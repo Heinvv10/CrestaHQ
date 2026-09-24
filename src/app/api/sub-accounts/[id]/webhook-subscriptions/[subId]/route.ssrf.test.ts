@@ -10,13 +10,12 @@ import { NextResponse } from "next/server";
 const patches: Array<Record<string, unknown>> = [];
 const dnsAnswers = new Map<string, string>();
 
-vi.mock("node:dns/promises", () => ({
-  lookup: vi.fn(async (host: string) => {
-    const address = dnsAnswers.get(host);
-    if (!address) throw Object.assign(new Error(`ENOTFOUND ${host}`), { code: "ENOTFOUND" });
-    return [{ address, family: 4 }];
+vi.mock("node:dns/promises", async () =>
+  (await import("@/test/fake-resolver")).fakeDnsModule((host, family) => {
+    const address = family === 4 ? dnsAnswers.get(host) : undefined;
+    return address ? [address] : undefined;
   }),
-}));
+);
 vi.mock("@/lib/auth/require-tenancy", () => ({
   requireSubAccountAdmin: async () => ({ uid: "u1" }),
 }));

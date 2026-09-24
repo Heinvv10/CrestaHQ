@@ -10,16 +10,16 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
  */
 
 const dnsQueue = new Map<string, string[]>();
-vi.mock("node:dns/promises", () => ({
-  lookup: vi.fn(async (host: string) => {
+vi.mock("node:dns/promises", async () =>
+  (await import("@/test/fake-resolver")).fakeDnsModule((host, family) => {
+    if (family === 6) return undefined;
     const q = dnsQueue.get(host);
     const address = q && q.length > 1 ? q.shift()! : q?.[0];
     // A nameserver that never answers.
-    if (address === "HANG") return new Promise(() => {});
-    if (!address) throw Object.assign(new Error(`ENOTFOUND ${host}`), { code: "ENOTFOUND" });
-    return [{ address, family: 4 }];
+    if (address === "HANG") return new Promise<string[]>(() => {});
+    return address ? [address] : undefined;
   }),
-}));
+);
 
 import { publicFetch } from "@/lib/webhooks/public-fetch";
 

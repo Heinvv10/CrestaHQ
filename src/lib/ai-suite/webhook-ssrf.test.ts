@@ -23,12 +23,11 @@ const sendDirectTestDelivery = vi.fn();
 vi.mock("@/lib/webhooks/direct-test", () => ({
   sendDirectTestDelivery: (...a: unknown[]) => sendDirectTestDelivery(...a),
 }));
-vi.mock("node:dns/promises", () => ({
-  lookup: vi.fn(async (host: string) => {
-    if (host === "internal.example.com") return [{ address: "100.96.203.105", family: 4 }];
-    throw Object.assign(new Error(`ENOTFOUND ${host}`), { code: "ENOTFOUND" });
-  }),
-}));
+vi.mock("node:dns/promises", async () =>
+  (await import("@/test/fake-resolver")).fakeDnsModule((host, family) =>
+    host === "internal.example.com" && family === 4 ? ["100.96.203.105"] : undefined,
+  ),
+);
 
 const { getCapability } = await import("./capabilities");
 
