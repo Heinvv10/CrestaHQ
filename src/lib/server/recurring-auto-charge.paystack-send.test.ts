@@ -169,7 +169,12 @@ describe("a later cycle that can't charge", () => {
     sendEmail.mockRejectedValue(new Error("SMTP down"));
     expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: false });
     expect(lastError()).toContain("the saved card was removed");
-    expect(lastError()).toContain("Also: invoice not sent: Send failed: SMTP down");
+    expect(lastError()).toContain("Invoice not sent: Send failed: SMTP down");
+    expect(lastError()).not.toMatch(/emailed/);
+    const tasks = mem.list("tasks");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].notes).toContain("Invoice not sent: Send failed: SMTP down");
+    expect(tasks[0].notes).not.toMatch(/emailed/);
   });
 
   it("an invoice-mode schedule's failed send keeps today's lastError", async () => {
@@ -177,5 +182,45 @@ describe("a later cycle that can't charge", () => {
     sendEmail.mockRejectedValue(new Error("SMTP down"));
     expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: false });
     expect(lastError()).toBe("Invoice raised but not sent: Send failed: SMTP down");
+  });
+});
+
+describe("first card cycle whose invoice can't be sent (B4, B5)", () => {
+  it("B4: no card, and no payment rail at all: one Task naming the send failure; lastError never says emailed", async () => {
+    seedCardSchedule({ cardMandateId: null, cyclesGenerated: 0 });
+    mem.seed(`subAccounts/${SA}/private/paystackConnection`, {});
+    stubAutoCharge();
+    expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: false });
+    expect(sendEmail).not.toHaveBeenCalled();
+    const tasks = mem.list("tasks");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe(`Invoice ${raised().quoteNumber} was not sent: Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.`);
+    expect(lastError()).toContain("Card not charged for invoice");
+    expect(lastError()).toContain("no card is saved");
+    expect(lastError()).toContain("Invoice not sent: Connect Paystack");
+    expect(lastError()).not.toMatch(/emailed/);
+  });
+
+  it("B5: the card-on-file link fails AND the email fails: one Task and lastError name both", async () => {
+    seedCardSchedule({ cardMandateId: null, cyclesGenerated: 0 });
+    sub({ name: "" });
+    stubAutoCharge();
+    sendEmail.mockRejectedValue(new Error("SMTP down"));
+    expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: false });
+    const tasks = mem.list("tasks");
+    expect(tasks).toHaveLength(1);
+    for (const text of [`${tasks[0].title} ${tasks[0].notes}`, lastError()]) {
+      expect(text).toContain("business name");
+      expect(text).toContain("Send failed: SMTP down");
+      expect(text).not.toMatch(/emailed|sent with/);
+    }
+  });
+
+  it("control: a first cycle that sends with its card-on-file link raises no Task and says emailed", async () => {
+    seedCardSchedule({ cardMandateId: null, cyclesGenerated: 0 });
+    stubAutoCharge();
+    expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: true });
+    expect(mem.list("tasks")).toHaveLength(0);
+    expect(lastError()).toContain("emailed instead");
   });
 });

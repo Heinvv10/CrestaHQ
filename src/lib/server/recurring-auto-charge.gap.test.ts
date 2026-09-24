@@ -96,7 +96,7 @@ describe("a cycle due too soon after the previous cycle", () => {
     const [task] = tasksAbout("too soon");
     expect(task.notes).toBe(
       "This cycle is due 5 March 2026, only 4 days after the previous cycle (1 March 2026) — usually because the billing day " +
-        "or frequency was changed — so the card was not charged and the invoice was emailed instead.",
+        "or frequency was changed — so the card was not charged. The invoice was emailed instead.",
     );
     expect(mem.read(`recurringInvoices/${SCHEDULE}`)!.lastError).toMatch(/only 4 days after the previous cycle/);
     expect(mem.read(`paymentMandates/m1`)!.consecutiveDeclines).toBeUndefined();

@@ -99,13 +99,14 @@ export function notifyDraftForReview(
  * failure does not fail the cycle — the invoice exists and the operator can
  * send it by hand — but it is recorded on the schedule, after any card `chargeNote`.
  * `cardLinkFallback`: a card-mode invoice went without its card-on-file link
- * (see `chooseInvoicePayRail`); the card cycle folds it into its one Task.
+ * (see `chooseInvoicePayRail`), sent or not; the card cycle folds it, and
+ * `error`, into its one Task.
  */
 export async function sendGeneratedInvoice(
   schedule: RecurringInvoiceDoc,
   invoiceId: string,
   chargeNote?: string,
-): Promise<{ sent: boolean; cardLinkFallback: string | null }> {
+): Promise<{ sent: boolean; cardLinkFallback: string | null; error: string | null }> {
   const replyTo = await accountContactEmail(schedule.subAccountId);
   const result = await sendQuoteServerSide({
     subAccountId: schedule.subAccountId,
@@ -117,17 +118,16 @@ export async function sendGeneratedInvoice(
     console.error(
       `[recurring] send failed for schedule ${schedule.id} invoice ${invoiceId}: ${result.failure.code} ${result.failure.error}`,
     );
-    const lead = chargeNote ? `${chargeNote} Also: invoice not sent` : "Invoice raised but not sent";
+    const cardLinkFallback = result.cardLinkFallback ?? null;
+    const lead = chargeNote ? `${chargeNote} Invoice not sent` : "Invoice raised but not sent";
+    const lastError = [`${lead}: ${result.failure.error}`, cardLinkFallback].filter(Boolean).join(" ");
     await schedulesCollection()
       .doc(schedule.id)
-      .update({
-        lastError: `${lead}: ${result.failure.error}`.slice(0, 500),
-        updatedAt: FieldValue.serverTimestamp(),
-      })
+      .update({ lastError: lastError.slice(0, 500), updatedAt: FieldValue.serverTimestamp() })
       .catch(() => {});
-    return { sent: false, cardLinkFallback: null };
+    return { sent: false, cardLinkFallback, error: result.failure.error };
   }
-  return { sent: true, cardLinkFallback: result.cardLinkFallback ?? null };
+  return { sent: true, cardLinkFallback: result.cardLinkFallback ?? null, error: null };
 }
 
 /**
