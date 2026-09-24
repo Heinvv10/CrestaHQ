@@ -219,11 +219,11 @@ async function openAttempt(
       return no("the Paystack key changed since the card was saved");
     }
     if (!secret) return no("the saved card's authorization is missing");
-    // Before the amount check: a billing-day change both moves the cycle and
-    // pro-rates its invoice, and the operator is told the cause, not the symptom.
+    // Before the amount: name the cause (billing-day change).
     if (previousDueAt && dueAt.getTime() - previousDueAt.getTime() < minCardChargeGapMs(schedule.cadence)) {
       return { ok: false, tooSoon: { dueAt, previousDueAt } };
     }
+    if (invoice?.prorated === "credit") return no("it carries a deliberate pro-rated credit for a billing-day change, so it is not the authorised amount — nothing to fix");
     const amountCents = invoice ? invoiceTotalCents(invoice) : NaN;
     if (
       !invoice ||

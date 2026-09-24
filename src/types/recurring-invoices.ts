@@ -129,11 +129,13 @@ export interface RecurringInvoiceDoc {
    */
   lastDueAt?: Timestamp | FieldValue | null;
   /**
-   * What a billing-day change pro-rated since the last billed cycle: how far
-   * the customer is paid, a credit owed on the next invoice, the gap invoiced.
+   * What a billing-day change pro-rated: how far the customer is paid, a
+   * credit owed on the next invoice, the gap invoices and their state.
    * Shape: `ProrationRecord` in `lib/recurring/prorate.ts`, dates as Timestamps.
    */
   proration?: Record<string, unknown> | null;
+  /** A gap invoice is still to be raised; the daily cron queries this. */
+  prorationPending?: boolean;
 
   createdAt: Timestamp | FieldValue;
   updatedAt: Timestamp | FieldValue;

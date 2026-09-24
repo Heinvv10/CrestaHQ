@@ -7,7 +7,7 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { parseScheduleUpdate } from "@/lib/recurring/schedule-input";
 import { toDate } from "@/lib/server/recurring-invoice-cycle";
-import { alertProration, commitWithProration, prorationForEdit, raiseGapInvoice } from "@/lib/server/recurring-prorate";
+import { commitWithProration, prorationFields, prorationForEdit, raiseProrationGaps } from "@/lib/server/recurring-prorate";
 import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +67,7 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const now = new Date();
   const parsed = parseScheduleUpdate(
     body,
     {
@@ -80,7 +81,7 @@ export async function PATCH(
       chargeMode: schedule.chargeMode,
       lastRunAt: toDate(schedule.lastRunAt),
     },
-    new Date(),
+    now,
   );
   if (!parsed.ok) {
     return NextResponse.json({ error: parsed.error }, { status: 400 });
@@ -103,11 +104,15 @@ export async function PATCH(
   if (Object.keys(rest).length > 0) updates.lastError = resumeNote ?? null;
 
   // A billing-day change on a schedule that has billed is pro-rated
-  // (`prorate.ts`): committed against the state it was computed from.
-  const proration = prorationForEdit(schedule, parsed.value);
+  // (`prorate.ts`), which also picks the next run; committed against the
+  // state it was computed from.
+  const proration = prorationForEdit(schedule, parsed.value, now);
+  if (proration) {
+    Object.assign(updates, prorationFields(proration.record), { nextRunAt: Timestamp.fromDate(proration.next) });
+  }
   try {
     if (!proration) await ref.update(updates);
-    else if (!(await commitWithProration(ref, schedule, updates, proration))) {
+    else if (!(await commitWithProration(ref, schedule, updates))) {
       return NextResponse.json(
         { error: "The schedule changed while you were editing it. Reload it and try again." },
         { status: 409 },
@@ -121,7 +126,7 @@ export async function PATCH(
     );
   }
 
-  if (proration?.note) await alertProration(schedule, proration.note);
-  if (proration?.record?.gap) await raiseGapInvoice(ref, new Date());
+  // Best effort: the daily sweep raises any gap this leaves pending.
+  if (proration?.record.gaps.some((g) => g.state === "pending")) await raiseProrationGaps(ref, now);
   return NextResponse.json({ ok: true });
 }

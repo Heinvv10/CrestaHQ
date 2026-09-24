@@ -33,7 +33,7 @@ vi.mock("@/lib/auth/require-tenancy", () => ({
 
 const { runOneSchedule } = await import("./recurring-invoice-service");
 const { PATCH } = await import("@/app/api/sub-accounts/[id]/recurring-invoices/[recurringId]/route");
-const { raiseGapInvoice } = await import("./recurring-prorate");
+const { commitWithProration, raiseProrationGaps, raisePendingProrations } = await import("./recurring-prorate");
 
 /** 07:00 SAST on a date. */
 const at = (day: string) => new Date(`${day}T05:00:00.000Z`);
@@ -42,6 +42,15 @@ const midnight = (day: string) => Timestamp.fromDate(new Date(new Date(`${day}T0
 const quotes = () => mem.list("quotes") as unknown as (Quote & { id: string })[];
 const total = (q: Quote) => computeQuoteTotals(q).total;
 const schedule = () => mem.read(`recurringInvoices/${SCHEDULE}`)!;
+type StoredGap = { state: string; invoiceId: string | null; docId: string; claimedAt: unknown };
+const gaps = () => ((schedule().proration as { gaps: StoredGap[] } | undefined)?.gaps ?? []) as StoredGap[];
+const scheduleRef = () => mem.db.doc(`recurringInvoices/${SCHEDULE}`) as unknown as Parameters<typeof raiseProrationGaps>[0];
+/** Patch the stored gaps, as a crashed or interrupted raiser would have left them. */
+const setGaps = (patch: Partial<StoredGap>) => {
+  const current = schedule();
+  const proration = current.proration as Record<string, unknown>;
+  mem.seed(`recurringInvoices/${SCHEDULE}`, { ...current, prorationPending: true, proration: { ...proration, gaps: gaps().map((g) => ({ ...g, ...patch })) } });
+};
 
 async function edit(day: string, body: Record<string, unknown>) {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -81,23 +90,37 @@ afterEach(() => {
 });
 
 describe("gap: 15th → 20th", () => {
-  it("raises and emails ONE pro-rata for 15–20 Jul at the edit; 20 Jul then bills in full", async () => {
+  it("raises and emails ONE pro-rata for 15–19 Jul at the edit; 20 Jul then bills in full", async () => {
     await billedOnce(15, "2026-06-15");
     expect((await edit("2026-07-01", { anchorDay: 20 })).status).toBe(200);
 
     const [, gap] = quotes();
     expect(gap.lineItems).toEqual([
-      { id: "prorate", description: "Pro-rated: 15 Jul – 20 Jul (billing day changed)", quantity: 1, unitPrice: 161.29, productId: null },
+      { id: "prorate", description: "Pro-rated: 15 Jul – 19 Jul (billing day changed)", quantity: 1, unitPrice: 161.29, productId: null },
     ]);
     expect(total(gap)).toBe(185.48); // R1,150 × 5 ÷ 31
-    expect(gap.recurringInvoiceId).toBe(SCHEDULE);
+    expect(gap).toMatchObject({ recurringInvoiceId: SCHEDULE, prorated: "gap" });
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(sendQuoteServerSide.mock.calls[0][0].quoteId).toBe(gap.id);
-    expect(schedule().proration).toMatchObject({ gap: { invoiceId: gap.id, days: 5, cycleDays: 31 } });
+    expect(gaps()).toMatchObject([{ state: "raised", invoiceId: gap.id }]);
+    expect(schedule().prorationPending).toBe(false);
 
     await runOneSchedule(SCHEDULE, at("2026-07-20"));
     expect(quotes()).toHaveLength(3);
     expect(total(quotes()[2])).toBe(1150);
+  });
+
+  it("edited on 17 Jun, before the 20th: the next bill is 20 Jul, and an after-count term stays whole", async () => {
+    await billedOnce(15, "2026-06-15", { cyclesGenerated: 0, endMode: "after_count", maxCycles: 2 });
+    await edit("2026-06-17", { anchorDay: 20 });
+    expect((schedule().nextRunAt as Timestamp).toDate()).toEqual(midnight("2026-07-20").toDate());
+    expect(quotes()[1].lineItems[0].description).toBe("Pro-rated: 15 Jul – 19 Jul (billing day changed)");
+    expect(await runOneSchedule(SCHEDULE, at("2026-06-20"))).toMatchObject({ kind: "skipped" });
+
+    await runOneSchedule(SCHEDULE, at("2026-07-20"));
+    expect(total(quotes()[2])).toBe(1150);
+    // Two regular cycles (15 Jun, 20 Jul) — the pro-rata is not one of them.
+    expect(schedule()).toMatchObject({ cyclesGenerated: 2, status: "completed" });
   });
 
   it("saving the same edit again raises nothing more", async () => {
@@ -123,35 +146,15 @@ describe("gap: 15th → 20th", () => {
     expect(quotes()).toHaveLength(2);
   });
 
-  it("the gap invoice is claimed before it is raised: two raisers make one invoice", async () => {
-    await billedOnce(15, "2026-06-15");
-    await edit("2026-07-01", { anchorDay: 20 });
-    const current = schedule();
-    const proration = current.proration as Record<string, Record<string, unknown>>;
-    mem.seed(`recurringInvoices/${SCHEDULE}`, { ...current, proration: { ...proration, gap: { ...proration.gap, invoiceId: null } } });
-    const ref = mem.db.doc(`recurringInvoices/${SCHEDULE}`) as unknown as Parameters<typeof raiseGapInvoice>[0];
-    await Promise.all([raiseGapInvoice(ref, at("2026-07-01")), raiseGapInvoice(ref, at("2026-07-01"))]);
-    expect(quotes()).toHaveLength(3);
-  });
-
-  it("a pro-rata that cannot be raised is left to a human, with a Task", async () => {
-    await billedOnce(15, "2026-06-15");
-    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
-    expect((await edit("2026-07-01", { anchorDay: 20 })).status).toBe(200);
-    expect(quotes()).toHaveLength(1);
-    expect(schedule().lastError).toMatch(/Pro-rated: 15 Jul – 20 Jul.*could not be raised.*Raise it by hand/);
-    expect(tasksAbout("could not be raised")).toHaveLength(1);
-  });
-
   it("review-first: the pro-rata is a draft for review, not sent", async () => {
     await billedOnce(15, "2026-06-15", { reviewFirst: true });
     await edit("2026-07-01", { anchorDay: 20 });
-    expect(quotes()[1]).toMatchObject({ status: "draft" });
+    expect(quotes()[1]).toMatchObject({ status: "draft", prorated: "gap" });
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     expect(sendPushForEvent).toHaveBeenCalledTimes(1);
   });
 
-  it("a card schedule's pro-rata is emailed, never charged; 20 Jul is charged in full", async () => {
+  it("a card schedule's pro-rata is emailed, never charged, and the Task says it is deliberate; 20 Jul is charged in full", async () => {
     seedMandate();
     const calls = stubAutoCharge();
     seedCardSchedule({ anchorDay: 15, nextRunAt: midnight("2026-06-15") });
@@ -162,6 +165,9 @@ describe("gap: 15th → 20th", () => {
     expect(chargeCalls(calls)).toHaveLength(1);
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(sendQuoteServerSide.mock.calls[0][0].quoteId).toBe(quotes()[1].id);
+    const [task] = tasksAbout("deliberate");
+    expect(task.notes).toContain("not charged to the saved card");
+    expect(task.notes).not.toMatch(/fix one/i);
 
     // The W5 period guard still sees 15 Jun as the last cycle: 20 Jul is 35 days on.
     await runOneSchedule(SCHEDULE, at("2026-07-20"));
@@ -183,8 +189,92 @@ describe("gap: 15th → 20th", () => {
   });
 });
 
+describe("the sweep guarantees the gap invoice", () => {
+  it("a raise that fails at the edit stays pending, with lastError and a Task, and the next sweep raises it", async () => {
+    await billedOnce(15, "2026-06-15");
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    expect((await edit("2026-07-01", { anchorDay: 20 })).status).toBe(200);
+    expect(quotes()).toHaveLength(1);
+    expect(gaps()).toMatchObject([{ state: "pending", invoiceId: null }]);
+    expect(schedule().prorationPending).toBe(true);
+    expect(schedule().lastError).toMatch(/Pro-rated: 15 Jul – 19 Jul.*could not be raised.*retried/);
+    expect(tasksAbout("could not be raised")).toHaveLength(1);
+
+    expect(await raisePendingProrations(at("2026-07-02"))).toBe(1);
+    expect(quotes()).toHaveLength(2);
+    expect(quotes()[1].lineItems[0].description).toBe("Pro-rated: 15 Jul – 19 Jul (billing day changed)");
+    expect(gaps()).toMatchObject([{ state: "raised" }]);
+    expect(schedule().prorationPending).toBe(false);
+    expect(await raisePendingProrations(at("2026-07-03"))).toBe(0);
+    expect(quotes()).toHaveLength(2);
+  });
+
+  it("a stale 'raising' claim is retaken; a fresh one is left alone", async () => {
+    await billedOnce(15, "2026-06-15");
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    await edit("2026-07-01", { anchorDay: 20 });
+    setGaps({ state: "raising", claimedAt: new Date("2026-07-02T04:55:00.000Z") });
+    expect(await raisePendingProrations(at("2026-07-02"))).toBe(0); // claimed 5 minutes ago
+    expect(await raisePendingProrations(new Date("2026-07-02T06:00:00.000Z"))).toBe(1);
+    expect(quotes()).toHaveLength(2);
+  });
+
+  it("a retaken claim whose invoice already exists raises no second one and does not re-send", async () => {
+    await billedOnce(15, "2026-06-15");
+    await edit("2026-07-01", { anchorDay: 20 });
+    setGaps({ state: "raising", claimedAt: new Date("2026-07-01T00:00:00.000Z"), invoiceId: null });
+    vi.clearAllMocks();
+    expect(await raisePendingProrations(at("2026-07-02"))).toBe(1);
+    expect(quotes()).toHaveLength(2);
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    expect(tasksAbout("whether it was sent is unknown")).toHaveLength(1);
+    expect(gaps()).toMatchObject([{ state: "raised" }]);
+  });
+
+  it("a cancelled schedule's pending gap is dropped, not raised", async () => {
+    await billedOnce(15, "2026-06-15");
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    await edit("2026-07-01", { anchorDay: 20 });
+    await edit("2026-07-02", { status: "cancelled" });
+    expect(await raisePendingProrations(at("2026-07-03"))).toBe(0);
+    expect(quotes()).toHaveLength(1);
+    expect(schedule().prorationPending).toBe(false);
+  });
+
+  it("an edit planned before a gap was claimed is refused, not written over the claim", async () => {
+    await billedOnce(15, "2026-06-15");
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    await edit("2026-07-01", { anchorDay: 20 });
+    const seen = { ...schedule(), id: SCHEDULE } as unknown as Parameters<typeof commitWithProration>[1];
+    setGaps({ state: "raising", claimedAt: new Date() });
+    expect(await commitWithProration(scheduleRef(), seen, { anchorDay: 15 })).toBe(false);
+    expect(schedule().anchorDay).toBe(20);
+  });
+
+  it("two raisers at once make one invoice", async () => {
+    await billedOnce(15, "2026-06-15");
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    await edit("2026-07-01", { anchorDay: 20 });
+    await Promise.all([raiseProrationGaps(scheduleRef(), at("2026-07-02")), raiseProrationGaps(scheduleRef(), at("2026-07-02"))]);
+    expect(quotes()).toHaveLength(2);
+  });
+
+  it("an unraised gap is cancelled by a revert (15 → 20 → 15): nothing invoiced, nothing credited", async () => {
+    await billedOnce(15, "2026-06-15");
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    await edit("2026-07-01", { anchorDay: 20 });
+    expect((await edit("2026-07-02", { anchorDay: 15 })).status).toBe(200);
+    expect(gaps()).toEqual([]);
+    expect(schedule()).toMatchObject({ prorationPending: false, proration: { credit: null } });
+    expect(await raisePendingProrations(at("2026-07-03"))).toBe(0);
+    await runOneSchedule(SCHEDULE, at("2026-07-15"));
+    expect(quotes()).toHaveLength(2);
+    expect(total(quotes()[1])).toBe(1150);
+  });
+});
+
 describe("overlap: 20th → 15th", () => {
-  it("credits 15–20 Jul on the 15 Jul invoice, and only on that one", async () => {
+  it("credits 15–19 Jul on the 15 Jul invoice, and only on that one", async () => {
     await billedOnce(20, "2026-06-20");
     await edit("2026-07-01", { anchorDay: 15 });
     expect(quotes()).toHaveLength(1);
@@ -192,21 +282,44 @@ describe("overlap: 20th → 15th", () => {
     await runOneSchedule(SCHEDULE, at("2026-07-15"));
     const credited = quotes()[1];
     expect(total(credited)).toBe(964.52); // R1,150 × (1 − 5 ÷ 31)
-    expect(credited.globalDiscount).toEqual({ type: "flat", value: 161.29 });
-    expect(credited.lineItems[1].description).toContain("Pro-rated credit: 15 Jul – 20 Jul (billing day changed)");
+    expect(credited).toMatchObject({ globalDiscount: { type: "flat", value: 161.29 }, prorated: "credit" });
+    expect(credited.lineItems[1].description).toContain("Pro-rated credit: 15 Jul – 19 Jul (billing day changed)");
 
     await runOneSchedule(SCHEDULE, at("2026-08-15"));
     expect(total(quotes()[2])).toBe(1150);
   });
 
-  it("a frequency change that orphans a pending credit says so", async () => {
+  it("a credited cycle that fails before its invoice exists passes the credit to the next invoice", async () => {
     await billedOnce(20, "2026-06-20");
     await edit("2026-07-01", { anchorDay: 15 });
-    // Weekly from today: the 15 Jul cycle the credit was owed on is gone.
-    await edit("2026-07-02", { cadence: { unit: "week", interval: 1 } });
-    expect(schedule().lastError).toMatch(/Pro-rated credit: 15 Jul – 20 Jul.*was not applied.*Credit it by hand/);
-    expect(tasksAbout("was not applied")).toHaveLength(1);
-    await runOneSchedule(SCHEDULE, at("2026-07-02"));
-    expect(total(quotes()[1])).toBe(1150);
+    issueQuoteNumber.mockRejectedValueOnce(new Error("numbering unavailable"));
+    expect(await runOneSchedule(SCHEDULE, at("2026-07-15"))).toMatchObject({ kind: "failed" });
+    expect(quotes()).toHaveLength(1);
+    await runOneSchedule(SCHEDULE, at("2026-08-15"));
+    expect(total(quotes()[1])).toBe(964.52);
+    await runOneSchedule(SCHEDULE, at("2026-09-15"));
+    expect(total(quotes()[2])).toBe(1150);
+  });
+
+  it("a credited cycle skipped as too stale passes the credit to the next invoice", async () => {
+    await billedOnce(20, "2026-06-20");
+    await edit("2026-07-01", { anchorDay: 15 });
+    expect(await runOneSchedule(SCHEDULE, at("2026-08-17"))).toMatchObject({ kind: "skipped", reason: "too_stale" });
+    await runOneSchedule(SCHEDULE, at("2026-08-18"));
+    expect(total(quotes()[1])).toBe(964.52);
+  });
+
+  it("a card schedule's credited cycle is emailed, and the Task says the difference is deliberate", async () => {
+    seedMandate();
+    const calls = stubAutoCharge();
+    seedCardSchedule({ anchorDay: 20, nextRunAt: midnight("2026-06-20") });
+    await runOneSchedule(SCHEDULE, at("2026-06-20"));
+    // Moved so the credited cycle is NOT too soon (29 days on): the pro-rata is the only reason.
+    await edit("2026-06-22", { anchorDay: 19 });
+    await runOneSchedule(SCHEDULE, at("2026-07-19"));
+    expect(chargeCalls(calls)).toHaveLength(1);
+    expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
+    const [task] = tasksAbout("deliberate pro-rated credit");
+    expect(`${task.title} ${task.notes}`).not.toMatch(/fix one/i);
   });
 });

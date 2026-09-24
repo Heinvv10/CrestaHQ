@@ -5,7 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendPushForEvent } from "@/lib/push/send";
 import { issueQuoteNumber } from "@/lib/quotes/number";
-import { readProration, withProratedCredit } from "@/lib/recurring/prorate";
+import { withProratedCredit, type ProrationCredit } from "@/lib/recurring/prorate";
 import {
   createTaskServerSide,
   territoryForContact,
@@ -30,11 +30,11 @@ export function schedulesCollection() {
   return getAdminDb().collection("recurringInvoices");
 }
 
-/** Mint an invoice from the schedule's template, plus any credit owed on the cycle due `dueAt`. */
+/** Mint an invoice from the schedule's template, with a pro-rated `credit` the claim gave this cycle. */
 export async function generateInvoice(
   schedule: RecurringInvoiceDoc,
   now: Date,
-  dueAt: Date | null = null,
+  opts: { credit?: ProrationCredit | null; docId?: string; prorated?: "gap" } = {},
 ): Promise<{ invoiceId: string; quoteNumber: string; territoryId: string }> {
   // Same stamp the hand-made path applies. Without it the rules read a null
   // territory and deny it to everyone but admins — so the rep who actually
@@ -45,7 +45,8 @@ export async function generateInvoice(
     "invoice",
     now,
   );
-  const ref = getAdminDb().collection("quotes").doc();
+  const quotes = getAdminDb().collection("quotes");
+  const ref = opts.docId ? quotes.doc(opts.docId) : quotes.doc();
   await ref.set({
     ...DEFAULT_QUOTE,
     kind: "invoice",
@@ -58,7 +59,8 @@ export async function generateInvoice(
     contactId: schedule.contactId,
     quoteNumber,
     currency: schedule.currency,
-    ...withProratedCredit(schedule, readProration(schedule.proration), dueAt, schedule.currency),
+    ...withProratedCredit(schedule, opts.credit ?? null, schedule.currency),
+    ...(opts.prorated || opts.credit ? { prorated: opts.prorated ?? "credit" } : {}),
     termsAndNotes: schedule.termsAndNotes,
     billedToOrganization: schedule.billedToOrganization,
     billingAddress: schedule.billingAddress,

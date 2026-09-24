@@ -146,6 +146,8 @@ export interface Quote {
   paidVia?: QuotePaidVia | null;
   /** Set by a recurring card cycle. See `QuoteAutoCharge`. */
   autoCharge?: QuoteAutoCharge | null;
+  /** A billing-day pro-rata (`lib/recurring/prorate.ts`): the gap invoice, or a cycle carrying a credit. */
+  prorated?: "gap" | "credit" | null;
 
   // ── Behaviour flags ──────────────────────────────────────────────
   /** When true, accepting the quote auto-creates a Deal at the "Won"
