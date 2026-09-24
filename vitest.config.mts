@@ -12,6 +12,11 @@ export default defineConfig({
     // assertion, only how long a slow import may take before it counts as a
     // failure.
     hookTimeout: 30_000,
+    // Same reason, for a test whose FIRST line imports its module (the cold
+    // compile then counts against the test itself). The default 5s failed the
+    // deploy gate on a different such test in each run on 2026-09-24, with
+    // ~30 workers compiling at once on the shared box. No assertion changes.
+    testTimeout: 30_000,
     // scripts/** carries the deploy-time fake-provider guard's test.
     // e2e/** carries the fixture guard's unit test — the guard is the only
     // thing between a spec bug and production Firestore, so it is covered
