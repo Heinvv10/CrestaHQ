@@ -4,11 +4,8 @@ import type Stripe from "stripe";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { applyFeatureGates } from "@/lib/server/feature-gates-service";
-import {
-  billingEventFlagId,
-  notifyAgencyOwnerOfFlag,
-  subscriptionFlagReason,
-} from "@/lib/server/billing-attention";
+import { billingEventFlagId, subscriptionFlagReason } from "@/lib/server/billing-attention";
+import { notifyFlag } from "@/lib/server/billing-attention-notify";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
   activationLedgerRef,
@@ -534,11 +531,14 @@ export async function recordSubAccountSubscriptionId(input: {
           },
           createdAt: FieldValue.serverTimestamp(),
         });
-      await notifyAgencyOwnerOfFlag({
+      const flaggedIds = (candidates.length > 0 ? candidates : billed).map((d) => d.id);
+      await notifyFlag({
         flagId: billingEventFlagId(eventId),
+        audience: "agencyOwner",
         agencyId,
         subAccountId: null,
-        reason: subscriptionFlagReason((candidates.length > 0 ? candidates : billed).length),
+        candidates: flaggedIds,
+        reason: subscriptionFlagReason(flaggedIds.length),
         amountCents: null,
         currency: null,
         reference: input.subscriptionId,

@@ -1,9 +1,7 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { formatBillingPrice } from "@/lib/billing/status";
 import type { AttentionItem } from "@/types/billing";
 
 /**
@@ -12,12 +10,14 @@ import type { AttentionItem } from "@/types/billing";
  *   - `billingEvents` rows of type payment.flagged / subscription.flagged
  *     (agency ↔ sub-account plan billing), and
  *   - `orders.attention` (a sub-account's own Stripe orders).
- * This module is the read side: it lists the unresolved ones, resolves them,
- * and emails the agency owner once per flag.
+ * This module is the read side: it lists the unresolved ones and resolves
+ * them. The email about a new flag is billing-attention-notify.ts.
  *
- * `billingAttention/{flagId}` (server-only, default-deny in rules) holds, per
- * flag, the owner-notice claim and the resolution. It is kept apart from the
- * flag itself because both writers overwrite their flag on a redelivery.
+ * A billing-event flag's resolution lives in `billingAttention/{flagId}`
+ * (server-only, default-deny in rules), apart from the flag row, because the
+ * writers overwrite that row on a redelivery. An order's resolution lives on
+ * the order (`attentionOpen: false` + `attentionResolved*`), which its flag
+ * writer preserves.
  */
 
 export const FLAGGED_BILLING_EVENTS = ["payment.flagged", "subscription.flagged"];
@@ -34,9 +34,12 @@ export const subscriptionFlagReason = (matches: number) =>
 
 export const billingEventFlagId = (eventDocId: string) => `event-${eventDocId}`;
 
-/** A new note on the same order is a new flag; a replayed note is the same one. */
-export const orderFlagId = (orderId: string, note: string) =>
-  `order-${orderId}-${createHash("sha256").update(note).digest("hex").slice(0, 16)}`;
+/**
+ * Stable across redeliveries: an order is paid by one checkout and settles
+ * exactly one source, so (order, source) names the problem whatever wording
+ * the reconciler produced for it this time.
+ */
+export const orderFlagId = (orderId: string, source: string) => `order-${orderId}-${source}`;
 
 function toMillis(v: unknown): number | null {
   if (v instanceof Date) return v.getTime();
@@ -83,27 +86,37 @@ export async function listAgencyBillingFlags(agencyId: string): Promise<Attentio
   return items.filter((i) => !done.has(i.flagId)).sort(newestFirst);
 }
 
-/** Unresolved `attention` notes on one sub-account's orders. */
+/** How many open order flags one listing returns. */
+const ORDER_FLAG_LIMIT = 100;
+
+/**
+ * Open `attention` notes on one sub-account's orders. Two equality filters,
+ * so single-field indexes serve it (no composite). Orders flagged before
+ * `attentionOpen` existed carry no such field and do not appear here.
+ */
 export async function listOrderFlags(subAccountId: string): Promise<AttentionItem[]> {
-  const snap = await getAdminDb().collection("orders").where("subAccountId", "==", subAccountId).get();
-  const items = snap.docs
-    .filter((d) => typeof d.data().attention === "string" && d.data().attention)
+  const snap = await getAdminDb()
+    .collection("orders")
+    .where("subAccountId", "==", subAccountId)
+    .where("attentionOpen", "==", true)
+    .limit(ORDER_FLAG_LIMIT)
+    .get();
+  return snap.docs
     .map((d): AttentionItem => {
       const o = d.data();
       return {
-        flagId: orderFlagId(d.id, o.attention as string),
+        flagId: orderFlagId(d.id, String(o.source ?? "")),
         orderId: d.id,
         subAccountId,
         candidates: [],
-        reason: o.attention as string,
+        reason: String(o.attention ?? ""),
         amountCents: typeof o.totalCents === "number" ? o.totalCents : null,
         currency: typeof o.currency === "string" ? o.currency : null,
         reference: (o.stripePaymentIntentId as string | null) ?? (o.stripeCheckoutSessionId as string | null) ?? null,
         createdAtMs: toMillis(o.paidAt) ?? toMillis(o.createdAt),
       };
-    });
-  const done = await resolvedIds(items.map((i) => i.flagId));
-  return items.filter((i) => !done.has(i.flagId)).sort(newestFirst);
+    })
+    .sort(newestFirst);
 }
 
 /** First resolution wins; resolving again is a no-op. */
@@ -139,116 +152,25 @@ export async function resolveAgencyBillingFlag(agencyId: string, flagId: string,
 }
 
 /**
- * "not_found" when the order is not this sub-account's or carries no note;
- * "stale" when its note changed since the caller listed it (the caller would
- * be resolving a flag it has not seen).
+ * Close an order's flag, recording who and when. The note stays on the order
+ * (it is the record of what happened); the order row shows it as resolved.
+ * False when the order is not this sub-account's or has no open flag.
  */
-export async function resolveOrderFlag(
-  subAccountId: string,
-  orderId: string,
-  flagId: string,
-  by: Resolver,
-): Promise<"ok" | "not_found" | "stale"> {
-  const snap = await getAdminDb().doc(`orders/${orderId}`).get();
-  const o = snap.data();
-  if (!snap.exists || !o || o.subAccountId !== subAccountId || typeof o.attention !== "string" || !o.attention) {
-    return "not_found";
-  }
-  if (orderFlagId(orderId, o.attention) !== flagId) return "stale";
-  await markResolved(flagId, { agencyId: String(o.agencyId ?? ""), subAccountId }, by);
-  return "ok";
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-/**
- * Email the agency owner about a flag that was just written — once per flag.
- * The `billingAttention` doc is created before sending, so a webhook
- * redelivery that re-writes the same flag finds it and sends nothing. At most
- * once: a send that fails is logged, not retried. Never throws — the flag
- * itself has already been written and must not be rolled back over an email.
- */
-export async function notifyAgencyOwnerOfFlag(input: {
-  flagId: string;
-  agencyId: string;
-  subAccountId: string | null;
-  reason: string;
-  amountCents: number | null;
-  currency: string | null;
-  reference: string | null;
-}): Promise<void> {
-  try {
-    // Dynamic: resend.ts pulls in the conversation + usage services, and the
-    // flag writers that call this sit underneath those.
-    const { emailIsConfigured, sendEmail } = await import("@/lib/comms/resend");
-    if (!emailIsConfigured() || !input.agencyId) return;
-    const db = getAdminDb();
-    const agency = (await db.doc(`agencies/${input.agencyId}`).get()).data() ?? {};
-    let to: string | null = null;
-    if (typeof agency.ownerUid === "string" && agency.ownerUid) {
-      to = ((await db.doc(`users/${agency.ownerUid}`).get()).data()?.email as string | undefined) ?? null;
-    }
-    to = to ?? (agency.supportEmail as string | undefined) ?? null;
-    if (!to) {
-      console.error(`[billing-attention] no owner email for agency ${input.agencyId} — flag ${input.flagId} not emailed`);
-      return;
-    }
-    try {
-      await noticeRef(input.flagId).create({
-        agencyId: input.agencyId,
-        subAccountId: input.subAccountId,
-        notifiedAt: null,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-    } catch (err) {
-      if ((err as { code?: unknown })?.code === 6) return; // already emailed (or resolved)
-      throw err;
-    }
-    const subName = input.subAccountId
-      ? String((await db.doc(`subAccounts/${input.subAccountId}`).get()).data()?.name ?? input.subAccountId)
-      : "a sub-account";
-    const amount = formatBillingPrice(input.amountCents, input.currency);
-    const lines: Array<[string, string]> = [
-      ["Sub-account", subName],
-      ["Reason", input.reason],
-      ["Amount", amount],
-      ["Reference", input.reference ?? "—"],
-    ];
-    const subject = `A payment needs attention — ${subName.replace(/[\r\n]+/g, " ")}`;
-    const text = [
-      "A payment arrived that could not be applied automatically. It may need a refund or a manual fix.",
-      "",
-      ...lines.map(([k, v]) => `${k}: ${v}`),
-      "",
-      "Review it under Client billing (plan payments) or the sub-account's Reports → Payments (orders), then mark it resolved.",
-    ].join("\n");
-    const html = `
-    <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
-      <h2 style="margin:0 0 12px;">A payment needs attention</h2>
-      <p>A payment arrived that could not be applied automatically. It may need a refund or a manual fix.</p>
-      <table style="border-collapse:collapse;font-size:14px;">${lines
-        .map(
-          ([k, v]) =>
-            `<tr><td style="padding:4px 12px 4px 0;color:#6b7280;">${escapeHtml(k)}</td><td style="padding:4px 0;">${escapeHtml(v)}</td></tr>`,
-        )
-        .join("")}</table>
-      <p style="color:#6b7280;font-size:13px;margin-top:20px;">Review it under Client billing (plan payments) or the sub-account's Reports → Payments (orders), then mark it resolved.</p>
-    </div>`;
-    try {
-      await sendEmail({ to, subject, text, html });
-      await noticeRef(input.flagId).update({ notifiedAt: FieldValue.serverTimestamp() });
-    } catch (err) {
-      console.error(`[billing-attention] owner email for flag ${input.flagId} failed`, err);
-      await noticeRef(input.flagId).update({ notifyError: err instanceof Error ? err.message : String(err) });
-    }
-  } catch (err) {
-    console.error(`[billing-attention] could not notify for flag ${input.flagId}`, err);
-  }
+export async function resolveOrderFlag(subAccountId: string, orderId: string, by: Resolver): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const o = snap.data();
+    if (!snap.exists || !o || o.subAccountId !== subAccountId) return false;
+    // Already resolved: a double click is a no-op, not an error.
+    if (o.attentionOpen !== true) return !!o.attentionResolvedAt;
+    tx.update(ref, {
+      attentionOpen: false,
+      attentionResolvedAt: FieldValue.serverTimestamp(),
+      attentionResolvedByUid: by.uid,
+      attentionResolvedByEmail: by.email || null,
+    });
+    return true;
+  });
 }

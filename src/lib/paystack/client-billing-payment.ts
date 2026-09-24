@@ -39,7 +39,7 @@ import type { BillingChargeDoc } from "@/types/billing";
  * activated or marked paid, the money (which did arrive on the agency's
  * account) is recorded as a `payment.flagged` row in `billingEvents` plus a
  * console.error, and the route answers 200. The flag is listed under Client
- * billing → Attention and emailed to the agency owner (billing-attention.ts).
+ * billing → Attention and emailed to the agency owner (billing-attention-notify.ts).
  */
 export async function settleClientBillingPayment(
   reference: string | undefined,

@@ -10,9 +10,9 @@ import type { AttentionItem } from "@/types/billing";
 /**
  * Flagged payments awaiting a person, with "Mark resolved". Used by Client
  * billing (plan-payment flags, `/api/agency/billing-attention`) and Reports →
- * Payments (order flags, `/api/sub-accounts/[id]/order-attention`). Both
- * routes take `{ flagId, orderId }` on POST (orderId is ignored by the agency
- * route). Renders nothing when there is nothing to show.
+ * Payments (order flags, `/api/sub-accounts/[id]/order-attention`). POST
+ * sends `{ flagId, orderId }`; the agency route reads flagId, the order route
+ * orderId. Renders nothing when there is nothing to show.
  */
 export function AttentionList({
   endpoint,

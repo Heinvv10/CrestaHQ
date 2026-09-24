@@ -27,7 +27,6 @@ vi.mock("@/lib/comms/resend", () => ({ emailIsConfigured: () => false, sendEmail
 
 const agency = await import("./route");
 const orders = await import("@/app/api/sub-accounts/[id]/order-attention/route");
-const { orderFlagId } = await import("@/lib/server/billing-attention");
 const db = () => mem.ref!;
 
 const req = (uid: string, body?: unknown) =>
@@ -110,30 +109,34 @@ describe("agency billing attention", () => {
 });
 
 describe("order attention", () => {
-  function order(id: string, sa: string, attention: string | null) {
+  function order(id: string, sa: string, attention: string | null, over: Record<string, unknown> = {}) {
     db().seed(`orders/${id}`, {
       agencyId: "ag1",
       subAccountId: sa,
+      source: "quote",
       attention,
+      attentionOpen: attention !== null,
       totalCents: 115000,
       currency: "zar",
       stripePaymentIntentId: `pi_${id}`,
       stripeCheckoutSessionId: `cs_${id}`,
       createdAt: new Date("2026-09-20T10:00:00Z"),
+      ...over,
     });
   }
 
-  it("lists this sub-account's flagged orders to its admin and the agency owner", async () => {
+  it("lists this sub-account's open flagged orders to its admin and the agency owner", async () => {
     order("o1", "sa1", "Paid, but the invoice was already paid");
     order("o2", "sa1", null);
     order("o3", "sa2", "Other workspace's flag");
+    order("o4", "sa1", "Already handled", { attentionOpen: false, attentionResolvedAt: new Date() });
 
     for (const uid of ["admin1", "owner1"]) {
       const res = await orders.GET(req(uid), ctx("sa1"));
       expect(res.status).toBe(200);
       const { items } = (await res.json()) as { items: Array<Record<string, unknown>> };
       expect(items).toHaveLength(1);
-      expect(items[0]).toMatchObject({ orderId: "o1", reference: "pi_o1", amountCents: 115000 });
+      expect(items[0]).toMatchObject({ orderId: "o1", flagId: "order-o1-quote", reference: "pi_o1", amountCents: 115000 });
     }
   });
 
@@ -143,29 +146,34 @@ describe("order attention", () => {
     expect((await orders.GET(req("owner2"), ctx("sa1"))).status).toBe(403);
     // An admin of sa1 has no membership in sa2.
     expect((await orders.GET(req("admin1"), ctx("sa2"))).status).toBe(403);
-    const body = { orderId: "o1", flagId: orderFlagId("o1", "flag") };
-    expect((await orders.POST(req("collab1", body), ctx("sa1"))).status).toBe(403);
-    expect(db().read(`billingAttention/${body.flagId}`)).toBeUndefined();
+    expect((await orders.POST(req("collab1", { orderId: "o1" }), ctx("sa1"))).status).toBe(403);
+    expect(db().read("orders/o1")).toMatchObject({ attentionOpen: true });
   });
 
   it("will not resolve an order through another sub-account", async () => {
     order("o3", "sa2", "flag");
-    db().seed("subAccounts/sa2/subAccountMembers/admin1", { status: "active", role: "admin" });
-    const body = { orderId: "o3", flagId: orderFlagId("o3", "flag") };
-    expect((await orders.POST(req("admin1", body), ctx("sa1"))).status).toBe(404);
-    expect(db().read(`billingAttention/${body.flagId}`)).toBeUndefined();
+    expect((await orders.POST(req("admin1", { orderId: "o3" }), ctx("sa1"))).status).toBe(404);
+    expect(db().read("orders/o3")).toMatchObject({ attentionOpen: true });
   });
 
-  it("resolves the note the admin saw; a changed note is a new flag", async () => {
-    order("o1", "sa1", "first problem");
-    const seen = orderFlagId("o1", "first problem");
-    order("o1", "sa1", "second problem");
-    expect((await orders.POST(req("admin1", { orderId: "o1", flagId: seen }), ctx("sa1"))).status).toBe(409);
-
-    const current = orderFlagId("o1", "second problem");
-    expect((await orders.POST(req("admin1", { orderId: "o1", flagId: current }), ctx("sa1"))).status).toBe(200);
-    expect(db().read(`billingAttention/${current}`)).toMatchObject({ resolvedByUid: "admin1", subAccountId: "sa1" });
+  it("resolving marks the order itself, recording who; a second click is a no-op", async () => {
+    order("o1", "sa1", "flag");
+    expect((await orders.POST(req("admin1", { orderId: "o1" }), ctx("sa1"))).status).toBe(200);
+    expect(db().read("orders/o1")).toMatchObject({
+      attention: "flag",
+      attentionOpen: false,
+      attentionResolvedByUid: "admin1",
+      attentionResolvedByEmail: "admin1@example.com",
+      attentionResolvedAt: expect.anything(),
+    });
+    expect((await orders.POST(req("owner1", { orderId: "o1" }), ctx("sa1"))).status).toBe(200);
+    expect(db().read("orders/o1")).toMatchObject({ attentionResolvedByUid: "admin1" });
     const { items } = (await (await orders.GET(req("admin1"), ctx("sa1"))).json()) as { items: unknown[] };
     expect(items).toEqual([]);
+  });
+
+  it("an order with no flag cannot be resolved", async () => {
+    order("o2", "sa1", null);
+    expect((await orders.POST(req("admin1", { orderId: "o2" }), ctx("sa1"))).status).toBe(404);
   });
 });

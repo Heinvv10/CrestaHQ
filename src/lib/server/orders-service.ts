@@ -3,7 +3,8 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { notifyAgencyOwnerOfFlag, orderFlagId } from "@/lib/server/billing-attention";
+import { orderFlagId } from "@/lib/server/billing-attention";
+import { notifyFlag } from "@/lib/server/billing-attention-notify";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import {
@@ -248,17 +249,24 @@ export async function markOrderPaid(input: {
 
 /**
  * Flag a paid order for the operator: the money arrived but what it paid for
- * could not be settled with it. Overwrites with the same note on a replay, so
- * a redelivered event never stacks duplicates.
+ * could not be settled with it. Overwrites the note on a replay, so a
+ * redelivered event never stacks duplicates — and never reopens a flag an
+ * admin already resolved (the flag is the order + its source, not the note's
+ * wording). The sub-account's admins are emailed once per flag.
  */
 export async function flagOrderAttention(order: Order, note: string): Promise<void> {
-  await getAdminDb().doc(`orders/${order.id}`).update({
+  const ref = getAdminDb().doc(`orders/${order.id}`);
+  // Not a transaction: the only concurrent writer is an admin's resolve, and
+  // losing that race just leaves the flag open to be resolved again.
+  const resolved = !!(await ref.get()).data()?.attentionResolvedAt;
+  await ref.update({
     attention: note,
+    ...(resolved ? {} : { attentionOpen: true }),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  // Once per (order, note) — a replay's identical note finds its notice claimed.
-  await notifyAgencyOwnerOfFlag({
-    flagId: orderFlagId(order.id, note),
+  await notifyFlag({
+    flagId: orderFlagId(order.id, order.source),
+    audience: "subAccountAdmins",
     agencyId: order.agencyId,
     subAccountId: order.subAccountId,
     reason: note,

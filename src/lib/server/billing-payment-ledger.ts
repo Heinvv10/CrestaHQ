@@ -2,7 +2,8 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { billingEventFlagId, notifyAgencyOwnerOfFlag } from "@/lib/server/billing-attention";
+import { billingEventFlagId } from "@/lib/server/billing-attention";
+import { notifyFlag } from "@/lib/server/billing-attention-notify";
 
 /**
  * The ledger row that marks one provider payment as having activated a plan.
@@ -56,8 +57,9 @@ export async function flagBillingPayment(input: {
       },
       createdAt: FieldValue.serverTimestamp(),
     });
-  await notifyAgencyOwnerOfFlag({
+  await notifyFlag({
     flagId: billingEventFlagId(eventId),
+    audience: "agencyOwner",
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
     reason: input.reason,
