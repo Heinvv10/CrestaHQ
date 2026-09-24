@@ -26,6 +26,7 @@ import {
   GraduationCap,
   Sparkles,
   Star,
+  Target,
   Trash2,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -40,6 +41,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
+import { prospectReportQuota } from "@/lib/prospecting/quota";
 import { SubAccountBillingSection } from "@/components/agency/sub-account-billing-section";
 import { SubAccountUsageSection } from "@/components/agency/sub-account-usage-section";
 import { effectiveBillingState } from "@/lib/billing/status";
@@ -133,6 +135,9 @@ function ManageDialogBody({
     subAccount.aiSuiteModel === "sonnet" ? "sonnet" : "opus";
   const initialLabs = subAccount.labsEnabledByAgency === true;
   const initialGetLeads = subAccount.getLeadsEnabledByAgency === true;
+  const initialProspecting = subAccount.prospectingEnabledByAgency === true;
+  // Shown as the effective quota (50 when unset); only sent when edited.
+  const initialProspectingQuota = String(prospectReportQuota(subAccount));
   // "Hide vs. show as Locked" flag for the sidebar-gated features. HIDDEN is the
   // default — a disabled feature is omitted from the tenant's sidebar unless the
   // owner explicitly opts it into the greyed "Locked" row (field set to `false`).
@@ -146,6 +151,8 @@ function ManageDialogBody({
     subAccount.communityHiddenWhenDisabled !== false;
   const initialGetLeadsHidden =
     subAccount.getLeadsHiddenWhenDisabled !== false;
+  const initialProspectingHidden =
+    subAccount.prospectingHiddenWhenDisabled !== false;
   const initialAiSuiteHidden = subAccount.aiSuiteHiddenWhenDisabled !== false;
   const initialLabsHidden = subAccount.labsHiddenWhenDisabled !== false;
   const hasLiveDomain = !!subAccount.resendConfig;
@@ -181,6 +188,11 @@ function ManageDialogBody({
   );
   const [labsEnabled, setLabsEnabled] = useState(initialLabs);
   const [getLeadsEnabled, setGetLeadsEnabled] = useState(initialGetLeads);
+  const [prospectingEnabled, setProspectingEnabled] =
+    useState(initialProspecting);
+  const [prospectingQuota, setProspectingQuota] = useState(
+    initialProspectingQuota
+  );
   const [broadcastsHidden, setBroadcastsHidden] = useState(
     initialBroadcastsHidden
   );
@@ -190,6 +202,9 @@ function ManageDialogBody({
     initialCommunityHidden
   );
   const [getLeadsHidden, setGetLeadsHidden] = useState(initialGetLeadsHidden);
+  const [prospectingHidden, setProspectingHidden] = useState(
+    initialProspectingHidden
+  );
   const [aiSuiteHidden, setAiSuiteHidden] = useState(initialAiSuiteHidden);
   const [labsHidden, setLabsHidden] = useState(initialLabsHidden);
   const [saving, setSaving] = useState(false);
@@ -245,11 +260,16 @@ function ManageDialogBody({
   const aiSuiteModelDirty = aiSuiteModel !== initialAiSuiteModel;
   const labsDirty = labsEnabled !== initialLabs;
   const getLeadsDirty = getLeadsEnabled !== initialGetLeads;
+  const prospectingDirty = prospectingEnabled !== initialProspecting;
+  const prospectingQuotaDirty =
+    prospectingQuota.trim() !== initialProspectingQuota;
   const broadcastsHiddenDirty = broadcastsHidden !== initialBroadcastsHidden;
   const websiteHiddenDirty = websiteHidden !== initialWebsiteHidden;
   const socialHiddenDirty = socialHidden !== initialSocialHidden;
   const communityHiddenDirty = communityHidden !== initialCommunityHidden;
   const getLeadsHiddenDirty = getLeadsHidden !== initialGetLeadsHidden;
+  const prospectingHiddenDirty =
+    prospectingHidden !== initialProspectingHidden;
   const aiSuiteHiddenDirty = aiSuiteHidden !== initialAiSuiteHidden;
   const labsHiddenDirty = labsHidden !== initialLabsHidden;
   const dirty =
@@ -278,11 +298,14 @@ function ManageDialogBody({
     aiSuiteModelDirty ||
     labsDirty ||
     getLeadsDirty ||
+    prospectingDirty ||
+    prospectingQuotaDirty ||
     broadcastsHiddenDirty ||
     websiteHiddenDirty ||
     socialHiddenDirty ||
     communityHiddenDirty ||
     getLeadsHiddenDirty ||
+    prospectingHiddenDirty ||
     aiSuiteHiddenDirty ||
     labsHiddenDirty;
 
@@ -292,6 +315,14 @@ function ManageDialogBody({
   const metaUnconfigured = metaConfigured === false;
 
   async function handleSave() {
+    const quota = Number(prospectingQuota.trim());
+    if (
+      prospectingQuotaDirty &&
+      !(Number.isInteger(quota) && quota >= 0 && quota <= 1000)
+    ) {
+      toast.error("Monthly report quota must be a whole number from 0 to 1000.");
+      return;
+    }
     setSaving(true);
     try {
       // Only send the fields the agency owner actually changed. Keeps the
@@ -323,11 +354,14 @@ function ManageDialogBody({
         aiSuiteModel?: "opus" | "sonnet";
         labsEnabled?: boolean;
         getLeadsEnabled?: boolean;
+        prospectingEnabled?: boolean;
+        prospectingReportQuota?: number;
         broadcastsHiddenWhenDisabled?: boolean;
         websiteHiddenWhenDisabled?: boolean;
         socialPlannerHiddenWhenDisabled?: boolean;
         communityHiddenWhenDisabled?: boolean;
         getLeadsHiddenWhenDisabled?: boolean;
+        prospectingHiddenWhenDisabled?: boolean;
         aiSuiteHiddenWhenDisabled?: boolean;
         labsHiddenWhenDisabled?: boolean;
       } = {};
@@ -363,6 +397,8 @@ function ManageDialogBody({
       if (aiSuiteModelDirty) payload.aiSuiteModel = aiSuiteModel;
       if (labsDirty) payload.labsEnabled = labsEnabled;
       if (getLeadsDirty) payload.getLeadsEnabled = getLeadsEnabled;
+      if (prospectingDirty) payload.prospectingEnabled = prospectingEnabled;
+      if (prospectingQuotaDirty) payload.prospectingReportQuota = quota;
       if (broadcastsHiddenDirty)
         payload.broadcastsHiddenWhenDisabled = broadcastsHidden;
       if (websiteHiddenDirty) payload.websiteHiddenWhenDisabled = websiteHidden;
@@ -372,6 +408,8 @@ function ManageDialogBody({
         payload.communityHiddenWhenDisabled = communityHidden;
       if (getLeadsHiddenDirty)
         payload.getLeadsHiddenWhenDisabled = getLeadsHidden;
+      if (prospectingHiddenDirty)
+        payload.prospectingHiddenWhenDisabled = prospectingHidden;
       if (aiSuiteHiddenDirty) payload.aiSuiteHiddenWhenDisabled = aiSuiteHidden;
       if (labsHiddenDirty) payload.labsHiddenWhenDisabled = labsHidden;
 
@@ -550,6 +588,16 @@ function ManageDialogBody({
             : "Get Leads disabled. New searches blocked until re-enabled."
         );
       }
+      if (prospectingDirty) {
+        parts.push(
+          prospectingEnabled
+            ? "Prospecting enabled."
+            : "Prospecting disabled. Saved lists are kept; the page is locked until re-enabled."
+        );
+      }
+      if (prospectingQuotaDirty) {
+        parts.push(`Prospect report quota set to ${quota} a month.`);
+      }
       if (labsDirty) {
         parts.push(
           labsEnabled
@@ -580,6 +628,10 @@ function ManageDialogBody({
       if (getLeadsHiddenDirty)
         hiddenChanges.push(
           `Get Leads ${getLeadsHidden ? "hidden" : "shown as Locked"}`
+        );
+      if (prospectingHiddenDirty)
+        hiddenChanges.push(
+          `Prospecting ${prospectingHidden ? "hidden" : "shown as Locked"}`
         );
       if (aiSuiteHiddenDirty)
         hiddenChanges.push(
@@ -1068,6 +1120,49 @@ function ManageDialogBody({
               new searches; nothing is torn down.
             </GateToggle>
           )}
+
+          <GateToggle
+            checked={prospectingEnabled}
+            onChange={setProspectingEnabled}
+            disabled={saving}
+            icon={
+              <Target className="h-3.5 w-3.5 text-cyan-600 dark:text-cyan-400" />
+            }
+            title="Prospecting"
+            beta
+            hideOption={{
+              hidden: prospectingHidden,
+              onHiddenChange: setProspectingHidden,
+              disabled: saving,
+            }}
+            enabledExtras={
+              <label className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-foreground font-medium">
+                  Monthly report quota
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={1}
+                  value={prospectingQuota}
+                  onChange={(e) => setProspectingQuota(e.target.value)}
+                  disabled={saving}
+                  className="h-8 w-24 text-xs"
+                  aria-label="Monthly prospect report quota"
+                />
+                <span>
+                  Prospect audit reports this sub-account may generate each
+                  month (0–1000).
+                </span>
+              </label>
+            }
+          >
+            When enabled, this sub-account can save Get Leads searches as
+            prospect lists and see them under Prospecting. Imports from a saved
+            list are linked to it. Needs Get Leads on to run searches.
+            Disabling locks the Prospecting page; saved lists are kept.
+          </GateToggle>
 
           <GateToggle
             checked={aiSuiteEnabled}
