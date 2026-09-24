@@ -62,7 +62,7 @@ it("firestore.indexes.json has the composite the stale re-check queries (state, 
 
 it("a slow re-check never holds the continuation back: it runs only on the final page", async () => {
   vi.mocked(runRecurringInvoiceSweep).mockResolvedValue({ processed: 50, hasMore: true } as never);
-  vi.mocked(publishCallback).mockResolvedValue(undefined as never);
+  vi.mocked(publishCallback).mockResolvedValue({ messageId: "m1" });
   vi.mocked(recheckStaleAutoCharges).mockImplementation(() => new Promise(() => {})); // e.g. 25 Paystack timeouts
   const res = await call();
   expect(publishCallback).toHaveBeenCalledTimes(1);
@@ -75,7 +75,7 @@ it("a sweep of three pages re-checks once, on the last", async () => {
     .mockResolvedValueOnce({ processed: 50, hasMore: true } as never)
     .mockResolvedValueOnce({ processed: 50, hasMore: true } as never)
     .mockResolvedValueOnce({ processed: 3, hasMore: false } as never);
-  vi.mocked(publishCallback).mockResolvedValue(undefined as never);
+  vi.mocked(publishCallback).mockResolvedValue({ messageId: "m1" });
   vi.mocked(recheckStaleAutoCharges).mockResolvedValue({ checked: 25, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
   await call();
   await call();
@@ -87,7 +87,7 @@ it("breaker R4 rerun: the continuation is queued once and the chain re-checks on
   vi.mocked(runRecurringInvoiceSweep)
     .mockResolvedValueOnce({ processed: 50, hasMore: true } as never)
     .mockResolvedValueOnce({ processed: 3, hasMore: false } as never);
-  vi.mocked(publishCallback).mockResolvedValue(undefined as never);
+  vi.mocked(publishCallback).mockResolvedValue({ messageId: "m1" });
   vi.mocked(recheckStaleAutoCharges).mockResolvedValue({ checked: 0, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
   await call();
   await call();
@@ -95,10 +95,12 @@ it("breaker R4 rerun: the continuation is queued once and the chain re-checks on
   expect(recheckStaleAutoCharges).toHaveBeenCalledTimes(1);
 });
 
-it("R9: a continuation that could not be queued (e.g. the QStash cap) re-checks on this page", async () => {
+it("R9: a continuation that could not be queued (publishCallback resolves null, e.g. the QStash cap) re-checks on this page", async () => {
   vi.mocked(runRecurringInvoiceSweep).mockResolvedValue({ processed: 50, hasMore: true } as never);
-  vi.mocked(publishCallback).mockRejectedValue(new Error("QstashDailyRatelimitError"));
+  vi.mocked(publishCallback).mockResolvedValue(null);
   vi.mocked(recheckStaleAutoCharges).mockResolvedValue({ checked: 0, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
-  expect((await call()).status).toBe(200);
+  const res = await call();
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ continuationScheduled: false });
   expect(recheckStaleAutoCharges).toHaveBeenCalledTimes(1);
 });

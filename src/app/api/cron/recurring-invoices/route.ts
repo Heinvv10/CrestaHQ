@@ -53,9 +53,13 @@ export async function POST(request: Request) {
     );
   }
 
+  // publishCallback never throws: null is its "not queued" (no QStash, no
+  // app URL, or the publish failed — e.g. the daily cap). A dropped
+  // continuation delays the remaining schedules to tomorrow's sweep; it must
+  // not fail the invoices already raised this run.
   let continued = false;
   if (result.hasMore) {
-    continued = await publishCallback({
+    continued = (await publishCallback({
       pathname: "/api/cron/recurring-invoices",
       body: {},
       delaySeconds: CONTINUATION_DELAY_SEC,
@@ -64,14 +68,8 @@ export async function POST(request: Request) {
       deduplicationId: `recurring-invoices_continuation_${Math.floor(
         Date.now() / 1000 / 60,
       )}`,
-    })
-      .then(() => true)
-      .catch((err) => {
-        // A dropped continuation delays the remaining schedules to tomorrow's
-        // sweep; it must not fail the invoices already raised this run.
-        console.error("[cron/recurring-invoices] continuation failed", err);
-        return false;
-      });
+    })) !== null;
+    if (!continued) console.error("[cron/recurring-invoices] continuation not queued");
   }
 
   // Card charges still unconfirmed: once, on the final page (or this one,
@@ -89,7 +87,7 @@ export async function POST(request: Request) {
     ok: true,
     durationMs: Date.now() - startedAt,
     ...result,
-    continuationScheduled: result.hasMore,
+    continuationScheduled: continued,
     staleCharges,
   });
 }
