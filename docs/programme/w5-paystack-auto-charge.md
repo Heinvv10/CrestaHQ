@@ -14,7 +14,7 @@ nothing here suspends anyone's access to the app. Workspace access for non-payme
 exists in the other direction — agency → sub-account, `billing.status` / `graceUntil` and
 [`billing-guard.tsx`](../../src/components/billing/billing-guard.tsx) — and is untouched.
 
-## What exists already
+## What existed before W5 (as of 2026-09-23, before PR1)
 
 | Piece | Where | State |
 |---|---|---|
@@ -57,7 +57,7 @@ account. **The lane confirms this against Paystack's own docs and a test-mode ca
 writing PR2.** If it is not available, ruling 1 is invalid and the lane stops and reports
 rather than quietly switching to Subscriptions.
 
-## Shape
+## Shape (as planned — see [As built](#as-built) for what changed)
 
 ### PR1 — attempt-scoped mode, and in-flight attempts (closes #188's open findings)
 
