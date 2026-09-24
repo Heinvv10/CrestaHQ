@@ -24,17 +24,41 @@
 #   - Production deploys are refused inside business hours (08:00-17:00 SAST,
 #     Mon-Fri) unless --force is passed. --force overrides the TIME WINDOW
 #     ONLY; it never skips the gates.
+#   - Zero downtime (blue/green). Two colours, crestahq@4301 and crestahq@4302,
+#     sit behind crestahq-proxy (nginx on 127.0.0.1:$PORT, where cloudflared
+#     points). The new build goes into its own release dir and starts on the
+#     IDLE colour; only once that colour passes the health AND instrumentation
+#     checks is the proxy switched to it, the switch is proven on the check
+#     port, and the old colour is drained and stopped. Any failure before the
+#     switch leaves the old colour serving, untouched. The stopped old colour
+#     keeps its release, so it is the rollback target. One-time setup and
+#     units: RUNBOOK.md, "Zero-downtime deploys"; deploy/velo/.
 #
-# Usage:  bash scripts/deploy-velo.sh [--force] [--skip-tests]
+# Usage:  bash scripts/deploy-velo.sh [--force] [--skip-tests] [--rollback]
 #   --force       deploy inside business hours (emergencies only)
 #   --skip-tests  skip the test gate — for a broken toolchain during an
 #                 incident, never for code that fails the suite
+#   --rollback    no build: start the idle colour on the release it last
+#                 served (the previous good deploy), check it, switch back
 # =============================================================================
 set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-/home/velo/crestahq}"
 SERVICE="${SERVICE:-crestahq}"
+# The proxy's public port. The app itself runs on BLUE_PORT / GREEN_PORT.
 PORT="${PORT:-4300}"
+BLUE_PORT="${BLUE_PORT:-4301}"
+GREEN_PORT="${GREEN_PORT:-4302}"
+CHECK_PORT="${CHECK_PORT:-4309}"
+PROXY_SERVICE="${PROXY_SERVICE:-crestahq-proxy}"
+PROXY_DIR="${PROXY_DIR:-$HOME/crestahq-proxy}"
+PROXY_CONF_SRC="${PROXY_CONF_SRC:-$DEPLOY_DIR/deploy/velo/crestahq-proxy.nginx.conf}"
+NGINX="${NGINX:-/usr/sbin/nginx}"
+# One immutable directory per deployed build, plus a <port> symlink per colour.
+# Outside $DEPLOY_DIR: `next build` wipes .next, and the dirty-checkout check
+# must never see them.
+RELEASES_DIR="${RELEASES_DIR:-$HOME/crestahq-releases}"
+DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-60}"
 BRANCH="${BRANCH:-main}"
 # Resolve the Node version from .nvmrc rather than hardcoding it. A pinned
 # path here drifted to v22.21.1 while .nvmrc (and therefore CI and every
@@ -46,15 +70,16 @@ NODE_BIN="${NODE_BIN:-/home/velo/.nvm/versions/node/v${NODE_VERSION}/bin}"
 # app runs as a USER service (same as jarvis-bff / ollama-proxy on this box).
 SYSTEMCTL="${SYSTEMCTL:-systemctl --user}"
 LOCK="${LOCK:-/tmp/crestahq-deploy.lock}"
-HEALTH_URL="http://127.0.0.1:${PORT}/login"
 HEALTH_TRIES=30
 
 FORCE=0
 SKIP_TESTS=0
+ROLLBACK=0
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
+    --rollback) ROLLBACK=1 ;;
     *) echo "unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
@@ -62,47 +87,9 @@ done
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31mFAILED: %s\033[0m\n' "$*" >&2; exit 1; }
 
-# Outside $DEPLOY_DIR on purpose: this survives `next build` wiping `.next`,
-# and never shows up in the "deploy dir has local changes" dirty-checkout
-# check further down (same reasoning as $LOCK living in /tmp). Lives in
-# velo's own persistent cache, not /tmp, so it survives a reboot.
-ROLLBACK_DIR="${ROLLBACK_DIR:-$HOME/.cache/crestahq-prev}"
-# The commit that produced whatever is currently in $ROLLBACK_DIR, so a
-# rollback can say what it's rolling back TO instead of just "the old one".
-ROLLBACK_SHA_FILE="${ROLLBACK_DIR}.commit"
-
-# Only called once the service has already been restarted onto a build that
-# failed its health check or never ran instrumentation — i.e. once rolling
-# forward has demonstrably failed. Restores the last-good standalone bundle
-# and restarts onto it, then re-checks health so the rollback's own outcome
-# is reported honestly rather than assumed, and exits non-zero either way so
-# the failure is never silent.
-rollback_and_die() {
-  local reason="$1"
-  printf '\n\033[31mFAILED: %s\033[0m\n' "$reason" >&2
-  if [ -d "$ROLLBACK_DIR" ]; then
-    local prev_sha="unknown"
-    [ -f "$ROLLBACK_SHA_FILE" ] && prev_sha="$(cat "$ROLLBACK_SHA_FILE")"
-    echo "rolling back to the last-good standalone bundle (commit $prev_sha)..." >&2
-    rm -rf .next/standalone
-    cp -a "$ROLLBACK_DIR" .next/standalone
-    if $SYSTEMCTL restart "$SERVICE"; then
-      echo "restarted $SERVICE on the rolled-back build ($prev_sha) — investigate $after before retrying." >&2
-      local rb_ok=0 rb_code i
-      for i in $(seq 1 $HEALTH_TRIES); do
-        rb_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" || echo 000)
-        if [ "$rb_code" = "200" ]; then rb_ok=1; echo "rollback build is healthy after ${i}s (HTTP 200)" >&2; break; fi
-        sleep 1
-      done
-      [ "$rb_ok" -eq 1 ] || echo "WARNING: the rolled-back build ($prev_sha) ALSO failed its health check — $SERVICE may be down. This needs immediate manual attention." >&2
-    else
-      echo "WARNING: rollback restart of $SERVICE also failed — $SERVICE needs manual attention." >&2
-    fi
-  else
-    echo "WARNING: no previous standalone bundle at $ROLLBACK_DIR to roll back to — $SERVICE may still be serving the broken build." >&2
-  fi
-  exit 1
-}
+# Blue/green: active_port, activate_idle, switch_proxy, drain_and_stop, ...
+# shellcheck source=scripts/deploy-velo-bluegreen.sh
+. "$(dirname "$0")/deploy-velo-bluegreen.sh"
 
 # ── Lock ────────────────────────────────────────────────────────────────────
 if [ -f "$LOCK" ]; then
@@ -124,6 +111,28 @@ if [ "$dow" -le 5 ] && [ "$hour" -ge 8 ] && [ "$hour" -lt 17 ]; then
     die "business hours (08:00-17:00 SAST Mon-Fri). Deploy after 17:00, or pass --force for a genuine emergency."
   fi
   echo "WARNING: deploying inside business hours because --force was passed."
+fi
+
+# ── Blue/green layout must exist (cheap, so before minutes of gates) ────────
+# `|| true`: under set -e + pipefail a missing upstream.conf would exit here
+# silently, before `die` could say why.
+active="$(active_port || true)"
+case "$active" in
+  "$BLUE_PORT"|"$GREEN_PORT") ;;
+  *) die "no live colour in $PROXY_DIR/upstream.conf — the zero-downtime layout is not set up. Do the one-time migration in RUNBOOK.md (\"Zero-downtime deploys\") first." ;;
+esac
+idle="$(other_port "$active")"
+idle_prev_link=""
+echo "live colour: $SERVICE@$active; idle colour: $SERVICE@$idle"
+
+if [ "$ROLLBACK" -eq 1 ]; then
+  prev="$(readlink "$RELEASES_DIR/$idle" || true)"
+  [ -n "$prev" ] && [ -d "$prev" ] \
+    || die "nothing to roll back to: $RELEASES_DIR/$idle does not point at a release"
+  say "Rolling back to $(basename "$prev") on $SERVICE@$idle"
+  activate_idle "$prev"
+  say "Rolled back: $SERVICE@$idle serves $(basename "$prev")"
+  exit 0
 fi
 
 [ -d "$NODE_BIN" ] \
@@ -177,23 +186,6 @@ else
   pnpm test || die "tests"
 fi
 
-# ── Seed the rollback snapshot, but only if there isn't one yet ─────────────
-# `next build` rebuilds `.next` from scratch, so a rollback needs a copy of
-# the bundle saved BEFORE we build. But "whatever happens to be in
-# .next/standalone right now" is not reliably last-good: a PREVIOUS deploy
-# attempt that failed partway through `pnpm build` can leave it in a
-# half-rebuilt state without the service ever having been restarted onto it.
-# The only trustworthy snapshot is one taken after a deploy's own health +
-# instrumentation checks passed (see below, after the restart) — this seed
-# only runs once, to give a rollback target on the very first deploy under
-# this script, using whatever is currently actually running.
-if [ ! -d "$ROLLBACK_DIR" ] && [ -d .next/standalone ]; then
-  mkdir -p "$(dirname "$ROLLBACK_DIR")"
-  cp -a .next/standalone "$ROLLBACK_DIR"
-  echo "$before" > "$ROLLBACK_SHA_FILE"
-  echo "seeded rollback snapshot from the currently running build ($before) at $ROLLBACK_DIR"
-fi
-
 say "Build"
 pnpm build || die "build"
 
@@ -227,44 +219,16 @@ node scripts/gbp-deploy-check.mjs post "$DEPLOY_DIR" "$APP_URL" \
 say "Assembling standalone bundle"
 node scripts/assemble-standalone.mjs || die "standalone bundle is incomplete (see above)"
 
-# ── Only now touch the running service ──────────────────────────────────────
-say "Restarting $SERVICE"
-restarted_at="$(date +%s)"
-$SYSTEMCTL restart "$SERVICE" || die "restart $SERVICE"
+# ── Only now touch the running service — and only its idle colour ─────────
+# A new directory per deploy: the live colour's release is never written to,
+# even when redeploying the same commit.
+say "Staging release"
+mkdir -p "$RELEASES_DIR"
+release="$RELEASES_DIR/${after}-$(date +%Y%m%d%H%M%S)"
+cp -a .next/standalone "$release" || die "copy the bundle to $release"
+mkdir -p "$release/.runtime"
+ln -s "$NODE_BIN/node" "$release/.runtime/node"
+echo "staged $release"
 
-say "Health check"
-ok=0
-for i in $(seq 1 $HEALTH_TRIES); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$HEALTH_URL" || echo 000)
-  if [ "$code" = "200" ]; then ok=1; echo "healthy after ${i}s (HTTP 200)"; break; fi
-  sleep 1
-done
-if [ "$ok" -ne 1 ]; then
-  echo "--- last 40 log lines ---"
-  journalctl --user -u "$SERVICE" -n 40 --no-pager 2>/dev/null || true
-  rollback_and_die "health check never returned 200 on $HEALTH_URL"
-fi
-
-# instrumentation.ts register() fails by never running: the server answers
-# 200 either way. Its one log line is the only proof it ran.
-say "Verifying instrumentation ran"
-ran=0
-for i in $(seq 1 10); do
-  if journalctl --user -u "$SERVICE" --since "@$restarted_at" -o cat --no-pager 2>/dev/null \
-      | grep -qF "[instrumentation] register() ran"; then ran=1; break; fi
-  sleep 1
-done
-[ "$ran" -eq 1 ] || rollback_and_die "$SERVICE is serving $after, but instrumentation.ts register() never logged — no log redaction, schedules or heartbeat"
-
-# This build is now PROVEN — it passed both the health check and the
-# instrumentation check — so it becomes the last-good snapshot the NEXT
-# deploy can roll back to. Only recorded here, never from a build whose
-# gates we skipped or that died partway through.
-if [ -d .next/standalone ]; then
-  rm -rf "$ROLLBACK_DIR"
-  mkdir -p "$(dirname "$ROLLBACK_DIR")"
-  cp -a .next/standalone "$ROLLBACK_DIR"
-  echo "$after" > "$ROLLBACK_SHA_FILE"
-fi
-
-say "Deployed $after to $SERVICE on port $PORT"
+activate_idle "$release"
+say "Deployed $after to $SERVICE@$idle behind $PROXY_SERVICE on port $PORT"

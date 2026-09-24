@@ -11,8 +11,8 @@ wherever it appears in user-facing copy.
 
 > **Two audiences, two deploy targets — do not mix them up.**
 > *This* repo (`/home/hein/Workspace/CrestaHQ`) is the product being built, and it
-> deploys to **velo-server** via `scripts/deploy-velo.sh` (systemd `crestahq`, port
-> 4300). **Buyer copies** deploy to **Vercel** — that path is documented for them in
+> deploys to **velo-server** via `scripts/deploy-velo.sh` (blue/green: systemd
+> `crestahq-proxy` on port 4300 in front of `crestahq@4301` / `crestahq@4302`). **Buyer copies** deploy to **Vercel** — that path is documented for them in
 > [SETUP.md](SETUP.md) and [docs/onboarding-buyer.md](docs/onboarding-buyer.md), and
 > is never the target of work done here.
 
@@ -156,7 +156,9 @@ Gates run before the service is touched, so a failed build can never leave a
 half-served app returning 500s. Production deploys are refused inside business
 hours (08:00–17:00 SAST, Mon–Fri); `--force` overrides **the time window only**,
 never the gates. The deploy dir is a target, not a workspace — the script
-refuses to run against a dirty checkout.
+refuses to run against a dirty checkout. Deploys are zero-downtime blue/green
+and `--rollback` switches back to the previous release; layout and the one-time
+migration are in [RUNBOOK.md](RUNBOOK.md#zero-downtime-deploys-velo-server-only).
 
 ---
 

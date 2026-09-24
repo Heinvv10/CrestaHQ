@@ -1,0 +1,23 @@
+# Always-on front for CrestaHQ: nginx, unprivileged, on 127.0.0.1:4300 — the
+# port cloudflared's ingress and the WhatsApp bridge already point at, so
+# neither ever changes or restarts. scripts/deploy-velo.sh switches the
+# upstream colour by rewriting ~/crestahq-proxy/upstream.conf and reloading
+# (SIGHUP): nginx starts new workers on the new upstream and lets the old
+# workers finish their in-flight requests, so a switch drops nothing.
+#
+# Installed once by the owner (RUNBOOK.md, "Zero-downtime deploys").
+[Unit]
+Description=CrestaHQ blue/green front proxy (nginx on 127.0.0.1:4300)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/nginx -t -q -p %h/crestahq-proxy/ -c nginx.conf -e stderr
+ExecStart=/usr/sbin/nginx -p %h/crestahq-proxy/ -c nginx.conf -e stderr
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
