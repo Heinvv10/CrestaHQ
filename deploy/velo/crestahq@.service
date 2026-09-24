@@ -28,7 +28,10 @@ Environment=MALLOC_ARENA_MAX=2
 # Each release carries a symlink to the Node the deploy built it with
 # (NODE_BIN, resolved from .nvmrc), so a unit never pins a Node version that
 # can drift from the build — and a rollback runs the Node its build used.
-ExecStart=%h/crestahq-releases/%i/.runtime/node server.js
+# `env` sets PORT/HOSTNAME on the command itself: systemd lets EnvironmentFile
+# override Environment=, and .env.production carries PORT=4300 (the old
+# single-service port), which made every colour try to bind 4300 (EADDRINUSE).
+ExecStart=/usr/bin/env PORT=%i HOSTNAME=127.0.0.1 %h/crestahq-releases/%i/.runtime/node server.js
 Restart=on-failure
 RestartSec=5
 
