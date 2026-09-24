@@ -64,8 +64,10 @@ export async function enrichBusinesses(
 // straight to the next waiter (FIFO) on release. The per-site timeout starts
 // only once a slot is held, so queued sites never time out while waiting —
 // instead, a waiter that is still queued when its call's deadline fires
-// leaves the queue immediately (no slot leak, no stale waiter woken later),
-// and a slot that arrives for it after the deadline is released unused.
+// leaves the queue immediately (no slot leak, no stale waiter woken later).
+// A slot handed over in the same tick the deadline fires still runs fn, whose
+// fetch is refused at once on the aborted signal (at worst one abandoned DNS
+// lookup) and the slot releases in `finally`.
 let activeFetches = 0;
 const fetchQueue: (() => void)[] = [];
 
@@ -79,12 +81,6 @@ async function withFetchSlot<T>(
   } else if (!(await waitForSlot(deadline))) {
     // Deadline fired while queued — this waiter never held a slot, so
     // there is nothing to release.
-    return null;
-  }
-  if (deadline.aborted) {
-    // Slot arrived after the deadline already fired: release it unused
-    // rather than starting work that would just be thrown away.
-    releaseSlot();
     return null;
   }
   try {
