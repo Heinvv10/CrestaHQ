@@ -24,22 +24,43 @@ const s = vi.hoisted(() => ({
   },
   threadReadThrows: false,
   pauseThrows: false,
+  /** The conversation doc's stored aiLoopPausedAt from a prior trip, if any. */
+  priorLoopPausedAtMs: null as number | null,
   escalations: [] as string[],
   loopEmails: [] as Array<{ to: string; subject: string }>,
+  loopPushes: [] as Array<{ subAccountId: string; agencyId: string; title: string; body: string; url: string }>,
   twilioSends: 0,
   conversationUpdates: [] as Array<Record<string, unknown>>,
   activities: [] as Array<Record<string, unknown>>,
   llmCalls: 0,
   cloudSends: 0,
   bridgeSends: 0,
+  /** Route callAi through the REAL OpenRouter client (fetch is stubbed). */
+  realLlm: false,
+  docSets: [] as Array<{ path: string; data: Record<string, unknown> }>,
 }));
 
 const fakeDb = {
+  doc: (path: string) => ({
+    set: async (data: Record<string, unknown>) => {
+      s.docSets.push({ path, data });
+    },
+  }),
   collection: (name: string) => ({
     doc: (id: string) => ({
+      get: async () => ({
+        data: () =>
+          name === "conversations" && s.priorLoopPausedAtMs !== null
+            ? { aiLoopPausedAt: { toMillis: () => s.priorLoopPausedAtMs } }
+            : {},
+      }),
       update: async (data: Record<string, unknown>) => {
         if (name === "conversations" && s.pauseThrows) throw new Error("write failed");
-        if (name === "conversations") s.conversationUpdates.push({ id, ...data });
+        if (name === "conversations") {
+          s.conversationUpdates.push({ id, ...data });
+          const at = data.aiLoopPausedAt;
+          if (at instanceof Date) s.priorLoopPausedAtMs = at.getTime();
+        }
       },
       collection: (sub: string) => ({
         add: async (data: Record<string, unknown>) => {
@@ -83,12 +104,17 @@ vi.mock("@/lib/server/conversations-service", () => ({
   setConversationDraft: async () => {},
   upsertConversationForMessage: async () => {},
 }));
-vi.mock("@/lib/comms/ai/openrouter", () => ({
-  callAi: async () => {
-    s.llmCalls++;
-    return { text: "reply", model: "m", totalTokens: 10, promptTokens: 5, completionTokens: 5 };
-  },
-}));
+vi.mock("@/lib/comms/ai/openrouter", async (orig) => {
+  const real = await orig<typeof import("./openrouter")>();
+  return {
+    ...real,
+    callAi: async (opts: Parameters<typeof real.callAi>[0]) => {
+      s.llmCalls++;
+      if (s.realLlm) return real.callAi(opts);
+      return { text: "reply", model: "m", totalTokens: 10, promptTokens: 5, completionTokens: 5 };
+    },
+  };
+});
 vi.mock("@/lib/server/usage-meter", () => ({ checkQuota: async () => ({ allowed: true }) }));
 vi.mock("@/lib/comms/ai/agent", () => ({ incrementChannelTokens: async () => {} }));
 vi.mock("@/lib/comms/ai/context", () => ({ buildContactContextBlock: async () => null }));
@@ -107,6 +133,20 @@ vi.mock("@/lib/comms/resend", () => ({
     s.loopEmails.push(e);
     return { id: "e1" };
   },
+}));
+vi.mock("@/lib/push/send", () => ({
+  sendPushForEvent: async (e: {
+    subAccountId: string;
+    agencyId: string;
+    title: string;
+    body: string;
+    url: string;
+  }) => {
+    s.loopPushes.push(e);
+  },
+}));
+vi.mock("@/lib/push/events", () => ({
+  contactTerritoryId: async () => undefined,
 }));
 vi.mock("@/lib/comms/business-hours", () => ({ isWithinBusinessHours: () => true }));
 vi.mock("@/lib/comms/meta", () => ({ sendMetaMessage: async () => "mid" }));
@@ -171,11 +211,11 @@ const subAccount = {
   ],
 } as unknown as SubAccountDoc;
 
-function respond(inboundProvider?: WhatsAppProviderId) {
+function respond(inboundProvider?: WhatsAppProviderId, withAgent: ResolvedAiAgent = agent) {
   return maybeRespondWithAi({
     subAccountId: "sa",
     subAccount,
-    agent,
+    agent: withAgent,
     channelId: "whatsapp",
     contact: { id: "c1", name: "Cust" } as Contact,
     incomingMessage: "hello",
@@ -205,14 +245,18 @@ beforeEach(() => {
   s.controls = { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
   s.threadReadThrows = false;
   s.pauseThrows = false;
+  s.priorLoopPausedAtMs = null;
   s.escalations = [];
   s.loopEmails = [];
+  s.loopPushes = [];
   s.conversationUpdates = [];
   s.activities = [];
   s.llmCalls = 0;
   s.cloudSends = 0;
   s.bridgeSends = 0;
   s.twilioSends = 0;
+  s.realLlm = false;
+  s.docSets = [];
 });
 
 const AUTO_REPLY = "Thanks for your message! We are closed right now and will reply soon."; // 60+ chars
@@ -249,6 +293,12 @@ describe("AI reply-loop guard", () => {
       expect.objectContaining({
         to: "ops@biz.test",
         subject: "AI auto-reply loop suspected — bot paused for 1h on Cust",
+      }),
+    ]);
+    expect(s.loopPushes).toEqual([
+      expect.objectContaining({
+        subAccountId: "sa",
+        title: "AI bot paused — reply loop",
       }),
     ]);
     expect(s.escalations).toEqual([]); // not the keyword-escalation template
@@ -295,6 +345,83 @@ describe("AI reply-loop guard", () => {
     expect(act.content).not.toContain("Bot paused");
     expect(s.loopEmails[0].subject).toContain("pausing the bot FAILED");
   });
+
+  it("trips on an auto-reply that varies only by ticket number", async () => {
+    const varying = (i: number) =>
+      `We're away right now — ticket #482${i}, we'll reply once we're back.`;
+    seedExchanges(2, 2_000, varying);
+    s.thread[0].body = varying(9);
+    const out = await respond("cloud");
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.activities.at(-1)).toMatchObject({ meta: { loop: "repeated_text" } });
+  });
+
+  it("a human sending short numeric texts does not trip", async () => {
+    const orders = ["order 123", "order 456", "order 789"];
+    seedExchanges(2, 20_000, (i) => orders[i + 1]);
+    s.thread[0].body = orders[0];
+    expect((await respond("cloud")).kind).toBe("replied");
+    expect(s.conversationUpdates).toHaveLength(0);
+  });
+
+  it("a second loop trip within 24h turns the bot off instead of re-pausing", async () => {
+    s.priorLoopPausedAtMs = Date.now() - 1_000; // an earlier trip, well within 24h
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    const out = await respond("cloud");
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.conversationUpdates.at(-1)).toMatchObject({
+      botMode: "off",
+      botPausedUntil: null,
+    });
+    expect(s.loopEmails.at(-1)).toEqual(
+      expect.objectContaining({ subject: "AI auto-reply loop suspected — bot turned OFF on Cust" }),
+    );
+    expect(s.loopPushes.at(-1)).toEqual(
+      expect.objectContaining({ title: "AI bot turned OFF — reply loop" }),
+    );
+    expect(s.activities.at(-1)).toMatchObject({
+      meta: { reason: "reply_loop", paused: true, turnedOff: true },
+    });
+  });
+
+  it("pushes staff even when no escalationNotifyEmail is configured (email would otherwise be the only alert)", async () => {
+    const noEmailAgent = {
+      effective: { ...agent.effective, escalationNotifyEmail: "" },
+    } as unknown as ResolvedAiAgent;
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    const out = await maybeRespondWithAi({
+      subAccountId: "sa",
+      subAccount,
+      agent: noEmailAgent,
+      channelId: "whatsapp",
+      contact: { id: "c1", name: "Cust" } as Contact,
+      incomingMessage: "hello",
+      replyTo: "+27820000000",
+      inboundProvider: "cloud",
+    });
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.loopEmails).toEqual([]);
+    expect(s.loopPushes).toEqual([
+      expect.objectContaining({ subAccountId: "sa", title: "AI bot paused — reply loop" }),
+    ]);
+  });
+
+  it("resuming after a turn-off answers normally again", async () => {
+    s.priorLoopPausedAtMs = Date.now() - 1_000;
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    expect(await respond("cloud")).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.conversationUpdates.at(-1)).toMatchObject({ botMode: "off" });
+
+    // Operator turns the bot back on for this conversation.
+    s.controls.botMode = "auto";
+    s.controls.loopResetAtMs = s.priorLoopPausedAtMs;
+    s.thread = [];
+    seedExchanges(1, 2_000, () => "a normal one-off follow-up message");
+    expect((await respond("cloud")).kind).toBe("replied");
+  });
 });
 
 describe("AI reply rail", () => {
@@ -315,5 +442,33 @@ describe("AI reply rail", () => {
     await respond("twilio");
     expect(s.twilioSends).toBe(1);
     expect(s.cloudSends + s.bridgeSends).toBe(0);
+  });
+});
+
+describe("model refused by OpenRouter (live reply seam)", () => {
+  it("retries once on the app default, still replies, and flags the channel", async () => {
+    s.realLlm = true;
+    process.env.OPENROUTER_API_KEY = "sk-test";
+    delete process.env.AI_REPLIES_DEFAULT_MODEL;
+    const models: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const model = (JSON.parse(String(init?.body)) as { model: string }).model;
+      models.push(model);
+      if (model === "gone/model") return new Response('{"error":{"message":"not found"}}', { status: 404 });
+      return Response.json({ choices: [{ message: { content: "hi there" } }], usage: { total_tokens: 3 }, model });
+    }));
+    try {
+      const withOverride = { effective: { ...agent.effective, modelOverride: "gone/model" } } as unknown as ResolvedAiAgent;
+      expect((await respond("cloud", withOverride)).kind).toBe("replied");
+      expect(models).toEqual(["gone/model", "anthropic/claude-haiku-4-5"]);
+      await vi.waitFor(() =>
+        expect(s.docSets).toContainEqual({
+          path: "subAccounts/sa/aiAgent/whatsapp",
+          data: { modelRejected: { model: "gone/model", at: expect.any(Number) } },
+        }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

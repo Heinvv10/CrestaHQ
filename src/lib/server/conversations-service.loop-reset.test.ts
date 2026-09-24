@@ -35,7 +35,7 @@ it("a loop pause moves the guard's reset marker past an older human reply", asyn
   expect((await getConversationControls("c1")).loopResetAtMs).toBe(humanAt.getTime());
 
   const before = Date.now();
-  expect(await pauseBotForReplyLoop("c1")).toBe(true);
+  expect(await pauseBotForReplyLoop("c1")).toEqual({ paused: true, turnedOff: false });
   const { loopResetAtMs } = await getConversationControls("c1");
   expect(loopResetAtMs).toBeGreaterThanOrEqual(before);
   expect(loopResetAtMs).toBeLessThanOrEqual(Date.now());

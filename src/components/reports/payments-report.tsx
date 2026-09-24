@@ -376,7 +376,15 @@ export function PaymentsReport({
                           </span>
                         )}
                         {o.attention && (
-                          <span className="mt-1 block max-w-xs text-[11px] text-amber-700 dark:text-amber-400">
+                          <span
+                            className={cn(
+                              "mt-1 block max-w-xs text-[11px]",
+                              o.attentionOpen === false
+                                ? "text-muted-foreground"
+                                : "text-amber-700 dark:text-amber-400",
+                            )}
+                          >
+                            {o.attentionOpen === false && "Resolved — "}
                             {o.attention}
                           </span>
                         )}

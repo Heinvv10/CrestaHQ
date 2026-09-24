@@ -14,6 +14,11 @@ import {
 } from "./provider";
 import type { SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
+import {
+  quietHoursHold,
+  quietHoursRefusal,
+  type SendOrigin,
+} from "@/lib/comms/quiet-hours";
 /**
  * Template sends — the compliant way to reach a contact whose window has shut.
  *
@@ -33,6 +38,11 @@ export async function dispatchWhatsappTemplateSend(input: {
   values: string[];
   /** The step's chosen sender. Absent = the workspace default. */
   senderId?: string | null;
+  /** Absent = "automated": held during quiet hours (refusedBy "quiet_hours").
+   *  A person sending passes "manual". See lib/comms/quiet-hours.ts. */
+  origin?: SendOrigin;
+  /** Booking confirmations of a customer's own booking only. */
+  selfTriggeredBookingAt?: Date | null;
   sendViaTwilio: (contentSid: string) => Promise<WhatsAppSendResult>;
 }): Promise<WhatsAppSendResult & { provider: WhatsAppProviderId }> {
   // The SAME resolution readiness ran, not a second read of the rail: a
@@ -48,6 +58,13 @@ export async function dispatchWhatsappTemplateSend(input: {
     };
   }
   const { provider } = resolved;
+
+  const hold = quietHoursHold({
+    subAccount: input.subAccount,
+    origin: input.origin,
+    selfTriggeredBookingAt: input.selfTriggeredBookingAt,
+  });
+  if (hold) return quietHoursRefusal(provider, hold);
 
   if (provider === "bridge") {
     return {

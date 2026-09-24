@@ -196,12 +196,26 @@ export async function POST(
   // Schedule the first approval poll. If QStash isn't configured the template
   // stays "pending" until the operator re-submits — log so it's diagnosable.
   if (qstashIsConfigured()) {
-    await publishCallback({
+    const queued = await publishCallback({
       pathname: `/api/sub-accounts/${subAccountId}/whatsapp-templates/poll`,
       body: { subAccountId, templateId, contentSid: externalId },
       delaySeconds: 20,
       deduplicationId: `watpl_${subAccountId}_${templateId}_0`,
     });
+    // publishCallback never throws: null means the poll was not queued (e.g.
+    // the daily cap). `pending` can't be escaped in the UI, so park it as
+    // `failed` (re-submittable) with the reason.
+    if (!queued) {
+      console.error(
+        `[whatsapp-templates/submit] first poll not queued sa=${subAccountId} template=${templateId}`,
+      );
+      await ref.update({
+        status: "failed",
+        rejectionReason:
+          "Submitted, but the approval check could not be scheduled. Re-submit the template to retry.",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
   } else {
     console.warn(
       `[whatsapp-templates/submit] QStash not configured — template ${templateId} won't auto-sync approval status`,

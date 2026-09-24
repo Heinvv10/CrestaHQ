@@ -26,6 +26,15 @@ export type AppTheme = "leadstack" | "green" | "neutral";
 import type { Timestamp, FieldValue } from "firebase/firestore";
 import type { SubscriptionStatus, MemberStatus } from "./firebase";
 
+export interface AiModelPolicy {
+  /** OpenRouter model ids the owner ticked. The app default is always allowed. */
+  allowedModels: string[];
+  /** USD per 1M input tokens; null = no ceiling. */
+  maxPromptPerM: number | null;
+  /** USD per 1M output tokens; null = no ceiling. */
+  maxCompletionPerM: number | null;
+}
+
 export interface AgencyDoc {
   id: string;
   name: string;
@@ -70,6 +79,13 @@ export interface AgencyDoc {
    * (`getTwilioForSubAccount`) and reflected in the workflow builder readiness.
    */
   sharedSmsAllowed?: boolean;
+  /**
+   * Which OpenRouter models sub-accounts may pick for AI Agents channels.
+   * Absent = never saved: every model already in use stays allowed, and the
+   * settings page pre-ticks those plus the app default. Owner-set via
+   * Agency → Settings → AI model. See lib/comms/ai/model-policy.ts.
+   */
+  aiModelPolicy?: AiModelPolicy | null;
   /**
    * Master switch for the Agency Assistant (the owner-level AI at
    * /agency/ai-suite). OFF by default — read `=== true`, so legacy docs

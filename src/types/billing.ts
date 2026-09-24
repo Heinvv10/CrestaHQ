@@ -293,3 +293,22 @@ export interface BillingChargeResponse {
   /** Times it was paid again after being paid (see `extraPaymentRefs`). */
   extraPaymentCount: number;
 }
+
+/**
+ * One flagged payment awaiting a person — a `billingEvents` flag (Client
+ * billing → Attention) or an order's `attention` note (Reports → Payments).
+ * Served by lib/server/billing-attention.ts.
+ */
+export interface AttentionItem {
+  flagId: string;
+  /** Order flags only. */
+  orderId: string | null;
+  subAccountId: string | null;
+  /** subscription.flagged only: the workspaces the subscription could belong to. */
+  candidates: string[];
+  reason: string;
+  amountCents: number | null;
+  currency: string | null;
+  reference: string | null;
+  createdAtMs: number | null;
+}

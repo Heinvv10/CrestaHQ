@@ -14,7 +14,8 @@ import { Input } from "@/components/ui/input";
  * them; see the user report of 2026-07-07):
  *
  *   - `replyToEmail` — Reply-To header on every automated/broadcast email
- *   - `sendWindow`   — quiet-hours restriction for workflow sends
+ *   - `sendWindow`   — quiet hours for automated SMS + WhatsApp, enforced at
+ *     the send seams (lib/comms/quiet-hours.ts)
  *   - `automationsPaused` — the workflow-engine kill switch (still enforced
  *     by lib/workflows/engine.ts, so legacy paused workspaces need this UI
  *     to un-pause)
@@ -156,10 +157,17 @@ export function SubAccountSendingPreferencesSection() {
               className="mt-0.5 h-4 w-4 cursor-pointer"
             />
             <span>
-              <span className="font-medium">Restrict sending hours</span>
+              <span className="font-medium">
+                Restrict automated SMS &amp; WhatsApp to these hours
+              </span>
               <span className="block text-xs text-muted-foreground">
-                Workflow messages outside the window wait for the next window
-                start instead of sending at 3 AM.
+                Outside them, automated texts and WhatsApp messages (workflow
+                steps, AI auto-replies, automatic review requests and
+                reminders, missed-call text-backs) wait until the window opens
+                instead of going out at 3 AM. Messages a person sends go
+                immediately, and a booking confirmation for a booking the
+                customer made in the last few minutes still goes out. Emails
+                are not held.
               </span>
             </span>
           </label>

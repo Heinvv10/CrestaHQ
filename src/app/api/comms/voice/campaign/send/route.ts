@@ -222,6 +222,18 @@ export async function POST(request: Request) {
       // Fixed id: a re-publish on retry collapses into the first.
       deduplicationId: `vcampfan_${campaignRef.id}_start`,
     });
+  // publishCallback never throws: null = the fanout was not queued.
+  const failStart = async () => {
+    await campaignRef.update({
+      status: "failed",
+      errorMessage: "Could not schedule the campaign. Check QStash and NEXT_PUBLIC_APP_URL.",
+      completedAt: FieldValue.serverTimestamp(),
+    });
+    return NextResponse.json(
+      { error: "Failed to schedule the campaign. Check QStash configuration." },
+      { status: 502 },
+    );
+  };
   const duplicate = async (existing: VoiceCampaignDoc) => {
     if (
       JSON.stringify(existing.audienceFilter) !== JSON.stringify(audienceFilter) ||
@@ -241,7 +253,7 @@ export async function POST(request: Request) {
     }
     // The first attempt may have died before its fanout publish landed.
     if (existing.status === "queued" && existing.fanoutDone === false) {
-      await startFanout();
+      if (!(await startFanout())) return failStart();
     }
     return NextResponse.json({ ok: true, campaignId: campaignRef.id, audienceSize: matching, duplicate: true });
   };
@@ -288,17 +300,7 @@ export async function POST(request: Request) {
   // publishes the paced per-recipient steps — stagger at the per-minute cap
   // so calls are paced and the burst limiter never trips.
   const fanout = await startFanout();
-  if (!fanout) {
-    await campaignRef.update({
-      status: "failed",
-      errorMessage: "Could not schedule the campaign. Check QStash and NEXT_PUBLIC_APP_URL.",
-      completedAt: FieldValue.serverTimestamp(),
-    });
-    return NextResponse.json(
-      { error: "Failed to schedule the campaign. Check QStash configuration." },
-      { status: 502 },
-    );
-  }
+  if (!fanout) return failStart();
 
   return NextResponse.json({
     ok: true,

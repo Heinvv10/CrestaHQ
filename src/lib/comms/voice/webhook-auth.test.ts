@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Every Vapi webhook route authenticates the caller by the `?s=` secret. The
@@ -43,6 +43,14 @@ function call(POST: (r: Request, c: { params: Promise<{ subAccountId: string }> 
 }
 
 describe.each(Object.entries(routes))("Vapi %s webhook auth", (_name, load) => {
+  // The first import of a route module is a cold compile of its whole import
+  // graph. Paying it inside the first test made that test time out at 5s on a
+  // loaded box (the deploy gate failed on it three times running); paying it
+  // here, with room to spare, leaves each test timing only its own work.
+  beforeAll(async () => {
+    await load();
+  }, 60_000);
+
   it("accepts the right secret via a constant-time compare", async () => {
     const { POST } = await load();
     const res = await call(POST, SECRET);

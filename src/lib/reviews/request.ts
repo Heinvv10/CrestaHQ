@@ -33,6 +33,12 @@ import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
+import {
+  QuietHoursDeferredError,
+  isQuietHoursDeferred,
+  type QuietHoursHold,
+} from "@/lib/comms/quiet-hours";
+import { holdForQuietHours } from "@/lib/comms/quiet-hours-hold";
 
 /**
  * Google review-request dispatcher. Sends a "leave us a review" message over
@@ -71,8 +77,11 @@ export interface SendReviewResult {
    *  no_phone | opted_out | cooldown | sms_not_configured | whatsapp_gate_off |
    *  whatsapp_not_configured | window_closed | rail_has_no_templates |
    *  no_template | template_not_approved | template_var_missing |
-   *  send_failed | error */
+   *  send_failed | error | quiet_hours_held | quiet_hours (reminder: the
+   *  worker reschedules itself with `quietHours`) */
   reason?: string;
+  /** Set with reason "quiet_hours": when the quiet window ends. */
+  quietHours?: QuietHoursHold;
 }
 
 function firstWord(s: string): string {
@@ -115,6 +124,9 @@ export async function maybeSendReviewRequest(
     }
 
     const isManual = input.trigger === "manual";
+    // A person pressing "send" goes now; every other trigger is held during
+    // the workspace's quiet hours (lib/comms/quiet-hours.ts).
+    const origin = isManual ? ("manual" as const) : ("automated" as const);
     // A reminder re-sends a request already made; its trigger's gate was checked then.
     const isReminder = input.trigger === "reminder" && !!input.reminderOf;
     if (!isManual && !isReminder) {
@@ -248,6 +260,7 @@ export async function maybeSendReviewRequest(
           to: contact.phone,
           body: freeFormBody,
           lastInboundAt,
+          origin,
         });
         sid = res.sid;
         fromNumber = res.from;
@@ -285,6 +298,7 @@ export async function maybeSendReviewRequest(
           to: contact.phone,
           template: tpl,
           values,
+          origin,
           sendViaTwilio: async (contentSid) => {
             const r = await sendWhatsappTemplateForSubAccount({
               subAccountId: input.subAccountId,
@@ -297,6 +311,7 @@ export async function maybeSendReviewRequest(
             return { ok: true, messageId: r.sid };
           },
         });
+        if (res.quietHours) throw new QuietHoursDeferredError(res.quietHours);
         if (!res.ok) return { sent: false, reason: "template_not_approved" };
         sid = res.messageId ?? "";
         fromNumber = templateFrom;
@@ -317,6 +332,7 @@ export async function maybeSendReviewRequest(
         subAccount,
         to: contact.phone,
         body: renderedBody,
+        origin,
       });
       sid = res.sid;
       fromNumber = res.from;
@@ -431,6 +447,21 @@ export async function maybeSendReviewRequest(
 
     return { sent: true };
   } catch (err) {
+    if (isQuietHoursDeferred(err)) {
+      // Nothing went out. A reminder is rescheduled by its own worker (it owns
+      // the attempt count); anything else is re-run whole at the window's end,
+      // so opt-out, cooldown and every gate above are checked again then.
+      if (input.trigger === "reminder") {
+        return { sent: false, reason: "quiet_hours", quietHours: err.hold };
+      }
+      await holdForQuietHours({
+        agencyId: input.agencyId,
+        subAccountId: input.subAccountId,
+        payload: { kind: "review_request", request: input },
+        hold: err.hold,
+      });
+      return { sent: false, reason: "quiet_hours_held" };
+    }
     console.warn("[reviews/request] failed", err);
     return { sent: false, reason: "send_failed" };
   }

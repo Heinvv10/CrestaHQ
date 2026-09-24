@@ -3,7 +3,13 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
+import {
+  noPlatformSender,
+  resolvePlatformSender,
+  sendPlatformEmail,
+  type PlatformSender,
+} from "@/lib/comms/platform-email";
+import { escapeHtml } from "@/lib/comms/escape-html";
 import { formatBillingPriceWithInterval } from "@/lib/billing/status";
 import type { BillingInterval } from "@/types/billing";
 import {
@@ -40,6 +46,7 @@ interface PatchBody {
 }
 
 async function emailCheckoutLink(opts: {
+  sender: PlatformSender;
   to: string;
   subAccountName: string;
   planName: string | null;
@@ -64,17 +71,17 @@ async function emailCheckoutLink(opts: {
   const html = `
     <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
       <h2 style="margin:0 0 12px;">Activate your subscription</h2>
-      <p>Your workspace <strong>${opts.subAccountName}</strong> is ready to activate${
+      <p>Your workspace <strong>${escapeHtml(opts.subAccountName)}</strong> is ready to activate${
         opts.planName
-          ? ` on the <strong>${opts.planName}</strong> plan (${opts.priceLabel})`
+          ? ` on the <strong>${escapeHtml(opts.planName)}</strong> plan (${escapeHtml(opts.priceLabel)})`
           : ""
       }.</p>
       <p style="margin:24px 0;">
-        <a href="${opts.url}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Complete checkout</a>
+        <a href="${escapeHtml(opts.url)}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Complete checkout</a>
       </p>
       <p style="color:#6b7280;font-size:13px;">Payment is handled securely by Stripe. Your card is charged ${opts.cadenceWord} and you can update it anytime from your workspace settings.</p>
     </div>`;
-  await sendEmail({ to: opts.to, subject, text, html });
+  await sendPlatformEmail(opts.sender, { to: opts.to, subject, text, html });
 }
 
 export async function PATCH(
@@ -177,8 +184,12 @@ async function maybeEmailLink(
   to: string,
   url: string,
 ): Promise<boolean> {
-  if (!emailIsConfigured()) return false;
   try {
+    const sender = await resolvePlatformSender(subAccountId);
+    if (!sender) {
+      noPlatformSender("[billing] checkout-link", subAccountId);
+      return false;
+    }
     const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
     const data = snap.data() ?? {};
     const billing = (data.billing ?? {}) as {
@@ -188,6 +199,7 @@ async function maybeEmailLink(
       billingInterval?: BillingInterval | null;
     };
     await emailCheckoutLink({
+      sender,
       to,
       subAccountName: String(data.name ?? "your workspace"),
       planName: billing.planName ?? null,

@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { callAi, type AiChatMessage } from "@/lib/comms/ai/openrouter";
+import { replyModelFallback } from "@/lib/comms/ai/model-policy";
 import {
   incrementChannelTokens,
   resolveAgent,
@@ -428,6 +429,7 @@ export async function respondToWebChat(
     completion = await callAi({
       model: eff.modelOverride ?? undefined,
       messages,
+      ...replyModelFallback(input.subAccountId, "web-chat"),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

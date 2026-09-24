@@ -7,6 +7,14 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { parseScheduleUpdate } from "@/lib/recurring/schedule-input";
 import { toDate } from "@/lib/server/recurring-invoice-cycle";
+import { readProration } from "@/lib/recurring/prorate-record";
+import {
+  alertOrphanedCredits,
+  commitWithProration,
+  prorationFields,
+  prorationForEdit,
+  raiseProrationGaps,
+} from "@/lib/server/recurring-prorate";
 import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
 
 export const dynamic = "force-dynamic";
@@ -66,6 +74,7 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  const now = new Date();
   const parsed = parseScheduleUpdate(
     body,
     {
@@ -79,7 +88,7 @@ export async function PATCH(
       chargeMode: schedule.chargeMode,
       lastRunAt: toDate(schedule.lastRunAt),
     },
-    new Date(),
+    now,
   );
   if (!parsed.ok) {
     return NextResponse.json({ error: parsed.error }, { status: 400 });
@@ -101,8 +110,26 @@ export async function PATCH(
   // edit itself has something to say (a resume that skipped cycles).
   if (Object.keys(rest).length > 0) updates.lastError = resumeNote ?? null;
 
+  // A billing-day change on a schedule that has billed is pro-rated
+  // (`prorate.ts`), which also picks the next run; committed against the
+  // state it was computed from.
+  const proration = prorationForEdit(schedule, parsed.value, now);
+  if (proration) {
+    // The end-date check in `parseScheduleUpdate` saw the pre-pro-ration next run.
+    const end = endAt !== undefined ? endAt : toDate(schedule.endAt);
+    if (end && proration.next.getTime() > end.getTime()) {
+      return NextResponse.json({ error: "The end date falls before the next billing date." }, { status: 400 });
+    }
+    Object.assign(updates, prorationFields(proration.record, now), { nextRunAt: Timestamp.fromDate(proration.next) });
+  }
   try {
-    await ref.update(updates);
+    if (!proration) await ref.update(updates);
+    else if (!(await commitWithProration(ref, schedule, updates))) {
+      return NextResponse.json(
+        { error: "The schedule changed while you were editing it. Reload it and try again." },
+        { status: 409 },
+      );
+    }
   } catch (err) {
     console.error("[recurring-invoices/patch] write failed", err);
     return NextResponse.json(
@@ -111,5 +138,12 @@ export async function PATCH(
     );
   }
 
+  // Best effort: the daily sweep raises any gap this leaves pending.
+  if (proration?.record.gaps.some((g) => g.state === "pending")) {
+    await raiseProrationGaps(ref, now).catch((err) => console.error("[recurring-invoices/patch] gap raise deferred to the sweep", err));
+  }
+  // Cancelled: no invoice will carry a credit still owed.
+  const owed = readProration(schedule.proration)?.credits.filter((c) => c.cycle === null) ?? [];
+  if (parsed.value.status === "cancelled" && owed.length) await alertOrphanedCredits(schedule, owed);
   return NextResponse.json({ ok: true });
 }

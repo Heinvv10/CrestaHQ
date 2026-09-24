@@ -21,6 +21,12 @@ import {
   type WhatsAppSendResult,
 } from "./provider";
 import type { SubAccountDoc } from "@/types";
+import {
+  QuietHoursDeferredError,
+  quietHoursHold,
+  quietHoursRefusal,
+  type SendOrigin,
+} from "@/lib/comms/quiet-hours";
 
 /**
  * Free-form WhatsApp send, whichever rail carries it. Reads the service window
@@ -104,6 +110,14 @@ export interface WhatsappDispatchInput {
    */
   humanReply?: boolean;
   /**
+   * Absent = "automated": held during the workspace's quiet hours and refused
+   * with `refusedBy: "quiet_hours"` + `quietHours`, nothing sent. A person
+   * sending passes "manual". See lib/comms/quiet-hours.ts.
+   */
+  origin?: SendOrigin;
+  /** Booking confirmations of a customer's own booking only. */
+  selfTriggeredBookingAt?: Date | null;
+  /**
    * Optional attachment. Carried by the rails whose capabilities declare
    * `supportsMedia` (bridge, cloud). Twilio takes media only by public URL,
    * which this seam does not implement, so an attachment there is refused
@@ -139,6 +153,13 @@ export async function dispatchWhatsappSend(
   }
   const { provider, capabilities } = resolved;
 
+  // Before the window read and before any rail: a held send touches nothing.
+  const hold = quietHoursHold({
+    subAccount: input.subAccount,
+    origin: input.origin,
+    selfTriggeredBookingAt: input.selfTriggeredBookingAt,
+  });
+  if (hold) return quietHoursRefusal(provider, hold);
 
   // Refused before the window is read and before anything is sent. Placed here
   // rather than in each rail's branch so a fourth rail cannot be added without
@@ -311,6 +332,8 @@ export async function sendWhatsappFreeFormForSubAccount(input: {
   lastInboundAt?: Date | null;
   /** The sender to reply from. Absent = the workspace default. */
   senderId?: string | null;
+  /** Absent = "automated" — see WhatsappDispatchInput.origin. */
+  origin?: SendOrigin;
 }): Promise<{ sid: string; from: string }> {
   let from = "";
   const result = await dispatchWhatsappSend({
@@ -321,6 +344,7 @@ export async function sendWhatsappFreeFormForSubAccount(input: {
     body: input.body,
     lastInboundAt: input.lastInboundAt,
     senderId: input.senderId,
+    origin: input.origin,
     template: null,
     sendViaTwilio: async () => {
       const r = await sendWhatsappForSubAccount({
@@ -333,6 +357,7 @@ export async function sendWhatsappFreeFormForSubAccount(input: {
       return { ok: true, messageId: r.sid };
     },
   });
+  if (result.quietHours) throw new QuietHoursDeferredError(result.quietHours);
   if (!result.ok) {
     throw new Error(result.error ?? "Failed to send WhatsApp message");
   }

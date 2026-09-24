@@ -223,6 +223,18 @@ export async function POST(request: Request) {
       delaySeconds: 0,
       deduplicationId: `bcastfan_${broadcastRef.id}_start`,
     });
+  // publishCallback never throws: null = the fanout was not queued.
+  const failStart = async () => {
+    await broadcastRef.update({
+      status: "failed",
+      errorMessage: "Could not schedule the send. Check QStash and NEXT_PUBLIC_APP_URL.",
+      completedAt: FieldValue.serverTimestamp(),
+    });
+    return NextResponse.json(
+      { error: "Failed to schedule the broadcast. Check QStash configuration." },
+      { status: 502 },
+    );
+  };
 
   try {
     await broadcastRef.create({ id: broadcastRef.id, ...broadcast });
@@ -246,7 +258,7 @@ export async function POST(request: Request) {
     }
     // The first attempt may have died before its fanout publish landed.
     if (existing.status === "queued" && existing.fanoutDone === false) {
-      await startFanout();
+      if (!(await startFanout())) return failStart();
     }
     return NextResponse.json({
       ok: true,
@@ -259,17 +271,7 @@ export async function POST(request: Request) {
   // Hand the audience to the fanout step, which pages through it and
   // publishes the staggered per-recipient sends.
   const fanout = await startFanout();
-  if (!fanout) {
-    await broadcastRef.update({
-      status: "failed",
-      errorMessage: "Could not schedule the send. Check QStash and NEXT_PUBLIC_APP_URL.",
-      completedAt: FieldValue.serverTimestamp(),
-    });
-    return NextResponse.json(
-      { error: "Failed to schedule the broadcast. Check QStash configuration." },
-      { status: 502 },
-    );
-  }
+  if (!fanout) return failStart();
 
   return NextResponse.json({
     ok: true,

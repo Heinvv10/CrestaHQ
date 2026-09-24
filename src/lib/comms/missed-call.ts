@@ -6,6 +6,8 @@ import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { reconcileContactFromCapture } from "@/lib/comms/ai/capture";
 import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
+import { isQuietHoursDeferred } from "@/lib/comms/quiet-hours";
+import { holdForQuietHours } from "@/lib/comms/quiet-hours-hold";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import { renderMergeTags } from "@/lib/messaging/merge-tags";
@@ -250,6 +252,21 @@ export async function handleMissedCall(input: {
     });
     smsSid = sent.sid;
   } catch (err) {
+    // Quiet hours: nothing went out. Held and sent when they end, after the
+    // contact's SMS opt-out is checked again.
+    if (isQuietHoursDeferred(err)) {
+      await logActivity(`Missed call from ${from}. Auto-text held for quiet hours.`);
+      const held = await holdForQuietHours({
+        agencyId,
+        subAccountId,
+        payload: {
+          kind: "message",
+          message: { channel: "sms", contactId, to: from, body: bodyText, source: "missed_call" },
+        },
+        hold: err.hold,
+      });
+      return { handled: held, reason: held ? "quiet_hours_held" : "send_failed", contactId };
+    }
     console.error("[mctb] text-back send failed", err);
     await logActivity(`Missed call from ${from}. Auto-text failed to send.`);
     return { handled: false, reason: "send_failed", contactId };

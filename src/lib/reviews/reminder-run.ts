@@ -4,7 +4,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { DEFAULT_REVIEW_SMS_TEMPLATE, activeReminder, normalizeReviewChannel } from "@/lib/reviews/constants";
-import { scheduleReviewReminder } from "@/lib/reviews/reminder";
+import { REVIEW_REMINDER_PATH, scheduleReviewReminder } from "@/lib/reviews/reminder";
+import { publishCallback } from "@/lib/automations/qstash";
 import { reminderStopReason, templateHash } from "@/lib/reviews/reminder-checks";
 import { reviewTrackingAvailable } from "@/lib/reviews/click-token";
 import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
@@ -140,6 +141,27 @@ export async function runReviewReminder(input: {
     trigger: "reminder",
     reminderOf: { requestId: input.requestId, tracked: c.tracked, channel: c.channel },
   });
+  if (!res.sent && res.quietHours) {
+    // Quiet hours: nothing went out. Hand the attempt back and fire it again
+    // when the window ends — its checks (clicked, replied, opted out…) re-run.
+    const hold = res.quietHours;
+    await ref.update({
+      "reminder.attempts": input.attempt - 1,
+      "reminder.state": "scheduled",
+      "reminder.nextAt": hold.until,
+    });
+    const published = await publishCallback({
+      pathname: REVIEW_REMINDER_PATH,
+      body: { subAccountId: input.subAccountId, requestId: input.requestId, attempt: input.attempt },
+      delaySeconds: hold.retryAfterSec,
+      deduplicationId: `rr_${input.requestId}_${input.attempt}_qh_${hold.until.getTime()}`,
+    });
+    if (!published) {
+      await ref.update(stopped("schedule_failed"));
+      return { outcome: "stopped", reason: "schedule_failed" };
+    }
+    return { outcome: "skipped", reason: "quiet_hours" };
+  }
   if (!res.sent) {
     const reason = res.reason === "no_contact" ? "contact_deleted" : (res.reason ?? "send_failed");
     await ref.update(stopped(reason));

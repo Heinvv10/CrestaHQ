@@ -83,7 +83,8 @@ describe("Paystack-only workspace", () => {
 
   it("the draft allowance is for drafts only: a paid invoice gets no link and no email", async () => {
     seedInvoice("inv1", { status: "paid" });
-    expect(await send()).toMatchObject({ ok: false, failure: { code: "paystack_link_failed", status: 409 } });
+    // Refused before any rail is chosen (sendQuoteServerSide's paid guard).
+    expect(await send()).toMatchObject({ ok: false, failure: { code: "already_paid", status: 409 } });
     expect(links()).toHaveLength(0);
     expect(sendEmail).not.toHaveBeenCalled();
   });
@@ -131,6 +132,15 @@ describe("card-mode recurring invoice", () => {
     expect(link.mandate).toBeUndefined();
     expect(link.amountCents).toBe(100000);
     expect(emailText()).toContain(`/pay/link/${link.token}`);
+  });
+
+  it("a billing-day pro-rata gets a plain Paystack link, and no fallback to 'fix'", async () => {
+    seedInvoice("inv1", { status: "draft", recurringInvoiceId: "rec1", globalTaxPercent: 0, prorated: "gap" });
+    const res = await send();
+    expect(res).toMatchObject({ ok: true, cardLinkFallback: null });
+    const [link] = links();
+    expect(link.mandate).toBeUndefined();
+    expect(link.amountCents).toBe(100000);
   });
 });
 

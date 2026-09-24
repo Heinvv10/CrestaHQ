@@ -53,9 +53,14 @@ const PUBLIC_PATHS = [
   "/api/cron/whatsapp-quality",
   // Daily sweep of abandoned WhatsApp composer uploads. Same auth: the signature.
   "/api/cron/whatsapp-staging-cleanup",
+  // Daily OpenRouter model-list refresh. Same auth: the signature.
+  "/api/cron/ai-models",
   // Review-request reminders (SP5 d2) — one QStash message per scheduled
   // reminder. Same auth: the signature, bound to this route's URL.
   "/api/cron/review-reminder",
+  // Quiet-hours release — one QStash message per automated SMS/WhatsApp held
+  // for the workspace's quiet hours. Same auth: the signature, bound to the URL.
+  "/api/comms/quiet-hours/release",
   // Hourly Inbox Follow-up Watchdog sweep (Labs). QStash-scheduled;
   // signature-verified inside the route.
   "/api/agents/watchdog/step",

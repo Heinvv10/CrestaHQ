@@ -77,6 +77,19 @@ describe("send request", () => {
     expect(new Set(h.sent.map((s) => s.contactId)).size).toBe(12);
   });
 
+  it("a retry whose fan-out re-publish is not queued fails the broadcast like the first publish", async () => {
+    seedTenant(3);
+    h.throwPublish = (m) => isFanout(m);
+    await expect(sendBroadcast("retry-key-2")).rejects.toThrow();
+    h.throwPublish = () => false;
+    h.failPublish = (m) => isFanout(m);
+    const res = await sendBroadcast("retry-key-2");
+    expect(res.status).toBe(502);
+    const [b] = broadcasts();
+    expect(b?.status).toBe("failed");
+    expect(b?.errorMessage).toBe("Could not schedule the send. Check QStash and NEXT_PUBLIC_APP_URL.");
+  });
+
   it("refuses a request without an idempotency key", async () => {
     seedTenant(3);
     const res = await call("/api/broadcasts/email/send", {

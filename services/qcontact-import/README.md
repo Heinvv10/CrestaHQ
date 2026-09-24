@@ -149,6 +149,42 @@ never a side effect of the first run. A case is marked seen only after
 LeadStack accepted it, so a failed upsert is retried next run; the
 `Idempotency-Key` is the case id, so a retry can never create a duplicate.
 
+## Backfilling pre-deal cases
+
+`state.deals` only ever gets an entry when `ensureDeal` runs, which didn't
+exist before `QCONTACT_DEAL_PIPELINE_ID` shipped — so any case marked
+`seen` before then has no deal id, and stage-sync has been silently
+skipping it ever since (counted under `summary.stageUnmapped`). `backfill.ts`
+is a one-off script to create the missing deal for each of those cases,
+in the pipeline stage matching the case's **current** QContact status.
+
+It never calls `POST /api/v1/contacts/upsert` — that's the enrolment-gated
+path (see "Deal stage sync" above for why re-deriving via upsert was
+rejected). The only write is the same idempotency-keyed `POST /api/v1/deals`
+the normal importer already uses via `leadstackDealEnsurer`, which has no
+enrolment gate at all. Since the state file never recorded a contact id for
+these cases, the script finds it by paginating `GET /api/v1/contacts` (a
+plain read) for a `custom_fields.qcontact_case_id` match — built once per
+run, not once per case.
+
+A case is skipped, never guessed, when: it's no longer in the current view
+(`notInView` — its current status can't be determined), its status has no
+entry in `STATUS_TO_STAGE_ID` (`unmappedStatus`), or no LeadStack contact
+carries its `qcontact_case_id` (`contactNotFound`). Only counts are printed
+— no names, phones, or addresses.
+
+```
+node --env-file=.env.local --experimental-strip-types services/qcontact-import/backfill.ts            # dry-run
+node --env-file=.env.local --experimental-strip-types services/qcontact-import/backfill.ts --apply     # writes
+```
+
+Takes the same `${QCONTACT_IMPORT_STATE}.lock` run lock as the timer, so it
+can never execute alongside a timer-triggered import. Requires
+`QCONTACT_DEAL_PIPELINE_ID` to be set (refuses to run otherwise) and reuses
+every other env var `run.ts` does. A failed deal-create for one case doesn't
+stop the run and isn't recorded, so re-running the script retries just that
+case.
+
 ## Running
 
 ```

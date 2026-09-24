@@ -8,6 +8,7 @@ import { AppIconSection } from "@/components/agency/app-icon-section";
 import { AppThemeSection } from "@/components/agency/app-theme-section";
 import { MessagingSection } from "@/components/agency/messaging-section";
 import { AiModelSection } from "@/components/agency/ai-model-section";
+import { AiModelAllowlistSection } from "@/components/agency/ai-model-allowlist-section";
 import { AgencyAssistantSection } from "@/components/agency/agency-assistant-section";
 import { AgencyAiKbSection } from "@/components/agency/agency-ai-kb-section";
 import { SeedDemoSection } from "@/components/agency/seed-demo-section";
@@ -78,6 +79,9 @@ export default function AgencySettingsPage() {
 
       {/* Read-only view of the deployment-wide AI model powering AI Agents. */}
       <AiModelSection />
+
+      {/* Which OpenRouter models sub-accounts may pick, + a price ceiling. */}
+      <AiModelAllowlistSection />
 
       {/* Agency Assistant master switch — OFF by default; every reply spends
           OpenRouter credits so the owner opts in deliberately. */}

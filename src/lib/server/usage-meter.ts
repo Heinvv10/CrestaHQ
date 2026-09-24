@@ -380,10 +380,13 @@ async function notifyOwner(
   try {
     // Dynamic import: resend.ts meters email sends through this module,
     // so a static import back would be a cycle.
-    const { emailIsConfigured, sendEmail } = await import(
-      "@/lib/comms/resend"
-    );
-    if (!emailIsConfigured()) return;
+    const { noPlatformSender, resolvePlatformSender, sendPlatformEmail } =
+      await import("@/lib/comms/platform-email");
+    const sender = await resolvePlatformSender(subAccountId);
+    if (!sender) {
+      noPlatformSender("[usage-meter] owner alert", subAccountId);
+      return;
+    }
     const db = getAdminDb();
     const sub = await loadSubAccount(subAccountId);
     if (!sub?.agencyId) return;
@@ -410,7 +413,7 @@ async function notifyOwner(
         ? `That channel's sends are now paused for this workspace until the month resets, or until you raise the limit (Sub-accounts → Manage → Usage).`
         : `At 100% that channel's sends pause for this workspace. Raise the limit under Sub-accounts → Manage → Usage if needed.`,
     ].join("\n");
-    await sendEmail({ to, subject, text });
+    await sendPlatformEmail(sender, { to, subject, text });
   } catch (err) {
     console.warn("[usage-meter] owner alert failed", { subAccountId, unit, err });
   }

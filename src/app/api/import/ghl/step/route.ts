@@ -24,7 +24,13 @@ import {
   type GhlImportMapping,
   type GhlPhase,
 } from "@/lib/import/ghl/transform";
-import { emptyTotals, type ImportEntity, type ImportJob } from "@/types/import";
+import {
+  emptyTotals,
+  IMPORT_ERROR_CAP,
+  type ImportEntity,
+  type ImportJob,
+  type ImportRecordError,
+} from "@/types/import";
 import type { GhlImportConfig } from "@/types";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
@@ -169,16 +175,30 @@ export async function POST(request: Request) {
     }
 
     // Advance: next page of this entity, else next entity, else finish.
+    let phase: GhlPhase = entity;
+    let scheduled = true;
     if (next) {
-      await schedule(jobId, subAccountId, entity, next);
+      scheduled = await schedule(jobId, subAccountId, entity, next);
     } else {
       const idx = entities.indexOf(entity);
       const following = entities.slice(idx + 1);
       if (following.length > 0) {
-        await schedule(jobId, subAccountId, following[0], null);
+        phase = following[0];
+        scheduled = await schedule(jobId, subAccountId, following[0], null);
       } else {
         await finishJob(db, jobRef, "completed");
       }
+    }
+    // publishCallback never throws: null means the next step was not queued
+    // (no QStash, no app URL, or the publish failed — e.g. the daily cap).
+    // Nothing would ever advance the job, so fail it visibly rather than
+    // leave it "running" forever.
+    if (!scheduled) {
+      console.error(
+        `[import/ghl/step] next step not queued job=${jobId} entity=${phase}`,
+      );
+      await failUnscheduled(db, jobRef, phase);
+      return NextResponse.json({ ok: true, stopped: "unscheduled" });
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
@@ -220,12 +240,50 @@ async function schedule(
   subAccountId: string,
   entity: GhlPhase,
   cursor: GhlCursor,
-): Promise<void> {
-  await publishCallback({
+): Promise<boolean> {
+  const published = await publishCallback({
     pathname: "/api/import/ghl/step",
     body: { jobId, subAccountId, entity, cursor },
     delaySeconds: STEP_DELAY[entity] ?? 1,
     deduplicationId: `ghlstep_${jobId}_${entity}_${cursorKey(cursor)}`,
+  });
+  return published !== null;
+}
+
+const PHASE_ENTITY: Record<GhlPhase, ImportEntity> = {
+  contacts: "contacts",
+  opportunities: "deals",
+  notes: "notes",
+};
+
+/**
+ * Fail the job with the reason first in its error list, so the run summary
+ * shows it. Starting the import again resumes it: every write is an
+ * idempotent upsert by external id.
+ */
+async function failUnscheduled(
+  db: FirebaseFirestore.Firestore,
+  jobRef: FirebaseFirestore.DocumentReference,
+  phase: GhlPhase,
+): Promise<void> {
+  const reason: ImportRecordError = {
+    entity: PHASE_ENTITY[phase],
+    externalId: null,
+    error:
+      "Could not schedule the next import step. Start the import again to retry; records already imported are updated, not duplicated.",
+  };
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(jobRef);
+    const prev = fresh.data()?.errors;
+    tx.update(jobRef, {
+      status: "failed",
+      errors: [reason, ...(Array.isArray(prev) ? prev : [])].slice(
+        0,
+        IMPORT_ERROR_CAP,
+      ),
+      finishedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
   });
 }
 

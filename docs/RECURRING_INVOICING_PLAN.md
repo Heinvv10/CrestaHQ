@@ -197,10 +197,69 @@ Contact and start date are fixed after creation; both are what the invoices
 already raised were raised against. Changing the cadence or the anchor
 recomputes `nextRunAt` **from today**, never earlier — the stored value came
 from the old cadence — and never at or before `lastRunAt`, so an edit cannot
-re-bill the cycle a sweep already billed that day. That is all it guarantees:
-an anchor change may shorten or lengthen the period straddling the edit
-(billed on the 15th, moved to the 20th, bills again on the 20th; moved the
-other way, the next bill is a month later). Resuming a paused schedule keeps a
+re-bill the cycle a sweep already billed that day.
+
+**A billing-day (anchor) change on a schedule that has billed is pro-rated**
+([src/lib/recurring/prorate.ts](../src/lib/recurring/prorate.ts)). Each invoice
+pays for its period in advance, so the 15 Jun invoice covers the customer until
+15 Jul. The billing day moves within that month and never to today or earlier:
+15th → 20th makes the next bill 20 Jul, even when edited on 17 Jun, so no
+extra cycle is used up and an after-count term stays whole. The uncovered
+15–19 Jul becomes one one-off invoice, "Pro-rated: 15 Jul – 19 Jul (billing day
+changed)". Moved the other way (20th → 15th), the next bill is 15 Jul and it
+carries a pro-rated credit for 15–19 Jul. Amount = the template's pre-tax
+total × days ÷ days in the cycle those days start, in the schedule's timezone,
+to the cent, with the template's tax. A gap's cycle is measured on the billing
+day the paid-through date actually sits on as billed (15 → 10 → 20 in one
+period is still 5 ÷ 31 of the 15th's cycle); an overlap's on the new day.
+
+The PATCH records the gap as **pending**. The daily cron raises every pending
+gap before running cycles, and the edit also tries straight away (best
+effort). The queue is `prorationDueAt`, oldest first, and one schedule failing
+never stops the rest. A failed gap moves to the back of the queue for a day. Each gap is claimed in a transaction under a quote id fixed at the
+edit, so a claim retaken after a crash (15 min) finds the invoice instead of
+raising a second one. Every failure leaves the gap pending for the next run
+and updates `lastError`. The first failure of each gap also raises an operator
+Task. A gap only counts as paid-for once its
+invoice exists: reverting 15 → 20 → 15 before it is raised cancels it, and
+nothing is credited. A **paused** schedule's pending gap is still raised,
+because those days were delivered and are owed. A cancelled schedule's pending
+gaps are dropped. The gap
+invoice respects `reviewFirst` (a draft) and is **emailed even on a card
+schedule**, with a Task saying the difference is deliberate: the customer
+authorised one fixed amount per cycle, and this is not it.
+
+Credits are a list, so a credit still owed is never overwritten. Each is
+claimed by the first cycle due on or after the day it was computed for. If that
+cycle is skipped (too stale) or fails before its invoice exists, the credit
+carries forward, including across a frequency change. When a credit is larger
+than what remains of the invoice (for example after a price cut), it takes what
+fits and the rest is owed by the next cycle. When a final cycle, or
+cancelling, leaves a credit that no invoice can carry, the operator gets a Task
+to credit it by hand. Quote lines are clamped to ≥ 0 everywhere
+(calc, sanitiser, builder), so the credit is a flat discount (added to any
+template discount) plus a zero-priced line naming it: a negative line would
+vanish as soon as an operator saved a review-first draft. A card cycle
+carrying a credit is **not auto-charged**, because it is not the authorised
+amount. It is emailed, and its Task says the pro-rata is deliberate. The W5
+period guard is checked first, so a too-soon cycle is reported as such.
+Pro-rated invoices are marked `prorated: "gap" | "credit"`, and are never
+offered a card-on-file link.
+
+What was pro-rated lives on the schedule as `proration` (the paid-through date
+and the billing day it sits on, credits, gaps and their state), plus
+`prorationDueAt` for the cron. An edit
+and its pro-ration commit in one transaction against the state they were
+computed from; a concurrent edit or a claim in between gets a 409. The edit's
+end date is checked against the pro-rated next run. Saving the same edit twice
+changes nothing.
+
+Not pro-rated: a schedule that has never billed; a paused one; and any
+**frequency change** (monthly ↔ quarterly/weekly), which redefines what a cycle
+is worth, so the next run simply moves from today. The billing day can only be
+changed through the API today; the form has no day-of-month control.
+
+Resuming a paused schedule keeps a
 cycle due today that was never billed, steps past cycles due before today, and
 names the skipped dates in `lastError` so they can be raised by hand. A
 schedule whose contact has been deleted is paused by the sweep, with the
@@ -228,7 +287,8 @@ those invoices exist.
 
 **Auto-charge** (`chargeMode` on the schedule, a stored Paystack authorization,
 retry and dunning on a failed charge) · agency→sub-account recurrence, which is
-Phase 1.1 · proration or mid-cycle template changes applying to an open cycle ·
+Phase 1.1 · proration of a template change applying to an open cycle (billing-day
+changes are pro-rated — see above) ·
 recurring *quotes* (invoices only) · a customer-facing "manage my subscription"
 page · usage-based or metered lines.
 

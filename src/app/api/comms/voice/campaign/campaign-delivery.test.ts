@@ -220,6 +220,19 @@ describe("voice campaign send idempotency and scope", () => {
     expect(h.calls).toHaveLength(3);
   });
 
+  it("a retry whose fan-out re-publish is not queued fails the campaign like the first publish", async () => {
+    seed(3);
+    h.throwPublish = (m) => !isStep(m);
+    await expect(send("same-key-5")).rejects.toThrow();
+    h.throwPublish = () => false;
+    h.failPublish = (m) => !isStep(m);
+    const res = await send("same-key-5");
+    expect(res.status).toBe(502);
+    const [c] = h.mem.list("voiceCampaigns");
+    expect(c?.status).toBe("failed");
+    expect(c?.errorMessage).toBe("Could not schedule the campaign. Check QStash and NEXT_PUBLIC_APP_URL.");
+  });
+
   it("a retry of a campaign that failed to start is reported as failed", async () => {
     seed(3);
     h.failPublish = (m) => !isStep(m);

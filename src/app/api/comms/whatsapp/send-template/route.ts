@@ -180,6 +180,8 @@ export async function POST(request: Request) {
       to: contact.phone,
       template: tpl,
       values,
+      // An operator sending from the thread: never held for quiet hours.
+      origin: "manual",
       sendViaTwilio: async (contentSid) => {
         const r = await sendWhatsappTemplateForSubAccount({
           subAccountId: contact.subAccountId,

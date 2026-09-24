@@ -7,7 +7,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * surfaces as a 500 naming the sweep.
  */
 
-const publishCallback = vi.hoisted(() => vi.fn(async () => {}));
+const publishCallback = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ messageId: string } | null> => ({ messageId: "m1" })),
+);
 vi.mock("@/lib/automations/qstash", () => ({
   verifyQStashSignature: async () => true,
   publishCallback,
@@ -101,5 +103,17 @@ describe("POST /api/cron/api-cleanup — sweep isolation", () => {
     const res = await run();
     expect(res.status).toBe(200);
     expect(publishCallback).toHaveBeenCalledTimes(1);
+    expect(((await res.json()) as { continuationScheduled: boolean }).continuationScheduled).toBe(true);
+  });
+
+  it("reports continuationScheduled false and logs when the continuation publish resolves null", async () => {
+    setup.failing = new Set();
+    setup.capped = new Set(["apiIdempotency"]);
+    publishCallback.mockResolvedValueOnce(null);
+    const res = await run();
+    expect(res.status).toBe(200);
+    expect(publishCallback).toHaveBeenCalledTimes(1);
+    expect(((await res.json()) as { continuationScheduled: boolean }).continuationScheduled).toBe(false);
+    expect(console.error).toHaveBeenCalledWith("[cron/api-cleanup] continuation not queued");
   });
 });

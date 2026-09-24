@@ -18,6 +18,8 @@ let docs: Map<string, Record<string, unknown>>;
 const createCloudTemplate = vi.fn();
 const createContentTemplate = vi.fn();
 const submitForWhatsappApproval = vi.fn();
+const publishCallback = vi.fn();
+const qstash = { configured: false };
 
 function docRef(path: string) {
   return {
@@ -60,8 +62,8 @@ vi.mock("@/lib/comms/whatsapp/templates-api", () => ({
   WhatsappContentError: class extends Error {},
 }));
 vi.mock("@/lib/automations/qstash", () => ({
-  qstashIsConfigured: () => false,
-  publishCallback: async () => {},
+  qstashIsConfigured: () => qstash.configured,
+  publishCallback: (...a: unknown[]) => publishCallback(...a),
 }));
 vi.mock("@/lib/comms/twilio", () => ({
   subAccountWhatsappIsConfigured: () => true,
@@ -102,6 +104,8 @@ beforeEach(() => {
   createCloudTemplate.mockReset().mockResolvedValue({ id: "meta_1" });
   createContentTemplate.mockReset().mockResolvedValue({ contentSid: "HX1" });
   submitForWhatsappApproval.mockReset().mockResolvedValue(undefined);
+  publishCallback.mockReset().mockResolvedValue({ messageId: "m1" });
+  qstash.configured = false;
   docs = new Map<string, Record<string, unknown>>([
     [
       `subAccounts/${SUB}/subAccountMembers/uid_admin`,
@@ -183,5 +187,31 @@ describe("submission targets the rail the sends will use", () => {
     expect(res.status).toBe(400);
     expect(createCloudTemplate).not.toHaveBeenCalled();
     expect(createContentTemplate).not.toHaveBeenCalled();
+  });
+});
+
+describe("the first approval poll cannot be queued", () => {
+  it("parks the template as failed (re-submittable) with the reason when the publish resolves null", async () => {
+    setSub({});
+    qstash.configured = true;
+    publishCallback.mockResolvedValue(null);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await submit();
+    expect(res.status).toBe(200);
+    const tpl = docs.get(`subAccounts/${SUB}/whatsappTemplates/${TPL}`);
+    expect(tpl?.status).toBe("failed");
+    expect(tpl?.rejectionReason).toMatch(/approval check could not be scheduled/);
+    expect(error).toHaveBeenCalledWith(
+      `[whatsapp-templates/submit] first poll not queued sa=${SUB} template=${TPL}`,
+    );
+    error.mockRestore();
+  });
+
+  it("stays pending when the first poll is queued", async () => {
+    setSub({});
+    qstash.configured = true;
+    await submit();
+    expect(publishCallback).toHaveBeenCalledTimes(1);
+    expect(docs.get(`subAccounts/${SUB}/whatsappTemplates/${TPL}`)?.status).toBe("pending");
   });
 });

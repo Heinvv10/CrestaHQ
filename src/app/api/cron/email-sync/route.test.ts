@@ -52,3 +52,25 @@ it("continues with a stable tenant cursor", async () => {
     expect.objectContaining({ body: { after: "tenant-z" } })
   );
 });
+it("logs the dropped cursor when the continuation publish resolves null", async () => {
+  vi.mocked(verifyQStashSignature).mockResolvedValue(true);
+  vi.mocked(runMailboxSweep).mockResolvedValue({
+    results: [],
+    hasMore: true,
+    nextAfter: "tenant-q",
+  });
+  vi.mocked(publishCallback).mockResolvedValueOnce(null);
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const response = await POST(
+    new Request("https://app.test", {
+      method: "POST",
+      headers: { "upstash-signature": "valid" },
+      body: "{}",
+    })
+  );
+  expect(response.status).toBe(200);
+  expect(error).toHaveBeenCalledWith(
+    "[cron/email-sync] continuation not queued after=tenant-q"
+  );
+  error.mockRestore();
+});

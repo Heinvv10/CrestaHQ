@@ -31,9 +31,10 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * use this endpoint as "resend" without revoking first. A resend rotates the
  * invite token, so earlier links stop working.
  *
- * Graceful degrade: if RESEND_API_KEY isn't set, the invite doc is still
- * created and `mailed: false` is returned so the UI can prompt the admin to
- * copy the signup link manually.
+ * Graceful degrade: with no email sender (no shared RESEND_API_KEY and no
+ * verified SMTP on this sub-account) the invite doc is still created and
+ * `mailed: false` is returned so the UI can prompt the admin to copy the
+ * signup link manually.
  *
  * The actual write lives in `lib/server/members-service.ts` —
  * shared with the AI Suite `invite_member` capability.

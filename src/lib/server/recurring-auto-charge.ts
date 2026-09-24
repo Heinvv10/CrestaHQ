@@ -9,9 +9,9 @@ import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
 import { minCardChargeGapMs } from "@/lib/recurring/charge-gap";
 import { invoiceTotalCents } from "@/lib/server/payment-links-service";
-import { raiseChargeTask } from "@/lib/server/auto-charge-alerts";
 import { countDecline, termsStillHold } from "@/lib/server/payment-mandates";
-import { schedulesCollection, sendGeneratedInvoice, toDate } from "@/lib/server/recurring-invoice-cycle";
+import { chargeFallback, type TaskText } from "@/lib/server/recurring-charge-fallback";
+import { toDate } from "@/lib/server/recurring-invoice-cycle";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import type { PaymentAttempt } from "@/types/payment-attempts";
 import { paymentMandateSecretPath, type PaymentMandate, type PaymentMandateSecret } from "@/types/payment-mandates";
@@ -38,8 +38,6 @@ import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
  *   no clear answer → NOT emailed — the card may have been charged — and a
  *                    Task names the reference to check.
  */
-
-const EMAILED = "The invoice was emailed instead.";
 
 export const autoChargeReference = (scheduleId: string, cycle: number) => `ra-${scheduleId}-c${cycle}`;
 
@@ -75,32 +73,7 @@ export async function chargeCycle(
   const invoice = (await invoiceRef.get()).data() as Quote | undefined;
   const label = invoice?.quoteNumber || invoiceId;
   const tag = `[recurring/auto-charge] schedule=${schedule.id} ref=${reference}`;
-  const note = (lastError: string) =>
-    schedulesCollection()
-      .doc(schedule.id)
-      .update({ lastError: lastError.slice(0, 500), updatedAt: FieldValue.serverTimestamp() })
-      .catch((err: unknown) => console.error(`${tag} lastError not written`, err));
-  // No redelivery re-runs a cycle, so a Task that fails to create is logged;
-  // the `lastError` written beside it still tells the operator.
-  const alert = (title: string, notes: string) =>
-    raiseChargeTask(schedule, title, notes).catch((err: unknown) => console.error(`${tag} task not raised: ${title}`, err));
-  type TaskText = { title: string; notes: string };
-  // "emailed" only once sent. ONE Task carries every reason; a failed send always raises one.
-  const emailInstead = async (why: string, task?: TaskText) => {
-    await note(why);
-    let res: Awaited<ReturnType<typeof sendGeneratedInvoice>> | undefined;
-    try {
-      res = await sendGeneratedInvoice(schedule, invoiceId, why);
-      if (res.sent) await note([why, EMAILED, res.cardLinkFallback].filter(Boolean).join(" "));
-      return res.sent;
-    } finally {
-      const failure = res?.sent ? null : (res?.error ?? "the send failed unexpectedly");
-      const extra = [failure ? `Invoice not sent: ${failure}` : EMAILED, res?.cardLinkFallback].filter(Boolean).join(" ");
-      if (task) await alert(task.title, `${task.notes} ${extra}`.trim());
-      else if (failure) await alert(`Invoice ${label} was not sent: ${failure}`, `${why} ${extra}`);
-      else if (res?.cardLinkFallback) await alert(res.cardLinkFallback, "Until a card is saved, each cycle emails its invoice instead of charging a card.");
-    }
-  };
+  const { note, alert, emailInstead } = chargeFallback(schedule, invoiceId, label, tag);
 
   const opened = await openAttempt(schedule, invoiceId, invoice, reference, dueAt);
   if ("alreadyCharged" in opened) {
@@ -219,6 +192,11 @@ async function openAttempt(
       return no("the Paystack key changed since the card was saved");
     }
     if (!secret) return no("the saved card's authorization is missing");
+    // Before the amount: name the cause (billing-day change).
+    if (previousDueAt && dueAt.getTime() - previousDueAt.getTime() < minCardChargeGapMs(schedule.cadence)) {
+      return { ok: false, tooSoon: { dueAt, previousDueAt } };
+    }
+    if (invoice?.prorated === "credit") return no("it carries a deliberate pro-rated credit for a billing-day change, so it is not the authorised amount — nothing to fix");
     const amountCents = invoice ? invoiceTotalCents(invoice) : NaN;
     if (
       !invoice ||
@@ -227,9 +205,6 @@ async function openAttempt(
       !termsStillHold(mandate.terms, schedule)
     ) {
       return no("the invoice no longer matches the amount the customer authorised");
-    }
-    if (previousDueAt && dueAt.getTime() - previousDueAt.getTime() < minCardChargeGapMs(schedule.cadence)) {
-      return { ok: false, tooSoon: { dueAt, previousDueAt } };
     }
     const attempt: Omit<PaymentAttempt, "id"> = {
       agencyId: schedule.agencyId,

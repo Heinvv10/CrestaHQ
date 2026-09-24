@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 const OUTCOME: Record<string, string> = {
   paid: "Paystack confirmed the charge: the invoice is now paid.",
   declined: "Paystack says the charge did not go through. You can now send the invoice with a pay link.",
+  failed_but_paid:
+    "Paystack says the card charge failed, but this invoice was already marked paid by hand. Confirm the payment you recorded.",
   pending: "Paystack has no final answer yet. Nothing was changed — check again later.",
   needs_attention: "Paystack reports a payment that couldn't be recorded against this invoice. See the Task it raised.",
 };
