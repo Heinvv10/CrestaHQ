@@ -18,38 +18,44 @@ const OUTCOME: Record<string, string> = {
  * "Re-check card charge" on an invoice whose recurring card charge is still
  * pending or unconfirmed. The server asks Paystack and records its answer;
  * the invoice view updates from its live subscription.
+ *
+ * The answer is handed to the parent rather than shown here: once the charge
+ * is settled or declined the parent stops rendering this button, and a
+ * message kept in its state would vanish with it.
  */
-export function RecheckCardChargeButton({ subAccountId, invoiceId }: { subAccountId: string; invoiceId: string }) {
+export function RecheckCardChargeButton({
+  subAccountId,
+  invoiceId,
+  onMessage,
+  onError,
+}: {
+  subAccountId: string;
+  invoiceId: string;
+  onMessage: (message: string) => void;
+  onError: (error: string) => void;
+}) {
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const recheck = async () => {
     setBusy(true);
-    setMessage(null);
-    setError(null);
     try {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/quotes/${invoiceId}/recheck-card-charge`, {
         method: "POST",
       });
       const body = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string };
       if (!res.ok || !body.outcome) throw new Error(body.error ?? `Re-check failed (HTTP ${res.status})`);
-      setMessage(OUTCOME[body.outcome] ?? `Paystack answered: ${body.outcome}.`);
+      onMessage(OUTCOME[body.outcome] ?? `Paystack answered: ${body.outcome}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Re-check failed");
+      onError(err instanceof Error ? err.message : "Re-check failed");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="flex w-full flex-col gap-2 sm:w-auto">
-      <Button type="button" variant="outline" size="sm" onClick={() => void recheck()} disabled={busy}>
-        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-        Re-check card charge
-      </Button>
-      {message && <p className="text-xs text-muted-foreground">{message}</p>}
-      {error && <p className="text-xs text-destructive">{error}</p>}
-    </div>
+    <Button type="button" variant="outline" size="sm" onClick={() => void recheck()} disabled={busy}>
+      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+      Re-check card charge
+    </Button>
   );
 }
