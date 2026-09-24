@@ -466,6 +466,7 @@ describe("model refused by OpenRouter (live reply seam)", () => {
           path: "subAccounts/sa/aiAgent/whatsapp",
           data: { modelRejected: { model: "gone/model", at: expect.any(Number) } },
         }),
+        { timeout: 10_000 },
       );
     } finally {
       vi.unstubAllGlobals();

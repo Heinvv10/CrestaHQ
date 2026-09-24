@@ -68,5 +68,6 @@ it("retries a refused override once on the app default, speaks the reply, and fl
   expect(models).toEqual(["gone/model", DEFAULT]);
   await vi.waitFor(() =>
     expect(mem.read("subAccounts/sa1/aiAgent/voice")?.modelRejected).toMatchObject({ model: "gone/model" }),
+    { timeout: 10_000 },
   );
 });

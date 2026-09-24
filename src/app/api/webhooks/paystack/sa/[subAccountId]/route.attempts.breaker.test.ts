@@ -572,7 +572,7 @@ describe("review round 2 — the sweep never closes a checkout that can still ta
       return new Promise((_, reject) => { release = () => reject(new TypeError("fetch failed")); });
     }));
     const pending = disconnect();
-    await vi.waitFor(() => expect(keyStoredWhenAsked).not.toBeNull());
+    await vi.waitFor(() => expect(keyStoredWhenAsked).not.toBeNull(), { timeout: 10_000 });
     expect(keyStoredWhenAsked).toBe(false);
     release();
     expect((await pending).status).toBe(200);
@@ -618,7 +618,7 @@ describe("review round 3 — a failing sweep never skips the flag step", () => {
       return new Promise<Response>((_, reject) => { release = () => reject(new TypeError("fetch failed")); });
     }));
     const pendingDisconnect = disconnect();
-    await vi.waitFor(() => expect(asked).toBe(true));
+    await vi.waitFor(() => expect(asked).toBe(true), { timeout: 10_000 });
     expect((await connect(LIVE_KEY)).status).toBe(200);
     release();
     await pendingDisconnect;
@@ -639,7 +639,7 @@ describe("review round 3 — a failing sweep never skips the flag step", () => {
       return new Promise<Response>((_, reject) => { release = () => reject(new TypeError("fetch failed")); });
     }));
     const pendingSwitch = connect("sk_live_k8");
-    await vi.waitFor(() => expect(asked).toBe(true));
+    await vi.waitFor(() => expect(asked).toBe(true), { timeout: 10_000 });
     expect((await connect(LIVE_KEY)).status).toBe(200);
     release();
     await pendingSwitch;

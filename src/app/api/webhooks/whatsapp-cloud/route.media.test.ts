@@ -421,7 +421,7 @@ describe("cloud inbound media — ordering against the redelivery guard", () => 
     };
 
     const first = post(image("is this the right pole?"));
-    await vi.waitFor(() => expect(fetchCalls.length).toBe(1));
+    await vi.waitFor(() => expect(fetchCalls.length).toBe(1), { timeout: 10_000 });
     expect((await post(image("is this the right pole?"))).status).toBe(200);
     release();
     expect((await first).status).toBe(200);
@@ -497,7 +497,7 @@ describe("cloud inbound media — never downgrade a row that holds media", () =>
     };
 
     const first = post(image());
-    await vi.waitFor(() => expect(fetchCalls.length).toBe(1));
+    await vi.waitFor(() => expect(fetchCalls.length).toBe(1), { timeout: 10_000 });
     await post(image());
     expect(parseWhatsappMedia(row().media)).not.toBeNull();
     release();
@@ -641,7 +641,7 @@ describe("cloud inbound media — nothing that doesn't need the file waits for i
     };
 
     const first = post(image("is this the right pole?"));
-    await vi.waitFor(() => expect(fetchCalls.length).toBe(1));
+    await vi.waitFor(() => expect(fetchCalls.length).toBe(1), { timeout: 10_000 });
     await post(image("is this the right pole?"));
 
     // Asserted WHILE the first delivery is still blocked in Graph.

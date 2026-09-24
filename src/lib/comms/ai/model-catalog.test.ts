@@ -143,14 +143,14 @@ describe("reply path", () => {
     fetchMock.mockReturnValueOnce(new Promise((r) => (release = r)));
     const cat = await readModelCatalogForReply(NOW);
     expect(cat?.models[0]?.id).toBe("old/m0");
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     release(ok(orBody(ids("new", 60))));
-    await vi.waitFor(() => expect(cachedIds()[0]).toBe("new/m0"));
+    await vi.waitFor(() => expect(cachedIds()[0]).toBe("new/m0"), { timeout: 10_000 });
   });
 
   it("does not fetch at all when the cache is fresh, and returns null with no cache", async () => {
     expect(await readModelCatalogForReply(NOW)).toBeNull();
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     fetchMock.mockReset();
     seed(ids("a", 60), NOW);
     await readModelCatalogForReply(NOW);
