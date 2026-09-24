@@ -7,6 +7,7 @@ import {
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
 import { sweepOldWatchdogRuns } from "@/lib/server/agents-watchdog-service";
+import { sweepAgentProposals } from "@/lib/server/agent-proposals";
 
 /**
  * Daily cleanup sweep for the public API's TTL'd collections.
@@ -188,6 +189,9 @@ export async function POST(request: Request) {
         hitCap: false,
       }),
     ],
+    // Agent API approval queue: expire stale `pending` rows, flip stale
+    // `executing` claims to `unsettled`. Status changes only, no deletes.
+    ["agentProposals", () => sweepAgentProposals(now)],
   ];
   const results: SweepResult[] = [];
   const failures: Array<{ collection: string; message: string }> = [];

@@ -171,11 +171,12 @@ export async function getApiKey(
 }
 
 /**
- * Registered by the Agent API's proposal layer (PR3) so revoking a key also
- * sweeps its `pending` `agentProposals` rows to `rejected`. Stub for now —
- * no registrant exists until PR3 ships `agent-proposals.ts`; `revokeApiKey`
- * calls every registered hook after the revoke write, ignoring hooks that
- * throw so a proposal-sweep failure never blocks the revoke itself.
+ * Registered by the Agent API's proposal layer
+ * (`lib/server/agent-proposals-revoke-hook.ts`, which the revoke route
+ * imports) so revoking a key also sweeps its `pending` `agentProposals` rows
+ * to `rejected`. `revokeApiKey` calls every registered hook after the revoke
+ * write, ignoring hooks that throw so a proposal-sweep failure never blocks
+ * the revoke itself.
  */
 const keyRevokeHooks: Array<
   (input: { subAccountId: string; keyId: string; revokedByUid: string }) => Promise<void>

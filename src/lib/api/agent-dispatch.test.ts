@@ -194,11 +194,49 @@ describe("args and approval", () => {
     });
   });
 
-  it("an approval capability → not_yet_available 501, execute never called", async () => {
-    const cap = inject({ name: "__fixture_outbound", approval: "outbound" });
-    const r = await dispatchAgentTool(auth, "__fixture_outbound", {});
-    expect(r).toMatchObject({ ok: false, code: "not_yet_available", httpStatus: 501 });
+  it("an approval capability → a pending proposal, execute never called", async () => {
+    const preview = [{ label: "To", value: "Ann (a***@x.io)" }];
+    const cap = inject({
+      name: "__fixture_outbound",
+      approval: "outbound",
+      preview: async () => preview,
+    });
+    const r = await dispatchAgentTool(auth, "__fixture_outbound", { body: "hi" });
+    expect(r).toMatchObject({
+      ok: true,
+      proposal: { status: "pending", summary: "fixture", preview },
+    });
+    const id = (r as { proposal: { id: string } }).proposal.id;
+    expect(mem.read(`agentProposals/${id}`)).toMatchObject({
+      agencyId: "ag1",
+      subAccountId: "sa1",
+      createdByUid: "apikey:abcd1234",
+      keyId: "key1",
+      capability: "__fixture_outbound",
+      approval: "outbound",
+      args: { body: "hi" },
+      status: "pending",
+    });
+    // The same call again is the same pending row, not a second one.
+    expect(await dispatchAgentTool(auth, "__fixture_outbound", { body: "hi" })).toEqual(r);
+    expect(mem.list("agentProposals")).toHaveLength(1);
     expect(cap.execute).not.toHaveBeenCalled();
+  });
+
+  it("an approval capability without a preview → internal_error 500, nothing queued", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const cap = inject({ name: "__fixture_no_preview", approval: "outbound" });
+    expect(await dispatchAgentTool(auth, "__fixture_no_preview", {})).toMatchObject({
+      code: "internal_error",
+      httpStatus: 500,
+    });
+    expect(mem.list("agentProposals")).toEqual([]);
+    expect(cap.execute).not.toHaveBeenCalled();
+    expect(logged).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ message: "__fixture_no_preview has approval but no preview" })
+    );
+    logged.mockRestore();
   });
 
   it("agentArgs narrows the raw args before validate and execute", async () => {

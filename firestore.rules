@@ -1505,6 +1505,28 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---------- agent API approval queue (AGENT_API_V1_PLAN.md) ----------
+    // Actions an API agent proposed that a person must approve. Members read
+    // (the approvals page); every write is the server's — the dispatch that
+    // queues a row, and the decide route / sweeps that move it.
+    match /agentProposals/{proposalId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+
+      // Superseded versions of the row (re-proposal, late settle). Reads
+      // inherit the parent's tenancy via get().
+      match /history/{historyId} {
+        allow read: if canAccessSub(
+          get(/databases/$(database)/documents/agentProposals/$(proposalId)).data.subAccountId,
+          get(/databases/$(database)/documents/agentProposals/$(proposalId)).data.agencyId
+        );
+        allow write: if false;
+      }
+    }
+
     // ---------- broadcasts (bulk email) ----------
     // Top-level send batches. Created + mutated server-side only by the
     // /api/broadcasts/email/* routes (Admin SDK bypasses these rules).
