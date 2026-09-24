@@ -226,6 +226,7 @@ const CASES: [string, Case, Outcome][] = [
   ["quotes: collaborator cannot set autoCharge", { caller: collaborator, method: "update", path: QTE, before: QUOTE, after: { ...QUOTE, autoCharge: AUTO_CHARGE } }, "deny"],
   ["quotes: admin edits a quote with autoCharge untouched (control)", { caller: saAdmin, method: "update", path: QTE, before: { ...QUOTE, autoCharge: AUTO_CHARGE }, after: { ...QUOTE, autoCharge: AUTO_CHARGE, status: "viewed" } }, "allow"],
   ["quotes: admin cannot create a quote carrying autoCharge", { caller: saAdmin, method: "create", path: QTE, after: { ...(({ paidVia: _, ...q }) => q)(QUOTE), autoCharge: AUTO_CHARGE } }, "deny"],
+  ["quotes: admin cannot create a quote carrying autoCharge: null", { caller: saAdmin, method: "create", path: QTE, after: { ...(({ paidVia: _, ...q }) => q)(QUOTE), autoCharge: null } }, "deny"],
 ];
 
 describe.skipIf(!haveCreds)("payment records — firestore rules", () => {
