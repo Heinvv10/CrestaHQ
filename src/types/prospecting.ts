@@ -61,7 +61,7 @@ export interface ProspectReportShareDoc {
 export interface ContactProspecting {
   /** `prospectLists/{listId}` this contact was imported from. */
   listId?: string;
-  /** Google place id from the Outscraper row. */
+  /** Google Places id of the imported listing. */
   placeId?: string;
   website?: string;
   rating?: number;

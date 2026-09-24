@@ -333,13 +333,13 @@ export interface SubAccountDoc {
   socialPlannerEnabledByAgency?: boolean;
   /**
    * Agency-controlled gate for Get Leads (EXPERIMENTAL) — the local-business
-   * prospecting tool (Outscraper-powered Google Maps search + enrichment,
+   * prospecting tool (Google Places search + homepage email/social lookup,
    * results on a Mapbox map, select-and-import into Contacts). Only the
    * agency owner can flip it (PATCH /api/agency/sub-accounts/[id]/
    * feature-gates). When `false` (or undefined on legacy docs): the Get Leads
    * sidebar entry renders a "Locked by your agency" state and the
-   * search/poll/import routes 403. Gated because every search spends the
-   * agency's shared Outscraper credits. No tear-down on disable — results are
+   * search/import routes 403. Gated because every search spends the
+   * agency's shared Places search quota (a hard daily cap). No tear-down on disable — results are
    * ephemeral and imported contacts are ordinary contacts. Defaults to
    * `false` at creation (explicit allowlist). Read `=== true` so legacy docs
    * stay locked.

@@ -32,7 +32,7 @@ import type { ContactProspecting, SubAccountDoc } from "@/types";
  */
 
 interface ImportRow {
-  /** Google place id from the Outscraper row (null when it had none). */
+  /** Google Places id of the listing (null when it had none). */
   googlePlaceId?: string | null;
   name?: string;
   category?: string | null;

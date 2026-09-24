@@ -1112,9 +1112,9 @@ function ManageDialogBody({
               search Google Maps listings by business type + location, see them
               on a map with enriched contact details (phone, website, email),
               and import the good ones as contacts.{" "}
-              <strong>Experimental</strong> — every search spends your
-              agency&apos;s shared Outscraper credits (roughly $0.10–0.20 per
-              search), which is why you control who gets it. Disabling blocks
+              <strong>Experimental</strong> — every search counts against your
+              agency&apos;s shared daily Google search limit, which is why you
+              control who gets it. Disabling blocks
               new searches; nothing is torn down.
             </GateToggle>
           )}
