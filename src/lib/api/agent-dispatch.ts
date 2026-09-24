@@ -3,6 +3,8 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { ApiAuthContext } from "@/lib/api/auth";
 import { buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
+import { recordAgentWrite } from "@/lib/api/agent-audit";
+import type { HeldEnrolment } from "@/lib/workflows/agent-hold";
 import {
   availableOn,
   CapabilityUserError,
@@ -20,7 +22,13 @@ import {
 } from "@/lib/server/agent-proposals-encoding";
 
 export type AgentDispatchResult =
-  | { ok: true; resultText: string; ref?: { kind: string; id: string } }
+  | {
+      ok: true;
+      resultText: string;
+      ref?: { kind: string; id: string };
+      /** Workflow enrolments the write caused, held for approval (ruling Q). */
+      held?: Array<Pick<HeldEnrolment, "proposalId" | "workflowName">>;
+    }
   | {
       ok: true;
       /** Queued for a person to approve (HTTP 202). */
@@ -162,9 +170,13 @@ async function dispatch(
   }
 
   const result = await cap.execute(ctx, validated.args);
+  if (!cap.readonly) await recordAgentWrite(auth, cap.name, validated.args, result.ref);
   return {
     ok: true,
     resultText: result.resultText,
     ...(result.ref ? { ref: result.ref } : {}),
+    ...(result.held
+      ? { held: result.held.map(({ proposalId, workflowName }) => ({ proposalId, workflowName })) }
+      : {}),
   };
 }

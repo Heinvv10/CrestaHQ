@@ -2,7 +2,7 @@ import "server-only";
 
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str } from "./helpers";
+import { EMAIL_RE, str, agentActor } from "./helpers";
 
 export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -73,10 +73,12 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
         address: "",
         source: "ai-suite",
         tags: (args.tags as string[]) ?? [],
+        actor: agentActor(ctx, "create_contact"),
       });
       return {
         resultText: `Added contact “${args.name}”. Open Contacts to see the full profile.`,
         ref: { kind: "contact", id: res.id },
+        ...(res.held ? { held: res.held } : {}),
       };
     },
   },

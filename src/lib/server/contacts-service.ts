@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { mirrorContactAssignee } from "@/lib/server/conversation-mirror";
 import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
+import type { AgentActor, HeldEnrolment } from "@/lib/workflows/agent-hold";
 import {
   serializeContactForApi,
   type ContactApiObject,
@@ -72,6 +73,11 @@ export interface CreateContactInput {
    */
   apiKeyId?: string;
   /**
+   * An API agent made this write: its workflow enrolments are held as
+   * proposals (ruling Q), and the create AWAITS the trigger to return them.
+   */
+  actor?: AgentActor;
+  /**
    * The contact is being created from an inbound WhatsApp opt-out (a
    * never-seen number whose message is STOP). It is written already opted
    * out and announces nothing — no `contact.created` webhook, no workflow
@@ -101,6 +107,8 @@ export interface ContactWriteResult {
    * — see lib/api/enrolment-cap.
    */
   firedTrigger: boolean;
+  /** Agent writes only: the enrolments held for approval. */
+  held?: HeldEnrolment[];
 }
 
 /**
@@ -124,6 +132,10 @@ export async function createContactServerSide(
     return { id: ref.id, contact, firedTrigger: false };
   }
   const { contact, trigger } = announceContactCreated(input, ref.id, doc);
+  if (input.actor) {
+    const outcome = trigger ? await trigger : null;
+    return { id: ref.id, contact, firedTrigger: trigger !== null, held: outcome?.held ?? [] };
+  }
   return { id: ref.id, contact, firedTrigger: trigger !== null };
 }
 
@@ -166,7 +178,7 @@ export function buildContactDoc(input: CreateContactInput) {
   };
 }
 
-type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId">;
+type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId" | "actor">;
 
 /**
  * Everything a newly written contact announces: the `contact.created`
@@ -204,6 +216,7 @@ export function announceContactCreated(
           type: "contact.created",
           contactId: id,
           apiKeyId: input.apiKeyId,
+          ...(input.actor ? { hold: input.actor } : {}),
         })
       : null;
   return { contact, trigger };

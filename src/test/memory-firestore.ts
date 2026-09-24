@@ -150,7 +150,8 @@ export interface MemoryDocRef {
 }
 
 export interface MemoryQuery {
-  where: (field: string, op: WhereOp, value: unknown) => MemoryQuery;
+  /** A non-string field (FieldPath.documentId()) filters on the document id. */
+  where: (field: string | object, op: WhereOp, value: unknown) => MemoryQuery;
   /** A non-string field (FieldPath.documentId()) orders by document id. */
   orderBy: (field: string | object, dir?: "asc" | "desc") => MemoryQuery;
   limit: (n: number) => MemoryQuery;
@@ -241,7 +242,8 @@ export function createMemoryFirestore() {
     after: string | { id: string } | unknown[] | null = null,
   ): MemoryQuery {
     return {
-      where: (f, op, v) => query(inScope, [...filters, [f, op, v]], order, max, after),
+      where: (f, op, v) =>
+        query(inScope, [...filters, [typeof f === "string" ? f : ID_ORDER, op, v]], order, max, after),
       orderBy: (f, dir = "asc") =>
         query(inScope, filters, [...order, [typeof f === "string" ? f : ID_ORDER, dir]], max, after),
       limit: (n) => query(inScope, filters, order, n, after),
@@ -264,7 +266,9 @@ export function createMemoryFirestore() {
         let paths = [...store.keys()].filter((p) => {
           if (!inScope(p.slice(0, p.lastIndexOf("/")))) return false;
           const data = store.get(p)!;
-          return filters.every(([f, op, v]) => matches(data, f, op, v));
+          return filters.every(([f, op, v]) =>
+            f === ID_ORDER ? matches({ [ID_ORDER]: p.split("/").pop() }, f, op, v) : matches(data, f, op, v)
+          );
         });
         const normalize = (v: unknown): number | string =>
           v instanceof Date ? v.getTime() : isTs(v) ? v.toMillis() : (v as number | string);
