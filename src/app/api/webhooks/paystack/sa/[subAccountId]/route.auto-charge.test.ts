@@ -15,6 +15,8 @@ import {
 } from "@/test/auto-charge-harness";
 import { KEY, OTHER_KEY, SA, mem, refused, seedAttempt, seedInvoice, seedSub, stubPaystack } from "@/test/paystack-links-harness";
 import { fireQuoteTrigger } from "@/lib/quotes/lifecycle";
+import { sendQuoteServerSide } from "@/lib/server/quote-send-service";
+import { createTaskServerSide } from "@/lib/server/tasks-service";
 
 /**
  * Seam test: a REAL card cycle (`runOneSchedule`) charges, then the REAL
@@ -63,6 +65,8 @@ function deliver(key = KEY, reference = REF) {
 }
 
 const attempt = () => mem.read(`paymentAttempts/${REF}`)!;
+const tasksCreated = (title: RegExp) =>
+  vi.mocked(createTaskServerSide).mock.calls.filter(([input]) => title.test(String((input as { title?: string }).title))).length;
 const succeeded = () => fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_succeeded");
 const verifies = (calls: { path: string }[]) => calls.filter((c) => c.path.startsWith("/transaction/verify/"));
 
@@ -135,6 +139,24 @@ describe("a card cycle's charge recorded by the verified webhook", () => {
     await deliver();
     expect(raised()).toMatchObject({ status: "draft", autoCharge: { state: "needs_attention" } });
     expect(succeeded()).toHaveLength(0);
+  });
+});
+
+describe("a success settled before the decline answer was recorded", () => {
+  it("is not treated as a decline: no email, no decline counted, no charge_failed", async () => {
+    stubAutoCharge({
+      charge: () => {
+        // The success webhook wins the race while charge_authorization answers "failed".
+        mem.seed(`paymentAttempts/${REF}`, { ...mem.read(`paymentAttempts/${REF}`)!, state: "settled" });
+        return chargeAnswer("failed", "Declined");
+      },
+    });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(attempt()).toMatchObject({ state: "settled" });
+    expect((raised().autoCharge as { state?: string } | undefined)?.state).not.toBe("declined");
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
+    expect(mem.read(`paymentMandates/${MANDATE}`)).toMatchObject({ consecutiveDeclines: 1 });
   });
 });
 
@@ -218,7 +240,7 @@ describe("what the webhook refuses to record", () => {
     expect(raised().autoCharge).toMatchObject({
       reference: REF,
       state: "needs_attention",
-      reason: expect.stringMatching(/later reported this charge/),
+      reason: expect.stringMatching(/later reported this card charge/),
     });
     expect(raised().status).not.toBe("paid");
     expect(succeeded()).toHaveLength(0);
@@ -262,12 +284,36 @@ describe("a success after a recorded decline, on the invoice", () => {
     expect(seen[0]).toBe("declined");
   });
 
-  it("on an invoice marked paid by hand, says so rather than 'emailed'", async () => {
+  const reasonAfter = async (patch: Record<string, unknown>) => {
     const inv = await declinedCycle();
-    mem.seed(`quotes/${inv.id}`, { ...inv, status: "paid" });
+    mem.seed(`quotes/${inv.id}`, { ...inv, ...patch });
     await deliver();
-    expect(raised().autoCharge).toMatchObject({ state: "needs_attention", reason: expect.stringMatching(/marked paid by hand/) });
-    expect((raised().autoCharge as { reason: string }).reason).not.toMatch(/emailed/);
+    expect(raised().autoCharge).toMatchObject({ state: "needs_attention" });
+    return (raised().autoCharge as { reason: string }).reason;
+  };
+
+  it("unpaid: says to mark it paid by hand, not to send a pay link", async () => {
+    expect(await reasonAfter({})).toMatch(/mark the invoice paid by hand — do not send a pay link/);
+  });
+
+  it("marked paid by hand: a refund MAY be owed", async () => {
+    const reason = await reasonAfter({ status: "paid" });
+    expect(reason).toMatch(/marked paid by hand/);
+    expect(reason).toMatch(/may be owed/);
+  });
+
+  it("paid by the pay link: the customer paid twice and a refund IS owed", async () => {
+    const reason = await reasonAfter({ status: "paid", paidVia: { rail: "paystack_link", reference: "pl-x" } });
+    expect(reason).toMatch(/also paid by a payment link, Paystack reference pl-x/);
+    expect(reason).toMatch(/a refund is owed/);
+  });
+
+  it("one Task however the invoice changes between redeliveries", async () => {
+    const inv = await declinedCycle();
+    await deliver();
+    mem.seed(`quotes/${inv.id}`, { ...raised(), status: "paid", paidVia: { rail: "paystack_link", reference: "pl-x" } });
+    await deliver();
+    expect(tasksCreated(/Card charged after its decline/)).toBe(1);
   });
 });
 

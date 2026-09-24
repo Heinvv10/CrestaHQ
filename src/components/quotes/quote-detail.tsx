@@ -394,7 +394,8 @@ export function QuoteDetail({
 
       {!showRecheck &&
         isInvoice &&
-        // A declined charge on a paid invoice was paid another way: nothing to do.
+        // A declined charge on a paid invoice was paid another way: nothing to
+        // do. needs_attention stays even when paid: it may say a refund is owed.
         ((quote.autoCharge?.state === "declined" && quote.status !== "paid") ||
           quote.autoCharge?.state === "needs_attention") && (
           <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">

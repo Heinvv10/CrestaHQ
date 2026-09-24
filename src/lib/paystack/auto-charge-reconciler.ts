@@ -105,20 +105,25 @@ export async function reconcileAutoCharge(input: {
 
     if (!(await settleAttempt(reference))) {
       console.error(`${tag} succeeded at Paystack after it was recorded as declined`);
+      await alertOnce(
+        attempt,
+        `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as declined. ` +
+          `Check your Paystack dashboard: if the invoice is unpaid, mark it paid by hand; if it was paid another way, a refund may be owed.`,
+        (invoice) => `Card charged after its decline: invoice ${invoice} may be paid twice`,
+      );
       const quoteRef = getAdminDb().doc(`quotes/${attempt.invoiceId}`);
-      // Refused either by a decline (the invoice then emailed) or by a
-      // re-check that found the invoice already marked paid by hand.
-      const handPaid = ((await quoteRef.get()).data() as Quote | undefined)?.status === "paid";
-      const why = handPaid
-        ? `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as failed on an invoice marked paid by hand. ` +
-          `Check your Paystack dashboard: if the hand mark recorded a different payment, the customer paid twice and a refund may be owed.`
-        : `Paystack later reported this charge (reference ${reference}) as paid, after it was recorded as declined and the invoice was emailed. ` +
-          `Check your Paystack dashboard: mark the invoice paid by hand, or refund a second payment.`;
-      await alertOnce(attempt, why, (invoice) => `Card charged after its decline: invoice ${invoice} may be paid twice`);
       // The invoice still reads "declined" (and, unpaid, offers a pay link); say otherwise.
       await getAdminDb().runTransaction(async (t) => {
-        const live = ((await t.get(quoteRef)).data() as Quote | undefined)?.autoCharge;
+        const invoice = (await t.get(quoteRef)).data() as Quote | undefined;
+        const live = invoice?.autoCharge;
         if (live?.reference !== reference || live.state !== "declined") return;
+        const late = `Paystack later reported this card charge (reference ${reference}) as paid, after it was recorded as declined`;
+        const why =
+          invoice!.status !== "paid"
+            ? `${late}. Check your Paystack dashboard and mark the invoice paid by hand — do not send a pay link.`
+            : invoice!.paidVia
+              ? `${late}, and the invoice was also paid by ${describeVia(invoice!.paidVia)}. The customer paid twice: a refund is owed.`
+              : `${late}, and the invoice was marked paid by hand. If the hand mark recorded a different payment, the customer paid twice and a refund may be owed.`;
         t.update(quoteRef, { autoCharge: { ...live, state: "needs_attention", reason: why }, updatedAt: FieldValue.serverTimestamp() });
       });
       return { handled: false, detail: "attempt was refused" };

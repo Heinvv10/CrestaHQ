@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -128,14 +128,20 @@ export async function chargeCycle(
   // on this reference. A refused key says nothing about the card, so it is
   // not counted against the mandate — the operator has a connection to fix.
   const keyRefused = answer.kind === "key";
-  // Invoice first: a success landing between the two writes then finds the
-  // attempt still open and settles it, rather than finding it refused while
-  // the invoice does not yet read declined (the reconciler's needs_attention
-  // write keys on that).
-  await setInvoice({ ...base, state: "declined", reason: answer.reason });
-  await refuseAttempt(reference, `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`).catch(
-    (err: unknown) => console.error(`${tag} attempt not refused`, err),
-  );
+  const recorded = await recordDecline(
+    reference,
+    invoiceRef,
+    `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`,
+    { ...base, state: "declined", reason: answer.reason },
+  ).catch((err: unknown) => {
+    console.error(`${tag} decline not recorded`, err);
+    return "recorded" as const;
+  });
+  if (recorded === "settled") {
+    // A success webhook settled this charge first: it was paid after all.
+    console.error(`${tag} declined answer arrived after the charge was settled; not treated as a decline`);
+    return false;
+  }
   let chargeNote = `Card declined for invoice ${label} (${answer.reason}).`;
   let task: TaskText | undefined;
   if (keyRefused) {
@@ -268,12 +274,24 @@ async function charge(opened: Extract<Opened, { ok: true }>, reference: string):
   }
 }
 
-async function refuseAttempt(reference: string, reason: string): Promise<void> {
+/**
+ * Refuse the attempt (open → refused, never over a settle or a flag) and mark
+ * the invoice's charge declined in ONE transaction, so a success webhook sees
+ * both or neither. A settled attempt — the success won — is left alone.
+ */
+async function recordDecline(
+  reference: string,
+  invoiceRef: DocumentReference,
+  reason: string,
+  autoCharge: QuoteAutoCharge,
+): Promise<"recorded" | "settled"> {
   const db = getAdminDb();
   const ref = db.doc(`paymentAttempts/${reference}`);
-  await db.runTransaction(async (t) => {
-    // Only open → refused: never over a settle or a flag.
-    if ((await t.get(ref)).data()?.state !== "open") return;
-    t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
+  return db.runTransaction(async (t) => {
+    const state = (await t.get(ref)).data()?.state;
+    if (state === "settled") return "settled";
+    if (state === "open") t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
+    t.update(invoiceRef, { autoCharge, updatedAt: FieldValue.serverTimestamp() });
+    return "recorded";
   });
 }
