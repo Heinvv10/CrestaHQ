@@ -127,6 +127,8 @@ const ROW = {
   capability: "send_message",
   approval: "outbound",
   status: "pending",
+  // Tenant-wide target: member-readable. Scoped rows below carry a territory.
+  targetScoped: false,
 };
 const northRep: Caller = {
   uid: "rep_n",
@@ -134,8 +136,9 @@ const northRep: Caller = {
   agencyRole: "none",
   memberships: { sa_1: { status: "active", role: "collaborator", assignedTerritoryIds: ["north"] } },
 };
-const SOUTH_ROW = { ...ROW, contactId: "c_s", territoryId: "south" };
-const NORTH_ROW = { ...ROW, contactId: "c_n", territoryId: "north" };
+const SOUTH_ROW = { ...ROW, contactId: "c_s", territoryId: "south", targetScoped: true };
+const NORTH_ROW = { ...ROW, contactId: "c_n", territoryId: "north", targetScoped: true };
+const SOUTH_DEAL_ROW = { ...ROW, contactId: null, territoryId: "south", targetScoped: true };
 const SCOPING_ON = { "subAccounts/sa_1": { agencyId: "agency_a", territoryScopingEnabled: true } };
 const SCOPING_OFF = { "subAccounts/sa_1": { agencyId: "agency_a", territoryScopingEnabled: false } };
 const PRO = "agentProposals/p_1";
@@ -161,8 +164,10 @@ const CASES: [string, Case, Outcome][] = [
   ["scoped collaborator reads their territory's proposal", { caller: northRep, method: "get", path: PRO, before: NORTH_ROW, gets: SCOPING_ON }, "allow"],
   ["scoped collaborator cannot read another territory's proposal", { caller: northRep, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_ON }, "deny"],
   ["scoped collaborator cannot read another territory's history", { caller: northRep, method: "get", path: HIS, before: SOUTH_ROW, gets: { ...SCOPING_ON, [PRO]: SOUTH_ROW } }, "deny"],
-  ["scoped collaborator cannot read a proposal whose contact has no territory", { caller: northRep, method: "get", path: PRO, before: { ...ROW, contactId: "c_x", territoryId: null }, gets: SCOPING_ON }, "deny"],
-  ["scoped collaborator reads a proposal with no contact", { caller: northRep, method: "get", path: PRO, before: ROW, gets: SCOPING_ON }, "allow"],
+  ["scoped collaborator cannot read a proposal whose contact has no territory", { caller: northRep, method: "get", path: PRO, before: { ...ROW, contactId: "c_x", territoryId: null, targetScoped: true }, gets: SCOPING_ON }, "deny"],
+  ["scoped collaborator cannot read another territory's deal-target proposal (no contactId)", { caller: northRep, method: "get", path: PRO, before: SOUTH_DEAL_ROW, gets: SCOPING_ON }, "deny"],
+  ["a row without targetScoped is treated as scoped (fail closed)", { caller: northRep, method: "get", path: PRO, before: { agencyId: "agency_a", subAccountId: "sa_1", status: "pending" }, gets: SCOPING_ON }, "deny"],
+  ["scoped collaborator reads a tenant-wide proposal", { caller: northRep, method: "get", path: PRO, before: ROW, gets: SCOPING_ON }, "allow"],
   ["collaborator reads another territory's proposal when scoping is off", { caller: northRep, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_OFF }, "allow"],
   ["sub-account admin reads another territory's proposal", { caller: saAdmin, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_ON }, "allow"],
   ["scoped collaborator cannot write their territory's proposal", { caller: northRep, method: "update", path: PRO, before: NORTH_ROW, after: { ...NORTH_ROW, status: "executing" }, gets: SCOPING_ON }, "deny"],

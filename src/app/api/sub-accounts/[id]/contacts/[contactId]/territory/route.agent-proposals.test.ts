@@ -37,3 +37,18 @@ it("moves the contact's proposals to the new territory, and only those", async (
   }
   expect(mem.read("agentProposals/p_other")?.territoryId).toBe("south");
 });
+
+it("catches a proposal created after the contact commit, while the cascade runs", async () => {
+  const original = mem.db.runTransaction.bind(mem.db);
+  vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) => {
+    const result = await original(fn as Parameters<typeof original>[0]);
+    // Proposed right after the contact moved, having read the old territory.
+    mem.seed("agentProposals/p_mid", { agencyId: "ag1", subAccountId: "sa1", contactId: "c1", territoryId: "south", status: "pending" });
+    return result;
+  });
+  await PATCH(
+    new Request("https://crm.test", { method: "PATCH", body: JSON.stringify({ territoryId: "north" }) }),
+    { params: Promise.resolve({ id: "sa1", contactId: "c1" }) }
+  );
+  expect(mem.read("agentProposals/p_mid")?.territoryId).toBe("north");
+});

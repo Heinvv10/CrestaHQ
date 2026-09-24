@@ -105,9 +105,17 @@ export interface AiSuiteCapability {
   /** Agent-surface-only narrowing of the raw args, applied before validate
    *  (e.g. dropping fields an agent may not set). */
   agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;
-  /** The contact an approval capability targets, for the approver's
-   *  territory gate. Default: `args.contactId` when it is a string. */
-  approvalContactId?: (args: Record<string, unknown>) => string | null;
+  /**
+   * REQUIRED when `approval` is set: the record the action targets, for the
+   * read rule and the approver's territory gate. Resolved at propose time
+   * under the neutral preview ctx. `scoped: true` gates on `territoryId`
+   * (null denies territory-scoped collaborators, as for contacts);
+   * `scoped: false` only for a genuinely tenant-wide target.
+   */
+  approvalTarget?: (
+    ctx: AiSuiteActionContext,
+    args: Record<string, unknown>
+  ) => Promise<{ contactId: string | null; territoryId: string | null; scoped: boolean }>;
   /**
    * Label/value rows the approvals UI renders verbatim for a proposal, plus
    * optional `pinned` values (e.g. the resolved recipient) that execute

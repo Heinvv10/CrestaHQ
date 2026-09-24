@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CapabilityUserError } from "@/lib/ai-suite/capabilities";
 import {
-  beforeNextTransaction, decide, execute, mem, outbound, propose, proposeId, revoke, row,
+  auth, beforeNextTransaction, decide, execute, mem, outbound, propose, proposeId, revoke, row,
   setupAgentProposalTests,
 } from "@/test/agent-proposals-harness";
 
@@ -56,6 +56,38 @@ describe("R1: row generations", () => {
     expect(row(id).status).toBe("pending");
     expect((await post(id, { decision: "reject" })).status).toBe(200);
     expect(row(id).status).toBe("rejected");
+  });
+});
+
+describe("H1: one action, one row — across keys", () => {
+  const key2 = { ...auth, keyId: "key2", keyPrefix: "efgh5678" };
+
+  it("key2 proposing an action key1 left unsettled → outcome_unknown; execute stays 1", async () => {
+    const id = await proposeId();
+    await decide(id, "approve");
+    expect(execute).toHaveBeenCalledTimes(1);
+    mem.seed(`agentProposals/${id}`, { ...row(id), status: "unsettled" });
+    expect(await propose({ body: "hi" }, key2)).toMatchObject({ ok: false, code: "outcome_unknown" });
+    expect(row(id).status).toBe("unsettled");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("a pending row from key1 re-proposed by key2 is the same row, still stamped key1", async () => {
+    const id = await proposeId();
+    expect(await proposeId({ body: "hi" }, key2)).toBe(id);
+    expect(row(id)).toMatchObject({ keyId: "key1", keyPrefix: "abcd1234", status: "pending" });
+    expect(mem.list("agentProposals")).toHaveLength(1);
+  });
+
+  it("key1 revoked → its pending row is rejected; key2's re-propose is a fresh generation stamped key2 that keeps priorAttemptSent", async () => {
+    const id = await proposeId();
+    mem.seed(`agentProposals/${id}`, { ...row(id), priorAttemptSent: { claimId: "c0" } });
+    await revoke("key1");
+    expect(row(id)).toMatchObject({ status: "rejected", reason: "key_revoked" });
+    expect(await proposeId({ body: "hi" }, key2)).toBe(id);
+    expect(row(id)).toMatchObject({ status: "pending", keyId: "key2", keyPrefix: "efgh5678", priorAttemptSent: { claimId: "c0" } });
+    expect((await decide(id, "approve")).status).toBe(409);
+    expect(execute).not.toHaveBeenCalled();
   });
 });
 

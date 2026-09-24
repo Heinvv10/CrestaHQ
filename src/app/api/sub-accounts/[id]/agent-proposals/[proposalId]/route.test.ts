@@ -137,7 +137,7 @@ describe("key revoke (through DELETE /api-keys/[keyId])", () => {
     const pending = await proposeId({ body: "a" });
     const claimed = await proposeId({ body: "b" });
     await claim(claimed, "u_other");
-    const otherKey = await proposeId({ body: "a" }, { ...auth, keyId: "key2" });
+    const otherKey = await proposeId({ body: "c" }, { ...auth, keyId: "key2" });
     expect((await revoke()).status).toBe(200);
     expect(row(pending)).toMatchObject({ status: "rejected", reason: "key_revoked" });
     expect(row(claimed).status).toBe("executing");

@@ -132,8 +132,11 @@ async function dispatch(
     // The approver sees `preview` verbatim; a queued action without one
     // could not be judged, so it is a registry bug, not a proposal.
     if (!cap.preview) throw new Error(`${cap.name} has approval but no preview`);
+    if (!cap.approvalTarget) throw new Error(`${cap.name} has approval but no approvalTarget`);
+    const previewCtx = buildPreviewContext(auth.agencyId, auth.subAccountId);
+    const target = await cap.approvalTarget(previewCtx, validated.args);
     const reviewed = normalizePreview(
-      await cap.preview(buildPreviewContext(auth.agencyId, auth.subAccountId), validated.args)
+      await cap.preview(previewCtx, validated.args)
     );
     assertPinnedWhenOutbound(cap.name, cap.approval, reviewed);
     const created = await createProposal({
@@ -147,11 +150,7 @@ async function dispatch(
       summary: cap.summarize(validated.args),
       preview: reviewed.rows,
       pinned: reviewed.pinned,
-      contactId: cap.approvalContactId
-        ? cap.approvalContactId(validated.args)
-        : typeof validated.args.contactId === "string"
-          ? validated.args.contactId
-          : null,
+      target,
     });
     if (!created.ok) {
       return created.code === "key_revoked"

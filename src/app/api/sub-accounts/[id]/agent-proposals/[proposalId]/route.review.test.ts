@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { millis } from "@/lib/server/agent-proposals-encoding";
 import {
-  beforeNextTransaction, caller, claim, decide, execute, history, later, mem, outbound, proposeId,
+  beforeNextTransaction, caller, claim, contactTarget, decide, execute, history, later, mem, outbound, proposeId,
   revoke, row, setupAgentProposalTests, sweep,
 } from "@/test/agent-proposals-harness";
 
@@ -21,8 +21,8 @@ setupAgentProposalTests();
 
 describe("general review — PR #259", () => {
   it("M2 + L4: a scoped collaborator cannot approve or reject a proposal targeting another territory's contact", async () => {
-    // The fixture names its target `recipientId`; approvalContactId says so.
-    outbound.approvalContactId = (args) => String(args.recipientId);
+    // The fixture names its target `recipientId`; approvalTarget says so.
+    outbound.approvalTarget = contactTarget("recipientId");
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
     mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
     mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });
@@ -98,7 +98,7 @@ describe("general review — PR #259", () => {
   });
 
   it("a contact with no territory is outside every scoped collaborator's territories (matches the rules)", async () => {
-    outbound.approvalContactId = (args) => String(args.recipientId);
+    outbound.approvalTarget = contactTarget("recipientId");
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
     mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
     mem.seed("contacts/c_untagged", { agencyId: "ag1", subAccountId: "sa1" });
@@ -114,7 +114,7 @@ describe("general review — PR #259", () => {
     const { CapabilityUserError } = await import("@/lib/ai-suite/capabilities");
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
     mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south", phone: "+27 1" });
-    outbound.approvalContactId = (args) => String(args.recipientId);
+    outbound.approvalTarget = contactTarget("recipientId");
     outbound.preview = async (ctx, args) => {
       const contact = mem.read(`contacts/${String(args.recipientId)}`);
       if (!canSeeTerritory(await territoryScopeFor(ctx), contact?.territoryId)) {
@@ -127,12 +127,37 @@ describe("general review — PR #259", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("F10: the row carries its contact's territoryId (null without one), for firestore.rules", async () => {
-    outbound.approvalContactId = (args) => (typeof args.recipientId === "string" ? args.recipientId : null);
+  it("F10/H4: the row stores what approvalTarget resolved (under the neutral preview ctx)", async () => {
+    const seen: string[] = [];
+    outbound.approvalTarget = async (ctx, args) => {
+      seen.push(`${ctx.uid}|${ctx.subAccountRole}`);
+      return contactTarget("recipientId")(ctx, args);
+    };
     mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });
     mem.seed("contacts/c_none", { agencyId: "ag1", subAccountId: "sa1" });
-    expect(row(await proposeId({ body: "a", recipientId: "c_south" }))).toMatchObject({ contactId: "c_south", territoryId: "south" });
-    expect(row(await proposeId({ body: "b", recipientId: "c_none" }))).toMatchObject({ contactId: "c_none", territoryId: null });
-    expect(row(await proposeId({ body: "c" }))).toMatchObject({ contactId: null, territoryId: null });
+    expect(row(await proposeId({ body: "a", recipientId: "c_south" }))).toMatchObject({ contactId: "c_south", territoryId: "south", targetScoped: true });
+    expect(row(await proposeId({ body: "b", recipientId: "c_none" }))).toMatchObject({ contactId: "c_none", territoryId: null, targetScoped: true });
+    expect(seen).toEqual(["preview|admin", "preview|admin"]);
+  });
+
+  it("H4: a proposal targeting a deal (no contact) is scoped by the deal's territory — list excludes it, decide 403", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
+    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
+    mem.seed("deals/d_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });
+    outbound.approvalTarget = async (_ctx, args) => ({
+      contactId: null,
+      territoryId: (mem.read(`deals/${String(args.dealId)}`)?.territoryId as string) ?? null,
+      scoped: true,
+    });
+    const id = await proposeId({ body: "x", dealId: "d_south" });
+    expect(row(id)).toMatchObject({ contactId: null, territoryId: "south", targetScoped: true });
+    caller.role = "collaborator";
+    const { GET } = await import("../route");
+    const listed = (await (await GET(new Request("http://localhost/x"), { params: Promise.resolve({ id: "sa1" }) })).json()) as {
+      proposals: { id: string }[];
+    };
+    expect(listed.proposals.map((p) => p.id)).not.toContain(id);
+    expect((await decide(id, "approve")).status).toBe(403);
+    expect(execute).not.toHaveBeenCalled();
   });
 });

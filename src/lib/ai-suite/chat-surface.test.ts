@@ -159,6 +159,14 @@ describe("registry invariants", () => {
     expect(missing).toEqual([]);
   });
 
+  // Vacuous today (no shipped approval capability yet): each one must say
+  // what it targets, or its row could not be territory-scoped.
+  it("every approval capability declares an approvalTarget", () => {
+    expect(
+      AI_SUITE_CAPABILITIES.filter((c) => c.approval && !c.approvalTarget).map((c) => c.name)
+    ).toEqual([]);
+  });
+
   // Vacuous today: no shipped capability sets `approval` yet (PR8+ add them).
   // Each one must then add sample args here; a missing entry fails the test.
   const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {};

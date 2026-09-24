@@ -13,6 +13,7 @@ const { dispatchAgentTool } = await import("./agent-dispatch");
 const { CapabilityUserError } = await import("@/lib/ai-suite/capabilities");
 
 setupDispatchTests();
+const tenantWide = async () => ({ contactId: null, territoryId: null, scoped: false });
 
 describe("approval capabilities", () => {
   it("an approval capability → a pending proposal, execute never called", async () => {
@@ -21,6 +22,7 @@ describe("approval capabilities", () => {
       name: "__fixture_outbound",
       approval: "outbound",
       preview: async () => ({ rows: preview, pinned: { to: "a@x.io" } }),
+      approvalTarget: tenantWide,
     });
     const r = await dispatchAgentTool(auth, "__fixture_outbound", { body: "hi" });
     expect(r).toMatchObject({
@@ -50,6 +52,7 @@ describe("approval capabilities", () => {
       name: "__fixture_unpinned",
       approval: "outbound",
       preview: async () => [{ label: "To", value: "Ann" }],
+      approvalTarget: tenantWide,
     });
     expect(await dispatchAgentTool(auth, "__fixture_unpinned", {})).toMatchObject({ code: "internal_error", httpStatus: 500 });
     expect(logged).toHaveBeenCalledWith(
@@ -62,13 +65,35 @@ describe("approval capabilities", () => {
   });
 
   it("a non-outbound approval (hard_delete) needs no pinned values", async () => {
-    await inject({ name: "__fixture_delete", approval: "hard_delete", preview: async () => [{ label: "Delete", value: "Ann" }] });
+    await inject({
+      name: "__fixture_delete",
+      approval: "hard_delete",
+      preview: async () => [{ label: "Delete", value: "Ann" }],
+      approvalTarget: tenantWide,
+    });
     expect(await dispatchAgentTool(auth, "__fixture_delete", {})).toMatchObject({ ok: true, proposal: { status: "pending" } });
+  });
+
+  it("H4: an approval capability without an approvalTarget → internal_error 500, logged, nothing queued", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const cap = await inject({
+      name: "__fixture_no_target",
+      approval: "hard_delete",
+      preview: async () => [{ label: "Delete", value: "Ann" }],
+    });
+    expect(await dispatchAgentTool(auth, "__fixture_no_target", {})).toMatchObject({ code: "internal_error", httpStatus: 500 });
+    expect(logged).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ message: "__fixture_no_target has approval but no approvalTarget" })
+    );
+    expect(mem.list("agentProposals")).toEqual([]);
+    expect(cap.execute).not.toHaveBeenCalled();
+    logged.mockRestore();
   });
 
   it("an approval capability without a preview → internal_error 500, nothing queued", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const cap = await inject({ name: "__fixture_no_preview", approval: "outbound" });
+    const cap = await inject({ name: "__fixture_no_preview", approval: "outbound", approvalTarget: tenantWide });
     expect(await dispatchAgentTool(auth, "__fixture_no_preview", {})).toMatchObject({
       code: "internal_error",
       httpStatus: 500,

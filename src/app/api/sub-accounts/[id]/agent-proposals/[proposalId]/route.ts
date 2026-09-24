@@ -97,12 +97,13 @@ export async function POST(
     subAccountId,
     subAccountRole: access.subAccountRole,
   };
-  if (typeof proposal.contactId === "string") {
-    const contact = await db.doc(`contacts/${proposal.contactId}`).get();
+  // The same gate as firestore.rules' canSeeProposal: a scoped target (the
+  // default when absent) needs the row's territoryId in the caller's scope.
+  if (proposal.targetScoped !== false) {
     const scope = await territoryScopeFor(actionCtx);
-    if (!canSeeTerritory(scope, contact.data()?.territoryId)) {
+    if (!canSeeTerritory(scope, proposal.territoryId)) {
       return NextResponse.json(
-        { error: "That contact isn't in one of your assigned territories." },
+        { error: "That record isn't in one of your assigned territories." },
         { status: 403 },
       );
     }

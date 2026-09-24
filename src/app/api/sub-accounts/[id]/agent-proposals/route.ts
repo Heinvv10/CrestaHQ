@@ -17,9 +17,11 @@ const STATUSES = new Set([
 
 /**
  * List a sub-account's agent proposals, newest first (optionally one
- * `?status=`), for any member — minus rows whose contact is outside a
- * territory-scoped caller's territories (a preview carries the contact's name
- * and the message). Rows with no contact stay visible.
+ * `?status=`), for any member — minus scoped rows whose `territoryId` is
+ * outside a territory-scoped caller's territories (a preview carries the
+ * target's name and the message), exactly as firestore.rules' canSeeProposal.
+ * The supported read path for the approvals UI: rules are not filters, so a
+ * client list query is refused for scoped collaborators.
  */
 export async function GET(
   request: Request,
@@ -39,25 +41,11 @@ export async function GET(
   if (status) q = q.where("status", "==", status);
   const snap = await q.orderBy("createdAt", "desc").limit(100).get();
   const scope = await territoryScopeFor({ ...access, subAccountId });
-  const contactIds = [
-    ...new Set(
-      snap.docs
-        .map((d) => d.data().contactId)
-        .filter((id): id is string => typeof id === "string"),
-    ),
-  ];
-  const db = getAdminDb();
-  const contacts = contactIds.length
-    ? await db.getAll(...contactIds.map((id) => db.doc(`contacts/${id}`)))
-    : [];
-  const territoryOf = new Map(contacts.map((c) => [c.id, c.data()?.territoryId]));
-  const visible = snap.docs.filter((d) => {
-    const contactId = d.data().contactId;
-    return (
-      typeof contactId !== "string" ||
-      canSeeTerritory(scope, territoryOf.get(contactId))
-    );
-  });
+  const visible = snap.docs.filter(
+    (d) =>
+      d.data().targetScoped === false ||
+      canSeeTerritory(scope, d.data().territoryId),
+  );
   return NextResponse.json({
     proposals: visible.map((d) => ({ id: d.id, ...d.data() })),
   });

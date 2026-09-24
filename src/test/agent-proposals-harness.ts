@@ -59,6 +59,19 @@ const previewBody: NonNullable<AiSuiteCapability["preview"]> = async (_ctx, args
 });
 const sent = () => ({ resultText: "sent", ref: { kind: "message", id: "m1" } });
 export const execute = vi.fn(async (..._a: Parameters<AiSuiteCapability["execute"]>) => sent());
+// The fixture's message is tenant-wide unless a test targets a record.
+const tenantWide: NonNullable<AiSuiteCapability["approvalTarget"]> = async () => ({
+  contactId: null,
+  territoryId: null,
+  scoped: false,
+});
+/** approvalTarget for a fixture that targets a contact by `args[argName]`. */
+export const contactTarget =
+  (argName: string): NonNullable<AiSuiteCapability["approvalTarget"]> =>
+  async (_ctx, args) => {
+    const id = String(args[argName]);
+    return { contactId: id, territoryId: (mem.read(`contacts/${id}`)?.territoryId as string) ?? null, scoped: true };
+  };
 export const outbound: AiSuiteCapability = {
   name: "__test_outbound",
   level: "sub-account",
@@ -70,6 +83,7 @@ export const outbound: AiSuiteCapability = {
   validate: validateAny,
   summarize: (args) => `Send “${args.body}”`,
   preview: previewBody,
+  approvalTarget: tenantWide,
   execute,
 };
 
@@ -174,8 +188,8 @@ export function setupAgentProposalTests() {
       approval: "outbound",
       validate: validateAny,
       preview: previewBody,
+      approvalTarget: tenantWide,
     });
-    delete outbound.approvalContactId;
     const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
     AI_SUITE_CAPABILITIES.push(outbound);
   });

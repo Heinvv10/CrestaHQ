@@ -54,8 +54,8 @@ export interface ProposalInput {
   pinned: Record<string, unknown> | null;
   /** workflow_enrolment rows only: one row per matched workflow. */
   workflowId?: string;
-  /** The contact the action targets, for the approver's territory gate. */
-  contactId: string | null;
+  /** What the action targets (AiSuiteCapability.approvalTarget). */
+  target: { contactId: string | null; territoryId: string | null; scoped: boolean };
 }
 
 export type CreateProposalResult =
@@ -75,10 +75,12 @@ export type TransitionResult = "ok" | "conflict" | "stale";
 /** A fresh per-generation nonce: a decision must name the generation it saw. */
 const newRev = () => randomBytes(12).toString("hex");
 
+/** The action's identity, NOT the key's: the same action proposed by two
+ *  keys is one row, so unsettled / executing / priorAttemptSent hold across
+ *  keys. The row's keyId is the key that created its current generation. */
 export function proposalId(input: ProposalInput): string {
   const key = [
     input.subAccountId,
-    input.keyId,
     input.capability,
     canonical(input.args),
     input.workflowId ?? "",
@@ -95,8 +97,9 @@ const historyRef = (id: string) => proposalRef(id).collection("history").doc();
  * re-proposing cannot keep bumping `rev` under an approver), an `unsettled`
  * row refuses (its action may already have happened), and a terminal row
  * moves to `history` so the id is re-used as a fresh `pending` generation
- * with a new `rev`. A revoked or missing key queues nothing. The row stores
- * its contact's `territoryId` so firestore.rules can scope reads.
+ * with a new `rev`, stamped with the proposing key. A revoked or missing key
+ * queues nothing. The row stores its target (`contactId`, `territoryId`,
+ * `targetScoped`) so firestore.rules and the routes can scope reads.
  */
 export async function createProposal(input: ProposalInput): Promise<CreateProposalResult> {
   const id = proposalId(input);
@@ -104,12 +107,7 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
   const db = getAdminDb();
   const keyRef = db.doc(`subAccounts/${input.subAccountId}/apiKeys/${input.keyId}`);
   return db.runTransaction(async (tx) => {
-    const contactRef = input.contactId ? db.doc(`contacts/${input.contactId}`) : null;
-    const [snap, keySnap, contactSnap] = await Promise.all([
-      tx.get(ref),
-      tx.get(keyRef),
-      contactRef ? tx.get(contactRef) : null,
-    ]);
+    const [snap, keySnap] = await Promise.all([tx.get(ref), tx.get(keyRef)]);
     if (!keySnap.exists || keySnap.data()?.revokedAt) {
       return { ok: false, code: "key_revoked", id };
     }
@@ -138,8 +136,9 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       summary: input.summary,
       preview: input.preview,
       pinned: input.pinned,
-      contactId: input.contactId,
-      territoryId: contactSnap?.data()?.territoryId ?? null,
+      contactId: input.target.contactId,
+      territoryId: input.target.territoryId,
+      targetScoped: input.target.scoped,
       // Sticky: once an attempt is known to have sent, it never clears.
       priorAttemptSent: cur?.priorAttemptSent ?? null,
       workflowId: input.workflowId ?? null,

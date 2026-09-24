@@ -76,7 +76,7 @@ export async function PATCH(
 
   // Gather the account's child records across the collections that carry a
   // denormalised territoryId.
-  const childCollections = ["deals", "quotes", "tasks", "events", "agentProposals"] as const;
+  const childCollections = ["deals", "quotes", "tasks", "events"] as const;
   const childSnaps = await Promise.all(
     childCollections.map((col) =>
       db
@@ -99,7 +99,6 @@ export async function PATCH(
     quotes: childSnaps[1].size,
     tasks: childSnaps[2].size,
     events: childSnaps[3].size,
-    agentProposals: childSnaps[4].size,
   };
 
   const stamp = FieldValue.serverTimestamp();
@@ -130,6 +129,17 @@ export async function PATCH(
     return conversations.docs.length;
   });
   counts.conversations = movedConversations;
+  // Agent proposals are read AFTER the contact commit, so one proposed in
+  // between (it read the old territory) is still caught. Only rows whose
+  // target is this contact are re-synced; proposals targeting a deal or task
+  // by its own territory are not re-synced in v1.
+  const proposals = await db
+    .collection("agentProposals")
+    .where("subAccountId", "==", subAccountId)
+    .where("contactId", "==", contactId)
+    .get();
+  for (const d of proposals.docs) refs.push(d.ref);
+  counts.agentProposals = proposals.size;
   for (let i = 0; i < refs.length; i += 500) {
     const batch = db.batch();
     for (const ref of refs.slice(i, i + 500)) {
