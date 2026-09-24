@@ -220,7 +220,7 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
           res.stage.label
         }. You'll see it on the Pipeline board.`,
         ref: { kind: "deal", id: res.id },
-        ...(res.held ? { held: res.held } : {}),
+        ...(res.held ? { held: res.held, holdFailures: res.holdFailures ?? [] } : {}),
       };
     },
   },

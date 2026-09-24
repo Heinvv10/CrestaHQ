@@ -54,6 +54,16 @@ describe("agent.write audit rows", () => {
   });
 });
 
+describe("the identifier audit rule", () => {
+  it("keeps a code identifier and redacts anything else", async () => {
+    const { auditValue } = await import("@/lib/audit/record");
+    expect(auditValue("agent.write", "capability", "create_contact")).toBe("create_contact");
+    expect(auditValue("agent.write", "capability", "Ann Smith <ann@x.io>")).toBe("[redacted]");
+    expect(auditValue("agent.write", "keyPrefix", "abc-12/../x")).toBe("[redacted]");
+    expect(auditValue("agent.write", "keyPrefix", 42)).toBe("[redacted]");
+  });
+});
+
 describe("request-log body redaction for read tools", () => {
   it("a read tool's response is not kept; a write's is", () => {
     expect(toolLogResponseBody({ readonly: true }, { contacts: ["Ann"] })).toBeNull();

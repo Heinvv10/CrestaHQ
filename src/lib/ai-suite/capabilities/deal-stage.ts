@@ -108,7 +108,7 @@ export const DEAL_STAGE_CAPABILITIES: AiSuiteCapability[] = [
       return {
         resultText: `Moved “${title}” to ${moved.stage.label}.`,
         ref: { kind: "deal", id: snap.id },
-        ...(moved.held ? { held: moved.held } : {}),
+        ...(moved.held ? { held: moved.held, holdFailures: moved.holdFailures ?? [] } : {}),
       };
     },
   },

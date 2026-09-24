@@ -8,8 +8,10 @@ import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harne
  * every trigger they fire — while every outbound seam is spied: Twilio,
  * SMTP, Resend, Meta, WhatsApp Cloud, global fetch, QStash publish, the
  * review-request sender, and the workflow run writer (no workflowRuns doc).
- * Every one must stay at 0 calls. On the agent path the services AWAIT their
- * triggers, so the dispatch promise resolving is the settle point.
+ * Every one must stay at 0 calls. The real fireWorkflowTrigger is wrapped so
+ * every trigger a row fires — awaited or leaked fire-and-forget — is awaited
+ * (plus a macrotask flush) before that row asserts, so a leak is caught by
+ * its own row even when it runs alone.
  *
  * Arg fixtures come from a table keyed by capability name: a new
  * agent-surfaced capability without an entry fails the first test.
@@ -45,8 +47,21 @@ vi.mock("@/lib/automations/qstash", async (orig) => ({
   qstashIsConfigured: () => true,
 }));
 vi.mock("@/lib/reviews/request", (orig) => partial(["maybeSendReviewRequest"])(orig));
+const fired = vi.hoisted(() => [] as Promise<unknown>[]);
+vi.mock("@/lib/workflows/engine", async (orig) => {
+  const real = (await orig()) as typeof import("@/lib/workflows/engine");
+  return {
+    ...real,
+    fireWorkflowTrigger: (input: Parameters<typeof real.fireWorkflowTrigger>[0]) => {
+      const p = real.fireWorkflowTrigger(input);
+      fired.push(p);
+      return p;
+    },
+  };
+});
 
 const { dispatchAgentTool } = await import("./agent-dispatch");
+const { TRIGGER_LABELS } = await import("@/lib/workflows/catalog");
 const { AI_SUITE_CAPABILITIES, availableOn } = await import("@/lib/ai-suite/capabilities");
 
 setupAgentProposalTests();
@@ -70,11 +85,14 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },
 };
-const TRIGGERS = ["contact.created", "deal.created", "pipeline.stage.changed", "deal.won", "deal.lost"];
+// An ACTIVE workflow for EVERY trigger type (TRIGGER_LABELS is exhaustive over
+// WorkflowTriggerType), with no narrowing config, so any trigger matches.
+const TRIGGERS = Object.keys(TRIGGER_LABELS);
 const agentCaps = () =>
   AI_SUITE_CAPABILITIES.filter((c) => c.level === "sub-account" && availableOn(c, "agent"));
 
 beforeEach(() => {
+  fired.length = 0;
   for (const s of Object.values(spies)) s.mockClear();
   mem.seed("contacts/c1", {
     subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Ann", email: "ann@x.io",
@@ -85,8 +103,8 @@ beforeEach(() => {
     contactId: "c1", value: 1, currency: "ZAR", territoryId: "global",
   });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
-  TRIGGERS.forEach((type, i) =>
-    mem.seed(`workflows/wf${i}`, {
+  TRIGGERS.forEach((type) =>
+    mem.seed(`workflows/wf_${type}`, {
       name: `Sends on ${type}`, subAccountId: "sa1", agencyId: "ag1", status: "active", startNodeId: "n1",
       trigger: { type, filters: { all: [] } },
       nodes: { n1: { id: "n1", type: "send_sms", config: { body: "Hi {{contact.firstName}}" }, next: null } },
@@ -94,7 +112,17 @@ beforeEach(() => {
   );
 });
 
-function expectNothingSent() {
+/** Every trigger fired so far (awaited or leaked) has settled. */
+async function drain() {
+  for (let seen = -1; seen !== fired.length; ) {
+    seen = fired.length;
+    await Promise.allSettled(fired);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+
+async function expectNothingSent() {
+  await drain();
   for (const [name, s] of Object.entries(spies)) expect(s, name).not.toHaveBeenCalled();
   expect(mem.list("workflowRuns")).toEqual([]);
 }
@@ -116,7 +144,7 @@ describe("an agent can never send on its own", () => {
       expect(r).toMatchObject({ ok: true });
     }
     expect(fetchSpy).not.toHaveBeenCalled();
-    expectNothingSent();
+    await expectNothingSent();
   });
 });
 
@@ -130,6 +158,17 @@ describe("MUTATION PROOF #2: every awaited trigger site returns its held enrolme
   ])("%s", async (_label, name, trigger) => {
     const r = (await dispatchAgentTool(auth, name, FIXTURE_ARGS[name])) as { held?: Array<{ workflowName: string }> };
     expect(r.held).toEqual([{ proposalId: expect.any(String), workflowName: `Sends on ${trigger}` }]);
-    expectNothingSent();
+    await expectNothingSent();
+  });
+
+  it.each(["won", "lost"])("move_deal_stage to %s holds BOTH the stage-change and the matching deal.won/lost trigger", async (stage) => {
+    const r = (await dispatchAgentTool(auth, "move_deal_stage", { dealId: "d1", dealTitle: "Fibre", stage })) as {
+      held?: Array<{ workflowName: string }>;
+    };
+    expect(r.held?.map((h) => h.workflowName).sort()).toEqual(
+      [`Sends on deal.${stage}`, "Sends on pipeline.stage.changed"].sort()
+    );
+    expect(mem.list("agentProposals")).toHaveLength(2);
+    await expectNothingSent();
   });
 });

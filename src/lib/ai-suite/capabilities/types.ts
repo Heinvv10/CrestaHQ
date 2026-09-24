@@ -2,7 +2,7 @@ import "server-only";
 
 import type { AiSuiteLevel } from "@/types/ai-suite";
 import type { ApiAuthContext } from "@/lib/api/auth";
-import type { HeldEnrolment } from "@/lib/workflows/agent-hold";
+import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
 
 /**
  * An execute-time failure whose message is safe (and useful) to show the
@@ -71,6 +71,8 @@ export interface ExecuteResult {
   navigate?: { href: string; label: string };
   /** Agent surface only: workflow enrolments this write held for approval. */
   held?: HeldEnrolment[];
+  /** Agent surface only: matched workflows neither held nor run. */
+  holdFailures?: HoldFailure[];
 }
 
 export type ValidateResult =

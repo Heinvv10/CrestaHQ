@@ -121,4 +121,58 @@ describe("held-enrolment: agent create_contact with a matching ACTIVE workflow",
     expect(proposals()).toEqual([]);
     expect(runs()).toEqual([]);
   });
+
+});
+
+describe("hold failures are reported to the agent, and fail closed", () => {
+  it("hold_refused: the queue refuses the proposal (key revoked meanwhile) → holdFailures, no run, no proposal", async () => {
+    mem.seed("subAccounts/sa1/apiKeys/key1", { ...mem.read("subAccounts/sa1/apiKeys/key1"), revokedAt: new Date() });
+    const r = await createContact();
+    expect(r).toMatchObject({ ok: true, held: [], holdFailures: [{ workflowId: "wf1", reason: "hold_refused" }] });
+    expect(mem.list("contacts")).toHaveLength(1);
+    expect(runs()).toEqual([]);
+    expect(proposals()).toEqual([]);
+  });
+
+  it("hold_error: the proposal write throws → holdFailures, no run", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(mem.db, "runTransaction").mockRejectedValueOnce(new Error("firestore unavailable"));
+    const r = await createContact();
+    expect(r).toMatchObject({ ok: true, held: [], holdFailures: [{ workflowId: "wf1", reason: "hold_error" }] });
+    expect(runs()).toEqual([]);
+  });
+
+  it("reentry_check_failed: the re-entry probe throws → holdFailures, no run", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), reentry: "unless_active" });
+    const collection = mem.db.collection.bind(mem.db);
+    vi.spyOn(mem.db, "collection").mockImplementation((name: string) => {
+      if (name === "workflowRuns") throw new Error("index missing");
+      return collection(name);
+    });
+    const r = await createContact();
+    expect(r).toMatchObject({ ok: true, held: [], holdFailures: [{ workflowId: "wf1", reason: "reentry_check_failed" }] });
+    expect(runs()).toEqual([]);
+    expect(proposals()).toEqual([]);
+  });
+
+  it("deals report hold failures too (move_deal_stage with the key revoked)", async () => {
+    mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), trigger: { type: "pipeline.stage.changed", filters: { all: [] } } });
+    mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Ben", tags: [], customFields: {}, territoryId: "global" });
+    mem.seed("deals/d1", { subAccountId: "sa1", agencyId: "ag1", mode: "live", title: "Fibre", stageId: "new", contactId: "c1", value: 1, currency: "ZAR" });
+    mem.seed("subAccounts/sa1/apiKeys/key1", { ...mem.read("subAccounts/sa1/apiKeys/key1"), revokedAt: new Date() });
+    const r = await dispatchAgentTool(auth, "move_deal_stage", { dealId: "d1", dealTitle: "Fibre", stage: "contacted" });
+    expect(r).toMatchObject({ ok: true, held: [], holdFailures: [{ workflowId: "wf1", reason: "hold_refused" }] });
+    expect(runs()).toEqual([]);
+  });
+
+  it("a whole-trigger failure is reported as trigger_error", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const collection = mem.db.collection.bind(mem.db);
+    vi.spyOn(mem.db, "collection").mockImplementation((name: string) => {
+      if (name === "workflows") throw new Error("down");
+      return collection(name);
+    });
+    expect(await createContact()).toMatchObject({ ok: true, held: [], holdFailures: [{ workflowId: null, reason: "trigger_error" }] });
+  });
 });

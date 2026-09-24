@@ -5,7 +5,12 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { mirrorContactAssignee } from "@/lib/server/conversation-mirror";
 import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
-import type { AgentActor, HeldEnrolment } from "@/lib/workflows/agent-hold";
+import {
+  holdFailuresOf,
+  type AgentActor,
+  type HeldEnrolment,
+  type HoldFailure,
+} from "@/lib/workflows/agent-hold";
 import {
   serializeContactForApi,
   type ContactApiObject,
@@ -107,8 +112,10 @@ export interface ContactWriteResult {
    * — see lib/api/enrolment-cap.
    */
   firedTrigger: boolean;
-  /** Agent writes only: the enrolments held for approval. */
+  /** Agent writes only: the enrolments held for approval… */
   held?: HeldEnrolment[];
+  /** …and the matched workflows that could be neither held nor run. */
+  holdFailures?: HoldFailure[];
 }
 
 /**
@@ -134,7 +141,13 @@ export async function createContactServerSide(
   const { contact, trigger } = announceContactCreated(input, ref.id, doc);
   if (input.actor) {
     const outcome = trigger ? await trigger : null;
-    return { id: ref.id, contact, firedTrigger: trigger !== null, held: outcome?.held ?? [] };
+    return {
+      id: ref.id,
+      contact,
+      firedTrigger: trigger !== null,
+      held: outcome?.held ?? [],
+      holdFailures: outcome ? holdFailuresOf(outcome) : [],
+    };
   }
   return { id: ref.id, contact, firedTrigger: trigger !== null };
 }

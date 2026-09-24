@@ -45,7 +45,12 @@ import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/li
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
-import { agentHold, type AgentActor, type HeldEnrolment } from "./agent-hold";
+import {
+  agentHold,
+  type AgentActor,
+  type HeldEnrolment,
+  type HoldFailure,
+} from "./agent-hold";
 import { writeHeldEnrolment } from "@/lib/server/agent-held-enrolment";
 import { publicFetch } from "@/lib/webhooks/public-fetch";
 import type { Contact } from "@/types/contacts";
@@ -1283,6 +1288,8 @@ export interface TriggerOutcome {
   skipped: Array<{ workflowId: string; reason: EnrolSkipReason }>;
   /** Agent surface only: enrolments written as proposals instead of runs. */
   held?: HeldEnrolment[];
+  /** Agent surface only: matched workflows whose hold could not be written. */
+  holdFailures?: HoldFailure[];
   reason: "automations_paused" | "no_active_workflow" | "contact_not_found" | "error" | null;
 }
 
@@ -1413,15 +1420,35 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         continue;
       }
       if (agentHold.shouldHold(input)) {
+        // Fails closed per workflow: never enrol, and tell the agent.
+        const fail = (reason: HoldFailure["reason"]) => {
+          (outcome.holdFailures ??= []).push({ workflowId: wf.id, reason });
+          skip(reason === "reentry_check_failed" ? "reentry_check_failed" : "hold_refused");
+        };
         // Obviously-blocked workflows produce no proposal; approve re-runs
         // the real re-entry check inside its run-creating transaction.
-        if (await reentryWouldBlock(wf, contact.id)) {
+        let blocked: boolean;
+        try {
+          blocked = await reentryWouldBlock(wf, contact.id);
+        } catch (err) {
+          console.error("[workflows] re-entry probe failed — not holding", err);
+          fail("reentry_check_failed");
+          continue;
+        }
+        if (blocked) {
           skip("reentry_blocked");
           continue;
         }
-        const held = await writeHeldEnrolment(input, wf, contact);
+        let held: HeldEnrolment | null;
+        try {
+          held = await writeHeldEnrolment(input, wf, contact);
+        } catch (err) {
+          console.error("[workflows] held enrolment write failed — not enrolling", err);
+          fail("hold_error");
+          continue;
+        }
         if (!held) {
-          skip("hold_refused");
+          fail("hold_refused");
           continue;
         }
         (outcome.held ??= []).push(held);

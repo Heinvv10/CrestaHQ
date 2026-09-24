@@ -4,7 +4,12 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
-import type { AgentActor, HeldEnrolment } from "@/lib/workflows/agent-hold";
+import {
+  holdFailuresOf,
+  type AgentActor,
+  type HeldEnrolment,
+  type HoldFailure,
+} from "@/lib/workflows/agent-hold";
 import {
   serializeDealForApi,
   type DealApiObject,
@@ -219,8 +224,10 @@ export interface DealWriteResult {
   stage: PipelineStage;
   /** Terminal flag of the stage the deal now sits in (update only). */
   stageTerminal?: "won" | "lost";
-  /** Agent writes only: the enrolments held for approval. */
+  /** Agent writes only: the enrolments held for approval… */
   held?: HeldEnrolment[];
+  /** …and the matched workflows that could be neither held nor run. */
+  holdFailures?: HoldFailure[];
 }
 
 /** Create a deal + log the create activity + emit `deal.created`. */
@@ -297,7 +304,7 @@ export async function createDealServerSide(
     }),
   ]);
 
-  return { id: ref.id, deal, stage, ...(input.actor ? { held } : {}) };
+  return { id: ref.id, deal, stage, ...(input.actor ? held : {}) };
 }
 
 /**
@@ -332,12 +339,15 @@ function fireDealTrigger(opts: {
   return fired;
 }
 
-/** The held enrolments of the triggers an agent write awaited. */
+/** The held enrolments (and hold failures) of the triggers an agent write awaited. */
 async function heldFrom(
   fired: Array<Promise<TriggerOutcome> | null>
-): Promise<HeldEnrolment[]> {
+): Promise<{ held: HeldEnrolment[]; holdFailures: HoldFailure[] }> {
   const outcomes = await Promise.all(fired.filter((f) => f !== null));
-  return outcomes.flatMap((o) => o.held ?? []);
+  return {
+    held: outcomes.flatMap((o) => o.held ?? []),
+    holdFailures: outcomes.flatMap(holdFailuresOf),
+  };
 }
 
 /**
@@ -586,7 +596,7 @@ export async function updateDealServerSide(opts: {
     deal,
     stage: findStage(pipeline, toStage) ?? getStage(toStage, stages),
     stageTerminal: terminalOf(toStage),
-    ...(opts.actor ? { held } : {}),
+    ...(opts.actor ? held : {}),
   };
 }
 

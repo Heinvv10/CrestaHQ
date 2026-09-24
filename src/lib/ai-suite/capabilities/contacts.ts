@@ -78,7 +78,7 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
       return {
         resultText: `Added contact “${args.name}”. Open Contacts to see the full profile.`,
         ref: { kind: "contact", id: res.id },
-        ...(res.held ? { held: res.held } : {}),
+        ...(res.held ? { held: res.held, holdFailures: res.holdFailures ?? [] } : {}),
       };
     },
   },

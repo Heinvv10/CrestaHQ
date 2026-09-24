@@ -21,6 +21,27 @@ export interface HeldEnrolment {
 }
 
 /**
+ * A workflow the agent's write matched whose enrolment could be neither held
+ * nor run (it fails closed): the agent is told, so it doesn't assume a
+ * proposal is waiting. `workflowId` is null when the whole trigger failed.
+ */
+export interface HoldFailure {
+  workflowId: string | null;
+  reason: "hold_refused" | "hold_error" | "reentry_check_failed" | "trigger_error";
+}
+
+/** The hold failures of one trigger outcome, for a service result. */
+export function holdFailuresOf(outcome: {
+  holdFailures?: HoldFailure[];
+  reason?: string | null;
+}): HoldFailure[] {
+  return [
+    ...(outcome.holdFailures ?? []),
+    ...(outcome.reason === "error" ? [{ workflowId: null, reason: "trigger_error" as const }] : []),
+  ];
+}
+
+/**
  * The engine's single hold decision, as an object so a test can prove the
  * hold is what keeps the run from starting (stub it off → a run appears).
  */

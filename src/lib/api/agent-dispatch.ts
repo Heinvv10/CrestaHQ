@@ -4,7 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import type { ApiAuthContext } from "@/lib/api/auth";
 import { buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
 import { recordAgentWrite } from "@/lib/api/agent-audit";
-import type { HeldEnrolment } from "@/lib/workflows/agent-hold";
+import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
 import {
   availableOn,
   CapabilityUserError,
@@ -28,6 +28,8 @@ export type AgentDispatchResult =
       ref?: { kind: string; id: string };
       /** Workflow enrolments the write caused, held for approval (ruling Q). */
       held?: Array<Pick<HeldEnrolment, "proposalId" | "workflowName">>;
+      /** Matched workflows whose enrolment was neither queued nor run. */
+      holdFailures?: HoldFailure[];
     }
   | {
       ok: true;
@@ -176,7 +178,10 @@ async function dispatch(
     resultText: result.resultText,
     ...(result.ref ? { ref: result.ref } : {}),
     ...(result.held
-      ? { held: result.held.map(({ proposalId, workflowName }) => ({ proposalId, workflowName })) }
+      ? {
+          held: result.held.map(({ proposalId, workflowName }) => ({ proposalId, workflowName })),
+          holdFailures: result.holdFailures ?? [],
+        }
       : {}),
   };
 }
