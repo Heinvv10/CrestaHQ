@@ -1,7 +1,10 @@
 import {
   collection,
   doc,
+  getDocs,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   updateDoc,
@@ -25,12 +28,18 @@ const CONVERSATIONS = "conversations";
  * Live list of conversations for a sub-account. Filters on subAccountId only
  * and sorts by lastMessageAt client-side — same convention as
  * subscribeToContacts, which avoids a composite index.
+ *
+ * `waitForServer` holds the callback until the server has answered. Without
+ * it the first snapshot can come from the in-memory cache and hold only the
+ * docs another query loaded (the inbox preview, the unread badge) — a
+ * partial inbox shown as complete.
  */
 export function subscribeToConversations(
   subAccountId: string,
   callback: (conversations: ConversationDoc[]) => void,
   onError?: (err: Error) => void,
-  territoryFilter?: string[] | null
+  territoryFilter?: string[] | null,
+  opts: { waitForServer?: boolean } = {}
 ): Unsubscribe {
   const plan = territoryQueryPlan(territoryFilter);
   if (plan.mode === "empty") {
@@ -42,9 +51,18 @@ export function subscribeToConversations(
     where("subAccountId", "==", subAccountId),
     ...(plan.mode === "in" ? [plan.constraint] : [])
   );
+  let serverAnswered = false;
   return onSnapshot(
     q,
+    // A warm, complete cache makes the server's confirmation metadata-only;
+    // without this it would never fire.
+    { includeMetadataChanges: opts.waitForServer === true },
     (snap) => {
+      if (opts.waitForServer) {
+        if (snap.metadata.fromCache && !serverAnswered) return;
+        if (serverAnswered && snap.docChanges().length === 0) return;
+        serverAnswered = true;
+      }
       const rows = snap.docs.map((d) => ({
         id: d.id,
         ...(d.data() as Omit<ConversationDoc, "id">),
@@ -56,6 +74,61 @@ export function subscribeToConversations(
     },
     (err) => onError?.(err)
   );
+}
+
+/**
+ * Live count of conversations with unread inbound messages. Queries only the
+ * unread ones: the badge used to subscribe to the whole inbox (~2 MB on a
+ * 5,000-conversation sub-account) on every dashboard page just to count.
+ * Needs the (subAccountId, unreadCount) and (subAccountId, territoryId,
+ * unreadCount) indexes. A doc with no `unreadCount` is not unread.
+ */
+export function subscribeToUnreadConversationCount(
+  subAccountId: string,
+  callback: (count: number) => void,
+  onError?: (err: Error) => void,
+  territoryFilter?: string[] | null
+): Unsubscribe {
+  const plan = territoryQueryPlan(territoryFilter);
+  if (plan.mode === "empty") {
+    callback(0);
+    return NOOP_UNSUB;
+  }
+  const q = query(
+    collection(getFirebaseDb(), CONVERSATIONS),
+    where("subAccountId", "==", subAccountId),
+    ...(plan.mode === "in" ? [plan.constraint] : []),
+    where("unreadCount", ">", 0)
+  );
+  return onSnapshot(
+    q,
+    (snap) => callback(snap.size),
+    (err) => onError?.(err)
+  );
+}
+
+/**
+ * The `count` most recently active conversations, one-shot — a first paint
+ * for the inbox while the full list is still downloading. Needs the
+ * (subAccountId, lastMessageAt desc) index; without it this rejects and
+ * callers show no preview. A doc with no `lastMessageAt` is left out.
+ */
+export async function fetchNewestConversations(
+  subAccountId: string,
+  count: number
+): Promise<ConversationDoc[]> {
+  const snap = await getDocs(
+    query(
+      collection(getFirebaseDb(), CONVERSATIONS),
+      where("subAccountId", "==", subAccountId),
+      orderBy("lastMessageAt", "desc"),
+      limit(count)
+    )
+  );
+  return snap.docs.map((d) => ({
+    id: d.id,
+    ...(d.data() as Omit<ConversationDoc, "id">),
+  }));
 }
 
 /** Live single conversation (doc id == contactId). */

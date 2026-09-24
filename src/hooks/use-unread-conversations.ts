@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { subscribeToConversations } from "@/lib/firestore/conversations";
+import { subscribeToUnreadConversationCount } from "@/lib/firestore/conversations";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -28,11 +28,9 @@ export function useUnreadConversationsCount(
       return;
     }
     setCount(0);
-    const unsub = subscribeToConversations(
+    const unsub = subscribeToUnreadConversationCount(
       subAccountId,
-      (rows) => {
-        setCount(rows.filter((c) => (c.unreadCount ?? 0) > 0).length);
-      },
+      setCount,
       () => setCount(0),
       territory.filter
     );

@@ -11,6 +11,9 @@ import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-fil
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToConversations } from "@/lib/firestore/conversations";
+import { useConversationsPreview } from "@/hooks/use-conversations-preview";
+import { useLoadingHint } from "@/hooks/use-loading-hint";
+import { RENDER_STEP } from "@/components/show-more-rows";
 import {
   DEFAULT_INBOX_FILTERS,
   buildInboxView,
@@ -87,10 +90,24 @@ export function InboxListPane() {
           "Could not load conversations. Check your access and try again."
         );
       },
-      territory.filter
+      territory.filter,
+      { waitForServer: true }
     );
     return () => unsub();
   }, [user, subAccountId, authLoading, territory.ready, territory.filter]);
+
+  // Newest page while the full list loads — only when it is exactly what the
+  // list will show: no territory narrowing, filters, non-default sort or search.
+  const preview = useConversationsPreview(
+    subAccountId,
+    RENDER_STEP,
+    loading &&
+      territory.ready &&
+      !!user &&
+      !territory.filter &&
+      query === "" &&
+      !search.trim()
+  );
 
   const activeId = params.contactId ?? null;
   const view = useMemo(
@@ -137,7 +154,13 @@ export function InboxListPane() {
       {loadError && <p className="text-destructive text-sm">{loadError}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading || !territory.ready ? (
-          <ListSkeleton />
+          <InboxLoading
+            key={`${subAccountId}|${territory.filter}`}
+            preview={preview}
+            basePath={saPath("/conversations")}
+            query={query}
+            activeId={activeId}
+          />
         ) : (
           <ConversationList
             conversations={view.rows}
@@ -148,6 +171,55 @@ export function InboxListPane() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Loading state: the newest page once it lands, otherwise the skeleton. The
+ * full list waits for the server (never a partial cache shown as complete),
+ * so while offline or stalled this says why instead of loading silently.
+ * The pane keys it per load, so the slow timer measures the current one.
+ */
+function InboxLoading({
+  preview,
+  basePath,
+  query,
+  activeId,
+}: {
+  preview: ConversationDoc[] | null;
+  basePath: string;
+  query: string;
+  activeId: string | null;
+}) {
+  const hint = useLoadingHint();
+  return (
+    <div className="flex flex-col gap-3">
+      {hint && (
+        <p
+          role="status"
+          className="bg-muted/40 text-muted-foreground rounded-lg border px-3 py-2 text-sm"
+        >
+          {hint === "offline"
+            ? "You're offline. Conversations will load when your connection is back."
+            : "Still loading conversations — this is taking longer than usual. If it doesn't finish, reload the page."}
+        </p>
+      )}
+      {preview?.length ? (
+        <>
+          <ConversationList
+            conversations={preview}
+            basePath={basePath}
+            query={query}
+            activeId={activeId}
+          />
+          <p className="text-muted-foreground py-3 text-center text-xs">
+            Loading all conversations…
+          </p>
+        </>
+      ) : (
+        <ListSkeleton />
+      )}
     </div>
   );
 }
