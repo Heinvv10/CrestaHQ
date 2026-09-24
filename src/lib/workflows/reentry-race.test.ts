@@ -12,10 +12,18 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 const mem = createMemoryFirestore();
 let txDown = false;
+/** Every target handed to tx.get — a query here locks an index range shared
+ *  by every contact of the workflow on the real server SDK. */
+let txReads: unknown[] = [];
+type TxFn = Parameters<typeof mem.db.runTransaction>[0];
 const db = {
   ...mem.db,
-  runTransaction: (fn: Parameters<typeof mem.db.runTransaction>[0]) =>
-    txDown ? Promise.reject(new Error("10 ABORTED: contention")) : mem.db.runTransaction(fn),
+  runTransaction: (fn: TxFn) =>
+    txDown
+      ? Promise.reject(new Error("10 ABORTED: contention"))
+      : mem.db.runTransaction((tx) =>
+          fn({ ...tx, get: (target) => (txReads.push(target), tx.get(target)) })
+        ),
 };
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => db }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
@@ -49,6 +57,7 @@ const fire = () =>
 beforeEach(() => {
   mem.clear();
   txDown = false;
+  txReads = [];
 });
 
 describe("re-entry under concurrent triggers", () => {
@@ -89,5 +98,61 @@ describe("re-entry under concurrent triggers", () => {
     const outcome = await fire();
     expect(outcome.skipped).toEqual([{ workflowId: "wf1", reason: "reentry_check_failed" }]);
     expect(mem.list("workflowRuns")).toHaveLength(0);
+  });
+});
+
+describe("re-entry lock doc", () => {
+  const LOCK = "workflowEnrolmentLocks/wf1_c1";
+  const lock = (lastRunId: string) =>
+    mem.seed(LOCK, { workflowId: "wf1", contactId: "c1", lastRunId });
+  const run = (id: string, status: string) =>
+    mem.seed(`workflowRuns/${id}`, { workflowId: "wf1", contactId: "c1", status });
+
+  it("the transaction reads document refs only, never a query", async () => {
+    seed("unless_active");
+    lock("r0");
+    run("r0", "completed");
+    await fire();
+    expect(txReads.length).toBeGreaterThan(0);
+    for (const target of txReads) {
+      expect(typeof (target as { path?: unknown }).path).toBe("string");
+    }
+  });
+
+  it("once_ever: an existing lock blocks, even with no run found", async () => {
+    seed("once_ever");
+    lock("gone");
+    const outcome = await fire();
+    expect(outcome.skipped).toEqual([{ workflowId: "wf1", reason: "reentry_blocked" }]);
+    expect(mem.list("workflowRuns")).toHaveLength(0);
+  });
+
+  it("once_ever: a legacy run with no lock still blocks", async () => {
+    seed("once_ever");
+    run("legacy", "completed");
+    const outcome = await fire();
+    expect(outcome.skipped).toEqual([{ workflowId: "wf1", reason: "reentry_blocked" }]);
+    expect(mem.list("workflowRuns")).toHaveLength(1);
+  });
+
+  it("unless_active: blocks while lock.lastRunId is waiting, allows once it completed", async () => {
+    seed("unless_active");
+    lock("r0");
+    run("r0", "waiting");
+    expect((await fire()).skipped).toEqual([{ workflowId: "wf1", reason: "reentry_blocked" }]);
+    await mem.db.doc("workflowRuns/r0").update({ status: "completed" });
+    expect((await fire()).enrolled).toHaveLength(1);
+    expect(mem.list("workflowRuns")).toHaveLength(2);
+  });
+
+  it("creates the run and the lock when neither exists", async () => {
+    seed("once_ever");
+    const outcome = await fire();
+    expect(outcome.enrolled).toHaveLength(1);
+    const [created] = mem.list("workflowRuns");
+    expect(mem.read(LOCK)).toMatchObject({
+      workflowId: "wf1", contactId: "c1", subAccountId: "sa1", agencyId: "ag1",
+      lastRunId: created.id,
+    });
   });
 });

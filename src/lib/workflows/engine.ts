@@ -1430,12 +1430,25 @@ const isLive = (d: { data: () => unknown }) => {
  * Create the run doc only if the workflow's re-enrollment policy allows it —
  * the check and the create in ONE transaction, so simultaneous triggers (three
  * inbound messages, three webhooks) cannot all pass a check none has yet
- * written past. A query alone gives no phantom protection, so the transaction
- * also reads and writes a per-(workflow, contact) lock doc: concurrent
- * enrolments conflict on it and the losers re-run, now seeing the winner's
- * run. "unless_active" blocks while a run is live; "once_ever" once any
- * exists. Fails CLOSED: an error here skips the enrolment rather than risk
- * the duplicate auto-reply the policy exists to prevent.
+ * written past. The transaction reads and writes a per-(workflow, contact)
+ * lock doc: concurrent enrolments for one contact conflict on it and the
+ * losers re-run, now seeing the winner's lock. "once_ever" blocks once the
+ * lock exists; "unless_active" blocks while the lock's `lastRunId` run is
+ * live.
+ *
+ * The transaction reads ONLY document refs, never a query. The server SDK
+ * locks pessimistically, and a `workflowRuns where workflowId == X` query
+ * locks an index range shared by EVERY contact of workflow X — which each
+ * enrolment then writes into. A bulk tag-add on 41 contacts made all 41
+ * contend on that one range and 19 exhausted their retries (2026-09-24).
+ *
+ * Runs created before lock docs existed (or by an every_time enrolment) have
+ * no lock, so the same policy is applied to a `workflowRuns` query run
+ * BEFORE the transaction. Those runs are not racing us, so a plain read is
+ * enough; concurrent new enrolments still serialise on the lock doc.
+ *
+ * Fails CLOSED: an error here skips the enrolment rather than risk the
+ * duplicate auto-reply the policy exists to prevent.
  */
 async function createRunUnlessBlocked(
   wf: WorkflowDoc,
@@ -1447,16 +1460,23 @@ async function createRunUnlessBlocked(
   const db = getAdminDb();
   const lockRef = db.doc(`workflowEnrolmentLocks/${wf.id}_${contactId}`);
   try {
+    const runs = await db
+      .collection("workflowRuns")
+      .where("workflowId", "==", wf.id)
+      .where("contactId", "==", contactId)
+      .get();
+    if (!runs.empty && (policy === "once_ever" || runs.docs.some(isLive))) {
+      return "reentry_blocked";
+    }
     return await db.runTransaction(async (tx) => {
-      await tx.get(lockRef);
-      const runs = await tx.get(
-        db
-          .collection("workflowRuns")
-          .where("workflowId", "==", wf.id)
-          .where("contactId", "==", contactId)
-      );
-      if (!runs.empty && (policy === "once_ever" || runs.docs.some(isLive))) {
-        return "reentry_blocked" as const;
+      const lock = await tx.get(lockRef);
+      if (lock.exists) {
+        if (policy === "once_ever") return "reentry_blocked" as const;
+        const lastRunId = (lock.data() as { lastRunId?: string }).lastRunId;
+        if (lastRunId) {
+          const last = await tx.get(db.doc(`workflowRuns/${lastRunId}`));
+          if (last.exists && isLive(last)) return "reentry_blocked" as const;
+        }
       }
       tx.set(lockRef, {
         workflowId: wf.id,
