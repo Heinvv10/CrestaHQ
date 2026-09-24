@@ -197,7 +197,7 @@ export async function POST(
         b.longitude === null ||
         haversineKm(origin, { latitude: b.latitude, longitude: b.longitude }) <= radiusKm,
     );
-    const businesses = await enrichBusinesses(inRadius);
+    const businesses = await enrichBusinesses(inRadius, request.signal);
     return NextResponse.json({
       ok: true,
       status: "success",

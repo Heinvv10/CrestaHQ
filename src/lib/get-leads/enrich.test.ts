@@ -4,7 +4,7 @@ import type { GetLeadsBusiness } from "@/types/get-leads";
 const publicFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/webhooks/public-fetch", () => ({ publicFetch }));
 
-const { extractContacts, enrichBusinesses, ENRICH_CONCURRENCY, HOMEPAGE_MAX_BYTES } =
+const { extractContacts, enrichBusinesses, ENRICH_CONCURRENCY, HOMEPAGE_MAX_BYTES, ENRICH_DEADLINE_MS } =
   await import("./enrich");
 
 function html(body: string, status = 200, headers: Record<string, string> = {}): Response {
@@ -215,5 +215,87 @@ describe("enrichBusinesses — concurrency is process-wide", () => {
     );
     expect(publicFetch).toHaveBeenCalledTimes(200);
     expect(peak).toBe(ENRICH_CONCURRENCY);
+  });
+});
+
+describe("enrichBusinesses — bounded deadline", () => {
+  beforeEach(() => publicFetch.mockReset());
+
+  it("a small search started after a huge one still returns within its own deadline", async () => {
+    // Reviewer's repro: a 40-site search occupies every process-wide slot
+    // continuously; a 1-site search that starts after it must not be
+    // queued indefinitely behind it — its own deadline bounds the wait.
+    publicFetch.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      return html(`<a href="mailto:hi@big.example">x</a>`);
+    });
+    const bigSearch = enrichBusinesses(
+      Array.from({ length: 40 }, (_, i) => biz(i, `https://big${i}.example`)),
+      undefined,
+      5_000,
+    );
+
+    const deadlineMs = 60;
+    const t0 = performance.now();
+    const [small] = await enrichBusinesses(
+      [biz(999, "https://small.example")],
+      undefined,
+      deadlineMs,
+    );
+    const elapsed = performance.now() - t0;
+
+    expect(elapsed).toBeLessThan(deadlineMs + 150);
+    expect(small!.email).toBeNull();
+
+    await bigSearch; // drain so it doesn't leak into later tests
+  });
+
+  it("a queued waiter leaves the queue when the deadline fires — no slot leak for a later call", async () => {
+    publicFetch.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 150));
+      return html("");
+    });
+    // 8 sites: 6 take every slot immediately, 2 sit in the wait queue.
+    // deadlineMs (20) fires long before any of the 6 in-flight fetches
+    // finish, so both queued waiters must leave the queue rather than
+    // wait for a slot that eventually frees up.
+    await enrichBusinesses(
+      Array.from({ length: 8 }, (_, i) => biz(i, `https://a${i}.example`)),
+      undefined,
+      20,
+    );
+
+    publicFetch.mockReset();
+    let inFlight = 0;
+    let peak = 0;
+    publicFetch.mockImplementation(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return html("");
+    });
+    await enrichBusinesses(
+      Array.from({ length: 6 }, (_, i) => biz(i, `https://b${i}.example`)),
+      undefined,
+      5_000,
+    );
+    expect(peak).toBe(ENRICH_CONCURRENCY);
+  });
+
+  it("an aborted caller signal stops the call promptly, well inside the default deadline", async () => {
+    expect(ENRICH_DEADLINE_MS).toBe(30_000);
+
+    publicFetch.mockResolvedValue(html(`<a href="mailto:hi@ok.example">x</a>`));
+    const controller = new AbortController();
+    controller.abort();
+
+    const t0 = performance.now();
+    const [b] = await enrichBusinesses([biz(1, "https://slow.example")], controller.signal);
+    const elapsed = performance.now() - t0;
+
+    expect(elapsed).toBeLessThan(200);
+    expect(b!.email).toBeNull();
+    expect(publicFetch).not.toHaveBeenCalled();
   });
 });

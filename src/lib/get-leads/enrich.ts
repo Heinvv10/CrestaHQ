@@ -16,6 +16,11 @@ import type { GetLeadsBusiness } from "@/types/get-leads";
 
 export const ENRICH_CONCURRENCY = 6;
 export const HOMEPAGE_MAX_BYTES = 500 * 1024;
+// Overall deadline for one enrichBusinesses call, regardless of how many
+// sites it has to enrich or how long the process-wide queue is. Without
+// this, one tenant's large search queues every other tenant's search behind
+// it with no bound (the per-site timeout only starts once a slot is held).
+export const ENRICH_DEADLINE_MS = 30_000;
 const SITE_TIMEOUT_MS = 5_000;
 const MAX_REDIRECTS = 3;
 const USER_AGENT = "Mozilla/5.0 (compatible; LeadStack-GetLeads/1.0; CRM contact lookup)";
@@ -28,12 +33,20 @@ export interface SiteContacts {
 
 export async function enrichBusinesses(
   businesses: GetLeadsBusiness[],
+  signal?: AbortSignal,
+  deadlineMs: number = ENRICH_DEADLINE_MS,
 ): Promise<GetLeadsBusiness[]> {
+  // One deadline per call: the caller's own abort (e.g. a disconnected
+  // client) combined with a hard ceiling, so this call can never wait
+  // longer than deadlineMs no matter how deep the shared queue is.
+  const deadline = AbortSignal.any(
+    signal ? [AbortSignal.timeout(deadlineMs), signal] : [AbortSignal.timeout(deadlineMs)],
+  );
   return Promise.all(
     businesses.map(async (b) => {
       if (!b.website) return b;
       const website = b.website;
-      const page = await withFetchSlot(() => fetchHomepage(website));
+      const page = await withFetchSlot(() => fetchHomepage(website, deadline), deadline);
       if (!page) return b;
       const found = extractContacts(page.html, page.url);
       return {
@@ -49,20 +62,61 @@ export async function enrichBusinesses(
 // ENRICH_CONCURRENCY is a process-wide cap: every enrichBusinesses call —
 // however many searches run at once — shares these slots. A slot is handed
 // straight to the next waiter (FIFO) on release. The per-site timeout starts
-// only once a slot is held, so queued sites never time out while waiting.
+// only once a slot is held, so queued sites never time out while waiting —
+// instead, a waiter that is still queued when its call's deadline fires
+// leaves the queue immediately (no slot leak, no stale waiter woken later),
+// and a slot that arrives for it after the deadline is released unused.
 let activeFetches = 0;
 const fetchQueue: (() => void)[] = [];
 
-async function withFetchSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (activeFetches < ENRICH_CONCURRENCY) activeFetches++;
-  else await new Promise<void>((resolve) => fetchQueue.push(resolve));
+async function withFetchSlot<T>(
+  fn: () => Promise<T>,
+  deadline: AbortSignal,
+): Promise<T | null> {
+  if (deadline.aborted) return null;
+  if (activeFetches < ENRICH_CONCURRENCY) {
+    activeFetches++;
+  } else if (!(await waitForSlot(deadline))) {
+    // Deadline fired while queued — this waiter never held a slot, so
+    // there is nothing to release.
+    return null;
+  }
+  if (deadline.aborted) {
+    // Slot arrived after the deadline already fired: release it unused
+    // rather than starting work that would just be thrown away.
+    releaseSlot();
+    return null;
+  }
   try {
     return await fn();
   } finally {
-    const next = fetchQueue.shift();
-    if (next) next();
-    else activeFetches--;
+    releaseSlot();
   }
+}
+
+function releaseSlot(): void {
+  const next = fetchQueue.shift();
+  if (next) next();
+  else activeFetches--;
+}
+
+// Resolves true once a slot is handed to this waiter, or false if the
+// deadline fires first — removing this waiter from the queue so a later
+// release never hands a slot to a caller that already gave up.
+function waitForSlot(deadline: AbortSignal): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const entry = () => {
+      deadline.removeEventListener("abort", onAbort);
+      resolve(true);
+    };
+    const onAbort = () => {
+      const idx = fetchQueue.indexOf(entry);
+      if (idx !== -1) fetchQueue.splice(idx, 1);
+      resolve(false);
+    };
+    fetchQueue.push(entry);
+    deadline.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function httpUrl(raw: string, base?: string): URL | null {
@@ -74,9 +128,12 @@ function httpUrl(raw: string, base?: string): URL | null {
   }
 }
 
-async function fetchHomepage(website: string): Promise<{ html: string; url: string } | null> {
+async function fetchHomepage(
+  website: string,
+  deadline: AbortSignal,
+): Promise<{ html: string; url: string } | null> {
   let url = httpUrl(website);
-  const signal = AbortSignal.timeout(SITE_TIMEOUT_MS);
+  const signal = AbortSignal.any([AbortSignal.timeout(SITE_TIMEOUT_MS), deadline]);
   try {
     for (let hop = 0; url && hop <= MAX_REDIRECTS; hop++) {
       const res = await publicFetch(url.href, {
