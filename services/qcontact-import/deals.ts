@@ -18,7 +18,7 @@
  * feat/workflow-task-assignee-deal-stage).
  */
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
-import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
+import { leadstackFetch } from "./leadstack-fetch.ts";
 
 export type DealEnv = {
   LEADSTACK_API_URL: string;
@@ -39,10 +39,11 @@ export type DealEnsurer = (input: {
 const DEAL_CURRENCY = "ZAR";
 
 export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fetch): DealEnsurer {
+  const lsFetch = leadstackFetch(fetchImpl);
   return async ({ contactId, caseId, title }) => {
-    const listRes = await fetchImpl(
+    const listRes = await lsFetch(
       `${env.LEADSTACK_API_URL}/api/v1/deals?contact_id=${encodeURIComponent(contactId)}`,
-      { headers: { Authorization: `Bearer ${env.LEADSTACK_API_KEY}` }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+      { headers: { Authorization: `Bearer ${env.LEADSTACK_API_KEY}` } },
     );
     if (!listRes.ok) {
       return { ok: false, error: `HTTP ${listRes.status} listing deals: ${(await listRes.text()).slice(0, 300)}` };
@@ -62,7 +63,7 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
       currency: DEAL_CURRENCY,
     };
     if (env.QCONTACT_DEAL_OWNER_UID) body.assigned_to_uid = env.QCONTACT_DEAL_OWNER_UID;
-    const createRes = await fetchImpl(`${env.LEADSTACK_API_URL}/api/v1/deals`, {
+    const createRes = await lsFetch(`${env.LEADSTACK_API_URL}/api/v1/deals`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.LEADSTACK_API_KEY}`,
@@ -73,7 +74,6 @@ export function leadstackDealEnsurer(env: DealEnv, fetchImpl: typeof fetch = fet
         "Idempotency-Key": dedupedIdempotencyKey(`qcontact-deal-${caseId}`, body),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (!createRes.ok) {
       return { ok: false, error: `HTTP ${createRes.status} creating deal: ${(await createRes.text()).slice(0, 300)}` };

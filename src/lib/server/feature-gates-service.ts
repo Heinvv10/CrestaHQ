@@ -36,13 +36,14 @@ import type { PlanGateKey } from "@/types/billing";
 
 /**
  * Every agency gate field the manual route can flip. Plans manage the
- * PlanGateKey subset; Get Leads (parked) is manual-only but still routes
- * through this service from the PATCH route.
+ * PlanGateKey subset; Get Leads is manual-only but still routes through
+ * this service from the PATCH route.
  */
 /**
  * Gates the agency can flip. `PlanGateKey` covers everything a Client Billing
  * plan can bundle; the extras are standalone gates deliberately kept OUT of
- * plans — Get Leads because it's parked, Payments because a plan silently
+ * plans — Get Leads because it was kept manual while parked (not promoted
+ * since), Payments because a plan silently
  * switching a money rail on or off is a worse failure than a manual toggle.
  * Promote either into `PLAN_GATE_KEYS` if that changes.
  */

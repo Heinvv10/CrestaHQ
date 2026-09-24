@@ -7,7 +7,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { GET_LEADS_RESULT_LIMIT } from "@/lib/get-leads/business-types";
-import type { SubAccountDoc } from "@/types";
+import { prospectingEnabled, prospectingGateOff } from "@/lib/prospecting/gate";
+import type { ContactProspecting, SubAccountDoc } from "@/types";
 
 /**
  * Get Leads — import selected businesses as contacts.
@@ -15,7 +16,12 @@ import type { SubAccountDoc } from "@/types";
  * Each imported row becomes an ordinary contact via the shared
  * `createContactServerSide` chokepoint (so `contact.created` webhooks +
  * workflow triggers fire like any other create), with:
- *   - `source: "get-leads"` + a search tag (e.g. "get-leads:plumber-brisbane")
+ *   - `source: "prospecting"` + tags `["prospecting", <batch tag>]`
+ *     (contacts imported before Prospecting keep `source: "get-leads"`)
+ *   - a `prospecting` map (place id, website, rating, reviews, category;
+ *     `approachedAt` / `lastReportId` null) — and `listId` when the import
+ *     names a saved list, which needs the Prospecting gate and a list owned
+ *     by this sub-account (else 403 `gate_off` / non-enumerating 404)
  *   - business name as both contact name and company
  *   - lat/lng from the listing, so pins land on the dashboard Leads map
  *   - a note carrying the enrichment extras (website, socials, rating) that
@@ -26,6 +32,8 @@ import type { SubAccountDoc } from "@/types";
  */
 
 interface ImportRow {
+  /** Google Places id of the listing (null when it had none). */
+  googlePlaceId?: string | null;
   name?: string;
   category?: string | null;
   fullAddress?: string | null;
@@ -51,12 +59,33 @@ interface PostBody {
    * broadcast-audience tag filters.
    */
   tag?: string;
+  /** A saved `prospectLists` doc of this sub-account to stamp on every contact. */
+  listId?: unknown;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function cleanStr(v: unknown, max = 300): string {
   return typeof v === "string" ? v.replace(/[\r\n\t]/g, " ").trim().slice(0, max) : "";
+}
+
+/** The contact's `prospecting` map. Keys without a value are left out. */
+function prospectingMap(raw: ImportRow, listId: string | null): ContactProspecting {
+  const placeId = cleanStr(raw.googlePlaceId, 200);
+  const website = cleanStr(raw.website, 300);
+  const category = cleanStr(raw.category, 200);
+  const rating = raw.rating;
+  const reviews = raw.reviewsCount;
+  return {
+    ...(listId ? { listId } : {}),
+    ...(placeId ? { placeId } : {}),
+    ...(website ? { website } : {}),
+    ...(typeof rating === "number" && rating >= 0 && rating <= 5 ? { rating } : {}),
+    ...(Number.isInteger(reviews) && (reviews as number) >= 0 ? { reviewsCount: reviews as number } : {}),
+    ...(category ? { category } : {}),
+    approachedAt: null,
+    lastReportId: null,
+  };
 }
 
 export async function POST(
@@ -89,6 +118,20 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  let listId: string | null = null;
+  if (body.listId !== undefined) {
+    if (!prospectingEnabled(sub)) return prospectingGateOff();
+    // A `/` would make db.doc() address a sub-path and throw (a 500).
+    if (typeof body.listId !== "string" || !body.listId.trim() || body.listId.includes("/")) {
+      return NextResponse.json({ error: "listId must be a list id." }, { status: 400 });
+    }
+    const listSnap = await db.doc(`prospectLists/${body.listId.trim()}`).get();
+    if (!listSnap.exists || listSnap.data()?.subAccountId !== subAccountId) {
+      return NextResponse.json({ error: "List not found" }, { status: 404 });
+    }
+    listId = listSnap.id;
+  }
+
   const rows = Array.isArray(body.businesses) ? body.businesses : [];
   if (rows.length === 0) {
     return NextResponse.json(
@@ -107,7 +150,7 @@ export async function POST(
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  const tags = ["get-leads", ...(tagSlug ? [tagSlug] : [])];
+  const tags = ["prospecting", ...(tagSlug ? [tagSlug] : [])];
 
   let imported = 0;
   const skipped: { name: string; reason: string }[] = [];
@@ -182,8 +225,9 @@ export async function POST(
       phone,
       company: name,
       address: cleanStr(raw.fullAddress, 300),
-      source: "get-leads",
+      source: "prospecting",
       tags,
+      prospecting: prospectingMap(raw, listId),
       location: {
         countryCode: null,
         country: null,

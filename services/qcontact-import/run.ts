@@ -21,7 +21,7 @@ import { gpsFromLocationFields, locationPinId, mapCase, type UpsertBody } from "
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
 import { leadstackStageSyncer, statusToStageId, type StageSyncer } from "./stage-sync.ts";
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
-import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
+import { leadstackFetch } from "./leadstack-fetch.ts";
 
 export type Env = {
   QCONTACT_BASE_URL: string;
@@ -197,8 +197,9 @@ export type Upserter = (
 ) => Promise<{ ok: true; contactId: string } | { ok: false; error: string }>;
 
 export function leadstackUpserter(env: Env, fetchImpl: typeof fetch = fetch): Upserter {
+  const lsFetch = leadstackFetch(fetchImpl);
   return async (body) => {
-    const res = await fetchImpl(`${env.LEADSTACK_API_URL}/api/v1/contacts/upsert`, {
+    const res = await lsFetch(`${env.LEADSTACK_API_URL}/api/v1/contacts/upsert`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.LEADSTACK_API_KEY}`,
@@ -209,7 +210,6 @@ export function leadstackUpserter(env: Env, fetchImpl: typeof fetch = fetch): Up
         "Idempotency-Key": dedupedIdempotencyKey(`qcontact-case-${body.custom_fields.qcontact_case_id}`, body),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (res.ok) {
       let data: unknown;

@@ -2,7 +2,7 @@
  * Get Leads v1 — the curated business-type picklist. Client-safe (no
  * server-only import): the page renders these as the category select and the
  * search route validates the submitted value against the same list, so a
- * forged request can't run arbitrary Outscraper queries on the agency's key.
+ * forged request can't run arbitrary Places queries on the agency's key.
  *
  * `query` is the term sent to Google Maps search — kept plural/colloquial
  * because that's what ranks best in Maps results.
@@ -14,12 +14,12 @@
  * Assistant's gate capability, and the assistant knowledge card. The page,
  * API routes, and `getLeadsEnabledByAgency` gate stay intact but unreachable
  * (the gate defaults off and nothing surfaces a way to flip it). To un-park:
- * flip this to `false` AND restore the Outscraper group in
- * `src/lib/setup/env-schema.mjs` + the OUTSCRAPER_API_KEY block in
+ * flip this to `false` AND restore the Google Places group in
+ * `src/lib/setup/env-schema.mjs` + the GOOGLE_PLACES_API_KEY block in
  * `.env.example` (those can't read this flag). Typed `boolean` on purpose so
  * TS doesn't narrow the dead branches into unused-import lint errors.
  */
-export const GET_LEADS_PARKED: boolean = true;
+export const GET_LEADS_PARKED: boolean = false;
 export interface BusinessType {
   value: string;
   label: string;
@@ -85,7 +85,7 @@ export function customBusinessTypes(labels: string[]): BusinessType[] {
  * Resolve a submitted businessType value against the curated list PLUS the
  * sub-account's stored custom labels — together they form the server-side
  * query allowlist (a forged request still can't run arbitrary text on the
- * agency's Outscraper key; custom entries had to be saved by an admin first).
+ * agency's Places key; custom entries had to be saved by an admin first).
  */
 export function resolveBusinessType(
   value: string,
@@ -102,10 +102,10 @@ export const RADIUS_OPTIONS_KM = [1, 5, 10, 25, 50] as const;
 export type RadiusKm = (typeof RADIUS_OPTIONS_KM)[number];
 
 /**
- * Operator-selectable per-search result caps. Outscraper's `limit` param
- * bounds both the returned businesses AND the enrichment spend, so this is
- * the per-run credit budget — a search can never return (or bill for) more
- * than the picked value. Also validated server-side.
+ * Operator-selectable per-search result caps. Places returns 20 per page and
+ * each page is a billable call against the daily cap, so 10/20 cost one call
+ * and 40 costs two — a search never makes more than ceil(limit / 20) calls.
+ * Also validated server-side.
  */
 export const RESULT_LIMIT_OPTIONS = [10, 20, 40] as const;
 

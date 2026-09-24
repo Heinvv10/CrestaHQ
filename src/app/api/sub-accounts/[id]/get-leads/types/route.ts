@@ -19,7 +19,7 @@ import type { SubAccountDoc } from "@/types";
  * PUT replaces the whole list (the manage dialog edits locally and saves
  * once) — add/update/remove are all "send the new list". Admin-only: the
  * saved labels become part of the search-route query allowlist, i.e. they
- * spend the agency's Outscraper credits, so collaborators can use them but
+ * spend the agency's shared Places search quota, so collaborators can use them but
  * not mint them.
  */
 

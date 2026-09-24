@@ -14,7 +14,7 @@
  * is decided by run.ts comparing against the stage it last recorded for
  * that case (also in the state file), not by fetching the deal.
  */
-import { FETCH_TIMEOUT_MS } from "./fetch-timeout.ts";
+import { leadstackFetch } from "./leadstack-fetch.ts";
 
 /**
  * QContact case status → LeadStack deal stage id. QContact renders
@@ -55,15 +55,15 @@ export type StageSyncResult =
 export type StageSyncer = (input: { dealId: string; stage: string }) => Promise<StageSyncResult>;
 
 export function leadstackStageSyncer(env: StageSyncEnv, fetchImpl: typeof fetch = fetch): StageSyncer {
+  const lsFetch = leadstackFetch(fetchImpl);
   return async ({ dealId, stage }) => {
-    const res = await fetchImpl(`${env.LEADSTACK_API_URL}/api/v1/deals/${encodeURIComponent(dealId)}`, {
+    const res = await lsFetch(`${env.LEADSTACK_API_URL}/api/v1/deals/${encodeURIComponent(dealId)}`, {
       method: "PATCH",
       headers: {
         Authorization: `Bearer ${env.LEADSTACK_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ stage }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (res.status === 404) return { ok: true, action: "not_found" };
     if (!res.ok) {

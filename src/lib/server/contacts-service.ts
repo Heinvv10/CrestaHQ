@@ -10,6 +10,7 @@ import {
   type ContactApiObject,
 } from "@/lib/api/serializers/contacts";
 import type { ContactAttribution } from "@/types/contacts";
+import type { ContactProspecting } from "@/types/prospecting";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import { normalizePhoneLenient } from "@/lib/contacts/phone";
 import { GLOBAL_TERRITORY_ID } from "@/types";
@@ -78,6 +79,8 @@ export interface CreateContactInput {
    * was STOP.
    */
   optedOutOnWhatsapp?: boolean;
+  /** Prospect facts (Get Leads import). Absent = the contact carries no map. */
+  prospecting?: ContactProspecting;
   /** Optional resolved location (form submit supplies this; UI doesn't). */
   location?: {
     countryCode: string | null;
@@ -146,6 +149,7 @@ export function buildContactDoc(input: CreateContactInput) {
     emailOptedOut: false,
     smsOptedOut: false,
     ...(input.optedOutOnWhatsapp ? { whatsappOptedOut: true } : {}),
+    ...(input.prospecting ? { prospecting: input.prospecting } : {}),
     countryCode: loc?.countryCode ?? null,
     country: loc?.country ?? null,
     city: loc?.city ?? null,
@@ -226,6 +230,11 @@ export interface UpdateContactPatch {
   assignedToUid?: string | null;
   /** Full replacement of the custom-field value map (validated by the route). */
   customFields?: Record<string, CustomFieldValue>;
+  /**
+   * Prospect facts (validated by the public API parser), merged field by
+   * field: each key is written as `prospecting.<key>`, keys not sent are kept.
+   */
+  prospecting?: ContactProspecting;
 }
 
 /** True when `patch` rewrites `company` on a linked contact without a companyId of its own. */
@@ -268,8 +277,12 @@ export async function updateContactServerSide(opts: {
 
   const existing = snap.data()!;
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
+  const { prospecting, ...fields } = opts.patch;
   const patch = {
-    ...opts.patch,
+    ...fields,
+    ...Object.fromEntries(
+      Object.entries(prospecting ?? {}).map(([k, v]) => [`prospecting.${k}`, v]),
+    ),
     ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
     // A writer that changes the free-text `company` without saying which
     // company (the public API, which has no companyId field) breaks the
