@@ -45,7 +45,11 @@ export async function dispatchAgentTool(
     if (err instanceof CapabilityUserError) {
       return refuse("invalid_request", 400, err.message);
     }
-    console.error(`[agent-dispatch] ${name} failed:`, err);
+    // `name` is caller-supplied: quote and cap it so it cannot forge log lines.
+    console.error(
+      `[agent-dispatch] ${JSON.stringify(String(name).slice(0, 80))} failed:`,
+      err
+    );
     return refuse("internal_error", 500, "The tool failed to run.");
   }
 }
