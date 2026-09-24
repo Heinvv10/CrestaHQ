@@ -104,6 +104,12 @@ export interface Order {
    * waiting). The operator must act by hand — refund or reconcile.
    */
   attention?: string | null;
+  /** True while `attention` awaits a person; false once resolved. Absent on
+   *  orders flagged before resolution existed. */
+  attentionOpen?: boolean;
+  attentionResolvedAt?: Timestamp | FieldValue | null;
+  attentionResolvedByUid?: string | null;
+  attentionResolvedByEmail?: string | null;
 
   createdAt: Timestamp | FieldValue | null;
   paidAt: Timestamp | FieldValue | null;

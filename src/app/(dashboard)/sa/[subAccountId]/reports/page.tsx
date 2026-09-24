@@ -22,6 +22,7 @@ import {
 } from "@/components/reports/charts";
 import { AttributionReport } from "@/components/reports/attribution-report";
 import { PaymentsReport } from "@/components/reports/payments-report";
+import { AttentionList } from "@/components/billing/attention-list";
 import { StageHistoryReport } from "@/components/reports/stage-history-report";
 import { subscribeToOrders } from "@/lib/firestore/orders";
 import type { Order } from "@/types/orders";
@@ -49,7 +50,7 @@ const RANGES: { id: RangeKey; label: string; days: number | null }[] = [
 
 export default function ReportsPage() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId, subAccount } = useSubAccount();
+  const { subAccountId, agencyId, subAccount, isAdmin } = useSubAccount();
   // Payments tab is only rendered when the agency gate is on, so a workspace
   // that never enables Payments sees the page exactly as it was.
   const paymentsOn = subAccount?.paymentsEnabledByAgency === true;
@@ -296,11 +297,19 @@ export default function ReportsPage() {
       {loading ? (
         <PageSkeleton />
       ) : tab === "payments" ? (
-        <PaymentsReport
-          orders={orders}
-          rangeCutoff={rangeCutoff}
-          currency={currency}
-        />
+        <>
+          {isAdmin && (
+            <AttentionList
+              endpoint={`/api/sub-accounts/${subAccountId}/order-attention`}
+              title="Orders needing attention"
+            />
+          )}
+          <PaymentsReport
+            orders={orders}
+            rangeCutoff={rangeCutoff}
+            currency={currency}
+          />
+        </>
       ) : tab === "stages" ? (
         <StageHistoryReport
           subAccountId={subAccountId}
