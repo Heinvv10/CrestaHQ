@@ -57,7 +57,10 @@ export type AgencyGateField =
   // as Webinar1: an outside account link is an explicit per-client decision.
   | "googleEnabledByAgency"
   // Per-member Google Calendar sync — standalone for the same reason.
-  | "googleCalendarEnabledByAgency";
+  | "googleCalendarEnabledByAgency"
+  // Agent API — standalone: external agent access to a client's CRM is an
+  // explicit per-client decision, not a plan perk.
+  | "agentApiEnabledByAgency";
 
 export interface ApplyGatesResult {
   /** True when a live Resend sending domain was removed by the email disable. */

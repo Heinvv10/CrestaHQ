@@ -38,7 +38,6 @@ export const PLAN_GATE_KEYS = [
   "aiSuiteEnabledByAgency",
   "labsEnabledByAgency",
   "reviewsAiEnabledByAgency",
-  "agentApiEnabledByAgency",
 ] as const;
 
 export type PlanGateKey = (typeof PLAN_GATE_KEYS)[number];
@@ -62,7 +61,6 @@ export const PLAN_GATE_LABELS: Record<PlanGateKey, string> = {
   aiSuiteEnabledByAgency: "AI Suite assistant",
   labsEnabledByAgency: "Labs (pre-release features)",
   reviewsAiEnabledByAgency: "Reviews AI (sentiment and reply drafts)",
-  agentApiEnabledByAgency: "Agent API (external LLM agent access)",
 };
 
 /** Full gate bundle a plan carries — every key present, true = enabled. */

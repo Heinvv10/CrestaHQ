@@ -86,7 +86,6 @@ export async function seedPlan() {
       metaAgentEnabledByAgency: off, websiteEnabledByAgency: off, socialPlannerEnabledByAgency: off,
       communityEnabledByAgency: off, missedCallTextBackEnabledByAgency: off, aiSuiteEnabledByAgency: off,
       labsEnabledByAgency: off, reviewsAiEnabledByAgency: off,
-      agentApiEnabledByAgency: off,
     },
     status: "active", stripeProductId: null, stripePriceId: null, stripeAnnualPriceId: null,
     createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
