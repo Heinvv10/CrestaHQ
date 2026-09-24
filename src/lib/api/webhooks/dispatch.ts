@@ -4,6 +4,7 @@ import { publishCallback } from "@/lib/automations/qstash";
 import {
   createDelivery,
   createEvent,
+  updateDelivery,
 } from "@/lib/firestore/webhook-events";
 import { findMatchingSubscriptions } from "@/lib/firestore/webhook-subscriptions";
 import { dispatchPushForWebhookEvent } from "@/lib/push/events";
@@ -99,15 +100,11 @@ export async function emitWebhookEvent(
           url: sub.url,
           scheduledAt: new Date(),
         });
-        await publishCallback({
-          pathname: DELIVERY_DISPATCH_PATH,
-          body: {
-            subAccountId: input.subAccountId,
-            eventId: event.id,
-            deliveryId: delivery.id,
-          },
+        await scheduleDeliveryRetry({
+          subAccountId: input.subAccountId,
+          eventId: event.id,
+          deliveryId: delivery.id,
           delaySeconds: 0,
-          deduplicationId: `${event.id}_${delivery.id}`,
         });
       }),
     );
@@ -124,14 +121,19 @@ export async function emitWebhookEvent(
  * delay via the backoff table. Uses a nonce in the QStash dedup id so
  * the retry actually lands (without one, the dedup id collides with
  * attempt 1's message).
+ *
+ * publishCallback never throws: null = not queued (e.g. the daily cap).
+ * Nothing would ever run the pending row, so mark it failed with the
+ * reason — the delivery log shows it and Redeliver replays it. Returns
+ * whether the delivery was queued.
  */
 export async function scheduleDeliveryRetry(opts: {
   subAccountId: string;
   eventId: string;
   deliveryId: string;
   delaySeconds: number;
-}): Promise<void> {
-  await publishCallback({
+}): Promise<boolean> {
+  const queued = await publishCallback({
     pathname: DELIVERY_DISPATCH_PATH,
     body: {
       subAccountId: opts.subAccountId,
@@ -144,4 +146,13 @@ export async function scheduleDeliveryRetry(opts: {
     // delivery id baked into the dedup key.
     deduplicationId: `${opts.eventId}_${opts.deliveryId}`,
   });
+  if (queued) return true;
+  console.error(
+    `[webhooks/dispatch] delivery not queued sa=${opts.subAccountId} event=${opts.eventId} delivery=${opts.deliveryId}`,
+  );
+  await updateDelivery(opts.subAccountId, opts.eventId, opts.deliveryId, {
+    status: "failed",
+    errorMessage: "Could not schedule this delivery (queue publish failed). Redeliver to retry.",
+  });
+  return false;
 }

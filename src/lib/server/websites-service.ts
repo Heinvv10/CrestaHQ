@@ -293,7 +293,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // Schedule the first QStash poll. Without QStash the build doc just sits
   // at "queued" — verifiable in gitpage's dashboard; don't fail the request.
   if (qstashIsConfigured()) {
-    await publishCallback({
+    const queued = await publishCallback({
       pathname: `/api/sub-accounts/${subAccountId}/website/${siteId}/poll`,
       body: {
         subAccountId,
@@ -303,6 +303,16 @@ export async function submitWebsiteBuildForSubAccount(input: {
       delaySeconds: 20,
       deduplicationId: `website_${subAccountId}_${siteId}_${submission.formResponseId}_0`,
     });
+    // publishCallback never throws: null = not queued. Same settle as the
+    // poll route's dead chain; the job id stays, so Re-check now can resume.
+    if (!queued) {
+      console.error(`[website/build] first poll not queued sa=${subAccountId} site=${siteId}`);
+      await docRef.update({
+        status: "failed",
+        errorMessage: "Couldn't schedule the next poll. Try Re-check now or Rebuild.",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
   } else {
     console.warn(
       "[website/build] QStash not configured — status will sit at queued",

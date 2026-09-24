@@ -213,9 +213,12 @@ export async function POST(request: Request) {
   // QStash retries it — in later minutes the dedup id doesn't collapse — and
   // each retry would schedule another continuation, fanning out for as long
   // as the failure persists. Tomorrow's scheduled run picks the backlog up.
-  const continuationScheduled = anyHitCap && failures.length === 0;
-  if (continuationScheduled) {
-    await publishCallback({
+  // publishCallback never throws: null means "not queued" (no QStash, no app
+  // URL, or the publish failed — e.g. the daily cap). The response reports
+  // what actually happened; tomorrow's scheduled run picks the backlog up.
+  let continuationScheduled = false;
+  if (anyHitCap && failures.length === 0) {
+    continuationScheduled = (await publishCallback({
       pathname: "/api/cron/api-cleanup",
       body: {},
       delaySeconds: CONTINUATION_DELAY_SEC,
@@ -223,7 +226,8 @@ export async function POST(request: Request) {
       // minute don't stomp each other but a healthy sweep can land its
       // next run.
       deduplicationId: `api-cleanup_continuation_${Math.floor(Date.now() / 1000 / 60)}`,
-    });
+    })) !== null;
+    if (!continuationScheduled) console.error("[cron/api-cleanup] continuation not queued");
   }
 
   return NextResponse.json(

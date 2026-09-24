@@ -17,6 +17,7 @@ const EXTERNAL_ID = "meta_1";
 let docs: Map<string, Record<string, unknown>>;
 let updates: Array<{ path: string; data: Record<string, unknown> }>;
 const fetchCloudTemplateStatus = vi.fn();
+const publishCallback = vi.fn();
 
 function docRef(path: string) {
   return {
@@ -41,7 +42,7 @@ vi.mock("firebase-admin/firestore", () => ({
 vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => true,
   verifyQStashSignature: async () => true,
-  publishCallback: async () => {},
+  publishCallback: (...a: unknown[]) => publishCallback(...a),
 }));
 vi.mock("@/lib/comms/whatsapp/cloud-credentials", () => ({
   getWabaCreds: async () => ({
@@ -107,6 +108,7 @@ async function poll() {
 
 beforeEach(() => {
   updates = [];
+  publishCallback.mockReset().mockResolvedValue({ messageId: "m1" });
   fetchCloudTemplateStatus
     .mockReset()
     .mockResolvedValue({ status: "approved", reason: null });
@@ -153,5 +155,31 @@ describe("a tick that cannot resolve the sender", () => {
     expect(
       docs.get(`subAccounts/${SUB}/whatsappTemplates/${TPL}`)?.status,
     ).toBe("approved");
+  });
+});
+
+describe("a tick whose next poll cannot be queued", () => {
+  it("parks the template as failed (re-submittable) with the reason when the publish resolves null", async () => {
+    setSub([RESOLVABLE_SENDER]);
+    fetchCloudTemplateStatus.mockResolvedValue({ status: "pending", reason: null });
+    publishCallback.mockResolvedValue(null);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { body } = await poll();
+    expect(body).toEqual({ ok: true, settled: "unscheduled" });
+    const tpl = docs.get(`subAccounts/${SUB}/whatsappTemplates/${TPL}`);
+    expect(tpl?.status).toBe("failed");
+    expect(tpl?.rejectionReason).toMatch(/Could not schedule the next approval check/);
+    expect(error).toHaveBeenCalledWith(
+      `[whatsapp-templates/poll] next poll not queued sa=${SUB} template=${TPL}`,
+    );
+    error.mockRestore();
+  });
+
+  it("stays pending and reports deferred when the publish is queued", async () => {
+    setSub([RESOLVABLE_SENDER]);
+    fetchCloudTemplateStatus.mockResolvedValue({ status: "pending", reason: null });
+    const { body } = await poll();
+    expect(body).toEqual({ ok: true, deferred: "pending" });
+    expect(docs.get(`subAccounts/${SUB}/whatsappTemplates/${TPL}`)?.status).toBe("pending");
   });
 });

@@ -176,8 +176,7 @@ export async function POST(
           lastSyncedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
         });
-        await reschedule(subAccountId, payload.templateId, payload.contentSid, attempts);
-        return NextResponse.json({ ok: true, deferred: "not-listed" });
+        return reschedule(ref, subAccountId, payload.templateId, payload.contentSid, attempts, "not-listed");
       }
       result = { status: cloud.status, rejectionReason: cloud.reason };
     } else {
@@ -223,8 +222,7 @@ export async function POST(
       pollAttempts: attempts,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    await reschedule(subAccountId, payload.templateId, payload.contentSid, attempts);
-    return NextResponse.json({ ok: true, deferred: "transient" });
+    return reschedule(ref, subAccountId, payload.templateId, payload.contentSid, attempts, "transient");
   }
 
   // Terminal states. Recorded against the rail that was polled, so an approval
@@ -269,20 +267,34 @@ export async function POST(
     lastSyncedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  await reschedule(subAccountId, payload.templateId, payload.contentSid, attempts);
-  return NextResponse.json({ ok: true, deferred: "pending" });
+  return reschedule(ref, subAccountId, payload.templateId, payload.contentSid, attempts, "pending");
 }
 
+/**
+ * Queue the next tick. publishCallback never throws: null means it was not
+ * queued (e.g. the daily cap). With no tick coming, `pending` would be
+ * stranded, so park the template as `failed` (re-submittable) and say why.
+ */
 async function reschedule(
+  ref: FirebaseFirestore.DocumentReference,
   subAccountId: string,
   templateId: string,
   contentSid: string,
   attempts: number,
-): Promise<void> {
-  await publishCallback({
+  deferred: string,
+): Promise<NextResponse> {
+  const queued = await publishCallback({
     pathname: `/api/sub-accounts/${subAccountId}/whatsapp-templates/poll`,
     body: { subAccountId, templateId, contentSid },
     delaySeconds: delayForAttempt(attempts),
     deduplicationId: `watpl_${subAccountId}_${templateId}_${attempts}`,
   });
+  if (queued) return NextResponse.json({ ok: true, deferred });
+  console.error(`[whatsapp-templates/poll] next poll not queued sa=${subAccountId} template=${templateId}`);
+  await ref.update({
+    status: "failed",
+    rejectionReason: "Could not schedule the next approval check. Re-submit the template to retry.",
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  return NextResponse.json({ ok: true, settled: "unscheduled" });
 }
