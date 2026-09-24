@@ -153,7 +153,7 @@ The QStash reminder is proven on #1000. Voice booking can't run in production (e
 
 ### SP12 — Prospecting
 **GHL surface:** Prospecting tool (business lookup, marketing audit report, lead capture into pipeline).
-**CrestaHQ today:** Get Leads (Outscraper maps search + enrich + import) **parked**; ApexSignal does the real pipeline externally.
+**CrestaHQ today:** Get Leads (maps search + enrich + import) **parked**; ApexSignal does the real pipeline externally.
 **Plan:** un-park Get Leads per its checklist; add the audit-report generator (site/SEO/GBP/reviews scorecard — reuse ApexGEO audit code); optional ApexSignal write-back. Report content sent to prospects stays human-gated.
 **Depends on:** SP0.
 

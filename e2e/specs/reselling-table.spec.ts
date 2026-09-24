@@ -58,6 +58,7 @@ function planDoc(): Omit<BillingPlanDoc, "createdAt" | "updatedAt"> & {
       aiSuiteEnabledByAgency: false,
       labsEnabledByAgency: false,
       reviewsAiEnabledByAgency: false,
+      prospectingEnabledByAgency: false,
     },
     status: "active",
     stripeProductId: null,

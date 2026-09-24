@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
   CheckCircle2,
   List,
+  BookmarkPlus,
   Loader2,
   LocateFixed,
   Lock,
@@ -47,20 +48,19 @@ import type { GetLeadsBusiness } from "@/types/get-leads";
 /**
  * Get Leads (EXPERIMENTAL) — prospect local businesses that might need
  * websites, SEO, or automation services. Pick a business type + location +
- * radius; results come back from an Outscraper Google Maps search with
- * email/social enrichment (1–3 min) and render on a Mapbox map + an
- * enriched list. Selected rows import as contacts (source "get-leads").
+ * radius; results come back from a Google Places search (plus an email /
+ * socials read of each business's homepage) and render on a Mapbox map + an
+ * enriched list. Selected rows import as contacts (source "prospecting").
+ * With the Prospecting gate on, "Save as list" keeps the result set as a
+ * `prospectLists` doc and every later import from it carries its listId.
  *
  * Results are ephemeral — navigate away and they're gone. Imports are the
  * durable output. Gated by `getLeadsEnabledByAgency`.
  */
 
-type SearchPhase = "idle" | "submitting" | "polling" | "done" | "failed";
+type SearchPhase = "idle" | "submitting" | "done" | "failed";
 type ResultsFilter = "all" | "no-website" | "has-email";
 type ResultsTab = "map" | "list";
-
-const POLL_INTERVAL_MS = 5_000;
-const POLL_CAP = 60; // ~5 minutes — enrichment occasionally dawdles.
 
 interface SearchOrigin {
   latitude: number;
@@ -127,6 +127,7 @@ function defaultImportTag(origin: SearchOrigin): string {
 export default function GetLeadsPage() {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
   const gateOn = subAccount?.getLeadsEnabledByAgency === true;
+  const prospectingOn = subAccount?.prospectingEnabledByAgency === true;
 
   // Service types — admin-managed via the Manage dialog. Custom additions
   // live on `getLeadsCustomTypes`; deleted built-ins on `getLeadsHiddenTypes`
@@ -173,8 +174,9 @@ export default function GetLeadsPage() {
   }, [customLabels, hiddenTypes]);
   const [locationText, setLocationText] = useState("");
   const [radiusKm, setRadiusKm] = useState<number>(10);
-  // Per-search result cap = the credit budget for one run. Defaults to the
-  // middle option so a first search can't silently spend the max.
+  // Per-search result cap (40 costs two calls against the daily search
+  // limit). Defaults to the middle option so a first search can't silently
+  // spend the max.
   const [maxResults, setMaxResults] = useState<number>(RESULT_LIMIT_OPTIONS[1]);
   const [locating, setLocating] = useState(false);
   // The confirmed search anchor — set by picking an autocomplete suggestion
@@ -214,7 +216,6 @@ export default function GetLeadsPage() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [businesses, setBusinesses] = useState<GetLeadsBusiness[]>([]);
   const [origin, setOrigin] = useState<SearchOrigin | null>(null);
-  const pollRun = useRef(0);
 
   // ── Results state ────────────────────────────────────────────────
   const [tab, setTab] = useState<ResultsTab>("map");
@@ -222,18 +223,14 @@ export default function GetLeadsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
-  // Tag applied to this import batch (alongside the constant "get-leads"
+  // Tag applied to this import batch (alongside the constant "prospecting"
   // tag). Pre-filled from the search; editable so the operator can target
   // it later in workflow triggers / broadcast audiences / voice campaigns.
   const [importTag, setImportTag] = useState("");
-
-  // Invalidate any in-flight poll loop on unmount.
-  useEffect(() => {
-    const run = pollRun;
-    return () => {
-      run.current++;
-    };
-  }, []);
+  // The saved prospect list for THIS result set (null until "Save as list").
+  // Every import after saving sends it; a new search clears it.
+  const [savedListId, setSavedListId] = useState<string | null>(null);
+  const [savingList, setSavingList] = useState(false);
 
   if (!gateOn) {
     return (
@@ -305,23 +302,19 @@ export default function GetLeadsPage() {
   }
 
   async function handleSearch() {
-    if (phase === "submitting" || phase === "polling") return;
+    if (phase === "submitting") return;
     setSearchError(null);
     setSuggestions([]);
 
     // Resolve the search origin: a picked suggestion / geolocation wins;
-    // otherwise one-shot geocode whatever was typed.
+    // otherwise one-shot geocode whatever was typed — in the browser via
+    // Mapbox when a token exists, else on the server (the route geocodes a
+    // place name sent without coordinates).
     let resolved: ResolvedLocation | null = null;
     const typed = locationText.trim();
     if (resolvedLoc && typed === resolvedLoc.label) {
       resolved = resolvedLoc;
-    } else if (typed) {
-      if (!process.env.NEXT_PUBLIC_MAPBOX_TOKEN) {
-        toast.error(
-          "Typed locations need NEXT_PUBLIC_MAPBOX_TOKEN configured — use “Use my location” instead.",
-        );
-        return;
-      }
+    } else if (typed && process.env.NEXT_PUBLIC_MAPBOX_TOKEN) {
       setPhase("submitting");
       try {
         resolved = (await fetchPlaces(typed, false))[0] ?? null;
@@ -333,28 +326,25 @@ export default function GetLeadsPage() {
         toast.error(`Couldn't find “${typed}” — try a fuller place name.`);
         return;
       }
-    } else {
+    } else if (!typed) {
       toast.error("Type a location or use “Use my location”.");
       return;
     }
 
     // Don't leak the geolocation placeholder into the Google Maps query —
     // coordinates anchor the search regardless.
-    const queryLabel = resolved.label === "Current location" ? "" : resolved.label;
+    const queryLabel = !resolved
+      ? typed
+      : resolved.label === "Current location"
+        ? ""
+        : resolved.label;
 
     setPhase("submitting");
     setBusinesses([]);
     setSelected(new Set());
     setImportedIds(new Set());
+    setSavedListId(null);
     setFilter("all");
-
-    const searchOrigin: SearchOrigin = {
-      latitude: resolved.latitude,
-      longitude: resolved.longitude,
-      label: queryLabel,
-      radiusKm,
-      businessType,
-    };
 
     try {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/get-leads/search`, {
@@ -362,81 +352,39 @@ export default function GetLeadsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           businessType,
-          latitude: searchOrigin.latitude,
-          longitude: searchOrigin.longitude,
+          latitude: resolved?.latitude,
+          longitude: resolved?.longitude,
           radiusKm,
           maxResults,
-          locationLabel: searchOrigin.label,
+          locationLabel: queryLabel,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
-        requestId?: string;
+        businesses?: GetLeadsBusiness[];
+        origin?: { latitude: number; longitude: number; label: string };
         error?: string;
       };
-      if (!res.ok || !data.ok || !data.requestId) {
-        throw new Error(data.error ?? "Couldn't start the search.");
+      if (!res.ok || !data.ok || !data.origin) {
+        throw new Error(data.error ?? "The search failed.");
       }
+      // The route echoes the origin it searched — for a server-geocoded
+      // name that's Google's formatted place name + coordinates.
+      const searchOrigin: SearchOrigin = {
+        latitude: data.origin.latitude,
+        longitude: data.origin.longitude,
+        label: data.origin.label,
+        radiusKm,
+        businessType,
+      };
       setOrigin(searchOrigin);
-      setPhase("polling");
-      void pollLoop(data.requestId, searchOrigin, ++pollRun.current);
+      setBusinesses(data.businesses ?? []);
+      setImportTag(defaultImportTag(searchOrigin));
+      setPhase("done");
+      setTab("map");
     } catch (err) {
       setPhase("failed");
-      setSearchError(
-        err instanceof Error ? err.message : "Couldn't start the search.",
-      );
-    }
-  }
-
-  async function pollLoop(
-    requestId: string,
-    searchOrigin: SearchOrigin,
-    run: number,
-  ) {
-    for (let attempt = 0; attempt < POLL_CAP; attempt++) {
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-      if (pollRun.current !== run) return; // superseded or unmounted
-
-      try {
-        const params = new URLSearchParams({
-          lat: String(searchOrigin.latitude),
-          lng: String(searchOrigin.longitude),
-          radiusKm: String(searchOrigin.radiusKm),
-        });
-        const res = await fetch(
-          `/api/sub-accounts/${subAccountId}/get-leads/search/${requestId}?${params}`,
-        );
-        const data = (await res.json().catch(() => ({}))) as {
-          ok?: boolean;
-          status?: "pending" | "success" | "failed";
-          businesses?: GetLeadsBusiness[];
-          error?: string;
-        };
-        if (pollRun.current !== run) return;
-        if (!res.ok) throw new Error(data.error ?? "Poll failed.");
-
-        if (data.status === "success") {
-          setBusinesses(data.businesses ?? []);
-          setImportTag(defaultImportTag(searchOrigin));
-          setPhase("done");
-          setTab("map");
-          return;
-        }
-        if (data.status === "failed") {
-          setPhase("failed");
-          setSearchError(data.error ?? "The search failed on the provider side.");
-          return;
-        }
-        // pending → keep looping
-      } catch {
-        // Transient poll error — keep trying until the cap.
-      }
-    }
-    if (pollRun.current === run) {
-      setPhase("failed");
-      setSearchError(
-        "The search is taking longer than expected. Try again with a smaller radius.",
-      );
+      setSearchError(err instanceof Error ? err.message : "The search failed.");
     }
   }
 
@@ -484,6 +432,7 @@ export default function GetLeadsPage() {
         body: JSON.stringify({
           businesses: rows,
           tag: importTag.trim(),
+          ...(savedListId ? { listId: savedListId } : {}),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -515,7 +464,45 @@ export default function GetLeadsPage() {
     }
   }
 
-  const searching = phase === "submitting" || phase === "polling";
+  async function handleSaveList() {
+    if (savingList || savedListId || !origin) return;
+    const typeLabel =
+      [...customOptions, ...BUSINESS_TYPES].find(
+        (t) => t.value === origin.businessType,
+      )?.label ?? origin.businessType.replace(/^custom:/, "");
+    const name = `${typeLabel} — ${origin.label || "your location"}`.slice(0, 100);
+    setSavingList(true);
+    try {
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/prospecting/lists`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          query: {
+            businessType: origin.businessType,
+            placeName: origin.label,
+            lat: origin.latitude,
+            lng: origin.longitude,
+            radiusKm: origin.radiusKm,
+          },
+          count: businesses.length,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        id?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.id) throw new Error(data.error ?? "Couldn't save the list.");
+      setSavedListId(data.id);
+      toast.success(`Saved “${name}”. Imports from these results are linked to it.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't save the list.");
+    } finally {
+      setSavingList(false);
+    }
+  }
+
+  const searching = phase === "submitting";
   const noWebsiteCount = businesses.filter((b) => !b.website).length;
   const emailCount = businesses.filter((b) => !!b.email).length;
 
@@ -659,7 +646,7 @@ export default function GetLeadsPage() {
               value={maxResults}
               onChange={(e) => setMaxResults(Number(e.target.value))}
               disabled={searching}
-              title="Caps how many businesses one search returns — and how many enrichment credits it can spend"
+              title="Caps how many businesses one search returns (every 20 results is one search against the daily limit)"
               className="flex h-9 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 text-foreground dark:bg-input/30 [&_option]:bg-background [&_option]:text-foreground"
             >
               {RESULT_LIMIT_OPTIONS.map((n) => (
@@ -690,12 +677,11 @@ export default function GetLeadsPage() {
           </Button>
         </div>
 
-        {phase === "polling" && (
+        {searching && (
           <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Searching Google Maps and enriching contact details (emails,
-            socials) for up to {maxResults} businesses — usually takes 1–3
-            minutes. Leave this page open.
+            Searching Google Maps and looking up emails and socials on each
+            business&apos;s website — usually well under a minute.
           </p>
         )}
         {phase === "failed" && searchError && (
@@ -723,6 +709,25 @@ export default function GetLeadsPage() {
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {prospectingOn && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSaveList}
+                  disabled={savingList || savedListId !== null}
+                  title="Keep this search as a prospect list (Sidebar → Prospecting)"
+                >
+                  {savedListId ? (
+                    <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                  ) : savingList ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <BookmarkPlus className="mr-1 h-3.5 w-3.5" />
+                  )}
+                  {savedListId ? "Saved as list" : "Save as list"}
+                </Button>
+              )}
               <Label htmlFor="gl-tag" className="whitespace-nowrap">
                 Tag as
               </Label>
@@ -733,7 +738,7 @@ export default function GetLeadsPage() {
                 disabled={importing}
                 placeholder="e.g. plumbers-brisbane"
                 className="h-8 w-52 text-sm"
-                title="Imported contacts get this tag (plus 'get-leads') — target it in Workflows, Broadcasts, and voice campaigns"
+                title="Imported contacts get this tag (plus 'prospecting') — target it in Workflows, Broadcasts, and voice campaigns"
               />
               <Button
                 type="button"

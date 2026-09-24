@@ -1,12 +1,14 @@
 /**
  * Get Leads (EXPERIMENTAL) — the normalized business listing returned by the
- * search/poll routes and consumed by the page, map, and import route.
+ * search route and consumed by the page, map, and import route.
  * Ephemeral wire format only: search results are never persisted (imports
  * create ordinary contacts).
  */
 export interface GetLeadsBusiness {
-  /** Outscraper place_id (or a synthesized fallback) — stable row key for selection. */
+  /** Google Places id (or a synthesized fallback) — stable row key for selection. */
   placeId: string;
+  /** Google Places `id` when the row carried one; null when `placeId` is synthesized. */
+  googlePlaceId: string | null;
   name: string;
   category: string | null;
   fullAddress: string | null;

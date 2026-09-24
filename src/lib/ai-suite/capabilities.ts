@@ -427,9 +427,13 @@ const FEATURE_GATES: Record<
     field: "reviewsAiEnabledByAgency",
     label: "Reviews AI (sentiment and reply drafts)",
   },
+  prospecting: {
+    field: "prospectingEnabledByAgency",
+    label: "Prospecting (saved prospect lists and reports)",
+  },
   // Get Leads is PARKED — while the flag is on the assistant can't flip (or
   // report) its gate, matching the hidden Manage-dialog toggle. When
-  // un-parked, enabling doesn't require OUTSCRAPER_API_KEY to be set —
+  // un-parked, enabling doesn't require GOOGLE_PLACES_API_KEY to be set —
   // searches just 503 with a friendly message until the key exists.
   ...(GET_LEADS_PARKED
     ? {}

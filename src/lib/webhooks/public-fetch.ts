@@ -19,7 +19,8 @@ import {
  *   - Redirects are never followed; a 3xx comes back as the response. A
  *     public URL redirecting to an internal one is the classic bypass of a
  *     check made only on the first URL.
- *   - The response body is capped at `MAX_RESPONSE_BYTES`.
+ *   - The response body is capped at `MAX_RESPONSE_BYTES` (or a smaller
+ *     `maxBytes`); a larger body rejects.
  *
  * Throws `NonPublicUrlError` (via the lookup, or directly for IP literals,
  * which never reach a lookup) when the destination is refused.
@@ -33,6 +34,8 @@ export interface PublicFetchInit {
   headers?: Record<string, string>;
   body?: string;
   signal?: AbortSignal;
+  /** Tighter body cap than the default `MAX_RESPONSE_BYTES`. */
+  maxBytes?: number;
 }
 
 export async function publicFetch(
@@ -43,10 +46,13 @@ export async function publicFetch(
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new NonPublicUrlError(url.hostname || input);
   }
+  const maxBytes = Math.min(init.maxBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES);
   const guard = ssrfGuardEnabled();
   // IP literals skip the socket lookup entirely, so check them (and
-  // `localhost`-style names) up front.
-  if (guard) await resolvePublicAddresses(url.hostname);
+  // `localhost`-style names) up front. dns.lookup takes no signal, so the
+  // caller's deadline is raced against it here (the connect-time lookup is
+  // covered by the request's own `signal`).
+  if (guard) await untilAborted(resolvePublicAddresses(url.hostname), init.signal);
 
   const mod = url.protocol === "https:" ? https : http;
   return new Promise<Response>((resolve, reject) => {
@@ -68,8 +74,12 @@ export async function publicFetch(
         let size = 0;
         res.on("data", (chunk: Buffer) => {
           size += chunk.length;
-          if (size > MAX_RESPONSE_BYTES) {
-            req.destroy(new Error("Response body too large."));
+          if (size > maxBytes) {
+            // Reject directly: when the whole body is already buffered,
+            // destroying the finished request emits no error, and "end"
+            // would otherwise resolve it (a later resolve is a no-op).
+            reject(new Error("Response body too large."));
+            req.destroy();
             return;
           }
           chunks.push(chunk);
@@ -101,5 +111,23 @@ export async function publicFetch(
     req.on("error", reject);
     if (init.body !== undefined) req.write(init.body);
     req.end();
+  });
+}
+
+/**
+ * Settles with `work`, or rejects with `signal.reason` as soon as the signal
+ * fires. The abandoned lookup still finishes in the background; its result
+ * is ignored.
+ */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 }

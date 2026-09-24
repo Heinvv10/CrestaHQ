@@ -333,18 +333,34 @@ export interface SubAccountDoc {
   socialPlannerEnabledByAgency?: boolean;
   /**
    * Agency-controlled gate for Get Leads (EXPERIMENTAL) — the local-business
-   * prospecting tool (Outscraper-powered Google Maps search + enrichment,
+   * prospecting tool (Google Places search + homepage email/social lookup,
    * results on a Mapbox map, select-and-import into Contacts). Only the
    * agency owner can flip it (PATCH /api/agency/sub-accounts/[id]/
    * feature-gates). When `false` (or undefined on legacy docs): the Get Leads
    * sidebar entry renders a "Locked by your agency" state and the
-   * search/poll/import routes 403. Gated because every search spends the
-   * agency's shared Outscraper credits. No tear-down on disable — results are
+   * search/import routes 403. Gated because every search spends the
+   * agency's shared Places search quota (a hard daily cap). No tear-down on disable — results are
    * ephemeral and imported contacts are ordinary contacts. Defaults to
    * `false` at creation (explicit allowlist). Read `=== true` so legacy docs
    * stay locked.
    */
   getLeadsEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for Prospecting — saved prospect lists (and, from
+   * Prospecting PR 2, audit reports). Only the agency owner can flip it
+   * (PATCH /api/agency/sub-accounts/[id]/feature-gates). When `false` (or
+   * undefined on legacy docs): the Prospecting sidebar entry is locked or
+   * hidden and every `/api/sub-accounts/[id]/prospecting/*` route, plus a Get
+   * Leads import that names a list, answers 403 `gate_off`. Defaults to
+   * `false` at creation. Read `=== true`. In `PLAN_GATE_KEYS`.
+   */
+  prospectingEnabledByAgency?: boolean;
+  /**
+   * Monthly prospect-report quota, set by the agency owner (integer 0–1000).
+   * Undefined reads as `PROSPECT_REPORT_QUOTA_DEFAULT` (50) — see
+   * lib/prospecting/quota.ts. Enforced by the report route (Prospecting PR 2).
+   */
+  prospectingReportQuota?: number;
   /**
    * Get Leads: operator-defined custom service types shown in the business-
    * type picker alongside the curated list. Plain display labels (each
@@ -552,6 +568,7 @@ export interface SubAccountDoc {
   socialPlannerHiddenWhenDisabled?: boolean;
   communityHiddenWhenDisabled?: boolean;
   getLeadsHiddenWhenDisabled?: boolean;
+  prospectingHiddenWhenDisabled?: boolean;
   aiSuiteHiddenWhenDisabled?: boolean;
   labsHiddenWhenDisabled?: boolean;
   paymentsHiddenWhenDisabled?: boolean;

@@ -63,6 +63,12 @@ interface PatchBody {
   aiSuiteModel?: "opus" | "sonnet";
   labsEnabled?: boolean;
   getLeadsEnabled?: boolean;
+  prospectingEnabled?: boolean;
+  /**
+   * Monthly prospect-report quota (integer 0–1000). Not a gate: writes
+   * directly like the hide flags. Anything else is refused with a 400.
+   */
+  prospectingReportQuota?: number;
   paymentsEnabled?: boolean;
   webinar1Enabled?: boolean;
   googleEnabled?: boolean;
@@ -84,6 +90,7 @@ interface PatchBody {
   socialPlannerHiddenWhenDisabled?: boolean;
   communityHiddenWhenDisabled?: boolean;
   getLeadsHiddenWhenDisabled?: boolean;
+  prospectingHiddenWhenDisabled?: boolean;
   aiSuiteHiddenWhenDisabled?: boolean;
   labsHiddenWhenDisabled?: boolean;
   paymentsHiddenWhenDisabled?: boolean;
@@ -136,6 +143,21 @@ export async function PATCH(
   }
   const wantsLabs = typeof body.labsEnabled === "boolean";
   const wantsGetLeads = typeof body.getLeadsEnabled === "boolean";
+  const wantsProspecting = typeof body.prospectingEnabled === "boolean";
+  const wantsProspectingQuota = body.prospectingReportQuota !== undefined;
+  if (
+    wantsProspectingQuota &&
+    !(
+      Number.isInteger(body.prospectingReportQuota) &&
+      (body.prospectingReportQuota as number) >= 0 &&
+      (body.prospectingReportQuota as number) <= 1000
+    )
+  ) {
+    return NextResponse.json(
+      { error: "prospectingReportQuota must be a whole number from 0 to 1000." },
+      { status: 400 }
+    );
+  }
   const wantsPayments = typeof body.paymentsEnabled === "boolean";
   const wantsWebinar1 = typeof body.webinar1Enabled === "boolean";
   const wantsGoogle = typeof body.googleEnabled === "boolean";
@@ -151,6 +173,8 @@ export async function PATCH(
     typeof body.communityHiddenWhenDisabled === "boolean";
   const wantsGetLeadsHidden =
     typeof body.getLeadsHiddenWhenDisabled === "boolean";
+  const wantsProspectingHidden =
+    typeof body.prospectingHiddenWhenDisabled === "boolean";
   const wantsAiSuiteHidden =
     typeof body.aiSuiteHiddenWhenDisabled === "boolean";
   const wantsLabsHidden = typeof body.labsHiddenWhenDisabled === "boolean";
@@ -183,6 +207,8 @@ export async function PATCH(
     !wantsAiSuiteModel &&
     !wantsLabs &&
     !wantsGetLeads &&
+    !wantsProspecting &&
+    !wantsProspectingQuota &&
     !wantsPayments &&
     !wantsWebinar1 &&
     !wantsGoogle &&
@@ -193,6 +219,7 @@ export async function PATCH(
     !wantsSocialPlannerHidden &&
     !wantsCommunityHidden &&
     !wantsGetLeadsHidden &&
+    !wantsProspectingHidden &&
     !wantsAiSuiteHidden &&
     !wantsLabsHidden &&
     !wantsPaymentsHidden &&
@@ -291,6 +318,9 @@ export async function PATCH(
   if (typeof body.getLeadsEnabled === "boolean") {
     gates.getLeadsEnabledByAgency = body.getLeadsEnabled;
   }
+  if (typeof body.prospectingEnabled === "boolean") {
+    gates.prospectingEnabledByAgency = body.prospectingEnabled;
+  }
   if (typeof body.paymentsEnabled === "boolean") {
     gates.paymentsEnabledByAgency = body.paymentsEnabled;
   }
@@ -360,6 +390,13 @@ export async function PATCH(
   if (wantsGetLeadsHidden) {
     hiddenUpdates.getLeadsHiddenWhenDisabled = body.getLeadsHiddenWhenDisabled;
   }
+  if (wantsProspectingHidden) {
+    hiddenUpdates.prospectingHiddenWhenDisabled =
+      body.prospectingHiddenWhenDisabled;
+  }
+  if (wantsProspectingQuota) {
+    hiddenUpdates.prospectingReportQuota = body.prospectingReportQuota;
+  }
   if (wantsAiSuiteHidden) {
     hiddenUpdates.aiSuiteHiddenWhenDisabled = body.aiSuiteHiddenWhenDisabled;
   }
@@ -411,6 +448,12 @@ export async function PATCH(
     ...(wantsAiSuiteModel ? { aiSuiteModel: body.aiSuiteModel } : {}),
     ...(wantsLabs ? { labsEnabled: body.labsEnabled } : {}),
     ...(wantsGetLeads ? { getLeadsEnabled: body.getLeadsEnabled } : {}),
+    ...(wantsProspecting
+      ? { prospectingEnabled: body.prospectingEnabled }
+      : {}),
+    ...(wantsProspectingQuota
+      ? { prospectingReportQuota: body.prospectingReportQuota }
+      : {}),
     ...(wantsWebinar1 ? { webinar1Enabled: body.webinar1Enabled } : {}),
     ...(wantsGoogle ? { googleEnabled: body.googleEnabled } : {}),
     ...(wantsGoogleCalendar
@@ -436,6 +479,9 @@ export async function PATCH(
       : {}),
     ...(wantsGetLeadsHidden
       ? { getLeadsHiddenWhenDisabled: body.getLeadsHiddenWhenDisabled }
+      : {}),
+    ...(wantsProspectingHidden
+      ? { prospectingHiddenWhenDisabled: body.prospectingHiddenWhenDisabled }
       : {}),
     ...(wantsAiSuiteHidden
       ? { aiSuiteHiddenWhenDisabled: body.aiSuiteHiddenWhenDisabled }

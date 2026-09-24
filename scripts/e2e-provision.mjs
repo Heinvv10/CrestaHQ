@@ -228,6 +228,7 @@ async function ensureSubAccount(name, slug) {
       websiteEnabledByAgency: false,
       communityEnabledByAgency: false,
       getLeadsEnabledByAgency: false,
+      prospectingEnabledByAgency: false,
       missedCallTextBackEnabledByAgency: false,
       labsEnabledByAgency: false,
       paymentsEnabledByAgency: false,

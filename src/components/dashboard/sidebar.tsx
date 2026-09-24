@@ -29,6 +29,7 @@ import {
   ScrollText,
   MessagesSquare,
   Radar,
+  Target,
   Share2,
   GraduationCap,
   Sparkles,
@@ -91,6 +92,7 @@ const SUB_ACCOUNT_NAV: NavItem[] = [
   ...(GET_LEADS_PARKED
     ? []
     : [{ href: "/get-leads", label: "Get Leads", icon: Radar, enabled: true }]),
+  { href: "/prospecting", label: "Prospecting", icon: Target, enabled: true },
   { href: "/pipeline", label: "Pipeline", icon: GitBranch, enabled: true },
   { href: "/calendar", label: "Calendar", icon: Calendar, enabled: true },
   {
@@ -190,6 +192,9 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   const [communityGate, setCommunityGate] = useState<boolean | null>(null);
   const [aiSuiteGate, setAiSuiteGate] = useState<boolean | null>(null);
   const [getLeadsGate, setGetLeadsGate] = useState<boolean | null>(null);
+  const [prospectingGate, setProspectingGate] = useState<boolean | null>(
+    null
+  );
   const [labsGate, setLabsGate] = useState<boolean | null>(null);
   const [paymentsGate, setPaymentsGate] = useState<boolean | null>(null);
   const [paymentsHidden, setPaymentsHidden] = useState(true);
@@ -204,6 +209,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   const [socialHidden, setSocialHidden] = useState(false);
   const [communityHidden, setCommunityHidden] = useState(false);
   const [getLeadsHidden, setGetLeadsHidden] = useState(false);
+  const [prospectingHidden, setProspectingHidden] = useState(false);
   const [aiSuiteHidden, setAiSuiteHidden] = useState(false);
   const [labsHidden, setLabsHidden] = useState(false);
   useEffect(() => {
@@ -215,6 +221,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
       setCommunityGate(null);
       setAiSuiteGate(null);
       setGetLeadsGate(null);
+      setProspectingGate(null);
       setLabsGate(null);
       setPaymentsGate(null);
       setWebinar1Gate(null);
@@ -232,6 +239,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
         // agency owner explicitly enabled it (legacy/unset reads as off).
         setAiSuiteGate(data?.aiSuiteEnabledByAgency === true);
         setGetLeadsGate(data?.getLeadsEnabledByAgency === true);
+        setProspectingGate(data?.prospectingEnabledByAgency === true);
         setLabsGate(data?.labsEnabledByAgency === true);
         setPaymentsGate(data?.paymentsEnabledByAgency === true);
         setWebinar1Gate(data?.webinar1EnabledByAgency === true);
@@ -241,6 +249,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
         setSocialHidden(data?.socialPlannerHiddenWhenDisabled !== false);
         setCommunityHidden(data?.communityHiddenWhenDisabled !== false);
         setGetLeadsHidden(data?.getLeadsHiddenWhenDisabled !== false);
+        setProspectingHidden(data?.prospectingHiddenWhenDisabled !== false);
         setAiSuiteHidden(data?.aiSuiteHiddenWhenDisabled !== false);
         setLabsHidden(data?.labsHiddenWhenDisabled !== false);
         setPaymentsHidden(data?.paymentsHiddenWhenDisabled !== false);
@@ -253,6 +262,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
         setCommunityGate(null);
         setAiSuiteGate(null);
         setGetLeadsGate(null);
+        setProspectingGate(null);
         setLabsGate(null);
         setPaymentsGate(null);
         setWebinar1Gate(null);
@@ -435,6 +445,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
                 (item.href === "/community" && communityGate === false) ||
                 (item.href === "/ai-suite" && aiSuiteGate === false) ||
                 (item.href === "/get-leads" && getLeadsGate === false) ||
+                (item.href === "/prospecting" && prospectingGate === false) ||
                 (item.href === "/labs" && labsGate === false) ||
                 (item.href === "/checkout" && paymentsGate === false) ||
                 (item.href === "/webinars" && webinar1Gate === false);
@@ -456,6 +467,9 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
                 (item.href === "/get-leads" &&
                   getLeadsGate === false &&
                   getLeadsHidden) ||
+                (item.href === "/prospecting" &&
+                  prospectingGate === false &&
+                  prospectingHidden) ||
                 (item.href === "/ai-suite" &&
                   aiSuiteGate === false &&
                   aiSuiteHidden) ||

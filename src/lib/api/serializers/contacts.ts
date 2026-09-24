@@ -3,6 +3,7 @@ import "server-only";
 import type { Timestamp } from "firebase-admin/firestore";
 import type { ContactAttribution } from "@/types/contacts";
 import type { CustomFieldValue } from "@/types/custom-fields";
+import type { ContactProspecting } from "@/types/prospecting";
 
 /**
  * Public-API wire shape for Contact. Frozen contract — every change here
@@ -44,8 +45,21 @@ export interface ContactApiObject {
   custom_fields: Record<string, CustomFieldValue> | null;
   attribution: ContactAttributionApiObject | null;
   location: ContactLocationApiObject | null;
+  /** Prospect facts (Prospecting module); null when the contact has none. */
+  prospecting: ContactProspectingApiObject | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ContactProspectingApiObject {
+  list_id: string | null;
+  place_id: string | null;
+  website: string | null;
+  rating: number | null;
+  reviews_count: number | null;
+  category: string | null;
+  approached_at: string | null;
+  last_report_id: string | null;
 }
 
 export interface ContactAttributionApiObject {
@@ -124,6 +138,21 @@ function serializeAttribution(
   };
 }
 
+function serializeProspecting(p: unknown): ContactProspectingApiObject | null {
+  if (!p || typeof p !== "object" || Array.isArray(p)) return null;
+  const v = p as ContactProspecting;
+  return {
+    list_id: v.listId ?? null,
+    place_id: v.placeId ?? null,
+    website: v.website ?? null,
+    rating: v.rating ?? null,
+    reviews_count: v.reviewsCount ?? null,
+    category: v.category ?? null,
+    approached_at: v.approachedAt ? tsToIso(v.approachedAt) : null,
+    last_report_id: v.lastReportId ?? null,
+  };
+}
+
 /**
  * Serialize a raw Firestore Contact (from Admin SDK read) into the public
  * API shape. `mode` is the request's mode; gets stamped as `livemode`.
@@ -163,6 +192,7 @@ export function serializeContactForApi(
             lng: (data.lng as number | null) ?? null,
           }
         : null,
+    prospecting: serializeProspecting(data.prospecting),
     created_at: tsToIso(data.createdAt),
     updated_at: tsToIso(data.updatedAt),
   };
@@ -291,19 +321,84 @@ export function parseContactCreate(raw: unknown): ParseResult<ContactCreateInput
   };
 }
 
+/** A PATCH body: any create field, plus the `prospecting` map. */
+export type ContactPatchInput = Partial<ContactCreateInput> & {
+  prospecting?: ContactProspecting;
+};
+
+const PROSPECTING_STRINGS = {
+  list_id: ["listId", 200],
+  place_id: ["placeId", 200],
+  category: ["category", 200],
+  website: ["website", 300],
+} as const;
+const PROSPECTING_KEYS = new Set([
+  ...Object.keys(PROSPECTING_STRINGS),
+  "rating",
+  "reviews_count",
+  "approached_at",
+  "last_report_id",
+]);
+
 /**
- * Parse + validate a PATCH body. Every field is optional; unknown fields
- * are tolerated but ignored. Returns the subset that was provided as a
- * partial update payload.
+ * The `prospecting` map (snake_case on the wire). Only the eight known keys;
+ * `approached_at` / `last_report_id` are server-owned and refused when sent
+ * at all (null included). Merged into the stored map field by field; the
+ * route checks the gate and that `list_id` names one of the key's lists.
+ */
+function parseProspecting(v: unknown): ParseResult<ContactProspecting> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) {
+    return { ok: false, error: "`prospecting` must be an object." };
+  }
+  const p = v as Record<string, unknown>;
+  const unknownKey = Object.keys(p).find((k) => !PROSPECTING_KEYS.has(k));
+  if (unknownKey !== undefined) {
+    return { ok: false, error: `\`prospecting.${unknownKey}\` is not a known field.` };
+  }
+  const out: ContactProspecting = {};
+  for (const [key, [field, max]] of Object.entries(PROSPECTING_STRINGS)) {
+    if (p[key] === undefined) continue;
+    if (typeof p[key] !== "string" || (p[key] as string).length > max) {
+      return { ok: false, error: `\`prospecting.${key}\` must be a string (≤ ${max} chars).` };
+    }
+    out[field] = p[key] as string;
+  }
+  if (out.listId !== undefined && (!out.listId.trim() || out.listId.includes("/"))) {
+    return { ok: false, error: "`prospecting.list_id` must be a list id." };
+  }
+  if (p.rating !== undefined) {
+    if (typeof p.rating !== "number" || !(p.rating >= 0 && p.rating <= 5)) {
+      return { ok: false, error: "`prospecting.rating` must be a number from 0 to 5." };
+    }
+    out.rating = p.rating;
+  }
+  if (p.reviews_count !== undefined) {
+    if (!Number.isInteger(p.reviews_count) || (p.reviews_count as number) < 0) {
+      return { ok: false, error: "`prospecting.reviews_count` must be a non-negative integer." };
+    }
+    out.reviewsCount = p.reviews_count as number;
+  }
+  for (const key of ["approached_at", "last_report_id"]) {
+    if (key in p) {
+      return { ok: false, error: `\`prospecting.${key}\` is set by LeadStack and cannot be written.` };
+    }
+  }
+  return { ok: true, value: out };
+}
+
+/**
+ * Parse + validate a PATCH body. Every field is optional; unknown top-level
+ * fields are tolerated but ignored (unknown keys INSIDE `prospecting` are
+ * refused). Returns the subset that was provided as a partial update payload.
  */
 export function parseContactPatch(
   raw: unknown,
-): ParseResult<Partial<ContactCreateInput>> {
+): ParseResult<ContactPatchInput> {
   if (!raw || typeof raw !== "object") {
     return { ok: false, error: "Body must be a JSON object." };
   }
   const b = raw as Record<string, unknown>;
-  const patch: Partial<ContactCreateInput> = {};
+  const patch: ContactPatchInput = {};
 
   if (b.name !== undefined) {
     const v = asString(b.name, MAX_NAME);
@@ -360,6 +455,11 @@ export function parseContactPatch(
       return { ok: false, error: "`territory_id` must be a string." };
     }
     patch.territoryId = v.length === 0 ? null : v;
+  }
+  if (b.prospecting !== undefined) {
+    const v = parseProspecting(b.prospecting);
+    if (!v.ok) return { ok: false, error: v.error };
+    patch.prospecting = v.value;
   }
 
   return { ok: true, value: patch };
