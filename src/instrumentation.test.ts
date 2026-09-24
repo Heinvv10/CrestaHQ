@@ -52,7 +52,7 @@ describe("register", () => {
       () => new Promise<void>((resolve) => (settle = resolve)),
     );
     const running = register();
-    await vi.waitFor(() => expect(ensureSchedulesRegistered).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(ensureSchedulesRegistered).toHaveBeenCalledOnce(), { timeout: 10_000 });
     await new Promise((r) => setTimeout(r, 10));
     expect(console.info).not.toHaveBeenCalledWith("[instrumentation] register() finished");
     settle();

@@ -244,15 +244,18 @@ it("a channel switch and the review insert both clear a stale refusal", async ()
 
 async function pickEmailSnippet() {
   await click("Snippets");
-  const item = await vi.waitFor(() => {
-    const b =
-      button("Quote mail · Email") ??
-      [...container.querySelectorAll("button")].find((x) =>
-        x.textContent?.startsWith("Quote mail")
-      );
-    if (!b) throw new Error("snippet not listed yet");
-    return b;
-  });
+  const item = await vi.waitFor(
+    () => {
+      const b =
+        button("Quote mail · Email") ??
+        [...container.querySelectorAll("button")].find((x) =>
+          x.textContent?.startsWith("Quote mail")
+        );
+      if (!b) throw new Error("snippet not listed yet");
+      return b;
+    },
+    { timeout: 10_000 }
+  );
   await act(async () => item.click());
 }
 

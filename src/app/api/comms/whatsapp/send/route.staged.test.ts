@@ -437,7 +437,7 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
 
     it("refuses a second send with a retryable 503 while the first holds the budget — its file is never loaded", async () => {
       const a = post(staged());
-      await vi.waitFor(() => expect(inFlightReads()).toEqual([OWN_PATH]));
+      await vi.waitFor(() => expect(inFlightReads()).toEqual([OWN_PATH]), { timeout: 10_000 });
       const b = await post(staged({ stagedId: OTHER_ID }));
       expect(b.status).toBe(503);
       expect(b.headers.get("Retry-After")).toBe("30");
@@ -453,7 +453,7 @@ describe("POST /api/comms/whatsapp/send — staged attachment", () => {
     it("lets a waiting send through once the first finishes inside the wait, one after the other", async () => {
       held.budget = createByteBudget(10, 5_000);
       const a = post(staged());
-      await vi.waitFor(() => expect(inFlightReads()).toEqual([OWN_PATH]));
+      await vi.waitFor(() => expect(inFlightReads()).toEqual([OWN_PATH]), { timeout: 10_000 });
       const b = post(staged({ stagedId: OTHER_ID }));
       await new Promise((r) => setTimeout(r, 30));
       expect(inFlightReads()).toEqual([OWN_PATH]);

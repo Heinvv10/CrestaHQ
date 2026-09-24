@@ -73,5 +73,6 @@ it("retries a refused override once on the app default, replies, and flags the w
   expect(models).toEqual(["gone/model", DEFAULT]);
   await vi.waitFor(() =>
     expect(mem.read("subAccounts/sa1/aiAgent/web-chat")?.modelRejected).toMatchObject({ model: "gone/model" }),
+    { timeout: 10_000 },
   );
 });

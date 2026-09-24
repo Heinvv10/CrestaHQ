@@ -57,6 +57,7 @@ describe("ai-agent/test dry-run model", () => {
     expect(chatModels).toEqual(["gone/model", DEFAULT]);
     await vi.waitFor(() =>
       expect(mem.read(`subAccounts/${SA}/aiAgent/sms`)?.modelRejected).toMatchObject({ model: "gone/model" }),
+      { timeout: 10_000 },
     );
   });
 

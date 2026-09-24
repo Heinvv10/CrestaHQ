@@ -204,6 +204,10 @@ say "Lint + tenancy check"
 pnpm lint || die "lint"
 
 say "Typecheck"
+# tsconfig includes .next/types, which the PREVIOUS build generated. When a
+# route has since been deleted, its stale entry fails tsc (TS2307) although the
+# code is fine. Next regenerates it; `pnpm build` below wipes .next anyway.
+rm -rf .next/types
 pnpm exec tsc --noEmit || die "typecheck"
 
 if [ "$SKIP_TESTS" -eq 1 ]; then

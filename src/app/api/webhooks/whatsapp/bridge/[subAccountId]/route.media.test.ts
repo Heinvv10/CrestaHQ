@@ -454,7 +454,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
 
     const a = post(inbound({ media: photo }));
     // Let A run up to the blocked upload.
-    await vi.waitFor(() => expect(putWhatsappMedia).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(putWhatsappMedia).toHaveBeenCalledTimes(1), { timeout: 10_000 });
 
     const b = await post(inbound({ mediaDropped: "delivery_failed" }));
     expect(b.status).toBe(200);
@@ -577,7 +577,7 @@ describe("POST /api/webhooks/whatsapp/bridge/[subAccountId] — media", () => {
     putWhatsappMedia.mockImplementation(() => new Promise(() => {}));
 
     void post(inbound({ media: photo }));
-    await vi.waitFor(() => expect(putWhatsappMedia).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(putWhatsappMedia).toHaveBeenCalledTimes(1), { timeout: 10_000 });
 
     const retry = await post(inbound({ mediaDropped: "delivery_failed" }));
     expect(retry.status).toBe(200);

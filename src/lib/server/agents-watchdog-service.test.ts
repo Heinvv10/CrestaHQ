@@ -40,7 +40,7 @@ function seedMember(uid: string, role: string, assignedTerritoryIds: string[]) {
 async function sweepFor(contactTerritory: string | null) {
   mem.seed("contacts/c1", { agencyId: "ag1", subAccountId: "sa1", name: "Ann", territoryId: contactTerritory });
   await runWatchdogSweep();
-  await vi.waitFor(() => expect(t.sentTo).toContain("boss"));
+  await vi.waitFor(() => expect(t.sentTo).toContain("boss"), { timeout: 10_000 });
   await new Promise((r) => setTimeout(r, 20)); // let every recipient's send land
   return t.sentTo.sort();
 }

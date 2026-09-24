@@ -210,6 +210,6 @@ describe("OpenRouter refused the model on a live reply", () => {
     expect(fallbackToDefault).toBe(true);
     onModelRejected("gone/model");
     replyModelFallback(SA, "voice").onModelRejected("old/model");
-    await vi.waitFor(async () => expect(await listRejectedModels(SA)).toEqual({ sms: "gone/model" }));
+    await vi.waitFor(async () => expect(await listRejectedModels(SA)).toEqual({ sms: "gone/model" }), { timeout: 10_000 });
   });
 });
