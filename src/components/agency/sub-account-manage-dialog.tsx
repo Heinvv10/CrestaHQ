@@ -41,7 +41,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
-import { prospectReportQuota } from "@/lib/prospecting/quota";
+import { parseProspectReportQuota, prospectReportQuota } from "@/lib/prospecting/quota";
 import { SubAccountBillingSection } from "@/components/agency/sub-account-billing-section";
 import { SubAccountUsageSection } from "@/components/agency/sub-account-usage-section";
 import { effectiveBillingState } from "@/lib/billing/status";
@@ -315,11 +315,8 @@ function ManageDialogBody({
   const metaUnconfigured = metaConfigured === false;
 
   async function handleSave() {
-    const quota = Number(prospectingQuota.trim());
-    if (
-      prospectingQuotaDirty &&
-      !(Number.isInteger(quota) && quota >= 0 && quota <= 1000)
-    ) {
+    const quota = parseProspectReportQuota(prospectingQuota);
+    if (prospectingQuotaDirty && quota === null) {
       toast.error("Monthly report quota must be a whole number from 0 to 1000.");
       return;
     }
@@ -398,7 +395,8 @@ function ManageDialogBody({
       if (labsDirty) payload.labsEnabled = labsEnabled;
       if (getLeadsDirty) payload.getLeadsEnabled = getLeadsEnabled;
       if (prospectingDirty) payload.prospectingEnabled = prospectingEnabled;
-      if (prospectingQuotaDirty) payload.prospectingReportQuota = quota;
+      if (prospectingQuotaDirty && quota !== null)
+        payload.prospectingReportQuota = quota;
       if (broadcastsHiddenDirty)
         payload.broadcastsHiddenWhenDisabled = broadcastsHidden;
       if (websiteHiddenDirty) payload.websiteHiddenWhenDisabled = websiteHidden;

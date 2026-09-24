@@ -15,3 +15,14 @@ export function prospectReportQuota(
     ? sub.prospectingReportQuota
     : PROSPECT_REPORT_QUOTA_DEFAULT;
 }
+
+/**
+ * The Manage dialog's quota field: digits only (after trimming), 0–1000.
+ * `Number()` alone would accept "", " ", "1e2" and "0x10". Null = refuse.
+ */
+export function parseProspectReportQuota(input: string): number | null {
+  const t = input.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n <= 1000 ? n : null;
+}

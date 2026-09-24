@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROSPECT_REPORT_QUOTA_DEFAULT, prospectReportQuota } from "./quota";
+import { PROSPECT_REPORT_QUOTA_DEFAULT, parseProspectReportQuota, prospectReportQuota } from "./quota";
 
 describe("prospectReportQuota", () => {
   it("defaults to 50 when the sub-account has no quota set", () => {
@@ -11,4 +11,23 @@ describe("prospectReportQuota", () => {
     expect(prospectReportQuota({ prospectingReportQuota: 120 })).toBe(120);
     expect(prospectReportQuota({ prospectingReportQuota: 0 })).toBe(0);
   });
+});
+
+describe("parseProspectReportQuota (the Manage dialog's quota field)", () => {
+  it.each([
+    ["0", 0],
+    ["50", 50],
+    [" 120 ", 120],
+    ["1000", 1000],
+    ["007", 7],
+  ])("accepts %j as %i", (input, expected) => {
+    expect(parseProspectReportQuota(input)).toBe(expected);
+  });
+
+  it.each(["", " ", "1e2", "0x10", "12.0", "1.5", "-1", "+5", "1001", "abc", "5 0", "Infinity"])(
+    "refuses %j",
+    (input) => {
+      expect(parseProspectReportQuota(input)).toBeNull();
+    },
+  );
 });
