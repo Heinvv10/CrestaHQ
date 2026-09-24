@@ -116,6 +116,48 @@ describe("refusals before any capability code runs", () => {
     spy.mockRestore();
   });
 
+  it.each([
+    "my_access",
+    "open_workspace",
+    "invite_member",
+    "create_community",
+    "research_website_reference",
+    "get_website_prefill",
+    "create_website",
+    "check_website_status",
+    "create_webhook",
+    "update_webhook_url",
+    "send_webhook_test",
+  ])("spec-excluded %s → not_available, never executed", async (name) => {
+    const real = AI_SUITE_CAPABILITIES.find((c) => c.name === name)!;
+    const spy = vi.spyOn(real, "execute");
+    expect(await dispatchAgentTool(auth, name, {})).toMatchObject({
+      ok: false,
+      code: "not_available",
+    });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("an agency-level capability any role satisfies → not_available (level guard alone)", async () => {
+    const cap = inject({
+      name: "__fixture_agency",
+      level: "agency",
+      requiredRole: "subAccountMember",
+    });
+    expect(await dispatchAgentTool(auth, "__fixture_agency", {})).toMatchObject({
+      code: "not_available",
+    });
+    expect(cap.execute).not.toHaveBeenCalled();
+  });
+
+  it("refusals are fresh objects, not a shared mutable one", async () => {
+    const a = await dispatchAgentTool(auth, "no_such_tool", {});
+    const b = await dispatchAgentTool(auth, "no_such_tool", {});
+    expect(a).toEqual(b);
+    expect(a).not.toBe(b);
+  });
+
   it("agency-level and unknown names get the same not_available response", async () => {
     const results = await Promise.all(
       ["list_sub_accounts", "find_contacts_in_sub_account", "no_such_tool"].map((n) =>
@@ -220,6 +262,41 @@ describe("execution", () => {
       httpStatus: 400,
       message: "That contact isn't in this workspace.",
     });
+  });
+
+  it("a throw before execute (the gate read) → internal_error 500, logged", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const cap = inject({ name: "__fixture_read" });
+    const doc = vi.spyOn(mem.db, "doc").mockImplementation(() => {
+      throw new Error("firestore unavailable");
+    });
+    const r = await dispatchAgentTool(auth, "__fixture_read", {});
+    doc.mockRestore();
+    expect(r).toEqual({
+      ok: false,
+      code: "internal_error",
+      httpStatus: 500,
+      message: "The tool failed to run.",
+    });
+    expect(logged).toHaveBeenCalled();
+    expect(cap.execute).not.toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
+  it("a throw from agentArgs → internal_error 500", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const cap = inject({
+      name: "__fixture_bad_narrow",
+      agentArgs: () => {
+        throw new Error("boom");
+      },
+    });
+    expect(await dispatchAgentTool(auth, "__fixture_bad_narrow", {})).toMatchObject({
+      code: "internal_error",
+      httpStatus: 500,
+    });
+    expect(cap.execute).not.toHaveBeenCalled();
+    logged.mockRestore();
   });
 
   it("any other throw → internal_error 500 without leaking the message", async () => {

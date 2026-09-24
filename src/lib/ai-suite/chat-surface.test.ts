@@ -30,8 +30,13 @@ vi.mock("@/lib/ai-suite/model", () => ({
 vi.mock("@/lib/ai-suite/usage", () => ({ recordAiSuiteUsage: async () => undefined }));
 vi.mock("@/lib/ai-suite/audit", () => ({ recordAiSuiteAction: async () => undefined }));
 
-const { AI_SUITE_CAPABILITIES, capabilityNamesForLevel, toolsForLevel } =
-  await import("./capabilities");
+const {
+  AI_SUITE_CAPABILITIES,
+  capabilityNamesForLevel,
+  getCapability,
+  inSubAccount,
+  toolsForLevel,
+} = await import("./capabilities");
 const chat = await import("@/app/api/ai-suite/chat/route");
 const confirm = await import("@/app/api/ai-suite/confirm/route");
 
@@ -119,6 +124,28 @@ describe("agent-only capabilities stay off the chat surface", () => {
     const offered = (runAiSuiteTurn.mock.calls[0]![0] as { tools: Array<{ function: { name: string } }> })
       .tools.map((t) => t.function.name);
     expect(offered).not.toContain("__agent_lookup");
+  });
+});
+
+describe("agency variants keep their base's surfaces", () => {
+  it("an agent-only base's _in_sub_account variant never reaches the agency chat", () => {
+    const base = injectAgentOnly("__agent_base", false);
+    const variant = inSubAccount(base);
+    AI_SUITE_CAPABILITIES.push(variant);
+    injected.push(variant);
+    expect(variant.surfaces).toEqual(["agent"]);
+    const owner = { agencyRoleIsOwner: true };
+    const tools = toolsForLevel("agency", owner).map((t) => t.function.name);
+    const { actions, lookups } = capabilityNamesForLevel("agency", owner);
+    const menu = [...actions, ...lookups].map((i) => i.name);
+    expect(tools).not.toContain("__agent_base_in_sub_account");
+    expect(menu).not.toContain("__agent_base_in_sub_account");
+    // Sanity: the agency list isn't empty.
+    expect(tools).toContain("find_contacts_in_sub_account");
+  });
+
+  it("the delegation loop carried a chat-only base's surfaces onto its variant", () => {
+    expect(getCapability("create_webhook_in_sub_account")!.surfaces).toEqual(["chat"]);
   });
 });
 

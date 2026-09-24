@@ -22,20 +22,35 @@ const refuse = (
 
 /** One response for every name the agent may not call, so it cannot probe
  *  which chat-only or agency-level names exist. */
-const NOT_AVAILABLE = refuse(
-  "not_available",
-  404,
-  "No such tool is available to this key."
-);
+const notAvailable = (): AgentDispatchResult =>
+  refuse("not_available", 404, "No such tool is available to this key.");
 
 /**
  * The ONE choke point for agent tool calls (MCP and REST). Every refusal
  * runs before any capability code: scope, test mode, the agency's Agent API
  * gate (read fresh on every call, so switching it off makes keys inert
  * immediately), then surface / level / role. A capability with an
- * `approval` class is never executed here.
+ * `approval` class is never executed here. Nothing thrown anywhere in the
+ * pipeline escapes: a CapabilityUserError is a 400 with its message, anything
+ * else a generic 500.
  */
 export async function dispatchAgentTool(
+  auth: ApiAuthContext,
+  name: string,
+  rawArgs: unknown
+): Promise<AgentDispatchResult> {
+  try {
+    return await dispatch(auth, name, rawArgs);
+  } catch (err) {
+    if (err instanceof CapabilityUserError) {
+      return refuse("invalid_request", 400, err.message);
+    }
+    console.error(`[agent-dispatch] ${name} failed:`, err);
+    return refuse("internal_error", 500, "The tool failed to run.");
+  }
+}
+
+async function dispatch(
   auth: ApiAuthContext,
   name: string,
   rawArgs: unknown
@@ -67,7 +82,7 @@ export async function dispatchAgentTool(
 
   const cap = getCapability(name);
   if (!cap || cap.level !== "sub-account" || !availableOn(cap, "agent")) {
-    return NOT_AVAILABLE;
+    return notAvailable();
   }
   if (
     !roleSatisfies(cap.requiredRole, {
@@ -75,7 +90,7 @@ export async function dispatchAgentTool(
       subAccountRole: "admin",
     })
   ) {
-    return NOT_AVAILABLE;
+    return notAvailable();
   }
 
   // Narrow before validate, so a stored proposal re-validates idempotently.
@@ -96,18 +111,10 @@ export async function dispatchAgentTool(
     );
   }
 
-  try {
-    const result = await cap.execute(buildAgentContext(auth), validated.args);
-    return {
-      ok: true,
-      resultText: result.resultText,
-      ...(result.ref ? { ref: result.ref } : {}),
-    };
-  } catch (err) {
-    if (err instanceof CapabilityUserError) {
-      return refuse("invalid_request", 400, err.message);
-    }
-    console.error(`[agent-dispatch] ${cap.name} failed:`, err);
-    return refuse("internal_error", 500, "The tool failed to run.");
-  }
+  const result = await cap.execute(buildAgentContext(auth), validated.args);
+  return {
+    ok: true,
+    resultText: result.resultText,
+    ...(result.ref ? { ref: result.ref } : {}),
+  };
 }
