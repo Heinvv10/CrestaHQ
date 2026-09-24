@@ -33,6 +33,11 @@ regexes = [
   # see realistic values. generic-api-key flags them by entropy. Never
   # credentials — each is an English phrase, and each anchor matches only
   # that exact value.
+  # Agent API key-mint route test fixture
+  # (src/app/api/sub-accounts/[id]/api-keys/route.test.ts): a made-up key in
+  # the lsk_ format so the mint response shape is realistic. Never a
+  # credential; the anchor matches only this exact value.
+  '''^lsk_live_abc123_secret$''',
   '''^1//0gMineButStale$''',
   '''^1//0gTheirRotation$''',
   '''^1//0gNewerGrant$''',

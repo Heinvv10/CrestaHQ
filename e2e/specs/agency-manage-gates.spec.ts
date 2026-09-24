@@ -82,7 +82,9 @@ test("two sequential Manage saves both persist", async ({ page }) => {
       agentApi: false,
     });
 
-    // Save 3 — Agent API on. Google + Labs must survive it.
+    // Save 3 — Agent API on. Google + Labs must survive it. Save 2 closed
+    // the dialog, so reopen it first.
+    await openManage(page);
     const agentApi = page.getByRole("checkbox", { name: /^Agent API/ });
     await expect(agentApi).not.toBeChecked();
     await agentApi.check();
