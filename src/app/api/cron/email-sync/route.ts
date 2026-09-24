@@ -22,13 +22,20 @@ export async function POST(request: Request) {
   }
   try {
     const result = await runMailboxSweep(after);
-    if (result.hasMore)
-      await publishCallback({
+    // publishCallback never throws: null means "not queued" (e.g. the daily
+    // cap). The next scheduled sweep picks the remaining mailboxes up.
+    if (
+      result.hasMore &&
+      !(await publishCallback({
         pathname: "/api/cron/email-sync",
         body: { after: result.nextAfter },
         delaySeconds: 1,
         deduplicationId: `email-sync-${result.nextAfter}-${Math.floor(Date.now() / 60000)}`,
-      });
+      }))
+    )
+      console.error(
+        `[cron/email-sync] continuation not queued after=${result.nextAfter}`
+      );
     return NextResponse.json(result);
   } catch {
     return NextResponse.json(

@@ -280,21 +280,20 @@ export async function scheduleEventReminders(input: {
     // Skip past-offsets (e.g. event is in 30 min and offset is T-1h).
     if (delaySeconds < 30) continue;
     const nonceSuffix = input.scheduleNonce ? `_${input.scheduleNonce}` : "";
-    try {
-      await publishCallback({
-        pathname: "/api/events/reminder/step",
-        body: {
-          eventId: input.eventId,
-          offsetMinutes: offsetMin,
-          token: input.rawToken,
-        },
-        delaySeconds,
-        deduplicationId: `evt_reminder_${input.eventId}_${offsetMin}${nonceSuffix}`,
-      });
-    } catch (err) {
-      console.warn(
-        `[booking/lifecycle] reminder schedule failed (offset ${offsetMin})`,
-        err,
+    // publishCallback never throws: null = not queued (e.g. the daily cap).
+    const queued = await publishCallback({
+      pathname: "/api/events/reminder/step",
+      body: {
+        eventId: input.eventId,
+        offsetMinutes: offsetMin,
+        token: input.rawToken,
+      },
+      delaySeconds,
+      deduplicationId: `evt_reminder_${input.eventId}_${offsetMin}${nonceSuffix}`,
+    });
+    if (!queued) {
+      console.error(
+        `[booking/lifecycle] reminder not queued event=${input.eventId} offset=${offsetMin}min`,
       );
     }
   }
@@ -320,15 +319,17 @@ export async function schedulePaymentAutoExpire(input: {
     30,
     Math.floor((input.expiresAt.getTime() - Date.now()) / 1000),
   );
-  try {
-    await publishCallback({
-      pathname: "/api/events/payment/expire-step",
-      body: { eventId: input.eventId },
-      delaySeconds,
-      deduplicationId: `evt_pay_expire_${input.eventId}`,
-    });
-  } catch (err) {
-    console.warn("[booking/lifecycle] auto-expire schedule failed", err);
+  // publishCallback never throws: null = not queued (e.g. the daily cap).
+  const queued = await publishCallback({
+    pathname: "/api/events/payment/expire-step",
+    body: { eventId: input.eventId },
+    delaySeconds,
+    deduplicationId: `evt_pay_expire_${input.eventId}`,
+  });
+  if (!queued) {
+    console.error(
+      `[booking/lifecycle] payment auto-expire not queued event=${input.eventId}`,
+    );
   }
 }
 

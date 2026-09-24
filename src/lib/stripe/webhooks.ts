@@ -411,18 +411,17 @@ async function handleFoundersCheckout(session: Stripe.Checkout.Session) {
   // get it, those without get the shared LSAGENCY fallback. Best-effort:
   // a scheduling failure must not break the purchase flow. The step route
   // is idempotent (skips if already reminded / excluded / no email).
+  // publishCallback never throws: null = not queued (e.g. the daily cap).
   if (LANDING_VARIANT === "leadstack" && qstashIsConfigured()) {
-    try {
-      await publishCallback({
-        pathname: "/api/gitpage-reminder/step",
-        body: { sessionId },
-        delaySeconds: REMINDER_DELAY_SECONDS,
-        deduplicationId: `gitpage-reminder-${sessionId}`,
-      });
-    } catch (err) {
+    const queued = await publishCallback({
+      pathname: "/api/gitpage-reminder/step",
+      body: { sessionId },
+      delaySeconds: REMINDER_DELAY_SECONDS,
+      deduplicationId: `gitpage-reminder-${sessionId}`,
+    });
+    if (!queued) {
       console.error(
         `[founders] failed to schedule 3-day reminder for ${sessionId}`,
-        err,
       );
     }
   }
