@@ -6,6 +6,7 @@ import {
   publishCallback,
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
+import { recheckStaleAutoCharges } from "@/lib/server/auto-charge-stale-sweep";
 import { runRecurringInvoiceSweep } from "@/lib/server/recurring-invoice-service";
 
 /**
@@ -52,6 +53,14 @@ export async function POST(request: Request) {
     );
   }
 
+  // Card charges still unconfirmed: their own step, which never fails the sweep.
+  let staleCharges = null;
+  try {
+    staleCharges = await recheckStaleAutoCharges(new Date());
+  } catch (err) {
+    console.error("[cron/recurring-invoices] stale card-charge re-check failed", err);
+  }
+
   if (result.hasMore) {
     await publishCallback({
       pathname: "/api/cron/recurring-invoices",
@@ -74,5 +83,6 @@ export async function POST(request: Request) {
     durationMs: Date.now() - startedAt,
     ...result,
     continuationScheduled: result.hasMore,
+    staleCharges,
   });
 }
