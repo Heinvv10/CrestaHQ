@@ -498,7 +498,7 @@ export interface SubAccountDoc {
    * at creation (explicit opt-in); read `=== true` so legacy docs stay
    * locked. No tear-down: an `agent`-scope key mint is simply refused
    * while off; existing keys are preserved so re-enabling resumes them.
-   * In `PLAN_GATE_KEYS` (not pre-ticked in new plans).
+   * Standalone gate, NOT in `PLAN_GATE_KEYS` — a plan never flips it.
    */
   agentApiEnabledByAgency?: boolean;
   /**
