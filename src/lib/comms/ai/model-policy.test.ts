@@ -3,15 +3,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * Agency model allow-list: pure verdicts, the "in use + default" starting
  * policy, and REQUEST-TIME fallback through resolveAgent() — the one seam every
- * live reply reads its model through. Real code over in-memory Firestore; the
- * catalog is seeded fresh so no fetch happens (fetch is stubbed to fail loudly).
+ * live reply reads its model through. Real code over in-memory Firestore;
+ * fetch is stubbed to fail — the OpenRouter API is never called.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
 const { mem } = await import("@/test/gbp-sync-store");
-const { evaluateModel, getEffectiveModelPolicy, resolveRuntimeModel, checkModelForSave, listPickableModels } =
-  await import("./model-policy");
+const {
+  evaluateModel,
+  evaluateModelForReply,
+  getEffectiveModelPolicy,
+  resolveRuntimeModel,
+  checkModelForSave,
+  listPickableModels,
+  replyModelFallback,
+  listRejectedModels,
+} = await import("./model-policy");
 const { resolveAgent } = await import("./agent");
 
 const DEFAULT = "anthropic/claude-haiku-4-5";
@@ -23,8 +31,11 @@ const warn = vi.fn();
 function seedCatalog(...ids: string[]) {
   mem.seed("appConfig/aiModels", { models: cat(...ids), fetchedAt: Date.now() });
 }
-function seedChannel(sa: string, channel: string, modelOverride: string | null) {
-  mem.seed(`subAccounts/${sa}/aiAgent/${channel}`, { enabled: true, contextMessageCount: 10, modelOverride });
+function seedChannel(sa: string, channel: string, modelOverride: string | null, enabled = true) {
+  mem.seed(`subAccounts/${sa}/aiAgent/${channel}`, { enabled, contextMessageCount: 10, modelOverride });
+}
+function seedPolicy(allowedModels: string[], maxPromptPerM: number | null = null) {
+  mem.seed("agencies/ag1", { aiModelPolicy: { allowedModels, maxPromptPerM, maxCompletionPerM: null } });
 }
 
 beforeEach(() => {
@@ -58,6 +69,18 @@ describe("evaluateModel", () => {
     expect(evaluateModel("a/one", { catalog, policy: { ...policy, allowedModels: [] }, defaultModel: DEFAULT }))
       .toEqual({ ok: false, reason: "not_allowed" });
   });
+  it("matches a :variant against its base id in the catalog", () => {
+    expect(evaluateModel("a/one:nitro", { catalog, policy: { ...policy, allowedModels: ["a/one"] }, defaultModel: DEFAULT }))
+      .toEqual({ ok: true });
+  });
+  it("reply-time: absence from the catalog never swaps; only the saved policy does", () => {
+    const ctx = { catalog, defaultModel: DEFAULT };
+    expect(evaluateModelForReply("gone/model", { ...ctx, savedPolicy: null })).toEqual({ ok: true });
+    expect(evaluateModelForReply("gone/model", { ...ctx, savedPolicy: { ...policy, allowedModels: ["gone/model"] } }))
+      .toEqual({ ok: true });
+    expect(evaluateModelForReply("gone/model", { ...ctx, savedPolicy: policy })).toEqual({ ok: false, reason: "not_allowed" });
+    expect(evaluateModelForReply("pricey/model:floor", { ...ctx, savedPolicy: policy })).toEqual({ ok: false, reason: "over_price" });
+  });
   it("rejects an allowed model above the price ceiling", () => {
     expect(evaluateModel("pricey/model", { catalog, policy, defaultModel: DEFAULT })).toEqual({ ok: false, reason: "over_price" });
     expect(evaluateModel("a/one", { catalog, policy, defaultModel: DEFAULT })).toEqual({ ok: true });
@@ -72,10 +95,11 @@ describe("unsaved policy = models in use + default", () => {
     seedChannel("sa2", "web-chat", "b/two");
     mem.seed("subAccounts/other", { agencyId: "ag2" });
     seedChannel("other", "sms", "c/three");
+    mem.seed("subAccounts/sa2/aiConfig/main", { modelOverride: "legacy/model" });
 
     const { policy, saved } = await getEffectiveModelPolicy("ag1");
     expect(saved).toBe(false);
-    expect([...policy.allowedModels].sort()).toEqual([DEFAULT, "a/one", "b/two"].sort());
+    expect([...policy.allowedModels].sort()).toEqual([DEFAULT, "a/one", "b/two", "legacy/model"].sort());
   });
 });
 
@@ -96,40 +120,80 @@ describe("save-time check", () => {
   });
 });
 
-describe("request-time fallback via resolveAgent", () => {
-  it("keeps an allowed, listed model", async () => {
+describe("reply-time resolution via resolveAgent", () => {
+  it("keeps an allowed model, and a :variant of one", async () => {
     seedCatalog("a/one");
-    seedChannel(SA, "sms", "a/one");
-    const agent = await resolveAgent(SA, "sms");
-    expect(agent?.effective.modelOverride).toBe("a/one");
+    seedPolicy(["a/one"]);
+    seedChannel(SA, "sms", "a/one:nitro");
+    expect((await resolveAgent(SA, "sms"))?.effective.modelOverride).toBe("a/one:nitro");
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("falls back to the app default with a warning when the stored model has retired", async () => {
+  it("KEEPS a stored model that is merely missing from the catalog (OpenRouter decides)", async () => {
     seedCatalog("a/one");
     seedChannel(SA, "sms", "gone/model");
-    const agent = await resolveAgent(SA, "sms");
-    expect(agent?.effective.modelOverride).toBe(DEFAULT);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("gone/model"));
+    expect((await resolveAgent(SA, "sms"))?.effective.modelOverride).toBe("gone/model");
   });
 
-  it("falls back when the agency no longer allows the stored model", async () => {
+  it("KEEPS a model the saved policy allows even though the catalog no longer lists it", async () => {
+    seedCatalog("a/one");
+    seedPolicy(["gone/model"]);
+    seedChannel(SA, "sms", "gone/model");
+    expect((await resolveAgent(SA, "sms"))?.effective.modelOverride).toBe("gone/model");
+  });
+
+  it("with no saved policy, doesn't even read or refresh the catalog", async () => {
+    const fetchSpy = vi.fn(async () => { throw new Error("should not fetch"); });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await resolveRuntimeModel(SA, "any/model")).toBe("any/model");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("swaps a model the saved policy no longer allows for the app default, with a warning", async () => {
     seedCatalog("a/one", "b/two");
     seedChannel(SA, "web-chat", "b/two");
-    mem.seed("agencies/ag1", { aiModelPolicy: { allowedModels: ["a/one"], maxPromptPerM: null, maxCompletionPerM: null } });
-    const agent = await resolveAgent(SA, "web-chat");
-    expect(agent?.effective.modelOverride).toBe(DEFAULT);
+    seedPolicy(["a/one"]);
+    expect((await resolveAgent(SA, "web-chat"))?.effective.modelOverride).toBe(DEFAULT);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("b/two"));
   });
 
-  it("honours AI_REPLIES_DEFAULT_MODEL as the fallback target", async () => {
-    process.env.AI_REPLIES_DEFAULT_MODEL = "x/deploy-default";
-    seedCatalog("a/one");
-    expect(await resolveRuntimeModel(SA, "gone/model")).toBe("x/deploy-default");
+  it("swaps a model over the saved price ceiling", async () => {
+    seedCatalog("pricey/model");
+    seedPolicy(["pricey/model"], 10);
+    seedChannel(SA, "sms", "pricey/model");
+    expect((await resolveAgent(SA, "sms"))?.effective.modelOverride).toBe(DEFAULT);
   });
 
-  it("leaves a blank override as null (the default) and never fails the reply when the check errors", async () => {
-    expect(await resolveRuntimeModel(SA, null)).toBeNull();
-    // No catalog and fetch fails -> unknown, not retired: stored model kept.
+  it("skips resolution for a disabled channel", async () => {
+    seedPolicy(["a/one"]);
+    seedChannel(SA, "sms", "b/two", false);
+    expect((await resolveAgent(SA, "sms"))?.effective.modelOverride).toBe("b/two");
+  });
+
+  it("never waits on OpenRouter, even with no catalog cached", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => undefined)));
+    seedPolicy(["a/one"]);
     expect(await resolveRuntimeModel(SA, "a/one")).toBe("a/one");
+    expect(await resolveRuntimeModel(SA, "b/two")).toBe(DEFAULT);
+  });
+
+  it("honours AI_REPLIES_DEFAULT_MODEL as the fallback target; blank stays null", async () => {
+    process.env.AI_REPLIES_DEFAULT_MODEL = "x/deploy-default";
+    seedPolicy(["a/one"]);
+    expect(await resolveRuntimeModel(SA, "b/two")).toBe("x/deploy-default");
+    expect(await resolveRuntimeModel(SA, null)).toBeNull();
+  });
+});
+
+describe("OpenRouter refused the model on a live reply", () => {
+  it("flags the channel; the flag shows only while that model is still stored", async () => {
+    seedChannel(SA, "sms", "gone/model");
+    seedChannel(SA, "voice", "a/one");
+    const { fallbackToDefault, onModelRejected } = replyModelFallback(SA, "sms");
+    expect(fallbackToDefault).toBe(true);
+    onModelRejected("gone/model");
+    replyModelFallback(SA, "voice").onModelRejected("old/model");
+    await vi.waitFor(async () => expect(await listRejectedModels(SA)).toEqual({ sms: "gone/model" }));
   });
 });

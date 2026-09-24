@@ -17,6 +17,7 @@ import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { isWithinBusinessHours } from "@/lib/comms/business-hours";
 import { checkQuota } from "@/lib/server/usage-meter";
 import { callAi, type AiChatMessage } from "@/lib/comms/ai/openrouter";
+import { replyModelFallback } from "@/lib/comms/ai/model-policy";
 import {
   incrementChannelTokens,
   type ConfiguredChannelId,
@@ -570,6 +571,7 @@ export async function maybeRespondWithAi(
     completion = await callAi({
       model: eff.modelOverride ?? undefined,
       messages,
+      ...replyModelFallback(subAccountId, channelId),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

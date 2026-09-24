@@ -3,7 +3,10 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { defaultAiModel } from "@/lib/comms/ai/openrouter";
 import {
+  baseModelId,
+  findCatalogModel,
   getModelCatalog,
+  readModelCatalogForReply,
   type CatalogModel,
   type ModelCatalog,
 } from "@/lib/comms/ai/model-catalog";
@@ -12,22 +15,49 @@ import type { AgencyDoc, AiModelPolicy } from "@/types";
 /**
  * Agency allow-list for AI Agents models. The owner ticks models from the
  * cached OpenRouter catalog and may set a price ceiling; sub-accounts can only
- * pick from what survives both. Enforced twice:
- *   - on save (channel PATCH) — a bad pick is refused with a 400;
- *   - at request time (resolveAgent / dry-run) — a stored pick that has since
- *     retired or been disallowed falls back to the app default with a logged
- *     warning, so a live customer reply never fails over a model choice.
+ * pick from what survives both.
+ *
+ *   - SAVE (channel PATCH): a changed pick must be in the catalog, allowed,
+ *     and under the ceiling — else 400.
+ *   - REPLY (resolveAgent / dry-run): only a model the SAVED policy disallows
+ *     or prices out is swapped for the app default. A model merely missing
+ *     from the catalog (retired, alias, `:nitro`-style variant) is kept; if
+ *     OpenRouter then refuses it, callAi retries once on the app default and
+ *     the channel is flagged (`modelRejected`) for the UI.
  *
  * The app default (`defaultAiModel()`) is always allowed: it is what a blank
- * override means and what every fallback lands on.
+ * override means and what every fallback lands on. There is no per-agency
+ * default model.
  */
 
 /** Channel docs under `subAccounts/{id}/aiAgent/` that carry a modelOverride. */
-const CHANNEL_DOCS = ["sms", "web-chat", "voice", "whatsapp", "meta"];
+export const MODEL_CHANNEL_DOCS = ["sms", "web-chat", "voice", "whatsapp", "meta"];
 
 export type ModelRejection = "retired" | "not_allowed" | "over_price";
 export type ModelVerdict = { ok: true } | { ok: false; reason: ModelRejection };
 
+function isAllowed(model: string, policy: AiModelPolicy): boolean {
+  return (
+    policy.allowedModels.includes(model) ||
+    policy.allowedModels.includes(baseModelId(model))
+  );
+}
+
+function overCeiling(entry: CatalogModel | undefined, policy: AiModelPolicy): boolean {
+  const over = (price: number | null | undefined, max: number | null) => {
+    if (max === null) return false;
+    // Unknown price (unlisted, or OpenRouter's -1): passes only because the
+    // owner ticked this exact model — callers check isAllowed first.
+    if (price === null || price === undefined) return false;
+    return price > max;
+  };
+  return (
+    over(entry?.promptPerM, policy.maxPromptPerM) ||
+    over(entry?.completionPerM, policy.maxCompletionPerM)
+  );
+}
+
+/** Save-time / picker verdict: the full check, catalog included. */
 export function evaluateModel(
   model: string,
   ctx: {
@@ -38,19 +68,31 @@ export function evaluateModel(
 ): ModelVerdict {
   if (model === ctx.defaultModel) return { ok: true };
   // No catalog yet = unknown, never "retired".
-  const entry = ctx.catalog?.models.find((m) => m.id === model);
+  const entry = findCatalogModel(ctx.catalog, model);
   if (ctx.catalog && !entry) return { ok: false, reason: "retired" };
   const policy = ctx.policy;
   if (!policy) return { ok: true };
-  if (!policy.allowedModels.includes(model)) {
-    return { ok: false, reason: "not_allowed" };
-  }
-  const over = (price: number | null | undefined, max: number | null) =>
-    max !== null && price !== null && price !== undefined && price > max;
-  if (
-    over(entry?.promptPerM, policy.maxPromptPerM) ||
-    over(entry?.completionPerM, policy.maxCompletionPerM)
-  ) {
+  if (!isAllowed(model, policy)) return { ok: false, reason: "not_allowed" };
+  if (overCeiling(entry, policy)) return { ok: false, reason: "over_price" };
+  return { ok: true };
+}
+
+/**
+ * Reply-time verdict: only the SAVED policy can swap a model. Absence from
+ * the catalog never does — OpenRouter itself is the judge of that.
+ */
+export function evaluateModelForReply(
+  model: string,
+  ctx: {
+    catalog: ModelCatalog | null;
+    savedPolicy: AiModelPolicy | null;
+    defaultModel: string;
+  },
+): ModelVerdict {
+  const policy = ctx.savedPolicy;
+  if (model === ctx.defaultModel || !policy) return { ok: true };
+  if (!isAllowed(model, policy)) return { ok: false, reason: "not_allowed" };
+  if (overCeiling(findCatalogModel(ctx.catalog, model), policy)) {
     return { ok: false, reason: "over_price" };
   }
   return { ok: true };
@@ -84,9 +126,12 @@ export async function listModelsInUse(agencyId: string): Promise<string[]> {
     .where("agencyId", "==", agencyId)
     .select()
     .get();
-  const refs = subs.docs.flatMap((d) =>
-    CHANNEL_DOCS.map((c) => db.doc(`subAccounts/${d.id}/aiAgent/${c}`)),
-  );
+  // Channel docs plus the pre-refactor aiConfig/main a sub-account that
+  // hasn't been read since the split may still carry.
+  const refs = subs.docs.flatMap((d) => [
+    ...MODEL_CHANNEL_DOCS.map((c) => db.doc(`subAccounts/${d.id}/aiAgent/${c}`)),
+    db.doc(`subAccounts/${d.id}/aiConfig/main`),
+  ]);
   if (refs.length === 0) return [];
   const snaps = await db.getAll(...refs);
   const inUse = new Set<string>();
@@ -161,10 +206,10 @@ export async function listPickableModels(
 }
 
 /**
- * Request-time resolution of a stored modelOverride. Null stays null (the
- * default). A retired or disallowed model resolves to the app default with a
- * warning — never a thrown error on a live reply. If the check itself fails
- * (Firestore/catalog trouble) the stored model is used unchanged.
+ * Reply-time resolution of a stored modelOverride. Null stays null (the
+ * default). Only a model the agency's SAVED policy disallows or prices out
+ * resolves to the app default, with a warning. Never waits on OpenRouter; if
+ * the check itself fails the stored model is used unchanged.
  */
 export async function resolveRuntimeModel(
   subAccountId: string,
@@ -176,12 +221,11 @@ export async function resolveRuntimeModel(
     const saSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
     const agencyId = (saSnap.data() as { agencyId?: string } | undefined)
       ?.agencyId;
-    const [policy, catalog] = await Promise.all([
-      agencyId ? getSavedModelPolicy(agencyId) : Promise.resolve(null),
-      getModelCatalog(),
-    ]);
+    const savedPolicy = agencyId ? await getSavedModelPolicy(agencyId) : null;
+    if (!savedPolicy) return wanted;
+    const catalog = await readModelCatalogForReply();
     const defaultModel = defaultAiModel();
-    const verdict = evaluateModel(wanted, { catalog, policy, defaultModel });
+    const verdict = evaluateModelForReply(wanted, { catalog, savedPolicy, defaultModel });
     if (verdict.ok) return wanted;
     console.warn(
       `[ai-models] sa=${subAccountId}: ${rejectionMessage(wanted, verdict.reason)} Falling back to ${defaultModel}.`,
@@ -195,4 +239,41 @@ export async function resolveRuntimeModel(
     );
     return wanted;
   }
+}
+
+/**
+ * callAi options for a reply: if OpenRouter refuses the chosen model, retry
+ * once on the app default and flag the channel so its settings page warns.
+ */
+export function replyModelFallback(subAccountId: string, channelId: string) {
+  return {
+    fallbackToDefault: true,
+    onModelRejected: (model: string) => {
+      getAdminDb()
+        .doc(`subAccounts/${subAccountId}/aiAgent/${channelId}`)
+        .set({ modelRejected: { model, at: Date.now() } }, { merge: true })
+        .catch((err: unknown) =>
+          console.warn(`[ai-models] sa=${subAccountId}: couldn't flag rejected model: ${String(err)}`),
+        );
+    },
+  };
+}
+
+/** Per channel: the stored model OpenRouter last refused, if still stored. */
+export async function listRejectedModels(
+  subAccountId: string,
+): Promise<Record<string, string>> {
+  const db = getAdminDb();
+  const snaps = await db.getAll(
+    ...MODEL_CHANNEL_DOCS.map((c) => db.doc(`subAccounts/${subAccountId}/aiAgent/${c}`)),
+  );
+  const out: Record<string, string> = {};
+  snaps.forEach((s, i) => {
+    const d = s.data() as
+      | { modelOverride?: string | null; modelRejected?: { model?: string } | null }
+      | undefined;
+    const rejected = d?.modelRejected?.model;
+    if (rejected && rejected === d?.modelOverride) out[MODEL_CHANNEL_DOCS[i]!] = rejected;
+  });
+  return out;
 }

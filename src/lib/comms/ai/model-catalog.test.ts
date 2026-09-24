@@ -1,24 +1,39 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * OpenRouter model catalog cache: fetched at most daily into
- * appConfig/aiModels; a failed fetch keeps the last good cache. Real code over
+ * OpenRouter model catalog cache (appConfig/aiModels). Real code over
  * in-memory Firestore; the OpenRouter fetch is stubbed — never the real API.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
 const { mem } = await import("@/test/gbp-sync-store");
-const { getModelCatalog, parseModelsResponse, CATALOG_DOC } = await import("./model-catalog");
+const {
+  getModelCatalog,
+  readModelCatalogForReply,
+  refreshModelCatalog,
+  parseModelsResponse,
+  findCatalogModel,
+  CATALOG_DOC,
+} = await import("./model-catalog");
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_800_000_000_000;
 const fetchMock = vi.fn();
 
-const orBody = (ids: string[]) => ({
-  data: ids.map((id) => ({ id, name: id.toUpperCase(), pricing: { prompt: "0.000001", completion: "0.000005" } })),
+const ids = (prefix: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}/m${i}`);
+const orBody = (list: string[]) => ({
+  data: list.map((id) => ({ id, name: id.toUpperCase(), pricing: { prompt: "0.000001", completion: "0.000005" } })),
 });
-const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+const ok = (body: unknown, type = "application/json") => ({
+  ok: true,
+  status: 200,
+  headers: { get: (h: string) => (h.toLowerCase() === "content-type" ? type : null) },
+  text: async () => JSON.stringify(body),
+});
+const seed = (list: string[], fetchedAt: number, extra: Record<string, unknown> = {}) =>
+  mem.seed(CATALOG_DOC, { models: parseModelsResponse(orBody(list)), fetchedAt, ...extra });
+const cachedIds = () => (mem.read(CATALOG_DOC)?.models as Array<{ id: string }>).map((m) => m.id);
 
 beforeEach(() => {
   mem.clear();
@@ -31,68 +46,105 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("parseModelsResponse", () => {
-  it("maps id, name and per-token prices to USD per 1M tokens", () => {
-    expect(parseModelsResponse(orBody(["a/b"]))).toEqual([
-      { id: "a/b", name: "A/B", promptPerM: 1, completionPerM: 5 },
-    ]);
+describe("parsing + lookup", () => {
+  it("maps id, name and per-token prices to USD per 1M tokens; -1/garbage = unknown", () => {
+    expect(parseModelsResponse(orBody(["a/b"]))).toEqual([{ id: "a/b", name: "A/B", promptPerM: 1, completionPerM: 5 }]);
+    const [m] = parseModelsResponse({ data: [{ id: "auto", pricing: { prompt: "-1", completion: "x" } }] });
+    expect(m).toMatchObject({ promptPerM: null, completionPerM: null });
+    expect(() => parseModelsResponse({})).toThrow();
   });
 
-  it("treats a negative/garbage price as unknown and rejects an empty list", () => {
-    const [m] = parseModelsResponse({ data: [{ id: "auto", pricing: { prompt: "-1", completion: "x" } }] });
-    expect(m).toMatchObject({ id: "auto", name: "auto", promptPerM: null, completionPerM: null });
-    expect(() => parseModelsResponse({ data: [] })).toThrow();
-    expect(() => parseModelsResponse({})).toThrow();
+  it("finds a :variant by its base id", () => {
+    const catalog = { models: parseModelsResponse(orBody(["a/b"])), fetchedAt: 0 };
+    expect(findCatalogModel(catalog, "a/b:nitro")?.id).toBe("a/b");
+    expect(findCatalogModel(catalog, "a/c")).toBeUndefined();
   });
 });
 
-describe("getModelCatalog", () => {
+describe("refresh (settings / cron path)", () => {
   it("fetches and caches when there is no cache", async () => {
-    fetchMock.mockResolvedValueOnce(ok(orBody(["a/b", "c/d"])));
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("a", 60))));
     const cat = await getModelCatalog(NOW);
-    expect(cat?.models.map((m) => m.id)).toEqual(["a/b", "c/d"]);
+    expect(cat?.models).toHaveLength(60);
     expect(fetchMock).toHaveBeenCalledWith("https://openrouter.ai/api/v1/models", expect.anything());
     expect(mem.read(CATALOG_DOC)).toMatchObject({ fetchedAt: NOW });
   });
 
   it("serves a cache younger than a day without fetching", async () => {
-    mem.seed(CATALOG_DOC, { models: parseModelsResponse(orBody(["old/one"])), fetchedAt: NOW - DAY + 1000 });
-    const cat = await getModelCatalog(NOW);
+    seed(ids("old", 60), NOW - DAY + 1000);
+    await getModelCatalog(NOW);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(cat?.models.map((m) => m.id)).toEqual(["old/one"]);
   });
 
-  it("refreshes a cache older than a day", async () => {
-    mem.seed(CATALOG_DOC, { models: parseModelsResponse(orBody(["old/one"])), fetchedAt: NOW - DAY - 1 });
-    fetchMock.mockResolvedValueOnce(ok(orBody(["new/one"])));
-    const cat = await getModelCatalog(NOW);
-    expect(cat?.models.map((m) => m.id)).toEqual(["new/one"]);
-    expect(mem.read(CATALOG_DOC)).toMatchObject({ fetchedAt: NOW });
+  it("refreshes a stale cache", async () => {
+    seed(ids("old", 60), NOW - DAY - 1);
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("new", 60))));
+    await getModelCatalog(NOW);
+    expect(cachedIds()[0]).toBe("new/m0");
   });
 
-  it("keeps the last good cache when the refresh fails, then backs off", async () => {
-    mem.seed(CATALOG_DOC, { models: parseModelsResponse(orBody(["old/one"])), fetchedAt: NOW - 2 * DAY });
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) });
-    const cat = await getModelCatalog(NOW);
-    expect(cat).toMatchObject({ fetchedAt: NOW - 2 * DAY });
-    expect(cat?.models.map((m) => m.id)).toEqual(["old/one"]);
-
-    // Within the back-off window: no second fetch, still the old list.
-    const again = await getModelCatalog(NOW + 60_000);
+  it("keeps the last good cache on failure, and doesn't retry within the claim window", async () => {
+    seed(ids("old", 60), NOW - 2 * DAY);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 503, headers: { get: () => null }, text: async () => "" });
+    expect((await getModelCatalog(NOW))?.fetchedAt).toBe(NOW - 2 * DAY);
+    await getModelCatalog(NOW + 60_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(again?.models.map((m) => m.id)).toEqual(["old/one"]);
+    expect(cachedIds()[0]).toBe("old/m0");
   });
 
-  it("keeps the last good cache when OpenRouter returns an empty list or throws", async () => {
-    mem.seed(CATALOG_DOC, { models: parseModelsResponse(orBody(["old/one"])), fetchedAt: NOW - 2 * DAY });
-    fetchMock.mockResolvedValueOnce(ok({ data: [] }));
-    expect((await getModelCatalog(NOW))?.models.map((m) => m.id)).toEqual(["old/one"]);
-    fetchMock.mockRejectedValueOnce(new Error("network down"));
-    expect((await getModelCatalog(NOW + 2 * 60 * 60 * 1000))?.models.map((m) => m.id)).toEqual(["old/one"]);
+  it("rejects an implausible list: tiny, under half the cache, or not JSON", async () => {
+    seed(ids("old", 200), NOW - 2 * DAY);
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("new", 90))));
+    await refreshModelCatalog({ force: true, now: NOW });
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("new", 10))));
+    await refreshModelCatalog({ force: true, now: NOW + 1 });
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("new", 200)), "text/html"));
+    await refreshModelCatalog({ force: true, now: NOW + 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(cachedIds()).toHaveLength(200);
+    expect(cachedIds()[0]).toBe("old/m0");
   });
 
-  it("returns null when no fetch has ever succeeded", async () => {
-    fetchMock.mockRejectedValueOnce(new Error("network down"));
-    expect(await getModelCatalog(NOW)).toBeNull();
+  it("single-flight: concurrent refreshes in one process share one fetch", async () => {
+    fetchMock.mockResolvedValue(ok(orBody(ids("a", 60))));
+    await Promise.all([getModelCatalog(NOW), getModelCatalog(NOW), refreshModelCatalog({ now: NOW })]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("single-flight holds even for forced refreshes, which skip the Firestore claim", async () => {
+    fetchMock.mockResolvedValue(ok(orBody(ids("a", 60))));
+    await Promise.all([refreshModelCatalog({ force: true, now: NOW }), refreshModelCatalog({ force: true, now: NOW })]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("another instance's recent claim stops a second fetch; the cron's force overrides it", async () => {
+    seed(ids("old", 60), NOW - 2 * DAY, { lastAttemptAt: NOW - 1000 });
+    await getModelCatalog(NOW);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValueOnce(ok(orBody(ids("new", 60))));
+    await refreshModelCatalog({ force: true, now: NOW });
+    expect(cachedIds()[0]).toBe("new/m0");
+  });
+});
+
+describe("reply path", () => {
+  it("returns the stale cache immediately — never waits on OpenRouter — and refreshes in the background", async () => {
+    seed(ids("old", 60), NOW - 2 * DAY);
+    let release!: (v: unknown) => void;
+    fetchMock.mockReturnValueOnce(new Promise((r) => (release = r)));
+    const cat = await readModelCatalogForReply(NOW);
+    expect(cat?.models[0]?.id).toBe("old/m0");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    release(ok(orBody(ids("new", 60))));
+    await vi.waitFor(() => expect(cachedIds()[0]).toBe("new/m0"));
+  });
+
+  it("does not fetch at all when the cache is fresh, and returns null with no cache", async () => {
+    expect(await readModelCatalogForReply(NOW)).toBeNull();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fetchMock.mockReset();
+    seed(ids("a", 60), NOW);
+    await readModelCatalogForReply(NOW);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

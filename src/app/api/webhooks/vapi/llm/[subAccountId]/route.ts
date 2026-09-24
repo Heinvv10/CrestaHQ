@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { vapiWebhookAuthorized } from "@/lib/comms/voice/webhook-auth";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { callAi, type AiChatMessage } from "@/lib/comms/ai/openrouter";
+import { replyModelFallback } from "@/lib/comms/ai/model-policy";
 import { incrementChannelTokens, resolveAgent } from "@/lib/comms/ai/agent";
 import { buildContactContextBlock } from "@/lib/comms/ai/context";
 import { buildSystemPrompt } from "@/lib/comms/ai/prompt";
@@ -327,6 +328,7 @@ export async function POST(
         // bot launching into a paragraph that the caller will interrupt.
         maxTokens: 220,
         temperature: 0.5,
+        ...replyModelFallback(subAccountId, "voice"),
       });
       totalTokens += completion.totalTokens;
       modelUsed = completion.model;

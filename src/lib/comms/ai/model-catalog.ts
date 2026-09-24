@@ -6,16 +6,21 @@ import { getAdminDb } from "@/lib/firebase/admin";
  * OpenRouter's public model list, cached in Firestore so model pickers and
  * the allow-list can cope with models appearing and retiring constantly.
  *
- * Fetched at most once a day (GET /api/v1/models needs no key). A failed
- * fetch keeps the last good cache and backs off for an hour, so an OpenRouter
- * outage never empties the list or stalls every live reply on a retry.
+ * Refreshed by the daily `leadstack-ai-models` QStash schedule, and by a
+ * single-flight refresh when a stale cache is read. The REPLY path never
+ * waits on a fetch: it reads the cache and at most kicks a background
+ * refresh. A failed or implausible fetch keeps the last good cache.
  */
 
 const MODELS_URL = "https://openrouter.ai/api/v1/models";
 export const CATALOG_DOC = "appConfig/aiModels";
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000;
-const FETCH_TIMEOUT_MS = 4_000;
+/** Another attempt (any instance) within this window = don't start one. */
+const CLAIM_MS = 60 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 10_000;
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+/** OpenRouter lists hundreds; fewer than this is a broken response. */
+const MIN_MODELS = 50;
 
 export interface CatalogModel {
   id: string;
@@ -33,7 +38,7 @@ export interface ModelCatalog {
 }
 
 interface CatalogDoc extends Partial<ModelCatalog> {
-  /** Epoch ms of the last fetch attempt, successful or not. */
+  /** Epoch ms of the last fetch attempt (the cross-instance claim). */
   lastAttemptAt?: number;
 }
 
@@ -43,6 +48,25 @@ interface OpenRouterModelsResponse {
     name?: unknown;
     pricing?: { prompt?: unknown; completion?: unknown };
   }>;
+}
+
+/** Routing variants (`:nitro`, `:floor`, `:online`, …) share the base id. */
+export function baseModelId(id: string): string {
+  const i = id.indexOf(":");
+  return i === -1 ? id : id.slice(0, i);
+}
+
+/** Exact id first, then the suffix-stripped base id. */
+export function findCatalogModel(
+  catalog: ModelCatalog | null,
+  id: string,
+): CatalogModel | undefined {
+  if (!catalog) return undefined;
+  const base = baseModelId(id);
+  return (
+    catalog.models.find((m) => m.id === id) ??
+    catalog.models.find((m) => m.id === base)
+  );
 }
 
 /** OpenRouter prices are USD per token as strings — convert to per 1M. */
@@ -65,7 +89,6 @@ export function parseModelsResponse(body: unknown): CatalogModel[] {
       completionPerM: perMillion(m.pricing?.completion),
     });
   }
-  if (models.length === 0) throw new Error("OpenRouter models: empty list");
   return models;
 }
 
@@ -74,33 +97,57 @@ async function fetchModels(): Promise<CatalogModel[]> {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`OpenRouter models ${res.status}`);
-  return parseModelsResponse(await res.json());
+  const type = res.headers.get("content-type") ?? "";
+  if (!type.includes("json")) throw new Error(`OpenRouter models: ${type || "no content-type"}`);
+  const text = await res.text();
+  if (text.length > MAX_BODY_BYTES) throw new Error("OpenRouter models: body too large");
+  return parseModelsResponse(JSON.parse(text));
 }
 
-/**
- * The cached catalog, refreshed when older than a day. Returns null only when
- * no fetch has EVER succeeded — callers must then treat every model as
- * "unknown", never as retired.
- */
-export async function getModelCatalog(
-  now: number = Date.now(),
-): Promise<ModelCatalog | null> {
-  const ref = getAdminDb().doc(CATALOG_DOC);
-  const snap = await ref.get();
-  const cached = (snap.exists ? snap.data() : undefined) as CatalogDoc | undefined;
-  const last: ModelCatalog | null =
-    cached?.models && typeof cached.fetchedAt === "number"
-      ? { models: cached.models, fetchedAt: cached.fetchedAt }
-      : null;
+/** A new list that is tiny, or under half the cached one, is not trusted. */
+function implausible(next: CatalogModel[], last: ModelCatalog | null): string | null {
+  if (next.length < MIN_MODELS) return `only ${next.length} models`;
+  if (last && next.length < last.models.length / 2) {
+    return `${next.length} models vs ${last.models.length} cached`;
+  }
+  return null;
+}
 
-  const fresh = last && now - last.fetchedAt < MAX_AGE_MS;
-  const backingOff =
-    typeof cached?.lastAttemptAt === "number" &&
-    now - cached.lastAttemptAt < RETRY_AFTER_FAILURE_MS;
-  if (fresh || backingOff) return last;
+function asCatalog(doc: CatalogDoc | undefined): ModelCatalog | null {
+  return doc?.models && typeof doc.fetchedAt === "number"
+    ? { models: doc.models, fetchedAt: doc.fetchedAt }
+    : null;
+}
+
+function isStale(doc: CatalogDoc | undefined, now: number): boolean {
+  return typeof doc?.fetchedAt !== "number" || now - doc.fetchedAt >= MAX_AGE_MS;
+}
+
+async function readDoc(): Promise<CatalogDoc | undefined> {
+  const snap = await getAdminDb().doc(CATALOG_DOC).get();
+  return snap.exists ? (snap.data() as CatalogDoc) : undefined;
+}
+
+async function doRefresh(force: boolean, now: number): Promise<ModelCatalog | null> {
+  const db = getAdminDb();
+  const ref = db.doc(CATALOG_DOC);
+  // Cross-instance claim: only one attempt per CLAIM_MS unless forced.
+  const claim = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const doc = (snap.exists ? snap.data() : undefined) as CatalogDoc | undefined;
+    const claimed =
+      typeof doc?.lastAttemptAt === "number" && now - doc.lastAttemptAt < CLAIM_MS;
+    if (!force && (!isStale(doc, now) || claimed)) return { go: false, doc };
+    tx.set(ref, { lastAttemptAt: now }, { merge: true });
+    return { go: true, doc };
+  });
+  const last = asCatalog(claim.doc);
+  if (!claim.go) return last;
 
   try {
     const models = await fetchModels();
+    const bad = implausible(models, last);
+    if (bad) throw new Error(`OpenRouter models: implausible list (${bad})`);
     await ref.set({ models, fetchedAt: now, lastAttemptAt: now });
     return { models, fetchedAt: now };
   } catch (err) {
@@ -109,7 +156,49 @@ export async function getModelCatalog(
         err instanceof Error ? err.message : String(err)
       }`,
     );
-    await ref.set({ lastAttemptAt: now }, { merge: true });
     return last;
   }
+}
+
+let inflight: Promise<ModelCatalog | null> | null = null;
+
+/**
+ * Refresh the cache when stale (or always, with `force` — the daily cron).
+ * Single-flight: concurrent callers in this process share one attempt, and
+ * the Firestore claim keeps other instances from starting their own.
+ */
+export function refreshModelCatalog(
+  opts: { force?: boolean; now?: number } = {},
+): Promise<ModelCatalog | null> {
+  if (!inflight) {
+    inflight = doRefresh(!!opts.force, opts.now ?? Date.now()).finally(() => {
+      inflight = null;
+    });
+  }
+  return inflight;
+}
+
+/**
+ * For owner-facing pages and save-time checks: may wait on one refresh when
+ * the cache is stale. Returns null only when no fetch has EVER succeeded —
+ * callers must then treat every model as "unknown", never as retired.
+ */
+export async function getModelCatalog(now: number = Date.now()): Promise<ModelCatalog | null> {
+  const doc = await readDoc();
+  if (!isStale(doc, now)) return asCatalog(doc);
+  return refreshModelCatalog({ now });
+}
+
+/**
+ * For the reply path: the cache as it is, never waiting on OpenRouter. A
+ * stale cache kicks a background refresh for the next caller.
+ */
+export async function readModelCatalogForReply(now: number = Date.now()): Promise<ModelCatalog | null> {
+  const doc = await readDoc();
+  if (isStale(doc, now)) {
+    refreshModelCatalog({ now }).catch((err: unknown) =>
+      console.warn(`[ai-models] background refresh failed: ${String(err)}`),
+    );
+  }
+  return asCatalog(doc);
 }

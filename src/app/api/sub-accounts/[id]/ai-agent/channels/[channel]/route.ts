@@ -410,18 +410,21 @@ export async function PATCH(
   // Model pick must be on the agency allow-list, under its price ceiling and
   // still offered by OpenRouter. Null (= app default) is always fine, and so
   // is re-sending the unchanged stored pick — an existing config whose model
-  // has since retired keeps saving its other settings (the UI warns, and live
-  // replies fall back to the default at request time).
+  // has since retired keeps saving its other settings (the picker warns).
+  // A changed pick also clears any "OpenRouter refused it" flag.
   if (
-    patch.modelOverride &&
+    "modelOverride" in patch &&
     patch.modelOverride !== (await getChannelConfig(id, channel))?.modelOverride
   ) {
-    const saSnap = await getAdminDb().doc(`subAccounts/${id}`).get();
-    const agencyId = (saSnap.data() as SubAccountDoc | undefined)?.agencyId;
-    const error = agencyId
-      ? await checkModelForSave(agencyId, patch.modelOverride)
-      : "Sub-account not found.";
-    if (error) return NextResponse.json({ error }, { status: 400 });
+    if (patch.modelOverride) {
+      const saSnap = await getAdminDb().doc(`subAccounts/${id}`).get();
+      const agencyId = (saSnap.data() as SubAccountDoc | undefined)?.agencyId;
+      const error = agencyId
+        ? await checkModelForSave(agencyId, patch.modelOverride)
+        : "Sub-account not found.";
+      if (error) return NextResponse.json({ error }, { status: 400 });
+    }
+    patch.modelRejected = null;
   }
 
   // Enabling a channel without a profile prompt = bot would call the LLM

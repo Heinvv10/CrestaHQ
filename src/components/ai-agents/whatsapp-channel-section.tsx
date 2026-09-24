@@ -273,6 +273,7 @@ export function WhatsappChannelSection() {
               <ModelOverrideSelect
                 id="wa-model"
                 subAccountId={subAccountId}
+                channel="whatsapp"
                 value={modelOverride}
                 onChange={setModelOverride}
               />

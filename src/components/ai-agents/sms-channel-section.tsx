@@ -242,6 +242,7 @@ export function SmsChannelSection() {
               <ModelOverrideSelect
                 id="sms-model"
                 subAccountId={subAccountId}
+                channel="sms"
                 value={modelOverride}
                 onChange={setModelOverride}
               />

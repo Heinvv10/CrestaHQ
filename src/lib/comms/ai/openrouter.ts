@@ -58,14 +58,7 @@ interface OpenRouterResponse {
  * caller can decide how to handle (typically: log + skip the AI reply,
  * never break the inbound webhook contract).
  */
-export async function callAi({
-  model,
-  messages,
-  maxTokens = 400,
-  temperature = 0.5,
-  timeoutMs = 30_000,
-  signal,
-}: {
+export interface CallAiOptions {
   model?: string;
   messages: AiChatMessage[];
   /** Cap on output tokens. 400 ≈ 300 words, fits within a few SMS
@@ -85,7 +78,25 @@ export async function callAi({
    *  armed through the body read, so aborting it really ends the call.
    *  Omitted → behaviour unchanged. An aborted call may still be billed. */
   signal?: AbortSignal;
-}): Promise<AiCompletionResult> {
+  /** When OpenRouter refuses the chosen model (400/404 — retired, renamed,
+   *  unknown variant), retry ONCE on the app default (`defaultAiModel()`)
+   *  instead of failing the reply. No-op when the default was the choice. */
+  fallbackToDefault?: boolean;
+  /** Told which model was refused, when the fallback kicked in. */
+  onModelRejected?: (model: string) => void;
+}
+
+export async function callAi(opts: CallAiOptions): Promise<AiCompletionResult> {
+  const {
+    model,
+    messages,
+    maxTokens = 400,
+    temperature = 0.5,
+    timeoutMs = 30_000,
+    signal,
+    fallbackToDefault,
+    onModelRejected,
+  } = opts;
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -135,6 +146,14 @@ export async function callAi({
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
+    const retryOn = fallbackToDefault ? defaultAiModel() : null;
+    if ((res.status === 400 || res.status === 404) && retryOn && retryOn !== chosenModel) {
+      console.warn(
+        `[openrouter] model ${chosenModel} refused (${res.status}: ${body.slice(0, 200)}); retrying once on ${retryOn}`,
+      );
+      onModelRejected?.(chosenModel);
+      return callAi({ ...opts, model: retryOn, fallbackToDefault: false, onModelRejected: undefined });
+    }
     throw new Error(
       `OpenRouter ${res.status}: ${body.slice(0, 300) || res.statusText}`,
     );

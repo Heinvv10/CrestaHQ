@@ -275,12 +275,12 @@ export async function resolveAgent(
       escalationNotifyEmail:
         channel.escalationNotifyEmailOverride ?? profile.escalationNotifyEmail,
       contextMessageCount: channel.contextMessageCount,
-      // A retired / no-longer-allowed pick falls back to the app default
-      // here, the one seam every live reply path reads the model through.
-      modelOverride: await resolveRuntimeModel(
-        subAccountId,
-        channel.modelOverride,
-      ),
+      // A pick the agency's saved policy no longer allows falls back to the
+      // app default here, the one seam every live reply path reads the model
+      // through. A disabled channel won't reply, so it isn't checked.
+      modelOverride: channel.enabled
+        ? await resolveRuntimeModel(subAccountId, channel.modelOverride)
+        : channel.modelOverride,
       websiteKb: profile.websiteKb ?? null,
     },
   };

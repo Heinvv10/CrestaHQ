@@ -666,6 +666,7 @@ export function VoiceChannelSection() {
             <ModelOverrideSelect
               id="voice-model"
               subAccountId={subAccountId}
+              channel="voice"
               value={modelOverride}
               onChange={setModelOverride}
             />

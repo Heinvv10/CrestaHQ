@@ -36,7 +36,7 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-19-whatsapp-staging-cleanup" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-24-ai-models" }),
     { merge: true }
   );
 });
@@ -97,7 +97,7 @@ it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even ov
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-19-whatsapp-staging-cleanup+gbp-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-24-ai-models+gbp-sync" }),
     { merge: true }
   );
 });
@@ -128,6 +128,20 @@ it("registers the daily WhatsApp staging cleanup — over a marker fresh from th
       scheduleId: "leadstack-whatsapp-staging-cleanup",
       cron: "45 4 * * *",
       destination: "https://app.example.com/api/cron/whatsapp-staging-cleanup",
+    })
+  );
+});
+
+it("registers the daily OpenRouter model-list refresh — over a marker fresh from the previous version", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
+  freshMarker({ scheduleVersion: "2026-09-19-whatsapp-staging-cleanup" });
+  await ensureSchedulesRegistered();
+  expect(mock.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      scheduleId: "leadstack-ai-models",
+      cron: "20 3 * * *",
+      destination: "https://app.example.com/api/cron/ai-models",
     })
   );
 });

@@ -214,7 +214,9 @@ export function AiModelAllowlistSection() {
                     </span>
                   </span>
                   <span className="shrink-0 text-muted-foreground">
-                    {fmt(m.promptPerM)} / {fmt(m.completionPerM)}
+                    {m.promptPerM === null || m.completionPerM === null
+                      ? "price unknown"
+                      : `${fmt(m.promptPerM)} / ${fmt(m.completionPerM)}`}
                   </span>
                 </label>
               );
@@ -222,7 +224,8 @@ export function AiModelAllowlistSection() {
           </div>
           <div className="flex items-center justify-between gap-3">
             <p className="text-[11px] text-muted-foreground">
-              Prices in / out per 1M tokens.{" "}
+              Prices in / out per 1M tokens. The ceiling can&rsquo;t check a
+              model with an unknown price — it is allowed only if ticked.{" "}
               {data.fetchedAt
                 ? `List updated ${new Date(data.fetchedAt).toLocaleString()}.`
                 : "OpenRouter's list hasn't loaded yet."}

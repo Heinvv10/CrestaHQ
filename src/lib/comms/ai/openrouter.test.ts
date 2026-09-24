@@ -87,3 +87,42 @@ describe("with a caller signal", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("fallbackToDefault: OpenRouter refuses the chosen model", () => {
+  const refused = (status: number) => ({ ok: false, status, text: async () => "no such model", statusText: "x" });
+  const body = (i: number) => JSON.parse(String((fetchMock.mock.calls[i]![1] as RequestInit).body)) as { model: string };
+
+  it("retries ONCE on the app default after a 404/400 and reports the refused model", async () => {
+    process.env.AI_REPLIES_DEFAULT_MODEL = "d/default";
+    for (const status of [404, 400]) {
+      fetchMock.mockReset();
+      const onModelRejected = vi.fn();
+      fetchMock.mockResolvedValueOnce(refused(status)).mockResolvedValueOnce(okResponse("fine"));
+      await expect(
+        callAi({ model: "gone/model", fallbackToDefault: true, onModelRejected, messages: [{ role: "user", content: "x" }] }),
+      ).resolves.toMatchObject({ text: "fine" });
+      expect(body(1).model).toBe("d/default");
+      expect(onModelRejected).toHaveBeenCalledWith("gone/model");
+    }
+  });
+
+  it("does not retry twice, nor on auth/credit/rate errors, nor without the flag, nor when already on the default", async () => {
+    fetchMock.mockResolvedValue(refused(404));
+    await expect(callAi({ model: "gone/model", fallbackToDefault: true, messages: [] })).rejects.toThrow("OpenRouter 404");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const status of [401, 402, 429]) {
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValue(refused(status));
+      await expect(callAi({ model: "a/one", fallbackToDefault: true, messages: [] })).rejects.toThrow(`OpenRouter ${status}`);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(refused(404));
+    await expect(callAi({ model: "a/one", messages: [] })).rejects.toThrow("OpenRouter 404");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(refused(404));
+    await expect(callAi({ fallbackToDefault: true, messages: [] })).rejects.toThrow("OpenRouter 404");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

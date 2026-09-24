@@ -382,6 +382,7 @@ export function WebChatChannelSection() {
               <ModelOverrideSelect
                 id="wc-model"
                 subAccountId={subAccountId}
+                channel="web-chat"
                 value={modelOverride}
                 onChange={setModelOverride}
               />

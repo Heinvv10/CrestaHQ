@@ -23,7 +23,7 @@
 | `userMemberships/{uid}/agencies/{agencyId}` | self-read | Denormalized index for agency-level access |
 | `users/{uid}` | self only | Slim profile (display name, photoURL, primaryAgencyId) |
 | `appConfig/main` | active members | Bootstrap singleton: `firstAgencyId`, `firstAgencyOwnerUid` |
-| `appConfig/aiModels` | active members read; server-only write | Cached OpenRouter model list `{models: [{id, name, promptPerM, completionPerM}], fetchedAt, lastAttemptAt}` — refreshed at most daily, last good copy kept on failure (see [ai-agents.md](../features/ai-agents.md#model-allow-list)) |
+| `appConfig/aiModels` | active members read; server-only write | Cached OpenRouter model list `{models: [{id, name, promptPerM, completionPerM}], fetchedAt, lastAttemptAt}` — refreshed daily by QStash (`/api/cron/ai-models`) or single-flight when stale; last good copy kept on failure (see [ai-agents.md](../features/ai-agents.md#model-allow-list)) |
 | `system/heartbeat` | server-only | Instance id + last-heartbeat timestamp (gitpage status checks) |
 | `system/gitpageStatus` | active members read | Cached gitpage subscription state; drives the activate-banner UI |
 | `invites/{auto}` | agency owner / sub-account admin | Typed invites (carry `subAccountId` + `subAccountRole`) |

@@ -8,7 +8,7 @@ import {
 import { aiIsConfigured, callAi } from "@/lib/comms/ai/openrouter";
 import { anyAiChannelGateOn } from "@/lib/comms/ai/gates";
 import { buildSystemPrompt } from "@/lib/comms/ai/prompt";
-import { resolveRuntimeModel } from "@/lib/comms/ai/model-policy";
+import { replyModelFallback, resolveRuntimeModel } from "@/lib/comms/ai/model-policy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createFixedWindowLimiter } from "@/lib/server/fixed-window-limit";
 import { DEFAULT_AI_CHANNEL_CONFIG } from "@/types/ai";
@@ -143,6 +143,7 @@ export async function POST(
   try {
     const completion = await callAi({
       model: model ?? undefined,
+      ...replyModelFallback(id, channelId),
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: message },

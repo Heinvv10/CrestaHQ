@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { listPickableModels } from "@/lib/comms/ai/model-policy";
+import { listPickableModels, listRejectedModels } from "@/lib/comms/ai/model-policy";
 import type { SubAccountDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -10,6 +10,7 @@ export const dynamic = "force-dynamic";
  * The models this sub-account's AI Agents channels may pick: the agency
  * allow-list, under its price ceiling, still offered by OpenRouter. The app
  * default is returned separately — it is what "no override" means.
+ * `rejected` maps a channel to its stored model OpenRouter last refused.
  */
 export async function GET(
   request: Request,
@@ -24,5 +25,9 @@ export async function GET(
   if (!agencyId) {
     return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
   }
-  return NextResponse.json(await listPickableModels(agencyId));
+  const [pickable, rejected] = await Promise.all([
+    listPickableModels(agencyId),
+    listRejectedModels(id),
+  ]);
+  return NextResponse.json({ ...pickable, rejected });
 }

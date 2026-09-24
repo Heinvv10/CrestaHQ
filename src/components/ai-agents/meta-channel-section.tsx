@@ -296,6 +296,7 @@ export function MetaChannelSection() {
               <ModelOverrideSelect
                 id="meta-model"
                 subAccountId={subAccountId}
+                channel="meta"
                 value={modelOverride}
                 onChange={setModelOverride}
               />
