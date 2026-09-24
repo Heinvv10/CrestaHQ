@@ -88,4 +88,6 @@ it("shows the route's refusal in the view", async () => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: "Reload and check again." }), { status: 409 }));
   await act(async () => recheckButton()!.click());
   expect(container.textContent).toContain("Reload and check again.");
+  // The charge is still unconfirmed, so it can be re-checked again.
+  expect(recheckButton()).toBeDefined();
 });
