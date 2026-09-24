@@ -21,7 +21,8 @@
 ## AI Suite capability tenancy check
 
 `pnpm check:tenancy` runs [scripts/check-capability-tenancy.mjs](../../scripts/check-capability-tenancy.mjs):
-a lint-style regression guard that parses the AI Suite capability registry and FAILS
+a lint-style regression guard that parses the AI Suite capability registry (`capabilities.ts`
+plus every per-resource file in `src/lib/ai-suite/capabilities/`) and FAILS
 when any capability's `execute` lacks a visible tenant anchor (`ctx.subAccountId`
 scope / re-anchor for sub-account level, `ctx.agencyId` for agency level, or the
 caller's own `userMemberships/${ctx.uid}` index). Capabilities that legitimately touch

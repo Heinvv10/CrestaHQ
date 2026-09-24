@@ -17,6 +17,7 @@ import { recordAiSuiteUsage } from "@/lib/ai-suite/usage";
 import { retrieveKnowledge } from "@/lib/ai-suite/retrieve";
 import { buildAiSuiteSystemPrompt } from "@/lib/ai-suite/prompt";
 import {
+  availableOn,
   CapabilityUserError,
   capabilityNamesForLevel,
   getCapability,
@@ -265,7 +266,7 @@ export async function POST(request: Request) {
       const call = turn.toolCall;
       if (!call) break;
       const cap = getCapability(call.name);
-      if (!cap || cap.level !== lvl) break;
+      if (!cap || cap.level !== lvl || !availableOn(cap, "chat")) break;
 
       // ── Write action: validate only. Valid → fall through to the proposal
       // path below. Invalid → bounce the error back to the model (capped).
@@ -376,7 +377,12 @@ export async function POST(request: Request) {
   // the lookup hop cap was hit — treat it as text, never as a proposal.)
   if (turn.toolCall) {
     const cap = getCapability(turn.toolCall.name);
-    if (cap && !cap.readonly && cap.level === lvl) {
+    if (
+      cap &&
+      !cap.readonly &&
+      cap.level === lvl &&
+      availableOn(cap, "chat")
+    ) {
       const validated = cap.validate(turn.toolCall.args);
       if (validated.ok) {
         const response: AiSuiteChatResponse = {

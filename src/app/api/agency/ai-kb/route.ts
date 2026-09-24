@@ -7,7 +7,10 @@ import { requireAgencyOwnerAny } from "@/lib/auth/require-tenancy";
 import { isLocalDev } from "@/lib/setup/env-file";
 import { aiSuiteIsConfigured, aiSuiteModel } from "@/lib/ai-suite/model";
 import { AI_SUITE_KNOWLEDGE } from "@/lib/ai-suite/knowledge-base";
-import { AI_SUITE_CAPABILITIES } from "@/lib/ai-suite/capabilities";
+import {
+  AI_SUITE_CAPABILITIES,
+  availableOn,
+} from "@/lib/ai-suite/capabilities";
 import { validateKbChanges, type KbChange } from "@/lib/ai-suite/kb-edit";
 
 export const dynamic = "force-dynamic";
@@ -54,7 +57,8 @@ function readSource(relPath: string, cap = 40_000): string {
 function buildReviewPrompt(): string {
   const cards = JSON.stringify(AI_SUITE_KNOWLEDGE, null, 1);
   const capabilities = JSON.stringify(
-    AI_SUITE_CAPABILITIES.map((c) => ({
+    // Cards are for the in-app assistant: only what the chat surface offers.
+    AI_SUITE_CAPABILITIES.filter((c) => availableOn(c, "chat")).map((c) => ({
       name: c.name,
       level: c.level,
       readonly: !!c.readonly,

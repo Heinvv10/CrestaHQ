@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { requireAgencyOwnerAny, requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import {
+  availableOn,
   CapabilityUserError,
   getCapability,
   roleSatisfies,
@@ -43,9 +44,15 @@ export async function POST(request: Request) {
   }
 
   // Readonly lookups execute inline in the chat route — they're not
-  // confirmable actions, so this endpoint refuses them.
+  // confirmable actions, so this endpoint refuses them. So is anything not
+  // offered on the chat surface (agent-only capabilities).
   const cap = getCapability(body.capability);
-  if (!cap || cap.level !== level || cap.readonly) {
+  if (
+    !cap ||
+    cap.level !== level ||
+    cap.readonly ||
+    !availableOn(cap, "chat")
+  ) {
     return NextResponse.json(
       { error: "Unknown or unavailable action." },
       { status: 400 },
