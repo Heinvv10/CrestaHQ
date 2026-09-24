@@ -110,7 +110,9 @@ export interface AiSuiteCapability {
    * read rule and the approver's territory gate. Resolved at propose time
    * under the neutral preview ctx. `scoped: true` gates on `territoryId`
    * (null denies territory-scoped collaborators, as for contacts);
-   * `scoped: false` only for a genuinely tenant-wide target.
+   * `scoped: false` only for a genuinely tenant-wide target. When
+   * `contactId` is set, the contact's live territory (read inside
+   * createProposal's transaction) is stored instead of `territoryId`.
    */
   approvalTarget?: (
     ctx: AiSuiteActionContext,
