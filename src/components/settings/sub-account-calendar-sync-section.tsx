@@ -2,10 +2,25 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { CalendarCheck, Copy, Loader2 } from "lucide-react";
+import { CalendarCheck, Copy, Loader2, TriangleAlert, X } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { GoogleCalendarCard } from "@/components/settings/google-calendar-card";
+
+/** PR #219 (2026-09-24) minted a per-user token into the "All bookings"
+ *  feed URL, which silently invalidated every subscription a member had
+ *  already added to their external calendar (it keeps polling the OLD
+ *  URL, which now 401s, so events just stop appearing with no error the
+ *  member would see). Shown until dismissed or past the auto-hide date —
+ *  by then everyone active in the sub-account has had months to see it. */
+const FEED_URL_CHANGE_DISMISS_KEY = "cal-feed-url-change-2026-09-24-dismissed";
+const FEED_URL_CHANGE_AUTO_HIDE_ISO = "2026-11-01T00:00:00Z";
+
+/** Pure so it's testable without a DOM: true while `now` is still before
+ *  the auto-hide date. */
+export function feedUrlChangeBannerStillActive(now: Date): boolean {
+  return now.getTime() < new Date(FEED_URL_CHANGE_AUTO_HIDE_ISO).getTime();
+}
 
 /**
  * Calendar subscription panel — the .ics feed URL operators paste into
@@ -30,6 +45,28 @@ export function SubAccountCalendarSyncSection() {
   const [hostUrl, setHostUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showFeedUrlChangeBanner, setShowFeedUrlChangeBanner] =
+    useState(false);
+
+  useEffect(() => {
+    if (!feedUrlChangeBannerStillActive(new Date())) return;
+    try {
+      if (localStorage.getItem(FEED_URL_CHANGE_DISMISS_KEY) !== "1") {
+        setShowFeedUrlChangeBanner(true);
+      }
+    } catch {
+      setShowFeedUrlChangeBanner(true);
+    }
+  }, []);
+
+  function dismissFeedUrlChangeBanner() {
+    setShowFeedUrlChangeBanner(false);
+    try {
+      localStorage.setItem(FEED_URL_CHANGE_DISMISS_KEY, "1");
+    } catch {
+      // Best-effort — worst case the banner reappears next visit.
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +123,28 @@ export function SubAccountCalendarSyncSection() {
           </p>
         </div>
       </header>
+
+      {showFeedUrlChangeBanner && (
+        <div
+          data-testid="feed-url-change-banner"
+          className="relative mb-4 flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 pr-9 text-xs text-amber-800 dark:text-amber-300"
+        >
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            The &quot;All bookings&quot; feed URL changed on 24 September
+            2026 for security reasons. If your calendar app stopped
+            updating, re-copy the URL below into it.
+          </p>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={dismissFeedUrlChangeBanner}
+            className="absolute right-2 top-2 rounded p-1 text-amber-800/70 hover:bg-amber-500/10 hover:text-amber-800 dark:text-amber-300/70 dark:hover:text-amber-300"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       <GoogleCalendarCard />
 
