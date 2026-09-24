@@ -993,7 +993,9 @@ service cloud.firestore {
         request.resource.data.subAccountId,
         request.resource.data.agencyId
       ) && companyLinkInTenant()
-        && assigneeIsMemberOrNull(request.resource.data.subAccountId);
+        && assigneeIsMemberOrNull(request.resource.data.subAccountId)
+        // The `prospecting` map is server-owned (Get Leads import, public API).
+        && !("prospecting" in request.resource.data);
       // Updates require territory visibility; territory reassignment uses
       // the server route so linked conversation previews move atomically.
       allow update: if canSeeScopedDoc(
@@ -1004,7 +1006,8 @@ service cloud.firestore {
         && assigneeIsMemberOrNull(resource.data.subAccountId)
         // Territory changes must use the server route, which atomically scopes inbox previews.
         && request.resource.data.get("territoryId", null) == resource.data.get("territoryId", null)
-        && companyLinkInTenant();
+        && companyLinkInTenant()
+        && request.resource.data.get("prospecting", null) == resource.data.get("prospecting", null);
       allow delete: if canAdminSub(
         resource.data.subAccountId,
         resource.data.agencyId

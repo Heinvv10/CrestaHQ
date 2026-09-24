@@ -14,6 +14,8 @@ import { beforeAll, describe, expect, it } from "vitest";
  *   - `prospectReportShares`: no client reads or writes at all, not even the
  *     agency owner — the public report route resolves a share server-side.
  *   - A member of another sub-account is refused everywhere.
+ *   - `contacts.prospecting` is server-owned: no client create may carry it
+ *     and no client update may change it (other edits still go through).
  *
  * Every case asserts the evaluation raised no error (or, for a non-member,
  * exactly the Null value error of a missing membership doc), so a "deny"
@@ -52,11 +54,13 @@ interface Case {
   before?: Data;
   /** The doc as it would be after a create/update. */
   after?: Data;
+  /** Other docs the rules may get(), by path under documents/. */
+  gets?: Record<string, Data>;
 }
 
 async function evaluate(cases: Case[]): Promise<{ allowed: boolean; errors: string[] }[]> {
   const { access_token } = await cert(creds as Required<typeof creds>).getAccessToken();
-  const testCases = cases.map(({ caller, method, path, before, after }) => ({
+  const testCases = cases.map(({ caller, method, path, before, after, gets }) => ({
     expectation: "ALLOW",
     request: {
       path: `${DOCS}${path}`,
@@ -67,11 +71,18 @@ async function evaluate(cases: Case[]): Promise<{ allowed: boolean; errors: stri
       ...(after ? { resource: { data: after } } : {}),
     },
     resource: before ? { data: before } : null,
-    functionMocks: Object.entries(caller?.memberships ?? {}).map(([saId, data]) => ({
-      function: "get",
-      args: [{ exactValue: `${DOCS}subAccounts/${saId}/subAccountMembers/${caller!.uid}` }],
-      result: { value: data === null ? null : { data } },
-    })),
+    functionMocks: [
+      ...Object.entries(caller?.memberships ?? {}).map(([saId, data]) => ({
+        function: "get",
+        args: [{ exactValue: `${DOCS}subAccounts/${saId}/subAccountMembers/${caller!.uid}` }],
+        result: { value: data === null ? null : { data } },
+      })),
+      ...Object.entries(gets ?? {}).map(([docPath, data]) => ({
+        function: "get",
+        args: [{ exactValue: `${DOCS}${docPath}` }],
+        result: { value: { data } },
+      })),
+    ],
   }));
 
   const res = await fetch(`https://firebaserules.googleapis.com/v1/projects/${creds.projectId}:test`, {
@@ -128,6 +139,12 @@ const SHARE = { ...TENANT, reportId: "r1", revokedAt: null };
 
 type Outcome = "allow" | "deny" | "deny: not a member";
 
+// A collaborator's contact access reads the sub-account's territory toggle.
+const SA_DOC = { "subAccounts/sa_1": { agencyId: "agency_a", territoryScopingEnabled: false } };
+const CONTACT = { ...TENANT, name: "Aqua Plumbing", mode: "live", territoryId: "global", tags: [] };
+const PROSPECT = { ...CONTACT, prospecting: { listId: "list1", approachedAt: null, lastReportId: null } };
+const CON = "contacts/c1";
+
 const LST = "prospectLists/list1";
 const RPT = "prospectReports/r1";
 const SHR = "prospectReportShares/share1";
@@ -165,6 +182,13 @@ const CASES: [string, Case, Outcome][] = [
   ["shares: signed-out cannot read one", { caller: null, method: "get", path: SHR, before: SHARE }, "deny"],
   ["shares: admin cannot create one", { caller: saAdmin, method: "create", path: SHR, after: SHARE }, "deny"],
   ["shares: owner cannot revoke one", { caller: owner, method: "update", path: SHR, before: SHARE, after: { ...SHARE, revokedAt: 1 } }, "deny"],
+
+  // ---- contacts.prospecting: server-owned ----
+  ["contacts: collaborator edits a prospect's name (map unchanged)", { caller: collaborator, method: "update", path: CON, before: PROSPECT, after: { ...PROSPECT, name: "Aqua Plumbing (Pty)" }, gets: SA_DOC }, "allow"],
+  ["contacts: collaborator cannot stamp prospecting.approachedAt", { caller: collaborator, method: "update", path: CON, before: PROSPECT, after: { ...PROSPECT, prospecting: { ...PROSPECT.prospecting, approachedAt: 1 } }, gets: SA_DOC }, "deny"],
+  ["contacts: admin cannot add a prospecting map to a contact", { caller: saAdmin, method: "update", path: CON, before: CONTACT, after: PROSPECT }, "deny"],
+  ["contacts: collaborator creates a contact without the map", { caller: collaborator, method: "create", path: CON, after: CONTACT }, "allow"],
+  ["contacts: collaborator cannot create a contact carrying the map", { caller: collaborator, method: "create", path: CON, after: PROSPECT }, "deny"],
 ];
 
 describe.skipIf(!haveCreds)("prospecting collections — firestore rules", () => {
