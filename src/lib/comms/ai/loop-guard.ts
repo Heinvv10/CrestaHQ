@@ -2,6 +2,8 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
+import { sendPushForEvent } from "@/lib/push/send";
+import { contactTerritoryId } from "@/lib/push/events";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -23,6 +25,10 @@ import type { SubAccountDoc } from "@/types";
  * Only messages after `resetAtMs` count — the last human reply or the last
  * loop pause — so a pause that is resumed (or expires) starts a fresh count
  * instead of re-tripping on the history that caused it.
+ *
+ * A second trip on the same conversation within AI_LOOP_REPEAT_OFF_WINDOW_MS
+ * of the first means the 1h pause isn't holding — the bot turns OFF for that
+ * conversation instead, until an operator re-enables it.
  */
 export const AI_LOOP_REPEATS = 3;
 export const AI_LOOP_MIN_REPEAT_CHARS = 40;
@@ -30,6 +36,8 @@ export const AI_LOOP_HARD_CAP = 30;
 export const AI_LOOP_WINDOW_MS = 10 * 60 * 1000;
 /** How long a tripped loop pauses the bot on the conversation. */
 export const AI_LOOP_PAUSE_MS = 60 * 60 * 1000;
+/** A second trip inside this window turns the bot off instead of re-pausing. */
+export const AI_LOOP_REPEAT_OFF_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Rows scanned: enough for the hard cap (30 AI replies + their inbounds). */
 const SCAN_LIMIT = 80;
@@ -43,7 +51,21 @@ interface Row {
   at: number | null;
 }
 
-const normalise = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+// Digit runs of 3+ fold to a single "#" so an auto-reply that varies only by
+// a timestamp or ticket number ("Ticket #4821 opened 09:14" vs "#4822 09:17")
+// still normalises equal instead of evading the repeated-text check. 1-2
+// digit runs (a day-of-month like "5th", a small count) are left alone —
+// folding those would make genuinely distinct short messages collide.
+// Trade-off, accepted: a real auto-reply that varies ONLY by a 1-2 digit
+// number ("case 5 opened" / "case 6 opened") still evades this check, same
+// as before — the hard cap (AI_LOOP_HARD_CAP replies / AI_LOOP_WINDOW_MS)
+// remains the backstop for that case.
+const normalise = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/\d{3,}/g, "#")
+    .replace(/\s+/g, " ")
+    .trim();
 
 /** Pure decision over rows sorted NEWEST first. Exported for tests. */
 export function loopReasonFromRows(
@@ -122,31 +144,68 @@ export async function detectAiReplyLoop(input: {
   }
 }
 
+function toMillis(v: unknown): number | null {
+  if (v instanceof Date) return v.getTime();
+  const t = (v as { toMillis?: () => number } | null | undefined)?.toMillis;
+  return typeof t === "function" ? t.call(v) : null;
+}
+
+export interface LoopPauseResult {
+  /** Whether the write succeeded (either the pause or the turn-off). */
+  paused: boolean;
+  /** True when this trip turned the bot off instead of pausing it. */
+  turnedOff: boolean;
+}
+
 /**
  * Pause the bot on this conversation and stamp `aiLoopPausedAt`, which resets
  * the guard's window (see `getConversationControls`). `update`, not a
  * merge-set: the inbound upsert already created the doc with its tenancy keys.
- * Returns whether the pause was written.
+ *
+ * If the previous trip's `aiLoopPausedAt` is within AI_LOOP_REPEAT_OFF_WINDOW_MS,
+ * the 1h pause isn't holding — this trip turns the bot OFF for the conversation
+ * (`botMode: "off"`) instead, which only an operator can undo.
  */
-export async function pauseBotForReplyLoop(conversationId: string): Promise<boolean> {
+export async function pauseBotForReplyLoop(
+  conversationId: string,
+): Promise<LoopPauseResult> {
   const now = Date.now();
+  const ref = getAdminDb().collection("conversations").doc(conversationId);
   try {
-    await getAdminDb()
-      .collection("conversations")
-      .doc(conversationId)
-      .update({
+    const snap = await ref.get();
+    const prevTripAt = toMillis(snap.data()?.aiLoopPausedAt);
+    const turnedOff =
+      prevTripAt !== null && now - prevTripAt <= AI_LOOP_REPEAT_OFF_WINDOW_MS;
+    if (turnedOff) {
+      await ref.update({
+        botMode: "off",
+        botPausedUntil: null,
+        aiLoopPausedAt: new Date(now),
+      });
+    } else {
+      await ref.update({
         botPausedUntil: new Date(now + AI_LOOP_PAUSE_MS),
         aiLoopPausedAt: new Date(now),
       });
-    return true;
+    }
+    return { paused: true, turnedOff };
   } catch (err) {
     console.warn("[ai/loop-guard] pause write failed", err);
-    return false;
+    return { paused: false, turnedOff: false };
   }
 }
 
-const escapeHtml = (v: string) =>
+/** Escapes a value for safe interpolation into an HTML email body. */
+export const escapeHtml = (v: string) =>
   v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/**
+ * Strips CR/LF from a value before it's interpolated into an email subject.
+ * A subject built from customer-controlled text (contact name, message)
+ * must not carry a raw newline, which some mail stacks would otherwise let
+ * inject extra headers.
+ */
+export const stripEol = (v: string) => v.replace(/[\r\n]+/g, " ");
 
 /**
  * Staff alert for a tripped loop — its own wording, not the keyword-escalation
@@ -159,22 +218,31 @@ export async function sendReplyLoopNotification(params: {
   contactId: string;
   contactName: string;
   paused: boolean;
+  /** True when this trip turned the bot off (second trip within 24h). */
+  turnedOff: boolean;
   appUrl: string;
 }): Promise<void> {
   if (!emailIsConfigured(params.subAccount)) {
     console.warn("[ai/loop-guard] email not configured — loop alert skipped");
     return;
   }
-  const who = params.contactName || "a contact";
-  const subject = params.paused
-    ? `AI auto-reply loop suspected — bot paused for 1h on ${who}`
-    : `AI auto-reply loop suspected — pausing the bot FAILED on ${who}`;
+  const who = stripEol(params.contactName) || "a contact";
+  const subject = params.turnedOff
+    ? `AI auto-reply loop suspected — bot turned OFF on ${who}`
+    : params.paused
+      ? `AI auto-reply loop suspected — bot paused for 1h on ${who}`
+      : `AI auto-reply loop suspected — pausing the bot FAILED on ${who}`;
   const link = `${params.appUrl}/sa/${params.subAccountId}/contacts/${params.contactId}`;
+  const resumeInstruction = params.turnedOff
+    ? "This is the second loop on this conversation within 24 hours, so the bot is now OFF for it — it will stay off until a human turns it back on, or"
+    : params.paused
+      ? "It will resume on its own after an hour, or"
+      : "The bot is NOT paused. Turn it off for this conversation, or";
   const text = `${subject}.
 
 The AI stopped replying because this conversation looks like two bots answering each other (for example the contact's own auto-reply).
 
-${params.paused ? "It will resume on its own after an hour, or" : "The bot is NOT paused. Turn it off for this conversation, or"} a human can reply or press Resume in the inbox:
+${resumeInstruction} a human can reply or press Resume in the inbox:
 ${link}
 `;
   const html = `<!DOCTYPE html><html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:32px auto;padding:0 16px;color:#1a1a22;line-height:1.6;">${text
@@ -195,4 +263,34 @@ ${link}
   } catch (err) {
     console.error("[ai/loop-guard] loop alert send failed", err);
   }
+}
+
+/**
+ * Staff PUSH alert for a tripped loop, sent unconditionally (unlike the
+ * email above, which only fires when escalationNotifyEmail is configured).
+ * Otherwise a workspace with no escalation email set has nothing telling
+ * staff the bot went silent — the customer can sit unanswered indefinitely.
+ * Uses the existing territory-scoped push system (lib/push/send.ts); a
+ * missing VAPID config or no subscriptions is a silent no-op there.
+ */
+export async function sendReplyLoopPush(params: {
+  subAccountId: string;
+  agencyId: string;
+  contactId: string;
+  contactName: string;
+  turnedOff: boolean;
+  appUrl: string;
+}): Promise<void> {
+  const who = params.contactName || "a contact";
+  await sendPushForEvent({
+    subAccountId: params.subAccountId,
+    agencyId: params.agencyId,
+    title: params.turnedOff ? "AI bot turned OFF — reply loop" : "AI bot paused — reply loop",
+    body: params.turnedOff
+      ? `${who}: a second bot-to-bot loop tripped within 24h — the AI is off for this conversation until you turn it back on.`
+      : `${who}: looks like two bots are replying to each other — the AI is paused here for 1 hour.`,
+    url: `${params.appUrl}/sa/${params.subAccountId}/conversations/${params.contactId}`,
+    tag: `ai-loop-${params.contactId}`,
+    territoryId: await contactTerritoryId(params.contactId),
+  });
 }

@@ -24,8 +24,11 @@ const s = vi.hoisted(() => ({
   },
   threadReadThrows: false,
   pauseThrows: false,
+  /** The conversation doc's stored aiLoopPausedAt from a prior trip, if any. */
+  priorLoopPausedAtMs: null as number | null,
   escalations: [] as string[],
   loopEmails: [] as Array<{ to: string; subject: string }>,
+  loopPushes: [] as Array<{ subAccountId: string; agencyId: string; title: string; body: string; url: string }>,
   twilioSends: 0,
   conversationUpdates: [] as Array<Record<string, unknown>>,
   activities: [] as Array<Record<string, unknown>>,
@@ -45,9 +48,19 @@ const fakeDb = {
   }),
   collection: (name: string) => ({
     doc: (id: string) => ({
+      get: async () => ({
+        data: () =>
+          name === "conversations" && s.priorLoopPausedAtMs !== null
+            ? { aiLoopPausedAt: { toMillis: () => s.priorLoopPausedAtMs } }
+            : {},
+      }),
       update: async (data: Record<string, unknown>) => {
         if (name === "conversations" && s.pauseThrows) throw new Error("write failed");
-        if (name === "conversations") s.conversationUpdates.push({ id, ...data });
+        if (name === "conversations") {
+          s.conversationUpdates.push({ id, ...data });
+          const at = data.aiLoopPausedAt;
+          if (at instanceof Date) s.priorLoopPausedAtMs = at.getTime();
+        }
       },
       collection: (sub: string) => ({
         add: async (data: Record<string, unknown>) => {
@@ -120,6 +133,20 @@ vi.mock("@/lib/comms/resend", () => ({
     s.loopEmails.push(e);
     return { id: "e1" };
   },
+}));
+vi.mock("@/lib/push/send", () => ({
+  sendPushForEvent: async (e: {
+    subAccountId: string;
+    agencyId: string;
+    title: string;
+    body: string;
+    url: string;
+  }) => {
+    s.loopPushes.push(e);
+  },
+}));
+vi.mock("@/lib/push/events", () => ({
+  contactTerritoryId: async () => undefined,
 }));
 vi.mock("@/lib/comms/business-hours", () => ({ isWithinBusinessHours: () => true }));
 vi.mock("@/lib/comms/meta", () => ({ sendMetaMessage: async () => "mid" }));
@@ -218,8 +245,10 @@ beforeEach(() => {
   s.controls = { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
   s.threadReadThrows = false;
   s.pauseThrows = false;
+  s.priorLoopPausedAtMs = null;
   s.escalations = [];
   s.loopEmails = [];
+  s.loopPushes = [];
   s.conversationUpdates = [];
   s.activities = [];
   s.llmCalls = 0;
@@ -266,6 +295,12 @@ describe("AI reply-loop guard", () => {
         subject: "AI auto-reply loop suspected — bot paused for 1h on Cust",
       }),
     ]);
+    expect(s.loopPushes).toEqual([
+      expect.objectContaining({
+        subAccountId: "sa",
+        title: "AI bot paused — reply loop",
+      }),
+    ]);
     expect(s.escalations).toEqual([]); // not the keyword-escalation template
     expect(s.activities.at(-1)).toMatchObject({
       type: "ai_skipped",
@@ -309,6 +344,83 @@ describe("AI reply-loop guard", () => {
     expect(act.meta.paused).toBe(false);
     expect(act.content).not.toContain("Bot paused");
     expect(s.loopEmails[0].subject).toContain("pausing the bot FAILED");
+  });
+
+  it("trips on an auto-reply that varies only by ticket number", async () => {
+    const varying = (i: number) =>
+      `We're away right now — ticket #482${i}, we'll reply once we're back.`;
+    seedExchanges(2, 2_000, varying);
+    s.thread[0].body = varying(9);
+    const out = await respond("cloud");
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.activities.at(-1)).toMatchObject({ meta: { loop: "repeated_text" } });
+  });
+
+  it("a human sending short numeric texts does not trip", async () => {
+    const orders = ["order 123", "order 456", "order 789"];
+    seedExchanges(2, 20_000, (i) => orders[i + 1]);
+    s.thread[0].body = orders[0];
+    expect((await respond("cloud")).kind).toBe("replied");
+    expect(s.conversationUpdates).toHaveLength(0);
+  });
+
+  it("a second loop trip within 24h turns the bot off instead of re-pausing", async () => {
+    s.priorLoopPausedAtMs = Date.now() - 1_000; // an earlier trip, well within 24h
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    const out = await respond("cloud");
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.conversationUpdates.at(-1)).toMatchObject({
+      botMode: "off",
+      botPausedUntil: null,
+    });
+    expect(s.loopEmails.at(-1)).toEqual(
+      expect.objectContaining({ subject: "AI auto-reply loop suspected — bot turned OFF on Cust" }),
+    );
+    expect(s.loopPushes.at(-1)).toEqual(
+      expect.objectContaining({ title: "AI bot turned OFF — reply loop" }),
+    );
+    expect(s.activities.at(-1)).toMatchObject({
+      meta: { reason: "reply_loop", paused: true, turnedOff: true },
+    });
+  });
+
+  it("pushes staff even when no escalationNotifyEmail is configured (email would otherwise be the only alert)", async () => {
+    const noEmailAgent = {
+      effective: { ...agent.effective, escalationNotifyEmail: "" },
+    } as unknown as ResolvedAiAgent;
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    const out = await maybeRespondWithAi({
+      subAccountId: "sa",
+      subAccount,
+      agent: noEmailAgent,
+      channelId: "whatsapp",
+      contact: { id: "c1", name: "Cust" } as Contact,
+      incomingMessage: "hello",
+      replyTo: "+27820000000",
+      inboundProvider: "cloud",
+    });
+    expect(out).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.loopEmails).toEqual([]);
+    expect(s.loopPushes).toEqual([
+      expect.objectContaining({ subAccountId: "sa", title: "AI bot paused — reply loop" }),
+    ]);
+  });
+
+  it("resuming after a turn-off answers normally again", async () => {
+    s.priorLoopPausedAtMs = Date.now() - 1_000;
+    seedExchanges(2, 2_000, () => AUTO_REPLY);
+    s.thread[0].body = AUTO_REPLY;
+    expect(await respond("cloud")).toEqual({ kind: "skipped", reason: "reply_loop" });
+    expect(s.conversationUpdates.at(-1)).toMatchObject({ botMode: "off" });
+
+    // Operator turns the bot back on for this conversation.
+    s.controls.botMode = "auto";
+    s.controls.loopResetAtMs = s.priorLoopPausedAtMs;
+    s.thread = [];
+    seedExchanges(1, 2_000, () => "a normal one-off follow-up message");
+    expect((await respond("cloud")).kind).toBe("replied");
   });
 });
 
