@@ -243,6 +243,7 @@ describe("refusals write nothing and enrol nobody", () => {
     ["a whole-array `tags` replace", { ...CANDIDATE, tags: [TAG] }],
     ["an invalid phone", { ...CANDIDATE, phone: "not a phone" }],
     ["a pipeline_stage it would otherwise drop", { ...CANDIDATE, pipeline_stage: "won" }],
+    ["a prospecting map it would otherwise drop", { ...CANDIDATE, prospecting: { place_id: "ChIJx" } }],
     ["a create with no name", { ...CANDIDATE, name: undefined }],
   ])("refuses %s", async (_label, body) => {
     const res = await upsert(body);

@@ -26,6 +26,17 @@ All under `src/lib/api/`:
 - `logs.ts` — append-only request log per key for debug visibility in the dashboard.
 - `serializers/{contacts, deals, tasks, events}.ts` — strict wire-format mappers so internal field renames don't accidentally break API consumers.
 
+## Contacts: the `prospecting` map
+
+Every contact object carries `prospecting` — `null`, or `{ list_id, place_id,
+website, rating, reviews_count, category, approached_at, last_report_id }`
+(missing keys as `null`). `PATCH /v1/contacts/:id` accepts it and replaces
+the stored map wholesale. Validation is strict: only those eight keys (any
+other key is a 400 `invalid_body`), `list_id` / `place_id` / `category`
+strings ≤ 200, `website` ≤ 300, `rating` a number 0–5, `reviews_count` a
+non-negative integer, and `approached_at` / `last_report_id` only `null` —
+LeadStack sets them. See [prospecting.md](prospecting.md).
+
 ## Workflow triggers + the enrolment cap
 
 `POST /v1/contacts` and `PATCH /v1/contacts/:id` write through
@@ -92,8 +103,8 @@ Velocity export is the first caller.
 - `tags_add` / `tags_remove` apply to the contact's CURRENT tags inside the
   write transaction, so a tag an operator added a moment ago survives.
   `tags` (whole-array replace) is refused on this route, as are
-  `pipeline_stage` and `territory_id` (set those with PATCH) — refused
-  rather than silently dropped.
+  `pipeline_stage`, `territory_id` and `prospecting` (set those with PATCH) —
+  refused rather than silently dropped.
 - 201 created · 200 updated · **409 `ambiguous_phone`** when more than one
   contact already holds the phone — nothing is written and the ids are named.
 - `Idempotency-Key` is honoured as on every v1 POST.

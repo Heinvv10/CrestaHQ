@@ -74,7 +74,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return apiError(ctx, "invalid_request", "invalid_body", "Body must be a JSON object.");
   }
-  for (const field of ["pipeline_stage", "territory_id"]) {
+  for (const field of ["pipeline_stage", "territory_id", "prospecting"]) {
     if (b[field] !== undefined) {
       return apiError(ctx, "invalid_request", "invalid_body",
         `\`${field}\` is not supported on upsert. Set it with PATCH /v1/contacts/:id.`);
