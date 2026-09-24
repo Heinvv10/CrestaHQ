@@ -144,8 +144,8 @@ export async function chargeCycle(
     });
   });
   if (recorded === "overtaken") {
-    // A success webhook settled this charge first: it was paid after all.
-    console.error(`${tag} declined answer arrived after the charge was settled; not treated as a decline`);
+    // Overtaken by a success: settled first, or recorded as a late success.
+    console.error(`${tag} declined answer overtaken by a success for this charge; not treated as a decline`);
     return false;
   }
   let chargeNote = `Card declined for invoice ${label} (${answer.reason}).`;
