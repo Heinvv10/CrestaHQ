@@ -107,6 +107,15 @@ it("waitForServer: a partial cache snapshot is held; the server answer is delive
   expect(cb).toHaveBeenCalledTimes(1);
   expect(cb.mock.calls[0][0]).toHaveLength(3);
 });
+it("waitForServer: cache-only snapshots (offline, server never answers) are never delivered", () => {
+  // Deliberate: a partial cache shown as a complete inbox is worse than
+  // waiting — the pane says it is offline / slow instead.
+  const { cb, next } = subscribe(true);
+  next(snap(["c1"], true));
+  next(snap(["c1", "c2"], true, 1));
+  next(snap(["c1", "c2"], true, 0));
+  expect(cb).not.toHaveBeenCalled();
+});
 it("waitForServer: a warm, complete cache loads on the server's metadata-only confirmation", () => {
   const { cb, next } = subscribe(true);
   next(snap(["c1", "c2"], true));

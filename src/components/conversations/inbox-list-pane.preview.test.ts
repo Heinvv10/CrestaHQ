@@ -64,6 +64,7 @@ vi.mock("@/components/conversations/star-toggle", () => ({
 }));
 
 import { InboxListPane } from "./inbox-list-pane";
+import { SLOW_AFTER_MS } from "@/hooks/use-loading-hint";
 
 const conv = (id: string, name: string) => ({
   id,
@@ -125,4 +126,70 @@ it("no preview when the URL carries a filter", async () => {
   state.params = new URLSearchParams("tab=unread");
   await mount();
   expect(state.fetchNewest).not.toHaveBeenCalled();
+});
+
+/**
+ * The full list waits for the server, so offline or stalled it would load
+ * silently forever. It must say why — for the preview AND the skeleton — and
+ * the message must go once the list arrives.
+ */
+const status = () => host.querySelector('[role="status"]')?.textContent ?? "";
+
+it("says offline while the list cannot load, and clears once it arrives", async () => {
+  state.fetchNewest.mockReturnValue(new Promise(() => undefined));
+  await mount();
+  await act(async () => {
+    window.dispatchEvent(new Event("offline"));
+  });
+  expect(status()).toContain("You're offline");
+  await act(async () => {
+    window.dispatchEvent(new Event("online"));
+  });
+  expect(status()).toBe("");
+  await act(async () => state.deliver!([conv("c1", "Full Person")]));
+  expect(status()).toBe("");
+  expect(host.textContent).toContain("Full Person");
+});
+
+it("says the load is slow after the threshold, over the preview too", async () => {
+  vi.useFakeTimers();
+  try {
+    state.fetchNewest.mockResolvedValue([conv("c1", "Preview Person")]);
+    await mount();
+    expect(status()).toBe("");
+    await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+    expect(status()).toContain("Still loading conversations");
+    expect(host.textContent).toContain("Preview Person");
+    await act(async () => state.deliver!([conv("c2", "Full Person")]));
+    expect(status()).toBe("");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("a territory-scoped viewer (skeleton, no preview) is told too", async () => {
+  vi.useFakeTimers();
+  try {
+    state.territoryFilter = ["north"];
+    await mount();
+    await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+    expect(status()).toContain("Still loading conversations");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("a restarted load (territory change) restarts the slow timer", async () => {
+  vi.useFakeTimers();
+  try {
+    state.territoryFilter = ["north"];
+    await mount();
+    await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+    expect(status()).toContain("Still loading conversations");
+    state.territoryFilter = ["south"];
+    await mount();
+    expect(status()).toBe("");
+  } finally {
+    vi.useRealTimers();
+  }
 });
