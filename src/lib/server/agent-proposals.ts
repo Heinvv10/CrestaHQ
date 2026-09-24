@@ -44,6 +44,8 @@ export interface ProposalInput {
   preview: Array<{ label: string; value: string }>;
   /** workflow_enrolment rows only: one row per matched workflow. */
   workflowId?: string;
+  /** The contact the action targets, for the approver's territory gate. */
+  contactId: string | null;
 }
 
 export type CreateProposalResult =
@@ -131,7 +133,9 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
     if (status === "executing") {
       return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
     }
-    if (status === "pending") {
+    // A pending row past its expiry is dead: roll it over like a terminal one.
+    const expired = status === "pending" && (millis(cur!.expiresAt) ?? Infinity) < Date.now();
+    if (status === "pending" && !expired) {
       if (canonical(cur!.preview) === canonical(input.preview)) {
         return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
       }
@@ -140,7 +144,8 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       return { ok: true, id, status, rev, summary: cur!.summary, preview: input.preview };
     }
     if (status === "unsettled") return { ok: false, code: "outcome_unknown", id };
-    if (status && TERMINAL.includes(status)) tx.set(historyRef(id), cur!);
+    if (expired) tx.set(historyRef(id), { ...cur!, status: "expired" });
+    else if (status && TERMINAL.includes(status)) tx.set(historyRef(id), cur!);
     const now = Date.now();
     const rev = newRev();
     tx.set(ref, {
@@ -154,13 +159,14 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       args: input.args,
       summary: input.summary,
       preview: input.preview,
-      contactId: typeof input.args.contactId === "string" ? input.args.contactId : null,
+      contactId: input.contactId,
       workflowId: input.workflowId ?? null,
       status: "pending",
       rev,
       createdAt: new Date(now),
       expiresAt: new Date(now + TTL_MS),
       claimedAt: null,
+      claimId: null,
       decidedAt: null,
       decidedByUid: null,
       decidedByEmail: null,
@@ -174,13 +180,13 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
 /**
  * Move a row `from` → `patch.status` only when, at read time, its status is
  * still `from`, its generation is still `rev` (person decisions), and its
- * claim is still `claimedAtMs` (sweeps of a claim).
+ * claim is still `claimId` (sweeps of a claim).
  */
 export async function transitionIf(
   id: string,
   from: ProposalStatus,
   patch: Record<string, unknown> & { status?: ProposalStatus },
-  guard: { rev?: string; claimedAtMs?: number } = {}
+  guard: { rev?: string; claimId?: string } = {}
 ): Promise<TransitionResult> {
   const ref = proposalRef(id);
   return getAdminDb().runTransaction(async (tx) => {
@@ -188,9 +194,7 @@ export async function transitionIf(
     const cur = snap.data();
     if (!cur || cur.status !== from) return "conflict";
     if (guard.rev !== undefined && cur.rev !== guard.rev) return "stale";
-    if (guard.claimedAtMs !== undefined && millis(cur.claimedAt) !== guard.claimedAtMs) {
-      return "conflict";
-    }
+    if (guard.claimId !== undefined && cur.claimId !== guard.claimId) return "conflict";
     tx.update(ref, patch);
     return "ok";
   });
@@ -201,21 +205,25 @@ export async function claimProposal(
   id: string,
   by: { uid: string; email: string },
   rev: string
-): Promise<{ claimedAtMs: number } | "conflict" | "stale"> {
+): Promise<{ claimId: string } | "conflict" | "stale"> {
   const claimedAt = new Date();
+  // A random token, not the timestamp: two claims in one millisecond (a
+  // re-proposal claimed right after) must never look like the same claim.
+  const claimId = newRev();
   const moved = await transitionIf(
     id,
     "pending",
     {
       status: "executing",
       claimedAt,
+      claimId,
       decidedAt: claimedAt,
       decidedByUid: by.uid,
       decidedByEmail: by.email,
     },
     { rev }
   );
-  return moved === "ok" ? { claimedAtMs: claimedAt.getTime() } : moved;
+  return moved === "ok" ? { claimId } : moved;
 }
 
 /** Store a freshly computed preview under a new `rev` (pending generation
@@ -239,7 +247,7 @@ export async function refreshPreview(
  */
 export async function settleProposal(
   id: string,
-  claimedAtMs: number,
+  claimId: string,
   outcome:
     | { status: "executed"; result: { resultText: string; ref: { kind: string; id: string } | null } }
     | { status: "failed"; error: string },
@@ -262,7 +270,7 @@ export async function settleProposal(
   const verdict = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const cur = snap.data();
-    const ours = millis(cur?.claimedAt) === claimedAtMs;
+    const ours = cur?.claimId === claimId;
     const v =
       ours && cur?.status === "executing"
         ? "settled"
@@ -271,7 +279,7 @@ export async function settleProposal(
           : "late";
     if (v === "settled") tx.update(ref, fields);
     else if (v === "resolved_late") tx.update(ref, { ...fields, settledLate: true });
-    else tx.set(historyRef(id), { lateSettle: true, claimedAt: new Date(claimedAtMs), ...fields });
+    else tx.set(historyRef(id), { lateSettle: true, claimId, ...fields });
     tx.set(db.collection("aiSuiteActions").doc(), {
       level: "sub-account",
       ...audit,
@@ -339,8 +347,8 @@ export async function sweepAgentProposals(
     }
   }
   for (const doc of stale.docs) {
-    const claimedAtMs = millis(doc.data().claimedAt) ?? undefined;
-    if ((await transitionIf(doc.id, "executing", { status: "unsettled" }, { claimedAtMs })) === "ok") {
+    const claimId = doc.data().claimId as string;
+    if ((await transitionIf(doc.id, "executing", { status: "unsettled" }, { claimId })) === "ok") {
       moved++;
     }
   }

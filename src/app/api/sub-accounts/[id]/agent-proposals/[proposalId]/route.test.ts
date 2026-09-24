@@ -29,7 +29,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (importOriginal) => {
 const { POST } = await import("./route");
 const { DELETE } = await import("../../api-keys/[keyId]/route");
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
-const { claimProposal, sweepAgentProposals } = await import("@/lib/server/agent-proposals");
+const { claimProposal, millis, sweepAgentProposals } = await import("@/lib/server/agent-proposals");
 const { replayHeldEnrolment } = await import("@/lib/server/agent-enrolment-replay");
 const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
 
@@ -46,6 +46,7 @@ const auth: ApiAuthContext = {
   apiVersion: "2026-01-01",
 };
 
+const validateAny: AiSuiteCapability["validate"] = (raw) => ({ ok: true, args: (raw ?? {}) as Record<string, unknown> });
 const execute = vi.fn(async () => ({ resultText: "sent", ref: { kind: "message", id: "m1" } }));
 const outbound: AiSuiteCapability = {
   name: "__test_outbound",
@@ -55,7 +56,7 @@ const outbound: AiSuiteCapability = {
   menuLabel: "fixture",
   description: "fixture",
   parameters: { type: "object", properties: {} },
-  validate: (raw) => ({ ok: true, args: (raw ?? {}) as Record<string, unknown> }),
+  validate: validateAny,
   summarize: (args) => `Send “${args.body}”`,
   preview: async (_ctx, args) => [{ label: "Body", value: String(args.body) }],
   execute,
@@ -103,6 +104,8 @@ beforeEach(() => {
   vi.mocked(replayHeldEnrolment).mockClear();
   outbound.requiredRole = "subAccountMember";
   outbound.approval = "outbound";
+  outbound.validate = validateAny;
+  delete outbound.approvalContactId;
   AI_SUITE_CAPABILITIES.push(outbound);
 });
 
@@ -445,5 +448,119 @@ describe("preview drift — breaker R4", () => {
     expect(row(id).rev).not.toBe(oldRev);
     expect((await decide(id, "approve", "sa1", oldRev)).status).toBe(409);
     expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe("general review — PR #259", () => {
+  /** Hang the next execute until the returned function is called. */
+  function hangNextExecute(): () => void {
+    let finish!: () => void;
+    execute.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = () => resolve({ resultText: "sent", ref: { kind: "message", id: "m1" } })))
+    );
+    return () => finish();
+  }
+
+  it("M1: A's late settle after mark_not_sent + re-propose + B's claim goes to history; B's row untouched", async () => {
+    const id = await proposeId();
+    const finishA = hangNextExecute();
+    const approvingA = decide(id, "approve");
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    await sweepAgentProposals(later(11 * 60_000));
+    expect((await decide(id, "mark_not_sent")).status).toBe(200);
+    await proposeId();
+    const finishB = hangNextExecute();
+    const approvingB = decide(id, "approve");
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    const bClaim = row(id).claimId;
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    finishA();
+    await approvingA;
+    expect(row(id)).toMatchObject({ status: "executing", claimId: bClaim });
+    expect(history(id)).toContainEqual(expect.objectContaining({ lateSettle: true, status: "executed" }));
+    finishB();
+    await approvingB;
+    expect(row(id).status).toBe("executed");
+  });
+
+  it("M2 + L4: a scoped collaborator cannot approve or reject a proposal targeting another territory's contact", async () => {
+    // The fixture names its target `recipientId`; approvalContactId says so.
+    outbound.approvalContactId = (args) => String(args.recipientId);
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), territoryScopingEnabled: true });
+    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
+    mem.seed("contacts/c_south", { agencyId: "ag1", subAccountId: "sa1", territoryId: "south" });
+    mem.seed("contacts/c_north", { agencyId: "ag1", subAccountId: "sa1", territoryId: "north" });
+    const south = await proposeId({ body: "x", recipientId: "c_south" });
+    const north = await proposeId({ body: "y", recipientId: "c_north" });
+    expect(row(south).contactId).toBe("c_south");
+    caller.role = "collaborator";
+    expect((await decide(south, "approve")).status).toBe(403);
+    expect((await decide(south, "reject")).status).toBe(403);
+    expect(row(south).status).toBe("pending");
+    expect((await decide(north, "approve")).status).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("M3: a key already revoked before the proposal row existed is caught at approve (breaker 2b)", async () => {
+    // Row written, then the key revoked with no sweep having run for it.
+    const id = await proposeId();
+    mem.seed("subAccounts/sa1/apiKeys/key1", { ...mem.read("subAccounts/sa1/apiKeys/key1"), revokedAt: new Date() });
+    const again = await DELETE(new Request("http://localhost/x", { method: "DELETE" }), {
+      params: Promise.resolve({ id: "sa1", keyId: "key1" }),
+    });
+    expect(await again.json()).toEqual({ ok: true, alreadyRevoked: true });
+    expect(row(id).status).toBe("pending");
+    expect((await decide(id, "approve")).status).toBe(409);
+    expect(row(id)).toMatchObject({ status: "rejected", reason: "key_revoked" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("L1: a claim that replaced the stale one between the sweep's query and its write is not flipped", async () => {
+    const id = await proposeId();
+    await claim(id, "u_a");
+    beforeNextTransaction(async () => {
+      mem.seed(`agentProposals/${id}`, { ...row(id), claimId: "fresh_claim", claimedAt: new Date() });
+    });
+    await sweepAgentProposals(later(11 * 60_000));
+    expect(row(id)).toMatchObject({ status: "executing", claimId: "fresh_claim" });
+  });
+
+  it("L2: stored args that no longer validate → 400 before the claim; execute 0, row stays pending", async () => {
+    const id = await proposeId();
+    outbound.validate = () => ({ ok: false, error: "body is too long" });
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(400);
+    expect(row(id).status).toBe("pending");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("L3: the revoke sweep skips a row with the same keyId in another sub-account", async () => {
+    await proposeId();
+    mem.seed("agentProposals/p_other_sa", { subAccountId: "sa2", keyId: "key1", status: "pending", rev: "r" });
+    await DELETE(new Request("http://localhost/x", { method: "DELETE" }), {
+      params: Promise.resolve({ id: "sa1", keyId: "key1" }),
+    });
+    expect(row("p_other_sa").status).toBe("pending");
+  });
+
+  it("L5: approving an expired pending row flips it to expired → 409 expired, execute 0", async () => {
+    const id = await proposeId();
+    mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "expired" });
+    expect(row(id).status).toBe("expired");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("L5: re-proposing an expired pending row rolls it to history as expired and starts a fresh pending", async () => {
+    const id = await proposeId();
+    const oldRev = row(id).rev;
+    mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
+    await proposeId();
+    expect(row(id).status).toBe("pending");
+    expect(row(id).rev).not.toBe(oldRev);
+    expect(millis(row(id).expiresAt)!).toBeGreaterThan(Date.now());
+    expect(history(id)).toEqual([expect.objectContaining({ status: "expired", rev: oldRev })]);
   });
 });

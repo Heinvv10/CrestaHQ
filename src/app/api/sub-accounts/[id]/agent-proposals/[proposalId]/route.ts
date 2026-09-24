@@ -13,6 +13,7 @@ import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-sco
 import {
   canonical,
   claimProposal,
+  millis,
   refreshPreview,
   settleProposal,
   transitionIf,
@@ -88,8 +89,6 @@ export async function POST(
     subAccountId,
     subAccountRole: access.subAccountRole,
   };
-  // Only `args.contactId` is gated today: an approval capability that targets
-  // records by another id must extend this check before it ships.
   if (typeof proposal.contactId === "string") {
     const contact = await db.doc(`contacts/${proposal.contactId}`).get();
     const scope = await territoryScopeFor(actionCtx);
@@ -172,6 +171,18 @@ export async function POST(
       : refused(moved);
   }
 
+  if ((millis(proposal.expiresAt) ?? Infinity) < Date.now()) {
+    const moved = await transitionIf(
+      proposalId,
+      "pending",
+      { status: "expired", decidedAt: new Date() },
+      { rev },
+    );
+    return moved === "ok"
+      ? NextResponse.json({ error: "expired" }, { status: 409 })
+      : refused(moved);
+  }
+
   // execute reads live data; the preview was computed when proposed. If
   // what would happen now differs, store it and make the approver look again.
   if (!enrolment && cap?.preview) {
@@ -189,7 +200,7 @@ export async function POST(
 
   const claim = await claimProposal(proposalId, access, rev);
   if (typeof claim === "string") return refused(claim);
-  const { claimedAtMs } = claim;
+  const { claimId } = claim;
 
   let outcome: Parameters<typeof settleProposal>[2];
   try {
@@ -212,7 +223,7 @@ export async function POST(
           : "The action failed to run.",
     };
   }
-  await settleProposal(proposalId, claimedAtMs, outcome, {
+  await settleProposal(proposalId, claimId, outcome, {
     agencyId: proposal.agencyId as string,
     subAccountId,
     capability: proposal.capability as string,

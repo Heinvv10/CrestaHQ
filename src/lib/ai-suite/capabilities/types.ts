@@ -98,6 +98,9 @@ export interface AiSuiteCapability {
   /** Agent-surface-only narrowing of the raw args, applied before validate
    *  (e.g. dropping fields an agent may not set). */
   agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;
+  /** The contact an approval capability targets, for the approver's
+   *  territory gate. Default: `args.contactId` when it is a string. */
+  approvalContactId?: (args: Record<string, unknown>) => string | null;
   /** Label/value rows the approvals UI renders verbatim for a proposal. */
   preview?: (
     ctx: AiSuiteActionContext,

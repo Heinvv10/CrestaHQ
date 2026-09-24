@@ -138,6 +138,11 @@ async function dispatch(
       args: validated.args,
       summary: cap.summarize(validated.args),
       preview: await cap.preview(ctx, validated.args),
+      contactId: cap.approvalContactId
+        ? cap.approvalContactId(validated.args)
+        : typeof validated.args.contactId === "string"
+          ? validated.args.contactId
+          : null,
     });
     if (!created.ok) {
       return created.code === "key_revoked"
