@@ -128,13 +128,21 @@ export async function chargeCycle(
   // on this reference. A refused key says nothing about the card, so it is
   // not counted against the mandate — the operator has a connection to fix.
   const keyRefused = answer.kind === "key";
+  const declined: QuoteAutoCharge = {
+    ...base,
+    state: "declined",
+    reason: keyRefused ? `Paystack refused this workspace's key: ${answer.reason}` : answer.reason,
+  };
   const recorded = await recordDecline(
     reference,
     invoiceRef,
     `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`,
-    { ...base, state: "declined", reason: answer.reason },
-  ).catch((err: unknown) => {
+    declined,
+  ).catch(async (err: unknown) => {
+    // The attempt stays open (the daily sweep re-checks it); the invoice at
+    // least reads declined, so no pay link is minted against an open charge.
     console.error(`${tag} decline not recorded`, err);
+    await setInvoice(declined);
     return "recorded" as const;
   });
   if (recorded === "settled") {

@@ -86,9 +86,11 @@ it("keeps a declined answer on screen after its own write unmounts the button", 
   answer({ outcome: "declined" });
   await click();
   // The live subscription delivers the declined charge after the response.
-  await render(invoice("declined"));
+  await render(invoice("declined", "sent", "Paystack has no record of this charge"));
   expect(recheckButton()).toBeUndefined();
   expect(container.textContent).toContain("did not go through");
+  // The answer stands in for the charge line; never both.
+  expect(container.textContent).not.toContain("Card not charged");
 });
 
 it("shows a declined answer before its own write reaches the view", async () => {
@@ -212,7 +214,7 @@ it("keeps a needs-attention answer on an invoice marked paid by hand mid-flight"
 it("says why a card charge was declined once the re-check answer is gone", async () => {
   await render(invoice("declined", "sent", "Paystack reports the charge failed"));
   expect(recheckButton()).toBeUndefined();
-  expect(container.textContent).toContain("Card charge declined: Paystack reports the charge failed");
+  expect(container.textContent).toContain("Card not charged: Paystack reports the charge failed");
 });
 
 it("tells another operator the charge was declined when their own re-check is refused", async () => {
@@ -220,7 +222,7 @@ it("tells another operator the charge was declined when their own re-check is re
   await click();
   await render(invoice("declined", "sent", "Paystack has no record of this charge"));
   expect(container.textContent).not.toContain("Reload and check again");
-  expect(container.textContent).toContain("Card charge declined: Paystack has no record of this charge");
+  expect(container.textContent).toContain("Card not charged: Paystack has no record of this charge");
 });
 
 it("shows a needs-attention charge's reason", async () => {
@@ -230,7 +232,7 @@ it("shows a needs-attention charge's reason", async () => {
 
 it("says nothing about a declined charge once the invoice was paid another way", async () => {
   await render(invoice("declined", "paid", "Insufficient funds"));
-  expect(container.textContent).not.toContain("Card charge declined");
+  expect(container.textContent).not.toContain("Card not charged");
 });
 
 it("still shows a needs-attention charge on a paid invoice", async () => {

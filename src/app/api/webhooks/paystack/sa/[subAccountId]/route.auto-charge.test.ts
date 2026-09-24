@@ -160,6 +160,37 @@ describe("a success settled before the decline answer was recorded", () => {
   });
 });
 
+describe("recording a decline", () => {
+  it("a refused key reads as the workspace's key, not the card", async () => {
+    stubAutoCharge({ charge: () => refused(401, "Invalid key") });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(raised().autoCharge).toMatchObject({ state: "declined", reason: expect.stringMatching(/^Paystack refused this workspace's key/) });
+  });
+
+  it("if the combined write fails, the invoice still reads declined", async () => {
+    let charged = false;
+    stubAutoCharge({
+      charge: () => {
+        charged = true;
+        return chargeAnswer("failed", "Declined");
+      },
+    });
+    const run = mem.db.runTransaction.bind(mem.db);
+    let failed = false;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      if (charged && !failed) {
+        failed = true;
+        throw new Error("10 ABORTED: contention");
+      }
+      return run(fn as never);
+    });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(failed).toBe(true);
+    expect(attempt()).toMatchObject({ state: "open" });
+    expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined", reason: "Declined" });
+  });
+});
+
 describe("what the webhook refuses to record", () => {
   it("a key other than the attempt's: flagged, never verified, not paid", async () => {
     const calls = await chargedCycle();
@@ -292,8 +323,11 @@ describe("a success after a recorded decline, on the invoice", () => {
     return (raised().autoCharge as { reason: string }).reason;
   };
 
-  it("unpaid: says to mark it paid by hand, not to send a pay link", async () => {
-    expect(await reasonAfter({})).toMatch(/mark the invoice paid by hand — do not send a pay link/);
+  it("unpaid: says to record the payment, not to send a pay link — still true once recorded", async () => {
+    const reason = await reasonAfter({});
+    expect(reason).toMatch(/Record it as this invoice's payment rather than sending a pay link/);
+    // Still true once the operator has done so.
+    expect(reason).not.toMatch(/mark (the invoice|it) paid by hand/i);
   });
 
   it("marked paid by hand: a refund MAY be owed", async () => {

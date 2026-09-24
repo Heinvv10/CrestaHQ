@@ -120,7 +120,7 @@ export async function reconcileAutoCharge(input: {
         const late = `Paystack later reported this card charge (reference ${reference}) as paid, after it was recorded as declined`;
         const why =
           invoice!.status !== "paid"
-            ? `${late}. Check your Paystack dashboard and mark the invoice paid by hand — do not send a pay link.`
+            ? `${late}, so the money is in your Paystack account. Record it as this invoice's payment rather than sending a pay link; if another payment was also taken, refund one.`
             : invoice!.paidVia
               ? `${late}, and the invoice was also paid by ${describeVia(invoice!.paidVia)}. The customer paid twice: a refund is owed.`
               : `${late}, and the invoice was marked paid by hand. If the hand mark recorded a different payment, the customer paid twice and a refund may be owed.`;
