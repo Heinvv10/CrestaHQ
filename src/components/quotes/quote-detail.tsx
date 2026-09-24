@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Timestamp } from "firebase/firestore";
 import { ArrowRight, CheckCircle2, Download, Loader2, Send, Trash2 } from "lucide-react";
@@ -81,6 +81,26 @@ export function QuoteDetail({
   >(null);
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
+  // A re-check's answer, shown only while the invoice is still where that
+  // answer left it: its own write (before or after the response lands) keeps
+  // it, any later change (a webhook, another operator) hides it.
+  const chargeView = `${quote.status}|${quote.autoCharge?.state ?? ""}`;
+  const chargeViewRef = useRef(chargeView);
+  chargeViewRef.current = chargeView;
+  const [recheck, setRecheck] = useState<{ text: string; isError: boolean; views: string[] } | null>(null);
+  const showRecheck = recheck && recheck.views.includes(chargeView) ? recheck : null;
+  const onRecheck = (text: string, isError: boolean, outcome?: string) => {
+    const now = chargeViewRef.current;
+    const after =
+      outcome === "paid"
+        ? "paid|paid"
+        : outcome === "failed_but_paid"
+          ? "paid|declined"
+          : outcome === "declined"
+            ? `${now.split("|")[0]}|declined`
+            : now;
+    setRecheck({ text, isError, views: [now, after] });
+  };
 
   const effStatus = effectiveQuoteStatus(quote);
   const totals = computeQuoteTotals(quote);
@@ -315,14 +335,8 @@ export function QuoteDetail({
               <RecheckCardChargeButton
                 subAccountId={scope.subAccountId}
                 invoiceId={quote.id}
-                onMessage={(m) => {
-                  setError(null);
-                  setFlash(m);
-                }}
-                onError={(e) => {
-                  setFlash(null);
-                  setError(e);
-                }}
+                onMessage={(m, outcome) => onRecheck(m, false, outcome)}
+                onError={(e) => onRecheck(e, true)}
               />
             )}
             {(canMarkPaid || canMarkCardDraftPaid) && (
@@ -369,6 +383,18 @@ export function QuoteDetail({
         )}
       </div>
 
+      {showRecheck && (
+        <p
+          className={cn(
+            "rounded-md border px-3 py-2 text-xs",
+            showRecheck.isError
+              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+          )}
+        >
+          {showRecheck.text}
+        </p>
+      )}
       {flash && (
         <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
           {flash}

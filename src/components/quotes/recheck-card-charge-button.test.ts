@@ -48,7 +48,7 @@ it("posts to the re-check route without a confirm() and shows the outcome", asyn
   await click();
   expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/quotes/inv1/recheck-card-charge", { method: "POST" });
   expect(confirmMock).not.toHaveBeenCalled();
-  expect(onMessage).toHaveBeenCalledWith(expect.stringContaining("did not go through"));
+  expect(onMessage).toHaveBeenCalledWith(expect.stringContaining("did not go through"), "declined");
   expect(onError).not.toHaveBeenCalled();
 });
 

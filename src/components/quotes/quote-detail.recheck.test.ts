@@ -24,11 +24,11 @@ const fetchMock = vi.fn();
 let container: HTMLDivElement;
 let root: Root;
 
-const invoice = (state: "unknown" | "declined"): Quote =>
+const invoice = (state: "unknown" | "declined" | "paid", status: "sent" | "paid" = "sent"): Quote =>
   ({
     id: "inv1",
     kind: "invoice",
-    status: "sent",
+    status,
     quoteNumber: "INV-1",
     currency: "ZAR",
     contactId: "c1",
@@ -75,19 +75,49 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("keeps Paystack's answer on screen after the charge settles and the button goes", async () => {
-  fetchMock.mockResolvedValue(new Response(JSON.stringify({ outcome: "declined" }), { status: 200 }));
-  await act(async () => recheckButton()!.click());
-  // The live subscription delivers the declined charge.
+const answer = (body: object, status = 200) => fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status }));
+const click = () => act(async () => recheckButton()!.click());
+
+it("keeps a declined answer on screen after its own write unmounts the button", async () => {
+  answer({ outcome: "declined" });
+  await click();
+  // The live subscription delivers the declined charge after the response.
   await render(invoice("declined"));
   expect(recheckButton()).toBeUndefined();
   expect(container.textContent).toContain("did not go through");
 });
 
-it("shows the route's refusal in the view", async () => {
-  fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: "Reload and check again." }), { status: 409 }));
-  await act(async () => recheckButton()!.click());
+it("keeps the answer when the subscription lands before the response", async () => {
+  let respond!: (r: Response) => void;
+  fetchMock.mockReturnValue(new Promise<Response>((r) => (respond = r)));
+  await click();
+  await render(invoice("declined"));
+  await act(async () => respond(new Response(JSON.stringify({ outcome: "declined" }), { status: 200 })));
+  expect(container.textContent).toContain("did not go through");
+});
+
+it("keeps a paid answer once the invoice turns paid", async () => {
+  answer({ outcome: "paid" });
+  await click();
+  await render(invoice("paid", "paid"));
+  expect(container.textContent).toContain("the invoice is now paid");
+});
+
+it("drops the answer when the invoice changes again afterwards", async () => {
+  answer({ outcome: "declined" });
+  await click();
+  await render(invoice("declined"));
+  // Later marked paid by hand.
+  await render(invoice("declined", "paid"));
+  expect(container.textContent).not.toContain("did not go through");
+});
+
+it("drops a refusal when a webhook settles the charge afterwards", async () => {
+  answer({ error: "Reload and check again." }, 409);
+  await click();
   expect(container.textContent).toContain("Reload and check again.");
   // The charge is still unconfirmed, so it can be re-checked again.
   expect(recheckButton()).toBeDefined();
+  await render(invoice("paid", "paid"));
+  expect(container.textContent).not.toContain("Reload and check again.");
 });

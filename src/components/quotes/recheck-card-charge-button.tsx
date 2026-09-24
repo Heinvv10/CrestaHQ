@@ -31,7 +31,7 @@ export function RecheckCardChargeButton({
 }: {
   subAccountId: string;
   invoiceId: string;
-  onMessage: (message: string) => void;
+  onMessage: (message: string, outcome: string) => void;
   onError: (error: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -44,7 +44,7 @@ export function RecheckCardChargeButton({
       });
       const body = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string };
       if (!res.ok || !body.outcome) throw new Error(body.error ?? `Re-check failed (HTTP ${res.status})`);
-      onMessage(OUTCOME[body.outcome] ?? `Paystack answered: ${body.outcome}.`);
+      onMessage(OUTCOME[body.outcome] ?? `Paystack answered: ${body.outcome}.`, body.outcome);
     } catch (err) {
       onError(err instanceof Error ? err.message : "Re-check failed");
     } finally {
