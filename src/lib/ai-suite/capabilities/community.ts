@@ -16,6 +16,7 @@ export const COMMUNITY_CAPABILITIES: AiSuiteCapability[] = [
     name: "create_community",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     menuLabel:
       "Set up a new community with its first course and lesson (returns the live URLs)",
     description:

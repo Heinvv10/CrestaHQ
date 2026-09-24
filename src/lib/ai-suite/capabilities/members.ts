@@ -72,6 +72,7 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
     name: "invite_member",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     menuLabel:
       "Invite someone to this workspace by email (as admin or collaborator)",
     description:

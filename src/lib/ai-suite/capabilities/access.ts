@@ -9,6 +9,7 @@ export const ACCESS_CAPABILITIES: AiSuiteCapability[] = [
     name: "my_access",
     level: "sub-account",
     requiredRole: "subAccountMember",
+    surfaces: ["chat"],
     readonly: true,
     menuLabel: "Check which workspaces you can access and your role in each",
     description:
@@ -50,6 +51,7 @@ export const ACCESS_CAPABILITIES: AiSuiteCapability[] = [
     name: "open_workspace",
     level: "sub-account",
     requiredRole: "subAccountMember",
+    surfaces: ["chat"],
     readonly: true,
     menuLabel:
       "Switch you to another workspace you belong to (via an open button)",

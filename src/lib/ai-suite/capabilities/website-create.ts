@@ -33,6 +33,7 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
     name: "create_website",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     menuLabel:
       "Create and build a website for this workspace (via the website builder)",
     description:

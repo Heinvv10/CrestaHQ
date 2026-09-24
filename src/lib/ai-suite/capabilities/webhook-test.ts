@@ -16,6 +16,7 @@ export const WEBHOOK_TEST_CAPABILITIES: AiSuiteCapability[] = [
     name: "send_webhook_test",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     menuLabel:
       "Send a test event to an existing webhook (verify n8n / Make / Zapier is receiving)",
     description:

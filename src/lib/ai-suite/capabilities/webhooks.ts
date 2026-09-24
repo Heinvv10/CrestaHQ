@@ -66,6 +66,7 @@ export const WEBHOOK_CAPABILITIES: AiSuiteCapability[] = [
     name: "create_webhook",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     menuLabel:
       "Set up an outbound webhook to n8n / Make / Zapier (with a live test to verify it)",
     description:

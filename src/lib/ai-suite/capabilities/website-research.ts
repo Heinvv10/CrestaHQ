@@ -16,6 +16,7 @@ export const WEBSITE_RESEARCH_CAPABILITIES: AiSuiteCapability[] = [
     name: "research_website_reference",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     readonly: true,
     menuLabel:
       "Read a reference website's content to inform a site you're drafting",
@@ -72,6 +73,7 @@ export const WEBSITE_RESEARCH_CAPABILITIES: AiSuiteCapability[] = [
     name: "get_website_prefill",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     readonly: true,
     menuLabel:
       "Check what's already known for a website draft (business details, defaults, site slots)",

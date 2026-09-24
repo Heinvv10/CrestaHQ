@@ -20,6 +20,7 @@ export const WEBHOOK_URL_CAPABILITIES: AiSuiteCapability[] = [
     name: "update_webhook_url",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
+    surfaces: ["chat"],
     menuLabel:
       "Point an existing webhook at a new URL (e.g. switch n8n test → production)",
     description:

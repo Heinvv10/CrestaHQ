@@ -67,6 +67,8 @@ export interface ApiAuthContext extends ResponseMeta {
   keyId: string;
   /** First 8 chars of the key — surfaced in logs / errors, never secret. */
   keyPrefix: string;
+  /** Operator-supplied key label ("Zapier production"). */
+  keyName: string;
   /** Live data plane or sandboxed test namespace. */
   mode: ApiKeyMode;
   /** Scopes granted to this key. Check before resource access. */
@@ -240,6 +242,7 @@ export async function authenticateApiRequest(
     subAccountId: candidate.subAccountId,
     keyId: candidate.id,
     keyPrefix: candidate.prefix,
+    keyName: candidate.name,
     mode: candidate.mode,
     scopes: candidate.scopes,
     enrolmentCapPerHour: resolveEnrolmentCapPerHour(candidate.enrolmentCapPerHour),

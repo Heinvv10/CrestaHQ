@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { AiSuiteLevel } from "@/types/ai-suite";
+import type { ApiAuthContext } from "@/lib/api/auth";
 
 /**
  * An execute-time failure whose message is safe (and useful) to show the
@@ -28,7 +29,24 @@ export interface AiSuiteActionContext {
   agencyId: string;
   subAccountId?: string;
   subAccountRole?: string;
+  /** Set only on the agent surface: the API key the call arrived on. */
+  apiKey?: Pick<
+    ApiAuthContext,
+    "keyId" | "keyPrefix" | "mode" | "enrolmentCapPerHour"
+  >;
 }
+
+/** Where a capability may be offered: the in-app assistant or an API agent. */
+export type CapabilitySurface = "chat" | "agent";
+
+/** Human-gate class. On the agent surface a capability carrying one is never
+ *  executed directly — it waits for a person to approve it. */
+export type CapabilityApproval =
+  | "outbound"
+  | "workflow_activate"
+  | "workflow_enrolment"
+  | "hard_delete"
+  | "spend";
 
 export interface ExecuteResult {
   /** Human-readable confirmation appended to the chat (or, for readonly
@@ -73,4 +91,16 @@ export interface AiSuiteCapability {
     ctx: AiSuiteActionContext,
     args: Record<string, unknown>
   ) => Promise<ExecuteResult>;
+  /** Surfaces that may offer this capability. Undefined = both. */
+  surfaces?: CapabilitySurface[];
+  /** Set = the agent surface queues it for approval instead of executing. */
+  approval?: CapabilityApproval;
+  /** Agent-surface-only narrowing of the raw args, applied before validate
+   *  (e.g. dropping fields an agent may not set). */
+  agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;
+  /** Label/value rows the approvals UI renders verbatim for a proposal. */
+  preview?: (
+    ctx: AiSuiteActionContext,
+    args: Record<string, unknown>
+  ) => Promise<Array<{ label: string; value: string }>>;
 }

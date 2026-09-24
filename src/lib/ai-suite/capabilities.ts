@@ -6,6 +6,7 @@ import {
   CapabilityUserError,
   type RequiredRole,
   type AiSuiteCapability,
+  type CapabilitySurface,
 } from "./capabilities/types";
 import { str } from "./capabilities/helpers";
 import { AGENCY_CAPABILITIES } from "./capabilities/agency";
@@ -35,6 +36,8 @@ export { CapabilityUserError } from "./capabilities/types";
 export type {
   AiSuiteActionContext,
   AiSuiteCapability,
+  CapabilityApproval,
+  CapabilitySurface,
   ExecuteResult,
   RequiredRole,
 } from "./capabilities/types";
@@ -112,6 +115,9 @@ function inSubAccount(base: AiSuiteCapability): AiSuiteCapability {
     level: "agency",
     requiredRole: "agencyOwner",
     readonly: base.readonly,
+    // A chat-only base stays chat-only; an agent-only base must never
+    // surface on chat through its agency variant.
+    surfaces: base.surfaces,
     menuLabel: `${base.menuLabel} — in a sub-account you name`,
     description: `${base.description} AGENCY VARIANT: performs this inside one of your sub-accounts. Resolve the sub-account's id with list_sub_accounts first — never guess ids. Exception: if the user identifies the sub-account by its account number (e.g. '#1011') or you already know its exact name, you may pass that as subAccountId — it's resolved server-side within this agency. If what the user said could match more than one sub-account (e.g. 'rode' when both 'Rode Plumbing' and 'Rode Sound' exist), ask which one BEFORE proposing.`,
     parameters: {
@@ -285,6 +291,14 @@ export function getCapability(name: string): AiSuiteCapability | undefined {
   return AI_SUITE_CAPABILITIES.find((c) => c.name === name);
 }
 
+/** True when `surface` may offer `cap` (no `surfaces` = every surface). */
+export function availableOn(
+  cap: AiSuiteCapability,
+  surface: CapabilitySurface
+): boolean {
+  return !cap.surfaces || cap.surfaces.includes(surface);
+}
+
 /** True when a caller with `role` satisfies the capability's required role. */
 export function roleSatisfies(
   required: RequiredRole,
@@ -313,7 +327,10 @@ export function toolsForLevel(
   role: { agencyRoleIsOwner: boolean; subAccountRole?: string }
 ): Array<{ type: "function"; function: Record<string, unknown> }> {
   return AI_SUITE_CAPABILITIES.filter(
-    (c) => c.level === level && roleSatisfies(c.requiredRole, role)
+    (c) =>
+      c.level === level &&
+      availableOn(c, "chat") &&
+      roleSatisfies(c.requiredRole, role)
   ).map((c) => ({
     type: "function",
     function: {
@@ -340,7 +357,10 @@ export function capabilityNamesForLevel(
   role: { agencyRoleIsOwner: boolean; subAccountRole?: string }
 ): { actions: CapabilityMenuItem[]; lookups: CapabilityMenuItem[] } {
   const offered = AI_SUITE_CAPABILITIES.filter(
-    (c) => c.level === level && roleSatisfies(c.requiredRole, role)
+    (c) =>
+      c.level === level &&
+      availableOn(c, "chat") &&
+      roleSatisfies(c.requiredRole, role)
   );
   const item = (c: AiSuiteCapability): CapabilityMenuItem => ({
     name: c.name,

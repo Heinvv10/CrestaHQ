@@ -8,6 +8,7 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     name: "check_website_status",
     level: "sub-account",
     requiredRole: "subAccountMember",
+    surfaces: ["chat"],
     readonly: true,
     menuLabel: "Check this workspace's websites (build status + live URLs)",
     description:
