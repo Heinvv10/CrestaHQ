@@ -11,6 +11,8 @@ import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-fil
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToConversations } from "@/lib/firestore/conversations";
+import { useConversationsPreview } from "@/hooks/use-conversations-preview";
+import { RENDER_STEP } from "@/components/show-more-rows";
 import {
   DEFAULT_INBOX_FILTERS,
   buildInboxView,
@@ -87,10 +89,24 @@ export function InboxListPane() {
           "Could not load conversations. Check your access and try again."
         );
       },
-      territory.filter
+      territory.filter,
+      { waitForServer: true }
     );
     return () => unsub();
   }, [user, subAccountId, authLoading, territory.ready, territory.filter]);
+
+  // Newest page while the full list loads — only when it is exactly what the
+  // list will show: no territory narrowing, filters, non-default sort or search.
+  const preview = useConversationsPreview(
+    subAccountId,
+    RENDER_STEP,
+    loading &&
+      territory.ready &&
+      !!user &&
+      !territory.filter &&
+      query === "" &&
+      !search.trim()
+  );
 
   const activeId = params.contactId ?? null;
   const view = useMemo(
@@ -136,7 +152,19 @@ export function InboxListPane() {
       />
       {loadError && <p className="text-destructive text-sm">{loadError}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading || !territory.ready ? (
+        {loading && preview ? (
+          <>
+            <ConversationList
+              conversations={preview}
+              basePath={saPath("/conversations")}
+              query={query}
+              activeId={activeId}
+            />
+            <p className="text-muted-foreground py-3 text-center text-xs">
+              Loading all conversations…
+            </p>
+          </>
+        ) : loading || !territory.ready ? (
           <ListSkeleton />
         ) : (
           <ConversationList
