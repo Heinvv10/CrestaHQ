@@ -394,12 +394,12 @@ export function QuoteDetail({
 
       {!showRecheck &&
         isInvoice &&
-        // A declined charge on a paid invoice was paid another way: nothing to
-        // do. needs_attention stays even when paid: it may say a refund is owed.
-        ((quote.autoCharge?.state === "declined" && quote.status !== "paid") ||
-          quote.autoCharge?.state === "needs_attention") && (
+        // Unpaid only: recording the payment is what resolves it. On a paid
+        // invoice any refund owed is the Task's, which can be completed.
+        quote.status !== "paid" &&
+        (quote.autoCharge?.state === "declined" || quote.autoCharge?.state === "needs_attention") && (
           <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-            {quote.autoCharge.state === "declined" ? "Card not charged" : "Card charge needs attention"}
+            {quote.autoCharge.state === "declined" ? "Card charge failed" : "Card charge needs attention"}
             {quote.autoCharge.reason ? `: ${quote.autoCharge.reason}` : "."}
           </p>
         )}

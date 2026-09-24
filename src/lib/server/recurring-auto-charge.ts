@@ -131,21 +131,19 @@ export async function chargeCycle(
   const declined: QuoteAutoCharge = {
     ...base,
     state: "declined",
-    reason: keyRefused ? `Paystack refused this workspace's key: ${answer.reason}` : answer.reason,
+    reason: keyRefused ? `Paystack refused this workspace's key (${answer.reason})` : answer.reason,
   };
-  const recorded = await recordDecline(
-    reference,
-    invoiceRef,
-    `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`,
-    declined,
-  ).catch(async (err: unknown) => {
+  const attemptReason = `${keyRefused ? "Paystack refused the key" : "Card declined"}: ${answer.reason}`;
+  const recorded = await recordDecline(reference, invoiceRef, attemptReason, declined).catch(async (err: unknown) => {
     // The attempt stays open (the daily sweep re-checks it); the invoice at
     // least reads declined, so no pay link is minted against an open charge.
-    console.error(`${tag} decline not recorded`, err);
-    await setInvoice(declined);
-    return "recorded" as const;
+    console.error(`${tag} decline not recorded; writing the invoice alone`, err);
+    return recordDecline(reference, invoiceRef, attemptReason, declined, { refuse: false }).catch((err2: unknown) => {
+      console.error(`${tag} invoice decline not written`, err2);
+      return "recorded" as const;
+    });
   });
-  if (recorded === "settled") {
+  if (recorded === "overtaken") {
     // A success webhook settled this charge first: it was paid after all.
     console.error(`${tag} declined answer arrived after the charge was settled; not treated as a decline`);
     return false;
@@ -285,20 +283,25 @@ async function charge(opened: Extract<Opened, { ok: true }>, reference: string):
 /**
  * Refuse the attempt (open → refused, never over a settle or a flag) and mark
  * the invoice's charge declined in ONE transaction, so a success webhook sees
- * both or neither. A settled attempt — the success won — is left alone.
+ * both or neither. Overtaken — the attempt settled, or the invoice already
+ * records this charge as paid or needing attention (a late success) — writes
+ * nothing. `refuse: false` writes the invoice alone, under the same guard.
  */
 async function recordDecline(
   reference: string,
   invoiceRef: DocumentReference,
   reason: string,
   autoCharge: QuoteAutoCharge,
-): Promise<"recorded" | "settled"> {
+  { refuse = true }: { refuse?: boolean } = {},
+): Promise<"recorded" | "overtaken"> {
   const db = getAdminDb();
   const ref = db.doc(`paymentAttempts/${reference}`);
   return db.runTransaction(async (t) => {
     const state = (await t.get(ref)).data()?.state;
-    if (state === "settled") return "settled";
-    if (state === "open") t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
+    const live = ((await t.get(invoiceRef)).data() as Quote | undefined)?.autoCharge;
+    const settledOnInvoice = live?.reference === reference && (live.state === "paid" || live.state === "needs_attention");
+    if (state === "settled" || settledOnInvoice) return "overtaken";
+    if (refuse && state === "open") t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
     t.update(invoiceRef, { autoCharge, updatedAt: FieldValue.serverTimestamp() });
     return "recorded";
   });

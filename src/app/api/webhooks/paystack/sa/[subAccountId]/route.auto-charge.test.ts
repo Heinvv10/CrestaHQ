@@ -164,7 +164,7 @@ describe("recording a decline", () => {
   it("a refused key reads as the workspace's key, not the card", async () => {
     stubAutoCharge({ charge: () => refused(401, "Invalid key") });
     await runOneSchedule(SCHEDULE, NOW);
-    expect(raised().autoCharge).toMatchObject({ state: "declined", reason: expect.stringMatching(/^Paystack refused this workspace's key/) });
+    expect(raised().autoCharge).toMatchObject({ state: "declined", reason: "Paystack refused this workspace's key (Paystack: Invalid key)" });
   });
 
   it("if the combined write fails, the invoice still reads declined", async () => {
@@ -188,6 +188,30 @@ describe("recording a decline", () => {
     expect(failed).toBe(true);
     expect(attempt()).toMatchObject({ state: "open" });
     expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined", reason: "Declined" });
+  });
+
+  it("never writes declined over a charge the invoice already records as paid or needing attention", async () => {
+    for (const state of ["paid", "needs_attention"]) {
+      mem.clear();
+      vi.clearAllMocks();
+      seedSub();
+      seedCardSchedule();
+      seedMandate({ consecutiveDeclines: 1 });
+      fireWorkflowTrigger.mockResolvedValue({ enrolled: [], skipped: [], reason: null });
+      stubAutoCharge({
+        charge: () => {
+          // A late success recorded on the invoice while the answer was in flight.
+          const inv = raised();
+          mem.seed(`quotes/${inv.id}`, { ...inv, autoCharge: { reference: REF, mandateId: MANDATE, state, reason: "late" } });
+          return chargeAnswer("failed", "Declined");
+        },
+      });
+      await runOneSchedule(SCHEDULE, NOW);
+      expect(raised().autoCharge).toMatchObject({ state, reason: "late" });
+      expect(attempt()).toMatchObject({ state: "open" });
+      expect(sendQuoteServerSide).not.toHaveBeenCalled();
+      expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
+    }
   });
 });
 
