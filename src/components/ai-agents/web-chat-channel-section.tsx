@@ -25,6 +25,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { ModelOverrideSelect } from "@/components/ai-agents/model-override-select";
 import type { AiAgentProfile, AiChannelConfig } from "@/types/ai";
 
 /**
@@ -377,13 +378,13 @@ export function WebChatChannelSection() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="wc-model">Model (advanced — blank for default)</Label>
-              <Input
+              <Label htmlFor="wc-model">Model (advanced)</Label>
+              <ModelOverrideSelect
                 id="wc-model"
+                subAccountId={subAccountId}
+                channel="web-chat"
                 value={modelOverride}
-                onChange={(e) => setModelOverride(e.target.value)}
-                placeholder="anthropic/claude-haiku-4-5"
-                className="font-mono text-xs"
+                onChange={setModelOverride}
               />
             </div>
           </div>

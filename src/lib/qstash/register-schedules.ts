@@ -100,9 +100,16 @@ const SCHEDULES: ScheduleSpec[] = [
     description:
       "Daily delete of abandoned WhatsApp composer uploads (whatsapp-staging/ objects over an hour old).",
   },
+  {
+    scheduleId: "leadstack-ai-models",
+    path: "/api/cron/ai-models",
+    cron: "20 3 * * *",
+    description:
+      "Daily refresh of the cached OpenRouter model list (AI model allow-list).",
+  },
 ];
 
-const BASE_SCHEDULE_VERSION = "2026-09-19-whatsapp-staging-cleanup";
+const BASE_SCHEDULE_VERSION = "2026-09-24-ai-models";
 
 /**
  * The Google Business Profile review sync is OPT-IN per deployment

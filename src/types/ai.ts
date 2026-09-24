@@ -96,6 +96,9 @@ export interface AiChannelConfig {
   /** OpenRouter model id, e.g. "anthropic/claude-haiku-4-5". Null =
    *  fall back to the deployment-wide AI_REPLIES_DEFAULT_MODEL. */
   modelOverride: string | null;
+  /** Set when OpenRouter refused `modelOverride` on a live reply and the
+   *  reply fell back to the app default. Cleared when the override changes. */
+  modelRejected?: { model: string; at: number } | null;
   /** Optional channel-specific overrides of the profile's escalation
    *  defaults. Null = use the profile value. Empty array = explicitly
    *  no escalation keywords on this channel. */
