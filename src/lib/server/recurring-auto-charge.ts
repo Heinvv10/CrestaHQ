@@ -284,8 +284,9 @@ async function charge(opened: Extract<Opened, { ok: true }>, reference: string):
  * Refuse the attempt (open → refused, never over a settle or a flag) and mark
  * the invoice's charge declined in ONE transaction, so a success webhook sees
  * both or neither. Overtaken — the attempt settled, or the invoice already
- * records this charge as paid or needing attention (a late success) — writes
- * nothing. `refuse: false` writes the invoice alone, under the same guard.
+ * records a late success on this charge (needs_attention: a first try that
+ * committed but threw, then the success webhook) — writes nothing.
+ * `refuse: false` writes the invoice alone, under the same guard.
  */
 async function recordDecline(
   reference: string,
@@ -299,8 +300,8 @@ async function recordDecline(
   return db.runTransaction(async (t) => {
     const state = (await t.get(ref)).data()?.state;
     const live = ((await t.get(invoiceRef)).data() as Quote | undefined)?.autoCharge;
-    const settledOnInvoice = live?.reference === reference && (live.state === "paid" || live.state === "needs_attention");
-    if (state === "settled" || settledOnInvoice) return "overtaken";
+    const lateSuccess = live?.reference === reference && live.state === "needs_attention";
+    if (state === "settled" || lateSuccess) return "overtaken";
     if (refuse && state === "open") t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
     t.update(invoiceRef, { autoCharge, updatedAt: FieldValue.serverTimestamp() });
     return "recorded";

@@ -190,28 +190,34 @@ describe("recording a decline", () => {
     expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined", reason: "Declined" });
   });
 
-  it("never writes declined over a charge the invoice already records as paid or needing attention", async () => {
-    for (const state of ["paid", "needs_attention"]) {
-      mem.clear();
-      vi.clearAllMocks();
-      seedSub();
-      seedCardSchedule();
-      seedMandate({ consecutiveDeclines: 1 });
-      fireWorkflowTrigger.mockResolvedValue({ enrolled: [], skipped: [], reason: null });
-      stubAutoCharge({
-        charge: () => {
-          // A late success recorded on the invoice while the answer was in flight.
-          const inv = raised();
-          mem.seed(`quotes/${inv.id}`, { ...inv, autoCharge: { reference: REF, mandateId: MANDATE, state, reason: "late" } });
-          return chargeAnswer("failed", "Declined");
-        },
-      });
-      await runOneSchedule(SCHEDULE, NOW);
-      expect(raised().autoCharge).toMatchObject({ state, reason: "late" });
-      expect(attempt()).toMatchObject({ state: "open" });
-      expect(sendQuoteServerSide).not.toHaveBeenCalled();
-      expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
-    }
+  it("a fallback after a commit that threw never writes declined over a late success", async () => {
+    let charged = false;
+    stubAutoCharge({
+      charge: () => {
+        charged = true;
+        return chargeAnswer("failed", "Declined");
+      },
+    });
+    const run = mem.db.runTransaction.bind(mem.db);
+    let thrown = false;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      if (charged && !thrown) {
+        // The combined write commits, then reports failure (an ambiguous commit)…
+        thrown = true;
+        await run(fn as never);
+        // …and a late success lands before the fallback runs.
+        const inv = raised();
+        mem.seed(`quotes/${inv.id}`, { ...inv, autoCharge: { reference: REF, mandateId: MANDATE, state: "needs_attention", reason: "late" } });
+        throw new Error("4 DEADLINE_EXCEEDED");
+      }
+      return run(fn as never);
+    });
+    await runOneSchedule(SCHEDULE, NOW);
+    expect(thrown).toBe(true);
+    expect(attempt()).toMatchObject({ state: "refused" });
+    expect(raised().autoCharge).toMatchObject({ state: "needs_attention", reason: "late" });
+    expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
   });
 });
 
