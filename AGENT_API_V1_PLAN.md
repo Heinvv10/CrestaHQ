@@ -1,6 +1,6 @@
 # Agent API v1
 
-> Status: **PLAN 2026-09-24, rev 3 after two blind reviews** (nothing built). Owner
+> Status: **PLAN 2026-09-24, rev 4 after three blind reviews** (nothing built). Owner
 > rulings locked: sub-account `lsk_` keys first (agency-wide keys are a later
 > PR); one tool registry (`src/lib/ai-suite/capabilities.ts`) exposed over MCP
 > + a REST mirror; outbound-to-humans and workflow activation only ever create
@@ -139,7 +139,13 @@ re-entry evaluation picks the ACTIVE workflows the contact would enter, if
 `hold` is set the engine **does not enrol**: it writes one `agentProposals`
 row of kind `workflow_enrolment` per matched workflow (`{workflowId,
 workflowName, contactId, triggerType, context}`) and returns them in
-`outcome.held`. At hold time re-entry is a **read-only probe**
+`outcome.held`. **When `actor` is set the services `await` the trigger**
+(today every caller is `void fireWorkflowTrigger` — deals-service.ts:309,
+booking/lifecycle.ts:137, quotes/lifecycle.ts:156 — which would discard
+`held`); the human/route path keeps its fire-and-forget. The awaited outcome's
+`held` ids come back in the capability's `ExecuteResult.held` and in the
+REST/MCP response (`{…, held:[{proposalId, workflowName}]}`), so the agent
+learns what is awaiting approval. At hold time re-entry is a **read-only probe**
 (`reentryWouldBlock(wf, contactId)`: same `workflowEnrolmentLocks/{wfId}_{contactId}`
 + live-run reads that `createRunUnlessBlocked` (engine.ts:1440) does inside
 its transaction, without the writes) so obviously-blocked workflows produce
@@ -152,7 +158,7 @@ workflow paused since proposal matches nothing, and the contact-in-sub check
 at engine.ts:1308 still runs; filters and the transactional re-entry check
 run again inside the run-creating transaction (a contact enrolled meanwhile
 is `reentry_blocked`, never doubled). The enrolment cap is charged at
-approve: `reserveEnrolment({subAccountId, keyId, capPerHour})`
+approve: `reserveEnrolment({subAccountId, keyId, limit})`
 (enrolment-cap.ts:122, the keyId-level primitive under `openEnrolmentGate`,
 which takes an `ApiAuthContext` the approve route does not have), reconciled
 by the engine's `finally`. Reject leaves the write in place and enrols
@@ -170,12 +176,13 @@ approved while off (approve route re-checks).
 | Field | Notes |
 |---|---|
 | `agencyId`, `subAccountId`, `createdByUid` (`apikey:<prefix>`) | tenancy keys per auth-and-tenancy.md |
-| `keyId`, `keyPrefix` | which key proposed it; key revoke sweeps its `pending` rows to `rejected` (`reason: key_revoked`) |
+| `keyId`, `keyPrefix` | which key proposed it; key revoke sweeps its `pending` rows to `rejected` (`reason: key_revoked`), pending-precondition per row |
+| `claimedAt` | set by the approve claim; settle writes are conditional on it |
 | `capability`, `args`, `summary` | validated args (post-`agentArgs`); `summary` from `cap.summarize` |
 | `approval` | `outbound` / `workflow_activate` / `workflow_enrolment` / `hard_delete` / `spend` |
 | `preview` | **verbatim** what will happen: full message body / subject, resolved recipient (name + masked address), channel, workflow name, amount + currency, or the doc about to be deleted — built by `cap.preview(ctx,args)` (new optional hook; required when `approval` is set) |
 | `contactId?`, `channel?`, `targetRef?` | for the list UI + the approver's territory gate |
-| `status` | `pending` → `executing` (claimed) → `executed` / `failed`; or `rejected` / `expired` |
+| `status` | `pending` → `executing` (claimed) → `executed` / `failed`; or `rejected` / `expired`; or `unsettled` (outcome unknown — see approve path) |
 | `createdAt`, `expiresAt` (+7 d), `decidedAt?`, `decidedByUid?`, `decidedByEmail?`, `result?`, `error?` | |
 
 Doc id: `p_<sha256(subAccountId|keyId|capability|canonical(args)|workflowId?)>`
@@ -186,11 +193,15 @@ doc; if it exists with `status == "pending"` it returns that id (no-op); if it
 is terminal (`executed`/`failed`/`rejected`/`expired`) it moves the old row
 to `agentProposals/{id}/history/{decidedAt}` and rewrites the id as a fresh
 `pending` row; if absent it creates it. A terminal row never blocks a
-legitimate re-proposal.
+legitimate re-proposal. **Two statuses are never recycled:** `executing`
+(returns the existing id) and `unsettled` (refuses with
+`outcome_unknown: "a previous approval of this exact action may have sent;
+check the conversation before re-proposing"`).
 Rules: `allow read: if canAccessSub(resource.data.subAccountId,
 resource.data.agencyId); allow write: if false;`. Index `(subAccountId ASC,
 status ASC, createdAt DESC)`. Deploy rules + indexes together after PR3
-(check open PRs first). Expiry rides the daily public-API TTL sweep.
+(check open PRs first). Expiry and the `executing → unsettled` flip ride the
+daily public-API TTL sweep.
 
 ### Approve path
 
@@ -208,10 +219,19 @@ second approve sees `executing`/`executed` and gets **409 `already_decided`**
 `workflow_enrolment` rows **never call `cap.execute`** (that would re-create
 the contact / redo the write) — they only run the enrolment replay above;
 every other kind calls `cap.execute`. Settle: `executed` + `result` or
-`failed` + `error` together with the `aiSuiteActions` row in one batch. A
-row stuck in `executing` past 10 min (process died mid-send) is surfaced as
-`failed: unsettled` by the expiry sweep, never re-executed automatically.
-Reject only stamps `rejected` (same pending-precondition transaction). The
+`failed` + `error` together with the `aiSuiteActions` row in one batch —
+the settle write is a transaction **conditional on `status == "executing" &&
+claimedAt == mine`**; if the row was moved meanwhile the outcome is appended
+to `history` instead and logged, never silently lost. A row still
+`executing` past 10 min (process died mid-send) is flipped by the sweep to
+**`unsettled`** — a distinct non-terminal-looking status meaning "outcome
+unknown", never `failed`, so roll-over cannot recycle it into a fresh
+`pending` with the same preview (that is a double send). The sweep runs
+daily, so "10 min" is in practice ≤ 24 h; an `unsettled` row is cleared only
+by a human on the approvals page ("mark as sent" / "mark as not sent"), which
+moves it to `history`. Reject, expiry and key-revoke sweeps all use the same
+**pending-precondition transaction** (`status == "pending"` at read time),
+so none can clobber a just-claimed `executing` row. The
 approver's identity is the actor on every provider call (`SendActor {uid,
 email}`), so quiet hours, opt-out, WhatsApp window and channel readiness are
 decided by the existing seam at approve time.
@@ -275,8 +295,8 @@ management, feature gates, anything agency-level.
 |---|---|---|---|
 | **PR1** scope + gate | — | `"agent"` scope (types, `VALID_SCOPES`, exclusive with `admin` and `forms-ingest`, rate-limit row, mint UI); `agentApiEnabledByAgency` 5-step; `FEATURE_GATES["agent-api"]`; `PLAN_GATE_KEYS`; key-revoke hook stub | `api-keys/route.test.ts`: `["agent","admin"]` → 400; `feature-gates/route.test.ts`: PATCH writes the field + audit row; `agency-manage-gates.spec.ts` checkbox |
 | **PR2** registry seams | — | `surfaces` / `approval` / `agentArgs` / `preview` fields; pure-move split into `capabilities/*.ts`; checker accepts a dir; `buildAgentContext`; `dispatchAgentTool` **without** proposal writes (approval caps return `not_yet_available`) | `agent-dispatch.test.ts` on `memory-firestore`: chat-only → `not_available`; agency-level → refused; test-mode → refused; gate off → 403; `capability-names.test.ts` asserts the **exact** name set before/after the split; checker floor unchanged |
-| **PR3** proposals + approve | PR2 | `agent-proposals.ts` (deterministic id), rules + index, list/decide routes, expiry, revoke sweep, `aiSuiteActions` row; `dispatchAgentTool` writes proposals; **fixture capability** `__test_outbound` (test-only, `approval:"outbound"`, execute calls a spy) | `agent-proposals.firestore-rules.test.ts` (sa2 cannot read sa1; client write denied); `decide/route.test.ts`: foreign `subAccountId` → 404; `roleSatisfies` denial → 403; approve runs the fixture's execute once with the approver's uid; **two concurrent approves (`Promise.all`) → execute spy called exactly once, one 200 + one 409**; a `workflow_enrolment` row → execute spy 0, replay spy 1; reject never; revoked key → pending rows `rejected`; re-proposing after a terminal row → new `pending` row, old one in `history` |
-| **PR3b** fuses on existing caps | PR3 | `FireInput.hold` + `onlyWorkflowId` + `outcome.held` + `reentryWouldBlock` in the engine; `actor` threaded through contacts / deals / tasks / events services; `update_contact` allowlist + `update_contact_channels` Q + service `subAccountId` check; webhook writes → chat-only; `agent.write` audit row; read-tool log redaction; **inverted outbound test** | `held-enrolment.test.ts`: agent `create_contact` with a matching ACTIVE workflow → contact exists, 0 runs, 1 `workflow_enrolment` proposal; approve → 1 run, cap reserved; **mutation proof** in the same file: with the `hold` branch stubbed out (`vi.spyOn` on the engine's hold writer forced to fall through) the assertion goes red. `outbound-never-sends.test.ts`: **every** agent-surfaced non-approval cap dispatched with Twilio, SMTP, Meta, global `fetch`, QStash publish, `maybeSendReviewRequest` and the workflow run-writer spied → 0 calls; every approval cap → 1 proposal, 0 calls. Triggers are fire-and-forget (`void fireWorkflowTrigger` at deals-service.ts:309, booking/lifecycle.ts:137, quotes/lifecycle.ts:156), so the harness **awaits `settleTriggers()`** — a test-only hook the engine exposes that resolves when every in-flight `fireWorkflowTrigger` promise has settled — before asserting; a test that forgets it fails a guard assertion (`pendingTriggerCount() === 0`) |
+| **PR3** proposals + approve | PR2 | `agent-proposals.ts` (deterministic id), rules + index, list/decide routes, expiry, revoke sweep, `aiSuiteActions` row; `dispatchAgentTool` writes proposals; **fixture capability** `__test_outbound` (test-only, `approval:"outbound"`, execute calls a spy) | `agent-proposals.firestore-rules.test.ts` (sa2 cannot read sa1; client write denied); `decide/route.test.ts`: foreign `subAccountId` → 404; `roleSatisfies` denial → 403; approve runs the fixture's execute once with the approver's uid; **two concurrent approves (`Promise.all`) → execute spy called exactly once, one 200 + one 409**; a `workflow_enrolment` row → execute spy 0, replay spy 1; reject never; revoked key → pending rows `rejected`; re-proposing after a terminal row → new `pending` row, old one in `history`; **sweep flips a stale `executing` to `unsettled` → re-propose → `outcome_unknown`, no new pending**; a settle arriving after the sweep lands in `history`, row stays `unsettled`; expiry sweep against a just-claimed `executing` row → untouched |
+| **PR3b** fuses on existing caps | PR3 | `FireInput.hold` + `onlyWorkflowId` + `outcome.held` + `reentryWouldBlock` in the engine; `actor` threaded through contacts / deals / tasks / events services; `update_contact` allowlist + `update_contact_channels` Q + service `subAccountId` check; webhook writes → chat-only; `agent.write` audit row; read-tool log redaction; **inverted outbound test** | `held-enrolment.test.ts`: agent `create_contact` with a matching ACTIVE workflow → contact exists, 0 runs, 1 `workflow_enrolment` proposal; approve → 1 run, cap reserved; **mutation proof** in the same file: with the `hold` branch stubbed out (`vi.spyOn` on the engine's hold writer forced to fall through) the assertion goes red. `outbound-never-sends.test.ts`: **every** agent-surfaced non-approval cap dispatched with Twilio, SMTP, Meta, global `fetch`, QStash publish, `maybeSendReviewRequest` and the workflow run-writer spied → 0 calls; every approval cap → 1 proposal, 0 calls. On the agent path the services **await** the trigger (P1-B above), so the dispatch promise resolving is the settle point — no test-only tracking hook. **Mutation proof #2** in `outbound-never-sends.test.ts`: the awaited call sites are listed by file:line in the test; reverting any one to `void` makes the held-enrolment assertion red (the harness asserts `result.held.length === 1` synchronously after dispatch) |
 | **PR6** approvals UI | PR3b | `/sa/[id]/approvals` (max-w-5xl; all states wrapped), sidebar badge, row renders `preview` verbatim (body, recipient, channel / workflow / amount) + approve / reject | `e2e/specs/agent-approvals.spec.ts`: no SMTP/Twilio fixture exists for E2E (checked `e2e/lib`; `inbox-scheduled-send.spec.ts` proves outcomes from the stored message `status`/`qstashMessageId`). So: (a) seed a `hard_delete` proposal → approve → doc gone, row `executed`; (b) seed a `send_message` email proposal on the fixture tenant (no SMTP connected) → approve → row `failed` with the seam's `SendRefusal.error` rendered, proving the outcome is the `SendOutcome`, not "no throw". The `ok: true` path is covered by PR3's unit test |
 | **PR4** REST mirror | PR3b | `/api/v1/tools`, `/api/v1/tools/[name]` | `tools/route.test.ts`: admin key → `insufficient_scope`; unknown → 404; approval cap → 202 + id; `Idempotency-Key` replay → same 202, one proposal |
 | **PR5** MCP route | PR4 | direct dep; `/api/mcp`; middleware; per-call rate limit + log | `mcp/route.mcp-client.test.ts`: real `Client` + `StreamableHTTPClientTransport` with `fetch` bound to the handler; `listTools()` == agent-surfaced set; `callTool("find_contacts")` returns sa1 only; `callTool("__test_outbound")` → proposal id, spy 0; a 3-call batch consumes 3 rate-limit tokens; bad bearer → 401 |
