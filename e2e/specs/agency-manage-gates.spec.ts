@@ -23,10 +23,16 @@ import { FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
 const GOOGLE = "googleEnabledByAgency";
 const LABS = "labsEnabledByAgency";
 const GCAL = "googleCalendarEnabledByAgency";
+const AGENT_API = "agentApiEnabledByAgency";
 
 async function gates(sa: string) {
   const d = (await adminDb().doc(`subAccounts/${sa}`).get()).data() ?? {};
-  return { google: d[GOOGLE] === true, labs: d[LABS] === true, gcal: d[GCAL] === true };
+  return {
+    google: d[GOOGLE] === true,
+    labs: d[LABS] === true,
+    gcal: d[GCAL] === true,
+    agentApi: d[AGENT_API] === true,
+  };
 }
 
 async function openManage(page: Page) {
@@ -45,7 +51,7 @@ test("two sequential Manage saves both persist", async ({ page }) => {
   const sa = env.E2E_SUBACCOUNT_ID;
   const ref = adminDb().doc(`subAccounts/${sa}`);
   const before = await gates(sa);
-  await ref.update({ [GOOGLE]: false, [LABS]: false, [GCAL]: false });
+  await ref.update({ [GOOGLE]: false, [LABS]: false, [GCAL]: false, [AGENT_API]: false });
 
   try {
     // Save 1 — Google on.
@@ -69,7 +75,29 @@ test("two sequential Manage saves both persist", async ({ page }) => {
     await labs.check();
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => gates(sa).then((g) => g.labs), { timeout: 15_000 }).toBe(true);
-    expect(await gates(sa)).toEqual({ google: true, labs: true, gcal: false });
+    expect(await gates(sa)).toEqual({
+      google: true,
+      labs: true,
+      gcal: false,
+      agentApi: false,
+    });
+
+    // Save 3 — Agent API on. Google + Labs must survive it. Save 2 closed
+    // the dialog, so reopen it first.
+    await openManage(page);
+    const agentApi = page.getByRole("checkbox", { name: /^Agent API/ });
+    await expect(agentApi).not.toBeChecked();
+    await agentApi.check();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect
+      .poll(() => gates(sa).then((g) => g.agentApi), { timeout: 15_000 })
+      .toBe(true);
+    expect(await gates(sa)).toEqual({
+      google: true,
+      labs: true,
+      gcal: false,
+      agentApi: true,
+    });
 
     // Close → Firestore changes → reopen, no reload.
     await expect(
@@ -98,6 +126,7 @@ test("two sequential Manage saves both persist", async ({ page }) => {
       [GOOGLE]: before.google,
       [LABS]: before.labs,
       [GCAL]: before.gcal,
+      [AGENT_API]: before.agentApi,
     });
   }
 });

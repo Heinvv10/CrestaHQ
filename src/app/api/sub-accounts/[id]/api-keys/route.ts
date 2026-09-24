@@ -29,7 +29,7 @@ import type { ApiKeyMode, ApiKeyScope } from "@/types/api";
  * equivalent to or broader than the caller's own session.
  */
 
-const VALID_SCOPES: ApiKeyScope[] = ["admin", "forms-ingest"];
+const VALID_SCOPES: ApiKeyScope[] = ["admin", "forms-ingest", "agent"];
 const VALID_MODES: ApiKeyMode[] = ["live", "test"];
 const MAX_NAME = 60;
 
@@ -123,6 +123,29 @@ export async function POST(
       { status: 400 },
     );
   }
+  // agent is exclusive too — it's scoped to the Agent API's tool surface
+  // only (POST /api/mcp, /api/v1/tools). Combining it with admin would
+  // silently grant the full CRUD surface to an LLM agent; combining it
+  // with forms-ingest serves no purpose (that scope is CORS-open for a
+  // single unauthenticated endpoint). Mint two keys instead.
+  if (scopes.includes("agent") && scopes.includes("admin")) {
+    return NextResponse.json(
+      {
+        error:
+          "Cannot combine 'admin' and 'agent' on one key. Mint two keys instead.",
+      },
+      { status: 400 },
+    );
+  }
+  if (scopes.includes("agent") && scopes.includes("forms-ingest")) {
+    return NextResponse.json(
+      {
+        error:
+          "Cannot combine 'agent' and 'forms-ingest' on one key. Mint two keys instead.",
+      },
+      { status: 400 },
+    );
+  }
 
   // Look up the sub-account once to read its agencyId for tenancy stamping.
   // requireSubAccountAdmin already verified the caller's access; this read
@@ -152,6 +175,20 @@ export async function POST(
       {
         error:
           "API access is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.",
+      },
+      { status: 403 },
+    );
+  }
+
+  // Agent API gate — layered on top of apiAccessEnabledByAgency. An `agent`
+  // key is useless without a transport (PR4/5) but is still refused at mint
+  // time while the gate is off, matching the wiring pattern's "runtime 403"
+  // step for every other gate.
+  if (scopes.includes("agent") && subData.agentApiEnabledByAgency !== true) {
+    return NextResponse.json(
+      {
+        error:
+          "Agent API access is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.",
       },
       { status: 403 },
     );

@@ -20,6 +20,7 @@ import {
   PhoneIncoming,
   PhoneMissed,
   PhoneOutgoing,
+  Cpu,
   Radar,
   Send,
   Share2,
@@ -126,6 +127,7 @@ function ManageDialogBody({
   const initialGoogleCalendar =
     subAccount.googleCalendarEnabledByAgency === true;
   const initialReviewsAi = subAccount.reviewsAiEnabledByAgency === true;
+  const initialAgentApi = subAccount.agentApiEnabledByAgency === true;
   // Workspace Assistant is opt-in like every other gate — off unless
   // explicitly enabled (legacy/unset reads as off).
   const initialAiSuite = subAccount.aiSuiteEnabledByAgency === true;
@@ -178,6 +180,7 @@ function ManageDialogBody({
   const [webinar1Hidden, setWebinar1Hidden] = useState(initialWebinar1Hidden);
   const [googleEnabled, setGoogleEnabled] = useState(initialGoogle);
   const [reviewsAiEnabled, setReviewsAiEnabled] = useState(initialReviewsAi);
+  const [agentApiEnabled, setAgentApiEnabled] = useState(initialAgentApi);
   const [googleCalendarEnabled, setGoogleCalendarEnabled] = useState(
     initialGoogleCalendar
   );
@@ -255,6 +258,7 @@ function ManageDialogBody({
   const googleDirty = googleEnabled !== initialGoogle;
   const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
   const reviewsAiDirty = reviewsAiEnabled !== initialReviewsAi;
+  const agentApiDirty = agentApiEnabled !== initialAgentApi;
   const missedCallDirty = missedCallEnabled !== initialMissedCall;
   const aiSuiteDirty = aiSuiteEnabled !== initialAiSuite;
   const aiSuiteModelDirty = aiSuiteModel !== initialAiSuiteModel;
@@ -293,6 +297,7 @@ function ManageDialogBody({
     googleDirty ||
     googleCalendarDirty ||
     reviewsAiDirty ||
+    agentApiDirty ||
     missedCallDirty ||
     aiSuiteDirty ||
     aiSuiteModelDirty ||
@@ -346,6 +351,7 @@ function ManageDialogBody({
         googleEnabled?: boolean;
         googleCalendarEnabled?: boolean;
         reviewsAiEnabled?: boolean;
+        agentApiEnabled?: boolean;
         missedCallTextBackEnabled?: boolean;
         aiSuiteEnabled?: boolean;
         aiSuiteModel?: "opus" | "sonnet";
@@ -388,6 +394,7 @@ function ManageDialogBody({
         payload.googleCalendarEnabled = googleCalendarEnabled;
       }
       if (reviewsAiDirty) payload.reviewsAiEnabled = reviewsAiEnabled;
+      if (agentApiDirty) payload.agentApiEnabled = agentApiEnabled;
       if (missedCallDirty)
         payload.missedCallTextBackEnabled = missedCallEnabled;
       if (aiSuiteDirty) payload.aiSuiteEnabled = aiSuiteEnabled;
@@ -556,6 +563,13 @@ function ManageDialogBody({
           reviewsAiEnabled
             ? "Reviews AI enabled."
             : "Reviews AI disabled. Existing sentiment labels stay; no new reviews are analysed."
+        );
+      }
+      if (agentApiDirty) {
+        parts.push(
+          agentApiEnabled
+            ? "Agent API enabled."
+            : "Agent API disabled. Existing agent keys preserved but inert until re-enabled."
         );
       }
       if (missedCallDirty) {
@@ -1069,6 +1083,26 @@ function ManageDialogBody({
             calls a day per sub-account. Spends
             your OpenRouter credits. Disabling stops new analysis; existing
             labels stay.
+          </GateToggle>
+
+          <GateToggle
+            checked={agentApiEnabled}
+            onChange={setAgentApiEnabled}
+            disabled={saving}
+            icon={
+              <Cpu className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+            }
+            title="Agent API"
+            beta
+          >
+            When enabled, this sub-account can mint <strong>agent</strong>-scope
+            API keys for an external LLM agent (MCP / tools API) to read and
+            manage its CRM. Layered on top of Public API access (above) — both
+            must be on to mint an agent key. Every write the agent makes to a
+            real person, or that would activate/enrol into automation, is held
+            as a proposal a member approves in-app; nothing sends or spends
+            without that approval. Disabling blocks new agent-key mints;
+            existing keys are preserved, so re-enabling resumes them instantly.
           </GateToggle>
 
           <GateToggle

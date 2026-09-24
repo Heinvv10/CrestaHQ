@@ -225,6 +225,9 @@ export async function createSubAccountForAgency(
       googleCalendarEnabledByAgency: false,
       // Reviews AI (SP5) spends the agency's OpenRouter credits — opt-in.
       reviewsAiEnabledByAgency: false,
+      // Agent API ships OFF — an external LLM agent acting as sub-account
+      // admin is always an explicit per-client decision.
+      agentApiEnabledByAgency: false,
       webinar1ConnectionMeta: null,
       // Workspace Assistant ships OFF like every other gate (opt-in) — the
       // agency owner enables it per sub-account from the Manage dialog.

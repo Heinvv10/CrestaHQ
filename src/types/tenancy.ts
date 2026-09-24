@@ -506,6 +506,18 @@ export interface SubAccountDoc {
    */
   reviewsAiEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for the Agent API (v1) — an external LLM agent
+   * holding an `agent`-scope key reading/managing this sub-account's CRM
+   * over `POST /api/mcp` or `/api/v1/tools[/{name}]`. Layered ON TOP of
+   * `apiAccessEnabledByAgency` (already checked by the public-API auth
+   * middleware) — this gate additionally must be on. Defaults to `false`
+   * at creation (explicit opt-in); read `=== true` so legacy docs stay
+   * locked. No tear-down: an `agent`-scope key mint is simply refused
+   * while off; existing keys are preserved so re-enabling resumes them.
+   * Standalone gate, NOT in `PLAN_GATE_KEYS` — a plan never flips it.
+   */
+  agentApiEnabledByAgency?: boolean;
+  /**
    * Reviews AI settings (SP5 c), written only by PUT
    * /api/sub-accounts/[id]/reputation/ai-settings (admin, Reviews AI gate).
    * `replyGuidelines` (≤ 1000 chars, "" = none) steer the reply DRAFT only —

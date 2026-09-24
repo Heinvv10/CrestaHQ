@@ -427,6 +427,10 @@ const FEATURE_GATES: Record<
     field: "reviewsAiEnabledByAgency",
     label: "Reviews AI (sentiment and reply drafts)",
   },
+  "agent-api": {
+    field: "agentApiEnabledByAgency",
+    label: "Agent API (external LLM agent access)",
+  },
   prospecting: {
     field: "prospectingEnabledByAgency",
     label: "Prospecting (saved prospect lists and reports)",

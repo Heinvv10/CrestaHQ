@@ -53,6 +53,8 @@ const SCOPE_HELP: Record<ApiKeyScope, string> = {
     "Full CRUD on every resource in this sub-account. Server-to-server only — never paste into a browser.",
   "forms-ingest":
     "Write-only, restricted to form submissions. Safe to embed in client-side JS on a custom landing page.",
+  agent:
+    "For an external LLM agent (MCP / tools API). Scoped to the agent tool surface only — requires the Agent API gate. Server-to-server only.",
 };
 
 export function SubAccountApiKeysSection() {
@@ -292,6 +294,11 @@ export function SubAccountApiKeysSection() {
                   label: "Forms ingest",
                   description: SCOPE_HELP["forms-ingest"],
                 },
+                {
+                  value: "agent",
+                  label: "Agent",
+                  description: SCOPE_HELP.agent,
+                },
               ]}
             />
           </div>
@@ -377,8 +384,10 @@ export function SubAccountApiKeysSection() {
         Keys grant access to this sub-account&apos;s data only.{" "}
         <strong>Admin</strong>-scope keys can read and write everything;
         treat them like passwords. <strong>Forms-ingest</strong> keys are
-        safe to embed in client-side code. If a key leaks, revoke it
-        immediately and mint a replacement — there is no &quot;regenerate&quot;.
+        safe to embed in client-side code. <strong>Agent</strong>-scope keys
+        are for an external LLM agent, scoped to its own tool surface. If a
+        key leaks, revoke it immediately and mint a replacement — there is no
+        &quot;regenerate&quot;.
       </p>
     </section>
   );
@@ -449,7 +458,8 @@ function ModeBadge({ mode }: { mode: ApiKeyMode }) {
 }
 
 function ScopeBadge({ scope }: { scope: ApiKeyScope }) {
-  const label = scope === "admin" ? "Admin" : "Forms ingest";
+  const label =
+    scope === "admin" ? "Admin" : scope === "agent" ? "Agent" : "Forms ingest";
   return (
     <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
       {label}

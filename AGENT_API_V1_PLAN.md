@@ -167,9 +167,15 @@ nobody. Capabilities never see this: it is decided at the seam.
 ### Feature gate — new `agentApiEnabledByAgency`
 
 Layered on `apiAccessEnabledByAgency` (already checked in auth). 5-step
-wiring per `feature-gates.md`; `FEATURE_GATES["agent-api"]`; in
-`PLAN_GATE_KEYS` (not pre-ticked). No tear-down; pending proposals cannot be
-approved while off (approve route re-checks).
+wiring per `feature-gates.md`; `FEATURE_GATES["agent-api"]`. No tear-down;
+pending proposals cannot be approved while off (approve route re-checks).
+
+> **REVISED 2026-09-24** (PR1 blind review): standalone gate, like
+> `webinar1EnabledByAgency` / `googleEnabledByAgency` — NOT in
+> `PLAN_GATE_KEYS`. External agent access to a client's CRM is an explicit
+> per-client decision, not a plan perk: as a plan key, `create_billing_plan
+> includeAllFeatures` would switch it on for every client on the plan, and
+> applying a plan would silently overwrite a manual enable/disable.
 
 ### Approval queue — `agentProposals/{id}`
 
@@ -299,7 +305,7 @@ management, feature gates, anything agency-level.
 
 | PR | Depends | Content | `verify:` |
 |---|---|---|---|
-| **PR1** scope + gate | — | `"agent"` scope (types, `VALID_SCOPES`, exclusive with `admin` and `forms-ingest`, rate-limit row, mint UI); `agentApiEnabledByAgency` 5-step; `FEATURE_GATES["agent-api"]`; `PLAN_GATE_KEYS`; key-revoke hook stub | `api-keys/route.test.ts`: `["agent","admin"]` → 400; `feature-gates/route.test.ts`: PATCH writes the field + audit row; `agency-manage-gates.spec.ts` checkbox |
+| **PR1** scope + gate | — | `"agent"` scope (types, `VALID_SCOPES`, exclusive with `admin` and `forms-ingest`, rate-limit row, mint UI); `agentApiEnabledByAgency` 5-step (standalone, NOT `PLAN_GATE_KEYS` — REVISED 2026-09-24); `FEATURE_GATES["agent-api"]`; key-revoke hook stub | `api-keys/route.test.ts`: `["agent","admin"]` → 400; `feature-gates/route.test.ts`: PATCH writes the field + audit row; `agency-manage-gates.spec.ts` checkbox; plan-apply never touches the field |
 | **PR2** registry seams | — | `surfaces` / `approval` / `agentArgs` / `preview` fields; pure-move split into `capabilities/*.ts`; checker accepts a dir; `buildAgentContext`; `dispatchAgentTool` **without** proposal writes (approval caps return `not_yet_available`) | `agent-dispatch.test.ts` on `memory-firestore`: chat-only → `not_available`; agency-level → refused; test-mode → refused; gate off → 403; `capability-names.test.ts` asserts the **exact** name set before/after the split; checker floor unchanged |
 | **PR3** proposals + approve | PR2 | `agent-proposals.ts` (deterministic id), rules + index, list/decide routes, expiry, revoke sweep, `aiSuiteActions` row; `dispatchAgentTool` writes proposals; **fixture capability** `__test_outbound` (test-only, `approval:"outbound"`, execute calls a spy) | `agent-proposals.firestore-rules.test.ts` (sa2 cannot read sa1; client write denied); `decide/route.test.ts`: foreign `subAccountId` → 404; `roleSatisfies` denial → 403; approve runs the fixture's execute once with the approver's uid; **two concurrent approves (`Promise.all`) → execute spy called exactly once, one 200 + one 409**; a `workflow_enrolment` row → execute spy 0, replay spy 1; reject never; revoked key → pending rows `rejected`; re-proposing after a terminal row → new `pending` row, old one in `history`; **sweep flips a stale `executing` to `unsettled` → re-propose → `outcome_unknown`, no new pending**; `mark_not_sent` on it → next identical re-propose creates a fresh `pending`; `mark_sent` on a `pending` row → 409; a settle arriving after the sweep lands in `history`, row stays `unsettled`; expiry sweep against a just-claimed `executing` row → untouched |
 | **PR3b** fuses on existing caps | PR3 | `FireInput.hold` + `onlyWorkflowId` + `outcome.held` + `reentryWouldBlock` in the engine; `actor` threaded through contacts / deals / tasks / events services; `update_contact` allowlist + `update_contact_channels` Q + service `subAccountId` check; webhook writes → chat-only; `agent.write` audit row; read-tool log redaction; **inverted outbound test** | `held-enrolment.test.ts`: agent `create_contact` with a matching ACTIVE workflow → contact exists, 0 runs, 1 `workflow_enrolment` proposal; approve → 1 run, cap reserved; **mutation proof** in the same file: with the `hold` branch stubbed out (`vi.spyOn` on the engine's hold writer forced to fall through) the assertion goes red. `outbound-never-sends.test.ts`: **every** agent-surfaced non-approval cap dispatched with Twilio, SMTP, Meta, global `fetch`, QStash publish, `maybeSendReviewRequest` and the workflow run-writer spied → 0 calls; every approval cap → 1 proposal, 0 calls. On the agent path the services **await** the trigger (P1-B above), so the dispatch promise resolving is the settle point — no test-only tracking hook. **Mutation proof #2** in `outbound-never-sends.test.ts`: one agent capability per awaited call site — `create_contact` (contacts-service), `move_deal_stage` (deals-service `fireDealTrigger`), `set_event_status completed` (event-status → booking/lifecycle) — each dispatched against a matching ACTIVE workflow and asserting `result.held.length === 1` synchronously after dispatch, so reverting **any one** site to `void` goes red (the quotes site is covered by PR11's `mark_quote_paid` approve test) |
