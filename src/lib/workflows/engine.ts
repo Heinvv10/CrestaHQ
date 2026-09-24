@@ -1426,15 +1426,34 @@ const isLive = (d: { data: () => unknown }) => {
   return s === "running" || s === "waiting";
 };
 
+/** The per-(workflow, contact) enrolment lock. EVERY run creation writes it
+ *  in the same atomic write as the run — see createRunUnlessBlocked. */
+function enrolmentLock(wf: WorkflowDoc, contactId: string, runId: string) {
+  return {
+    ref: getAdminDb().doc(`workflowEnrolmentLocks/${wf.id}_${contactId}`),
+    data: {
+      workflowId: wf.id,
+      contactId,
+      subAccountId: wf.subAccountId,
+      agencyId: wf.agencyId,
+      lastRunId: runId,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+  };
+}
+
 /**
  * Create the run doc only if the workflow's re-enrollment policy allows it —
  * the check and the create in ONE transaction, so simultaneous triggers (three
  * inbound messages, three webhooks) cannot all pass a check none has yet
- * written past. The transaction reads and writes a per-(workflow, contact)
- * lock doc: concurrent enrolments for one contact conflict on it and the
- * losers re-run, now seeing the winner's lock. "once_ever" blocks once the
- * lock exists; "unless_active" blocks while the lock's `lastRunId` run is
- * live.
+ * written past.
+ *
+ * Invariant: every run creation — this path, every_time and test enrolments
+ * alike — writes the per-(workflow, contact) lock doc atomically with the
+ * run. The transaction reads that lock, so any run created concurrently
+ * conflicts on it and the transaction re-runs, now seeing it as the lock's
+ * `lastRunId`. "once_ever" blocks once the lock exists; "unless_active"
+ * blocks while the `lastRunId` run is live.
  *
  * The transaction reads ONLY document refs, never a query. The server SDK
  * locks pessimistically, and a `workflowRuns where workflowId == X` query
@@ -1442,10 +1461,10 @@ const isLive = (d: { data: () => unknown }) => {
  * enrolment then writes into. A bulk tag-add on 41 contacts made all 41
  * contend on that one range and 19 exhausted their retries (2026-09-24).
  *
- * Runs created before lock docs existed (or by an every_time enrolment) have
- * no lock, so the same policy is applied to a `workflowRuns` query run
- * BEFORE the transaction. Those runs are not racing us, so a plain read is
- * enough; concurrent new enrolments still serialise on the lock doc.
+ * The `workflowRuns` query BEFORE the transaction covers only runs the lock
+ * cannot show: runs from before lock docs existed, and earlier runs whose
+ * `lastRunId` was since overwritten (a live run, then a newer test run).
+ * Those are not racing us, so a plain read is enough.
  *
  * Fails CLOSED: an error here skips the enrolment rather than risk the
  * duplicate auto-reply the policy exists to prevent.
@@ -1458,7 +1477,7 @@ async function createRunUnlessBlocked(
   runData: Record<string, unknown>
 ): Promise<"created" | "reentry_blocked" | "reentry_check_failed"> {
   const db = getAdminDb();
-  const lockRef = db.doc(`workflowEnrolmentLocks/${wf.id}_${contactId}`);
+  const lock = enrolmentLock(wf, contactId, runRef.id);
   try {
     const runs = await db
       .collection("workflowRuns")
@@ -1469,23 +1488,16 @@ async function createRunUnlessBlocked(
       return "reentry_blocked";
     }
     return await db.runTransaction(async (tx) => {
-      const lock = await tx.get(lockRef);
-      if (lock.exists) {
+      const lockSnap = await tx.get(lock.ref);
+      if (lockSnap.exists) {
         if (policy === "once_ever") return "reentry_blocked" as const;
-        const lastRunId = (lock.data() as { lastRunId?: string }).lastRunId;
+        const lastRunId = (lockSnap.data() as { lastRunId?: string }).lastRunId;
         if (lastRunId) {
           const last = await tx.get(db.doc(`workflowRuns/${lastRunId}`));
           if (last.exists && isLive(last)) return "reentry_blocked" as const;
         }
       }
-      tx.set(lockRef, {
-        workflowId: wf.id,
-        contactId,
-        subAccountId: wf.subAccountId,
-        agencyId: wf.agencyId,
-        lastRunId: runRef.id,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+      tx.set(lock.ref, lock.data);
       tx.set(runRef, runData);
       return "created" as const;
     });
@@ -1523,7 +1535,8 @@ async function enroll(
   };
   const policy = applyReentry ? (wf.reentry ?? "every_time") : "every_time";
   if (policy === "every_time") {
-    await runRef.set(runData);
+    const lock = enrolmentLock(wf, contactId, runRef.id);
+    await db.batch().set(lock.ref, lock.data).set(runRef, runData).commit();
   } else {
     const created = await createRunUnlessBlocked(wf, contactId, policy, runRef, runData);
     if (created !== "created") return created;

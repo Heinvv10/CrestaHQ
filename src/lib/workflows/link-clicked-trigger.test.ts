@@ -27,6 +27,19 @@ vi.mock("@/lib/firebase/admin", () => ({
       }),
       update: async () => undefined,
     }),
+    // enroll() writes the run with its enrolment lock in one batch; replay the
+    // sets on the refs so the run's set() still records (or throws).
+    batch: () => {
+      const sets: Array<() => Promise<unknown> | undefined> = [];
+      const b = {
+        set: (ref: { set?: (d: unknown) => Promise<unknown> }, d: unknown) =>
+          (sets.push(() => ref.set?.(d)), b),
+        commit: async () => {
+          for (const s of sets) await s();
+        },
+      };
+      return b;
+    },
     collection: (name: string) => {
       if (name === "workflows") {
         const q = {
