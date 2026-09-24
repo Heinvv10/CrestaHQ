@@ -140,7 +140,9 @@ async function dispatch(
       preview: await cap.preview(ctx, validated.args),
     });
     if (!created.ok) {
-      return refuse("outcome_unknown", 409, OUTCOME_UNKNOWN_MESSAGE);
+      return created.code === "key_revoked"
+        ? refuse("key_revoked", 401, "This API key has been revoked.")
+        : refuse("outcome_unknown", 409, OUTCOME_UNKNOWN_MESSAGE);
     }
     const { id, status, summary, preview } = created;
     return { ok: true, proposal: { id, status, summary, preview } };

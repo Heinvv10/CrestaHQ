@@ -11,9 +11,12 @@ import {
 } from "@/lib/ai-suite/capabilities";
 import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
 import {
+  canonical,
   claimProposal,
+  refreshPreview,
   settleProposal,
   transitionIf,
+  type TransitionResult,
 } from "@/lib/server/agent-proposals";
 import { replayHeldEnrolment } from "@/lib/server/agent-enrolment-replay";
 
@@ -24,9 +27,13 @@ type Decision = (typeof DECISIONS)[number];
  * Decide an agent proposal. Every decision needs the capability's own role
  * (as the AI Suite confirm route), admin for `hard_delete`, and territory
  * access to the proposal's contact. `approve` also re-checks both agency
- * gates, then CLAIMS the row (`pending` → `executing` in a transaction) before
- * running anything, so two approvers can never both execute it. `reject` is
- * legal only on `pending`; `mark_sent` / `mark_not_sent` only on `unsettled`.
+ * gates and the proposing key, re-computes the preview (a changed one is
+ * stored and refused, so the approver sees what will really happen), then
+ * CLAIMS the row (`pending` → `executing` in a transaction) before running
+ * anything, so two approvers can never both execute it. `reject` is legal
+ * only on `pending`; `mark_sent` / `mark_not_sent` only on `unsettled`. Every
+ * decision names the row generation (`rev`) the approver saw: a row
+ * re-proposed or refreshed since is 409 `stale_proposal`.
  */
 export async function POST(
   request: Request,
@@ -36,15 +43,20 @@ export async function POST(
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
-  let decision: Decision;
+  let body: { decision?: Decision; rev?: unknown };
   try {
-    decision = ((await request.json()) as { decision?: Decision }).decision!;
+    body = (await request.json()) as typeof body;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const decision = body.decision!;
   if (!DECISIONS.includes(decision)) {
     return NextResponse.json({ error: "Unknown decision" }, { status: 400 });
   }
+  if (typeof body.rev !== "string" || !body.rev) {
+    return NextResponse.json({ error: "`rev` is required" }, { status: 400 });
+  }
+  const rev = body.rev;
 
   const db = getAdminDb();
   const snap = await db.doc(`agentProposals/${proposalId}`).get();
@@ -76,6 +88,8 @@ export async function POST(
     subAccountId,
     subAccountRole: access.subAccountRole,
   };
+  // Only `args.contactId` is gated today: an approval capability that targets
+  // records by another id must extend this check before it ships.
   if (typeof proposal.contactId === "string") {
     const contact = await db.doc(`contacts/${proposal.contactId}`).get();
     const scope = await territoryScopeFor(actionCtx);
@@ -92,30 +106,32 @@ export async function POST(
     decidedByUid: access.uid,
     decidedByEmail: access.email,
   };
-  const conflict = () =>
+  const refused = (moved: Exclude<TransitionResult, "ok">) =>
     NextResponse.json(
-      { error: "already_decided", status: proposal.status },
+      { error: moved === "stale" ? "stale_proposal" : "already_decided" },
       { status: 409 },
     );
   if (decision === "reject") {
-    const ok = await transitionIf(proposalId, "pending", {
-      status: "rejected",
-      reason: "rejected_by_approver",
-      ...decided,
-    });
-    return ok ? NextResponse.json({ status: "rejected" }) : conflict();
+    const moved = await transitionIf(
+      proposalId,
+      "pending",
+      { status: "rejected", reason: "rejected_by_approver", ...decided },
+      { rev },
+    );
+    return moved === "ok" ? NextResponse.json({ status: "rejected" }) : refused(moved);
   }
   if (decision === "mark_sent" || decision === "mark_not_sent") {
-    const ok = await transitionIf(
+    const moved = await transitionIf(
       proposalId,
       "unsettled",
       decision === "mark_sent"
         ? { status: "executed", settledBy: "human", ...decided }
         : { status: "rejected", reason: "not_sent_confirmed", ...decided },
+      { rev },
     );
-    return ok
+    return moved === "ok"
       ? NextResponse.json({ status: decision === "mark_sent" ? "executed" : "rejected" })
-      : conflict();
+      : refused(moved);
   }
 
   // ── approve
@@ -139,8 +155,41 @@ export async function POST(
     }
   }
 
-  const claimedAtMs = await claimProposal(proposalId, access);
-  if (claimedAtMs === null) return conflict();
+  // The key may have been revoked after this row was written (or its revoke
+  // sweep failed): the row dies with the key.
+  const key = (
+    await db.doc(`subAccounts/${subAccountId}/apiKeys/${proposal.keyId}`).get()
+  ).data();
+  if (!key || key.revokedAt) {
+    const moved = await transitionIf(
+      proposalId,
+      "pending",
+      { status: "rejected", reason: "key_revoked", decidedAt: new Date() },
+      { rev },
+    );
+    return moved === "ok"
+      ? NextResponse.json({ error: "key_revoked" }, { status: 409 })
+      : refused(moved);
+  }
+
+  // execute reads live data; the preview was computed when proposed. If
+  // what would happen now differs, store it and make the approver look again.
+  if (!enrolment && cap?.preview) {
+    const fresh = await cap.preview(actionCtx, args);
+    if (canonical(fresh) !== canonical(proposal.preview)) {
+      const nextRev = await refreshPreview(proposalId, rev, fresh);
+      return nextRev
+        ? NextResponse.json(
+            { error: "preview_changed", rev: nextRev, preview: fresh },
+            { status: 409 },
+          )
+        : NextResponse.json({ error: "stale_proposal" }, { status: 409 });
+    }
+  }
+
+  const claim = await claimProposal(proposalId, access, rev);
+  if (typeof claim === "string") return refused(claim);
+  const { claimedAtMs } = claim;
 
   let outcome: Parameters<typeof settleProposal>[2];
   try {

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
@@ -51,22 +51,40 @@ export type CreateProposalResult =
       ok: true;
       id: string;
       status: ProposalStatus;
+      rev: string;
       summary: string;
       preview: Array<{ label: string; value: string }>;
     }
-  | { ok: false; code: "outcome_unknown"; id: string };
+  | { ok: false; code: "outcome_unknown" | "key_revoked"; id: string };
 
-/** Key-sorted JSON, so the same args always hash the same. */
-function canonical(v: unknown): string {
+/** Transition outcome: moved, the row is not in `from`, or `rev` mismatch. */
+export type TransitionResult = "ok" | "conflict" | "stale";
+
+/**
+ * Key-sorted JSON, so the same args always hash the same. Undefined keys
+ * are skipped (Firestore drops them too), a Date is `{"$date": iso}`, and
+ * any other non-plain object throws rather than hashing as `{}`.
+ */
+export function canonical(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v instanceof Date) return canonical({ $date: v.toISOString() });
   if (v && typeof v === "object") {
-    return `{${Object.keys(v)
+    const proto = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new Error("canonical: only plain objects, arrays and Dates are supported");
+    }
+    const obj = v as Record<string, unknown>;
+    return `{${Object.keys(obj)
+      .filter((k) => obj[k] !== undefined)
       .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`)
+      .map((k) => `${JSON.stringify(k)}:${canonical(obj[k])}`)
       .join(",")}}`;
   }
   return JSON.stringify(v) ?? "null";
 }
+
+/** A fresh per-generation nonce: a decision must name the generation it saw. */
+const newRev = () => randomBytes(12).toString("hex");
 
 export function proposalId(input: ProposalInput): string {
   const key = [
@@ -92,23 +110,39 @@ const proposalRef = (id: string) => getAdminDb().doc(`agentProposals/${id}`);
 const historyRef = (id: string) => proposalRef(id).collection("history").doc();
 
 /**
- * Dedupe is pending-only: a `pending` or `executing` row returns its id, an
+ * Dedupe is pending-only: a `pending` or `executing` row returns its id (a
+ * pending row's preview is refreshed, with a new `rev`, if it changed), an
  * `unsettled` row refuses (its action may already have happened), and a
- * terminal row moves to `history` so the id is re-used as a fresh `pending`.
+ * terminal row moves to `history` so the id is re-used as a fresh `pending`
+ * generation with a new `rev`. A revoked or missing key queues nothing.
  */
 export async function createProposal(input: ProposalInput): Promise<CreateProposalResult> {
   const id = proposalId(input);
   const ref = proposalRef(id);
-  return getAdminDb().runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
+  const db = getAdminDb();
+  const keyRef = db.doc(`subAccounts/${input.subAccountId}/apiKeys/${input.keyId}`);
+  return db.runTransaction(async (tx) => {
+    const [snap, keySnap] = await Promise.all([tx.get(ref), tx.get(keyRef)]);
+    if (!keySnap.exists || keySnap.data()?.revokedAt) {
+      return { ok: false, code: "key_revoked", id };
+    }
     const cur = snap.data();
     const status = cur?.status as ProposalStatus | undefined;
-    if (status === "pending" || status === "executing") {
-      return { ok: true, id, status, summary: cur!.summary, preview: cur!.preview };
+    if (status === "executing") {
+      return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
+    }
+    if (status === "pending") {
+      if (canonical(cur!.preview) === canonical(input.preview)) {
+        return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
+      }
+      const rev = newRev();
+      tx.update(ref, { preview: input.preview, rev });
+      return { ok: true, id, status, rev, summary: cur!.summary, preview: input.preview };
     }
     if (status === "unsettled") return { ok: false, code: "outcome_unknown", id };
     if (status && TERMINAL.includes(status)) tx.set(historyRef(id), cur!);
     const now = Date.now();
+    const rev = newRev();
     tx.set(ref, {
       agencyId: input.agencyId,
       subAccountId: input.subAccountId,
@@ -123,6 +157,7 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       contactId: typeof input.args.contactId === "string" ? input.args.contactId : null,
       workflowId: input.workflowId ?? null,
       status: "pending",
+      rev,
       createdAt: new Date(now),
       expiresAt: new Date(now + TTL_MS),
       claimedAt: null,
@@ -132,52 +167,75 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       result: null,
       error: null,
     });
-    return { ok: true, id, status: "pending", summary: input.summary, preview: input.preview };
+    return { ok: true, id, status: "pending", rev, summary: input.summary, preview: input.preview };
   });
 }
 
 /**
- * Move a row `from` → `patch.status` only when its status is still `from`
- * at read time (and, when given, its claim is still `claimedAtMs`).
- * Returns false when the row is absent or has moved on.
+ * Move a row `from` → `patch.status` only when, at read time, its status is
+ * still `from`, its generation is still `rev` (person decisions), and its
+ * claim is still `claimedAtMs` (sweeps of a claim).
  */
 export async function transitionIf(
   id: string,
   from: ProposalStatus,
-  patch: Record<string, unknown> & { status: ProposalStatus },
-  claimedAtMs?: number
-): Promise<boolean> {
+  patch: Record<string, unknown> & { status?: ProposalStatus },
+  guard: { rev?: string; claimedAtMs?: number } = {}
+): Promise<TransitionResult> {
   const ref = proposalRef(id);
   return getAdminDb().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const cur = snap.data();
-    if (!cur || cur.status !== from) return false;
-    if (claimedAtMs !== undefined && millis(cur.claimedAt) !== claimedAtMs) return false;
+    if (!cur || cur.status !== from) return "conflict";
+    if (guard.rev !== undefined && cur.rev !== guard.rev) return "stale";
+    if (guard.claimedAtMs !== undefined && millis(cur.claimedAt) !== guard.claimedAtMs) {
+      return "conflict";
+    }
     tx.update(ref, patch);
-    return true;
+    return "ok";
   });
 }
 
-/** The approve claim: `pending` → `executing`. Null when not claimable. */
+/** The approve claim: `pending` → `executing`, for generation `rev` only. */
 export async function claimProposal(
   id: string,
-  by: { uid: string; email: string }
-): Promise<number | null> {
+  by: { uid: string; email: string },
+  rev: string
+): Promise<{ claimedAtMs: number } | "conflict" | "stale"> {
   const claimedAt = new Date();
-  const claimed = await transitionIf(id, "pending", {
-    status: "executing",
-    claimedAt,
-    decidedAt: claimedAt,
-    decidedByUid: by.uid,
-    decidedByEmail: by.email,
-  });
-  return claimed ? claimedAt.getTime() : null;
+  const moved = await transitionIf(
+    id,
+    "pending",
+    {
+      status: "executing",
+      claimedAt,
+      decidedAt: claimedAt,
+      decidedByUid: by.uid,
+      decidedByEmail: by.email,
+    },
+    { rev }
+  );
+  return moved === "ok" ? { claimedAtMs: claimedAt.getTime() } : moved;
+}
+
+/** Store a freshly computed preview under a new `rev` (pending generation
+ *  `rev` only). Returns the new rev, or null when the row moved on. */
+export async function refreshPreview(
+  id: string,
+  rev: string,
+  preview: Array<{ label: string; value: string }>
+): Promise<string | null> {
+  const next = newRev();
+  return (await transitionIf(id, "pending", { preview, rev: next }, { rev })) === "ok"
+    ? next
+    : null;
 }
 
 /**
  * Settle a claimed row and write its `aiSuiteActions` row in one
- * transaction. If the row is no longer ours (the sweep flipped it to
- * `unsettled`), the outcome goes to `history` and is logged — never lost.
+ * transaction. If the sweep flipped OUR claim to `unsettled`, the outcome is
+ * now known, so the row resolves to it (`settledLate`) and `mark_*` no
+ * longer apply. Any other moved row gets the outcome in `history`, logged.
  */
 export async function settleProposal(
   id: string,
@@ -194,18 +252,25 @@ export async function settleProposal(
     confirmedByUid: string;
     confirmedByEmail: string;
   }
-): Promise<"settled" | "late"> {
+): Promise<"settled" | "resolved_late" | "late"> {
   const db = getAdminDb();
   const ref = proposalRef(id);
   const fields =
     outcome.status === "executed"
       ? { status: outcome.status, result: outcome.result }
       : { status: outcome.status, error: outcome.error };
-  const settled = await db.runTransaction(async (tx) => {
+  const verdict = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     const cur = snap.data();
-    const mine = cur?.status === "executing" && millis(cur.claimedAt) === claimedAtMs;
-    if (mine) tx.update(ref, fields);
+    const ours = millis(cur?.claimedAt) === claimedAtMs;
+    const v =
+      ours && cur?.status === "executing"
+        ? "settled"
+        : ours && cur?.status === "unsettled"
+          ? "resolved_late"
+          : "late";
+    if (v === "settled") tx.update(ref, fields);
+    else if (v === "resolved_late") tx.update(ref, { ...fields, settledLate: true });
     else tx.set(historyRef(id), { lateSettle: true, claimedAt: new Date(claimedAtMs), ...fields });
     tx.set(db.collection("aiSuiteActions").doc(), {
       level: "sub-account",
@@ -216,12 +281,12 @@ export async function settleProposal(
       agentProposalId: id,
       createdAt: FieldValue.serverTimestamp(),
     });
-    return mine;
+    return v;
   });
-  if (!settled) {
+  if (verdict === "late") {
     console.error(`[agent-proposals] late settle of ${id} (${outcome.status}) recorded in history`);
   }
-  return settled ? "settled" : "late";
+  return verdict;
 }
 
 /** Revoking a key rejects its still-pending rows (never an executing one). */
@@ -242,7 +307,7 @@ export async function sweepRevokedKeyProposals(input: {
       reason: "key_revoked",
       decidedAt: new Date(),
     });
-    if (moved) rejected++;
+    if (moved === "ok") rejected++;
   }
   return rejected;
 }
@@ -269,11 +334,15 @@ export async function sweepAgentProposals(
   ]);
   let moved = 0;
   for (const doc of expiring.docs) {
-    if (await transitionIf(doc.id, "pending", { status: "expired", decidedAt: now })) moved++;
+    if ((await transitionIf(doc.id, "pending", { status: "expired", decidedAt: now })) === "ok") {
+      moved++;
+    }
   }
   for (const doc of stale.docs) {
     const claimedAtMs = millis(doc.data().claimedAt) ?? undefined;
-    if (await transitionIf(doc.id, "executing", { status: "unsettled" }, claimedAtMs)) moved++;
+    if ((await transitionIf(doc.id, "executing", { status: "unsettled" }, { claimedAtMs })) === "ok") {
+      moved++;
+    }
   }
   return {
     collection: "agentProposals",

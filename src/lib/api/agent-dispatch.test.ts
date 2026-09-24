@@ -54,6 +54,7 @@ beforeEach(() => {
   mem.clear();
   mem.seed("subAccounts/sa1", { agencyId: "ag1", agentApiEnabledByAgency: true, timezone: "UTC" });
   mem.seed("subAccounts/sa2", { agencyId: "ag1", agentApiEnabledByAgency: true, timezone: "UTC" });
+  mem.seed("subAccounts/sa1/apiKeys/key1", { subAccountId: "sa1", revokedAt: null });
 });
 
 afterEach(() => {

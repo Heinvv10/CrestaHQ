@@ -241,7 +241,7 @@ two human exits on the decide route, legal **only when `status ==
 has confirmed the send happened, so a deliberate re-propose is a new
 action; `mark_not_sent` → `rejected` (`reason: "not_sent_confirmed"`), so the
 next identical re-propose creates a fresh `pending`. Nothing automatic ever
-leaves `unsettled`. Reject, expiry and key-revoke sweeps all use the same
+leaves `unsettled` — **REVISED 2026-09-24:** except the original claim's own late settle, which resolves the row to its real outcome (breaker R3, PR #259). Reject, expiry and key-revoke sweeps all use the same
 **pending-precondition transaction** (`status == "pending"` at read time),
 so none can clobber a just-claimed `executing` row. The
 approver's identity is the actor on every provider call (`SendActor {uid,
