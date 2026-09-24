@@ -156,10 +156,10 @@ async function maybeEmailChargeLink(opts: {
     const html = `
       <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
         <h2 style="margin:0 0 12px;">Payment request</h2>
-        <p>A one-time payment is requested for <strong>${workspaceName}</strong>:</p>
-        <p style="font-size:16px;"><strong>${opts.description}</strong> — ${opts.priceLabel}</p>
+        <p>A one-time payment is requested for <strong>${escapeHtml(workspaceName)}</strong>:</p>
+        <p style="font-size:16px;"><strong>${escapeHtml(opts.description)}</strong> — ${escapeHtml(opts.priceLabel)}</p>
         <p style="margin:24px 0;">
-          <a href="${opts.url}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Pay now</a>
+          <a href="${escapeHtml(opts.url)}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Pay now</a>
         </p>
         <p style="color:#6b7280;font-size:13px;">Payment is handled securely by Stripe. This is a one-time charge — no subscription is created.</p>
       </div>`;
@@ -170,4 +170,13 @@ async function maybeEmailChargeLink(opts: {
     console.warn("[billing/charges] charge-link email failed", err);
     return false;
   }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }

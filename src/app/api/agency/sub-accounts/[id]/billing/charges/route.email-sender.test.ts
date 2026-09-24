@@ -37,11 +37,11 @@ const { SA, mem, resetSeam, smtpSend } = await s();
 const { POST } = await import("./route");
 
 const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
-const post = (subAccountId: string) =>
+const post = (subAccountId: string, description = "Web design") =>
   POST(
     new Request("https://app.test", {
       method: "POST",
-      body: JSON.stringify({ description: "Web design", amountCents: 5000, emailTo: "client@example.com" }),
+      body: JSON.stringify({ description, amountCents: 5000, emailTo: "client@example.com" }),
     }),
     { params: Promise.resolve({ id: subAccountId }) },
   );
@@ -49,6 +49,8 @@ const post = (subAccountId: string) =>
 beforeEach(() => {
   resetSeam();
   mem.seed("subAccounts/sa-nomail", { agencyId: "ag1", name: "No Mail Co" });
+  mem.seed("agencies/ag1", { ownerUid: "owner1", supportEmail: "help@agency.test" });
+  mem.seed("users/owner1", { email: "owner@agency.test" });
   m.smtpFor.mockClear();
   m.resendSend.mockReset();
   errors.mockClear();
@@ -61,8 +63,18 @@ describe("charge-link email with no shared sender", () => {
     const res = await post(SA);
     expect(await res.json()).toMatchObject({ ok: true, emailed: true });
     expect(m.smtpFor.mock.calls).toEqual([[SA]]);
-    expect(smtpSend.mock.calls[0][1].to).toBe("client@example.com");
+    const msg = smtpSend.mock.calls[0][1] as { to: string; replyTo?: string };
+    expect(msg.to).toBe("client@example.com");
+    // Replies reach the agency, not the client's own mailbox.
+    expect(msg.replyTo).toBe("help@agency.test");
     expect(m.resendSend).not.toHaveBeenCalled();
+  });
+
+  it("escapes the description in the HTML body", async () => {
+    await post(SA, `<img src=x onerror="alert(1)">`);
+    const html = (smtpSend.mock.calls[0][1] as { to: string; html?: string }).html ?? "";
+    expect(html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    expect(html).not.toContain("<img");
   });
 
   it("a sub-account without SMTP: link returned, not emailed, logged", async () => {

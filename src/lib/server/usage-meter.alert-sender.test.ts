@@ -52,7 +52,10 @@ describe("quota alert with no shared sender", () => {
     await recordUsage({ subAccountId: "sa-mail", unit: "smsSegments", qty: 10 });
     await vi.waitFor(() => expect(smtpSend).toHaveBeenCalledTimes(1));
     expect(m.smtpFor.mock.calls).toEqual([["sa-mail"]]);
-    expect(smtpSend.mock.calls[0][1].to).toBe("owner@agency.test");
+    const msg = smtpSend.mock.calls[0][1] as { to: string; replyTo?: string };
+    expect(msg.to).toBe("owner@agency.test");
+    // The agency has no supportEmail: replies reach its owner, not the client's mailbox.
+    expect(msg.replyTo).toBe("owner@agency.test");
     expect(m.resendSend).not.toHaveBeenCalled();
   });
 

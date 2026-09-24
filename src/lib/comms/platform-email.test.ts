@@ -112,7 +112,8 @@ describe("member invite with no shared sender", () => {
   it("a sub-account without SMTP is not emailed through a sibling's mailbox; logged, invite kept", async () => {
     const res = await invite(NO_SMTP);
     expect(res.mailed).toBe(false);
-    expect(res.mailError).toContain("No email sender");
+    // Generic for the UI; the detail is only in the server log.
+    expect(res.mailError).toBe("No email could be sent — configure SMTP in Settings.");
     expect(smtpSend).not.toHaveBeenCalled();
     expect(m.resendSend).not.toHaveBeenCalled();
     expect(errors).toHaveBeenCalledWith(expect.stringContaining(`sub-account ${NO_SMTP} has no verified SMTP`));
@@ -154,9 +155,12 @@ describe("resolvePlatformSender with no shared sender", () => {
   });
 });
 
-describe("operator booking cancel with no shared sender", () => {
+// Not changed by the platform-sender fix: pins that an operator cancel already
+// sends through the booking's own sub-account SMTP with no shared sender, so
+// the prod "email not configured" skips mean that sub-account had no SMTP.
+describe("operator booking cancel (unchanged path) with no shared sender", () => {
   const ts = (iso: string) => ({ toDate: () => new Date(iso) }) as never;
-  it("emails the visitor through the booking sub-account's SMTP", async () => {
+  it("already emails the visitor through the booking sub-account's own SMTP", async () => {
     mem.seed("contacts/c1", { subAccountId: SA, name: "Visitor", email: "visitor@example.com" });
     mem.seed("events/e1", { subAccountId: SA, status: "scheduled" });
     const outcome = await changeEventStatus(
