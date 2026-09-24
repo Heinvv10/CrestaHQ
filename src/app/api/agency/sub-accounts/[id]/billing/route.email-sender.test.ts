@@ -68,6 +68,20 @@ describe("subscription checkout-link email with no shared sender", () => {
     expect(m.resendSend).not.toHaveBeenCalled();
   });
 
+  it("escapes the sub-account and plan names in the HTML body", async () => {
+    mem.seed(`subAccounts/${SA}`, {
+      ...(mem.read(`subAccounts/${SA}`) as Record<string, unknown>),
+      name: `<b>Acme</b>`,
+      billing: { planName: `Pro"><img src=x>`, priceCents: 1000, currency: "usd", billingInterval: "month" },
+    });
+    await sendLink(SA);
+    const html = (smtpSend.mock.calls[0][1] as { to: string; html?: string }).html ?? "";
+    expect(html).toContain("&lt;b&gt;Acme&lt;/b&gt;");
+    expect(html).toContain("Pro&quot;&gt;&lt;img src=x&gt;");
+    expect(html).not.toContain("<b>Acme");
+    expect(html).not.toContain("<img");
+  });
+
   it("a sub-account without SMTP: link returned, not emailed, logged", async () => {
     const res = await sendLink("sa-nomail");
     expect(await res.json()).toMatchObject({ ok: true, emailed: false, checkoutUrl: expect.any(String) });

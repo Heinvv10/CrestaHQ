@@ -9,6 +9,7 @@ import {
   sendPlatformEmail,
   type PlatformSender,
 } from "@/lib/comms/platform-email";
+import { escapeHtml } from "@/lib/comms/escape-html";
 import { formatBillingPriceWithInterval } from "@/lib/billing/status";
 import type { BillingInterval } from "@/types/billing";
 import {
@@ -70,13 +71,13 @@ async function emailCheckoutLink(opts: {
   const html = `
     <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
       <h2 style="margin:0 0 12px;">Activate your subscription</h2>
-      <p>Your workspace <strong>${opts.subAccountName}</strong> is ready to activate${
+      <p>Your workspace <strong>${escapeHtml(opts.subAccountName)}</strong> is ready to activate${
         opts.planName
-          ? ` on the <strong>${opts.planName}</strong> plan (${opts.priceLabel})`
+          ? ` on the <strong>${escapeHtml(opts.planName)}</strong> plan (${escapeHtml(opts.priceLabel)})`
           : ""
       }.</p>
       <p style="margin:24px 0;">
-        <a href="${opts.url}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Complete checkout</a>
+        <a href="${escapeHtml(opts.url)}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Complete checkout</a>
       </p>
       <p style="color:#6b7280;font-size:13px;">Payment is handled securely by Stripe. Your card is charged ${opts.cadenceWord} and you can update it anytime from your workspace settings.</p>
     </div>`;

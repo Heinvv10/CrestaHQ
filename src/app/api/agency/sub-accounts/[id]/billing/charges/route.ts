@@ -8,6 +8,7 @@ import {
   resolvePlatformSender,
   sendPlatformEmail,
 } from "@/lib/comms/platform-email";
+import { escapeHtml } from "@/lib/comms/escape-html";
 import { formatBillingPrice } from "@/lib/billing/status";
 import {
   BillingError,
@@ -170,13 +171,4 @@ async function maybeEmailChargeLink(opts: {
     console.warn("[billing/charges] charge-link email failed", err);
     return false;
   }
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
