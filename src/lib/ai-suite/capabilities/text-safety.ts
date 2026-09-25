@@ -4,20 +4,19 @@
  * how stored values print on one line.
  */
 
-/** Control (Cc, incl. NEL), format (Cf: zero-width, bidi marks, BOM) and
- *  line / paragraph separator characters, plus the characters that render
- *  as nothing without being Cf: the combining grapheme joiner (U+034F), the
- *  Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) and the blank braille
- *  cell (U+2800), the Khmer inherent vowels (U+17B4, U+17B5), the Mongolian
- *  free variation selectors (U+180B–U+180D, U+180F) and the variation
- *  selectors U+FE00–U+FE0E and U+E0100–U+E01EF. Refused in stored text an
- *  approver reads (a newline could fake a preview row, an invisible one hide
- *  text). U+FE0F (emoji presentation) stays allowed. */
-const INVISIBLE_LETTERS =
-  "\\u034f\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180d\\u180f\\u2800\\u3164\\ufe00-\\ufe0e\\uffa0\\u{e0100}-\\u{e01ef}";
-export const UNSAFE_TEXT_RE = new RegExp(`[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}${INVISIBLE_LETTERS}]`, "u");
-/** What oneLine removes outright: format characters and the same invisible letters. */
-const STRIP_RE = new RegExp(`[\\p{Cf}${INVISIBLE_LETTERS}]`, "gu");
+/** Control (Cc, incl. NEL), format (Cf), line / paragraph separators, and
+ *  every Default_Ignorable code point — the characters that render as
+ *  nothing, assigned or not (fillers, variation selectors, tag characters…)
+ *  — plus the blank braille cell U+2800, which is visible-as-nothing but not
+ *  default-ignorable. By property, not by list, so new ones are covered.
+ *  Refused in stored text an approver reads (a newline could fake a preview
+ *  row, an invisible one hide text). U+FE0F (emoji presentation) is
+ *  default-ignorable too, and is let through by every check below. */
+export const UNSAFE_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/u;
+/** What oneLine removes outright: the same invisible set, less U+FE0F. */
+const STRIP_RE = /(?!\ufe0f)[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+/** Emoji presentation — the one default-ignorable character that's text. */
+const EMOJI_PRESENTATION = /\ufe0f/g;
 
 /** A ZWNJ / ZWJ that joins two letters, marks or emoji — Persian names,
  *  family emoji sequences (U+1F468 U+200D U+1F469 …) — is text, not a trick. */
@@ -26,7 +25,7 @@ const JOINER_IN_WORD =
 
 /** UNSAFE_TEXT_RE, except a ZWNJ / ZWJ between letters, marks or emoji. */
 export function hasUnsafeText(value: string): boolean {
-  return UNSAFE_TEXT_RE.test(value.replace(JOINER_IN_WORD, ""));
+  return UNSAFE_TEXT_RE.test(value.replace(JOINER_IN_WORD, "").replace(EMOJI_PRESENTATION, ""));
 }
 
 /**
@@ -63,5 +62,5 @@ const EMOJI_ZWJ =
  */
 export function messageBody(value: string): string | null {
   const body = value.replace(/\r\n?/g, "\n").trim();
-  return UNSAFE_TEXT_RE.test(body.replace(/\n/g, " ").replace(EMOJI_ZWJ, "")) ? null : body;
+  return UNSAFE_TEXT_RE.test(body.replace(/\n/g, " ").replace(EMOJI_ZWJ, "").replace(EMOJI_PRESENTATION, "")) ? null : body;
 }

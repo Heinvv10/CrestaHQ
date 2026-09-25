@@ -112,3 +112,10 @@ describe("create_contact's email gets the strict rule", () => {
       .toMatchObject({ ok: false, code: "invalid_args" });
   });
 });
+
+describe("oneLine", () => {
+  it("keeps U+FE0F (emoji presentation) while stripping every other default-ignorable", async () => {
+    const { oneLine } = await import("./text-safety");
+    expect(oneLine("\u2764\ufe0f Co\u2065\u3164")).toBe("\u2764\ufe0f Co");
+  });
+});

@@ -99,6 +99,33 @@ describe("email", () => {
   });
 });
 
+describe("breaker round 2", () => {
+  it.each([
+    ["U+2065", "a\u2065b"], ["U+FFF0", "a\ufff0b"], ["U+E0080", "a\u{e0080}b"], ["U+E01F0", "a\u{e01f0}b"], ["U+E0000", "a\u{e0000}b"],
+  ])("a body with the unassigned default-ignorable %s is refused", async (_label, body) => {
+    expect(await propose({ channel: "sms", body })).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it("a legacy email doc without references can still be replied to; the thread is shown", async () => {
+    mem.seed("contacts/c1/emailMessages/e0", {
+      subAccountId: "sa1", direction: "inbound", subject: "Old\nthread", messageId: "<old@x.io>", inReplyTo: null, createdAt: new Date("2026-01-02T03:04:05.000Z"),
+    });
+    const id = await proposeId({ channel: "email", subject: "Re: Old thread", body: "Hi" });
+    expect(row(id).preview).toContainEqual({ label: "In reply to", value: "Old thread (2026-01-02T03:04:05.000Z)" });
+    expect(row(id).pinned).toMatchObject({ inReplyTo: "<old@x.io>", references: ["<old@x.io>"] });
+  });
+
+  it("a newer email since the proposal changes the visible In reply to row", async () => {
+    mem.seed("contacts/c1/emailMessages/e0", { subAccountId: "sa1", subject: "First", messageId: "<a@x.io>", references: [], createdAt: new Date(1000) });
+    const id = await proposeId({ channel: "email", subject: "Re", body: "Hi" });
+    mem.seed("contacts/c1/emailMessages/e1", { subAccountId: "sa1", subject: "Second", messageId: "<b@x.io>", references: [], createdAt: new Date(2000) });
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect((await res.json()).preview).toContainEqual({ label: "In reply to", value: expect.stringContaining("Second") });
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
 it("a WhatsApp send carries the per-approval idempotency key", async () => {
   const id = await proposeId({ channel: "whatsapp", body: "Hi" });
   await decide(id, "approve");

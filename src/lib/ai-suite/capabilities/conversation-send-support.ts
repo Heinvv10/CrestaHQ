@@ -9,6 +9,8 @@ import type { EmailMessageDoc } from "@/types/email";
 import type { SubAccountDoc } from "@/types";
 import { CapabilityUserError } from "./types";
 import { tenantContact } from "./contact-edit";
+import { toDate } from "./helpers";
+import { oneLine } from "./text-safety";
 import { tenantConversation } from "./conversations-read";
 
 /**
@@ -77,7 +79,10 @@ export async function emailEnvelope(subAccountId: string, contactId: string) {
   ]);
   const parent = latest.docs.map((d) => d.data() as EmailMessageDoc).find((m) => m.subAccountId === subAccountId) ?? null;
   const reply = emailReplyFields(parent);
+  const sent = toDate(parent?.createdAt);
   return {
+    // Shown, so a change of thread (a newer email) is visible to the approver.
+    inReplyToLabel: parent ? `${oneLine(parent.subject) || "(no subject)"} (${sent ? sent.toISOString() : "unknown date"})` : null,
     from: tenantFrom(sub) ?? "the workspace's default sender",
     replyTo: sub?.replyToEmail || (sub?.emailProvider === "smtp" ? "none" : "the approving person's email"),
     inReplyTo: reply.inReplyTo ?? null,

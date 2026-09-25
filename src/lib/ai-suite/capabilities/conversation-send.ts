@@ -83,6 +83,7 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
           { label: "Consent", value: blocked ? `${blocked} It will not be sent.` : `Not opted out of ${channel}.` },
           { label: "When", value: "Sends immediately when approved (quiet hours don't hold it)." },
           ...(env ? [{ label: "From", value: env.from }, { label: "Reply-To", value: env.replyTo }] : []),
+          ...(env?.inReplyToLabel ? [{ label: "In reply to", value: env.inReplyToLabel }] : []),
           ...(args.subject ? [{ label: "Subject", value: String(args.subject) }] : []),
           // Exactly as it will be sent, line breaks included.
           { label: "Message", value: String(args.body), multiline: true },

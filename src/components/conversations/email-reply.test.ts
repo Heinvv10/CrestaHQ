@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { emailReplyFields } from "./email-reply";
 
 describe("email reply headers", () => {
+  it("tolerates a legacy / imported email doc with no references field", () => {
+    const legacy = { subject: "Quote", messageId: "<m1@x.io>", inReplyTo: "<root@x.io>" } as unknown as Parameters<typeof emailReplyFields>[0];
+    expect(emailReplyFields(legacy)).toEqual({
+      subject: "Re: Quote",
+      inReplyTo: "<m1@x.io>",
+      references: ["<root@x.io>", "<m1@x.io>"],
+    });
+  });
   it("keeps the selected thread and appends its message ID only once", () => {
     expect(
       emailReplyFields({
