@@ -5,7 +5,7 @@ import Link from "next/link";
 import { GitBranch } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToDeals } from "@/lib/firestore/deals";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
@@ -32,9 +32,12 @@ export default function PipelinePage() {
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
   const [deals, setDeals] = useState<Deal[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  // On a listener error this settles to an empty list, so the board
+  // doesn't hang on the skeleton.
+  const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [territories, setTerritories] = useState<TerritoryDoc[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const loading = dealsLoading || contactsLoading;
   const [filters, setFilters] = useState<PipelineFilterState>(EMPTY_FILTERS);
   // Which pipeline the board shows. Absent `pipelineId` on a deal = default.
   const { pipelines, byId } = usePipelines();
@@ -48,45 +51,23 @@ export default function PipelinePage() {
     // deal in the sub-account before the listener was re-issued with
     // the territory `in` clause.
     if (!filterReady) return;
-    setLoading(true);
+    setDealsLoading(true);
     const scope = { agencyId, subAccountId };
-    let dealsReady = false;
-    let contactsReady = false;
-    const settle = () => {
-      if (dealsReady && contactsReady) setLoading(false);
-    };
     const unsubDeals = subscribeToDeals(
       scope,
       { territoryFilter },
       (list) => {
         setDeals(list);
-        dealsReady = true;
-        settle();
+        setDealsLoading(false);
       },
       (err) => {
         console.error("[pipeline] deals listener error", err);
         // Don't hang on the skeleton if the listener fails.
-        dealsReady = true;
-        settle();
-      },
-    );
-    const unsubContacts = subscribeToContacts(
-      scope,
-      { territoryFilter },
-      (list) => {
-        setContacts(list);
-        contactsReady = true;
-        settle();
-      },
-      (err) => {
-        console.error("[pipeline] contacts listener error", err);
-        contactsReady = true;
-        settle();
+        setDealsLoading(false);
       },
     );
     return () => {
       unsubDeals();
-      unsubContacts();
     };
   }, [
     user,

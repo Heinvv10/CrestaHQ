@@ -23,7 +23,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToDeals } from "@/lib/firestore/deals";
 import { subscribeToForms } from "@/lib/firestore/forms";
 import { formatCurrency, daysSince, toDate } from "@/lib/format";
@@ -42,11 +42,12 @@ export default function DashboardPage() {
   const { subAccount, subAccountId, agencyId, saPath } = useSubAccount();
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [deals, setDeals] = useState<Deal[]>([]);
   const [forms, setForms] = useState<LeadForm[]>([]);
   const [workflows, setWorkflows] = useState<{ status?: string }[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const loading = dealsLoading || contactsLoading;
 
   useEffect(() => {
     if (!user || !agencyId) return;
@@ -56,24 +57,12 @@ export default function DashboardPage() {
     // owners / scoping-off resolve synchronously, so no perceptible delay.
     if (!filterReady) return;
     const scope = { agencyId, subAccountId };
-    let dealsReady = false;
-    let contactsReady = false;
-    const settle = () => {
-      if (dealsReady && contactsReady) setLoading(false);
-    };
-    const unsubC = subscribeToContacts(scope, { territoryFilter }, (l) => {
-      setContacts(l);
-      contactsReady = true;
-      settle();
-    });
     const unsubD = subscribeToDeals(scope, { territoryFilter }, (l) => {
       setDeals(l);
-      dealsReady = true;
-      settle();
+      setDealsLoading(false);
     });
     const unsubF = subscribeToForms(scope, setForms);
     return () => {
-      unsubC();
       unsubD();
       unsubF();
     };

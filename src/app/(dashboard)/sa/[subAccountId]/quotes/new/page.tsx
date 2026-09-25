@@ -12,10 +12,9 @@ import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToDeals } from "@/lib/firestore/deals";
 import { subscribeToProducts } from "@/lib/firestore/products";
-import type { Contact } from "@/types/contacts";
 import type { Deal } from "@/types/deals";
 import type { Product } from "@/types/products";
 import type { QuoteKind } from "@/types/quotes";
@@ -41,7 +40,7 @@ export default function NewQuotePage() {
   // invoice page, paypal.me mints a link at send time.
   const paymentReady = canPayInvoice(subAccount);
 
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts } = useSubAccountContacts();
   const [products, setProducts] = useState<Product[]>([]);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [contactId, setContactId] = useState<string>(
@@ -55,7 +54,6 @@ export default function NewQuotePage() {
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
-    const unsubC = subscribeToContacts({ agencyId, subAccountId }, setContacts);
     const unsubP = subscribeToProducts({ agencyId, subAccountId }, (all) =>
       setProducts(all.filter((p) => p.active)),
     );
@@ -64,7 +62,6 @@ export default function NewQuotePage() {
     // picker simply doesn't render — same as before the picker existed.
     const unsubD = subscribeToDeals({ agencyId, subAccountId }, setDeals);
     return () => {
-      unsubC();
       unsubP();
       unsubD();
     };

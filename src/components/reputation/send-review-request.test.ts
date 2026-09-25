@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ({ subAccountId: "sa1", agencyId: "ag1" }) }));
+vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { uid: "u1" }, loading: false }) }));
 vi.mock("@/hooks/use-effective-territory-filter", () => ({ useEffectiveTerritoryFilter: () => ({ ready: true, filter: null }) }));
 const contacts = vi.hoisted(() => ({
   emit: null as null | ((c: unknown[]) => void),
@@ -35,7 +36,11 @@ vi.mock("@/components/quotes/contact-picker", async () => {
   };
 });
 
+import { ContactsProvider } from "@/context/contacts-context";
 import { SendReviewRequestButton } from "./send-review-request";
+
+// The dialog reads contacts from the sub-account layout's shared provider.
+const renderButton = () => createElement(ContactsProvider, null, createElement(SendReviewRequestButton, { onSent }));
 
 const fetchMock = vi.fn();
 const onSent = vi.fn();
@@ -63,7 +68,7 @@ const click = (id: string) => act(async () => (byId(id) as HTMLButtonElement).cl
 const answer = (status: number, body: unknown) => fetchMock.mockResolvedValueOnce({ ok: status < 400, status, json: async () => body });
 
 async function openAndPick() {
-  await act(async () => root.render(createElement(SendReviewRequestButton, { onSent })));
+  await act(async () => root.render(renderButton()));
   await click("rep-send-open");
   expect(byId("rep-send-contacts-loading")).not.toBeNull();
   expect(contacts.scope).toEqual({ agencyId: "ag1", subAccountId: "sa1" });
@@ -88,7 +93,7 @@ describe("send review request dialog", () => {
   });
 
   it("after a send, choosing another contact turns Send back on", async () => {
-    await act(async () => root.render(createElement(SendReviewRequestButton, { onSent })));
+    await act(async () => root.render(renderButton()));
     await click("rep-send-open");
     await act(async () => contacts.emit?.([{ id: "c1", name: "One" }, { id: "c2", name: "Two" }]));
     await click("pick-first");
@@ -102,8 +107,16 @@ describe("send review request dialog", () => {
     expect((byId("rep-send-submit") as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("downloads no contacts until the dialog opens", async () => {
+    contacts.scope = null;
+    await act(async () => root.render(renderButton()));
+    expect(contacts.emit).toBeNull();
+    await click("rep-send-open");
+    expect(contacts.scope).toEqual({ agencyId: "ag1", subAccountId: "sa1" });
+  });
+
   it("contacts that fail to load say so, instead of an empty list", async () => {
-    await act(async () => root.render(createElement(SendReviewRequestButton, { onSent })));
+    await act(async () => root.render(renderButton()));
     await click("rep-send-open");
     await act(async () => contacts.fail?.(new Error("permission-denied")));
     expect(byId("rep-send-contacts-error")?.textContent).toContain("Contacts could not be loaded");

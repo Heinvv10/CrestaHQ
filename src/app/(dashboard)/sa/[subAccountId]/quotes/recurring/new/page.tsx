@@ -16,9 +16,8 @@ import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { canPayInvoice } from "@/lib/payments/can-take-payment";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToProducts } from "@/lib/firestore/products";
-import type { Contact } from "@/types/contacts";
 import type { Product } from "@/types/products";
 
 /**
@@ -33,7 +32,7 @@ export default function NewRecurringInvoicePage() {
   const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
   const paymentReady = canPayInvoice(subAccount);
 
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts } = useSubAccountContacts();
   const [products, setProducts] = useState<Product[]>([]);
   const [contactId, setContactId] = useState(searchParams.get("contactId") ?? "");
   const [schedule, setSchedule] = useState<ScheduleFormValues>(() =>
@@ -44,12 +43,10 @@ export default function NewRecurringInvoicePage() {
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
-    const unsubC = subscribeToContacts({ agencyId, subAccountId }, setContacts);
     const unsubP = subscribeToProducts({ agencyId, subAccountId }, (all) =>
       setProducts(all.filter((p) => p.active)),
     );
     return () => {
-      unsubC();
       unsubP();
     };
   }, [user, agencyId, subAccountId, authLoading]);

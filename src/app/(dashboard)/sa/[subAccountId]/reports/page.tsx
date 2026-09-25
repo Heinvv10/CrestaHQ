@@ -11,7 +11,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToDeals } from "@/lib/firestore/deals";
 import { formatCurrency, toDate } from "@/lib/format";
 import {
@@ -29,7 +29,6 @@ import type { Order } from "@/types/orders";
 import { type Deal } from "@/types/deals";
 import { usePipelines, usePipelineStages } from "@/hooks/use-pipeline-stages";
 import { dealOutcome } from "@/lib/pipelines/stages";
-import type { Contact } from "@/types/contacts";
 import { cn } from "@/lib/utils";
 
 type RangeKey = "7d" | "30d" | "90d" | "all";
@@ -60,8 +59,9 @@ export default function ReportsPage() {
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
   const [deals, setDeals] = useState<Deal[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { contacts, loading: contactsLoading } = useSubAccountContacts();
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const loading = dealsLoading || contactsLoading;
   const [range, setRange] = useState<RangeKey>("30d");
   const [tab, setTab] = useState<TabKey>("overview");
   const [orders, setOrders] = useState<Order[]>([]);
@@ -84,26 +84,14 @@ export default function ReportsPage() {
     // list — see lib/firestore/territory-query.ts). Resolves synchronously
     // for admins / owners / scoping-off so this gate is invisible to them.
     if (!filterReady) return;
-    setLoading(true);
+    setDealsLoading(true);
     const scope = { agencyId, subAccountId };
-    let dealsReady = false;
-    let contactsReady = false;
-    const settle = () => {
-      if (dealsReady && contactsReady) setLoading(false);
-    };
     const unsubD = subscribeToDeals(scope, { territoryFilter }, (l) => {
       setDeals(l);
-      dealsReady = true;
-      settle();
-    });
-    const unsubC = subscribeToContacts(scope, { territoryFilter }, (l) => {
-      setContacts(l);
-      contactsReady = true;
-      settle();
+      setDealsLoading(false);
     });
     return () => {
       unsubD();
-      unsubC();
     };
   }, [
     user,

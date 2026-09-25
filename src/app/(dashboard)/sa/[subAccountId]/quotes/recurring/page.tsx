@@ -1,27 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
 import { Repeat } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { RecurringInvoiceList } from "@/components/quotes/recurring-invoice-list";
-import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
-import type { Contact } from "@/types/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 
 /** Every standing billing instruction in this workspace. */
 export default function RecurringInvoicesPage() {
-  const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId, saPath } = useSubAccount();
-  const [contacts, setContacts] = useState<Contact[]>([]);
-
-  useEffect(() => {
-    if (authLoading || !user || !agencyId) return;
-    const unsub = subscribeToContacts({ agencyId, subAccountId }, setContacts);
-    return () => unsub();
-  }, [user, agencyId, subAccountId, authLoading]);
+  const { subAccountId, saPath } = useSubAccount();
+  const { contacts } = useSubAccountContacts();
 
   const contactNames = useMemo(() => {
     const map: Record<string, string> = {};

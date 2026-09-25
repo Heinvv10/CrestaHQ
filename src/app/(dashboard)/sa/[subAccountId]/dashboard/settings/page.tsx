@@ -8,7 +8,7 @@ import { CreditCard, Download } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { getUserDoc } from "@/lib/firestore/users";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { serializeCsv, downloadCsv } from "@/lib/csv";
 import { toDate } from "@/lib/format";
 import { LANDING_VARIANT } from "@/config/landing";
@@ -45,7 +45,6 @@ import { SubAccountWebhooksSection } from "@/components/settings/sub-account-web
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { UserDoc, SubscriptionStatus } from "@/types";
-import type { Contact } from "@/types/contacts";
 
 const PLAN_LABEL: Record<SubscriptionStatus, { label: string; tone: string }> =
   {
@@ -75,7 +74,7 @@ const TAB_VALUES = ["admin", "messaging", "api", "custom-fields", "import"] as c
 
 export default function SettingsPage() {
   const { user, role } = useAuth();
-  const { subAccountId, agencyId, subAccount } = useSubAccount();
+  const { subAccount } = useSubAccount();
   const workspaceName = subAccount?.name ?? "this sub-account";
   // `?tab=` lets a CTA elsewhere (e.g. the Launchpad) land straight on a
   // tab — Base UI's Tabs is uncontrolled, so this only needs to seed
@@ -85,18 +84,12 @@ export default function SettingsPage() {
     ? (requestedTab as (typeof TAB_VALUES)[number])
     : "admin";
   const [profile, setProfile] = useState<UserDoc | null>(null);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts } = useSubAccountContacts();
 
   useEffect(() => {
     if (!user) return;
     getUserDoc(user.uid).then((d) => setProfile(d));
   }, [user]);
-
-  useEffect(() => {
-    if (!user || !agencyId) return;
-    const unsub = subscribeToContacts({ agencyId, subAccountId }, setContacts);
-    return () => unsub();
-  }, [user, agencyId, subAccountId]);
 
   function handleExportContacts() {
     if (contacts.length === 0) {

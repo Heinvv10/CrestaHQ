@@ -1,15 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import Link from "next/link";
 import { FileText, Link2, Receipt, Repeat } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { QuoteList } from "@/components/quotes/quote-list";
-import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
-import type { Contact } from "@/types/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 
 /**
  * Sub-account-wide quotes list. Mounts <QuoteList> with a name-map
@@ -17,15 +15,8 @@ import type { Contact } from "@/types/contacts";
  * Plumbing" rather than a contact ID.
  */
 export default function QuotesPage() {
-  const { user, loading: authLoading } = useAuth();
   const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
-  const [contacts, setContacts] = useState<Contact[]>([]);
-
-  useEffect(() => {
-    if (authLoading || !user || !agencyId) return;
-    const unsub = subscribeToContacts({ agencyId, subAccountId }, setContacts);
-    return () => unsub();
-  }, [user, agencyId, subAccountId, authLoading]);
+  const { contacts } = useSubAccountContacts();
 
   const contactNames = useMemo(() => {
     const map: Record<string, string> = {};

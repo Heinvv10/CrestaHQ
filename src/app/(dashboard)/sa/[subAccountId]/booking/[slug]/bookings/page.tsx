@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import {
   subscribeToBookingPage,
   subscribeToBookingPageEvents,
@@ -63,11 +63,10 @@ export default function BookingsListPage() {
   const params = useParams<{ subAccountId: string; slug: string }>();
   const slug = params.slug;
   const { subAccountId, saPath } = useSubAccount();
-  const { ready: filterReady, filter: territoryFilter } =
-    useEffectiveTerritoryFilter();
+  const { filter: territoryFilter } = useEffectiveTerritoryFilter();
   const [page, setPage] = useState<BookingPage | null>(null);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts } = useSubAccountContacts();
   const [loaded, setLoaded] = useState(false);
   const [filter, setFilter] = useState<FilterKey>("upcoming");
   const [search, setSearch] = useState("");
@@ -89,16 +88,6 @@ export default function BookingsListPage() {
       unsubEvents();
     };
   }, [subAccountId, slug]);
-
-  useEffect(() => {
-    if (!subAccountId || !filterReady) return;
-    const unsub = subscribeToContacts(
-      { agencyId: "", subAccountId }, // agencyId only used for create paths
-      { territoryFilter },
-      setContacts,
-    );
-    return () => unsub();
-  }, [subAccountId, filterReady, territoryFilter]);
 
   // Apply territory scoping client-side. Collaborators only see
   // bookings whose territoryId is in their filter (admins see all).

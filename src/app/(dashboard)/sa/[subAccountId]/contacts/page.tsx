@@ -6,7 +6,7 @@ import { Download, Mail, PhoneOutgoing, Search, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { useSmartLists } from "@/hooks/use-smart-lists";
 import { applyFilters, matchesSearch } from "@/lib/contacts/filter";
@@ -31,7 +31,6 @@ import {
   ContactsLoading,
   EmptyState,
 } from "@/components/contacts/contacts-empty-states";
-import type { Contact } from "@/types/contacts";
 import type { TerritoryDoc } from "@/types";
 
 /**
@@ -70,14 +69,13 @@ function QueryWatcher({
 }
 
 export default function ContactsPage() {
-  const { user, loading: authLoading } = useAuth();
+  const { user } = useAuth();
   const { subAccountId, agencyId, subAccount, isAdmin } = useSubAccount();
   const scopingOn = subAccount?.territoryScopingEnabled === true;
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts, loading } = useSubAccountContacts();
   const [territories, setTerritories] = useState<TerritoryDoc[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [bulkEmailOpen, setBulkEmailOpen] = useState(false);
@@ -115,28 +113,6 @@ export default function ContactsPage() {
     () => visible.filter((c) => selection.selected.has(c.id)),
     [visible, selection.selected],
   );
-
-  useEffect(() => {
-    if (authLoading || !user || !agencyId) return;
-    if (!filterReady) return;
-    setLoading(true);
-    const unsub = subscribeToContacts(
-      { agencyId, subAccountId },
-      { territoryFilter, waitForServer: true },
-      (list) => {
-        setContacts(list);
-        setLoading(false);
-      },
-    );
-    return () => unsub();
-  }, [
-    user,
-    agencyId,
-    subAccountId,
-    authLoading,
-    filterReady,
-    territoryFilter,
-  ]);
 
   useEffect(() => {
     if (!scopingOn || !subAccountId) {

@@ -13,9 +13,8 @@ import {
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToProducts } from "@/lib/firestore/products";
-import type { Contact } from "@/types/contacts";
 import type { Product } from "@/types/products";
 import type { Quote } from "@/types/quotes";
 import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
@@ -38,7 +37,7 @@ export default function EditRecurringInvoicePage() {
   const [schedule, setSchedule] = useState<RecurringInvoiceDoc | null>(null);
   const [form, setForm] = useState<ScheduleFormValues | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts } = useSubAccountContacts();
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -69,10 +68,8 @@ export default function EditRecurringInvoicePage() {
     const unsubP = subscribeToProducts({ agencyId, subAccountId }, (all) =>
       setProducts(all.filter((p) => p.active)),
     );
-    const unsubC = subscribeToContacts({ agencyId, subAccountId }, setContacts);
     return () => {
       unsubP();
-      unsubC();
     };
   }, [user, agencyId, subAccountId, authLoading]);
 

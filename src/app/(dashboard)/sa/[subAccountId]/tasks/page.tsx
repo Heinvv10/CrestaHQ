@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CheckSquare, Plus } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToTasks } from "@/lib/firestore/tasks";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { toDate } from "@/lib/format";
@@ -23,8 +23,9 @@ export default function TasksPage() {
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { contacts, loading: contactsLoading } = useSubAccountContacts();
+  const [tasksLoading, setTasksLoading] = useState(true);
+  const loading = tasksLoading || contactsLoading;
   const [filter, setFilter] = useState<TaskFilter>("today");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTask, setEditTask] = useState<Task | null>(null);
@@ -32,26 +33,14 @@ export default function TasksPage() {
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
     if (!filterReady) return;
-    setLoading(true);
+    setTasksLoading(true);
     const scope = { agencyId, subAccountId };
-    let tasksReady = false;
-    let contactsReady = false;
-    const settle = () => {
-      if (tasksReady && contactsReady) setLoading(false);
-    };
     const unsubT = subscribeToTasks(scope, { territoryFilter }, (l) => {
       setTasks(l);
-      tasksReady = true;
-      settle();
-    });
-    const unsubC = subscribeToContacts(scope, { territoryFilter }, (l) => {
-      setContacts(l);
-      contactsReady = true;
-      settle();
+      setTasksLoading(false);
     });
     return () => {
       unsubT();
-      unsubC();
     };
   }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);
 
