@@ -110,8 +110,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    // Bumped on every onUser pass, so a background token refresh started by
-    // an earlier pass (another user, or a retry) cannot write its claims.
+    // Bumped on every onUser pass. A pass that resumes after a newer one has
+    // started (another user, a sign-out, a retry) is stale: it must not touch
+    // shared state or the newer pass's membership listen.
     let generation = 0;
 
     const unsubscribe = onAuthStateChanged(
@@ -139,6 +140,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setMembershipsLoaded(false);
 
         let retrying = false;
+        // This pass's own membership listen — torn down only by this pass,
+        // never the shared handle another pass may have replaced.
+        let ownMembershipUnsub: (() => void) | null = null;
+        const dropOwnMembershipListen = () => {
+          if (!ownMembershipUnsub) return;
+          ownMembershipUnsub();
+          if (membershipUnsub === ownMembershipUnsub) membershipUnsub = null;
+          ownMembershipUnsub = null;
+        };
         try {
           // Firestore rules need the `status: "active"` claim on the token
           // before any read fires, or they deny with "Missing or insufficient
@@ -150,6 +160,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const cachedClaims = await readActiveCachedClaims(firebaseUser);
           let claims =
             cachedClaims ?? (await loadIdTokenClaims(firebaseUser));
+          if (gen !== generation) return;
           // Set once the user doc confirms an active user. Until then no
           // membership data is published and no claims are applied.
           let activeUser: UserDoc | null = null;
@@ -163,7 +174,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               (claims.agencyRole as AgencyRole | null | undefined) ?? null,
             );
           };
-          if (cachedClaims) {
+          // getIdTokenResult(false) already refreshes a token that is near
+          // expiry, so one issued within the last minute needs no second
+          // refresh.
+          const issuedAgoMs = Date.now() - Number(cachedClaims?.iat) * 1000;
+          if (cachedClaims && !(Math.abs(issuedAgoMs) < 60_000)) {
             void firebaseUser.getIdTokenResult(true).then(
               ({ claims: fresh }) => {
                 if (gen !== generation) return;
@@ -184,6 +199,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // held back until that read confirms the user is still active.
           let pendingMemberships: UserSubAccountMembership[] | null = null;
           const publishMemberships = (items: UserSubAccountMembership[]) => {
+            if (gen !== generation) return;
             if (!activeUser) {
               pendingMemberships = items;
               return;
@@ -191,7 +207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setMemberships(items);
             setMembershipsLoaded(true);
           };
-          membershipUnsub = onSnapshot(
+          ownMembershipUnsub = onSnapshot(
             collection(db, `userMemberships/${firebaseUser.uid}/subAccounts`),
             (snap) => {
               const items: UserSubAccountMembership[] = snap.docs.map((d) => {
@@ -226,11 +242,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             },
             () => publishMemberships([]),
           );
+          membershipUnsub = ownMembershipUnsub;
 
           const [cfgSnap, userSnap] = await Promise.all([
             getDoc(doc(db, "appConfig", "main")),
             getDoc(doc(db, "users", firebaseUser.uid)),
           ]);
+          if (gen !== generation) return;
 
           const cfg = cfgSnap.exists()
             ? (cfgSnap.data() as AppConfig)
@@ -242,7 +260,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!userDoc || userDoc.status !== "active") {
             // Removed/orphan user — sign them out hard. Drop the membership
             // listen first: nothing it held back is ever published.
-            cleanupMembership();
+            dropOwnMembershipListen();
+            // Not re-checked after this await: signing out starts a newer
+            // (null) pass, and this path must still finish the removal.
             await signOutUser().catch(() => undefined);
             setAdminUid(null);
             setRole(null);
@@ -282,7 +302,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (err) {
           // The user was never confirmed active: drop the listen, as before
           // when it was attached only after the user-doc read succeeded.
-          cleanupMembership();
+          dropOwnMembershipListen();
+          if (gen !== generation) return;
           if (
             isTransientLoadError(err) &&
             attempt < TRANSIENT_RETRY_DELAYS_MS.length
@@ -300,7 +321,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setMembershipsLoaded(true);
           }
         } finally {
-          if (!retrying) setLoading(false);
+          if (!retrying && gen === generation) setLoading(false);
         }
       },
     );

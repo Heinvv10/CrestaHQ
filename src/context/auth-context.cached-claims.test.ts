@@ -9,6 +9,9 @@ const m = vi.hoisted(() => ({
   userDoc: { role: "admin", status: "active", primaryAgencyId: "ag_1" } as Record<string, unknown>,
   // When set, the users/{uid} read waits on this before it resolves.
   userDocGate: null as null | Promise<void>,
+  // Per-uid gates and docs, for races between two users' passes.
+  userDocGates: {} as Record<string, Promise<void>>,
+  userDocs: {} as Record<string, Record<string, unknown>>,
   userDocReads: 0,
   // Rejections to hand out, one per read of the user doc, before it succeeds.
   getDocFailures: [] as unknown[],
@@ -35,10 +38,13 @@ vi.mock("firebase/firestore", () => ({
       m.userDocReads++;
       if (m.getDocFailures.length > 0) throw m.getDocFailures.shift();
       if (m.userDocGate) await m.userDocGate;
+      await m.userDocGates[path.slice("users/".length)];
     }
+    const uid = path.slice("users/".length);
     return {
       exists: () => true,
-      data: () => (path === "appConfig/main" ? { adminUid: "owner" } : m.userDoc),
+      data: () =>
+        path === "appConfig/main" ? { adminUid: "owner" } : (m.userDocs[uid] ?? m.userDoc),
     };
   },
   onSnapshot: (_q: unknown, next: (snap: unknown) => void) => {
@@ -107,6 +113,8 @@ afterEach(async () => {
   await unmount();
   m.userDoc = { role: "admin", status: "active", primaryAgencyId: "ag_1" };
   m.userDocGate = null;
+  m.userDocGates = {};
+  m.userDocs = {};
   m.userDocReads = 0;
   m.getDocFailures = [];
   m.listens = [];
@@ -218,4 +226,114 @@ it("drops the first listen when a dropped connection forces a retry", async () =
   expect(m.listens).toHaveLength(2);
   await step(() => m.listens[1].next(membershipSnap));
   expect(value()?.memberships.map((s) => s.subAccountId)).toEqual(["sa_1"]);
+});
+
+it("skips the background refresh when the cached token was issued this minute", async () => {
+  const fresh = { ...activeOwner, iat: String(Math.floor(Date.now() / 1000) - 5) };
+  const user = tokenUser("owner", fresh, never);
+  const value = await mount(user);
+  expect(value()?.agencyRole).toBe("owner");
+  expect(user.getIdTokenResult).not.toHaveBeenCalledWith(true);
+
+  const old = { ...activeOwner, iat: String(Math.floor(Date.now() / 1000) - 1_800) };
+  const oldUser = tokenUser("owner", old, never);
+  await step(() => m.authListener?.(oldUser));
+  expect(oldUser.getIdTokenResult).toHaveBeenCalledWith(true);
+});
+
+// ---- stale passes: a pass that resumes after a newer one has started ----
+
+const removed = { role: "admin", status: "removed", primaryAgencyId: "ag_1" };
+const activeB = { status: "active", agencyId: "ag_2", agencyRole: null };
+
+it("a stale removed-user pass leaves the next user's listen alone", async () => {
+  const gateA = deferred<void>();
+  m.userDocGates.a = gateA.promise;
+  m.userDocs.a = removed;
+  const value = await mount(tokenUser("a", activeOwner, never));
+  await step(() => m.authListener?.(tokenUser("b", activeB, never)));
+  const listenB = m.listens[1];
+  await step(() => gateA.resolve());
+  expect(m.signOut).not.toHaveBeenCalled();
+  expect(listenB.unsub).not.toHaveBeenCalled();
+  expect(value()?.status).toBe("active");
+  await step(() => listenB.next(membershipSnap));
+  expect(value()?.membershipsLoaded).toBe(true);
+  expect(value()?.agencyId).toBe("ag_2");
+});
+
+it("a stale pass whose user-doc read throws leaves the next user's state alone", async () => {
+  const gateA = deferred<void>();
+  m.userDocGates.a = gateA.promise;
+  const gateB = deferred<void>();
+  m.userDocGates.b = gateB.promise;
+  const value = await mount(tokenUser("a", activeOwner, never));
+  await step(() => m.authListener?.(tokenUser("b", activeB, never)));
+  await step(() =>
+    gateA.reject(Object.assign(new Error("denied"), { code: "permission-denied" })),
+  );
+  expect(m.listens[1].unsub).not.toHaveBeenCalled();
+  expect(value()?.membershipsLoaded).toBe(false);
+  // B's user doc is still loading, so nothing may decide access yet.
+  expect(value()?.loading).toBe(true);
+  await step(() => gateB.resolve());
+  expect(value()?.loading).toBe(false);
+  expect(value()?.agencyId).toBe("ag_2");
+});
+
+it("a stale active pass does not end the next user's loading", async () => {
+  const gateA = deferred<void>();
+  m.userDocGates.a = gateA.promise;
+  m.userDocGates.b = never();
+  const value = await mount(tokenUser("a", activeOwner, never));
+  await step(() => m.authListener?.(tokenUser("b", activeB, never)));
+  await step(() => gateA.resolve());
+  expect(value()?.loading).toBe(true);
+  expect(value()?.agencyRole).toBeNull();
+});
+
+it("a pass still reading claims when the user changes never attaches a listen", async () => {
+  const refreshA = deferred<Claims>();
+  await mount(tokenUser("a", {}, () => refreshA.promise));
+  await step(() => m.authListener?.(tokenUser("b", activeB, never)));
+  expect(m.listens).toHaveLength(1);
+  await step(() => refreshA.resolve(activeOwner));
+  expect(m.listens).toHaveLength(1);
+});
+
+it("a pass still reading the cached token when the user changes never attaches a listen", async () => {
+  const cachedA = deferred<{ claims: Claims }>();
+  const userA = { uid: "a", getIdTokenResult: vi.fn(() => cachedA.promise) };
+  await mount(userA);
+  await step(() => m.authListener?.(tokenUser("b", activeB, never)));
+  expect(m.listens).toHaveLength(1);
+  await step(() => cachedA.resolve({ claims: activeOwner }));
+  expect(m.listens).toHaveLength(1);
+});
+
+it("a pass that resumes after sign-out does not restore the old user", async () => {
+  const gateA = deferred<void>();
+  m.userDocGates.a = gateA.promise;
+  const value = await mount(tokenUser("a", activeOwner, never));
+  await step(() => m.listens[0].next(membershipSnap));
+  await step(() => m.authListener?.(null));
+  await step(() => gateA.resolve());
+  // A snapshot delivered late by the dropped listen is ignored too.
+  await step(() => m.listens[0].next(membershipSnap));
+  expect(value()?.user).toBeNull();
+  expect(value()?.status).toBeNull();
+  expect(value()?.agencyId).toBeNull();
+  expect(value()?.agencyRole).toBeNull();
+  expect(value()?.memberships).toEqual([]);
+  expect(value()?.membershipsLoaded).toBe(true);
+});
+
+it("ignores a snapshot the previous user's listen delivers after the user changed", async () => {
+  const value = await mount(tokenUser("a", activeOwner, never));
+  const listenA = m.listens[0];
+  m.userDocGates.b = never();
+  await step(() => m.authListener?.(tokenUser("b", activeB, never)));
+  await step(() => listenA.next(membershipSnap));
+  expect(value()?.memberships).toEqual([]);
+  expect(value()?.membershipsLoaded).toBe(false);
 });
