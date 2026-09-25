@@ -27,7 +27,10 @@ function startProblem(args: Record<string, unknown>, wf: WorkflowDoc): string | 
   if (!touchesSteps(args)) return null;
   const nodes = (args.nodes ?? wf.nodes ?? {}) as Record<string, unknown>;
   const start = args.startNodeId !== undefined ? args.startNodeId : wf.startNodeId;
-  return typeof start === "string" && !Object.hasOwn(nodes, start) ? "The start step must be one of the workflow's steps." : null;
+  if (typeof start !== "string" || Object.hasOwn(nodes, start)) return null;
+  return args.startNodeId !== undefined
+    ? "The start step must be one of the workflow's steps."
+    : `The new steps don't include the current start step (${start}): send startNodeId too, a step id or null.`;
 }
 
 export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
@@ -137,6 +140,8 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
         workflowId,
         patch,
         actor: agentActor(ctx, "update_workflow"),
+        // Only a direct steps edit depends on runs in progress.
+        checkRuns: !ctx.approved && touchesSteps(args),
         guard: (current, liveRun) => {
           if (ctx.approved) {
             if (workflowFingerprint(current) !== ctx.approved.pinned?.fingerprint) {

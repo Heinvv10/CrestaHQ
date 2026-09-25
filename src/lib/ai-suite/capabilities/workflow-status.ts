@@ -60,7 +60,7 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       return {
         rows: [
           ...workflowReviewRows(wf),
-          { label: "Then", value: "From approval on, every contact matching the trigger is enrolled and these steps run, messages included." },
+          { label: "Then", value: "From approval on, every contact matching the trigger is enrolled and these steps run, messages included; runs still waiting from before (e.g. a pause) resume on these steps." },
         ],
         pinned: { workflowId: wf.id, fingerprint: workflowFingerprint(wf) },
       };

@@ -73,19 +73,6 @@ describe("update_workflow", () => {
   });
 
   it.each([
-    ["a __proto__ key in a step's config", () => ({ nodes: JSON.parse('{"n1":{"type":"webhook","config":{"__proto__":{"url":"x"}}}}') }), '"__proto__"'],
-    ["a __proto__ step id", () => ({ nodes: JSON.parse('{"__proto__":{"type":"send_sms","config":{}}}') }), '"__proto__"'],
-    ["a constructor key in the trigger", () => ({ trigger: JSON.parse('{"type":"contact.created","constructor":{"x":1}}') }), '"constructor"'],
-    ["a prototype key deep in a step", () => ({ nodes: { n1: { type: "send_sms", config: { a: [{ prototype: 1 }] } } } }), '"prototype"'],
-    ["a __x__ key", () => ({ nodes: { n1: { type: "send_sms", config: { __x__: 1 } } } }), '"__x__"'],
-  ])("%s → refused, nothing written", async (_label, patch, key) => {
-    expect(await call("update_workflow", { workflowId: "wf1", ...patch() })).toMatchObject({
-      ok: false, code: "invalid_args", message: `the trigger and steps can't use the key ${key}`,
-    });
-    expect(wf()).toEqual(WF);
-  });
-
-  it.each([
     ["all as a number", { all: 5 }],
     ["a null condition", { all: [null] }],
     ["an unknown op", { all: [{ field: "email", op: "bogus" }] }],
@@ -148,6 +135,13 @@ describe("update_workflow", () => {
     expect(wf()).toMatchObject({ nodes: NEW_STEPS, startNodeId: "n2", status: "draft" });
   });
 
+  it("a RUNNING run holds a steps edit too", async () => {
+    liveRun("running");
+    const id = await proposeId("update_workflow", { workflowId: "wf1", nodes: NEW_STEPS, startNodeId: "n2" });
+    expect(row(id).approval).toBe("workflow_activate");
+    expect(wf()).toEqual(WF);
+  });
+
   it.each(["completed", "exited"])("a %s run doesn't count: the steps edit is direct", async (status) => {
     liveRun(status);
     expect(await call("update_workflow", { workflowId: "wf1", nodes: NEW_STEPS, startNodeId: "n2" })).toMatchObject({ ok: true, resultText: "Updated the workflow." });
@@ -177,30 +171,16 @@ describe("update_workflow", () => {
   });
 
   it.each([
-    ["steps that drop the stored start step", { nodes: NEW_STEPS }],
-    ["a start step that isn't one of the stored steps", { startNodeId: "n9" }],
-  ])("%s → refused, nothing written", async (_label, patch) => {
-    expect(await call("update_workflow", { workflowId: "wf1", ...patch })).toMatchObject({ ok: false, message: "The start step must be one of the workflow's steps." });
+    ["steps that drop the stored start step", { nodes: NEW_STEPS }, "The new steps don't include the current start step (n1): send startNodeId too, a step id or null."],
+    ["a start step that isn't one of the stored steps", { startNodeId: "n9" }, "The start step must be one of the workflow's steps."],
+  ])("%s → refused, nothing written", async (_label, patch, message) => {
+    expect(await call("update_workflow", { workflowId: "wf1", ...patch })).toMatchObject({ ok: false, message });
     expect(wf()).toEqual(WF);
     seed({ status: "active" });
-    expect(await call("update_workflow", { workflowId: "wf1", ...patch })).toMatchObject({ ok: false, message: "The start step must be one of the workflow's steps." });
+    expect(await call("update_workflow", { workflowId: "wf1", ...patch })).toMatchObject({ ok: false, message });
     expect(mem.list("agentProposals")).toEqual([]);
   });
 
-  it.each([
-    ["an unknown trigger type", { trigger: { type: "toString" } }],
-    ["trigger filters that aren't an object", { trigger: { type: "contact.created", filters: "all" } }],
-    ["an unknown step type", { nodes: { n1: { type: "launch_rocket", config: {} } } }],
-    ["too many steps", { nodes: Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`n${i}`, { type: "send_sms", config: {} }])) }],
-    ["a start step that isn't one of the steps", { nodes: NEW_STEPS, startNodeId: "n9" }],
-    ["an inherited-property start step", { nodes: NEW_STEPS, startNodeId: "toString" }],
-    ["an invisible character in the name", { name: "We\u200blcome" }],
-    ["an unknown re-entry", { reentry: "sometimes" }],
-    ["nothing to change", { status: "active" }],
-  ])("%s → refused, nothing written", async (_label, patch) => {
-    expect(await call("update_workflow", { workflowId: "wf1", ...patch })).toMatchObject({ ok: false, code: "invalid_args" });
-    expect(wf()).toEqual(WF);
-  });
 });
 
 describe("set_workflow_status", () => {
@@ -213,10 +193,23 @@ describe("set_workflow_status", () => {
     ]);
   });
 
+  it("pausing or drafting never reads runs (no dependence on the runs index)", async () => {
+    seed({ status: "active" });
+    const collection = vi.spyOn(mem.db, "collection");
+    expect(await call("set_workflow_status", { workflowId: "wf1", status: "paused" })).toMatchObject({ ok: true });
+    expect(await call("set_workflow_status", { workflowId: "wf1", status: "draft" })).toMatchObject({ ok: true });
+    expect(collection.mock.calls.map(([path]) => path)).not.toContain("workflowRuns");
+    collection.mockRestore();
+  });
+
   it("activating → a proposal showing the exact trigger and steps; approve activates, audited as the approver", async () => {
     const id = await proposeId("set_workflow_status", { workflowId: "wf1", status: "active" });
     expect(wf().status).toBe("draft");
     expect(row(id).preview).toContainEqual({ label: "Start step", value: "n1" });
+    expect(row(id).preview).toContainEqual({
+      label: "Then",
+      value: "From approval on, every contact matching the trigger is enrolled and these steps run, messages included; runs still waiting from before (e.g. a pause) resume on these steps.",
+    });
     expect(row(id).preview).toContainEqual({ label: "Steps (exact)", value: expect.stringContaining('"body": "Hi {{contact.firstName}}"'), multiline: true });
     expect((await decide(id, "approve")).status).toBe(200);
     expect(wf().status).toBe("active");

@@ -27,8 +27,10 @@ export async function updateWorkflowGuarded(opts: {
   subAccountId: string;
   workflowId: string;
   patch: WorkflowPatch;
-  /** `liveRun`: a run of it is in progress (read in the transaction). */
+  /** `liveRun`: a run of it is in progress (read in the transaction, only
+   *  when `checkRuns`; false otherwise). */
   guard: (current: WorkflowDoc, liveRun: boolean) => void;
+  checkRuns?: boolean;
   /** An API agent's write: stamped (see agentEditStamp). */
   actor?: AgentActor;
 }): Promise<{ previousStatus: WorkflowStatus } | null> {
@@ -38,8 +40,8 @@ export async function updateWorkflowGuarded(opts: {
     const snap = await tx.get(ref);
     if (!snap.exists || snap.data()!.subAccountId !== opts.subAccountId) return null;
     const current = { id: snap.id, ...(snap.data() as Omit<WorkflowDoc, "id">) };
-    const runs = await tx.get(liveRunsQuery(opts.workflowId));
-    opts.guard(current, !runs.empty);
+    const liveRun = opts.checkRuns ? !(await tx.get(liveRunsQuery(opts.workflowId))).empty : false;
+    opts.guard(current, liveRun);
     tx.update(ref, { ...workflowPatchWrite(opts.patch), ...agentEditStamp(opts.actor) });
     return { previousStatus: current.status };
   });
