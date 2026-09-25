@@ -247,8 +247,30 @@ For an external LLM agent. Keys minted with the `agent` scope (exclusive with
   would store its result). A read tool's request log keeps status and latency
   only: neither its request body (the args) nor its response body is stored.
 
-The MCP transport (PR5) and the full agent guide (`docs/features/agent-api.md`,
-PR14) follow; see `AGENT_API_V1_PLAN.md`.
+### MCP (`POST /api/mcp`)
+
+The same tools over MCP (Streamable HTTP, stateless; GET and DELETE → 405).
+Connect an MCP client with the agent key as a bearer header, e.g. Claude Code:
+
+```bash
+claude mcp add --transport http leadstack https://<your-app>/api/mcp \
+  --header "Authorization: Bearer lsk_live_…"
+```
+
+- `tools/list` is exactly `GET /api/v1/tools`: `inputSchema` is the tool's
+  JSON Schema, reads carry `annotations.readOnlyHint`.
+- Each `tools/call` takes one rate-limit token, including every call inside a
+  JSON-RPC batch. A write returns its result text (plus `structuredContent`
+  `{ref?, held?, holdFailures?}`); a tool that needs a person returns a text
+  naming the queued proposal (`structuredContent.proposal: {id, status,
+  summary}`); a refusal is an `isError` result with `{error: {code, message}}`.
+- A bad key, a key without the `agent` scope, a test-mode key or the gate off
+  is refused at the HTTP level with the v1 error body, before any call runs.
+- Each call is logged as `/api/mcp#<tool>`, with the same body rules as REST.
+  No `Idempotency-Key` on MCP; use REST when a retry must not repeat a write.
+
+The full agent guide (`docs/features/agent-api.md`, PR14) follows; see
+`AGENT_API_V1_PLAN.md`.
 
 ## Webhooks
 

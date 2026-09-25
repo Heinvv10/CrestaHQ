@@ -2,16 +2,8 @@ import "server-only";
 
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk, type ErrorType } from "@/lib/api/responses";
-import { agentCallable, dispatchAgentTool } from "@/lib/api/agent-dispatch";
+import { dispatchAgentTool, isAgentReadTool } from "@/lib/api/agent-dispatch";
 import { agentPrecheck } from "@/lib/api/agent-precheck";
-import { getCapability } from "@/lib/ai-suite/capabilities";
-
-/** A read tool the key may call. Anything else — including a chat-only or
- *  unknown name — is treated alike, so the hooks can't reveal which exist. */
-const isAgentReadTool = (name: string) => {
-  const cap = getCapability(name);
-  return !!cap && agentCallable(cap) && cap.readonly === true;
-};
 
 const TYPE_FOR_STATUS: Record<number, ErrorType> = {
   400: "invalid_request",

@@ -72,6 +72,14 @@ export function agentCallable(cap: AiSuiteCapability): boolean {
   );
 }
 
+/** A read tool the key may call. Anything else — including a chat-only or
+ *  unknown name — is treated alike, so the REST and MCP hooks can't reveal
+ *  which exist. */
+export function isAgentReadTool(name: string): boolean {
+  const cap = getCapability(name);
+  return !!cap && agentCallable(cap) && cap.readonly === true;
+}
+
 /**
  * The ONE choke point for agent tool calls (MCP and REST). Every refusal
  * runs before any capability code: scope, test mode, the agency's Agent API
