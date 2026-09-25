@@ -76,14 +76,21 @@ it("N1 a hung handler holds the key for at most MAX_HOLD_MS; after that + the TT
   expect(handler).toHaveBeenCalledTimes(2);
 });
 
-it("N2 cacheIdempotently throwing after the handler still stops the heartbeat and hands the key back", async () => {
+it("N2 + S1 cacheIdempotently throwing after the handler SUCCEEDED stops the heartbeat and marks the key done_unknown", async () => {
   vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
   handler.mockResolvedValue(NextResponse.json({ id: "x" }, { status: 201 }));
+  const err = vi.spyOn(console, "error").mockImplementation(() => {});
   await expect(post("leak", throwingVeto)).rejects.toThrow("veto bug");
   expect(vi.getTimerCount()).toBe(0);
-  expect(mem.list(IDEM)).toEqual([]);
-  await expect(post("leak", throwingVeto)).rejects.toThrow("veto bug");
-  expect(handler).toHaveBeenCalledTimes(2);
+  expect(mem.list(IDEM)).toMatchObject([{ state: "done_unknown" }]);
+  expect((mem.list(IDEM)[0].expiresAt as Date).getTime()).toBeGreaterThan(Date.now() + 23 * 3600_000);
+  expect(err).toHaveBeenCalledWith(expect.stringContaining("key marked done_unknown"));
+  for (const _retry of [1, 2]) {
+    const r = await post("leak", throwingVeto);
+    expect(r.status).toBe(409);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe("outcome_unknown");
+  }
+  expect(handler).toHaveBeenCalledTimes(1);
 });
 
 it("store and release each stop the heartbeat, and are idempotent", async () => {

@@ -107,6 +107,8 @@ export type IdempotencyReservation =
       kind: "reserved";
       store: (entry: { status: number; bodyJson: unknown }) => Promise<void>;
       release: () => Promise<void>;
+      /** The handler ran but its outcome can't be stored: mark done_unknown. */
+      markUnknown: () => Promise<void>;
     }
   /** A finished request with this key and body: return its stored response. */
   | { kind: "replay"; cached: CachedResponse }
@@ -210,7 +212,11 @@ export async function reserveIdempotencyKey(
         expiresAt: new Date(Date.now() + CACHE_TTL_MS),
       }),
     );
-  // store / release are idempotent: only the first call of either acts.
+  const writeUnknown = () =>
+    whileOurs((tx) =>
+      tx.update(ref, { state: "done_unknown", expiresAt: new Date(Date.now() + CACHE_TTL_MS) }),
+    );
+  // store / release / markUnknown are idempotent: only the first call of any acts.
   let settled = false;
   return {
     kind: "reserved",
@@ -231,14 +237,27 @@ export async function reserveIdempotencyKey(
       // The action may have happened: mark the key so a retry is told the
       // outcome is unknown instead of running it again.
       try {
-        await whileOurs((tx) =>
-          tx.update(ref, { state: "done_unknown", expiresAt: new Date(Date.now() + CACHE_TTL_MS) }),
-        );
+        await writeUnknown();
         console.error("[api/v1] idempotency outcome not stored; key marked done_unknown (unless taken over)", lastErr);
       } catch (err) {
         console.error(
           "[api/v1] idempotency outcome and done_unknown marker both failed; the reservation expires and a retry may re-run",
           lastErr,
+          err,
+        );
+      }
+    },
+    // Never throws, like store.
+    markUnknown: async () => {
+      clearInterval(heartbeat);
+      if (settled) return;
+      settled = true;
+      try {
+        await writeUnknown();
+        console.error("[api/v1] request failed after its handler ran; key marked done_unknown (unless taken over)");
+      } catch (err) {
+        console.error(
+          "[api/v1] request failed after its handler ran and the done_unknown marker failed; the reservation expires and a retry may re-run",
           err,
         );
       }

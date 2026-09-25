@@ -557,9 +557,10 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
 
     // Whatever throws from here on (the handler, a cacheIdempotently bug),
     // the reservation is settled: its heartbeat stops and, unless store or
-    // release already ran, the key is handed back.
+    // release already ran, the key is handed back — or, once the handler has
+    // returned (its action may have happened), marked done_unknown.
+    let response: NextResponse | undefined;
     try {
-      let response: NextResponse;
       try {
         response = await handler({ request, params, body, rawBody, ctx });
       } catch (err) {
@@ -604,7 +605,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
 
       return finalize(response, responseBodyJson);
     } finally {
-      await releaseReservation();
+      if (response) await reservation?.markUnknown();
+      else await releaseReservation();
     }
   };
 }
