@@ -8,10 +8,13 @@
  *  line / paragraph separator characters, plus the characters that render
  *  as nothing without being Cf: the combining grapheme joiner (U+034F), the
  *  Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) and the blank braille
- *  cell (U+2800). Refused in stored text an approver reads (a newline could
- *  fake a preview row, an invisible one hide text). U+FE0F (emoji
- *  presentation) is a variation selector, not in the set. */
-const INVISIBLE_LETTERS = "\\u034f\\u115f\\u1160\\u2800\\u3164\\uffa0";
+ *  cell (U+2800), the Khmer inherent vowels (U+17B4, U+17B5), the Mongolian
+ *  free variation selectors (U+180B–U+180D, U+180F) and the variation
+ *  selectors U+FE00–U+FE0E and U+E0100–U+E01EF. Refused in stored text an
+ *  approver reads (a newline could fake a preview row, an invisible one hide
+ *  text). U+FE0F (emoji presentation) stays allowed. */
+const INVISIBLE_LETTERS =
+  "\\u034f\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180d\\u180f\\u2800\\u3164\\ufe00-\\ufe0e\\uffa0\\u{e0100}-\\u{e01ef}";
 export const UNSAFE_TEXT_RE = new RegExp(`[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}${INVISIBLE_LETTERS}]`, "u");
 /** What oneLine removes outright: format characters and the same invisible letters. */
 const STRIP_RE = new RegExp(`[\\p{Cf}${INVISIBLE_LETTERS}]`, "gu");

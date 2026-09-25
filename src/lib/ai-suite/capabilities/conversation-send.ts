@@ -1,6 +1,7 @@
 import "server-only";
 
-import { sendConversationMessage, type SendableChannel } from "@/lib/server/conversation-send";
+import { sendConversationMessage, type SendableChannel, type SendOutcome } from "@/lib/server/conversation-send";
+import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 import type { Contact } from "@/types/contacts";
 import { CapabilityOutcomeUnknown, CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
@@ -77,7 +78,8 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
       const conversationId = str(raw, "conversationId");
       const channel = str(raw, "channel") as SendableChannel;
       const body = typeof r.body === "string" ? messageBody(r.body) : "";
-      const subject = str(raw, "subject");
+      // What is sent is what the approver reads: one line, collapsed.
+      const subject = (typeof r.subject === "string" ? r.subject : "").replace(/\s+/g, " ").trim();
       if (!conversationId) return { ok: false, error: "a conversationId is required" };
       if (!(CHANNELS as readonly string[]).includes(channel)) return { ok: false, error: `channel must be one of ${CHANNELS.join(", ")}` };
       // Line breaks are text in a message; nothing else invisible is.
@@ -99,6 +101,7 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
         rows: [
           { label: "To", value: `${oneLine(contact.name) || "(unnamed)"} (${masked(channel, to)})` },
           { label: "Channel", value: channel },
+          { label: "When", value: "Sends immediately when approved (quiet hours don't hold it)." },
           ...(args.subject ? [{ label: "Subject", value: String(args.subject) }] : []),
           // Exactly as it will be sent, line breaks included.
           { label: "Message", value: String(args.body), multiline: true },
@@ -117,19 +120,44 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
       if (contactId !== pinned.contactId || recipientOf(channel, contact) !== pinned.to) {
         throw new CapabilityUserError("The recipient changed since this was reviewed; nothing was sent.");
       }
-      const outcome = await sendConversationMessage({
+      // The pinned address, not a fresh lookup (they match, checked above).
+      const sendTo = { ...withRecipient(channel, contact, pinned.to), id: contactId } as Contact;
+      let outcome: SendOutcome;
+      try {
+        outcome = await sendConversationMessage({
+          channel,
+          contactId,
+          contact: sendTo,
+          body: args.body as string,
+          subject: (args.subject as string | undefined) ?? "",
+          actor: { uid: ctx.uid, email: ctx.email },
+          // The seam sends as origin "manual" — a person's message, sent now,
+          // not held for quiet hours: approving is a human act, and the
+          // preview says it sends immediately. humanReply stays false: the
+          // bridge's in-session relaxation is for someone typing right now.
+          humanReply: false,
+        });
+      } catch (err) {
+        // A throw may come after the provider accepted the message (the
+        // thread / usage bookkeeping): never "failed", which invites a resend.
+        console.error("[send_message] the send seam threw", err);
+        throw new CapabilityOutcomeUnknown(
+          "The message may have gone out: something failed during the send. Check the thread before sending again."
+        );
+      }
+      // The human send routes log review requests the same way.
+      await logInboxReviewAsk({
+        contact: sendTo,
         channel,
-        contactId,
-        // The pinned address, not a fresh lookup (they match, checked above).
-        contact: { ...withRecipient(channel, contact, pinned.to), id: contactId } as Contact,
-        body: args.body as string,
-        subject: (args.subject as string | undefined) ?? "",
-        actor: { uid: ctx.uid, email: ctx.email },
-        // A proposal, not a person typing in the thread: full quiet-hours guard.
-        humanReply: false,
+        parts: channel === "email" ? [args.subject as string, args.body as string] : [args.body as string],
+        actorUid: ctx.uid,
+        outcome: askOutcomeOf(outcome),
       });
       if (!outcome.ok) {
-        if (outcome.outcomeUnknown) throw new CapabilityOutcomeUnknown(outcome.error);
+        // Once the provider was contacted, even a rejection may have gone
+        // out: a person checks it (mark_sent / mark_not_sent). Only a refusal
+        // decided before any provider call (opt-out, readiness, window) fails.
+        if (outcome.outcomeUnknown || outcome.attempted) throw new CapabilityOutcomeUnknown(outcome.error);
         throw new CapabilityUserError(outcome.error);
       }
       return { resultText: `Sent the ${channel} message.`, ref: { kind: "message", id: outcome.messageId } };

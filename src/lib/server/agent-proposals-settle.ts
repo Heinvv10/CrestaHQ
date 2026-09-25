@@ -120,8 +120,18 @@ export async function executeAndSettle(input: {
       };
     } catch (err) {
       if (err instanceof CapabilityOutcomeUnknown) {
-        // Maybe sent: a person checks it (mark_sent / mark_not_sent).
+        // Maybe sent: a person checks it (mark_sent / mark_not_sent). No late
+        // settle will follow, so the audit row is written now.
         await transitionIf(input.id, "executing", { status: "unsettled", unsettledReason: err.message }, { claimId: input.claimId });
+        await getAdminDb().collection("aiSuiteActions").add({
+          level: "sub-account",
+          ...input.audit,
+          status: "unknown",
+          resultRef: null,
+          error: err.message,
+          agentProposalId: input.id,
+          createdAt: FieldValue.serverTimestamp(),
+        });
         return "deadline";
       }
       if (!(err instanceof CapabilityUserError)) {

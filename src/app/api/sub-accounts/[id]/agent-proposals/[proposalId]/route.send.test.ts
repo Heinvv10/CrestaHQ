@@ -14,6 +14,8 @@ const send = vi.hoisted(() =>
   vi.fn(async (..._a: unknown[]): Promise<unknown> => ({ ok: true, messageId: "SM1", response: {} }))
 );
 vi.mock("@/lib/server/conversation-send", async (orig) => ({ ...((await orig()) as object), sendConversationMessage: send }));
+const reviewAsk = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => undefined));
+vi.mock("@/lib/reviews/review-ask", async (orig) => ({ ...((await orig()) as object), logInboxReviewAsk: reviewAsk }));
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-proposals-harness")).adminMock());
 vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/agent-proposals-harness")).tenancyMock());
 vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
@@ -28,6 +30,7 @@ const { buildAgentContext } = await import("@/lib/api/agent-context");
 const ANN = { subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Ann", phone: "+27821111111", email: "ann@x.io", territoryId: "global" };
 beforeEach(() => {
   send.mockClear();
+  reviewAsk.mockClear();
   mem.seed("contacts/c1", ANN);
   mem.seed("conversations/c1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", contactName: "Ann", territoryId: "global" });
 });
@@ -44,6 +47,7 @@ describe("propose", () => {
     expect(row(id).preview).toEqual([
       { label: "To", value: "Ann (…1111)" },
       { label: "Channel", value: "sms" },
+      { label: "When", value: "Sends immediately when approved (quiet hours don't hold it)." },
       { label: "Message", value: "Your install is booked for Tuesday.", multiline: true },
     ]);
     expect(row(id)).toMatchObject({ approval: "outbound", contactId: "c1", pinned: { contactId: "c1", channel: "sms", to: "+27821111111" } });
@@ -65,6 +69,27 @@ describe("propose", () => {
     expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body }))
       .toMatchObject({ ok: false, code: "invalid_args" });
     expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it.each([
+    ["U+FE0E", "a\ufe0eb"], ["U+E0101", "a\u{e0101}b"], ["U+17B4", "a\u17b4b"], ["U+180B", "a\u180bb"],
+  ])("a body with the invisible mark %s is refused", async (_label, body) => {
+    expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body }))
+      .toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it("U+FE0F (emoji presentation) in a body is fine", async () => {
+    expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body: "Thanks \u2764\ufe0f" }))
+      .toMatchObject({ ok: true, proposal: { status: "pending" } });
+  });
+
+  it("the email subject stored (and sent) is the one-line form the approver reads; an unsafe one is refused", async () => {
+    const r = await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "email", subject: " Your\n  quote\tis ready ", body: "Hi" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    expect(row(r.proposal.id)).toMatchObject({ args: { subject: "Your quote is ready" } });
+    expect(row(r.proposal.id).preview).toContainEqual({ label: "Subject", value: "Your quote is ready" });
+    expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "email", subject: "Hi\u202e", body: "x" }))
+      .toMatchObject({ ok: false, code: "invalid_args" });
   });
 
   it("another sub-account's conversation → refused, nothing written or sent", async () => {
@@ -128,6 +153,33 @@ describe("approve", () => {
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id)).toMatchObject({ status: "failed", error: "This contact has opted out of SMS (replied STOP)." });
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("REPRO 1: the seam throws after delivery (bookkeeping) → unsettled, audited, and a re-propose can't send again", async () => {
+    send.mockRejectedValueOnce(new Error("upsertConversationForMessage failed"));
+    const id = await proposeSms();
+    expect((await decide(id, "approve")).status).toBe(202);
+    expect(row(id).status).toBe("unsettled");
+    expect(mem.list("aiSuiteActions")).toEqual([expect.objectContaining({ agentProposalId: id, status: "unknown" })]);
+    const again = await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body: "Your install is booked for Tuesday." });
+    expect(again).toMatchObject({ ok: false, code: "outcome_unknown" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("REPRO 2: the provider was contacted and then failed (attempted) → unsettled, never failed", async () => {
+    send.mockResolvedValueOnce({ ok: false, status: 502, error: "socket hang up", attempted: true });
+    const id = await proposeSms();
+    expect((await decide(id, "approve")).status).toBe(202);
+    expect(row(id)).toMatchObject({ status: "unsettled", unsettledReason: "socket hang up" });
+  });
+
+  it("a successful send logs the review request like the human route", async () => {
+    const id = await proposeSms();
+    await decide(id, "approve");
+    expect(reviewAsk).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "sms", parts: ["Your install is booked for Tuesday."], actorUid: "u_admin",
+      outcome: { ok: true, messageSid: "SM1" }, contact: expect.objectContaining({ id: "c1", phone: "+27821111111" }),
+    }));
   });
 
   it("an unknown delivery outcome → unsettled (never failed), for a person to check", async () => {
