@@ -174,6 +174,45 @@ describe("approve", () => {
     expect(row(id)).toMatchObject({ status: "unsettled", unsettledReason: "socket hang up" });
   });
 
+  it.each([
+    ["outcomeUnknown", { ok: false, status: 409, error: "WhatsApp said AMBIGUOUS", outcomeUnknown: true }],
+    ["attempted", { ok: false, status: 409, error: "Provider rejected after contact", attempted: true }],
+  ])("a non-502 %s refusal → unsettled, never failed", async (_label, outcome) => {
+    send.mockResolvedValueOnce(outcome);
+    const id = await proposeSms();
+    expect((await decide(id, "approve")).status).toBe(202);
+    expect(row(id).status).toBe("unsettled");
+  });
+
+  it("the unknown-outcome audit row failing to write still answers the approve (logged, row unsettled)", async () => {
+    send.mockResolvedValueOnce({ ok: false, status: 502, error: "maybe", outcomeUnknown: true });
+    const id = await proposeSms();
+    const realCollection = mem.db.collection.bind(mem.db);
+    vi.spyOn(mem.db, "collection").mockImplementation(((path: string) =>
+      path === "aiSuiteActions"
+        ? { ...realCollection(path), add: () => Promise.reject(new Error("audit write failed")) }
+        : realCollection(path)) as never);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect((await decide(id, "approve")).status).toBe(202);
+    expect(row(id).status).toBe("unsettled");
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("unknown-outcome audit"), expect.any(Error));
+  });
+
+  it("an email send logs its review ask with [subject, body]", async () => {
+    const r = await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "email", subject: "Your quote", body: "Attached." });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    await decide(r.proposal.id, "approve");
+    expect(reviewAsk).toHaveBeenCalledWith(expect.objectContaining({ channel: "email", parts: ["Your quote", "Attached."] }));
+  });
+
+  it("the When row is channel-aware: WhatsApp's bridge quiet hours can refuse it", async () => {
+    const r = await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    expect(row(r.proposal.id).preview).toContainEqual({
+      label: "When", value: "Sends when approved, unless the WhatsApp bridge's quiet hours refuse it (then it fails and nothing is sent).",
+    });
+  });
+
   it("a successful send logs the review request like the human route", async () => {
     const id = await proposeSms();
     await decide(id, "approve");

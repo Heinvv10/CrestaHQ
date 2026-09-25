@@ -81,7 +81,13 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
           { label: "To", value: `${oneLine(contact.name) || "(unnamed)"} (${masked(channel, to)})` },
           { label: "Channel", value: channel },
           { label: "Consent", value: blocked ? `${blocked} It will not be sent.` : `Not opted out of ${channel}.` },
-          { label: "When", value: "Sends immediately when approved (quiet hours don't hold it)." },
+          {
+            label: "When",
+            value:
+              channel === "whatsapp"
+                ? "Sends when approved, unless the WhatsApp bridge's quiet hours refuse it (then it fails and nothing is sent)."
+                : "Sends immediately when approved (quiet hours don't hold it).",
+          },
           ...(env ? [{ label: "From", value: env.from }, { label: "Reply-To", value: env.replyTo }] : []),
           ...(env?.inReplyToLabel ? [{ label: "In reply to", value: env.inReplyToLabel }] : []),
           ...(args.subject ? [{ label: "Subject", value: String(args.subject) }] : []),
