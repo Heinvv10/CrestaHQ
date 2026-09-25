@@ -19,7 +19,10 @@ import {
   isFirebaseConfigured,
 } from "@/lib/firebase/client";
 import { signOutUser } from "@/lib/firebase/auth";
-import { loadIdTokenClaims } from "@/lib/firebase/id-token-claims";
+import {
+  loadIdTokenClaims,
+  readActiveCachedClaims,
+} from "@/lib/firebase/id-token-claims";
 import type {
   AgencyRole,
   AppConfig,
@@ -54,7 +57,7 @@ export interface AuthContextValue {
   /**
    * False until the membership subscription has delivered its first
    * snapshot. `loading` flips to false as soon as the auth token + user doc
-   * resolve — which is BEFORE memberships arrive — so anything that decides
+   * resolve — which can be BEFORE memberships arrive — so anything that decides
    * access from `memberships` (e.g. the sub-account no-access redirect) must
    * gate on this, or it will act against an empty list on refresh.
    */
@@ -107,11 +110,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     };
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    // Bumped on every onUser pass. A pass that resumes after a newer one has
+    // started (another user, a sign-out, a retry) is stale: it must not touch
+    // shared state or the newer pass's membership listen.
+    let generation = 0;
 
     const unsubscribe = onAuthStateChanged(
       getFirebaseAuth(),
       async function onUser(firebaseUser: User | null, attempt = 0) {
         clearTimeout(retryTimer);
+        const gen = ++generation;
         setUser(firebaseUser);
         cleanupMembership();
 
@@ -132,73 +140,74 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setMembershipsLoaded(false);
 
         let retrying = false;
+        // This pass's own membership listen — torn down only by this pass,
+        // never the shared handle another pass may have replaced.
+        let ownMembershipUnsub: (() => void) | null = null;
+        const dropOwnMembershipListen = () => {
+          if (!ownMembershipUnsub) return;
+          ownMembershipUnsub();
+          if (membershipUnsub === ownMembershipUnsub) membershipUnsub = null;
+          ownMembershipUnsub = null;
+        };
         try {
-          // Refresh the ID token FIRST so newly-set custom claims (status,
-          // agencyId, agencyRole) are present on the token before any
-          // Firestore read fires. Without this, rules see a stale token
-          // missing the `status: "active"` claim and deny the reads with
-          // "Missing or insufficient permissions".
-          const claims = await loadIdTokenClaims(firebaseUser);
-
-          const db = getFirebaseDb();
-          const [cfgSnap, userSnap] = await Promise.all([
-            getDoc(doc(db, "appConfig", "main")),
-            getDoc(doc(db, "users", firebaseUser.uid)),
-          ]);
-
-          const cfg = cfgSnap.exists()
-            ? (cfgSnap.data() as AppConfig)
-            : null;
-          const userDoc = userSnap.exists()
-            ? (userSnap.data() as UserDoc)
-            : null;
-
-          if (!userDoc || userDoc.status !== "active") {
-            // Removed/orphan user — sign them out hard.
-            await signOutUser().catch(() => undefined);
-            setAdminUid(null);
-            setRole(null);
-            setStatus("removed");
-            setAgencyId(null);
-            setAgencyRole(null);
-            setMemberships([]);
-            setMembershipsLoaded(true);
-            setUser(null);
-            if (typeof window !== "undefined") {
-              window.location.href = "/login?reason=removed";
-            }
-            return;
+          // Firestore rules need the `status: "active"` claim on the token
+          // before any read fires, or they deny with "Missing or insufficient
+          // permissions". A cached token that already carries it is used
+          // straight away and refreshed in the background (the forced
+          // refresh cost every page load ~335 ms); one without it — claims
+          // set moments ago by signup / invite acceptance — is refreshed
+          // FIRST, as before.
+          const cachedClaims = await readActiveCachedClaims(firebaseUser);
+          let claims =
+            cachedClaims ?? (await loadIdTokenClaims(firebaseUser));
+          if (gen !== generation) return;
+          // Set once the user doc confirms an active user. Until then no
+          // membership data is published and no claims are applied.
+          let activeUser: UserDoc | null = null;
+          const applyClaims = (u: UserDoc) => {
+            setAgencyId(
+              (claims.agencyId as string | undefined) ??
+                u.primaryAgencyId ??
+                null,
+            );
+            setAgencyRole(
+              (claims.agencyRole as AgencyRole | null | undefined) ?? null,
+            );
+          };
+          // getIdTokenResult(false) already refreshes a token that is near
+          // expiry, so one issued within the last minute needs no second
+          // refresh.
+          const issuedAgoMs = Date.now() - Number(cachedClaims?.iat) * 1000;
+          if (cachedClaims && !(Math.abs(issuedAgoMs) < 60_000)) {
+            void firebaseUser.getIdTokenResult(true).then(
+              ({ claims: fresh }) => {
+                if (gen !== generation) return;
+                claims = fresh;
+                if (activeUser) applyClaims(activeUser);
+              },
+              // A failed refresh keeps the cached claims — never `{}`, which
+              // would demote an owner (see loadIdTokenClaims).
+              () => undefined,
+            );
           }
 
-          setAdminUid(cfg?.adminUid ?? null);
-          setRole(userDoc.role);
-          setStatus(userDoc.status);
-          setAgencyId(
-            (claims.agencyId as string | undefined) ??
-              userDoc.primaryAgencyId ??
-              null,
-          );
-          setAgencyRole(
-            (claims.agencyRole as AgencyRole | null | undefined) ?? null,
-          );
-
-          // Fire-and-forget: claim any pending sub-account invites for
-          // this user's email. Handles the "invited to multiple
-          // sub-accounts after my first signup" case — the signup route
-          // 409s for existing users, so this is the only path that
-          // attaches the 2nd, 3rd, … memberships. Idempotent. The
-          // membership subscription below picks up any new docs the
-          // route writes without us needing to do anything extra.
-          void fetch("/api/auth/claim-pending-invites", {
-            method: "POST",
-            credentials: "include",
-          }).catch((err) => {
-            console.warn("[auth] claim-pending-invites failed", err);
-          });
+          const db = getFirebaseDb();
 
           // Subscribe to the user's sub-account memberships so the switcher
-          // updates live when an admin adds/removes them somewhere.
-          membershipUnsub = onSnapshot(
+          // updates live when an admin adds/removes them somewhere. Started
+          // alongside the user-doc read rather than after it; snapshots are
+          // held back until that read confirms the user is still active.
+          let pendingMemberships: UserSubAccountMembership[] | null = null;
+          const publishMemberships = (items: UserSubAccountMembership[]) => {
+            if (gen !== generation) return;
+            if (!activeUser) {
+              pendingMemberships = items;
+              return;
+            }
+            setMemberships(items);
+            setMembershipsLoaded(true);
+          };
+          ownMembershipUnsub = onSnapshot(
             collection(db, `userMemberships/${firebaseUser.uid}/subAccounts`),
             (snap) => {
               const items: UserSubAccountMembership[] = snap.docs.map((d) => {
@@ -229,15 +238,72 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                   sensitivity: "base",
                 });
               });
-              setMemberships(items);
-              setMembershipsLoaded(true);
+              publishMemberships(items);
             },
-            () => {
-              setMemberships([]);
-              setMembershipsLoaded(true);
-            },
+            () => publishMemberships([]),
           );
+          membershipUnsub = ownMembershipUnsub;
+
+          const [cfgSnap, userSnap] = await Promise.all([
+            getDoc(doc(db, "appConfig", "main")),
+            getDoc(doc(db, "users", firebaseUser.uid)),
+          ]);
+          if (gen !== generation) return;
+
+          const cfg = cfgSnap.exists()
+            ? (cfgSnap.data() as AppConfig)
+            : null;
+          const userDoc = userSnap.exists()
+            ? (userSnap.data() as UserDoc)
+            : null;
+
+          if (!userDoc || userDoc.status !== "active") {
+            // Removed/orphan user — sign them out hard. Drop the membership
+            // listen first: nothing it held back is ever published.
+            dropOwnMembershipListen();
+            // Not re-checked after this await: signing out starts a newer
+            // (null) pass, and this path must still finish the removal.
+            await signOutUser().catch(() => undefined);
+            setAdminUid(null);
+            setRole(null);
+            setStatus("removed");
+            setAgencyId(null);
+            setAgencyRole(null);
+            setMemberships([]);
+            setMembershipsLoaded(true);
+            setUser(null);
+            if (typeof window !== "undefined") {
+              window.location.href = "/login?reason=removed";
+            }
+            return;
+          }
+
+          setAdminUid(cfg?.adminUid ?? null);
+          setRole(userDoc.role);
+          setStatus(userDoc.status);
+          activeUser = userDoc;
+          applyClaims(userDoc);
+
+          // Fire-and-forget: claim any pending sub-account invites for
+          // this user's email. Handles the "invited to multiple
+          // sub-accounts after my first signup" case — the signup route
+          // 409s for existing users, so this is the only path that
+          // attaches the 2nd, 3rd, … memberships. Idempotent. The
+          // membership subscription above picks up any new docs the
+          // route writes without us needing to do anything extra.
+          void fetch("/api/auth/claim-pending-invites", {
+            method: "POST",
+            credentials: "include",
+          }).catch((err) => {
+            console.warn("[auth] claim-pending-invites failed", err);
+          });
+
+          if (pendingMemberships) publishMemberships(pendingMemberships);
         } catch (err) {
+          // The user was never confirmed active: drop the listen, as before
+          // when it was attached only after the user-doc read succeeded.
+          dropOwnMembershipListen();
+          if (gen !== generation) return;
           if (
             isTransientLoadError(err) &&
             attempt < TRANSIENT_RETRY_DELAYS_MS.length
@@ -251,18 +317,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             );
           } else {
             console.error("Failed to load auth context", err);
-            // Don't strand membership-gated UI if setup threw before the
-            // subscription was attached.
+            // Don't strand membership-gated UI when setup threw.
             setMembershipsLoaded(true);
           }
         } finally {
-          if (!retrying) setLoading(false);
+          if (!retrying && gen === generation) setLoading(false);
         }
       },
     );
 
     return () => {
       clearTimeout(retryTimer);
+      // Makes any pass still in flight stale, so it cannot subscribe late.
+      generation++;
       cleanupMembership();
       unsubscribe();
     };

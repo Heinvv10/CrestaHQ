@@ -30,6 +30,26 @@ export async function loadIdTokenClaims(
 }
 
 /**
+ * The cached token's claims, or `null` when they are not enough to proceed on.
+ *
+ * Every claim is minted together with `status: "active"` (signup,
+ * /api/auth/refresh-claims), and the Firestore rules' `isActive()` needs
+ * exactly that claim — so a cached token carrying it can be used without
+ * waiting on a network refresh. A token without it (claims set moments ago,
+ * after the token was minted) must go through {@link loadIdTokenClaims}.
+ */
+export async function readActiveCachedClaims(
+  user: TokenSource,
+): Promise<ParsedToken | null> {
+  try {
+    const { claims } = await user.getIdTokenResult(false);
+    return claims.status === "active" ? claims : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Whether the user holds the agency-owner claim. Unlike
  * {@link loadIdTokenClaims} this THROWS when the token cannot be read at all,
  * so a caller can tell "not an owner" from "could not find out" — returning
