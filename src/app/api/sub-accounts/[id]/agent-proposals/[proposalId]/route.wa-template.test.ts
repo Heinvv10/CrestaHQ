@@ -102,6 +102,11 @@ describe("propose", () => {
       mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, name: "Acme\u1680Fibre" });
     }, "would not show exactly as sent"],
     ["a placeholder beyond the variables", () => editTemplate({ body: "Hi {{1}}, on {{2}} at {{3}}." }), "uses {{3}}, which has no variable"],
+    ["a custom-field value with a space that doesn't show as sent", () => {
+      editTemplate({ variables: [{ ...TPL.variables[0], mergeTag: "contact.customFields.street" }, TPL.variables[1]] });
+      mem.seed("contacts/c1", { ...ANN, customFields: { street: "12\u1680Main" } });
+    }, "would not show exactly as sent"],
+    ["{{2}} in the body with only one variable", () => editTemplate({ body: "Hi {{1}}, on {{2}}.", variables: [TPL.variables[0]] }), "uses {{2}}, which has no variable"],
     ["a WhatsApp opt-out", () => mem.seed("contacts/c1", { ...ANN, whatsappOptedOut: true }), "opted out of WhatsApp"],
   ])("%s → refused, no proposal", async (_label, arrange, message) => {
     await arrange();
