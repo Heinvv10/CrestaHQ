@@ -105,3 +105,10 @@ describe("company email and website get the strict rule", () => {
     expect(await dispatchAgentTool(auth, "create_company", args)).toMatchObject({ ok: false, code: "invalid_args" });
   });
 });
+
+describe("create_contact's email gets the strict rule", () => {
+  it("a joiner between letters in the email is refused", async () => {
+    expect(await dispatchAgentTool(auth, "create_contact", { name: "Ann", email: "a\u200db@x.io" }))
+      .toMatchObject({ ok: false, code: "invalid_args" });
+  });
+});
