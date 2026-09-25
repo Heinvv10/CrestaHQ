@@ -3,7 +3,8 @@ import "server-only";
 import { sendConversationMessage, type SendableChannel } from "@/lib/server/conversation-send";
 import type { Contact } from "@/types/contacts";
 import { CapabilityOutcomeUnknown, CapabilityUserError, type AiSuiteCapability } from "./types";
-import { hasUnsafeText, oneLine, str } from "./helpers";
+import { str } from "./helpers";
+import { hasUnsafeText, messageBody, oneLine } from "./text-safety";
 import { tenantContact } from "./contact-edit";
 import { conversationIdParam, conversationTarget, tenantConversation } from "./conversations-read";
 
@@ -75,14 +76,14 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
       const r = (raw ?? {}) as Record<string, unknown>;
       const conversationId = str(raw, "conversationId");
       const channel = str(raw, "channel") as SendableChannel;
-      const body = typeof r.body === "string" ? r.body.trim() : "";
+      const body = typeof r.body === "string" ? messageBody(r.body) : "";
       const subject = str(raw, "subject");
       if (!conversationId) return { ok: false, error: "a conversationId is required" };
       if (!(CHANNELS as readonly string[]).includes(channel)) return { ok: false, error: `channel must be one of ${CHANNELS.join(", ")}` };
+      // Line breaks are text in a message; nothing else invisible is.
+      if (body === null) return { ok: false, error: "the message can't contain control or invisible characters" };
       if (!body) return { ok: false, error: "a message body is required" };
       if (body.length > MAX_BODY) return { ok: false, error: `the message must be at most ${MAX_BODY} characters` };
-      // Line breaks and tabs are text in a message; nothing else invisible is.
-      if (hasUnsafeText(body.replace(/[\r\n\t]/g, " "))) return { ok: false, error: "the message can't contain control or invisible characters" };
       if (channel === "email" && !subject) return { ok: false, error: "an email needs a subject" };
       if (subject.length > MAX_SUBJECT || hasUnsafeText(subject)) return { ok: false, error: "that subject isn't valid" };
       return { ok: true, args: { conversationId, channel, body, ...(channel === "email" ? { subject } : {}) } };
@@ -99,7 +100,8 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
           { label: "To", value: `${oneLine(contact.name) || "(unnamed)"} (${masked(channel, to)})` },
           { label: "Channel", value: channel },
           ...(args.subject ? [{ label: "Subject", value: String(args.subject) }] : []),
-          { label: "Message", value: String(args.body) },
+          // Exactly as it will be sent, line breaks included.
+          { label: "Message", value: String(args.body), multiline: true },
         ],
         pinned: { contactId, channel, to },
       };

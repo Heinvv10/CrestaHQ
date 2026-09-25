@@ -44,17 +44,37 @@ describe("propose", () => {
     expect(row(id).preview).toEqual([
       { label: "To", value: "Ann (…1111)" },
       { label: "Channel", value: "sms" },
-      { label: "Message", value: "Your install is booked for Tuesday." },
+      { label: "Message", value: "Your install is booked for Tuesday.", multiline: true },
     ]);
     expect(row(id)).toMatchObject({ approval: "outbound", contactId: "c1", pinned: { contactId: "c1", channel: "sms", to: "+27821111111" } });
     expect(send).not.toHaveBeenCalled();
   });
 
-  it("a multi-line body is fine; an invisible character in it is refused", async () => {
-    expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body: "Hi Ann,\nSee you Tuesday." }))
-      .toMatchObject({ ok: true, proposal: { status: "pending" } });
-    expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body: "Hi\u200bAnn" }))
+  it("a multi-line body is shown exactly as sent (CRLF normalised), and that is what is sent", async () => {
+    const r = await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body: "Hi Ann,\r\n\nSee you Tuesday." });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    expect(row(r.proposal.id).preview).toContainEqual({ label: "Message", value: "Hi Ann,\n\nSee you Tuesday.", multiline: true });
+    expect((await decide(r.proposal.id, "approve")).status).toBe(200);
+    expect(send.mock.calls[0]![0]).toMatchObject({ body: "Hi Ann,\n\nSee you Tuesday." });
+  });
+
+  it.each([
+    ["a bidi override", "Pay \u202e0001 ZAR"], ["a zero-width space", "Hi\u200bAnn"],
+    ["a NUL", "Hi\u0000"], ["a file separator", "Hi\u001cAnn"], ["a tab", "Hi\tAnn"],
+  ])("a body with %s is refused, not stripped", async (_label, body) => {
+    expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body }))
       .toMatchObject({ ok: false, code: "invalid_args" });
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it("another sub-account's conversation → refused, nothing written or sent", async () => {
+    mem.seed("contacts/c2", { ...ANN, subAccountId: "sa2" });
+    mem.seed("conversations/c2", { subAccountId: "sa2", agencyId: "ag1", contactId: "c2", contactName: "Bob" });
+    const before = JSON.stringify(mem.all());
+    expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c2", channel: "sms", body: "x" }))
+      .toMatchObject({ ok: false, httpStatus: 400 });
+    expect(JSON.stringify(mem.all())).toBe(before);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("an email needs a subject; a contact without the channel's address is refused", async () => {

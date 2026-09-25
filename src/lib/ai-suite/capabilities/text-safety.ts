@@ -43,3 +43,15 @@ export function agentText(key: string, value: string): string {
 export function oneLine(value: unknown): string {
   return String(value ?? "").replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").replace(STRIP_RE, "").trim();
 }
+
+/**
+ * A message body as it will be sent: CRLF / CR normalised to LF, trimmed —
+ * or null when it carries anything a person reading the preview could not
+ * see (control, format, separator or invisible characters). Line breaks are
+ * the only exception: a message may have several lines. Refusing, not
+ * stripping, so the recipient never gets a character the approver didn't.
+ */
+export function messageBody(value: string): string | null {
+  const body = value.replace(/\r\n?/g, "\n").trim();
+  return hasUnsafeText(body.replace(/\n/g, " ")) ? null : body;
+}

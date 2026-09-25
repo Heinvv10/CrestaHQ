@@ -1,6 +1,6 @@
 import "server-only";
 
-import { oneLine } from "@/lib/ai-suite/capabilities/text-safety";
+import { messageBody, oneLine } from "@/lib/ai-suite/capabilities/text-safety";
 
 /**
  * Value encodings shared by the agent approval queue: the canonical form that
@@ -41,7 +41,7 @@ export function millis(v: unknown): number | null {
   return null;
 }
 
-export type PreviewRows = Array<{ label: string; value: string }>;
+export type PreviewRows = Array<{ label: string; value: string; multiline?: true }>;
 
 /** Approval classes whose preview must pin its target: outbound (the
  *  recipient) and channel_change (the new phone / email). */
@@ -64,6 +64,16 @@ export function normalizePreview(
 ): { rows: PreviewRows; pinned: Record<string, unknown> | null } {
   const { rows, pinned } = Array.isArray(p) ? { rows: p, pinned: null } : { rows: p.rows, pinned: p.pinned ?? null };
   // Every value the approver reads is one visible line, whatever a
-  // capability's preview built it from (stored names come from outside).
-  return { rows: rows.map((r) => ({ ...r, value: oneLine(r.value) })), pinned };
+  // capability's preview built it from (stored names come from outside) —
+  // except a multiline row (a message body), shown exactly as it will be
+  // sent. Its value must already be a safe body: anything invisible in it is
+  // a capability bug, not something to hide.
+  return {
+    rows: rows.map((r) => {
+      if (!r.multiline) return { label: r.label, value: oneLine(r.value) };
+      if (messageBody(r.value) !== r.value) throw new Error(`preview row "${r.label}" is multiline but not a safe message body`);
+      return { label: r.label, value: r.value, multiline: true as const };
+    }),
+    pinned,
+  };
 }

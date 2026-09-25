@@ -96,6 +96,15 @@ export type ValidateResult =
   | { ok: true; args: Record<string, unknown> }
   | { ok: false; error: string };
 
+/** One approver-facing preview row. `multiline` keeps the value's line
+ *  breaks (a message body shown exactly as sent); every other row is shown
+ *  on one line. */
+export interface PreviewRow {
+  label: string;
+  value: string;
+  multiline?: true;
+}
+
 export interface AiSuiteCapability {
   name: string;
   level: AiSuiteLevel;
@@ -163,7 +172,7 @@ export interface AiSuiteCapability {
     ctx: AiSuiteActionContext,
     args: Record<string, unknown>
   ) => Promise<
-    | Array<{ label: string; value: string }>
-    | { rows: Array<{ label: string; value: string }>; pinned?: Record<string, unknown> }
+    | Array<PreviewRow>
+    | { rows: Array<PreviewRow>; pinned?: Record<string, unknown> }
   >;
 }
