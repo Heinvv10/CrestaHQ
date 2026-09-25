@@ -5,7 +5,8 @@ import { deleteContactServerSide, findContactBlockers } from "@/lib/server/conta
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { EMAIL_RE, oneLine, str, UNSAFE_TEXT_RE } from "./helpers";
+import { EMAIL_RE, str } from "./helpers";
+import { oneLine, UNSAFE_TEXT_RE } from "./text-safety";
 import { tenantContact } from "./contact-edit";
 import { recordProvenanceRows } from "./record-provenance";
 

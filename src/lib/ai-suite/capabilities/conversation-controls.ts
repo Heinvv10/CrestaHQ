@@ -8,7 +8,8 @@ import {
 import { cancelScheduledMessage } from "@/lib/server/scheduled-messages/service";
 import type { ConversationBotMode, ConversationStatus } from "@/types/conversations";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { oneLine, str } from "./helpers";
+import { str } from "./helpers";
+import { oneLine } from "./text-safety";
 import { tenantContact } from "./contact-edit";
 import { conversationIdParam, conversationTarget, tenantConversation } from "./conversations-read";
 

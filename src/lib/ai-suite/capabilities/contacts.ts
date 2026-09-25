@@ -2,7 +2,8 @@ import "server-only";
 
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str, agentActor, agentText, hasUnsafeText, UNSAFE_TEXT_RE } from "./helpers";
+import { EMAIL_RE, str, agentActor } from "./helpers";
+import { agentText, hasUnsafeText, UNSAFE_TEXT_RE } from "./text-safety";
 
 export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
   {

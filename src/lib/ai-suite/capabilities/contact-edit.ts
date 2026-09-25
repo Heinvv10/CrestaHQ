@@ -5,7 +5,8 @@ import { updateContactServerSide, type UpdateContactPatch } from "@/lib/server/c
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
-import { str, agentActor, agentText, hasUnsafeText, oneLine } from "./helpers";
+import { str, agentActor } from "./helpers";
+import { agentText, hasUnsafeText, oneLine } from "./text-safety";
 import { asTags, MAX_TAGS, MAX_TAG_LEN } from "@/lib/api/serializers/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 

@@ -9,7 +9,8 @@ import {
   territoryScopeFor,
 } from "@/lib/ai-suite/territory-scope";
 import { type AiSuiteCapability } from "./types";
-import { str, fmtMoney, oneLine } from "./helpers";
+import { str, fmtMoney } from "./helpers";
+import { oneLine } from "./text-safety";
 
 export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
   {

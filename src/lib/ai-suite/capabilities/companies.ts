@@ -9,7 +9,8 @@ import {
 } from "@/lib/server/companies-service";
 import type { CompanyFormData } from "@/types/companies";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str, agentActor, agentText, hasUnsafeText, oneLine } from "./helpers";
+import { EMAIL_RE, str, agentActor } from "./helpers";
+import { agentText, hasUnsafeText, oneLine } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 
 /**

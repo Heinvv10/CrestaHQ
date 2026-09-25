@@ -5,7 +5,8 @@ import { isDocId } from "@/lib/server/doc-id";
 import { listScheduledMessages } from "@/lib/server/scheduled-messages/service";
 import { scopedDocs, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { oneLine, str, toDate } from "./helpers";
+import { str, toDate } from "./helpers";
+import { oneLine } from "./text-safety";
 import { tenantContact } from "./contact-edit";
 
 /**
