@@ -60,3 +60,14 @@ export function workflowRows(wf: WorkflowDoc): PreviewRow[] {
     { label: "Start step", value: wf.startNodeId ?? "(none)" },
   ];
 }
+
+/** Everything an approver needs to judge what a workflow will do: the rows
+ *  above, plus its re-entry and its exact trigger and steps. */
+export function workflowReviewRows(wf: WorkflowDoc): PreviewRow[] {
+  return [
+    ...workflowRows(wf),
+    { label: "Re-entry", value: wf.reentry ?? "every_time" },
+    { label: "Trigger (exact)", value: readableJson(wf.trigger), multiline: true },
+    { label: "Steps (exact)", value: readableJson(wf.nodes), multiline: true },
+  ];
+}

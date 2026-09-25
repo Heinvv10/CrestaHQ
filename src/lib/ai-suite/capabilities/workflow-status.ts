@@ -10,7 +10,7 @@ import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
 import { oneLine } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
-import { readableJson, tenantWorkflow, workflowFingerprint, workflowIdParam, workflowRows } from "./workflow-support";
+import { tenantWorkflow, workflowFingerprint, workflowIdParam, workflowReviewRows, workflowRows } from "./workflow-support";
 
 /**
  * set_workflow_status and delete_workflow for API agents (PR9). Pausing or
@@ -59,10 +59,7 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       if (wf.status === "active") throw new CapabilityUserError("That workflow is already active.");
       return {
         rows: [
-          ...workflowRows(wf),
-          { label: "Re-entry", value: wf.reentry ?? "every_time" },
-          { label: "Trigger (exact)", value: readableJson(wf.trigger), multiline: true },
-          { label: "Steps (exact)", value: readableJson(wf.nodes), multiline: true },
+          ...workflowReviewRows(wf),
           { label: "Then", value: "From approval on, every contact matching the trigger is enrolled and these steps run, messages included." },
         ],
         pinned: { workflowId: wf.id, fingerprint: workflowFingerprint(wf) },

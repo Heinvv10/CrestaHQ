@@ -50,11 +50,66 @@ describe("update_workflow", () => {
     seed({ status: "active" });
     const id = await proposeId("update_workflow", { workflowId: "wf1", nodes: { ...NEW_STEPS, n2: { ...NEW_STEPS.n2, config: { body: "Hi\u200bthere" } } }, startNodeId: "n2" });
     expect(row(id).approval).toBe("workflow_activate");
-    const steps = (row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === "New steps (replace all)")!;
+    const steps = (row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === "Steps (exact)")!;
     expect(steps.value).toContain('"body": "Hi\\u200bthere"');
     expect(wf().nodes).toEqual(STEPS);
     expect((await decide(id, "approve")).status).toBe(200);
     expect(wf()).toMatchObject({ status: "active", startNodeId: "n2", nodes: { n2: { config: { body: "Hi\u200bthere" } } } });
+  });
+
+  it("a new start step on an active workflow: the preview shows the whole workflow, the orphan step it would run included", async () => {
+    seed({ status: "active", nodes: { ...STEPS, n2: { id: "n2", type: "send_sms", config: { body: "ORPHAN BODY" }, next: null } } });
+    const id = await proposeId("update_workflow", { workflowId: "wf1", startNodeId: "n2" });
+    expect(row(id).preview).toContainEqual({ label: "Start step", value: "n2" });
+    expect(row(id).preview).toContainEqual({ label: "Steps (exact)", value: expect.stringContaining('"body": "ORPHAN BODY"'), multiline: true });
+    expect(row(id).preview).toContainEqual({ label: "Changes", value: "startNodeId" });
+  });
+
+  it("a wider trigger on an active workflow: the preview shows the steps it would run for everyone", async () => {
+    seed({ status: "active", trigger: { type: "form.submitted", filters: { all: [] } } });
+    const id = await proposeId("update_workflow", { workflowId: "wf1", trigger: { type: "contact.created" } });
+    expect(row(id).preview).toContainEqual({ label: "Trigger", value: "Contact created" });
+    expect(row(id).preview).toContainEqual({ label: "Steps (exact)", value: expect.stringContaining('"body": "Hi {{contact.firstName}}"'), multiline: true });
+  });
+
+  it.each([
+    ["a __proto__ key in a step's config", () => ({ nodes: JSON.parse('{"n1":{"type":"webhook","config":{"__proto__":{"url":"x"}}}}') }), '"__proto__"'],
+    ["a __proto__ step id", () => ({ nodes: JSON.parse('{"__proto__":{"type":"send_sms","config":{}}}') }), '"__proto__"'],
+    ["a constructor key in the trigger", () => ({ trigger: JSON.parse('{"type":"contact.created","constructor":{"x":1}}') }), '"constructor"'],
+    ["a prototype key deep in a step", () => ({ nodes: { n1: { type: "send_sms", config: { a: [{ prototype: 1 }] } } } }), '"prototype"'],
+    ["a __x__ key", () => ({ nodes: { n1: { type: "send_sms", config: { __x__: 1 } } } }), '"__x__"'],
+  ])("%s → refused, nothing written", async (_label, patch, key) => {
+    expect(await call("update_workflow", { workflowId: "wf1", ...patch() })).toMatchObject({
+      ok: false, code: "invalid_args", message: `the trigger and steps can't use the key ${key}`,
+    });
+    expect(wf()).toEqual(WF);
+  });
+
+  it.each([
+    ["all as a number", { all: 5 }],
+    ["a null condition", { all: [null] }],
+    ["an unknown op", { all: [{ field: "email", op: "bogus" }] }],
+    ["a non-text value", { all: [{ field: "email", op: "equals", value: 5 }] }],
+    ["an extra condition key", { all: [{ field: "email", op: "is_set", extra: 1 }] }],
+    ["an extra group key", { all: [], any: [] }],
+    ["an unknown match", { all: [], match: "some" }],
+  ])("trigger filters with %s → refused", async (_label, filters) => {
+    expect(await call("update_workflow", { workflowId: "wf1", trigger: { type: "contact.created", filters } })).toMatchObject({ ok: false, code: "invalid_args" });
+    expect(wf()).toEqual(WF);
+  });
+
+  it("trigger filters as the builder makes them are accepted", async () => {
+    const filters = { match: "any", all: [{ field: "email", op: "is_set" }, { field: "tags", op: "has_tag", value: "vip" }] };
+    expect(await call("update_workflow", { workflowId: "wf1", trigger: { type: "contact.created", filters } })).toMatchObject({ ok: true });
+    expect(wf().trigger).toEqual({ type: "contact.created", filters });
+  });
+
+  it("a proposal too large to store → refused with a clear message, nothing queued", async () => {
+    seed({ status: "active" });
+    const body = "\u5b57".repeat(48_000);
+    const r = await call("update_workflow", { workflowId: "wf1", nodes: { n1: { type: "send_sms", config: { body } } }, startNodeId: "n1" });
+    expect(r).toMatchObject({ ok: false, code: "proposal_too_large", message: "This action is too large to queue for approval. Split it into smaller changes." });
+    expect(mem.list("agentProposals")).toEqual([]);
   });
 
   it("an active workflow changed since the proposal → preview_changed, nothing written", async () => {

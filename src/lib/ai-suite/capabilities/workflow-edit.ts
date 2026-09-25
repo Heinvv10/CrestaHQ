@@ -3,13 +3,12 @@ import "server-only";
 import { isDocId } from "@/lib/server/doc-id";
 import { listWorkflows, type WorkflowPatch } from "@/lib/server/workflows-service";
 import { liveRunsQuery, updateWorkflowGuarded } from "@/lib/server/workflows-guarded";
-import { TRIGGER_LABELS } from "@/lib/workflows/catalog";
-import { sanitizeNodes } from "@/lib/workflows/sanitize-nodes";
-import type { WorkflowDoc, WorkflowReentry } from "@/types/workflows";
+import type { WorkflowDoc } from "@/types/workflows";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, str } from "./helpers";
-import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
-import { readableJson, tenantWorkflow, workflowFingerprint, workflowIdParam, workflowRows } from "./workflow-support";
+import { oneLine } from "./text-safety";
+import { EDITABLE, patchOf, REENTRY } from "./workflow-args";
+import { readableJson, tenantWorkflow, workflowFingerprint, workflowIdParam, workflowReviewRows } from "./workflow-support";
 
 /**
  * Workflow reads and update_workflow for API agents (AGENT_API_V1_PLAN.md,
@@ -19,58 +18,6 @@ import { readableJson, tenantWorkflow, workflowFingerprint, workflowIdParam, wor
  * runs, so it is queued for approval (checked again at write time, in a
  * transaction). The status never changes here: that is set_workflow_status.
  */
-
-const REENTRY: readonly WorkflowReentry[] = ["every_time", "unless_active", "once_ever"];
-const MAX_NODES = 100;
-const MAX_JSON = 50_000;
-const EDITABLE = ["name", "trigger", "reentry", "nodes", "startNodeId"] as const;
-
-const plain = (v: unknown): v is Record<string, unknown> =>
-  !!v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype;
-
-/** The patch an agent's args ask for; `status` is never read. */
-function patchOf(raw: unknown): { ok: true; patch: WorkflowPatch } | { ok: false; error: string } {
-  const r = (raw ?? {}) as Record<string, unknown>;
-  const patch: WorkflowPatch = {};
-  if (r.name !== undefined) {
-    const name = typeof r.name === "string" ? r.name.trim() : "";
-    if (!name || name.length > 120 || hasUnsafeText(name)) {
-      return { ok: false, error: `name must be 1-120 characters of text, none that ${UNSAFE_TEXT_MESSAGE}` };
-    }
-    patch.name = name;
-  }
-  if (r.reentry !== undefined) {
-    if (!REENTRY.includes(r.reentry as WorkflowReentry)) return { ok: false, error: `reentry must be one of ${REENTRY.join(", ")}` };
-    patch.reentry = r.reentry as WorkflowReentry;
-  }
-  if (r.trigger !== undefined) {
-    const t = r.trigger;
-    if (!plain(t) || typeof t.type !== "string" || !Object.hasOwn(TRIGGER_LABELS, t.type)) {
-      return { ok: false, error: `trigger must be an object whose type is one of ${Object.keys(TRIGGER_LABELS).join(", ")}` };
-    }
-    if (t.filters !== undefined && !plain(t.filters)) return { ok: false, error: "trigger.filters must be an object" };
-    const trigger = JSON.parse(JSON.stringify({ ...t, filters: t.filters ?? { all: [] } }));
-    if (JSON.stringify(trigger).length > MAX_JSON) return { ok: false, error: "the trigger is too large" };
-    patch.trigger = trigger;
-  }
-  if (r.nodes !== undefined) {
-    const nodes = plain(r.nodes) ? sanitizeNodes(r.nodes) : null;
-    if (!nodes) return { ok: false, error: "nodes must be a map of step id → { type, config, next, branches } with known step types" };
-    if (Object.keys(nodes).length > MAX_NODES) return { ok: false, error: `a workflow can have at most ${MAX_NODES} steps` };
-    const json = JSON.stringify(nodes);
-    if (json.length > MAX_JSON) return { ok: false, error: "the steps are too large" };
-    patch.nodes = JSON.parse(json);
-  }
-  if (r.startNodeId !== undefined) {
-    if (r.startNodeId !== null && typeof r.startNodeId !== "string") return { ok: false, error: "startNodeId must be a step id or null" };
-    if (typeof r.startNodeId === "string" && patch.nodes && !Object.hasOwn(patch.nodes, r.startNodeId)) {
-      return { ok: false, error: "startNodeId must be one of the steps" };
-    }
-    patch.startNodeId = r.startNodeId as string | null;
-  }
-  if (Object.keys(patch).length === 0) return { ok: false, error: `give at least one of ${EDITABLE.join(", ")}` };
-  return { ok: true, patch };
-}
 
 /** Changes what a run executes next (runs read the steps live). */
 const touchesSteps = (args: Record<string, unknown>) => args.nodes !== undefined || args.startNodeId !== undefined;
@@ -154,7 +101,6 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       return p.ok ? { ok: true, args: { workflowId, ...p.patch } } : p;
     },
     summarize: (args) => `Edit the workflow ${args.workflowId} (${EDITABLE.filter((k) => args[k] !== undefined).join(", ")}).`,
-    // Its status decides: editing what an active automation does needs a person.
     // Editing what runs — an active workflow, or the steps of one with runs
     // in progress (a draft's test run reads them live) — needs a person.
     approvalFor: async (args, ctx) => {
@@ -172,15 +118,15 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
       const bad = startProblem(args, wf);
       if (bad) throw new CapabilityUserError(bad);
-      const changes = [
-        ...(args.name !== undefined ? [{ label: "New name", value: String(args.name) }] : []),
-        ...(args.reentry !== undefined ? [{ label: "New re-entry", value: String(args.reentry) }] : []),
-        ...(args.startNodeId !== undefined ? [{ label: "New start step", value: String(args.startNodeId ?? "(none)") }] : []),
-        ...(args.trigger !== undefined ? [{ label: "New trigger", value: readableJson(args.trigger), multiline: true as const }] : []),
-        ...(args.nodes !== undefined ? [{ label: "New steps (replace all)", value: readableJson(args.nodes), multiline: true as const }] : []),
-      ];
+      // The whole workflow as it will be, not just the changed fields: a new
+      // start step or a wider trigger runs steps the patch never mentions.
+      const { workflowId: _id, ...patch } = args;
       return {
-        rows: [...workflowRows(wf), ...changes, { label: "Then", value: "Every enrolment from then on runs the new version, and runs already in progress switch to the new steps at their next step." }],
+        rows: [
+          { label: "Changes", value: EDITABLE.filter((k) => args[k] !== undefined).join(", ") },
+          ...workflowReviewRows({ ...wf, ...patch }),
+          { label: "Then", value: "Every enrolment from then on runs the new version, and runs already in progress switch to the new steps at their next step." },
+        ],
         pinned: { workflowId: wf.id, fingerprint: workflowFingerprint(wf) },
       };
     },
