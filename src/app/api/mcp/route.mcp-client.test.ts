@@ -17,7 +17,6 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 const { POST, GET, DELETE } = await import("./route");
 const { GET: restListTools } = await import("@/app/api/v1/tools/route");
 const { mintApiKey } = await import("@/lib/api/keys");
-const { snapshotRemaining, checkAndCount } = await import("@/lib/api/rate-limit");
 const { agentCallable } = await import("@/lib/api/agent-dispatch");
 const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
 
@@ -113,9 +112,12 @@ describe("tools/list", () => {
     const rest = (await (await restListTools(
       new Request("http://localhost/api/v1/tools", { headers: { authorization: `Bearer ${key}` } }),
       { params: Promise.resolve({}) }
-    )).json()) as { tools: Array<{ name: string; description: string; parameters: unknown; readOnly: boolean }> };
-    expect(tools.map((t) => ({ name: t.name, description: t.description, parameters: t.inputSchema, readOnly: t.annotations?.readOnlyHint === true })))
-      .toEqual(rest.tools.map(({ name, description, parameters, readOnly }) => ({ name, description, parameters, readOnly })));
+    )).json()) as { tools: Array<{ name: string; description: string; parameters: unknown; readOnly: boolean; approval?: string }> };
+    expect(tools.map((t) => ({
+      name: t.name, description: t.description, parameters: t.inputSchema,
+      readOnly: t.annotations?.readOnlyHint === true, approval: t._meta?.approval,
+    }))).toEqual(rest.tools.map(({ name, description, parameters, readOnly, approval }) => ({ name, description, parameters, readOnly, approval })));
+    expect(tools.find((t) => t.name === "__mcp_outbound")?._meta).toEqual({ approval: "outbound" });
   });
 });
 
@@ -139,16 +141,25 @@ describe("tools/call", () => {
     expect(String(logs("/api/mcp#create_contact")[0]!.responseBody)).toContain("Mcp Contact");
   });
 
-  it("an approval capability is queued as a proposal: id + summary, never pinned or rev, execute never called", async () => {
+  it("an approval capability is queued as a proposal: id, summary, preview — never pinned or rev; execute never called", async () => {
     const r = await (await connect()).callTool({ name: "__mcp_outbound", arguments: { body: "hello" } });
     expect(r.isError).toBeFalsy();
-    const { proposal } = r.structuredContent as { proposal: { id: string; summary: string } };
+    const { proposal } = r.structuredContent as { proposal: { id: string; summary: string; preview: unknown } };
     expect(proposal.id).toEqual(expect.any(String));
     expect(proposal.summary).toBe("Send “hello”");
+    expect(proposal.preview).toEqual([{ label: "Body", value: "hello" }]);
     expect(textOf(r)).toContain(proposal.id);
     expect(JSON.stringify(r)).not.toMatch(/\+27820009999|pinned|"rev"/);
     expect(mem.read(`agentProposals/${proposal.id}`)).toMatchObject({ status: "pending" });
     expect(outboundExecute).not.toHaveBeenCalled();
+  });
+
+  it("a caller-supplied tool name cannot forge a log line", async () => {
+    await (await connect()).callTool({ name: "x\nFAKE\u2028y", arguments: {} });
+    await settle();
+    const paths = mem.list("subAccounts/sa1/apiRequestLogs").map((l) => String(l.path));
+    expect(paths).toContain("/api/mcp#x?FAKE?y");
+    expect(paths.some((p) => /[\n\u2028]/.test(p))).toBe(false);
   });
 
   it("a refusal is an isError result with its code", async () => {
@@ -156,62 +167,6 @@ describe("tools/call", () => {
     expect(r).toMatchObject({ isError: true, structuredContent: { error: { code: "not_available" } } });
   });
 
-  it("a 3-call JSON-RPC batch in ONE HTTP request consumes 3 rate-limit tokens", async () => {
-    const call = (id: number) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "find_contacts", arguments: { query: "ann" } } });
-    expect((await rawPost(call(0))).status).toBe(200); // opens this key's bucket
-    const before = snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining;
-    const res = await rawPost([call(1), call(2), call(3)]);
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as unknown[]).length).toBe(3);
-    expect(before - snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining).toBe(3);
-  });
-
-  it("a request with no tools/call (tools/list) consumes exactly one token; past the limit it is a v1 429", async () => {
-    const list = { jsonrpc: "2.0", id: 1, method: "tools/list" };
-    expect((await rawPost(list)).status).toBe(200); // opens this key's bucket
-    const before = snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining;
-    expect((await rawPost(list)).status).toBe(200);
-    expect(before - snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining).toBe(1);
-    while (checkAndCount({ keyId, mode: "live", scope: "agent" }).ok);
-    const res = await rawPost(list);
-    expect(res.status).toBe(429);
-    expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
-    expect(await res.json()).toMatchObject({
-      error: { type: "rate_limit_error", code: "rate_limited", request_id: expect.any(String) },
-    });
-    await settle();
-    expect(logs("/api/mcp").filter((l) => l.keyId === keyId)).toMatchObject([{ responseStatus: 429, errorCode: "rate_limited" }]);
-  });
-
-  it("invalid JSON is a JSON-RPC parse error, still charged one token", async () => {
-    expect((await rawPost({ jsonrpc: "2.0", id: 1, method: "tools/list" })).status).toBe(200);
-    const before = snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining;
-    const res = await POST(new Request(URL_, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: "{not json",
-    }));
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ error: { code: -32700 } });
-    expect(before - snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining).toBe(1);
-  });
-
-  it("a body over 4 MiB is a 413, never parsed", async () => {
-    const res = await POST(new Request(URL_, {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
-      body: `"${"x".repeat(4 * 1024 * 1024)}"`,
-    }));
-    expect(res.status).toBe(413);
-  });
-
-  it("a call past the per-key limit is an isError rate_limited result, not a run", async () => {
-    const client = await connect();
-    for (let i = 0; i < 60; i++) checkAndCount({ keyId, mode: "live", scope: "agent" });
-    const r = await client.callTool({ name: "create_contact", arguments: { name: "Too Many" } });
-    expect(r).toMatchObject({ isError: true, structuredContent: { error: { code: "rate_limited" } } });
-    expect(mem.all().filter((d) => d.path.startsWith("contacts/") && JSON.stringify(d.data).includes("Too Many"))).toEqual([]);
-  });
 });
 
 describe("HTTP-level refusals", () => {

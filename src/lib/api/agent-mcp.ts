@@ -20,7 +20,8 @@ import { AI_SUITE_CAPABILITIES } from "@/lib/ai-suite/capabilities";
  * HTTP transport. `tools/list` is the same set as GET /api/v1/tools
  * (`agentCallable`); every `tools/call` takes its own rate-limit token — so
  * a JSON-RPC batch can't turn one HTTP request into N writes — then runs
- * dispatchAgentTool and writes one request log (`/api/mcp#<name>`). A read
+ * dispatchAgentTool and writes one request log (`/api/mcp#<name>`); the
+ * route charges each request one more token up front. A read
  * tool's args and result stay out of that log, as on REST. No idempotency
  * on MCP in v1.
  */
@@ -32,6 +33,7 @@ export function agentMcpTools(): Tool[] {
     description: c.description,
     inputSchema: c.parameters as Tool["inputSchema"],
     ...(c.readonly ? { annotations: { readOnlyHint: true } } : {}),
+    ...(c.approval ? { _meta: { approval: c.approval } } : {}),
   }));
 }
 
@@ -40,6 +42,16 @@ const refusal = (code: string, message: string): CallToolResult => ({
   content: [{ type: "text", text: `${code}: ${message}` }],
   structuredContent: { error: { code, message } },
 });
+
+/** A caller-supplied name, safe in a log line: control and line-separator
+ *  characters become "?", and it is capped at 80. */
+const logSafe = (name: unknown) =>
+  [...String(name).slice(0, 80)]
+    .map((ch) => {
+      const c = ch.charCodeAt(0);
+      return c < 0x20 || c === 0x7f || c === 0x2028 || c === 0x2029 ? "?" : ch;
+    })
+    .join("");
 
 /** One tools/call: rate limit, dispatch, map to an MCP result, log. */
 async function callTool(
@@ -77,7 +89,7 @@ async function callTool(
             text: `Queued for human approval as proposal ${id}: ${summary}. It runs only if a person approves it; do not retry.`,
           },
         ],
-        structuredContent: { proposal: { id, status: proposalStatus, summary } },
+        structuredContent: { proposal: { id, status: proposalStatus, summary, preview } },
       };
     } else {
       status = 200;
@@ -105,8 +117,7 @@ async function callTool(
     mode: auth.mode,
     requestId: auth.requestId,
     method: "POST",
-    // `name` is caller-supplied: cap it.
-    path: `/api/mcp#${String(name).slice(0, 80)}`,
+    path: `/api/mcp#${logSafe(name)}`,
     query: "",
     requestHeaders: request.headers,
     requestBody: read ? "" : JSON.stringify(args ?? {}),

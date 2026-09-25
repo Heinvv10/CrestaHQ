@@ -257,17 +257,27 @@ claude mcp add --transport http leadstack https://<your-app>/api/mcp \
   --header "Authorization: Bearer lsk_live_…"
 ```
 
-- `tools/list` is exactly `GET /api/v1/tools`: `inputSchema` is the tool's
-  JSON Schema, reads carry `annotations.readOnlyHint`.
-- Each `tools/call` takes one rate-limit token, including every call inside a
-  JSON-RPC batch. A write returns its result text (plus `structuredContent`
-  `{ref?, held?, holdFailures?}`); a tool that needs a person returns a text
-  naming the queued proposal (`structuredContent.proposal: {id, status,
-  summary}`); a refusal is an `isError` result with `{error: {code, message}}`.
+- `tools/list` lists the same tools as `GET /api/v1/tools`: `inputSchema` is
+  the tool's JSON Schema, reads carry `annotations.readOnlyHint`, and a tool
+  that needs a person carries its approval class in `_meta: {approval}`.
+- Rate limit (the same per-key agent budget as REST): every request pays one
+  token up front, and each `tools/call` that runs pays one more, so a 3-call
+  JSON-RPC batch costs 4. An exhausted key gets the v1 429 with `Retry-After`
+  and `X-RateLimit-*` before anything runs. A batch that repeats a request id
+  is refused whole (JSON-RPC `-32600`).
+- A write returns its result text (plus `structuredContent` `{ref?, held?,
+  holdFailures?}`); a tool that needs a person returns a text naming the
+  queued proposal (`structuredContent.proposal: {id, status, summary,
+  preview}`); a refusal is an `isError` result with `{error: {code, message}}`.
 - A bad key, a key without the `agent` scope, a test-mode key or the gate off
   is refused at the HTTP level with the v1 error body, before any call runs.
-- Each call is logged as `/api/mcp#<tool>`, with the same body rules as REST.
-  No `Idempotency-Key` on MCP; use REST when a retry must not repeat a write.
+- Request log: each `tools/call` is logged as `/api/mcp#<tool>`, with the same
+  body rules as REST (a read tool keeps status and latency only). A request
+  refused by the route before its messages run (scope, test mode, gate, rate
+  limit, invalid JSON, a repeated id, an oversized body) is logged as
+  `/api/mcp` without bodies; nothing else is (`initialize`, `tools/list`, or
+  a refusal from the MCP transport itself, e.g. a 406). No `Idempotency-Key` on MCP; use REST when a
+  retry must not repeat a write.
 
 The full agent guide (`docs/features/agent-api.md`, PR14) follows; see
 `AGENT_API_V1_PLAN.md`.
