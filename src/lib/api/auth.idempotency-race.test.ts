@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { NextResponse } from "next/server";
+import { createHash } from "node:crypto";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -14,6 +15,7 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
 const { withApiAuth } = await import("./auth");
 const { mintApiKey } = await import("./keys");
+const { fingerprintRequest } = await import("./idempotency");
 
 let key = "";
 const handler = vi.fn(async (): Promise<NextResponse> => NextResponse.json({}));
@@ -98,28 +100,37 @@ it("a handler throw releases the reservation, so a retry runs", async () => {
   expect(handler).toHaveBeenCalledTimes(2);
 });
 
-it("a stale in_progress reservation past its expiry is taken over", async () => {
+it("a dead process's in_progress reservation (no heartbeat, aged past expiry) is taken over", async () => {
   handler.mockResolvedValue(NextResponse.json({ id: "c2" }, { status: 201 }));
-  // Reserve, then make the reservation look like a dead process's.
-  let finish = () => {};
-  handler.mockImplementationOnce(
-    () => new Promise((r) => (finish = () => r(NextResponse.json({ id: "dead" }, { status: 201 }))))
-  );
-  const dead = post("stale");
-  await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
-  const [doc] = mem.list(IDEM);
-  expect(doc.state).toBe("in_progress");
+  const docId = `live_k1_${createHash("sha256").update("stale").digest("hex")}`;
+  const dead = {
+    state: "in_progress", reservationId: "dead", mode: "live",
+    requestFingerprint: fingerprintRequest("POST", "/api/v1/things", "{}"),
+  };
+  mem.seed(`${IDEM}/${docId}`, { ...dead, expiresAt: new Date(Date.now() + 1000) });
   expect((await post("stale")).status).toBe(409);
-  const { id, ...data } = doc;
-  mem.seed(`${IDEM}/${id}`, { ...data, expiresAt: new Date(Date.now() - 1000) });
+  expect(handler).not.toHaveBeenCalled();
 
+  mem.seed(`${IDEM}/${docId}`, { ...dead, expiresAt: new Date(Date.now() - 1000) });
   const res = await post("stale");
   expect(res.status).toBe(201);
   expect(await res.json()).toMatchObject({ id: "c2" });
-  expect(handler).toHaveBeenCalledTimes(2);
-  // The dead request finishing late must not overwrite the new owner's outcome.
-  finish();
-  await dead;
-  expect(await (await post("stale")).json()).toMatchObject({ id: "c2" });
-  expect(handler).toHaveBeenCalledTimes(2);
+  expect(handler).toHaveBeenCalledTimes(1);
+  expect(mem.read(`${IDEM}/${docId}`)).toMatchObject({ state: "done", status: 201 });
+});
+
+it("a process whose reservation was taken over cannot overwrite or delete the new owner's outcome", async () => {
+  const { reserveIdempotencyKey } = await import("./idempotency");
+  handler.mockResolvedValue(NextResponse.json({ id: "new" }, { status: 201 }));
+  const fp = fingerprintRequest("POST", "/api/v1/things", "{}");
+  const old = await reserveIdempotencyKey("sa1", "live", "k1", "paused", fp);
+  if (old.kind !== "reserved") throw new Error(`expected a reservation, got ${old.kind}`);
+  const [doc] = mem.list(IDEM);
+  const { id, ...data } = doc;
+  mem.seed(`${IDEM}/${id}`, { ...data, expiresAt: new Date(Date.now() - 1000) }); // it stalled past expiry
+  expect((await post("paused")).status).toBe(201);
+  await old.store({ status: 201, bodyJson: { id: "old" } });
+  await old.release();
+  expect(await (await post("paused")).json()).toMatchObject({ id: "new" });
+  expect(handler).toHaveBeenCalledTimes(1);
 });

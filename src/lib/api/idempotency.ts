@@ -38,9 +38,15 @@ import type { ApiKeyMode } from "@/types/api";
  */
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-/** How long an `in_progress` reservation holds a key before a new request
- *  may take it over (a process that died mid-request must not block it). */
+/** How long an `in_progress` reservation holds a key without a heartbeat
+ *  before a new request may take it over (a process that died mid-request
+ *  must not block it). */
 export const IN_PROGRESS_TTL_MS = 60 * 1000;
+/** A running request extends its reservation this often, so only a dead
+ *  process's reservation ever reaches IN_PROGRESS_TTL_MS. */
+export const HEARTBEAT_MS = 20 * 1000;
+/** Pauses before the 2nd and 3rd attempt to store an outcome. */
+const STORE_RETRY_DELAYS_MS = [100, 300];
 const MAX_KEY_LEN = 255;
 const VALID_KEY_RE = /^[A-Za-z0-9_\-:.]+$/;
 
@@ -103,6 +109,9 @@ export type IdempotencyReservation =
   | { kind: "replay"; cached: CachedResponse }
   /** A request with this key and body is still running: retry shortly. */
   | { kind: "in_progress" }
+  /** A request with this key and body finished, but its outcome could not be
+   *  stored: it may have taken effect, so it must never run again. */
+  | { kind: "outcome_unknown" }
   /** This key was used with a different request body. */
   | { kind: "collision" };
 
@@ -116,6 +125,10 @@ export type IdempotencyReservation =
  * died mid-request can't block the key forever — the transaction's re-read
  * makes that takeover conditional on it still being the same stale doc.
  * `store` / `release` act only while the reservation is still this one.
+ * While the handler runs a heartbeat extends the reservation, so a takeover
+ * only ever hits a dead process. `store` retries, and if the outcome still
+ * can't be stored it marks the key `done_unknown`: a later request with it
+ * gets outcome_unknown and never re-runs an action that may have happened.
  */
 export async function reserveIdempotencyKey(
   subAccountId: string,
@@ -131,10 +144,15 @@ export async function reserveIdempotencyKey(
     const snap = await tx.get(ref);
     const data = snap.data();
     const expiresAt = tsToDate(data?.expiresAt);
-    const live = !!data && !!expiresAt && expiresAt.getTime() > Date.now();
+    const pending = data?.state === "in_progress" || data?.state === "done_unknown";
+    // A done doc without a numeric status can't be replayed: treat it as absent.
+    const live =
+      !!data && !!expiresAt && expiresAt.getTime() > Date.now() &&
+      (pending || typeof data.status === "number");
     if (live) {
       if (data!.requestFingerprint !== requestFingerprint) return { kind: "collision" as const };
       if (data!.state === "in_progress") return { kind: "in_progress" as const };
+      if (data!.state === "done_unknown") return { kind: "outcome_unknown" as const };
       return {
         kind: "replay" as const,
         cached: {
@@ -159,25 +177,63 @@ export async function reserveIdempotencyKey(
   if (found.kind !== "reserved") return found;
 
   /** Run `write` only while the doc still holds THIS reservation. */
-  const whileOurs = (write: (tx: FirebaseFirestore.Transaction) => void) =>
+  const whileOurs = (write: (tx: FirebaseFirestore.Transaction) => void, onlyInProgress = false) =>
     db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (snap.data()?.reservationId === reservationId) write(tx);
+      const data = (await tx.get(ref)).data();
+      if (data?.reservationId !== reservationId) return;
+      if (onlyInProgress && data.state !== "in_progress") return;
+      write(tx);
     });
+  // Heartbeat: while the handler runs, keep the reservation from ageing into
+  // a takeover. A failed beat is logged, never fatal to the request.
+  const heartbeat = setInterval(() => {
+    whileOurs(
+      (tx) => tx.update(ref, { expiresAt: new Date(Date.now() + IN_PROGRESS_TTL_MS) }),
+      true,
+    ).catch((err) => console.warn("[api/v1] idempotency heartbeat failed", err));
+  }, HEARTBEAT_MS);
+
+  const storeOnce = (entry: { status: number; bodyJson: unknown }) =>
+    whileOurs((tx) =>
+      tx.set(ref, {
+        state: "done",
+        status: entry.status,
+        bodyJson: entry.bodyJson,
+        requestFingerprint,
+        mode,
+        createdAt: FieldValue.serverTimestamp(),
+        expiresAt: new Date(Date.now() + CACHE_TTL_MS),
+      }),
+    );
   return {
     kind: "reserved",
-    store: (entry) =>
-      whileOurs((tx) =>
-        tx.set(ref, {
-          state: "done",
-          status: entry.status,
-          bodyJson: entry.bodyJson,
-          requestFingerprint,
-          mode,
-          createdAt: FieldValue.serverTimestamp(),
-          expiresAt: new Date(Date.now() + CACHE_TTL_MS),
-        }),
-      ),
-    release: () => whileOurs((tx) => tx.delete(ref)),
+    // Never throws: the handler already ran, so the response must go out.
+    store: async (entry) => {
+      clearInterval(heartbeat);
+      let lastErr: unknown;
+      for (let attempt = 0; attempt <= STORE_RETRY_DELAYS_MS.length; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, STORE_RETRY_DELAYS_MS[attempt - 1]));
+        try {
+          return await storeOnce(entry);
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      // The action may have happened: mark the key so a retry is told the
+      // outcome is unknown instead of running it again.
+      try {
+        await whileOurs((tx) =>
+          tx.update(ref, { state: "done_unknown", expiresAt: new Date(Date.now() + CACHE_TTL_MS) }),
+        );
+        console.error("[api/v1] idempotency outcome not stored; key marked done_unknown (unless taken over)", lastErr);
+      } catch (err) {
+        console.error(
+          "[api/v1] idempotency outcome and done_unknown marker both failed; the reservation expires and a retry may re-run",
+          lastErr,
+          err,
+        );
+      }
+    },
+    release: () => (clearInterval(heartbeat), whileOurs((tx) => tx.delete(ref))),
   };
 }

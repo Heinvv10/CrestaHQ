@@ -526,6 +526,18 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
           "idempotency_in_progress",
         );
       }
+      if (found.kind === "outcome_unknown") {
+        return finalize(
+          apiError(
+            ctx,
+            "idempotency_error",
+            "outcome_unknown",
+            "A previous request with this Idempotency-Key may have completed; check before retrying with a new key.",
+          ),
+          undefined,
+          "outcome_unknown",
+        );
+      }
       if (found.kind === "replay") {
         return finalize(
           apiOk(ctx, found.cached.bodyJson, { status: found.cached.status }),
@@ -566,13 +578,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
       : response.status < 500;
     if (reservation && storeOutcome) {
-      try {
-        await reservation.store({ status: response.status, bodyJson: responseBodyJson });
-      } catch (err) {
-        // Cache write failures must not break the response. Log + return
-        // the original response; the reservation expires on its own.
-        console.warn("[api/v1] idempotency cache write failed", err);
-      }
+      // Never throws: retries, then marks the key done_unknown (see store).
+      await reservation.store({ status: response.status, bodyJson: responseBodyJson });
     } else if (reservation) {
       // Not a stored outcome (a 5xx, or the route vetoed it): free the key so
       // the caller's retry actually runs the handler again.
