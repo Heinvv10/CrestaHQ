@@ -19,7 +19,11 @@ export const GET = withApiAuth(
       description: c.description,
       parameters: c.parameters,
       readOnly: c.readonly === true,
-      ...(c.approval ? { approval: c.approval } : {}),
+      ...(c.approval
+        ? { approval: c.approval }
+        : c.approvalHint
+          ? { approval: c.approvalHint.approval, approvalWhen: c.approvalHint.when }
+          : {}),
     }));
     return apiOk(ctx, { tools });
   },

@@ -101,6 +101,11 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   create_company: { name: "Agent Co", email: "hi@agent.co" },
   update_company: { companyId: "co1", phone: "+27820000001" },
   delete_company: { companyId: "co1" },
+  find_conversations: {},
+  get_conversation: { conversationId: "c1" },
+  list_scheduled_messages: { contactId: "c1" },
+  set_bot_mode: { conversationId: "c1", mode: "off" },
+  cancel_scheduled_message: { contactId: "c1", scheduledMessageId: "s1" },
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },
@@ -129,6 +134,8 @@ beforeEach(() => {
     contactId: "c1", value: 1, currency: "ZAR", territoryId: "global",
   });
   mem.seed("companies/co1", { subAccountId: "sa1", agencyId: "ag1", name: "Acme" });
+  mem.seed("conversations/c1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", contactName: "Ann", status: "open", botMode: "off", lastMessageAt: new Date() });
+  mem.seed("contacts/c1/scheduledMessages/s1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", channel: "sms", body: "later", status: "pending", sendAt: new Date(Date.now() + 3_600_000) });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
   TRIGGERS.forEach((type) =>
     mem.seed(`workflows/wf_${type}`, {
@@ -161,16 +168,25 @@ describe("an agent can never send on its own", () => {
     expect(agentCaps().map((c) => c.name).filter((n) => !(n in FIXTURE_ARGS))).toEqual([]);
   });
 
-  it.each(Object.keys(FIXTURE_ARGS))("%s: dispatches fine and reaches no outbound seam", async (name) => {
+  // Every fixture, plus the per-call approval cases (approvalFor).
+  const CASES: Array<[string, Record<string, unknown>]> = [
+    ...Object.entries(FIXTURE_ARGS),
+    ["set_bot_mode", { conversationId: "c1", mode: "suggest" }],
+    ["set_bot_mode", { conversationId: "c1", mode: "auto" }],
+  ];
+  it.each(CASES)("%s %j: dispatches fine and reaches no outbound seam", async (name, args) => {
     const cap = agentCaps().find((c) => c.name === name);
     expect(cap, `${name} is no longer agent-surfaced; drop its fixture`).toBeDefined();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const r = await dispatchAgentTool(auth, name, FIXTURE_ARGS[name]);
-    if (cap!.approval) {
+    const r = await dispatchAgentTool(auth, name, args);
+    const validated = cap!.validate(cap!.agentArgs ? cap!.agentArgs(args) : args);
+    const approval = cap!.approvalFor && validated.ok ? cap!.approvalFor(validated.args) : cap!.approval;
+    if (approval) {
       expect(r).toMatchObject({ ok: true, proposal: { status: "pending" } });
       expect(mem.list("agentProposals")).toHaveLength(1);
     } else {
       expect(r).toMatchObject({ ok: true });
+      expect(r).not.toHaveProperty("proposal");
     }
     expect(fetchSpy).not.toHaveBeenCalled();
     await expectNothingSent();

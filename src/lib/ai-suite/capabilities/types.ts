@@ -116,6 +116,16 @@ export interface AiSuiteCapability {
   surfaces?: CapabilitySurface[];
   /** Set = the agent surface queues it for approval instead of executing. */
   approval?: CapabilityApproval;
+  /**
+   * Per-call approval class, for a capability that is a direct write for
+   * some args and needs a person for others (set_bot_mode: `auto` only).
+   * Given validated args; overrides `approval`. `preview` and
+   * `approvalTarget` are then required, as for `approval`.
+   */
+  approvalFor?: (args: Record<string, unknown>) => CapabilityApproval | undefined;
+  /** With `approvalFor`: what the tools listings (REST and MCP) show — the
+   *  class, and in words when it applies (e.g. "mode=auto"). */
+  approvalHint?: { approval: CapabilityApproval; when: string };
   /** Agent-surface-only narrowing of the raw args, applied before validate
    *  (e.g. dropping fields an agent may not set). */
   agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;

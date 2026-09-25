@@ -9,7 +9,8 @@ import {
 } from "@/lib/server/companies-service";
 import type { CompanyFormData } from "@/types/companies";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str, agentActor, agentText, oneLine, UNSAFE_TEXT_RE } from "./helpers";
+import { EMAIL_RE, str, agentActor } from "./helpers";
+import { agentText, hasUnsafeText, oneLine, UNSAFE_TEXT_RE } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 
 /**
@@ -42,7 +43,10 @@ function companyFields(raw: unknown): { ok: true; data: Partial<CompanyFormData>
     if (r[k] === undefined) continue;
     if (typeof r[k] !== "string") return { ok: false, error: `${k} must be text` };
     const v = agentText(k, r[k] as string);
-    if (UNSAFE_TEXT_RE.test(v)) return { ok: false, error: `${k} can't contain control or bidi characters` };
+    // Addresses and URLs have no words to join: no joiner exception there.
+    if (k === "email" || k === "website" ? UNSAFE_TEXT_RE.test(v) : hasUnsafeText(v)) {
+      return { ok: false, error: `${k} can't contain control or bidi characters` };
+    }
     if (v.length > MAX_FIELD) return { ok: false, error: `${k} must be at most ${MAX_FIELD} characters` };
     data[k] = v;
   }

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { oneLine } from "@/lib/ai-suite/capabilities/text-safety";
+
 /**
  * Value encodings shared by the agent approval queue: the canonical form that
  * keys a proposal id and compares previews, and Firestore time → epoch ms.
@@ -60,5 +62,8 @@ export function assertPinnedWhenOutbound(
 export function normalizePreview(
   p: PreviewRows | { rows: PreviewRows; pinned?: Record<string, unknown> }
 ): { rows: PreviewRows; pinned: Record<string, unknown> | null } {
-  return Array.isArray(p) ? { rows: p, pinned: null } : { rows: p.rows, pinned: p.pinned ?? null };
+  const { rows, pinned } = Array.isArray(p) ? { rows: p, pinned: null } : { rows: p.rows, pinned: p.pinned ?? null };
+  // Every value the approver reads is one visible line, whatever a
+  // capability's preview built it from (stored names come from outside).
+  return { rows: rows.map((r) => ({ ...r, value: oneLine(r.value) })), pinned };
 }

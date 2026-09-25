@@ -168,7 +168,10 @@ async function dispatch(
   }
 
   const ctx = buildAgentContext(auth);
-  if (cap.approval) {
+  const approval = cap.approvalFor ? cap.approvalFor(validated.args) : cap.approval;
+  // Only the engine writes workflow_enrolment rows (see agentCallable).
+  if (approval === "workflow_enrolment") return notAvailable();
+  if (approval) {
     // The approver sees `preview` verbatim; a queued action without one
     // could not be judged, so it is a registry bug, not a proposal.
     if (!cap.preview) throw new Error(`${cap.name} has approval but no preview`);
@@ -178,14 +181,14 @@ async function dispatch(
     const reviewed = normalizePreview(
       await cap.preview(previewCtx, validated.args)
     );
-    assertPinnedWhenOutbound(cap.name, cap.approval, reviewed);
+    assertPinnedWhenOutbound(cap.name, approval, reviewed);
     const created = await createProposal({
       agencyId: auth.agencyId,
       subAccountId: auth.subAccountId,
       keyId: auth.keyId,
       keyPrefix: auth.keyPrefix,
       capability: cap.name,
-      approval: cap.approval,
+      approval,
       args: validated.args,
       summary: cap.summarize(validated.args),
       preview: reviewed.rows,

@@ -38,7 +38,11 @@ export function agentMcpTools(): Tool[] {
     description: c.description,
     inputSchema: c.parameters as Tool["inputSchema"],
     ...(c.readonly ? { annotations: { readOnlyHint: true } } : {}),
-    ...(c.approval ? { _meta: { approval: c.approval } } : {}),
+    ...(c.approval
+      ? { _meta: { approval: c.approval } }
+      : c.approvalHint
+        ? { _meta: { approval: c.approvalHint.approval, approvalWhen: c.approvalHint.when } }
+        : {}),
   }));
 }
 

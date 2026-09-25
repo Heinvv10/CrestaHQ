@@ -112,11 +112,13 @@ describe("tools/list", () => {
     const rest = (await (await restListTools(
       new Request("http://localhost/api/v1/tools", { headers: { authorization: `Bearer ${key}` } }),
       { params: Promise.resolve({}) }
-    )).json()) as { tools: Array<{ name: string; description: string; parameters: unknown; readOnly: boolean; approval?: string }> };
+    )).json()) as { tools: Array<{ name: string; description: string; parameters: unknown; readOnly: boolean; approval?: string; approvalWhen?: string }> };
     expect(tools.map((t) => ({
       name: t.name, description: t.description, parameters: t.inputSchema,
-      readOnly: t.annotations?.readOnlyHint === true, approval: t._meta?.approval,
-    }))).toEqual(rest.tools.map(({ name, description, parameters, readOnly, approval }) => ({ name, description, parameters, readOnly, approval })));
+      readOnly: t.annotations?.readOnlyHint === true, approval: t._meta?.approval, approvalWhen: t._meta?.approvalWhen,
+    }))).toEqual(rest.tools.map(({ name, description, parameters, readOnly, approval, approvalWhen }) => ({ name, description, parameters, readOnly, approval, approvalWhen })));
+    expect(tools.find((t) => t.name === "set_bot_mode")?._meta).toEqual({ approval: "outbound", approvalWhen: "mode≠off" });
+    expect(rest.tools.find((t) => t.name === "set_bot_mode")).toMatchObject({ approval: "outbound", approvalWhen: "mode≠off" });
     expect(tools.find((t) => t.name === "__mcp_outbound")?._meta).toEqual({ approval: "outbound" });
   });
 });
