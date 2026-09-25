@@ -130,17 +130,22 @@ export interface MemoryDocSnapshot {
   exists: boolean;
   /** Write count at read time; a transaction's conflict check compares it. */
   version: number;
+  /** Stands in for Firestore's updateTime (the write count, as millis), for
+   *  an update's `lastUpdateTime` precondition. Absent for a missing doc.
+   *  Not a Timestamp: several suites mock firebase-admin/firestore. */
+  updateTime?: UpdateTime;
   ref: MemoryDocRef;
   data: () => Data | undefined;
 }
 
+type UpdateTime = { toMillis: () => number };
 type Write<A extends unknown[]> = (...args: A) => Promise<void>;
 export interface MemoryDocRef {
   id: string;
   path: string;
   get: () => Promise<MemoryDocSnapshot>;
   set: Write<[Data, { merge?: boolean }?]>;
-  update: Write<[Data]>;
+  update: Write<[Data, { lastUpdateTime?: UpdateTime }?]>;
   create: Write<[Data]>;
   delete: Write<[]>;
   collection: (name: string) => MemoryQuery & {
@@ -182,10 +187,12 @@ export function createMemoryFirestore() {
 
   const snapshot = (path: string): MemoryDocSnapshot => {
     const data = store.get(path);
+    const version = versions.get(path) ?? 0;
     return {
       id: path.split("/").pop()!,
       exists: data !== undefined,
-      version: versions.get(path) ?? 0,
+      version,
+      ...(data === undefined ? {} : { updateTime: { toMillis: () => version } }),
       ref: docRef(path),
       data: () => (data === undefined ? undefined : clone(data)),
     };
@@ -198,12 +205,15 @@ export function createMemoryFirestore() {
     bump(path);
   };
 
-  const writeUpdate = (path: string, patch: Data) => {
+  const writeUpdate = (path: string, patch: Data, pre?: { lastUpdateTime?: UpdateTime }) => {
     const current = store.get(path);
     if (current === undefined) {
       throw Object.assign(new Error(`5 NOT_FOUND: No document to update: ${path}`), {
         code: 5,
       });
+    }
+    if (pre?.lastUpdateTime && pre.lastUpdateTime.toMillis() !== (versions.get(path) ?? 0)) {
+      throw Object.assign(new Error(`9 FAILED_PRECONDITION: ${path} changed since it was read`), { code: 9 });
     }
     const next = clone(current);
     for (const [k, v] of Object.entries(patch)) setPath(next, k.split("."), v);
@@ -222,7 +232,7 @@ export function createMemoryFirestore() {
       path,
       get: () => { const snap = snapshot(path); return tick().then(() => snap); },
       set: (data, opts) => tick().then(() => writeSet(path, data, opts?.merge === true)),
-      update: (patch) => tick().then(() => writeUpdate(path, patch)),
+      update: (patch, pre) => tick().then(() => writeUpdate(path, patch, pre)),
       create: (data) => tick().then(() => writeCreate(path, data)),
       delete: () => tick().then(() => remove(path)),
       collection: (name) => collectionRef(`${path}/${name}`),

@@ -11,8 +11,17 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/auth/require-tenancy", () => ({ requireSubAccountAdmin: async () => ({ uid: "u_1" }) }));
+const loadKeys = vi.hoisted(() => vi.fn(async () => new Set<string>()));
+const createContent = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => ({ contentSid: "HX2" })));
+vi.mock("@/lib/custom-fields/load-defs", () => ({ loadContactCustomFieldKeys: loadKeys }));
+vi.mock("@/lib/comms/whatsapp/templates-api", async (orig) => ({
+  ...((await orig()) as object), createContentTemplate: createContent, submitForWhatsappApproval: async () => undefined,
+}));
+vi.mock("@/lib/server/sub-account-secrets", () => ({ readSubAccountSecret: async () => "tok" }));
+vi.mock("@/lib/automations/qstash", () => ({ qstashIsConfigured: () => false, publishCallback: async () => null }));
 
 const { PATCH } = await import("@/app/api/sub-accounts/[id]/whatsapp-templates/[templateId]/route");
+const { POST: SUBMIT } = await import("@/app/api/sub-accounts/[id]/whatsapp-templates/[templateId]/submit/route");
 
 const PATH = "subAccounts/sa_1/whatsappTemplates/t1";
 const BASE = {
@@ -25,7 +34,18 @@ const edit = (patch: Record<string, unknown>) =>
     params: Promise.resolve({ id: "sa_1", templateId: "t1" }),
   });
 
-beforeEach(() => mem.clear());
+const submit = () =>
+  SUBMIT(new Request("https://app.test/x", { method: "POST" }), { params: Promise.resolve({ id: "sa_1", templateId: "t1" }) });
+
+beforeEach(() => {
+  mem.clear();
+  loadKeys.mockClear();
+  createContent.mockClear();
+  mem.seed("subAccounts/sa_1", {
+    agencyId: "ag_1", whatsappEnabledByAgency: true, whatsappProvider: "twilio",
+    twilioConfig: { enabled: true, accountSid: "AC1", authToken: "tok", whatsappFromNumber: "+27110000000" },
+  });
+});
 
 describe("editing a template live on some rail", () => {
   it.each([
@@ -66,5 +86,44 @@ describe("editing a template live on some rail", () => {
     mem.seed(PATH, { ...BASE, registrations: { cloud: { externalId: null, status: "rejected", rejectionReason: "no" } } });
     expect((await edit({ body: "Hi {{1}}, it changed.", language: "af" })).status).toBe(200);
     expect(mem.read(PATH)).toMatchObject({ body: "Hi {{1}}, it changed.", language: "af", status: "draft" });
+  });
+});
+
+describe("an edit and a submit racing", () => {
+  it("the edit read before the submit, and writes after it → 409, the submitted content stands", async () => {
+    mem.seed(PATH, { ...BASE, status: "draft" });
+    let submitted: Response | undefined;
+    // Between the edit's read and its write, a whole submit runs.
+    loadKeys.mockImplementationOnce(async () => {
+      submitted = await submit();
+      return new Set<string>();
+    });
+    const res = await edit({ body: "Hi {{1}}, it changed." });
+    expect(submitted!.status).toBe(200);
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe("The template changed while saving. Reload and try again.");
+    expect((createContent.mock.calls[0]![0] as { body: string }).body).toBe("Hi {{1}}.");
+    expect(mem.read(PATH)).toMatchObject({ body: "Hi {{1}}.", status: "pending", contentSid: "HX2" });
+  });
+
+  it("the submit read before an edit, and writes after it → 409, nothing sent to the provider, the edit stands", async () => {
+    mem.seed(PATH, { ...BASE, status: "draft" });
+    const doc = mem.db.doc.bind(mem.db);
+    vi.spyOn(mem.db, "doc").mockImplementationOnce((path: string) => {
+      const ref = doc(path);
+      return {
+        ...ref,
+        get: async () => {
+          const snap = await ref.get();
+          expect((await edit({ body: "Hi {{1}}, it changed." })).status).toBe(200);
+          return snap;
+        },
+      };
+    });
+    const res = await submit();
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toBe("The template changed while saving. Reload and try again.");
+    expect(createContent).not.toHaveBeenCalled();
+    expect(mem.read(PATH)).toMatchObject({ body: "Hi {{1}}, it changed.", status: "draft" });
   });
 });

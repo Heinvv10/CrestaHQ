@@ -164,7 +164,19 @@ export async function PATCH(
     updates.buttons = buttons.buttons;
   }
 
-  await ref.update(updates);
+  // Only onto the doc as read: a submit that started meanwhile registers the
+  // content it read, and this edit must not slip in under it.
+  try {
+    await ref.update(updates, { lastUpdateTime: snap.updateTime });
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 9) {
+      return NextResponse.json(
+        { error: "The template changed while saving. Reload and try again." },
+        { status: 409 },
+      );
+    }
+    throw err;
+  }
   const updated = await ref.get();
   return NextResponse.json({ ok: true, template: { id: ref.id, ...updated.data() } });
 }

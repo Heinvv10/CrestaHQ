@@ -120,13 +120,28 @@ export async function POST(
     variablesSample[String(v.position)] = v.sampleValue;
   }
 
-  // Optimistic state so a slow Twilio round-trip shows as in-progress.
-  await ref.update({
-    status: "submitting",
-    name,
-    rejectionReason: null,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  // Optimistic state so a slow Twilio round-trip shows as in-progress. Only
+  // onto the doc as read, since the provider gets the content read here; once
+  // it says "submitting", edits are refused.
+  try {
+    await ref.update(
+      {
+        status: "submitting",
+        name,
+        rejectionReason: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { lastUpdateTime: tplSnap.updateTime },
+    );
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 9) {
+      return NextResponse.json(
+        { error: "The template changed while saving. Reload and try again." },
+        { status: 409 },
+      );
+    }
+    throw err;
+  }
 
   let externalId: string;
   try {
