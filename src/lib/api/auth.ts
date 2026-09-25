@@ -92,6 +92,12 @@ export interface WithApiAuthOptions {
    * re-execute).
    */
   idempotency?: boolean;
+  /**
+   * What the request log may keep of the response body (default: all of it).
+   * The agent tools route passes `toolLogResponseBody` so a read tool's
+   * result — tenant data, often PII — is never persisted in the log.
+   */
+  logResponseBody?: (params: Record<string, string>, body: unknown) => unknown;
 }
 
 export interface ApiHandlerInput<P extends Record<string, string> = Record<string, string>> {
@@ -331,6 +337,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     // readBody so this is essentially free for read paths.
     const params = await routeCtx.params;
     const { rawBody, body } = await readBody(request);
+    const logged = (b: unknown) => (opts.logResponseBody ? opts.logResponseBody(params, b) : b);
 
     // Helper that captures the log + returns the response. Used at every
     // exit point so every request makes it into the log viewer regardless
@@ -439,7 +446,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         }
         return finalize(
           apiOk(ctx, cached.bodyJson, { status: cached.status }),
-          cached.bodyJson,
+          logged(cached.bodyJson),
         );
       }
     }
@@ -504,7 +511,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     response.headers.set("X-RateLimit-Remaining", String(snapshot.remaining));
     response.headers.set("X-RateLimit-Reset", String(snapshot.resetSec));
 
-    return finalize(response, responseBodyJson);
+    return finalize(response, logged(responseBodyJson));
   };
 }
 
