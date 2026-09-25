@@ -8,8 +8,10 @@ import {
   sanitiseButtons,
   sanitiseVariables,
 } from "@/lib/comms/whatsapp/template-validation";
+import { templateRegistration } from "@/lib/comms/whatsapp/template-registrations";
 import { loadContactCustomFieldKeys } from "@/lib/custom-fields/load-defs";
 import type {
+  WhatsappTemplateButton,
   WhatsappTemplateCategory,
   WhatsappTemplateDoc,
 } from "@/types/whatsapp-templates";
@@ -24,11 +26,30 @@ export const dynamic = "force-dynamic";
  */
 
 const EDITABLE: ReadonlyArray<string> = ["draft", "rejected", "failed"];
+const RAILS = ["twilio", "cloud", "bridge"] as const;
 const VALID_CATEGORIES: WhatsappTemplateCategory[] = [
   "UTILITY",
   "MARKETING",
   "AUTHENTICATION",
 ];
+
+/**
+ * Whether a PATCH would change what the recipient reads, compared after the
+ * normalisation a save applies — the manager always sends every field, so a
+ * rename must not count as a content edit.
+ */
+function changesContent(body: PatchBody, existing: WhatsappTemplateDoc): boolean {
+  if (typeof body.body === "string" && body.body.trim().slice(0, 1024) !== existing.body) return true;
+  if (typeof body.language === "string" && (body.language.trim() || "en").slice(0, 12) !== existing.language) return true;
+  if (body.buttons !== undefined) {
+    const next = sanitiseButtons(body.buttons, existing.category);
+    if ("error" in next) return true;
+    const key = (buttons: WhatsappTemplateButton[]) =>
+      JSON.stringify(buttons.map((b) => [b.type, b.text, b.type === "url" ? b.url : null]));
+    if (key(next.buttons) !== key(existing.buttons ?? [])) return true;
+  }
+  return false;
+}
 
 interface PatchBody {
   displayName?: string;
@@ -69,6 +90,24 @@ export async function PATCH(
     body = (await request.json()) as PatchBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  // The flat status is one rail's. A template still approved (or awaiting
+  // approval) on another sends THAT rail's stored content, so changing what
+  // the recipient reads here would make every preview show text that isn't
+  // what goes out.
+  if (changesContent(body, existing)) {
+    for (const rail of RAILS) {
+      const status = templateRegistration(existing, rail)?.status;
+      if (status === "approved" || status === "pending") {
+        return NextResponse.json(
+          {
+            error: `This template is ${status} on ${rail}, so its text, buttons and language can't change. Create a new template instead.`,
+          },
+          { status: 409 },
+        );
+      }
+    }
   }
 
   const nextBody = (body.body ?? existing.body).trim();
@@ -125,7 +164,19 @@ export async function PATCH(
     updates.buttons = buttons.buttons;
   }
 
-  await ref.update(updates);
+  // Only onto the doc as read: a submit that started meanwhile registers the
+  // content it read, and this edit must not slip in under it.
+  try {
+    await ref.update(updates, { lastUpdateTime: snap.updateTime });
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 9) {
+      return NextResponse.json(
+        { error: "The template changed while saving. Reload and try again." },
+        { status: 409 },
+      );
+    }
+    throw err;
+  }
   const updated = await ref.get();
   return NextResponse.json({ ok: true, template: { id: ref.id, ...updated.data() } });
 }

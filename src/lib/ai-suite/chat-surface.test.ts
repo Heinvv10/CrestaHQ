@@ -176,6 +176,7 @@ describe("registry invariants", () => {
     set_bot_mode: { conversationId: "c_sample", mode: "auto" },
     send_message: { conversationId: "c_sample", channel: "sms", body: "Hello" },
     schedule_message: { conversationId: "c_sample", channel: "sms", body: "Hello", sendAt: "2030-01-10T08:00:00.000Z" },
+    send_whatsapp_template: { conversationId: "c_sample", templateId: "tpl_sample", variables: { "1": "Tuesday" } },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = (c: (typeof AI_SUITE_CAPABILITIES)[number]) =>
@@ -186,6 +187,14 @@ describe("registry invariants", () => {
     });
     mem.seed("companies/co_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample Co" });
     mem.seed("conversations/c_sample", { subAccountId: "sa1", agencyId: "ag1", contactId: "c_sample", contactName: "Sample", botMode: "suggest" });
+    mem.seed("subAccounts/sa1", {
+      ...mem.read("subAccounts/sa1"), whatsappEnabledByAgency: true,
+      twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, whatsappFromNumber: "+27100000000" },
+    });
+    mem.seed("subAccounts/sa1/whatsappTemplates/tpl_sample", {
+      subAccountId: "sa1", agencyId: "ag1", name: "sample", displayName: "Sample", language: "en", status: "approved", contentSid: "HX1",
+      body: "See you {{1}}.", variables: [{ position: 1, label: "Day", sampleValue: "Monday", source: "manual", mergeTag: null }],
+    });
   };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {

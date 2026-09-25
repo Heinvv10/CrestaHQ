@@ -32,6 +32,7 @@ import { CONVERSATION_READ_CAPABILITIES } from "./capabilities/conversations-rea
 import { CONVERSATION_CONTROL_CAPABILITIES } from "./capabilities/conversation-controls";
 import { CONVERSATION_SEND_CAPABILITIES } from "./capabilities/conversation-send";
 import { CONVERSATION_SCHEDULE_CAPABILITIES } from "./capabilities/conversation-schedule";
+import { CONVERSATION_WA_TEMPLATE_CAPABILITIES } from "./capabilities/conversation-wa-template";
 import { TASK_CAPABILITIES } from "./capabilities/tasks";
 import { TASK_COMPLETE_CAPABILITIES } from "./capabilities/task-complete";
 import { EVENT_CAPABILITIES } from "./capabilities/events";
@@ -96,6 +97,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...CONVERSATION_CONTROL_CAPABILITIES,
   ...CONVERSATION_SEND_CAPABILITIES,
   ...CONVERSATION_SCHEDULE_CAPABILITIES,
+  ...CONVERSATION_WA_TEMPLATE_CAPABILITIES,
   ...TASK_CAPABILITIES,
   ...TASK_COMPLETE_CAPABILITIES,
   ...EVENT_CAPABILITIES,
