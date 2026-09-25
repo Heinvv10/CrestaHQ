@@ -114,6 +114,15 @@ describe("create_contact's email gets the strict rule", () => {
 });
 
 describe("oneLine", () => {
+  it("keeps a presentation-selector U+FE0F and strips a stray one", async () => {
+    const { oneLine } = await import("./text-safety");
+    expect(oneLine("a\ufe0fb \u2764\ufe0f\ufe0f 1\ufe0f\u20e3")).toBe("ab \u2764\ufe0f 1\ufe0f\u20e3");
+  });
+
+  it("a stray U+FE0F in a company name is refused", async () => {
+    expect(await dispatchAgentTool(auth, "create_company", { name: "Acme\ufe0f" })).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
   it("keeps U+FE0F (emoji presentation) while stripping every other default-ignorable", async () => {
     const { oneLine } = await import("./text-safety");
     expect(oneLine("\u2764\ufe0f Co\u2065\u3164")).toBe("\u2764\ufe0f Co");

@@ -126,6 +126,48 @@ describe("breaker round 2", () => {
   });
 });
 
+describe("breaker round 3", () => {
+  const EMOJI = "\u2764\ufe0f \u{1F468}\u200d\u{1F469}\u200d\u{1F467} 1\ufe0f\u20e3 \u260e\ufe0f \u{1F3F3}\ufe0f\u200d\u{1F308} \u{1F441}\ufe0f\u200d\u{1F5E8}\ufe0f";
+
+  it.each([
+    ["after a letter", "a\ufe0fb"], ["stacked", "\u2764\ufe0f\ufe0f"], ["leading", "\ufe0fHi"],
+    ["after a bare digit", "1\ufe0f"], ["a run", "Hi\ufe0f\ufe0f\ufe0f"],
+  ])("REPRO 7: a U+FE0F %s is refused", async (_label, body) => {
+    expect(await propose({ channel: "sms", body })).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it("real presentation selectors are accepted in a body and in a company name", async () => {
+    expect(await propose({ channel: "sms", body: `Hi ${EMOJI}` })).toMatchObject({ ok: true });
+    expect(await dispatchAgentTool(auth, "create_company", { name: `Co ${EMOJI}` })).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    ["trailing spaces", "Hi   \nThere  ", "Hi\nThere"],
+    ["a line of only spaces", "Hi\n   \nBye", "Hi\n\nBye"],
+  ])("REPRO 8: %s are normalised, and the stored body is exactly what is sent", async (_label, body, expected) => {
+    const id = await proposeId({ channel: "sms", body });
+    expect(row(id).args).toMatchObject({ body: expected });
+    await decide(id, "approve");
+    expect(send.mock.calls[0]![0]).toMatchObject({ body: expected });
+  });
+
+  it("interior runs of spaces are kept (visible under pre-wrap)", async () => {
+    const id = await proposeId({ channel: "sms", body: "Total:   R100" });
+    expect(row(id).args).toMatchObject({ body: "Total:   R100" });
+  });
+
+  it.each([
+    ["an NBSP", "Hi\u00a0there"], ["an em space", "Hi\u2003there"], ["an ideographic space", "Hi\u3000there"],
+    ["a private-use character", "Hi\ue000"], ["an unassigned code point", "Hi\u0378"], ["a lone surrogate", "Hi\ud800"],
+  ])("REPRO 8: a body with %s is refused", async (_label, body) => {
+    expect(await propose({ channel: "sms", body })).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it.each([["an NBSP", "Acme\u00a0Co"], ["a private-use character", "Acme\ue000"]])("a company name with %s is refused", async (_label, name) => {
+    expect(await dispatchAgentTool(auth, "create_company", { name })).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+});
+
 it("a WhatsApp send carries the per-approval idempotency key", async () => {
   const id = await proposeId({ channel: "whatsapp", body: "Hi" });
   await decide(id, "approve");
