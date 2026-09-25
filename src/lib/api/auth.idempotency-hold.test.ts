@@ -76,11 +76,21 @@ it("N1 a hung handler holds the key for at most MAX_HOLD_MS; after that + the TT
   expect(handler).toHaveBeenCalledTimes(2);
 });
 
-it("N2 + S1 cacheIdempotently throwing after the handler SUCCEEDED stops the heartbeat and marks the key done_unknown", async () => {
+it("N2 + S1 cacheIdempotently throwing after the handler SUCCEEDED: a logged v1 500, heartbeat stopped, key marked done_unknown", async () => {
   vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
   handler.mockResolvedValue(NextResponse.json({ id: "x" }, { status: 201 }));
   const err = vi.spyOn(console, "error").mockImplementation(() => {});
-  await expect(post("leak", throwingVeto)).rejects.toThrow("veto bug");
+  const res = await post("leak", throwingVeto);
+  expect(res.status).toBe(500);
+  const body = (await res.json()) as { error: { type: string; code: string; request_id: string } };
+  expect(body.error).toMatchObject({ type: "internal_error", code: "internal_error", request_id: expect.any(String) });
+  expect(err).toHaveBeenCalledWith("[api/v1] post-handler step threw", expect.any(Error));
+  // Logs are fire-and-forget; match this request's row, not a straggler from an earlier test.
+  await vi.waitFor(() =>
+    expect(mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.requestId === body.error.request_id)).toMatchObject([
+      { responseStatus: 500, errorCode: "internal_error" },
+    ])
+  );
   expect(vi.getTimerCount()).toBe(0);
   expect(mem.list(IDEM)).toMatchObject([{ state: "done_unknown" }]);
   expect((mem.list(IDEM)[0].expiresAt as Date).getTime()).toBeGreaterThan(Date.now() + 23 * 3600_000);

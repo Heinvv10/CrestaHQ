@@ -604,6 +604,12 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       response.headers.set("X-RateLimit-Reset", String(snapshot.resetSec));
 
       return finalize(response, responseBodyJson);
+    } catch (err) {
+      // A step after the handler threw (e.g. a cacheIdempotently bug). Answer
+      // with the logged v1 500 rather than letting Next send a raw one; the
+      // finally marks the key done_unknown, since the handler did return.
+      console.error("[api/v1] post-handler step threw", err);
+      return internalError();
     } finally {
       if (response) await reservation?.markUnknown();
       else await releaseReservation();
