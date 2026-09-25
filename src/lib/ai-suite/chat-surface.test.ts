@@ -153,7 +153,7 @@ describe("registry invariants", () => {
   // Vacuous today: no capability sets `approval` yet. It becomes live in PR3,
   // when the approvals UI renders `preview` for every queued proposal.
   it("every capability with an approval class has a preview", () => {
-    const missing = AI_SUITE_CAPABILITIES.filter((c) => c.approval && !c.preview).map(
+    const missing = AI_SUITE_CAPABILITIES.filter((c) => (c.approval || c.approvalFor) && !c.preview).map(
       (c) => c.name
     );
     expect(missing).toEqual([]);
@@ -163,7 +163,7 @@ describe("registry invariants", () => {
   // what it targets, or its row could not be territory-scoped.
   it("every approval capability declares an approvalTarget", () => {
     expect(
-      AI_SUITE_CAPABILITIES.filter((c) => c.approval && !c.approvalTarget).map((c) => c.name)
+      AI_SUITE_CAPABILITIES.filter((c) => (c.approval || c.approvalFor) && !c.approvalTarget).map((c) => c.name)
     ).toEqual([]);
   });
 
@@ -173,12 +173,17 @@ describe("registry invariants", () => {
     update_contact_channels: { contactId: "c_sample", phone: "+27821234567", email: "new@x.io" },
     delete_contact: { contactId: "c_sample" },
     delete_company: { companyId: "co_sample" },
+    set_bot_mode: { conversationId: "c_sample", mode: "auto" },
   };
+  /** The approval class a capability carries for its sample args. */
+  const approvalOf = (c: (typeof AI_SUITE_CAPABILITIES)[number]) =>
+    c.approvalFor ? c.approvalFor(PREVIEW_SAMPLE_ARGS[c.name] ?? {}) : c.approval;
   const seedSample = () => {
     mem.seed("contacts/c_sample", {
       subAccountId: "sa1", agencyId: "ag1", name: "Sample", phone: "+27820000000", email: "old@x.io", territoryId: "global",
     });
     mem.seed("companies/co_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample Co" });
+    mem.seed("conversations/c_sample", { subAccountId: "sa1", agencyId: "ag1", contactId: "c_sample", contactName: "Sample", botMode: "suggest" });
   };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {
@@ -187,7 +192,7 @@ describe("registry invariants", () => {
     const admin = { ...tenant, uid: "u_admin", email: "admin@x.io", displayName: "A", subAccountRole: "admin" };
     const rep = { ...tenant, uid: "u_rep", email: "rep@x.io", displayName: "R", subAccountRole: "collaborator" };
     seedSample();
-    for (const cap of AI_SUITE_CAPABILITIES.filter((c) => c.approval)) {
+    for (const cap of AI_SUITE_CAPABILITIES.filter((c) => approvalOf(c))) {
       const args = PREVIEW_SAMPLE_ARGS[cap.name];
       expect(args, `${cap.name} needs PREVIEW_SAMPLE_ARGS`).toBeDefined();
       const neutral = await cap.preview!(buildPreviewContext("ag1", "sa1"), args!);
@@ -201,8 +206,8 @@ describe("registry invariants", () => {
   it("every outbound / channel_change approval capability's sample preview pins a non-empty target", async () => {
     const { buildPreviewContext } = await import("@/lib/api/agent-context");
     seedSample();
-    const pinning = AI_SUITE_CAPABILITIES.filter((c) => c.approval === "outbound" || c.approval === "channel_change");
-    expect(pinning.map((c) => c.name)).toContain("update_contact_channels");
+    const pinning = AI_SUITE_CAPABILITIES.filter((c) => approvalOf(c) === "outbound" || approvalOf(c) === "channel_change");
+    expect(pinning.map((c) => c.name)).toEqual(expect.arrayContaining(["update_contact_channels", "set_bot_mode"]));
     for (const cap of pinning) {
       const p = await cap.preview!(buildPreviewContext("ag1", "sa1"), PREVIEW_SAMPLE_ARGS[cap.name] ?? {});
       expect(Array.isArray(p) ? {} : (p.pinned ?? {}), `${cap.name} must pin its target`).not.toEqual({});

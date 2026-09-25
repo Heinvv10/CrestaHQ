@@ -101,6 +101,12 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   create_company: { name: "Agent Co", email: "hi@agent.co" },
   update_company: { companyId: "co1", phone: "+27820000001" },
   delete_company: { companyId: "co1" },
+  find_conversations: {},
+  get_conversation: { conversationId: "c1" },
+  list_scheduled_messages: { contactId: "c1" },
+  set_conversation_status: { conversationId: "c1", status: "closed" },
+  set_bot_mode: { conversationId: "c1", mode: "suggest" },
+  cancel_scheduled_message: { contactId: "c1", scheduledMessageId: "s1" },
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },
@@ -129,6 +135,8 @@ beforeEach(() => {
     contactId: "c1", value: 1, currency: "ZAR", territoryId: "global",
   });
   mem.seed("companies/co1", { subAccountId: "sa1", agencyId: "ag1", name: "Acme" });
+  mem.seed("conversations/c1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", contactName: "Ann", status: "open", botMode: "off", lastMessageAt: new Date() });
+  mem.seed("contacts/c1/scheduledMessages/s1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", channel: "sms", body: "later", status: "pending", sendAt: new Date(Date.now() + 3_600_000) });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
   TRIGGERS.forEach((type) =>
     mem.seed(`workflows/wf_${type}`, {

@@ -37,10 +37,15 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["create_event", { title: "E", date: "2030-01-10", time: "10:00", contactId: "c1/sub/y", contactName: "Row" }],
   ["update_company", { companyId: "co1/sub/y", name: "X" }],
   ["delete_company", { companyId: "co1/sub/y" }],
+  ["get_conversation", { conversationId: "cv1/sub/y" }],
+  ["set_conversation_status", { conversationId: "cv1/sub/y", status: "closed" }],
+  ["set_bot_mode", { conversationId: "cv1/sub/y", mode: "off" }],
+  ["list_scheduled_messages", { contactId: "c1/sub/y" }],
+  ["cancel_scheduled_message", { contactId: "c1/sub/y", scheduledMessageId: "s1" }],
 ];
 
 beforeEach(() => {
-  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1"]) {
+  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1"]) {
     mem.seed(parent, SUB);
     mem.seed(`${parent}/sub/y`, SUB);
     // A real top-level doc named like the path's last segment: a service
