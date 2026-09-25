@@ -240,4 +240,15 @@ describe("round 2", () => {
     expect(contacts(/"X"/)).toEqual([]);
     logged.mockRestore();
   });
+
+  it("A1 three parallel create_contact under one Idempotency-Key create exactly one contact", async () => {
+    const results = await Promise.all(
+      [1, 2, 3].map(() => call("create_contact", { name: "Race One" }, { "idempotency-key": "race-1" }))
+    );
+    expect(contacts(/"Race One"/)).toHaveLength(1);
+    for (const r of results) {
+      if (r.status === 409) expect(await r.json()).toMatchObject({ error: { code: "idempotency_in_progress" } });
+      else expect(r.status).toBe(200);
+    }
+  });
 });

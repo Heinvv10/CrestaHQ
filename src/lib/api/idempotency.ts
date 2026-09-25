@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { ApiKeyMode } from "@/types/api";
@@ -12,8 +12,12 @@ import type { ApiKeyMode } from "@/types/api";
  * we cache `{status, body}` for 24 hours keyed by
  *   `<subAccountId>_<mode>_<idempotencyKey>`
  *
- * Behaviour:
- *   - Cache MISS  → run the handler, store the result, return it.
+ * Behaviour (see reserveIdempotencyKey — the key is claimed BEFORE the
+ * handler, so concurrent retries run it once):
+ *   - Cache MISS  → reserve, run the handler, store the result (or release
+ *     the reservation when the outcome isn't stored), return it.
+ *   - Reserved by a request still running, same body → 409
+ *     idempotency_in_progress (Retry-After: 1).
  *   - Cache HIT, request fingerprint matches → return the stored response.
  *   - Cache HIT, request fingerprint differs → 409 idempotency_error
  *     (same key reused with a different body — almost always a bug, never
@@ -34,6 +38,9 @@ import type { ApiKeyMode } from "@/types/api";
  */
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+/** How long an `in_progress` reservation holds a key before a new request
+ *  may take it over (a process that died mid-request must not block it). */
+export const IN_PROGRESS_TTL_MS = 60 * 1000;
 const MAX_KEY_LEN = 255;
 const VALID_KEY_RE = /^[A-Za-z0-9_\-:.]+$/;
 
@@ -76,55 +83,101 @@ function tsToDate(ts: Timestamp | Date | null | undefined): Date | null {
   return null;
 }
 
-export async function readIdempotencyCache(
-  subAccountId: string,
-  mode: ApiKeyMode,
-  keyId: string,
-  idempotencyKey: string,
-): Promise<CachedResponse | null> {
-  const ref = getAdminDb()
+function refFor(subAccountId: string, mode: ApiKeyMode, keyId: string, idempotencyKey: string) {
+  return getAdminDb()
     .collection("subAccounts")
     .doc(subAccountId)
     .collection("apiIdempotency")
     .doc(docIdFor(mode, keyId, idempotencyKey));
-  const snap = await ref.get();
-  if (!snap.exists) return null;
-  const data = snap.data()!;
-  const expiresAt = tsToDate(data.expiresAt);
-  if (!expiresAt || expiresAt.getTime() <= Date.now()) {
-    // Treat expired entries as a miss. Don't bother deleting here — the
-    // Firestore TTL policy (configured in `firestore.indexes.json`) reaps
-    // them in the background.
-    return null;
-  }
-  return {
-    status: data.status as number,
-    bodyJson: data.bodyJson,
-    requestFingerprint: data.requestFingerprint as string,
-    createdAt: tsToDate(data.createdAt) ?? new Date(0),
-    expiresAt,
-  };
 }
 
-export async function writeIdempotencyCache(
+/** What reserving an Idempotency-Key found. */
+export type IdempotencyReservation =
+  /** The key is ours: run the handler, then `store` its outcome or `release`. */
+  | {
+      kind: "reserved";
+      store: (entry: { status: number; bodyJson: unknown }) => Promise<void>;
+      release: () => Promise<void>;
+    }
+  /** A finished request with this key and body: return its stored response. */
+  | { kind: "replay"; cached: CachedResponse }
+  /** A request with this key and body is still running: retry shortly. */
+  | { kind: "in_progress" }
+  /** This key was used with a different request body. */
+  | { kind: "collision" };
+
+/**
+ * Claim an Idempotency-Key BEFORE the handler runs, atomically: a
+ * transaction reads the doc and writes an `in_progress` reservation only if
+ * there is none (or only an expired one). So of N concurrent requests with
+ * the same key exactly one runs the handler; the rest see `in_progress`
+ * (same body) or `collision` (different body), and later ones the stored
+ * outcome. A reservation expires after IN_PROGRESS_TTL_MS, so a process that
+ * died mid-request can't block the key forever — the transaction's re-read
+ * makes that takeover conditional on it still being the same stale doc.
+ * `store` / `release` act only while the reservation is still this one.
+ */
+export async function reserveIdempotencyKey(
   subAccountId: string,
   mode: ApiKeyMode,
   keyId: string,
   idempotencyKey: string,
-  entry: { status: number; bodyJson: unknown; requestFingerprint: string },
-): Promise<void> {
-  const ref = getAdminDb()
-    .collection("subAccounts")
-    .doc(subAccountId)
-    .collection("apiIdempotency")
-    .doc(docIdFor(mode, keyId, idempotencyKey));
-  const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
-  await ref.set({
-    status: entry.status,
-    bodyJson: entry.bodyJson,
-    requestFingerprint: entry.requestFingerprint,
-    mode,
-    createdAt: FieldValue.serverTimestamp(),
-    expiresAt,
+  requestFingerprint: string,
+): Promise<IdempotencyReservation> {
+  const db = getAdminDb();
+  const ref = refFor(subAccountId, mode, keyId, idempotencyKey);
+  const reservationId = randomBytes(12).toString("hex");
+  const found = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.data();
+    const expiresAt = tsToDate(data?.expiresAt);
+    const live = !!data && !!expiresAt && expiresAt.getTime() > Date.now();
+    if (live) {
+      if (data!.requestFingerprint !== requestFingerprint) return { kind: "collision" as const };
+      if (data!.state === "in_progress") return { kind: "in_progress" as const };
+      return {
+        kind: "replay" as const,
+        cached: {
+          status: data!.status as number,
+          bodyJson: data!.bodyJson,
+          requestFingerprint,
+          createdAt: tsToDate(data!.createdAt) ?? new Date(0),
+          expiresAt: expiresAt!,
+        },
+      };
+    }
+    tx.set(ref, {
+      state: "in_progress",
+      reservationId,
+      requestFingerprint,
+      mode,
+      createdAt: FieldValue.serverTimestamp(),
+      expiresAt: new Date(Date.now() + IN_PROGRESS_TTL_MS),
+    });
+    return { kind: "reserved" as const };
   });
+  if (found.kind !== "reserved") return found;
+
+  /** Run `write` only while the doc still holds THIS reservation. */
+  const whileOurs = (write: (tx: FirebaseFirestore.Transaction) => void) =>
+    db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.data()?.reservationId === reservationId) write(tx);
+    });
+  return {
+    kind: "reserved",
+    store: (entry) =>
+      whileOurs((tx) =>
+        tx.set(ref, {
+          state: "done",
+          status: entry.status,
+          bodyJson: entry.bodyJson,
+          requestFingerprint,
+          mode,
+          createdAt: FieldValue.serverTimestamp(),
+          expiresAt: new Date(Date.now() + CACHE_TTL_MS),
+        }),
+      ),
+    release: () => whileOurs((tx) => tx.delete(ref)),
+  };
 }

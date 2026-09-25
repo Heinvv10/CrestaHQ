@@ -43,3 +43,42 @@ describe("batch", () => {
     expect(mem.read("a/2")).toEqual({ n: 0 });
   });
 });
+
+describe("create", () => {
+  it("docRef.create rejects on an existing doc and leaves it untouched", async () => {
+    const mem = createMemoryFirestore();
+    mem.seed("a/1", { n: 0 });
+    await expect(mem.db.doc("a/1").create({ n: 1 })).rejects.toThrow(/ALREADY_EXISTS/);
+    expect(mem.read("a/1")).toEqual({ n: 0 });
+    await mem.db.doc("a/2").create({ n: 2 });
+    expect(mem.read("a/2")).toEqual({ n: 2 });
+  });
+
+  it("tx.create rejects the transaction on an existing doc and applies none of its writes", async () => {
+    const mem = createMemoryFirestore();
+    mem.seed("a/1", { n: 0 });
+    const run = mem.db.runTransaction(async (tx) => {
+      tx.set(mem.db.doc("a/3"), { n: 3 });
+      tx.create(mem.db.doc("a/1"), { n: 1 });
+    });
+    await expect(run).rejects.toThrow(/ALREADY_EXISTS/);
+    expect([mem.read("a/1"), mem.read("a/3")]).toEqual([{ n: 0 }, undefined]);
+  });
+});
+
+describe("runTransaction", () => {
+  it("re-runs a transaction whose read of an ABSENT doc was invalidated by a concurrent create", async () => {
+    const mem = createMemoryFirestore();
+    const ref = mem.db.doc("a/1");
+    const claim = (who: string) =>
+      mem.db.runTransaction(async (tx) => {
+        const snap = (await tx.get(ref)) as { exists: boolean };
+        if (snap.exists) return false;
+        await new Promise((r) => setTimeout(r, 5));
+        tx.set(ref, { who });
+        return true;
+      });
+    const won = await Promise.all([claim("x"), claim("y")]);
+    expect(won.filter(Boolean)).toHaveLength(1);
+  });
+});

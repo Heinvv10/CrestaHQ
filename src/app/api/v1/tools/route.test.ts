@@ -164,6 +164,11 @@ describe("POST /api/v1/tools/{name}", () => {
     expect(mem.list("subAccounts/sa1/apiIdempotency")).toHaveLength(1);
   });
 
+  it("parallel reads under one Idempotency-Key never reserve it: none is refused as in progress", async () => {
+    const results = await Promise.all([1, 2, 3].map(() => call("find_contacts", { query: "ann" }, { "idempotency-key": "read-par" })));
+    expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
+  });
+
   it("the Agent API gate is re-read per request: flipped off, the next call is 403", async () => {
     expect((await call("find_contacts", { query: "ann" })).status).toBe(200);
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), agentApiEnabledByAgency: false });

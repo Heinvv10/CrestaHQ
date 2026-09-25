@@ -24,8 +24,8 @@ import {
 import {
   fingerprintRequest,
   isValidIdempotencyKey,
-  readIdempotencyCache,
-  writeIdempotencyCache,
+  reserveIdempotencyKey,
+  type IdempotencyReservation,
 } from "@/lib/api/idempotency";
 import {
   checkAndCount as checkRateLimit,
@@ -461,7 +461,18 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       !!idempotencyKey &&
       (opts.cacheIdempotently ? opts.cacheIdempotently(params) : true);
 
-    let fingerprint: string | null = null;
+    const internalError = () =>
+      finalize(
+        apiError(
+          ctx,
+          "internal_error",
+          "internal_error",
+          "Something went wrong on our end. Quote this request_id in support.",
+        ),
+        undefined,
+        "internal_error",
+      );
+    let reservation: Extract<IdempotencyReservation, { kind: "reserved" }> | null = null;
     if (useIdempotency) {
       if (!isValidIdempotencyKey(idempotencyKey!)) {
         return finalize(
@@ -475,48 +486,70 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
           "invalid_idempotency_key",
         );
       }
-      fingerprint = fingerprintRequest(request.method, url.pathname, rawBody);
-      const cached = await readIdempotencyCache(
-        ctx.subAccountId,
-        ctx.mode,
-        ctx.keyId,
-        idempotencyKey!,
-      );
-      if (cached) {
-        if (cached.requestFingerprint !== fingerprint) {
-          return finalize(
-            apiError(
-              ctx,
-              "idempotency_error",
-              "idempotency_collision",
-              "This Idempotency-Key was already used with a different request body. Use a new key for a new request.",
-            ),
-            undefined,
-            "idempotency_collision",
-          );
-        }
+      // Claim the key BEFORE the handler, so concurrent retries run it once.
+      let found: IdempotencyReservation;
+      try {
+        found = await reserveIdempotencyKey(
+          ctx.subAccountId,
+          ctx.mode,
+          ctx.keyId,
+          idempotencyKey!,
+          fingerprintRequest(request.method, url.pathname, rawBody),
+        );
+      } catch (err) {
+        // Fail closed: without a reservation a retry could run twice.
+        console.error("[api/v1] idempotency reservation failed", err);
+        return internalError();
+      }
+      if (found.kind === "collision") {
         return finalize(
-          apiOk(ctx, cached.bodyJson, { status: cached.status }),
-          cached.bodyJson,
+          apiError(
+            ctx,
+            "idempotency_error",
+            "idempotency_collision",
+            "This Idempotency-Key was already used with a different request body. Use a new key for a new request.",
+          ),
+          undefined,
+          "idempotency_collision",
         );
       }
+      if (found.kind === "in_progress") {
+        return finalize(
+          apiError(
+            ctx,
+            "idempotency_error",
+            "idempotency_in_progress",
+            "A request with this Idempotency-Key is still being processed. Retry shortly.",
+            { extraHeaders: { "Retry-After": "1" } },
+          ),
+          undefined,
+          "idempotency_in_progress",
+        );
+      }
+      if (found.kind === "replay") {
+        return finalize(
+          apiOk(ctx, found.cached.bodyJson, { status: found.cached.status }),
+          found.cached.bodyJson,
+        );
+      }
+      reservation = found;
     }
+    /** Hand the key back so a retry runs; never fails the response. */
+    const releaseReservation = async () => {
+      try {
+        await reservation?.release();
+      } catch (err) {
+        console.warn("[api/v1] idempotency reservation release failed", err);
+      }
+    };
 
     let response: NextResponse;
     try {
       response = await handler({ request, params, body, rawBody, ctx });
     } catch (err) {
       console.error("[api/v1] handler threw", err);
-      return finalize(
-        apiError(
-          ctx,
-          "internal_error",
-          "internal_error",
-          "Something went wrong on our end. Quote this request_id in support.",
-        ),
-        undefined,
-        "internal_error",
-      );
+      await releaseReservation();
+      return internalError();
     }
 
     // Read response body ONCE, here, so both the idempotency cache writer
@@ -532,25 +565,18 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     const storeOutcome = opts.cacheIdempotently
       ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
       : response.status < 500;
-    if (useIdempotency && fingerprint && storeOutcome) {
+    if (reservation && storeOutcome) {
       try {
-        await writeIdempotencyCache(
-          ctx.subAccountId,
-          ctx.mode,
-          ctx.keyId,
-          idempotencyKey!,
-          {
-            status: response.status,
-            bodyJson: responseBodyJson,
-            requestFingerprint: fingerprint,
-          },
-        );
+        await reservation.store({ status: response.status, bodyJson: responseBodyJson });
       } catch (err) {
         // Cache write failures must not break the response. Log + return
-        // the original response — the worst case is the next retry
-        // re-executes (which is what would happen anyway without cache).
+        // the original response; the reservation expires on its own.
         console.warn("[api/v1] idempotency cache write failed", err);
       }
+    } else if (reservation) {
+      // Not a stored outcome (a 5xx, or the route vetoed it): free the key so
+      // the caller's retry actually runs the handler again.
+      await releaseReservation();
     }
 
     // Add per-key rate-limit snapshot headers so client libraries can pace
