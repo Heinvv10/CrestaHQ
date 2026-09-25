@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Contact } from "@/types/contacts";
 
 /**
@@ -40,6 +40,7 @@ vi.mock("@/lib/firestore/contacts", () => ({
   },
 }));
 
+import { SLOW_AFTER_MS } from "@/hooks/use-loading-hint";
 import {
   ContactsProvider,
   useSubAccountContacts,
@@ -49,13 +50,22 @@ import {
 const LIST = [{ id: "c1" }, { id: "c2" }] as Contact[];
 const seen: Record<string, SubAccountContacts> = {};
 
-function Consumer({ name, enabled }: { name: string; enabled?: boolean }) {
-  seen[name] = useSubAccountContacts(enabled);
+function Consumer({
+  name,
+  enabled,
+  ownsLoadingHint,
+}: {
+  name: string;
+  enabled?: boolean;
+  ownsLoadingHint?: boolean;
+}) {
+  seen[name] = useSubAccountContacts(enabled, { ownsLoadingHint });
   return null;
 }
 const Bare = () => null;
 
 let root: ReturnType<typeof createRoot>;
+let el: HTMLDivElement;
 async function render(...children: ReactNode[]) {
   await act(async () =>
     root.render(createElement(ContactsProvider, null, ...children)),
@@ -72,7 +82,8 @@ beforeEach(() => {
   state.territory = { ready: true, filter: null };
   state.subs = [];
   for (const k of Object.keys(seen)) delete seen[k];
-  root = createRoot(document.createElement("div"));
+  el = document.createElement("div");
+  root = createRoot(el);
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -208,4 +219,67 @@ it("refuses to run outside the provider", async () => {
   await expect(
     act(async () => root.render(createElement(Consumer, { name: "x" }))),
   ).rejects.toThrow(/ContactsProvider/);
+});
+
+it("signing out forgets the request and the list", async () => {
+  await render(consumer("a"));
+  await act(async () => latest().deliver(LIST));
+  state.auth = { user: null, loading: false };
+  await render(createElement(Bare, { key: "bare" }));
+  // The same user comes back: no consumer mounted, so nothing downloads.
+  state.auth = { user: { uid: "u1" }, loading: false };
+  await render(createElement(Bare, { key: "bare" }));
+  expect(state.subs).toHaveLength(1);
+  // A page that asks now waits for the server, not the old list.
+  await render(consumer("b"));
+  expect(state.subs).toHaveLength(2);
+  expect(seen.b).toMatchObject({ loading: true, contacts: [] });
+});
+
+describe("the wait hint", () => {
+  const offlineText = "You're offline. Contacts will load when your connection is back.";
+  const slowText = "taking longer than usual";
+  function setOnline(v: boolean) {
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(v);
+  }
+
+  it("says so when offline, and clears once the server answers", async () => {
+    setOnline(false);
+    await render(consumer("a"));
+    expect(el.querySelector('[role="status"]')?.textContent).toBe(offlineText);
+    await act(async () => latest().deliver(LIST));
+    expect(el.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("is not shown while nobody is waiting", async () => {
+    setOnline(false);
+    await render(createElement(Bare, { key: "bare" }), consumer("dialog", false));
+    expect(el.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("leaves it to a page that shows its own hint", async () => {
+    setOnline(false);
+    await render(
+      createElement(Consumer, { key: "page", name: "page", ownsLoadingHint: true }),
+    );
+    expect(state.subs).toHaveLength(1);
+    expect(el.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("says a load is slow, and a new load restarts the timer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await render(consumer("a"));
+      expect(el.textContent).not.toContain(slowText);
+      await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+      expect(el.textContent).toContain(slowText);
+      state.territory = { ready: true, filter: ["global", "t2"] };
+      await render(consumer("a"));
+      expect(el.textContent).not.toContain(slowText);
+      await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+      expect(el.textContent).toContain(slowText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

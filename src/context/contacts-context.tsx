@@ -12,6 +12,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
+import { useLoadingHint } from "@/hooks/use-loading-hint";
 import { subscribeToContacts } from "@/lib/firestore/contacts";
 import type { Contact } from "@/types/contacts";
 
@@ -25,6 +26,8 @@ export interface SubAccountContacts {
 
 interface ContactsContextValue extends SubAccountContacts {
   request: () => void;
+  /** Counts a mounted consumer that relies on the provider's wait hint. */
+  watch: () => () => void;
 }
 
 const ContactsContext = createContext<ContactsContextValue | undefined>(
@@ -62,6 +65,16 @@ export function ContactsProvider({ children }: { children: ReactNode }) {
     contacts: Contact[];
     error: Error | null;
   } | null>(null);
+  const [waiters, setWaiters] = useState(0);
+
+  // Signed out or auth reloading: forget the request and the list, so a
+  // returning user neither re-subscribes without a consumer nor sees the
+  // old list while the new listener waits for the server.
+  useEffect(() => {
+    if (key) return;
+    setWantedKey(null);
+    setState(null);
+  }, [key]);
 
   // A new identity per key, so a consumer that stays mounted across a
   // sub-account or territory change asks again for the new query.
@@ -84,6 +97,11 @@ export function ContactsProvider({ children }: { children: ReactNode }) {
     );
   }, [key, wantedKey, agencyId, subAccountId, territoryFilter]);
 
+  const watch = useCallback(() => {
+    setWaiters((n) => n + 1);
+    return () => setWaiters((n) => n - 1);
+  }, []);
+
   const current = state && state.key === key ? state : null;
   const value = useMemo<ContactsContextValue>(
     () => ({
@@ -91,29 +109,58 @@ export function ContactsProvider({ children }: { children: ReactNode }) {
       loading: !current,
       error: current?.error ?? null,
       request,
+      watch,
     }),
-    [current, request],
+    [current, request, watch],
   );
 
+  // waitForServer never answers from the cache, so offline (or on a stalled
+  // connection) a page would sit on its skeleton with no explanation.
+  const waiting = !!key && !current && waiters > 0;
   return (
     <ContactsContext.Provider value={value}>
+      {waiting && <ContactsWaitHint key={key} />}
       {children}
     </ContactsContext.Provider>
+  );
+}
+
+/** Keyed per load by the provider, so the slow timer measures the current one. */
+function ContactsWaitHint() {
+  const hint = useLoadingHint();
+  if (!hint) return null;
+  return (
+    <p
+      role="status"
+      className="mx-auto mb-4 w-full max-w-5xl rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+    >
+      {hint === "offline"
+        ? "You're offline. Contacts will load when your connection is back."
+        : "Still loading contacts — this is taking longer than usual. If it doesn't finish, reload the page."}
+    </p>
   );
 }
 
 /**
  * The active sub-account's contacts, narrowed to the viewer's territories.
  * `enabled: false` (e.g. a closed dialog) reads without starting the download.
+ * `ownsLoadingHint`: the caller shows its own slow/offline hint, so the
+ * provider's banner stays out of the way.
  */
-export function useSubAccountContacts(enabled = true): SubAccountContacts {
+export function useSubAccountContacts(
+  enabled = true,
+  { ownsLoadingHint = false }: { ownsLoadingHint?: boolean } = {},
+): SubAccountContacts {
   const ctx = useContext(ContactsContext);
   if (!ctx) {
     throw new Error("useSubAccountContacts must be used within a ContactsProvider");
   }
-  const { request, contacts, loading, error } = ctx;
+  const { request, watch, contacts, loading, error } = ctx;
   useEffect(() => {
     if (enabled) request();
   }, [enabled, request]);
+  useEffect(() => {
+    if (enabled && !ownsLoadingHint) return watch();
+  }, [enabled, ownsLoadingHint, watch]);
   return useMemo(() => ({ contacts, loading, error }), [contacts, loading, error]);
 }

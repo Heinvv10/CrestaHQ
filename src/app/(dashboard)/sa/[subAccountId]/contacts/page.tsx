@@ -74,7 +74,10 @@ export default function ContactsPage() {
   const scopingOn = subAccount?.territoryScopingEnabled === true;
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
-  const { contacts, loading } = useSubAccountContacts();
+  // ContactsLoading carries its own slow/offline hint.
+  const { contacts, loading, error } = useSubAccountContacts(true, {
+    ownsLoadingHint: true,
+  });
   const [territories, setTerritories] = useState<TerritoryDoc[]>([]);
   const [search, setSearch] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -238,6 +241,10 @@ export default function ContactsPage() {
 
       {loading ? (
         <ContactsLoading key={`${subAccountId}|${territoryFilter}`} preview={preview} territories={territories} />
+      ) : error ? (
+        <p role="alert" className="text-sm text-destructive">
+          Contacts could not be loaded. Reload the page to try again.
+        </p>
       ) : contacts.length === 0 ? (
         <EmptyState onImport={() => setImportOpen(true)} />
       ) : visible.length === 0 ? (

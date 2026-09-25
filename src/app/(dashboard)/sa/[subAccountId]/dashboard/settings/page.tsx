@@ -84,7 +84,8 @@ export default function SettingsPage() {
     ? (requestedTab as (typeof TAB_VALUES)[number])
     : "admin";
   const [profile, setProfile] = useState<UserDoc | null>(null);
-  const { contacts } = useSubAccountContacts();
+  const { contacts, loading: contactsLoading, error: contactsError } =
+    useSubAccountContacts();
 
   useEffect(() => {
     if (!user) return;
@@ -269,10 +270,19 @@ export default function SettingsPage() {
             <div className="bg-background flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4">
               <div>
                 <p className="text-sm font-medium">Export contacts</p>
-                <p className="text-muted-foreground text-xs">
-                  {contacts.length} contact{contacts.length === 1 ? "" : "s"} ·
-                  CSV with tags, source, and timestamps
-                </p>
+                {/* A failed or unfinished load is not "0 contacts". */}
+                {contactsError ? (
+                  <p role="alert" className="text-destructive text-xs">
+                    Contacts could not be loaded. Reload the page to try again.
+                  </p>
+                ) : (
+                  <p className="text-muted-foreground text-xs">
+                    {contactsLoading
+                      ? "Loading contacts…"
+                      : `${contacts.length} contact${contacts.length === 1 ? "" : "s"}`}{" "}
+                    · CSV with tags, source, and timestamps
+                  </p>
+                )}
               </div>
               <Button
                 variant="outline"

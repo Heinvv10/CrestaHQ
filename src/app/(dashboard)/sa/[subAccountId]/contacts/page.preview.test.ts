@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
   filters: { all: [] as unknown[] },
   territoryFilter: null as string[] | null,
   deliver: null as ((list: unknown[]) => void) | null,
+  fail: null as ((e: Error) => void) | null,
   subscribeOpts: null as unknown,
   subscribeCount: 0,
   fetchNewest: vi.fn(),
@@ -58,7 +59,13 @@ vi.mock("@/hooks/use-sub-account-members", () => ({
   useSubAccountMembers: () => ({ members: [] }),
 }));
 vi.mock("@/lib/firestore/contacts", () => ({
-  subscribeToContacts: (_s: unknown, o: unknown, cb: (l: unknown[]) => void) => {
+  subscribeToContacts: (
+    _s: unknown,
+    o: unknown,
+    cb: (l: unknown[]) => void,
+    onError: (e: Error) => void,
+  ) => {
+    state.fail = onError;
     state.subscribeOpts = o;
     state.subscribeCount += 1;
     state.deliver = cb;
@@ -118,6 +125,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   el.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 const rows = () => el.querySelectorAll("tbody tr").length;
@@ -221,4 +229,22 @@ it("coming back to the page shows the list at once, without a new download", asy
   expect(skeleton()).toBe(false);
   expect(state.subscribeCount).toBe(1);
   expect(state.fetchNewest).not.toHaveBeenCalled();
+});
+
+it("a failed load says so instead of showing the empty state", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  state.fetchNewest.mockResolvedValue([]);
+  await act(async () => root.render(page()));
+  await act(async () => state.fail!(new Error("permission-denied")));
+  expect(el.querySelector('[role="alert"]')?.textContent).toContain(
+    "Contacts could not be loaded",
+  );
+  expect(el.textContent).not.toContain("No contacts yet");
+});
+
+it("does not add the layout's wait banner on top of its own hint", async () => {
+  vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+  state.fetchNewest.mockReturnValue(new Promise(() => undefined));
+  await act(async () => root.render(page()));
+  expect(el.querySelectorAll('[role="status"]')).toHaveLength(1);
 });
