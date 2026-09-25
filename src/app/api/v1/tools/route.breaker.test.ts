@@ -197,11 +197,47 @@ describe("PII persistence", () => {
   });
 });
 
+const contacts = (re: RegExp) => mem.all().filter((d) => d.path.startsWith("contacts/") && re.test(JSON.stringify(d.data)));
+
 describe("rate limit", () => {
   it("one request = one token and one tool", async () => {
     const r = await call("find_contacts", [{ query: "a" }, { query: "b" }]);
     const r2 = await call("find_contacts", { query: "a" });
     expect(r2.headers.get("X-RateLimit-Remaining")).toBe("58");
     void r;
+  });
+});
+
+describe("round 2", () => {
+  it("A2 a Firestore failure inside precheck is a logged, generic 500 — not an unhandled throw, never cached", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const orig = mem.db.doc.bind(mem.db);
+    let n = 0;
+    // The 1st subAccounts/sa1 read is auth's; the 2nd is the precheck's gate read.
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation(((p: string) => {
+      if (p === "subAccounts/sa1" && ++n === 2) throw new Error("UNAVAILABLE internal-host-10.0.0.5");
+      return orig(p);
+    }) as never);
+    let res: Response | string;
+    try {
+      res = await call("create_contact", { name: "X" }, { "idempotency-key": "a2" });
+    } catch (e) {
+      res = `threw: ${(e as Error).message}`;
+    }
+    spy.mockRestore();
+    expect(typeof res).not.toBe("string");
+    const r = res as Response;
+    expect(r.status).toBe(500);
+    const text = await r.text();
+    expect(JSON.parse(text)).toMatchObject({ error: { code: "internal_error" } });
+    expect(text).not.toContain("internal-host");
+    expect(logged).toHaveBeenCalledWith("[api/v1] precheck threw", expect.any(Error));
+    await settle();
+    const rows = mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === "/api/v1/tools/create_contact");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ responseStatus: 500, errorCode: "internal_error" });
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
+    expect(contacts(/"X"/)).toEqual([]);
+    logged.mockRestore();
   });
 });

@@ -425,7 +425,24 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     }
 
     if (opts.precheck) {
-      const refused = await opts.precheck(ctx);
+      let refused: NextResponse | null;
+      try {
+        refused = await opts.precheck(ctx);
+      } catch (err) {
+        // Same as a throwing handler: a logged, generic v1 internal_error —
+        // never the raw error, never cached (the lookup hasn't run yet).
+        console.error("[api/v1] precheck threw", err);
+        return finalize(
+          apiError(
+            ctx,
+            "internal_error",
+            "internal_error",
+            "Something went wrong on our end. Quote this request_id in support.",
+          ),
+          undefined,
+          "internal_error",
+        );
+      }
       if (refused) {
         const code = await refused
           .clone()
