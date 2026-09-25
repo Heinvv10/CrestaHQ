@@ -4,17 +4,36 @@
  * how stored values print on one line.
  */
 
-/** Control (Cc, incl. NEL), format (Cf: zero-width, bidi marks, BOM) and
- *  line / paragraph separator characters, plus the characters that render
- *  as nothing without being Cf: the combining grapheme joiner (U+034F), the
- *  Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) and the blank braille
- *  cell (U+2800). Refused in stored text an approver reads (a newline could
- *  fake a preview row, an invisible one hide text). U+FE0F (emoji
- *  presentation) is a variation selector, not in the set. */
-const INVISIBLE_LETTERS = "\\u034f\\u115f\\u1160\\u2800\\u3164\\uffa0";
-export const UNSAFE_TEXT_RE = new RegExp(`[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}${INVISIBLE_LETTERS}]`, "u");
-/** What oneLine removes outright: format characters and the same invisible letters. */
-const STRIP_RE = new RegExp(`[\\p{Cf}${INVISIBLE_LETTERS}]`, "gu");
+/** Control (Cc, incl. NEL), format (Cf), line / paragraph separators, and
+ *  every Default_Ignorable code point — the characters that render as
+ *  nothing, assigned or not (fillers, variation selectors, tag characters…)
+ *  — plus the blank braille cell U+2800, which is visible-as-nothing but not
+ *  default-ignorable. By property, not by list, so new ones are covered.
+ *  Also private-use (Co), unassigned (Cn) and lone-surrogate (Cs) code
+ *  points, which won't render. Refused in stored text an approver reads (a
+ *  newline could fake a preview row, an invisible one hide text or carry
+ *  data). U+FE0F is default-ignorable too: only a real presentation
+ *  selector (EMOJI_PRESENTATION) is let through. Space separators (NBSP,
+ *  U+202F, U+3000…) are not refused — they show as spaces — but agentText
+ *  and messageBody turn them into plain spaces first. */
+export const UNSAFE_TEXT_RE =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\p{Co}\p{Cn}\p{Cs}\u2800]/u;
+
+/** The one refusal message for UNSAFE_TEXT_RE, naming the cause. */
+export const UNSAFE_TEXT_MESSAGE =
+  "contains characters that can't be shown safely (control, invisible, bidi, private-use or unassigned)";
+
+/** Every space separator (NBSP, thin, U+202F, U+3000…) as a plain space. */
+export const plainSpaces = (v: string) => v.replace(/\p{Zs}/gu, " ");
+/** What oneLine removes outright: the invisible set (a presentation
+ *  selector excepted, see oneLine). */
+const STRIP_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+/** A U+FE0F that is really an emoji presentation selector: once, right after
+ *  an emoji, or in a keycap (digit / # / * + FE0F + U+20E3). Any other FE0F —
+ *  after a letter, stacked, leading — is an invisible character. */
+const PRESENTATION_SOURCE = "(?<=\\p{Extended_Pictographic})\\ufe0f(?!\\ufe0f)|(?<=[0-9#*])\\ufe0f(?=\\u20e3)";
+const EMOJI_PRESENTATION = new RegExp(PRESENTATION_SOURCE, "gu");
+const PRESENTATION_AT = new RegExp(PRESENTATION_SOURCE, "uy");
 
 /** A ZWNJ / ZWJ that joins two letters, marks or emoji — Persian names,
  *  family emoji sequences (U+1F468 U+200D U+1F469 …) — is text, not a trick. */
@@ -23,7 +42,7 @@ const JOINER_IN_WORD =
 
 /** UNSAFE_TEXT_RE, except a ZWNJ / ZWJ between letters, marks or emoji. */
 export function hasUnsafeText(value: string): boolean {
-  return UNSAFE_TEXT_RE.test(value.replace(JOINER_IN_WORD, ""));
+  return UNSAFE_TEXT_RE.test(value.replace(JOINER_IN_WORD, "").replace(EMOJI_PRESENTATION, ""));
 }
 
 /**
@@ -33,7 +52,7 @@ export function hasUnsafeText(value: string): boolean {
  * other control character, and a newline in any other field.
  */
 export function agentText(key: string, value: string): string {
-  const v = value.trim();
+  const v = plainSpaces(value).trim();
   return key === "address" ? v.replace(/\s*[\r\n]+\s*/g, ", ") : v;
 }
 
@@ -41,5 +60,41 @@ export function agentText(key: string, value: string): string {
  *  externally supplied data — a WhatsApp profile name, a web-chat visitor —
  *  may hold separators, control, zero-width or bidi characters). */
 export function oneLine(value: unknown): string {
-  return String(value ?? "").replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").replace(STRIP_RE, "").trim();
+  return String(value ?? "")
+    .replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ")
+    // A stacked run shows as (at most) one selector.
+    .replace(/\ufe0f+/gu, "\ufe0f")
+    .replace(STRIP_RE, (ch, at: number, whole: string) => {
+      if (ch !== "\ufe0f") return "";
+      PRESENTATION_AT.lastIndex = at;
+      return PRESENTATION_AT.test(whole) ? ch : "";
+    })
+    .trim();
+}
+
+/** A ZWJ inside an emoji sequence (after an emoji, skin tone or U+FE0F,
+ *  before an emoji) — the only joiner a message body may carry. */
+const EMOJI_ZWJ =
+  /(?<=[\p{Extended_Pictographic}\p{Emoji_Modifier}\ufe0f])\u200d(?=\p{Extended_Pictographic})/gu;
+
+/**
+ * A message body as it will be sent — or null when it carries anything a
+ * person reading the preview could not see (UNSAFE_TEXT_RE). Normalised, so
+ * the stored, shown and sent bodies are identical: CRLF / CR become LF,
+ * every space separator a plain space, trailing spaces go from every line (a line of only spaces becomes empty),
+ * and the whole is trimmed. Line breaks are the only exception to the
+ * refusal, plus a ZWJ inside an emoji sequence: a ZWNJ / ZWJ between letters
+ * could sit inside a link ("ba<ZWNJ>nk.co.za") and change where it goes
+ * while looking the same. Interior runs of spaces stay (pre-wrap shows
+ * them). Refusing, not stripping, so the recipient never gets a character
+ * the approver didn't see.
+ */
+export function messageBody(value: string): string | null {
+  const body = plainSpaces(value)
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/ +$/, ""))
+    .join("\n")
+    .trim();
+  return UNSAFE_TEXT_RE.test(body.replace(/\n/g, " ").replace(EMOJI_ZWJ, "").replace(EMOJI_PRESENTATION, "")) ? null : body;
 }

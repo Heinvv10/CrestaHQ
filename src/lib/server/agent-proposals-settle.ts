@@ -2,7 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { CapabilityUserError, type ExecuteResult } from "@/lib/ai-suite/capabilities";
+import { CapabilityOutcomeUnknown, CapabilityUserError, type ExecuteResult } from "@/lib/ai-suite/capabilities";
 import { EXECUTE_DEADLINE_MS, transitionIf } from "@/lib/server/agent-proposals";
 
 /**
@@ -110,7 +110,7 @@ export async function executeAndSettle(input: {
   audit: SettleAudit;
 }): Promise<SettleOutcome | "deadline"> {
   const abort = new AbortController();
-  const run = (async () => {
+  const run = (async (): Promise<SettleOutcome | "deadline"> => {
     let outcome: SettleOutcome;
     try {
       const result = await input.execute(abort.signal);
@@ -119,6 +119,27 @@ export async function executeAndSettle(input: {
         result: { resultText: result.resultText, ref: result.ref ?? null },
       };
     } catch (err) {
+      if (err instanceof CapabilityOutcomeUnknown) {
+        // Maybe sent: a person checks it (mark_sent / mark_not_sent). No late
+        // settle will follow, so the audit row is written now.
+        await transitionIf(input.id, "executing", { status: "unsettled", unsettledReason: err.message }, { claimId: input.claimId });
+        try {
+          await getAdminDb().collection("aiSuiteActions").add({
+            level: "sub-account",
+            ...input.audit,
+            status: "unknown",
+            resultRef: null,
+            error: err.message,
+            agentProposalId: input.id,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        } catch (auditErr) {
+          // The row is already unsettled; a missing audit row must not turn
+          // the approve into a 500.
+          console.error(`[agent-proposals] unknown-outcome audit for ${input.id} failed:`, auditErr);
+        }
+        return "deadline";
+      }
       if (!(err instanceof CapabilityUserError)) {
         console.error(`[agent-proposals] approve ${input.id} failed:`, err);
       }

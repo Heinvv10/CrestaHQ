@@ -12,6 +12,14 @@ import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
  */
 export class CapabilityUserError extends Error {}
 
+/**
+ * The action may or may not have happened (a provider that could not say
+ * whether a message was delivered). An approved proposal that throws this is
+ * left `unsettled` for a person to check — never `failed`, which would
+ * invite a second send.
+ */
+export class CapabilityOutcomeUnknown extends CapabilityUserError {}
+
 /** Role a capability requires. Enforced server-side in the confirm route. */
 export type RequiredRole =
   | "agencyOwner"
@@ -37,6 +45,9 @@ export interface AiSuiteActionContext {
     pinned: Record<string, unknown> | null;
     /** The prefix of the API key that PROPOSED the action (not the approver). */
     keyPrefix?: string;
+    /** The proposal and this approval attempt's claim (idempotency keys). */
+    proposalId?: string;
+    claimId?: string;
   };
   /** Aborted when the approve path's execute deadline passes; provider calls
    *  should honour it. */
@@ -87,6 +98,15 @@ export interface ExecuteResult {
 export type ValidateResult =
   | { ok: true; args: Record<string, unknown> }
   | { ok: false; error: string };
+
+/** One approver-facing preview row. `multiline` keeps the value's line
+ *  breaks (a message body shown exactly as sent); every other row is shown
+ *  on one line. */
+export interface PreviewRow {
+  label: string;
+  value: string;
+  multiline?: true;
+}
 
 export interface AiSuiteCapability {
   name: string;
@@ -155,7 +175,7 @@ export interface AiSuiteCapability {
     ctx: AiSuiteActionContext,
     args: Record<string, unknown>
   ) => Promise<
-    | Array<{ label: string; value: string }>
-    | { rows: Array<{ label: string; value: string }>; pinned?: Record<string, unknown> }
+    | Array<PreviewRow>
+    | { rows: Array<PreviewRow>; pinned?: Record<string, unknown> }
   >;
 }

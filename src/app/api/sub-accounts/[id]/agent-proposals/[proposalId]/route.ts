@@ -251,7 +251,7 @@ export async function POST(
     execute: (signal) => {
       const execCtx = {
         ...actionCtx,
-        approved: { pinned, keyPrefix: proposal.keyPrefix as string | undefined },
+        approved: { pinned, keyPrefix: proposal.keyPrefix as string | undefined, proposalId, claimId },
         signal,
       };
       return enrolment

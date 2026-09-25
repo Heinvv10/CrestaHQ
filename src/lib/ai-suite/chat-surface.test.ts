@@ -174,6 +174,7 @@ describe("registry invariants", () => {
     delete_contact: { contactId: "c_sample" },
     delete_company: { companyId: "co_sample" },
     set_bot_mode: { conversationId: "c_sample", mode: "auto" },
+    send_message: { conversationId: "c_sample", channel: "sms", body: "Hello" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = (c: (typeof AI_SUITE_CAPABILITIES)[number]) =>

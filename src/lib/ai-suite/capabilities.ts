@@ -30,6 +30,7 @@ import { CONTACT_QUEUED_CAPABILITIES } from "./capabilities/contact-queued";
 import { COMPANY_CAPABILITIES } from "./capabilities/companies";
 import { CONVERSATION_READ_CAPABILITIES } from "./capabilities/conversations-read";
 import { CONVERSATION_CONTROL_CAPABILITIES } from "./capabilities/conversation-controls";
+import { CONVERSATION_SEND_CAPABILITIES } from "./capabilities/conversation-send";
 import { TASK_CAPABILITIES } from "./capabilities/tasks";
 import { TASK_COMPLETE_CAPABILITIES } from "./capabilities/task-complete";
 import { EVENT_CAPABILITIES } from "./capabilities/events";
@@ -38,7 +39,7 @@ import { WEBSITE_RESEARCH_CAPABILITIES } from "./capabilities/website-research";
 import { WEBSITE_CREATE_CAPABILITIES } from "./capabilities/website-create";
 import { WEBSITE_STATUS_CAPABILITIES } from "./capabilities/website-status";
 
-export { CapabilityUserError } from "./capabilities/types";
+export { CapabilityOutcomeUnknown, CapabilityUserError } from "./capabilities/types";
 export type {
   AiSuiteActionContext,
   AiSuiteCapability,
@@ -92,6 +93,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...COMPANY_CAPABILITIES,
   ...CONVERSATION_READ_CAPABILITIES,
   ...CONVERSATION_CONTROL_CAPABILITIES,
+  ...CONVERSATION_SEND_CAPABILITIES,
   ...TASK_CAPABILITIES,
   ...TASK_COMPLETE_CAPABILITIES,
   ...EVENT_CAPABILITIES,

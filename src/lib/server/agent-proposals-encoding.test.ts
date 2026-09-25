@@ -60,3 +60,19 @@ describe("normalizePreview", () => {
     });
   });
 });
+
+describe("normalizePreview multiline rows", () => {
+  it("keeps a multiline row's line breaks and flattens every other row", () => {
+    expect(normalizePreview([{ label: "To", value: "Ann\nx" }, { label: "Message", value: "a\n\nb", multiline: true }]).rows).toEqual([
+      { label: "To", value: "Ann x" },
+      { label: "Message", value: "a\n\nb", multiline: true },
+    ]);
+  });
+
+  it.each([["a bidi override", "a\u202eb"], ["a CR", "a\rb"], ["surrounding space", " a "]])(
+    "refuses a multiline value with %s (capability bug), never hides it",
+    (_label, value) => {
+      expect(() => normalizePreview([{ label: "Message", value, multiline: true }])).toThrow(/not a safe message body/);
+    }
+  );
+});

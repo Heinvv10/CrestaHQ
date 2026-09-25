@@ -2,8 +2,8 @@ import "server-only";
 
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str, agentActor } from "./helpers";
-import { agentText, hasUnsafeText, UNSAFE_TEXT_RE } from "./text-safety";
+import { EMAIL_RE, agentActor } from "./helpers";
+import { agentText, hasUnsafeText, plainSpaces, UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
 
 export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -30,29 +30,32 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
       additionalProperties: false,
     },
     validate: (raw) => {
-      const name = str(raw, "name");
-      if (!name) return { ok: false, error: "a contact name is required" };
       const r = (raw ?? {}) as Record<string, unknown>;
+      const text: Record<"name" | "company" | "phone" | "email", string> = { name: "", company: "", phone: "", email: "" };
       for (const k of ["name", "company", "phone", "email"] as const) {
         if (typeof r[k] !== "string") continue;
+        // Trimmed, space separators as plain spaces — checked and stored alike.
         const v = agentText(k, r[k] as string);
         // An email gets no joiner exception: an address has no words to join.
         if (k === "email" ? UNSAFE_TEXT_RE.test(v) : hasUnsafeText(v)) {
-          return { ok: false, error: `${k} can't contain control, invisible or bidi characters` };
+          return { ok: false, error: `${k} ${UNSAFE_TEXT_MESSAGE}` };
         }
+        text[k] = v;
       }
-      const email = str(raw, "email").toLowerCase();
+      const name = text.name;
+      if (!name) return { ok: false, error: "a contact name is required" };
+      const email = text.email.toLowerCase();
       if (email && !EMAIL_RE.test(email)) {
         return { ok: false, error: "that email address doesn't look valid" };
       }
       const rawTags = (raw as Record<string, unknown>)?.tags;
       if (Array.isArray(rawTags) && rawTags.some((t) => typeof t === "string" && hasUnsafeText(t))) {
-        return { ok: false, error: "tags can't contain control, invisible or bidi characters" };
+        return { ok: false, error: `tags ${UNSAFE_TEXT_MESSAGE}` };
       }
       const tags = Array.isArray(rawTags)
         ? rawTags
             .filter((t): t is string => typeof t === "string")
-            .map((t) => t.trim().slice(0, 40))
+            .map((t) => plainSpaces(t).trim().slice(0, 40))
             .filter(Boolean)
             .slice(0, 10)
         : [];
@@ -61,8 +64,8 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
         args: {
           name,
           email,
-          phone: str(raw, "phone"),
-          company: str(raw, "company"),
+          phone: text.phone,
+          company: text.company,
           tags,
         },
       };

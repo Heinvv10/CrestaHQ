@@ -15,7 +15,8 @@ export function emailReplyFields(
   if (!message) return { subject: "", references: [] as string[] };
   // RFC 5322 §3.6.4: the parent's References — or, when it has none, its
   // In-Reply-To — followed by the parent's own Message-ID.
-  const ancestry: (string | null)[] = message.references.length
+  // Imported / legacy email docs may carry no `references` at all.
+  const ancestry: (string | null)[] = message.references?.length
     ? message.references
     : [message.inReplyTo];
   const references = [

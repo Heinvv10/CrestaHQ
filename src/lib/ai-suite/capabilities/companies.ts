@@ -10,7 +10,7 @@ import {
 import type { CompanyFormData } from "@/types/companies";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str, agentActor } from "./helpers";
-import { agentText, hasUnsafeText, oneLine, UNSAFE_TEXT_RE } from "./text-safety";
+import { agentText, hasUnsafeText, oneLine, UNSAFE_TEXT_RE, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 
 /**
@@ -45,7 +45,7 @@ function companyFields(raw: unknown): { ok: true; data: Partial<CompanyFormData>
     const v = agentText(k, r[k] as string);
     // Addresses and URLs have no words to join: no joiner exception there.
     if (k === "email" || k === "website" ? UNSAFE_TEXT_RE.test(v) : hasUnsafeText(v)) {
-      return { ok: false, error: `${k} can't contain control or bidi characters` };
+      return { ok: false, error: `${k} ${UNSAFE_TEXT_MESSAGE}` };
     }
     if (v.length > MAX_FIELD) return { ok: false, error: `${k} must be at most ${MAX_FIELD} characters` };
     data[k] = v;
