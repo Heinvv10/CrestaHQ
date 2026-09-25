@@ -12,7 +12,9 @@ import { approvedRecipient, outgoingApprovalTarget, outgoingParameters, outgoing
  * plus a time. Approving BOOKS the message (an executed row means scheduled);
  * the scheduled-message worker sends it at that time, re-checking the contact
  * and refusing if the address is no longer the pinned one. The booking's doc
- * id comes from the proposal and the claim, so a retry can't book twice.
+ * id comes from the proposal and the claim, which only stops the same claim
+ * booking twice; the real protection is that a booking whose outcome is
+ * unknown settles unsettled, telling the approver to check, never to retry.
  */
 
 /** The same window the inbox's "Send later" allows (parseScheduleRequest). */
@@ -21,6 +23,28 @@ function sendAtError(ms: number, nowMs: number): string | null {
   if (ms < nowMs + SCHEDULE_MIN_LEAD_MS) return "pick a time at least a minute from now";
   if (ms > nowMs + SCHEDULE_MAX_DAYS * 86_400_000) return `messages can be scheduled up to ${SCHEDULE_MAX_DAYS} days ahead`;
   return null;
+}
+
+/** Explicit about its zone: a bare local time would be read in the server's. */
+const OFFSET_RE = /(Z|[+-]\d{2}:\d{2})$/;
+
+/** What happens at fire time beyond the recipient re-check, per channel. */
+const AT_FIRE: Record<string, string> = {
+  sms: "SMS has no quiet hours; it sends at that time.",
+  email: "Email has no quiet hours; it sends at that time.",
+  whatsapp: "It fails without sending if WhatsApp quiet hours apply or the 24-hour reply window has closed at that time.",
+  messenger: "It fails without sending if Meta's 24-hour reply window has closed at that time.",
+  instagram: "It fails without sending if Meta's 24-hour reply window has closed at that time.",
+};
+
+/** The zone to show: the sub-account's, or UTC when it isn't a real zone. */
+function shownZone(tz: string): string {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return tz;
+  } catch {
+    return "UTC";
+  }
 }
 
 export const CONVERSATION_SCHEDULE_CAPABILITIES: AiSuiteCapability[] = [
@@ -47,7 +71,10 @@ export const CONVERSATION_SCHEDULE_CAPABILITIES: AiSuiteCapability[] = [
       const base = validateOutgoing(raw);
       if (!base.ok) return base;
       const r = (raw ?? {}) as Record<string, unknown>;
-      const ms = typeof r.sendAt === "string" ? Date.parse(r.sendAt) : Number.NaN;
+      if (typeof r.sendAt !== "string" || !OFFSET_RE.test(r.sendAt)) {
+        return { ok: false, error: "sendAt must be an ISO date-time ending in Z or a +hh:mm offset" };
+      }
+      const ms = Date.parse(r.sendAt);
       const error = sendAtError(ms, Date.now());
       if (error) return { ok: false, error };
       return { ok: true, args: { ...base.args, sendAt: new Date(ms).toISOString() } };
@@ -55,11 +82,11 @@ export const CONVERSATION_SCHEDULE_CAPABILITIES: AiSuiteCapability[] = [
     summarize: (args) => `Schedule a ${args.channel} message for ${args.sendAt}.`,
     approvalTarget: outgoingApprovalTarget,
     preview: async (ctx, args) => {
-      const tz = await subAccountTimezone(ctx.subAccountId!);
+      const tz = shownZone(await subAccountTimezone(ctx.subAccountId!));
       const at = new Date(args.sendAt as string);
       return outgoingPreview(ctx, args, [
         { label: "When", value: `${fmtInTz(at, tz)} (${tz}) — ${at.toISOString()}` },
-        { label: "Then", value: "Fires at that time; the recipient is re-checked then, and it won't send if it changed." },
+        { label: "Then", value: `Fires at that time; the recipient is re-checked then, and it won't send if it changed. ${AT_FIRE[args.channel as string]}` },
       ]);
     },
     execute: async (ctx, args) => {

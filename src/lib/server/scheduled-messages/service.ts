@@ -17,6 +17,9 @@ import type { ScheduleRequest } from "./parse";
 
 export const FIRE_PATH = "/api/scheduled-messages/fire";
 
+/** A booking that will still send, or has: what a retried booking may find. */
+const LIVE_STATUSES: unknown[] = ["pending", "sending", "sent"] satisfies ScheduledMessageStatus[];
+
 export const scheduledMessagesPath = (contactId: string) =>
   `contacts/${contactId}/scheduledMessages`;
 
@@ -57,8 +60,10 @@ export async function scheduleConversationMessage(input: {
    */
   pinnedTo?: string;
   /**
-   * A caller-chosen doc id, making the booking idempotent: a second call
-   * with the same id books nothing more and returns the existing id.
+   * A caller-chosen doc id. A second call with the same id books nothing
+   * more: it returns the existing id only when that booking is this same
+   * message and still live, and throws otherwise. This covers a retry of one
+   * caller's booking, nothing wider.
    */
   id?: string;
 }): Promise<{ ok: true; id: string } | SendRefusal> {
@@ -100,9 +105,19 @@ export async function scheduleConversationMessage(input: {
     try {
       await ref.create(doc);
     } catch (err) {
-      // Already booked under this id (a retry): nothing more to do.
-      if ((err as { code?: unknown }).code === 6) return { ok: true, id: ref.id };
-      throw err;
+      if ((err as { code?: unknown }).code !== 6) throw err;
+      // Already booked under this id: a retry of the same booking is done;
+      // anything else under the id is not this message, and never "booked".
+      const existing = (await ref.get()).data();
+      if (
+        existing?.body === doc.body &&
+        existing?.channel === doc.channel &&
+        existing?.pinnedTo === input.pinnedTo &&
+        LIVE_STATUSES.includes(existing?.status)
+      ) {
+        return { ok: true, id: ref.id };
+      }
+      throw new Error(`scheduled message ${ref.id} already exists and is not this booking`);
     }
   } else {
     await ref.set(doc);

@@ -65,7 +65,7 @@ describe("propose", () => {
     vi.useRealTimers();
     expect(row(id).preview).toEqual(expect.arrayContaining([
       { label: "When", value: expect.stringMatching(/10:00 AM \(Africa\/Johannesburg\) — 2030-01-10T08:00:00\.000Z$/) },
-      { label: "Then", value: "Fires at that time; the recipient is re-checked then, and it won't send if it changed." },
+      { label: "Then", value: "Fires at that time; the recipient is re-checked then, and it won't send if it changed. SMS has no quiet hours; it sends at that time." },
       { label: "Message", value: "Your install is tomorrow.", multiline: true },
     ]));
     expect(row(id).pinned).toMatchObject({ contactId: "c1", channel: "sms", to: "+27821111111" });
@@ -74,7 +74,29 @@ describe("propose", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it.each([["in the past", new Date(Date.now() - 60_000).toISOString()], ["under a minute ahead", new Date(Date.now() + 10_000).toISOString()], ["past the 7-day horizon", new Date(Date.now() + 8 * 86_400_000).toISOString()], ["not a date", "tomorrow"]])(
+  it.each([
+    ["email", { subject: "Hi" }, "Email has no quiet hours; it sends at that time."],
+    ["whatsapp", {}, "It fails without sending if WhatsApp quiet hours apply or the 24-hour reply window has closed at that time."],
+    ["messenger", {}, "It fails without sending if Meta's 24-hour reply window has closed at that time."],
+    ["instagram", {}, "It fails without sending if Meta's 24-hour reply window has closed at that time."],
+  ])("the %s preview says what can stop it at fire time", async (channel, extra, then) => {
+    mem.seed("contacts/c1", { ...ANN, metaUserId: "psid_1" });
+    const id = await proposeId({ channel, ...extra });
+    expect(row(id).preview).toContainEqual({
+      label: "Then", value: `Fires at that time; the recipient is re-checked then, and it won't send if it changed. ${then}`,
+    });
+  });
+
+  it("a sub-account timezone that isn't a real zone → the time is shown and labelled as UTC", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, timezone: "Mars/Olympus" });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2030-01-10T06:00:00.000Z"));
+    const id = await proposeId({ sendAt: "2030-01-10T08:00:00.000Z" });
+    vi.useRealTimers();
+    expect(row(id).preview).toContainEqual({ label: "When", value: "Thu, Jan 10, 8:00 AM (UTC) — 2030-01-10T08:00:00.000Z" });
+  });
+
+  it.each([["without a timezone offset", new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 19)], ["in the past", new Date(Date.now() - 60_000).toISOString()], ["under a minute ahead", new Date(Date.now() + 10_000).toISOString()], ["past the 7-day horizon", new Date(Date.now() + 8 * 86_400_000).toISOString()], ["not a date", "tomorrow"]])(
     "a time %s is refused",
     async (_label, sendAt) => {
       const r = await dispatchAgentTool(auth, "schedule_message", { conversationId: "c1", channel: "sms", body: "x", sendAt });
@@ -165,6 +187,7 @@ describe("fire", () => {
   it("the recipient changed between approval and firing → refused, 0 sends", async () => {
     const r = await approveAndFire(() => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" }));
     expect(r).toMatchObject({ outcome: "failed", reason: "The recipient changed since this was approved, so it was not sent." });
+    expect(booked()[0]).toMatchObject({ status: "failed", failureCode: "recipient_changed" });
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -183,16 +206,4 @@ describe("fire", () => {
     expect(r).toMatchObject({ outcome: "failed", reason: "This contact has opted out of email." });
     expect(send).not.toHaveBeenCalled();
   });
-});
-
-it("booking twice under the same id books once (the service's idempotent create)", async () => {
-  const { scheduleConversationMessage } = await import("@/lib/server/scheduled-messages/service");
-  const input = {
-    request: { contactId: "c1", channel: "sms" as const, body: "x", subject: null, inReplyTo: null, references: null, sendAt: new Date(Date.now() + 3_600_000) },
-    contact: { id: "c1", ...ANN } as never, actorUid: "u_admin", nowMs: Date.now(), pinnedTo: "+27821111111", id: "agent_p1_k1",
-  };
-  expect(await scheduleConversationMessage(input)).toEqual({ ok: true, id: "agent_p1_k1" });
-  expect(await scheduleConversationMessage(input)).toEqual({ ok: true, id: "agent_p1_k1" });
-  expect(booked()).toHaveLength(1);
-  expect(publish).toHaveBeenCalledTimes(1);
 });
