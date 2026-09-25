@@ -188,6 +188,13 @@ describe("no oracle, one predicate", () => {
       return [await strip(a), await strip(b)];
     };
     expect(await run("my_access", "oracle-1")).toEqual(await run("no_such_tool", "oracle-2"));
+    // An INVALID key: a real read tool skips idempotency entirely, so if a
+    // chat-only read name were treated as one it would answer differently.
+    const invalid = async (name: string) => {
+      const r = await call(name, {}, { "idempotency-key": "not a valid key!" });
+      return { status: r.status, ...((await r.json()) as { error: object }).error, request_id: undefined };
+    };
+    expect(await invalid("my_access")).toEqual(await invalid("no_such_tool"));
     // Treated alike: both a 404 refusal, so neither is cached.
     expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
   });
