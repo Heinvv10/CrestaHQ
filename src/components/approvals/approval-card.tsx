@@ -18,6 +18,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  reasonText,
   refusalText,
   STATUS_LABELS,
   type ApprovalRow,
@@ -86,8 +87,8 @@ export function ApprovalCard({
   const approve = () =>
     row.priorAttemptSent ? setConfirmPriorOpen(true) : void decide("approve");
   const liveDeal = row.live?.deal;
-  const dealMoved =
-    liveDeal && (!liveDeal.exists || liveDeal.stageId !== row.args?.context?.toStage);
+  // The server's own verdict (the approve route's dealStillMatches).
+  const dealMoved = liveDeal ? !liveDeal.wouldReplay : false;
 
   return (
     <div className="bg-card space-y-3 rounded-2xl border p-4" data-testid={`approval-${row.id}`}>
@@ -128,7 +129,7 @@ export function ApprovalCard({
 
       {(row.status === "failed" || row.status === "rejected") && (row.error || row.reason) && (
         <p className="text-destructive text-sm" data-testid="approval-error">
-          {row.error ?? row.reason}
+          {row.error ?? reasonText(row.reason)}
         </p>
       )}
       {row.status === "executed" && row.result?.resultText && (

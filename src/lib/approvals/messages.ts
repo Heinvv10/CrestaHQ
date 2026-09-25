@@ -24,7 +24,9 @@ export interface ApprovalRow {
   contactId?: string | null;
   priorAttemptSent?: { claimId: string } | null;
   args?: { type?: string; context?: { toStage?: string } };
-  live?: { deal: { exists: boolean; stageId: string | null; stageLabel: string | null } };
+  live?: {
+    deal: { exists: boolean; stageId: string | null; stageLabel: string | null; wouldReplay: boolean };
+  };
   reason?: string | null;
   error?: string | null;
   result?: { resultText?: string } | null;
@@ -49,7 +51,15 @@ const MESSAGES: Record<string, string> = {
   previous_attempt_sent: "An earlier attempt of this exact action already went out.",
   preview_unavailable: "The details for this request can no longer be built.",
   trigger_mismatch: "What triggered this changed since, so nobody was enrolled.",
+  // Row reasons (why a row ended rejected).
+  rejected_by_approver: "Rejected by a person.",
+  not_sent_confirmed: "Marked as not sent.",
 };
+
+/** Human text for a stored row reason — never the raw code. */
+export function reasonText(code: string | null | undefined): string {
+  return (code && MESSAGES[code]) || "This request was closed.";
+}
 
 /** Human text for a decide-route refusal. */
 export function refusalText(code: string | undefined, row: Pick<ApprovalRow, "claimedAt">, fallback?: string): string {

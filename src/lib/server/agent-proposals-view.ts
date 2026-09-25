@@ -2,8 +2,9 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { millis } from "@/lib/server/agent-proposals-encoding";
-import { loadPipeline } from "@/lib/pipelines/server";
-import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
+import { readPipelineStages } from "@/lib/pipelines/server";
+import { dealPipelineId } from "@/lib/pipelines/stages";
+import { dealStillMatches } from "@/lib/server/agent-enrolment-replay";
 
 /** Time fields a proposal row carries, sent to the browser as ISO strings. */
 const TIME_FIELDS = ["createdAt", "expiresAt", "claimedAt", "decidedAt"] as const;
@@ -12,14 +13,24 @@ const TIME_FIELDS = ["createdAt", "expiresAt", "claimedAt", "decidedAt"] as cons
 export type ProposalView = Record<string, unknown> & {
   id: string;
   /** Held deal enrolments only: where the deal is NOW, next to the stored preview. */
-  live?: { deal: { exists: boolean; stageId: string | null; stageLabel: string | null } };
+  live?: {
+    deal: {
+      exists: boolean;
+      stageId: string | null;
+      stageLabel: string | null;
+      /** The approve route's own verdict (dealStillMatches): would it enrol now? */
+      wouldReplay: boolean;
+    };
+  };
 };
 
 /**
  * Shape proposal rows for the approvals page: `pinned` never leaves the
  * server (execute acts on it; the approver reviews `preview` only), times
- * become ISO strings, and a held deal enrolment gains the deal's LIVE stage,
- * so the approver sees if it moved since (approve re-checks it anyway).
+ * become ISO strings, and a held deal enrolment gains the deal's LIVE stage
+ * and whether approving would still enrol — computed by the approve route's
+ * own `dealStillMatches`, so the page cannot disagree with the server. All
+ * reads; a GET never seeds a pipeline.
  */
 export async function toProposalViews(
   subAccountId: string,
@@ -45,22 +56,24 @@ export async function toProposalViews(
   const deals = new Map(
     snaps.map((s) => [s.id, s.exists && s.data()?.subAccountId === subAccountId ? s.data()! : null])
   );
-  const pipelines = new Map<string, Awaited<ReturnType<typeof loadPipeline>>>();
+  const stagesOf = new Map<string, Awaited<ReturnType<typeof readPipelineStages>>>();
   for (const deal of deals.values()) {
     const pid = deal ? dealPipelineId(deal) : null;
-    if (pid && !pipelines.has(pid)) pipelines.set(pid, await loadPipeline(subAccountId, pid));
+    if (pid && !stagesOf.has(pid)) stagesOf.set(pid, await readPipelineStages(subAccountId, pid));
   }
   for (const v of views) {
     const id = dealIdOf(v);
     if (!id) continue;
     const deal = deals.get(id) ?? null;
     const stageId = deal ? ((deal.stageId as string | undefined) ?? null) : null;
-    const pipeline = deal ? pipelines.get(dealPipelineId(deal)) : null;
+    const stages = deal ? stagesOf.get(dealPipelineId(deal)) : null;
+    const args = v.args as { type: string; context: Record<string, unknown> };
     v.live = {
       deal: {
         exists: deal !== null,
         stageId,
-        stageLabel: pipeline && stageId ? (findStage(pipeline, stageId)?.label ?? stageId) : stageId,
+        stageLabel: stages && stageId ? (stages.find((s) => s.id === stageId)?.label ?? stageId) : stageId,
+        wouldReplay: await dealStillMatches(subAccountId, args.type, args.context),
       },
     };
   }

@@ -61,7 +61,9 @@ it("?status=open returns pending + unsettled only (the sidebar badge)", async ()
 });
 
 it("never sends pinned to the browser, and sends times as ISO strings", async () => {
-  mem.seed("agentProposals/p1", { ...mem.read("agentProposals/p1"), pinned: { to: "+27 82 000 0000" }, claimedAt: new Date(5000) });
+  const { Timestamp } = await import("firebase-admin/firestore");
+  // A real Firestore Timestamp: without the ISO conversion it would JSON as {_seconds, …}.
+  mem.seed("agentProposals/p1", { ...mem.read("agentProposals/p1"), pinned: { to: "+27 82 000 0000" }, claimedAt: Timestamp.fromMillis(5000) });
   const [p1] = ((await (await list("?status=pending")).json()) as { proposals: Record<string, unknown>[] }).proposals;
   expect(p1).not.toHaveProperty("pinned");
   expect(JSON.stringify(p1)).not.toContain("+27 82 000 0000");
@@ -81,8 +83,45 @@ it("a held deal enrolment carries the deal's LIVE stage; a missing or foreign de
   mem.seed("subAccounts/sa1", { agencyId: "ag1" });
   const rows = ((await (await list("?status=pending")).json()) as { proposals: Array<{ id: string; live?: unknown }> }).proposals;
   const live = Object.fromEntries(rows.map((r) => [r.id, r.live]));
-  expect(live.e1).toEqual({ deal: { exists: true, stageId: "lost", stageLabel: "Lost" } });
-  expect(live.e2).toEqual({ deal: { exists: false, stageId: null, stageLabel: null } });
-  expect(live.e3).toEqual({ deal: { exists: false, stageId: null, stageLabel: null } });
+  expect(live.e1).toEqual({ deal: { exists: true, stageId: "lost", stageLabel: "Lost", wouldReplay: false } });
+  expect(live.e2).toEqual({ deal: { exists: false, stageId: null, stageLabel: null, wouldReplay: false } });
+  expect(live.e3).toEqual({ deal: { exists: false, stageId: null, stageLabel: null, wouldReplay: false } });
   expect(live.p1).toBeUndefined();
+});
+
+it("wouldReplay is the approve route's own verdict: deal.created ignores a move, stage/pipeline changes don't", async () => {
+  mem.seed("subAccounts/sa1", { agencyId: "ag1" });
+  const enrol = (id: string, type: string, dealId: string, toStage: string, n: number) =>
+    mem.seed(`agentProposals/${id}`, {
+      targetScoped: false, subAccountId: "sa1", status: "pending", approval: "workflow_enrolment", createdAt: new Date(n),
+      args: { type, contactId: "c1", context: { dealId, toStage, pipelineId: "default" } },
+    });
+  mem.seed("deals/d_created", { subAccountId: "sa1", stageId: "qualified" });
+  mem.seed("deals/d_stage", { subAccountId: "sa1", stageId: "proposal" });
+  mem.seed("deals/d_pipe", { subAccountId: "sa1", stageId: "qualified", pipelineId: "p_other" });
+  mem.seed("deals/d_won", { subAccountId: "sa1", stageId: "won" });
+  enrol("created_moved", "deal.created", "d_created", "new", 20);
+  enrol("stage_moved", "pipeline.stage.changed", "d_stage", "qualified", 21);
+  enrol("pipeline_changed", "pipeline.stage.changed", "d_pipe", "qualified", 22);
+  enrol("still_won", "deal.won", "d_won", "won", 23);
+  const rows = ((await (await list("?status=pending")).json()) as { proposals: Array<{ id: string; live?: { deal: { wouldReplay: boolean } } }> }).proposals;
+  const verdict = Object.fromEntries(rows.filter((r) => r.live).map((r) => [r.id, r.live!.deal.wouldReplay]));
+  expect(verdict).toEqual({ created_moved: true, stage_moved: false, pipeline_changed: false, still_won: true });
+});
+
+it("the list GET never writes a pipeline", async () => {
+  mem.seed("subAccounts/sa1", { agencyId: "ag1" });
+  mem.seed("deals/d1", { subAccountId: "sa1", stageId: "won" });
+  mem.seed("agentProposals/e9", {
+    targetScoped: false, subAccountId: "sa1", status: "pending", approval: "workflow_enrolment", createdAt: new Date(30),
+    args: { type: "deal.won", contactId: "c1", context: { dealId: "d1", toStage: "won", pipelineId: "default" } },
+  });
+  await list("?status=pending");
+  expect(mem.list("subAccounts/sa1/pipelines")).toEqual([]);
+});
+
+it("?status=recent returns only terminal rows", async () => {
+  mem.seed("agentProposals/p9", { targetScoped: false, subAccountId: "sa1", status: "unsettled", createdAt: new Date(9) });
+  const res = (await (await list("?status=recent")).json()) as { proposals: { id: string }[] };
+  expect(res.proposals.map((p) => p.id)).toEqual(["p2"]);
 });

@@ -6,19 +6,21 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 /** The sidebar badge: one list-route request for pending + unsettled, none
  *  while the Agent API gate is off. */
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/sa/sa1/dashboard" }));
+let pathname = "/sa/sa1/dashboard";
+vi.mock("next/navigation", () => ({ usePathname: () => pathname }));
 const { useOpenApprovalsCount } = await import("./use-open-approvals");
 
 let latest = -1;
 let root: Root;
 const fetchMock = vi.fn();
-function Probe({ sub, enabled }: { sub: string | null; enabled: boolean }) {
-  latest = useOpenApprovalsCount(sub, enabled);
+type Mode = "open" | "unsettled" | null;
+function Probe({ sub, mode }: { sub: string | null; mode: Mode }) {
+  latest = useOpenApprovalsCount(sub, mode);
   return null;
 }
-async function render(sub: string | null, enabled: boolean) {
+async function render(sub: string | null, mode: Mode) {
   await act(async () => {
-    root.render(createElement(Probe, { sub, enabled }));
+    root.render(createElement(Probe, { sub, mode }));
     await new Promise((r) => setTimeout(r, 0));
   });
 }
@@ -37,20 +39,32 @@ afterEach(async () => {
 
 it("counts the open rows from ONE list-route request", async () => {
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ proposals: [{ id: "a" }, { id: "b" }, { id: "c" }] })));
-  await render("sa1", true);
+  await render("sa1", "open");
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/agent-proposals?status=open");
   expect(latest).toBe(3);
 });
 
-it("makes no request and shows 0 while the gate is off", async () => {
-  await render("sa1", false);
+it("gate off: asks only for unsettled rows", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ proposals: [{ id: "u" }] })));
+  await render("sa1", "unsettled");
+  expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/agent-proposals?status=unsettled");
+  expect(latest).toBe(1);
+});
+
+it("makes no request and shows 0 while the gate is unknown", async () => {
+  await render("sa1", null);
   expect(fetchMock).not.toHaveBeenCalled();
   expect(latest).toBe(0);
 });
 
-it("a failed request shows 0, not a stale number", async () => {
-  fetchMock.mockResolvedValue(new Response("{}", { status: 500 }));
-  await render("sa1", true);
+it("a failed request after a good one shows 0, not the stale number", async () => {
+  fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ proposals: [{ id: "a" }, { id: "b" }] })));
+  await render("sa1", "open");
+  expect(latest).toBe(2);
+  fetchMock.mockResolvedValueOnce(new Response("{}", { status: 500 }));
+  pathname = "/sa/sa1/contacts";
+  await render("sa1", "open");
+  expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(latest).toBe(0);
 });

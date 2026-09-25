@@ -12,39 +12,53 @@ import type { ApprovalRow } from "@/lib/approvals/messages";
  * Approvals — actions an API agent asked for that a person must approve
  * (AGENT_API_V1_PLAN.md, PR6). Read ONLY through the list route: it applies
  * the territory rule server-side, which a client SDK list query cannot
- * (rules are not filters), and it keeps `pinned` off the browser.
+ * (rules are not filters), and it keeps `pinned` off the browser. The
+ * actionable rows come from `?status=open` — the same set the sidebar badge
+ * counts — so an old pending row can never be counted yet not shown; terminal
+ * rows come from a separate `?status=recent`. With the Agent API gate off,
+ * only unsettled rows load: their mark actions must stay reachable.
  */
 
 export default function ApprovalsPage() {
   const { subAccountId, subAccount } = useSubAccount();
   const gateOn = subAccount?.agentApiEnabledByAgency === true;
   const [rows, setRows] = useState<ApprovalRow[]>([]);
+  const [recent, setRecent] = useState<ApprovalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setLoadError(null);
-    try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/agent-proposals`);
+    const load = async (status: string) => {
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/agent-proposals?status=${status}`);
       const data = (await res.json().catch(() => ({}))) as { proposals?: ApprovalRow[]; error?: string };
       if (!res.ok) throw new Error(data.error ?? "Couldn't load approvals.");
-      setRows(data.proposals ?? []);
+      return data.proposals ?? [];
+    };
+    try {
+      if (gateOn) {
+        const [open, done] = await Promise.all([load("open"), load("recent")]);
+        setRows(open);
+        setRecent(done);
+      } else {
+        setRows(await load("unsettled"));
+        setRecent([]);
+      }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Couldn't load approvals.");
     } finally {
       setLoading(false);
     }
-  }, [subAccountId]);
+  }, [subAccountId, gateOn]);
 
   useEffect(() => {
-    if (!gateOn) {
-      setLoading(false);
-      return;
-    }
+    if (!subAccount) return;
     void reload();
-  }, [gateOn, reload]);
+  }, [subAccount, reload]);
 
   const replace = (next: ApprovalRow) => setRows((rs) => rs.map((r) => (r.id === next.id ? next : r)));
+  const unsettled = rows.filter((r) => r.status === "unsettled");
+  const pending = rows.filter((r) => r.status === "pending");
   const card = (r: ApprovalRow) => (
     <ApprovalCard key={r.id} subAccountId={subAccountId} row={r} onReplace={replace} onChanged={reload} />
   );
@@ -59,7 +73,17 @@ export default function ApprovalsPage() {
     );
   }
 
-  if (!gateOn) {
+  if (loading) {
+    return (
+      <Shell>
+        <Centered>
+          <Loader2 className="text-muted-foreground h-5 w-5 animate-spin" />
+        </Centered>
+      </Shell>
+    );
+  }
+
+  if (!gateOn && !loadError && unsettled.length === 0) {
     return (
       <Shell>
         <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed py-16 text-center">
@@ -69,16 +93,6 @@ export default function ApprovalsPage() {
             Agent API access isn&apos;t enabled for this workspace. Ask your agency to turn it on.
           </p>
         </div>
-      </Shell>
-    );
-  }
-
-  if (loading) {
-    return (
-      <Shell>
-        <Centered>
-          <Loader2 className="text-muted-foreground h-5 w-5 animate-spin" />
-        </Centered>
       </Shell>
     );
   }
@@ -96,11 +110,22 @@ export default function ApprovalsPage() {
     );
   }
 
-  const unsettled = rows.filter((r) => r.status === "unsettled");
-  const pending = rows.filter((r) => r.status === "pending");
-  const recent = rows.filter((r) => r.status !== "pending" && r.status !== "unsettled");
+  if (!gateOn) {
+    // Agent API off: nothing new can be approved, but a person must still be
+    // able to settle what is outstanding.
+    return (
+      <Shell>
+        <p className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm" data-testid="approvals-paused">
+          New approvals are paused because Agent API access is off for this workspace. Settle these outstanding ones.
+        </p>
+        <Section title="Needs checking" hint="We don't know if these went out. Check, then say which.">
+          {unsettled.map(card)}
+        </Section>
+      </Shell>
+    );
+  }
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && recent.length === 0) {
     return (
       <Shell>
         <div className="bg-card rounded-2xl border p-12 text-center">

@@ -8,8 +8,8 @@ import {
 import { getAdminDb } from "@/lib/firebase/admin";
 import { reserveEnrolment, resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
-import { loadPipeline } from "@/lib/pipelines/server";
-import { dealPipelineId, findStage } from "@/lib/pipelines/stages";
+import { readPipelineStages } from "@/lib/pipelines/server";
+import { dealPipelineId } from "@/lib/pipelines/stages";
 import type { WorkflowTriggerType } from "@/types/workflows";
 
 const WHY: Record<string, string> = {
@@ -32,7 +32,7 @@ const DEAL_TRIGGERS = new Set(["deal.created", "deal.won", "deal.lost", "pipelin
  * stays approvable); a stage change or won/lost needs the same stage and
  * pipeline, and won/lost a stage with that terminal flag.
  */
-async function dealStillMatches(
+export async function dealStillMatches(
   subAccountId: string,
   type: string,
   context: Record<string, unknown>
@@ -44,8 +44,9 @@ async function dealStillMatches(
   if (deal.stageId !== context.toStage) return false;
   if (dealPipelineId(deal) !== context.pipelineId) return false;
   if (type === "deal.won" || type === "deal.lost") {
-    const pipeline = await loadPipeline(subAccountId, dealPipelineId(deal));
-    const stage = pipeline ? findStage(pipeline, deal.stageId as string) : undefined;
+    // Read-only: the approvals list shows this same verdict from a GET.
+    const stages = await readPipelineStages(subAccountId, dealPipelineId(deal));
+    const stage = stages?.find((s) => s.id === deal.stageId);
     return stage?.terminal === type.slice("deal.".length);
   }
   return true;

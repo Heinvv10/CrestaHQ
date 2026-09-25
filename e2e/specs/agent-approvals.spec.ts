@@ -36,7 +36,7 @@ test("approve, confirm a re-send, and reject agent proposals from the Approvals 
   const tenant = { agencyId: env.E2E_AGENCY_ID, subAccountId: sa };
   const saRef = db.doc(`subAccounts/${sa}`);
   const keyRef = db.doc(`subAccounts/${sa}/apiKeys/${KEY_ID}`);
-  const taskRefs = [db.collection("tasks").doc(), db.collection("tasks").doc()];
+  const taskRefs = [db.collection("tasks").doc(), db.collection("tasks").doc(), db.collection("tasks").doc()];
   const ids = { approve: `p_e2e_approve_${stamp}`, resend: `p_e2e_resend_${stamp}`, reject: `p_e2e_reject_${stamp}` };
   const proposalRefs = Object.values(ids).map((id) => db.doc(`agentProposals/${id}`));
   // Captured before the try so `finally` restores exactly what was there.
@@ -73,7 +73,7 @@ test("approve, confirm a re-send, and reject agent proposals from the Approvals 
   try {
     await saRef.update({ agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true });
     await keyRef.set({ ...tenant, name: "E2E agent key", mode: "live", prefix: "e2eagent", scopes: ["agent"], revokedAt: null });
-    const titles = [`E2E approve task ${stamp}`, `E2E resend task ${stamp}`];
+    const titles = [`E2E approve task ${stamp}`, `E2E resend task ${stamp}`, `E2E reject task ${stamp}`];
     for (const [i, ref] of taskRefs.entries()) {
       await ref.set({ ...tenant, title: titles[i], completed: false, mode: "live", createdByUid: "e2e", contactId: null });
     }
@@ -81,7 +81,7 @@ test("approve, confirm a re-send, and reject agent proposals from the Approvals 
     await db.doc(`agentProposals/${ids.resend}`).set(
       proposal(ids.resend, taskRefs[1]!, titles[1]!, { priorAttemptSent: { claimId: "c0", settledAt: new Date() } })
     );
-    await db.doc(`agentProposals/${ids.reject}`).set(proposal(ids.reject, taskRefs[0]!, `E2E reject ${stamp}`));
+    await db.doc(`agentProposals/${ids.reject}`).set(proposal(ids.reject, taskRefs[2]!, titles[2]!));
 
     await page.goto(`/sa/${sa}/approvals`);
     const card = (id: string) => page.getByTestId(`approval-${id}`);
@@ -106,9 +106,13 @@ test("approve, confirm a re-send, and reject agent proposals from the Approvals 
     await card(ids.reject).getByRole("button", { name: "Reject" }).click();
     await expect(card(ids.reject)).toContainText("Rejected", { timeout: 30_000 });
     expect((await db.doc(`agentProposals/${ids.reject}`).get()).data()?.status).toBe("rejected");
+    expect((await taskRefs[2]!.get()).data()?.completed).toBe(false);
   } finally {
     await saRef.update(previousGates);
-    for (const ref of [...proposalRefs, ...taskRefs, keyRef]) await deleteScoped(ref);
+    // The aiSuiteActions rows the approvals wrote — found by THIS spec's
+    // proposal ids only, then scope-checked like every other delete.
+    const actions = await db.collection("aiSuiteActions").where("agentProposalId", "in", Object.values(ids)).get();
+    for (const ref of [...proposalRefs, ...taskRefs, keyRef, ...actions.docs.map((d) => d.ref)]) await deleteScoped(ref);
   }
 });
 

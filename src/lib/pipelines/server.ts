@@ -57,6 +57,23 @@ export async function ensureDefaultPipeline(
   });
 }
 
+/**
+ * A pipeline's stages WITHOUT seeding: a read path (a GET) must not write.
+ * A default pipeline not yet created reads as the stages it would be seeded
+ * with. Null when a non-default pipeline is missing.
+ */
+export async function readPipelineStages(
+  subAccountId: string,
+  pipelineId?: string | null,
+): Promise<PipelineDoc["stages"] | null> {
+  const id = pipelineId || DEFAULT_PIPELINE_ID;
+  const snap = await pipelinesCol(subAccountId).doc(id).get();
+  if (snap.exists) return toDoc(snap.id, snap.data()!).stages;
+  if (id !== DEFAULT_PIPELINE_ID) return null;
+  const sub = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
+  return sub.exists ? seedDefaultStages(sub.data()!.pipelineStages) : null;
+}
+
 /** One pipeline by id; `undefined`/absent id = the default. Null if missing. */
 export async function loadPipeline(
   subAccountId: string,

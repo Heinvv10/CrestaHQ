@@ -16,9 +16,15 @@ const STATUSES = new Set([
   "unsettled",
 ]);
 
+const GROUPS: Record<string, string[]> = {
+  open: ["pending", "unsettled"],
+  recent: ["executed", "failed", "rejected", "expired"],
+};
+
 /**
  * List a sub-account's agent proposals, newest first (optionally one
- * `?status=`, or `?status=open` for pending + unsettled — the sidebar badge),
+ * `?status=`; `open` = pending + unsettled, the actionable rows the page and
+ * the sidebar badge show; `recent` = the terminal ones),
  * for any member — minus scoped rows whose `territoryId` is
  * outside a territory-scoped caller's territories (a preview carries the
  * target's name and the message), exactly as firestore.rules' canSeeProposal.
@@ -34,13 +40,13 @@ export async function GET(
   if (access instanceof NextResponse) return access;
 
   const status = new URL(request.url).searchParams.get("status");
-  if (status !== null && status !== "open" && !STATUSES.has(status)) {
+  if (status !== null && !(status in GROUPS) && !STATUSES.has(status)) {
     return NextResponse.json({ error: "Unknown status" }, { status: 400 });
   }
   let q = getAdminDb()
     .collection("agentProposals")
     .where("subAccountId", "==", subAccountId);
-  if (status === "open") q = q.where("status", "in", ["pending", "unsettled"]);
+  if (status && status in GROUPS) q = q.where("status", "in", GROUPS[status]!);
   else if (status) q = q.where("status", "==", status);
   const snap = await q.orderBy("createdAt", "desc").limit(100).get();
   const scope = await territoryScopeFor({ ...access, subAccountId });

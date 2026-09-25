@@ -211,7 +211,12 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   const [webinar1Hidden, setWebinar1Hidden] = useState(true);
   // Agent API approvals: shown only while the agency enabled the Agent API.
   const [agentApiGate, setAgentApiGate] = useState<boolean | null>(null);
-  const openApprovals = useOpenApprovalsCount(badgeSubId, agentApiGate === true);
+  // Gate off: still surface rows whose outcome is unknown — a person must
+  // settle them even though nothing new can be approved.
+  const openApprovals = useOpenApprovalsCount(
+    badgeSubId,
+    agentApiGate === true ? "open" : agentApiGate === false ? "unsettled" : null
+  );
   // Per-feature "hide vs. show as Locked" flag. Only consulted when the
   // matching gate is off. HIDDEN IS THE DEFAULT — a disabled feature is omitted
   // entirely so the tenant never knows it exists; the agency owner has to opt a
@@ -495,8 +500,11 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
                 (item.href === "/webinars" &&
                   webinar1Gate === false &&
                   webinar1Hidden) ||
-                // No "Locked" row: with the Agent API off there is nothing to approve.
-                (item.href === "/approvals" && agentApiGate !== true);
+                // No "Locked" row: with the Agent API off the entry shows only
+                // while unsettled rows still need settling.
+                (item.href === "/approvals" &&
+                  agentApiGate !== true &&
+                  openApprovals === 0);
               if (gateHidden) return null;
               if (!item.enabled || gateLocked) {
                 const lockedByGate = gateLocked;
