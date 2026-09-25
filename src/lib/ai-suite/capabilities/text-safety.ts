@@ -11,7 +11,10 @@
  *  cell (U+2800). Refused in stored text an approver reads (a newline could
  *  fake a preview row, an invisible one hide text). U+FE0F (emoji
  *  presentation) is a variation selector, not in the set. */
-export const UNSAFE_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
+const INVISIBLE_LETTERS = "\\u034f\\u115f\\u1160\\u2800\\u3164\\uffa0";
+export const UNSAFE_TEXT_RE = new RegExp(`[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}${INVISIBLE_LETTERS}]`, "u");
+/** What oneLine removes outright: format characters and the same invisible letters. */
+const STRIP_RE = new RegExp(`[\\p{Cf}${INVISIBLE_LETTERS}]`, "gu");
 
 /** A ZWNJ / ZWJ that joins two letters, marks or emoji — Persian names,
  *  family emoji sequences (U+1F468 U+200D U+1F469 …) — is text, not a trick. */
@@ -38,5 +41,5 @@ export function agentText(key: string, value: string): string {
  *  externally supplied data — a WhatsApp profile name, a web-chat visitor —
  *  may hold separators, control, zero-width or bidi characters). */
 export function oneLine(value: unknown): string {
-  return String(value ?? "").replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").replace(/\p{Cf}/gu, "").trim();
+  return String(value ?? "").replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").replace(STRIP_RE, "").trim();
 }

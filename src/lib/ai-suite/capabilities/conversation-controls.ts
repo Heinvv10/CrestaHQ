@@ -24,14 +24,18 @@ const EFFECT: Record<string, string> = {
   auto: "The AI replies to people on its own, with no one checking first.",
 };
 
-/** AI replies held for quiet hours on this contact's thread. They go out at
- *  release only while the conversation is on auto (quiet-hours-release.ts). */
-async function heldAiReplies(subAccountId: string, contactId: unknown): Promise<number> {
-  if (!isDocId(contactId)) return 0;
+/**
+ * AI replies held for quiet hours that this conversation's mode releases.
+ * quiet-hours-release sends one only while `conversations/{contactId}` is on
+ * auto — the contact-keyed thread — so a web-chat conversation (its own doc
+ * id) releases none. A hold being released right now still counts.
+ */
+async function heldAiReplies(subAccountId: string, conversationId: unknown, contactId: unknown): Promise<number> {
+  if (!isDocId(contactId) || conversationId !== contactId) return 0;
   const snap = await getAdminDb()
     .collection(`subAccounts/${subAccountId}/quietHoursHolds`)
     .where("contactId", "==", contactId)
-    .where("status", "==", "pending")
+    .where("status", "in", ["pending", "releasing"])
     .get();
   return snap.docs.filter((d) => {
     const p = d.data().payload as { kind?: string; message?: { source?: string } } | undefined;
@@ -71,7 +75,7 @@ export const CONVERSATION_CONTROL_CAPABILITIES: AiSuiteCapability[] = [
     approvalTarget: conversationTarget,
     preview: async (ctx, args) => {
       const c = await tenantConversation(ctx.subAccountId!, args.conversationId);
-      const held = args.mode === "auto" ? await heldAiReplies(ctx.subAccountId!, c.contactId) : 0;
+      const held = args.mode === "auto" ? await heldAiReplies(ctx.subAccountId!, args.conversationId, c.contactId) : 0;
       return {
         rows: [
           { label: "Conversation", value: oneLine(c.contactName) || oneLine(c.visitorLabel) || "(unnamed)" },

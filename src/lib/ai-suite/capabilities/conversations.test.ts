@@ -248,3 +248,34 @@ describe("stored text from outside is one visible line", () => {
     expect(values[0]).toBe("Annx");
   });
 });
+
+describe("breaker notes", () => {
+  const hold = (status: string) => ({ contactId: "c1", status, payload: { kind: "message", message: { source: "ai_reply" } } });
+  const heldRow = async (conversationId: string) => {
+    const r = await dispatchAgentTool(auth, "set_bot_mode", { conversationId, mode: "auto" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    return (row(r.proposal.id).preview as Array<{ label: string; value: string }>).find((p) => p.label === "Held replies");
+  };
+
+  it("oneLine strips the invisible letters too: a Hangul filler never reaches a preview value", async () => {
+    const { hasUnsafeText } = await import("@/lib/ai-suite/capabilities/text-safety");
+    mem.seed("conversations/c1", { ...CONV, contactName: "Ann\u3164Evil\u2800\u034f" });
+    const r = await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode: "auto" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    const values = (row(r.proposal.id).preview as Array<{ value: string }>).map((p) => p.value);
+    expect(values.some((v) => hasUnsafeText(v))).toBe(false);
+    expect(values[0]).toBe("AnnEvil");
+  });
+
+  it("a web-chat conversation linked to the contact releases none of the contact's held replies", async () => {
+    mem.seed("conversations/web_s1", { ...CONV, contactId: "c1", sessionId: "s1" });
+    mem.seed("subAccounts/sa1/quietHoursHolds/h1", hold("pending"));
+    expect(await heldRow("web_s1")).toBeUndefined();
+    expect(await heldRow("c1")).toMatchObject({ value: expect.stringContaining("1 AI reply held") });
+  });
+
+  it("a hold being released right now still counts", async () => {
+    mem.seed("subAccounts/sa1/quietHoursHolds/h1", hold("releasing"));
+    expect(await heldRow("c1")).toMatchObject({ value: expect.stringContaining("1 AI reply held") });
+  });
+});
