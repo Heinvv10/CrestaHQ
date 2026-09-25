@@ -166,6 +166,45 @@ describe("tools/call", () => {
     expect(before - snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining).toBe(3);
   });
 
+  it("a request with no tools/call (tools/list) consumes exactly one token; past the limit it is a v1 429", async () => {
+    const list = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+    expect((await rawPost(list)).status).toBe(200); // opens this key's bucket
+    const before = snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining;
+    expect((await rawPost(list)).status).toBe(200);
+    expect(before - snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining).toBe(1);
+    while (checkAndCount({ keyId, mode: "live", scope: "agent" }).ok);
+    const res = await rawPost(list);
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(await res.json()).toMatchObject({
+      error: { type: "rate_limit_error", code: "rate_limited", request_id: expect.any(String) },
+    });
+    await settle();
+    expect(logs("/api/mcp").filter((l) => l.keyId === keyId)).toMatchObject([{ responseStatus: 429, errorCode: "rate_limited" }]);
+  });
+
+  it("invalid JSON is a JSON-RPC parse error, still charged one token", async () => {
+    expect((await rawPost({ jsonrpc: "2.0", id: 1, method: "tools/list" })).status).toBe(200);
+    const before = snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining;
+    const res = await POST(new Request(URL_, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: "{not json",
+    }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: -32700 } });
+    expect(before - snapshotRemaining({ keyId, mode: "live", scope: "agent" }).remaining).toBe(1);
+  });
+
+  it("a body over 4 MiB is a 413, never parsed", async () => {
+    const res = await POST(new Request(URL_, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: `"${"x".repeat(4 * 1024 * 1024)}"`,
+    }));
+    expect(res.status).toBe(413);
+  });
+
   it("a call past the per-key limit is an isError rate_limited result, not a run", async () => {
     const client = await connect();
     for (let i = 0; i < 60; i++) checkAndCount({ keyId, mode: "live", scope: "agent" });

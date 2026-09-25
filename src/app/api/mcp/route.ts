@@ -4,6 +4,7 @@ import type { NextResponse } from "next/server";
 import { authenticateApiRequest, requireApiScope, type ApiAuthContext } from "@/lib/api/auth";
 import { apiError } from "@/lib/api/responses";
 import { captureRequestLog } from "@/lib/api/logs";
+import { checkAndCount } from "@/lib/api/rate-limit";
 import { agentPrecheck } from "@/lib/api/agent-precheck";
 import { handleMcpRequest } from "@/lib/api/agent-mcp";
 
@@ -13,6 +14,9 @@ import { handleMcpRequest } from "@/lib/api/agent-mcp";
  * scope, then the same precheck as REST (test mode refused, the Agent API
  * gate read fresh). Those refusals are plain HTTP v1 errors, logged as
  * `/api/mcp`; per-call refusals are MCP `isError` results (see agent-mcp).
+ * Rate limit: each tools/call takes one token (in agent-mcp); a request
+ * with no tools/call at all (initialize, tools/list, notifications) takes
+ * exactly one, here — so nothing on this route is unthrottled.
  * GET (no server-initiated stream) and DELETE (no sessions) → 405.
  */
 export async function POST(request: Request): Promise<Response> {
@@ -20,7 +24,7 @@ export async function POST(request: Request): Promise<Response> {
   const auth = await authenticateApiRequest(request);
   if (auth instanceof Response) return auth;
 
-  const refuse = (response: NextResponse, code: string) => {
+  const refuse = (response: Response, code: string) => {
     void captureRequestLog({
       subAccountId: auth.subAccountId,
       agencyId: auth.agencyId,
@@ -58,8 +62,35 @@ export async function POST(request: Request): Promise<Response> {
       .catch(() => "refused");
     return refuse(refused, code);
   }
+  // Read the body here (capped like the transport's own read) so the
+  // token decision is made before any message runs; the transport then
+  // uses this parse instead of re-reading.
+  const raw = await readCappedBody(request);
+  if (raw === null) return refuse(jsonRpcError(413, -32000, "Request body too large."), "body_too_large");
+  let parsed: unknown;
   try {
-    return await handleMcpRequest(auth, request);
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  const hasToolCall = messages.some(
+    (m) => !!m && typeof m === "object" && (m as { method?: unknown }).method === "tools/call",
+  );
+  if (!hasToolCall) {
+    const rl = checkAndCount({ keyId: auth.keyId, mode: auth.mode, scope: "agent" });
+    if (!rl.ok) {
+      return refuse(
+        apiError(auth, "rate_limit_error", "rate_limited", `Too many requests. Retry after ${rl.retryAfterSec}s.`, {
+          extraHeaders: { "Retry-After": String(rl.retryAfterSec) },
+        }),
+        "rate_limited",
+      );
+    }
+  }
+  if (parsed === undefined) return refuse(jsonRpcError(400, -32700, "Parse error: Invalid JSON"), "parse_error");
+  try {
+    return await handleMcpRequest(auth, request, parsed);
   } catch (err) {
     console.error("[api/mcp] request failed", err);
     return refuse(internalError(auth), "internal_error");
@@ -68,6 +99,32 @@ export async function POST(request: Request): Promise<Response> {
 
 const internalError = (auth: ApiAuthContext) =>
   apiError(auth, "internal_error", "internal_error", "Something went wrong on our end. Quote this request_id in support.");
+
+/** The transport's default body bound (4 MiB). */
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+
+/** The body as text, or null past MAX_BODY_BYTES (read no further). */
+async function readCappedBody(request: Request): Promise<string | null> {
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+const jsonRpcError = (status: number, code: number, message: string) =>
+  Response.json({ jsonrpc: "2.0", error: { code, message }, id: null }, { status });
 
 const methodNotAllowed = () =>
   new Response(null, { status: 405, headers: { Allow: "POST" } });

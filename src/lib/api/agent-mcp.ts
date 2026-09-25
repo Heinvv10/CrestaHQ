@@ -119,7 +119,11 @@ async function callTool(
 }
 
 /** Serve one MCP HTTP request for an authenticated, prechecked agent key. */
-export async function handleMcpRequest(auth: ApiAuthContext, request: Request): Promise<Response> {
+export async function handleMcpRequest(
+  auth: ApiAuthContext,
+  request: Request,
+  parsedBody: unknown,
+): Promise<Response> {
   const server = new Server(
     { name: "leadstack", version: "1.0.0" },
     { capabilities: { tools: {} } },
@@ -134,7 +138,7 @@ export async function handleMcpRequest(auth: ApiAuthContext, request: Request): 
   });
   await server.connect(transport);
   try {
-    return await transport.handleRequest(request);
+    return await transport.handleRequest(request, { parsedBody });
   } finally {
     await server.close();
   }
