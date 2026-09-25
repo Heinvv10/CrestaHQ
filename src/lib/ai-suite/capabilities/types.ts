@@ -12,6 +12,14 @@ import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
  */
 export class CapabilityUserError extends Error {}
 
+/**
+ * The action may or may not have happened (a provider that could not say
+ * whether a message was delivered). An approved proposal that throws this is
+ * left `unsettled` for a person to check — never `failed`, which would
+ * invite a second send.
+ */
+export class CapabilityOutcomeUnknown extends CapabilityUserError {}
+
 /** Role a capability requires. Enforced server-side in the confirm route. */
 export type RequiredRole =
   | "agencyOwner"
