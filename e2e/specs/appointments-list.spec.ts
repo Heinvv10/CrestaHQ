@@ -61,7 +61,7 @@ function members() {
 // stale) never sweeps this run's still-live fixtures (see
 // e2e/lib/run-id.ts).
 const TITLE_PREFIX = "E2E Appt ";
-const TITLE_PREFIX_END = TITLE_PREFIX + "";
+const TITLE_PREFIX_END = TITLE_PREFIX + "\uF8FF";
 const RUN_TITLE_PREFIX = `${TITLE_PREFIX}${runId()} `;
 const STALE_MS = 6 * 3600_000;
 
@@ -118,7 +118,7 @@ const HOST_UID_PREFIX = "e2e-appt-";
 async function purgeStaleHosts() {
   const snap = await members()
     .where("uid", ">=", HOST_UID_PREFIX)
-    .where("uid", "<", HOST_UID_PREFIX + "")
+    .where("uid", "<", HOST_UID_PREFIX + "\uF8FF")
     .get();
   for (const d of snap.docs) {
     const m = d.data();
