@@ -97,6 +97,11 @@ describe("propose", () => {
       editTemplate({ variables: [{ ...TPL.variables[0], mergeTag: "workspace.name" }, TPL.variables[1]] });
       mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, name: "Acme\u00a0\u00a0\u00a0\u00a0\u00a0Fibre" });
     }, "more than 4 spaces"],
+    ["a stored value with a space that doesn't show as sent (U+1680)", () => {
+      editTemplate({ variables: [{ ...TPL.variables[0], mergeTag: "workspace.name" }, TPL.variables[1]] });
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, name: "Acme\u1680Fibre" });
+    }, "would not show exactly as sent"],
+    ["a placeholder beyond the variables", () => editTemplate({ body: "Hi {{1}}, on {{2}} at {{3}}." }), "uses {{3}}, which has no variable"],
     ["a WhatsApp opt-out", () => mem.seed("contacts/c1", { ...ANN, whatsappOptedOut: true }), "opted out of WhatsApp"],
   ])("%s → refused, no proposal", async (_label, arrange, message) => {
     await arrange();
@@ -144,6 +149,15 @@ describe("approve", () => {
   ])("the template's %s changed since the proposal → preview_changed, 0 sends", async (_label, patch) => {
     const id = await proposeId();
     editTemplate(patch);
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "preview_changed" });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("the provider's template id (sid) changed since the proposal → preview_changed, 0 sends", async () => {
+    const id = await proposeId();
+    editTemplate({ contentSid: "HX2" });
     const res = await decide(id, "approve");
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: "preview_changed" });

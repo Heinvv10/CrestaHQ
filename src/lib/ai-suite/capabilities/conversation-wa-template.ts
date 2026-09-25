@@ -132,10 +132,21 @@ export const CONVERSATION_WA_TEMPLATE_CAPABILITIES: AiSuiteCapability[] = [
         const problem = valueProblem(values[i] ?? "");
         if (problem) throw new CapabilityUserError(`The "${v.label}" value ${problem}.`);
       });
+      // A placeholder with no value would be filled by the provider (Twilio
+      // falls back to the sample), never by what the approver read.
+      for (const [, n] of tpl.body.matchAll(/\{\{\s*(\d+)\s*\}\}/g)) {
+        if (!values[Number(n) - 1]) throw new CapabilityUserError(`The template's text uses {{${n}}}, which has no variable to fill it.`);
+      }
       const rendered = renderPreview(tpl.body, values);
       if (rendered.length > MAX_TEXT) throw new CapabilityUserError(`The filled-in template must be at most ${MAX_TEXT} characters.`);
       const shown = messageBody(rendered);
       if (shown === null) throw new CapabilityUserError(`The template's text ${UNSAFE_TEXT_MESSAGE}`);
+      // The Message row must be what is dispatched. The agent's own values are
+      // normalised already, so this trips only on stored text (a template or a
+      // merge-tag value with odd spacing, e.g. U+1680, which renders as a dash).
+      if (shown !== rendered) {
+        throw new CapabilityUserError("The filled-in template has spacing or characters that would not show exactly as sent.");
+      }
       const base = await outgoingPreview(ctx, { ...args, channel: "whatsapp", body: shown }, [
         { label: "Template", value: `${tpl.displayName} (${tpl.name})` },
         { label: "Language", value: tpl.language },
