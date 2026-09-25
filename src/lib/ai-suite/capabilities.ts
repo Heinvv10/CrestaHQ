@@ -24,6 +24,8 @@ import { WEBHOOK_URL_CAPABILITIES } from "./capabilities/webhook-url";
 import { COMMUNITY_CAPABILITIES } from "./capabilities/community";
 import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
 import { CONTACT_CAPABILITIES } from "./capabilities/contacts";
+import { CONTACT_EDIT_CAPABILITIES } from "./capabilities/contact-edit";
+import { CONTACT_QUEUED_CAPABILITIES } from "./capabilities/contact-queued";
 import { TASK_CAPABILITIES } from "./capabilities/tasks";
 import { TASK_COMPLETE_CAPABILITIES } from "./capabilities/task-complete";
 import { EVENT_CAPABILITIES } from "./capabilities/events";
@@ -80,6 +82,8 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...COMMUNITY_CAPABILITIES,
   ...WORKFLOW_CAPABILITIES,
   ...CONTACT_CAPABILITIES,
+  ...CONTACT_EDIT_CAPABILITIES,
+  ...CONTACT_QUEUED_CAPABILITIES,
   ...TASK_CAPABILITIES,
   ...TASK_COMPLETE_CAPABILITIES,
   ...EVENT_CAPABILITIES,

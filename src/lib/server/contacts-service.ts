@@ -296,6 +296,13 @@ export async function updateContactServerSide(opts: {
    * cap (lib/api/enrolment-cap).
    */
   apiKeyId?: string;
+  /** When set, a contact in any other sub-account reads as missing (null). */
+  subAccountId?: string;
+  /**
+   * An API agent made this write: a tag it adds holds its enrolments as
+   * proposals (ruling Q), and the update AWAITS the trigger to return them.
+   */
+  actor?: AgentActor;
 }): Promise<ContactWriteResult | null> {
   const db = getAdminDb();
   const ref = db.doc(`contacts/${opts.contactId}`);
@@ -303,6 +310,7 @@ export async function updateContactServerSide(opts: {
   if (!snap.exists) return null;
 
   const existing = snap.data()!;
+  if (opts.subAccountId !== undefined && existing.subAccountId !== opts.subAccountId) return null;
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
   const { prospecting, ...fields } = opts.patch;
   const patch = {
@@ -372,6 +380,7 @@ export async function updateContactServerSide(opts: {
     mode,
     type: "contact.updated",
     payload: { contact },
+    ...(opts.actor ? { byAgent: true } : {}),
   });
   // Replace-semantics patch → diff against the pre-update tags.
   const trigger = patch.tags
@@ -383,9 +392,20 @@ export async function updateContactServerSide(opts: {
         before: existing.tags,
         after: patch.tags,
         apiKeyId: opts.apiKeyId,
+        actor: opts.actor,
       })
     : null;
 
+  if (opts.actor) {
+    const outcome = trigger ? await trigger : null;
+    return {
+      id: ref.id,
+      contact,
+      firedTrigger: trigger !== null,
+      held: outcome?.held ?? [],
+      holdFailures: outcome ? holdFailuresOf(outcome) : [],
+    };
+  }
   return { id: ref.id, contact, firedTrigger: trigger !== null };
 }
 
@@ -404,6 +424,8 @@ export function fireTagsAdded(opts: {
   before: unknown;
   after: string[];
   apiKeyId?: string;
+  /** An agent's write: its enrolments are held for approval. */
+  actor?: AgentActor;
 }): Promise<TriggerOutcome> | null {
   if (opts.mode !== "live") return null;
   const oldTags: string[] = Array.isArray(opts.before) ? opts.before : [];
@@ -416,6 +438,7 @@ export function fireTagsAdded(opts: {
     contactId: opts.contactId,
     context: { addedTags: added },
     apiKeyId: opts.apiKeyId,
+    ...(opts.actor ? { hold: opts.actor } : {}),
   });
 }
 

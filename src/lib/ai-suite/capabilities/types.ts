@@ -54,7 +54,10 @@ export type CapabilityApproval =
   | "workflow_activate"
   | "workflow_enrolment"
   | "hard_delete"
-  | "spend";
+  | "spend"
+  /** A change to where messages go (a contact's phone / email): pins the
+   *  new values, like outbound, since queued sends follow the contact. */
+  | "channel_change";
 
 export interface ExecuteResult {
   /** Human-readable confirmation appended to the chat (or, for readonly

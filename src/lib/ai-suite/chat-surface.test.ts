@@ -167,15 +167,23 @@ describe("registry invariants", () => {
     ).toEqual([]);
   });
 
-  // Vacuous today: no shipped capability sets `approval` yet (PR8+ add them).
-  // Each one must then add sample args here; a missing entry fails the test.
-  const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {};
+  // Every approval capability adds sample args here; a missing entry fails
+  // the test. They target the contact seeded below.
+  const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {
+    update_contact_channels: { contactId: "c_sample", phone: "+27821234567", email: "new@x.io" },
+    delete_contact: { contactId: "c_sample" },
+  };
+  const seedSample = () =>
+    mem.seed("contacts/c_sample", {
+      subAccountId: "sa1", agencyId: "ag1", name: "Sample", phone: "+27820000000", email: "old@x.io", territoryId: "global",
+    });
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {
     const { buildPreviewContext } = await import("@/lib/api/agent-context");
     const tenant = { agencyId: "ag1", subAccountId: "sa1" };
     const admin = { ...tenant, uid: "u_admin", email: "admin@x.io", displayName: "A", subAccountRole: "admin" };
     const rep = { ...tenant, uid: "u_rep", email: "rep@x.io", displayName: "R", subAccountRole: "collaborator" };
+    seedSample();
     for (const cap of AI_SUITE_CAPABILITIES.filter((c) => c.approval)) {
       const args = PREVIEW_SAMPLE_ARGS[cap.name];
       expect(args, `${cap.name} needs PREVIEW_SAMPLE_ARGS`).toBeDefined();
@@ -185,11 +193,14 @@ describe("registry invariants", () => {
     }
   });
 
-  // Vacuous today, like the test above: every OUTBOUND approval capability's
-  // preview must pin what it will send to (dispatch and approve refuse otherwise).
-  it("every outbound approval capability's sample preview pins a non-empty target", async () => {
+  // Every OUTBOUND or CHANNEL_CHANGE approval capability's preview must pin
+  // its target (dispatch and approve refuse otherwise).
+  it("every outbound / channel_change approval capability's sample preview pins a non-empty target", async () => {
     const { buildPreviewContext } = await import("@/lib/api/agent-context");
-    for (const cap of AI_SUITE_CAPABILITIES.filter((c) => c.approval === "outbound")) {
+    seedSample();
+    const pinning = AI_SUITE_CAPABILITIES.filter((c) => c.approval === "outbound" || c.approval === "channel_change");
+    expect(pinning.map((c) => c.name)).toContain("update_contact_channels");
+    for (const cap of pinning) {
       const p = await cap.preview!(buildPreviewContext("ag1", "sa1"), PREVIEW_SAMPLE_ARGS[cap.name] ?? {});
       expect(Array.isArray(p) ? {} : (p.pinned ?? {}), `${cap.name} must pin its target`).not.toEqual({});
     }
