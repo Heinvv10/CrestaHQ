@@ -5,8 +5,9 @@ import { deleteContactServerSide, findContactBlockers } from "@/lib/server/conta
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str } from "./helpers";
+import { EMAIL_RE, oneLine, str, UNSAFE_TEXT_RE } from "./helpers";
 import { tenantContact } from "./contact-edit";
+import { recordProvenanceRows } from "./record-provenance";
 
 /**
  * Contact actions an API agent may only PROPOSE (AGENT_API_V1_PLAN.md, PR7):
@@ -15,10 +16,6 @@ import { tenantContact } from "./contact-edit";
  * preview, approvalTarget and execute, so a contact moved or deleted since
  * the proposal is refused at approve, never acted on.
  */
-
-/** Control (Cc), format (Cf: zero-width, bidi overrides) and line/paragraph
- *  separator characters. */
-const INVISIBLE_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 const contactIdParam = { type: "string", description: "The contact's id (from find_contacts)." };
 
@@ -66,7 +63,7 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
         const email = str(raw, "email").toLowerCase();
         // The approver must see exactly what gets stored: no control,
         // zero-width or bidi characters, which render as nothing.
-        if (!EMAIL_RE.test(email) || INVISIBLE_RE.test(email)) {
+        if (!EMAIL_RE.test(email) || UNSAFE_TEXT_RE.test(email)) {
           return { ok: false, error: "that email address doesn't look valid" };
         }
         args.email = email;
@@ -81,7 +78,7 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
     approvalTarget: contactTarget,
     preview: async (ctx, args) => {
       const c = await tenantContact(ctx.subAccountId!, args.contactId as string);
-      const rows = [{ label: "Contact", value: String(c.name ?? "(unnamed)") }];
+      const rows = [{ label: "Contact", value: oneLine(c.name) || "(unnamed)" }];
       const pinned: Record<string, unknown> = { contactId: args.contactId };
       if (args.phone !== undefined) {
         rows.push({ label: "Phone", value: `${c.phone || "(none)"} → ${args.phone}` });
@@ -107,6 +104,9 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
         contactId: args.contactId as string,
         patch,
         subAccountId: ctx.subAccountId!,
+        // The values were the proposing agent's: stamp its key, so a later
+        // delete preview warns (no actor: this write holds and fires nothing).
+        ...(ctx.approved?.keyPrefix ? { agentEditedBy: { keyPrefix: ctx.approved.keyPrefix } } : {}),
       });
       if (!res) throw new CapabilityUserError("That contact isn't in this workspace.");
       return {
@@ -134,15 +134,17 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
     preview: async (ctx, args) => {
       const c = await tenantContact(ctx.subAccountId!, args.contactId as string);
       const { blockers } = await findContactBlockers(getAdminDb(), ctx.subAccountId!, args.contactId as string);
+      // One line per value: a stored newline must not fake a row.
       return [
         { label: "Delete contact", value: String(c.name ?? "(unnamed)") },
+        ...recordProvenanceRows(args.contactId as string, c),
         { label: "Phone", value: String(c.phone || "(none)") },
         { label: "Email", value: String(c.email || "(none)") },
         { label: "Also deleted", value: "Its notes, activities, messages and form submissions" },
         ...(blockers.length
           ? [{ label: "Will fail", value: `Still linked to ${describeBlockers(blockers)}; clear those first.` }]
           : []),
-      ];
+      ].map((r) => ({ ...r, value: oneLine(r.value) }));
     },
     execute: async (ctx, args) => {
       const res = await deleteContactServerSide({

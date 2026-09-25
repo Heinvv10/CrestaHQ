@@ -249,7 +249,11 @@ export async function POST(
     id: proposalId,
     claimId,
     execute: (signal) => {
-      const execCtx = { ...actionCtx, approved: { pinned }, signal };
+      const execCtx = {
+        ...actionCtx,
+        approved: { pinned, keyPrefix: proposal.keyPrefix as string | undefined },
+        signal,
+      };
       return enrolment
         ? replayHeldEnrolment({ id: proposalId, ...proposal }, execCtx)
         : cap!.execute(execCtx, args);

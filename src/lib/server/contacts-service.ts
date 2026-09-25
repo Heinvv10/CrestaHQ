@@ -21,6 +21,7 @@ import type { CustomFieldValue } from "@/types/custom-fields";
 import { normalizePhoneLenient } from "@/lib/contacts/phone";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { isDocId } from "@/lib/server/doc-id";
+import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 
 /**
  * Server-side Contact write service — the single chokepoint where a contact
@@ -129,7 +130,7 @@ export async function createContactServerSide(
 ): Promise<ContactWriteResult> {
   const ref = getAdminDb().collection("contacts").doc();
   const doc = buildContactDoc(input);
-  await ref.set(doc);
+  await ref.set({ ...doc, ...agentEditStamp(input.actor) });
   if (input.optedOutOnWhatsapp) {
     const now = new Date();
     const contact = serializeContactForApi(
@@ -328,6 +329,11 @@ export async function updateContactServerSide(opts: {
    * Used instead of `patch` (pass `{}`); never with a territory change.
    */
   computePatch?: (current: FirebaseFirestore.DocumentData) => UpdateContactPatch;
+  /**
+   * An agent chose these values but a person approved the write: stamp the
+   * agent's key (agentEditStamp) without `actor`'s hold / webhook effects.
+   */
+  agentEditedBy?: Pick<AgentActor, "keyPrefix">;
 }): Promise<ContactWriteResult | null> {
   if (!isDocId(opts.contactId)) return null;
   const db = getAdminDb();
@@ -343,7 +349,8 @@ export async function updateContactServerSide(opts: {
   // update(), not set(..., {merge: true}): merge recurses into nested maps,
   // which would keep cleared customFields values forever. update() replaces
   // a map field wholesale and behaves identically for the scalar fields.
-  const update = { ...patch, updatedAt: FieldValue.serverTimestamp() };
+  const stamp = agentEditStamp(opts.actor ?? opts.agentEditedBy);
+  const update = { ...patch, updatedAt: FieldValue.serverTimestamp(), ...stamp };
   if (opts.computePatch) {
     const computed = await db.runTransaction(async (tx) => {
       const current = (await tx.get(ref)).data();
@@ -352,7 +359,7 @@ export async function updateContactServerSide(opts: {
       // A territory move also re-scopes conversations (the branch below).
       if ("territoryId" in computedPatch) throw new Error("computePatch may not change territoryId.");
       const next = buildUpdatePatch(current, computedPatch);
-      tx.update(ref, { ...next, updatedAt: FieldValue.serverTimestamp() });
+      tx.update(ref, { ...next, updatedAt: FieldValue.serverTimestamp(), ...stamp });
       return { current, next };
     });
     if (!computed) return null;

@@ -2,7 +2,7 @@ import "server-only";
 
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str, agentActor } from "./helpers";
+import { EMAIL_RE, str, agentActor, UNSAFE_TEXT_RE } from "./helpers";
 
 export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -31,6 +31,12 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
     validate: (raw) => {
       const name = str(raw, "name");
       if (!name) return { ok: false, error: "a contact name is required" };
+      const r = (raw ?? {}) as Record<string, unknown>;
+      for (const k of ["name", "company", "phone", "email"] as const) {
+        if (typeof r[k] === "string" && UNSAFE_TEXT_RE.test(r[k] as string)) {
+          return { ok: false, error: `${k} can't contain control, invisible or bidi characters` };
+        }
+      }
       const email = str(raw, "email").toLowerCase();
       if (email && !EMAIL_RE.test(email)) {
         return { ok: false, error: "that email address doesn't look valid" };

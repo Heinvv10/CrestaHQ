@@ -1,10 +1,65 @@
 import "server-only";
 
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
+import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
+import type { AgentActor } from "@/lib/workflows/agent-hold";
+import type { CompanyFormData } from "@/types/companies";
+
 /**
- * Server half of companies. Create/update/list are client-SDK writes under
- * the `companies` rules block; these two helpers are the parts that need
- * the Admin SDK — a cross-doc batch and a tenancy check on the link.
+ * Server half of companies. The dashboard creates/updates/lists through the
+ * client SDK under the `companies` rules block; the Admin SDK paths here are
+ * a cross-doc batch, a tenancy check on the link, and create/update for API
+ * agents — which write the same doc shape as lib/firestore/companies.ts.
+ * Companies fire no workflow triggers or webhooks.
  */
+
+/** Create a company exactly as the dashboard's createCompany does. */
+export async function createCompanyServerSide(input: {
+  agencyId: string;
+  subAccountId: string;
+  createdByUid: string;
+  data: CompanyFormData;
+  /** An API agent's write: stamped (see agentEditStamp). */
+  actor?: Pick<AgentActor, "keyPrefix">;
+}): Promise<string> {
+  const ref = getAdminDb().collection("companies").doc();
+  await ref.set({
+    ...input.data,
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    createdByUid: input.createdByUid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    ...agentEditStamp(input.actor),
+  });
+  return ref.id;
+}
+
+/**
+ * Patch a company as the dashboard's updateCompany does (the company doc
+ * only: linked contacts keep the name copied at link time). Returns false
+ * when the company is missing or in another sub-account; the check and the
+ * write share one transaction.
+ */
+export async function updateCompanyServerSide(opts: {
+  companyId: string;
+  subAccountId: string;
+  data: Partial<CompanyFormData>;
+  /** An API agent's write: stamped (see agentEditStamp). */
+  actor?: Pick<AgentActor, "keyPrefix">;
+}): Promise<boolean> {
+  if (!isDocId(opts.companyId)) return false;
+  const db = getAdminDb();
+  const ref = db.doc(`companies/${opts.companyId}`);
+  return db.runTransaction(async (tx) => {
+    const current = (await tx.get(ref)).data();
+    if (!current || current.subAccountId !== opts.subAccountId) return false;
+    tx.update(ref, { ...opts.data, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(opts.actor) });
+    return true;
+  });
+}
 
 export type CompanyLink =
   | { ok: true; companyId: string; company: string }

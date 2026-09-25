@@ -238,8 +238,9 @@ For an external LLM agent. Keys minted with the `agent` scope (exclusive with
 - `GET /api/v1/tools` → `{tools: [{name, description, parameters, readOnly, approval?}]}` —
   `parameters` is the tool's JSON Schema.
 - `POST /api/v1/tools/{name}` with the args as the JSON body. A write returns 200
-  `{result, ref?, held?, holdFailures?}` (`held` = workflow enrolments queued for
-  approval instead of started). A tool that needs a person returns 202
+  `{result, ref?, held?, holdFailures?, truncated?}` (`held` = workflow enrolments
+  queued for approval instead of started; `truncated: true` = a read hit its row
+  cap and may be incomplete). A tool that needs a person returns 202
   `{proposal: {id, status, summary, preview}}` and waits on the sub-account's
   Approvals page. Refusals use the v1 error body; an unknown tool is the same 404
   as one the key may not call. `Idempotency-Key` is honoured for writes and

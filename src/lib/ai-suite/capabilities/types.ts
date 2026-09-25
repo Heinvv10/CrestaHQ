@@ -33,7 +33,11 @@ export interface AiSuiteActionContext {
   /** Approve path only: what the approver reviewed. An outbound capability
    *  sends to `approved.pinned` values and refuses when the live target
    *  differs, never to a target nobody reviewed. */
-  approved?: { pinned: Record<string, unknown> | null };
+  approved?: {
+    pinned: Record<string, unknown> | null;
+    /** The prefix of the API key that PROPOSED the action (not the approver). */
+    keyPrefix?: string;
+  };
   /** Aborted when the approve path's execute deadline passes; provider calls
    *  should honour it. */
   signal?: AbortSignal;
@@ -76,6 +80,8 @@ export interface ExecuteResult {
   held?: HeldEnrolment[];
   /** Agent surface only: matched workflows neither held nor run. */
   holdFailures?: HoldFailure[];
+  /** A read that hit its row cap: the result may be incomplete. */
+  truncated?: true;
 }
 
 export type ValidateResult =

@@ -162,6 +162,20 @@ describe("tools/call", () => {
     expect(paths.some((p) => /[\n\u2028]/.test(p))).toBe(false);
   });
 
+  it("a capped read carries truncated: true — in MCP structuredContent and the REST body alike", async () => {
+    for (let i = 0; i < 501; i++) mem.seed(`companies/bulk${i}`, { subAccountId: "sa1", agencyId: "ag1", name: `Bulk ${i}` });
+    const r = await (await connect()).callTool({ name: "list_companies", arguments: {} });
+    expect(r.structuredContent).toMatchObject({ truncated: true });
+    const { POST: restCall } = await import("@/app/api/v1/tools/[name]/route");
+    const res = await restCall(
+      new Request("http://localhost/api/v1/tools/list_companies", {
+        method: "POST", headers: { authorization: `Bearer ${key}`, "content-type": "application/json" }, body: "{}",
+      }),
+      { params: Promise.resolve({ name: "list_companies" }) }
+    );
+    expect(await res.json()).toMatchObject({ truncated: true });
+  });
+
   it("a refusal is an isError result with its code", async () => {
     const r = await (await connect()).callTool({ name: "create_webhook", arguments: {} });
     expect(r).toMatchObject({ isError: true, structuredContent: { error: { code: "not_available" } } });
