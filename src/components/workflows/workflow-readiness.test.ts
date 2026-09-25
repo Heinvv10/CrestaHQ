@@ -11,6 +11,11 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/context/sub-account-context", () => ({
   useSubAccount: () => ({ subAccount: {} }),
 }));
+// WorkflowBuilder always mounts TestDialog (closed by default), which reads
+// the shared contacts context regardless of `open`.
+vi.mock("@/context/contacts-context", () => ({
+  useSubAccountContacts: () => ({ contacts: [], loading: false, error: null }),
+}));
 
 let container: HTMLDivElement;
 let root: Root;

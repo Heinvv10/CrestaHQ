@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { collection, getDocs, limit, query, where } from "firebase/firestore";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Search } from "lucide-react";
 import {
@@ -11,13 +10,42 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { getFirebaseDb } from "@/lib/firebase/client";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { contactDisplayName } from "@/lib/contacts/display-name";
+import type { Contact } from "@/types/contacts";
 
-interface Person {
-  id: string;
-  name: string;
-  email: string;
+/** Rendered results are capped so a large sub-account's list stays fast; the search itself still runs over every contact. */
+const RESULTS_CAP = 50;
+
+function digitsOnly(s: string): string {
+  return s.replace(/\D+/g, "");
+}
+
+/**
+ * True when the typed digits and the contact's phone agree on their
+ * trailing 9 digits — so a local "0823216574", a bare "823216574" and a
+ * formatted "+27 82 321 6574" all match a contact stored as
+ * "+27823216574", regardless of trunk prefix or country code on either
+ * side. Below 4 digits either side, skip phone matching (too noisy).
+ */
+function phoneMatches(contactPhone: string, queryDigits: string): boolean {
+  const contactDigits = digitsOnly(contactPhone);
+  if (queryDigits.length < 4 || contactDigits.length < 4) return false;
+  const n = Math.min(9, queryDigits.length, contactDigits.length);
+  return queryDigits.slice(-n) === contactDigits.slice(-n);
+}
+
+/** Name/email/phone search behind the Test workflow contact picker. Exported for tests. */
+export function filterTestContacts(contacts: Contact[], q: string): Contact[] {
+  const term = q.trim().toLowerCase();
+  if (!term) return contacts;
+  const queryDigits = digitsOnly(term);
+  return contacts.filter(
+    (c) =>
+      c.name.toLowerCase().includes(term) ||
+      c.email.toLowerCase().includes(term) ||
+      phoneMatches(c.phone, queryDigits),
+  );
 }
 
 export function TestDialog({
@@ -31,34 +59,9 @@ export function TestDialog({
   open: boolean;
   onOpenChange: (o: boolean) => void;
 }) {
-  const [contacts, setContacts] = useState<Person[] | null>(null);
+  const { contacts, loading, error } = useSubAccountContacts(open);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setContacts(null);
-    (async () => {
-      try {
-        const snap = await getDocs(
-          query(
-            collection(getFirebaseDb(), "contacts"),
-            where("subAccountId", "==", saId),
-            limit(100),
-          ),
-        );
-        setContacts(
-          snap.docs.map((d) => ({
-            id: d.id,
-            name: contactDisplayName(d.data()),
-            email: (d.data().email as string) || "",
-          })),
-        );
-      } catch {
-        setContacts([]);
-      }
-    })();
-  }, [open, saId]);
 
   async function enroll(contactId: string) {
     setBusy(contactId);
@@ -82,10 +85,8 @@ export function TestDialog({
     }
   }
 
-  const filtered = (contacts ?? []).filter((c) => {
-    const t = q.toLowerCase();
-    return !t || c.name.toLowerCase().includes(t) || c.email.toLowerCase().includes(t);
-  });
+  const filtered = useMemo(() => filterTestContacts(contacts, q), [contacts, q]);
+  const shown = filtered.slice(0, RESULTS_CAP);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -108,31 +109,44 @@ export function TestDialog({
           />
         </div>
         <div className="max-h-72 space-y-1 overflow-y-auto">
-          {contacts === null ? (
+          {loading ? (
             <div className="flex justify-center py-8 text-muted-foreground">
               <Loader2 className="h-5 w-5 animate-spin" />
             </div>
-          ) : filtered.length === 0 ? (
+          ) : error ? (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              Couldn&apos;t load contacts.
+            </p>
+          ) : shown.length === 0 ? (
             <p className="py-8 text-center text-sm text-muted-foreground">
               No contacts found.
             </p>
           ) : (
-            filtered.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => enroll(c.id)}
-                disabled={busy !== null}
-                className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/50 disabled:opacity-60"
-              >
-                <span className="min-w-0">
-                  <span className="block truncate font-medium">{c.name}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {c.email}
+            <>
+              {shown.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => enroll(c.id)}
+                  disabled={busy !== null}
+                  className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/50 disabled:opacity-60"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium">
+                      {contactDisplayName(c)}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {c.email}
+                    </span>
                   </span>
-                </span>
-                {busy === c.id && <Loader2 className="h-4 w-4 animate-spin" />}
-              </button>
-            ))
+                  {busy === c.id && <Loader2 className="h-4 w-4 animate-spin" />}
+                </button>
+              ))}
+              {filtered.length > RESULTS_CAP && (
+                <p className="py-2 text-center text-xs text-muted-foreground">
+                  {filtered.length - RESULTS_CAP} more match — refine your search.
+                </p>
+              )}
+            </>
           )}
         </div>
       </DialogContent>
