@@ -462,3 +462,10 @@ describe("middleware() — identity headers are never trusted from the caller (S
     expect(new URL(prot.headers.get("location")!).pathname).toBe("/login");
   });
 });
+
+describe("isPublicPath — the MCP route", () => {
+  it("lets a bearer-key agent reach /api/mcp without a session, and nothing that merely shares the prefix", () => {
+    expect(isPublicPath("/api/mcp")).toBe(true);
+    expect(isPublicPath("/api/mcpx")).toBe(false);
+  });
+});

@@ -244,11 +244,48 @@ For an external LLM agent. Keys minted with the `agent` scope (exclusive with
   Approvals page. Refusals use the v1 error body; an unknown tool is the same 404
   as one the key may not call. `Idempotency-Key` is honoured for writes and
   proposals and ignored for read tools (they are idempotent, and caching one
-  would store its result). A read tool's request log keeps status and latency
-  only: neither its request body (the args) nor its response body is stored.
+  would store its result). The request log keeps bodies only for a write tool
+  the key may call; for a read tool, or an unknown / misspelled name, it keeps
+  status and latency only.
 
-The MCP transport (PR5) and the full agent guide (`docs/features/agent-api.md`,
-PR14) follow; see `AGENT_API_V1_PLAN.md`.
+### MCP (`POST /api/mcp`)
+
+The same tools over MCP (Streamable HTTP, stateless; GET and DELETE → 405).
+Connect an MCP client with the agent key as a bearer header, e.g. Claude Code:
+
+```bash
+claude mcp add --transport http leadstack https://<your-app>/api/mcp \
+  --header "Authorization: Bearer lsk_live_…"
+```
+
+- `tools/list` lists the same tools as `GET /api/v1/tools`: `inputSchema` is
+  the tool's JSON Schema, reads carry `annotations.readOnlyHint`, and a tool
+  that needs a person carries its approval class in `_meta: {approval}`.
+- Rate limit: the same per-key agent budget as REST, at the same price — one
+  tool call costs one token. Every request pays one token up front, which
+  also covers its first `tools/call`; each further call in a JSON-RPC batch
+  pays one more (a 3-call batch costs 3), and a request that runs no call
+  still costs 1. An exhausted key gets the v1 429 with `Retry-After`
+  and `X-RateLimit-*` before anything runs. A batch that repeats a request id
+  is refused whole (JSON-RPC `-32600`).
+- A write returns its result text (plus `structuredContent` `{ref?, held?,
+  holdFailures?}`); a tool that needs a person returns a text naming the
+  queued proposal (`structuredContent.proposal: {id, status, summary,
+  preview}`); a refusal is an `isError` result with `{error: {code, message}}`.
+- A bad key, a key without the `agent` scope, a test-mode key or the gate off
+  is refused at the HTTP level with the v1 error body, before any call runs.
+- Request log: each `tools/call` that runs is logged as `/api/mcp#<tool>`,
+  with the same body rules as REST (bodies only for a callable write; its
+  validated args, never the raw ones). Calls refused by the rate limit inside
+  a batch share ONE `/api/mcp` row with their count. A request
+  refused by the route before its messages run (scope, test mode, gate, rate
+  limit, invalid JSON, a repeated id, an oversized body) is logged as
+  `/api/mcp` without bodies; nothing else is (`initialize`, `tools/list`, or
+  a refusal from the MCP transport itself, e.g. a 406). No `Idempotency-Key` on MCP; use REST when a
+  retry must not repeat a write.
+
+The full agent guide (`docs/features/agent-api.md`, PR14) follows; see
+`AGENT_API_V1_PLAN.md`.
 
 ## Webhooks
 

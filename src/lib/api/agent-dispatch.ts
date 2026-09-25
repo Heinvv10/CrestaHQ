@@ -26,6 +26,8 @@ export type AgentDispatchResult =
   | {
       ok: true;
       resultText: string;
+      /** The validated args that ran (for logs; never the raw args). */
+      args: Record<string, unknown>;
       ref?: { kind: string; id: string };
       /** Workflow enrolments the write caused, held for approval (ruling Q). */
       held?: Array<Pick<HeldEnrolment, "proposalId" | "workflowName">>;
@@ -34,6 +36,8 @@ export type AgentDispatchResult =
     }
   | {
       ok: true;
+      /** The validated args that were queued (for logs). */
+      args: Record<string, unknown>;
       /** Queued for a person to approve (HTTP 202). */
       proposal: {
         id: string;
@@ -70,6 +74,22 @@ export function agentCallable(cap: AiSuiteCapability): boolean {
     cap.approval !== "workflow_enrolment" &&
     roleSatisfies(cap.requiredRole, { agencyRoleIsOwner: false, subAccountRole: "admin" })
   );
+}
+
+/** A write tool the key may call: the only kind whose bodies a request log
+ *  keeps. A read's args and result are PII; an unknown or non-callable
+ *  name's args may be too (a misspelled read), so neither is logged. */
+export function isAgentWriteTool(name: string): boolean {
+  const cap = getCapability(name);
+  return !!cap && agentCallable(cap) && cap.readonly !== true;
+}
+
+/** A read tool the key may call. Anything else — including a chat-only or
+ *  unknown name — is treated alike, so the REST and MCP hooks can't reveal
+ *  which exist. */
+export function isAgentReadTool(name: string): boolean {
+  const cap = getCapability(name);
+  return !!cap && agentCallable(cap) && cap.readonly === true;
 }
 
 /**
@@ -176,7 +196,7 @@ async function dispatch(
         : refuse("outcome_unknown", 409, OUTCOME_UNKNOWN_MESSAGE);
     }
     const { id, status, summary, preview } = created;
-    return { ok: true, proposal: { id, status, summary, preview } };
+    return { ok: true, args: validated.args, proposal: { id, status, summary, preview } };
   }
 
   const result = await cap.execute(ctx, validated.args);
@@ -184,6 +204,7 @@ async function dispatch(
   return {
     ok: true,
     resultText: result.resultText,
+    args: validated.args,
     ...(result.ref ? { ref: result.ref } : {}),
     ...(result.held
       ? {
