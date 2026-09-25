@@ -43,6 +43,17 @@ export function millis(v: unknown): number | null {
 
 export type PreviewRows = Array<{ label: string; value: string; multiline?: true }>;
 
+/** A proposal row holds the args and the preview: kept well under
+ *  Firestore's 1 MiB document limit, or its write would fail. */
+const MAX_PROPOSAL_BYTES = 400_000;
+
+export function proposalTooLarge(
+  args: Record<string, unknown>,
+  preview: { rows: PreviewRows; pinned: Record<string, unknown> | null }
+): boolean {
+  return Buffer.byteLength(JSON.stringify({ args, ...preview })) > MAX_PROPOSAL_BYTES;
+}
+
 /** Approval classes whose preview must pin its target: outbound (the
  *  recipient) and channel_change (the new phone / email). */
 const PINNED_CLASSES = new Set(["outbound", "channel_change"]);

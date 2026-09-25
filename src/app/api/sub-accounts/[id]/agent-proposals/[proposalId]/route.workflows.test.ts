@@ -60,7 +60,7 @@ describe("update_workflow", () => {
   it("a new start step on an active workflow: the preview shows the whole workflow, the orphan step it would run included", async () => {
     seed({ status: "active", nodes: { ...STEPS, n2: { id: "n2", type: "send_sms", config: { body: "ORPHAN BODY" }, next: null } } });
     const id = await proposeId("update_workflow", { workflowId: "wf1", startNodeId: "n2" });
-    expect(row(id).preview).toContainEqual({ label: "Start step", value: "n2" });
+    expect(row(id).preview).toContainEqual({ label: "Start step", value: "\"n2\"" });
     expect(row(id).preview).toContainEqual({ label: "Steps (exact)", value: expect.stringContaining('"body": "ORPHAN BODY"'), multiline: true });
     expect(row(id).preview).toContainEqual({ label: "Changes", value: "startNodeId" });
   });
@@ -205,7 +205,7 @@ describe("set_workflow_status", () => {
   it("activating → a proposal showing the exact trigger and steps; approve activates, audited as the approver", async () => {
     const id = await proposeId("set_workflow_status", { workflowId: "wf1", status: "active" });
     expect(wf().status).toBe("draft");
-    expect(row(id).preview).toContainEqual({ label: "Start step", value: "n1" });
+    expect(row(id).preview).toContainEqual({ label: "Start step", value: "\"n1\"" });
     expect(row(id).preview).toContainEqual({
       label: "Then",
       value: "From approval on, every contact matching the trigger is enrolled and these steps run, messages included; runs still waiting from before (e.g. a pause) resume on these steps.",
@@ -214,6 +214,25 @@ describe("set_workflow_status", () => {
     expect((await decide(id, "approve")).status).toBe(200);
     expect(wf().status).toBe("active");
     expect(audit()).toEqual([expect.objectContaining({ actor: { type: "user", id: "u_admin" }, changes: [{ field: "status", before: "draft", after: "active" }] })]);
+  });
+
+  it("a stored look-alike start step shows escaped, so it can't pass for another step", async () => {
+    seed({ status: "paused", startNodeId: "n1\u200b", nodes: { ...STEPS, "n1\u200b": { id: "n1\u200b", type: "send_sms", config: { body: "BLAST" }, next: null } } });
+    const id = await proposeId("set_workflow_status", { workflowId: "wf1", status: "active" });
+    expect(row(id).preview).toContainEqual({ label: "Start step", value: '"n1\\u200b"' });
+  });
+
+  it("the workflow grown too large to review since the proposal → preview_unavailable, nothing large stored", async () => {
+    const id = await proposeId("set_workflow_status", { workflowId: "wf1", status: "active" });
+    let deep: unknown = Array(22_000).fill(0);
+    for (let i = 0; i < 15; i++) deep = [deep];
+    expect(await call("update_workflow", { workflowId: "wf1", nodes: { n1: { type: "send_sms", config: { body: "Hi", deep } } } })).toMatchObject({ ok: true });
+    const before = JSON.stringify(row(id).preview);
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "preview_unavailable" });
+    expect(JSON.stringify(row(id).preview)).toBe(before);
+    expect(wf().status).toBe("draft");
   });
 
   it("steps changed between the approve-time re-check and the write → not activated", async () => {

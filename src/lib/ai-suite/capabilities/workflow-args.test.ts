@@ -30,3 +30,38 @@ describe("patchOf refuses", () => {
     expect(patchOf(patch)).toMatchObject({ ok: false });
   });
 });
+
+describe("step ids", () => {
+  const BLAST = { type: "send_sms", config: { body: "BLAST" }, next: null };
+  const BENIGN = { type: "send_sms", config: { body: "Hello" }, next: null };
+  it.each([
+    ["a zero-width look-alike start step", { nodes: { n1: BENIGN, "n1\u200b": BLAST }, startNodeId: "n1\u200b" }],
+    ["a trailing-space look-alike start step", { nodes: { n1: BENIGN, "n1 ": BLAST }, startNodeId: "n1 " }],
+    ["a look-alike start step alone", { startNodeId: "n1 " }],
+    ["a look-alike next", { nodes: { n1: { ...BENIGN, next: "n2\u200b" }, n2: BLAST } }],
+    ["a look-alike yes-branch", { nodes: { n1: { type: "if_else", config: {}, branches: { whenTrue: "n2 ", whenFalse: null } }, n2: BLAST } }],
+    ["a look-alike no-branch", { nodes: { n1: { type: "if_else", config: {}, branches: { whenTrue: null, whenFalse: "n2 " } }, n2: BLAST } }],
+    ["an over-long id", { nodes: { ["n".repeat(65)]: BENIGN } }],
+  ])("%s → refused", (_label, patch) => {
+    expect(patchOf(patch)).toMatchObject({ ok: false });
+  });
+
+  it("ids the builder and the templates make are accepted", () => {
+    const uuid = "3f2b8c1e-9a4d-4e7b-8c2a-1f0e9d8c7b6a";
+    const nodes = {
+      n1: { ...BENIGN, next: uuid },
+      [uuid]: { type: "if_else", config: { conditions: { all: [{ field: "email", op: "is_set" }] } }, branches: { whenTrue: "n_abc123", whenFalse: null } },
+      n_abc123: BENIGN,
+    };
+    expect(patchOf({ nodes, startNodeId: "n1" })).toMatchObject({ ok: true });
+  });
+});
+
+describe("if_else conditions", () => {
+  it.each([
+    ["all as a number", { all: 5 }],
+    ["an unknown op", { all: [{ field: "email", op: "bogus" }] }],
+  ])("%s → refused", (_label, conditions) => {
+    expect(patchOf({ nodes: { n1: { type: "if_else", config: { conditions } } } })).toMatchObject({ ok: false });
+  });
+});

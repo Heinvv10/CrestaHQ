@@ -15,6 +15,10 @@ const MAX_JSON = 50_000;
 const MAX_CONDITIONS = 50;
 const MAX_DEPTH = 20;
 const OPS: readonly string[] = CONDITION_OPS.map((o) => o.value);
+/** Every step id the builder (randomUUID, or `n_<base36>`) and the starter
+ *  templates (`n1`…) make; nothing invisible or look-alike can hide in one. */
+const STEP_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const stepRef = (v: unknown) => v === null || v === undefined || (typeof v === "string" && STEP_ID.test(v));
 
 const plain = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype;
@@ -91,12 +95,19 @@ export function patchOf(raw: unknown): { ok: true; patch: WorkflowPatch } | { ok
     const nodes = plain(r.nodes) ? sanitizeNodes(r.nodes) : null;
     if (!nodes) return { ok: false, error: "nodes must be a map of step id → { type, config, next, branches } with known step types" };
     if (Object.keys(nodes).length > MAX_NODES) return { ok: false, error: `a workflow can have at most ${MAX_NODES} steps` };
+    for (const [id, n] of Object.entries(nodes)) {
+      if (!STEP_ID.test(id) || !stepRef(n.next) || !stepRef(n.branches?.whenTrue) || !stepRef(n.branches?.whenFalse)) {
+        return { ok: false, error: "step ids (and next / branches) must be 1-64 letters, digits, _ or -" };
+      }
+      const problem = n.type === "if_else" && n.config.conditions !== undefined ? filtersProblem(n.config.conditions) : null;
+      if (problem) return { ok: false, error: `step ${id}'s conditions ${problem}` };
+    }
     const json = JSON.stringify(nodes);
     if (json.length > MAX_JSON) return { ok: false, error: "the steps are too large" };
     patch.nodes = JSON.parse(json);
   }
   if (r.startNodeId !== undefined) {
-    if (r.startNodeId !== null && typeof r.startNodeId !== "string") return { ok: false, error: "startNodeId must be a step id or null" };
+    if (!stepRef(r.startNodeId)) return { ok: false, error: "startNodeId must be a step id (1-64 letters, digits, _ or -) or null" };
     if (typeof r.startNodeId === "string" && patch.nodes && !Object.hasOwn(patch.nodes, r.startNodeId)) {
       return { ok: false, error: "startNodeId must be one of the steps" };
     }

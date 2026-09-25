@@ -20,6 +20,7 @@ import {
 import {
   assertPinnedWhenOutbound,
   normalizePreview,
+  proposalTooLarge,
 } from "@/lib/server/agent-proposals-encoding";
 
 export type AgentDispatchResult =
@@ -49,8 +50,6 @@ export type AgentDispatchResult =
       };
     }
   | { ok: false; code: string; httpStatus: number; message: string };
-
-const MAX_PROPOSAL_BYTES = 400_000;
 
 const refuse = (
   code: string,
@@ -184,9 +183,7 @@ async function dispatch(
       await cap.preview(previewCtx, validated.args)
     );
     assertPinnedWhenOutbound(cap.name, approval, reviewed);
-    // A proposal row holds the args and the preview: well under Firestore's
-    // 1 MiB document limit, or the write itself would fail.
-    if (Buffer.byteLength(JSON.stringify({ args: validated.args, ...reviewed })) > MAX_PROPOSAL_BYTES) {
+    if (proposalTooLarge(validated.args, reviewed)) {
       return refuse(
         "proposal_too_large",
         400,
