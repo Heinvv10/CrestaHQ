@@ -5,6 +5,7 @@ import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { tenantFrom } from "@/lib/comms/resend";
 import { emailReplyFields } from "@/components/conversations/email-reply";
 import type { SendableChannel } from "@/lib/server/conversation-send";
+export { recipientOf, withRecipient } from "@/lib/server/conversation-send/recipient";
 import type { EmailMessageDoc } from "@/types/email";
 import type { SubAccountDoc } from "@/types";
 import { CapabilityUserError } from "./types";
@@ -19,18 +20,6 @@ import { tenantConversation } from "./conversations-read";
  * address a channel goes to, a masked form, the consent state, and for
  * email the From / Reply-To / threading the human send route would use.
  */
-
-/** The address a message on `channel` goes to, from the stored contact. */
-export function recipientOf(channel: SendableChannel, contact: FirebaseFirestore.DocumentData): string {
-  const v = channel === "email" ? contact.email : channel === "sms" || channel === "whatsapp" ? contact.phone : contact.metaUserId;
-  return typeof v === "string" ? v : "";
-}
-
-/** `contact` with the channel's address set to `to` (the pinned value). */
-export function withRecipient(channel: SendableChannel, contact: FirebaseFirestore.DocumentData, to: string) {
-  const field = channel === "email" ? "email" : channel === "sms" || channel === "whatsapp" ? "phone" : "metaUserId";
-  return { ...contact, [field]: to };
-}
 
 /** Enough of the address for a person to recognise it. */
 export function masked(channel: SendableChannel, to: string): string {

@@ -50,6 +50,17 @@ export async function scheduleConversationMessage(input: {
   contact: Contact;
   actorUid: string;
   nowMs: number;
+  /**
+   * The exact address an approver reviewed (agent schedule_message). The
+   * worker refuses to send if the contact's address has changed by then.
+   * Absent = today's behaviour (the address at fire time).
+   */
+  pinnedTo?: string;
+  /**
+   * A caller-chosen doc id, making the booking idempotent: a second call
+   * with the same id books nothing more and returns the existing id.
+   */
+  id?: string;
 }): Promise<{ ok: true; id: string } | SendRefusal> {
   const { request, contact, actorUid } = input;
   const blocked =
@@ -63,8 +74,9 @@ export async function scheduleConversationMessage(input: {
     );
   }
 
-  const ref = getAdminDb().collection(scheduledMessagesPath(request.contactId)).doc();
-  await ref.set({
+  const col = getAdminDb().collection(scheduledMessagesPath(request.contactId));
+  const ref = input.id ? col.doc(input.id) : col.doc();
+  const doc = {
     agencyId: contact.agencyId,
     subAccountId: contact.subAccountId,
     createdByUid: actorUid,
@@ -80,9 +92,21 @@ export async function scheduleConversationMessage(input: {
     failureCode: null,
     qstashMessageId: null,
     sentMessageId: null,
+    ...(input.pinnedTo !== undefined ? { pinnedTo: input.pinnedTo } : {}),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
-  });
+  };
+  if (input.id) {
+    try {
+      await ref.create(doc);
+    } catch (err) {
+      // Already booked under this id (a retry): nothing more to do.
+      if ((err as { code?: unknown }).code === 6) return { ok: true, id: ref.id };
+      throw err;
+    }
+  } else {
+    await ref.set(doc);
+  }
 
   // Written first so the worker always finds the doc: the lead time is at
   // least a minute (parseScheduleRequest), the write takes milliseconds.

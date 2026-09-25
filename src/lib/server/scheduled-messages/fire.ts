@@ -13,6 +13,7 @@ import {
 } from "@/types/scheduled-messages";
 import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 import { scheduledMessagesPath, scheduledSendBlock } from "./service";
+import { recipientOf } from "@/lib/server/conversation-send/recipient";
 
 export type FireResult =
   | { outcome: "skipped"; reason: string }
@@ -32,6 +33,8 @@ interface ScheduledDoc {
   references: string[] | null;
   sendAt: Timestamp;
   status: ScheduledMessageStatus;
+  /** Set by an approved agent booking: the only address it may go to. */
+  pinnedTo?: string;
 }
 
 /**
@@ -124,6 +127,9 @@ export async function fireScheduledMessage(
   }
   if (contact.subAccountId !== doc.subAccountId) {
     return record("failed", "The contact is no longer in this sub-account.");
+  }
+  if (typeof doc.pinnedTo === "string" && recipientOf(doc.channel, contact as unknown as Record<string, unknown>) !== doc.pinnedTo) {
+    return record("failed", "The recipient changed since this was approved, so it was not sent.", "recipient_changed");
   }
   const blocked = scheduledSendBlock(doc.channel, contact);
   if (blocked) return record("failed", blocked.error, blocked.code ?? null);
