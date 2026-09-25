@@ -7,6 +7,7 @@ import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str } from "./helpers";
 import { tenantContact } from "./contact-edit";
+import { recordProvenanceRows } from "./record-provenance";
 
 /**
  * Contact actions an API agent may only PROPOSE (AGENT_API_V1_PLAN.md, PR7):
@@ -136,6 +137,7 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
       const { blockers } = await findContactBlockers(getAdminDb(), ctx.subAccountId!, args.contactId as string);
       return [
         { label: "Delete contact", value: String(c.name ?? "(unnamed)") },
+        ...recordProvenanceRows(args.contactId as string, c),
         { label: "Phone", value: String(c.phone || "(none)") },
         { label: "Email", value: String(c.email || "(none)") },
         { label: "Also deleted", value: "Its notes, activities, messages and form submissions" },

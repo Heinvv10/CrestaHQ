@@ -5,7 +5,7 @@ import { updateContactServerSide, type UpdateContactPatch } from "@/lib/server/c
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
-import { str, agentActor } from "./helpers";
+import { str, agentActor, oneLine, UNSAFE_TEXT_RE } from "./helpers";
 import { asTags, MAX_TAGS, MAX_TAG_LEN } from "@/lib/api/serializers/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 
@@ -86,12 +86,12 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       const c = await tenantContact(ctx.subAccountId!, args.contactId as string);
       const optedOut = (["email", "sms", "whatsapp"] as const).filter((ch) => c[`${ch}OptedOut`] === true);
       const lines = [
-        `Name: ${c.name ?? ""}`,
-        `Phone: ${c.phone || "(none)"}`,
-        `Email: ${c.email || "(none)"}`,
-        `Company: ${c.company || "(none)"}`,
-        `Address: ${c.address || "(none)"}`,
-        `Tags: ${Array.isArray(c.tags) && c.tags.length ? c.tags.join(", ") : "(none)"}`,
+        `Name: ${oneLine(c.name)}`,
+        `Phone: ${oneLine(c.phone) || "(none)"}`,
+        `Email: ${oneLine(c.email) || "(none)"}`,
+        `Company: ${oneLine(c.company) || "(none)"}`,
+        `Address: ${oneLine(c.address) || "(none)"}`,
+        `Tags: ${Array.isArray(c.tags) && c.tags.length ? c.tags.map(oneLine).join(", ") : "(none)"}`,
         `Custom fields: ${JSON.stringify(c.customFields ?? {})}`,
         `Opted out of: ${optedOut.join(", ") || "nothing"}`,
       ];
@@ -131,7 +131,11 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       const contactId = str(raw, "contactId");
       if (!contactId) return { ok: false, error: "a contactId is required" };
       const args: Record<string, unknown> = { contactId };
-      for (const k of ["name", "company", "address"] as const) if (typeof r[k] === "string") args[k] = str(raw, k);
+      for (const k of ["name", "company", "address"] as const) {
+        if (typeof r[k] !== "string") continue;
+        if (UNSAFE_TEXT_RE.test(r[k] as string)) return { ok: false, error: `${k} can't contain control or bidi characters` };
+        args[k] = str(raw, k);
+      }
       if (args.name === "") return { ok: false, error: "a contact's name can't be empty" };
       if (r.customFields !== undefined) {
         if (!r.customFields || typeof r.customFields !== "object" || Array.isArray(r.customFields)) {

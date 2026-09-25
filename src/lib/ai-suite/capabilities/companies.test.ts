@@ -81,7 +81,7 @@ describe("allowlist and doc shape", () => {
     expect(r).toMatchObject({ ok: true, ref: { kind: "company" } });
     const doc = mem.read(`companies/${(r as { ref: { id: string } }).ref.id}`)!;
     expect(Object.keys(doc).sort()).toEqual(
-      ["address", "agencyId", "createdAt", "createdByUid", "email", "name", "phone", "subAccountId", "updatedAt", "website"]
+      ["address", "agencyId", "createdAt", "createdByUid", "email", "lastAgentEditAt", "lastAgentEditKey", "name", "phone", "subAccountId", "updatedAt", "website"]
     );
     expect(doc).toMatchObject({
       name: "New Co", email: "hi@new.co", phone: "", website: "", address: "",
@@ -121,6 +121,8 @@ describe("delete_company through the decide route", () => {
     const id = await proposeDelete();
     expect(row(id).preview).toEqual([
       { label: "Delete company", value: "Acme" },
+      { label: "Id", value: "co1" },
+      { label: "Created", value: "(unknown)" },
       { label: "Contacts unlinked", value: "2 (they stay, keeping the company name as text)" },
     ]);
     expect(row(id)).toMatchObject({ approval: "hard_delete", targetScoped: false });

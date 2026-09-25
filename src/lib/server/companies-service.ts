@@ -3,6 +3,8 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isDocId } from "@/lib/server/doc-id";
+import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
+import type { AgentActor } from "@/lib/workflows/agent-hold";
 import type { CompanyFormData } from "@/types/companies";
 
 /**
@@ -19,6 +21,8 @@ export async function createCompanyServerSide(input: {
   subAccountId: string;
   createdByUid: string;
   data: CompanyFormData;
+  /** An API agent's write: stamped (see agentEditStamp). */
+  actor?: Pick<AgentActor, "keyPrefix">;
 }): Promise<string> {
   const ref = getAdminDb().collection("companies").doc();
   await ref.set({
@@ -28,6 +32,7 @@ export async function createCompanyServerSide(input: {
     createdByUid: input.createdByUid,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
+    ...agentEditStamp(input.actor),
   });
   return ref.id;
 }
@@ -42,6 +47,8 @@ export async function updateCompanyServerSide(opts: {
   companyId: string;
   subAccountId: string;
   data: Partial<CompanyFormData>;
+  /** An API agent's write: stamped (see agentEditStamp). */
+  actor?: Pick<AgentActor, "keyPrefix">;
 }): Promise<boolean> {
   if (!isDocId(opts.companyId)) return false;
   const db = getAdminDb();
@@ -49,7 +56,7 @@ export async function updateCompanyServerSide(opts: {
   return db.runTransaction(async (tx) => {
     const current = (await tx.get(ref)).data();
     if (!current || current.subAccountId !== opts.subAccountId) return false;
-    tx.update(ref, { ...opts.data, updatedAt: FieldValue.serverTimestamp() });
+    tx.update(ref, { ...opts.data, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(opts.actor) });
     return true;
   });
 }

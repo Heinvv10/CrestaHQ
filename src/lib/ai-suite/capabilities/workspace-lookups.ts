@@ -9,7 +9,7 @@ import {
   territoryScopeFor,
 } from "@/lib/ai-suite/territory-scope";
 import { type AiSuiteCapability } from "./types";
-import { str, fmtMoney } from "./helpers";
+import { str, fmtMoney, oneLine } from "./helpers";
 
 export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -73,11 +73,11 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
       const lines = matches.map((d) => {
         const data = d.data();
         const bits = [
-          data.email && `email: ${data.email}`,
-          data.phone && `phone: ${data.phone}`,
-          data.company && `company: ${data.company}`,
+          data.email && `email: ${oneLine(data.email)}`,
+          data.phone && `phone: ${oneLine(data.phone)}`,
+          data.company && `company: ${oneLine(data.company)}`,
         ].filter(Boolean);
-        return `- ${data.name ?? "(unnamed)"} — id: ${d.id}${
+        return `- ${oneLine(data.name) || "(unnamed)"} — id: ${d.id}${
           bits.length ? ` (${bits.join(", ")})` : ""
         }`;
       });

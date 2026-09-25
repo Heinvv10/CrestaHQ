@@ -9,7 +9,8 @@ import {
 } from "@/lib/server/companies-service";
 import type { CompanyFormData } from "@/types/companies";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str } from "./helpers";
+import { EMAIL_RE, str, agentActor, oneLine, UNSAFE_TEXT_RE } from "./helpers";
+import { recordProvenanceRows } from "./record-provenance";
 
 /**
  * Companies for API agents (AGENT_API_V1_PLAN.md, PR7b). Every model-supplied
@@ -38,6 +39,7 @@ function companyFields(raw: unknown): { ok: true; data: Partial<CompanyFormData>
   for (const k of COMPANY_FIELDS) {
     if (r[k] === undefined) continue;
     if (typeof r[k] !== "string") return { ok: false, error: `${k} must be text` };
+    if (UNSAFE_TEXT_RE.test(r[k] as string)) return { ok: false, error: `${k} can't contain control or bidi characters` };
     const v = str(raw, k);
     if (v.length > MAX_FIELD) return { ok: false, error: `${k} must be at most ${MAX_FIELD} characters` };
     data[k] = v;
@@ -83,6 +85,8 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
     summarize: () => "List companies.",
     execute: async (ctx, args) => {
       const q = (args.query as string).toLowerCase();
+      // Capped at 500 docs BEFORE the name filter: a match past the first
+      // 500 is not found (known limit, kept for now).
       const snap = await getAdminDb().collection("companies").where("subAccountId", "==", ctx.subAccountId!).limit(500).get();
       const rows = snap.docs
         .map((d) => ({ id: d.id, ...d.data() }) as { id: string } & Partial<CompanyFormData>)
@@ -93,8 +97,12 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
       return {
         resultText: rows
           .map((c) => {
-            const bits = [c.phone && `phone: ${c.phone}`, c.email && `email: ${c.email}`, c.website && `website: ${c.website}`].filter(Boolean);
-            return `- ${c.name || "(unnamed)"} — id: ${c.id}${bits.length ? ` (${bits.join(", ")})` : ""}`;
+            const bits = [
+              c.phone && `phone: ${oneLine(c.phone)}`,
+              c.email && `email: ${oneLine(c.email)}`,
+              c.website && `website: ${oneLine(c.website)}`,
+            ].filter(Boolean);
+            return `- ${oneLine(c.name) || "(unnamed)"} — id: ${c.id}${bits.length ? ` (${bits.join(", ")})` : ""}`;
           })
           .join("\n"),
       };
@@ -121,6 +129,7 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
         subAccountId: ctx.subAccountId!,
         createdByUid: ctx.uid,
         data: args as unknown as CompanyFormData,
+        actor: agentActor(ctx, "create_company"),
       });
       return { resultText: `Added the company “${args.name}”.`, ref: { kind: "company", id } };
     },
@@ -155,6 +164,7 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
         companyId: companyId as string,
         subAccountId: ctx.subAccountId!,
         data: data as Partial<CompanyFormData>,
+        actor: agentActor(ctx, "update_company"),
       });
       if (!ok) throw new CapabilityUserError("That company isn't in this workspace.");
       return { resultText: "Updated the company.", ref: { kind: "company", id: companyId as string } };
@@ -185,6 +195,7 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
       const linked = await linkedContacts(ctx.subAccountId!, args.companyId as string);
       return [
         { label: "Delete company", value: String(c.name || "(unnamed)") },
+        ...recordProvenanceRows(args.companyId as string, c),
         { label: "Contacts unlinked", value: `${linked} (they stay, keeping the company name as text)` },
       ];
     },
