@@ -107,6 +107,7 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   set_bot_mode: { conversationId: "c1", mode: "off" },
   cancel_scheduled_message: { contactId: "c1", scheduledMessageId: "s1" },
   send_message: { conversationId: "c1", channel: "sms", body: "Hi Ann" },
+  schedule_message: { conversationId: "c1", channel: "sms", body: "Later", sendAt: new Date(Date.now() + 3_600_000).toISOString() },
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },

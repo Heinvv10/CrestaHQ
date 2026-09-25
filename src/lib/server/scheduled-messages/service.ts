@@ -17,6 +17,9 @@ import type { ScheduleRequest } from "./parse";
 
 export const FIRE_PATH = "/api/scheduled-messages/fire";
 
+/** A booking that will still send, or has: what a retried booking may find. */
+const LIVE_STATUSES: unknown[] = ["pending", "sending", "sent"] satisfies ScheduledMessageStatus[];
+
 export const scheduledMessagesPath = (contactId: string) =>
   `contacts/${contactId}/scheduledMessages`;
 
@@ -50,6 +53,19 @@ export async function scheduleConversationMessage(input: {
   contact: Contact;
   actorUid: string;
   nowMs: number;
+  /**
+   * The exact address an approver reviewed (agent schedule_message). The
+   * worker refuses to send if the contact's address has changed by then.
+   * Absent = today's behaviour (the address at fire time).
+   */
+  pinnedTo?: string;
+  /**
+   * A caller-chosen doc id. A second call with the same id books nothing
+   * more: it returns the existing id only when that booking is this same
+   * message and still live, and throws otherwise. This covers a retry of one
+   * caller's booking, nothing wider.
+   */
+  id?: string;
 }): Promise<{ ok: true; id: string } | SendRefusal> {
   const { request, contact, actorUid } = input;
   const blocked =
@@ -63,8 +79,9 @@ export async function scheduleConversationMessage(input: {
     );
   }
 
-  const ref = getAdminDb().collection(scheduledMessagesPath(request.contactId)).doc();
-  await ref.set({
+  const col = getAdminDb().collection(scheduledMessagesPath(request.contactId));
+  const ref = input.id ? col.doc(input.id) : col.doc();
+  const doc = {
     agencyId: contact.agencyId,
     subAccountId: contact.subAccountId,
     createdByUid: actorUid,
@@ -80,9 +97,31 @@ export async function scheduleConversationMessage(input: {
     failureCode: null,
     qstashMessageId: null,
     sentMessageId: null,
+    ...(input.pinnedTo !== undefined ? { pinnedTo: input.pinnedTo } : {}),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
-  });
+  };
+  if (input.id) {
+    try {
+      await ref.create(doc);
+    } catch (err) {
+      if ((err as { code?: unknown }).code !== 6) throw err;
+      // Already booked under this id: a retry of the same booking is done;
+      // anything else under the id is not this message, and never "booked".
+      const existing = (await ref.get()).data();
+      if (
+        existing?.body === doc.body &&
+        existing?.channel === doc.channel &&
+        existing?.pinnedTo === input.pinnedTo &&
+        LIVE_STATUSES.includes(existing?.status)
+      ) {
+        return { ok: true, id: ref.id };
+      }
+      throw new Error(`scheduled message ${ref.id} already exists and is not this booking`);
+    }
+  } else {
+    await ref.set(doc);
+  }
 
   // Written first so the worker always finds the doc: the lead time is at
   // least a minute (parseScheduleRequest), the write takes milliseconds.

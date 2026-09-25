@@ -40,6 +40,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["get_conversation", { conversationId: "cv1/sub/y" }],
   ["set_bot_mode", { conversationId: "cv1/sub/y", mode: "off" }],
   ["send_message", { conversationId: "cv1/sub/y", channel: "sms", body: "hi" }],
+  ["schedule_message", { conversationId: "cv1/sub/y", channel: "sms", body: "hi", sendAt: new Date(Date.now() + 3_600_000).toISOString() }],
   ["list_scheduled_messages", { contactId: "c1/sub/y" }],
   ["cancel_scheduled_message", { contactId: "c1/sub/y", scheduledMessageId: "s1" }],
 ];

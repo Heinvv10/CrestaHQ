@@ -52,6 +52,7 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["set_bot_mode",                              "sub-account", "subAccountMember", false, ["agent"]],
   ["cancel_scheduled_message",                  "sub-account", "subAccountMember", false, ["agent"]],
   ["send_message",                              "sub-account", "subAccountMember", false, ["agent"]],
+  ["schedule_message",                          "sub-account", "subAccountMember", false, ["agent"]],
   ["create_task",                               "sub-account", "subAccountMember", false, null],
   ["find_tasks",                                "sub-account", "subAccountMember", true, null],
   ["complete_task",                             "sub-account", "subAccountMember", false, null],
