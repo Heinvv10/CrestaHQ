@@ -137,3 +137,18 @@ it("a second store after one that ended in done_unknown is a no-op", async () =>
   await r.store({ status: 201, bodyJson: { id: 1 } });
   expect(mem.list(IDEM)).toMatchObject([{ state: "done_unknown" }]);
 });
+
+it("M6 taken-over reservation: markUnknown from the old owner does not touch the new owner's doc", async () => {
+  const { reserveIdempotencyKey } = await import("./idempotency");
+  const a = await reserveIdempotencyKey("sa1", "live", "k1", "m6", "fp");
+  if (a.kind !== "reserved") throw new Error(a.kind);
+  const [{ id, ...d }] = mem.list(IDEM);
+  mem.seed(`${IDEM}/${id}`, { ...d, expiresAt: new Date(Date.now() - 1) });
+  const b = await reserveIdempotencyKey("sa1", "live", "k1", "m6", "fp");
+  if (b.kind !== "reserved") throw new Error(b.kind);
+  const bToken = mem.list(IDEM)[0].reservationId;
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  await a.markUnknown();
+  expect(mem.list(IDEM)).toMatchObject([{ state: "in_progress", reservationId: bToken }]);
+  await b.release();
+});
