@@ -21,13 +21,15 @@ export function useDueTodayCount(subAccountId: string | null): number {
   const { user } = useAuth();
   const territory = useEffectiveTerritoryFilter(subAccountId);
   const [count, setCount] = useState(0);
-  const [day, setDay] = useState(() => new Date().toDateString());
+  // Bumped every time the midnight timer fires — a counter, not the date, so
+  // the timer always re-arms even if the clock was set back across midnight.
+  const [day, setDay] = useState(0);
 
   useEffect(() => {
     const next = new Date();
     next.setHours(24, 0, 1, 0); // just past the coming local midnight
     const timer = setTimeout(
-      () => setDay(new Date().toDateString()),
+      () => setDay((d) => d + 1),
       next.getTime() - Date.now(),
     );
     return () => clearTimeout(timer);

@@ -82,3 +82,18 @@ it("re-subscribes just after local midnight so the bound moves to the new day", 
   });
   expect(m.subscribe).toHaveBeenCalledTimes(2);
 });
+
+it("keeps re-arming at midnight even if the clock is set back across it", async () => {
+  vi.setSystemTime(new Date(2026, 8, 25, 23, 59, 50));
+  await render("sa1");
+  await act(async () => {
+    vi.advanceTimersByTime(15_000); // fires just after midnight
+  });
+  expect(m.subscribe).toHaveBeenCalledTimes(2);
+  // An NTP correction pulls the wall clock back before midnight.
+  vi.setSystemTime(new Date(2026, 8, 25, 23, 59, 58));
+  await act(async () => {
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000); // a day later
+  });
+  expect(m.subscribe.mock.calls.length).toBeGreaterThanOrEqual(3);
+});
