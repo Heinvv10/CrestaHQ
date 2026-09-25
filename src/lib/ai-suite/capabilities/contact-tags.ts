@@ -44,8 +44,12 @@ async function changeTags(
   const contact = await tenantContact(subAccountId, contactId);
   let tags: string[] = [];
   const res = await writeContact(ctx, capability, contactId, (stored) => {
-    tags = next(Array.isArray(stored.tags) ? stored.tags : [], args.tags as string[]);
-    if (tags.length > MAX_TAGS) throw new CapabilityUserError(`A contact can carry at most ${MAX_TAGS} tags.`);
+    const have: string[] = Array.isArray(stored.tags) ? stored.tags : [];
+    tags = next(have, args.tags as string[]);
+    // Only a GROWING list is capped: a contact already past the cap (the
+    // workflow add_tag step, bulk tagging and upsert have none) can still
+    // have tags removed.
+    if (tags.length > MAX_TAGS && tags.length > have.length) throw new CapabilityUserError(`A contact can carry at most ${MAX_TAGS} tags.`);
     return { tags };
   });
   return {

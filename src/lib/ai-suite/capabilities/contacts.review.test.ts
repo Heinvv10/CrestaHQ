@@ -75,6 +75,15 @@ describe("over-limit tags are refused, never truncated", () => {
     expect(tags()).toEqual(TWELVE);
   });
 
+  it("a contact already past 50 tags can still lose one; adding to it is refused", async () => {
+    const many = Array.from({ length: 55 }, (_, i) => `t${i}`);
+    mem.seed("contacts/c1", { ...ANN, tags: many });
+    expect(await dispatchAgentTool(auth, "remove_tags", { contactId: "c1", tags: ["t0"] })).toMatchObject({ ok: true });
+    expect(tags()).toHaveLength(54);
+    expect(await dispatchAgentTool(auth, "add_tags", { contactId: "c1", tags: ["new"] })).toMatchObject({ ok: false });
+    expect(tags()).toHaveLength(54);
+  });
+
   it("a 60-character stored tag can be removed by its exact text", async () => {
     const long = "y".repeat(60);
     mem.seed("contacts/c1", { ...ANN, tags: [long, "keep"] });

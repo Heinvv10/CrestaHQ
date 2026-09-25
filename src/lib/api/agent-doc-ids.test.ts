@@ -63,6 +63,16 @@ describe("a caller-supplied id is never a path", () => {
   });
 });
 
+describe("isDocId", () => {
+  it("refuses Firestore's reserved __…__ ids, and get_contact treats one as not found", async () => {
+    const { isDocId } = await import("@/lib/server/doc-id");
+    expect([isDocId("__c1__"), isDocId("____"), isDocId("c1__"), isDocId("__c1")]).toEqual([false, false, true, true]);
+    expect(await dispatchAgentTool(auth, "get_contact", { contactId: "__c1__" })).toMatchObject({
+      ok: false, httpStatus: 400, message: "That contact isn't in this workspace.",
+    });
+  });
+});
+
 describe("the contact services refuse a path id themselves", () => {
   it("updateContactServerSide → null, the subcollection doc unchanged", async () => {
     const { updateContactServerSide } = await import("@/lib/server/contacts-service");
