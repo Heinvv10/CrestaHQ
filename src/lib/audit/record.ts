@@ -57,15 +57,20 @@ const GATE_FIELDS: Record<AgencyGateField, true> = {
  * Staff identity is resolved from the uid at read time, so the uid itself is
  * what the trail needs; a customer's uid or contact id never goes in such a field.
  */
-export type AuditFieldRule = readonly AuditStoredValue[] | "staffUid";
+export type AuditFieldRule = readonly AuditStoredValue[] | "staffUid" | "identifier";
 
 /** Firebase Auth uids: letters, digits, `_`/`-`. No `@`, spaces or dots. */
 const UID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
+/** A code identifier (a capability name, a key prefix): never free text. */
+const IDENTIFIER_SHAPE = /^[A-Za-z0-9_]{1,64}$/;
 
 export function storedValue(rule: AuditFieldRule | undefined, value: AuditInputValue): AuditStoredValue {
   if (value === undefined || value === null) return null;
   if (rule === "staffUid") {
     return typeof value === "string" && UID_SHAPE.test(value) ? value : REDACTED;
+  }
+  if (rule === "identifier") {
+    return typeof value === "string" && IDENTIFIER_SHAPE.test(value) ? value : REDACTED;
   }
   return rule?.includes(value) ? value : REDACTED;
 }
@@ -79,6 +84,8 @@ export const AUDIT_ALLOWED_VALUES: Record<
   ),
   "workflow.status_changed": { status: ["draft", "active", "paused"] },
   "member.role_changed": { role: ["admin", "collaborator"] },
+  // Names only: arg VALUES (names, phones, message bodies) are redacted.
+  "agent.write": { capability: "identifier", keyPrefix: "identifier" },
 };
 
 export function auditValue(

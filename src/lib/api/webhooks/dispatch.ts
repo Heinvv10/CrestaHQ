@@ -49,6 +49,12 @@ export interface EmitWebhookEventInput {
    * dispatcher.
    */
   payload: unknown;
+  /**
+   * An API agent made the write. Subscribers get the same payload (a
+   * tenant's own webhooks are its integration, as on the human path); only
+   * the staff push copy changes, so an agent can't put its text on phones.
+   */
+  byAgent?: boolean;
 }
 
 export async function emitWebhookEvent(

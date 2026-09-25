@@ -6,6 +6,12 @@ import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { mirrorContactAssignee } from "@/lib/server/conversation-mirror";
 import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
 import {
+  holdFailuresOf,
+  type AgentActor,
+  type HeldEnrolment,
+  type HoldFailure,
+} from "@/lib/workflows/agent-hold";
+import {
   serializeContactForApi,
   type ContactApiObject,
 } from "@/lib/api/serializers/contacts";
@@ -72,6 +78,11 @@ export interface CreateContactInput {
    */
   apiKeyId?: string;
   /**
+   * An API agent made this write: its workflow enrolments are held as
+   * proposals (ruling Q), and the create AWAITS the trigger to return them.
+   */
+  actor?: AgentActor;
+  /**
    * The contact is being created from an inbound WhatsApp opt-out (a
    * never-seen number whose message is STOP). It is written already opted
    * out and announces nothing — no `contact.created` webhook, no workflow
@@ -101,6 +112,10 @@ export interface ContactWriteResult {
    * — see lib/api/enrolment-cap.
    */
   firedTrigger: boolean;
+  /** Agent writes only: the enrolments held for approval… */
+  held?: HeldEnrolment[];
+  /** …and the matched workflows that could be neither held nor run. */
+  holdFailures?: HoldFailure[];
 }
 
 /**
@@ -124,6 +139,16 @@ export async function createContactServerSide(
     return { id: ref.id, contact, firedTrigger: false };
   }
   const { contact, trigger } = announceContactCreated(input, ref.id, doc);
+  if (input.actor) {
+    const outcome = trigger ? await trigger : null;
+    return {
+      id: ref.id,
+      contact,
+      firedTrigger: trigger !== null,
+      held: outcome?.held ?? [],
+      holdFailures: outcome ? holdFailuresOf(outcome) : [],
+    };
+  }
   return { id: ref.id, contact, firedTrigger: trigger !== null };
 }
 
@@ -166,7 +191,7 @@ export function buildContactDoc(input: CreateContactInput) {
   };
 }
 
-type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId">;
+type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId" | "actor">;
 
 /**
  * Everything a newly written contact announces: the `contact.created`
@@ -195,6 +220,7 @@ export function announceContactCreated(
     mode: input.mode,
     type: "contact.created",
     payload: { contact },
+    ...(input.actor ? { byAgent: true } : {}),
   });
   const trigger =
     input.mode === "live"
@@ -204,6 +230,7 @@ export function announceContactCreated(
           type: "contact.created",
           contactId: id,
           apiKeyId: input.apiKeyId,
+          ...(input.actor ? { hold: input.actor } : {}),
         })
       : null;
   return { contact, trigger };

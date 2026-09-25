@@ -3,6 +3,8 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { ApiAuthContext } from "@/lib/api/auth";
 import { buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
+import { recordAgentWrite } from "@/lib/api/agent-audit";
+import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
 import {
   availableOn,
   CapabilityUserError,
@@ -20,7 +22,15 @@ import {
 } from "@/lib/server/agent-proposals-encoding";
 
 export type AgentDispatchResult =
-  | { ok: true; resultText: string; ref?: { kind: string; id: string } }
+  | {
+      ok: true;
+      resultText: string;
+      ref?: { kind: string; id: string };
+      /** Workflow enrolments the write caused, held for approval (ruling Q). */
+      held?: Array<Pick<HeldEnrolment, "proposalId" | "workflowName">>;
+      /** Matched workflows whose enrolment was neither queued nor run. */
+      holdFailures?: HoldFailure[];
+    }
   | {
       ok: true;
       /** Queued for a person to approve (HTTP 202). */
@@ -131,6 +141,11 @@ async function dispatch(
   if (cap.approval) {
     // The approver sees `preview` verbatim; a queued action without one
     // could not be judged, so it is a registry bug, not a proposal.
+    // Only the engine writes held enrolments (ruling Q); a capability that
+    // claims the class would let an agent forge one.
+    if (cap.approval === "workflow_enrolment") {
+      throw new Error(`${cap.name} claims workflow_enrolment, which only the engine may create`);
+    }
     if (!cap.preview) throw new Error(`${cap.name} has approval but no preview`);
     if (!cap.approvalTarget) throw new Error(`${cap.name} has approval but no approvalTarget`);
     const previewCtx = buildPreviewContext(auth.agencyId, auth.subAccountId);
@@ -162,9 +177,16 @@ async function dispatch(
   }
 
   const result = await cap.execute(ctx, validated.args);
+  if (!cap.readonly) await recordAgentWrite(auth, cap.name, validated.args, result.ref);
   return {
     ok: true,
     resultText: result.resultText,
     ...(result.ref ? { ref: result.ref } : {}),
+    ...(result.held
+      ? {
+          held: result.held.map(({ proposalId, workflowName }) => ({ proposalId, workflowName })),
+          holdFailures: result.holdFailures ?? [],
+        }
+      : {}),
   };
 }

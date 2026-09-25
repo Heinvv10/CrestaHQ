@@ -3,7 +3,13 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
-import { fireWorkflowTrigger } from "@/lib/workflows/engine";
+import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
+import {
+  holdFailuresOf,
+  type AgentActor,
+  type HeldEnrolment,
+  type HoldFailure,
+} from "@/lib/workflows/agent-hold";
 import {
   serializeDealForApi,
   type DealApiObject,
@@ -207,6 +213,8 @@ export interface CreateDealInput {
   territoryId?: string | null;
   assignedToUid?: string | null;
   customFields?: Record<string, CustomFieldValue> | null;
+  /** An API agent made this write: enrolments are held and awaited. */
+  actor?: AgentActor;
 }
 
 export interface DealWriteResult {
@@ -216,6 +224,10 @@ export interface DealWriteResult {
   stage: PipelineStage;
   /** Terminal flag of the stage the deal now sits in (update only). */
   stageTerminal?: "won" | "lost";
+  /** Agent writes only: the enrolments held for approval… */
+  held?: HeldEnrolment[];
+  /** …and the matched workflows that could be neither held nor run. */
+  holdFailures?: HoldFailure[];
 }
 
 /** Create a deal + log the create activity + emit `deal.created`. */
@@ -280,22 +292,27 @@ export async function createDealServerSide(
     deal,
     events: [{ type: "deal.created" }],
   });
-  fireDealTrigger({
-    subAccountId: input.subAccountId,
-    agencyId: input.agencyId,
-    mode: input.mode,
-    type: "deal.created",
-    contactId: input.contactId,
-    context: { dealId: ref.id, pipelineId, toStage: input.stageId },
-  });
+  const held = await heldFrom([
+    fireDealTrigger({
+      subAccountId: input.subAccountId,
+      agencyId: input.agencyId,
+      mode: input.mode,
+      type: "deal.created",
+      contactId: input.contactId,
+      context: { dealId: ref.id, pipelineId, toStage: input.stageId },
+      actor: input.actor,
+    }),
+  ]);
 
-  return { id: ref.id, deal, stage };
+  return { id: ref.id, deal, stage, ...(input.actor ? held : {}) };
 }
 
 /**
  * Fire a deal-scoped workflow trigger. Live mode only (test-mode API keys
  * must never enrol real contacts), and only when the deal has a contact —
- * workflow runs are contact-scoped.
+ * workflow runs are contact-scoped. Fire-and-forget (returns null) unless an
+ * API agent made the write: then its enrolments are held and the caller
+ * awaits the outcome for them.
  */
 function fireDealTrigger(opts: {
   subAccountId: string;
@@ -304,15 +321,33 @@ function fireDealTrigger(opts: {
   type: "deal.created" | "deal.won" | "deal.lost" | "pipeline.stage.changed";
   contactId: string | null | undefined;
   context: Record<string, unknown>;
-}): void {
-  if (opts.mode !== "live" || !opts.contactId) return;
-  void fireWorkflowTrigger({
+  actor?: AgentActor;
+}): Promise<TriggerOutcome> | null {
+  if (opts.mode !== "live" || !opts.contactId) return null;
+  const fired = fireWorkflowTrigger({
     subAccountId: opts.subAccountId,
     agencyId: opts.agencyId,
     type: opts.type,
     contactId: opts.contactId,
     context: opts.context,
+    ...(opts.actor ? { hold: opts.actor } : {}),
   });
+  if (!opts.actor) {
+    void fired;
+    return null;
+  }
+  return fired;
+}
+
+/** The held enrolments (and hold failures) of the triggers an agent write awaited. */
+async function heldFrom(
+  fired: Array<Promise<TriggerOutcome> | null>
+): Promise<{ held: HeldEnrolment[]; holdFailures: HoldFailure[] }> {
+  const outcomes = await Promise.all(fired.filter((f) => f !== null));
+  return {
+    held: outcomes.flatMap((o) => o.held ?? []),
+    holdFailures: outcomes.flatMap(holdFailuresOf),
+  };
 }
 
 /**
@@ -374,6 +409,8 @@ export async function updateDealServerSide(opts: {
   workflowDepth?: number;
   /** Entry point, stamped on the stage-history row. */
   source: StageMoveSource;
+  /** An API agent made this write: enrolments are held and awaited. */
+  actor?: AgentActor;
 }): Promise<DealWriteResult | null> {
   const db = getAdminDb();
   const ref = db.doc(`deals/${opts.dealId}`);
@@ -530,6 +567,7 @@ export async function updateDealServerSide(opts: {
   // Workflow triggers — a stage move enrols the deal's contact (workflow
   // runs are contact-scoped). `pipelineId` + `toStage` let a workflow narrow
   // to one stage of one pipeline; a won/lost landing also fires its own.
+  const fired: Array<Promise<TriggerOutcome> | null> = [];
   if (stageChanged) {
     const base = {
       subAccountId: existing.subAccountId as string,
@@ -545,17 +583,20 @@ export async function updateDealServerSide(opts: {
           ? { workflowDepth: opts.workflowDepth }
           : {}),
       },
+      actor: opts.actor,
     };
-    fireDealTrigger({ ...base, type: "pipeline.stage.changed" });
-    if (nextTerminal === "won") fireDealTrigger({ ...base, type: "deal.won" });
-    else if (nextTerminal === "lost") fireDealTrigger({ ...base, type: "deal.lost" });
+    fired.push(fireDealTrigger({ ...base, type: "pipeline.stage.changed" }));
+    if (nextTerminal === "won") fired.push(fireDealTrigger({ ...base, type: "deal.won" }));
+    else if (nextTerminal === "lost") fired.push(fireDealTrigger({ ...base, type: "deal.lost" }));
   }
+  const held = await heldFrom(fired);
 
   return {
     id: fresh.id,
     deal,
     stage: findStage(pipeline, toStage) ?? getStage(toStage, stages),
     stageTerminal: terminalOf(toStage),
+    ...(opts.actor ? held : {}),
   };
 }
 

@@ -15,6 +15,7 @@ import {
   rethrowStageError,
   assertInTerritory,
   fmtMoney,
+  agentActor,
 } from "./helpers";
 
 export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
@@ -209,6 +210,7 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
         // The deal lives in its contact's territory, as tasks/events do.
         territoryId:
           typeof contactTerritory === "string" ? contactTerritory : null,
+        actor: agentActor(ctx, "create_deal"),
       }).catch(rethrowStageError);
       return {
         resultText: `Created the deal “${args.title}” (${fmtMoney(
@@ -218,6 +220,7 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
           res.stage.label
         }. You'll see it on the Pipeline board.`,
         ref: { kind: "deal", id: res.id },
+        ...(res.held ? { held: res.held, holdFailures: res.holdFailures ?? [] } : {}),
       };
     },
   },

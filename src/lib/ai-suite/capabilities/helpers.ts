@@ -7,7 +7,8 @@ import { PIPELINE_STAGES } from "@/types/deals";
 import { type WorkflowTemplate } from "@/lib/server/workflows-service";
 import type { EffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { canSeeTerritory } from "@/lib/ai-suite/territory-scope";
-import { CapabilityUserError } from "./types";
+import type { AgentActor } from "@/lib/workflows/agent-hold";
+import { CapabilityUserError, type AiSuiteActionContext } from "./types";
 
 // ── validation helpers ───────────────────────────────────────────────────
 export const SLUG_RE = /^[a-z0-9-]+$/;
@@ -260,3 +261,13 @@ export function enabledGateLabels(data: Record<string, unknown>): string[] {
     .map(([, g]) => g.label);
 }
 
+/** The trigger actor for an agent-surface call (ruling Q), or undefined on
+ *  chat, where a person already confirmed the write. */
+export function agentActor(
+  ctx: AiSuiteActionContext,
+  capability: string
+): AgentActor | undefined {
+  return ctx.apiKey
+    ? { keyId: ctx.apiKey.keyId, keyPrefix: ctx.apiKey.keyPrefix, capability }
+    : undefined;
+}

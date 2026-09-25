@@ -9,6 +9,7 @@ import {
   STAGE_IDS,
   rethrowStageError,
   assertInTerritory,
+  agentActor,
 } from "./helpers";
 
 export const DEAL_STAGE_CAPABILITIES: AiSuiteCapability[] = [
@@ -95,6 +96,7 @@ export const DEAL_STAGE_CAPABILITIES: AiSuiteCapability[] = [
           stageId: args.stage as string,
           lostReason: (args.lostReason as string) || null,
         },
+        actor: agentActor(ctx, "move_deal_stage"),
       }).catch(rethrowStageError);
       if (!moved) {
         throw new CapabilityUserError(
@@ -106,6 +108,7 @@ export const DEAL_STAGE_CAPABILITIES: AiSuiteCapability[] = [
       return {
         resultText: `Moved “${title}” to ${moved.stage.label}.`,
         ref: { kind: "deal", id: snap.id },
+        ...(moved.held ? { held: moved.held, holdFailures: moved.holdFailures ?? [] } : {}),
       };
     },
   },

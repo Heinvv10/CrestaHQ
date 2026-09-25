@@ -9,6 +9,8 @@ export const AUDIT_ACTIONS = [
   "feature_gates.updated",
   "workflow.status_changed",
   "member.role_changed",
+  // Every direct (non-approval) write an API agent made (lib/api/agent-audit).
+  "agent.write",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -34,7 +36,16 @@ export interface AuditActor {
   id: string;
 }
 
-export const AUDIT_TARGET_TYPES = ["subAccount", "workflow", "member"] as const;
+export const AUDIT_TARGET_TYPES = [
+  "subAccount",
+  "workflow",
+  "member",
+  // Records an agent write can touch (agent.write).
+  "contact",
+  "deal",
+  "task",
+  "event",
+] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 
 export interface AuditTarget {

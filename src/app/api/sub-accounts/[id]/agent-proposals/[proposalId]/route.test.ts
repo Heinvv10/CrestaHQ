@@ -95,9 +95,10 @@ describe("approve", () => {
     const res = await decide("p_enrol", "approve");
     expect(execute).not.toHaveBeenCalled();
     expect(replayHeldEnrolment).toHaveBeenCalledTimes(1);
-    // PR3's seam refuses until PR3b implements the replay.
+    // No workflow wf1 exists here, so the real replay enrols nobody
+    // (the happy path is src/lib/workflows/held-enrolment.test.ts).
     expect(res.status).toBe(422);
-    expect(row("p_enrol")).toMatchObject({ status: "failed", error: expect.stringContaining("not available yet") });
+    expect(row("p_enrol")).toMatchObject({ status: "failed", error: expect.stringContaining("no longer active") });
   });
 });
 

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldPath, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendEmail, emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
@@ -45,6 +45,13 @@ import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/li
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
+import {
+  agentHold,
+  type AgentActor,
+  type HeldEnrolment,
+  type HoldFailure,
+} from "./agent-hold";
+import { writeHeldEnrolment } from "@/lib/server/agent-held-enrolment";
 import { publicFetch } from "@/lib/webhooks/public-fetch";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
@@ -1237,7 +1244,7 @@ function selfTriggeredBookingAt(wf: WorkflowDoc, run: WorkflowRunDoc): Date | nu
   return typeof at?.toDate === "function" ? at.toDate() : null;
 }
 
-interface FireInput {
+export interface FireInput {
   subAccountId: string;
   agencyId: string;
   type: WorkflowTriggerType;
@@ -1249,6 +1256,14 @@ interface FireInput {
    * lib/api/enrolment-cap) so a looping script can't message a whole list.
    */
   apiKeyId?: string;
+  /**
+   * Set when an API agent's write fired this trigger: every workflow the
+   * contact would enter becomes a `workflow_enrolment` proposal instead of a
+   * run (ruling Q). No enrolment is reserved then — approve reserves it.
+   */
+  hold?: AgentActor;
+  /** Approve-time replay of a held enrolment: match this workflow only. */
+  onlyWorkflowId?: string;
 }
 
 /** Why a matching-type workflow did not take the contact. */
@@ -1258,7 +1273,10 @@ export type EnrolSkipReason =
   | "reentry_blocked"
   /** The re-entry transaction errored; not enrolled (fails closed). */
   | "reentry_check_failed"
-  | "no_start_node";
+  | "no_start_node"
+  /** An agent's hold could not be written (e.g. an unsettled earlier
+   *  approval of it); nothing was enrolled. */
+  | "hold_refused";
 
 /**
  * What one trigger did. Callers that fire and forget ignore it; a caller that
@@ -1268,6 +1286,10 @@ export type EnrolSkipReason =
 export interface TriggerOutcome {
   enrolled: Array<{ workflowId: string; runId: string; status: "running" | "failed" }>;
   skipped: Array<{ workflowId: string; reason: EnrolSkipReason }>;
+  /** Agent surface only: enrolments written as proposals instead of runs. */
+  held?: HeldEnrolment[];
+  /** Agent surface only: matched workflows whose hold could not be written. */
+  holdFailures?: HoldFailure[];
   reason: "automations_paused" | "no_active_workflow" | "contact_not_found" | "error" | null;
 }
 
@@ -1293,12 +1315,15 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
     const subSnap = await db.doc(`subAccounts/${input.subAccountId}`).get();
     if (subSnap.data()?.automationsPaused === true) return settle("automations_paused");
 
-    const matches = await db
+    let query = db
       .collection("workflows")
       .where("subAccountId", "==", input.subAccountId)
       .where("status", "==", "active")
-      .where("trigger.type", "==", input.type)
-      .get();
+      .where("trigger.type", "==", input.type);
+    if (input.onlyWorkflowId) {
+      query = query.where(FieldPath.documentId(), "==", input.onlyWorkflowId);
+    }
+    const matches = await query.get();
     if (matches.empty) return settle("no_active_workflow");
 
     const contactSnap = await db.doc(`contacts/${input.contactId}`).get();
@@ -1394,6 +1419,41 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         skip("filters_not_met");
         continue;
       }
+      if (agentHold.shouldHold(input)) {
+        // Fails closed per workflow: never enrol, and tell the agent.
+        const fail = (reason: HoldFailure["reason"]) => {
+          (outcome.holdFailures ??= []).push({ workflowId: wf.id, reason });
+          skip(reason === "reentry_check_failed" ? "reentry_check_failed" : "hold_refused");
+        };
+        // Obviously-blocked workflows produce no proposal; approve re-runs
+        // the real re-entry check inside its run-creating transaction.
+        let blocked: boolean;
+        try {
+          blocked = await reentryWouldBlock(wf, contact.id);
+        } catch (err) {
+          console.error("[workflows] re-entry probe failed — not holding", err);
+          fail("reentry_check_failed");
+          continue;
+        }
+        if (blocked) {
+          skip("reentry_blocked");
+          continue;
+        }
+        let held: HeldEnrolment | null;
+        try {
+          held = await writeHeldEnrolment(input, wf, contact);
+        } catch (err) {
+          console.error("[workflows] held enrolment write failed — not enrolling", err);
+          fail("hold_error");
+          continue;
+        }
+        if (!held) {
+          fail("hold_refused");
+          continue;
+        }
+        (outcome.held ??= []).push(held);
+        continue;
+      }
       const run = await enroll(wf, contact.id, input.context ?? {}, true);
       if (typeof run === "string") {
         skip(run);
@@ -1425,6 +1485,29 @@ const isLive = (d: { data: () => unknown }) => {
   const s = (d.data() as WorkflowRunDoc).status;
   return s === "running" || s === "waiting";
 };
+
+/**
+ * Read-only probe of the re-entry policy — the same reads createRunUnlessBlocked
+ * makes (the runs query, the lock, its lastRunId run), without the writes.
+ */
+async function reentryWouldBlock(wf: WorkflowDoc, contactId: string): Promise<boolean> {
+  const policy = wf.reentry ?? "every_time";
+  if (policy === "every_time") return false;
+  const db = getAdminDb();
+  const runs = await db
+    .collection("workflowRuns")
+    .where("workflowId", "==", wf.id)
+    .where("contactId", "==", contactId)
+    .get();
+  if (!runs.empty && (policy === "once_ever" || runs.docs.some(isLive))) return true;
+  const lock = await db.doc(`workflowEnrolmentLocks/${wf.id}_${contactId}`).get();
+  if (!lock.exists) return false;
+  if (policy === "once_ever") return true;
+  const lastRunId = (lock.data() as { lastRunId?: string }).lastRunId;
+  if (!lastRunId) return false;
+  const last = await db.doc(`workflowRuns/${lastRunId}`).get();
+  return last.exists && isLive(last);
+}
 
 /** The per-(workflow, contact) enrolment lock. EVERY run creation writes it
  *  in the same atomic write as the run — see createRunUnlessBlocked. */
