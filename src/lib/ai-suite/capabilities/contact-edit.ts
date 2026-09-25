@@ -6,7 +6,7 @@ import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
 import { str, agentActor } from "./helpers";
-import { agentText, hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { agentText, hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE, plainSpaces } from "./text-safety";
 import { asTags, MAX_TAGS, MAX_TAG_LEN } from "@/lib/api/serializers/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 
@@ -35,7 +35,9 @@ export async function tenantContact(
  *  truncated or dropped, so nothing is lost silently. */
 export const TAGS_RULE = `a list of at most ${MAX_TAGS} non-empty tags of at most ${MAX_TAG_LEN} characters, none that ${UNSAFE_TEXT_MESSAGE}`;
 export function parseTags(raw: unknown): string[] | null {
-  const tags = raw === null || raw === undefined ? null : asTags(raw);
+  // Plain spaces first: tags match exactly (workflow filters, the add /
+  // remove diff), so an NBSP "VIP Client" must be the same tag as a plain one.
+  const tags = raw === null || raw === undefined ? null : asTags(Array.isArray(raw) ? raw.map((t) => (typeof t === "string" ? plainSpaces(t) : t)) : raw);
   return tags && !tags.some(hasUnsafeText) ? tags : null;
 }
 

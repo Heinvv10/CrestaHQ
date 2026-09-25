@@ -3,7 +3,7 @@ import "server-only";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { type AiSuiteCapability } from "./types";
 import { EMAIL_RE, agentActor } from "./helpers";
-import { agentText, hasUnsafeText, UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
+import { agentText, hasUnsafeText, plainSpaces, UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
 
 export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -55,7 +55,7 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
       const tags = Array.isArray(rawTags)
         ? rawTags
             .filter((t): t is string => typeof t === "string")
-            .map((t) => t.trim().slice(0, 40))
+            .map((t) => plainSpaces(t).trim().slice(0, 40))
             .filter(Boolean)
             .slice(0, 10)
         : [];

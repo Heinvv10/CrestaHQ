@@ -24,7 +24,7 @@ export const UNSAFE_TEXT_MESSAGE =
   "contains characters that can't be shown safely (control, invisible, bidi, private-use or unassigned)";
 
 /** Every space separator (NBSP, thin, U+202F, U+3000…) as a plain space. */
-const plainSpaces = (v: string) => v.replace(/\p{Zs}/gu, " ");
+export const plainSpaces = (v: string) => v.replace(/\p{Zs}/gu, " ");
 /** What oneLine removes outright: the invisible set (a presentation
  *  selector excepted, see oneLine). */
 const STRIP_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;

@@ -140,16 +140,50 @@ describe("pasted space separators are plain spaces, not refusals", () => {
     expect(created(await dispatchAgentTool(auth, "create_contact", args), "contacts")).toMatchObject(stored);
   });
 
-  it("a space separator is not itself unsafe (it shows as a space), wherever it isn't normalised", async () => {
+  it("a space separator is not itself unsafe (it shows as a space); an NBSP tag is stored as the plain-space tag", async () => {
     const { UNSAFE_TEXT_RE, hasUnsafeText } = await import("./text-safety");
     expect(UNSAFE_TEXT_RE.test("a\u00a0b\u202fc\u3000d")).toBe(false);
     expect(hasUnsafeText("VIP\u00a0Client")).toBe(false);
     expect(await dispatchAgentTool(auth, "add_tags", { contactId: "c1", tags: ["VIP\u00a0Client"] })).toMatchObject({ ok: true });
+    expect(mem.read("contacts/c1")!.tags).toEqual(["VIP Client"]);
   });
 
   it("the refusal names the cause", async () => {
     expect(await dispatchAgentTool(auth, "create_company", { name: "A\u200bB" })).toMatchObject({
       ok: false, message: "name contains characters that can't be shown safely (control, invisible, bidi, private-use or unassigned)",
     });
+  });
+});
+
+describe("tags are normalised to plain spaces (they match exactly)", () => {
+  beforeEach(() => {
+    mem.seed("contacts/c1", { ...mem.read("contacts/c1")!, tags: ["VIP Client"] });
+    mem.seed("workflows/wt", {
+      name: "On tag", subAccountId: "sa1", agencyId: "ag1", status: "active", startNodeId: "n1",
+      trigger: { type: "contact.tag.added", filters: { all: [] } },
+      nodes: { n1: { id: "n1", type: "send_sms", config: { body: "x" }, next: null } },
+    });
+  });
+
+  it("adding an NBSP 'VIP Client' to a contact that has 'VIP Client' keeps one tag and holds nothing", async () => {
+    const r = await dispatchAgentTool(auth, "add_tags", { contactId: "c1", tags: ["VIP\u00a0Client"] });
+    expect(r).toMatchObject({ ok: true });
+    expect(mem.read("contacts/c1")!.tags).toEqual(["VIP Client"]);
+    expect((r as { held?: unknown[] }).held ?? []).toEqual([]);
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it("remove_tags with an NBSP input removes the plain-space tag", async () => {
+    await dispatchAgentTool(auth, "remove_tags", { contactId: "c1", tags: ["VIP\u202fClient"] });
+    expect(mem.read("contacts/c1")!.tags).toEqual([]);
+  });
+
+  it.each([
+    ["create_contact", { name: "New", tags: ["VIP\u00a0Client"] }],
+    ["update_contact", { contactId: "c1", tags: ["VIP\u3000Client"] }],
+  ])("%s stores a plain-space tag", async (name, args) => {
+    const r = await dispatchAgentTool(auth, name, args);
+    const id = name === "create_contact" ? (r as { ref: { id: string } }).ref.id : "c1";
+    expect(mem.read(`contacts/${id}`)!.tags).toEqual(["VIP Client"]);
   });
 });
