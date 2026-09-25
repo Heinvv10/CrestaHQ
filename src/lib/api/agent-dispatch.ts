@@ -187,7 +187,7 @@ async function dispatch(
       return refuse(
         "proposal_too_large",
         400,
-        "This action is too large to queue for approval. Split it into smaller changes."
+        cap.proposalTooLargeMessage ?? "This action is too large to queue for approval. Split it into smaller changes."
       );
     }
     const created = await createProposal({

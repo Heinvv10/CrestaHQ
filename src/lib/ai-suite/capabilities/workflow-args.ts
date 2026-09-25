@@ -20,6 +20,8 @@ const OPS: readonly string[] = CONDITION_OPS.map((o) => o.value);
 const STEP_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const stepRef = (v: unknown) => v === null || v === undefined || (typeof v === "string" && STEP_ID.test(v));
 
+const TOO_DEEP = "(too deep)";
+
 const plain = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype;
 
@@ -29,7 +31,7 @@ const plain = (v: unknown): v is Record<string, unknown> =>
  * `prototype`), or a nesting too deep to walk; null when none.
  */
 function badKey(v: unknown, depth = 0): string | null {
-  if (depth > MAX_DEPTH) return "(nested too deeply)";
+  if (depth > MAX_DEPTH) return TOO_DEEP;
   if (Array.isArray(v)) {
     for (const x of v) {
       const bad = badKey(x, depth + 1);
@@ -79,6 +81,7 @@ export function patchOf(raw: unknown): { ok: true; patch: WorkflowPatch } | { ok
   }
   // Walked before anything copies them: a copy would act on such a key.
   const bad = badKey(r.trigger) ?? badKey(r.nodes);
+  if (bad === TOO_DEEP) return { ok: false, error: `the trigger and steps can be nested at most ${MAX_DEPTH} levels deep` };
   if (bad) return { ok: false, error: `the trigger and steps can't use the key ${bad}` };
   if (r.trigger !== undefined) {
     const t = r.trigger;

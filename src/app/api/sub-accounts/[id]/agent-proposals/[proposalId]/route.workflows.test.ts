@@ -95,7 +95,7 @@ describe("update_workflow", () => {
     seed({ status: "active" });
     const body = "\u5b57".repeat(48_000);
     const r = await call("update_workflow", { workflowId: "wf1", nodes: { n1: { type: "send_sms", config: { body } } }, startNodeId: "n1" });
-    expect(r).toMatchObject({ ok: false, code: "proposal_too_large", message: "This action is too large to queue for approval. Split it into smaller changes." });
+    expect(r).toMatchObject({ ok: false, code: "proposal_too_large", message: "This workflow is too large to review as one approval; edit it in the builder." });
     expect(mem.list("agentProposals")).toEqual([]);
   });
 

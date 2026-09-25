@@ -112,6 +112,8 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       return touchesSteps(args) && !(await liveRunsQuery(wf.id).get()).empty ? "workflow_activate" : undefined;
     },
     approvalHint: { approval: "workflow_activate", when: "the workflow is active, or the edit changes its steps while runs are in progress" },
+    // The preview is the whole workflow: splitting the edit wouldn't shrink it.
+    proposalTooLargeMessage: "This workflow is too large to review as one approval; edit it in the builder.",
     // Workflows carry no territory: the approval is tenant-wide.
     approvalTarget: async (ctx, args) => {
       await tenantWorkflow(ctx.subAccountId!, args.workflowId);

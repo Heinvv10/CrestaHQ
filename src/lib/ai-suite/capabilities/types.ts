@@ -151,6 +151,9 @@ export interface AiSuiteCapability {
   /** With `approvalFor`: what the tools listings (REST and MCP) show — the
    *  class, and in words when it applies (e.g. "mode=auto"). */
   approvalHint?: { approval: CapabilityApproval; when: string };
+  /** With an approval class: what the agent is told when the proposal is
+   *  too large to store (default: split it into smaller changes). */
+  proposalTooLargeMessage?: string;
   /** Agent-surface-only narrowing of the raw args, applied before validate
    *  (e.g. dropping fields an agent may not set). */
   agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;
