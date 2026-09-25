@@ -188,8 +188,8 @@ describe("no oracle, one predicate", () => {
       return [await strip(a), await strip(b)];
     };
     expect(await run("my_access", "oracle-1")).toEqual(await run("no_such_tool", "oracle-2"));
-    // Both cached alike (a chat-only name is not treated as a read tool).
-    expect(mem.list("subAccounts/sa1/apiIdempotency")).toHaveLength(2);
+    // Treated alike: both a 404 refusal, so neither is cached.
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
   });
 
   it("an agency-level tool any role satisfies is neither listed nor callable", async () => {
@@ -217,6 +217,19 @@ describe("no oracle, one predicate", () => {
     }
     const listed = ((await (await listTools()).json()) as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
     expect(listed.sort()).toEqual(accepted.sort());
+  });
+});
+
+describe("which outcomes are cached", () => {
+  it("a refusal is never cached; a 409 outcome_unknown is", async () => {
+    expect((await call("create_contact", {}, { "idempotency-key": "bad-args" })).status).toBe(400);
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
+    const first = (await (await call("__rest_outbound", { body: "hi" })).json()) as { proposal: { id: string } };
+    mem.seed(`agentProposals/${first.proposal.id}`, { ...mem.read(`agentProposals/${first.proposal.id}`), status: "unsettled" });
+    const unknown = await call("__rest_outbound", { body: "hi" }, { "idempotency-key": "u1" });
+    expect(unknown.status).toBe(409);
+    expect(await unknown.json()).toMatchObject({ error: { code: "outcome_unknown" } });
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toHaveLength(1);
   });
 });
 

@@ -108,10 +108,17 @@ export interface WithApiAuthOptions {
   precheck?: (ctx: ApiAuthContext) => Promise<NextResponse | null>;
   /**
    * Per-request veto of the idempotency cache (default: cache as usual).
-   * The agent tools route returns false for read tools: a read is naturally
-   * idempotent, and caching its result would persist tenant data (PII).
+   * The agent tools route returns false for read tools (a read is naturally
+   * idempotent, and caching its result would persist tenant data), and
+   * stores only real outcomes, never a refusal that would replay forever.
    */
-  cacheIdempotently?: (params: Record<string, string>) => boolean;
+  cacheIdempotently?: (
+    params: Record<string, string>,
+    /** Absent: "take part in idempotency at all?" (before the lookup).
+     *  Present: "store this outcome?" (after the handler; the default stores
+     *  anything below 500). */
+    outcome?: { status: number; body: unknown },
+  ) => boolean;
 }
 
 export interface ApiHandlerInput<P extends Record<string, string> = Record<string, string>> {
@@ -505,7 +512,10 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
 
     // Cache successful responses only — never cache server errors so the
     // caller's retry-with-same-key actually hits the handler again.
-    if (useIdempotency && fingerprint && response.status < 500) {
+    const storeOutcome = opts.cacheIdempotently
+      ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
+      : response.status < 500;
+    if (useIdempotency && fingerprint && storeOutcome) {
       try {
         await writeIdempotencyCache(
           ctx.subAccountId,

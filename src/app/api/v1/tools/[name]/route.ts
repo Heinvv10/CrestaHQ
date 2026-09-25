@@ -60,6 +60,15 @@ export const POST = withApiAuth<{ name: string }>(
       const read = isAgentReadTool(name);
       return { requestBody: read, responseBody: read };
     },
-    cacheIdempotently: ({ name }) => !isAgentReadTool(name),
+    // Reads never take part. Otherwise only real outcomes are stored — a
+    // write (200), a proposal (202), or outcome_unknown (409); a refusal
+    // (gate off, test mode, not available, bad args) must not replay forever.
+    cacheIdempotently: ({ name }, outcome) =>
+      !isAgentReadTool(name) &&
+      (!outcome ||
+        outcome.status === 200 ||
+        outcome.status === 202 ||
+        (outcome.status === 409 &&
+          (outcome.body as { error?: { code?: string } } | null)?.error?.code === "outcome_unknown")),
   },
 );
