@@ -180,9 +180,8 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   const router = useRouter();
   // Resolve the active sub-account from the URL — the Sidebar renders above the
   // SubAccountProvider, so the count hooks can't read it from context.
-  const { subAccountId: badgeSubId, agencyId: badgeAgencyId } =
-    useActiveSubAccountId();
-  const dueToday = useDueTodayCount(badgeSubId, badgeAgencyId);
+  const { subAccountId: badgeSubId } = useActiveSubAccountId();
+  const dueToday = useDueTodayCount(badgeSubId);
   const unreadConversations = useUnreadConversationsCount(badgeSubId);
   const { agencyRole, memberships, loading } = useAuth();
   const agency = useAgency();

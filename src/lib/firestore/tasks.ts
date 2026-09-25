@@ -115,6 +115,41 @@ export function subscribeToTasks(
   );
 }
 
+/**
+ * Live count of incomplete tasks due today or overdue. Queries only those
+ * tasks: the Sidebar badge used to subscribe to the whole task list (0.46 MB
+ * on an 845-task sub-account) on every dashboard page just to count.
+ * Needs the (subAccountId, completed, dueAt) and (subAccountId, territoryId,
+ * completed, dueAt) indexes. A doc with no `dueAt` is not due.
+ */
+export function subscribeToDueTodayCount(
+  subAccountId: string,
+  callback: (count: number) => void,
+  onError?: (err: Error) => void,
+  territoryFilter?: string[] | null,
+): Unsubscribe {
+  const plan = territoryQueryPlan(territoryFilter);
+  if (plan.mode === "empty") {
+    callback(0);
+    return NOOP_UNSUB;
+  }
+  const tomorrow = new Date();
+  tomorrow.setHours(0, 0, 0, 0);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const q = query(
+    collection(getFirebaseDb(), TASKS),
+    where("subAccountId", "==", subAccountId),
+    ...(plan.mode === "in" ? [plan.constraint] : []),
+    where("completed", "==", false),
+    where("dueAt", "<", Timestamp.fromDate(tomorrow)),
+  );
+  return onSnapshot(
+    q,
+    (snap) => callback(snap.size),
+    (err) => onError?.(err),
+  );
+}
+
 export function subscribeToTasksForContact(
   contactId: string,
   scope: TenantScope,
