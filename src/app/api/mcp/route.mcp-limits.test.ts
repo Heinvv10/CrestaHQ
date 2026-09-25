@@ -1,6 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -13,7 +11,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { POST, GET, DELETE } = await import("./route");
+const { POST } = await import("./route");
 const { mintApiKey } = await import("@/lib/api/keys");
 const { snapshotRemaining, checkAndCount } = await import("@/lib/api/rate-limit");
 
@@ -30,21 +28,6 @@ function mintKey(scopes: string[], mode: "live" | "test" = "live") {
   return m.rawKey;
 }
 const URL_ = "http://localhost/api/mcp";
-const routeFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-  const req = new Request(input, init);
-  if (req.method === "POST") return POST(req);
-  return req.method === "GET" ? GET() : DELETE();
-}) as typeof fetch;
-const connect = async (bearer = key) => {
-  const client = new Client({ name: "test-agent", version: "1.0.0" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(URL_), {
-      fetch: routeFetch,
-      requestInit: { headers: { authorization: `Bearer ${bearer}` } },
-    })
-  );
-  return client;
-};
 const rawPost = (body: unknown, bearer = key) =>
   POST(new Request(URL_, {
     method: "POST",
@@ -96,11 +79,17 @@ describe("one token per request, one more per executed tools/call", () => {
     expect(tokens).toBe(1);
   });
 
-  it("a 3-call batch costs 4 and runs all three", async () => {
+  it("a single tools/call costs 1 — the same budget as REST", async () => {
+    const { res, tokens } = await cost(() => rawPost(call(1)));
+    expect(res.status).toBe(200);
+    expect(tokens).toBe(1);
+  });
+
+  it("a 3-call batch costs 3 and runs all three", async () => {
     const { res, tokens } = await cost(() => rawPost([call(1), call(2), call(3)]));
     expect(res.status).toBe(200);
     expect(((await res.json()) as unknown[]).length).toBe(3);
-    expect(tokens).toBe(4);
+    expect(tokens).toBe(3);
   });
 
   it.each([
@@ -165,11 +154,13 @@ describe("refused before any message runs", () => {
     expect(res.status).toBe(413);
   });
 
-  it("a call past the limit inside a request that got its token is an isError rate_limited result, not a run", async () => {
-    const client = await connect();
+  it("with one token left, a 2-call batch runs the first (prepaid) and refuses the second as isError rate_limited", async () => {
     while (remaining() > 1) checkAndCount({ keyId, mode: "live", scope: "agent" });
-    const r = await client.callTool({ name: "create_contact", arguments: { name: "Too Many" } });
-    expect(r).toMatchObject({ isError: true, structuredContent: { error: { code: "rate_limited" } } });
+    const res = await rawPost([call(1, "create_contact", { name: "First In" }), call(2, "create_contact", { name: "Too Many" })]);
+    const out = (await res.json()) as Array<{ id: number; result: { isError?: boolean; structuredContent?: unknown } }>;
+    expect(out.find((m) => m.id === 1)!.result.isError).toBeFalsy();
+    expect(out.find((m) => m.id === 2)!.result).toMatchObject({ isError: true, structuredContent: { error: { code: "rate_limited" } } });
+    expect(contactsNamed("First In")).toHaveLength(1);
     expect(contactsNamed("Too Many")).toEqual([]);
   });
 });

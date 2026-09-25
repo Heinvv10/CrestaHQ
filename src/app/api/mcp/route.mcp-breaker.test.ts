@@ -76,15 +76,16 @@ describe("REPRO 2: an exhausted key cannot amplify one request into many log row
   it("calls rate-limited inside a batch collapse into ONE summary row with their count", async () => {
     while (remaining() > 4) checkAndCount({ keyId, mode: "live", scope: "agent" });
     const batch = Array.from({ length: 100 }, (_, i) => call(i + 1, "find_contacts", { query: "ann" }));
-    const res = await rawPost(batch); // 1 request token, then 3 calls run, 97 refused
+    const res = await rawPost(batch); // the request token (covering call 1) + 3 more calls run, 96 refused
     expect(res.status).toBe(200);
     await settle();
     const rows = keyLogs();
     const summary = rows.filter((l) => l.path === "/api/mcp");
     expect(summary).toHaveLength(1);
     expect(summary[0]).toMatchObject({ responseStatus: 429, errorCode: "rate_limited" });
-    expect(JSON.parse(String(summary[0]!.responseBody))).toEqual({ rateLimitedCalls: 97 });
-    expect(rows.filter((l) => l.path === "/api/mcp#find_contacts")).toHaveLength(3);
+    expect(JSON.parse(String(summary[0]!.responseBody))).toEqual({ rateLimitedCalls: 96 });
+    expect(rows.filter((l) => l.path === "/api/mcp#find_contacts")).toHaveLength(4);
+    expect(rows).toHaveLength(5); // 4 calls + 1 summary: no row per refused call
   });
 });
 
@@ -164,4 +165,10 @@ it("a tools/call with no params gets a generic JSON-RPC error, not the SDK's val
   const res = await rawPost({ jsonrpc: "2.0", id: 1, method: "tools/call" });
   const body = (await res.json()) as { error: { code: number; message: string; data?: unknown } };
   expect(body.error).toEqual({ code: -32602, message: "Invalid tool call: check the tool name and arguments." });
+});
+
+it("an SDK error on another method gets a generic \"Invalid request.\"", async () => {
+  const res = await rawPost({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { cursor: 5 } });
+  const body = (await res.json()) as { error: { code: number; message: string } };
+  expect(body.error).toEqual({ code: -32600, message: "Invalid request." });
 });

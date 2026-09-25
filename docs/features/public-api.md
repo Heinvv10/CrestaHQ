@@ -261,9 +261,11 @@ claude mcp add --transport http leadstack https://<your-app>/api/mcp \
 - `tools/list` lists the same tools as `GET /api/v1/tools`: `inputSchema` is
   the tool's JSON Schema, reads carry `annotations.readOnlyHint`, and a tool
   that needs a person carries its approval class in `_meta: {approval}`.
-- Rate limit (the same per-key agent budget as REST): every request pays one
-  token up front, and each `tools/call` that runs pays one more, so a 3-call
-  JSON-RPC batch costs 4. An exhausted key gets the v1 429 with `Retry-After`
+- Rate limit: the same per-key agent budget as REST, at the same price — one
+  tool call costs one token. Every request pays one token up front, which
+  also covers its first `tools/call`; each further call in a JSON-RPC batch
+  pays one more (a 3-call batch costs 3), and a request that runs no call
+  still costs 1. An exhausted key gets the v1 429 with `Retry-After`
   and `X-RateLimit-*` before anything runs. A batch that repeats a request id
   is refused whole (JSON-RPC `-32600`).
 - A write returns its result text (plus `structuredContent` `{ref?, held?,

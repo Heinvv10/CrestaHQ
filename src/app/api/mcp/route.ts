@@ -15,9 +15,10 @@ import { handleMcpRequest } from "@/lib/api/agent-mcp";
  * gate read fresh). Those refusals are plain HTTP v1 errors, logged as
  * `/api/mcp`; per-call refusals are MCP `isError` results (see agent-mcp).
  * Rate limit: every authenticated request pays one token up front, right
- * after the scope check and before anything else runs (as on REST); each
- * tools/call that executes pays one more (in agent-mcp), so a 3-call batch
- * costs 4 and a request can never do work for free. A batch that repeats a
+ * after the scope check and before anything else runs (as on REST). That
+ * token also covers the request's first tools/call; each further call pays
+ * one more (in agent-mcp). So one call costs 1, a 3-call batch 3, and a
+ * request that runs nothing still 1 — nothing is free. A batch that repeats a
  * JSON-RPC id is refused whole before any message runs.
  * GET (no server-initiated stream) and DELETE (no sessions) → 405.
  */

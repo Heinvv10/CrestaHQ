@@ -20,10 +20,11 @@ import { AI_SUITE_CAPABILITIES } from "@/lib/ai-suite/capabilities";
  * The MCP face of the Agent API (AGENT_API_V1_PLAN.md, PR5): a low-level
  * `Server` built per HTTP request over a STATELESS web-standard Streamable
  * HTTP transport. `tools/list` is the same set as GET /api/v1/tools
- * (`agentCallable`); every `tools/call` takes its own rate-limit token — so
- * a JSON-RPC batch can't turn one HTTP request into N writes — then runs
- * dispatchAgentTool and writes one request log (`/api/mcp#<name>`); the
- * route charges each request one more token up front. Bodies are logged
+ * (`agentCallable`). The route charges each request one token up front,
+ * which pays for its first `tools/call`; every further call takes its own —
+ * so one call costs one token, as on REST, and a JSON-RPC batch can't turn
+ * one HTTP request into N free writes. Each call runs dispatchAgentTool and
+ * writes one request log (`/api/mcp#<name>`). Bodies are logged
  * only for a callable write (its validated args, never the raw ones), and
  * per-call rate-limit refusals collapse into ONE log row per HTTP request.
  * Nothing thrown — dispatch, logging, SDK validation — reaches the client
@@ -60,6 +61,11 @@ const logSafe = (name: unknown) =>
 /** Per-HTTP-request state shared by that request's tool calls. */
 interface CallState {
   rateLimited: number;
+  /** The request's up-front token also pays for its first call, so one
+   *  call costs one token — the same budget as REST. */
+  firstCallPaid: boolean;
+  /** JSON-RPC ids of this request's tools/call messages. */
+  toolCallIds: Set<string>;
 }
 
 const INTERNAL = refusal("internal_error", "The tool call failed.");
@@ -73,7 +79,11 @@ async function callTool(
   args: unknown,
 ): Promise<CallToolResult> {
   const start = Date.now();
-  const rl = checkAndCount({ keyId: auth.keyId, mode: auth.mode, scope: "agent" });
+  const prepaid = state.firstCallPaid;
+  state.firstCallPaid = false;
+  const rl = prepaid
+    ? { ok: true as const, retryAfterSec: 0 }
+    : checkAndCount({ keyId: auth.keyId, mode: auth.mode, scope: "agent" });
   if (!rl.ok) {
     // Not logged per call: the request writes one summary row (handleMcpRequest).
     state.rateLimited += 1;
@@ -178,12 +188,12 @@ function log(
 
 /** An SDK-produced JSON-RPC error (e.g. a tools/call whose params fail its
  *  schema) carries the raw validation dump; the agent gets a generic one. */
-function sanitizeOutgoing(message: JSONRPCMessage): JSONRPCMessage {
+function sanitizeOutgoing(message: JSONRPCMessage, toolCallIds: Set<string>): JSONRPCMessage {
   if (!("error" in message) || message.error.code === ErrorCode.MethodNotFound) return message;
-  return {
-    ...message,
-    error: { code: ErrorCode.InvalidParams, message: "Invalid tool call: check the tool name and arguments." },
-  };
+  const error = toolCallIds.has(JSON.stringify(message.id))
+    ? { code: ErrorCode.InvalidParams, message: "Invalid tool call: check the tool name and arguments." }
+    : { code: ErrorCode.InvalidRequest, message: "Invalid request." };
+  return { ...message, error };
 }
 
 /** Serve one MCP HTTP request for an authenticated, prechecked agent key. */
@@ -193,7 +203,16 @@ export async function handleMcpRequest(
   parsedBody: unknown,
 ): Promise<Response> {
   const start = Date.now();
-  const state: CallState = { rateLimited: 0 };
+  const messages = Array.isArray(parsedBody) ? parsedBody : [parsedBody];
+  const state: CallState = {
+    rateLimited: 0,
+    firstCallPaid: true,
+    toolCallIds: new Set(
+      messages
+        .filter((m) => !!m && typeof m === "object" && (m as { method?: unknown }).method === "tools/call" && "id" in m)
+        .map((m) => JSON.stringify((m as { id: unknown }).id)),
+    ),
+  };
   const server = new Server(
     { name: "leadstack", version: "1.0.0" },
     { capabilities: { tools: {} } },
@@ -208,7 +227,7 @@ export async function handleMcpRequest(
   });
   await server.connect(transport);
   const send = transport.send.bind(transport);
-  transport.send = (message, options) => send(sanitizeOutgoing(message), options);
+  transport.send = (message, options) => send(sanitizeOutgoing(message, state.toolCallIds), options);
   try {
     return await transport.handleRequest(request, { parsedBody });
   } finally {
