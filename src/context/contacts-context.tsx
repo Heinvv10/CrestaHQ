@@ -131,6 +131,7 @@ export function ContactsProvider({ children }: { children: ReactNode }) {
  * Keyed per load by the provider, so the slow timer measures the current
  * one. A fixed pill rather than a page-width block: it sits over full-bleed
  * pages and open dialogs (z-50) alike, and clears the mobile tab bar.
+ * Status text only: it never takes a tap meant for a button beneath it.
  */
 function ContactsWaitHint({ visible }: { visible: boolean }) {
   const hint = useLoadingHint();
@@ -138,7 +139,7 @@ function ContactsWaitHint({ visible }: { visible: boolean }) {
   return (
     <p
       role="status"
-      className="fixed bottom-20 left-1/2 z-[60] w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-full border bg-background px-4 py-2 text-sm text-muted-foreground shadow-lg md:bottom-4"
+      className="pointer-events-none fixed bottom-20 left-1/2 z-[60] w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-full border bg-background px-4 py-2 text-sm text-muted-foreground shadow-lg md:bottom-4"
     >
       {hint === "offline"
         ? "You're offline. Contacts will load when your connection is back."

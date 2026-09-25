@@ -282,6 +282,26 @@ describe("the wait hint", () => {
     }
   });
 
+  it("starts timing at the first request, not when the provider mounts", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await render(createElement(Bare, { key: "bare" }));
+      await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+      await render(consumer("a"));
+      expect(el.textContent).not.toContain(slowText);
+      await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
+      expect(el.textContent).toContain(slowText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never takes a tap meant for what is under it", async () => {
+    setOnline(false);
+    await render(consumer("a"));
+    expect(el.querySelector('[role="status"]')?.classList).toContain("pointer-events-none");
+  });
+
   it("says a load is slow, and a new load restarts the timer", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
