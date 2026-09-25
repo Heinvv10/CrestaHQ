@@ -50,6 +50,18 @@ describe("editing a template live on some rail", () => {
     expect(mem.read(PATH)).toMatchObject({ displayName: "Install day v2", body: "Hi {{1}}." });
   });
 
+  it("the manager's full save payload with only the name changed goes through (buttons compared canonically)", async () => {
+    // Stored with a different key order than the manager sends.
+    const buttons = [{ url: "https://x.io/r", text: "Reschedule", type: "url" }];
+    mem.seed(PATH, { ...BASE, buttons, registrations: { twilio: { externalId: "HX1", status: "approved", rejectionReason: null } } });
+    const res = await edit({
+      displayName: "Install day v2", category: "UTILITY", language: " en ", body: " Hi {{1}}. ", variables: BASE.variables,
+      buttons: [{ type: "url", text: "Reschedule", url: "https://x.io/r" }],
+    });
+    expect(res.status).toBe(200);
+    expect(mem.read(PATH)).toMatchObject({ displayName: "Install day v2", body: "Hi {{1}}.", language: "en" });
+  });
+
   it("with nothing approved or pending on any rail, the text is editable as before", async () => {
     mem.seed(PATH, { ...BASE, registrations: { cloud: { externalId: null, status: "rejected", rejectionReason: "no" } } });
     expect((await edit({ body: "Hi {{1}}, it changed.", language: "af" })).status).toBe(200);

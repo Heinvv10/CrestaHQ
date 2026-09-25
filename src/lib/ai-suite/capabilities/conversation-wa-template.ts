@@ -128,7 +128,9 @@ export const CONVERSATION_WA_TEMPLATE_CAPABILITIES: AiSuiteCapability[] = [
       if (!isTemplateApprovedFor(tpl, sender.provider)) {
         throw new CapabilityUserError(`Template "${tpl.name}" isn't approved for sending on this workspace's WhatsApp account.`);
       }
-      tpl.variables.forEach((v, i) => {
+      // values[i] is the i-th variable by position (resolveTemplateVariables).
+      const byPosition = [...tpl.variables].sort((a, b) => a.position - b.position);
+      byPosition.forEach((v, i) => {
         const problem = valueProblem(values[i] ?? "");
         if (problem) throw new CapabilityUserError(`The "${v.label}" value ${problem}.`);
       });
@@ -145,7 +147,10 @@ export const CONVERSATION_WA_TEMPLATE_CAPABILITIES: AiSuiteCapability[] = [
       // normalised already, so this trips only on stored text (a template or a
       // merge-tag value with odd spacing, e.g. U+1680, which renders as a dash).
       if (shown !== rendered) {
-        throw new CapabilityUserError("The filled-in template has spacing or characters that would not show exactly as sent.");
+        const at = byPosition.find((_v, i) => messageBody(values[i] ?? "") !== values[i]);
+        throw new CapabilityUserError(
+          `${at ? `The "${at.label}" value` : "The template's text"} has spacing or characters that would not show exactly as sent.`
+        );
       }
       const base = await outgoingPreview(ctx, { ...args, channel: "whatsapp", body: shown }, [
         { label: "Template", value: `${tpl.displayName} (${tpl.name})` },

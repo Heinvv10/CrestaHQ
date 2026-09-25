@@ -116,6 +116,23 @@ describe("propose", () => {
     expect(mem.list("agentProposals")).toEqual([]);
   });
 
+  it.each([
+    ["a variable's stored value", () => mem.seed("contacts/c1", { ...ANN, customFields: { street: "12\u1680Main" } }), 'The "First name" value has'],
+    ["the template's own text", () => editTemplate({ body: "Hi {{1}},\u1680your install is on {{2}}." }), "The template's text has"],
+  ])("spacing that wouldn't show as sent in %s → the refusal names where", async (_label, arrange, where) => {
+    editTemplate({ variables: [{ ...TPL.variables[0], mergeTag: "contact.customFields.street" }, TPL.variables[1]] });
+    mem.seed("contacts/c1", { ...ANN, customFields: { street: "12 Main" } });
+    arrange();
+    expect(await propose()).toMatchObject({ ok: false, message: `${where} spacing or characters that would not show exactly as sent.` });
+  });
+
+  it("variables stored out of position order → the refusal still names the right one", async () => {
+    const street = { position: 2, label: "Street", sampleValue: "1 Main", source: "merge_tag", mergeTag: "contact.customFields.street" };
+    editTemplate({ variables: [street, TPL.variables[0]] });
+    mem.seed("contacts/c1", { ...ANN, customFields: { street: "12\u1680Main" } });
+    expect(await propose({ variables: {} })).toMatchObject({ ok: false, message: 'The "Street" value has spacing or characters that would not show exactly as sent.' });
+  });
+
   it("another sub-account's conversation, or a templateId that is a path → refused, nothing written", async () => {
     mem.seed("contacts/c2", { ...ANN, subAccountId: "sa2" });
     mem.seed("conversations/c2", { subAccountId: "sa2", agencyId: "ag1", contactId: "c2" });
