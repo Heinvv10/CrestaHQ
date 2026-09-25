@@ -2,10 +2,10 @@ import "server-only";
 
 import { isDocId } from "@/lib/server/doc-id";
 import { listWorkflows, type WorkflowPatch } from "@/lib/server/workflows-service";
-import { updateWorkflowGuarded } from "@/lib/server/workflows-guarded";
+import { liveRunsQuery, updateWorkflowGuarded } from "@/lib/server/workflows-guarded";
 import { TRIGGER_LABELS } from "@/lib/workflows/catalog";
 import { sanitizeNodes } from "@/lib/workflows/sanitize-nodes";
-import type { WorkflowReentry } from "@/types/workflows";
+import type { WorkflowDoc, WorkflowReentry } from "@/types/workflows";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, str } from "./helpers";
 import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
@@ -14,9 +14,10 @@ import { readableJson, tenantWorkflow, workflowFingerprint, workflowIdParam, wor
 /**
  * Workflow reads and update_workflow for API agents (AGENT_API_V1_PLAN.md,
  * PR9). An edit to a draft or paused workflow is a direct write; an edit to
- * an ACTIVE one changes what an automation already running does, so it is
- * queued for approval (checked again at write time, in a transaction). The
- * status never changes here: that is set_workflow_status.
+ * an ACTIVE one, or to the steps of one with runs in progress (a draft's
+ * test run reads the steps live, and sends for real), changes what already
+ * runs, so it is queued for approval (checked again at write time, in a
+ * transaction). The status never changes here: that is set_workflow_status.
  */
 
 const REENTRY: readonly WorkflowReentry[] = ["every_time", "unless_active", "once_ever"];
@@ -69,6 +70,17 @@ function patchOf(raw: unknown): { ok: true; patch: WorkflowPatch } | { ok: false
   }
   if (Object.keys(patch).length === 0) return { ok: false, error: `give at least one of ${EDITABLE.join(", ")}` };
   return { ok: true, patch };
+}
+
+/** Changes what a run executes next (runs read the steps live). */
+const touchesSteps = (args: Record<string, unknown>) => args.nodes !== undefined || args.startNodeId !== undefined;
+
+/** The start step after the patch must be one of the steps after it. */
+function startProblem(args: Record<string, unknown>, wf: WorkflowDoc): string | null {
+  if (!touchesSteps(args)) return null;
+  const nodes = (args.nodes ?? wf.nodes ?? {}) as Record<string, unknown>;
+  const start = args.startNodeId !== undefined ? args.startNodeId : wf.startNodeId;
+  return typeof start === "string" && !Object.hasOwn(nodes, start) ? "The start step must be one of the workflow's steps." : null;
 }
 
 export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
@@ -143,9 +155,14 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Edit the workflow ${args.workflowId} (${EDITABLE.filter((k) => args[k] !== undefined).join(", ")}).`,
     // Its status decides: editing what an active automation does needs a person.
-    approvalFor: async (args, ctx) =>
-      (await tenantWorkflow(ctx.subAccountId!, args.workflowId)).status === "active" ? "workflow_activate" : undefined,
-    approvalHint: { approval: "workflow_activate", when: "the workflow is active" },
+    // Editing what runs — an active workflow, or the steps of one with runs
+    // in progress (a draft's test run reads them live) — needs a person.
+    approvalFor: async (args, ctx) => {
+      const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
+      if (wf.status === "active") return "workflow_activate";
+      return touchesSteps(args) && !(await liveRunsQuery(wf.id).get()).empty ? "workflow_activate" : undefined;
+    },
+    approvalHint: { approval: "workflow_activate", when: "the workflow is active, or the edit changes its steps while runs are in progress" },
     // Workflows carry no territory: the approval is tenant-wide.
     approvalTarget: async (ctx, args) => {
       await tenantWorkflow(ctx.subAccountId!, args.workflowId);
@@ -153,6 +170,8 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
     },
     preview: async (ctx, args) => {
       const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
+      const bad = startProblem(args, wf);
+      if (bad) throw new CapabilityUserError(bad);
       const changes = [
         ...(args.name !== undefined ? [{ label: "New name", value: String(args.name) }] : []),
         ...(args.reentry !== undefined ? [{ label: "New re-entry", value: String(args.reentry) }] : []),
@@ -161,7 +180,7 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
         ...(args.nodes !== undefined ? [{ label: "New steps (replace all)", value: readableJson(args.nodes), multiline: true as const }] : []),
       ];
       return {
-        rows: [...workflowRows(wf), ...changes, { label: "Then", value: "The active workflow runs the new version for every enrolment from then on." }],
+        rows: [...workflowRows(wf), ...changes, { label: "Then", value: "Every enrolment from then on runs the new version, and runs already in progress switch to the new steps at their next step." }],
         pinned: { workflowId: wf.id, fingerprint: workflowFingerprint(wf) },
       };
     },
@@ -172,14 +191,18 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
         workflowId,
         patch,
         actor: agentActor(ctx, "update_workflow"),
-        guard: (current) => {
+        guard: (current, liveRun) => {
           if (ctx.approved) {
             if (workflowFingerprint(current) !== ctx.approved.pinned?.fingerprint) {
               throw new CapabilityUserError("The workflow changed since this was reviewed; nothing was changed.");
             }
           } else if (current.status === "active") {
             throw new CapabilityUserError("The workflow is active now, so editing it needs approval: send the edit again.");
+          } else if (touchesSteps(args) && liveRun) {
+            throw new CapabilityUserError("The workflow has runs in progress, so changing its steps needs approval: send the edit again.");
           }
+          const bad = startProblem(args, current);
+          if (bad) throw new CapabilityUserError(bad);
         },
       });
       if (!done) throw new CapabilityUserError("That workflow isn't in this workspace.");

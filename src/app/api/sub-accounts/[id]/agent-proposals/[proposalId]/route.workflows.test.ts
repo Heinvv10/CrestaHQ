@@ -31,6 +31,8 @@ async function proposeId(name: string, args: Record<string, unknown>): Promise<s
   if (!("proposal" in r)) throw new Error(`expected a proposal, got ${JSON.stringify(r)}`);
   return r.proposal.id;
 }
+const liveRun = (status = "waiting") =>
+  mem.seed("workflowRuns/r1", { workflowId: "wf1", subAccountId: "sa1", contactId: "c1", status, context: { test: true } });
 const audit = () => mem.list("auditEvents").filter((e) => e.action === "workflow.status_changed");
 
 beforeEach(() => seed());
@@ -81,6 +83,55 @@ describe("update_workflow", () => {
     expect(wf().name).toBe("Welcome");
   });
 
+  it("a draft with a test run waiting: a steps edit → a proposal (the run would send them), nothing written", async () => {
+    liveRun();
+    const id = await proposeId("update_workflow", { workflowId: "wf1", nodes: NEW_STEPS, startNodeId: "n2" });
+    expect(row(id).approval).toBe("workflow_activate");
+    expect(row(id).preview).toContainEqual({ label: "Then", value: "Every enrolment from then on runs the new version, and runs already in progress switch to the new steps at their next step." });
+    expect(wf()).toEqual(WF);
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(wf()).toMatchObject({ nodes: NEW_STEPS, startNodeId: "n2", status: "draft" });
+  });
+
+  it.each(["completed", "exited"])("a %s run doesn't count: the steps edit is direct", async (status) => {
+    liveRun(status);
+    expect(await call("update_workflow", { workflowId: "wf1", nodes: NEW_STEPS, startNodeId: "n2" })).toMatchObject({ ok: true, resultText: "Updated the workflow." });
+  });
+
+  it("a run in progress doesn't hold back a rename", async () => {
+    liveRun();
+    expect(await call("update_workflow", { workflowId: "wf1", name: "Renamed" })).toMatchObject({ ok: true });
+    expect(wf().name).toBe("Renamed");
+  });
+
+  it("a run starting between the check and the direct write → refused, nothing written", async () => {
+    beforeNextTransaction(async () => liveRun());
+    expect(await call("update_workflow", { workflowId: "wf1", nodes: NEW_STEPS, startNodeId: "n2" })).toMatchObject({
+      ok: false, message: "The workflow has runs in progress, so changing its steps needs approval: send the edit again.",
+    });
+    expect(wf()).toEqual(WF);
+  });
+
+  it("the status changed between the approve-time re-check and the write → failed, nothing written", async () => {
+    seed({ status: "active" });
+    const id = await proposeId("update_workflow", { workflowId: "wf1", name: "Renamed" });
+    beforeNextTransaction(async () => seed({ status: "paused" }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id).error).toBe("The workflow changed since this was reviewed; nothing was changed.");
+    expect(wf().name).toBe("Welcome");
+  });
+
+  it.each([
+    ["steps that drop the stored start step", { nodes: NEW_STEPS }],
+    ["a start step that isn't one of the stored steps", { startNodeId: "n9" }],
+  ])("%s → refused, nothing written", async (_label, patch) => {
+    expect(await call("update_workflow", { workflowId: "wf1", ...patch })).toMatchObject({ ok: false, message: "The start step must be one of the workflow's steps." });
+    expect(wf()).toEqual(WF);
+    seed({ status: "active" });
+    expect(await call("update_workflow", { workflowId: "wf1", ...patch })).toMatchObject({ ok: false, message: "The start step must be one of the workflow's steps." });
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
   it.each([
     ["an unknown trigger type", { trigger: { type: "toString" } }],
     ["trigger filters that aren't an object", { trigger: { type: "contact.created", filters: "all" } }],
@@ -110,6 +161,7 @@ describe("set_workflow_status", () => {
   it("activating → a proposal showing the exact trigger and steps; approve activates, audited as the approver", async () => {
     const id = await proposeId("set_workflow_status", { workflowId: "wf1", status: "active" });
     expect(wf().status).toBe("draft");
+    expect(row(id).preview).toContainEqual({ label: "Start step", value: "n1" });
     expect(row(id).preview).toContainEqual({ label: "Steps (exact)", value: expect.stringContaining('"body": "Hi {{contact.firstName}}"'), multiline: true });
     expect((await decide(id, "approve")).status).toBe(200);
     expect(wf().status).toBe("active");

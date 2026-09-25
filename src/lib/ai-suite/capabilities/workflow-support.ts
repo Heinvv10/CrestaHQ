@@ -57,5 +57,6 @@ export function workflowRows(wf: WorkflowDoc): PreviewRow[] {
     { label: "Status", value: wf.status },
     { label: "Trigger", value: TRIGGER_LABELS[wf.trigger?.type] ?? String(wf.trigger?.type ?? "(none)") },
     { label: "Steps", value: String(Object.keys(wf.nodes ?? {}).length) },
+    { label: "Start step", value: wf.startNodeId ?? "(none)" },
   ];
 }
