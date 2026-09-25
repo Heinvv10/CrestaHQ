@@ -346,6 +346,11 @@ export function createMemoryFirestore() {
   const db = {
     doc: (path: string) => docRef(path),
     getAll: (...refs: MemoryDocRef[]) => Promise.all(refs.map((r) => r.get())),
+    /** The doc and every doc in its subcollections, like the Admin SDK's. */
+    recursiveDelete: (ref: MemoryDocRef) =>
+      tick().then(() => {
+        for (const p of [...store.keys()]) if (p === ref.path || p.startsWith(`${ref.path}/`)) remove(p);
+      }),
     batch: () => {
       const writes: Array<() => void> = [];
       const queue = (w: () => void) => (writes.push(w), b);

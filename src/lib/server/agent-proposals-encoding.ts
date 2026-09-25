@@ -41,14 +41,18 @@ export function millis(v: unknown): number | null {
 
 export type PreviewRows = Array<{ label: string; value: string }>;
 
-/** An outbound action must pin what it will send to (see AiSuiteCapability.preview). */
+/** Approval classes whose preview must pin its target: outbound (the
+ *  recipient) and channel_change (the new phone / email). */
+const PINNED_CLASSES = new Set(["outbound", "channel_change"]);
+
+/** An outbound or channel_change action must pin its target (see AiSuiteCapability.preview). */
 export function assertPinnedWhenOutbound(
   capability: string,
   approval: string,
   preview: { pinned: Record<string, unknown> | null }
 ): void {
-  if (approval === "outbound" && Object.keys(preview.pinned ?? {}).length === 0) {
-    throw new Error(`${capability} is outbound but its preview pins nothing`);
+  if (PINNED_CLASSES.has(approval) && Object.keys(preview.pinned ?? {}).length === 0) {
+    throw new Error(`${capability} is ${approval} but its preview pins nothing`);
   }
 }
 

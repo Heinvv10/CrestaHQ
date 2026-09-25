@@ -20,6 +20,7 @@ import type { ContactProspecting } from "@/types/prospecting";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import { normalizePhoneLenient } from "@/lib/contacts/phone";
 import { GLOBAL_TERRITORY_ID } from "@/types";
+import { isDocId } from "@/lib/server/doc-id";
 
 /**
  * Server-side Contact write service — the single chokepoint where a contact
@@ -264,6 +265,23 @@ export interface UpdateContactPatch {
   prospecting?: ContactProspecting;
 }
 
+/** The Firestore update for `input` against the stored doc `existing`. */
+function buildUpdatePatch(existing: FirebaseFirestore.DocumentData, input: UpdateContactPatch) {
+  const { prospecting, ...fields } = input;
+  return {
+    ...fields,
+    ...Object.fromEntries(
+      Object.entries(prospecting ?? {}).map(([k, v]) => [`prospecting.${k}`, v]),
+    ),
+    ...(input.tags ? { tags: [...new Set(input.tags)] } : {}),
+    // A writer that changes the free-text `company` without saying which
+    // company (the public API, which has no companyId field) breaks the
+    // link rather than leaving companyId pointing at a company whose name
+    // the contact no longer carries. The dashboard always sends companyId.
+    ...(companyStringDrifts(existing, input) ? { companyId: null } : {}),
+  };
+}
+
 /** True when `patch` rewrites `company` on a linked contact without a companyId of its own. */
 export function companyStringDrifts(
   existing: { companyId?: string | null; company?: string },
@@ -296,33 +314,51 @@ export async function updateContactServerSide(opts: {
    * cap (lib/api/enrolment-cap).
    */
   apiKeyId?: string;
+  /** When set, a contact in any other sub-account reads as missing (null). */
+  subAccountId?: string;
+  /**
+   * An API agent made this write: a tag it adds holds its enrolments as
+   * proposals (ruling Q), and the update AWAITS the trigger to return them.
+   */
+  actor?: AgentActor;
+  /**
+   * Build the patch from the CURRENT doc, read and written in one
+   * transaction — for a change relative to what is stored (add a tag,
+   * merge custom fields), so a concurrent write is never overwritten.
+   * Used instead of `patch` (pass `{}`); never with a territory change.
+   */
+  computePatch?: (current: FirebaseFirestore.DocumentData) => UpdateContactPatch;
 }): Promise<ContactWriteResult | null> {
+  if (!isDocId(opts.contactId)) return null;
   const db = getAdminDb();
   const ref = db.doc(`contacts/${opts.contactId}`);
   const snap = await ref.get();
   if (!snap.exists) return null;
 
-  const existing = snap.data()!;
+  let existing = snap.data()!;
+  if (opts.subAccountId !== undefined && existing.subAccountId !== opts.subAccountId) return null;
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
-  const { prospecting, ...fields } = opts.patch;
-  const patch = {
-    ...fields,
-    ...Object.fromEntries(
-      Object.entries(prospecting ?? {}).map(([k, v]) => [`prospecting.${k}`, v]),
-    ),
-    ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
-    // A writer that changes the free-text `company` without saying which
-    // company (the public API, which has no companyId field) breaks the
-    // link rather than leaving companyId pointing at a company whose name
-    // the contact no longer carries. The dashboard always sends companyId.
-    ...(companyStringDrifts(existing, opts.patch) ? { companyId: null } : {}),
-  };
+  let patch = buildUpdatePatch(existing, opts.patch);
 
   // update(), not set(..., {merge: true}): merge recurses into nested maps,
   // which would keep cleared customFields values forever. update() replaces
   // a map field wholesale and behaves identically for the scalar fields.
   const update = { ...patch, updatedAt: FieldValue.serverTimestamp() };
-  if (Object.prototype.hasOwnProperty.call(patch, "territoryId")) {
+  if (opts.computePatch) {
+    const computed = await db.runTransaction(async (tx) => {
+      const current = (await tx.get(ref)).data();
+      if (!current || current.subAccountId !== existing.subAccountId) return null;
+      const computedPatch = opts.computePatch!(current);
+      // A territory move also re-scopes conversations (the branch below).
+      if ("territoryId" in computedPatch) throw new Error("computePatch may not change territoryId.");
+      const next = buildUpdatePatch(current, computedPatch);
+      tx.update(ref, { ...next, updatedAt: FieldValue.serverTimestamp() });
+      return { current, next };
+    });
+    if (!computed) return null;
+    existing = computed.current;
+    patch = computed.next;
+  } else if (Object.prototype.hasOwnProperty.call(patch, "territoryId")) {
     await db.runTransaction(async (tx) => {
       const current = (await tx.get(ref)).data();
       if (
@@ -372,6 +408,7 @@ export async function updateContactServerSide(opts: {
     mode,
     type: "contact.updated",
     payload: { contact },
+    ...(opts.actor ? { byAgent: true } : {}),
   });
   // Replace-semantics patch → diff against the pre-update tags.
   const trigger = patch.tags
@@ -383,9 +420,20 @@ export async function updateContactServerSide(opts: {
         before: existing.tags,
         after: patch.tags,
         apiKeyId: opts.apiKeyId,
+        actor: opts.actor,
       })
     : null;
 
+  if (opts.actor) {
+    const outcome = trigger ? await trigger : null;
+    return {
+      id: ref.id,
+      contact,
+      firedTrigger: trigger !== null,
+      held: outcome?.held ?? [],
+      holdFailures: outcome ? holdFailuresOf(outcome) : [],
+    };
+  }
   return { id: ref.id, contact, firedTrigger: trigger !== null };
 }
 
@@ -404,6 +452,8 @@ export function fireTagsAdded(opts: {
   before: unknown;
   after: string[];
   apiKeyId?: string;
+  /** An agent's write: its enrolments are held for approval. */
+  actor?: AgentActor;
 }): Promise<TriggerOutcome> | null {
   if (opts.mode !== "live") return null;
   const oldTags: string[] = Array.isArray(opts.before) ? opts.before : [];
@@ -416,6 +466,7 @@ export function fireTagsAdded(opts: {
     contactId: opts.contactId,
     context: { addedTags: added },
     apiKeyId: opts.apiKeyId,
+    ...(opts.actor ? { hold: opts.actor } : {}),
   });
 }
 

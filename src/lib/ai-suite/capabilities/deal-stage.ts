@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { updateDealServerSide } from "@/lib/server/deals-service";
 import { territoryScopeFor } from "@/lib/ai-suite/territory-scope";
@@ -72,10 +73,10 @@ export const DEAL_STAGE_CAPABILITIES: AiSuiteCapability[] = [
       }.`,
     execute: async (ctx, args) => {
       // The deal id came from the model — verify it's in THIS workspace.
-      const snap = await getAdminDb()
-        .doc(`deals/${args.dealId as string}`)
-        .get();
-      if (!snap.exists || snap.data()?.subAccountId !== ctx.subAccountId) {
+      const snap = isDocId(args.dealId)
+        ? await getAdminDb().doc(`deals/${args.dealId}`).get()
+        : null;
+      if (!snap?.exists || snap.data()?.subAccountId !== ctx.subAccountId) {
         throw new CapabilityUserError(
           "That deal wasn't found in this workspace."
         );

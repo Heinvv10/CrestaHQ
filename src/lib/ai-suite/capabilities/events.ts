@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createEventServerSide } from "@/lib/server/events-service";
 import { utcFromWallClock } from "@/lib/booking/availability";
@@ -236,8 +237,8 @@ export const EVENT_CAPABILITIES: AiSuiteCapability[] = [
       const contactId = (args.contactId as string) || null;
       if (contactId) {
         // The id came from the model — verify it's in THIS workspace.
-        const c = await getAdminDb().doc(`contacts/${contactId}`).get();
-        if (!c.exists || c.data()?.subAccountId !== ctx.subAccountId) {
+        const c = isDocId(contactId) ? await getAdminDb().doc(`contacts/${contactId}`).get() : null;
+        if (!c?.exists || c.data()?.subAccountId !== ctx.subAccountId) {
           throw new CapabilityUserError(
             "The linked contact wasn't found in this workspace."
           );

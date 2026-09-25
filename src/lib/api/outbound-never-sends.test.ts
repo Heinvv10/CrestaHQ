@@ -91,6 +91,12 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   find_events: { range: "all-upcoming" },
   create_event: { title: "Install", date: "2030-01-10", time: "10:00", contactId: "c1", contactName: "Ann" },
   list_members: {},
+  get_contact: { contactId: "c1" },
+  update_contact: { contactId: "c1", name: "Ann B", tags: ["vip"] },
+  add_tags: { contactId: "c1", tags: ["vip"] },
+  remove_tags: { contactId: "c1", tags: ["vip"] },
+  update_contact_channels: { contactId: "c1", phone: "+27829999999" },
+  delete_contact: { contactId: "c1" },
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },
@@ -171,6 +177,8 @@ describe("MUTATION PROOF #2: every awaited trigger site returns its held enrolme
   // empties `held` — the dispatch has already resolved, so it cannot wait.
   it.each([
     ["create_contact (contacts-service)", "create_contact", "contact.created"],
+    ["add_tags (contacts-service update → fireTagsAdded)", "add_tags", "contact.tag.added"],
+    ["update_contact tags (contacts-service update → fireTagsAdded)", "update_contact", "contact.tag.added"],
     ["create_deal (deals-service create)", "create_deal", "deal.created"],
     ["move_deal_stage (deals-service fireDealTrigger)", "move_deal_stage", "pipeline.stage.changed"],
   ])("%s", async (_label, name, trigger) => {

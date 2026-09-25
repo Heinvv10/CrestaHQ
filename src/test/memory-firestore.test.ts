@@ -82,3 +82,14 @@ describe("runTransaction", () => {
     expect(won.filter(Boolean)).toHaveLength(1);
   });
 });
+
+describe("recursiveDelete", () => {
+  it("removes the doc and everything under it, and nothing beside it", async () => {
+    const mem = createMemoryFirestore();
+    mem.seed("contacts/c1", { n: 1 });
+    mem.seed("contacts/c1/notes/n1", { n: 2 });
+    mem.seed("contacts/c10", { n: 3 });
+    await mem.db.recursiveDelete(mem.db.doc("contacts/c1"));
+    expect(mem.all().map((d) => d.path)).toEqual(["contacts/c10"]);
+  });
+});

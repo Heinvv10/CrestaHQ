@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
-const { canonical } = await import("./agent-proposals-encoding");
+const { canonical, assertPinnedWhenOutbound } = await import("./agent-proposals-encoding");
 
 // canonical() keys the proposal id and compares previews, so two values
 // that differ must never encode the same (breaker R5).
@@ -37,5 +37,17 @@ describe("canonical", () => {
 
   it("is key-order independent", () => {
     expect(canonical({ a: 1, b: { c: 2, d: 3 } })).toBe(canonical({ b: { d: 3, c: 2 }, a: 1 }));
+  });
+});
+
+describe("assertPinnedWhenOutbound", () => {
+  it.each(["outbound", "channel_change"])("%s must pin its target", (approval) => {
+    expect(() => assertPinnedWhenOutbound("cap", approval, { pinned: null })).toThrow(/pins nothing/);
+    expect(() => assertPinnedWhenOutbound("cap", approval, { pinned: {} })).toThrow(/pins nothing/);
+    expect(() => assertPinnedWhenOutbound("cap", approval, { pinned: { to: "x" } })).not.toThrow();
+  });
+
+  it("other classes need not pin", () => {
+    expect(() => assertPinnedWhenOutbound("cap", "hard_delete", { pinned: null })).not.toThrow();
   });
 });

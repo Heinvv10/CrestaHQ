@@ -2,6 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitContactDeleted } from "@/lib/server/contacts-service";
+import { isDocId } from "@/lib/server/doc-id";
 
 /**
  * THE contact delete. Both the single DELETE /api/contacts/[id] route and
@@ -17,12 +18,18 @@ export type DeleteContactResult =
 
 export async function deleteContactServerSide(opts: {
   contactId: string;
+  /** When set, a contact in any other sub-account reads as not found. */
+  subAccountId?: string;
 }): Promise<DeleteContactResult> {
+  if (!isDocId(opts.contactId)) return { status: "not_found" };
   const db = getAdminDb();
   const contactRef = db.doc(`contacts/${opts.contactId}`);
   const snap = await contactRef.get();
   if (!snap.exists) return { status: "not_found" };
   const contact = snap.data()!;
+  if (opts.subAccountId !== undefined && contact.subAccountId !== opts.subAccountId) {
+    return { status: "not_found" };
+  }
   const subAccountId = contact.subAccountId as string;
   const agencyId = contact.agencyId as string;
 
