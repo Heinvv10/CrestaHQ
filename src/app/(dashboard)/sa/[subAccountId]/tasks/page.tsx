@@ -9,6 +9,7 @@ import { subscribeToTasks } from "@/lib/firestore/tasks";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
+import { RENDER_STEP, ShowMoreRows } from "@/components/show-more-rows";
 import { TaskDialog } from "@/components/tasks/task-dialog";
 import { TaskItem } from "@/components/tasks/task-item";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,7 @@ export default function TasksPage() {
   const [filter, setFilter] = useState<TaskFilter>("today");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editTask, setEditTask] = useState<Task | null>(null);
+  const [renderLimit, setRenderLimit] = useState(RENDER_STEP);
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
@@ -196,7 +198,7 @@ export default function TasksPage() {
         <EmptyState filter={filter} onAdd={openNew} />
       ) : (
         <div className="space-y-2">
-          {shown.map((t) => (
+          {shown.slice(0, renderLimit).map((t) => (
             <TaskItem
               key={t.id}
               task={t}
@@ -204,6 +206,11 @@ export default function TasksPage() {
               onClick={openEdit}
             />
           ))}
+          <ShowMoreRows
+            shown={Math.min(renderLimit, shown.length)}
+            total={shown.length}
+            onMore={() => setRenderLimit((n) => n + RENDER_STEP)}
+          />
         </div>
       )}
 

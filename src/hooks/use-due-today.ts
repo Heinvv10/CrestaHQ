@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { subscribeToTasks } from "@/lib/firestore/tasks";
-import { toDate } from "@/lib/format";
+import { subscribeToDueTodayCount } from "@/lib/firestore/tasks";
+import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useAuth } from "@/hooks/use-auth";
 
 /**
@@ -13,42 +13,42 @@ import { useAuth } from "@/hooks/use-auth";
  * read from context: this hook's consumers (Sidebar / PWA badges) render above
  * the SubAccountProvider, where the context is always null — reading it there
  * silently pinned every badge to `memberships[0]`.
+ *
+ * The query's "due before tomorrow" bound is fixed when it subscribes, and the
+ * Sidebar never remounts, so the hook re-subscribes at local midnight.
  */
-export function useDueTodayCount(
-  subAccountId: string | null,
-  agencyId: string | null,
-): number {
+export function useDueTodayCount(subAccountId: string | null): number {
   const { user } = useAuth();
+  const territory = useEffectiveTerritoryFilter(subAccountId);
   const [count, setCount] = useState(0);
+  // Bumped every time the midnight timer fires — a counter, not the date, so
+  // the timer always re-arms even if the clock was set back across midnight.
+  const [day, setDay] = useState(0);
 
   useEffect(() => {
-    if (!user || !subAccountId || !agencyId) {
+    const next = new Date();
+    next.setHours(24, 0, 1, 0); // just past the coming local midnight
+    const timer = setTimeout(
+      () => setDay((d) => d + 1),
+      next.getTime() - Date.now(),
+    );
+    return () => clearTimeout(timer);
+  }, [day]);
+
+  useEffect(() => {
+    if (!user || !subAccountId || !territory.ready) {
       setCount(0);
       return;
     }
-    const unsub = subscribeToTasks(
-      { agencyId, subAccountId },
-      (tasks) => {
-        const now = Date.now();
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const nextDay = new Date(today);
-        nextDay.setDate(nextDay.getDate() + 1);
-        let n = 0;
-        for (const t of tasks) {
-          if (t.completed) continue;
-          const d = toDate(t.dueAt);
-          if (!d) continue;
-          // overdue or due today
-          if (d.getTime() < nextDay.getTime() || d.getTime() < now) {
-            n += 1;
-          }
-        }
-        setCount(n);
-      },
+    setCount(0);
+    const unsub = subscribeToDueTodayCount(
+      subAccountId,
+      setCount,
+      () => setCount(0),
+      territory.filter,
     );
     return () => unsub();
-  }, [user, subAccountId, agencyId]);
+  }, [user, subAccountId, territory.ready, territory.filter, day]);
 
   return count;
 }
