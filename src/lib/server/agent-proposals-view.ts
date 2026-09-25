@@ -4,7 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { millis } from "@/lib/server/agent-proposals-encoding";
 import { readPipelineStages } from "@/lib/pipelines/server";
 import { dealPipelineId } from "@/lib/pipelines/stages";
-import { dealStillMatches } from "@/lib/server/agent-enrolment-replay";
+import { DEAL_TRIGGERS, dealStillMatches } from "@/lib/server/agent-enrolment-replay";
 
 /** Time fields a proposal row carries, sent to the browser as ISO strings. */
 const TIME_FIELDS = ["createdAt", "expiresAt", "claimedAt", "decidedAt"] as const;
@@ -61,19 +61,29 @@ export async function toProposalViews(
     const pid = deal ? dealPipelineId(deal) : null;
     if (pid && !stagesOf.has(pid)) stagesOf.set(pid, await readPipelineStages(subAccountId, pid));
   }
+  // The approve route's own checks, all rows at once; gated on the same
+  // trigger set replay re-checks, so a non-deal trigger reads as replayable.
+  const verdicts = new Map(
+    await Promise.all(
+      views.filter((v) => dealIdOf(v)).map(async (v) => {
+        const args = v.args as { type: string; context: Record<string, unknown> };
+        const ok = DEAL_TRIGGERS.has(args.type) ? await dealStillMatches(subAccountId, args.type, args.context) : true;
+        return [v.id, ok] as const;
+      })
+    )
+  );
   for (const v of views) {
     const id = dealIdOf(v);
     if (!id) continue;
     const deal = deals.get(id) ?? null;
     const stageId = deal ? ((deal.stageId as string | undefined) ?? null) : null;
     const stages = deal ? stagesOf.get(dealPipelineId(deal)) : null;
-    const args = v.args as { type: string; context: Record<string, unknown> };
     v.live = {
       deal: {
         exists: deal !== null,
         stageId,
         stageLabel: stages && stageId ? (stages.find((s) => s.id === stageId)?.label ?? stageId) : stageId,
-        wouldReplay: await dealStillMatches(subAccountId, args.type, args.context),
+        wouldReplay: verdicts.get(v.id) ?? false,
       },
     };
   }

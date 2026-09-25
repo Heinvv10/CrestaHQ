@@ -23,7 +23,8 @@ const WHY: Record<string, string> = {
     "The deal changed since this was proposed (it moved, left its pipeline or was deleted), so nobody was enrolled (trigger_mismatch).",
 };
 
-const DEAL_TRIGGERS = new Set(["deal.created", "deal.won", "deal.lost", "pipeline.stage.changed"]);
+/** Deal triggers a held enrolment re-checks at replay (and the approvals list mirrors). */
+export const DEAL_TRIGGERS = new Set(["deal.created", "deal.won", "deal.lost", "pipeline.stage.changed"]);
 
 /**
  * A held deal trigger replays only while its fact is still true. Every deal

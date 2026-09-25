@@ -193,6 +193,12 @@ describe("rendering", () => {
     expect(live).not.toContain("will be refused");
   });
 
+  it("an executing row renders as In progress with no actions", async () => {
+    await render({ ...ROW, status: "executing" });
+    expect(document.querySelector('[data-testid="approval-p1"]')!.textContent).toContain("In progress");
+    expect(document.querySelectorAll("button")).toHaveLength(0);
+  });
+
   it("a stored reason renders as human text, never the raw code", async () => {
     await render({ ...ROW, status: "rejected", reason: "key_revoked" });
     const text = document.querySelector('[data-testid="approval-error"]')!.textContent;

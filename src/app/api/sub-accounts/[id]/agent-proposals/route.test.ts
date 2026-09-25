@@ -120,8 +120,9 @@ it("the list GET never writes a pipeline", async () => {
   expect(mem.list("subAccounts/sa1/pipelines")).toEqual([]);
 });
 
-it("?status=recent returns only terminal rows", async () => {
+it("?status=recent returns terminal rows and executing ones, never open ones", async () => {
   mem.seed("agentProposals/p9", { targetScoped: false, subAccountId: "sa1", status: "unsettled", createdAt: new Date(9) });
+  mem.seed("agentProposals/p8", { targetScoped: false, subAccountId: "sa1", status: "executing", createdAt: new Date(8) });
   const res = (await (await list("?status=recent")).json()) as { proposals: { id: string }[] };
-  expect(res.proposals.map((p) => p.id)).toEqual(["p2"]);
+  expect(res.proposals.map((p) => p.id)).toEqual(["p8", "p2"]);
 });

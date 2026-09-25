@@ -69,7 +69,7 @@ export function refusalText(code: string | undefined, row: Pick<ApprovalRow, "cl
 
 export const STATUS_LABELS: Record<ApprovalStatus, string> = {
   pending: "Waiting for approval",
-  executing: "Running",
+  executing: "In progress",
   executed: "Done",
   failed: "Failed",
   rejected: "Rejected",

@@ -18,7 +18,8 @@ const STATUSES = new Set([
 
 const GROUPS: Record<string, string[]> = {
   open: ["pending", "unsettled"],
-  recent: ["executed", "failed", "rejected", "expired"],
+  // `executing` rides with recent: an approval being run right now (no actions).
+  recent: ["executing", "executed", "failed", "rejected", "expired"],
 };
 
 /**
