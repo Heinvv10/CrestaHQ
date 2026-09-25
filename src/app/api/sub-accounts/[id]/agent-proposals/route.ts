@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
+import { toProposalViews } from "@/lib/server/agent-proposals-view";
 
 const STATUSES = new Set([
   "pending",
@@ -17,7 +18,8 @@ const STATUSES = new Set([
 
 /**
  * List a sub-account's agent proposals, newest first (optionally one
- * `?status=`), for any member — minus scoped rows whose `territoryId` is
+ * `?status=`, or `?status=open` for pending + unsettled — the sidebar badge),
+ * for any member — minus scoped rows whose `territoryId` is
  * outside a territory-scoped caller's territories (a preview carries the
  * target's name and the message), exactly as firestore.rules' canSeeProposal.
  * The supported read path for the approvals UI: rules are not filters, so a
@@ -32,13 +34,14 @@ export async function GET(
   if (access instanceof NextResponse) return access;
 
   const status = new URL(request.url).searchParams.get("status");
-  if (status !== null && !STATUSES.has(status)) {
+  if (status !== null && status !== "open" && !STATUSES.has(status)) {
     return NextResponse.json({ error: "Unknown status" }, { status: 400 });
   }
   let q = getAdminDb()
     .collection("agentProposals")
     .where("subAccountId", "==", subAccountId);
-  if (status) q = q.where("status", "==", status);
+  if (status === "open") q = q.where("status", "in", ["pending", "unsettled"]);
+  else if (status) q = q.where("status", "==", status);
   const snap = await q.orderBy("createdAt", "desc").limit(100).get();
   const scope = await territoryScopeFor({ ...access, subAccountId });
   const visible = snap.docs.filter(
@@ -47,6 +50,6 @@ export async function GET(
       canSeeTerritory(scope, d.data().territoryId),
   );
   return NextResponse.json({
-    proposals: visible.map((d) => ({ id: d.id, ...d.data() })),
+    proposals: await toProposalViews(subAccountId, visible),
   });
 }

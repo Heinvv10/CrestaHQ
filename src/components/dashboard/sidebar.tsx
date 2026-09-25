@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { doc, onSnapshot } from "firebase/firestore";
 import {
+  ClipboardCheck,
   Home,
   Users,
   GitBranch,
@@ -46,6 +47,7 @@ import { signOutUser } from "@/lib/firebase/auth";
 import { useIsStandalone } from "@/hooks/use-standalone";
 import { useDueTodayCount } from "@/hooks/use-due-today";
 import { useUnreadConversationsCount } from "@/hooks/use-unread-conversations";
+import { useOpenApprovalsCount } from "@/hooks/use-open-approvals";
 import { useActiveSubAccountId } from "@/hooks/use-active-sub-account-id";
 import { useAuth } from "@/hooks/use-auth";
 import { useAgency } from "@/hooks/use-agency";
@@ -64,7 +66,7 @@ interface NavItem {
   label: string;
   icon: typeof Home;
   enabled: boolean;
-  badgeKey?: "dueToday" | "unreadConversations";
+  badgeKey?: "dueToday" | "unreadConversations" | "openApprovals";
   matchPrefix?: string;
 }
 
@@ -116,6 +118,13 @@ const SUB_ACCOUNT_NAV: NavItem[] = [
   { href: "/website", label: "Website", icon: Globe, enabled: true },
   { href: "/media", label: "Media", icon: Images, enabled: true },
   { href: "/workflows", label: "Workflows", icon: Workflow, enabled: true },
+  {
+    href: "/approvals",
+    label: "Approvals",
+    icon: ClipboardCheck,
+    enabled: true,
+    badgeKey: "openApprovals",
+  },
   { href: "/ai-agents", label: "AI Agents", icon: Bot, enabled: true },
   { href: "/broadcasts", label: "Broadcasts", icon: Send, enabled: true },
   { href: "/webinars", label: "Webinars", icon: MonitorPlay, enabled: true },
@@ -200,6 +209,9 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   const [paymentsHidden, setPaymentsHidden] = useState(true);
   const [webinar1Gate, setWebinar1Gate] = useState<boolean | null>(null);
   const [webinar1Hidden, setWebinar1Hidden] = useState(true);
+  // Agent API approvals: shown only while the agency enabled the Agent API.
+  const [agentApiGate, setAgentApiGate] = useState<boolean | null>(null);
+  const openApprovals = useOpenApprovalsCount(badgeSubId, agentApiGate === true);
   // Per-feature "hide vs. show as Locked" flag. Only consulted when the
   // matching gate is off. HIDDEN IS THE DEFAULT — a disabled feature is omitted
   // entirely so the tenant never knows it exists; the agency owner has to opt a
@@ -225,6 +237,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
       setLabsGate(null);
       setPaymentsGate(null);
       setWebinar1Gate(null);
+      setAgentApiGate(null);
       return;
     }
     return onSnapshot(
@@ -243,6 +256,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
         setLabsGate(data?.labsEnabledByAgency === true);
         setPaymentsGate(data?.paymentsEnabledByAgency === true);
         setWebinar1Gate(data?.webinar1EnabledByAgency === true);
+        setAgentApiGate(data?.agentApiEnabledByAgency === true);
         // Default (unset) → hidden. Only an explicit `false` shows the Locked row.
         setBroadcastsHidden(data?.broadcastsHiddenWhenDisabled !== false);
         setWebsiteHidden(data?.websiteHiddenWhenDisabled !== false);
@@ -266,6 +280,7 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
         setLabsGate(null);
         setPaymentsGate(null);
         setWebinar1Gate(null);
+        setAgentApiGate(null);
       }
     );
   }, [activeSubId, memberships]);
@@ -479,7 +494,9 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
                   paymentsHidden) ||
                 (item.href === "/webinars" &&
                   webinar1Gate === false &&
-                  webinar1Hidden);
+                  webinar1Hidden) ||
+                // No "Locked" row: with the Agent API off there is nothing to approve.
+                (item.href === "/approvals" && agentApiGate !== true);
               if (gateHidden) return null;
               if (!item.enabled || gateLocked) {
                 const lockedByGate = gateLocked;
@@ -510,7 +527,9 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
                   : item.badgeKey === "unreadConversations" &&
                       unreadConversations > 0
                     ? unreadConversations
-                    : null;
+                    : item.badgeKey === "openApprovals" && openApprovals > 0
+                      ? openApprovals
+                      : null;
               return (
                 <Link
                   key={item.href}
