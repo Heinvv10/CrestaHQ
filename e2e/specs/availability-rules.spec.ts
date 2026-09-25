@@ -4,6 +4,7 @@ import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
 import { assertWindowsClear } from "../lib/booking-windows";
 import { deleteScoped } from "../lib/guard";
+import { runId } from "../lib/run-id";
 
 /**
  * SP3 (b) availability rules, end to end on the public page: a date
@@ -19,7 +20,13 @@ import { deleteScoped } from "../lib/guard";
 
 test.use({ timezoneId: "UTC", locale: "en-US" });
 
-const PREFIX = "e2e-avail-";
+// Run-scoped so a concurrent run's afterEach(purge) can't sweep this run's
+// freshly seeded pages mid-test (see e2e/lib/run-id.ts). BASE_PREFIX (no run
+// id) is kept for crash-recovery below.
+const BASE_PREFIX = "e2e-avail-";
+const PREFIX = `${BASE_PREFIX}${runId()}-`;
+const BUSY_TITLE = `E2E Avail busy ${runId()}`;
+const STALE_MS = 6 * 3600_000;
 const env = readEnv();
 const sa = env.E2E_SUBACCOUNT_ID;
 const stamp = Date.now();
@@ -75,7 +82,7 @@ async function seedBusy(start: string, end: string) {
   await adminDb()
     .collection("events")
     .add({
-      title: "E2E Avail busy",
+      title: BUSY_TITLE,
       startAt: Timestamp.fromDate(at(TOMORROW, start)),
       endAt: Timestamp.fromDate(at(TOMORROW, end)),
       contactId: null,
@@ -94,17 +101,34 @@ async function seedBusy(start: string, end: string) {
     });
 }
 
-/** Every event and page this spec made, in this or an earlier crashed run. */
+/** True once createdAt is older than STALE_MS — a doc an earlier, crashed
+ * run never cleaned up, not a concurrent run's still-live fixture. */
+function isStale(createdAt: unknown): boolean {
+  if (!(createdAt instanceof Timestamp)) return false;
+  return Date.now() - createdAt.toMillis() > STALE_MS;
+}
+
+/**
+ * Every event and page THIS run made, plus anything BASE_PREFIX-matching
+ * left behind by an earlier crashed run (identified by age, not run id, so
+ * a concurrent run's still-live docs are never touched).
+ */
 async function purge() {
   const events = await adminDb().collection("events").where("subAccountId", "==", sa).get();
   for (const d of events.docs) {
     const e = d.data();
     const slug = typeof e.bookingPageSlug === "string" ? e.bookingPageSlug : "";
-    if (slug.startsWith(PREFIX) || e.title === "E2E Avail busy") await deleteScoped(d.ref);
+    const title = typeof e.title === "string" ? e.title : "";
+    const ours = slug.startsWith(PREFIX) || title === BUSY_TITLE;
+    const stale = (slug.startsWith(BASE_PREFIX) || title.startsWith("E2E Avail busy")) && isStale(e.createdAt);
+    if (ours || stale) await deleteScoped(d.ref);
   }
   const pages = await adminDb().collection(`subAccounts/${sa}/bookingPages`).get();
   for (const d of pages.docs) {
-    if (d.id.startsWith(PREFIX)) await deleteScoped(d.ref);
+    const p = d.data();
+    if (d.id.startsWith(PREFIX) || (d.id.startsWith(BASE_PREFIX) && isStale(p.createdAt))) {
+      await deleteScoped(d.ref);
+    }
   }
 }
 
@@ -122,7 +146,7 @@ test.beforeAll(async () => {
   await assertWindowsClear(
     sa,
     [TOMORROW, DAY_AFTER].map((d) => [at(d, "21:00"), new Date(at(d, "21:00").getTime() + 3 * 3600_000)]),
-    (e) => String(e.bookingPageSlug ?? "").startsWith(PREFIX) || e.title === "E2E Avail busy",
+    (e) => String(e.bookingPageSlug ?? "").startsWith(PREFIX) || e.title === BUSY_TITLE,
   );
   await members().doc(HOST.uid).set({
     uid: HOST.uid,

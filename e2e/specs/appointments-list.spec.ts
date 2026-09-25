@@ -4,6 +4,7 @@ import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
 import { deleteScoped } from "../lib/guard";
 import { ensureBookingStatusSeed } from "../lib/seed";
+import { runId } from "../lib/run-id";
 
 /**
  * SP3 (f) - appointments list, driven through the real UI:
@@ -30,7 +31,10 @@ import { ensureBookingStatusSeed } from "../lib/seed";
  * (crash recovery) AND after every run.
  */
 
-const PREFIX = "e2e-appt-";
+// Run-scoped so this run's fixture host member doc can't collide with a
+// concurrent run's (see e2e/lib/run-id.ts). NOTE: purge() below scopes by
+// TITLE_PREFIX, a title-text range, not this PREFIX — see the note there.
+const PREFIX = `e2e-appt-${runId()}-`;
 const HOST = { uid: `${PREFIX}host`, name: "E2E Appt Host" };
 
 const env = readEnv();
