@@ -221,7 +221,7 @@ describe("what the approver reviewed", () => {
       const id = await proposeId();
       expect(row(id).pinned).toEqual({ to: "+27 11 111 1111" });
       expect((await decide(id, "approve")).status).toBe(200);
-      expect(execute.mock.calls[0]![0].approved).toEqual({ pinned: { to: "+27 11 111 1111" } });
+      expect(execute.mock.calls[0]![0].approved).toEqual({ pinned: { to: "+27 11 111 1111" }, keyPrefix: "abcd1234" });
       expect(sentTo).toEqual(["+27 11 111 1111"]);
     });
 

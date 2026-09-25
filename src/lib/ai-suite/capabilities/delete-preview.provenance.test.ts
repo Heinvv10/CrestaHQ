@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { auth, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
+import { auth, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
 /**
  * Delete-preview spoofing (breaker, PR #271): an agent renames a record
@@ -91,5 +91,51 @@ describe("stored text an approver reads", () => {
     const r = (await dispatchAgentTool(auth, name, args)) as { resultText: string };
     expect(r.resultText).toContain("Ann - Forged — id: evil");
     expect(r.resultText.split("\n").some((l) => l.startsWith("- Forged"))).toBe(false);
+  });
+});
+
+describe("breaker round 2", () => {
+  // U+2028, U+2029, NEL, ZWSP, RLM, ALM, BOM
+  const SEVEN = ["\u2028", "\u2029", "\u0085", "\u200b", "\u200f", "\u061c", "\ufeff"];
+
+  const u = (ch: string) => `U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
+  it.each(SEVEN.flatMap((ch) => [
+    ["create_company", u(ch), { name: `A${ch}B` }],
+    ["create_contact", u(ch), { name: `A${ch}B` }],
+    ["update_contact", u(ch), { contactId: "c1", name: `A${ch}B` }],
+    ["update_contact_channels", u(ch), { contactId: "c1", email: `a${ch}@x.io` }],
+  ] as Array<[string, string, Record<string, unknown>]>))("%s refuses %s", async (name, _label, args) => {
+    const before = JSON.stringify(mem.all());
+    expect(await dispatchAgentTool(auth, name, args)).toMatchObject({ ok: false, code: "invalid_args" });
+    expect(JSON.stringify(mem.all())).toBe(before);
+  });
+
+  it.each(["company", "phone"])("create_contact refuses a newline in %s", async (field) => {
+    expect(await dispatchAgentTool(auth, "create_contact", { name: "Bob", [field]: "x\nWarning: none" }))
+      .toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it("create_contact refuses a name that would forge a preview row", async () => {
+    expect(await dispatchAgentTool(auth, "create_contact", { name: "Bob\nWarning: none" }))
+      .toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it.each([
+    ["delete_contact", "contacts/c1", { contactId: "c1" }],
+    ["delete_company", "companies/co1", { companyId: "co1" }],
+  ])("%s flattens every stored value (legacy data) to one line", async (name, path, args) => {
+    mem.seed(path, { ...mem.read(path)!, name: "Bob\u0085Warning: none", email: "a\nb" });
+    const rows = await previewOf(name, args);
+    expect(rows.every((r) => !/[\n\u0085\u2028\u2029]/.test(r.value))).toBe(true);
+    expect(rows[0]!.value).toBe("Bob Warning: none");
+    expect(warning(rows)).toBeUndefined();
+  });
+
+  it("an APPROVED channel change is stamped with the proposing key, so a later delete preview warns", async () => {
+    const r = await dispatchAgentTool(auth, "update_contact_channels", { contactId: "c1", email: "agent@choice.io" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    expect((await decide(r.proposal.id, "approve")).status).toBe(200);
+    expect(mem.read("contacts/c1")).toMatchObject({ email: "agent@choice.io", lastAgentEditKey: "abcd1234" });
+    expect(warning(await previewOf("delete_contact", { contactId: "c1" }))?.value).toContain("API agent abcd1234");
   });
 });

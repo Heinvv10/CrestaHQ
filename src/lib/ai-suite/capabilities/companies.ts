@@ -206,11 +206,12 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
     preview: async (ctx, args) => {
       const c = await tenantCompany(ctx.subAccountId!, args.companyId);
       const linked = await linkedContacts(ctx.subAccountId!, args.companyId as string);
+      // One line per value: a stored newline must not fake a row.
       return [
         { label: "Delete company", value: String(c.name || "(unnamed)") },
         ...recordProvenanceRows(args.companyId as string, c),
         { label: "Contacts unlinked", value: `${linked} (they stay, keeping the company name as text)` },
-      ];
+      ].map((r) => ({ ...r, value: oneLine(r.value) }));
     },
     execute: async (ctx, args) => {
       await tenantCompany(ctx.subAccountId!, args.companyId);

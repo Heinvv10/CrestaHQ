@@ -14,13 +14,14 @@ import { CapabilityUserError, type AiSuiteActionContext } from "./types";
 export const SLUG_RE = /^[a-z0-9-]+$/;
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-/** Control, DEL and bidi override/isolate characters: refused in stored text
- *  an approver reads (a newline could fake a preview row). */
-export const UNSAFE_TEXT_RE = /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/;
+/** Control (Cc, incl. NEL), format (Cf: zero-width, bidi marks, BOM) and
+ *  line / paragraph separator characters: refused in stored text an approver
+ *  reads (a newline could fake a preview row, an invisible one hide text). */
+export const UNSAFE_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 /** A stored value on one line, for list output (legacy data may hold newlines). */
 export function oneLine(value: unknown): string {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
+  return String(value ?? "").replace(/[\s\u0085\u2028\u2029]+/g, " ").trim();
 }
 
 export function str(raw: unknown, key: string): string {
