@@ -235,3 +235,26 @@ it("B8 fake fidelity: two reservations interleaved at the read, only one commits
   ]);
   expect([a.kind, b.kind].sort()).toEqual(["in_progress", "reserved"]);
 });
+
+it("a heartbeat never touches a reservation that is no longer in_progress (a done_unknown marker keeps its TTL)", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const { reserveIdempotencyKey } = await import("./idempotency");
+  const r = await reserveIdempotencyKey("sa1", "live", "k1", "beat", "fp");
+  if (r.kind !== "reserved") throw new Error(`expected a reservation, got ${r.kind}`);
+  const [{ id, ...data }] = mem.list(IDEM);
+  const marked = new Date(Date.now() + 24 * 3600_000);
+  mem.seed(`${IDEM}/${id}`, { ...data, state: "done_unknown", expiresAt: marked });
+  const orig = mem.db.runTransaction.bind(mem.db);
+  const beats: Promise<unknown>[] = [];
+  vi.spyOn(mem.db, "runTransaction").mockImplementation(((fn: never) => {
+    const p = orig(fn);
+    beats.push(p);
+    return p;
+  }) as never);
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(beats).toHaveLength(1);
+  await beats[0];
+  expect(expiresAtOf()).toBe(marked.getTime());
+  vi.restoreAllMocks();
+  await r.release();
+});
