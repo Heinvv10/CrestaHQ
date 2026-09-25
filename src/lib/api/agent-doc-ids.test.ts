@@ -63,13 +63,44 @@ describe("a caller-supplied id is never a path", () => {
   });
 });
 
-describe("isDocId", () => {
-  it("refuses Firestore's reserved __…__ ids, and get_contact treats one as not found", async () => {
+describe("isDocId follows Firestore's own id rules", () => {
+  it.each([
+    ["empty", ""], ["a slash", "c1/notes/n1"], ["a trailing slash", "c1/"], ["dot", "."], ["dot-dot", ".."],
+    ["reserved", "__c1__"], ["reserved, bare", "____"], ["over 1,500 UTF-8 bytes", "é".repeat(751)], ["not a string", 7],
+  ])("refuses %s", async (_label, id) => {
     const { isDocId } = await import("@/lib/server/doc-id");
-    expect([isDocId("__c1__"), isDocId("____"), isDocId("c1__"), isDocId("__c1")]).toEqual([false, false, true, true]);
-    expect(await dispatchAgentTool(auth, "get_contact", { contactId: "__c1__" })).toMatchObject({
+    expect(isDocId(id)).toBe(false);
+  });
+
+  it.each([
+    ["a space", "c1 legacy"], ["unicode", "ç1"], ["a backslash", "c1\\x"], ["an encoded slash (literal text)", "c1%2Fnotes"],
+    ["underscores at one end only", "__c1"], ["1,500 bytes exactly", "é".repeat(750)],
+  ])("accepts %s", async (_label, id) => {
+    const { isDocId } = await import("@/lib/server/doc-id");
+    expect(isDocId(id)).toBe(true);
+  });
+
+  it.each(["c1 legacy", "ç1"])("a legacy contact with id %j resolves", async (id) => {
+    mem.seed(`contacts/${id}`, { ...SUB, name: "Legacy" });
+    expect(await dispatchAgentTool(auth, "get_contact", { contactId: id })).toMatchObject({
+      ok: true, resultText: expect.stringContaining("Name: Legacy"),
+    });
+  });
+
+  it.each(["__c1__", "..", "c1%2Fsub%2Fy"])("get_contact(%j) → not found", async (id) => {
+    expect(await dispatchAgentTool(auth, "get_contact", { contactId: id })).toMatchObject({
       ok: false, httpStatus: 400, message: "That contact isn't in this workspace.",
     });
+  });
+});
+
+describe("computePatch", () => {
+  it("throws when the computed patch changes territoryId, writing nothing", async () => {
+    const { updateContactServerSide } = await import("@/lib/server/contacts-service");
+    await expect(
+      updateContactServerSide({ contactId: "c1", patch: {}, computePatch: () => ({ territoryId: "t2" }) })
+    ).rejects.toThrow(/territoryId/);
+    expect(mem.read("contacts/c1")).toEqual(SUB);
   });
 });
 

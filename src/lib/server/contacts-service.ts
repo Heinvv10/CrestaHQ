@@ -348,7 +348,10 @@ export async function updateContactServerSide(opts: {
     const computed = await db.runTransaction(async (tx) => {
       const current = (await tx.get(ref)).data();
       if (!current || current.subAccountId !== existing.subAccountId) return null;
-      const next = buildUpdatePatch(current, opts.computePatch!(current));
+      const computedPatch = opts.computePatch!(current);
+      // A territory move also re-scopes conversations (the branch below).
+      if ("territoryId" in computedPatch) throw new Error("computePatch may not change territoryId.");
+      const next = buildUpdatePatch(current, computedPatch);
       tx.update(ref, { ...next, updatedAt: FieldValue.serverTimestamp() });
       return { current, next };
     });
