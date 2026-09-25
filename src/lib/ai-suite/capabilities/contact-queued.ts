@@ -1,7 +1,8 @@
 import "server-only";
 
 import { updateContactServerSide } from "@/lib/server/contacts-service";
-import { deleteContactServerSide } from "@/lib/server/contact-delete";
+import { deleteContactServerSide, findContactBlockers } from "@/lib/server/contact-delete";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str } from "./helpers";
@@ -20,6 +21,9 @@ import { tenantContact } from "./contact-edit";
 const INVISIBLE_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
 const contactIdParam = { type: "string", description: "The contact's id (from find_contacts)." };
+
+const describeBlockers = (blockers: Array<{ count: number; label: string }>) =>
+  blockers.map((b) => `${b.count} ${b.label}${b.count === 1 ? "" : "s"}`).join(", ");
 
 /** The approver's territory gate targets the contact itself. */
 const contactTarget: NonNullable<AiSuiteCapability["approvalTarget"]> = async (ctx, args) => {
@@ -90,8 +94,10 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
       return { rows, pinned };
     },
     execute: async (ctx, args) => {
-      // On approve, write exactly what the approver reviewed.
-      const src = ctx.approved?.pinned ?? args;
+      // On approve, write exactly what the approver reviewed — and refuse
+      // rather than fall back to the args when nothing was pinned.
+      const src = ctx.approved ? ctx.approved.pinned : args;
+      if (!src) throw new CapabilityUserError("Nothing reviewed to apply: the proposal carries no pinned values.");
       if (src.contactId !== args.contactId) throw new CapabilityUserError("The approved contact doesn't match.");
       const patch = {
         ...(typeof src.phone === "string" ? { phone: src.phone } : {}),
@@ -127,11 +133,15 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
     approvalTarget: contactTarget,
     preview: async (ctx, args) => {
       const c = await tenantContact(ctx.subAccountId!, args.contactId as string);
+      const { blockers } = await findContactBlockers(getAdminDb(), ctx.subAccountId!, args.contactId as string);
       return [
         { label: "Delete contact", value: String(c.name ?? "(unnamed)") },
         { label: "Phone", value: String(c.phone || "(none)") },
         { label: "Email", value: String(c.email || "(none)") },
         { label: "Also deleted", value: "Its notes, activities, messages and form submissions" },
+        ...(blockers.length
+          ? [{ label: "Will fail", value: `Still linked to ${describeBlockers(blockers)}; clear those first.` }]
+          : []),
       ];
     },
     execute: async (ctx, args) => {
@@ -142,7 +152,7 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
       if (res.status === "not_found") throw new CapabilityUserError("That contact isn't in this workspace.");
       if (res.status === "blocked") {
         throw new CapabilityUserError(
-          `The contact still has ${res.blockers.map((b) => `${b.count} ${b.label}${b.count === 1 ? "" : "s"}`).join(", ")}; clear those first.`
+          `The contact is still linked to ${describeBlockers(res.blockers)}; clear those first.`
         );
       }
       return { resultText: "Deleted the contact.", ref: { kind: "contact", id: args.contactId as string } };

@@ -86,9 +86,18 @@ describe("delete_contact", () => {
     expect(mem.read("contacts/c1")).toBeDefined();
   });
 
-  it("still linked to a deal → the approve fails with the reason, the contact stays", async () => {
+  it("the preview says it will fail while a deal still points at the contact", async () => {
+    mem.seed("deals/d1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", title: "Fibre" });
+    const id = await proposeId("delete_contact", { contactId: "c1" });
+    expect(row(id).preview).toContainEqual({ label: "Will fail", value: "Still linked to 1 deal; clear those first." });
+  });
+
+  it("linked to a deal since the proposal → the approver sees the new warning; approving anyway fails with the reason", async () => {
     const id = await proposeId("delete_contact", { contactId: "c1" });
     mem.seed("deals/d1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", title: "Fibre" });
+    const first = await decide(id, "approve");
+    expect(first.status).toBe(409);
+    expect(await first.json()).toMatchObject({ error: "preview_changed" });
     const res = await decide(id, "approve");
     expect(res.status).toBe(422);
     expect(await res.json()).toMatchObject({ status: "failed", error: expect.stringContaining("1 deal") });

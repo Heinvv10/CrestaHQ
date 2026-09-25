@@ -25,6 +25,7 @@ import { COMMUNITY_CAPABILITIES } from "./capabilities/community";
 import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
 import { CONTACT_CAPABILITIES } from "./capabilities/contacts";
 import { CONTACT_EDIT_CAPABILITIES } from "./capabilities/contact-edit";
+import { CONTACT_TAG_CAPABILITIES } from "./capabilities/contact-tags";
 import { CONTACT_QUEUED_CAPABILITIES } from "./capabilities/contact-queued";
 import { TASK_CAPABILITIES } from "./capabilities/tasks";
 import { TASK_COMPLETE_CAPABILITIES } from "./capabilities/task-complete";
@@ -83,6 +84,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...WORKFLOW_CAPABILITIES,
   ...CONTACT_CAPABILITIES,
   ...CONTACT_EDIT_CAPABILITIES,
+  ...CONTACT_TAG_CAPABILITIES,
   ...CONTACT_QUEUED_CAPABILITIES,
   ...TASK_CAPABILITIES,
   ...TASK_COMPLETE_CAPABILITIES,

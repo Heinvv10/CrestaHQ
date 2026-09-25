@@ -6,6 +6,7 @@ import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
 import { str, agentActor } from "./helpers";
+import { asTags, MAX_TAGS, MAX_TAG_LEN } from "@/lib/api/serializers/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 
 /**
@@ -28,14 +29,12 @@ export async function tenantContact(
   return data;
 }
 
-/** Trimmed, de-duplicated tags: at most 10, each at most 40 characters. */
-export function cleanTags(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  const tags = raw
-    .filter((t): t is string => typeof t === "string")
-    .map((t) => t.trim().slice(0, 40))
-    .filter(Boolean);
-  return [...new Set(tags)].slice(0, 10);
+/** A tags arg as stored: a list of 1–80-character tags, at most 50 (the
+ *  public API's limits). Over-limit or malformed input is REFUSED, never
+ *  truncated or dropped, so nothing is lost silently. */
+export const TAGS_RULE = `a list of at most ${MAX_TAGS} non-empty tags of at most ${MAX_TAG_LEN} characters`;
+export function parseTags(raw: unknown): string[] | null {
+  return raw === null || raw === undefined ? null : asTags(raw);
 }
 
 /** The fields `update_contact` may set. Everything else an agent sends is
@@ -43,71 +42,28 @@ export function cleanTags(raw: unknown): string[] {
 const UPDATE_ALLOWLIST = ["contactId", "name", "company", "address", "customFields", "tags"] as const;
 const CHANNEL_FIELDS = ["phone", "email"] as const;
 
-const withHeld = (res: { held?: ExecuteResult["held"]; holdFailures?: ExecuteResult["holdFailures"] }) =>
+export const withHeld = (res: { held?: ExecuteResult["held"]; holdFailures?: ExecuteResult["holdFailures"] }) =>
   res.held ? { held: res.held, holdFailures: res.holdFailures ?? [] } : {};
 
-const contactIdParam = { type: "string", description: "The contact's id (from find_contacts)." };
+export const contactIdParam = { type: "string", description: "The contact's id (from find_contacts)." };
 
-async function writeContact(
+/** Write a contact as the agent. `change` is built from the CURRENT doc inside
+ *  one transaction, so a concurrent write in between is never overwritten. */
+export async function writeContact(
   ctx: Parameters<AiSuiteCapability["execute"]>[0],
   capability: string,
   contactId: string,
-  patch: UpdateContactPatch
+  change: (current: FirebaseFirestore.DocumentData) => UpdateContactPatch
 ) {
   const res = await updateContactServerSide({
     contactId,
-    patch,
+    patch: {},
+    computePatch: change,
     subAccountId: ctx.subAccountId!,
     actor: agentActor(ctx, capability),
   });
   if (!res) throw new CapabilityUserError("That contact isn't in this workspace.");
   return res;
-}
-
-function tagCapability(mode: "add" | "remove"): AiSuiteCapability {
-  const name = mode === "add" ? "add_tags" : "remove_tags";
-  return {
-    name,
-    level: "sub-account",
-    requiredRole: "subAccountMember",
-    surfaces: ["agent"],
-    menuLabel: mode === "add" ? "Tag a contact" : "Remove tags from a contact",
-    description:
-      mode === "add"
-        ? "Add tags to a contact, keeping its existing tags. A workflow a tag would start is queued for a person to approve."
-        : "Remove tags from a contact; tags it doesn't have are ignored.",
-    parameters: {
-      type: "object",
-      properties: {
-        contactId: contactIdParam,
-        tags: { type: "array", items: { type: "string" }, description: 'Tags, e.g. ["vip"].' },
-      },
-      required: ["contactId", "tags"],
-      additionalProperties: false,
-    },
-    validate: (raw) => {
-      const contactId = str(raw, "contactId");
-      const tags = cleanTags((raw as Record<string, unknown>)?.tags);
-      if (!contactId) return { ok: false, error: "a contactId is required" };
-      if (tags.length === 0) return { ok: false, error: "at least one tag is required" };
-      return { ok: true, args: { contactId, tags } };
-    },
-    summarize: (args) =>
-      `${mode === "add" ? "Add" : "Remove"} tag(s) ${(args.tags as string[]).join(", ")} ${mode === "add" ? "to" : "from"} a contact.`,
-    execute: async (ctx, args) => {
-      const contactId = args.contactId as string;
-      const current = await tenantContact(ctx.subAccountId!, contactId);
-      const have: string[] = Array.isArray(current.tags) ? current.tags : [];
-      const given = args.tags as string[];
-      const tags = mode === "add" ? [...new Set([...have, ...given])] : have.filter((t) => !given.includes(t));
-      const res = await writeContact(ctx, name, contactId, { tags });
-      return {
-        resultText: `Tags on “${current.name ?? "the contact"}” are now: ${tags.join(", ") || "(none)"}.`,
-        ref: { kind: "contact", id: contactId },
-        ...withHeld(res),
-      };
-    },
-  };
 }
 
 export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
@@ -183,7 +139,11 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
         }
         args.customFields = r.customFields;
       }
-      if (r.tags !== undefined) args.tags = cleanTags(r.tags);
+      if (r.tags !== undefined) {
+        const tags = parseTags(r.tags);
+        if (!tags) return { ok: false, error: `tags must be ${TAGS_RULE} (an empty list clears them)` };
+        args.tags = tags;
+      }
       if (Array.isArray(r.ignoredChannels)) {
         args.ignoredChannels = r.ignoredChannels.filter((c) => (CHANNEL_FIELDS as readonly unknown[]).includes(c));
       }
@@ -202,13 +162,15 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       if (args.company !== undefined) patch.company = args.company as string;
       if (args.address !== undefined) patch.address = args.address as string;
       if (args.tags !== undefined) patch.tags = args.tags as string[];
-      if (args.customFields !== undefined) {
-        const merged = { ...(current.customFields ?? {}), ...(args.customFields as Record<string, unknown>) };
-        const cf = validateCustomFieldValues(merged, await loadCustomFieldDefs(ctx.subAccountId!, "contact"));
+      const defs = args.customFields !== undefined ? await loadCustomFieldDefs(ctx.subAccountId!, "contact") : null;
+      const res = await writeContact(ctx, "update_contact", contactId, (stored) => {
+        if (!defs) return patch;
+        // Merge into the custom fields as stored NOW (same transaction).
+        const merged = { ...(stored.customFields ?? {}), ...(args.customFields as Record<string, unknown>) };
+        const cf = validateCustomFieldValues(merged, defs);
         if (!cf.ok) throw new CapabilityUserError(cf.error ?? "Those custom field values aren't valid.");
-        patch.customFields = cf.value;
-      }
-      const res = await writeContact(ctx, "update_contact", contactId, patch);
+        return { ...patch, customFields: cf.value };
+      });
       const ignored = (args.ignoredChannels as string[] | undefined) ?? [];
       return {
         resultText:
@@ -221,6 +183,4 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       };
     },
   },
-  tagCapability("add"),
-  tagCapability("remove"),
 ];

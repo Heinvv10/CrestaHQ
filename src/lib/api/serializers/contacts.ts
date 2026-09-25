@@ -225,8 +225,8 @@ export interface ParseResult<T> {
 
 const MAX_NAME = 200;
 const MAX_FIELD = 500;
-const MAX_TAGS = 50;
-const MAX_TAG_LEN = 80;
+export const MAX_TAGS = 50;
+export const MAX_TAG_LEN = 80;
 
 function asString(v: unknown, max: number): string | null {
   if (v === null || v === undefined) return "";

@@ -265,6 +265,23 @@ export interface UpdateContactPatch {
   prospecting?: ContactProspecting;
 }
 
+/** The Firestore update for `input` against the stored doc `existing`. */
+function buildUpdatePatch(existing: FirebaseFirestore.DocumentData, input: UpdateContactPatch) {
+  const { prospecting, ...fields } = input;
+  return {
+    ...fields,
+    ...Object.fromEntries(
+      Object.entries(prospecting ?? {}).map(([k, v]) => [`prospecting.${k}`, v]),
+    ),
+    ...(input.tags ? { tags: [...new Set(input.tags)] } : {}),
+    // A writer that changes the free-text `company` without saying which
+    // company (the public API, which has no companyId field) breaks the
+    // link rather than leaving companyId pointing at a company whose name
+    // the contact no longer carries. The dashboard always sends companyId.
+    ...(companyStringDrifts(existing, input) ? { companyId: null } : {}),
+  };
+}
+
 /** True when `patch` rewrites `company` on a linked contact without a companyId of its own. */
 export function companyStringDrifts(
   existing: { companyId?: string | null; company?: string },
@@ -304,6 +321,13 @@ export async function updateContactServerSide(opts: {
    * proposals (ruling Q), and the update AWAITS the trigger to return them.
    */
   actor?: AgentActor;
+  /**
+   * Build the patch from the CURRENT doc, read and written in one
+   * transaction — for a change relative to what is stored (add a tag,
+   * merge custom fields), so a concurrent write is never overwritten.
+   * Used instead of `patch` (pass `{}`); never with a territory change.
+   */
+  computePatch?: (current: FirebaseFirestore.DocumentData) => UpdateContactPatch;
 }): Promise<ContactWriteResult | null> {
   if (!isDocId(opts.contactId)) return null;
   const db = getAdminDb();
@@ -311,28 +335,27 @@ export async function updateContactServerSide(opts: {
   const snap = await ref.get();
   if (!snap.exists) return null;
 
-  const existing = snap.data()!;
+  let existing = snap.data()!;
   if (opts.subAccountId !== undefined && existing.subAccountId !== opts.subAccountId) return null;
   const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
-  const { prospecting, ...fields } = opts.patch;
-  const patch = {
-    ...fields,
-    ...Object.fromEntries(
-      Object.entries(prospecting ?? {}).map(([k, v]) => [`prospecting.${k}`, v]),
-    ),
-    ...(opts.patch.tags ? { tags: [...new Set(opts.patch.tags)] } : {}),
-    // A writer that changes the free-text `company` without saying which
-    // company (the public API, which has no companyId field) breaks the
-    // link rather than leaving companyId pointing at a company whose name
-    // the contact no longer carries. The dashboard always sends companyId.
-    ...(companyStringDrifts(existing, opts.patch) ? { companyId: null } : {}),
-  };
+  let patch = buildUpdatePatch(existing, opts.patch);
 
   // update(), not set(..., {merge: true}): merge recurses into nested maps,
   // which would keep cleared customFields values forever. update() replaces
   // a map field wholesale and behaves identically for the scalar fields.
   const update = { ...patch, updatedAt: FieldValue.serverTimestamp() };
-  if (Object.prototype.hasOwnProperty.call(patch, "territoryId")) {
+  if (opts.computePatch) {
+    const computed = await db.runTransaction(async (tx) => {
+      const current = (await tx.get(ref)).data();
+      if (!current || current.subAccountId !== existing.subAccountId) return null;
+      const next = buildUpdatePatch(current, opts.computePatch!(current));
+      tx.update(ref, { ...next, updatedAt: FieldValue.serverTimestamp() });
+      return { current, next };
+    });
+    if (!computed) return null;
+    existing = computed.current;
+    patch = computed.next;
+  } else if (Object.prototype.hasOwnProperty.call(patch, "territoryId")) {
     await db.runTransaction(async (tx) => {
       const current = (await tx.get(ref)).data();
       if (
