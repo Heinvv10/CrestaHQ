@@ -19,6 +19,17 @@ export const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  *  reads (a newline could fake a preview row, an invisible one hide text). */
 export const UNSAFE_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
+/**
+ * An agent-supplied field, trimmed. For `address` only, line breaks are
+ * folded to ", " first — people store multi-line addresses (the forms use a
+ * textarea) — so the unsafe-text check that follows still refuses every
+ * other control character, and a newline in any other field.
+ */
+export function agentText(key: string, value: string): string {
+  const v = value.trim();
+  return key === "address" ? v.replace(/\s*[\r\n]+\s*/g, ", ") : v;
+}
+
 /** A stored value on one line, for list output (legacy data may hold newlines). */
 export function oneLine(value: unknown): string {
   return String(value ?? "").replace(/[\s\u0085\u2028\u2029]+/g, " ").trim();

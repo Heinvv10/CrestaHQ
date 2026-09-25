@@ -5,7 +5,7 @@ import { updateContactServerSide, type UpdateContactPatch } from "@/lib/server/c
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
-import { str, agentActor, oneLine, UNSAFE_TEXT_RE } from "./helpers";
+import { str, agentActor, agentText, oneLine, UNSAFE_TEXT_RE } from "./helpers";
 import { asTags, MAX_TAGS, MAX_TAG_LEN } from "@/lib/api/serializers/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 
@@ -133,8 +133,9 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       const args: Record<string, unknown> = { contactId };
       for (const k of ["name", "company", "address"] as const) {
         if (typeof r[k] !== "string") continue;
-        if (UNSAFE_TEXT_RE.test(r[k] as string)) return { ok: false, error: `${k} can't contain control or bidi characters` };
-        args[k] = str(raw, k);
+        const v = agentText(k, r[k] as string);
+        if (UNSAFE_TEXT_RE.test(v)) return { ok: false, error: `${k} can't contain control or bidi characters` };
+        args[k] = v;
       }
       if (args.name === "") return { ok: false, error: "a contact's name can't be empty" };
       if (r.customFields !== undefined) {

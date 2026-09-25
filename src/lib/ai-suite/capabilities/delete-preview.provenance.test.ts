@@ -139,3 +139,42 @@ describe("breaker round 2", () => {
     expect(warning(await previewOf("delete_contact", { contactId: "c1" }))?.value).toContain("API agent abcd1234");
   });
 });
+
+describe("reviewer re-check", () => {
+  it("create_contact (createContactServerSide with an actor) stamps the new contact", async () => {
+    const r = (await dispatchAgentTool(auth, "create_contact", { name: "Agent Made" })) as { ref: { id: string } };
+    expect(mem.read(`contacts/${r.ref.id}`)).toMatchObject({ lastAgentEditKey: "abcd1234", lastAgentEditAt: expect.anything() });
+  });
+
+  it("a human create never stamps", async () => {
+    const { createContactServerSide } = await import("@/lib/server/contacts-service");
+    const res = await createContactServerSide({
+      subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", mode: "live",
+      name: "Person Made", email: "", phone: "", company: "", address: "", source: "manual", tags: [],
+    });
+    expect(mem.read(`contacts/${res.id}`)).not.toHaveProperty("lastAgentEditAt");
+  });
+
+  it("the plain (non-computePatch) update path stamps an agent write", async () => {
+    const { updateContactServerSide } = await import("@/lib/server/contacts-service");
+    await updateContactServerSide({
+      contactId: "c1", patch: { name: "Plain" }, actor: { keyId: "k", keyPrefix: "abcd1234", capability: "x" },
+    });
+    expect(mem.read("contacts/c1")).toMatchObject({ name: "Plain", lastAgentEditKey: "abcd1234" });
+  });
+
+  it.each([
+    ["update_contact", { contactId: "c1" }, "contacts/c1"],
+    ["update_company", { companyId: "co1" }, "companies/co1"],
+  ])("%s folds a multi-line address to one line; other fields still refuse a newline", async (name, target, path) => {
+    expect(await dispatchAgentTool(auth, name, { ...target, address: "  1 Main St\r\nCape Town\n" })).toMatchObject({ ok: true });
+    expect(mem.read(path)!.address).toBe("1 Main St, Cape Town");
+    expect(await dispatchAgentTool(auth, name, { ...target, address: "1 Main St\u0000" })).toMatchObject({ ok: false });
+    expect(await dispatchAgentTool(auth, name, { ...target, name: "A\nB" })).toMatchObject({ ok: false });
+  });
+
+  it("create_company folds its address too", async () => {
+    const r = (await dispatchAgentTool(auth, "create_company", { name: "New", address: "1 Main St\nCape Town\n" })) as { ref: { id: string } };
+    expect(mem.read(`companies/${r.ref.id}`)!.address).toBe("1 Main St, Cape Town");
+  });
+});
