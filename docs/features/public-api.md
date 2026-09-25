@@ -228,6 +228,28 @@ ACTIVE member of the key's sub-account, else **`400`** `invalid_request`.
 Absent or `null` creates the deal unassigned. It is read-only on
 `PATCH /v1/deals/:id` (silently ignored there, like any unknown key).
 
+## Agent tools (`agent` scope)
+
+For an external LLM agent. Keys minted with the `agent` scope (exclusive with
+`admin` and `forms-ingest`) and only while the agency enabled
+`agentApiEnabledByAgency`, which is re-read on every request (off → 403
+`agent_api_disabled`). Rate limit: 60/min, 1,000/h per key.
+
+- `GET /api/v1/tools` → `{tools: [{name, description, parameters, readOnly, approval?}]}` —
+  `parameters` is the tool's JSON Schema.
+- `POST /api/v1/tools/{name}` with the args as the JSON body. A write returns 200
+  `{result, ref?, held?, holdFailures?}` (`held` = workflow enrolments queued for
+  approval instead of started). A tool that needs a person returns 202
+  `{proposal: {id, status, summary, preview}}` and waits on the sub-account's
+  Approvals page. Refusals use the v1 error body; an unknown tool is the same 404
+  as one the key may not call. `Idempotency-Key` is honoured for writes and
+  proposals and ignored for read tools (they are idempotent, and caching one
+  would store its result). A read tool's request log keeps status and latency
+  only: neither its request body (the args) nor its response body is stored.
+
+The MCP transport (PR5) and the full agent guide (`docs/features/agent-api.md`,
+PR14) follow; see `AGENT_API_V1_PLAN.md`.
+
 ## Webhooks
 
 Outbound webhooks let the sub-account react to platform events (contact created, deal moved, event booked, …) without polling.

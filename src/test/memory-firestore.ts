@@ -409,6 +409,9 @@ export function createMemoryFirestore() {
       const d = store.get(path);
       return d === undefined ? undefined : clone(d);
     },
+    /** Every doc in the store, as `{ path, data }` (a whole-store scan for a test). */
+    all: (): Array<{ path: string; data: Data }> =>
+      [...store.entries()].map(([path, d]) => ({ path, data: clone(d) })),
     /** Every doc directly under a collection path, as `{ id, ...data }`. */
     list: (path: string): Array<Data & { id: string }> =>
       [...store.entries()].filter(([p]) => p.slice(0, p.lastIndexOf("/")) === path)

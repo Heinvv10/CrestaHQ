@@ -92,6 +92,33 @@ export interface WithApiAuthOptions {
    * re-execute).
    */
   idempotency?: boolean;
+  /**
+   * Which bodies the request log must NOT keep (default: keep both). The
+   * agent tools route redacts both for a read tool: its args (a searched
+   * email) and its result (tenant data) are PII, so a read logs status +
+   * latency only. Applied on every exit path.
+   */
+  redactLog?: (params: Record<string, string>) => { requestBody: boolean; responseBody: boolean };
+  /**
+   * Runs after auth, scope and rate limit, BEFORE the idempotency lookup: a
+   * non-null response ends the request (and is never cached). The agent
+   * tools routes check test mode and the Agent API gate here, so an
+   * idempotent replay can't outlive a gate switched off.
+   */
+  precheck?: (ctx: ApiAuthContext) => Promise<NextResponse | null>;
+  /**
+   * Per-request veto of the idempotency cache (default: cache as usual).
+   * The agent tools route returns false for read tools (a read is naturally
+   * idempotent, and caching its result would persist tenant data), and
+   * stores only real outcomes, never a refusal that would replay forever.
+   */
+  cacheIdempotently?: (
+    params: Record<string, string>,
+    /** Absent: "take part in idempotency at all?" (before the lookup).
+     *  Present: "store this outcome?" (after the handler; the default stores
+     *  anything below 500). */
+    outcome?: { status: number; body: unknown },
+  ) => boolean;
 }
 
 export interface ApiHandlerInput<P extends Record<string, string> = Record<string, string>> {
@@ -331,6 +358,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     // readBody so this is essentially free for read paths.
     const params = await routeCtx.params;
     const { rawBody, body } = await readBody(request);
+    const redact = opts.redactLog?.(params) ?? { requestBody: false, responseBody: false };
 
     // Helper that captures the log + returns the response. Used at every
     // exit point so every request makes it into the log viewer regardless
@@ -356,11 +384,11 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         requestId: ctx.requestId,
         method: request.method,
         path: url.pathname,
-        query: url.search,
+        query: redact.requestBody ? "" : url.search,
         requestHeaders: request.headers,
-        requestBody: rawBody,
+        requestBody: redact.requestBody ? "" : rawBody,
         responseStatus: response.status,
-        responseBodyJson: bodyJson,
+        responseBodyJson: redact.responseBody ? null : bodyJson,
         errorCode: errorCode ?? null,
         latencyMs: Date.now() - start,
       });
@@ -396,12 +424,42 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       return finalize(rlResp, undefined, "rate_limited");
     }
 
+    if (opts.precheck) {
+      let refused: NextResponse | null;
+      try {
+        refused = await opts.precheck(ctx);
+      } catch (err) {
+        // Same as a throwing handler: a logged, generic v1 internal_error —
+        // never the raw error, never cached (the lookup hasn't run yet).
+        console.error("[api/v1] precheck threw", err);
+        return finalize(
+          apiError(
+            ctx,
+            "internal_error",
+            "internal_error",
+            "Something went wrong on our end. Quote this request_id in support.",
+          ),
+          undefined,
+          "internal_error",
+        );
+      }
+      if (refused) {
+        const code = await refused
+          .clone()
+          .json()
+          .then((b: { error?: { code?: string } }) => b.error?.code ?? null)
+          .catch(() => null);
+        return finalize(refused, undefined, code);
+      }
+    }
+
     // Idempotency check (POST/PATCH/DELETE + header present).
     const idempotencyKey = request.headers.get("idempotency-key");
     const useIdempotency =
       opts.idempotency !== false &&
       METHODS_WITH_IDEMPOTENCY.has(request.method) &&
-      !!idempotencyKey;
+      !!idempotencyKey &&
+      (opts.cacheIdempotently ? opts.cacheIdempotently(params) : true);
 
     let fingerprint: string | null = null;
     if (useIdempotency) {
@@ -471,7 +529,10 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
 
     // Cache successful responses only — never cache server errors so the
     // caller's retry-with-same-key actually hits the handler again.
-    if (useIdempotency && fingerprint && response.status < 500) {
+    const storeOutcome = opts.cacheIdempotently
+      ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
+      : response.status < 500;
+    if (useIdempotency && fingerprint && storeOutcome) {
       try {
         await writeIdempotencyCache(
           ctx.subAccountId,

@@ -5,7 +5,8 @@ import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harne
  * Every direct (non-approval) agent write leaves one `agent.write` audit row
  * from dispatchAgentTool: the key as actor, the capability and key prefix,
  * the record touched, and the NAMES of the args — never their values. Read
- * tools leave none, and their responses are kept out of request logs.
+ * tools leave none (their request-log redaction is tested with the REST
+ * route, src/app/api/v1/tools/route.test.ts).
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-proposals-harness")).adminMock());
@@ -15,7 +16,6 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
 );
 
 const { dispatchAgentTool } = await import("./agent-dispatch");
-const { toolLogResponseBody } = await import("./agent-audit");
 
 setupAgentProposalTests();
 
@@ -64,9 +64,3 @@ describe("the identifier audit rule", () => {
   });
 });
 
-describe("request-log body redaction for read tools", () => {
-  it("a read tool's response is not kept; a write's is", () => {
-    expect(toolLogResponseBody({ readonly: true }, { contacts: ["Ann"] })).toBeNull();
-    expect(toolLogResponseBody({ readonly: false }, { id: "c1" })).toEqual({ id: "c1" });
-  });
-});
