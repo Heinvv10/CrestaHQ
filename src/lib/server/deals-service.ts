@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
 import {
@@ -262,7 +263,9 @@ export async function createDealServerSide(
     stageChangedAt: FieldValue.serverTimestamp(),
   };
   const batch = db.batch();
-  batch.set(ref, doc);
+  // An agent-made deal is stamped (see agentEditStamp); the history row and
+  // the events read `doc` alone.
+  batch.set(ref, { ...doc, ...agentEditStamp(input.actor) });
   appendStageEntry(db, batch, {
     dealId: ref.id,
     deal: doc,
@@ -484,7 +487,7 @@ export async function updateDealServerSide(opts: {
       }
     }
 
-    tx.set(ref, write, { merge: true });
+    tx.set(ref, { ...write, ...agentEditStamp(opts.actor) }, { merge: true });
     if (stageChanged) {
       appendStageEntry(db, tx, {
         dealId: ref.id,

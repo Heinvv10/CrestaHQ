@@ -168,7 +168,7 @@ async function dispatch(
   }
 
   const ctx = buildAgentContext(auth);
-  const approval = cap.approvalFor ? cap.approvalFor(validated.args) : cap.approval;
+  const approval = cap.approvalFor ? await cap.approvalFor(validated.args, ctx) : cap.approval;
   // Only the engine writes workflow_enrolment rows (see agentCallable).
   if (approval === "workflow_enrolment") return notAvailable();
   if (approval) {

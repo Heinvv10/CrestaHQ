@@ -82,8 +82,15 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   find_deals: { query: "fibre" },
   create_deal: { title: "Fibre 100", value: 500, currency: "ZAR", contactId: "c1", contactName: "Ann", stage: "new" },
   move_deal_stage: { dealId: "d1", dealTitle: "Fibre", stage: "contacted" },
+  update_deal: { dealId: "d1", title: "Fibre 200", value: 700 },
+  delete_deal: { dealId: "d1" },
   list_webhooks: {},
   create_workflow: { template: "speed-to-lead" },
+  list_workflows: {},
+  get_workflow: { workflowId: "wf_draft" },
+  update_workflow: { workflowId: "wf_draft", name: "Renamed" },
+  set_workflow_status: { workflowId: "wf_draft", status: "paused" },
+  delete_workflow: { workflowId: "wf_draft" },
   create_contact: { name: "Agent Contact", email: "agent@x.io", phone: "+27821234567" },
   create_task: { title: "Call Ann", contactId: "c1", contactName: "Ann" },
   find_tasks: { filter: "all-open" },
@@ -148,6 +155,11 @@ beforeEach(() => {
     body: "Your install is on {{1}}.", variables: [{ position: 1, label: "Day", sampleValue: "Monday", source: "manual", mergeTag: null }],
   });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
+  mem.seed("workflows/wf_draft", {
+    name: "Draft", subAccountId: "sa1", agencyId: "ag1", status: "draft", startNodeId: "n1",
+    trigger: { type: "contact.created", filters: { all: [] } },
+    nodes: { n1: { id: "n1", type: "send_sms", config: { body: "Hi" }, next: null } },
+  });
   TRIGGERS.forEach((type) =>
     mem.seed(`workflows/wf_${type}`, {
       name: `Sends on ${type}`, subAccountId: "sa1", agencyId: "ag1", status: "active", startNodeId: "n1",
@@ -184,6 +196,8 @@ describe("an agent can never send on its own", () => {
     ...Object.entries(FIXTURE_ARGS),
     ["set_bot_mode", { conversationId: "c1", mode: "suggest" }],
     ["set_bot_mode", { conversationId: "c1", mode: "auto" }],
+    ["update_workflow", { workflowId: "wf_contact.created", name: "Renamed" }],
+    ["set_workflow_status", { workflowId: "wf_draft", status: "active" }],
   ];
   it.each(CASES)("%s %j: dispatches fine and reaches no outbound seam", async (name, args) => {
     const cap = agentCaps().find((c) => c.name === name);
@@ -191,7 +205,8 @@ describe("an agent can never send on its own", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const r = await dispatchAgentTool(auth, name, args);
     const validated = cap!.validate(cap!.agentArgs ? cap!.agentArgs(args) : args);
-    const approval = cap!.approvalFor && validated.ok ? cap!.approvalFor(validated.args) : cap!.approval;
+    const { buildAgentContext } = await import("@/lib/api/agent-context");
+    const approval = cap!.approvalFor && validated.ok ? await cap!.approvalFor(validated.args, buildAgentContext(auth)) : cap!.approval;
     if (approval) {
       expect(r).toMatchObject({ ok: true, proposal: { status: "pending" } });
       expect(mem.list("agentProposals")).toHaveLength(1);

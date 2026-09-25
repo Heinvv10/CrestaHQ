@@ -177,10 +177,21 @@ describe("registry invariants", () => {
     send_message: { conversationId: "c_sample", channel: "sms", body: "Hello" },
     schedule_message: { conversationId: "c_sample", channel: "sms", body: "Hello", sendAt: "2030-01-10T08:00:00.000Z" },
     send_whatsapp_template: { conversationId: "c_sample", templateId: "tpl_sample", variables: { "1": "Tuesday" } },
+    update_workflow: { workflowId: "wf_active", name: "Renamed" },
+    set_workflow_status: { workflowId: "wf_paused", status: "active" },
+    delete_workflow: { workflowId: "wf_paused" },
+    delete_deal: { dealId: "d_sample" },
   };
   /** The approval class a capability carries for its sample args. */
-  const approvalOf = (c: (typeof AI_SUITE_CAPABILITIES)[number]) =>
-    c.approvalFor ? c.approvalFor(PREVIEW_SAMPLE_ARGS[c.name] ?? {}) : c.approval;
+  const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
+    const { buildPreviewContext } = await import("@/lib/api/agent-context");
+    return c.approvalFor ? c.approvalFor(PREVIEW_SAMPLE_ARGS[c.name] ?? {}, buildPreviewContext("ag1", "sa1")) : c.approval;
+  };
+  const withApproval = async (keep: (a: Awaited<ReturnType<typeof approvalOf>>) => boolean) => {
+    const out = [];
+    for (const c of AI_SUITE_CAPABILITIES) if (keep(await approvalOf(c))) out.push(c);
+    return out;
+  };
   const seedSample = () => {
     mem.seed("contacts/c_sample", {
       subAccountId: "sa1", agencyId: "ag1", name: "Sample", phone: "+27820000000", email: "old@x.io", territoryId: "global",
@@ -195,6 +206,14 @@ describe("registry invariants", () => {
       subAccountId: "sa1", agencyId: "ag1", name: "sample", displayName: "Sample", language: "en", status: "approved", contentSid: "HX1",
       body: "See you {{1}}.", variables: [{ position: 1, label: "Day", sampleValue: "Monday", source: "manual", mergeTag: null }],
     });
+    for (const [id, status] of [["wf_active", "active"], ["wf_paused", "paused"]]) {
+      mem.seed(`workflows/${id}`, {
+        subAccountId: "sa1", agencyId: "ag1", name: "Sample flow", status, startNodeId: "n1",
+        trigger: { type: "contact.created", filters: { all: [] } },
+        nodes: { n1: { id: "n1", type: "send_sms", config: { body: "Hi" }, next: null } },
+      });
+    }
+    mem.seed("deals/d_sample", { subAccountId: "sa1", agencyId: "ag1", title: "Sample deal", stageId: "new", territoryId: "global" });
   };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {
@@ -203,7 +222,7 @@ describe("registry invariants", () => {
     const admin = { ...tenant, uid: "u_admin", email: "admin@x.io", displayName: "A", subAccountRole: "admin" };
     const rep = { ...tenant, uid: "u_rep", email: "rep@x.io", displayName: "R", subAccountRole: "collaborator" };
     seedSample();
-    for (const cap of AI_SUITE_CAPABILITIES.filter((c) => approvalOf(c))) {
+    for (const cap of await withApproval((a) => !!a)) {
       const args = PREVIEW_SAMPLE_ARGS[cap.name];
       expect(args, `${cap.name} needs PREVIEW_SAMPLE_ARGS`).toBeDefined();
       const neutral = await cap.preview!(buildPreviewContext("ag1", "sa1"), args!);
@@ -217,7 +236,7 @@ describe("registry invariants", () => {
   it("every outbound / channel_change approval capability's sample preview pins a non-empty target", async () => {
     const { buildPreviewContext } = await import("@/lib/api/agent-context");
     seedSample();
-    const pinning = AI_SUITE_CAPABILITIES.filter((c) => approvalOf(c) === "outbound" || approvalOf(c) === "channel_change");
+    const pinning = await withApproval((a) => a === "outbound" || a === "channel_change");
     expect(pinning.map((c) => c.name)).toEqual(expect.arrayContaining(["update_contact_channels", "set_bot_mode"]));
     for (const cap of pinning) {
       const p = await cap.preview!(buildPreviewContext("ag1", "sa1"), PREVIEW_SAMPLE_ARGS[cap.name] ?? {});

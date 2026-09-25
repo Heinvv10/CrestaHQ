@@ -32,6 +32,12 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["delete_contact", { contactId: "c1/sub/y" }],
   ["create_deal", { title: "D", value: 1, currency: "ZAR", contactId: "c1/sub/y", contactName: "Row", stage: "new" }],
   ["move_deal_stage", { dealId: "d1/sub/y", dealTitle: "Row", stage: "contacted" }],
+  ["update_deal", { dealId: "d1/sub/y", title: "X" }],
+  ["delete_deal", { dealId: "d1/sub/y" }],
+  ["get_workflow", { workflowId: "wf1/sub/y" }],
+  ["update_workflow", { workflowId: "wf1/sub/y", name: "X" }],
+  ["set_workflow_status", { workflowId: "wf1/sub/y", status: "paused" }],
+  ["delete_workflow", { workflowId: "wf1/sub/y" }],
   ["create_task", { title: "T", contactId: "c1/sub/y", contactName: "Row" }],
   ["complete_task", { taskId: "t1/sub/y", taskTitle: "Row" }],
   ["create_event", { title: "E", date: "2030-01-10", time: "10:00", contactId: "c1/sub/y", contactName: "Row" }],
@@ -47,7 +53,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
 ];
 
 beforeEach(() => {
-  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1"]) {
+  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1", "workflows/wf1"]) {
     mem.seed(parent, SUB);
     mem.seed(`${parent}/sub/y`, SUB);
     // A real top-level doc named like the path's last segment: a service
