@@ -1,4 +1,4 @@
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { expect, test } from "@playwright/test";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
@@ -54,9 +54,23 @@ function members() {
 
 // Standard Firestore "starts with" range trick: appending the highest
 // BMP codepoint sorts after every normal title/name, so [prefix, end)
-// matches everything this spec ever named, across any stamp.
+// matches everything this spec ever named, across any stamp. TITLE_PREFIX
+// stays bare (no run id) so the range still catches every run's docs, for
+// stale-crash cleanup below; RUN_TITLE_PREFIX is what THIS run actually
+// seeds with, so a concurrent run's purge (its own docs, plus anything
+// stale) never sweeps this run's still-live fixtures (see
+// e2e/lib/run-id.ts).
 const TITLE_PREFIX = "E2E Appt ";
 const TITLE_PREFIX_END = TITLE_PREFIX + "";
+const RUN_TITLE_PREFIX = `${TITLE_PREFIX}${runId()} `;
+const STALE_MS = 6 * 3600_000;
+
+/** True once createdAt/addedAt is older than STALE_MS - a doc an earlier,
+ * crashed run never cleaned up, not a concurrent run's still-live fixture. */
+function isStale(timestamp: unknown): boolean {
+  if (!(timestamp instanceof Timestamp)) return false;
+  return Date.now() - timestamp.toMillis() > STALE_MS;
+}
 
 /**
  * Every contact/event this spec made, in this run or an earlier crashed
@@ -73,7 +87,12 @@ async function purge() {
     .where("title", "<", TITLE_PREFIX_END)
     .get();
   for (const d of events.docs) {
-    if (d.data().subAccountId === subAccountId) await deleteScoped(d.ref);
+    const e = d.data();
+    if (e.subAccountId !== subAccountId) continue;
+    const title = typeof e.title === "string" ? e.title : "";
+    const ours = title.startsWith(RUN_TITLE_PREFIX);
+    const stale = !ours && isStale(e.createdAt);
+    if (ours || stale) await deleteScoped(d.ref);
   }
 
   const contacts = await adminDb()
@@ -82,12 +101,35 @@ async function purge() {
     .where("name", "<", TITLE_PREFIX_END)
     .get();
   for (const d of contacts.docs) {
-    if (d.data().subAccountId === subAccountId) await deleteScoped(d.ref);
+    const c = d.data();
+    if (c.subAccountId !== subAccountId) continue;
+    const name = typeof c.name === "string" ? c.name : "";
+    const ours = name.startsWith(RUN_TITLE_PREFIX);
+    const stale = !ours && isStale(c.createdAt);
+    if (ours || stale) await deleteScoped(d.ref);
+  }
+}
+
+// Bare prefix for the HOST member doc, so a stale one left by a crashed run
+// can be found and purged too (member docs carry no title/name to range
+// query on, so this is a separate uid-range query, same shape as above).
+const HOST_UID_PREFIX = "e2e-appt-";
+
+async function purgeStaleHosts() {
+  const snap = await members()
+    .where("uid", ">=", HOST_UID_PREFIX)
+    .where("uid", "<", HOST_UID_PREFIX + "")
+    .get();
+  for (const d of snap.docs) {
+    const m = d.data();
+    if (m.subAccountId !== subAccountId || d.id === HOST.uid) continue;
+    if (isStale(m.addedAt)) await deleteScoped(d.ref);
   }
 }
 
 test.beforeAll(async () => {
   await purge();
+  await purgeStaleHosts();
   await members().doc(HOST.uid).set({
     uid: HOST.uid,
     subAccountId,
@@ -174,17 +216,17 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   const uid = ownerSnap.data()?.ownerUid as string;
   const stamp = Date.now();
 
-  const contactUpcoming = await ensureContact(uid, `E2E Appt Upcoming ${stamp}`);
-  const contactCancelled = await ensureContact(uid, `E2E Appt Cancelled ${stamp}`);
-  const contactManual = await ensureContact(uid, `E2E Appt Manual ${stamp}`);
-  const contactCancelable = await ensureContact(uid, `E2E Appt Cancelable ${stamp}`);
-  const contactPast = await ensureContact(uid, `E2E Appt Past ${stamp}`);
+  const contactUpcoming = await ensureContact(uid, `${RUN_TITLE_PREFIX}Upcoming ${stamp}`);
+  const contactCancelled = await ensureContact(uid, `${RUN_TITLE_PREFIX}Cancelled ${stamp}`);
+  const contactManual = await ensureContact(uid, `${RUN_TITLE_PREFIX}Manual ${stamp}`);
+  const contactCancelable = await ensureContact(uid, `${RUN_TITLE_PREFIX}Cancelable ${stamp}`);
+  const contactPast = await ensureContact(uid, `${RUN_TITLE_PREFIX}Past ${stamp}`);
 
-  const titleUpcoming = `E2E Appt Upcoming Booking ${stamp}`;
-  const titleCancelled = `E2E Appt Cancelled Booking ${stamp}`;
-  const titleManual = `E2E Appt Manual Meeting ${stamp}`;
-  const titleCancelable = `E2E Appt Cancelable Booking ${stamp}`;
-  const titlePast = `E2E Appt Past Booking ${stamp}`;
+  const titleUpcoming = `${RUN_TITLE_PREFIX}Upcoming Booking ${stamp}`;
+  const titleCancelled = `${RUN_TITLE_PREFIX}Cancelled Booking ${stamp}`;
+  const titleManual = `${RUN_TITLE_PREFIX}Manual Meeting ${stamp}`;
+  const titleCancelable = `${RUN_TITLE_PREFIX}Cancelable Booking ${stamp}`;
+  const titlePast = `${RUN_TITLE_PREFIX}Past Booking ${stamp}`;
 
   const upcomingEventId = await createEvent({
     createdByUid: uid,
@@ -280,7 +322,7 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   await page.getByLabel("Calendar").selectOption({ label: "Any calendar" });
 
   // --- search (narrower than the stamp: one contact's name) ----------
-  await searchBox.fill(`E2E Appt Manual ${stamp}`);
+  await searchBox.fill(`${RUN_TITLE_PREFIX}Manual ${stamp}`);
   await expect(page.getByText(titleManual, { exact: true })).toBeVisible({
     timeout: 15_000,
   });
