@@ -26,9 +26,11 @@ const WHY: Record<string, string> = {
 const DEAL_TRIGGERS = new Set(["deal.created", "deal.won", "deal.lost", "pipeline.stage.changed"]);
 
 /**
- * A held deal trigger replays only while the deal is still where the trigger
- * said: same stage, same pipeline, and for won/lost a stage with that
- * terminal flag. Otherwise approving would enrol on a fact no longer true.
+ * A held deal trigger replays only while its fact is still true. Every deal
+ * trigger needs the deal to still exist in this sub-account. `deal.created`
+ * needs nothing more (a deal moved since is still a new deal: speed-to-lead
+ * stays approvable); a stage change or won/lost needs the same stage and
+ * pipeline, and won/lost a stage with that terminal flag.
  */
 async function dealStillMatches(
   subAccountId: string,
@@ -38,6 +40,7 @@ async function dealStillMatches(
   const snap = await getAdminDb().doc(`deals/${String(context.dealId)}`).get();
   const deal = snap.data();
   if (!deal || deal.subAccountId !== subAccountId) return false;
+  if (type === "deal.created") return true;
   if (deal.stageId !== context.toStage) return false;
   if (dealPipelineId(deal) !== context.pipelineId) return false;
   if (type === "deal.won" || type === "deal.lost") {

@@ -216,6 +216,38 @@ describe("replaying a held deal trigger re-checks the deal", () => {
     expect(runs()).toEqual([]);
   });
 
+  it("a deal now in ANOTHER sub-account (same id) → failed, 0 runs", async () => {
+    seedWorkflow("wf1", { type: "pipeline.stage.changed" });
+    await moveTo("qualified");
+    mem.seed("deals/d1", { ...mem.read("deals/d1"), subAccountId: "sa2" });
+    const [p] = proposals();
+    expect((await decide(p!.id, "approve")).status).toBe(422);
+    expect(runs()).toEqual([]);
+  });
+
+  it("a held deal.created stays approvable after the deal was moved (speed-to-lead)", async () => {
+    seedWorkflow("wf1", { type: "deal.created" });
+    await dispatchAgentTool(auth, "create_deal", {
+      title: "New lead deal", value: 10, currency: "ZAR", contactId: "c1", contactName: "Ben", stage: "new",
+    });
+    const [p] = proposals();
+    const dealId = (p!.args as { context: { dealId: string } }).context.dealId;
+    mem.seed(`deals/${dealId}`, { ...mem.read(`deals/${dealId}`), stageId: "qualified" });
+    expect((await decide(p!.id, "approve")).status).toBe(200);
+    expect(runs()).toHaveLength(1);
+  });
+
+  it("a held deal.created whose deal was deleted → failed, 0 runs", async () => {
+    seedWorkflow("wf1", { type: "deal.created" });
+    await dispatchAgentTool(auth, "create_deal", {
+      title: "New lead deal", value: 10, currency: "ZAR", contactId: "c1", contactName: "Ben", stage: "new",
+    });
+    const [p] = proposals();
+    await mem.db.doc(`deals/${(p!.args as { context: { dealId: string } }).context.dealId}`).delete();
+    expect((await decide(p!.id, "approve")).status).toBe(422);
+    expect(runs()).toEqual([]);
+  });
+
   it("a deal deleted since the proposal → failed, 0 runs", async () => {
     seedWorkflow("wf1", { type: "pipeline.stage.changed" });
     await moveTo("qualified");
