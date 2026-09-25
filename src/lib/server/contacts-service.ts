@@ -20,6 +20,7 @@ import type { ContactProspecting } from "@/types/prospecting";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import { normalizePhoneLenient } from "@/lib/contacts/phone";
 import { GLOBAL_TERRITORY_ID } from "@/types";
+import { isDocId } from "@/lib/server/doc-id";
 
 /**
  * Server-side Contact write service — the single chokepoint where a contact
@@ -304,6 +305,7 @@ export async function updateContactServerSide(opts: {
    */
   actor?: AgentActor;
 }): Promise<ContactWriteResult | null> {
+  if (!isDocId(opts.contactId)) return null;
   const db = getAdminDb();
   const ref = db.doc(`contacts/${opts.contactId}`);
   const snap = await ref.get();

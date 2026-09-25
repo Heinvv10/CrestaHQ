@@ -6,6 +6,7 @@ import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
 import { str, agentActor } from "./helpers";
+import { isDocId } from "@/lib/server/doc-id";
 
 /**
  * Contact reads and edits for API agents (AGENT_API_V1_PLAN.md, PR7). Every
@@ -20,7 +21,7 @@ export async function tenantContact(
   subAccountId: string,
   contactId: string
 ): Promise<FirebaseFirestore.DocumentData> {
-  const data = contactId ? (await getAdminDb().doc(`contacts/${contactId}`).get()).data() : undefined;
+  const data = isDocId(contactId) ? (await getAdminDb().doc(`contacts/${contactId}`).get()).data() : undefined;
   if (!data || data.subAccountId !== subAccountId) {
     throw new CapabilityUserError("That contact isn't in this workspace.");
   }

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { setTaskCompletedServerSide } from "@/lib/server/tasks-service";
 import { territoryScopeFor } from "@/lib/ai-suite/territory-scope";
@@ -44,10 +45,10 @@ export const TASK_COMPLETE_CAPABILITIES: AiSuiteCapability[] = [
       `Mark the task “${args.taskTitle || args.taskId}” as done.`,
     execute: async (ctx, args) => {
       // The id came from the model — verify it's in THIS workspace.
-      const snap = await getAdminDb()
-        .doc(`tasks/${args.taskId as string}`)
-        .get();
-      if (!snap.exists || snap.data()?.subAccountId !== ctx.subAccountId) {
+      const snap = isDocId(args.taskId)
+        ? await getAdminDb().doc(`tasks/${args.taskId}`).get()
+        : null;
+      if (!snap?.exists || snap.data()?.subAccountId !== ctx.subAccountId) {
         throw new CapabilityUserError(
           "That task wasn't found in this workspace."
         );

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { scopedDocs, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
@@ -78,8 +79,8 @@ export const TASK_CAPABILITIES: AiSuiteCapability[] = [
         // The id came from the model — verify it's a real contact in THIS
         // sub-account before linking, so a wrong/crafted id can't attach the
         // task to another tenant's record.
-        const c = await getAdminDb().doc(`contacts/${contactId}`).get();
-        if (!c.exists || c.data()?.subAccountId !== ctx.subAccountId) {
+        const c = isDocId(contactId) ? await getAdminDb().doc(`contacts/${contactId}`).get() : null;
+        if (!c?.exists || c.data()?.subAccountId !== ctx.subAccountId) {
           throw new CapabilityUserError(
             "The linked contact wasn't found in this workspace."
           );

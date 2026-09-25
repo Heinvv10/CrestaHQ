@@ -1,5 +1,6 @@
 import "server-only";
 
+import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createDealServerSide } from "@/lib/server/deals-service";
 import {
@@ -180,10 +181,10 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
       )}) for ${args.contactName} in ${getStage(args.stage as PipelineStageId).label}.`,
     execute: async (ctx, args) => {
       // The contact id came from the model — verify it's in THIS workspace.
-      const c = await getAdminDb()
-        .doc(`contacts/${args.contactId as string}`)
-        .get();
-      if (!c.exists || c.data()?.subAccountId !== ctx.subAccountId) {
+      const c = isDocId(args.contactId)
+        ? await getAdminDb().doc(`contacts/${args.contactId}`).get()
+        : null;
+      if (!c?.exists || c.data()?.subAccountId !== ctx.subAccountId) {
         throw new CapabilityUserError(
           "That contact wasn't found in this workspace."
         );

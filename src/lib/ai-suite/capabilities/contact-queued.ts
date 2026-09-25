@@ -15,6 +15,10 @@ import { tenantContact } from "./contact-edit";
  * the proposal is refused at approve, never acted on.
  */
 
+/** Control (Cc), format (Cf: zero-width, bidi overrides) and line/paragraph
+ *  separator characters. */
+const INVISIBLE_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
 const contactIdParam = { type: "string", description: "The contact's id (from find_contacts)." };
 
 /** The approver's territory gate targets the contact itself. */
@@ -56,7 +60,11 @@ export const CONTACT_QUEUED_CAPABILITIES: AiSuiteCapability[] = [
       }
       if (typeof r.email === "string") {
         const email = str(raw, "email").toLowerCase();
-        if (!EMAIL_RE.test(email)) return { ok: false, error: "that email address doesn't look valid" };
+        // The approver must see exactly what gets stored: no control,
+        // zero-width or bidi characters, which render as nothing.
+        if (!EMAIL_RE.test(email) || INVISIBLE_RE.test(email)) {
+          return { ok: false, error: "that email address doesn't look valid" };
+        }
         args.email = email;
       }
       if (args.phone === undefined && args.email === undefined) {
