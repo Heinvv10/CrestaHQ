@@ -162,7 +162,7 @@ describe("args", () => {
       name: "Ann",
       whatsappOptedOut: false,
     });
-    expect(r).toEqual({ ok: true, resultText: "ran" });
+    expect(r).toEqual({ ok: true, resultText: "ran", args: { name: "Ann" } });
     expect(validate).toHaveBeenCalledWith({ name: "Ann" });
     expect(cap.execute).toHaveBeenCalledWith(expect.anything(), { name: "Ann" });
   });

@@ -244,8 +244,9 @@ For an external LLM agent. Keys minted with the `agent` scope (exclusive with
   Approvals page. Refusals use the v1 error body; an unknown tool is the same 404
   as one the key may not call. `Idempotency-Key` is honoured for writes and
   proposals and ignored for read tools (they are idempotent, and caching one
-  would store its result). A read tool's request log keeps status and latency
-  only: neither its request body (the args) nor its response body is stored.
+  would store its result). The request log keeps bodies only for a write tool
+  the key may call; for a read tool, or an unknown / misspelled name, it keeps
+  status and latency only.
 
 ### MCP (`POST /api/mcp`)
 
@@ -271,8 +272,10 @@ claude mcp add --transport http leadstack https://<your-app>/api/mcp \
   preview}`); a refusal is an `isError` result with `{error: {code, message}}`.
 - A bad key, a key without the `agent` scope, a test-mode key or the gate off
   is refused at the HTTP level with the v1 error body, before any call runs.
-- Request log: each `tools/call` is logged as `/api/mcp#<tool>`, with the same
-  body rules as REST (a read tool keeps status and latency only). A request
+- Request log: each `tools/call` that runs is logged as `/api/mcp#<tool>`,
+  with the same body rules as REST (bodies only for a callable write; its
+  validated args, never the raw ones). Calls refused by the rate limit inside
+  a batch share ONE `/api/mcp` row with their count. A request
   refused by the route before its messages run (scope, test mode, gate, rate
   limit, invalid JSON, a repeated id, an oversized body) is logged as
   `/api/mcp` without bodies; nothing else is (`initialize`, `tools/list`, or

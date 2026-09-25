@@ -2,7 +2,7 @@ import "server-only";
 
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk, type ErrorType } from "@/lib/api/responses";
-import { dispatchAgentTool, isAgentReadTool } from "@/lib/api/agent-dispatch";
+import { dispatchAgentTool, isAgentReadTool, isAgentWriteTool } from "@/lib/api/agent-dispatch";
 import { agentPrecheck } from "@/lib/api/agent-precheck";
 
 const TYPE_FOR_STATUS: Record<number, ErrorType> = {
@@ -23,8 +23,9 @@ const TYPE_FOR_STATUS: Record<number, ErrorType> = {
  * its status with the v1 error body. An unknown name is the same 404 as a
  * tool this key may not call. `Idempotency-Key` is honoured (withApiAuth)
  * for writes and proposals; a read tool ignores it — reads are idempotent,
- * and caching one would persist its result. A read tool's request and
- * response bodies are both kept out of the request log. Test mode and the
+ * and caching one would persist its result. The request log keeps bodies
+ * only for a write tool the key may call — never a read's, nor an unknown
+ * name's. Test mode and the
  * Agent API gate are checked before any cached reply (`agentPrecheck`).
  */
 export const POST = withApiAuth<{ name: string }>(
@@ -48,9 +49,11 @@ export const POST = withApiAuth<{ name: string }>(
   {
     requireScope: "agent",
     precheck: agentPrecheck,
+    // Bodies are kept only for a callable write: a read's are PII, and so
+    // may be an unknown name's (a misspelled read).
     redactLog: ({ name }) => {
-      const read = isAgentReadTool(name);
-      return { requestBody: read, responseBody: read };
+      const redact = !isAgentWriteTool(name);
+      return { requestBody: redact, responseBody: redact };
     },
     // Reads never take part. Otherwise only real outcomes are stored — a
     // write (200), a proposal (202), or outcome_unknown (409); a refusal
