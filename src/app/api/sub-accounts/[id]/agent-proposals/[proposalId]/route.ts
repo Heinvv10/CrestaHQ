@@ -16,6 +16,7 @@ import {
   canonical,
   millis,
   normalizePreview,
+  proposalTooLarge,
 } from "@/lib/server/agent-proposals-encoding";
 import {
   claimProposal,
@@ -221,6 +222,14 @@ export async function POST(
     }
     const stored = { rows: proposal.preview, pinned };
     if (canonical(fresh) !== canonical(stored)) {
+      // Grown past what a row can hold (e.g. the record was edited since):
+      // nothing is stored, the approver rejects it and the agent proposes again.
+      if (proposalTooLarge(args, fresh)) {
+        return NextResponse.json(
+          { error: "preview_unavailable", message: "What this would do is now too large to review. Reject it and propose a smaller change." },
+          { status: 409 },
+        );
+      }
       const nextRev = await refreshPreview(proposalId, rev, fresh);
       return nextRev
         ? NextResponse.json(

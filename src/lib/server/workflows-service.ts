@@ -2,6 +2,8 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
+import type { AgentActor } from "@/lib/workflows/agent-hold";
 import type {
   WorkflowDoc,
   WorkflowNode,
@@ -351,6 +353,8 @@ export async function createWorkflowServerSide(opts: {
   createdByUid: string;
   name: string;
   template?: WorkflowTemplate;
+  /** An API agent's write: stamped (see agentEditStamp). */
+  actor?: AgentActor;
 }): Promise<string> {
   const db = getAdminDb();
   const subSnap = await db.doc(`subAccounts/${opts.subAccountId}`).get();
@@ -380,7 +384,7 @@ export async function createWorkflowServerSide(opts: {
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
-  await ref.set({ id: ref.id, ...doc });
+  await ref.set({ id: ref.id, ...doc, ...agentEditStamp(opts.actor) });
   return ref.id;
 }
 
@@ -395,6 +399,21 @@ export interface WorkflowPatch {
   folderId?: string | null;
 }
 
+/** The Firestore write a patch makes. */
+export function workflowPatchWrite(patch: WorkflowPatch): Record<string, unknown> {
+  const write: Record<string, unknown> = {
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  if (patch.name !== undefined) write.name = patch.name.trim() || "Untitled workflow";
+  if (patch.status !== undefined) write.status = patch.status;
+  if (patch.trigger !== undefined) write.trigger = patch.trigger;
+  if (patch.reentry !== undefined) write.reentry = patch.reentry;
+  if (patch.nodes !== undefined) write.nodes = patch.nodes;
+  if (patch.startNodeId !== undefined) write.startNodeId = patch.startNodeId;
+  if (patch.folderId !== undefined) write.folderId = patch.folderId;
+  return write;
+}
+
 /** Null when the workflow is not this sub-account's; else its status before the patch. */
 export async function updateWorkflowServerSide(opts: {
   subAccountId: string;
@@ -406,18 +425,7 @@ export async function updateWorkflowServerSide(opts: {
   if (!snap.exists || snap.data()!.subAccountId !== opts.subAccountId) {
     return null;
   }
-  const { patch } = opts;
-  const write: Record<string, unknown> = {
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  if (patch.name !== undefined) write.name = patch.name.trim() || "Untitled workflow";
-  if (patch.status !== undefined) write.status = patch.status;
-  if (patch.trigger !== undefined) write.trigger = patch.trigger;
-  if (patch.reentry !== undefined) write.reentry = patch.reentry;
-  if (patch.nodes !== undefined) write.nodes = patch.nodes;
-  if (patch.startNodeId !== undefined) write.startNodeId = patch.startNodeId;
-  if (patch.folderId !== undefined) write.folderId = patch.folderId;
-  await ref.update(write);
+  await ref.update(workflowPatchWrite(opts.patch));
   return { previousStatus: snap.data()!.status as WorkflowStatus };
 }
 

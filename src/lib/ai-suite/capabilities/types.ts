@@ -140,12 +140,20 @@ export interface AiSuiteCapability {
    * Per-call approval class, for a capability that is a direct write for
    * some args and needs a person for others (set_bot_mode: `auto` only).
    * Given validated args; overrides `approval`. `preview` and
-   * `approvalTarget` are then required, as for `approval`.
+   * `approvalTarget` are then required, as for `approval`. It may read the
+   * target (update_workflow: an ACTIVE workflow needs a person) — then
+   * execute must re-check at write time, since the target can change.
    */
-  approvalFor?: (args: Record<string, unknown>) => CapabilityApproval | undefined;
+  approvalFor?: (
+    args: Record<string, unknown>,
+    ctx: AiSuiteActionContext
+  ) => CapabilityApproval | undefined | Promise<CapabilityApproval | undefined>;
   /** With `approvalFor`: what the tools listings (REST and MCP) show — the
    *  class, and in words when it applies (e.g. "mode=auto"). */
   approvalHint?: { approval: CapabilityApproval; when: string };
+  /** With an approval class: what the agent is told when the proposal is
+   *  too large to store (default: split it into smaller changes). */
+  proposalTooLargeMessage?: string;
   /** Agent-surface-only narrowing of the raw args, applied before validate
    *  (e.g. dropping fields an agent may not set). */
   agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;

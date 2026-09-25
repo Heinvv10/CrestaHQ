@@ -20,6 +20,7 @@ import {
 import {
   assertPinnedWhenOutbound,
   normalizePreview,
+  proposalTooLarge,
 } from "@/lib/server/agent-proposals-encoding";
 
 export type AgentDispatchResult =
@@ -168,7 +169,7 @@ async function dispatch(
   }
 
   const ctx = buildAgentContext(auth);
-  const approval = cap.approvalFor ? cap.approvalFor(validated.args) : cap.approval;
+  const approval = cap.approvalFor ? await cap.approvalFor(validated.args, ctx) : cap.approval;
   // Only the engine writes workflow_enrolment rows (see agentCallable).
   if (approval === "workflow_enrolment") return notAvailable();
   if (approval) {
@@ -182,6 +183,13 @@ async function dispatch(
       await cap.preview(previewCtx, validated.args)
     );
     assertPinnedWhenOutbound(cap.name, approval, reviewed);
+    if (proposalTooLarge(validated.args, reviewed)) {
+      return refuse(
+        "proposal_too_large",
+        400,
+        cap.proposalTooLargeMessage ?? "This action is too large to queue for approval. Split it into smaller changes."
+      );
+    }
     const created = await createProposal({
       agencyId: auth.agencyId,
       subAccountId: auth.subAccountId,

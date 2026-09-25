@@ -5,7 +5,7 @@ import {
   type WorkflowTemplate,
 } from "@/lib/server/workflows-service";
 import { type AiSuiteCapability } from "./types";
-import { str, WORKFLOW_TEMPLATES } from "./helpers";
+import { agentActor, str, WORKFLOW_TEMPLATES } from "./helpers";
 
 export const WORKFLOW_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -65,6 +65,7 @@ export const WORKFLOW_CAPABILITIES: AiSuiteCapability[] = [
         createdByUid: ctx.uid,
         name: (args.name as string) || label,
         template,
+        actor: agentActor(ctx, "create_workflow"),
       });
       return {
         resultText: `Created the “${label}” workflow as a draft. Open Workflows to review and publish it.`,

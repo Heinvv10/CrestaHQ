@@ -23,6 +23,9 @@ import { WEBHOOK_TEST_CAPABILITIES } from "./capabilities/webhook-test";
 import { WEBHOOK_URL_CAPABILITIES } from "./capabilities/webhook-url";
 import { COMMUNITY_CAPABILITIES } from "./capabilities/community";
 import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
+import { WORKFLOW_EDIT_CAPABILITIES } from "./capabilities/workflow-edit";
+import { WORKFLOW_STATUS_CAPABILITIES } from "./capabilities/workflow-status";
+import { DEAL_EDIT_CAPABILITIES } from "./capabilities/deal-edit";
 import { CONTACT_CAPABILITIES } from "./capabilities/contacts";
 import { CONTACT_EDIT_CAPABILITIES } from "./capabilities/contact-edit";
 import { CONTACT_TAG_CAPABILITIES } from "./capabilities/contact-tags";
@@ -83,11 +86,14 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...WORKSPACE_LOOKUP_CAPABILITIES,
   ...DEAL_CAPABILITIES,
   ...DEAL_STAGE_CAPABILITIES,
+  ...DEAL_EDIT_CAPABILITIES,
   ...WEBHOOK_CAPABILITIES,
   ...WEBHOOK_TEST_CAPABILITIES,
   ...WEBHOOK_URL_CAPABILITIES,
   ...COMMUNITY_CAPABILITIES,
   ...WORKFLOW_CAPABILITIES,
+  ...WORKFLOW_EDIT_CAPABILITIES,
+  ...WORKFLOW_STATUS_CAPABILITIES,
   ...CONTACT_CAPABILITIES,
   ...CONTACT_EDIT_CAPABILITIES,
   ...CONTACT_TAG_CAPABILITIES,
