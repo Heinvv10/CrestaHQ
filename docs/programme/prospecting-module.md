@@ -1,6 +1,6 @@
 # Prospecting module — plan
 
-*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Status: **PLAN, nothing built** (2026-09-24). Grilled with Hein on 2026-09-24; the rulings under "Settled" are closed and are not to be re-opened by an implementer.*
+*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Status: PR 1 merged and live (2026-09-24, #245 + #247); PRs 2–6 not started. Grilled with Hein on 2026-09-24; the rulings under "Settled" are closed and are not to be re-opened by an implementer.*
 
 ## Why
 
@@ -17,13 +17,15 @@ This module makes the whole loop a LeadStack feature so (a) CrestaHQ prospects a
 5. **One sourcing door.** Get Leads is un-parked and gains a persisted prospect list. ApexSignal keeps sourcing for us and pushes rows into #1000 through the public API. Outreach, reports and the approach guard only ever see contacts.
 6. **Bridge stays an add-on.** Nothing here depends on the WhatsApp bridge.
 
+Outscraper dropped 2026-09-24 — Hein ruled out paying per search; Get Leads (the sourcing door for this module) runs on Google Places API (New) instead. See "Report sections" and [get-leads.md](../features/get-leads.md) for the live shape.
+
 ## Report sections
 
 | # | Section | Source | Cost owner | GHL has it |
 |---|---|---|---|---|
-| 1 | Business details (name, phone, address, hours, categories, website) | Outscraper row already returned by Get Leads | agency Outscraper key | yes |
-| 2 | Google Business Profile completeness (claimed, photos, hours, description, posts, Q&A) | Outscraper row (fields already in `leads_n_contacts`); no GBP OAuth for a prospect | Outscraper | yes |
-| 3 | Reputation (rating, review count, velocity last 90 d, owner reply rate) | Outscraper reviews sample (`reviews_limit` small) | Outscraper | yes |
+| 1 | Business details (name, phone, address, hours, categories, website) | Google Places row already returned by Get Leads | agency Google Places key (free tier) | yes |
+| 2 | Google Business Profile completeness (claimed, photos, hours, description, posts, Q&A) | Places Details for the place id (name, hours, category already in the Text Search row; photos/hours/description may need a Places Details call on the Pro/Enterprise SKU — within the free tier at these volumes) | Google Places key | yes |
+| 3 | Reputation (rating, review count, velocity last 90 d, owner reply rate) | rating + review count from Places (Text Search row); a reviews sample needs the Atmosphere SKU — velocity/owner-reply-rate needs Places reviews (Enterprise+Atmosphere SKU) — decide in PR 2 | Google Places key | yes |
 | 4 | Listings / NAP consistency (Facebook page, Bing Places, Yellow Pages SA, Brabys, Cylex) | own HTTP checks, name+phone match, no paid citation API | none | yes |
 | 5 | Website performance (Core Web Vitals mobile, HTTPS, mobile viewport) | ApexGEO audit (PageSpeed inside it) | ApexGEO key | yes |
 | 6 | Tech stack (CMS, builder, analytics, chat widget, booking widget) | own fingerprinting from the fetched HTML using the open-source Wappalyzer rule set, top ~40 rules only | none | yes |
@@ -76,8 +78,8 @@ Manage dialog: gate checkbox, quota number field. Sidebar entry "Prospecting" at
 
 | PR | Scope | Gate to merge |
 |---|---|---|
-| 1 | Gate + quota + schema + rules + Manage dialog + `FEATURE_GATES` entry + un-park Get Leads with saved lists and the `prospecting` map on import and on v1 contacts | tests for the gate 403s, rules tests, tenancy check; Level-3 boundary |
-| 2 | `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Outscraper/Firecrawl), QStash callback, quota enforcement, share page `/r/[shareId]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
+| 1 | **DONE (#245, #247)** — Gate + quota + schema + rules + Manage dialog + `FEATURE_GATES` entry + un-park Get Leads with saved lists and the `prospecting` map on import and on v1 contacts | tests for the gate 403s, rules tests, tenancy check; Level-3 boundary |
+| 2 | `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Google Places/Firecrawl), QStash callback, quota enforcement, share page `/r/[shareId]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
 | 3 | ApexGEO connection + sections 5, 7, 8; "Not connected" state | recorded-response tests against the ApexGEO OpenAPI shapes; live proof on #1000 with a real key |
 | 4 | Workflow trigger + merge tags + approach guard + daily cap | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
 | 5 | Mystery-shop actions (form/call, WhatsApp) with confirm dialog | **human gate**: sends reach a real business; first live run is to a number Hein owns |
@@ -95,6 +97,6 @@ Deploys: after 17:00 SAST, Hein's approval per deploy. `firebase deploy --only f
 ## Risks carried into the build
 
 - ApexGEO's v1 API is now a contract for outside buyers. Pin `x-api-version`, record the OpenAPI shapes as fixtures, fail the section rather than the report on drift.
-- Outscraper field pricing: keep `reviews_limit` ≤ 10 and never request enrichment twice for the same place id (cache on the contact).
+- Google Places daily caps (30 SearchText/day, 100 Geocoding/day) are Google Cloud config, not code, and there is no per-sub-account search limit — one client can spend the deployment's whole daily quota. Cache Places lookups per place id rather than re-fetching for report sections.
 - Mystery shop is outbound to real people; PR 5 stays behind the human gate regardless of CI.
 - Report generation time: 12 sections with network calls will exceed a request. The runner is QStash-only; the UI polls the report doc.
