@@ -101,7 +101,8 @@ async function sweepIdempotency(now: Date): Promise<SweepResult> {
     .where("expiresAt", "<", now)
     .limit(BATCH_LIMIT)
     .get();
-  const outcomes = await Promise.all(
+  // allSettled: one aborted delete must not fail the whole sweep.
+  const outcomes = await Promise.allSettled(
     snap.docs.map((doc) =>
       db.runTransaction(async (tx) => {
         const cur = await tx.get(doc.ref);
@@ -114,9 +115,12 @@ async function sweepIdempotency(now: Date): Promise<SweepResult> {
       }),
     ),
   );
+  for (const o of outcomes) {
+    if (o.status === "rejected") console.error("[cron/api-cleanup] apiIdempotency delete failed", o.reason);
+  }
   return {
     collection: API_IDEMPOTENCY,
-    deleted: outcomes.filter(Boolean).length,
+    deleted: outcomes.filter((o) => o.status === "fulfilled" && o.value).length,
     hitCap: snap.size >= BATCH_LIMIT,
   };
 }

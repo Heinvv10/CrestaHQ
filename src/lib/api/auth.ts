@@ -555,50 +555,57 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       }
     };
 
-    let response: NextResponse;
+    // Whatever throws from here on (the handler, a cacheIdempotently bug),
+    // the reservation is settled: its heartbeat stops and, unless store or
+    // release already ran, the key is handed back.
     try {
-      response = await handler({ request, params, body, rawBody, ctx });
-    } catch (err) {
-      console.error("[api/v1] handler threw", err);
+      let response: NextResponse;
+      try {
+        response = await handler({ request, params, body, rawBody, ctx });
+      } catch (err) {
+        console.error("[api/v1] handler threw", err);
+        await releaseReservation();
+        return internalError();
+      }
+
+      // Read response body ONCE, here, so both the idempotency cache writer
+      // and the log capture see the same bytes without re-consuming the
+      // response stream.
+      const responseBodyJson = await response
+        .clone()
+        .json()
+        .catch(() => null);
+
+      // Cache successful responses only — never cache server errors so the
+      // caller's retry-with-same-key actually hits the handler again.
+      const storeOutcome = opts.cacheIdempotently
+        ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
+        : response.status < 500;
+      if (reservation && storeOutcome) {
+        // Never throws: retries, then marks the key done_unknown (see store).
+        await reservation.store({ status: response.status, bodyJson: responseBodyJson });
+      } else if (reservation) {
+        // Not a stored outcome (a 5xx, or the route vetoed it): free the key so
+        // the caller's retry actually runs the handler again.
+        await releaseReservation();
+      }
+
+      // Add per-key rate-limit snapshot headers so client libraries can pace
+      // themselves without waiting for a 429. Computed AFTER the request was
+      // counted so `remaining` reflects post-increment.
+      const snapshot = snapshotRemaining({
+        keyId: ctx.keyId,
+        mode: ctx.mode,
+        scope: requireScope,
+      });
+      response.headers.set("X-RateLimit-Limit", String(snapshot.limit));
+      response.headers.set("X-RateLimit-Remaining", String(snapshot.remaining));
+      response.headers.set("X-RateLimit-Reset", String(snapshot.resetSec));
+
+      return finalize(response, responseBodyJson);
+    } finally {
       await releaseReservation();
-      return internalError();
     }
-
-    // Read response body ONCE, here, so both the idempotency cache writer
-    // and the log capture see the same bytes without re-consuming the
-    // response stream.
-    const responseBodyJson = await response
-      .clone()
-      .json()
-      .catch(() => null);
-
-    // Cache successful responses only — never cache server errors so the
-    // caller's retry-with-same-key actually hits the handler again.
-    const storeOutcome = opts.cacheIdempotently
-      ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
-      : response.status < 500;
-    if (reservation && storeOutcome) {
-      // Never throws: retries, then marks the key done_unknown (see store).
-      await reservation.store({ status: response.status, bodyJson: responseBodyJson });
-    } else if (reservation) {
-      // Not a stored outcome (a 5xx, or the route vetoed it): free the key so
-      // the caller's retry actually runs the handler again.
-      await releaseReservation();
-    }
-
-    // Add per-key rate-limit snapshot headers so client libraries can pace
-    // themselves without waiting for a 429. Computed AFTER the request was
-    // counted so `remaining` reflects post-increment.
-    const snapshot = snapshotRemaining({
-      keyId: ctx.keyId,
-      mode: ctx.mode,
-      scope: requireScope,
-    });
-    response.headers.set("X-RateLimit-Limit", String(snapshot.limit));
-    response.headers.set("X-RateLimit-Remaining", String(snapshot.remaining));
-    response.headers.set("X-RateLimit-Reset", String(snapshot.resetSec));
-
-    return finalize(response, responseBodyJson);
   };
 }
 

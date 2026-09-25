@@ -49,3 +49,19 @@ it.each([
   expect((await run()).status).toBe(200);
   expect(mem.read(DOC)).toMatchObject({ reservationId: replacement.reservationId, state: "in_progress" });
 });
+
+it("one aborted delete is logged and the rest of the sweep still lands and is counted", async () => {
+  mem.seed(DOC, { state: "done", status: 201, expiresAt: past() });
+  mem.seed(`${DOC}2`, { state: "done", status: 201, expiresAt: past() });
+  const orig = mem.db.runTransaction.bind(mem.db);
+  let n = 0;
+  vi.spyOn(mem.db, "runTransaction").mockImplementation(((fn: never) =>
+    ++n === 1 ? Promise.reject(new Error("10 ABORTED")) : orig(fn)) as never);
+  const err = vi.spyOn(console, "error").mockImplementation(() => {});
+  const res = await run();
+  expect(res.status).toBe(200);
+  const { results } = (await res.json()) as { results: Array<{ collection: string; deleted: number }> };
+  expect(results.find((r) => r.collection === "apiIdempotency")?.deleted).toBe(1);
+  expect(mem.list("subAccounts/sa1/apiIdempotency")).toHaveLength(1);
+  expect(err).toHaveBeenCalledWith("[cron/api-cleanup] apiIdempotency delete failed", expect.any(Error));
+});

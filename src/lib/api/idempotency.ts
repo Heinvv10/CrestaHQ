@@ -45,6 +45,9 @@ export const IN_PROGRESS_TTL_MS = 60 * 1000;
 /** A running request extends its reservation this often, so only a dead
  *  process's reservation ever reaches IN_PROGRESS_TTL_MS. */
 export const HEARTBEAT_MS = 20 * 1000;
+/** The heartbeat stops after this long, so a request that hangs forever
+ *  ages into a takeover instead of holding the key forever. */
+export const MAX_HOLD_MS = 10 * 60 * 1000;
 /** Pauses before the 2nd and 3rd attempt to store an outcome. */
 const STORE_RETRY_DELAYS_MS = [100, 300];
 const MAX_KEY_LEN = 255;
@@ -125,8 +128,8 @@ export type IdempotencyReservation =
  * died mid-request can't block the key forever — the transaction's re-read
  * makes that takeover conditional on it still being the same stale doc.
  * `store` / `release` act only while the reservation is still this one.
- * While the handler runs a heartbeat extends the reservation, so a takeover
- * only ever hits a dead process. `store` retries, and if the outcome still
+ * While the handler runs a heartbeat extends the reservation (for at most
+ * MAX_HOLD_MS), so a takeover only hits a dead or hung process. `store` retries, and if the outcome still
  * can't be stored it marks the key `done_unknown`: a later request with it
  * gets outcome_unknown and never re-runs an action that may have happened.
  */
@@ -186,7 +189,9 @@ export async function reserveIdempotencyKey(
     });
   // Heartbeat: while the handler runs, keep the reservation from ageing into
   // a takeover. A failed beat is logged, never fatal to the request.
+  const heldSince = Date.now();
   const heartbeat = setInterval(() => {
+    if (Date.now() - heldSince >= MAX_HOLD_MS) return clearInterval(heartbeat);
     whileOurs(
       (tx) => tx.update(ref, { expiresAt: new Date(Date.now() + IN_PROGRESS_TTL_MS) }),
       true,
@@ -205,11 +210,15 @@ export async function reserveIdempotencyKey(
         expiresAt: new Date(Date.now() + CACHE_TTL_MS),
       }),
     );
+  // store / release are idempotent: only the first call of either acts.
+  let settled = false;
   return {
     kind: "reserved",
     // Never throws: the handler already ran, so the response must go out.
     store: async (entry) => {
       clearInterval(heartbeat);
+      if (settled) return;
+      settled = true;
       let lastErr: unknown;
       for (let attempt = 0; attempt <= STORE_RETRY_DELAYS_MS.length; attempt++) {
         if (attempt > 0) await new Promise((r) => setTimeout(r, STORE_RETRY_DELAYS_MS[attempt - 1]));
@@ -234,6 +243,11 @@ export async function reserveIdempotencyKey(
         );
       }
     },
-    release: () => (clearInterval(heartbeat), whileOurs((tx) => tx.delete(ref))),
+    release: async () => {
+      clearInterval(heartbeat);
+      if (settled) return;
+      settled = true;
+      await whileOurs((tx) => tx.delete(ref));
+    },
   };
 }
