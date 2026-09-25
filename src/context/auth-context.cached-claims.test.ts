@@ -337,3 +337,25 @@ it("ignores a snapshot the previous user's listen delivers after the user change
   expect(value()?.memberships).toEqual([]);
   expect(value()?.membershipsLoaded).toBe(false);
 });
+
+it("a stale pass that throws leaves the next user's listen for that user's sign-out to drop", async () => {
+  const gateA = deferred<void>();
+  m.userDocGates.a = gateA.promise;
+  m.userDocGates.b = never();
+  await mount(tokenUser("a", activeOwner, never));
+  await step(() => m.authListener?.(tokenUser("b", activeB, never)));
+  await step(() =>
+    gateA.reject(Object.assign(new Error("denied"), { code: "permission-denied" })),
+  );
+  await step(() => m.authListener?.(null));
+  expect(m.listens[1].unsub).toHaveBeenCalled();
+});
+
+it("a pass still reading claims when the provider unmounts never subscribes", async () => {
+  const refresh = deferred<Claims>();
+  await mount(tokenUser("owner", {}, () => refresh.promise));
+  await unmount();
+  unmount = async () => undefined;
+  await step(() => refresh.resolve(activeOwner));
+  expect(m.listens).toHaveLength(0);
+});

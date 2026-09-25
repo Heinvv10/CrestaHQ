@@ -328,6 +328,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       clearTimeout(retryTimer);
+      // Makes any pass still in flight stale, so it cannot subscribe late.
+      generation++;
       cleanupMembership();
       unsubscribe();
     };
