@@ -97,6 +97,10 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   remove_tags: { contactId: "c1", tags: ["vip"] },
   update_contact_channels: { contactId: "c1", phone: "+27829999999" },
   delete_contact: { contactId: "c1" },
+  list_companies: {},
+  create_company: { name: "Agent Co", email: "hi@agent.co" },
+  update_company: { companyId: "co1", phone: "+27820000001" },
+  delete_company: { companyId: "co1" },
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },
@@ -124,6 +128,7 @@ beforeEach(() => {
     subAccountId: "sa1", agencyId: "ag1", mode: "live", title: "Fibre", stageId: "new",
     contactId: "c1", value: 1, currency: "ZAR", territoryId: "global",
   });
+  mem.seed("companies/co1", { subAccountId: "sa1", agencyId: "ag1", name: "Acme" });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
   TRIGGERS.forEach((type) =>
     mem.seed(`workflows/wf_${type}`, {

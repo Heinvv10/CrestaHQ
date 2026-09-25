@@ -27,6 +27,7 @@ import { CONTACT_CAPABILITIES } from "./capabilities/contacts";
 import { CONTACT_EDIT_CAPABILITIES } from "./capabilities/contact-edit";
 import { CONTACT_TAG_CAPABILITIES } from "./capabilities/contact-tags";
 import { CONTACT_QUEUED_CAPABILITIES } from "./capabilities/contact-queued";
+import { COMPANY_CAPABILITIES } from "./capabilities/companies";
 import { TASK_CAPABILITIES } from "./capabilities/tasks";
 import { TASK_COMPLETE_CAPABILITIES } from "./capabilities/task-complete";
 import { EVENT_CAPABILITIES } from "./capabilities/events";
@@ -86,6 +87,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...CONTACT_EDIT_CAPABILITIES,
   ...CONTACT_TAG_CAPABILITIES,
   ...CONTACT_QUEUED_CAPABILITIES,
+  ...COMPANY_CAPABILITIES,
   ...TASK_CAPABILITIES,
   ...TASK_COMPLETE_CAPABILITIES,
   ...EVENT_CAPABILITIES,

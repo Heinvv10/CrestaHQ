@@ -172,11 +172,14 @@ describe("registry invariants", () => {
   const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {
     update_contact_channels: { contactId: "c_sample", phone: "+27821234567", email: "new@x.io" },
     delete_contact: { contactId: "c_sample" },
+    delete_company: { companyId: "co_sample" },
   };
-  const seedSample = () =>
+  const seedSample = () => {
     mem.seed("contacts/c_sample", {
       subAccountId: "sa1", agencyId: "ag1", name: "Sample", phone: "+27820000000", email: "old@x.io", territoryId: "global",
     });
+    mem.seed("companies/co_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample Co" });
+  };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {
     const { buildPreviewContext } = await import("@/lib/api/agent-context");
