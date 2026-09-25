@@ -5,7 +5,7 @@ import { updateContactServerSide, type UpdateContactPatch } from "@/lib/server/c
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
-import { str, agentActor, agentText, oneLine, UNSAFE_TEXT_RE } from "./helpers";
+import { str, agentActor, agentText, hasUnsafeText, oneLine } from "./helpers";
 import { asTags, MAX_TAGS, MAX_TAG_LEN } from "@/lib/api/serializers/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 
@@ -32,9 +32,10 @@ export async function tenantContact(
 /** A tags arg as stored: a list of 1–80-character tags, at most 50 (the
  *  public API's limits). Over-limit or malformed input is REFUSED, never
  *  truncated or dropped, so nothing is lost silently. */
-export const TAGS_RULE = `a list of at most ${MAX_TAGS} non-empty tags of at most ${MAX_TAG_LEN} characters`;
+export const TAGS_RULE = `a list of at most ${MAX_TAGS} non-empty tags of at most ${MAX_TAG_LEN} characters, with no control or invisible characters`;
 export function parseTags(raw: unknown): string[] | null {
-  return raw === null || raw === undefined ? null : asTags(raw);
+  const tags = raw === null || raw === undefined ? null : asTags(raw);
+  return tags && !tags.some(hasUnsafeText) ? tags : null;
 }
 
 /** The fields `update_contact` may set. Everything else an agent sends is
@@ -134,7 +135,7 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       for (const k of ["name", "company", "address"] as const) {
         if (typeof r[k] !== "string") continue;
         const v = agentText(k, r[k] as string);
-        if (UNSAFE_TEXT_RE.test(v)) return { ok: false, error: `${k} can't contain control or bidi characters` };
+        if (hasUnsafeText(v)) return { ok: false, error: `${k} can't contain control or bidi characters` };
         args[k] = v;
       }
       if (args.name === "") return { ok: false, error: "a contact's name can't be empty" };

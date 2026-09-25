@@ -2,7 +2,7 @@ import "server-only";
 
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import { type AiSuiteCapability } from "./types";
-import { EMAIL_RE, str, agentActor, UNSAFE_TEXT_RE } from "./helpers";
+import { EMAIL_RE, str, agentActor, agentText, hasUnsafeText, UNSAFE_TEXT_RE } from "./helpers";
 
 export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -33,7 +33,10 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
       if (!name) return { ok: false, error: "a contact name is required" };
       const r = (raw ?? {}) as Record<string, unknown>;
       for (const k of ["name", "company", "phone", "email"] as const) {
-        if (typeof r[k] === "string" && UNSAFE_TEXT_RE.test(r[k] as string)) {
+        if (typeof r[k] !== "string") continue;
+        const v = agentText(k, r[k] as string);
+        // An email gets no joiner exception: an address has no words to join.
+        if (k === "email" ? UNSAFE_TEXT_RE.test(v) : hasUnsafeText(v)) {
           return { ok: false, error: `${k} can't contain control, invisible or bidi characters` };
         }
       }
@@ -42,6 +45,9 @@ export const CONTACT_CAPABILITIES: AiSuiteCapability[] = [
         return { ok: false, error: "that email address doesn't look valid" };
       }
       const rawTags = (raw as Record<string, unknown>)?.tags;
+      if (Array.isArray(rawTags) && rawTags.some((t) => typeof t === "string" && hasUnsafeText(t))) {
+        return { ok: false, error: "tags can't contain control, invisible or bidi characters" };
+      }
       const tags = Array.isArray(rawTags)
         ? rawTags
             .filter((t): t is string => typeof t === "string")

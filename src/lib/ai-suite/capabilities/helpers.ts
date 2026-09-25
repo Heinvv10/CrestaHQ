@@ -19,6 +19,16 @@ export const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  *  reads (a newline could fake a preview row, an invisible one hide text). */
 export const UNSAFE_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 
+/** A ZWNJ / ZWJ that joins two letters, marks or emoji — Persian names,
+ *  family emoji sequences (U+1F468 U+200D U+1F469 …) — is text, not a trick. */
+const JOINER_IN_WORD =
+  /(?<=[\p{L}\p{M}\p{Extended_Pictographic}])[\u200c\u200d](?=[\p{L}\p{M}\p{Extended_Pictographic}])/gu;
+
+/** UNSAFE_TEXT_RE, except a ZWNJ / ZWJ between letters, marks or emoji. */
+export function hasUnsafeText(value: string): boolean {
+  return UNSAFE_TEXT_RE.test(value.replace(JOINER_IN_WORD, ""));
+}
+
 /**
  * An agent-supplied field, trimmed. For `address` only, line breaks are
  * folded to ", " first — people store multi-line addresses (the forms use a
