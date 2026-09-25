@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ParsedToken } from "firebase/auth";
-import { loadIdTokenClaims, readOwnerClaim } from "./id-token-claims";
+import { loadIdTokenClaims, readActiveCachedClaims, readOwnerClaim } from "./id-token-claims";
 
 const owner = { agencyId: "ag_1", agencyRole: "owner", status: "active" };
 
@@ -48,5 +48,27 @@ describe("readOwnerClaim", () => {
       throw new Error("network");
     });
     await expect(readOwnerClaim(user)).rejects.toThrow("network");
+  });
+});
+
+describe("readActiveCachedClaims", () => {
+  it("returns the cached claims, without a refresh, when they carry status active", async () => {
+    const user = fakeUser(async () => ({ claims: owner }));
+    expect(await readActiveCachedClaims(user)).toEqual(owner);
+    expect(user.getIdTokenResult).toHaveBeenCalledWith(false);
+    expect(user.getIdTokenResult).not.toHaveBeenCalledWith(true);
+  });
+
+  it("returns null when the cached token has no active status", async () => {
+    expect(await readActiveCachedClaims(fakeUser(async () => ({ claims: {} })))).toBeNull();
+    const removed = fakeUser(async () => ({ claims: { ...owner, status: "removed" } }));
+    expect(await readActiveCachedClaims(removed)).toBeNull();
+  });
+
+  it("returns null when the token cannot be read", async () => {
+    const user = fakeUser(async () => {
+      throw new Error("network");
+    });
+    expect(await readActiveCachedClaims(user)).toBeNull();
   });
 });
