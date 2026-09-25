@@ -45,6 +45,9 @@ export interface AiSuiteActionContext {
     pinned: Record<string, unknown> | null;
     /** The prefix of the API key that PROPOSED the action (not the approver). */
     keyPrefix?: string;
+    /** The proposal and this approval attempt's claim (idempotency keys). */
+    proposalId?: string;
+    claimId?: string;
   };
   /** Aborted when the approve path's execute deadline passes; provider calls
    *  should honour it. */

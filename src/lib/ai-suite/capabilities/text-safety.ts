@@ -47,14 +47,21 @@ export function oneLine(value: unknown): string {
   return String(value ?? "").replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").replace(STRIP_RE, "").trim();
 }
 
+/** A ZWJ inside an emoji sequence (after an emoji, skin tone or U+FE0F,
+ *  before an emoji) — the only joiner a message body may carry. */
+const EMOJI_ZWJ =
+  /(?<=[\p{Extended_Pictographic}\p{Emoji_Modifier}\ufe0f])\u200d(?=\p{Extended_Pictographic})/gu;
+
 /**
  * A message body as it will be sent: CRLF / CR normalised to LF, trimmed —
  * or null when it carries anything a person reading the preview could not
  * see (control, format, separator or invisible characters). Line breaks are
- * the only exception: a message may have several lines. Refusing, not
- * stripping, so the recipient never gets a character the approver didn't.
+ * the only exception, plus a ZWJ inside an emoji sequence: a ZWNJ / ZWJ
+ * between letters could sit inside a link ("ba<ZWNJ>nk.co.za") and change
+ * where it goes while looking the same. Refusing, not stripping, so the
+ * recipient never gets a character the approver didn't see.
  */
 export function messageBody(value: string): string | null {
   const body = value.replace(/\r\n?/g, "\n").trim();
-  return hasUnsafeText(body.replace(/\n/g, " ")) ? null : body;
+  return UNSAFE_TEXT_RE.test(body.replace(/\n/g, " ").replace(EMOJI_ZWJ, "")) ? null : body;
 }

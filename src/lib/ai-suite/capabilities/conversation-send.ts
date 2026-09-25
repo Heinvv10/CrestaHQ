@@ -6,8 +6,8 @@ import type { Contact } from "@/types/contacts";
 import { CapabilityOutcomeUnknown, CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
 import { hasUnsafeText, messageBody, oneLine } from "./text-safety";
-import { tenantContact } from "./contact-edit";
-import { conversationIdParam, conversationTarget, tenantConversation } from "./conversations-read";
+import { conversationIdParam, conversationTarget } from "./conversations-read";
+import { consentBlock, emailEnvelope, masked, recipientOf, resolveContact, withRecipient } from "./conversation-send-support";
 
 /**
  * send_message for API agents (AGENT_API_V1_PLAN.md, PR8). Always a proposal
@@ -21,36 +21,6 @@ import { conversationIdParam, conversationTarget, tenantConversation } from "./c
 const CHANNELS = ["sms", "whatsapp", "email", "messenger", "instagram"] as const;
 const MAX_BODY = 5000;
 const MAX_SUBJECT = 200;
-
-/** The address a message on `channel` goes to, from the stored contact. */
-function recipientOf(channel: SendableChannel, contact: FirebaseFirestore.DocumentData): string {
-  const v = channel === "email" ? contact.email : channel === "sms" || channel === "whatsapp" ? contact.phone : contact.metaUserId;
-  return typeof v === "string" ? v : "";
-}
-
-/** `contact` with the channel's address set to `to` (the pinned value). */
-function withRecipient(channel: SendableChannel, contact: FirebaseFirestore.DocumentData, to: string) {
-  const field = channel === "email" ? "email" : channel === "sms" || channel === "whatsapp" ? "phone" : "metaUserId";
-  return { ...contact, [field]: to };
-}
-
-/** Enough of the address for a person to recognise it. */
-function masked(channel: SendableChannel, to: string): string {
-  if (channel === "email") {
-    const [user, domain] = to.split("@");
-    return `${user.slice(0, 1)}***@${domain ?? ""}`;
-  }
-  if (channel === "sms" || channel === "whatsapp") return `…${to.slice(-4)}`;
-  return `account …${to.slice(-4)}`;
-}
-
-/** The conversation's contact, both re-anchored to the sub-account. */
-async function resolveContact(subAccountId: string, conversationId: unknown) {
-  const conv = await tenantConversation(subAccountId, conversationId);
-  if (!conv.contactId) throw new CapabilityUserError("Replies to an anonymous web chat can't be sent from here.");
-  const contact = await tenantContact(subAccountId, conv.contactId as string);
-  return { contactId: conv.contactId as string, contact };
-}
 
 export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -91,22 +61,36 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
       return { ok: true, args: { conversationId, channel, body, ...(channel === "email" ? { subject } : {}) } };
     },
     summarize: (args) => `Send a ${args.channel} message.`,
-    approvalTarget: conversationTarget,
+    // Runs only at propose: an opted-out contact gets no proposal at all.
+    approvalTarget: async (ctx, args) => {
+      const { contact } = await resolveContact(ctx.subAccountId!, args.conversationId);
+      const blocked = consentBlock(args.channel as SendableChannel, contact);
+      if (blocked) throw new CapabilityUserError(blocked);
+      return conversationTarget(ctx, args);
+    },
     preview: async (ctx, args) => {
       const channel = args.channel as SendableChannel;
       const { contactId, contact } = await resolveContact(ctx.subAccountId!, args.conversationId);
       const to = recipientOf(channel, contact);
       if (!to) throw new CapabilityUserError(`This contact has no ${channel === "email" ? "email address" : channel === "sms" || channel === "whatsapp" ? "phone number" : `${channel} account`}.`);
+      // An opt-out after the proposal changes this row: the approver looks again.
+      const blocked = consentBlock(channel, contact);
+      const env = channel === "email" ? await emailEnvelope(ctx.subAccountId!, contactId) : null;
       return {
         rows: [
           { label: "To", value: `${oneLine(contact.name) || "(unnamed)"} (${masked(channel, to)})` },
           { label: "Channel", value: channel },
+          { label: "Consent", value: blocked ? `${blocked} It will not be sent.` : `Not opted out of ${channel}.` },
           { label: "When", value: "Sends immediately when approved (quiet hours don't hold it)." },
+          ...(env ? [{ label: "From", value: env.from }, { label: "Reply-To", value: env.replyTo }] : []),
           ...(args.subject ? [{ label: "Subject", value: String(args.subject) }] : []),
           // Exactly as it will be sent, line breaks included.
           { label: "Message", value: String(args.body), multiline: true },
         ],
-        pinned: { contactId, channel, to },
+        pinned: {
+          contactId, channel, to,
+          ...(env ? { inReplyTo: env.inReplyTo, references: env.references } : {}),
+        },
       };
     },
     execute: async (ctx, args) => {
@@ -120,6 +104,9 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
       if (contactId !== pinned.contactId || recipientOf(channel, contact) !== pinned.to) {
         throw new CapabilityUserError("The recipient changed since this was reviewed; nothing was sent.");
       }
+      // Opted out since it was reviewed: refused before any provider call.
+      const blocked = consentBlock(channel, contact);
+      if (blocked) throw new CapabilityUserError(blocked);
       // The pinned address, not a fresh lookup (they match, checked above).
       const sendTo = { ...withRecipient(channel, contact, pinned.to), id: contactId } as Contact;
       let outcome: SendOutcome;
@@ -130,6 +117,17 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
           contact: sendTo,
           body: args.body as string,
           subject: (args.subject as string | undefined) ?? "",
+          ...(channel === "email"
+            ? {
+                inReplyTo: (pinned.inReplyTo as string | null) ?? undefined,
+                references: (pinned.references as string[] | undefined) ?? [],
+              }
+            : {}),
+          // One key per approval attempt, like the scheduled worker's: a
+          // redelivered WhatsApp bridge send converges instead of repeating.
+          ...(channel === "whatsapp" && ctx.approved.proposalId
+            ? { idempotencyKey: `agent_${ctx.approved.proposalId}_${ctx.approved.claimId}` }
+            : {}),
           actor: { uid: ctx.uid, email: ctx.email },
           // The seam sends as origin "manual" — a person's message, sent now,
           // not held for quiet hours: approving is a human act, and the
@@ -157,7 +155,9 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
         // Once the provider was contacted, even a rejection may have gone
         // out: a person checks it (mark_sent / mark_not_sent). Only a refusal
         // decided before any provider call (opt-out, readiness, window) fails.
-        if (outcome.outcomeUnknown || outcome.attempted) throw new CapabilityOutcomeUnknown(outcome.error);
+        if (outcome.status === 502 || outcome.outcomeUnknown || outcome.attempted) {
+          throw new CapabilityOutcomeUnknown(outcome.error);
+        }
         throw new CapabilityUserError(outcome.error);
       }
       return { resultText: `Sent the ${channel} message.`, ref: { kind: "message", id: outcome.messageId } };

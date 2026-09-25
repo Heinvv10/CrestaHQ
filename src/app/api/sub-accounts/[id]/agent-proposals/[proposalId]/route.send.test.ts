@@ -47,6 +47,7 @@ describe("propose", () => {
     expect(row(id).preview).toEqual([
       { label: "To", value: "Ann (…1111)" },
       { label: "Channel", value: "sms" },
+      { label: "Consent", value: "Not opted out of sms." },
       { label: "When", value: "Sends immediately when approved (quiet hours don't hold it)." },
       { label: "Message", value: "Your install is booked for Tuesday.", multiline: true },
     ]);
