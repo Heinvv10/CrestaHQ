@@ -53,6 +53,7 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["cancel_scheduled_message",                  "sub-account", "subAccountMember", false, ["agent"]],
   ["send_message",                              "sub-account", "subAccountMember", false, ["agent"]],
   ["schedule_message",                          "sub-account", "subAccountMember", false, ["agent"]],
+  ["send_whatsapp_template",                    "sub-account", "subAccountMember", false, ["agent"]],
   ["create_task",                               "sub-account", "subAccountMember", false, null],
   ["find_tasks",                                "sub-account", "subAccountMember", true, null],
   ["complete_task",                             "sub-account", "subAccountMember", false, null],

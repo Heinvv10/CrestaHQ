@@ -108,6 +108,7 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   cancel_scheduled_message: { contactId: "c1", scheduledMessageId: "s1" },
   send_message: { conversationId: "c1", channel: "sms", body: "Hi Ann" },
   schedule_message: { conversationId: "c1", channel: "sms", body: "Later", sendAt: new Date(Date.now() + 3_600_000).toISOString() },
+  send_whatsapp_template: { conversationId: "c1", templateId: "wt1", variables: { "1": "Tuesday" } },
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },
@@ -138,6 +139,14 @@ beforeEach(() => {
   mem.seed("companies/co1", { subAccountId: "sa1", agencyId: "ag1", name: "Acme" });
   mem.seed("conversations/c1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", contactName: "Ann", status: "open", botMode: "off", lastMessageAt: new Date() });
   mem.seed("contacts/c1/scheduledMessages/s1", { subAccountId: "sa1", agencyId: "ag1", contactId: "c1", channel: "sms", body: "later", status: "pending", sendAt: new Date(Date.now() + 3_600_000) });
+  mem.seed("subAccounts/sa1", {
+    ...mem.read("subAccounts/sa1")!, whatsappEnabledByAgency: true,
+    twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, whatsappFromNumber: "+27100000000" },
+  });
+  mem.seed("subAccounts/sa1/whatsappTemplates/wt1", {
+    subAccountId: "sa1", agencyId: "ag1", name: "install_day", displayName: "Install day", language: "en", status: "approved", contentSid: "HX1",
+    body: "Your install is on {{1}}.", variables: [{ position: 1, label: "Day", sampleValue: "Monday", source: "manual", mergeTag: null }],
+  });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
   TRIGGERS.forEach((type) =>
     mem.seed(`workflows/wf_${type}`, {
