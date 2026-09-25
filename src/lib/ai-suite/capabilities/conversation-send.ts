@@ -5,7 +5,7 @@ import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 import type { Contact } from "@/types/contacts";
 import { CapabilityOutcomeUnknown, CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
-import { hasUnsafeText, messageBody, oneLine } from "./text-safety";
+import { hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { conversationIdParam, conversationTarget } from "./conversations-read";
 import { consentBlock, emailEnvelope, masked, recipientOf, resolveContact, withRecipient } from "./conversation-send-support";
 
@@ -53,11 +53,12 @@ export const CONVERSATION_SEND_CAPABILITIES: AiSuiteCapability[] = [
       if (!conversationId) return { ok: false, error: "a conversationId is required" };
       if (!(CHANNELS as readonly string[]).includes(channel)) return { ok: false, error: `channel must be one of ${CHANNELS.join(", ")}` };
       // Line breaks are text in a message; nothing else invisible is.
-      if (body === null) return { ok: false, error: "the message can't contain control or invisible characters" };
+      if (body === null) return { ok: false, error: `the message ${UNSAFE_TEXT_MESSAGE}` };
       if (!body) return { ok: false, error: "a message body is required" };
       if (body.length > MAX_BODY) return { ok: false, error: `the message must be at most ${MAX_BODY} characters` };
       if (channel === "email" && !subject) return { ok: false, error: "an email needs a subject" };
-      if (subject.length > MAX_SUBJECT || hasUnsafeText(subject)) return { ok: false, error: "that subject isn't valid" };
+      if (subject.length > MAX_SUBJECT) return { ok: false, error: `the subject must be at most ${MAX_SUBJECT} characters` };
+      if (hasUnsafeText(subject)) return { ok: false, error: `the subject ${UNSAFE_TEXT_MESSAGE}` };
       return { ok: true, args: { conversationId, channel, body, ...(channel === "email" ? { subject } : {}) } };
     },
     summarize: (args) => `Send a ${args.channel} message.`,

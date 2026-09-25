@@ -128,3 +128,28 @@ describe("oneLine", () => {
     expect(oneLine("\u2764\ufe0f Co\u2065\u3164")).toBe("\u2764\ufe0f Co");
   });
 });
+
+describe("pasted space separators are plain spaces, not refusals", () => {
+  it.each([
+    ["an NBSP name", { name: "Ann\u00a0Lee" }, { name: "Ann Lee" }],
+    ["an NBSP-formatted phone", { name: "Ann", phone: "+27\u00a082\u00a0123\u00a04567" }, { phone: "+27821234567" }],
+    ["a thin-space-formatted phone", { name: "Ann", phone: "+27\u200982\u2009123\u20094567" }, { phone: "+27821234567" }],
+    ["a U+202F company", { name: "Ann", company: "Acme\u202f(Pty)\u202fLtd" }, { company: "Acme (Pty) Ltd" }],
+    ["a U+3000 Japanese name", { name: "\u5c71\u7530\u3000\u592a\u90ce" }, { name: "\u5c71\u7530 \u592a\u90ce" }],
+  ])("create_contact accepts %s (plain spaces; a phone is then E.164-normalised as always)", async (_label, args, stored) => {
+    expect(created(await dispatchAgentTool(auth, "create_contact", args), "contacts")).toMatchObject(stored);
+  });
+
+  it("a space separator is not itself unsafe (it shows as a space), wherever it isn't normalised", async () => {
+    const { UNSAFE_TEXT_RE, hasUnsafeText } = await import("./text-safety");
+    expect(UNSAFE_TEXT_RE.test("a\u00a0b\u202fc\u3000d")).toBe(false);
+    expect(hasUnsafeText("VIP\u00a0Client")).toBe(false);
+    expect(await dispatchAgentTool(auth, "add_tags", { contactId: "c1", tags: ["VIP\u00a0Client"] })).toMatchObject({ ok: true });
+  });
+
+  it("the refusal names the cause", async () => {
+    expect(await dispatchAgentTool(auth, "create_company", { name: "A\u200bB" })).toMatchObject({
+      ok: false, message: "name contains characters that can't be shown safely (control, invisible, bidi, private-use or unassigned)",
+    });
+  });
+});

@@ -156,15 +156,24 @@ describe("breaker round 3", () => {
     expect(row(id).args).toMatchObject({ body: "Total:   R100" });
   });
 
-  it.each([
-    ["an NBSP", "Hi\u00a0there"], ["an em space", "Hi\u2003there"], ["an ideographic space", "Hi\u3000there"],
-    ["a private-use character", "Hi\ue000"], ["an unassigned code point", "Hi\u0378"], ["a lone surrogate", "Hi\ud800"],
-  ])("REPRO 8: a body with %s is refused", async (_label, body) => {
-    expect(await propose({ channel: "sms", body })).toMatchObject({ ok: false, code: "invalid_args" });
+  it("space separators (NBSP, em space) become plain spaces: the preview equals what is sent", async () => {
+    const id = await proposeId({ channel: "sms", body: "Hi\u00a0Ann,\u2003see\u3000you" });
+    expect(row(id).args).toMatchObject({ body: "Hi Ann, see you" });
+    expect(row(id).preview).toContainEqual({ label: "Message", value: "Hi Ann, see you", multiline: true });
+    await decide(id, "approve");
+    expect(send.mock.calls[0]![0]).toMatchObject({ body: "Hi Ann, see you" });
   });
 
-  it.each([["an NBSP", "Acme\u00a0Co"], ["a private-use character", "Acme\ue000"]])("a company name with %s is refused", async (_label, name) => {
-    expect(await dispatchAgentTool(auth, "create_company", { name })).toMatchObject({ ok: false, code: "invalid_args" });
+  it.each([
+    ["a private-use character", "Hi\ue000"], ["an unassigned code point", "Hi\u0378"], ["a lone surrogate", "Hi\ud800"],
+  ])("REPRO 8: a body with %s is refused, naming the cause", async (_label, body) => {
+    expect(await propose({ channel: "sms", body })).toMatchObject({
+      ok: false, code: "invalid_args", message: expect.stringContaining("private-use or unassigned"),
+    });
+  });
+
+  it("a company name with a private-use character is refused", async () => {
+    expect(await dispatchAgentTool(auth, "create_company", { name: "Acme\ue000" })).toMatchObject({ ok: false, code: "invalid_args" });
   });
 });
 

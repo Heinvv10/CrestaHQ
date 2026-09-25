@@ -6,7 +6,7 @@ import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { CapabilityUserError, type AiSuiteCapability, type ExecuteResult } from "./types";
 import { str, agentActor } from "./helpers";
-import { agentText, hasUnsafeText, oneLine } from "./text-safety";
+import { agentText, hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { asTags, MAX_TAGS, MAX_TAG_LEN } from "@/lib/api/serializers/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 
@@ -33,7 +33,7 @@ export async function tenantContact(
 /** A tags arg as stored: a list of 1–80-character tags, at most 50 (the
  *  public API's limits). Over-limit or malformed input is REFUSED, never
  *  truncated or dropped, so nothing is lost silently. */
-export const TAGS_RULE = `a list of at most ${MAX_TAGS} non-empty tags of at most ${MAX_TAG_LEN} characters, with no control or invisible characters`;
+export const TAGS_RULE = `a list of at most ${MAX_TAGS} non-empty tags of at most ${MAX_TAG_LEN} characters, none that ${UNSAFE_TEXT_MESSAGE}`;
 export function parseTags(raw: unknown): string[] | null {
   const tags = raw === null || raw === undefined ? null : asTags(raw);
   return tags && !tags.some(hasUnsafeText) ? tags : null;
@@ -136,7 +136,7 @@ export const CONTACT_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       for (const k of ["name", "company", "address"] as const) {
         if (typeof r[k] !== "string") continue;
         const v = agentText(k, r[k] as string);
-        if (hasUnsafeText(v)) return { ok: false, error: `${k} can't contain control or bidi characters` };
+        if (hasUnsafeText(v)) return { ok: false, error: `${k} ${UNSAFE_TEXT_MESSAGE}` };
         args[k] = v;
       }
       if (args.name === "") return { ok: false, error: "a contact's name can't be empty" };

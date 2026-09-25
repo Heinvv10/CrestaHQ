@@ -10,13 +10,21 @@
  *  — plus the blank braille cell U+2800, which is visible-as-nothing but not
  *  default-ignorable. By property, not by list, so new ones are covered.
  *  Also private-use (Co), unassigned (Cn) and lone-surrogate (Cs) code
- *  points, which won't render, and any space but a plain U+0020 (NBSP, the
- *  U+2000 block, U+3000…), which a reader can't tell from one. Refused in
- *  stored text an approver reads (a newline could fake a preview row, an
- *  invisible one hide text or carry data). U+FE0F is default-ignorable too:
- *  only a real presentation selector (EMOJI_PRESENTATION) is let through. */
+ *  points, which won't render. Refused in stored text an approver reads (a
+ *  newline could fake a preview row, an invisible one hide text or carry
+ *  data). U+FE0F is default-ignorable too: only a real presentation
+ *  selector (EMOJI_PRESENTATION) is let through. Space separators (NBSP,
+ *  U+202F, U+3000…) are not refused — they show as spaces — but agentText
+ *  and messageBody turn them into plain spaces first. */
 export const UNSAFE_TEXT_RE =
-  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\p{Co}\p{Cn}\p{Cs}\u2800]|(?! )\p{Zs}/u;
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\p{Co}\p{Cn}\p{Cs}\u2800]/u;
+
+/** The one refusal message for UNSAFE_TEXT_RE, naming the cause. */
+export const UNSAFE_TEXT_MESSAGE =
+  "contains characters that can't be shown safely (control, invisible, bidi, private-use or unassigned)";
+
+/** Every space separator (NBSP, thin, U+202F, U+3000…) as a plain space. */
+const plainSpaces = (v: string) => v.replace(/\p{Zs}/gu, " ");
 /** What oneLine removes outright: the invisible set (a presentation
  *  selector excepted, see oneLine). */
 const STRIP_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
@@ -44,7 +52,7 @@ export function hasUnsafeText(value: string): boolean {
  * other control character, and a newline in any other field.
  */
 export function agentText(key: string, value: string): string {
-  const v = value.trim();
+  const v = plainSpaces(value).trim();
   return key === "address" ? v.replace(/\s*[\r\n]+\s*/g, ", ") : v;
 }
 
@@ -73,7 +81,7 @@ const EMOJI_ZWJ =
  * A message body as it will be sent — or null when it carries anything a
  * person reading the preview could not see (UNSAFE_TEXT_RE). Normalised, so
  * the stored, shown and sent bodies are identical: CRLF / CR become LF,
- * trailing spaces go from every line (a line of only spaces becomes empty),
+ * every space separator a plain space, trailing spaces go from every line (a line of only spaces becomes empty),
  * and the whole is trimmed. Line breaks are the only exception to the
  * refusal, plus a ZWJ inside an emoji sequence: a ZWNJ / ZWJ between letters
  * could sit inside a link ("ba<ZWNJ>nk.co.za") and change where it goes
@@ -82,7 +90,7 @@ const EMOJI_ZWJ =
  * the approver didn't see.
  */
 export function messageBody(value: string): string | null {
-  const body = value
+  const body = plainSpaces(value)
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => line.replace(/ +$/, ""))
