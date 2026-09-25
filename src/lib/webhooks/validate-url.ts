@@ -129,13 +129,22 @@ export class NonPublicUrlError extends Error {
  */
 const resolver = new Resolver({ timeout: 2000, tries: 2 });
 
+/**
+ * Test-only: point the resolver at a local DNS server so tests exercise real
+ * c-ares behaviour. Production never calls this and keeps the system servers.
+ */
+export function setResolverServersForTest(servers: string[]): void {
+  resolver.setServers(servers);
+}
+
 /** A then AAAA answers, IPv4 first (this host has no IPv6 route). */
 async function resolveName(h: string): Promise<LookupAddress[]> {
   const [v4, v6] = await Promise.allSettled([resolver.resolve4(h), resolver.resolve6(h)]);
   // A transient A-record failure (ETIMEOUT, ESERVFAIL, ECONNREFUSED, ...) is
   // not "no such record" (ENODATA / ENOTFOUND) — a v6-only answer under a
-  // transient v4 failure must not stand in for a real v4 lookup, since this
-  // host has no IPv6 route and would connect to an address it never checked.
+  // transient v4 failure must not stand in for a real v4 lookup: this host
+  // has no IPv6 route, so that answer is unreachable, and a transient DNS
+  // failure should not pass the save-time check.
   if (
     v4.status === "rejected" &&
     !["ENODATA", "ENOTFOUND"].includes((v4.reason as NodeJS.ErrnoException)?.code ?? "")
