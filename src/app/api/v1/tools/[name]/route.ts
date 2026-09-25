@@ -2,9 +2,16 @@ import "server-only";
 
 import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk, type ErrorType } from "@/lib/api/responses";
-import { dispatchAgentTool } from "@/lib/api/agent-dispatch";
-import { toolLogResponseBody } from "@/lib/api/agent-audit";
+import { agentCallable, dispatchAgentTool } from "@/lib/api/agent-dispatch";
+import { agentPrecheck } from "@/lib/api/agent-precheck";
 import { getCapability } from "@/lib/ai-suite/capabilities";
+
+/** A read tool the key may call. Anything else — including a chat-only or
+ *  unknown name — is treated alike, so the hooks can't reveal which exist. */
+const isAgentReadTool = (name: string) => {
+  const cap = getCapability(name);
+  return !!cap && agentCallable(cap) && cap.readonly === true;
+};
 
 const TYPE_FOR_STATUS: Record<number, ErrorType> = {
   400: "invalid_request",
@@ -24,8 +31,9 @@ const TYPE_FOR_STATUS: Record<number, ErrorType> = {
  * its status with the v1 error body. An unknown name is the same 404 as a
  * tool this key may not call. `Idempotency-Key` is honoured (withApiAuth)
  * for writes and proposals; a read tool ignores it — reads are idempotent,
- * and caching one would persist its result. A read tool's result is also
- * kept out of the request log.
+ * and caching one would persist its result. A read tool's request and
+ * response bodies are both kept out of the request log. Test mode and the
+ * Agent API gate are checked before any cached reply (`agentPrecheck`).
  */
 export const POST = withApiAuth<{ name: string }>(
   async ({ ctx, params, body }) => {
@@ -47,8 +55,11 @@ export const POST = withApiAuth<{ name: string }>(
   },
   {
     requireScope: "agent",
-    logResponseBody: ({ name }, responseBody) =>
-      toolLogResponseBody(getCapability(name) ?? { readonly: false }, responseBody),
-    cacheIdempotently: ({ name }) => getCapability(name)?.readonly !== true,
+    precheck: agentPrecheck,
+    redactLog: ({ name }) => {
+      const read = isAgentReadTool(name);
+      return { requestBody: read, responseBody: read };
+    },
+    cacheIdempotently: ({ name }) => !isAgentReadTool(name),
   },
 );

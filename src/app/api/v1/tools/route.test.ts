@@ -18,10 +18,10 @@ const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
 
 let key: string;
 let keySeq = 0;
-function mintKey(scopes: string[]) {
-  const m = mintApiKey("live");
+function mintKey(scopes: string[], mode: "live" | "test" = "live") {
+  const m = mintApiKey(mode);
   mem.seed(`subAccounts/sa1/apiKeys/k${++keySeq}`, {
-    subAccountId: "sa1", agencyId: "ag1", name: "Agent key", mode: "live",
+    subAccountId: "sa1", agencyId: "ag1", name: "Agent key", mode,
     prefix: m.prefix, hashedSecret: m.hashedSecret, scopes, revokedAt: null, createdAt: new Date(),
   });
   return m.rawKey;
@@ -98,13 +98,13 @@ describe("GET /api/v1/tools", () => {
 });
 
 describe("POST /api/v1/tools/{name}", () => {
-  it("a read tool → 200 {result}; its response body never reaches the request log", async () => {
-    const res = await call("find_contacts", { query: "ann" });
+  it("a read tool → 200 {result}; neither its args nor its result reach the request log", async () => {
+    const res = await call("find_contacts", { query: "ann@private.io" });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { result: string }).result).toContain("Ann Private");
     await settle();
     const [log] = logs("/api/v1/tools/find_contacts");
-    expect(log).toMatchObject({ responseStatus: 200 });
+    expect(log).toMatchObject({ responseStatus: 200, requestBody: "", responseBody: "" });
     expect(JSON.stringify(log)).not.toContain("Ann Private");
     expect(JSON.stringify(log)).not.toContain("ann@private.io");
   });
@@ -176,5 +176,73 @@ describe("POST /api/v1/tools/{name}", () => {
     const res = await call("find_contacts", { query: "ann" });
     expect(res.headers.get("X-RateLimit-Limit")).toBe("60");
     expect(res.headers.get("X-RateLimit-Remaining")).toBe("59");
+  });
+});
+
+describe("no oracle, one predicate", () => {
+  it("a chat-only read tool and an unknown name behave identically under a repeated Idempotency-Key", async () => {
+    const run = async (name: string, k: string) => {
+      const a = await call(name, {}, { "idempotency-key": k });
+      const b = await call(name, {}, { "idempotency-key": k });
+      const strip = async (r: Response) => ({ status: r.status, ...((await r.json()) as { error: object }).error, request_id: undefined });
+      return [await strip(a), await strip(b)];
+    };
+    expect(await run("my_access", "oracle-1")).toEqual(await run("no_such_tool", "oracle-2"));
+    // Both cached alike (a chat-only name is not treated as a read tool).
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toHaveLength(2);
+  });
+
+  it("an agency-level tool any role satisfies is neither listed nor callable", async () => {
+    const agencyFixture = { ...outbound, name: "__rest_agency", level: "agency" as const, approval: undefined, readonly: true };
+    AI_SUITE_CAPABILITIES.push(agencyFixture);
+    try {
+      const listed = ((await (await listTools()).json()) as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
+      expect(listed).not.toContain("__rest_agency");
+      expect((await call("__rest_agency", {})).status).toBe(404);
+    } finally {
+      AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(agencyFixture), 1);
+    }
+  });
+
+  it("parity: GET /tools lists exactly the names dispatch accepts, over the whole registry", async () => {
+    const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
+    const auth = {
+      agencyId: "ag1", subAccountId: "sa1", keyId: `k${keySeq}`, keyPrefix: "x", keyName: "k", mode: "live" as const,
+      scopes: ["agent" as const], enrolmentCapPerHour: 50, requestId: "r", apiVersion: "2026-01-01",
+    };
+    const accepted: string[] = [];
+    for (const cap of AI_SUITE_CAPABILITIES) {
+      const r = await dispatchAgentTool(auth, cap.name, {});
+      if (!("code" in r) || r.code !== "not_available") accepted.push(cap.name);
+    }
+    const listed = ((await (await listTools()).json()) as { tools: Array<{ name: string }> }).tools.map((t) => t.name);
+    expect(listed.sort()).toEqual(accepted.sort());
+  });
+});
+
+describe("the gate and test mode run before any cached reply", () => {
+  it("a write cached under w1, then the gate switched off: replaying w1 is 403, nothing new written", async () => {
+    expect((await call("create_contact", { name: "Once" }, { "idempotency-key": "w1" })).status).toBe(200);
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), agentApiEnabledByAgency: false });
+    const replay = await call("create_contact", { name: "Once" }, { "idempotency-key": "w1" });
+    expect(replay.status).toBe(403);
+    expect(await replay.json()).toMatchObject({ error: { code: "agent_api_disabled" } });
+    expect(mem.list("contacts").filter((c) => c.name === "Once")).toHaveLength(1);
+  });
+
+  it("a 403 agent_api_disabled is never cached: gate off → 403 → gate on → a new key works", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), agentApiEnabledByAgency: false });
+    expect((await call("create_contact", { name: "Later" }, { "idempotency-key": "n1" })).status).toBe(403);
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), agentApiEnabledByAgency: true });
+    expect((await call("create_contact", { name: "Later" }, { "idempotency-key": "n2" })).status).toBe(200);
+  });
+
+  it("GET /tools and POST refuse a test-mode key with test_mode_unsupported", async () => {
+    key = mintKey(["agent"], "test");
+    for (const res of [await listTools(), await call("find_contacts", { query: "ann" })]) {
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: { code: "test_mode_unsupported" } });
+    }
   });
 });

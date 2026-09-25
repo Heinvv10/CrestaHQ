@@ -93,11 +93,19 @@ export interface WithApiAuthOptions {
    */
   idempotency?: boolean;
   /**
-   * What the request log may keep of the response body (default: all of it).
-   * The agent tools route passes `toolLogResponseBody` so a read tool's
-   * result — tenant data, often PII — is never persisted in the log.
+   * Which bodies the request log must NOT keep (default: keep both). The
+   * agent tools route redacts both for a read tool: its args (a searched
+   * email) and its result (tenant data) are PII, so a read logs status +
+   * latency only. Applied on every exit path.
    */
-  logResponseBody?: (params: Record<string, string>, body: unknown) => unknown;
+  redactLog?: (params: Record<string, string>) => { requestBody: boolean; responseBody: boolean };
+  /**
+   * Runs after auth, scope and rate limit, BEFORE the idempotency lookup: a
+   * non-null response ends the request (and is never cached). The agent
+   * tools routes check test mode and the Agent API gate here, so an
+   * idempotent replay can't outlive a gate switched off.
+   */
+  precheck?: (ctx: ApiAuthContext) => Promise<NextResponse | null>;
   /**
    * Per-request veto of the idempotency cache (default: cache as usual).
    * The agent tools route returns false for read tools: a read is naturally
@@ -343,7 +351,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     // readBody so this is essentially free for read paths.
     const params = await routeCtx.params;
     const { rawBody, body } = await readBody(request);
-    const logged = (b: unknown) => (opts.logResponseBody ? opts.logResponseBody(params, b) : b);
+    const redact = opts.redactLog?.(params) ?? { requestBody: false, responseBody: false };
 
     // Helper that captures the log + returns the response. Used at every
     // exit point so every request makes it into the log viewer regardless
@@ -369,11 +377,11 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         requestId: ctx.requestId,
         method: request.method,
         path: url.pathname,
-        query: url.search,
+        query: redact.requestBody ? "" : url.search,
         requestHeaders: request.headers,
-        requestBody: rawBody,
+        requestBody: redact.requestBody ? "" : rawBody,
         responseStatus: response.status,
-        responseBodyJson: bodyJson,
+        responseBodyJson: redact.responseBody ? null : bodyJson,
         errorCode: errorCode ?? null,
         latencyMs: Date.now() - start,
       });
@@ -407,6 +415,18 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         },
       );
       return finalize(rlResp, undefined, "rate_limited");
+    }
+
+    if (opts.precheck) {
+      const refused = await opts.precheck(ctx);
+      if (refused) {
+        const code = await refused
+          .clone()
+          .json()
+          .then((b: { error?: { code?: string } }) => b.error?.code ?? null)
+          .catch(() => null);
+        return finalize(refused, undefined, code);
+      }
     }
 
     // Idempotency check (POST/PATCH/DELETE + header present).
@@ -453,7 +473,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         }
         return finalize(
           apiOk(ctx, cached.bodyJson, { status: cached.status }),
-          logged(cached.bodyJson),
+          cached.bodyJson,
         );
       }
     }
@@ -518,7 +538,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     response.headers.set("X-RateLimit-Remaining", String(snapshot.remaining));
     response.headers.set("X-RateLimit-Reset", String(snapshot.resetSec));
 
-    return finalize(response, logged(responseBodyJson));
+    return finalize(response, responseBodyJson);
   };
 }
 

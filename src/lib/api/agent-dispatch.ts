@@ -10,6 +10,7 @@ import {
   CapabilityUserError,
   getCapability,
   roleSatisfies,
+  type AiSuiteCapability,
 } from "@/lib/ai-suite/capabilities";
 import {
   createProposal,
@@ -53,6 +54,23 @@ const refuse = (
  *  which chat-only or agency-level names exist. */
 const notAvailable = (): AgentDispatchResult =>
   refuse("not_available", 404, "No such tool is available to this key.");
+
+/**
+ * Whether an agent key may call `cap` at all — the ONE predicate behind
+ * dispatch, the tools listing and the REST hooks, so none can disagree or
+ * leak which chat-only names exist: sub-account level, surfaced to agents,
+ * runnable as a sub-account admin, and never the engine-only
+ * workflow_enrolment class (only the engine writes those rows; a capability
+ * claiming it would let an agent forge one).
+ */
+export function agentCallable(cap: AiSuiteCapability): boolean {
+  return (
+    cap.level === "sub-account" &&
+    availableOn(cap, "agent") &&
+    cap.approval !== "workflow_enrolment" &&
+    roleSatisfies(cap.requiredRole, { agencyRoleIsOwner: false, subAccountRole: "admin" })
+  );
+}
 
 /**
  * The ONE choke point for agent tool calls (MCP and REST). Every refusal
@@ -115,17 +133,7 @@ async function dispatch(
   }
 
   const cap = getCapability(name);
-  if (!cap || cap.level !== "sub-account" || !availableOn(cap, "agent")) {
-    return notAvailable();
-  }
-  if (
-    !roleSatisfies(cap.requiredRole, {
-      agencyRoleIsOwner: false,
-      subAccountRole: "admin",
-    })
-  ) {
-    return notAvailable();
-  }
+  if (!cap || !agentCallable(cap)) return notAvailable();
 
   // Narrow before validate, so a stored proposal re-validates idempotently.
   const raw =
@@ -141,11 +149,6 @@ async function dispatch(
   if (cap.approval) {
     // The approver sees `preview` verbatim; a queued action without one
     // could not be judged, so it is a registry bug, not a proposal.
-    // Only the engine writes held enrolments (ruling Q); a capability that
-    // claims the class would let an agent forge one.
-    if (cap.approval === "workflow_enrolment") {
-      throw new Error(`${cap.name} claims workflow_enrolment, which only the engine may create`);
-    }
     if (!cap.preview) throw new Error(`${cap.name} has approval but no preview`);
     if (!cap.approvalTarget) throw new Error(`${cap.name} has approval but no approvalTarget`);
     const previewCtx = buildPreviewContext(auth.agencyId, auth.subAccountId);

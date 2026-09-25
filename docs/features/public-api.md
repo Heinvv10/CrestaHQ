@@ -242,8 +242,10 @@ For an external LLM agent. Keys minted with the `agent` scope (exclusive with
   approval instead of started). A tool that needs a person returns 202
   `{proposal: {id, status, summary, preview}}` and waits on the sub-account's
   Approvals page. Refusals use the v1 error body; an unknown tool is the same 404
-  as one the key may not call. `Idempotency-Key` is honoured. A read tool's
-  response body is never kept in the request log.
+  as one the key may not call. `Idempotency-Key` is honoured for writes and
+  proposals and ignored for read tools (they are idempotent, and caching one
+  would store its result). A read tool's request log keeps status and latency
+  only: neither its request body (the args) nor its response body is stored.
 
 The MCP transport (PR5) and the full agent guide (`docs/features/agent-api.md`,
 PR14) follow; see `AGENT_API_V1_PLAN.md`.

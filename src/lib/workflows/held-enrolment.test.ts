@@ -164,9 +164,10 @@ describe("hold failures are reported to the agent, and fail closed", () => {
 });
 
 describe("a forged enrolment", () => {
-  it("dispatch refuses a capability claiming workflow_enrolment (500, logged, nothing queued)", async () => {
+  // Not agent-callable (agentCallable excludes the class), so it answers
+  // exactly like an unknown name: nothing to probe, nothing queued.
+  it("dispatch refuses a capability claiming workflow_enrolment as not_available, nothing queued", async () => {
     const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
-    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const forged = {
       name: "__forged_enrolment", level: "sub-account" as const, requiredRole: "subAccountMember" as const,
       approval: "workflow_enrolment" as const, menuLabel: "x", description: "x",
@@ -179,8 +180,10 @@ describe("a forged enrolment", () => {
     };
     AI_SUITE_CAPABILITIES.push(forged);
     try {
-      expect(await dispatchAgentTool(auth, "__forged_enrolment", {})).toMatchObject({ code: "internal_error", httpStatus: 500 });
-      expect(logged).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ message: expect.stringContaining("only the engine") }));
+      expect(await dispatchAgentTool(auth, "__forged_enrolment", {})).toEqual(
+        await dispatchAgentTool(auth, "__no_such_tool", {})
+      );
+      expect(await dispatchAgentTool(auth, "__forged_enrolment", {})).toMatchObject({ code: "not_available", httpStatus: 404 });
       expect(proposals()).toEqual([]);
       expect(forged.execute).not.toHaveBeenCalled();
     } finally {
