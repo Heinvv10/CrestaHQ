@@ -155,6 +155,16 @@ it("the done_unknown marker failing too is logged; the reservation then expires 
   expect(handler).toHaveBeenCalledTimes(2);
 });
 
+it("a failed reservation fails closed: 500, and the handler never runs", async () => {
+  const err = vi.spyOn(console, "error").mockImplementation(() => {});
+  failTransactions([1]);
+  const res = await post("no-reserve");
+  expect(res.status).toBe(500);
+  expect(await codeOf(res)).toBe("internal_error");
+  expect(handler).not.toHaveBeenCalled();
+  expect(err).toHaveBeenCalledWith("[api/v1] idempotency reservation failed", expect.any(Error));
+});
+
 it("B4 crash then concurrent retries: exactly one re-run", async () => {
   handler.mockRejectedValueOnce(new Error("boom"));
   handler.mockImplementation(async () => {

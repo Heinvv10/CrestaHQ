@@ -134,3 +134,30 @@ it("a process whose reservation was taken over cannot overwrite or delete the ne
   expect(await (await post("paused")).json()).toMatchObject({ id: "new" });
   expect(handler).toHaveBeenCalledTimes(1);
 });
+
+it("a request that was taken over and then throws leaves the new owner's reservation in place", async () => {
+  const pending: Array<{ ok: () => void; fail: () => void }> = [];
+  handler.mockImplementation(
+    () => new Promise((ok, fail) =>
+      pending.push({ ok: () => ok(NextResponse.json({ id: "b" }, { status: 201 })), fail: () => fail(new Error("A died")) }))
+  );
+  const a = post("takeover-throw");
+  await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+  const [doc] = mem.list(IDEM);
+  const { id, ...data } = doc;
+  mem.seed(`${IDEM}/${id}`, { ...data, expiresAt: new Date(Date.now() - 1000) }); // A stalled past expiry
+  const b = post("takeover-throw");
+  await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+  const bToken = mem.read(`${IDEM}/${id}`)?.reservationId;
+  expect(bToken).not.toBe(data.reservationId);
+
+  const err = vi.spyOn(console, "error").mockImplementation(() => {});
+  pending[0].fail();
+  expect((await a).status).toBe(500);
+  err.mockRestore();
+  expect(mem.read(`${IDEM}/${id}`)).toMatchObject({ state: "in_progress", reservationId: bToken });
+  expect((await post("takeover-throw")).status).toBe(409);
+  pending[1].ok();
+  expect((await b).status).toBe(201);
+  expect(handler).toHaveBeenCalledTimes(2);
+});
