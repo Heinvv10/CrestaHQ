@@ -157,6 +157,13 @@ describe("POST /api/v1/tools/{name}", () => {
     expect(mem.list("subAccounts/sa1/apiIdempotency").length).toBeGreaterThan(0);
   });
 
+  it("a read tool ignores Idempotency-Key and writes no apiIdempotency doc; a write still caches", async () => {
+    expect((await call("find_contacts", { query: "ann" }, { "idempotency-key": "read-1" })).status).toBe(200);
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
+    expect((await call("create_contact", { name: "Cached" }, { "idempotency-key": "write-1" })).status).toBe(200);
+    expect(mem.list("subAccounts/sa1/apiIdempotency")).toHaveLength(1);
+  });
+
   it("the Agent API gate is re-read per request: flipped off, the next call is 403", async () => {
     expect((await call("find_contacts", { query: "ann" })).status).toBe(200);
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), agentApiEnabledByAgency: false });

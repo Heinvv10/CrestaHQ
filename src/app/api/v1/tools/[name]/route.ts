@@ -22,8 +22,10 @@ const TYPE_FOR_STATUS: Record<number, ErrorType> = {
  * holdFailures?}`; an approval capability returns 202 `{proposal}` — its id,
  * status, summary and preview, never `pinned` or `rev`; a refusal returns
  * its status with the v1 error body. An unknown name is the same 404 as a
- * tool this key may not call. `Idempotency-Key` is honoured (withApiAuth),
- * and a read tool's result is kept out of the request log.
+ * tool this key may not call. `Idempotency-Key` is honoured (withApiAuth)
+ * for writes and proposals; a read tool ignores it — reads are idempotent,
+ * and caching one would persist its result. A read tool's result is also
+ * kept out of the request log.
  */
 export const POST = withApiAuth<{ name: string }>(
   async ({ ctx, params, body }) => {
@@ -47,5 +49,6 @@ export const POST = withApiAuth<{ name: string }>(
     requireScope: "agent",
     logResponseBody: ({ name }, responseBody) =>
       toolLogResponseBody(getCapability(name) ?? { readonly: false }, responseBody),
+    cacheIdempotently: ({ name }) => getCapability(name)?.readonly !== true,
   },
 );

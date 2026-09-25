@@ -98,6 +98,12 @@ export interface WithApiAuthOptions {
    * result — tenant data, often PII — is never persisted in the log.
    */
   logResponseBody?: (params: Record<string, string>, body: unknown) => unknown;
+  /**
+   * Per-request veto of the idempotency cache (default: cache as usual).
+   * The agent tools route returns false for read tools: a read is naturally
+   * idempotent, and caching its result would persist tenant data (PII).
+   */
+  cacheIdempotently?: (params: Record<string, string>) => boolean;
 }
 
 export interface ApiHandlerInput<P extends Record<string, string> = Record<string, string>> {
@@ -408,7 +414,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     const useIdempotency =
       opts.idempotency !== false &&
       METHODS_WITH_IDEMPOTENCY.has(request.method) &&
-      !!idempotencyKey;
+      !!idempotencyKey &&
+      (opts.cacheIdempotently ? opts.cacheIdempotently(params) : true);
 
     let fingerprint: string | null = null;
     if (useIdempotency) {
