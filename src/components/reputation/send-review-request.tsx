@@ -1,14 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Loader2, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ContactPicker } from "@/components/quotes/contact-picker";
-import { useSubAccount } from "@/context/sub-account-context";
-import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
-import type { Contact } from "@/types/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { sendResultMessage } from "./send-result";
 
 /**
@@ -21,23 +18,15 @@ import { sendResultMessage } from "./send-result";
 type Result = { state: "sent" | "refused" | "error"; message: string } | null;
 
 export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
-  const { subAccountId, agencyId } = useSubAccount();
-  const { ready, filter } = useEffectiveTerritoryFilter();
   const [open, setOpen] = useState(false);
-  const [contacts, setContacts] = useState<Contact[] | "error" | null>(null);
+  // Only starts the sub-account's contacts download once the dialog opens.
+  const shared = useSubAccountContacts(open);
+  const contacts = shared.error ? "error" : shared.loading ? null : shared.contacts;
   const [contactId, setContactId] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<Result>(null);
   /** Who this dialog last sent to: Send stays off for them, however they are re-picked. */
   const [sentTo, setSentTo] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open || !agencyId || !ready) return;
-    return subscribeToContacts({ agencyId, subAccountId }, { territoryFilter: filter }, setContacts, (err) => {
-      console.warn(`[reputation/send-review-request] contacts load failed kind=${err.name}`);
-      setContacts("error");
-    });
-  }, [open, agencyId, subAccountId, ready, filter]);
 
   function openDialog() {
     setContactId("");

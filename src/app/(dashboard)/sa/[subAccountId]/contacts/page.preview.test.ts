@@ -13,7 +13,9 @@ const state = vi.hoisted(() => ({
   filters: { all: [] as unknown[] },
   territoryFilter: null as string[] | null,
   deliver: null as ((list: unknown[]) => void) | null,
+  fail: null as ((e: Error) => void) | null,
   subscribeOpts: null as unknown,
+  subscribeCount: 0,
   fetchNewest: vi.fn(),
   None: () => null,
   auth: { user: { uid: "u1" }, loading: false },
@@ -57,8 +59,15 @@ vi.mock("@/hooks/use-sub-account-members", () => ({
   useSubAccountMembers: () => ({ members: [] }),
 }));
 vi.mock("@/lib/firestore/contacts", () => ({
-  subscribeToContacts: (_s: unknown, o: unknown, cb: (l: unknown[]) => void) => {
+  subscribeToContacts: (
+    _s: unknown,
+    o: unknown,
+    cb: (l: unknown[]) => void,
+    onError: (e: Error) => void,
+  ) => {
+    state.fail = onError;
     state.subscribeOpts = o;
+    state.subscribeCount += 1;
     state.deliver = cb;
     return () => undefined;
   },
@@ -77,6 +86,7 @@ vi.mock("@/components/contacts/smart-list-tabs", () => ({ SmartListTabs: state.N
 vi.mock("@/components/contacts/bulk-actions-bar", () => ({ BulkActionsBar: state.None }));
 
 import ContactsPage from "./page";
+import { ContactsProvider } from "@/context/contacts-context";
 import { SLOW_AFTER_MS } from "@/components/contacts/contacts-empty-states";
 
 function contacts(prefix: string, n: number): Contact[] {
@@ -95,6 +105,9 @@ function contacts(prefix: string, n: number): Contact[] {
   })) as unknown as Contact[];
 }
 
+// The sub-account layout mounts the shared contacts provider above every page.
+const page = () => createElement(ContactsProvider, null, createElement(ContactsPage));
+
 let el: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
@@ -102,6 +115,7 @@ beforeEach(() => {
   state.filters = { all: [] };
   state.territoryFilter = null;
   state.deliver = null;
+  state.subscribeCount = 0;
   state.fetchNewest.mockReset();
   el = document.createElement("div");
   document.body.appendChild(el);
@@ -111,6 +125,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   el.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 const rows = () => el.querySelectorAll("tbody tr").length;
@@ -121,7 +136,7 @@ const checkboxes = () => el.querySelectorAll('[aria-label^="Select"]').length;
 
 it("paints the newest page first, then the full list replaces it", async () => {
   state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
-  await act(async () => root.render(createElement(ContactsPage)));
+  await act(async () => root.render(page()));
   expect(state.fetchNewest).toHaveBeenCalledWith(
     { agencyId: "ag1", subAccountId: "sa1" },
     100,
@@ -139,7 +154,7 @@ it("paints the newest page first, then the full list replaces it", async () => {
 
 it("the preview has no selection checkboxes; the full list does", async () => {
   state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
-  await act(async () => root.render(createElement(ContactsPage)));
+  await act(async () => root.render(page()));
   expect(rows()).toBe(3);
   expect(checkboxes()).toBe(0);
   await act(async () => state.deliver!(contacts("Full", 3)));
@@ -148,7 +163,7 @@ it("the preview has no selection checkboxes; the full list does", async () => {
 
 it("typing a search hides the preview — it would not match the results", async () => {
   state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
-  await act(async () => root.render(createElement(ContactsPage)));
+  await act(async () => root.render(page()));
   expect(rows()).toBe(3);
   const input = el.querySelector<HTMLInputElement>('input[placeholder^="Search"]')!;
   await act(async () => {
@@ -163,12 +178,12 @@ it("a new load mid-flight restarts the slow-load timer", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     state.fetchNewest.mockReturnValue(new Promise(() => undefined));
-    await act(async () => root.render(createElement(ContactsPage)));
+    await act(async () => root.render(page()));
     await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS));
     expect(slowHint()).toBe(true);
     // The territory filter changes while the first load is still running.
     state.territoryFilter = ["t2"];
-    await act(async () => root.render(createElement(ContactsPage)));
+    await act(async () => root.render(page()));
     expect(slowHint()).toBe(false);
   } finally {
     vi.useRealTimers();
@@ -178,7 +193,7 @@ it("a new load mid-flight restarts the slow-load timer", async () => {
 it("shows the skeleton, not a preview, while a smart-list filter is active", async () => {
   state.filters = { all: [{ field: "tags", op: "contains", value: "x" }] };
   state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
-  await act(async () => root.render(createElement(ContactsPage)));
+  await act(async () => root.render(page()));
   expect(state.fetchNewest).not.toHaveBeenCalled();
   expect(rows()).toBe(0);
   expect(skeleton()).toBe(true);
@@ -187,7 +202,7 @@ it("shows the skeleton, not a preview, while a smart-list filter is active", asy
 it("never previews for a territory-scoped viewer", async () => {
   state.territoryFilter = ["t1"];
   state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
-  await act(async () => root.render(createElement(ContactsPage)));
+  await act(async () => root.render(page()));
   expect(state.fetchNewest).not.toHaveBeenCalled();
   expect(skeleton()).toBe(true);
 });
@@ -195,8 +210,41 @@ it("never previews for a territory-scoped viewer", async () => {
 it("a failed preview falls back to the skeleton until the list arrives", async () => {
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   state.fetchNewest.mockRejectedValue(new Error("FAILED_PRECONDITION"));
-  await act(async () => root.render(createElement(ContactsPage)));
+  await act(async () => root.render(page()));
   expect(skeleton()).toBe(true);
   await act(async () => state.deliver!(contacts("Full", 2)));
   expect(rows()).toBe(2);
+});
+
+it("coming back to the page shows the list at once, without a new download", async () => {
+  state.fetchNewest.mockResolvedValue(contacts("Preview", 3));
+  await act(async () => root.render(page()));
+  await act(async () => state.deliver!(contacts("Full", 5)));
+  // Navigate elsewhere in the sub-account: the layout (and provider) stays.
+  await act(async () => root.render(createElement(ContactsProvider, null, null)));
+  expect(rows()).toBe(0);
+  state.fetchNewest.mockClear();
+  await act(async () => root.render(page()));
+  expect(rows()).toBe(5);
+  expect(skeleton()).toBe(false);
+  expect(state.subscribeCount).toBe(1);
+  expect(state.fetchNewest).not.toHaveBeenCalled();
+});
+
+it("a failed load says so instead of showing the empty state", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  state.fetchNewest.mockResolvedValue([]);
+  await act(async () => root.render(page()));
+  await act(async () => state.fail!(new Error("permission-denied")));
+  expect(el.querySelector('[role="alert"]')?.textContent).toContain(
+    "Contacts could not be loaded",
+  );
+  expect(el.textContent).not.toContain("No contacts yet");
+});
+
+it("does not add the layout's wait banner on top of its own hint", async () => {
+  vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+  state.fetchNewest.mockReturnValue(new Promise(() => undefined));
+  await act(async () => root.render(page()));
+  expect(el.querySelectorAll('[role="status"]')).toHaveLength(1);
 });

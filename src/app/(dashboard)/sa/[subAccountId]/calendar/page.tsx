@@ -4,11 +4,10 @@ import { useEffect, useState } from "react";
 import { CalendarDays } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToEvents } from "@/lib/firestore/events";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import type { CalendarEvent } from "@/types/events";
-import type { Contact } from "@/types/contacts";
 import { CalendarView } from "@/components/calendar/calendar-view";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
 
@@ -18,32 +17,21 @@ export default function CalendarPage() {
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
   const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { contacts, loading: contactsLoading } = useSubAccountContacts();
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const loading = eventsLoading || contactsLoading;
 
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
     if (!filterReady) return;
-    setLoading(true);
+    setEventsLoading(true);
     const scope = { agencyId, subAccountId };
-    let eventsReady = false;
-    let contactsReady = false;
-    const settle = () => {
-      if (eventsReady && contactsReady) setLoading(false);
-    };
     const unsubE = subscribeToEvents(scope, { territoryFilter }, (l) => {
       setEvents(l);
-      eventsReady = true;
-      settle();
-    });
-    const unsubC = subscribeToContacts(scope, { territoryFilter }, (l) => {
-      setContacts(l);
-      contactsReady = true;
-      settle();
+      setEventsLoading(false);
     });
     return () => {
       unsubE();
-      unsubC();
     };
   }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);
 

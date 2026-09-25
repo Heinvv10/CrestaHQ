@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { Link2, Loader2 } from "lucide-react";
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { ContactPicker } from "@/components/quotes/contact-picker";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import type { Contact } from "@/types/contacts";
 
 /**
@@ -28,23 +28,19 @@ import type { Contact } from "@/types/contacts";
  * not applicable, so it can be dropped into the header unconditionally.
  */
 export function LinkContactButton({ contact }: { contact: Contact }) {
-  const { subAccountId, agencyId, isAdmin, saPath } = useSubAccount();
+  const { isAdmin, saPath } = useSubAccount();
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts: all } = useSubAccountContacts(open);
+  // Can't merge into itself; drop the stub from the list.
+  const contacts = useMemo(
+    () => all.filter((c) => c.id !== contact.id),
+    [all, contact.id],
+  );
   const [targetId, setTargetId] = useState("");
   const [linking, setLinking] = useState(false);
 
   const isMeta = !!contact.metaUserId;
-
-  useEffect(() => {
-    if (!open || !agencyId) return;
-    const unsub = subscribeToContacts({ agencyId, subAccountId }, (list) =>
-      // Can't merge into itself; drop the stub from the list.
-      setContacts(list.filter((c) => c.id !== contact.id)),
-    );
-    return () => unsub();
-  }, [open, agencyId, subAccountId, contact.id]);
 
   if (!isAdmin || !isMeta) return null;
 

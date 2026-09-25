@@ -24,9 +24,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ContactPicker } from "@/components/quotes/contact-picker";
-import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import type { Contact } from "@/types/contacts";
 import type { Webinar1Video, Webinar1Webinar } from "@/types/webinar1";
 
@@ -56,9 +55,7 @@ function slugify(title: string): string {
 }
 
 export default function WebinarsPage() {
-  const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId, subAccount, isAdmin, saPath } =
-    useSubAccount();
+  const { subAccountId, subAccount, isAdmin, saPath } = useSubAccount();
   // Agency gate — same model as Website: the sidebar entry is hidden or
   // Locked while off, and this page (still reachable by URL) shows the
   // locked notice instead of the feature. The API routes 403 regardless.
@@ -69,7 +66,7 @@ export default function WebinarsPage() {
   const [videos, setVideos] = useState<Webinar1Video[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts } = useSubAccountContacts();
   const [createOpen, setCreateOpen] = useState(false);
   const [registerFor, setRegisterFor] = useState<Webinar1Webinar | null>(null);
 
@@ -109,12 +106,6 @@ export default function WebinarsPage() {
     }
     void load();
   }, [gateOn, connected, load]);
-
-  useEffect(() => {
-    if (authLoading || !user || !agencyId) return;
-    const unsub = subscribeToContacts({ agencyId, subAccountId }, setContacts);
-    return () => unsub();
-  }, [user, agencyId, subAccountId, authLoading]);
 
   const videoTitles = useMemo(() => {
     const map: Record<string, string> = {};

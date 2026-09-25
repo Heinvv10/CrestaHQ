@@ -8,7 +8,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToEvents } from "@/lib/firestore/events";
 import { subscribeToBookingPages } from "@/lib/firestore/booking-pages";
 import { toDate } from "@/lib/format";
@@ -117,9 +117,10 @@ export default function AppointmentsListPage() {
   const tz = resolveAppointmentsTimezone(subAccount);
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [bookingPages, setBookingPages] = useState<BookingPage[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const loading = eventsLoading || contactsLoading;
 
   const [tab, setTab] = useState<AppointmentTab>("upcoming");
   const [search, setSearch] = useState("");
@@ -156,27 +157,15 @@ export default function AppointmentsListPage() {
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
     if (!filterReady) return;
-    setLoading(true);
+    setEventsLoading(true);
     const scope = { agencyId, subAccountId };
-    let eventsReady = false;
-    let contactsReady = false;
-    const settle = () => {
-      if (eventsReady && contactsReady) setLoading(false);
-    };
     const unsubE = subscribeToEvents(scope, { territoryFilter }, (l) => {
       setEvents(l);
-      eventsReady = true;
-      settle();
-    });
-    const unsubC = subscribeToContacts(scope, { territoryFilter }, (l) => {
-      setContacts(l);
-      contactsReady = true;
-      settle();
+      setEventsLoading(false);
     });
     const unsubP = subscribeToBookingPages(subAccountId, setBookingPages);
     return () => {
       unsubE();
-      unsubC();
       unsubP();
     };
   }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);

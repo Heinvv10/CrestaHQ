@@ -6,21 +6,17 @@ import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToCompanies } from "@/lib/firestore/companies";
-import { subscribeToContacts } from "@/lib/firestore/contacts";
-import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
+import { useSubAccountContacts } from "@/context/contacts-context";
 import { Input } from "@/components/ui/input";
 import { CompaniesTable } from "@/components/companies/companies-table";
 import { AddCompanySheet } from "@/components/companies/add-company-sheet";
 import type { Company } from "@/types/companies";
-import type { Contact } from "@/types/contacts";
 
 export default function CompaniesPage() {
   const { user, loading: authLoading } = useAuth();
   const { subAccountId, agencyId } = useSubAccount();
-  const { ready: filterReady, filter: territoryFilter } =
-    useEffectiveTerritoryFilter();
   const [companies, setCompanies] = useState<Company[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
+  const { contacts, error: contactsError } = useSubAccountContacts();
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
 
@@ -43,14 +39,8 @@ export default function CompaniesPage() {
   // Same listener the contacts page uses — the count column is derived
   // client-side so it honours the caller's territory visibility.
   useEffect(() => {
-    if (authLoading || !user || !agencyId || !filterReady) return;
-    return subscribeToContacts(
-      { agencyId, subAccountId },
-      { territoryFilter },
-      setContacts,
-      () => toast.error("Couldn't load contact counts."),
-    );
-  }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);
+    if (contactsError) toast.error("Couldn't load contact counts.");
+  }, [contactsError]);
 
   const contactCounts = useMemo(() => {
     const m = new Map<string, number>();
