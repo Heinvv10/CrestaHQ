@@ -93,7 +93,7 @@ describe("POST /api/cron/api-cleanup — sweep isolation", () => {
   });
 
   it("does not schedule a continuation on a partial failure, even when another sweep hit the cap", async () => {
-    setup.capped = new Set(["apiIdempotency"]);
+    setup.capped = new Set(["communityMagicLinkUses"]);
     const res = await run();
     expect(res.status).toBe(500);
     expect(((await res.json()) as { continuationScheduled: boolean }).continuationScheduled).toBe(false);
@@ -102,7 +102,7 @@ describe("POST /api/cron/api-cleanup — sweep isolation", () => {
 
   it("still schedules one when every sweep succeeded and one hit the cap", async () => {
     setup.failing = new Set();
-    setup.capped = new Set(["apiIdempotency"]);
+    setup.capped = new Set(["communityMagicLinkUses"]);
     const res = await run();
     expect(res.status).toBe(200);
     expect(publishCallback).toHaveBeenCalledTimes(1);
@@ -111,7 +111,7 @@ describe("POST /api/cron/api-cleanup — sweep isolation", () => {
 
   it("reports continuationScheduled false and logs when the continuation publish resolves null", async () => {
     setup.failing = new Set();
-    setup.capped = new Set(["apiIdempotency"]);
+    setup.capped = new Set(["communityMagicLinkUses"]);
     publishCallback.mockResolvedValueOnce(null);
     const res = await run();
     expect(res.status).toBe(200);

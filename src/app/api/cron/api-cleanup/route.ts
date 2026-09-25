@@ -1,6 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import type { Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   publishCallback,
@@ -83,6 +84,43 @@ async function sweepFlatCollection(
   return {
     collection: collectionGroupName,
     deleted: snap.size,
+    hitCap: snap.size >= BATCH_LIMIT,
+  };
+}
+
+/**
+ * apiIdempotency docs are live state, not just logs: between this query and
+ * the delete, a request may take over an expired reservation or a heartbeat
+ * may extend one. So each delete runs in a transaction that re-reads the doc
+ * and deletes it only if it is still expired and still the same reservation.
+ */
+async function sweepIdempotency(now: Date): Promise<SweepResult> {
+  const db = getAdminDb();
+  const snap = await db
+    .collectionGroup(API_IDEMPOTENCY)
+    .where("expiresAt", "<", now)
+    .limit(BATCH_LIMIT)
+    .get();
+  // allSettled: one aborted delete must not fail the whole sweep.
+  const outcomes = await Promise.allSettled(
+    snap.docs.map((doc) =>
+      db.runTransaction(async (tx) => {
+        const cur = await tx.get(doc.ref);
+        const expiresAt = cur.data()?.expiresAt as Timestamp | Date | undefined;
+        const expiresMs = expiresAt instanceof Date ? expiresAt.getTime() : expiresAt?.toMillis();
+        if (!cur.exists || expiresMs === undefined || expiresMs >= now.getTime()) return false;
+        if ((cur.data()?.reservationId ?? null) !== (doc.data().reservationId ?? null)) return false;
+        tx.delete(doc.ref);
+        return true;
+      }),
+    ),
+  );
+  for (const o of outcomes) {
+    if (o.status === "rejected") console.error("[cron/api-cleanup] apiIdempotency delete failed", o.reason);
+  }
+  return {
+    collection: API_IDEMPOTENCY,
+    deleted: outcomes.filter((o) => o.status === "fulfilled" && o.value).length,
     hitCap: snap.size >= BATCH_LIMIT,
   };
 }
@@ -176,7 +214,7 @@ export async function POST(request: Request) {
   // reported in a 500 so QStash and the logs show them.
   const sweeps: Array<[string, () => Promise<SweepResult>]> = [
     [API_REQUEST_LOGS, () => sweepFlatCollection(API_REQUEST_LOGS, now)],
-    [API_IDEMPOTENCY, () => sweepFlatCollection(API_IDEMPOTENCY, now)],
+    [API_IDEMPOTENCY, () => sweepIdempotency(now)],
     [WEBHOOK_EVENTS, () => sweepWebhookEvents(now)],
     [COMMUNITY_MAGIC_LINK_USES, () => sweepFlatCollection(COMMUNITY_MAGIC_LINK_USES, now)],
     ["reviewFeedback/pii", () => scrubReviewFeedbackPii(now)],

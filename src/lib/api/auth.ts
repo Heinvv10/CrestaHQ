@@ -24,8 +24,8 @@ import {
 import {
   fingerprintRequest,
   isValidIdempotencyKey,
-  readIdempotencyCache,
-  writeIdempotencyCache,
+  reserveIdempotencyKey,
+  type IdempotencyReservation,
 } from "@/lib/api/idempotency";
 import {
   checkAndCount as checkRateLimit,
@@ -461,7 +461,18 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       !!idempotencyKey &&
       (opts.cacheIdempotently ? opts.cacheIdempotently(params) : true);
 
-    let fingerprint: string | null = null;
+    const internalError = () =>
+      finalize(
+        apiError(
+          ctx,
+          "internal_error",
+          "internal_error",
+          "Something went wrong on our end. Quote this request_id in support.",
+        ),
+        undefined,
+        "internal_error",
+      );
+    let reservation: Extract<IdempotencyReservation, { kind: "reserved" }> | null = null;
     if (useIdempotency) {
       if (!isValidIdempotencyKey(idempotencyKey!)) {
         return finalize(
@@ -475,97 +486,134 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
           "invalid_idempotency_key",
         );
       }
-      fingerprint = fingerprintRequest(request.method, url.pathname, rawBody);
-      const cached = await readIdempotencyCache(
-        ctx.subAccountId,
-        ctx.mode,
-        ctx.keyId,
-        idempotencyKey!,
-      );
-      if (cached) {
-        if (cached.requestFingerprint !== fingerprint) {
-          return finalize(
-            apiError(
-              ctx,
-              "idempotency_error",
-              "idempotency_collision",
-              "This Idempotency-Key was already used with a different request body. Use a new key for a new request.",
-            ),
-            undefined,
-            "idempotency_collision",
-          );
-        }
-        return finalize(
-          apiOk(ctx, cached.bodyJson, { status: cached.status }),
-          cached.bodyJson,
-        );
-      }
-    }
-
-    let response: NextResponse;
-    try {
-      response = await handler({ request, params, body, rawBody, ctx });
-    } catch (err) {
-      console.error("[api/v1] handler threw", err);
-      return finalize(
-        apiError(
-          ctx,
-          "internal_error",
-          "internal_error",
-          "Something went wrong on our end. Quote this request_id in support.",
-        ),
-        undefined,
-        "internal_error",
-      );
-    }
-
-    // Read response body ONCE, here, so both the idempotency cache writer
-    // and the log capture see the same bytes without re-consuming the
-    // response stream.
-    const responseBodyJson = await response
-      .clone()
-      .json()
-      .catch(() => null);
-
-    // Cache successful responses only — never cache server errors so the
-    // caller's retry-with-same-key actually hits the handler again.
-    const storeOutcome = opts.cacheIdempotently
-      ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
-      : response.status < 500;
-    if (useIdempotency && fingerprint && storeOutcome) {
+      // Claim the key BEFORE the handler, so concurrent retries run it once.
+      let found: IdempotencyReservation;
       try {
-        await writeIdempotencyCache(
+        found = await reserveIdempotencyKey(
           ctx.subAccountId,
           ctx.mode,
           ctx.keyId,
           idempotencyKey!,
-          {
-            status: response.status,
-            bodyJson: responseBodyJson,
-            requestFingerprint: fingerprint,
-          },
+          fingerprintRequest(request.method, url.pathname, rawBody),
         );
       } catch (err) {
-        // Cache write failures must not break the response. Log + return
-        // the original response — the worst case is the next retry
-        // re-executes (which is what would happen anyway without cache).
-        console.warn("[api/v1] idempotency cache write failed", err);
+        // Fail closed: without a reservation a retry could run twice.
+        console.error("[api/v1] idempotency reservation failed", err);
+        return internalError();
       }
+      if (found.kind === "collision") {
+        return finalize(
+          apiError(
+            ctx,
+            "idempotency_error",
+            "idempotency_collision",
+            "This Idempotency-Key was already used with a different request body. Use a new key for a new request.",
+          ),
+          undefined,
+          "idempotency_collision",
+        );
+      }
+      if (found.kind === "in_progress") {
+        return finalize(
+          apiError(
+            ctx,
+            "idempotency_error",
+            "idempotency_in_progress",
+            "A request with this Idempotency-Key is still being processed. Retry shortly.",
+            { extraHeaders: { "Retry-After": "1" } },
+          ),
+          undefined,
+          "idempotency_in_progress",
+        );
+      }
+      if (found.kind === "outcome_unknown") {
+        return finalize(
+          apiError(
+            ctx,
+            "idempotency_error",
+            "outcome_unknown",
+            "A previous request with this Idempotency-Key may have completed; check before retrying with a new key.",
+          ),
+          undefined,
+          "outcome_unknown",
+        );
+      }
+      if (found.kind === "replay") {
+        return finalize(
+          apiOk(ctx, found.cached.bodyJson, { status: found.cached.status }),
+          found.cached.bodyJson,
+        );
+      }
+      reservation = found;
     }
+    /** Hand the key back so a retry runs; never fails the response. */
+    const releaseReservation = async () => {
+      try {
+        await reservation?.release();
+      } catch (err) {
+        console.warn("[api/v1] idempotency reservation release failed", err);
+      }
+    };
 
-    // Add per-key rate-limit snapshot headers so client libraries can pace
-    // themselves without waiting for a 429. Computed AFTER the request was
-    // counted so `remaining` reflects post-increment.
-    const snapshot = snapshotRemaining({
-      keyId: ctx.keyId,
-      mode: ctx.mode,
-      scope: requireScope,
-    });
-    response.headers.set("X-RateLimit-Limit", String(snapshot.limit));
-    response.headers.set("X-RateLimit-Remaining", String(snapshot.remaining));
-    response.headers.set("X-RateLimit-Reset", String(snapshot.resetSec));
+    // Whatever throws from here on (the handler, a cacheIdempotently bug),
+    // the reservation is settled: its heartbeat stops and, unless store or
+    // release already ran, the key is handed back — or, once the handler has
+    // returned (its action may have happened), marked done_unknown.
+    let response: NextResponse | undefined;
+    try {
+      try {
+        response = await handler({ request, params, body, rawBody, ctx });
+      } catch (err) {
+        console.error("[api/v1] handler threw", err);
+        await releaseReservation();
+        return internalError();
+      }
 
-    return finalize(response, responseBodyJson);
+      // Read response body ONCE, here, so both the idempotency cache writer
+      // and the log capture see the same bytes without re-consuming the
+      // response stream.
+      const responseBodyJson = await response
+        .clone()
+        .json()
+        .catch(() => null);
+
+      // Cache successful responses only — never cache server errors so the
+      // caller's retry-with-same-key actually hits the handler again.
+      const storeOutcome = opts.cacheIdempotently
+        ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
+        : response.status < 500;
+      if (reservation && storeOutcome) {
+        // Never throws: retries, then marks the key done_unknown (see store).
+        await reservation.store({ status: response.status, bodyJson: responseBodyJson });
+      } else if (reservation) {
+        // Not a stored outcome (a 5xx, or the route vetoed it): free the key so
+        // the caller's retry actually runs the handler again.
+        await releaseReservation();
+      }
+
+      // Add per-key rate-limit snapshot headers so client libraries can pace
+      // themselves without waiting for a 429. Computed AFTER the request was
+      // counted so `remaining` reflects post-increment.
+      const snapshot = snapshotRemaining({
+        keyId: ctx.keyId,
+        mode: ctx.mode,
+        scope: requireScope,
+      });
+      response.headers.set("X-RateLimit-Limit", String(snapshot.limit));
+      response.headers.set("X-RateLimit-Remaining", String(snapshot.remaining));
+      response.headers.set("X-RateLimit-Reset", String(snapshot.resetSec));
+
+      return finalize(response, responseBodyJson);
+    } catch (err) {
+      // A step after the handler threw (e.g. a cacheIdempotently bug). Answer
+      // with the logged v1 500 rather than letting Next send a raw one; the
+      // finally marks the key done_unknown, since the handler did return.
+      console.error("[api/v1] post-handler step threw", err);
+      return internalError();
+    } finally {
+      if (response) await reservation?.markUnknown();
+      else await releaseReservation();
+    }
   };
 }
 
