@@ -266,6 +266,22 @@ describe("the wait hint", () => {
     expect(el.querySelector('[role="status"]')).toBeNull();
   });
 
+  it("times the load, not the page: switching pages mid-load keeps the timer", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await render(consumer("page1"));
+      await act(async () => vi.advanceTimersByTime(6_000));
+      // Navigate: the page that waited unmounts, another one mounts.
+      await render(createElement(Bare, { key: "bare" }));
+      await render(consumer("page2"));
+      expect(el.textContent).not.toContain(slowText);
+      await act(async () => vi.advanceTimersByTime(SLOW_AFTER_MS - 6_000));
+      expect(el.textContent).toContain(slowText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("says a load is slow, and a new load restarts the timer", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {

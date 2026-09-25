@@ -115,24 +115,30 @@ export function ContactsProvider({ children }: { children: ReactNode }) {
   );
 
   // waitForServer never answers from the cache, so offline (or on a stalled
-  // connection) a page would sit on its skeleton with no explanation.
-  const waiting = !!key && !current && waiters > 0;
+  // connection) a page would sit on its skeleton with no explanation. The
+  // timer lives as long as the load, so moving between pages mid-load does
+  // not restart it; whether anyone is waiting only decides visibility.
+  const pending = !!key && wantedKey === key && !current;
   return (
     <ContactsContext.Provider value={value}>
-      {waiting && <ContactsWaitHint key={key} />}
+      {pending && <ContactsWaitHint key={key} visible={waiters > 0} />}
       {children}
     </ContactsContext.Provider>
   );
 }
 
-/** Keyed per load by the provider, so the slow timer measures the current one. */
-function ContactsWaitHint() {
+/**
+ * Keyed per load by the provider, so the slow timer measures the current
+ * one. A fixed pill rather than a page-width block: it sits over full-bleed
+ * pages and open dialogs (z-50) alike, and clears the mobile tab bar.
+ */
+function ContactsWaitHint({ visible }: { visible: boolean }) {
   const hint = useLoadingHint();
-  if (!hint) return null;
+  if (!hint || !visible) return null;
   return (
     <p
       role="status"
-      className="mx-auto mb-4 w-full max-w-5xl rounded-lg border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+      className="fixed bottom-20 left-1/2 z-[60] w-max max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-full border bg-background px-4 py-2 text-sm text-muted-foreground shadow-lg md:bottom-4"
     >
       {hint === "offline"
         ? "You're offline. Contacts will load when your connection is back."
