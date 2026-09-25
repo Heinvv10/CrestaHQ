@@ -84,6 +84,13 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   move_deal_stage: { dealId: "d1", dealTitle: "Fibre", stage: "contacted" },
   update_deal: { dealId: "d1", title: "Fibre 200", value: 700 },
   delete_deal: { dealId: "d1" },
+  mark_deal_completed: { dealId: "d_won" },
+  list_pipelines: {},
+  get_pipeline: { pipelineId: "p1" },
+  create_pipeline: { name: "Installs", stages: [{ label: "Booked" }, { label: "Done", terminal: "won" }] },
+  update_pipeline: { pipelineId: "p1", name: "Renamed" },
+  delete_pipeline: { pipelineId: "p1" },
+  list_workflow_runs: { workflowId: "wf_draft" },
   list_webhooks: {},
   create_workflow: { template: "speed-to-lead" },
   list_workflows: {},
@@ -155,6 +162,12 @@ beforeEach(() => {
     body: "Your install is on {{1}}.", variables: [{ position: 1, label: "Day", sampleValue: "Monday", source: "manual", mergeTag: null }],
   });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
+  mem.seed("deals/d_won", {
+    subAccountId: "sa1", agencyId: "ag1", mode: "live", title: "Won deal", stageId: "won", contactId: "c1", value: 1, currency: "ZAR", territoryId: "global",
+  });
+  mem.seed("subAccounts/sa1/pipelines/p1", {
+    subAccountId: "sa1", agencyId: "ag1", name: "Installs", isDefault: false, stages: [{ id: "booked", label: "Booked", tone: "" }],
+  });
   mem.seed("workflows/wf_draft", {
     name: "Draft", subAccountId: "sa1", agencyId: "ag1", status: "draft", startNodeId: "n1",
     trigger: { type: "contact.created", filters: { all: [] } },

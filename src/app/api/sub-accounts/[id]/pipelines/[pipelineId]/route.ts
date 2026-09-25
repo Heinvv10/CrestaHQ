@@ -1,11 +1,11 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { countDeals, loadPipeline } from "@/lib/pipelines/server";
+import { loadPipeline } from "@/lib/pipelines/server";
 import { validatePipelineName, validateStages } from "@/lib/pipelines/stages";
+import { deletePipeline, updatePipeline, type PipelineRefusal } from "@/lib/pipelines/write";
+import type { PipelineStage } from "@/types/deals";
 
 /**
  * One pipeline. Sub-account admin only.
@@ -17,6 +17,13 @@ import { validatePipelineName, validateStages } from "@/lib/pipelines/stages";
  * DELETE — remove the pipeline. Refused for the default pipeline and for
  *          any pipeline that still has deals (409 with the count).
  */
+
+function refused({ status, error, stageId, count }: PipelineRefusal) {
+  return NextResponse.json(
+    { error, ...(stageId !== undefined ? { stageId } : {}), ...(count !== undefined ? { count } : {}) },
+    { status },
+  );
+}
 
 export async function PATCH(
   request: Request,
@@ -39,40 +46,23 @@ export async function PATCH(
     return NextResponse.json({ error: "Pipeline not found" }, { status: 404 });
   }
 
-  const update: Record<string, unknown> = {
-    updatedAt: FieldValue.serverTimestamp(),
-  };
+  let name: string | undefined;
   if (b.name !== undefined) {
-    const name = validatePipelineName(b.name);
-    if (!name.ok) return NextResponse.json({ error: name.error }, { status: 400 });
-    update.name = name.value;
+    const v = validatePipelineName(b.name);
+    if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
+    name = v.value;
   }
+  let stages: PipelineStage[] | undefined;
   if (b.stages !== undefined) {
-    const stages = validateStages(b.stages);
-    if (!stages.ok) {
-      return NextResponse.json({ error: stages.error }, { status: 400 });
+    const v = validateStages(b.stages);
+    if (!v.ok) {
+      return NextResponse.json({ error: v.error }, { status: 400 });
     }
-    const keep = new Set(stages.value.map((s) => s.id));
-    for (const old of pipeline.stages) {
-      if (keep.has(old.id)) continue;
-      const count = await countDeals(subAccountId, pipeline.id, old.id);
-      if (count > 0) {
-        return NextResponse.json(
-          {
-            error: `"${old.label}" still has ${count} deal${count === 1 ? "" : "s"}. Move them first.`,
-            stageId: old.id,
-            count,
-          },
-          { status: 409 },
-        );
-      }
-    }
-    update.stages = stages.value;
+    stages = v.value;
   }
 
-  await getAdminDb()
-    .doc(`subAccounts/${subAccountId}/pipelines/${pipeline.id}`)
-    .update(update);
+  const done = await updatePipeline({ subAccountId, pipeline, name, stages });
+  if (!done.ok) return refused(done);
   return NextResponse.json({ ok: true });
 }
 
@@ -88,24 +78,7 @@ export async function DELETE(
   if (!pipeline) {
     return NextResponse.json({ error: "Pipeline not found" }, { status: 404 });
   }
-  if (pipeline.isDefault) {
-    return NextResponse.json(
-      { error: "The default pipeline can't be deleted." },
-      { status: 409 },
-    );
-  }
-  const count = await countDeals(subAccountId, pipeline.id);
-  if (count > 0) {
-    return NextResponse.json(
-      {
-        error: `This pipeline still has ${count} deal${count === 1 ? "" : "s"}. Move or delete them first.`,
-        count,
-      },
-      { status: 409 },
-    );
-  }
-  await getAdminDb()
-    .doc(`subAccounts/${subAccountId}/pipelines/${pipeline.id}`)
-    .delete();
+  const done = await deletePipeline(subAccountId, pipeline);
+  if (!done.ok) return refused(done);
   return NextResponse.json({ ok: true });
 }

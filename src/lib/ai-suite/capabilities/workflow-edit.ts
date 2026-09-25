@@ -1,7 +1,7 @@
 import "server-only";
 
 import { isDocId } from "@/lib/server/doc-id";
-import { listWorkflows, type WorkflowPatch } from "@/lib/server/workflows-service";
+import { listWorkflowRuns, listWorkflows, type WorkflowPatch } from "@/lib/server/workflows-service";
 import { liveRunsQuery, updateWorkflowGuarded } from "@/lib/server/workflows-guarded";
 import type { WorkflowDoc } from "@/types/workflows";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
@@ -74,6 +74,32 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
       const { name, status, trigger, reentry, startNodeId, nodes } = wf;
       return { resultText: readableJson({ id: wf.id, name, status, trigger, reentry: reentry ?? "every_time", startNodeId, nodes }) };
+    },
+  },
+  {
+    name: "list_workflow_runs",
+    level: "sub-account",
+    requiredRole: "subAccountAdmin",
+    readonly: true,
+    surfaces: ["agent"],
+    menuLabel: "List a workflow's recent runs",
+    description: "List a workflow's most recent runs (up to 100): the contact, status, whether it was a test, when it started, and its last step.",
+    parameters: { type: "object", properties: { workflowId: workflowIdParam }, required: ["workflowId"], additionalProperties: false },
+    validate: (raw) => {
+      const workflowId = str(raw, "workflowId");
+      if (!isDocId(workflowId)) return { ok: false, error: "a workflowId is required" };
+      return { ok: true, args: { workflowId } };
+    },
+    summarize: () => "List a workflow's runs.",
+    execute: async (ctx, args) => {
+      const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
+      const runs = await listWorkflowRuns(ctx.subAccountId!, wf.id);
+      if (!runs.length) return { resultText: "No runs." };
+      const lines = runs.map((r) => {
+        const last = r.history.at(-1);
+        return `- run ${r.id} — contact: ${oneLine(r.contactName)} (${r.contactId}), status: ${r.status}${r.test ? " (test)" : ""}, started: ${new Date(r.enrolledAtMs).toISOString()}, last step: ${last ? `${last.type} (${last.result})` : "none"}`;
+      });
+      return { resultText: `Runs (most recent ${runs.length}):\n${lines.join("\n")}` };
     },
   },
   {

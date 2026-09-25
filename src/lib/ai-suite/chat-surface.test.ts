@@ -181,6 +181,8 @@ describe("registry invariants", () => {
     set_workflow_status: { workflowId: "wf_paused", status: "active" },
     delete_workflow: { workflowId: "wf_paused" },
     delete_deal: { dealId: "d_sample" },
+    mark_deal_completed: { dealId: "d_won" },
+    delete_pipeline: { pipelineId: "p_sample" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
@@ -214,6 +216,8 @@ describe("registry invariants", () => {
       });
     }
     mem.seed("deals/d_sample", { subAccountId: "sa1", agencyId: "ag1", title: "Sample deal", stageId: "new", territoryId: "global" });
+    mem.seed("deals/d_won", { subAccountId: "sa1", agencyId: "ag1", title: "Won deal", stageId: "won", contactId: "c_sample", territoryId: "global" });
+    mem.seed("subAccounts/sa1/pipelines/p_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample", isDefault: false, stages: [{ id: "a", label: "A", tone: "" }] });
   };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {
