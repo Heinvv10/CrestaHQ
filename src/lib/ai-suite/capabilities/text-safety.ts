@@ -34,7 +34,9 @@ export function agentText(key: string, value: string): string {
   return key === "address" ? v.replace(/\s*[\r\n]+\s*/g, ", ") : v;
 }
 
-/** A stored value on one line, for list output (legacy data may hold newlines). */
+/** A stored value on one line, for list output and previews (legacy or
+ *  externally supplied data — a WhatsApp profile name, a web-chat visitor —
+ *  may hold separators, control, zero-width or bidi characters). */
 export function oneLine(value: unknown): string {
-  return String(value ?? "").replace(/[\s\u0085\u2028\u2029]+/g, " ").trim();
+  return String(value ?? "").replace(/[\s\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").replace(/\p{Cf}/gu, "").trim();
 }

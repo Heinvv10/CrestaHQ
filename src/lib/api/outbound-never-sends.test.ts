@@ -104,7 +104,7 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   find_conversations: {},
   get_conversation: { conversationId: "c1" },
   list_scheduled_messages: { contactId: "c1" },
-  set_bot_mode: { conversationId: "c1", mode: "suggest" },
+  set_bot_mode: { conversationId: "c1", mode: "off" },
   cancel_scheduled_message: { contactId: "c1", scheduledMessageId: "s1" },
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
@@ -171,6 +171,7 @@ describe("an agent can never send on its own", () => {
   // Every fixture, plus the per-call approval cases (approvalFor).
   const CASES: Array<[string, Record<string, unknown>]> = [
     ...Object.entries(FIXTURE_ARGS),
+    ["set_bot_mode", { conversationId: "c1", mode: "suggest" }],
     ["set_bot_mode", { conversationId: "c1", mode: "auto" }],
   ];
   it.each(CASES)("%s %j: dispatches fine and reaches no outbound seam", async (name, args) => {

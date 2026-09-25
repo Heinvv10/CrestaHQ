@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
-const { canonical, assertPinnedWhenOutbound } = await import("./agent-proposals-encoding");
+const { canonical, assertPinnedWhenOutbound, normalizePreview } = await import("./agent-proposals-encoding");
 
 // canonical() keys the proposal id and compares previews, so two values
 // that differ must never encode the same (breaker R5).
@@ -49,5 +49,14 @@ describe("assertPinnedWhenOutbound", () => {
 
   it("other classes need not pin", () => {
     expect(() => assertPinnedWhenOutbound("cap", "hard_delete", { pinned: null })).not.toThrow();
+  });
+});
+
+describe("normalizePreview", () => {
+  it("makes every row value one visible line, for every capability's preview", () => {
+    expect(normalizePreview({ rows: [{ label: "Phone", value: "\u202e0821\n\u001c9 \u200b" }], pinned: { to: "x" } })).toEqual({
+      rows: [{ label: "Phone", value: "0821 9" }],
+      pinned: { to: "x" },
+    });
   });
 });

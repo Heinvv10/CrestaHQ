@@ -161,7 +161,7 @@ export const CONVERSATION_READ_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       const c = await tenantConversation(ctx.subAccountId!, args.conversationId);
       const lines = [
-        `Contact: ${nameOf(c)}${c.contactId ? ` (contact id: ${c.contactId})` : ""}`,
+        `Contact: ${nameOf(c)}${c.contactId ? ` (contact id: ${oneLine(c.contactId)})` : ""}`,
         `Status: ${oneLine(c.status) || "open"} · AI mode: ${oneLine(c.botMode) || "auto"}`,
         `Channels: ${Array.isArray(c.channelsSeen) ? c.channelsSeen.map(oneLine).join(", ") : oneLine(c.lastChannel)}`,
       ];
@@ -198,7 +198,7 @@ export const CONVERSATION_READ_CAPABILITIES: AiSuiteCapability[] = [
       if (list.length === 0) return { resultText: "No scheduled messages." };
       return {
         resultText: list
-          .map((m) => `- id: ${m.id} · ${m.status} · ${m.channel} · ${m.sendAt}: ${oneLine(m.body).slice(0, 200)}`)
+          .map((m) => `- id: ${m.id} · ${oneLine(m.status)} · ${oneLine(m.channel)} · ${m.sendAt}: ${oneLine(m.body).slice(0, 200)}`)
           .join("\n"),
       };
     },

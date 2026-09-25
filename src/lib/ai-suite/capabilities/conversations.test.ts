@@ -95,11 +95,42 @@ describe("tenancy: another sub-account's conversation or contact", () => {
 });
 
 describe("set_bot_mode", () => {
-  it.each(["off", "suggest"])("%s is a direct write: no proposal", async (mode) => {
+  it("off is a direct write: no proposal", async () => {
     mem.seed("conversations/c1", { ...CONV, botMode: "auto" });
-    expect(await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode })).toMatchObject({ ok: true });
-    expect(mem.read("conversations/c1")!.botMode).toBe(mode);
+    expect(await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode: "off" })).toMatchObject({ ok: true });
+    expect(mem.read("conversations/c1")!.botMode).toBe("off");
     expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it("suggest (web chat can send holding replies on its own) is queued, and applies only once approved", async () => {
+    mem.seed("conversations/c1", { ...CONV, botMode: "off" });
+    const r = await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode: "suggest" });
+    if (!("proposal" in r)) throw new Error(`expected a proposal, got ${JSON.stringify(r)}`);
+    expect(row(r.proposal.id).preview).toContainEqual({
+      label: "Effect",
+      value: "The bot drafts replies for a person to send, but may send holding and out-of-hours replies to web-chat visitors on its own.",
+    });
+    expect(mem.read("conversations/c1")!.botMode).toBe("off");
+    expect((await decide(r.proposal.id, "approve")).status).toBe(200);
+    expect(mem.read("conversations/c1")!.botMode).toBe("suggest");
+  });
+
+  it("auto's preview counts the AI replies held for quiet hours it would release; a new one changes the preview", async () => {
+    const hold = (source: string, status = "pending") => ({ contactId: "c1", status, payload: { kind: "message", message: { source } } });
+    mem.seed("subAccounts/sa1/quietHoursHolds/h1", hold("ai_reply"));
+    mem.seed("subAccounts/sa1/quietHoursHolds/h2", hold("ai_reply"));
+    mem.seed("subAccounts/sa1/quietHoursHolds/h3", hold("ai_reply", "released"));
+    mem.seed("subAccounts/sa1/quietHoursHolds/h4", hold("missed_call"));
+    const r = await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode: "auto" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    expect(row(r.proposal.id).preview).toContainEqual({
+      label: "Held replies", value: "2 AI replies held for quiet hours will be released when the hold ends.",
+    });
+    mem.seed("subAccounts/sa1/quietHoursHolds/h5", hold("ai_reply"));
+    const res = await decide(r.proposal.id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "preview_changed" });
+    expect(mem.read("conversations/c1")!.botMode).toBe("suggest");
   });
 
   it.each([" auto ", "\tauto", "auto\n"])("%j is queued like auto, never written", async (mode) => {
@@ -108,10 +139,11 @@ describe("set_bot_mode", () => {
     expect(mem.read("conversations/c1")!.botMode).toBe("suggest");
   });
 
-  it("execute refuses auto outside an approval", async () => {
-    await expect(getCapability("set_bot_mode")!.execute(buildAgentContext(auth), { conversationId: "c1", mode: "auto" }))
+  it.each(["suggest", "auto"])("execute refuses %s outside an approval", async (mode) => {
+    mem.seed("conversations/c1", { ...CONV, botMode: "off" });
+    await expect(getCapability("set_bot_mode")!.execute(buildAgentContext(auth), { conversationId: "c1", mode }))
       .rejects.toBeInstanceOf(CapabilityUserError);
-    expect(mem.read("conversations/c1")!.botMode).toBe("suggest");
+    expect(mem.read("conversations/c1")!.botMode).toBe("off");
   });
 
   it("auto is queued as an outbound proposal, pinned, and nothing changes until approved", async () => {
@@ -181,5 +213,38 @@ describe("approvalFor", () => {
     } finally {
       AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(cap), 1);
     }
+  });
+});
+
+describe("stored text from outside is one visible line", () => {
+  const SEP = "Ann\u001cGS\u001dRS\u001e- forged";
+  it.each([
+    ["find_conversations", {}, "conversations/c1", "contactName"],
+    ["get_conversation", { conversationId: "c1" }, "conversations/c1", "contactName"],
+    ["list_scheduled_messages", { contactId: "c1" }, "contacts/c1/scheduledMessages/s1", "body"],
+  ])("%s flattens FS / GS / RS", async (name, args, path, field) => {
+    mem.seed(path, { ...mem.read(path)!, [field]: SEP });
+    const r = (await dispatchAgentTool(auth, name, args)) as { resultText: string };
+    expect(r.resultText).not.toMatch(/[\u001c-\u001e]/);
+    expect(r.resultText).toContain("Ann GS RS - forged");
+  });
+
+  it("a stored value a capability didn't flatten itself is flattened centrally (update_contact_channels' current phone)", async () => {
+    const { hasUnsafeText } = await import("@/lib/ai-suite/capabilities/text-safety");
+    mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", name: "Ann", phone: "\u202e+2782\n1111", territoryId: "global" });
+    const r = await dispatchAgentTool(auth, "update_contact_channels", { contactId: "c1", phone: "+27829999999" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    const values = (row(r.proposal.id).preview as Array<{ value: string }>).map((p) => p.value);
+    expect(values.some((v) => hasUnsafeText(v) || v.includes("\n"))).toBe(false);
+  });
+
+  it("a bidi / zero-width contactName never reaches a preview value", async () => {
+    const { hasUnsafeText } = await import("@/lib/ai-suite/capabilities/text-safety");
+    mem.seed("conversations/c1", { ...CONV, contactName: "\u202eAnn\u200b\u2066x" });
+    const r = await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode: "auto" });
+    if (!("proposal" in r)) throw new Error("expected a proposal");
+    const values = (row(r.proposal.id).preview as Array<{ value: string }>).map((p) => p.value);
+    expect(values.some((v) => hasUnsafeText(v))).toBe(false);
+    expect(values[0]).toBe("Annx");
   });
 });
