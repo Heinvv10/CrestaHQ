@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
-import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
+import { isTemplateApprovedFor, templateRegistration } from "@/lib/comms/whatsapp/template-registrations";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   prepareWhatsappTemplateSend,
@@ -14,7 +14,7 @@ import type { Contact } from "@/types/contacts";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 import { CapabilityOutcomeUnknown, CapabilityUserError, type AiSuiteCapability, type PreviewRow } from "./types";
 import { str } from "./helpers";
-import { hasUnsafeText, messageBody, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { hasUnsafeText, messageBody, plainSpaces, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { conversationIdParam } from "./conversations-read";
 import { resolveContact } from "./conversation-send-support";
 import { approvedRecipient, outgoingApprovalTarget, outgoingPreview } from "./outgoing-message";
@@ -37,15 +37,23 @@ const RUN_OF_SPACES = / {5,}/;
 /** Why a variable value can't be sent, or null. Line breaks are refused (Cc). */
 function valueProblem(v: string): string | null {
   if (hasUnsafeText(v)) return "can't contain line breaks, tabs or invisible characters";
-  if (RUN_OF_SPACES.test(v)) return "can't contain more than 4 spaces in a row";
+  // Any space character counts (a run of no-break spaces too).
+  if (RUN_OF_SPACES.test(plainSpaces(v))) return "can't contain more than 4 spaces in a row";
   if (v.length > MAX_TEXT) return `must be at most ${MAX_TEXT} characters`;
   return null;
 }
 
-/** One hash of what the approver saw: the template and the filled-in values. */
-function renderedPin(templateId: string, tpl: WhatsappTemplateDoc, values: string[]): string {
+/**
+ * One hash of what the approver saw: the template and the filled-in values,
+ * plus the rail and the provider's own template id, since what the provider
+ * sends is ITS stored copy of the template.
+ */
+function renderedPin(templateId: string, { subAccount, tpl, values }: PreparedTemplateSend): string {
+  const sender = resolveWhatsappSender(subAccount);
+  const provider = sender.ok ? sender.provider : null;
+  const externalId = provider ? (templateRegistration(tpl, provider)?.externalId ?? null) : null;
   return createHash("sha256")
-    .update(JSON.stringify([templateId, tpl.name, tpl.language, tpl.body, tpl.buttons ?? [], values]))
+    .update(JSON.stringify([templateId, provider, externalId, tpl.name, tpl.language, tpl.body, tpl.buttons ?? [], values]))
     .digest("hex");
 }
 
@@ -112,7 +120,8 @@ export const CONVERSATION_WA_TEMPLATE_CAPABILITIES: AiSuiteCapability[] = [
       const { contactId, contact } = await resolveContact(ctx.subAccountId!, args.conversationId);
       // Consent is its own preview row (and refused at propose and approve):
       // an opt-out after the proposal must change the preview, not break it.
-      const { subAccount, tpl, values } = await prepared({ ...contact, id: contactId, whatsappOptedOut: false } as Contact, args);
+      const ready = await prepared({ ...contact, id: contactId, whatsappOptedOut: false } as Contact, args);
+      const { subAccount, tpl, values } = ready;
       const sender = resolveWhatsappSender(subAccount);
       if (!sender.ok) throw new CapabilityUserError(sender.error);
       // The bridge never holds an approved registration, so it is refused here too.
@@ -137,13 +146,13 @@ export const CONVERSATION_WA_TEMPLATE_CAPABILITIES: AiSuiteCapability[] = [
       ]);
       return {
         rows: [...base.rows, ...buttonsSummary(tpl)],
-        pinned: { ...base.pinned, templateId: args.templateId, rendered: renderedPin(args.templateId as string, tpl, values) },
+        pinned: { ...base.pinned, templateId: args.templateId, rendered: renderedPin(args.templateId as string, ready) },
       };
     },
     execute: async (ctx, args) => {
       const { contactId, sendTo, pinned } = await approvedRecipient(ctx, ctx.subAccountId!, args, "send_whatsapp_template");
       const ready = await prepared(sendTo, args);
-      if (pinned.templateId !== args.templateId || renderedPin(args.templateId as string, ready.tpl, ready.values) !== pinned.rendered) {
+      if (pinned.templateId !== args.templateId || renderedPin(args.templateId as string, ready) !== pinned.rendered) {
         throw new CapabilityUserError("The template or its values changed since this was reviewed; nothing was sent.");
       }
       let sent: Awaited<ReturnType<typeof sendWhatsappTemplate>>;

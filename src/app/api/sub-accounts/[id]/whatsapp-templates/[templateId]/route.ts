@@ -8,6 +8,7 @@ import {
   sanitiseButtons,
   sanitiseVariables,
 } from "@/lib/comms/whatsapp/template-validation";
+import { templateRegistration } from "@/lib/comms/whatsapp/template-registrations";
 import { loadContactCustomFieldKeys } from "@/lib/custom-fields/load-defs";
 import type {
   WhatsappTemplateCategory,
@@ -24,6 +25,7 @@ export const dynamic = "force-dynamic";
  */
 
 const EDITABLE: ReadonlyArray<string> = ["draft", "rejected", "failed"];
+const RAILS = ["twilio", "cloud", "bridge"] as const;
 const VALID_CATEGORIES: WhatsappTemplateCategory[] = [
   "UTILITY",
   "MARKETING",
@@ -69,6 +71,24 @@ export async function PATCH(
     body = (await request.json()) as PatchBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  // The flat status is one rail's. A template still approved (or awaiting
+  // approval) on another sends THAT rail's stored content, so changing what
+  // the recipient reads here would make every preview show text that isn't
+  // what goes out.
+  if (body.body !== undefined || body.buttons !== undefined || body.language !== undefined) {
+    for (const rail of RAILS) {
+      const status = templateRegistration(existing, rail)?.status;
+      if (status === "approved" || status === "pending") {
+        return NextResponse.json(
+          {
+            error: `This template is ${status} on ${rail}, so its text, buttons and language can't change. Create a new template instead.`,
+          },
+          { status: 409 },
+        );
+      }
+    }
   }
 
   const nextBody = (body.body ?? existing.body).trim();

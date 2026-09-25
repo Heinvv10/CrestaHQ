@@ -13,6 +13,7 @@ import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests 
 const dispatch = vi.hoisted(() => vi.fn(async (..._a: unknown[]): Promise<Record<string, unknown>> => ({ ok: true, messageId: "wamid.T1", provider: "twilio" })));
 const logAsk = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => undefined));
 vi.mock("@/lib/comms/whatsapp/template-dispatch", () => ({ dispatchWhatsappTemplateSend: dispatch }));
+vi.mock("@/lib/comms/whatsapp/cloud-credentials", async (orig) => ({ ...((await orig()) as object), whatsappCloudIsConfigured: async () => true }));
 vi.mock("@/lib/reviews/review-ask", async (orig) => ({ ...((await orig()) as object), logInboxReviewAsk: logAsk }));
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-proposals-harness")).adminMock());
 vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/agent-proposals-harness")).tenancyMock());
@@ -92,6 +93,10 @@ describe("propose", () => {
     ["a template not approved", () => editTemplate({ status: "paused" }), "isn't approved"],
     ["a missing template", () => mem.db.doc("subAccounts/sa1/whatsappTemplates/wt1").delete(), "Template not found"],
     ["the bridge rail", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, whatsappProvider: "bridge" }), "bridge"],
+    ["a merge-tag value with a run of no-break spaces", () => {
+      editTemplate({ variables: [{ ...TPL.variables[0], mergeTag: "workspace.name" }, TPL.variables[1]] });
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, name: "Acme\u00a0\u00a0\u00a0\u00a0\u00a0Fibre" });
+    }, "more than 4 spaces"],
     ["a WhatsApp opt-out", () => mem.seed("contacts/c1", { ...ANN, whatsappOptedOut: true }), "opted out of WhatsApp"],
   ])("%s → refused, no proposal", async (_label, arrange, message) => {
     await arrange();
@@ -155,6 +160,20 @@ describe("approve", () => {
   it("the template changed between the approve-time re-check and the send → failed, 0 sends", async () => {
     const id = await proposeId();
     beforeNextTransaction(async () => editTemplate({ body: "Hi {{1}}, it moved to {{2}}." }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id)).toMatchObject({ status: "failed", error: "The template or its values changed since this was reviewed; nothing was sent." });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the provider's template id (sid)", () => editTemplate({ contentSid: "HX2" })],
+    ["the rail", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, whatsappProvider: "cloud" })],
+    ["a merge-tag value (the contact's name)", () => mem.seed("contacts/c1", { ...ANN, name: "Bob Smith" })],
+  ])("%s changed between the approve-time re-check and the send → failed, 0 sends", async (_label, change) => {
+    // The same id on both rails, so a rail switch changes nothing but the rail.
+    editTemplate({ registrations: { cloud: { externalId: "HX1", status: "approved", rejectionReason: null } } });
+    const id = await proposeId();
+    beforeNextTransaction(async () => change());
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id)).toMatchObject({ status: "failed", error: "The template or its values changed since this was reviewed; nothing was sent." });
     expect(dispatch).not.toHaveBeenCalled();

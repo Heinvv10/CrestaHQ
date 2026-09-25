@@ -16,6 +16,7 @@ const dispatchWhatsappTemplateSend = vi.fn();
 const upsertConversationForMessage = vi.fn();
 const docs: Record<string, Record<string, unknown> | undefined> = {};
 let messageRow: Record<string, unknown> | undefined;
+let activity: Record<string, unknown> | undefined;
 
 vi.mock("@/lib/comms/route-auth", () => ({
   requireUid: (...a: unknown[]) => requireUid(...a),
@@ -39,7 +40,9 @@ vi.mock("@/lib/firebase/admin", () => ({
     collection: () => ({
       doc: () => ({
         collection: (name: string) => ({
-          add: async () => undefined,
+          add: async (data: Record<string, unknown>) => {
+            if (name === "activities") activity = data;
+          },
           doc: () => ({
             set: async (data: Record<string, unknown>) => {
               if (name === "whatsappMessages") messageRow = data;
@@ -66,6 +69,7 @@ function post(body: unknown) {
 beforeEach(() => {
   vi.clearAllMocks();
   messageRow = undefined;
+  activity = undefined;
   for (const k of Object.keys(docs)) delete docs[k];
   docs["subAccounts/sa1"] = { name: "Acme Fibre", whatsappEnabledByAgency: true, whatsappProvider: "cloud" };
   docs["subAccounts/sa1/whatsappTemplates/t1"] = {
@@ -144,5 +148,52 @@ describe("POST /api/comms/whatsapp/send-template — conversation index", () => 
 
     expect(res.status).toBe(502);
     expect(upsertConversationForMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/comms/whatsapp/send-template — refusals and attribution", () => {
+  const send = () => post({ contactId: "c1", templateId: "t1", manualValues: { "1": "Thandi" } });
+
+  it("an opted-out contact → 400, nothing dispatched", async () => {
+    requireContactAccessible.mockResolvedValue({ id: "c1", agencyId: "ag1", subAccountId: "sa1", phone: "+27821234567", whatsappOptedOut: true });
+    const res = await send();
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "This contact has opted out of WhatsApp." });
+    expect(dispatchWhatsappTemplateSend).not.toHaveBeenCalled();
+  });
+
+  it("WhatsApp disabled by the agency → 403, nothing dispatched", async () => {
+    docs["subAccounts/sa1"] = { name: "Acme Fibre", whatsappEnabledByAgency: false };
+    const res = await send();
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "WhatsApp is disabled for this sub-account by your agency." });
+    expect(dispatchWhatsappTemplateSend).not.toHaveBeenCalled();
+  });
+
+  it("not ready → 503 with the readiness error, nothing dispatched", async () => {
+    checkWhatsappReadiness.mockResolvedValue({ ready: false, provider: "cloud", error: "WhatsApp Cloud isn't connected." });
+    const res = await send();
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "WhatsApp Cloud isn't connected." });
+    expect(dispatchWhatsappTemplateSend).not.toHaveBeenCalled();
+  });
+
+  it("over the usage quota → 429 with its message", async () => {
+    const { UsageQuotaExceededError } = await import("@/lib/server/usage-meter");
+    const quota = new UsageQuotaExceededError("whatsappMessages");
+    dispatchWhatsappTemplateSend.mockRejectedValue(quota);
+    const res = await send();
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: quota.message });
+  });
+
+  it("the activity and the thread row are attributed to the sender", async () => {
+    dispatchWhatsappTemplateSend.mockResolvedValue({ ok: true, provider: "cloud", messageId: "wamid.3" });
+    expect((await send()).status).toBe(200);
+    expect(activity).toMatchObject({
+      type: "whatsapp_sent", createdBy: "u1", content: "WhatsApp template (Follow-up): Hi Thandi, following up.",
+      meta: { sid: "wamid.3", templateId: "t1", kind: "template" },
+    });
+    expect(messageRow).toMatchObject({ sentByUid: "u1", to: "+27821234567" });
   });
 });
