@@ -42,6 +42,7 @@ describe("joiners inside words are text", () => {
     ["a ZWJ at the start", "\u200dAnn"],
     ["a ZWJ between spaces", "Ann \u200d Lee"],
     ["a ZWNJ next to a digit", "Ann\u200c1"],
+    ["a ZWNJ after a digit", "1\u200cAnn"],
   ])("%s is still refused", async (_label, name) => {
     expect(await dispatchAgentTool(auth, "create_contact", { name })).toMatchObject({ ok: false, code: "invalid_args" });
   });
@@ -79,5 +80,28 @@ describe("an approved channel change is a person's write", () => {
     expect(updated).toHaveLength(1);
     expect(updated[0]).not.toHaveProperty("byAgent");
     expect(mem.list("agentProposals").map((p) => p.approval)).toEqual(["channel_change"]);
+  });
+});
+
+describe("characters that render as nothing without being Cf", () => {
+  it.each([
+    ["U+034F", "A\u034fB"], ["U+115F", "A\u115fB"], ["U+1160", "A\u1160B"],
+    ["U+3164", "A\u3164B"], ["U+FFA0", "A\uffa0B"], ["U+2800", "A\u2800B"],
+  ])("%s is refused", async (_label, name) => {
+    expect(await dispatchAgentTool(auth, "create_company", { name })).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it("U+FE0F (emoji presentation) is accepted", async () => {
+    const name = "\u2764\ufe0f Heart Co";
+    expect(created(await dispatchAgentTool(auth, "create_company", { name }), "companies").name).toBe(name);
+  });
+});
+
+describe("company email and website get the strict rule", () => {
+  it.each([
+    ["email", { name: "Co", email: "a\u200db@x.io" }],
+    ["website", { name: "Co", website: "ex\u200dample.com" }],
+  ])("a joiner between letters in the %s is refused", async (_label, args) => {
+    expect(await dispatchAgentTool(auth, "create_company", args)).toMatchObject({ ok: false, code: "invalid_args" });
   });
 });

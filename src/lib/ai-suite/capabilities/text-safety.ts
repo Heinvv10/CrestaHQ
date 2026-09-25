@@ -5,9 +5,13 @@
  */
 
 /** Control (Cc, incl. NEL), format (Cf: zero-width, bidi marks, BOM) and
- *  line / paragraph separator characters: refused in stored text an approver
- *  reads (a newline could fake a preview row, an invisible one hide text). */
-export const UNSAFE_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+ *  line / paragraph separator characters, plus the characters that render
+ *  as nothing without being Cf: the combining grapheme joiner (U+034F), the
+ *  Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) and the blank braille
+ *  cell (U+2800). Refused in stored text an approver reads (a newline could
+ *  fake a preview row, an invisible one hide text). U+FE0F (emoji
+ *  presentation) is a variation selector, not in the set. */
+export const UNSAFE_TEXT_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u034f\u115f\u1160\u2800\u3164\uffa0]/u;
 
 /** A ZWNJ / ZWJ that joins two letters, marks or emoji — Persian names,
  *  family emoji sequences (U+1F468 U+200D U+1F469 …) — is text, not a trick. */

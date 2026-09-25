@@ -123,6 +123,9 @@ export interface AiSuiteCapability {
    * `approvalTarget` are then required, as for `approval`.
    */
   approvalFor?: (args: Record<string, unknown>) => CapabilityApproval | undefined;
+  /** With `approvalFor`: what the tools listings (REST and MCP) show — the
+   *  class, and in words when it applies (e.g. "mode=auto"). */
+  approvalHint?: { approval: CapabilityApproval; when: string };
   /** Agent-surface-only narrowing of the raw args, applied before validate
    *  (e.g. dropping fields an agent may not set). */
   agentArgs?: (args: Record<string, unknown>) => Record<string, unknown>;

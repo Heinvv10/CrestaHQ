@@ -38,7 +38,6 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["update_company", { companyId: "co1/sub/y", name: "X" }],
   ["delete_company", { companyId: "co1/sub/y" }],
   ["get_conversation", { conversationId: "cv1/sub/y" }],
-  ["set_conversation_status", { conversationId: "cv1/sub/y", status: "closed" }],
   ["set_bot_mode", { conversationId: "cv1/sub/y", mode: "off" }],
   ["list_scheduled_messages", { contactId: "c1/sub/y" }],
   ["cancel_scheduled_message", { contactId: "c1/sub/y", scheduledMessageId: "s1" }],

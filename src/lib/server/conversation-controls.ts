@@ -3,10 +3,10 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isDocId } from "@/lib/server/doc-id";
-import type { ConversationBotMode, ConversationStatus } from "@/types/conversations";
+import type { ConversationBotMode } from "@/types/conversations";
 
 /**
- * Server-side writes of a conversation's operator controls — the same fields
+ * Server-side write of a conversation's AI mode — the same field
  * the inbox sets through the client SDK (lib/firestore/conversations.ts,
  * within the rules' allowed key set). For API agents. Each re-checks the
  * sub-account inside its transaction; returns false when the conversation is
@@ -27,12 +27,6 @@ async function patchConversation(
     return true;
   });
 }
-
-export const setConversationStatusServerSide = (
-  conversationId: string,
-  subAccountId: string,
-  status: ConversationStatus
-) => patchConversation(conversationId, subAccountId, { status });
 
 export const setConversationBotModeServerSide = (
   conversationId: string,

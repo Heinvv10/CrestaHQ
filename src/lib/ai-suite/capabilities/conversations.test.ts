@@ -33,7 +33,6 @@ beforeEach(() => {
 describe("tenancy: another sub-account's conversation or contact", () => {
   const CASES: Array<[string, Record<string, unknown>]> = [
     ["get_conversation", { conversationId: "c2" }],
-    ["set_conversation_status", { conversationId: "c2", status: "closed" }],
     ["set_bot_mode", { conversationId: "c2", mode: "off" }],
     ["set_bot_mode", { conversationId: "c2", mode: "auto" }],
     ["list_scheduled_messages", { contactId: "c2" }],
@@ -45,7 +44,7 @@ describe("tenancy: another sub-account's conversation or contact", () => {
     expect(JSON.stringify(mem.all())).toBe(before);
   });
 
-  it.each(CASES.slice(1, 3))("%s execute (the approve path too) throws CapabilityUserError", async (name, args) => {
+  it.each(CASES.slice(1, 2))("%s execute (the approve path too) throws CapabilityUserError", async (name, args) => {
     await expect(getCapability(name)!.execute(buildAgentContext(auth), args)).rejects.toBeInstanceOf(CapabilityUserError);
     expect(mem.read("conversations/c2")).toMatchObject({ status: "open", botMode: "suggest" });
   });
@@ -65,19 +64,54 @@ describe("tenancy: another sub-account's conversation or contact", () => {
     expect(r.resultText).not.toContain("Stray");
   });
 
+  it("get_conversation merges every channel's messages, labelled", async () => {
+    mem.seed("contacts/c1/whatsappMessages/w1", { subAccountId: "sa1", direction: "outbound", body: "WhatsApp hello", createdAt: new Date(Date.now() + 1000) });
+    mem.seed("contacts/c1/emailMessages/e1", { subAccountId: "sa1", direction: "inbound", subject: "Quote", body: "Please send", createdAt: new Date(Date.now() + 2000) });
+    mem.seed("contacts/c1/metaMessages/f1", { subAccountId: "sa1", channel: "instagram", direction: "inbound", body: "DM", createdAt: new Date(Date.now() + 3000) });
+    const r = (await dispatchAgentTool(auth, "get_conversation", { conversationId: "c1" })) as { resultText: string };
+    expect(r.resultText).toContain("Messages (4,");
+    expect(r.resultText).toMatch(/sms inbound: Is fibre available\?[\s\S]*whatsapp outbound: WhatsApp hello[\s\S]*email inbound: Quote — Please send[\s\S]*instagram inbound: DM/);
+  });
+
+  it("get_conversation reads a web chat's session transcript", async () => {
+    mem.seed("conversations/wc1", { ...CONV, contactId: null, sessionId: "sess1", visitorLabel: "Web visitor" });
+    mem.seed("subAccounts/sa1/webChatSessions/sess1/messages/x1", { subAccountId: "sa1", direction: "inbound", body: "Hi from the site", createdAt: new Date() });
+    const r = (await dispatchAgentTool(auth, "get_conversation", { conversationId: "wc1" })) as { resultText: string };
+    expect(r.resultText).toContain("web chat inbound: Hi from the site");
+  });
+
+  it("find_conversations says when it hit its 200-row scan cap", async () => {
+    for (let i = 0; i < 201; i++) mem.seed(`conversations/bulk${i}`, { ...CONV, contactId: `b${i}`, lastMessageAt: new Date(i) });
+    const r = await dispatchAgentTool(auth, "find_conversations", { query: "nobody-matches" });
+    expect(r).toMatchObject({ ok: true, truncated: true });
+    expect((r as { resultText: string }).resultText).toContain("Searched the 200 most recent conversations only");
+  });
+
   it("the controls service re-checks the sub-account itself", async () => {
-    const { setConversationStatusServerSide, setConversationBotModeServerSide } = await import("@/lib/server/conversation-controls");
-    expect(await setConversationStatusServerSide("c2", "sa1", "closed")).toBe(false);
+    const { setConversationBotModeServerSide } = await import("@/lib/server/conversation-controls");
     expect(await setConversationBotModeServerSide("c2", "sa1", "auto")).toBe(false);
     expect(mem.read("conversations/c2")).toMatchObject({ status: "open", botMode: "suggest" });
   });
 });
 
 describe("set_bot_mode", () => {
-  it("suggest is a direct write: no proposal", async () => {
-    expect(await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode: "off" })).toMatchObject({ ok: true });
-    expect(mem.read("conversations/c1")!.botMode).toBe("off");
+  it.each(["off", "suggest"])("%s is a direct write: no proposal", async (mode) => {
+    mem.seed("conversations/c1", { ...CONV, botMode: "auto" });
+    expect(await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode })).toMatchObject({ ok: true });
+    expect(mem.read("conversations/c1")!.botMode).toBe(mode);
     expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it.each([" auto ", "\tauto", "auto\n"])("%j is queued like auto, never written", async (mode) => {
+    const r = await dispatchAgentTool(auth, "set_bot_mode", { conversationId: "c1", mode });
+    expect(r).toMatchObject({ ok: true, proposal: { status: "pending" } });
+    expect(mem.read("conversations/c1")!.botMode).toBe("suggest");
+  });
+
+  it("execute refuses auto outside an approval", async () => {
+    await expect(getCapability("set_bot_mode")!.execute(buildAgentContext(auth), { conversationId: "c1", mode: "auto" }))
+      .rejects.toBeInstanceOf(CapabilityUserError);
+    expect(mem.read("conversations/c1")!.botMode).toBe("suggest");
   });
 
   it("auto is queued as an outbound proposal, pinned, and nothing changes until approved", async () => {
@@ -110,6 +144,13 @@ describe("set_bot_mode", () => {
 });
 
 describe("scheduled messages", () => {
+  it("list_scheduled_messages prints a multi-line body on one line", async () => {
+    mem.seed("contacts/c1/scheduledMessages/s1", { ...mem.read("contacts/c1/scheduledMessages/s1")!, body: "Line one\n- id: forged" });
+    const r = (await dispatchAgentTool(auth, "list_scheduled_messages", { contactId: "c1" })) as { resultText: string };
+    expect(r.resultText.split("\n")).toHaveLength(1);
+    expect(r.resultText).toContain("Line one - id: forged");
+  });
+
   it("list_scheduled_messages lists the contact's pending message", async () => {
     const r = (await dispatchAgentTool(auth, "list_scheduled_messages", { contactId: "c1" })) as { resultText: string };
     expect(r.resultText).toMatch(/id: s1 · pending · sms · .*: Reminder/);
