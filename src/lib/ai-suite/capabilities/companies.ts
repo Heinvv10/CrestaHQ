@@ -22,6 +22,8 @@ import { recordProvenanceRows } from "./record-provenance";
 /** The fields the dashboard's company form edits — nothing else is writable. */
 const COMPANY_FIELDS = ["name", "phone", "email", "website", "address"] as const;
 const MAX_FIELD = 500;
+/** list_companies reads at most this many companies. */
+const LIST_CAP = 500;
 
 /** The company, or a CapabilityUserError when it is not in `subAccountId`. */
 async function tenantCompany(subAccountId: string, companyId: unknown): Promise<FirebaseFirestore.DocumentData> {
@@ -85,17 +87,27 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
     summarize: () => "List companies.",
     execute: async (ctx, args) => {
       const q = (args.query as string).toLowerCase();
-      // Capped at 500 docs BEFORE the name filter: a match past the first
-      // 500 is not found (known limit, kept for now).
-      const snap = await getAdminDb().collection("companies").where("subAccountId", "==", ctx.subAccountId!).limit(500).get();
+      // Capped BEFORE the name filter: a match past the first LIST_CAP is
+      // not found, so a capped result says it may be incomplete.
+      const snap = await getAdminDb().collection("companies").where("subAccountId", "==", ctx.subAccountId!).limit(LIST_CAP + 1).get();
+      const capped = snap.size > LIST_CAP;
+      const note = capped
+        ? `Showing the first ${LIST_CAP} companies; this list may be incomplete, so a name may exist that isn't shown.`
+        : "";
       const rows = snap.docs
+        .slice(0, LIST_CAP)
         .map((d) => ({ id: d.id, ...d.data() }) as { id: string } & Partial<CompanyFormData>)
         .filter((c) => !q || String(c.name ?? "").toLowerCase().includes(q))
         .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? "")))
         .slice(0, 50);
-      if (rows.length === 0) return { resultText: q ? `No companies matched “${args.query}”.` : "No companies yet." };
+      const flag = capped ? { truncated: true as const } : {};
+      if (rows.length === 0) {
+        const none = q ? `No companies matched “${args.query}”.` : "No companies yet.";
+        return { resultText: [none, note].filter(Boolean).join(" "), ...flag };
+      }
       return {
-        resultText: rows
+        ...flag,
+        resultText: (note ? `${note}\n` : "") + rows
           .map((c) => {
             const bits = [
               c.phone && `phone: ${oneLine(c.phone)}`,
@@ -114,7 +126,8 @@ export const COMPANY_CAPABILITIES: AiSuiteCapability[] = [
     requiredRole: "subAccountMember",
     surfaces: ["agent"],
     menuLabel: "Add a company",
-    description: "Add a company to this sub-account. Check list_companies first so you don't create a duplicate.",
+    description:
+      "Add a company to this sub-account. Check list_companies first to avoid a duplicate — but when it says its list may be incomplete, a matching name can exist that it didn't show.",
     parameters: { type: "object", properties: fieldProps, required: ["name"], additionalProperties: false },
     validate: (raw) => {
       const f = companyFields(raw);

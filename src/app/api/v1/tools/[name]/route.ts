@@ -43,6 +43,7 @@ export const POST = withApiAuth<{ name: string }>(
     return apiOk(ctx, {
       result: r.resultText,
       ...(r.ref ? { ref: r.ref } : {}),
+      ...(r.truncated ? { truncated: true } : {}),
       ...(r.held ? { held: r.held, holdFailures: r.holdFailures ?? [] } : {}),
     });
   },

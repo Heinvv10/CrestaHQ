@@ -123,6 +123,7 @@ async function callTool(
     status = 200;
     const extra = {
       ...(r.ref ? { ref: r.ref } : {}),
+      ...(r.truncated ? { truncated: true } : {}),
       ...(r.held ? { held: r.held, holdFailures: r.holdFailures ?? [] } : {}),
     };
     body = { result: r.resultText, ...extra };

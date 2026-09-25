@@ -29,6 +29,8 @@ export type AgentDispatchResult =
       /** The validated args that ran (for logs; never the raw args). */
       args: Record<string, unknown>;
       ref?: { kind: string; id: string };
+      /** A read that hit its row cap: the result may be incomplete. */
+      truncated?: true;
       /** Workflow enrolments the write caused, held for approval (ruling Q). */
       held?: Array<Pick<HeldEnrolment, "proposalId" | "workflowName">>;
       /** Matched workflows whose enrolment was neither queued nor run. */
@@ -206,6 +208,7 @@ async function dispatch(
     resultText: result.resultText,
     args: validated.args,
     ...(result.ref ? { ref: result.ref } : {}),
+    ...(result.truncated ? { truncated: true as const } : {}),
     ...(result.held
       ? {
           held: result.held.map(({ proposalId, workflowName }) => ({ proposalId, workflowName })),

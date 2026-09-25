@@ -76,6 +76,8 @@ export interface ExecuteResult {
   held?: HeldEnrolment[];
   /** Agent surface only: matched workflows neither held nor run. */
   holdFailures?: HoldFailure[];
+  /** A read that hit its row cap: the result may be incomplete. */
+  truncated?: true;
 }
 
 export type ValidateResult =

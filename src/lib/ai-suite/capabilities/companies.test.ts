@@ -73,6 +73,23 @@ describe("tenancy: an sa2 companyId from an sa1 key", () => {
   });
 });
 
+describe("list_companies at its cap", () => {
+  it("501 companies → truncated: true and an explicit may-be-incomplete note", async () => {
+    for (let i = 0; i < 501; i++) mem.seed(`companies/bulk${i}`, { ...ACME, name: `Bulk ${i}` });
+    const r = await dispatchAgentTool(auth, "list_companies", { query: "zzz-not-there" });
+    expect(r).toMatchObject({ ok: true, truncated: true });
+    expect((r as { resultText: string }).resultText).toContain(
+      "Showing the first 500 companies; this list may be incomplete, so a name may exist that isn't shown."
+    );
+  });
+
+  it("under the cap → no flag, no note", async () => {
+    const r = await dispatchAgentTool(auth, "list_companies", {});
+    expect(r).not.toHaveProperty("truncated");
+    expect((r as { resultText: string }).resultText).not.toContain("incomplete");
+  });
+});
+
 describe("allowlist and doc shape", () => {
   it("create_company writes the dashboard's doc shape; tenancy keys come from the key, never the args", async () => {
     const r = await dispatchAgentTool(auth, "create_company", {
