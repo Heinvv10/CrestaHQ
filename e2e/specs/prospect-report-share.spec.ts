@@ -126,7 +126,8 @@ test("a ready report renders through the real share page, and an unknown token 4
     const visitor = await context.newPage();
     const res = await visitor.goto(`/report/${validToken}`);
     expect(res?.status()).toBe(200);
-    await expect(visitor.getByText(businessName)).toBeVisible({ timeout: 30_000 });
+    // The name shows in the header and in the business-details card.
+    await expect(visitor.getByText(businessName).first()).toBeVisible({ timeout: 30_000 });
     await expect(visitor.getByRole("heading", { name: "3 quick wins to boost bookings" })).toBeVisible();
     await expect(visitor.getByTestId("report-section-business_details")).toBeVisible();
     await expect(visitor.getByTestId("report-section-reputation")).toBeVisible();
