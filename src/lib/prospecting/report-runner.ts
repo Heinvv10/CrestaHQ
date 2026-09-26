@@ -40,6 +40,9 @@ const STORED_FACT_SECTIONS: ReadonlySet<ProspectSectionKey> = new Set(["business
 
 export const SECTION_TIMEOUT_MS = 20_000;
 export const REPORT_DEADLINE_MS = 100_000;
+// Get Leads gives a homepage 5 s because it fetches dozens per search; a
+// report fetches one, and every site-based section depends on it.
+const HOMEPAGE_TIMEOUT_MS = 15_000;
 
 export interface RunnerOptions {
   sections?: Section[];
@@ -62,7 +65,13 @@ export async function runProspectReport(
     if (business.website) {
       count("http");
       const website = business.website;
-      homepage = await withReportFetchSlot(() => fetchHomepage(website, deadline), deadline);
+      homepage = await withReportFetchSlot(
+        () => fetchHomepage(website, deadline, undefined, HOMEPAGE_TIMEOUT_MS),
+        deadline,
+      );
+      if (!homepage) {
+        console.warn("[prospecting] homepage not fetched", { website });
+      }
     }
     const sections = await Promise.all(
       (opts.sections ?? SECTIONS).map((section) =>

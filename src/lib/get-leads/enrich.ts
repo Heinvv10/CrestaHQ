@@ -131,9 +131,10 @@ export async function fetchHomepage(
   website: string,
   deadline: AbortSignal,
   maxBytes: number = HOMEPAGE_MAX_BYTES,
+  timeoutMs: number = SITE_TIMEOUT_MS,
 ): Promise<{ html: string; url: string } | null> {
   let url = httpUrl(website);
-  const signal = AbortSignal.any([AbortSignal.timeout(SITE_TIMEOUT_MS), deadline]);
+  const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), deadline]);
   try {
     for (let hop = 0; url && hop <= MAX_REDIRECTS; hop++) {
       const res = await publicFetch(url.href, {

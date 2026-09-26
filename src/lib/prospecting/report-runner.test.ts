@@ -203,3 +203,37 @@ describe("report page fetches have their own bounded pool (M3, NEW-M2)", () => {
     await Promise.all(reports);
   });
 });
+
+describe("runProspectReport homepage budget", () => {
+  // A publicFetch that honours its signal the way the real one does.
+  const slowPage = (ms: number) =>
+    publicFetch.mockImplementation(
+      (_url: string, init: { signal?: AbortSignal }) =>
+        new Promise((resolve, reject) => {
+          const t = setTimeout(() => resolve(html(BARE_HOMEPAGE)), ms);
+          init.signal?.addEventListener("abort", () => {
+            clearTimeout(t);
+            reject(init.signal?.reason);
+          });
+        }),
+    );
+
+  it("a homepage slower than Get Leads' 5 s budget is still fetched for a report", async () => {
+    slowPage(5_500);
+    const techStack = await import("./sections/tech-stack");
+    const out = await runProspectReport(BUSINESS, { sections: [techStack] });
+    expect(out.sections[0]?.status).toBe("ok");
+  }, 20_000);
+
+  it("logs the host when the homepage cannot be fetched", async () => {
+    publicFetch.mockRejectedValue(new Error("ECONNRESET"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const techStack = await import("./sections/tech-stack");
+    const out = await runProspectReport(BUSINESS, { sections: [techStack] });
+    expect(out.sections[0]?.status).toBe("unavailable");
+    expect(warn).toHaveBeenCalledWith(
+      "[prospecting] homepage not fetched",
+      expect.objectContaining({ website: BUSINESS.website }),
+    );
+  });
+});
