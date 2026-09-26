@@ -5,7 +5,7 @@ import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
-import { prepareBookingPage } from "@/lib/server/booking-page-write";
+import { prepareBookingPage, upcomingBookingCount } from "@/lib/server/booking-page-write";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
 import { CapabilityUserError, type AiSuiteActionContext, type AiSuiteCapability } from "./types";
@@ -16,9 +16,11 @@ import { assertPageName, FORM_KEYS, formOf, PAGE_PROPS, pageFields, pageRows, sl
 /**
  * update_booking_page for API agents (AGENT_API_V1_PLAN.md, PR12): the
  * booking editor's full-replace save (the stored page with the asked fields
- * changed, through booking-page-write.ts). A draft is edited directly. A
- * published page, or an edit that publishes one, changes what the public
- * sees and books, so a sub-account admin approves it (public_change) with
+ * changed, through booking-page-write.ts). A draft with no upcoming bookings
+ * is edited directly. A published page, an edit that publishes one, or a
+ * page with upcoming bookings (whose reminders, cancel and reschedule emails
+ * read it live) changes what the public sees, books or is sent, so a
+ * sub-account admin approves it (public_change) with
  * every changed field old -> new; the stored page is pinned and re-checked
  * in the write's transaction. The slug never changes (public links).
  */
@@ -34,7 +36,12 @@ async function plan(ctx: AiSuiteActionContext, args: Record<string, unknown>) {
   return { page, data: prepared.data };
 }
 
-const isPublic = (page: BookingPage, data: { status: string }) => page.status === "published" || data.status === "published";
+type QueryGet = (q: FirebaseFirestore.Query) => Promise<FirebaseFirestore.QuerySnapshot>;
+
+/** Is the page (or would it be) seen by the public, or read by messages to booked customers? */
+async function isPublic(subAccountId: string, page: BookingPage, status: unknown, get?: QueryGet): Promise<boolean> {
+  return page.status === "published" || status === "published" || (await upcomingBookingCount(subAccountId, page.id, get)) > 0;
+}
 
 export const BOOKING_PAGE_EDIT_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -57,9 +64,9 @@ export const BOOKING_PAGE_EDIT_CAPABILITIES: AiSuiteCapability[] = [
     summarize: (args) => `Edit the booking page /${args.slug}.`,
     approvalFor: async (args, ctx) => {
       const page = await tenantPage(ctx.subAccountId!, args.slug);
-      return page.status === "published" || args.status === "published" ? "public_change" : undefined;
+      return (await isPublic(ctx.subAccountId!, page, args.status)) ? "public_change" : undefined;
     },
-    approvalHint: { approval: "public_change", when: "the page is published, or the edit publishes it" },
+    approvalHint: { approval: "public_change", when: "the page is published, the edit publishes it, or bookings on it are upcoming" },
     approvalTarget: async (ctx, args) => {
       await tenantPage(ctx.subAccountId!, args.slug);
       return { contactId: null, territoryId: null, scoped: false };
@@ -85,8 +92,8 @@ export const BOOKING_PAGE_EDIT_CAPABILITIES: AiSuiteCapability[] = [
         const current = await tenantPage(ctx.subAccountId!, page.id, (r) => tx.get(r));
         if (pinned) {
           if (canonical(formOf(current)) !== pinned.before) throw new CapabilityUserError("The page was edited since this was reviewed; nothing was changed.");
-        } else if (isPublic(current, data)) {
-          throw new CapabilityUserError("This page is published (or the edit publishes it), so the change needs approval: send it again.");
+        } else if (await isPublic(ctx.subAccountId!, current, data.status, (q) => tx.get(q))) {
+          throw new CapabilityUserError("This page is published, the edit publishes it, or bookings on it are upcoming, so the change needs approval: send it again.");
         }
         tx.update(ref, {
           ...data,

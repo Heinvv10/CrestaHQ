@@ -126,9 +126,30 @@ describe("update_booking_page", () => {
   it("a draft published between the agent's read and its write -> refused, unchanged", async () => {
     beforeNextTransaction(async () => mem.seed(`${P}/bp1`, { ...PAGE, status: "published" }));
     expect(await call("update_booking_page", { slug: "bp1", durationMinutes: 45 })).toMatchObject({
-      ok: false, message: "This page is published (or the edit publishes it), so the change needs approval: send it again.",
+      ok: false, message: "This page is published, the edit publishes it, or bookings on it are upcoming, so the change needs approval: send it again.",
     });
     expect(mem.read(`${P}/bp1`)!.durationMinutes).toBe(PAGE.durationMinutes);
+  });
+
+  it("a draft with an upcoming booking (its reminders read the page): a meeting-link and name edit is a proposal, nothing written", async () => {
+    booking(86_400_000);
+    const id = await proposeId("update_booking_page", { slug: "bp1", meetingUrl: "https://meet.example/new", name: "Consult (new)" });
+    expect(row(id).approval).toBe("public_change");
+    expect(rowOf(id, "meetingUrl")).toMatch(/\u2192 https:\/\/meet\.example\/new$/);
+    expect(mem.read(`${P}/bp1`)).toEqual(PAGE);
+  });
+
+  it("a booking made on a draft between the agent's read and its write -> refused, unchanged", async () => {
+    beforeNextTransaction(async () => booking(86_400_000));
+    expect(await call("update_booking_page", { slug: "bp1", durationMinutes: 45 })).toMatchObject({
+      ok: false, message: "This page is published, the edit publishes it, or bookings on it are upcoming, so the change needs approval: send it again.",
+    });
+    expect(mem.read(`${P}/bp1`)).toEqual(PAGE);
+  });
+
+  it("a draft whose bookings are all past is still edited directly", async () => {
+    booking(-86_400_000);
+    expect(await call("update_booking_page", { slug: "bp1", durationMinutes: 45 })).toMatchObject({ ok: true });
   });
 
   it("the slug can't be changed; unknown pages are refused", async () => {

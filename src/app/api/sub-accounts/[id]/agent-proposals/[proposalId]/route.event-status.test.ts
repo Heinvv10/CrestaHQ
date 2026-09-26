@@ -68,6 +68,15 @@ describe("set_event_status", () => {
     expect(mem.list("workflowRuns")).toEqual([]);
   });
 
+  it("a held booking.showed whose appointment now belongs to another contact -> nobody enrolled", async () => {
+    workflow("booking.showed");
+    const r = (await call({ status: "completed" })) as { held: Array<{ proposalId: string }> };
+    mem.seed("contacts/c2", { ...ANN, name: "Ben" });
+    mem.seed("events/ev1", pastEvent({ status: "completed", contactId: "c2" }));
+    expect((await decide(r.held[0]!.proposalId, "approve")).status).toBe(422);
+    expect(mem.list("workflowRuns")).toEqual([]);
+  });
+
   it.each([
     ["an appointment that hasn't started", () => mem.seed("events/ev1", pastEvent({ startAt: Timestamp.fromMillis(Date.now() + 3_600_000) })), "completed", "This appointment hasn't happened yet."],
     ["another sub-account's appointment", () => mem.seed("events/ev1", pastEvent({ subAccountId: "sa2" })), "completed", "That appointment isn't in this workspace."],

@@ -32,9 +32,10 @@ export async function prepareBookingPage(
   const data = validated.value;
   const create = edit === undefined;
 
-  const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
-  if (create && !subSnap.exists) return { ok: false, status: 404, error: "Sub-account not found" };
-  const sub = subSnap.data() ?? {};
+  // An edit reads the sub-account only for the payment gate, as the route did.
+  const subSnap = create || data.payment ? await getAdminDb().doc(`subAccounts/${subAccountId}`).get() : null;
+  if (create && !subSnap?.exists) return { ok: false, status: 404, error: "Sub-account not found" };
+  const sub = subSnap?.data() ?? {};
   const agencyId = (sub.agencyId as string | undefined) ?? null;
   if (create && !agencyId) return { ok: false, status: 500, error: "Sub-account is missing tenancy metadata." };
 

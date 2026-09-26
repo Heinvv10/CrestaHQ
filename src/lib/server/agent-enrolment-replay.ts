@@ -29,10 +29,15 @@ const WHY: Record<string, string> = {
 /** Booking triggers an agent's status change holds, and the status each needs at replay. */
 const BOOKING_STATUS: Record<string, string> = { "booking.showed": "completed", "booking.no_show": "no_show" };
 
-/** A held booking trigger replays only while the event is still in this sub-account with that status. */
-export async function eventStillMatches(subAccountId: string, type: string, context: Record<string, unknown>): Promise<boolean> {
+/** A held booking trigger replays only while the event is still in this sub-account, for the same contact, with that status. */
+export async function eventStillMatches(subAccountId: string, type: string, context: Record<string, unknown>, contactId: string): Promise<boolean> {
   const event = (await getAdminDb().doc(`events/${String(context.eventId)}`).get()).data();
-  return !!event && event.subAccountId === subAccountId && eventStatus(event as Pick<CalendarEvent, "status">) === BOOKING_STATUS[type];
+  return (
+    !!event &&
+    event.subAccountId === subAccountId &&
+    event.contactId === contactId &&
+    eventStatus(event as Pick<CalendarEvent, "status">) === BOOKING_STATUS[type]
+  );
 }
 
 /** Deal triggers a held enrolment re-checks at replay (and the approvals list mirrors). */
@@ -84,7 +89,7 @@ export async function replayHeldEnrolment(
   if (DEAL_TRIGGERS.has(args.type) && !(await dealStillMatches(subAccountId, args.type, args.context ?? {}))) {
     throw new CapabilityUserError(WHY.deal_changed);
   }
-  if (args.type in BOOKING_STATUS && !(await eventStillMatches(subAccountId, args.type, args.context ?? {}))) {
+  if (Object.hasOwn(BOOKING_STATUS, args.type) && !(await eventStillMatches(subAccountId, args.type, args.context ?? {}, args.contactId))) {
     throw new CapabilityUserError(WHY.event_changed);
   }
   const key = (await getAdminDb().doc(`subAccounts/${subAccountId}/apiKeys/${keyId}`).get()).data();
