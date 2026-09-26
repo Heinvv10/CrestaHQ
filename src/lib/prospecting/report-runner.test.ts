@@ -225,7 +225,7 @@ describe("runProspectReport homepage budget", () => {
     expect(out.sections[0]?.status).toBe("ok");
   }, 20_000);
 
-  it("logs the host when the homepage cannot be fetched", async () => {
+  it("logs the website when the homepage cannot be fetched", async () => {
     publicFetch.mockRejectedValue(new Error("ECONNRESET"));
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const techStack = await import("./sections/tech-stack");
