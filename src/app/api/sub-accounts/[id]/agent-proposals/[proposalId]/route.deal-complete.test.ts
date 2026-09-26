@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Timestamp } from "firebase-admin/firestore";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
 /**
@@ -27,18 +28,28 @@ const DEAL = {
   stageId: "won", contactId: "c1", territoryId: "global",
 };
 const ANN = { subAccountId: "sa1", agencyId: "ag1", name: "Ann Smith", phone: "+27821111111", territoryId: "global" };
-const REVIEWS = { enabled: true, triggerOnDealCompleted: true, reviewUrl: "https://g.page/r/fixture/review", channel: "sms" };
+const REVIEWS = {
+  enabled: true, triggerOnDealCompleted: true, reviewUrl: "https://g.page/r/fixture/review", channel: "sms",
+  messageTemplate: "Hi {{firstName}}, thanks from {{businessName}}! Review us: {{reviewUrl}}",
+};
+const SMS_TEXT = "Hi Ann, thanks from Acme! Review us: https://g.page/r/fixture/review";
+const reviews = (patch: Record<string, unknown>) =>
+  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, googleReviewConfig: { ...REVIEWS, ...patch } });
 const call = (args: Record<string, unknown> = {}) => dispatchAgentTool(auth, "mark_deal_completed", { dealId: "d1", ...args });
 async function proposeId(): Promise<string> {
   const r = await call();
   if (!("proposal" in r)) throw new Error(`expected a proposal, got ${JSON.stringify(r)}`);
   return r.proposal.id;
 }
-const reviewRow = (id: string) => (row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === "Review request")!.value;
+const rowOf = (id: string, label: string) => (row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === label)?.value;
+const reviewRow = (id: string) => rowOf(id, "Review request");
+/** A write-transaction hook one transaction later than beforeNextTransaction:
+ *  after approve's claim, between execute's reads and its deal write. */
+const inExecuteWindow = (change: () => void) => beforeNextTransaction(async () => beforeNextTransaction(async () => change()));
 
 beforeEach(() => {
   reviewAsk.mockClear();
-  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, googleReviewConfig: REVIEWS });
+  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, name: "Acme", googleReviewConfig: REVIEWS });
   mem.seed("deals/d1", DEAL);
   mem.seed("contacts/c1", ANN);
 });
@@ -47,8 +58,9 @@ describe("mark_deal_completed", () => {
   it("proposing sends nothing and names the review request's recipient; approve completes and asks exactly once", async () => {
     const id = await proposeId();
     expect(row(id).approval).toBe("outbound");
-    expect(reviewRow(id)).toBe("Sent to Ann Smith (…1111) by SMS, unless quiet hours, an opt-out or the review cooldown stop it.");
-    expect(row(id).pinned).toEqual({ dealId: "d1", contactId: "c1", phone: "+27821111111" });
+    expect(reviewRow(id)).toBe("Sent to Ann Smith (…1111) by SMS; quiet hours delay it.");
+    expect(row(id).preview).toContainEqual({ label: "Message", value: SMS_TEXT, multiline: true });
+    expect(row(id).pinned).toEqual({ dealId: "d1", contactId: "c1", phone: "+27821111111", body: SMS_TEXT });
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
     expect((await decide(id, "approve")).status).toBe(200);
@@ -58,13 +70,73 @@ describe("mark_deal_completed", () => {
   });
 
   it.each([
-    ["review requests off", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, googleReviewConfig: { ...REVIEWS, triggerOnDealCompleted: false } }), "None: review requests for completed deals are off in this workspace."],
-    ["no review link", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, googleReviewConfig: { ...REVIEWS, reviewUrl: "" } }), "None: review requests for completed deals are off in this workspace."],
+    ["review requests off", () => reviews({ triggerOnDealCompleted: false }), "None: review requests for completed deals are off in this workspace."],
+    ["no review link", () => reviews({ reviewUrl: "" }), "None: review requests for completed deals are off in this workspace."],
     ["a contact with no phone", () => mem.seed("contacts/c1", { ...ANN, phone: "" }), "None: the deal's contact has no phone number."],
-    ["the WhatsApp channel", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, googleReviewConfig: { ...REVIEWS, channel: "whatsapp_template" } }), "Sent to Ann Smith (…1111) by WhatsApp, unless quiet hours, an opt-out or the review cooldown stop it."],
-  ])("%s → the preview says so", async (_label, arrange, text) => {
+    ["an SMS opt-out", () => mem.seed("contacts/c1", { ...ANN, smsOptedOut: true }), "None: the contact has opted out of SMS."],
+    ["a WhatsApp opt-out", () => (reviews({ channel: "whatsapp_manual" }), mem.seed("contacts/c1", { ...ANN, whatsappOptedOut: true })), "None: the contact has opted out of WhatsApp."],
+    ["a request within the cooldown", () => mem.seed("contacts/c1", { ...ANN, reviewRequestedAt: Timestamp.fromMillis(Date.now() - 86_400_000) }), "None: the contact was asked for a review in the last 90 days."],
+    ["no WhatsApp template set", () => reviews({ channel: "whatsapp_template" }), "None: no WhatsApp review template is set."],
+  ])("%s → the preview says so, with no message", async (_label, arrange, text) => {
     arrange();
-    expect(reviewRow(await proposeId())).toBe(text);
+    const id = await proposeId();
+    expect(reviewRow(id)).toBe(text);
+    expect(rowOf(id, "Message")).toBeUndefined();
+  });
+
+  it.each([
+    ["free-form WhatsApp", () => reviews({ channel: "whatsapp_manual" }), "WhatsApp", SMS_TEXT],
+    ["a WhatsApp template", () => {
+      reviews({ channel: "whatsapp_template", whatsappTemplateId: "rt1" });
+      mem.seed("subAccounts/sa1/whatsappTemplates/rt1", {
+        name: "review", body: "Hi {{1}}, please review {{2}}", status: "approved",
+        variables: [
+          { position: 1, label: "Name", sampleValue: "Ben", source: "merge_tag", mergeTag: "contact.firstName" },
+          { position: 2, label: "Biz", sampleValue: "Co", source: "merge_tag", mergeTag: "workspace.name" },
+        ],
+      });
+    }, "WhatsApp", "Hi Ann, please review Acme"],
+  ])("%s → the exact text in the preview", async (_label, arrange, channel, text) => {
+    arrange();
+    const id = await proposeId();
+    expect(reviewRow(id)).toBe(`Sent to Ann Smith (…1111) by ${channel}; quiet hours delay it.`);
+    expect(rowOf(id, "Message")).toBe(text);
+  });
+
+  it("the message template changed since the proposal → preview_changed, nothing sent", async () => {
+    const id = await proposeId();
+    reviews({ messageTemplate: "New words {{reviewUrl}}" });
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "preview_changed" });
+    expect(reviewAsk).not.toHaveBeenCalled();
+    expect(mem.read("deals/d1")!.completed).toBeUndefined();
+  });
+
+  it("a pipeline an agent last edited → a warning that its Won stage may be the agent's", async () => {
+    mem.seed("subAccounts/sa1/pipelines/default", {
+      subAccountId: "sa1", agencyId: "ag1", name: "Default", isDefault: true, lastAgentEditKey: "abcd1234", lastAgentEditAt: Timestamp.fromMillis(Date.UTC(2030, 0, 1)),
+      stages: [{ id: "new", label: "New", tone: "" }, { id: "won", label: "Won", tone: "", terminal: "won" }],
+    });
+    expect(rowOf(await proposeId(), "Warning")).toBe(
+      "API agent abcd1234 last edited this pipeline at 2030-01-01T00:00:00.000Z: its stage names and which stage counts as Won may be the agent's."
+    );
+  });
+
+  it("completed by someone else between execute's read and its write → no second review request", async () => {
+    const id = await proposeId();
+    inExecuteWindow(() => mem.seed("deals/d1", { ...DEAL, completed: true }));
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(reviewAsk).not.toHaveBeenCalled();
+  });
+
+  it("moved out of Won between execute's read and its write → failed, not completed, nothing sent", async () => {
+    const id = await proposeId();
+    inExecuteWindow(() => mem.seed("deals/d1", { ...DEAL, stageId: "new" }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id).error).toBe("The deal is no longer on a Won stage; it was not marked completed.");
+    expect(mem.read("deals/d1")!.completed).toBeUndefined();
+    expect(reviewAsk).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -92,13 +164,14 @@ describe("mark_deal_completed", () => {
 
   it.each([
     ["the number", () => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" })],
+    ["the review request's text", () => reviews({ messageTemplate: "Other words {{reviewUrl}}" })],
     // Same number, different person: the contact itself is pinned.
     ["the deal's contact", () => (mem.seed("contacts/c2", { ...ANN, name: "Ben" }), mem.seed("deals/d1", { ...DEAL, contactId: "c2" }))],
   ])("%s changed between the approve-time re-check and the write → failed, not completed, nothing sent", async (_label, change) => {
     const id = await proposeId();
     beforeNextTransaction(async () => change());
     expect((await decide(id, "approve")).status).toBe(422);
-    expect(row(id).error).toBe("The deal's contact or their number changed since this was reviewed; nothing was changed.");
+    expect(row(id).error).toBe("The deal's contact, their number or the review request changed since this was reviewed; nothing was changed.");
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
     expect(reviewAsk).not.toHaveBeenCalled();
   });

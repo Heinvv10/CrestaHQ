@@ -30,7 +30,7 @@ const patch = (body: unknown) =>
 beforeEach(() => {
   fake.deal.completed = undefined;
   fake.ask.mockClear();
-  fake.update.mockReset().mockResolvedValue({ deal: { id: "d1", contact_id: "c1" }, stageTerminal: "won" });
+  fake.update.mockReset().mockResolvedValue({ deal: { id: "d1", contact_id: "c1" }, stageTerminal: "won", previousCompleted: false });
 });
 
 it("a Won deal first marked completed asks for a review, once", async () => {
@@ -39,11 +39,11 @@ it("a Won deal first marked completed asks for a review, once", async () => {
   expect(fake.ask).toHaveBeenCalledWith({ subAccountId: "sa", agencyId: "ag", contactId: "c1", trigger: "deal_completed" });
 });
 
-it("an already completed deal, or one not Won, or an unrelated edit asks for nothing", async () => {
-  fake.deal.completed = true;
+it("an already completed deal (as the write's transaction saw it), or one not Won, or an unrelated edit asks for nothing", async () => {
+  // Completed by someone else between the route's read and the write.
+  fake.update.mockResolvedValueOnce({ deal: { id: "d1", contact_id: "c1" }, stageTerminal: "won", previousCompleted: true });
   await patch({ completed: true });
-  fake.deal.completed = undefined;
-  fake.update.mockResolvedValue({ deal: { id: "d1", contact_id: "c1" }, stageTerminal: undefined });
+  fake.update.mockResolvedValue({ deal: { id: "d1", contact_id: "c1" }, stageTerminal: undefined, previousCompleted: false });
   await patch({ completed: true });
   await patch({ title: "Renamed" });
   expect(fake.ask).not.toHaveBeenCalled();

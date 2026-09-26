@@ -11,13 +11,15 @@ import type { DealWriteResult } from "./deals-service";
  * agent's approved mark_deal_completed, so both ask exactly the same way.
  */
 export function askReviewIfNewlyCompleted(opts: {
-  /** The deal as it was before the write. */
+  /** The deal as it was before the write (for its tenant and contact). */
   before: FirebaseFirestore.DocumentData;
   completed: boolean | undefined;
   result: DealWriteResult;
 }): void {
   const { before, result } = opts;
-  const becameCompleted = opts.completed === true && before.completed !== true;
+  // "Was it already completed?" from the write's own transaction: of two
+  // writers completing it at once, only one sees "not yet".
+  const becameCompleted = opts.completed === true && result.previousCompleted !== true;
   if (becameCompleted && result.stageTerminal === "won") {
     void maybeSendReviewRequest({
       subAccountId: before.subAccountId as string,
