@@ -14,13 +14,13 @@ import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
 import { isWithinServiceWindow } from "@/lib/comms/whatsapp/send-mode";
 import { dispatchWhatsappTemplateSend } from "@/lib/comms/whatsapp/template-dispatch";
-import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import {
   DEFAULT_REVIEW_COOLDOWN_DAYS,
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
+  type ReviewChannel,
 } from "@/lib/reviews/constants";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { logReviewRequest } from "@/lib/reviews/request-log";
@@ -28,8 +28,7 @@ import { planReviewLink, scheduleReviewReminder, supersedeOtherReminders } from 
 import { phoneHash, templateHash } from "@/lib/reviews/reminder-checks";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
-import type { MergeTagSubject } from "@/lib/automations/merge-tags";
-import type { AgencyDoc, SubAccountDoc } from "@/types";
+import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
@@ -39,6 +38,7 @@ import {
   type QuietHoursHold,
 } from "@/lib/comms/quiet-hours";
 import { holdForQuietHours } from "@/lib/comms/quiet-hours-hold";
+import { fillPositional, reviewBodyNow, reviewSmsBody, reviewTemplateFill } from "@/lib/reviews/review-body";
 
 /**
  * Google review-request dispatcher. Sends a "leave us a review" message over
@@ -69,6 +69,11 @@ export interface SendReviewInput {
   /** SP5 d2: a reminder re-send of this request (trigger "reminder") — same
    *  link, no cooldown, no new log row; the worker records the attempt. */
   reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
+  /** What a person approved (an agent's mark_deal_completed): the send is
+   *  refused if the contact's number, the configured channel or the text now
+   *  differs, here or when a quiet-hours hold releases it; and it never
+   *  schedules reminders. Absent for every other caller. */
+  expect?: { phone: string; channel: ReviewChannel; body: string; /** whatsapp_template only. */ fingerprint?: string };
 }
 
 export interface SendReviewResult {
@@ -78,30 +83,10 @@ export interface SendReviewResult {
    *  whatsapp_not_configured | window_closed | rail_has_no_templates |
    *  no_template | template_not_approved | template_var_missing |
    *  send_failed | error | quiet_hours_held | quiet_hours (reminder: the
-   *  worker reschedules itself with `quietHours`) */
+   *  worker reschedules itself with `quietHours`) | changed_since_approval */
   reason?: string;
   /** Set with reason "quiet_hours": when the quiet window ends. */
   quietHours?: QuietHoursHold;
-}
-
-function firstWord(s: string): string {
-  const t = (s ?? "").trim();
-  const i = t.indexOf(" ");
-  return i === -1 ? t : t.slice(0, i);
-}
-
-function fillReviewSms(
-  template: string,
-  v: { firstName: string; businessName: string; reviewUrl: string },
-): string {
-  return template
-    .replace(/\{\{\s*firstName\s*\}\}/g, v.firstName)
-    .replace(/\{\{\s*businessName\s*\}\}/g, v.businessName)
-    .replace(/\{\{\s*reviewUrl\s*\}\}/g, v.reviewUrl);
-}
-
-function fillPositional(body: string, values: string[]): string {
-  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (_m, n: string) => values[Number(n) - 1] ?? "");
 }
 
 function toMillis(v: unknown): number | null {
@@ -154,6 +139,21 @@ export async function maybeSendReviewRequest(
     if (!contact.phone) return { sent: false, reason: "no_phone" };
 
     const channel = normalizeReviewChannel(cfg.channel);
+    // The template fill an approved send was checked against, sent as is.
+    let approvedTemplate: { tpl: WhatsappTemplateDoc; values: string[] } | undefined;
+    if (input.expect) {
+      const now = await reviewBodyNow({ db, subAccountId: input.subAccountId, subAccount, cfg, channel, contact, reviewUrl });
+      if (
+        contact.phone !== input.expect.phone ||
+        channel !== input.expect.channel ||
+        !now.ok ||
+        now.body !== input.expect.body ||
+        (channel === "whatsapp_template" && now.template?.fingerprint !== input.expect.fingerprint)
+      ) {
+        return { sent: false, reason: "changed_since_approval" };
+      }
+      approvedTemplate = now.template;
+    }
     const isWhatsapp = channel !== "sms";
     const convoChannel: ConversationChannel = isWhatsapp ? "whatsapp" : "sms";
     // A reminder goes only on the channel its request went on.
@@ -180,7 +180,10 @@ export async function maybeSendReviewRequest(
 
     const businessName = subAccount.name ?? "";
     // SP5 d2: reminders off (the default) → null, and every body below is as before.
-    const plan = planReviewLink({
+    // An approved agent send (expect) never starts reminders: each would be
+    // rendered later, unreviewed. With no plan the link is the configured
+    // one (tracking exists only for reminders), so the text is as approved.
+    const plan = input.expect ? null : planReviewLink({
       config: cfg,
       channel,
       subAccountId: input.subAccountId,
@@ -230,10 +233,7 @@ export async function maybeSendReviewRequest(
         return { sent: false, reason: "whatsapp_not_configured" };
       }
 
-      const freeFormBody = fillReviewSms(
-        cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl: bodyUrl },
-      );
+      const freeFormBody = reviewSmsBody(cfg, contact, businessName, bodyUrl);
 
       if (channel === "whatsapp_manual") {
         // Free-form. No approved template required. Read the window ONCE and
@@ -275,22 +275,13 @@ export async function maybeSendReviewRequest(
           return { sent: false, reason: "rail_has_no_templates" };
         }
         if (!cfg.whatsappTemplateId) return { sent: false, reason: "no_template" };
-        const tplSnap = await db
-          .doc(`subAccounts/${input.subAccountId}/whatsappTemplates/${cfg.whatsappTemplateId}`)
-          .get();
-        const tpl = tplSnap.exists ? (tplSnap.data() as WhatsappTemplateDoc) : null;
         // Approval is per-rail: a template cleared through Twilio's BSP has
         // never been seen by our own WABA, so "approved" alone is not enough.
-        if (!tpl) return { sent: false, reason: "template_not_approved" };
-        const subject = await buildSubject(db, contact, subAccount);
-        const values = resolveTemplateVariables({
-          variables: tpl.variables,
-          subject,
-          manualValues: {},
-        });
-        if (values.some((v) => v.trim() === "")) {
-          return { sent: false, reason: "template_var_missing" };
-        }
+        const filled = approvedTemplate
+          ? { ok: true as const, ...approvedTemplate }
+          : await reviewTemplateFill(db, input.subAccountId, cfg.whatsappTemplateId, contact, subAccount);
+        if (!filled.ok) return { sent: false, reason: filled.reason };
+        const { tpl, values } = filled;
         let templateFrom = "";
         const res = await dispatchWhatsappTemplateSend({
           subAccountId: input.subAccountId,
@@ -323,10 +314,7 @@ export async function maybeSendReviewRequest(
       if (!dedicated && !smsIsConfigured()) {
         return { sent: false, reason: "sms_not_configured" };
       }
-      renderedBody = fillReviewSms(
-        cfg.messageTemplate || DEFAULT_REVIEW_SMS_TEMPLATE,
-        { firstName: firstWord(contact.name), businessName, reviewUrl: bodyUrl },
-      );
+      renderedBody = reviewSmsBody(cfg, contact, businessName, bodyUrl);
       const res = await sendSmsForSubAccount({
         subAccountId: input.subAccountId,
         subAccount,
@@ -435,6 +423,10 @@ export async function maybeSendReviewRequest(
           }
         : {}),
     });
+    if (input.expect) {
+      // An approved send starts no reminders, and ends any still waiting.
+      await supersedeOtherReminders(input.subAccountId, contact.id, phoneHash(contact.phone), "");
+    }
     if (plan?.reminder) {
       await supersedeOtherReminders(input.subAccountId, contact.id, phoneHash(contact.phone), plan.requestId);
       await scheduleReviewReminder({
@@ -502,39 +494,4 @@ async function whatsappLastInboundAt(
     // closed.
     return null;
   }
-}
-
-/** Build the merge-tag subject for WhatsApp template variable resolution. */
-async function buildSubject(
-  db: Firestore,
-  contact: Contact,
-  subAccount: SubAccountDoc,
-): Promise<MergeTagSubject> {
-  let owner = { displayName: "", email: "" };
-  try {
-    const agencySnap = await db.doc(`agencies/${contact.agencyId}`).get();
-    const agency = agencySnap.exists ? (agencySnap.data() as AgencyDoc) : null;
-    if (agency?.ownerUid) {
-      const ownerSnap = await db.doc(`users/${agency.ownerUid}`).get();
-      const od = ownerSnap.data();
-      owner = {
-        displayName: (od?.displayName as string) ?? "",
-        email: (od?.email as string) ?? "",
-      };
-    }
-  } catch {
-    /* best-effort */
-  }
-  return {
-    contact: {
-      name: contact.name ?? "",
-      email: contact.email ?? "",
-      phone: contact.phone ?? "",
-      customFields: contact.customFields ?? null,
-    },
-    owner,
-    workspace: { name: subAccount.name ?? "" },
-    bookingLink: subAccount.bookingLink ?? "",
-    unsubscribeLink: "",
-  };
 }

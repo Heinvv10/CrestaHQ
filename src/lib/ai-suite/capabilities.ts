@@ -26,6 +26,8 @@ import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
 import { WORKFLOW_EDIT_CAPABILITIES } from "./capabilities/workflow-edit";
 import { WORKFLOW_STATUS_CAPABILITIES } from "./capabilities/workflow-status";
 import { DEAL_EDIT_CAPABILITIES } from "./capabilities/deal-edit";
+import { DEAL_COMPLETE_CAPABILITIES } from "./capabilities/deal-complete";
+import { PIPELINE_CAPABILITIES } from "./capabilities/pipelines";
 import { CONTACT_CAPABILITIES } from "./capabilities/contacts";
 import { CONTACT_EDIT_CAPABILITIES } from "./capabilities/contact-edit";
 import { CONTACT_TAG_CAPABILITIES } from "./capabilities/contact-tags";
@@ -87,6 +89,8 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...DEAL_CAPABILITIES,
   ...DEAL_STAGE_CAPABILITIES,
   ...DEAL_EDIT_CAPABILITIES,
+  ...DEAL_COMPLETE_CAPABILITIES,
+  ...PIPELINE_CAPABILITIES,
   ...WEBHOOK_CAPABILITIES,
   ...WEBHOOK_TEST_CAPABILITIES,
   ...WEBHOOK_URL_CAPABILITIES,

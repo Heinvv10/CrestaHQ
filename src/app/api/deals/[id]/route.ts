@@ -14,7 +14,7 @@ import {
   type UpdateDealPatch,
 } from "@/lib/server/deals-service";
 import { isAssignableMember, parseAssignedToUid } from "@/lib/server/assignee";
-import { maybeSendReviewRequest } from "@/lib/reviews/request";
+import { askReviewIfNewlyCompleted } from "@/lib/server/deal-completion";
 import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import { loadPipeline } from "@/lib/pipelines/server";
@@ -171,17 +171,7 @@ export async function PATCH(
   }
 
   // Auto Google review request when a Won deal is FIRST marked completed.
-  // Fire-and-forget; the dispatcher re-checks the sub-account's review config
-  // (enabled + triggerOnDealCompleted + cooldown) before sending anything.
-  const becameCompleted = patch.completed === true && data.completed !== true;
-  if (becameCompleted && result.stageTerminal === "won") {
-    void maybeSendReviewRequest({
-      subAccountId: data.subAccountId as string,
-      agencyId: data.agencyId as string,
-      contactId: (result.deal.contact_id ?? data.contactId) as string,
-      trigger: "deal_completed",
-    });
-  }
+  askReviewIfNewlyCompleted({ before: data, completed: patch.completed, result });
 
   return NextResponse.json({ deal: result.deal });
 }

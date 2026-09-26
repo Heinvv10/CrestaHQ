@@ -225,6 +225,9 @@ export interface DealWriteResult {
   stage: PipelineStage;
   /** Terminal flag of the stage the deal now sits in (update only). */
   stageTerminal?: "won" | "lost";
+  /** Update only: whether the deal was already completed, read in the
+   *  write's own transaction (so two writers can't both see "not yet"). */
+  previousCompleted?: boolean;
   /** Agent writes only: the enrolments held for approval… */
   held?: HeldEnrolment[];
   /** …and the matched workflows that could be neither held nor run. */
@@ -414,6 +417,12 @@ export async function updateDealServerSide(opts: {
   source: StageMoveSource;
   /** An API agent made this write: enrolments are held and awaited. */
   actor?: AgentActor;
+  /**
+   * Runs in the transaction with the deal as it is and its current stage's
+   * terminal flag; throws to refuse the write (e.g. completing a deal that
+   * is no longer Won).
+   */
+  guard?: (existing: FirebaseFirestore.DocumentData, terminal: "won" | "lost" | undefined) => void;
 }): Promise<DealWriteResult | null> {
   const db = getAdminDb();
   const ref = db.doc(`deals/${opts.dealId}`);
@@ -441,6 +450,7 @@ export async function updateDealServerSide(opts: {
     const stages = pipeline.stages;
     const terminalOf = (stageId: string | undefined) =>
       stageId ? findStage(pipeline, stageId)?.terminal : undefined;
+    opts.guard?.(existing, terminalOf(previousStage));
     if (patch.pipelineId !== undefined && patch.stageId === undefined && !patch.terminal) {
       throw new DealStageError("invalid_stage", "A pipeline move needs a stageId.");
     }
@@ -599,6 +609,7 @@ export async function updateDealServerSide(opts: {
     deal,
     stage: findStage(pipeline, toStage) ?? getStage(toStage, stages),
     stageTerminal: terminalOf(toStage),
+    previousCompleted: existing.completed === true,
     ...(opts.actor ? held : {}),
   };
 }

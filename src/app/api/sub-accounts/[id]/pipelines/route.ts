@@ -1,15 +1,13 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
 import {
   requireSubAccountAdmin,
   requireSubAccountMember,
 } from "@/lib/auth/require-tenancy";
 import { listPipelines } from "@/lib/pipelines/server";
 import { validatePipelineName, validateStages } from "@/lib/pipelines/stages";
-import type { PipelineDoc } from "@/types/deals";
+import { createPipeline } from "@/lib/pipelines/write";
 
 /**
  * Pipelines per sub-account (`subAccounts/{id}/pipelines`).
@@ -51,24 +49,14 @@ export async function POST(
   const stages = validateStages(b.stages);
   if (!stages.ok) return NextResponse.json({ error: stages.error }, { status: 400 });
 
-  const db = getAdminDb();
-  const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  const agencyId = subSnap.data()?.agencyId as string | undefined;
-  if (!subSnap.exists || !agencyId) {
-    return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
-  }
-
-  const ref = db.collection(`subAccounts/${subAccountId}/pipelines`).doc();
-  const doc: Omit<PipelineDoc, "id"> = {
-    name: name.value,
-    stages: stages.value,
-    isDefault: false,
-    agencyId,
+  const id = await createPipeline({
     subAccountId,
     createdByUid: access.uid,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  await ref.set(doc);
-  return NextResponse.json({ ok: true, id: ref.id }, { status: 201 });
+    name: name.value,
+    stages: stages.value,
+  });
+  if (!id) {
+    return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true, id }, { status: 201 });
 }
