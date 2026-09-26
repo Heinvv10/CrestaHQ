@@ -225,6 +225,8 @@ export async function createSubAccountForAgency(
       googleCalendarEnabledByAgency: false,
       // Reviews AI (SP5) spends the agency's OpenRouter credits — opt-in.
       reviewsAiEnabledByAgency: false,
+      // Review auto-reply posts to Google without a click — opt-in.
+      reviewsAutoReplyEnabledByAgency: false,
       // Agent API ships OFF — an external LLM agent acting as sub-account
       // admin is always an explicit per-client decision.
       agentApiEnabledByAgency: false,

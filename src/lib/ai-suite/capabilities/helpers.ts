@@ -162,10 +162,14 @@ export const WORKFLOW_TEMPLATES: Record<WorkflowTemplate, string> = {
  * omission: `emailDomainEnabled` is excluded because disabling it TEARS DOWN
  * the sub-account's live Resend sending domain; that destructive path stays
  * in the Manage dialog where its warning UI lives.
+ *
+ * `assistantMayEnable: false` — the assistant (and Agent API keys, which run
+ * the same capability) may switch the gate OFF but never ON; enabling stays
+ * with the agency owner in the Manage dialog.
  */
 export const FEATURE_GATES: Record<
   string,
-  { field: string; label: string; metaRequired?: boolean }
+  { field: string; label: string; metaRequired?: boolean; assistantMayEnable?: false }
 > = {
   "api-access": {
     field: "apiAccessEnabledByAgency",
@@ -231,6 +235,12 @@ export const FEATURE_GATES: Record<
   "reviews-ai": {
     field: "reviewsAiEnabledByAgency",
     label: "Reviews AI (sentiment and reply drafts)",
+  },
+  // Posts to Google without a click: the assistant can switch it off, never on.
+  "reviews-auto-reply": {
+    field: "reviewsAutoReplyEnabledByAgency",
+    label: "Review auto-reply (AI posts replies to Google)",
+    assistantMayEnable: false,
   },
   "agent-api": {
     field: "agentApiEnabledByAgency",

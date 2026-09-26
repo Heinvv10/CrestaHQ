@@ -127,7 +127,7 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     menuLabel:
       "Enable or disable a feature (broadcasts, API access, WhatsApp, Community, …) for one of your sub-accounts",
     description:
-      "Enable or disable one feature gate on one sub-account in this agency. Resolve the sub-account's id with list_sub_accounts first — never guess ids. The dedicated email sending domain gate can't be changed here (it has a destructive tear-down); point the user at the sub-account's Manage dialog for that one.",
+      "Enable or disable one feature gate on one sub-account in this agency. Resolve the sub-account's id with list_sub_accounts first — never guess ids. The dedicated email sending domain gate can't be changed here (it has a destructive tear-down); point the user at the sub-account's Manage dialog for that one. Review auto-reply can be switched off here but only switched on in that dialog.",
     parameters: {
       type: "object",
       properties: {
@@ -178,6 +178,12 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
           error: "whether to enable or disable the feature is required",
         };
       }
+      if (enabled && gateDef.assistantMayEnable === false) {
+        return {
+          ok: false,
+          error: `${gateDef.label} can only be switched on by the agency owner in the sub-account's Manage dialog`,
+        };
+      }
       if (enabled && gateDef.metaRequired && !metaAppConfigured()) {
         return {
           ok: false,
@@ -203,6 +209,12 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const g = FEATURE_GATES[args.gate as string];
+      // Re-checked here so a caller that skips validate still cannot enable it.
+      if (args.enabled === true && g.assistantMayEnable === false) {
+        throw new CapabilityUserError(
+          `${g.label} can only be switched on by the agency owner in the sub-account's Manage dialog.`
+        );
+      }
       const ref = getAdminDb().doc(
         `subAccounts/${args.subAccountId as string}`
       );

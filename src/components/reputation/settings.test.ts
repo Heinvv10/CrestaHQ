@@ -77,6 +77,12 @@ describe("the page", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("does not show the auto-reply card yet (hidden until the engine ships)", async () => {
+    await render();
+    expect(byId("rep-settings-autoreply-card")).toBeNull();
+    expect(fetchMock.mock.calls.map(([u]) => u)).not.toContain("/api/sub-accounts/sa1/reputation/auto-reply");
+  });
+
   it("mounts the existing review-request section and links to where Google is connected", async () => {
     await render();
     expect(byId("review-request-section")).not.toBeNull();

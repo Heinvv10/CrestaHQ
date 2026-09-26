@@ -127,6 +127,8 @@ function ManageDialogBody({
   const initialGoogleCalendar =
     subAccount.googleCalendarEnabledByAgency === true;
   const initialReviewsAi = subAccount.reviewsAiEnabledByAgency === true;
+  const initialReviewsAutoReply =
+    subAccount.reviewsAutoReplyEnabledByAgency === true;
   const initialAgentApi = subAccount.agentApiEnabledByAgency === true;
   // Workspace Assistant is opt-in like every other gate — off unless
   // explicitly enabled (legacy/unset reads as off).
@@ -180,6 +182,9 @@ function ManageDialogBody({
   const [webinar1Hidden, setWebinar1Hidden] = useState(initialWebinar1Hidden);
   const [googleEnabled, setGoogleEnabled] = useState(initialGoogle);
   const [reviewsAiEnabled, setReviewsAiEnabled] = useState(initialReviewsAi);
+  const [reviewsAutoReplyEnabled, setReviewsAutoReplyEnabled] = useState(
+    initialReviewsAutoReply
+  );
   const [agentApiEnabled, setAgentApiEnabled] = useState(initialAgentApi);
   const [googleCalendarEnabled, setGoogleCalendarEnabled] = useState(
     initialGoogleCalendar
@@ -258,6 +263,8 @@ function ManageDialogBody({
   const googleDirty = googleEnabled !== initialGoogle;
   const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
   const reviewsAiDirty = reviewsAiEnabled !== initialReviewsAi;
+  const reviewsAutoReplyDirty =
+    reviewsAutoReplyEnabled !== initialReviewsAutoReply;
   const agentApiDirty = agentApiEnabled !== initialAgentApi;
   const missedCallDirty = missedCallEnabled !== initialMissedCall;
   const aiSuiteDirty = aiSuiteEnabled !== initialAiSuite;
@@ -297,6 +304,7 @@ function ManageDialogBody({
     googleDirty ||
     googleCalendarDirty ||
     reviewsAiDirty ||
+    reviewsAutoReplyDirty ||
     agentApiDirty ||
     missedCallDirty ||
     aiSuiteDirty ||
@@ -351,6 +359,7 @@ function ManageDialogBody({
         googleEnabled?: boolean;
         googleCalendarEnabled?: boolean;
         reviewsAiEnabled?: boolean;
+        reviewsAutoReplyEnabled?: boolean;
         agentApiEnabled?: boolean;
         missedCallTextBackEnabled?: boolean;
         aiSuiteEnabled?: boolean;
@@ -394,6 +403,9 @@ function ManageDialogBody({
         payload.googleCalendarEnabled = googleCalendarEnabled;
       }
       if (reviewsAiDirty) payload.reviewsAiEnabled = reviewsAiEnabled;
+      if (reviewsAutoReplyDirty) {
+        payload.reviewsAutoReplyEnabled = reviewsAutoReplyEnabled;
+      }
       if (agentApiDirty) payload.agentApiEnabled = agentApiEnabled;
       if (missedCallDirty)
         payload.missedCallTextBackEnabled = missedCallEnabled;
@@ -563,6 +575,13 @@ function ManageDialogBody({
           reviewsAiEnabled
             ? "Reviews AI enabled."
             : "Reviews AI disabled. Existing sentiment labels stay; no new reviews are analysed."
+        );
+      }
+      if (reviewsAutoReplyDirty) {
+        parts.push(
+          reviewsAutoReplyEnabled
+            ? "Review auto-reply enabled."
+            : "Review auto-reply disabled. The sub-account's auto-reply settings are preserved."
         );
       }
       if (agentApiDirty) {
@@ -1083,6 +1102,24 @@ function ManageDialogBody({
             calls a day per sub-account. Spends
             your OpenRouter credits. Disabling stops new analysis; existing
             labels stay.
+          </GateToggle>
+
+          <GateToggle
+            checked={reviewsAutoReplyEnabled}
+            onChange={setReviewsAutoReplyEnabled}
+            disabled={saving}
+            icon={
+              <Star className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+            }
+            title="Review auto-reply"
+          >
+            When enabled, together with Reviews AI and Google Business Profile,
+            a sub-account admin may let the AI post replies to Google reviews
+            without a click, choosing per star rating. Replies are public.
+            Disabling stops auto-replies; the sub-account&apos;s settings are
+            preserved. Only you can switch this on — the Workspace Assistant
+            cannot. Not live yet: sub-accounts cannot turn auto-reply on until
+            it ships.
           </GateToggle>
 
           <GateToggle

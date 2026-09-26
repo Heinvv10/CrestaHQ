@@ -61,7 +61,10 @@ export type AgencyGateField =
   | "googleCalendarEnabledByAgency"
   // Agent API — standalone: external agent access to a client's CRM is an
   // explicit per-client decision, not a plan perk.
-  | "agentApiEnabledByAgency";
+  | "agentApiEnabledByAgency"
+  // Review auto-reply — standalone: no plan may switch public posting to
+  // Google on for its clients.
+  | "reviewsAutoReplyEnabledByAgency";
 
 export interface ApplyGatesResult {
   /** True when a live Resend sending domain was removed by the email disable. */

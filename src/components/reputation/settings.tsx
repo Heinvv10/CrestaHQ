@@ -7,6 +7,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { SubAccountGoogleReviewSection } from "@/components/settings/sub-account-google-review-section";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { AUTO_REPLY_UI_ENABLED, AutoReplyCard } from "@/components/reputation/auto-reply-card";
 
 /**
  * Reputation → Settings (SP5 c; ledger S1, R6): the "Reviews AI" card — the
@@ -137,6 +138,7 @@ export function ReputationSettings() {
   return (
     <div className="space-y-6">
       <ReviewsAiCard subAccountId={subAccountId} isAdmin={isAdmin} />
+      {AUTO_REPLY_UI_ENABLED && <AutoReplyCard subAccountId={subAccountId} isAdmin={isAdmin} />}
       <SubAccountGoogleReviewSection />
       <p className="text-sm text-muted-foreground">
         Connect Google Business Profile and choose the listing in{" "}

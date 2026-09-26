@@ -304,6 +304,7 @@ export async function POST(request: Request) {
         googleEnabledByAgency: false,
         googleCalendarEnabledByAgency: false,
         reviewsAiEnabledByAgency: false,
+        reviewsAutoReplyEnabledByAgency: false,
         // Agent API ships OFF — an external LLM agent acting as sub-account
         // admin is always an explicit per-client decision.
         agentApiEnabledByAgency: false,
