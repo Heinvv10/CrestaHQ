@@ -230,7 +230,9 @@ export async function recordReplyChange(
       const release = change.key && holds(d.replyInFlight, change.key) ? { replyInFlight: null } : {};
       // `hadReply` is sticky: deleting the reply later never clears it (auto-reply never replaces one).
       const posted = change.type === "reply_posted" ? { pendingReply: null, hadReply: true } : {};
-      const auto = change.auto ? { autoReplied: { at: change.now, key: change.key } } : {};
+      // A person's reply replaces an auto one: the review is no longer auto-replied.
+      const auto = change.auto ? { autoReplied: { at: change.now, key: change.key } }
+        : change.type === "reply_posted" ? { autoReplied: null } : {};
       tx.update(reviewRef, { reply, contentHash: hash, ...release, ...posted, ...auto });
     }
     const reviewName = target.reviewName ?? (typeof d?.reviewName === "string" ? d.reviewName : null);

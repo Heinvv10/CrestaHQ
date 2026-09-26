@@ -85,7 +85,7 @@ export async function loadNeverMarkers(subAccountId: string): Promise<Map<string
   for (const doc of snap.docs) {
     const d = doc.data();
     out.set(doc.id, {
-      reason: d.reason === "auto_replied" ? "auto_replied" : "replied",
+      autoReplied: d.reason === "auto_replied" || "star" in d,
       star: typeof d.star === "number" ? d.star : null,
     });
   }
@@ -133,7 +133,7 @@ export function upsertFor(
   // gained text (auto-reply only ever answers rating-only reviews): the caller
   // sends one alert. Known from the cache, or after a cache clear from the
   // durable marker.
-  const autoReplied = cached?.autoRepliedStar != null || marker?.reason === "auto_replied";
+  const autoReplied = cached?.autoRepliedStar != null || marker?.autoReplied === true;
   const was = cached?.autoRepliedStar ?? marker?.star ?? null;
   const editedLow = autoReplied && review.starRating <= 3
     && ((was !== null && review.starRating < was) || (review.comment ?? "").trim() !== "");

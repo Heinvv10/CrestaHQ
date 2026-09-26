@@ -20,6 +20,9 @@ import { clearGbpCache } from "@/lib/gbp/sync/store";
 import { markReconnectRequiredIf } from "@/lib/gbp/tokens";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { PUT } from "@/app/api/sub-accounts/[id]/google/listing/route";
+import { POST as POST_REPLY } from "@/app/api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply/route";
+import { PUT as PUT_SETTINGS } from "@/app/api/sub-accounts/[id]/reputation/auto-reply/route";
+import { KEY, callReply } from "@/test/gbp-reply-harness";
 import { autoReplyAlertsCollection } from "./alerts";
 
 const ORIGINAL = { ...process.env };
@@ -177,6 +180,29 @@ describe("edited_low", () => {
     await sync();
     expect(alerts("edited_low")).toEqual([]);
   });
+
+  it("a sync that rewrote the marker's reason (overlapping the post) keeps its star → still detected after a clear", async () => {
+    await syncAndRun();
+    mem.seed(neverPath("fake-a1"), { ...mem.read(neverPath("fake-a1")), reason: "replied" });
+    await clearGbpCache(SA);
+    await sync();
+    putFixtureReview("fake-a1", 2, null, 28);
+    await sync();
+    expect(alerts("edited_low")).toHaveLength(1);
+  });
+
+  it("a person's reply replaced the auto reply → no longer auto-replied: an edit to 2★ does not alert", async () => {
+    await syncAndRun();
+    const res = await callReply(POST_REPLY, "POST", "uid_admin", SA, A1, { comment: "Thanks — from a person", idempotencyKey: KEY });
+    expect(res.status).toBe(200);
+    expect(reviewDoc("fake-a1").autoReplied).toBeNull();
+    expect(mem.read(neverPath("fake-a1"))).not.toHaveProperty("star");
+    putFixtureReview("fake-a1", 2, null, 28);
+    await sync();
+    await clearGbpCache(SA);
+    await sync();
+    expect(alerts("edited_low")).toEqual([]);
+  });
 });
 
 describe("reconnect_required", () => {
@@ -202,6 +228,17 @@ describe("reconnect_required", () => {
     await markReconnectRequiredIf(SA, "revoked", expected);
     expect(mem.read(`subAccounts/${SA}`)!.googleConnectionMeta).toMatchObject({ reconnectRequired: true });
     expect(alerts("reconnect_required")).toEqual([]);
+  });
+
+  it("switching auto-reply ON while Google needs reconnecting is refused; editing it while on is not", async () => {
+    const body = (enabled: boolean) => JSON.stringify({ enabled, modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: false });
+    const put = (enabled: boolean) => PUT_SETTINGS(asUser(`${BASE}/reputation/auto-reply`, "uid_admin", "PUT", body(enabled)), params);
+    await markReconnectRequiredIf(SA, "revoked", expected);
+    expect((await put(true)).status).toBe(200);
+    expect((await put(false)).status).toBe(200);
+    const refused = await put(true);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: "reconnect_required" });
   });
 
   it("a newer grant (secret changed) is not flagged → no alert", async () => {

@@ -107,6 +107,12 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
     if (input.enabled) {
       const refused = gateRefusal(sub);
       if (refused) return refused;
+      // Switching it ON while it could not post (and the reconnect alert, sent
+      // only while it is on, already went unsent) would stall silently.
+      const meta = sub.googleConnectionMeta as { reconnectRequired?: unknown } | null | undefined;
+      if ((sub.reviewsAutoReply as { enabled?: unknown } | undefined)?.enabled !== true && meta?.reconnectRequired === true) {
+        return gbpRefusal(409, "reconnect_required", "Reconnect Google before turning auto-reply on.");
+      }
     }
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
     if (input.enabled && typeof listing === "string" && listing) {

@@ -47,7 +47,13 @@ export function neverMarker(
 }
 
 export interface NeverMarkerSeen {
-  reason: NeverReason;
+  /**
+   * The marker's reply is an auto-reply: reason `auto_replied`, or a `star`
+   * field — only auto-reply writes one, and it survives a sync's merge that
+   * rewrote the reason (a sync overlapping the post); a human reply's
+   * marker is a full set() and drops it.
+   */
+  autoReplied: boolean;
   /** The star when auto-replied; null when not recorded. */
   star: number | null;
 }
