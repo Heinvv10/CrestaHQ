@@ -1,4 +1,5 @@
 import { Frown, Meh, Smile } from "lucide-react";
+import type { ApprovalState } from "@/lib/reputation/auto-reply/approval";
 import { shortDate } from "./format-time";
 
 /** The public review shape GET /gbp/reviews returns (lib/gbp/sync/public.ts). */
@@ -19,8 +20,6 @@ export interface ReviewView {
   /** A fresh auto-reply draft waiting for a person: why, and its text for the composer. */
   approval?: { state: ApprovalState; draft: string | null } | null;
 }
-
-export type ApprovalState = "held" | "queued" | "paused" | "draft_failed" | "over_limit" | "post_failed";
 
 /** Each "Needs approval" row's reason, as the page says it. */
 export const APPROVAL_LABEL: Record<ApprovalState, string> = {

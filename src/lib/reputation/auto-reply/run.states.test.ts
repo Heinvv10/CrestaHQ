@@ -246,7 +246,7 @@ describe("dismissed (Discard)", () => {
     };
     await syncAndRun();
     expect(pendingOf("fake-a1")).toMatchObject({ reason: "auto_queued" });
-    expect(await dismissAutoReply(SA, A1, "uid_admin", new Date())).toBe(true);
+    expect(await dismissAutoReply(SA, A1, "uid_admin", new Date())).toBe("dismissed");
     patchSub({ reviewsAutoReplyEnabledByAgency: true });
     const drafts = draftsMade();
     await syncAndRun();
@@ -256,6 +256,8 @@ describe("dismissed (Discard)", () => {
   });
 
   it("a Discard clicked during the draft call wins: nothing stored, nothing posted", async () => {
+    // A failed draft is shown (with Discard) and retried a day later — the retry is the draft call.
+    seedPending("draft_failed", { at: new Date(Date.now() - 25 * 3600_000) });
     hook.during = async () => {
       hook.during = null;
       await dismissAutoReply(SA, A1, "uid_admin", new Date());
@@ -266,6 +268,7 @@ describe("dismissed (Discard)", () => {
   });
 
   it("survives a cache clear, and the set carries the tenant keys but no content", async () => {
+    seedPending("approval");
     await dismissAutoReply(SA, A1, "uid_admin", new Date());
     await clearGbpCache(SA);
     expect(mem.read(reviewPath("fake-a1"))).toBeUndefined();
@@ -279,6 +282,7 @@ describe("dismissed (Discard)", () => {
   });
 
   it("a dismissed review whose content then changes is decided again", async () => {
+    seedPending("approval");
     await dismissAutoReply(SA, A1, "uid_admin", new Date());
     putFixtureReview("fake-a1", 4, null, 28);
     await syncAndRun();
@@ -286,6 +290,6 @@ describe("dismissed (Discard)", () => {
   });
 
   it("dismissing a review not in the cache is refused", async () => {
-    expect(await dismissAutoReply(SA, R6.replace(/./, "0"), "uid_admin", new Date())).toBe(false);
+    expect(await dismissAutoReply(SA, R6.replace(/./, "0"), "uid_admin", new Date())).toBe("not_found");
   });
 });

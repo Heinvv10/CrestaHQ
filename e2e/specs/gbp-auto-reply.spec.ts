@@ -148,12 +148,19 @@ test("enable → Sync now: rating-only 5★ auto-replied; 3★ and texted 5★ h
   expect((await doc("fake-ar-5t"))?.pendingReply).toMatchObject({ reason: "dismissed", text: null });
   expect(await puts()).toHaveLength(2);
 
-  // --- Sync now again: nothing new is drafted or posted.
+  // --- Sync now again: nothing new is drafted or posted. The completion
+  // signal: the engine's lease, deleted here, is taken and then released
+  // (runId null) only by a run that got past every gate to the reviews.
   const draftsBefore = await drafts();
   await resetManualCooldown();
+  await guard();
+  await privateDoc("autoReplyLease").delete();
   await page.getByTestId("gbp-filter-needs-approval").click();
   await syncNow(page);
-  await page.waitForTimeout(5000); // the after-response engine run has finished by now (the fakes answer at once)
+  await expect.poll(async () => {
+    const lease = await privateDoc("autoReplyLease").get();
+    return lease.exists ? lease.data()?.runId ?? null : "absent";
+  }, { timeout: 60_000 }).toBeNull();
   expect(await puts()).toHaveLength(2);
   expect(await drafts()).toBe(draftsBefore);
   expect((await doc("fake-ar-5t"))?.pendingReply).toMatchObject({ reason: "dismissed" });

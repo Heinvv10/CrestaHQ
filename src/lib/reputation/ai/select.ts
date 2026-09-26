@@ -16,10 +16,15 @@ import type { ReviewsAi } from "./types";
  */
 export async function getReviewsAiFor(subAccountId: string): Promise<ReviewsAi> {
   if (reviewsAiMode() === "openrouter") return openRouterReviewsAi(defaultAiModel());
+  await assertReviewsAiFixtureAgency(subAccountId);
+  return createFakeReviewsAi(subAccountId);
+}
+
+/** The fake's fixture-agency fence on its own: throws unless `subAccountId` belongs to REVIEWS_AI_FAKE_AGENCY_ID. */
+export async function assertReviewsAiFixtureAgency(subAccountId: string): Promise<void> {
   const fixture = process.env.REVIEWS_AI_FAKE_AGENCY_ID;
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   if (!fixture || (snap.exists ? snap.data()?.agencyId : undefined) !== fixture) {
     throw new ReviewsAiFakeRefusedError("sub-account is not in the fixture agency");
   }
-  return createFakeReviewsAi(subAccountId);
 }

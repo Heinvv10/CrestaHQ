@@ -282,11 +282,12 @@ jobs:
       REVIEWS_AI_FAKE_ALLOW_PROD_BUILD: "1"
       REVIEWS_AI_FAKE_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
       # Review auto-reply's kill switch (gbp-auto-reply.spec.ts). E2E job ONLY.
-      # Fenced like the fakes: with GBP_PROVIDER=fake the engine serves only
-      # sub-accounts of GBP_FAKE_AGENCY_ID (run.ts refuses any other before a
-      # read or write), it runs only after a sync the fenced GBP fake allowed,
-      # drafts only through the fenced Reviews AI fake and posts only through
-      # the fenced GBP fake — so no real tenant is read, drafted or posted for.
+      # Fenced like the fakes: with the GBP or Reviews AI fake the engine
+      # serves only that fake's fixture agency (run.ts refuses any other after
+      # reading only its sub-account doc for the agencyId, before any write),
+      # it runs only after a sync the fenced GBP fake allowed, drafts only
+      # through the fenced Reviews AI fake and posts only through the fenced
+      # GBP fake — so no real tenant's reviews are read, drafted or posted for.
       REVIEWS_AUTO_REPLY_ENABLED: "1"
       # The whole suite runs from one loopback client, so the public booking
       # routes' per-IP rate limiters (src/lib/booking/rate-limit-e2e.ts) would

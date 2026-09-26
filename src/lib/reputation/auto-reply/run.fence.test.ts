@@ -9,6 +9,27 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+/** `aiReal`: the Reviews AI in real (OpenRouter) mode — stubbed so no model is ever called. */
+const ai = vi.hoisted(() => ({ aiReal: false }));
+vi.mock("@/lib/reputation/ai/mode", async (orig) => {
+  const real = await orig<typeof import("@/lib/reputation/ai/mode")>();
+  return {
+    ...real,
+    reviewsAiMode: () => (ai.aiReal ? "openrouter" : real.reviewsAiMode()),
+    reviewsAiConfigured: () => (ai.aiReal ? true : real.reviewsAiConfigured()),
+  };
+});
+vi.mock("@/lib/reputation/ai/select", async (orig) => {
+  const real = await orig<typeof import("@/lib/reputation/ai/select")>();
+  const refuse = async () => {
+    throw new Error("stub: no model call in tests");
+  };
+  return {
+    ...real,
+    getReviewsAiFor: async (sa: string) =>
+      ai.aiReal ? { model: "stub", classifySentiment: refuse, draftReply: refuse } : real.getReviewsAiFor(sa),
+  };
+});
 
 import { FOREIGN_AGENCY, FOREIGN_SA, SA, mem } from "@/test/gbp-sync-harness";
 import { resetAutoReply } from "@/test/auto-reply-harness";
@@ -18,6 +39,7 @@ import { autoReplyAfterSync } from "./run";
 const ORIGINAL = { ...process.env };
 
 beforeEach(() => {
+  ai.aiReal = false;
   resetAutoReply();
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
@@ -37,4 +59,14 @@ it("a sub-account of another agency, auto-reply on, gets no run and no write", a
   mem.seed(`subAccounts/${FOREIGN_SA}`, { ...mem.read(`subAccounts/${SA}`)!, agencyId: FOREIGN_AGENCY });
   expect(await run(FOREIGN_SA)).toBeNull();
   expect(mem.read(autoReplyLeasePath(FOREIGN_SA))).toBeUndefined();
+});
+
+it("the GBP fake's fence alone (Reviews AI real) keeps another agency's sub-account out — not even the lease", async () => {
+  ai.aiReal = true;
+  mem.seed(`subAccounts/${FOREIGN_SA}`, { ...mem.read(`subAccounts/${SA}`)!, agencyId: FOREIGN_AGENCY });
+  expect(await run(FOREIGN_SA)).toBeNull();
+  expect(mem.read(autoReplyLeasePath(FOREIGN_SA))).toBeUndefined();
+  // The control: the fixture's own sub-account does get that far.
+  await run(SA);
+  expect(mem.read(autoReplyLeasePath(SA))).toBeDefined();
 });

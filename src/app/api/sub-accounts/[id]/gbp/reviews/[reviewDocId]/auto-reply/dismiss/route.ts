@@ -17,7 +17,9 @@ import { dismissAutoReply } from "@/lib/reputation/auto-reply/store";
  * Addressed and guarded exactly like the reply route: sub-account admin only,
  * agency-gated (403 `gate_off`), and the review must be an active cached
  * review of this sub-account's current listing (else 404 — a guessed id from
- * another tenant names nothing here).
+ * another tenant names nothing here). A review with a reply, or without an
+ * auto-reply draft, is 409 `nothing_to_dismiss` (nothing written); a repeat
+ * Discard is accepted.
  */
 
 export const dynamic = "force-dynamic";
@@ -33,8 +35,10 @@ export async function POST(request: Request, ctx: Ctx) {
   }
   const target = await loadReplyTarget(id, reviewDocId);
   if (!target) return gbpRefusal(404, "not_found", "Review not found.");
-  if (!(await dismissAutoReply(id, target.docId, access.uid, new Date()))) {
-    return gbpRefusal(404, "not_found", "Review not found.");
+  const outcome = await dismissAutoReply(id, target.docId, access.uid, new Date());
+  if (outcome === "not_found") return gbpRefusal(404, "not_found", "Review not found.");
+  if (outcome === "nothing_to_dismiss") {
+    return gbpRefusal(409, "nothing_to_dismiss", "This review has a reply or no auto-reply draft to discard.");
   }
   return NextResponse.json({ ok: true });
 }

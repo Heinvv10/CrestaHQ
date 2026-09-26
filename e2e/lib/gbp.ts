@@ -99,6 +99,8 @@ export async function clearGbp(): Promise<void> {
     googleListing: FieldValue.delete(),
     gbpSummary: FieldValue.delete(),
     gbpWidgetMeta: FieldValue.delete(),
+    // A crashed auto-reply spec must not leave auto-reply on for later specs.
+    reviewsAutoReply: FieldValue.delete(),
   });
 }
 

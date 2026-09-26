@@ -606,13 +606,15 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   basis), not `dismissed`, and unreplied (`auto-reply/approval.ts`). Each
   row's reason (`approval.state`): Held for approval (`approval`/`texted`),
   Queued to auto-post (`auto_queued` the engine would post now — kill switch,
-  gates, on for this listing, star on Auto), Auto-post paused (`auto_queued`
+  gates, on for this listing, no other sub-account on the same location,
+  star on Auto), Auto-post paused (`auto_queued`
   otherwise), Draft failed, Over today's limit (`cap`/`no_budget`), Post
   failed. Only the reason and the draft text leave the server — never
   `textHash`, `basisHash`, `model` or `at`. The composer opens **pre-filled**
   with the draft ("Review draft"); **Post** is the ordinary human reply route.
   **Discard** is `POST …/gbp/reviews/[reviewDocId]/auto-reply/dismiss`
-  (sub-account admin, Google gate, the reply route's 404 rules) →
+  (sub-account admin, Google gate, the reply route's 404 rules; 409
+  `nothing_to_dismiss` for a replied review or one without a draft) →
   `dismissAutoReply`. A reply auto-reply posted shows an **Auto-replied** tag
   (`autoReplied`).
 
@@ -625,8 +627,9 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
 - **Kill switch:** `REVIEWS_AUTO_REPLY_ENABLED=1` or the engine never runs on
   the deployment — no read, no draft, no post
   ([environment.md](../environment.md)). Re-read in every post's final
-  transaction. With the GBP fake (CI, dev) the engine serves only the fake's
-  fixture agency (`run.ts`), before any read or write.
+  transaction. With the GBP or Reviews AI fake (CI, dev) the engine serves
+  only that fake's fixture agency (`run.ts`): another sub-account's doc is
+  read for its agencyId and nothing is written.
 - **When:** after a sync route has answered (cron `gbp-sync` and Sync now),
   auto-reply for every synced tenant first, then sentiment, under the
   request's one deadline (`lib/reputation/after-sync.ts`). Never inside the sync.
@@ -710,7 +713,7 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   concurrent run exits `busy`.
 - **Tests:** `auto-reply/decide.test.ts` (the matrix + state table),
   `run.test.ts`, `run.midrun.test.ts`, `run.states.test.ts` (seam: real sync,
-  fake GBP provider, Reviews AI fake), `run.fence.test.ts`,
+  fake GBP provider, Reviews AI fake), `run.fence.test.ts`, `run.blast.test.ts`,
   `gbp/reply-attempts.require-no-reply.test.ts`, `reputation/after-sync.test.ts`;
   UI: `auto-reply-card.test.ts`, `gbp/reviews-section.approval.test.ts`,
   `…/gbp/reviews/route.approval.test.ts`, `…/auto-reply/dismiss/route.test.ts`;

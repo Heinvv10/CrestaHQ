@@ -12,7 +12,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { AGENCY, LEAK_MARKERS, OTHER_SA, SA, mem, resetSync } from "@/test/gbp-sync-harness";
 import { calls, docIdOf, reviewPath } from "@/test/gbp-reply-harness";
-import { A1, dismissedPath, posts, resetAutoReply, sync, draftsMade } from "@/test/auto-reply-harness";
+import { A1, dismissedPath, draftsMade, patchSettings, pendingOf, posts, resetAutoReply, sync } from "@/test/auto-reply-harness";
 import { autoReplyAfterSync } from "@/lib/reputation/auto-reply/run";
 import { syncListing } from "@/lib/gbp/sync/run";
 import { POST } from "./route";
@@ -29,9 +29,17 @@ async function dismiss(uid: string, sa: string, docId: string) {
   return { status: res.status, body: JSON.parse(text) as { code?: string; ok?: boolean } };
 }
 
+/** A held auto-reply draft on `reviewId` (the rows Discard is offered on). */
+function hold(reviewId: string, sa = SA) {
+  const d = mem.read(reviewPath(reviewId, sa))!;
+  mem.seed(reviewPath(reviewId, sa), {
+    ...d, pendingReply: { text: "Held draft.", textHash: "h", basisHash: "b", reason: "approval", at: new Date(), model: "fake" },
+  });
+}
+
 /** Nothing dismissed for SA or OTHER_SA, and nothing reached Google. */
 function expectUntouched() {
-  expect(mem.read(reviewPath("fake-r6"))?.pendingReply).toBeUndefined();
+  expect(mem.read(reviewPath("fake-r6"))?.pendingReply).toMatchObject({ reason: "approval", text: "Held draft." });
   expect(mem.list(`subAccounts/${SA}/autoReplyDismissed`)).toEqual([]);
   expect(mem.list(`subAccounts/${OTHER_SA}/autoReplyDismissed`)).toEqual([]);
   expect(calls(SA)).toEqual([]);
@@ -43,6 +51,7 @@ beforeEach(async () => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   await syncListing(SA, { trigger: "scheduled" });
   await syncListing(OTHER_SA, { trigger: "scheduled" });
+  hold("fake-r6");
 });
 const ORIGINAL = { ...process.env };
 afterEach(() => {
@@ -115,16 +124,43 @@ describe("which review", () => {
   });
 });
 
+describe("what may be dismissed", () => {
+  it("a replied review — with or without a draft — is 409 nothing_to_dismiss, nothing written", async () => {
+    expect(await dismiss("uid_admin", SA, docIdOf("fake-r7"))).toMatchObject({ status: 409, body: { code: "nothing_to_dismiss" } });
+    hold("fake-r7");
+    expect(await dismiss("uid_admin", SA, docIdOf("fake-r7"))).toMatchObject({ status: 409, body: { code: "nothing_to_dismiss" } });
+    expect(mem.read(reviewPath("fake-r7"))!.pendingReply).toMatchObject({ reason: "approval" });
+    expect(mem.read(dismissedPath("fake-r7"))).toBeUndefined();
+  });
+
+  it("an unreplied review without an auto-reply draft is 409 nothing_to_dismiss, nothing written", async () => {
+    expect(await dismiss("uid_admin", SA, docIdOf("fake-r2"))).toMatchObject({ status: 409, body: { code: "nothing_to_dismiss" } });
+    expect(mem.read(reviewPath("fake-r2"))!.pendingReply).toBeUndefined();
+    expect(mem.read(dismissedPath("fake-r2"))).toBeUndefined();
+  });
+
+  it("a repeat Discard is accepted and keeps the same basis", async () => {
+    expect((await dismiss("uid_admin", SA, R6)).status).toBe(200);
+    const first = mem.read(dismissedPath("fake-r6"))!.basisHash;
+    expect((await dismiss("uid_admin", SA, R6)).status).toBe(200);
+    expect(mem.read(dismissedPath("fake-r6"))!.basisHash).toBe(first);
+  });
+});
+
 describe("the engine honours it", () => {
-  it("a review Discarded through the route is never drafted or auto-posted, on this run or the next", async () => {
+  it("a held draft Discarded through the route is never re-drafted or auto-posted", async () => {
     resetAutoReply();
+    patchSettings({ modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "approval" } });
     const first = await sync();
-    expect((await dismiss("uid_admin", SA, A1)).status).toBe(200);
     await autoReplyAfterSync(SA, first.startedAt, Date.now() + 240_000);
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval" });
+    expect((await dismiss("uid_admin", SA, A1)).status).toBe(200);
+    patchSettings({ modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" } });
+    const drafts = draftsMade();
     const second = await sync();
     await autoReplyAfterSync(SA, second.startedAt, Date.now() + 240_000);
     expect(posts().filter((c) => c.reviewName.endsWith("/reviews/fake-a1"))).toEqual([]);
-    expect(posts()).toHaveLength(1); // fake-a2 (4★ rating-only) still auto-posts
-    expect(draftsMade()).toBe(1);
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "dismissed" });
+    expect(draftsMade()).toBe(drafts);
   });
 });

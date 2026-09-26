@@ -100,7 +100,9 @@ it("a deleted reply's marker survives an account switch, even once auto-reply is
 
 it("a Discard survives an account switch, even once auto-reply is re-enabled", async () => {
   await sync();
-  expect(await dismissAutoReply(SA, A1, "uid_admin", new Date())).toBe(true);
+  const doc = mem.read(`subAccounts/${SA}/gbpReviews/${A1}`)!;
+  mem.seed(`subAccounts/${SA}/gbpReviews/${A1}`, { ...doc, pendingReply: { text: "x", textHash: "h", basisHash: "b", reason: "approval", at: new Date(), model: "fake" } });
+  expect(await dismissAutoReply(SA, A1, "uid_admin", new Date())).toBe("dismissed");
   await switchAccount();
   expect((await reEnable()).status).toBe(200);
   await syncAndRun();

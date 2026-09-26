@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { LEAK_MARKERS, SA, asUser, mem } from "@/test/gbp-sync-harness";
+import { LEAK_MARKERS, LOC_A, OTHER_SA, SA, asUser, mem } from "@/test/gbp-sync-harness";
 import { reviewPath } from "@/test/gbp-reply-harness";
 import { patchSettings, patchSub, resetAutoReply, sync } from "@/test/auto-reply-harness";
 import { reviewBasis } from "@/lib/reputation/sentiment-basis";
@@ -120,6 +120,10 @@ describe("each row's reason", () => {
       ["the auto-reply gate off", () => patchSub({ reviewsAutoReplyEnabledByAgency: false })],
       ["the Reviews AI gate off", () => patchSub({ reviewsAiEnabledByAgency: false })],
       ["enabled for another listing", () => patchSettings({ listingLocationName: "locations/other" })],
+      ["another sub-account on the same location (listing_shared)", () => {
+        const other = mem.read(`subAccounts/${OTHER_SA}`)!;
+        mem.seed(`subAccounts/${OTHER_SA}`, { ...other, googleListing: { ...(other.googleListing as object), locationName: LOC_A } });
+      }],
     ];
     for (const [label, pause] of pausedBy) {
       resetAutoReply();

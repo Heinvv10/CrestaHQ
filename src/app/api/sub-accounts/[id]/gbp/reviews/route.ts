@@ -38,15 +38,20 @@ const RUN_CAP = 10;
 
 /**
  * Whether auto-reply would post a star right now — the kill switch, all three
- * gates, switched on for THIS listing, the star on Auto. A queued draft it
- * would not post is shown as "Auto-post paused".
+ * gates, switched on for THIS listing, no other sub-account on the same
+ * location (`listing_shared` pauses posting), the star on Auto. A queued
+ * draft it would not post is shown as "Auto-post paused".
  */
-function autoPostsFor(sub: SubAccountDoc, locationName: string | null): (star: number) => boolean {
+async function autoPostsFor(id: string, sub: SubAccountDoc, locationName: string | null): Promise<(star: number) => boolean> {
   const raw = sub.reviewsAutoReply;
   const settings = readAutoReplySettings(raw);
-  const on = autoReplyKillSwitchOn() && sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
+  let on = autoReplyKillSwitchOn() && sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
     && sub.reviewsAutoReplyEnabledByAgency === true && settings.enabled
     && !!locationName && raw?.listingLocationName === locationName;
+  if (on) {
+    const same = await getAdminDb().collection("subAccounts").where("googleListing.locationName", "==", locationName).get();
+    on = !same.docs.some((d) => d.id !== id);
+  }
   return (star) => on && settings.modes[star as AutoReplyStar] === "auto";
 }
 
@@ -83,7 +88,7 @@ export async function GET(
   ]);
 
   const active = served.reviews;
-  const autoPosts = autoPostsFor(sub, locationName);
+  const autoPosts = await autoPostsFor(id, sub, locationName);
   const reviews = applyReviewFilters(active, parsed.filters).map((d) => publicReview(d, autoPosts));
   const summary =
     locationName && sub.gbpSummary?.locationName === locationName

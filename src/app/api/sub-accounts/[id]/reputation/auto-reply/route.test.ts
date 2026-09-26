@@ -104,6 +104,11 @@ describe("GET", () => {
   });
 });
 
+it("a PUT cannot set or keep disabledReason itself (400, nothing written)", async () => {
+  expect((await put({ ...OFF, disabledReason: "listing_changed" })).status).toBe(400);
+  expect(stored()).toBeUndefined();
+});
+
 describe("who may PUT", () => {
   it.each([
     ["a collaborator", "uid_collab"],
