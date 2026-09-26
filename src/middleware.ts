@@ -317,6 +317,15 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // answer for unknown, revoked, expired and used-up links. Exactly one segment.
   /^\/s\/snapshot\/[^/]+$/,
   /^\/api\/public\/snapshots\/[^/]+$/,
+  // Prospect report share link (Prospecting PR 2): the /report/{token} page
+  // and its JSON /api/public/prospecting/report/{token}. The prospect has no
+  // session; the 256-bit token, hashed and matched server-side, is the
+  // credential. Exactly one segment. (`/r` is the review page — unrelated.)
+  /^\/report\/[^/]+$/,
+  /^\/api\/public\/prospecting\/report\/[^/]+$/,
+  // Prospect report worker — QStash callback, signature-verified inside the
+  // route and bound to its URL.
+  /^\/api\/automations\/prospecting\/report$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {
