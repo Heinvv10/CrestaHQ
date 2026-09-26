@@ -544,3 +544,21 @@ describe("isPublicPath — the MCP route", () => {
     expect(isPublicPath("/api/mcpx")).toBe(false);
   });
 });
+
+describe("isPublicPath — prospect report share links + worker", () => {
+  it("opens the share page, its JSON and the QStash worker without a session", () => {
+    expect(isPublicPath("/report/AbC-12_x")).toBe(true);
+    expect(isPublicPath("/api/public/prospecting/report/AbC-12_x")).toBe(true);
+    expect(isPublicPath("/api/automations/prospecting/report")).toBe(true);
+  });
+
+  it("opens exactly one segment — nothing under or beside them", () => {
+    expect(isPublicPath("/report")).toBe(false);
+    expect(isPublicPath("/report/tok/extra")).toBe(false);
+    expect(isPublicPath("/reports/tok")).toBe(false);
+    expect(isPublicPath("/api/public/prospecting")).toBe(false);
+    expect(isPublicPath("/api/public/prospecting/report/tok/extra")).toBe(false);
+    expect(isPublicPath("/api/automations/prospecting/report/x")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/prospecting/reports")).toBe(false);
+  });
+});
