@@ -326,7 +326,9 @@ body for token markers).
   each written in the same transaction as the change it records. No client
   rule (default deny).
 
-Selecting a **different** listing, clearing it, disconnecting, and a reconnect
+Selecting a **different** listing (or the same location through another
+Google account — its reviews come back under new names), clearing it,
+disconnecting, and a reconnect
 re-verification that drops it all also delete the synced review cache, the
 summary and the sync state (`clearGbpCache`, `lib/gbp/sync/store.ts`, reached
 through `clearListing` and the listing PUT). A re-verification that declines
@@ -915,16 +917,20 @@ with a QStash-signed POST (`e2e/lib/qstash.ts`).
 `POST /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply`
 `{comment, idempotencyKey}` posts (or edits) the owner reply to one Google
 review; `DELETE` on the same path deletes it. `lib/gbp/reply.ts` is the
-**only** caller of the provider's `putReply` / `deleteReply` — no sync, cron,
-workflow or AI path posts a reply (`…/reply/route.idempotency.test.ts` › no
-sync, sweep or cron path ever calls putReply or deleteReply; E2E 5 counts the
-fake's call log after a cron sweep). **AI drafts exist since SP5 (c)** —
+**only** caller of the provider's `putReply` / `deleteReply`. No sync,
+workflow or other AI path posts a reply; the sync itself never does
+(`…/reply/route.idempotency.test.ts` › no sync, sweep or cron path ever calls
+putReply or deleteReply; E2E 5 counts the fake's call log after a cron
+sweep). **AI drafts exist since SP5 (c)** —
 `POST …/gbp/reviews/[reviewDocId]/draft` returns text for the composer's box
 and posts nothing (it never reaches `putReply` / `deleteReply`; every draft
 route test ends by asserting zero reply calls, and
-`e2e/specs/reputation-ai-draft.spec.ts` counts zero until the click) — so
-`lib/gbp/reply.ts`, on the admin's click of "Post reply to Google", is still
-the ONLY poster. See [reputation.md › AI reply drafts](reputation.md#ai-reply-drafts-sp5-c).
+`e2e/specs/reputation-ai-draft.spec.ts` counts zero until the click). **Since
+auto-reply ([reputation.md › Review auto-reply](reputation.md#review-auto-reply-auto_reply_v1_planmd)),
+`lib/gbp/reply.ts` has a second caller**: after a sync responds, the engine
+may post rating-only replies without a click for a sub-account that switched
+it on — only while `REVIEWS_AUTO_REPLY_ENABLED=1` is set on the deployment,
+never over an existing reply (`requireNoReply`), and never a delete.
 
 Order of checks, each refusal writing nothing and calling Google zero times:
 

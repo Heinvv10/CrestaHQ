@@ -49,6 +49,10 @@ export interface ReviewsAi {
   model: string;
   /** One result per item, in order. Nothing is guessed: an item is labelled or says why not. */
   classifySentiment(items: SentimentItem[]): Promise<SentimentResult[]>;
-  /** A reply DRAFT for the admin to edit. It never posts anything anywhere. */
+  /**
+   * A reply DRAFT. It posts nothing itself: "Draft with AI" hands it to the
+   * admin to edit; review auto-reply (lib/reputation/auto-reply), when a
+   * sub-account switched it on, may post it to Google without a click.
+   */
   draftReply(input: DraftInput): Promise<DraftResult>;
 }

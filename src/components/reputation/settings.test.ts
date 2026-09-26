@@ -94,7 +94,7 @@ describe("the Reviews AI card", () => {
   it("an admin sees and saves the guidelines, with the no-auto-post line", async () => {
     await render();
     expect(area().value).toBe("Sign off as The Fixture Team.");
-    expect(byId("rep-settings-ai-card")?.textContent).toContain("Nothing is posted to Google until you click Post reply to Google");
+    expect(byId("rep-settings-ai-card")?.textContent).toContain("A reply is posted to Google only when you click Post reply to Google, unless auto-reply is switched on for this sub-account.");
     // The numbers come from the route (the server's constants), not from the page.
     expect(byId("rep-settings-ai-limits")?.textContent).toBe(
       "Drafts can use up to 40 of this sub-account's 250 AI calls a day; the rest stays for sentiment.",

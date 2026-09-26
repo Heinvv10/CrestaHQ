@@ -80,10 +80,19 @@ export async function PUT(
   const { account, location } = match;
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${id}`);
-  const previous = await db.runTransaction(async (tx) => {
+  const changed = await db.runTransaction(async (tx) => {
     const snap = await tx.get(subRef);
     const previous: string | null = snap.data()?.googleListing?.locationName ?? null;
+    // The same location through ANOTHER Google account is a different listing
+    // too: Google names its reviews under that account (new cache doc ids).
+    const changed = previous !== location.name || snap.data()?.googleListing?.accountName !== account.name;
+    // A different listing switches review auto-reply off (modes kept): it was
+    // enabled for the old one, and resuming needs an explicit re-enable.
+    const autoReplyOff = changed && snap.data()?.reviewsAutoReply
+      ? { "reviewsAutoReply.enabled": false }
+      : {};
     tx.update(subRef, {
+      ...autoReplyOff,
       googleListing: {
         accountName: account.name,
         accountDisplayName: account.accountName,
@@ -108,10 +117,10 @@ export async function PUT(
       locationName: location.name,
       previousLocationName: previous,
     });
-    return previous;
+    return changed;
   });
   // The cache only ever holds the current listing: a different one starts empty.
-  if (previous !== location.name) await clearGbpCache(id);
+  if (changed) await clearGbpCache(id);
 
   return NextResponse.json({ ok: true });
 }

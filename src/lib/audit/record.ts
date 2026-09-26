@@ -87,6 +87,8 @@ export const AUDIT_ALLOWED_VALUES: Record<
   "member.role_changed": { role: ["admin", "collaborator"] },
   // Names only: arg VALUES (names, phones, message bodies) are redacted.
   "agent.write": { capability: "identifier", keyPrefix: "identifier" },
+  // No changes: the row records THAT a reply was posted, never its text.
+  "review.auto_replied": {},
 };
 
 export function auditValue(

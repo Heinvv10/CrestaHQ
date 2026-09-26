@@ -24,7 +24,9 @@ import {
  * sub-account admin; any other key or a missing star is 400 `invalid_body`.
  * Turning it on needs the engine (409 `not_available`), the Google gate
  * (403 `gate_off`), the Reviews AI gate (403 `ai_gate_off`), the auto-reply
- * gate (403 `auto_reply_gate_off`) and a selected listing (409 `no_listing`);
+ * gate (403 `auto_reply_gate_off`), a selected listing (409 `no_listing`)
+ * that no other sub-account has also selected (409 `listing_shared` — the
+ * engine cannot see replies cached under another sub-account);
  * turning it off is always allowed. The server stamps `enabledAt`,
  * `enabledByUid` and `listingLocationName` on the off→on transition, inside
  * a transaction. See AUTO_REPLY_V1_PLAN.md.
@@ -88,6 +90,12 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
       if (refused) return refused;
     }
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
+    if (input.enabled && typeof listing === "string" && listing) {
+      const same = (await tx.get(db.collection("subAccounts").where("googleListing.locationName", "==", listing))) as FirebaseFirestore.QuerySnapshot;
+      if (same.docs.some((d) => d.id !== id)) {
+        return gbpRefusal(409, "listing_shared", "Another sub-account uses this Google listing — auto-reply can't be switched on here.");
+      }
+    }
     const next = nextAutoReplySettings(sub.reviewsAutoReply, input, {
       now: new Date(),
       uid: access.uid,

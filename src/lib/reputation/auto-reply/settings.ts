@@ -14,11 +14,12 @@ export const AUTO_REPLY_DAILY_POST_CAP = 20;
 export const AUTO_REPLY_DAILY_DRAFT_CAP = 40;
 
 /**
- * The engine that acts on these settings does not exist yet (PR 2), so the
- * route refuses `enabled: true` with 409 `not_available` while this is false.
- * PR 2 flips it.
+ * Whether the route may switch auto-reply on. PR 1 shipped it false (409
+ * `not_available`); the engine (run.ts) exists since PR 2. Whether the engine
+ * RUNS on a deployment is the separate `REVIEWS_AUTO_REPLY_ENABLED` kill
+ * switch (kill-switch.ts).
  */
-export const AUTO_REPLY_ENGINE_AVAILABLE = false;
+export const AUTO_REPLY_ENGINE_AVAILABLE = true;
 
 const DEFAULT_AUTO_REPLY_MODES: Readonly<Record<AutoReplyStar, AutoReplyMode>> = {
   1: "approval",

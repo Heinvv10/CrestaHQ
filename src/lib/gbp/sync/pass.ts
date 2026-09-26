@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withGbpAccess } from "../access";
 import { GbpProviderError, type GbpReviewsPage } from "../provider/types";
+import { autoReplyNeverPath, neverMarker } from "../auto-reply-never";
 import { commitGuarded, type GuardedOp } from "./lease";
 import { withRetry, type Sleep } from "./retry";
 import { reviewDocId, upsertFor, type CachedReview, type UpsertContext } from "./store";
@@ -95,13 +96,18 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
     for (const review of page.reviews) {
       const docId = reviewDocId(review.name);
       const cached = cache.get(docId);
-      const { kind, data, merge } = upsertFor(review, cached, ctx);
+      const { kind, data, merge, markNever } = upsertFor(review, cached, ctx);
       const docRef = db.doc(`${reviewsCollection(subAccountId)}/${docId}`);
       ops.push((tx) => (merge ? tx.set(docRef, data, { merge: true }) : tx.set(docRef, data)));
+      if (markNever) {
+        const marker = neverMarker(ctx, "replied", ctx.now, docId);
+        ops.push((tx) => tx.set(db.doc(autoReplyNeverPath(subAccountId, review.name)), marker, { merge: true }));
+      }
       counts[kind] += 1;
       // Run-local view, so a review repeated on a later page is "unchanged".
       const hash = kind === "unchanged" ? (cached?.contentHash ?? null) : (data.contentHash as string);
-      cache.set(docId, { state: "active", passId, lastSeenAt: nowMs, contentHash: hash });
+      const replied = data.hadReply === true || cached?.replied === true;
+      cache.set(docId, { state: "active", passId, lastSeenAt: nowMs, contentHash: hash, replied, hadReply: replied });
     }
     const next = page.nextPageToken;
     pagesDone += 1;

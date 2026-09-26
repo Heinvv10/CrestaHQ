@@ -14,11 +14,16 @@ import { reviewsCollection } from "./sync/types";
 import { GbpNotConnectedError } from "./tokens";
 
 /**
- * The explicit human reply to a Google review. The ONLY caller of the
- * provider's `putReply` / `deleteReply`: no sync, cron, workflow or AI path
- * posts one. Each attempt calls Google exactly once (withGbpAccess's single
- * refresh-and-retry after a 401 aside); a human retries with the same key.
- * Never logs the reply text.
+ * Replies to Google reviews. The ONLY caller of the provider's `putReply` /
+ * `deleteReply`, reached from exactly two places: the explicit human reply
+ * route, and the review auto-reply engine (lib/reputation/auto-reply/run.ts,
+ * AUTO_REPLY_V1_PLAN.md) — which posts WITHOUT a click, only for a
+ * sub-account whose admin switched auto-reply on, only rating-only reviews of
+ * a star set to Auto, and only while the deployment's
+ * `REVIEWS_AUTO_REPLY_ENABLED` kill switch is set. No sync, workflow or other
+ * AI path posts one, and nothing deletes one automatically. Each attempt
+ * calls Google exactly once (withGbpAccess's single refresh-and-retry after a
+ * 401 aside); a retry reuses the same key. Never logs the reply text.
  */
 
 export const MAX_REPLY_CHARS = 4000;
@@ -73,21 +78,37 @@ function kindOf(err: unknown): string {
   return "internal";
 }
 
+/**
+ * The auto-reply engine's post: never to a review that has or had a reply,
+ * and only the queued bytes `textHash` on an Auto star (`requireNoReply` —
+ * refused as 200 `{skipped: "already_replied" | "not_queued"}`), recorded as
+ * `autoReplied` and attributed to `createdByUid`, whoever switched auto-reply on.
+ */
+export interface AutoPost {
+  createdByUid: string;
+  textHash: string;
+}
+
 export async function postReply(
   subAccountId: string,
   target: ReplyTarget,
   body: { comment: string; idempotencyKey: string },
   actorUid: string,
+  auto?: AutoPost,
 ): Promise<NextResponse> {
   const now = new Date();
-  const claim = await claimAttempt(subAccountId, target, body, actorUid, now);
+  const claim = await claimAttempt(subAccountId, target, body, actorUid, now, auto
+    ? { requireNoReply: { textHash: auto.textHash }, createdByUid: auto.createdByUid }
+    : {});
+  if (claim.kind === "already_replied" || claim.kind === "not_queued") return NextResponse.json({ skipped: claim.kind });
   if (claim.kind === "reused") {
     return gbpRefusal(409, "idempotency_key_reused", "This reply was already submitted with different text — start a new reply.");
   }
   if (claim.kind === "in_progress") {
     return gbpRefusal(409, "in_progress", "This reply is still being posted — try again in a moment.");
   }
-  if (claim.kind === "done") return NextResponse.json({ reply: claim.reply });
+  // The auto path is told a `done` apart: it must not audit or count it again.
+  if (claim.kind === "done") return NextResponse.json(auto ? { reply: claim.reply, done: true } : { reply: claim.reply });
   if (claim.kind === "gone") return gbpRefusal(404, "not_found", "Review not found.");
 
   let reply: GbpReviewReply;
@@ -102,7 +123,7 @@ export async function postReply(
   }
   try {
     await recordReplyChange(subAccountId, target, reply, {
-      type: "reply_posted", actorUid, key: body.idempotencyKey, now,
+      type: "reply_posted", actorUid, key: body.idempotencyKey, now, auto,
     });
   } catch (err) {
     // The reply IS public on Google; only our record of it failed. Say so —

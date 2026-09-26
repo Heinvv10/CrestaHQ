@@ -8,10 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 const handed = vi.hoisted(() => vi.fn());
-// Sentiment runs after the response (SP5 b); here we only see what the route hands it.
-vi.mock("@/lib/reputation/sentiment-after", async (orig) => ({
-  ...(await orig<typeof import("@/lib/reputation/sentiment-after")>()),
-  classifyAfterResponse: handed,
+// Auto-reply then sentiment run after the response; here we only see what the route hands them.
+vi.mock("@/lib/reputation/after-sync", async (orig) => ({
+  ...(await orig<typeof import("@/lib/reputation/after-sync")>()),
+  afterSyncResponse: handed,
 }));
 
 import {
@@ -129,14 +129,18 @@ describe("an admin's Sync now", () => {
   });
 });
 
-describe("sentiment after the response (SP5 b)", () => {
-  it("hands this run's created/updated counts to sentiment — which runs after responding", async () => {
+describe("auto-reply + sentiment after the response", () => {
+  it("hands this run's counts and start to the after-response work", async () => {
     handed.mockClear();
     const { status } = await syncNow("uid_admin");
     expect(status).toBe(200);
     expect(handed).toHaveBeenCalledTimes(1);
+    // The run's startedAt is what auto-reply's "seen by this run" compares against.
+    const run = mem.list(`subAccounts/${SA}/gbpSyncRuns`)[0];
+    expect(handed).toHaveBeenCalledWith(
+      [{ subAccountId: SA, created: 7, updated: 0, startedAt: run.startedAt }], expect.any(Number),
+    );
     // One deadline for the request: its start + 240 s.
-    expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 7, updated: 0 }], expect.any(Number));
     const deadline = handed.mock.calls[0][1] as number;
     expect(deadline - Date.now()).toBeGreaterThan(230_000);
     expect(deadline - Date.now()).toBeLessThanOrEqual(240_000);

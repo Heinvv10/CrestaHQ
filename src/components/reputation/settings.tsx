@@ -13,8 +13,9 @@ import { AUTO_REPLY_UI_ENABLED, AutoReplyCard } from "@/components/reputation/au
  * Reputation → Settings (SP5 c; ledger S1, R6): the "Reviews AI" card — the
  * reply guidelines "Draft with AI" follows — and the existing review-request
  * section, mounted as it is. Connecting Google and choosing the listing stay
- * on AI Agents → Google Business. There is no auto-reply setting: replies
- * are only ever posted by the admin's click.
+ * on AI Agents → Google Business. Replies are posted by the admin's click,
+ * unless review auto-reply is switched on for the sub-account (its card,
+ * AutoReplyCard, is hidden until AUTO_REPLY_UI_ENABLED).
  */
 
 const MAX = 1000;
@@ -77,7 +78,7 @@ function ReviewsAiCard({ subAccountId, isAdmin }: { subAccountId: string; isAdmi
       <h2 className="text-base font-semibold">Reviews AI</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         Reply guidelines steer <strong>Draft with AI</strong> in the reply box: tone, how to sign off, things never to say. A draft only
-        fills the box — you edit it. Nothing is posted to Google until you click Post reply to Google. There is no auto-reply.
+        fills the box — you edit it. A reply is posted to Google only when you click Post reply to Google, unless auto-reply is switched on for this sub-account.
       </p>
 
       {load.state === "loading" && <Loading testId="rep-settings-ai-loading" />}

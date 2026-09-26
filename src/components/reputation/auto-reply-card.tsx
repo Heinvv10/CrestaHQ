@@ -11,7 +11,8 @@ import type { AutoReplyStar, ReviewsAutoReplySettings } from "@/types";
  * caps read-only (the server's constants, via GET). Every save sends the whole
  * `{enabled, modes, includeBacklog}` the route allow-lists.
  *
- * Hidden until PR 2 ships the engine: `AUTO_REPLY_UI_ENABLED` keeps the
+ * Hidden until PR 3 ships this card with the Reviews tab's "Needs approval"
+ * UI (the engine shipped in PR 2): `AUTO_REPLY_UI_ENABLED` keeps the
  * settings page from mounting it.
  */
 export const AUTO_REPLY_UI_ENABLED = false;

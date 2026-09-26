@@ -546,8 +546,9 @@ export interface SubAccountDoc {
   /**
    * Reviews AI settings (SP5 c), written only by PUT
    * /api/sub-accounts/[id]/reputation/ai-settings (admin, Reviews AI gate).
-   * `replyGuidelines` (≤ 1000 chars, "" = none) steer the reply DRAFT only —
-   * nothing posts to Google without the admin's click.
+   * `replyGuidelines` (≤ 1000 chars, "" = none) steer the AI reply drafts —
+   * "Draft with AI" (posted only on the admin's click) and, for a sub-account
+   * that switched review auto-reply on, the drafts it may post without one.
    */
   reviewsAiConfig?: { replyGuidelines: string; updatedAt: Date; updatedByUid: string } | null;
   /**

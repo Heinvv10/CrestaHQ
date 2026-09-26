@@ -10,7 +10,8 @@ import { claimManualSlot } from "@/lib/gbp/sync/lease";
 import { publicRun } from "@/lib/gbp/sync/public";
 import { recordFailedRun } from "@/lib/gbp/sync/record";
 import { syncListing } from "@/lib/gbp/sync/run";
-import { classifyAfterResponse, requestDeadline } from "@/lib/reputation/sentiment-after";
+import { afterSyncResponse } from "@/lib/reputation/after-sync";
+import { requestDeadline } from "@/lib/reputation/sentiment-after";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -25,7 +26,7 @@ import type { SubAccountDoc } from "@/types";
  */
 
 export const dynamic = "force-dynamic";
-/** Sentiment runs after the response inside this invocation (budget 240 s). */
+/** Auto-reply + sentiment run after the response inside this invocation (budget 240 s). */
 export const maxDuration = 300;
 
 export async function POST(
@@ -54,8 +55,8 @@ export async function POST(
 
   try {
     const run = await syncListing(id, { trigger: "manual", actorUid: access.uid });
-    // Sentiment for what this run changed runs after the response (SP5 b).
-    classifyAfterResponse([{ subAccountId: id, created: run.created, updated: run.updated }], deadline);
+    // Auto-reply, then sentiment for what this run changed, after the response.
+    afterSyncResponse([{ subAccountId: id, created: run.created, updated: run.updated, startedAt: run.startedAt }], deadline);
     return NextResponse.json({ run: publicRun(run) });
   } catch (err) {
     console.error(`[gbp/sync-now] sync threw sa=${id}: ${err instanceof Error ? err.name : typeof err}`);
