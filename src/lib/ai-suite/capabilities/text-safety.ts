@@ -122,15 +122,19 @@ const LOWER_CONFUSABLES = new Map<string, string>([
   ["\uab83", "w"], ["\uab93", "z"],
 ]);
 
-/** Spaces, dashes, connectors, brackets and quote marks never tell two names
- *  apart ("Follow-up" = "Follow up", "Don\u2019t" = "Don't", "(Pro)" = "Pro"); symbols and other
- *  punctuation do ("A+" / "A", "Pro" / "Pro+", "10.0" / "100", emoji). */
-const SEPARATORS = /[\s\p{Pd}\p{Pc}\p{Ps}\p{Pe}'"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033\u02bc\uff07]/gu;
+/** Spaces, connectors, brackets and quote marks never tell two names apart
+ *  ("Don\u2019t" = "Don't", "(Pro)" = "Pro"), nor does a dash joining two
+ *  letters ("Follow-up" = "Follow up"); symbols, other punctuation and other
+ *  dashes do ("A+" / "A", "A-" / "A", "1-2" / "12",
+ *  "10.0" / "100", emoji). */
+const SEPARATORS = /[\s\p{Pc}\p{Ps}\p{Pe}'"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033\u02bc\uff07]/gu;
+const dropSeparators = (value: string) =>
+  value.replace(/(?<=[\p{L}\p{M}])\p{Pd}+(?=\p{L})/gu, "").replace(SEPARATORS, "");
 
 /** A name folded for "is this the same name?": NFKC, case-folded, separators
  *  dropped. */
 function casefoldKey(value: string): string {
-  return value.normalize("NFKC").toLowerCase().replace(SEPARATORS, "");
+  return dropSeparators(value.normalize("NFKC").toLowerCase());
 }
 
 /** Vertical bars that pass for an l (\u2223 \u05c0 \u2502 \u23d0 \ufe31 \u01c0 | \uff5c),
@@ -141,21 +145,19 @@ const IS_BAR = /[\u2223\u05c0\u2502\u23d0\ufe31\u01c0\u01c1|\uff5c]/u;
 /**
  * What a name looks like (UTS #39 style): bar-like symbols read as l; NFKC;
  * capital I and the capital confusables mapped; case-folded, then NFC (so
- * "\u0130" keeps its dot); the lowercase confusables mapped; 1 read as l, 0 as
- * o; separators dropped. "rn" / "vv" also read as "m" /
+ * "\u0130" keeps its dot); the lowercase confusables mapped; separators
+ * dropped; 1 read as l, 0 as o. "rn" / "vv" also read as "m" /
  * "w": deliberately, as a spoof is worse than refusing the odd real pair
  * (Modern / Modem).
  */
 export function skeleton(value: string): string {
   const capitals = [...value.replace(/\u01c1/g, "ll").replace(BAR_LIKE, "l").normalize("NFKC")].map((c) => (c === "I" ? "l" : (CAPITAL_CONFUSABLES.get(c) ?? c))).join("");
-  return [...capitals.toLowerCase().normalize("NFC")]
-    .map((c) => LOWER_CONFUSABLES.get(c) ?? c)
-    .join("")
+  // Separators go before 1 / 0 become letters, so "0800-123" keeps its dash.
+  return dropSeparators([...capitals.toLowerCase().normalize("NFC")].map((c) => LOWER_CONFUSABLES.get(c) ?? c).join(""))
     .replace(/1/g, "l")
     .replace(/0/g, "o")
     .replace(/rn/g, "m")
-    .replace(/vv/g, "w")
-    .replace(SEPARATORS, "");
+    .replace(/vv/g, "w");
 }
 
 const ASCII = /^[\x00-\x7f]*$/;
@@ -199,7 +201,7 @@ const IS_SEPARATOR = new RegExp(SEPARATORS.source, "u");
  */
 function symbolInWord(value: string): boolean {
   for (const [run] of value.normalize("NFC").matchAll(/(?<=[A-Za-z])[^A-Za-z\s]+(?=[A-Za-z])/gu)) {
-    const odd = (c: string) => !/[0-9.&/+\p{M}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
+    const odd = (c: string) => !/[0-9.&/+\p{M}\p{Pd}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
     if ([...run].some(odd)) return true;
   }
   return false;
@@ -215,6 +217,8 @@ function symbolInWord(value: string): boolean {
 function latinMarkLeft(value: string): boolean {
   let base = "";
   for (const c of value.normalize("NFC")) {
+    // Emoji presentation and the keycap ("5\ufe0f\u20e3") are not decorations on a letter.
+    if (c === "\ufe0f" || c === "\u20e3") continue;
     if (!/\p{M}/u.test(c)) base = c;
     else if (/\p{N}/u.test(base) || IS_BAR.test(base) || (/\p{Script=Latin}/u.test(base) && !/\p{M}/u.test(base.normalize("NFD")))) return true;
   }

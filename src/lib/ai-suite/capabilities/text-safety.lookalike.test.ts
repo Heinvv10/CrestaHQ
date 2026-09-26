@@ -97,4 +97,16 @@ describe("lookAlikeProblem", () => {
       expect(lookAlikeProblem(name, []), name).toBeNull();
     }
   });
+
+  it("keycap emoji are accepted; a mark on a digit inside a word is not", () => {
+    for (const name of ["5\ufe0f\u20e3 Five", "1\ufe0f\u20e3 Intro"]) expect(lookAlikeProblem(name, []), name).toBeNull();
+    expect(lookAlikeProblem("deta1\u0307ls", [])).toBe("has a mark that can't combine into a standard accented letter");
+  });
+
+  it("a dash is a separator only between two letters", () => {
+    expect(lookAlikeProblem("A-", ["A"])).toBeNull();
+    expect(lookAlikeProblem("1-2", ["12"])).toBeNull();
+    expect(lookAlikeProblem("Follow-up", ["Follow up"])).toBe("is the same as, or looks like, an existing one");
+    expect(lookAlikeProblem("0800-123", ["0800 123"])).toBeNull();
+  });
 });
