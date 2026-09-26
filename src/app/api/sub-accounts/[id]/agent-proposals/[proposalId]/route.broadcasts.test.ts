@@ -150,6 +150,18 @@ describe("create_broadcast", () => {
     });
   });
 
+  it("a proposal from before createdServerAt existed is anchored at its createdAt; an unreadable one is refused", async () => {
+    const id = await proposeId();
+    const { createdServerAt: _s, ...legacy } = row(id);
+    mem.seed(`agentProposals/${id}`, legacy);
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const cap = getCapability("create_broadcast")!;
+    const ctx = (proposalId: string) => ({ uid: "u1", email: "a@x.io", displayName: "A", agencyId: "ag1", subAccountId: "sa1", approved: { pinned: row(id).pinned as Record<string, unknown>, proposalId, claimId: proposalId } });
+    await cap.execute(ctx(id), ALL);
+    expect((mem.list("broadcasts")[0]!.approved as { at: unknown }).at).toEqual(legacy.createdAt);
+    await expect(cap.execute(ctx("p_missing"), ALL)).rejects.toThrow("The proposal couldn't be read; nothing was sent.");
+  });
+
   it("a tag audience counts only its contacts", async () => {
     const id = await proposeId({ ...ALL, audienceFilter: { kind: "tag", tag: "vip" } });
     expect(rowOf(id, "To")).toBe('contacts tagged "vip": 1 contact(s) now, less those opted out or without an email');

@@ -154,7 +154,9 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
       const cap = Number(pinned.audienceCount);
       if (matching > cap) throw new CapabilityUserError(`The audience grew to ${matching} contacts since ${cap} were approved; nothing was sent. Propose it again.`);
       // Contacts are skipped if an agent edits them after the PROPOSAL was made (the approver never saw their values).
-      const proposedAt = (await getAdminDb().doc(`agentProposals/${ctx.approved.proposalId}`).get()).data()?.createdServerAt;
+      // createdAt only for a proposal made before createdServerAt existed.
+      const proposal = (await getAdminDb().doc(`agentProposals/${ctx.approved.proposalId}`).get()).data();
+      const proposedAt = proposal?.createdServerAt ?? proposal?.createdAt;
       if (!toDate(proposedAt)) throw new CapabilityUserError("The proposal couldn't be read; nothing was sent.");
       const started = await startBroadcast({
         subAccountId: ctx.subAccountId!,
