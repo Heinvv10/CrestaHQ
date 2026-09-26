@@ -38,7 +38,9 @@ function hiddenText(r: Record<string, unknown>): string | null {
   return null;
 }
 
-/** Refuses a label that could pass for another field's of the same entity. */
+/** Refuses a label that could pass for another field's of the same entity.
+ *  Two agent writes racing past each other is accepted: the racer is the
+ *  agent itself, and each write is stamped as its own. */
 async function assertLabelDistinct(subAccountId: string, entity: string, label: string, selfId: string | null): Promise<void> {
   const snap = await getAdminDb().collection(`subAccounts/${subAccountId}/customFields`).get();
   const others = snap.docs.filter((d) => d.id !== selfId && d.data().entity === entity).map((d) => String(d.data().label ?? ""));

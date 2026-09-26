@@ -48,7 +48,7 @@ describe("custom fields", () => {
     ["no options for a dropdown", { entity: "contact", label: "Slot", type: "dropdown" }, "need an options list"],
     ["a label mixing Latin and Cyrillic", { entity: "contact", label: "B\u0430nk details", type: "text" }, "the label mixes Latin with Cyrillic or Greek"],
     ["an option mixing Latin and Greek", { entity: "contact", label: "Answer", type: "dropdown", options: ["No", "\u03a5es"] }, 'the option "\u03a5es" mixes Latin'],
-    ["two options alike once normalised", { entity: "contact", label: "Answer", type: "dropdown", options: ["Yes", " YES"] }, 'the option "YES" is the same as an existing one'],
+    ["two options alike once normalised", { entity: "contact", label: "Answer", type: "dropdown", options: ["Yes", " YES"] }, 'the option "YES" is the same as, or looks like, an existing one'],
   ])("create_custom_field with %s → refused", async (_label, args, message) => {
     expect(await call("create_custom_field", args)).toMatchObject({ ok: false, code: "invalid_args", message: expect.stringContaining(message) });
     expect(mem.list(FIELDS)).toHaveLength(1);
@@ -56,12 +56,12 @@ describe("custom fields", () => {
 
   it("a label another field of the entity already has (once normalised) → refused; the other entity's is fine", async () => {
     mem.seed(`${FIELDS}/cf2`, { ...FIELD, key: "id_number", label: "ID number" });
-    for (const label of ["ID number", " id  NUMBER"]) {
+    for (const label of ["ID number", " id  NUMBER", "lD number"]) {
       expect(await call("create_custom_field", { entity: "contact", label, type: "text" })).toMatchObject({
-        ok: false, message: "The label is the same as an existing one (another contact field's).",
+        ok: false, message: "The label is the same as, or looks like, an existing one (another contact field's).",
       });
     }
-    expect(await call("update_custom_field", { fieldId: "cf1", label: "Id Number" })).toMatchObject({ ok: false, message: expect.stringContaining("is the same as an existing one") });
+    expect(await call("update_custom_field", { fieldId: "cf1", label: "Id Number" })).toMatchObject({ ok: false, message: expect.stringContaining("is the same as, or looks like, an existing one") });
     expect(await call("update_custom_field", { fieldId: "cf1", label: "Install date" })).toMatchObject({ ok: true });
     expect(await call("create_custom_field", { entity: "deal", label: "ID number", type: "text" })).toMatchObject({ ok: true });
     expect(await call("create_custom_field", { entity: "contact", label: "\u041d\u043e\u043c\u0435\u0440", type: "text" })).toMatchObject({ ok: true });
@@ -149,7 +149,7 @@ describe("folders", () => {
   });
 
   it("a folder name the entity already has (once normalised) → refused", async () => {
-    expect(await call("create_custom_field_folder", { name: "install", entity: "contact" })).toMatchObject({ ok: false, message: "The folder name is the same as an existing one." });
+    expect(await call("create_custom_field_folder", { name: "install", entity: "contact" })).toMatchObject({ ok: false, message: "The folder name is the same as, or looks like, an existing one." });
     expect(await call("update_custom_field_folder", { folderId: "fo1", name: "INSTALL" })).toMatchObject({ ok: true });
     expect(await call("create_custom_field_folder", { name: "install", entity: "deal" })).toMatchObject({ ok: true });
   });

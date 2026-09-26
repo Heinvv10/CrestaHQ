@@ -10,7 +10,7 @@ import { productSellers, productUsage } from "@/lib/products/usage";
 import type { Product } from "@/types/products";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, fmtMoney, str } from "./helpers";
-import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { hasUnsafeText, lookAlikeProblem, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 
 /**
@@ -43,9 +43,13 @@ const PRODUCT_LABELS: Record<string, string> = {
   bumpHeadline: "Bump headline",
 };
 
-/** The stored value of each field the edit touches (null when unset). */
-const valuesOf = (p: FirebaseFirestore.DocumentData, fields: Record<string, unknown>) =>
-  Object.fromEntries(Object.keys(fields).sort().map((k) => [k, p[k] ?? null]));
+/** The stored value of each field the edit touches (null when unset); a
+ *  price is its amount and currency together, so either pins both. */
+const valuesOf = (p: FirebaseFirestore.DocumentData, fields: Record<string, unknown>) => {
+  const keys = new Set(Object.keys(fields));
+  if (keys.has("unitPriceCents") || keys.has("currency")) ["unitPriceCents", "currency"].forEach((k) => keys.add(k));
+  return Object.fromEntries([...keys].sort().map((k) => [k, p[k] ?? null]));
+};
 
 /** The sanitized payload of the args, or an error for hidden text / bad values. */
 function productFields(raw: unknown): { ok: true; fields: Partial<Product> } | { ok: false; error: string } {
@@ -54,6 +58,8 @@ function productFields(raw: unknown): { ok: true; fields: Partial<Product> } | {
     if (r[k] !== undefined && typeof r[k] !== "string") return { ok: false, error: `${k} must be text` };
     if (typeof r[k] === "string" && hasUnsafeText(r[k] as string)) return { ok: false, error: `${k} ${UNSAFE_TEXT_MESSAGE}` };
   }
+  const lookAlike = typeof r.name === "string" ? lookAlikeProblem(r.name, []) : null;
+  if (lookAlike) return { ok: false, error: `the name ${lookAlike}` };
   if (r.unitPriceCents !== undefined && (typeof r.unitPriceCents !== "number" || !Number.isFinite(r.unitPriceCents) || r.unitPriceCents < 0)) {
     return { ok: false, error: "unitPriceCents must be a whole number of cents, 0 or more" };
   }
@@ -61,6 +67,15 @@ function productFields(raw: unknown): { ok: true; fields: Partial<Product> } | {
     return { ok: false, error: "currency must be a 3-letter code" };
   }
   return { ok: true, fields: sanitizeProductPayload(r) };
+}
+
+/** Refuses a name that could pass for another product's in the sub-account.
+ *  Two agent writes racing past each other is accepted: the racer is the
+ *  agent itself, and each write is stamped as its own. */
+async function assertNameDistinct(subAccountId: string, name: string, selfId: string | null): Promise<void> {
+  const snap = await getAdminDb().collection("products").where("subAccountId", "==", subAccountId).get();
+  const problem = lookAlikeProblem(name.trim(), snap.docs.filter((d) => d.id !== selfId).map((d) => String(d.data().name ?? "")));
+  if (problem) throw new CapabilityUserError(`The name ${problem} (another product's).`);
 }
 
 async function tenantProduct(subAccountId: string, productId: unknown): Promise<Product> {
@@ -109,6 +124,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Add the product “${args.name}”.`,
     execute: async (ctx, args) => {
+      await assertNameDistinct(ctx.subAccountId!, args.name as string, null);
       const id = await createProduct({
         subAccountId: ctx.subAccountId!,
         createdByUid: ctx.uid,
@@ -182,6 +198,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       const { productId, ...fields } = args;
       const p = await tenantProduct(ctx.subAccountId!, productId);
+      if (typeof fields.name === "string") await assertNameDistinct(ctx.subAccountId!, fields.name, p.id);
       const db = getAdminDb();
       const ref = db.doc(`products/${p.id}`);
       await db.runTransaction(async (tx) => {

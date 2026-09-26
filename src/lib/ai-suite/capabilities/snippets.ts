@@ -46,7 +46,9 @@ function snippetInput(raw: unknown): { ok: true; value: SnippetInput } | { ok: f
   return v;
 }
 
-/** Refuses a name that could pass for another snippet's in the sub-account. */
+/** Refuses a name that could pass for another snippet's in the sub-account.
+ *  Two agent writes racing past each other is accepted: the racer is the
+ *  agent itself, and each write is stamped as its own. */
 async function assertNameDistinct(subAccountId: string, name: string, selfId: string | null): Promise<void> {
   const snap = await getAdminDb().collection("snippets").where("subAccountId", "==", subAccountId).get();
   const problem = lookAlikeProblem(name, snap.docs.filter((d) => d.id !== selfId).map((d) => String(d.data().name ?? "")));

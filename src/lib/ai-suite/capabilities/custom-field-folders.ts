@@ -29,7 +29,9 @@ function folderName(raw: unknown): { ok: true; name: string } | { ok: false; err
   return { ok: true, name };
 }
 
-/** Refuses a name that could pass for another folder's of the same entity. */
+/** Refuses a name that could pass for another folder's of the same entity.
+ *  Two agent writes racing past each other is accepted: the racer is the
+ *  agent itself, and each write is stamped as its own. */
 async function assertNameDistinct(subAccountId: string, entity: unknown, name: string, selfId: string | null): Promise<void> {
   const snap = await getAdminDb().collection(`subAccounts/${subAccountId}/customFieldFolders`).where("entity", "==", entity).get();
   const problem = lookAlikeProblem(name, snap.docs.filter((d) => d.id !== selfId).map((d) => String(d.data().name ?? "")));

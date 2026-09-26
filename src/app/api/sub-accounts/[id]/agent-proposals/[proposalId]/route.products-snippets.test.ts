@@ -131,6 +131,25 @@ describe("products", () => {
     expect(mem.read("products/pr1")!.unitPriceCents).toBe(1);
   });
 
+  it("a currency-only edit pins the amount too: the amount changing in the window → failed", async () => {
+    page({ productId: "pr1" });
+    const id = await proposeId("update_product", { productId: "pr1", currency: "USD" });
+    expect(row(id).pinned).toEqual({ productId: "pr1", before: { currency: "ZAR", unitPriceCents: 49900 } });
+    beforeNextTransaction(async () => mem.seed("products/pr1", { ...PRODUCT, unitPriceCents: 1 }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(mem.read("products/pr1")!.currency).toBe("ZAR");
+  });
+
+  it.each([
+    ["a Cyrillic e", "create_product", { name: "Fibr\u0435 100", unitPriceCents: 1 }, "the name mixes Latin with Cyrillic or Greek letters in one word"],
+    ["l and O for 1 and 0 (as another product's)", "create_product", { name: "Fibre lOO", unitPriceCents: 1 }, "The name is the same as, or looks like, an existing one (another product's)."],
+    ["another product's name on update", "update_product", { productId: "pr2", name: "FIBRE 100" }, "The name is the same as, or looks like, an existing one (another product's)."],
+  ])("a product name with %s → refused", async (_label, name, args, message) => {
+    mem.seed("products/pr2", { ...PRODUCT, name: "Unsold" });
+    expect(await call(name, args)).toMatchObject({ ok: false, message });
+    expect(await call("update_product", { productId: "pr1", name: "Fibre 100" })).toMatchObject({ ok: true });
+  });
+
   it.each([
     ["a checkout page's offer", () => page({ productId: "pr1" })],
     ["a checkout page's order bump", () => page({ bumpProductIds: ["pr1"] })],
@@ -197,9 +216,24 @@ describe("snippets", () => {
     expect(await call("create_snippet", { type: "text", body: "Hi", ...patch })).toMatchObject({ ok: false, code: "invalid_args", message });
   });
 
+  it.each([
+    ["an l for an I", "lnvoice link", "The name is the same as, or looks like, an existing one (another snippet's)."],
+    ["rn for m", "Payrnent link", "The name is the same as, or looks like, an existing one (another snippet's)."],
+    ["vv for w", "VVelcome", "The name is the same as, or looks like, an existing one (another snippet's)."],
+    ["all-Cyrillic look-alikes", "\u0422\u0410\u0425 INFO", "the name uses letters from another script that look like Latin ones"],
+    ["all-Greek look-alikes", "\u03a4\u0391\u03a7 INFO", "the name uses letters from another script that look like Latin ones"],
+    ["an Armenian o", "B\u0585nus code", "the name uses letters from another script that look like Latin ones"],
+    ["a Cherokee S", "\u13daMS reply", "the name uses letters from another script that look like Latin ones"],
+  ])("a snippet name with %s → refused", async (_label, name, message) => {
+    mem.seed("snippets/sn2", { ...SNIPPET, name: "Invoice link" });
+    mem.seed("snippets/sn3", { ...SNIPPET, name: "Payment link" });
+    mem.seed("snippets/sn4", { ...SNIPPET, name: "Welcome" });
+    expect(await call("create_snippet", { name, type: "text", body: "Hi" })).toMatchObject({ ok: false, message });
+  });
+
   it("a snippet name matching another's once normalised → refused; one wholly in Cyrillic or Greek is fine", async () => {
     expect(await call("create_snippet", { name: " thanks ", type: "text", body: "Hi" })).toMatchObject({
-      ok: false, message: "The name is the same as an existing one (another snippet's).",
+      ok: false, message: "The name is the same as, or looks like, an existing one (another snippet's).",
     });
     for (const name of ["\u0411\u0430\u043d\u043a", "\u03a4\u03c1\u03ac\u03c0\u03b5\u03b6\u03b1"]) {
       expect(await call("create_snippet", { name, type: "text", body: "Hi" })).toMatchObject({ ok: true });

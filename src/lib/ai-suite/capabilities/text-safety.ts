@@ -99,10 +99,46 @@ export function messageBody(value: string): string | null {
   return UNSAFE_TEXT_RE.test(body.replace(/\n/g, " ").replace(EMOJI_ZWJ, "").replace(EMOJI_PRESENTATION, "")) ? null : body;
 }
 
-/** "Is this the same name?": NFKC, case-folded, whitespace collapsed. */
-export function sameNameKey(value: string): string {
-  return value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+/**
+ * Characters that look like a Latin letter, mapped to it: a curated subset
+ * of Unicode UTS #39 confusables: the Cyrillic, Greek, Armenian and
+ * Cherokee letters that pass for Latin ones (ASCII look-alikes are folded
+ * in skeleton). Not complete: enough to stop the common impersonations.
+ */
+const CONFUSABLES = new Map<string, string>([
+  ["\u0410", "a"], ["\u0412", "b"], ["\u0415", "e"],
+  ["\u041a", "k"], ["\u041c", "m"], ["\u041d", "h"], ["\u041e", "o"], ["\u0420", "p"], ["\u0421", "c"],
+  ["\u0422", "t"], ["\u0425", "x"], ["\u0423", "y"], ["\u0405", "s"], ["\u0406", "l"], ["\u0408", "j"],
+  ["\u04ae", "y"], ["\u04ba", "h"], ["\u0430", "a"], ["\u0435", "e"], ["\u043e", "o"], ["\u0440", "p"],
+  ["\u0441", "c"], ["\u0443", "y"], ["\u0445", "x"], ["\u0455", "s"], ["\u0456", "i"], ["\u0458", "j"],
+  ["\u0501", "d"], ["\u051b", "q"], ["\u051d", "w"], ["\u04bb", "h"], ["\u04af", "y"], ["\u0391", "a"],
+  ["\u0392", "b"], ["\u0395", "e"], ["\u0396", "z"], ["\u0397", "h"], ["\u0399", "l"], ["\u039a", "k"],
+  ["\u039c", "m"], ["\u039d", "n"], ["\u039f", "o"], ["\u03a1", "p"], ["\u03a4", "t"], ["\u03a5", "y"],
+  ["\u03a7", "x"], ["\u03bf", "o"], ["\u03c1", "p"], ["\u03bd", "v"], ["\u03b9", "i"], ["\u0555", "o"],
+  ["\u0585", "o"], ["\u057d", "u"], ["\u0570", "h"], ["\u0578", "n"], ["\u0566", "q"], ["\u0581", "g"],
+  ["\u13aa", "a"], ["\u13f4", "b"], ["\u13df", "c"], ["\u13a0", "d"], ["\u13ac", "e"], ["\u13c0", "g"],
+  ["\u13bb", "h"], ["\u13ab", "j"], ["\u13e6", "k"], ["\u13de", "l"], ["\u13b7", "m"], ["\u13e2", "p"],
+  ["\u13a1", "r"], ["\u13da", "s"], ["\u13a2", "t"], ["\u13d9", "v"], ["\u13b3", "w"], ["\u13c3", "z"],
+]);
+
+/** What a name looks like: NFKC, confusables mapped to Latin, case-folded,
+ *  i / 1 / | read as l and 0 as o, "rn" / "vv" as "m" / "w", whitespace
+ *  collapsed. Two names with the
+ *  same skeleton can pass for each other. */
+export function skeleton(value: string): string {
+  const mapped = [...value.normalize("NFKC")].map((c) => CONFUSABLES.get(c) ?? c).join("");
+  // Folded first, so I / i / l / 1 / | all read alike (and 0 / o).
+  return mapped
+    .toLowerCase()
+    .replace(/[i1|]/g, "l")
+    .replace(/0/g, "o")
+    .replace(/rn/g, "m")
+    .replace(/vv/g, "w")
+    .replace(/\s+/g, " ")
+    .trim();
 }
+
+const ASCII = /^[\x00-\x7f]*$/;
 
 /** A word mixing Latin with Cyrillic or Greek letters: "B\u0430nk" (a
  *  Cyrillic a) reads as "Bank". A word wholly in one script is fine. */
@@ -110,13 +146,17 @@ const MIXED_SCRIPT_WORD = /(?=\S*\p{Script=Latin})(?=\S*[\p{Script=Cyrillic}\p{S
 
 /**
  * Why an agent-chosen name could pass for another, or null: a word mixing
- * scripts, or the same name as one of `existing` (same scope) once
- * normalised. For names a person picks from a list (snippets, field labels,
+ * scripts, a word written wholly in Latin look-alikes, or the same skeleton
+ * as one of `existing` (same scope). For names a person picks from a list (snippets, field labels,
  * options, folders).
  */
 export function lookAlikeProblem(value: string, existing: readonly string[]): string | null {
   if (MIXED_SCRIPT_WORD.test(value)) return "mixes Latin with Cyrillic or Greek letters in one word";
-  const key = sameNameKey(value);
-  if (existing.some((e) => sameNameKey(e) === key)) return "is the same as an existing one";
+  // A word made only of letters that pass for Latin ones reads as Latin.
+  if (value.split(/\s+/).some((w) => !ASCII.test(w) && ASCII.test(skeleton(w)))) {
+    return "uses letters from another script that look like Latin ones";
+  }
+  const key = skeleton(value);
+  if (existing.some((e) => skeleton(e) === key)) return "is the same as, or looks like, an existing one";
   return null;
 }
