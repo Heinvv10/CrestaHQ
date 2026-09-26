@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GbpHealth } from "@/lib/gbp/sync/types";
-import { fmtRating } from "../reputation/format";
+import { fmtRating } from "@/components/reputation/format";
 import { absoluteTime, relativeTime } from "./format-time";
 import { RecentSyncs } from "./recent-syncs";
 import { FIELD_LABEL, NO_FILTERS, ReviewFilters, filterQuery, type FilterValue } from "./review-filters";
