@@ -22,6 +22,11 @@ vi.mock("next/link", () => ({
 import { ReputationSettings } from "./settings";
 
 const API = "/api/sub-accounts/sa1/reputation/ai-settings";
+const AUTO_API = "/api/sub-accounts/sa1/reputation/auto-reply";
+const AUTO_STATE = {
+  enabled: false, modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: false,
+  enabledAt: null, disabledReason: null, gatesOn: true, gate: null, available: true, running: true, dailyPostCap: 20, dailyDraftCap: 40,
+};
 let state: Record<string, unknown>;
 let putStatus: number;
 const fetchMock = vi.fn();
@@ -36,6 +41,7 @@ beforeEach(() => {
   state = { enabled: true, configured: true, replyGuidelines: "Sign off as The Fixture Team.", updatedAt: "2026-09-14T08:00:00.000Z", draftDailyCap: 40, dailyCap: 250 };
   putStatus = 200;
   fetchMock.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url === AUTO_API) return json(AUTO_STATE);
     if (url !== API) throw new Error(`unexpected fetch ${url}`);
     if ((init?.method ?? "GET") === "GET") return json(state);
     const body = JSON.parse(String(init?.body)) as { replyGuidelines: string };
@@ -77,10 +83,11 @@ describe("the page", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("does not show the auto-reply card yet (hidden until the engine ships)", async () => {
+  it("mounts the auto-reply card (shown since PR 3) and loads its settings", async () => {
     await render();
-    expect(byId("rep-settings-autoreply-card")).toBeNull();
-    expect(fetchMock.mock.calls.map(([u]) => u)).not.toContain("/api/sub-accounts/sa1/reputation/auto-reply");
+    expect(byId("rep-settings-autoreply-card")).not.toBeNull();
+    expect(fetchMock.mock.calls.map(([u]) => u)).toContain(AUTO_API);
+    expect(byId("rep-settings-autoreply-enabled")).not.toBeNull();
   });
 
   it("mounts the existing review-request section and links to where Google is connected", async () => {

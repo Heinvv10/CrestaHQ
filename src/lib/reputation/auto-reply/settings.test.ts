@@ -45,4 +45,19 @@ describe("nextAutoReplySettings", () => {
     expect(nextAutoReplySettings(undefined, on, { ...ctx, listingLocationName: null })).toEqual({ ok: false, code: "no_listing" });
     expect(nextAutoReplySettings(undefined, { ...on, enabled: false }, { ...ctx, listingLocationName: null }).ok).toBe(true);
   });
+
+  it("keeps disabledReason only while auto-reply stays off without an admin's switch", () => {
+    const changed = { enabled: false, disabledReason: "listing_changed" };
+    const off = { ...on, enabled: false };
+    // A save while still off (a star changed) keeps the note.
+    expect(nextAutoReplySettings(changed, off, ctx)).toMatchObject({ ok: true, value: { disabledReason: "listing_changed" } });
+    // Switching on clears it.
+    expect(nextAutoReplySettings(changed, on, ctx)).toMatchObject({ ok: true, value: { disabledReason: null } });
+    // An admin's own on→off is not a listing change.
+    expect(nextAutoReplySettings({ enabled: true, disabledReason: "listing_changed" }, off, ctx))
+      .toMatchObject({ ok: true, value: { disabledReason: null } });
+    // Anything but the one known value reads as none.
+    expect(nextAutoReplySettings({ enabled: false, disabledReason: "other" }, off, ctx))
+      .toMatchObject({ ok: true, value: { disabledReason: null } });
+  });
 });

@@ -60,16 +60,42 @@ describe("GET", () => {
     expect(status).toBe(200);
     expect(body).toEqual({
       enabled: false, modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: false,
-      enabledAt: null, gatesOn: true, available: true, dailyPostCap: 20, dailyDraftCap: 40,
+      enabledAt: null, disabledReason: null, gatesOn: true, gate: null, available: true, running: false,
+      dailyPostCap: 20, dailyDraftCap: 40,
     });
   });
 
-  it("reports gatesOn false when any one gate is off", async () => {
-    for (const gate of ["googleEnabledByAgency", "reviewsAiEnabledByAgency", "reviewsAutoReplyEnabledByAgency"]) {
+  it("reports gatesOn false when any one gate is off, and names that gate", async () => {
+    const codes = { googleEnabledByAgency: "gate_off", reviewsAiEnabledByAgency: "ai_gate_off", reviewsAutoReplyEnabledByAgency: "auto_reply_gate_off" };
+    for (const [gate, code] of Object.entries(codes)) {
       resetSync();
       patchSub({ reviewsAiEnabledByAgency: true, reviewsAutoReplyEnabledByAgency: true, [gate]: false });
-      expect((await get()).body.gatesOn).toBe(false);
+      expect((await get()).body).toMatchObject({ gatesOn: false, gate: code });
     }
+  });
+
+  it("running is the kill switch as a boolean — exactly \"1\" — never its value", async () => {
+    const prior = process.env.REVIEWS_AUTO_REPLY_ENABLED;
+    try {
+      process.env.REVIEWS_AUTO_REPLY_ENABLED = "1";
+      const on = await get();
+      expect(on.body.running).toBe(true);
+      process.env.REVIEWS_AUTO_REPLY_ENABLED = "true";
+      const off = await get();
+      expect(off.body.running).toBe(false);
+      expect(JSON.stringify(off.body)).not.toContain("REVIEWS_AUTO_REPLY");
+      expect(JSON.stringify(off.body)).not.toContain("\"true\"");
+    } finally {
+      if (prior === undefined) delete process.env.REVIEWS_AUTO_REPLY_ENABLED;
+      else process.env.REVIEWS_AUTO_REPLY_ENABLED = prior;
+    }
+  });
+
+  it("disabledReason: listing_changed reads through; anything else reads as null", async () => {
+    patchSub({ reviewsAutoReply: { enabled: false, modes: MODES, includeBacklog: false, disabledReason: "listing_changed" } });
+    expect((await get()).body.disabledReason).toBe("listing_changed");
+    patchSub({ reviewsAutoReply: { enabled: false, modes: MODES, includeBacklog: false, disabledReason: "whatever" } });
+    expect((await get()).body.disabledReason).toBeNull();
   });
 
   it("refuses a non-member and another sub-account's admin", async () => {

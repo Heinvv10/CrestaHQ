@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { autoReplyNeverCollection, stableReviewKey } from "@/lib/gbp/auto-reply-never";
 import { PENDING_MS } from "@/lib/gbp/reply-attempts";
+import { assertFakeFixtureAgency, gbpProviderMode } from "@/lib/gbp/provider/select";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewsAiConfigured } from "../ai/mode";
 import { getReviewsAiFor } from "../ai/select";
@@ -44,6 +45,10 @@ const kind = (err: unknown) => (err instanceof Error ? err.name : typeof err);
 export async function autoReplyAfterSync(sa: string, runStartedAt: Date, deadline: number): Promise<AutoReplyRun | null> {
   if (!autoReplyKillSwitchOn()) return null;
   try {
+    // With the GBP fake (CI and dev, which run on the PRODUCTION Firestore)
+    // only the fixture agency is served: nothing of a real tenant's is read or
+    // written, not even the lease. Throws (→ logged, null) otherwise.
+    if (gbpProviderMode() === "fake") await assertFakeFixtureAgency(sa);
     return await runEngine(sa, runStartedAt.getTime(), deadline);
   } catch (err) {
     console.warn(`[reputation/auto-reply] sa=${sa} run failed kind=${kind(err)}`);

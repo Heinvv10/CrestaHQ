@@ -254,17 +254,24 @@ would be invisible).
 - Reputation settings: an "Auto-reply" card — master switch, five star rows
   with Auto / Approval, the backlog checkbox, a note that reviews with written
   text always wait for approval, the caps shown read-only. Locked state when
-  the agency gate is off. **Hidden until PR 3 ships** (PR 1's route refused
-  `enabled: true` with 409 `not_available`; PR 2 lifted it). **Any listing
+  any of the three agency gates is off, naming the gate. Shown since PR 3
+  (PR 1's route refused `enabled: true` with 409 `not_available`; PR 2
+  lifted it); it also says when the deployment's kill switch is unset
+  (GET `running`, a boolean). **Any listing
   change or clear switches auto-reply OFF** (`enabled: false`, modes kept —
   rev 5; the same location through another Google account counts): the card
   shows it as off with a note that the listing changed — re-enable to resume —
-  and one alert is sent (PR 4).
+  (PR 3: `reviewsAutoReply.disabledReason: "listing_changed"`, written by the
+  listing writers when it was on, cleared by any admin switch) and one alert
+  is sent (PR 4).
 - Reviews tab: "Needs approval" filter (`pendingReply` present, fresh,
   `reason !== "dismissed"`, and `reply == null`) with a count, over the same capped 500 served records; each row shows its reason
-  (held for approval vs queued to auto-post);
+  (held for approval, queued to auto-post, auto-post paused, draft failed,
+  over today's limit, post failed — only the reason and draft text are
+  served);
   the composer opens pre-filled with the draft; **Post** uses the existing
-  human reply route; **Discard** marks it dismissed (see the state table) and
+  human reply route; **Discard** (`POST …/gbp/reviews/[reviewDocId]/auto-reply/dismiss`,
+  guarded like the reply route) marks it dismissed (see the state table) and
   removes it from the filter — E2E asserts the count drops and the row is gone. Auto-posted replies
   show a small "Auto-replied" tag.
 

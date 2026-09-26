@@ -71,6 +71,11 @@ export function readAutoReplySettings(raw: unknown): AutoReplyInput {
   return { enabled: r.enabled === true, modes, includeBacklog: r.includeBacklog === true };
 }
 
+/** `listing_changed` when a listing change or clear switched auto-reply off; otherwise null. */
+export function readDisabledReason(raw: unknown): "listing_changed" | null {
+  return isPlainObject(raw) && raw.disabledReason === "listing_changed" ? "listing_changed" : null;
+}
+
 type NextSettings =
   | { ok: true; value: ReviewsAutoReplySettings }
   | { ok: false; code: "no_listing" };
@@ -102,6 +107,9 @@ export function nextAutoReplySettings(
       enabledAt: turningOn ? ctx.now : kept(p.enabledAt, isStamp),
       enabledByUid: turningOn ? ctx.uid : kept(p.enabledByUid, isString),
       listingLocationName: turningOn ? ctx.listingLocationName : kept(p.listingLocationName, isString),
+      // "Switched off because the listing changed" lasts only while it stays
+      // off without an admin's switch: any on, or an admin's on→off, clears it.
+      disabledReason: input.enabled || p.enabled === true ? null : readDisabledReason(p),
       updatedAt: ctx.now,
       updatedByUid: ctx.uid,
     },

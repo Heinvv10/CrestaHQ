@@ -12,13 +12,19 @@ import {
   nextAutoReplySettings,
   parseAutoReplyBody,
   readAutoReplySettings,
+  readDisabledReason,
 } from "@/lib/reputation/auto-reply/settings";
+import { autoReplyKillSwitchOn } from "@/lib/reputation/auto-reply/kill-switch";
 
 /**
- * GET → `{enabled, modes, includeBacklog, enabledAt, gatesOn, available,
- * dailyPostCap, dailyDraftCap}` for any member: the saved review auto-reply
- * settings (defaults when absent), whether all three agency gates are on,
- * whether this deployment's engine can act on them, and the daily caps.
+ * GET → `{enabled, modes, includeBacklog, enabledAt, disabledReason, gatesOn,
+ * gate, available, running, dailyPostCap, dailyDraftCap}` for any member: the
+ * saved review auto-reply settings (defaults when absent), why a listing
+ * change switched it off (`disabledReason: "listing_changed"`, else null),
+ * whether all three agency gates are on and, when not, the FIRST one that is
+ * off (`gate`: the PUT's refusal code), whether this deployment's engine can
+ * act on them, whether it RUNS here (`running` — the kill switch as a boolean,
+ * never its env value), and the daily caps.
  *
  * PUT `{enabled, modes: {1..5: "auto"|"approval"}, includeBacklog}` —
  * sub-account admin; any other key or a missing star is 400 `invalid_body`.
@@ -36,22 +42,32 @@ export const dynamic = "force-dynamic";
 
 type Sub = Record<string, unknown>;
 
-function gateRefusal(sub: Sub): NextResponse | null {
-  if (sub.googleEnabledByAgency !== true) {
-    return gbpRefusal(403, "gate_off", "Google Business Profile is locked by your agency.");
-  }
-  if (sub.reviewsAiEnabledByAgency !== true) {
-    return gbpRefusal(403, "ai_gate_off", "Reviews AI is not enabled for this sub-account.");
-  }
-  if (sub.reviewsAutoReplyEnabledByAgency !== true) {
-    return gbpRefusal(403, "auto_reply_gate_off", "Review auto-reply is not enabled for this sub-account.");
-  }
+const GATE_MESSAGES = {
+  gate_off: "Google Business Profile is locked by your agency.",
+  ai_gate_off: "Reviews AI is not enabled for this sub-account.",
+  auto_reply_gate_off: "Review auto-reply is not enabled for this sub-account.",
+} as const;
+
+/** The first of the three agency gates that is off, or null when all are on. */
+function gateOff(sub: Sub): keyof typeof GATE_MESSAGES | null {
+  if (sub.googleEnabledByAgency !== true) return "gate_off";
+  if (sub.reviewsAiEnabledByAgency !== true) return "ai_gate_off";
+  if (sub.reviewsAutoReplyEnabledByAgency !== true) return "auto_reply_gate_off";
   return null;
+}
+
+function gateRefusal(sub: Sub): NextResponse | null {
+  const code = gateOff(sub);
+  return code ? gbpRefusal(403, code, GATE_MESSAGES[code]) : null;
 }
 
 function view(raw: unknown) {
   const at = toMillis((raw as { enabledAt?: unknown } | null | undefined)?.enabledAt);
-  return { ...readAutoReplySettings(raw), enabledAt: at === null ? null : new Date(at).toISOString() };
+  return {
+    ...readAutoReplySettings(raw),
+    enabledAt: at === null ? null : new Date(at).toISOString(),
+    disabledReason: readDisabledReason(raw),
+  };
 }
 
 export async function GET(request: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -59,10 +75,13 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   const access = await requireSubAccountMember(request, id);
   if (access instanceof NextResponse) return access;
   const sub = (await getAdminDb().doc(`subAccounts/${id}`).get()).data() ?? {};
+  const gate = gateOff(sub);
   return NextResponse.json({
     ...view(sub.reviewsAutoReply),
-    gatesOn: gateRefusal(sub) === null,
+    gatesOn: gate === null,
+    gate,
     available: AUTO_REPLY_ENGINE_AVAILABLE,
+    running: autoReplyKillSwitchOn(),
     dailyPostCap: AUTO_REPLY_DAILY_POST_CAP,
     dailyDraftCap: AUTO_REPLY_DAILY_DRAFT_CAP,
   });

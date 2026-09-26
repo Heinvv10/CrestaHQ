@@ -13,7 +13,8 @@ import type { GbpProvider } from "./provider/types";
  * is logged when there was no listing to clear. Every clear — admin, disconnect,
  * reconnect re-verification — also drops the synced review cache, summary and
  * sync state (`clearGbpCache`): the cache only ever holds the current listing.
- * Every clear also switches review auto-reply off (`reviewsAutoReply.enabled`).
+ * Every clear also switches review auto-reply off (`reviewsAutoReply.enabled`),
+ * noting `disabledReason: "listing_changed"` when it was on.
  */
 
 export type ListingClearedReason =
@@ -42,8 +43,11 @@ export async function clearListing(
     const previous: string | null = sub.googleListing?.locationName ?? null;
     if (opts.onlyIf !== undefined && previous !== opts.onlyIf) return false;
     // Review auto-reply was enabled for this listing: switched off (modes kept);
-    // resuming needs an explicit re-enable.
-    const autoReplyOff = sub.reviewsAutoReply ? { reviewsAutoReply: { enabled: false } } : {};
+    // resuming needs an explicit re-enable. When it was ON, the card says why.
+    const wasOn = sub.reviewsAutoReply?.enabled === true;
+    const autoReplyOff = sub.reviewsAutoReply
+      ? { reviewsAutoReply: { enabled: false, ...(wasOn ? { disabledReason: "listing_changed" } : {}) } }
+      : {};
     tx.set(
       subRef,
       { ...opts.alsoSet, ...autoReplyOff, googleListing: null, updatedAt: FieldValue.serverTimestamp() },

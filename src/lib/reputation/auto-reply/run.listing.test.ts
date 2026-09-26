@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Rev 5 ruling: ANY listing change or clear switches review auto-reply off
@@ -14,7 +14,7 @@ import { A1, patchSettings, posts, resetAutoReply, reviewNameOf, sync, syncAndRu
 import { dismissAutoReply } from "./store";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { DELETE, PUT } from "@/app/api/sub-accounts/[id]/google/listing/route";
-import { PUT as PUT_SETTINGS } from "@/app/api/sub-accounts/[id]/reputation/auto-reply/route";
+import { GET as GET_SETTINGS, PUT as PUT_SETTINGS } from "@/app/api/sub-accounts/[id]/reputation/auto-reply/route";
 
 const ORIGINAL = { ...process.env };
 const BASE = `http://127.0.0.1:3100/api/sub-accounts/${SA}`;
@@ -114,4 +114,41 @@ it("a sub-account without auto-reply settings gets none written", async () => {
   await select(LOC_NORTH);
   await clearListing(SA, "uid_admin", "admin_cleared");
   expect(mem.read(`subAccounts/${SA}`)!.reviewsAutoReply).toBeUndefined();
+});
+
+describe("disabledReason — the card's \"switched off because the listing changed\" note", () => {
+  const shown = async () =>
+    ((await (await GET_SETTINGS(asUser(`${BASE}/reputation/auto-reply`, "uid_admin"), params)).json()) as { disabledReason: unknown }).disabledReason;
+
+  it("a listing change of an ON auto-reply notes it; re-enabling clears it", async () => {
+    expect((await select(LOC_NORTH)).status).toBe(200);
+    expect(settings()).toMatchObject({ enabled: false, disabledReason: "listing_changed" });
+    expect(await shown()).toBe("listing_changed");
+    expect((await select(LOC_A)).status).toBe(200);
+    expect((await reEnable()).status).toBe(200);
+    expect(settings()).toMatchObject({ enabled: true, disabledReason: null });
+    expect(await shown()).toBeNull();
+  });
+
+  it("DELETE and a disconnect's clear note it too", async () => {
+    expect((await DELETE(asUser(`${BASE}/google/listing`, "uid_admin", "DELETE"), params)).status).toBe(200);
+    expect(settings().disabledReason).toBe("listing_changed");
+    patchSettings({ enabled: true, disabledReason: null });
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, googleListing: { accountName: ACCOUNT, locationName: LOC_A } });
+    await clearListing(SA, "uid_admin", "disconnected");
+    expect(settings()).toMatchObject({ enabled: false, disabledReason: "listing_changed" });
+  });
+
+  it("an auto-reply the admin had already switched off gets no note", async () => {
+    patchSettings({ enabled: false });
+    expect((await select(LOC_NORTH)).status).toBe(200);
+    expect(settings().disabledReason).toBeUndefined();
+    await clearListing(SA, "uid_admin", "admin_cleared");
+    expect(settings().disabledReason).toBeUndefined();
+  });
+
+  it("re-selecting the SAME listing adds no note", async () => {
+    expect((await select(LOC_A)).status).toBe(200);
+    expect(settings().disabledReason).toBeUndefined();
+  });
 });
