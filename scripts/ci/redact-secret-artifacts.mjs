@@ -40,16 +40,23 @@ if (existingPaths.length === 0) {
   process.exit(0);
 }
 
-// -l: list matching files only, -I: skip binaries, -F: literal string (not
-// regex), -r: recurse. execFileSync with an argument array (no shell), so the
-// secret's own characters can never be interpreted as shell metacharacters.
-function filesContainingSecret() {
+// -l: list matching files only, -F: literal string (not regex), -r: recurse.
+// execFileSync with an argument array (no shell), so the secret's own
+// characters can never be interpreted as shell metacharacters.
+//
+// The redaction pass adds -I (skip binaries): this script only rewrites
+// plain text, and reading a binary as utf8 and rewriting it would corrupt it
+// without removing the secret. The final verification pass deliberately
+// drops -I — a hit inside a binary (a trace zip, a video, anything a future
+// spec attaches) is exactly the case this script cannot fix, so it must fail
+// the step and block the upload rather than pass because grep politely
+// skipped the file that still has the password in it.
+function filesContainingSecret({ skipBinaries }) {
+  const flags = skipBinaries ? "-rIlF" : "-rlF";
   try {
-    const out = execFileSync(
-      "grep",
-      ["-rIlF", "--", secret, ...existingPaths],
-      { encoding: "utf8" },
-    );
+    const out = execFileSync("grep", [flags, "--", secret, ...existingPaths], {
+      encoding: "utf8",
+    });
     return out.split("\n").filter(Boolean);
   } catch (err) {
     // grep exits 1 when there are no matches — that is success here, not a
@@ -59,15 +66,15 @@ function filesContainingSecret() {
   }
 }
 
-const hits = filesContainingSecret();
+const hits = filesContainingSecret({ skipBinaries: true });
 for (const file of hits) {
   const before = readFileSync(file, "utf8");
   const after = before.split(secret).join("[REDACTED]");
   writeFileSync(file, after, "utf8");
 }
-console.log(`redact-secret-artifacts: redacted ${hits.length} file(s).`);
+console.log(`redact-secret-artifacts: redacted ${hits.length} text file(s).`);
 
-const remaining = filesContainingSecret();
+const remaining = filesContainingSecret({ skipBinaries: false });
 if (remaining.length > 0) {
   console.error(
     `redact-secret-artifacts: password still present after redaction in: ${remaining.join(", ")}`,

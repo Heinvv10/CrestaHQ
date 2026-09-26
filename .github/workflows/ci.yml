@@ -323,16 +323,19 @@ jobs:
       # into the password field. The html reporter embeds it into
       # playwright-report/, which the next step uploads as an artifact; GitHub
       # only masks a registered secret in the Actions LOG, never in an
-      # uploaded artifact. Redact before every upload, and refuse to upload if
-      # the password is still present anywhere in the report.
+      # uploaded artifact. Redact before every upload. The upload step below
+      # is gated on `steps.redact.outcome == 'success'` (not `!= 'failure'`),
+      # so a skipped or cancelled redact also blocks the upload — a fail-open
+      # `if: always()` on the upload would make the script's exit 1 cosmetic.
+      # E2E_PASSWORD is already in this job's env block above; no need to
+      # redeclare it here.
       - name: Redact E2E password from report
+        id: redact
         if: always()
-        env:
-          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
         run: node scripts/ci/redact-secret-artifacts.mjs playwright-report test-results
 
       - name: Upload report
-        if: always()
+        if: ${{ always() && steps.redact.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report
