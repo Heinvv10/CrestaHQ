@@ -52,7 +52,7 @@ import { useActiveSubAccountId } from "@/hooks/use-active-sub-account-id";
 import { useAuth } from "@/hooks/use-auth";
 import { useAgency } from "@/hooks/use-agency";
 import { Button } from "@/components/ui/button";
-import { LogoMark } from "@/components/brand/logo-mark";
+import { SidebarBrand } from "@/components/dashboard/sidebar-brand";
 import { cn } from "@/lib/utils";
 import {
   Sheet,
@@ -308,21 +308,11 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-16 items-center border-b px-6">
-        <Link href="/" className="flex items-center gap-2 text-xl font-bold">
-          {agency.logoUrl ? (
-            // Custom agency logo. Constrained to 24px tall, auto width;
-            // the agency hosts the asset so we render whatever they paste.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={agency.logoUrl}
-              alt={agency.name}
-              className="h-6 w-auto max-w-[120px] object-contain"
-            />
-          ) : (
-            <LogoMark size={20} idSuffix="-sidebar" />
-          )}
-          <span className="truncate">{agency.name}</span>
-        </Link>
+        <SidebarBrand
+          name={agency.name}
+          logoUrl={agency.logoUrl}
+          ready={agency.brandingReady}
+        />
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto p-4">

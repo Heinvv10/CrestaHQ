@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { doc, onSnapshot } from "firebase/firestore";
 import { useAuth } from "@/hooks/use-auth";
+import { useInitialAgencyBranding } from "@/context/agency-branding-context";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { CUSTOM_BRAND } from "@/config/landing";
 import type { AgencyDoc, AppTheme } from "@/types";
@@ -29,8 +30,22 @@ interface AgencySummary {
    * "opus" — matches pre-picker behavior for upgrading deployments.
    */
   agencyAssistantModel: "opus" | "sonnet";
-  /** True until the Firestore snapshot has resolved. UI shouldn't render brand chrome before this flips false. */
+  /**
+   * Starts as `!!agencyId` at mount and flips false when the snapshot (or
+   * its error) arrives. On a hard load auth has not resolved at mount, so
+   * it starts — and stays — false even before the doc arrives; only a
+   * mount after auth has settled sees it true. Server-seeded branding does
+   * NOT flip it. Brand chrome should gate on `brandingReady` instead.
+   */
   loading: boolean;
+  /**
+   * True once name/logoUrl/appTheme are the agency's real values: seeded by
+   * the server (AgencyBrandingProvider), delivered by the snapshot, or known
+   * to be absent (auth settled with no agency). Brand chrome gates on this.
+   * appTheme is still applied by AppAccent's effect after hydration, so a
+   * seed does not remove the accent-theme swap on first paint.
+   */
+  brandingReady: boolean;
 }
 
 interface AgencyData {
@@ -50,15 +65,19 @@ interface AgencyData {
  * SSR matches the first client paint.
  */
 export function useAgency(): AgencySummary {
-  const { agencyId } = useAuth();
+  const { agencyId, loading: authLoading } = useAuth();
+  // Same value on the server render and the client's first render, so
+  // seeding cannot cause a hydration mismatch.
+  const seed = useInitialAgencyBranding();
+  const [resolved, setResolved] = useState(false);
   const [data, setData] = useState<AgencyData>({
     // Deployment brand, not the template name — this fallback surfaces in
     // client-visible chrome (sidebar wordmark, header title) pre-hydration.
-    name: CUSTOM_BRAND.name,
-    logoUrl: null,
+    name: seed?.name || CUSTOM_BRAND.name,
+    logoUrl: seed?.logoUrl ?? null,
     supportEmail: null,
     primaryDomain: null,
-    appTheme: null,
+    appTheme: seed?.appTheme ?? null,
     agencyAssistantEnabled: false,
     agencyAssistantModel: "opus",
   });
@@ -87,11 +106,16 @@ export function useAgency(): AgencySummary {
           });
         }
         setLoading(false);
+        setResolved(true);
       },
-      () => setLoading(false),
+      () => {
+        setLoading(false);
+        setResolved(true);
+      },
     );
     return () => unsub();
   }, [agencyId]);
 
-  return { ...data, loading };
+  const brandingReady = !!seed || resolved || (!authLoading && !agencyId);
+  return { ...data, loading, brandingReady };
 }

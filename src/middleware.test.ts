@@ -13,7 +13,7 @@ import type { NextRequest } from "next/server";
  */
 type MiddlewareOptions = {
   handleValidToken: (
-    result: { decodedToken: { uid: string; email?: string } },
+    result: { decodedToken: { uid: string; email?: string; agencyId?: unknown; status?: unknown } },
     headers: Headers,
   ) => Promise<unknown>;
   handleInvalidToken: () => Promise<unknown>;
@@ -395,6 +395,81 @@ describe("middleware() end to end — the actual wiring, not just the helper", (
     expect(res.headers.get("x-middleware-request-x-user-email")).toBe(
       "real@example.com",
     );
+  });
+});
+
+/**
+ * `x-agency-id` seeds the dashboard's server-rendered branding (see
+ * src/lib/server/agency-branding.ts). It must come ONLY from the verified
+ * token's custom claims — a caller-sent value is dropped on every path.
+ */
+describe("middleware() — x-agency-id comes only from the verified token", () => {
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_FIREBASE_API_KEY = "test-key";
+    process.env.FIREBASE_ADMIN_PROJECT_ID = "test-project";
+    capturedOptions = null;
+  });
+
+  it("drops a forged x-agency-id on a public path (invalid token and error)", async () => {
+    const req = fullRequest("/api/forms/f1", { "x-agency-id": "victim-agency" });
+    await middleware(req);
+    for (const handler of [capturedOptions!.handleInvalidToken, capturedOptions!.handleError]) {
+      const res = (await handler()) as Response;
+      expect(overriddenHeaderNames(res).length).toBeGreaterThan(0);
+      expect(overriddenHeaderNames(res)).not.toContain("x-agency-id");
+      expect(res.headers.get("x-middleware-request-x-agency-id")).toBeNull();
+    }
+  });
+
+  it("drops a forged x-agency-id on static-image and Firebase-unconfigured paths", async () => {
+    const img = (await middleware(
+      fullRequest("/logo.svg", { "x-agency-id": "victim-agency" }),
+    )) as Response;
+    expect(overriddenHeaderNames(img)).not.toContain("x-agency-id");
+    expect(img.headers.get("x-middleware-request-x-agency-id")).toBeNull();
+
+    delete process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
+    const pub = (await middleware(
+      fullRequest("/api/forms/f1", { "x-agency-id": "victim-agency" }),
+    )) as Response;
+    expect(overriddenHeaderNames(pub)).not.toContain("x-agency-id");
+    expect(pub.headers.get("x-middleware-request-x-agency-id")).toBeNull();
+  });
+
+  it("a valid session overwrites a forged x-agency-id with the token's agencyId claim", async () => {
+    const req = fullRequest("/agency", { "x-agency-id": "victim-agency" });
+    await middleware(req);
+    const res = (await capturedOptions!.handleValidToken(
+      { decodedToken: { uid: "u1", agencyId: "real-agency", status: "active" } },
+      new Headers(req.headers),
+    )) as Response;
+    expect(res.headers.get("x-middleware-request-x-agency-id")).toBe("real-agency");
+  });
+
+  it("a token whose status claim is not active never carries x-agency-id", async () => {
+    const req = fullRequest("/agency", { "x-agency-id": "victim-agency" });
+    await middleware(req);
+    for (const status of ["removed", "disabled", undefined, true]) {
+      const res = (await capturedOptions!.handleValidToken(
+        { decodedToken: { uid: "u1", agencyId: "real-agency", status } },
+        new Headers(req.headers),
+      )) as Response;
+      expect(overriddenHeaderNames(res)).not.toContain("x-agency-id");
+      expect(res.headers.get("x-middleware-request-x-agency-id")).toBeNull();
+    }
+  });
+
+  it("a valid session with no agencyId claim drops a forged x-agency-id", async () => {
+    const req = fullRequest("/agency", { "x-agency-id": "victim-agency" });
+    await middleware(req);
+    for (const agencyId of [undefined, "", 42]) {
+      const res = (await capturedOptions!.handleValidToken(
+        { decodedToken: { uid: "u1", agencyId, status: "active" } },
+        new Headers(req.headers),
+      )) as Response;
+      expect(overriddenHeaderNames(res)).not.toContain("x-agency-id");
+      expect(res.headers.get("x-middleware-request-x-agency-id")).toBeNull();
+    }
   });
 });
 

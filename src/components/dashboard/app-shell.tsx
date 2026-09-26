@@ -10,6 +10,10 @@ import { OfflineBanner } from "@/components/dashboard/offline-banner";
 import { BottomTabBar } from "@/components/pwa/bottom-tab-bar";
 import { AppBadge } from "@/components/pwa/app-badge";
 import { AppAccent } from "@/components/theme/app-accent";
+import {
+  AgencyBrandingProvider,
+  type AgencyBranding,
+} from "@/context/agency-branding-context";
 import { cn } from "@/lib/utils";
 
 /**
@@ -19,8 +23,10 @@ import { cn } from "@/lib/utils";
  */
 export function DashboardAppShell({
   children,
+  initialBranding,
 }: {
   children: React.ReactNode;
+  initialBranding: AgencyBranding | null;
 }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -45,28 +51,30 @@ export function DashboardAppShell({
     // h-dvh (not h-screen): 100vh overshoots when mobile browser toolbars
     // or the on-screen keyboard are up, hiding bottom-anchored UI like the
     // conversations composer. Dynamic viewport units track the real height.
-    <div className="flex h-dvh">
-      <Sidebar open={sidebarOpen} onOpenChange={setSidebarOpen} />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <Header
-          onMenuClick={() => setSidebarOpen(true)}
-          onOpenSearch={() => setSearchOpen(true)}
-        />
-        <OfflineBanner />
-        <InstallBanner />
-        <main
-          className={cn(
-            "flex-1 overflow-y-auto p-4 md:p-6",
-            hasTabBar && "pb-24 md:pb-6",
-          )}
-        >
-          {children}
-        </main>
+    <AgencyBrandingProvider initial={initialBranding}>
+      <div className="flex h-dvh">
+        <Sidebar open={sidebarOpen} onOpenChange={setSidebarOpen} />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <Header
+            onMenuClick={() => setSidebarOpen(true)}
+            onOpenSearch={() => setSearchOpen(true)}
+          />
+          <OfflineBanner />
+          <InstallBanner />
+          <main
+            className={cn(
+              "flex-1 overflow-y-auto p-4 md:p-6",
+              hasTabBar && "pb-24 md:pb-6",
+            )}
+          >
+            {children}
+          </main>
+        </div>
+        <BottomTabBar onMore={() => setSidebarOpen(true)} />
+        <AppBadge />
+        <AppAccent />
+        <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
       </div>
-      <BottomTabBar onMore={() => setSidebarOpen(true)} />
-      <AppBadge />
-      <AppAccent />
-      <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
-    </div>
+    </AgencyBrandingProvider>
   );
 }
