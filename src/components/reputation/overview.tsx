@@ -9,7 +9,7 @@ import { RANGE_PRESETS, type RangePreset } from "@/lib/reputation/overview";
 import { Checklist, RequestsCard, ResponseCard } from "./overview-cards";
 import { SentimentCard } from "./overview-sentiment";
 import { Distribution, Tiles, Trend } from "./overview-tiles";
-import { RANGE_LABEL } from "./format";
+import { RANGE_LABEL, fmtRating } from "./format";
 import { SendReviewRequestButton } from "./send-review-request";
 import type { OverviewResponse } from "./types";
 
@@ -157,7 +157,7 @@ function Ready({
         <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="rep-listing">
           <HealthBadge health={data.health} />
           {data.listing?.averageRating != null && data.listing.totalReviewCount != null
-            ? `Google shows ${data.listing.averageRating} from ${data.listing.totalReviewCount} reviews for this listing.`
+            ? `Google shows ${fmtRating(data.listing.averageRating)} from ${data.listing.totalReviewCount} reviews for this listing.`
             : "Google's listing rating is not available yet."}
           {data.truncated.reviews && " Figures cover the newest 500 stored reviews only."}
         </p>

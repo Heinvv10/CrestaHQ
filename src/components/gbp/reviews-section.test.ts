@@ -90,6 +90,14 @@ describe("summary", () => {
     expect(byId("gbp-health-ok")).not.toBeNull();
   });
 
+  it("rounds Google's float32 average rating to one decimal", async () => {
+    payload = { ...payload, summary: summary({ averageRating: 4.699999809265137 }) };
+    await render();
+    const text = byId("gbp-summary")?.textContent ?? "";
+    expect(text).toContain("4.7");
+    expect(text).not.toContain("4.699999809265137");
+  });
+
   it("says so when this deployment runs no schedule", async () => {
     payload = { ...payload, scheduled: false };
     await render();
