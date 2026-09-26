@@ -146,13 +146,16 @@ test("a ready report renders through the real share page, and an unknown token 4
     expect(missing?.status()).toBe(404);
     await strangerContext.close();
   } finally {
-    // Gate first: a throwing delete below must not leave Prospecting on.
-    // Missing before → missing after, not an explicit false.
-    await primaryRef().update({
-      prospectingEnabledByAgency: priorGate === undefined ? FieldValue.delete() : priorGate,
-    });
-    if (shareId) await deleteScoped(adminDb().doc(`prospectReportShares/${shareId}`));
-    if (reportId) await deleteScoped(adminDb().doc(`prospectReports/${reportId}`));
-    if (contactId) await deleteScoped(adminDb().doc(`contacts/${contactId}`));
+    // Nested so each half runs even if the other throws. Missing before →
+    // missing after, not an explicit false.
+    try {
+      await primaryRef().update({
+        prospectingEnabledByAgency: priorGate === undefined ? FieldValue.delete() : priorGate,
+      });
+    } finally {
+      if (shareId) await deleteScoped(adminDb().doc(`prospectReportShares/${shareId}`));
+      if (reportId) await deleteScoped(adminDb().doc(`prospectReports/${reportId}`));
+      if (contactId) await deleteScoped(adminDb().doc(`contacts/${contactId}`));
+    }
   }
 });
