@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { PENDING_MS } from "@/lib/gbp/reply-attempts";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
-import { unsuppliedContact } from "../ai/contact-guard";
 import { reviewsAiConfigured } from "../ai/mode";
 import { getReviewsAiFor } from "../ai/select";
 import type { ReviewsAi } from "../ai/types";
@@ -16,7 +15,7 @@ import { autoReplyKillSwitchOn } from "./kill-switch";
 import { postQueued } from "./post";
 import { AUTO_REPLY_DAILY_DRAFT_CAP, readAutoReplySettings } from "./settings";
 import {
-  acquireAutoReplyLease, autoDraftsToday, autoReplyDismissedCollection, postsToday, readPending,
+  acquireAutoReplyLease, autoDraftsToday, autoReplyDismissedCollection, holdQueuedForApproval, postsToday, readPending,
   releaseAutoReplyLease, renewAutoReplyLease, storePending, toDecidePending,
 } from "./store";
 
@@ -113,6 +112,7 @@ function decideInput(d: Record<string, unknown>, dismissedBasis: unknown, now: n
     createTimeMs: toMillis(d.createTime),
     lastSeenAtMs: toMillis(d.lastSeenAt),
     hasReply: !!d.reply,
+    hadReply: d.hadReply === true,
     inFlight: !!lock && now - (toMillis(lock.at) ?? 0) < PENDING_MS,
     autoReplied: !!d.autoReplied,
     basisHash: d.state === "active" ? reviewBasis(d) : null,
@@ -124,6 +124,12 @@ function decideInput(d: Record<string, unknown>, dismissedBasis: unknown, now: n
 /** One review's decision carried out; a non-null result stops the run. */
 async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, review: DecideReview, d: Decision): Promise<string | null> {
   if (d.verdict === "skip") return null;
+  if (d.verdict === "to_approval") {
+    const p = readPending(data.pendingReply);
+    if (p?.textHash) await holdQueuedForApproval(ctx.sa, docId, p.textHash);
+    ctx.tally.held += 1;
+    return null;
+  }
   const basisHash = review.basisHash!;
   if (d.verdict === "hold" && !d.draft) {
     const p = review.pending;
@@ -135,7 +141,7 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
   }
   let text = d.verdict === "auto" && d.stored ? readPending(data.pendingReply)?.text ?? null : null;
   if (text === null) {
-    const drafted = await draft(ctx, docId, data, basisHash, d.verdict === "auto" ? "auto_queued" : d.reason);
+    const drafted = await draft(ctx, docId, basisHash, d.verdict === "auto" ? "auto_queued" : d.reason);
     if (drafted !== null && typeof drafted === "object") return drafted.stop;
     if (drafted === null || d.verdict !== "auto") return null;
     text = drafted;
@@ -154,7 +160,7 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
  * (held for lack of budget, draft failed, or changed during the call).
  */
 async function draft(
-  ctx: Ctx, docId: string, data: Record<string, unknown>, basisHash: string,
+  ctx: Ctx, docId: string, basisHash: string,
   reason: "auto_queued" | "approval" | "texted",
 ): Promise<string | { stop: string } | null> {
   if (Date.now() >= ctx.deadline) return { stop: "deadline" };
@@ -168,10 +174,9 @@ async function draft(
     return null;
   }
   ctx.counts.autoDraftsToday += 1;
-  const input = await draftInputFor(ctx.sa, docId);
-  // A reviewer's display name is untrusted too: one carrying a contact is dropped, the draft is not refused.
-  const name = (data.reviewer as { displayName?: unknown } | null | undefined)?.displayName;
-  if (typeof name === "string" && unsuppliedContact(name, input.guidelines)) input.reviewerFirstName = null;
+  // No reviewer name on the auto path: a display name is untrusted text a
+  // member of the public chose, and this draft may be posted unread.
+  const input = { ...(await draftInputFor(ctx.sa, docId)), reviewerFirstName: null };
   const result = await ctx.ai.draftReply(input);
   if (result.text === null) {
     console.warn(`[reputation/auto-reply] no draft sa=${ctx.sa} failure=${result.failure}`);

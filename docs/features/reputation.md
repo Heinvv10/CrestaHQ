@@ -598,8 +598,10 @@ are stored but not shown.
   auto-reply for every synced tenant first, then sentiment, under the
   request's one deadline (`lib/reputation/after-sync.ts`). Never inside the sync.
 - **Which reviews** (`decide.ts`, pure): active, of the listing auto-reply
-  was enabled for, no reply and no reply in flight, never auto-replied
-  before, **seen by the run that just finished** (`lastSeenAt >= run start` —
+  was enabled for, **never replied to by anyone** (no `reply`, and no sticky
+  `hadReply` — set whenever a reply is cached or posted and never cleared, so
+  an owner who deleted a reply has chosen "no reply"), no reply in flight,
+  never auto-replied before, **seen by the run that just finished** (`lastSeenAt >= run start` —
   a stale cache never posts), created at/after `enabledAt` unless backlog is
   on (newest first), not Discarded. **Auto** only when the star is set to
   Auto AND the review is rating-only (blank or whitespace comment); written
@@ -616,26 +618,41 @@ are stored but not shown.
   post (`basisHash` = the sentiment basis, stars + comment). The post uses
   exactly those bytes, key `auto:{reviewDocId}:{textHash}`, so a failed post
   retried by the next run posts the same text once and never drafts again.
-  The reviewer's display name goes through the contact guard; a hit drops the
-  name from the input (the draft is not refused).
-- **Before each post** (`post.ts` → `confirm.ts`): the deadline; the reply
-  route's own review lookup and preflight; then one transaction that
-  re-checks the lease, the kill switch, all three gates, `enabled`, the
-  listing, the review (active, unreplied, same basis) and that its draft is
-  still this `auto_queued` text, then `modes[star]`, text presence and
+  **No reviewer name** is passed to an auto draft at all (a display name is
+  untrusted text); "Draft with AI" still gets the first name.
+- **Before each post** (`post.ts` → `confirm.ts`): the deadline; an attempt
+  Google already accepted (ledger `succeeded`) is only finalized — no call, no
+  count, no audit; the reply route's own review lookup and preflight; then one
+  transaction that re-checks the lease, the kill switch, all three gates,
+  `enabled`, the listing — and that **no other sub-account has selected the
+  same Google location** (its replies are not in this cache; enabling is
+  refused with 409 `listing_shared` for the same reason) — the review
+  (active, never replied, same basis) and that its draft is still this
+  queued (`auto_queued` / `post_failed`) text, then `modes[star]`, text presence and
   `enabledAt` — a star switched to Approval, or auto-reply switched off and
   on (backlog off, older review), turns the draft into `approval` (kept, now
   waits for a person); a gate / switch / kill switch off leaves it
   `auto_queued` ("paused") to post when auto-reply resumes. Then
-  `postReply(…, {createdByUid: enabledByUid})` with **`requireNoReply`**:
-  `claimAttempt` answers `already_replied` for a review whose cached reply is
-  set (any text) and clears its `pendingReply` — the human route never passes
-  it and still edits a reply. Residual risk: a reply made at Google (or GHL)
+  `postReply(…, {createdByUid: enabledByUid, textHash})` with
+  **`requireNoReply`**: inside the claim's transaction `claimAttempt` answers
+  `already_replied` for a review that has or had a reply (clearing its
+  `pendingReply`), and `not_queued` unless the draft is still these queued
+  bytes on a star still set to Auto (`gbp/reply-auto-guard.ts`) — the human
+  route never passes it and still edits a reply. Google accepting the post
+  but our record failing is finalized (`pendingReply` cleared, `autoReplied`
+  + `hadReply` set) and audited once. A refusal about THIS review (Google 404,
+  another 4xx) sets `post_failed` (text kept, shown held, retried once a
+  day) and the run goes on; auth, 429, 5xx/network and the deadline stop the
+  run with the draft still queued. Residual risk: a reply made at Google (or GHL)
   after this run's fetch is invisible; the window is the run's own duration.
 - **State table** (fresh = `basisHash` equals the review's current basis):
   `auto_queued` fresh → post the stored bytes, stale → re-draft;
   `approval`/`texted` fresh → skip (waits for a person), stale → re-drafted,
-  stays held; `draft_failed` → retried once `at` is 24 h old (stale: at once);
+  stays held with its reason re-derived (texted on an Auto star with text,
+  else approval); `draft_failed` → retried once `at` is 24 h old (stale: at
+  once); `post_failed` → its stored bytes retried once `at` is 24 h old
+  (stale: re-decided); a queued draft whose review is older than a new
+  `enabledAt` (switched off and on, backlog off) → `approval`, text kept;
   `no_budget`/`cap` → re-decided; `dismissed` fresh → skipped for good, stale
   → re-decided. **Discard** (`dismissAutoReply`, wired to a button in PR 3)
   writes `pendingReply {reason: "dismissed"}` AND

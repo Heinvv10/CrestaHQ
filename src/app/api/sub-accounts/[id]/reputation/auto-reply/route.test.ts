@@ -19,7 +19,7 @@ vi.mock("@/lib/reputation/auto-reply/settings", async (importOriginal) => {
 });
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { LOC_A, OTHER_SA, SA, asUser, mem, resetSync } from "@/test/gbp-sync-harness";
+import { LOC_A, LOC_NORTH, OTHER_SA, SA, asUser, mem, resetSync } from "@/test/gbp-sync-harness";
 import { GET, PUT } from "./route";
 
 const MODES = { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" };
@@ -40,10 +40,14 @@ const get = async (uid = "uid_collab") => {
 const stored = (sa = SA) => mem.read(`subAccounts/${sa}`)?.reviewsAutoReply as Record<string, unknown> | undefined;
 const patchSub = (patch: Record<string, unknown>, sa = SA) => mem.seed(`subAccounts/${sa}`, { ...mem.read(`subAccounts/${sa}`)!, ...patch });
 
+const listingOf = (sa: string) => mem.read(`subAccounts/${sa}`)!.googleListing as Record<string, unknown>;
+
 beforeEach(() => {
   engine.available = true;
   resetSync();
   patchSub({ reviewsAiEnabledByAgency: true, reviewsAutoReplyEnabledByAgency: true });
+  // The harness gives both sub-accounts the same location; here they differ.
+  patchSub({ googleListing: { ...listingOf(OTHER_SA), locationName: LOC_NORTH } }, OTHER_SA);
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -178,6 +182,14 @@ describe("transition stamping", () => {
     vi.setSystemTime(new Date("2026-09-28T08:00:00Z"));
     await put(ON);
     expect((stored()?.enabledAt as Date).toISOString()).toBe("2026-09-28T08:00:00.000Z");
+  });
+
+  it("refuses enabling when another sub-account selected the same Google location (409 listing_shared)", async () => {
+    patchSub({ googleListing: { ...listingOf(OTHER_SA), locationName: LOC_A } }, OTHER_SA);
+    const res = await put(ON);
+    expect([res.status, res.body.code]).toEqual([409, "listing_shared"]);
+    expect(stored()).toBeUndefined();
+    expect((await put(OFF)).status).toBe(200); // turning off is never refused
   });
 
   it("refuses off→on without a selected listing (409 no_listing)", async () => {

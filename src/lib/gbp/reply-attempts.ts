@@ -3,6 +3,7 @@ import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { GbpReviewReply } from "./provider/types";
+import { autoClaimRefusal } from "./reply-auto-guard";
 import { contentHash } from "./sync/store";
 import { reviewsCollection, toMillis } from "./sync/types";
 
@@ -45,8 +46,10 @@ export type Claim =
   | { kind: "reused" }
   /** The cached review went away between the lookup and the claim. */
   | { kind: "gone" }
-  /** `requireNoReply` only: the cached review already has a reply (any text, any author). */
-  | { kind: "already_replied" };
+  /** `requireNoReply` only: the review has, or ever had, a reply (any text, any author). */
+  | { kind: "already_replied" }
+  /** `requireNoReply` only: its draft is no longer these queued bytes, or its star is no longer Auto. */
+  | { kind: "not_queued" };
 
 /**
  * Claim the attempt for `idempotencyKey` in one transaction. A key already
@@ -58,10 +61,14 @@ export type Claim =
  * Google exactly once.
  *
  * `requireNoReply` (the auto-reply engine only — AUTO_REPLY_V1_PLAN.md): a
- * review whose cached `reply` is set, whatever its text, is `already_replied`
- * — nothing is claimed and its `pendingReply` is cleared in the same
- * transaction — so an automatic post never overwrites a reply. Without it (a
+ * review that has or ever had a reply (`reply` / sticky `hadReply`) is
+ * `already_replied` — nothing is claimed and its `pendingReply` is cleared in
+ * the same transaction — so an automatic post never overwrites or replaces a
+ * reply; one whose draft is no longer the queued `textHash`, or whose star is
+ * no longer Auto, is `not_queued` (reply-auto-guard.ts). Without it (a
  * human's explicit reply) a different reply is posted over, as an edit.
+ * The attempt records `createdByUid` (the tenant anchor: `createdByUid` when
+ * given — the auto path's enabler — else the actor) and `actorUid`.
  */
 export async function claimAttempt(
   sa: string,
@@ -69,7 +76,7 @@ export async function claimAttempt(
   body: { comment: string; idempotencyKey: string },
   actorUid: string,
   now: Date,
-  opts: { requireNoReply?: boolean } = {},
+  opts: { requireNoReply?: { textHash: string }; createdByUid?: string } = {},
 ): Promise<Claim> {
   const db = getAdminDb();
   const ref = attemptRef(sa, body.idempotencyKey);
@@ -89,15 +96,19 @@ export async function claimAttempt(
     }
     const data = review.data();
     if (!data) return { kind: "gone" };
-    if (opts.requireNoReply && data.reply) {
-      tx.update(reviewRef, { pendingReply: null });
-      return { kind: "already_replied" };
+    if (opts.requireNoReply) {
+      const refusal = await autoClaimRefusal(tx, db.doc(`subAccounts/${sa}`), data, opts.requireNoReply.textHash);
+      if (refusal === "already_replied") {
+        tx.update(reviewRef, { pendingReply: null });
+        return { kind: "already_replied" };
+      }
+      if (refusal) return { kind: refusal };
     }
     const lock = data.replyInFlight as { key?: unknown; at?: unknown } | null | undefined;
     if (lock && !holds(lock, body.idempotencyKey) && live(lock.at)) return { kind: "in_progress" };
 
     const base = {
-      agencyId: target.agencyId, subAccountId: sa, createdByUid: actorUid, reviewDocId: target.docId,
+      agencyId: target.agencyId, subAccountId: sa, createdByUid: opts.createdByUid ?? actorUid, actorUid, reviewDocId: target.docId,
       commentHash, at: now, errorKind: null,
     };
     // Compared with the CACHED reply: a reply edited at Google since the last
@@ -164,6 +175,11 @@ export async function releaseLock(sa: string, docId: string, key: string): Promi
   });
 }
 
+/** Whether the attempt for `key` is already `succeeded` (Google accepted it). */
+export async function attemptSucceeded(sa: string, key: string): Promise<boolean> {
+  return (await attemptRef(sa, key).get()).data()?.status === "succeeded";
+}
+
 /** Google accepted the reply but the local record failed — at least stop a retry re-posting it. */
 export async function markAttemptSucceeded(sa: string, key: string, reply: GbpReviewReply): Promise<void> {
   await attemptRef(sa, key).set({ status: "succeeded", replyUpdateTime: reply.updateTime, errorKind: null }, { merge: true });
@@ -206,7 +222,8 @@ export async function recordReplyChange(
         starRating: d.starRating ?? null, comment: d.comment ?? null, updateTime: isoOf(d.updateTime), reply,
       });
       const release = change.key && holds(d.replyInFlight, change.key) ? { replyInFlight: null } : {};
-      const posted = change.type === "reply_posted" ? { pendingReply: null } : {};
+      // `hadReply` is sticky: deleting the reply later never clears it (auto-reply never replaces one).
+      const posted = change.type === "reply_posted" ? { pendingReply: null, hadReply: true } : {};
       const auto = change.auto ? { autoReplied: { at: change.now, key: change.key } } : {};
       tx.update(reviewRef, { reply, contentHash: hash, ...release, ...posted, ...auto });
     }

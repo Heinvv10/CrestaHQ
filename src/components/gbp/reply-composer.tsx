@@ -8,8 +8,10 @@ import type { ReviewView } from "./review-item";
 
 /**
  * The explicit owner reply to one review. Posting is a public side effect on
- * Google, so it only ever happens on the admin's click of "Post reply to
- * Google" — nothing posts in the background. "Draft with AI" (SP5 c, when
+ * Google, so from here it only ever happens on the admin's click of "Post
+ * reply to Google" — this composer posts nothing in the background (review
+ * auto-reply, when a sub-account switches it on, posts server-side after a
+ * sync — lib/reputation/auto-reply). "Draft with AI" (SP5 c, when
  * the reviews response says `aiDrafts`) only FILLS the box — replacing text
  * already there only after an inline "Replace your text?" — and never
  * submits. The idempotency key is made when the composer opens and reused

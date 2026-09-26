@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -87,11 +88,11 @@ describe("approval / texted (held)", () => {
     expect(draftsMade()).toBe(1);
   });
 
-  it.each(["approval", "texted"])("%s stale → re-drafted and stays held (even on an Auto star)", async (reason) => {
+  it.each(["approval", "texted"])("%s stale → re-drafted and stays held (even on an Auto star), reason re-derived", async (reason) => {
     seedPending(reason, { basisHash: "old" });
     await syncAndRun();
     expect(a1Posts()).toEqual([]);
-    expect(pendingOf("fake-a1")).toMatchObject({ reason, basisHash: A1_BASIS });
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval", basisHash: A1_BASIS });
     expect(pendingOf("fake-a1")?.text).toMatch(/5-star review/);
   });
 
@@ -117,6 +118,55 @@ describe("approval / texted (held)", () => {
     });
     await sync();
     expect(pendingOf("fake-r6")).toBeNull();
+  });
+});
+
+describe("hadReply (sticky)", () => {
+  const replyAtGoogle = (reply: { comment: string; updateTime: string } | null) =>
+    setScenario(SA, (s) => void (s.reviews["locations/e2e-velo-gqeberha"].reviews.find((x) => x.reviewId === "fake-a1")!.reply = reply));
+
+  it("a reply that appears on a later sync and is then deleted at Google → never auto-replied", async () => {
+    replyAtGoogle({ comment: "Thanks from GHL.", updateTime: "2026-08-29T10:00:00Z" });
+    await sync();
+    replyAtGoogle(null);
+    await syncAndRun();
+    expect(mem.read(reviewPath("fake-a1"))).toMatchObject({ reply: null, hadReply: true });
+    expect(a1Posts()).toEqual([]);
+  });
+
+  it("a review cached WITH a reply before hadReply existed is stamped by the next (unchanged) sync", async () => {
+    replyAtGoogle({ comment: "Old reply.", updateTime: "2026-08-29T10:00:00Z" });
+    await sync();
+    const { hadReply: _dropped, ...legacy } = mem.read(reviewPath("fake-a1"))!;
+    mem.seed(reviewPath("fake-a1"), legacy);
+    await sync();
+    expect(mem.read(reviewPath("fake-a1"))!.hadReply).toBe(true);
+  });
+});
+
+describe("orphaned queue (off→on, backlog off)", () => {
+  it("a queued draft of a review older than the new enabledAt → approval, text kept, nothing posted", async () => {
+    seedPending("auto_queued");
+    patchSettings({ enabledAt: new Date("2026-09-01T00:00:00Z") });
+    await syncAndRun();
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval", text: "Stored auto_queued bytes." });
+    expect(a1Posts()).toEqual([]);
+  });
+});
+
+describe("an attempt Google already accepted", () => {
+  it("is finalized without a call, a count or an audit row", async () => {
+    seedPending("auto_queued");
+    const key = `auto:${A1}:${textHashOf("Stored auto_queued bytes.")}`;
+    mem.seed(`subAccounts/${SA}/gbpReplyAttempts/${createHash("sha256").update(key).digest("hex").slice(0, 40)}`, {
+      status: "succeeded", commentHash: createHash("sha256").update("Stored auto_queued bytes.").digest("hex"), reviewDocId: A1,
+      replyUpdateTime: "2026-09-26T00:00:00Z", agencyId: AGENCY, subAccountId: SA, createdByUid: "uid_admin",
+    });
+    await syncAndRun();
+    expect(a1Posts()).toEqual([]);
+    expect(mem.read(reviewPath("fake-a1"))).toMatchObject({ pendingReply: null, hadReply: true, autoReplied: { key } });
+    expect(mem.list("auditEvents").filter((r) => (r.target as { id: string }).id === A1)).toEqual([]);
+    expect(mem.read(`subAccounts/${SA}/private/autoReplyUsage`)).toMatchObject({ posts: 1 }); // a2 only
   });
 });
 

@@ -90,8 +90,10 @@ export function upsertFor(
   ctx: UpsertContext,
 ): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean } {
   const hash = contentHash(review);
-  // Seeing a review resets its miss count.
-  const seen = { lastSeenAt: ctx.now, passId: ctx.passId, missedPasses: 0 };
+  // Seeing a review resets its miss count. A review seen WITH a reply is
+  // marked `hadReply` for good (never cleared, so a reply deleted later still
+  // counts): review auto-reply never replaces a reply someone removed.
+  const seen = { lastSeenAt: ctx.now, passId: ctx.passId, missedPasses: 0, ...(review.reply ? { hadReply: true } : {}) };
   // A tombstone's contentHash is null, so a review that comes back is an update.
   if (cached && cached.contentHash === hash) {
     return { kind: "unchanged", data: seen, merge: true };
@@ -131,6 +133,7 @@ export function upsertFor(
     passId: ctx.passId,
     contentHash: hash,
     missedPasses: 0,
+    ...(review.reply ? { hadReply: true } : {}),
   };
   return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false };
 }

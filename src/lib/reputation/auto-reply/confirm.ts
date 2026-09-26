@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { everReplied, QUEUED_REASONS } from "@/lib/gbp/reply-auto-guard";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewBasis } from "../sentiment-basis";
 import { isTexted } from "./decide";
@@ -17,11 +18,13 @@ import {
  *
  *   lease_lost   another run owns the sub-account now          → stop the run
  *   paused       kill switch unset, any of the three gates off, auto-reply
- *                off, or the listing changed; the draft stays `auto_queued`
- *                and posts when auto-reply resumes             → stop the run
+ *                off, the listing changed, or ANOTHER sub-account has selected
+ *                the same Google location (its replies are not in this
+ *                cache); the draft stays queued and posts when auto-reply
+ *                resumes                                        → stop the run
  *   cap          20 posts today; the draft stays queued        → stop the run
- *   stale        the review changed, was replied to or removed, or its draft
- *                is no longer this `auto_queued` text (a Discard wins) → skip it
+ *   stale        the review changed, has or ever had a reply, was removed, or
+ *                its draft is no longer this queued text (a Discard wins) → skip it
  *   approval     its star was switched to Approval, it has text, or auto-reply
  *                was switched off and on since (backlog off, review older) —
  *                the draft is kept and now waits for a person   → skip it
@@ -45,6 +48,11 @@ export async function confirmAutoPost(
     const sub = ((await tx.get(subRef)).data() ?? {}) as Record<string, unknown>;
     const review = (await tx.get(reviewRef)).data() as Record<string, unknown> | undefined;
     const usage = (await tx.get(usageRef)).data() as { day?: string; posts?: number } | undefined;
+    const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
+    const sharing = typeof listing === "string"
+      ? ((await tx.get(db.collection("subAccounts").where("googleListing.locationName", "==", listing))) as FirebaseFirestore.QuerySnapshot)
+        .docs.some((d) => d.id !== sa)
+      : false;
 
     if (lease?.runId !== p.runId) return "lease_lost";
     if (!autoReplyKillSwitchOn()) return "paused";
@@ -53,13 +61,12 @@ export async function confirmAutoPost(
     const raw = (sub.reviewsAutoReply ?? {}) as { enabledAt?: unknown; listingLocationName?: unknown };
     const settings = readAutoReplySettings(raw);
     if (!settings.enabled) return "paused";
-    const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
-    if (typeof listing !== "string" || raw.listingLocationName !== listing) return "paused";
+    if (typeof listing !== "string" || raw.listingLocationName !== listing || sharing) return "paused";
 
     const pending = readPending(review?.pendingReply);
     const basis = review ? reviewBasis(review) : null;
-    if (!review || review.state !== "active" || review.locationName !== listing || review.reply) return "stale";
-    if (!pending || pending.reason !== "auto_queued" || pending.textHash !== p.textHash) return "stale";
+    if (!review || review.state !== "active" || review.locationName !== listing || everReplied(review)) return "stale";
+    if (!pending || !QUEUED_REASONS.includes(pending.reason) || pending.textHash !== p.textHash) return "stale";
     if (basis === null || pending.basisHash !== basis) return "stale";
 
     const star = review.starRating as 1 | 2 | 3 | 4 | 5;

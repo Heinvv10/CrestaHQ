@@ -34,6 +34,7 @@ import {
 } from "@/test/auto-reply-harness";
 import { storeDb } from "@/test/gbp-sync-store";
 import { loadReplyTarget, postReply } from "@/lib/gbp/reply";
+import { draftInputFor } from "@/lib/reputation/draft";
 import { autoReplyAfterSync } from "./run";
 
 const ORIGINAL = { ...process.env };
@@ -55,7 +56,8 @@ describe("the happy path", () => {
     const run = await syncAndRun();
     expect(run).toMatchObject({ posted: 2, drafted: 2, stop: null });
     expect(posts().map((c) => c.reviewName).sort()).toEqual([reviewNameOf("fake-a1"), reviewNameOf("fake-a2")].sort());
-    expect(replyOf("fake-a1")).toMatch(/^Hi Fixture, thank you for your 5-star review/);
+    // No reviewer name on the auto path.
+    expect(replyOf("fake-a1")).toMatch(/^Thank you for your 5-star review/);
 
     expect(await syncAndRun()).toMatchObject({ posted: 0, drafted: 0 });
     expect(posts()).toHaveLength(2);
@@ -86,11 +88,12 @@ describe("the happy path", () => {
     expect(posts()).toHaveLength(2); // a1 + a2 only
   });
 
-  it("a reviewer's display name carrying a contact is dropped from the draft input, not refused", async () => {
-    putFixtureReview("fake-a1", 5, null, 28, "Call 082 555 0101");
+  it("the auto path passes no reviewer name to the draft; a human draft still gets the first name", async () => {
+    putFixtureReview("fake-a1", 5, null, 28, "Hostile Name 082 555 0101");
     await syncAndRun();
     expect(replyOf("fake-a1")).toMatch(/^Thank you for your 5-star review/);
-    expect(replyOf("fake-a1")).not.toContain("Call");
+    expect(replyOf("fake-a1")).not.toContain("Hostile");
+    expect((await draftInputFor(SA, A1)).reviewerFirstName).toBe("Hostile");
   });
 });
 
@@ -153,6 +156,38 @@ describe("failures", () => {
     const a1Calls = posts().filter((c) => c.reviewName === reviewNameOf("fake-a1"));
     expect(a1Calls).toHaveLength(2); // the failed one + the one that landed
     expect(draftsMade()).toBe(2); // a1 once, a2 once
+  });
+
+  it("Google refusing THIS review (404) → post_failed, text kept, and the run goes on to the next review", async () => {
+    const { setScenario } = await import("@/test/gbp-sync-harness");
+    setScenario(SA, (s) => void (s.failNext = { op: "putReply", kind: "not_found" }));
+    expect(await syncAndRun()).toMatchObject({ posted: 1, stop: null });
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "post_failed", text: expect.any(String) });
+    expect(replyOf("fake-a2")).not.toBeNull();
+    // Not retried within 24 h; no second draft.
+    await syncAndRun();
+    expect(posts().filter((c) => c.reviewName === reviewNameOf("fake-a1"))).toHaveLength(1);
+    expect(draftsMade()).toBe(2);
+  });
+
+  it("a post_failed draft 24 h old is retried once with the same bytes", async () => {
+    const { setScenario } = await import("@/test/gbp-sync-harness");
+    setScenario(SA, (s) => void (s.failNext = { op: "putReply", kind: "malformed" }));
+    await syncAndRun();
+    const failed = pendingOf("fake-a1")!;
+    expect(failed.reason).toBe("post_failed");
+    mem.seed(reviewPath("fake-a1"), { ...mem.read(reviewPath("fake-a1"))!, pendingReply: { ...failed, at: new Date(Date.now() - 25 * 3600_000) } });
+    await syncAndRun();
+    expect(replyOf("fake-a1")).toBe(failed.text);
+    expect(draftsMade()).toBe(2);
+  });
+
+  it.each(["rate_limited", "access_not_approved", "permission_denied", "revoked"] as const)("Google %s → the run stops, the draft stays queued", async (kind) => {
+    const { setScenario } = await import("@/test/gbp-sync-harness");
+    setScenario(SA, (s) => void (s.failNext = { op: "putReply", kind }));
+    expect(await syncAndRun()).toMatchObject({ posted: 0, stop: "post_stopped" });
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "auto_queued" });
+    expect(replyOf("fake-a2")).toBeNull();
   });
 
   it("a failed draft stores draft_failed with no text, and posts nothing", async () => {

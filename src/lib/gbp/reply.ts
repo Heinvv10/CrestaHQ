@@ -79,13 +79,14 @@ function kindOf(err: unknown): string {
 }
 
 /**
- * The auto-reply engine's post: never over an existing reply (`requireNoReply`
- * — `already_replied` answers 200 `{skipped: "already_replied"}` with the
- * review's `pendingReply` cleared), recorded as `autoReplied` and attributed
- * to `createdByUid`, whoever switched auto-reply on.
+ * The auto-reply engine's post: never to a review that has or had a reply,
+ * and only the queued bytes `textHash` on an Auto star (`requireNoReply` —
+ * refused as 200 `{skipped: "already_replied" | "not_queued"}`), recorded as
+ * `autoReplied` and attributed to `createdByUid`, whoever switched auto-reply on.
  */
 export interface AutoPost {
   createdByUid: string;
+  textHash: string;
 }
 
 export async function postReply(
@@ -96,15 +97,18 @@ export async function postReply(
   auto?: AutoPost,
 ): Promise<NextResponse> {
   const now = new Date();
-  const claim = await claimAttempt(subAccountId, target, body, auto?.createdByUid ?? actorUid, now, { requireNoReply: !!auto });
-  if (claim.kind === "already_replied") return NextResponse.json({ skipped: "already_replied" });
+  const claim = await claimAttempt(subAccountId, target, body, actorUid, now, auto
+    ? { requireNoReply: { textHash: auto.textHash }, createdByUid: auto.createdByUid }
+    : {});
+  if (claim.kind === "already_replied" || claim.kind === "not_queued") return NextResponse.json({ skipped: claim.kind });
   if (claim.kind === "reused") {
     return gbpRefusal(409, "idempotency_key_reused", "This reply was already submitted with different text — start a new reply.");
   }
   if (claim.kind === "in_progress") {
     return gbpRefusal(409, "in_progress", "This reply is still being posted — try again in a moment.");
   }
-  if (claim.kind === "done") return NextResponse.json({ reply: claim.reply });
+  // The auto path is told a `done` apart: it must not audit or count it again.
+  if (claim.kind === "done") return NextResponse.json(auto ? { reply: claim.reply, done: true } : { reply: claim.reply });
   if (claim.kind === "gone") return gbpRefusal(404, "not_found", "Review not found.");
 
   let reply: GbpReviewReply;

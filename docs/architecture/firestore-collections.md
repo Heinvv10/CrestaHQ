@@ -113,9 +113,13 @@ rule, so default deny. No new index.
 Explicit replies: `subAccounts/{id}/gbpReplyAttempts/{sha256(idempotencyKey)[:40]}`
 is the reply idempotency ledger — `status` (`pending` / `succeeded` /
 `failed`), `reviewDocId`, `commentHash` (sha256 of the reply, never its text),
-`replyUpdateTime`, `errorKind`, `at`; tenant-anchored. Written by the reply
-route only (Admin SDK); no client rule, so default deny; no index. A posted or
-deleted reply changes only the cached review's `reply` and `contentHash`.
+`createdByUid` (the tenant anchor: the admin, or for an auto post whoever
+switched auto-reply on) and `actorUid` (the admin, or `system:auto-reply`),
+`replyUpdateTime`, `errorKind`, `at`; tenant-anchored. Written by
+`lib/gbp/reply.ts` only — the reply route and the auto-reply engine (Admin
+SDK); no client rule, so default deny; no index. A posted or deleted reply
+changes the cached review's `reply` and `contentHash`; a posted one also
+clears `pendingReply` and sets `hadReply` (and `autoReplied` for an auto post).
 
 Review sync (all written by the sync core only, Admin SDK; no client rule, so
 default deny; no composite index): `subAccounts/{id}/gbpReviews/{sha256(review.name)[:40]}`
@@ -153,8 +157,11 @@ client rule, so default deny; no index) writes: `pendingReply {text,
 textHash, basisHash, reason, at, model}` on a cached review (its draft, held
 or queued to post — the only place draft text is stored; cleared by any
 posted reply, by a reply appearing at Google and by a tombstone; purged with
-the review), `autoReplied {at, key}` on a review it replied to (kept by the
-sync's merge), `private/autoReplyLease {runId, until}` (one run per
+the review; `reason` ∈ auto_queued, approval, texted, draft_failed,
+post_failed, no_budget, cap, dismissed), `autoReplied {at, key}` on a review
+it replied to (kept by the sync's merge), `hadReply: true` on any review ever
+seen with or given a reply (sticky; written by the sync and the reply record,
+never cleared — auto-reply never replaces a deleted reply), `private/autoReplyLease {runId, until}` (one run per
 sub-account), `private/autoReplyUsage {day (SAST), posts}` (the 20/day post
 cap; auto drafts are `autoDraftCalls` in `private/sentimentUsage`, on its
 `draftsDay`), and `subAccounts/{id}/autoReplyDismissed/{reviewDocId}

@@ -2,7 +2,7 @@ import type { GbpReview } from "@/lib/gbp/provider/types";
 import { fakeLogPath } from "@/lib/reputation/ai/fake";
 import { syncListing } from "@/lib/gbp/sync/run";
 import { autoReplyAfterSync } from "@/lib/reputation/auto-reply/run";
-import { AGENCY, ACCOUNT, LOC_A, SA, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
+import { AGENCY, ACCOUNT, LOC_A, LOC_NORTH, OTHER_SA, SA, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
 import { calls, docIdOf, reviewPath } from "@/test/gbp-reply-harness";
 
 /**
@@ -52,9 +52,15 @@ export function patchSettings(patch: Record<string, unknown>) {
   patchSub({ reviewsAutoReply: { ...cur, ...patch } });
 }
 
-/** Fresh store, the kill switch set, all three gates on, auto-reply enabled as above. */
+/**
+ * Fresh store, the kill switch set, all three gates on, auto-reply enabled as
+ * above. OTHER_SA selects the OTHER fixture location: a location shared by two
+ * sub-accounts pauses auto-reply (listing_shared).
+ */
 export function resetAutoReply() {
   resetSync();
+  const other = mem.read(`subAccounts/${OTHER_SA}`)!;
+  mem.seed(`subAccounts/${OTHER_SA}`, { ...other, googleListing: { ...(other.googleListing as object), locationName: LOC_NORTH } });
   process.env.REVIEWS_AI_PROVIDER = "fake";
   process.env.REVIEWS_AI_FAKE_AGENCY_ID = AGENCY;
   process.env.REVIEWS_AUTO_REPLY_ENABLED = "1";

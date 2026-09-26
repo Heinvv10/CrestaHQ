@@ -145,6 +145,8 @@ export interface GbpReviewDoc {
   contentHash: string | null;
   /** Consecutive complete single-run passes this review was missing from (0 when seen). */
   missedPasses: number;
+  /** Sticky: the review has had a reply at some point (auto-reply never replaces one). */
+  hadReply?: boolean;
 }
 
 export const reviewsCollection = (sa: string) => `subAccounts/${sa}/gbpReviews`;

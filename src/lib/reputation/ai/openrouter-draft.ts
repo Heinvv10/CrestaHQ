@@ -5,9 +5,10 @@ import { unsuppliedContact } from "./contact-guard";
 import type { DraftFailure, DraftInput, DraftResult } from "./types";
 
 /**
- * An owner-reply DRAFT on OpenRouter (SP5 c). It only ever fills the reply
- * box — posting stays the admin's click on "Post reply to Google"
- * (lib/gbp/reply.ts is the only poster). The review is untrusted: it reaches
+ * An owner-reply DRAFT on OpenRouter (SP5 c). From "Draft with AI" it only
+ * fills the reply box and posting stays the admin's click; from review
+ * auto-reply (lib/reputation/auto-reply) a rating-only review's draft may be
+ * posted without one (lib/gbp/reply.ts is the only poster). The review is untrusted: it reaches
  * the model only as JSON string values, and the system prompt says so. The
  * answer is checked, not trusted: plain text, trimmed, cut to the reply
  * route's 4000-character limit, and REFUSED (nothing is shown) when it

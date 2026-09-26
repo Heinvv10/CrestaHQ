@@ -151,3 +151,44 @@ export async function dismissAutoReply(sa: string, docId: string, byUid: string,
     return true;
   });
 }
+
+/** Only when the review still holds these queued bytes of this basis. */
+function stillQueued(d: ReviewData | undefined, textHash: string): boolean {
+  const p = readPending(d?.pendingReply);
+  return !!d && !!p && (p.reason === "auto_queued" || p.reason === "post_failed") && p.textHash === textHash;
+}
+
+/**
+ * Google accepted this auto post but our record of it did not land (or a
+ * rerun found the attempt already `succeeded`): record what the post means —
+ * no draft pending, auto-replied, and replied for good — so no later run
+ * posts, counts or audits it again. The reply itself arrives with the next sync.
+ */
+export async function finalizeAutoPost(sa: string, docId: string, key: string, now: Date): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
+  await db.runTransaction(async (tx) => {
+    if (!(await tx.get(ref)).exists) return;
+    tx.update(ref, { pendingReply: null, autoReplied: { at: now, key }, hadReply: true });
+  });
+}
+
+/** Google refused THIS review's post (not the connection): kept and shown held, retried once a day. */
+export async function markPostFailed(sa: string, docId: string, textHash: string, now: Date): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
+  await db.runTransaction(async (tx) => {
+    const d = (await tx.get(ref)).data() as ReviewData | undefined;
+    if (stillQueued(d, textHash)) tx.update(ref, { "pendingReply.reason": "post_failed", "pendingReply.at": now });
+  });
+}
+
+/** A queued draft its review no longer qualifies for (step 4b): kept, now waits for a person. */
+export async function holdQueuedForApproval(sa: string, docId: string, textHash: string): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
+  await db.runTransaction(async (tx) => {
+    const d = (await tx.get(ref)).data() as ReviewData | undefined;
+    if (stillQueued(d, textHash)) tx.update(ref, { "pendingReply.reason": "approval" });
+  });
+}

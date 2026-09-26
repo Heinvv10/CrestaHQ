@@ -27,7 +27,7 @@ const settings = (o: Partial<DecideSettings> = {}): DecideSettings => ({
 });
 const review = (o: Partial<DecideReview> = {}): DecideReview => ({
   state: "active", locationName: LOC, starRating: 5, comment: null, createTimeMs: ENABLED_AT + DAY, lastSeenAtMs: RUN,
-  hasReply: false, inFlight: false, autoReplied: false, basisHash: BASIS, pending: null, dismissedBasisHash: null, ...o,
+  hasReply: false, hadReply: false, inFlight: false, autoReplied: false, basisHash: BASIS, pending: null, dismissedBasisHash: null, ...o,
 });
 const pending = (reason: DecidePending["reason"], o: Partial<DecidePending> = {}): DecidePending => ({
   reason, basisHash: BASIS, atMs: NOW - 60_000, hasText: reason === "auto_queued" || reason === "approval" || reason === "texted", ...o,
@@ -111,6 +111,7 @@ describe("skips", () => {
     ["another listing", { locationName: "locations/other" }, {}, "other_listing"],
     ["no enabled listing", {}, { listingLocationName: null }, "other_listing"],
     ["replied", { hasReply: true }, {}, "replied"],
+    ["ever replied (a reply since deleted)", { hadReply: true }, {}, "had_reply"],
     ["a reply in flight", { inFlight: true }, {}, "in_flight"],
     ["auto-replied before", { autoReplied: true }, {}, "auto_replied"],
     ["not seen by this run (stale cache)", { lastSeenAtMs: RUN - 1 }, {}, "not_seen"],
@@ -154,8 +155,12 @@ describe("the pendingReply state table", () => {
     expect(run({ pending: pending(reason) })).toEqual({ verdict: "skip", why: "held" });
   });
 
-  it.each(["approval", "texted"] as const)("%s stale → re-draft, stays held", (reason) => {
-    expect(run({ pending: pending(reason, { basisHash: "old" }) })).toEqual({ verdict: "hold", reason, draft: true });
+  it.each(["approval", "texted"] as const)("%s stale → re-draft, stays held, its reason re-derived", (reason) => {
+    // 5★ Auto, rating-only now → held as approval; with text → texted; on an Approval star → approval.
+    expect(run({ pending: pending(reason, { basisHash: "old" }) })).toEqual({ verdict: "hold", reason: "approval", draft: true });
+    expect(run({ pending: pending(reason, { basisHash: "old" }), comment: "hi" })).toEqual({ verdict: "hold", reason: "texted", draft: true });
+    expect(run({ pending: pending(reason, { basisHash: "old" }), comment: "hi", starRating: 2 }))
+      .toEqual({ verdict: "hold", reason: "approval", draft: true });
   });
 
   it("draft_failed fresh → retried only once `at` is 24 h old", () => {
@@ -178,6 +183,22 @@ describe("the pendingReply state table", () => {
   });
 
   it("every star in auto mode still holds a stale held draft", () => {
-    expect(run({ pending: pending("texted", { basisHash: "old" }) }, { modes: ALL_AUTO })).toMatchObject({ reason: "texted" });
+    expect(run({ pending: pending("texted", { basisHash: "old" }) }, { modes: ALL_AUTO })).toMatchObject({ verdict: "hold", reason: "approval" });
+  });
+
+  it("post_failed fresh → the stored bytes retried once `at` is 24 h old (within the post cap); stale → re-decide", () => {
+    const failed = (o: Partial<DecidePending> = {}) => pending("post_failed", { hasText: true, ...o });
+    expect(run({ pending: failed({ atMs: NOW - DAY + 1 }) })).toEqual({ verdict: "skip", why: "post_retry_wait" });
+    expect(run({ pending: failed({ atMs: NOW - DAY }) })).toEqual({ verdict: "auto", stored: true });
+    expect(run({ pending: failed({ atMs: NOW - DAY }) }, {}, counts(20))).toEqual({ verdict: "skip", why: "cap_wait" });
+    expect(run({ pending: failed({ basisHash: "old" }) })).toEqual({ verdict: "auto", stored: false });
+  });
+
+  it.each(["auto_queued", "post_failed"] as const)("%s orphaned by an off→on (backlog off, review older) → to_approval", (reason) => {
+    const p = pending(reason, { hasText: true });
+    expect(run({ pending: p, createTimeMs: ENABLED_AT - 1 })).toEqual({ verdict: "to_approval" });
+    const withBacklog = reason === "auto_queued" ? { verdict: "auto", stored: true } : { verdict: "skip", why: "post_retry_wait" };
+    expect(run({ pending: p, createTimeMs: ENABLED_AT - 1 }, { includeBacklog: true })).toEqual(withBacklog);
+    expect(run({ pending: { ...p, basisHash: "old" }, createTimeMs: ENABLED_AT - 1 })).toEqual({ verdict: "skip", why: "before_enabled" });
   });
 });

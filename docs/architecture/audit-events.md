@@ -86,6 +86,7 @@ field:
 | `workflow.status_changed` | `status` | `draft`, `active`, `paused` |
 | `member.role_changed` | `role` | `admin`, `collaborator` |
 | `agent.write` | `capability`, `keyPrefix` | `"identifier"`: a code identifier (`[A-Za-z0-9_]{1,64}`), anything else redacted. Every `args.*` field is redacted: the row records which args were set, never their values |
+| `review.auto_replied` | none | No changes are recorded (an empty list): the row says THAT an automatic reply was posted to the target review, never its text |
 
 An action can also declare a field as `"staffUid"`, for a field that holds a staff
 member's uid (for example a ticket's `assignedToUid` from and to). Such a value is
@@ -239,7 +240,11 @@ Hein. Each one names the alternative that was rejected.
 | `PATCH /api/sub-accounts/[id]/members/[uid]` | `member.role_changed` | `role` changed, after the member and index batch commits |
 | `POST /api/sub-accounts/[id]/invite` and the assistant's `invite_member` (both via `addExistingUserAsMember`) | `member.role_changed` | an existing membership's `role` changed, after the batch commits |
 | `dispatchAgentTool` (Agent API, `src/lib/api/agent-dispatch.ts`) | `agent.write` | every direct (non-approval, non-read) agent tool call, after its capability executed. Actor `api_key` (key id); target the record the capability returned (`contact` / `deal` / `task` / `event` / `workflow`, else the sub-account) |
+| review auto-reply engine (`postQueued`, `src/lib/reputation/auto-reply/post.ts`) | `review.auto_replied` | once per reply Google accepted from the engine — never for an attempt already `succeeded` (finalized without a row). Actor `{ type: "system", id: "auto-reply" }`; target `{ type: "review", id: reviewDocId }`; `onBehalfOfUid` = whoever switched auto-reply on |
 
-All of them use `recordSubAccountAuditEvent`. Routes use the actor
+All of them use `recordSubAccountAuditEvent` except the auto-reply engine,
+which calls `recordAuditEvent` directly with the `agencyId` of the review
+lookup it already made (`loadReplyTarget`) — the same tenant read from the
+stored sub-account doc. Routes use the actor
 `{ type: "user", id: access.uid }` from `requireSubAccountMember` or
 `requireSubAccountAdmin`. The assistant uses `ai_agent` plus `onBehalfOfUid`.

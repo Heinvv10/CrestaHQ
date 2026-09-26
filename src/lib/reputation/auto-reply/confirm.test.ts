@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { SA, mem } from "@/test/gbp-sync-harness";
+import { LOC_A, OTHER_SA, SA, mem } from "@/test/gbp-sync-harness";
 import { reviewPath } from "@/test/gbp-reply-harness";
 import { A1, patchSettings, patchSub, resetAutoReply, sync } from "@/test/auto-reply-harness";
 import { sentimentBasis } from "@/lib/reputation/sentiment-basis";
@@ -42,6 +42,11 @@ it("go: counts the post (SAST day) and renews the lease", async () => {
   expect(mem.read(autoReplyLeasePath(SA))!.until as number).toBeGreaterThan(Date.now() + 200_000);
 });
 
+it("a post_failed draft (its daily retry) is confirmed like a queued one", async () => {
+  patchReview({ pendingReply: pending({ reason: "post_failed" }) });
+  expect(await confirm()).toBe("go");
+});
+
 describe("stop the run", () => {
   it("lease held by another run → lease_lost", async () => {
     expect(await confirm("run-2")).toBe("lease_lost");
@@ -55,6 +60,10 @@ describe("stop the run", () => {
     ["auto-reply switched off", () => patchSettings({ enabled: false })],
     ["the listing changed", () => patchSub({ googleListing: { ...(mem.read(`subAccounts/${SA}`)!.googleListing as object), locationName: "locations/x" } })],
     ["enabled for another listing", () => patchSettings({ listingLocationName: "locations/x" })],
+    ["another sub-account selected the same location", () => {
+      const other = mem.read(`subAccounts/${OTHER_SA}`)!;
+      mem.seed(`subAccounts/${OTHER_SA}`, { ...other, googleListing: { ...(other.googleListing as object), locationName: LOC_A } });
+    }],
   ])("%s → paused, nothing counted, the draft stays queued", async (_l, change) => {
     change();
     expect(await confirm()).toBe("paused");
@@ -73,6 +82,7 @@ describe("stop the run", () => {
 describe("skip this review (stale)", () => {
   it.each<[string, () => void]>([
     ["replied meanwhile", () => patchReview({ reply: { comment: "Human reply.", updateTime: "2026-09-01T00:00:00Z" } })],
+    ["a reply since deleted (hadReply)", () => patchReview({ hadReply: true })],
     ["removed", () => patchReview({ state: "removed" })],
     ["another location's review", () => patchReview({ locationName: "locations/x" })],
     ["no draft any more", () => patchReview({ pendingReply: null })],
