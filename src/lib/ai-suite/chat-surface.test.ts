@@ -186,6 +186,7 @@ describe("registry invariants", () => {
     delete_custom_field: { fieldId: "cf_sample" },
     delete_custom_field_folder: { folderId: "fo_sample" },
     delete_product: { productId: "pr_sample" },
+    update_product: { productId: "pr_sold", unitPriceCents: 200 },
     delete_snippet: { snippetId: "sn_sample" },
   };
   /** The approval class a capability carries for its sample args. */
@@ -224,6 +225,8 @@ describe("registry invariants", () => {
     mem.seed("subAccounts/sa1/customFields/cf_sample", { subAccountId: "sa1", agencyId: "ag1", entity: "contact", key: "k", label: "K", type: "text", options: [], required: false, order: 0 });
     mem.seed("subAccounts/sa1/customFieldFolders/fo_sample", { subAccountId: "sa1", agencyId: "ag1", name: "F", entity: "contact", order: 0 });
     mem.seed("products/pr_sample", { subAccountId: "sa1", agencyId: "ag1", name: "P", unitPriceCents: 100, currency: "USD", active: true });
+    mem.seed("products/pr_sold", { subAccountId: "sa1", agencyId: "ag1", name: "Sold", unitPriceCents: 100, currency: "USD", active: true });
+    mem.seed("subAccounts/sa1/checkoutPages/cp_sample", { subAccountId: "sa1", name: "Offer", productId: "pr_sold", bumpProductIds: [] });
     mem.seed("snippets/sn_sample", { subAccountId: "sa1", agencyId: "ag1", name: "S", type: "text", body: "Hi", subject: null, folder: null });
     mem.seed("subAccounts/sa1/pipelines/p_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample", isDefault: false, stages: [{ id: "a", label: "A", tone: "" }] });
   };

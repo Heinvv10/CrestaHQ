@@ -68,15 +68,30 @@ describe("custom fields", () => {
     mem.seed("workflows/w3", { subAccountId: "sa2", nodes: { n1: { config: { body: "{{contact.customFields.install_date}}" } } } });
     mem.seed("subAccounts/sa1/whatsappTemplates/t1", { variables: [{ position: 1, source: "merge_tag", mergeTag: "contact.customFields.install_date" }] });
     mem.seed("snippets/s1", { subAccountId: "sa1", body: "Your install is {{contact.customFields.install_date}}" });
+    mem.seed("message_templates/m1", { subAccountId: "sa1", body: "Install: {{contact.customFields.install_date}}" });
+    mem.seed("message_templates/m2", { subAccountId: "sa2", body: "Install: {{contact.customFields.install_date}}" });
     const id = await proposeId("delete_custom_field", { fieldId: "cf1" });
     expect(row(id).preview).toEqual(expect.arrayContaining([
       { label: "Delete custom field", value: "Install date" },
       { label: "Key", value: "contact · customFields.install_date · text" },
-      { label: "Used by", value: "1 workflow(s), 1 WhatsApp template(s), 1 snippet(s): they'll read it as empty." },
+      {
+        label: "Used by",
+        value:
+          "1 workflow(s), 1 email/SMS template(s) (broadcasts send these), 1 WhatsApp template(s), 1 snippet(s): they'll read it as empty. " +
+          "Not checked: the agency's template library and snapshots.",
+      },
     ]));
     expect(mem.read(`${FIELDS}/cf1`)).toBeDefined();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read(`${FIELDS}/cf1`)).toBeUndefined();
+  });
+
+  it("the workspace's own settings naming the field are counted too", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, twilioConfig: { missedCallTextBack: { message: "Sorry {{contact.customFields.install_date}}" } } });
+    const id = await proposeId("delete_custom_field", { fieldId: "cf1" });
+    expect((row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === "Used by")!.value).toContain(
+      "0 snippet(s), and the workspace settings (e.g. the missed-call text-back): they'll read it as empty."
+    );
   });
 
   it("another sub-account's field isn't found; list shows only this one's, filtered by entity", async () => {

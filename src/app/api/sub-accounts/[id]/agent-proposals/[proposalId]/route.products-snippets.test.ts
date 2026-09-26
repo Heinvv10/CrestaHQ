@@ -55,6 +55,54 @@ describe("products", () => {
     expect(mem.read("products/pr1")).toEqual(PRODUCT);
   });
 
+  it("a price change to a product a checkout page sells → a spend proposal naming it, nothing written; approve applies", async () => {
+    page({ productId: "pr1", name: "Main offer" });
+    const id = await proposeId("update_product", { productId: "pr1", unitPriceCents: 59900 });
+    expect(row(id).approval).toBe("spend");
+    expect(row(id).preview).toEqual(expect.arrayContaining([
+      { label: "Price", value: "ZAR 499 → ZAR 599" },
+      { label: "Active", value: "true (unchanged)" },
+      { label: "Sold by", value: "checkout page Main offer (cp1)" },
+    ]));
+    expect(mem.read("products/pr1")!.unitPriceCents).toBe(49900);
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(mem.read("products/pr1")!.unitPriceCents).toBe(59900);
+  });
+
+  it.each([
+    ["deactivating a product a funnel sells", () => mem.seed("subAccounts/sa1/funnels/fu1", { subAccountId: "sa1", productId: "pr1", name: "Promo" }), { active: false }],
+    ["a currency change to an order bump", () => page({ bumpProductIds: ["pr1"] }), { currency: "USD" }],
+  ])("%s → a spend proposal", async (_label, arrange, patch) => {
+    arrange();
+    expect(await call("update_product", { productId: "pr1", ...patch })).toMatchObject({ ok: true, proposal: { status: "pending" } });
+    expect(mem.read("products/pr1")).toEqual(PRODUCT);
+  });
+
+  it("a rename of a sold product, or a price change to an unsold one, is a direct write", async () => {
+    page({ productId: "pr1" });
+    expect(await call("update_product", { productId: "pr1", name: "Fibre 100 Pro" })).toMatchObject({ ok: true, resultText: "Updated the product." });
+    mem.seed("products/pr2", { ...PRODUCT, name: "Unsold" });
+    expect(await call("update_product", { productId: "pr2", unitPriceCents: 1 })).toMatchObject({ ok: true, resultText: "Updated the product." });
+    expect(mem.read("products/pr2")!.unitPriceCents).toBe(1);
+  });
+
+  it("a checkout page starting to sell it between the check and the direct write → refused, nothing written", async () => {
+    beforeNextTransaction(async () => page({ productId: "pr1" }));
+    expect(await call("update_product", { productId: "pr1", unitPriceCents: 1 })).toMatchObject({
+      ok: false, message: "A checkout page or funnel now sells this product, so this change needs approval: send it again.",
+    });
+    expect(mem.read("products/pr1")).toEqual(PRODUCT);
+  });
+
+  it("the price changed between the approve-time re-check and the write → failed, nothing written", async () => {
+    page({ productId: "pr1" });
+    const id = await proposeId("update_product", { productId: "pr1", unitPriceCents: 59900 });
+    beforeNextTransaction(async () => mem.seed("products/pr1", { ...PRODUCT, unitPriceCents: 1 }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id).error).toBe("The product's price or status changed since this was reviewed; nothing was changed.");
+    expect(mem.read("products/pr1")!.unitPriceCents).toBe(1);
+  });
+
   it.each([
     ["a checkout page's offer", () => page({ productId: "pr1" })],
     ["a checkout page's order bump", () => page({ bumpProductIds: ["pr1"] })],

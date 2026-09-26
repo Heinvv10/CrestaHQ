@@ -181,7 +181,11 @@ export const CUSTOM_FIELD_CAPABILITIES: AiSuiteCapability[] = [
         { label: "Key", value: `${f.entity} · customFields.${f.key} · ${f.type}` },
         {
           label: "Used by",
-          value: `${used.workflows} workflow(s), ${used.whatsappTemplates} WhatsApp template(s), ${used.snippets} snippet(s): they'll read it as empty.`,
+          value:
+            `${used.workflows} workflow(s), ${used.messageTemplates} email/SMS template(s) (broadcasts send these), ` +
+            `${used.whatsappTemplates} WhatsApp template(s), ${used.snippets} snippet(s)` +
+            `${used.workspaceSettings ? ", and the workspace settings (e.g. the missed-call text-back)" : ""}: they'll read it as empty. ` +
+            `Not checked: ${used.notChecked}.`,
         },
         { label: "Stored values", value: `Stay on each ${f.entity} but stop showing.` },
       ];
