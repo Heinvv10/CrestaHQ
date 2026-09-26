@@ -32,8 +32,10 @@ import { autoReplyKillSwitchOn } from "@/lib/reputation/auto-reply/kill-switch";
  * (403 `gate_off`), the Reviews AI gate (403 `ai_gate_off`), the auto-reply
  * gate (403 `auto_reply_gate_off`), a selected listing (409 `no_listing`)
  * that no other sub-account has also selected (409 `listing_shared` — the
- * engine cannot see replies cached under another sub-account);
- * turning it off is always allowed. The server stamps `enabledAt`,
+ * engine cannot see replies cached under another sub-account), and — for
+ * the off→on switch only — no pending Google reconnect (409
+ * `reconnect_required`: it could not post, and its reconnect alert fires
+ * only while it is on); turning it off is always allowed. The server stamps `enabledAt`,
  * `enabledByUid` and `listingLocationName` on the off→on transition, inside
  * a transaction. See AUTO_REPLY_V1_PLAN.md.
  */
