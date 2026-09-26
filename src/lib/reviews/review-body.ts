@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Firestore } from "firebase-admin/firestore";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
+import { templateFingerprint } from "@/lib/comms/whatsapp/template-fingerprint";
 import { DEFAULT_REVIEW_SMS_TEMPLATE, type ReviewChannel } from "@/lib/reviews/constants";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
@@ -85,7 +86,16 @@ export async function reviewBodyNow(opts: {
   channel: ReviewChannel;
   contact: Contact;
   reviewUrl: string;
-}): Promise<{ ok: true; body: string } | { ok: false; why: string }> {
+}): Promise<
+  | {
+      ok: true;
+      body: string;
+      /** whatsapp_template only: the checked fill (sent as is, never re-read)
+       *  and its fingerprint (templateFingerprint). */
+      template?: { tpl: WhatsappTemplateDoc; values: string[]; fingerprint: string };
+    }
+  | { ok: false; why: string }
+> {
   const { cfg, contact } = opts;
   if (opts.channel !== "whatsapp_template") {
     return { ok: true, body: reviewSmsBody(cfg, contact, opts.subAccount.name ?? "", opts.reviewUrl) };
@@ -93,7 +103,8 @@ export async function reviewBodyNow(opts: {
   if (!cfg.whatsappTemplateId) return { ok: false, why: "no WhatsApp review template is set." };
   const filled = await reviewTemplateFill(opts.db, opts.subAccountId, cfg.whatsappTemplateId, contact, opts.subAccount);
   if (!filled.ok) return { ok: false, why: `the WhatsApp review template can't be sent (${filled.reason}).` };
-  return { ok: true, body: fillPositional(filled.tpl.body, filled.values) };
+  const fingerprint = templateFingerprint(cfg.whatsappTemplateId, opts.subAccount, filled.tpl, filled.values);
+  return { ok: true, body: fillPositional(filled.tpl.body, filled.values), template: { tpl: filled.tpl, values: filled.values, fingerprint } };
 }
 
 /** Build the merge-tag subject for WhatsApp template variable resolution. */

@@ -23,8 +23,9 @@ vi.mock("@/lib/comms/twilio", async () => {
 });
 const held = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => true));
 const scheduled = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => undefined));
+const superseded = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => undefined));
 vi.mock("@/lib/reviews/reminder", async (orig) => ({
-  ...((await orig()) as object), scheduleReviewReminder: scheduled, supersedeOtherReminders: async () => undefined,
+  ...((await orig()) as object), scheduleReviewReminder: scheduled, supersedeOtherReminders: superseded,
 }));
 vi.mock("@/lib/comms/quiet-hours-hold", () => ({ holdForQuietHours: held }));
 vi.mock("@/lib/server/conversations-service", async () => {
@@ -34,8 +35,12 @@ vi.mock("@/lib/server/conversations-service", async () => {
 
 import { QuietHoursDeferredError } from "@/lib/comms/quiet-hours";
 import type { SendReviewInput } from "./request";
-import { AG, C, SA, SUB_PATH, docs, resetHarness, sendSms, sendWhatsappTemplate, setApprovedTemplate, setContact, setReviewCfg } from "@/test/reviews-request-harness";
+import { AG, C, SA, SUB_PATH, docs, resetHarness, setSub, sendSms, sendWhatsappTemplate, setApprovedTemplate, setContact, setReviewCfg } from "@/test/reviews-request-harness";
 import { maybeSendReviewRequest } from "./request";
+import { phoneHash } from "./reminder-checks";
+import { templateFingerprint } from "@/lib/comms/whatsapp/template-fingerprint";
+import type { SubAccountDoc } from "@/types";
+import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
 type Expect = NonNullable<SendReviewInput["expect"]>;
 const PHONE = "+61412345678";
@@ -83,20 +88,61 @@ it("held for quiet hours, then the name changes before the release → the relea
   expect(sendSms).toHaveBeenCalledTimes(1);
 });
 
-it("a WhatsApp template: its text with the variables filled is compared; a variable's source changing refuses", async () => {
-  setApprovedTemplate();
-  const approved: Expect = { phone: PHONE, channel: "whatsapp_template", body: "Hi Jane, mind leaving us a review?" };
-  expect(await send(approved)).not.toEqual(REFUSED);
-  setContact({ name: "Joan Doe" });
-  expect(await send(approved)).toEqual(REFUSED);
-  expect(sendWhatsappTemplate).not.toHaveBeenCalled();
-});
+const TPL_TEXT = "Hi Jane, mind leaving us a review?";
+/** What an approver of the t1 review template would have been shown (and pinned). */
+function approvedTemplate(): Expect {
+  const tpl = docs[`${SUB_PATH}/whatsappTemplates/t1`] as unknown as WhatsappTemplateDoc;
+  return { phone: PHONE, channel: "whatsapp_template", body: TPL_TEXT, fingerprint: templateFingerprint("t1", docs[SUB_PATH] as unknown as SubAccountDoc, tpl, ["Jane"]) };
+}
 
-it("a WhatsApp template that can no longer be filled (deleted since approval) → refused as changed", async () => {
-  setApprovedTemplate();
-  delete docs[`${SUB_PATH}/whatsappTemplates/t1`];
-  expect(await send({ phone: PHONE, channel: "whatsapp_template", body: "Hi Jane, mind leaving us a review?" })).toEqual(REFUSED);
-  expect(sendWhatsappTemplate).not.toHaveBeenCalled();
+describe("a WhatsApp template", () => {
+  beforeEach(() => setApprovedTemplate());
+
+  it("its filled text and fingerprint match → past the check; a variable's source changing refuses", async () => {
+    const approved = approvedTemplate();
+    expect(await send(approved)).not.toEqual(REFUSED);
+    setContact({ name: "Joan Doe" });
+    expect(await send(approved)).toEqual(REFUSED);
+  });
+
+  it("swapped for another template with the same text but other buttons and id → refused, nothing sent", async () => {
+    const approved = approvedTemplate();
+    docs[`${SUB_PATH}/whatsappTemplates/t2`] = {
+      ...(docs[`${SUB_PATH}/whatsappTemplates/t1`] as object), name: "lure", contentSid: "HX999",
+      buttons: [{ type: "url", text: "Claim", url: "https://evil.example" }],
+    };
+    setReviewCfg({ whatsappTemplateId: "t2" });
+    expect(await send(approved)).toEqual(REFUSED);
+    expect(sendWhatsappTemplate).not.toHaveBeenCalled();
+  });
+
+  it("its buttons changed since approval (same text) → refused", async () => {
+    const approved = approvedTemplate();
+    Object.assign(docs[`${SUB_PATH}/whatsappTemplates/t1`] as object, { buttons: [{ type: "url", text: "Claim", url: "https://evil.example" }] });
+    expect(await send(approved)).toEqual(REFUSED);
+  });
+
+  it("sends the very template it checked: a change after the check never reaches the send", async () => {
+    setSub({ whatsappEnabledByAgency: true });
+    setReviewCfg({ triggerOnDealCompleted: true });
+    setApprovedTemplate();
+    const approved = approvedTemplate();
+    const path = `${SUB_PATH}/whatsappTemplates/t1`;
+    const original = docs[path];
+    let reads = 0;
+    // The first read is the check; any later one would see a swapped template.
+    Object.defineProperty(docs, path, { configurable: true, enumerable: true, get: () => (reads++ === 0 ? original : { ...(original as object), contentSid: "HX999" }) });
+    expect(await send(approved)).toEqual({ sent: true });
+    expect(sendWhatsappTemplate).toHaveBeenCalledTimes(1);
+    expect((sendWhatsappTemplate.mock.calls[0] as unknown as [{ contentSid: string }])[0]).toMatchObject({ contentSid: "HX123" });
+  });
+
+  it("no longer fillable (deleted since approval) → refused as changed", async () => {
+    const approved = approvedTemplate();
+    delete docs[`${SUB_PATH}/whatsappTemplates/t1`];
+    expect(await send(approved)).toEqual(REFUSED);
+    expect(sendWhatsappTemplate).not.toHaveBeenCalled();
+  });
 });
 
 describe("reminders", () => {
@@ -115,9 +161,10 @@ describe("reminders", () => {
     expect((sendSms.mock.calls[0] as unknown as [{ body: string }])[0].body).not.toContain("https://g.page/r/acme/review");
   });
 
-  it("an approved request schedules none, and sends the approved text byte for byte", async () => {
+  it("an approved request schedules none, ends any still waiting, and sends the approved text byte for byte", async () => {
     expect(await send(APPROVED)).toEqual({ sent: true });
     expect(scheduled).not.toHaveBeenCalled();
+    expect(superseded).toHaveBeenCalledWith(SA, C, phoneHash(PHONE), "");
     expect((sendSms.mock.calls[0] as unknown as [{ body: string }])[0].body).toBe(TEXT);
   });
 });

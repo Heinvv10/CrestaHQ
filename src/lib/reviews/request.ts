@@ -31,6 +31,7 @@ import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
+import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 import {
   QuietHoursDeferredError,
   isQuietHoursDeferred,
@@ -72,7 +73,7 @@ export interface SendReviewInput {
    *  refused if the contact's number, the configured channel or the text now
    *  differs, here or when a quiet-hours hold releases it; and it never
    *  schedules reminders. Absent for every other caller. */
-  expect?: { phone: string; channel: ReviewChannel; body: string };
+  expect?: { phone: string; channel: ReviewChannel; body: string; /** whatsapp_template only. */ fingerprint?: string };
 }
 
 export interface SendReviewResult {
@@ -138,11 +139,20 @@ export async function maybeSendReviewRequest(
     if (!contact.phone) return { sent: false, reason: "no_phone" };
 
     const channel = normalizeReviewChannel(cfg.channel);
+    // The template fill an approved send was checked against, sent as is.
+    let approvedTemplate: { tpl: WhatsappTemplateDoc; values: string[] } | undefined;
     if (input.expect) {
       const now = await reviewBodyNow({ db, subAccountId: input.subAccountId, subAccount, cfg, channel, contact, reviewUrl });
-      if (contact.phone !== input.expect.phone || channel !== input.expect.channel || !now.ok || now.body !== input.expect.body) {
+      if (
+        contact.phone !== input.expect.phone ||
+        channel !== input.expect.channel ||
+        !now.ok ||
+        now.body !== input.expect.body ||
+        (channel === "whatsapp_template" && now.template?.fingerprint !== input.expect.fingerprint)
+      ) {
         return { sent: false, reason: "changed_since_approval" };
       }
+      approvedTemplate = now.template;
     }
     const isWhatsapp = channel !== "sms";
     const convoChannel: ConversationChannel = isWhatsapp ? "whatsapp" : "sms";
@@ -267,7 +277,9 @@ export async function maybeSendReviewRequest(
         if (!cfg.whatsappTemplateId) return { sent: false, reason: "no_template" };
         // Approval is per-rail: a template cleared through Twilio's BSP has
         // never been seen by our own WABA, so "approved" alone is not enough.
-        const filled = await reviewTemplateFill(db, input.subAccountId, cfg.whatsappTemplateId, contact, subAccount);
+        const filled = approvedTemplate
+          ? { ok: true as const, ...approvedTemplate }
+          : await reviewTemplateFill(db, input.subAccountId, cfg.whatsappTemplateId, contact, subAccount);
         if (!filled.ok) return { sent: false, reason: filled.reason };
         const { tpl, values } = filled;
         let templateFrom = "";
@@ -411,6 +423,10 @@ export async function maybeSendReviewRequest(
           }
         : {}),
     });
+    if (input.expect) {
+      // An approved send starts no reminders, and ends any still waiting.
+      await supersedeOtherReminders(input.subAccountId, contact.id, phoneHash(contact.phone), "");
+    }
     if (plan?.reminder) {
       await supersedeOtherReminders(input.subAccountId, contact.id, phoneHash(contact.phone), plan.requestId);
       await scheduleReviewReminder({

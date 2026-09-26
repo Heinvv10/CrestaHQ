@@ -43,6 +43,18 @@ async function proposeId(): Promise<string> {
 }
 const rowOf = (id: string, label: string) => (row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === label)?.value;
 const reviewRow = (id: string) => rowOf(id, "Review request");
+const RT1 = {
+  name: "review", displayName: "Review ask", language: "en", body: "Hi {{1}}, please review {{2}}", status: "approved", contentSid: "HX1",
+  buttons: [{ type: "url", text: "Review us", url: "https://g.page/r/fixture/review" }],
+  variables: [
+    { position: 1, label: "Name", sampleValue: "Ben", source: "merge_tag", mergeTag: "contact.firstName" },
+    { position: 2, label: "Biz", sampleValue: "Co", source: "merge_tag", mergeTag: "workspace.name" },
+  ],
+};
+const waTemplate = () => {
+  reviews({ channel: "whatsapp_template", whatsappTemplateId: "rt1" });
+  mem.seed("subAccounts/sa1/whatsappTemplates/rt1", RT1);
+};
 /** A write-transaction hook one transaction later than beforeNextTransaction:
  *  after approve's claim, between execute's reads and its deal write. */
 const inExecuteWindow = (change: () => unknown) => beforeNextTransaction(async () => beforeNextTransaction(async () => { await change(); }));
@@ -60,7 +72,7 @@ describe("mark_deal_completed", () => {
     expect(row(id).approval).toBe("outbound");
     expect(reviewRow(id)).toBe("Sent to Ann Smith (…1111) by SMS; quiet hours delay it.");
     expect(row(id).preview).toContainEqual({ label: "Message", value: SMS_TEXT, multiline: true });
-    expect(row(id).pinned).toEqual({ dealId: "d1", contactId: "c1", phone: "+27821111111", channel: "sms", body: SMS_TEXT });
+    expect(row(id).pinned).toEqual({ dealId: "d1", contactId: "c1", phone: "+27821111111", channel: "sms", body: SMS_TEXT, fingerprint: null });
     expect(row(id).preview).toContainEqual({ label: "Stage", value: "Won (Won stage)" });
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
@@ -91,21 +103,34 @@ describe("mark_deal_completed", () => {
 
   it.each([
     ["free-form WhatsApp", () => reviews({ channel: "whatsapp_manual" }), "WhatsApp", SMS_TEXT],
-    ["a WhatsApp template", () => {
-      reviews({ channel: "whatsapp_template", whatsappTemplateId: "rt1" });
-      mem.seed("subAccounts/sa1/whatsappTemplates/rt1", {
-        name: "review", body: "Hi {{1}}, please review {{2}}", status: "approved",
-        variables: [
-          { position: 1, label: "Name", sampleValue: "Ben", source: "merge_tag", mergeTag: "contact.firstName" },
-          { position: 2, label: "Biz", sampleValue: "Co", source: "merge_tag", mergeTag: "workspace.name" },
-        ],
-      });
-    }, "WhatsApp", "Hi Ann, please review Acme"],
-  ])("%s → the exact text in the preview", async (_label, arrange, channel, text) => {
+    ["a WhatsApp template", () => waTemplate(), "WhatsApp", "Hi Ann, please review Acme"],
+  ])("%s → the exact text in the preview", async (label, arrange, channel, text) => {
     arrange();
     const id = await proposeId();
     expect(reviewRow(id)).toBe(`Sent to Ann Smith (…1111) by ${channel}; quiet hours delay it.`);
     expect(rowOf(id, "Message")).toBe(text);
+    if (label === "a WhatsApp template") {
+      expect(rowOf(id, "Template")).toBe("Review ask (review)");
+      expect(rowOf(id, "Language")).toBe("en");
+      expect(rowOf(id, "Buttons")).toBe('link "Review us" (https://g.page/r/fixture/review)');
+      expect(row(id).pinned).toMatchObject({ channel: "whatsapp_template", fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    }
+  });
+
+  it("a WhatsApp template: approve passes its fingerprint to the send; swapped (same text) before the write → failed", async () => {
+    waTemplate();
+    const id = await proposeId();
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(reviewAsk.mock.calls[0]![0]).toMatchObject({ expect: { channel: "whatsapp_template", fingerprint: (row(id).pinned as { fingerprint: string }).fingerprint } });
+    mem.seed("deals/d1", DEAL);
+    reviewAsk.mockClear();
+    const id2 = await proposeId();
+    beforeNextTransaction(async () => {
+      mem.seed("subAccounts/sa1/whatsappTemplates/rt2", { ...RT1, contentSid: "HX2", name: "lure" });
+      reviews({ channel: "whatsapp_template", whatsappTemplateId: "rt2" });
+    });
+    expect((await decide(id2, "approve")).status).toBe(422);
+    expect(reviewAsk).not.toHaveBeenCalled();
   });
 
   it("reminders on: the preview says none will follow, and nothing hints at a tracking link", async () => {

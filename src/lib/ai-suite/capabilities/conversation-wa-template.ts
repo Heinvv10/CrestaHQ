@@ -1,8 +1,8 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
-import { isTemplateApprovedFor, templateRegistration } from "@/lib/comms/whatsapp/template-registrations";
+import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registrations";
+import { describeTemplateButtons, templateFingerprint } from "@/lib/comms/whatsapp/template-fingerprint";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   prepareWhatsappTemplateSend,
@@ -49,12 +49,7 @@ function valueProblem(v: string): string | null {
  * sends is ITS stored copy of the template.
  */
 function renderedPin(templateId: string, { subAccount, tpl, values }: PreparedTemplateSend): string {
-  const sender = resolveWhatsappSender(subAccount);
-  const provider = sender.ok ? sender.provider : null;
-  const externalId = provider ? (templateRegistration(tpl, provider)?.externalId ?? null) : null;
-  return createHash("sha256")
-    .update(JSON.stringify([templateId, provider, externalId, tpl.name, tpl.language, tpl.body, tpl.buttons ?? [], values]))
-    .digest("hex");
+  return templateFingerprint(templateId, subAccount, tpl, values);
 }
 
 async function prepared(contact: Contact, args: Record<string, unknown>): Promise<PreparedTemplateSend> {
@@ -64,9 +59,8 @@ async function prepared(contact: Contact, args: Record<string, unknown>): Promis
 }
 
 function buttonsSummary(tpl: WhatsappTemplateDoc): PreviewRow[] {
-  if (!tpl.buttons?.length) return [];
-  const parts = tpl.buttons.map((b) => (b.type === "url" ? `link "${b.text}" (${b.url})` : `quick reply "${b.text}"`));
-  return [{ label: "Buttons", value: parts.join(" · ") }];
+  const buttons = describeTemplateButtons(tpl);
+  return buttons ? [{ label: "Buttons", value: buttons }] : [];
 }
 
 export const CONVERSATION_WA_TEMPLATE_CAPABILITIES: AiSuiteCapability[] = [

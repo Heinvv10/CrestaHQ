@@ -77,14 +77,20 @@ export const DEAL_COMPLETE_CAPABILITIES: AiSuiteCapability[] = [
           { label: "Value", value: fmtMoney(typeof d.value === "number" ? d.value : 0, (d.currency as string) || "USD") },
           ...plan.rows,
         ],
-        pinned: { dealId: args.dealId, contactId: plan.contactId, phone: plan.phone, channel: plan.channel, body: plan.body },
+        pinned: { dealId: args.dealId, contactId: plan.contactId, phone: plan.phone, channel: plan.channel, body: plan.body, fingerprint: plan.fingerprint },
       };
     },
     execute: async (ctx, args) => {
       const before = await tenantDeal(ctx.subAccountId!, args.dealId);
       const pinned = ctx.approved?.pinned ?? {};
       const plan = await reviewPlan(ctx.subAccountId!, before, Date.now());
-      if (plan.contactId !== pinned.contactId || plan.phone !== pinned.phone || plan.channel !== pinned.channel || plan.body !== pinned.body) {
+      if (
+        plan.contactId !== pinned.contactId ||
+        plan.phone !== pinned.phone ||
+        plan.channel !== pinned.channel ||
+        plan.body !== pinned.body ||
+        plan.fingerprint !== pinned.fingerprint
+      ) {
         throw new CapabilityUserError("The deal's contact, their number or the review request changed since this was reviewed; nothing was changed.");
       }
       const result = await updateDealServerSide({
@@ -105,7 +111,12 @@ export const DEAL_COMPLETE_CAPABILITIES: AiSuiteCapability[] = [
       // Only a reviewed request is sent, and the send itself refuses a number
       // or channel that changed after this point.
       if (plan.channel) {
-        askReviewIfNewlyCompleted({ before, completed: true, result, expect: { phone: plan.phone, channel: plan.channel, body: plan.body! } });
+        askReviewIfNewlyCompleted({
+          before,
+          completed: true,
+          result,
+          expect: { phone: plan.phone, channel: plan.channel, body: plan.body!, ...(plan.fingerprint ? { fingerprint: plan.fingerprint } : {}) },
+        });
       }
       return { resultText: "Marked the deal completed.", ref: { kind: "deal", id: args.dealId as string } };
     },

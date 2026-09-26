@@ -6,6 +6,7 @@ import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { activeReminder, DEFAULT_REVIEW_COOLDOWN_DAYS, normalizeReviewChannel, type ReviewChannel } from "@/lib/reviews/constants";
 import { reviewBodyNow } from "@/lib/reviews/review-body";
+import { describeTemplateButtons } from "@/lib/comms/whatsapp/template-fingerprint";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { PreviewRow } from "./types";
@@ -30,6 +31,8 @@ export interface ReviewPlan {
   body: string | null;
   /** The configured channel the text goes on (null when nothing is sent). */
   channel: ReviewChannel | null;
+  /** whatsapp_template only: templateFingerprint of what would be sent. */
+  fingerprint: string | null;
   rows: PreviewRow[];
 }
 
@@ -38,6 +41,7 @@ const none = (contactId: string | null, phone: string, why: string): ReviewPlan 
   phone,
   body: null,
   channel: null,
+  fingerprint: null,
   rows: [{ label: "Review request", value: `None: ${why}` }],
 });
 
@@ -72,6 +76,7 @@ export async function reviewPlan(subAccountId: string, deal: FirebaseFirestore.D
   // Shown byte for byte as sent (and pinned so): hidden characters, or
   // spacing a message body would tidy, can't be shown exactly.
   const shown = messageBody(now.body);
+  const buttons = now.template ? describeTemplateButtons(now.template.tpl) : null;
   if (shown === null) return none(contactId, phone, "the review request's text contains characters that can't be shown safely.");
   if (shown !== now.body) return none(contactId, phone, "the review request's text has spacing that can't be shown exactly as sent.");
   return {
@@ -79,9 +84,17 @@ export async function reviewPlan(subAccountId: string, deal: FirebaseFirestore.D
     phone,
     body: now.body,
     channel,
+    fingerprint: now.template?.fingerprint ?? null,
     rows: [
       { label: "Review request", value: `Sent to ${oneLine(contact.name) || "(unnamed)"} (${masked("sms", phone)}) by ${label}; quiet hours delay it.` },
+      ...(now.template
+        ? [
+            { label: "Template", value: `${oneLine(now.template.tpl.displayName) || "(unnamed)"} (${oneLine(now.template.tpl.name)})` },
+            { label: "Language", value: oneLine(now.template.tpl.language) },
+          ]
+        : []),
       { label: "Message", value: shown, multiline: true },
+      ...(buttons ? [{ label: "Buttons", value: buttons }] : []),
       // The send skips reminders for an approved request (see `expect`).
       ...(activeReminder(cfg.reminder)
         ? [{ label: "Reminders", value: "No reminders will follow (reminders apply only to requests people send)." }]
