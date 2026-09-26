@@ -5,7 +5,13 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
 import { runProspectReport } from "@/lib/prospecting/report-runner";
-import { REPORT_ID, failAndRelease, reportInputOf } from "@/lib/prospecting/reports";
+import { prospectingEnabled } from "@/lib/prospecting/gate";
+import {
+  INTERRUPTED_AFTER_MS,
+  REPORT_ID,
+  failAndRelease,
+  reportInputOf,
+} from "@/lib/prospecting/reports";
 
 /**
  * Prospect report worker — one QStash message per report, published by
@@ -17,9 +23,12 @@ import { REPORT_ID, failAndRelease, reportInputOf } from "@/lib/prospecting/repo
  * transaction, so a QStash retry or duplicate delivery of a report that is
  * running or settled is a 200 no-op: the runner runs at most once per report.
  *
- * Known gap: if the process dies mid-run the report stays `running` and its
- * quota stays charged — nothing sweeps it. A thrown error (not a crash) is
- * caught and settles the report `failed` with the quota released.
+ * A process that dies mid-run (e.g. a blue/green cut-over) leaves the report
+ * `running`; QStash's retry of it then settles it `failed` ("interrupted")
+ * with the quota released once it is older than INTERRUPTED_AFTER_MS, and the
+ * list route sweeps anything stuck longer (STALE_AFTER_MS). A thrown error is
+ * caught and settles the report `failed` with the quota released. A report
+ * whose sub-account's Prospecting gate went off is not run, and released.
  */
 
 export const dynamic = "force-dynamic";
@@ -53,12 +62,22 @@ export async function POST(request: Request) {
     tx.update(reportRef, { status: "running", startedAt: FieldValue.serverTimestamp() });
     return report;
   });
-  if (!claimed) return NextResponse.json({ ok: true, skipped: true });
+  if (!claimed) {
+    const interrupted = await failAndRelease(
+      reportId,
+      { failureReason: "interrupted" },
+      { olderThanMs: INTERRUPTED_AFTER_MS },
+    );
+    return NextResponse.json(interrupted ? { ok: true, status: "failed" } : { ok: true, skipped: true });
+  }
 
   try {
     const contactRef = db.doc(`contacts/${claimed.contactId}`);
-    const contact = (await contactRef.get()).data();
-    if (!contact || contact.subAccountId !== claimed.subAccountId) {
+    const [contact, sub] = await Promise.all([
+      contactRef.get().then((s) => s.data()),
+      db.doc(`subAccounts/${claimed.subAccountId}`).get().then((s) => s.data()),
+    ]);
+    if (!contact || contact.subAccountId !== claimed.subAccountId || !prospectingEnabled(sub ?? {})) {
       await failAndRelease(reportId);
       return NextResponse.json({ ok: true, status: "failed" });
     }

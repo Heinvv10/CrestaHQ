@@ -15,6 +15,9 @@ import { measured, unavailable, type Scored, type SectionInput } from "./types";
 export const key = "gbp" as const;
 
 const DETAILS_URL = "https://places.googleapis.com/v1/places/";
+/** Places ids are URL-safe tokens; anything else never reaches the request path. */
+const PLACE_ID = /^[A-Za-z0-9_-]{1,300}$/;
+
 export const GBP_FIELD_MASK = "id,businessStatus,photos,regularOpeningHours,nationalPhoneNumber";
 
 export function score(details: Record<string, unknown>): Scored {
@@ -43,6 +46,7 @@ export function score(details: Record<string, unknown>): Scored {
 export async function run(input: SectionInput) {
   const placeId = input.business.placeId;
   if (!placeId) return unavailable(key, "No Google place id on this contact.");
+  if (!PLACE_ID.test(placeId)) return unavailable(key, "The stored Google place id is malformed.");
   const apiKey = process.env.GOOGLE_PLACES_API_KEY?.trim();
   if (!apiKey) return unavailable(key, "GOOGLE_PLACES_API_KEY is not configured.");
 

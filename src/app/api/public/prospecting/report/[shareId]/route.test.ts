@@ -48,6 +48,7 @@ beforeEach(() => {
   mem.clear();
   seed();
   mem.seed("agencies/ag1", { name: "Cresta Agency", logoUrl: "https://cdn.test/logo.png", appTheme: "green", ownerUid: "OWNER-SENTINEL" });
+  mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
   mem.seed("contacts/c1", { subAccountId: "sa1", name: "Acme", company: "Acme Plumbing", email: "EMAIL-SENTINEL@x.test", phone: "PHONE-SENTINEL" });
   mem.seed("subAccounts/sa1/bookingPages/later", { status: "published", createdAt: new Date("2026-09-10T00:00:00Z") });
   mem.seed("subAccounts/sa1/bookingPages/first", { status: "published", createdAt: new Date("2026-09-01T00:00:00Z") });
@@ -80,6 +81,8 @@ describe("a live share", () => {
   it("cta is null when no booking page is published", async () => {
     mem.clear();
     seed();
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
+    mem.seed("contacts/c1", { subAccountId: "sa1", company: "Acme Plumbing" });
     const body = (await (await get(await mint())).json()) as { cta: unknown };
     expect(body.cta).toBeNull();
   });
@@ -106,6 +109,28 @@ describe("section details", () => {
   });
 });
 
+describe("the business name (L1)", () => {
+  const bd = { key: "business_details", status: "ok", score: 50, findings: [], raw: { name: "Jane Private", category: "Plumber" } };
+
+  it("a person's name on a non-prospecting contact without a company is never published", async () => {
+    mem.seed("contacts/c1", { subAccountId: "sa1", name: "Jane Private", company: "" });
+    seed({ sections: [bd] });
+    const res = await get(await mint());
+    const text = await res.text();
+    expect(res.status).toBe(200);
+    expect(text).not.toContain("Jane Private");
+    expect(JSON.parse(text)).toMatchObject({ businessName: null, sections: [{ details: { category: "Plumber" } }] });
+  });
+
+  it("a prospecting import's name is the business name", async () => {
+    mem.seed("contacts/c1", { subAccountId: "sa1", name: "Jane's Bakery", company: "", source: "prospecting" });
+    seed({ sections: [{ ...bd, raw: { name: "Jane's Bakery" } }] });
+    const body = (await (await get(await mint())).json()) as { businessName: string; sections: { details: unknown }[] };
+    expect(body.businessName).toBe("Jane's Bakery");
+    expect(body.sections[0]!.details).toEqual({ name: "Jane's Bakery" });
+  });
+});
+
 describe("non-enumeration", () => {
   it("unknown, malformed, revoked, not-ready and tenancy-mismatched tokens are byte-identical 404s", async () => {
     const unknown = await snapshot(await get("A".repeat(43)));
@@ -129,6 +154,21 @@ describe("non-enumeration", () => {
         await mem.db.doc("prospectReports/r1").delete();
         return get(t);
       },
+      "gate off (L3)": async () => {
+        const t = await mint();
+        mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: false });
+        return get(t);
+      },
+      "gate field missing (L3)": async () => {
+        const t = await mint();
+        mem.seed("subAccounts/sa1", { agencyId: "ag1" });
+        return get(t);
+      },
+      "contact deleted (L3)": async () => {
+        const t = await mint();
+        await mem.db.doc("contacts/c1").delete();
+        return get(t);
+      },
       "tenancy mismatch": async () => {
         const t = await mint();
         mem.seed("prospectReports/r1", { ...mem.read("prospectReports/r1"), subAccountId: "sa2" });
@@ -138,6 +178,8 @@ describe("non-enumeration", () => {
     for (const [label, make] of Object.entries(cases)) {
       mem.clear();
       seed();
+      mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
+      mem.seed("contacts/c1", { subAccountId: "sa1", company: "Acme Plumbing" });
       expect({ label, ...(await snapshot(await make())) }).toEqual({ label, ...unknown });
     }
   });

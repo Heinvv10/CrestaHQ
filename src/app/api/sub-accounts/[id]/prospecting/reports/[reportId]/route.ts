@@ -6,8 +6,9 @@ import { REPORT_ID, prospectingAccess, serializeReport } from "@/lib/prospecting
 
 /**
  * GET — one prospect report, for members of the sub-account that owns it.
- * Sections keep their `raw` (the member view renders it). A report of another
- * sub-account is the same 404 as a missing one.
+ * Sections go through the public whitelist (`serializeReport`), so `raw`
+ * never leaves the server. A report of another sub-account is the same 404
+ * as a missing one.
  */
 export async function GET(
   request: Request,

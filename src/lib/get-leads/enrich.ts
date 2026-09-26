@@ -60,7 +60,8 @@ export async function enrichBusinesses(
 }
 
 // ENRICH_CONCURRENCY is a process-wide cap: every enrichBusinesses call —
-// however many searches run at once — shares these slots. A slot is handed
+// however many searches run at once — shares these slots, and so do the
+// prospect report runner's homepage and directory fetches. A slot is handed
 // straight to the next waiter (FIFO) on release. The per-site timeout starts
 // only once a slot is held, so queued sites never time out while waiting —
 // instead, a waiter that is still queued when its call's deadline fires
@@ -71,7 +72,7 @@ export async function enrichBusinesses(
 let activeFetches = 0;
 const fetchQueue: (() => void)[] = [];
 
-async function withFetchSlot<T>(
+export async function withFetchSlot<T>(
   fn: () => Promise<T>,
   deadline: AbortSignal,
 ): Promise<T | null> {

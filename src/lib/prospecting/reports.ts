@@ -6,7 +6,14 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { prospectingEnabled, prospectingGateOff } from "@/lib/prospecting/gate";
 import { usageMonthKey } from "@/lib/server/usage-meter";
-import type { ContactProspecting, ProspectReportInput, SubAccountDoc } from "@/types";
+import { REPORT_DEADLINE_MS } from "@/lib/prospecting/report-runner";
+import { publicSection } from "@/lib/prospecting/public-sections";
+import type {
+  ContactProspecting,
+  ProspectReportInput,
+  ProspectSectionResult,
+  SubAccountDoc,
+} from "@/types";
 
 /**
  * Prospect reports: quota reservation, failure release, and the member view.
@@ -19,6 +26,18 @@ import type { ContactProspecting, ProspectReportInput, SubAccountDoc } from "@/t
  */
 
 export const REPORT_ID = /^[A-Za-z0-9_-]{1,200}$/;
+
+/**
+ * A `running` report older than this was interrupted: the process died (e.g.
+ * a blue/green cut-over's 60 s drain is shorter than the 100 s deadline) and
+ * QStash's retry of a `running` report is otherwise a no-op.
+ */
+export const INTERRUPTED_AFTER_MS = REPORT_DEADLINE_MS + 60_000;
+
+/** A queued/running report this old is swept `failed` by the list route. */
+export const STALE_AFTER_MS = 10 * 60_000;
+
+const IN_PROGRESS = new Set(["queued", "running"]);
 
 type Access = { uid: string; agencyId: string; sub: SubAccountDoc };
 
@@ -45,7 +64,13 @@ export async function reportsUsed(subAccountId: string): Promise<number> {
 
 /**
  * Charge one report against the month and create it `queued`, atomically.
- * Throws on any Firestore error — the caller fails closed.
+ * Refuses while the contact already has a queued/running report. Throws on
+ * any Firestore error — the caller fails closed.
+ *
+ * The in-progress check is a query inside the transaction. Every reservation
+ * also reads then writes the month's usage doc, so two concurrent ones
+ * conflict on it and the retry sees the other's report; the one gap is two
+ * reservations for one contact straddling a month boundary.
  */
 export async function reserveReport(input: {
   agencyId: string;
@@ -53,13 +78,19 @@ export async function reserveReport(input: {
   uid: string;
   contactId: string;
   quota: number;
-}): Promise<{ reportId: string } | "quota_exhausted"> {
+}): Promise<{ reportId: string } | "quota_exhausted" | "report_in_progress"> {
   const db = getAdminDb();
   const usageMonth = usageMonthKey();
   const usageRef = db.doc(`subAccounts/${input.subAccountId}/usage/${usageMonth}`);
   const reportRef = db.collection("prospectReports").doc();
+  const contactReports = db
+    .collection("prospectReports")
+    .where("subAccountId", "==", input.subAccountId)
+    .where("contactId", "==", input.contactId);
   return db.runTransaction(async (tx) => {
     const used = usedOf((await tx.get(usageRef)).data());
+    const existing = await tx.get(contactReports);
+    if (existing.docs.some((d) => IN_PROGRESS.has(d.data()?.status))) return "report_in_progress" as const;
     if (used >= input.quota) return "quota_exhausted" as const;
     tx.set(usageRef, { prospectReports: FieldValue.increment(1) }, { merge: true });
     tx.create(reportRef, {
@@ -79,20 +110,33 @@ export async function reserveReport(input: {
   });
 }
 
+/** Milliseconds since the report last moved (claimed, else created); null if unknown. */
+export function reportAgeMs(report: FirebaseFirestore.DocumentData, now = Date.now()): number | null {
+  const at = toIso(report.startedAt) ?? toIso(report.createdAt);
+  return at ? now - Date.parse(at) : null;
+}
+
 /**
  * Mark a queued/running report `failed` (with `patch`) and give its quota back
  * — a report that produced nothing is not charged. A report already settled is
  * left alone, so a repeat call cannot release twice. Floors the counter at 0.
+ * With `olderThanMs`, only a report that has not moved for that long (checked
+ * inside the transaction, so a report claimed meanwhile is left alone).
  */
 export async function failAndRelease(
   reportId: string,
   patch: Record<string, unknown> = {},
+  opts: { olderThanMs?: number } = {},
 ): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`prospectReports/${reportId}`);
   return db.runTransaction(async (tx) => {
     const report = (await tx.get(ref)).data();
-    if (!report || (report.status !== "queued" && report.status !== "running")) return false;
+    if (!report || !IN_PROGRESS.has(report.status)) return false;
+    if (opts.olderThanMs !== undefined) {
+      const age = reportAgeMs(report);
+      if (age === null || age <= opts.olderThanMs) return false;
+    }
     const usageRef = db.doc(`subAccounts/${report.subAccountId}/usage/${report.usageMonth}`);
     const used = usedOf((await tx.get(usageRef)).data());
     tx.update(ref, { ...patch, status: "failed" });
@@ -128,14 +172,19 @@ export function toIso(v: unknown): string | null {
   return typeof ts?.toDate === "function" ? ts.toDate().toISOString() : null;
 }
 
-/** The member view of a report: the doc with its timestamps ISO-ified. */
+/**
+ * The member view of a report: timestamps ISO-ified, sections through the same
+ * whitelist as the public page (no `raw`), with the business name kept.
+ */
 export function serializeReport(id: string, d: FirebaseFirestore.DocumentData) {
   return {
     id,
     contactId: d.contactId as string,
     createdByUid: d.createdByUid as string,
     status: d.status as string,
-    sections: (d.sections ?? []) as unknown[],
+    sections: ((d.sections ?? []) as ProspectSectionResult[]).map((s) =>
+      publicSection(s, { showName: true }),
+    ),
     headline: (d.headline ?? null) as string | null,
     shared: typeof d.shareId === "string",
     cost: (d.cost ?? {}) as Record<string, number>,

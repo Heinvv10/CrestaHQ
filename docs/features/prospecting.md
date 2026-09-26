@@ -14,14 +14,14 @@ Status: **PR 2 of 6** — gate, quota, collections, saved lists (PR 1) and audit
 
 ## Reports (PR 2)
 
-**Flow.** Contact profile → *Prospect reports* card (rendered only while the gate is on) → Generate → `POST /api/sub-accounts/[id]/prospecting/reports` reserves one report against the month's quota **transactionally** (counter increment + `queued` doc in one transaction; 429 `quota_exhausted` at the cap) and queues it on QStash. The worker (`/api/automations/prospecting/report`) claims it `queued → running`, runs `lib/prospecting/report-runner.ts` (homepage fetched once, sections in parallel, 20 s per section, 100 s per report), and settles `ready` (≥ 1 section measured) or `failed`. A report that produces nothing (queue unavailable, runner failed) has its quota **released**. The card polls every 4 s while a report is queued/running. *View* opens the member page `/sa/[id]/prospecting/reports/[reportId]`; *Share* mints a link shown once; *Revoke* 404s it.
+**Flow.** Contact profile → *Prospect reports* card (rendered only while the gate is on) → Generate → `POST /api/sub-accounts/[id]/prospecting/reports` reserves one report against the month's quota **transactionally** (counter increment + `queued` doc in one transaction; 429 `quota_exhausted` at the cap; 409 `report_in_progress` while that contact already has a queued/running report) and queues it on QStash. The worker (`/api/automations/prospecting/report`) claims it `queued → running`, runs `lib/prospecting/report-runner.ts` (homepage fetched once, sections in parallel, 20 s per section, 100 s per report), and settles `ready` or `failed`. `ready` needs an `ok` from a section that measured something this run — business_details and reputation only restate facts stored on the contact, so they never make a report ready on their own. Homepage and directory fetches share the process-wide fetch slot with Get Leads enrichment (6 in flight). A report whose gate went off after queueing is not run. A report that produces nothing (queue unavailable, runner failed) has its quota **released**. The card polls every 4 s while a report is queued/running. *View* opens the member page `/sa/[id]/prospecting/reports/[reportId]`; *Share* mints a link shown once; *Revoke* 404s it.
 
 **Sections run** (`lib/prospecting/sections/*`; `unavailable` = cannot be measured honestly, never a guessed negative):
 
 | Section | Measures |
 |---|---|
 | business_details | Name / phone / address / website / category completeness; `no_website`, `no_https` (from the homepage's final URL). |
-| gbp | One Places Details call: opening hours, photos, phone. Field mask omits `editorialSummary` (Enterprise + Atmosphere SKU), so the **description is not measured**; `gbp_unclaimed` is never emitted (Places cannot tell). |
+| gbp | One Places Details call (place id must match `^[A-Za-z0-9_-]{1,300}$`, else unavailable): opening hours, photos, phone. Field mask omits `editorialSummary` (Enterprise + Atmosphere SKU), so the **description is not measured**; `gbp_unclaimed` is never emitted (Places cannot tell). |
 | reputation | Places rating + review count already on the contact. Review velocity and owner reply rate are reported **not measured**. |
 | listings | Name + phone match on Facebook (the page the website links to), Bing, Yellow Pages SA, Brabys, Cylex. |
 | tech_stack | Homepage fingerprints (`tech-rules.ts`, original rules — not Wappalyzer's GPL text); `no_analytics`. |
@@ -29,13 +29,13 @@ Status: **PR 2 of 6** — gate, quota, collections, saved lists (PR 1) and audit
 | lead_capture | WhatsApp click-to-chat, booking, contact form, tap-to-call, live chat on the homepage. |
 
 **Decisions.**
-- **D1** — the public URL is `/report/[token]` (not `/r/`, which is the review page). Token is hashed at rest; every refusal is the same 404; `noindex`, `no-referrer`. Only the keys named in `lib/prospecting/public-sections.ts` reach the public page — `raw` is never passed through.
+- **D1** — the public URL is `/report/[token]` (not `/r/`, which is the review page). Token is hashed at rest; every refusal is the same 404 — including the sub-account's gate being off or the contact being gone; `noindex`, `no-referrer`. The business name is published only when the contact has a company or is a prospecting import (otherwise it may be a person's name). The member view gets the same whitelisted sections; `raw` never leaves the server. Only the keys named in `lib/prospecting/public-sections.ts` reach the public page — `raw` is never passed through.
 - **D2** — reputation is the Places rating + count only. Revisit trigger: the first buyer who asks for review velocity.
 - **D3** — one homepage fetch per report, shared by every section.
 - **D5 outcome** — ads cannot be measured keylessly: Meta Ad Library answers 403; Google Ads Transparency is a JS shell over an undocumented RPC. The section links to both for a manual check; `no_ads_running` is never emitted.
 - **Listings outcome** — Brabys and Cylex answer 403 (Cloudflare); Yellow Pages SA is a client-rendered shell → `unknown`. Bing and the Facebook page linked from the website are checked. `listing_missing` is never emitted: no directory gives a miss we can trust.
 
-**Known gap.** A worker that crashes mid-run leaves its report `running` with the quota charged — nothing sweeps it.
+**Interrupted and stale reports.** A worker killed mid-run (a blue/green cut-over drains for 60 s, less than the 100 s deadline) leaves its report `running`. QStash's retry then settles it `failed` (`failureReason: "interrupted"`, quota released) once it is older than the deadline + 60 s. Independently, the list route settles any queued/running report older than 10 minutes (`failureReason: "stale"`, quota released) before answering, so a polling card always settles. Both checks re-read the report's age inside the release transaction.
 
 ## Not yet
 

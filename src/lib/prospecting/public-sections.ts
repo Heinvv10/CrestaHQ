@@ -88,10 +88,18 @@ export interface PublicReportSection {
 const isScalar = (v: unknown): v is Scalar =>
   v === null || ["string", "number", "boolean"].includes(typeof v);
 
-export function publicSection(s: ProspectSectionResult): PublicReportSection {
+/**
+ * `showName: false` drops business_details `name`: for a contact that is not
+ * a business (no company, not a prospecting import) it is a person's name.
+ */
+export function publicSection(
+  s: ProspectSectionResult,
+  opts: { showName: boolean },
+): PublicReportSection {
   const raw = obj(s.raw);
   const details: Record<string, Scalar> = {};
   for (const k of PUBLIC_RAW_KEYS[s.key] ?? []) {
+    if (k === "name" && !opts.showName) continue;
     if (isScalar(raw[k])) details[k] = raw[k];
   }
   Object.assign(details, PUBLIC_DERIVED[s.key]?.(raw) ?? {});

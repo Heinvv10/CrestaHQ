@@ -7,6 +7,7 @@ const publicFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/webhooks/public-fetch", () => ({ publicFetch }));
 
 const { runProspectReport } = await import("./report-runner");
+const { ENRICH_CONCURRENCY } = await import("@/lib/get-leads/enrich");
 
 const fetchMock = vi.fn();
 const html = (body: string) => new Response(body, { status: 200, headers: { "content-type": "text/html" } });
@@ -137,5 +138,46 @@ describe("runProspectReport with the real sections", () => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify(BARE_DETAILS)));
     const out = await runProspectReport({ ...BUSINESS, website: "fixture.example.com" });
     expect(out.sections[0]!.raw.https).toBe(true);
+  });
+});
+
+describe("ready needs a section that measured something (M1)", () => {
+  const EMPTY = {
+    name: "", phone: null, address: null, website: null, placeId: null,
+    rating: null, reviewsCount: null, category: null, city: null,
+  };
+
+  it("an all-null contact is failed: business_details alone restates the CRM", async () => {
+    publicFetch.mockRejectedValue(new Error("blocked"));
+    const out = await runProspectReport(EMPTY);
+    expect(out.sections.find((s) => s.key === "business_details")?.status).toBe("ok");
+    expect(out.status).toBe("failed");
+  });
+
+  it("every outbound fetch failing is failed, even with a stored rating", async () => {
+    publicFetch.mockRejectedValue(new Error("blocked"));
+    fetchMock.mockRejectedValue(new Error("down"));
+    const out = await runProspectReport(BUSINESS);
+    expect(out.sections.find((s) => s.key === "reputation")?.status).toBe("ok");
+    expect(out.status).toBe("failed");
+  });
+});
+
+describe("outbound fetches share the process-wide slot (M3)", () => {
+  it("three reports at once never exceed ENRICH_CONCURRENCY page fetches in flight", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    publicFetch.mockImplementation(async (url: string) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 15));
+      inFlight--;
+      if (url.includes("fixture-plumbing.example.com")) return html(BARE_HOMEPAGE);
+      return html("<p>" + "x ".repeat(400) + "</p>");
+    });
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify(BARE_DETAILS)));
+    await Promise.all([1, 2, 3].map(() => runProspectReport(BUSINESS)));
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(ENRICH_CONCURRENCY);
   });
 });

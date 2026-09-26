@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 const run = vi.fn();
-vi.mock("@/lib/prospecting/report-runner", () => ({ runProspectReport: (...a: unknown[]) => run(...a) }));
+vi.mock("@/lib/prospecting/report-runner", async (orig) => ({
+  ...(await orig<typeof import("@/lib/prospecting/report-runner")>()),
+  runProspectReport: (...a: unknown[]) => run(...a),
+}));
 
 const KEY = "sig_test_current_key_for_prospect_reports";
 process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
@@ -17,6 +20,7 @@ process.env.QSTASH_NEXT_SIGNING_KEY = "sig_test_next_key_for_prospect_reports";
 const { signQStashBody } = await import("../../../../../../e2e/lib/qstash");
 const { mem } = await import("@/test/gbp-sync-store");
 const { POST } = await import("./route");
+const { REPORT_DEADLINE_MS } = await import("@/lib/prospecting/report-runner");
 
 const ORIGINAL = { ...process.env };
 const URL_ = "http://127.0.0.1:3100/api/automations/prospecting/report";
@@ -39,6 +43,7 @@ beforeEach(() => {
   run.mockReset().mockResolvedValue(READY);
   mem.clear();
   mem.seed(USAGE, { prospectReports: 2 });
+  mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
   mem.seed("prospectReports/r1", {
     agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1",
     status: "queued", sections: [], headline: null, shareId: null, generatedAt: null, usageMonth: "2026-09",
@@ -124,6 +129,39 @@ describe("a run", () => {
 
   it("a contact moved to another sub-account is not run, and the quota is released", async () => {
     mem.seed("contacts/c1", { ...mem.read("contacts/c1"), subAccountId: "sa2" });
+    expect((await call()).status).toBe(200);
+    expect(run).not.toHaveBeenCalled();
+    expect(mem.read("prospectReports/r1")?.status).toBe("failed");
+    expect(mem.read(USAGE)?.prospectReports).toBe(1);
+  });
+});
+
+describe("interrupted and gated runs (M2, L3)", () => {
+  const running = (ageMs: number) =>
+    mem.seed("prospectReports/r1", {
+      ...mem.read("prospectReports/r1"),
+      status: "running",
+      startedAt: new Date(Date.now() - ageMs),
+    });
+
+  it("a retry of a report stuck running past the deadline + 60s settles it failed and releases the quota", async () => {
+    running(REPORT_DEADLINE_MS + 61_000);
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(run).not.toHaveBeenCalled();
+    expect(mem.read("prospectReports/r1")).toMatchObject({ status: "failed", failureReason: "interrupted" });
+    expect(mem.read(USAGE)?.prospectReports).toBe(1);
+  });
+
+  it("a retry while the report is still within its deadline leaves it running", async () => {
+    running(REPORT_DEADLINE_MS - 1_000);
+    expect(await (await call()).json()).toMatchObject({ skipped: true });
+    expect(mem.read("prospectReports/r1")?.status).toBe("running");
+    expect(mem.read(USAGE)?.prospectReports).toBe(2);
+  });
+
+  it("the gate turned off after queueing: not run, settled failed, quota released", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: false });
     expect((await call()).status).toBe(200);
     expect(run).not.toHaveBeenCalled();
     expect(mem.read("prospectReports/r1")?.status).toBe("failed");

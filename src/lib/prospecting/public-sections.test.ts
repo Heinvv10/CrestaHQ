@@ -59,7 +59,7 @@ describe("publicSection whitelist", () => {
       await leadCapture.run(input),
     ];
     const keys = Object.fromEntries(
-      results.map((r) => [r.key, Object.keys(publicSection(r).details).sort()]),
+      results.map((r) => [r.key, Object.keys(publicSection(r, { showName: true }).details).sort()]),
     );
     expect(keys).toEqual({
       business_details: ["category", "https", "name", "website"],
@@ -73,20 +73,20 @@ describe("publicSection whitelist", () => {
   });
 
   it("carries the values, flattened to scalars", async () => {
-    expect(publicSection(gbpResult).details).toEqual({
+    expect(publicSection(gbpResult, { showName: true }).details).toEqual({
       description: "notMeasured",
       hoursListed: true,
       photoCount: 1,
       phoneListed: true,
     });
-    expect(publicSection(listingsResult).details).toEqual({
+    expect(publicSection(listingsResult, { showName: true }).details).toEqual({
       Facebook: "found",
       Bing: "not_found",
       Brabys: "unknown",
     });
-    const tech = publicSection(await techStack.run(input)).details.technologies;
+    const tech = publicSection(await techStack.run(input), { showName: true }).details.technologies;
     expect(tech).toContain("WordPress");
-    expect(publicSection(await businessDetails.run(input)).details).toEqual({
+    expect(publicSection(await businessDetails.run(input), { showName: true }).details).toEqual({
       name: BUSINESS.name,
       website: BUSINESS.website,
       category: "Plumber",
@@ -96,7 +96,7 @@ describe("publicSection whitelist", () => {
 
   it("leaks nothing identifying", async () => {
     const all = JSON.stringify(
-      [await businessDetails.run(input), gbpResult, listingsResult].map(publicSection),
+      [await businessDetails.run(input), gbpResult, listingsResult].map((r) => publicSection(r, { showName: true })),
     );
     for (const secret of [
       BUSINESS.phone!,
@@ -117,7 +117,7 @@ describe("publicSection whitelist", () => {
       score: 50,
       findings: [],
       raw: { rating: { html: "<p>x</p>" }, reviewsCount: 12 },
-    });
+    }, { showName: true });
     expect(r.details).toEqual({ reviewsCount: 12 });
   });
 });

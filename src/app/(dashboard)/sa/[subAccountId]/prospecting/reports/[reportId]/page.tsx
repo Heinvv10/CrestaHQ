@@ -6,8 +6,8 @@ import { useParams } from "next/navigation";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { ReportSections } from "@/components/prospecting/report-view";
-import { publicSection } from "@/lib/prospecting/public-sections";
-import type { ProspectReportStatus, ProspectSectionResult } from "@/types/prospecting";
+import type { PublicReportSection } from "@/lib/prospecting/public-sections";
+import type { ProspectReportStatus } from "@/types/prospecting";
 
 /**
  * One prospect report, for members of the sub-account (opened from the
@@ -20,7 +20,8 @@ interface MemberReport {
   contactId: string;
   status: ProspectReportStatus;
   headline: string | null;
-  sections: ProspectSectionResult[];
+  /** Already whitelisted server-side (no `raw`). */
+  sections: PublicReportSection[];
   generatedAt: string | null;
 }
 
@@ -109,7 +110,7 @@ export default function ProspectReportPage() {
           {report.headline ?? (report.status === "ready" ? "No issues found" : `Report ${report.status}`)}
         </h1>
       </div>
-      <ReportSections sections={report.sections.map(publicSection)} />
+      <ReportSections sections={report.sections} />
     </div>
   );
 }

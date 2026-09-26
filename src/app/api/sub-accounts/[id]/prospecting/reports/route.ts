@@ -6,8 +6,10 @@ import { publishCallback } from "@/lib/automations/qstash";
 import { prospectReportQuota } from "@/lib/prospecting/quota";
 import {
   REPORT_ID,
+  STALE_AFTER_MS,
   failAndRelease,
   prospectingAccess,
+  reportAgeMs,
   reportsUsed,
   reserveReport,
   toIso,
@@ -17,9 +19,12 @@ import {
  * Prospect reports for one contact.
  *
  *   GET  ?contactId= → that contact's reports (newest first) + `{ quota, used }`
- *        for this month, so the UI can disable Generate.
+ *        for this month, so the UI can disable Generate. A queued/running
+ *        report older than STALE_AFTER_MS is settled `failed` (quota
+ *        released) first, so a polling card always settles.
  *   POST `{ contactId }` → reserve one report against the monthly quota and
- *        queue it on QStash (`/api/automations/prospecting/report`). 202 `{ reportId }`.
+ *        queue it on QStash (`/api/automations/prospecting/report`). 202 `{ reportId }`;
+ *        409 `report_in_progress` while the contact has a queued/running one.
  *
  * Any active member (or the agency owner); 403 `gate_off` while the gate is
  * off. A contact that is missing or belongs to another sub-account is the
@@ -42,20 +47,31 @@ export async function GET(
   }
 
   // Equality-only, sorted in memory: no composite index.
-  const [snap, used] = await Promise.all([
-    getAdminDb()
-      .collection("prospectReports")
-      .where("subAccountId", "==", subAccountId)
-      .where("contactId", "==", contactId)
-      .get(),
-    reportsUsed(subAccountId),
-  ]);
+  const snap = await getAdminDb()
+    .collection("prospectReports")
+    .where("subAccountId", "==", subAccountId)
+    .where("contactId", "==", contactId)
+    .get();
+  const swept = new Set<string>();
+  for (const d of snap.docs) {
+    const data = d.data() ?? {};
+    const age = reportAgeMs(data);
+    if ((data.status !== "queued" && data.status !== "running") || age === null || age <= STALE_AFTER_MS) continue;
+    const failed = await failAndRelease(d.id, { failureReason: "stale" }, { olderThanMs: STALE_AFTER_MS }).catch(
+      (err) => {
+        console.error("[prospecting/reports] stale sweep failed", d.id, err);
+        return false;
+      },
+    );
+    if (failed) swept.add(d.id);
+  }
+  const used = await reportsUsed(subAccountId);
   const reports = snap.docs
     .map((d) => {
       const data = d.data() ?? {};
       return {
         id: d.id,
-        status: data.status as string,
+        status: swept.has(d.id) ? "failed" : (data.status as string),
         headline: (data.headline ?? null) as string | null,
         shared: typeof data.shareId === "string",
         createdAt: toIso(data.createdAt),
@@ -102,6 +118,12 @@ export async function POST(
   } catch (err) {
     console.error("[prospecting/reports] reservation failed", err);
     return NextResponse.json({ error: "Could not start the report. Try again." }, { status: 500 });
+  }
+  if (reserved === "report_in_progress") {
+    return NextResponse.json(
+      { error: "A report for this contact is already in progress.", code: "report_in_progress" },
+      { status: 409 },
+    );
   }
   if (reserved === "quota_exhausted") {
     return NextResponse.json(

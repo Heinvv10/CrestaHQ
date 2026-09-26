@@ -63,7 +63,9 @@ beforeEach(() => {
   seedSa("sa2", true);
   mem.seed("subAccounts/sa1/subAccountMembers/admin1", { status: "active", role: "admin" });
   claims.set("admin1", { status: "active", agencyId: "ag1", agencyRole: null });
-  mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", name: "Acme Plumbing" });
+  for (const c of ["c1", "c2", "c3", "c4", "c5"]) {
+    mem.seed(`contacts/${c}`, { subAccountId: "sa1", agencyId: "ag1", name: "Acme Plumbing" });
+  }
   mem.seed("contacts/cOther", { subAccountId: "sa2", agencyId: "ag1", name: "Theirs" });
 });
 
@@ -110,7 +112,7 @@ describe("POST — reserve + queue", () => {
     mem.seed(USAGE, { prospectReports: 2 });
     expect((await post({ contactId: "c1" })).status).toBe(202);
     expect(used()).toBe(3);
-    const res = await post({ contactId: "c1" });
+    const res = await post({ contactId: "c2" });
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ code: "quota_exhausted" });
     expect(used()).toBe(3);
@@ -119,7 +121,8 @@ describe("POST — reserve + queue", () => {
 
   it("concurrent POSTs cannot exceed the quota", async () => {
     mem.seed(USAGE, { prospectReports: 2 });
-    const all = await Promise.all(Array.from({ length: 5 }, () => post({ contactId: "c1" })));
+    // Distinct contacts, so only the quota (not report_in_progress) can refuse.
+    const all = await Promise.all(["c1", "c2", "c3", "c4", "c5"].map((c) => post({ contactId: c })));
     const statuses = all.map((r) => r.status).sort();
     expect(statuses).toEqual([202, 429, 429, 429, 429]);
     expect(used()).toBe(3);
@@ -144,6 +147,35 @@ describe("POST — reserve + queue", () => {
     expect(reports()).toHaveLength(1);
     expect(reports()[0].status).toBe("failed");
     expect(used()).toBe(1);
+  });
+
+  it("refuses 409 report_in_progress while this contact has a queued or running report (M3)", async () => {
+    for (const status of ["queued", "running"]) {
+      mem.clear();
+      seedSa("sa1", true, 3);
+      mem.seed("subAccounts/sa1/subAccountMembers/admin1", { status: "active", role: "admin" });
+      mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", name: "Acme Plumbing" });
+      seedReport("busy", { status, createdAt: new Date() });
+      const res = await post({ contactId: "c1" });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ code: "report_in_progress" });
+      expect(used()).toBeUndefined();
+      expect(reports()).toHaveLength(1);
+    }
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("concurrent POSTs for one contact reserve exactly one report (M3)", async () => {
+    const all = await Promise.all(Array.from({ length: 4 }, () => post({ contactId: "c1" })));
+    expect(all.map((r) => r.status).sort()).toEqual([202, 409, 409, 409]);
+    expect(used()).toBe(1);
+    expect(reports()).toHaveLength(1);
+  });
+
+  it("a finished report does not block a new one", async () => {
+    seedReport("done", { status: "ready" });
+    seedReport("bad", { status: "failed" });
+    expect((await post({ contactId: "c1" })).status).toBe(202);
   });
 
   it("a contact of another sub-account is the same 404 as a missing one", async () => {
@@ -181,15 +213,36 @@ describe("GET — list + quota", () => {
   });
 });
 
+describe("GET — stale sweep (M2)", () => {
+  it("settles a queued/running report older than 10 min as failed and releases its quota; a fresh one is kept", async () => {
+    mem.seed(USAGE, { prospectReports: 3 });
+    const ago = (min: number) => new Date(Date.now() - min * 60_000);
+    seedReport("stuckQ", { status: "queued", createdAt: ago(11) });
+    seedReport("stuckR", { status: "running", createdAt: ago(30), startedAt: ago(11) });
+    seedReport("fresh", { status: "running", createdAt: ago(30), startedAt: ago(1) });
+    const body = (await (await list("c1")).json()) as { reports: { id: string; status: string }[]; used: number };
+    const status = Object.fromEntries(body.reports.map((r) => [r.id, r.status]));
+    expect(status).toEqual({ stuckQ: "failed", stuckR: "failed", fresh: "running" });
+    expect(mem.read("prospectReports/stuckQ")).toMatchObject({ status: "failed", failureReason: "stale" });
+    expect(used()).toBe(1);
+    expect(body.used).toBe(1);
+  });
+});
+
 describe("GET /[reportId]", () => {
-  it("returns this sub-account's report with ISO timestamps and raw kept; another's is 404", async () => {
-    const sections = [{ key: "gbp", status: "ok", score: 80, findings: [], raw: { rating: 4.5 } }];
+  it("returns this sub-account's report with ISO timestamps and whitelisted details, no raw (L4); another's is 404", async () => {
+    const sections = [{ key: "reputation", status: "ok", score: 80, findings: [], raw: { rating: 4.5, secret: "RAW-SENTINEL" } }];
     seedReport("r1", { sections });
     seedReport("r2", { subAccountId: "sa2" });
     const res = await item.GET(req("GET", "sa1/prospecting/reports/r1"), ctx("r1"));
     expect(res.status).toBe(200);
     const { report } = (await res.json()) as { report: Record<string, unknown> };
-    expect(report).toMatchObject({ id: "r1", status: "ready", sections, generatedAt: "2026-09-20T00:00:00.000Z" });
+    expect(report).toMatchObject({ id: "r1", status: "ready", generatedAt: "2026-09-20T00:00:00.000Z" });
+    expect(report.sections).toEqual([
+      { key: "reputation", status: "ok", score: 80, findings: [], reason: null, details: { rating: 4.5 } },
+    ]);
+    expect(JSON.stringify(report)).not.toContain("RAW-SENTINEL");
+    expect(JSON.stringify(report)).not.toContain('"raw"');
     const theirs = await item.GET(req("GET", "sa1/prospecting/reports/r2"), ctx("r2"));
     const missing = await item.GET(req("GET", "sa1/prospecting/reports/zz"), ctx("zz"));
     expect(theirs.status).toBe(404);

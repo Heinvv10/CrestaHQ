@@ -34,3 +34,25 @@ Follow-up (public raw whitelist filled in from builder-sections' final raw shape
 | File:line | Mutation | Red test |
 |---|---|---|
 | `src/lib/prospecting/public-report.ts:68` (now `public-sections.ts`, `publicSection`) | iterate `Object.keys(s.raw)` instead of `PUBLIC_RAW_KEYS[s.key]` | public route: *returns exactly the whitelisted payload*; *pass only whitelisted scalar raw keys* |
+
+Fix round (PR #288 adversarial review). Each finding's test was run RED
+against the unfixed code first (14 new tests failing), then green after the
+fix. Guards mutated afterwards, same method; 13 of 14 went RED. Line numbers
+at the time of the run.
+
+| Finding | File:line | Mutation | Red test |
+|---|---|---|---|
+| M1 | `src/lib/prospecting/report-runner.ts:77` | drop `!STORED_FACT_SECTIONS.has(s.key)` | runner: *an all-null contact is failed*; *every outbound fetch failing is failed, even with a stored rating* |
+| M3a | `src/lib/prospecting/report-runner.ts:64` | homepage fetch outside `withFetchSlot` | runner: *three reports at once never exceed ENRICH_CONCURRENCY page fetches in flight* |
+| M3a | `src/lib/prospecting/sections/listings.ts:120` | directory fetch outside `withFetchSlot` | runner: *three reports at once …* |
+| L2 | `src/lib/prospecting/sections/gbp.ts:49` | place-id check disabled | gbp: *a malformed place id (`..`, `a/b`, 301 chars) is unavailable with no call* |
+| M3b | `src/lib/prospecting/reports.ts:93` | in-progress check in the reservation deleted | reports route: *refuses 409 report_in_progress …*; *concurrent POSTs for one contact reserve exactly one report* |
+| M2 | `src/lib/prospecting/reports.ts:138` | `olderThanMs` age guard in `failAndRelease` deleted | worker: *a retry while the report is still within its deadline leaves it running* |
+| M2a | `src/app/api/automations/prospecting/report/route.ts:69` | interrupted threshold → never | worker: *a retry of a report stuck running past the deadline + 60s settles it failed* |
+| L3 | `src/app/api/automations/prospecting/report/route.ts:80` | gate check deleted | worker: *the gate turned off after queueing: not run, settled failed, quota released* |
+| M2b | `src/app/api/sub-accounts/[id]/prospecting/reports/route.ts:59` | sweep skips every report | reports route: *settles a queued/running report older than 10 min …* |
+| L3 | `src/lib/prospecting/public-report.ts:75` | gate check deleted | public route: *… byte-identical 404s* (gate off / gate field missing) |
+| L3 | `src/lib/prospecting/public-report.ts:75` | `!contact \|\| contact.subAccountId !== …` → `contact?.subAccountId !== …` | SURVIVED — equivalent: a missing contact still fails the tenancy comparison |
+| L1 | `src/lib/prospecting/public-report.ts:81` | `showName = true` | public route: *a person's name on a non-prospecting contact without a company is never published* |
+| L1 | `src/lib/prospecting/public-report.ts:81` | `showName = company !== null` (prospecting source ignored) | public route: *a prospecting import's name is the business name* |
+| L4 | `src/lib/prospecting/reports.ts:185` | member sections passed through with `raw` | reports route: *… whitelisted details, no raw (L4)* |

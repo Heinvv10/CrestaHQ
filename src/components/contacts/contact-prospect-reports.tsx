@@ -51,6 +51,7 @@ async function errorOf(res: Response): Promise<string> {
   const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
   if (body.code === "quota_exhausted") return "This month's report quota is used up.";
   if (body.code === "gate_off") return "Prospecting is locked by your agency.";
+  if (body.code === "report_in_progress") return "A report for this contact is already running.";
   return body.error ?? `Failed (HTTP ${res.status})`;
 }
 

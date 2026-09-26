@@ -32,6 +32,7 @@ beforeEach(() => {
     ],
   });
   mem.seed("agencies/ag1", { name: "Cresta Agency", logoUrl: "https://cdn.test/logo.png" });
+  mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
   mem.seed("contacts/c1", { subAccountId: "sa1", company: "Acme Plumbing" });
   mem.seed("subAccounts/sa1/bookingPages/intro", { status: "published", createdAt: new Date("2026-09-01T00:00:00Z") });
 });

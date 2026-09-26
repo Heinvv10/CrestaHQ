@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { hashShareToken } from "@/lib/snapshots/share";
 import { toIso } from "@/lib/prospecting/reports";
+import { prospectingEnabled } from "@/lib/prospecting/gate";
 import { publicSection, type PublicReportSection } from "@/lib/prospecting/public-sections";
 import type { AppTheme, ProspectSectionResult } from "@/types";
 
@@ -11,8 +12,10 @@ export type { PublicReportSection };
 /**
  * Resolve a public report share token (`/report/[token]` and
  * `/api/public/prospecting/report/[token]`). Every refusal — unknown,
- * malformed, revoked, report gone, not ready, tenancy mismatch — is the same
- * `null`, so a caller learns nothing about which. The payload is built field
+ * malformed, revoked, report gone, not ready, tenancy mismatch, Prospecting
+ * gate off, contact gone — is the same `null`, so a caller learns nothing
+ * about which. The business name is published only for a business: a contact
+ * with a company, or a prospecting import (else it may be a person's name). The payload is built field
  * by field: nothing reaches the public that is not named here (sections via
  * `public-sections.ts`).
  */
@@ -62,21 +65,26 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     return null;
   }
 
-  const [agencySnap, contactSnap, cta] = await Promise.all([
+  const [agencySnap, subSnap, contactSnap, cta] = await Promise.all([
     db.doc(`agencies/${report.agencyId}`).get(),
+    db.doc(`subAccounts/${report.subAccountId}`).get(),
     db.doc(`contacts/${report.contactId}`).get(),
     bookingCta(report.subAccountId),
   ]);
-  const agency = agencySnap.data() ?? {};
   const contact = contactSnap.data();
-  const ownContact = contact?.subAccountId === report.subAccountId ? contact : undefined;
+  if (!prospectingEnabled(subSnap.data() ?? {}) || !contact || contact.subAccountId !== report.subAccountId) {
+    return null;
+  }
+  const agency = agencySnap.data() ?? {};
   const logoUrl = str(agency.logoUrl);
+  const company = str(contact.company);
+  const showName = company !== null || contact.source === "prospecting";
 
   return {
-    businessName: str(ownContact?.company) ?? str(ownContact?.name),
+    businessName: company ?? (showName ? str(contact.name) : null),
     headline: str(report.headline),
     generatedAt: toIso(report.generatedAt),
-    sections: ((report.sections ?? []) as ProspectSectionResult[]).map(publicSection),
+    sections: ((report.sections ?? []) as ProspectSectionResult[]).map((s) => publicSection(s, { showName })),
     agency: {
       name: str(agency.name),
       logoUrl: logoUrl && /^https:\/\//i.test(logoUrl) ? logoUrl : null,

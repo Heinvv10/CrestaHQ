@@ -44,6 +44,12 @@ describe("gbp score", () => {
 });
 
 describe("gbp run", () => {
+  it.each(["..", "a/b", "x".repeat(301)])("a malformed place id (%s) is unavailable with no call", async (placeId) => {
+    const out = await run(input(placeId));
+    expect(out.status).toBe("unavailable");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("makes exactly one Details call with the key and the minimal field mask, counted as placesDetails", async () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(FULL_DETAILS)));
     const i = input();

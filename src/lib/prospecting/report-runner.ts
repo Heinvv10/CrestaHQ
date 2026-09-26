@@ -1,9 +1,10 @@
 import "server-only";
 
-import { fetchHomepage } from "@/lib/get-leads/enrich";
+import { fetchHomepage, withFetchSlot } from "@/lib/get-leads/enrich";
 import type {
   ProspectReportInput,
   ProspectReportOutcome,
+  ProspectSectionKey,
   ProspectSectionResult,
 } from "@/types";
 import { headline } from "./severity";
@@ -22,11 +23,19 @@ import type { CostKey, Homepage, Section, SectionInput } from "./sections/types"
  * under the QStash callback limit). A section that throws is `failed`, one
  * that overruns is `timeout` — the runner never waits on a section that
  * ignores its signal. The report is `ready` when at least one section
- * measured something. Never throws.
+ * measured something (see STORED_FACT_SECTIONS). Never throws. Page fetches
+ * take the process-wide slot shared with Get Leads enrichment.
  */
 
 /** Plan order: sections 1, 2, 3, 4, 6, 9, 10. */
 const SECTIONS: Section[] = [businessDetails, gbp, reputation, listings, techStack, ads, leadCapture];
+
+/**
+ * Sections that only restate facts already stored on the contact (CRM fields,
+ * the Places rating saved at import). They are shown, but an `ok` from them
+ * measured nothing new, so it cannot make a report `ready` on its own.
+ */
+const STORED_FACT_SECTIONS: ReadonlySet<ProspectSectionKey> = new Set(["business_details", "reputation"]);
 
 export const SECTION_TIMEOUT_MS = 20_000;
 export const REPORT_DEADLINE_MS = 100_000;
@@ -51,7 +60,8 @@ export async function runProspectReport(
     let homepage: Homepage | null = null;
     if (business.website) {
       count("http");
-      homepage = await fetchHomepage(business.website, deadline);
+      const website = business.website;
+      homepage = await withFetchSlot(() => fetchHomepage(website, deadline), deadline);
     }
     const sections = await Promise.all(
       (opts.sections ?? SECTIONS).map((section) =>
@@ -64,7 +74,9 @@ export async function runProspectReport(
       ),
     );
     return {
-      status: sections.some((s) => s.status === "ok") ? "ready" : "failed",
+      status: sections.some((s) => s.status === "ok" && !STORED_FACT_SECTIONS.has(s.key))
+        ? "ready"
+        : "failed",
       sections,
       headline: headline(sections),
       cost,
