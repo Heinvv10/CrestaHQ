@@ -155,6 +155,13 @@ describe("states", () => {
 });
 
 describe("ready", () => {
+  it("rounds Google's float32 listing rating to one decimal", async () => {
+    body = payload({ listing: { averageRating: 4.699999809265137, totalReviewCount: 7 } });
+    await render();
+    expect(text("rep-listing")).toContain("Google shows 4.7 from");
+    expect(text("rep-listing")).not.toContain("4.699999809265137");
+  });
+
   it("shows the API's numbers, formatted", async () => {
     await render();
     expect(byId("rep-state-health")).toBeNull();

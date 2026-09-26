@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2, RefreshCw, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { GbpHealth } from "@/lib/gbp/sync/types";
+import { fmtRating } from "@/components/reputation/format";
 import { absoluteTime, relativeTime } from "./format-time";
 import { RecentSyncs } from "./recent-syncs";
 import { FIELD_LABEL, NO_FILTERS, ReviewFilters, filterQuery, type FilterValue } from "./review-filters";
@@ -115,7 +116,7 @@ export function ReviewsSection({
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1 text-2xl font-semibold">
               <Star className="h-5 w-5 fill-amber-400 text-amber-400" />
-              {s?.averageRating ?? "—"}
+              {fmtRating(s?.averageRating ?? null)}
             </span>
             <span className="text-sm text-muted-foreground">
               {s?.totalReviewCount != null ? `${s.totalReviewCount} reviews` : "No review count yet"}
