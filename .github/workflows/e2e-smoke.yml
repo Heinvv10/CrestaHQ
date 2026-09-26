@@ -64,8 +64,21 @@ jobs:
       - name: Playwright
         run: pnpm exec playwright test --grep-invert "@enrols-workflows"
 
-      - name: Upload report
+      # See the same step in ci.yml: error-context.md records input VALUES
+      # (including E2E_PASSWORD) regardless of the spec's own trace/screenshot
+      # settings, and the html reporter embeds it into playwright-report/.
+      # GitHub masks a registered secret in the Actions log only, never in an
+      # uploaded artifact. The upload step is gated on this step's outcome
+      # being 'success' (not just "didn't fail") so a skipped or cancelled
+      # redact also blocks the upload — E2E_PASSWORD is already in this job's
+      # env block above.
+      - name: Redact E2E password from report
+        id: redact
         if: always()
+        run: node scripts/ci/redact-secret-artifacts.mjs playwright-report test-results
+
+      - name: Upload report
+        if: ${{ always() && steps.redact.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report-smoke
