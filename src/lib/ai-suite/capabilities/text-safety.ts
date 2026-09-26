@@ -120,6 +120,9 @@ const LOWER_CONFUSABLES = new Map<string, string>([
   ["\uab7c", "e"], ["\uab90", "g"], ["\uab8b", "h"], ["\uab7b", "j"], ["\uabb6", "k"], ["\uabae", "l"],
   ["\uab87", "m"], ["\uabb2", "p"], ["\uab71", "r"], ["\uabaa", "s"], ["\uab72", "t"], ["\uaba9", "v"],
   ["\uab83", "w"], ["\uab93", "z"],
+  // Symbols that pass for a letter, for duplicates only (they never make a word look-alike).
+  ["\u00d7", "x"], ["\u25e6", "o"], ["\u25cb", "o"], ["\u25ef", "o"], ["\u26ac", "o"], ["\u237a", "a"],
+  ["\u2373", "i"], ["\u2374", "p"], ["\u2375", "w"],
 ]);
 
 /** Spaces, connectors, brackets and quote marks never tell two names apart

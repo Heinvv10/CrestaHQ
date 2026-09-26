@@ -127,4 +127,11 @@ describe("lookAlikeProblem", () => {
       expect(lookAlikeProblem(name, []), name).toBeNull();
     }
   });
+
+  it("symbols that pass for a letter make a duplicate, but are fine without a clash", () => {
+    const pairs = [["Bo\u00d7", "Box"], ["Ma\u00d7 plan", "Max plan"], ["Pizz\u237a", "Pizza"], ["Hell\u25e6", "Hello"], ["Hell\u25cb", "Hello"], ["Hell\u25ef", "Hello"], ["Hell\u26ac", "Hello"]];
+    for (const [name, existing] of pairs) expect(lookAlikeProblem(name, [existing]), name).toBe("is the same as, or looks like, an existing one");
+    expect(skeleton("\u2373\u2374\u2375")).toBe("ipw");
+    for (const name of ["2\u00d73 pack", "Brand\u00ae", "Bo\u00d7"]) expect(lookAlikeProblem(name, []), name).toBeNull();
+  });
 });
