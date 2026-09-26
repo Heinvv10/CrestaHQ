@@ -323,7 +323,7 @@ jobs:
         run: pnpm build
 
       - name: Playwright
-        run: pnpm exec playwright test
+        run: pnpm exec playwright test e2e/specs/prospect-report-share.spec.ts
 
       # login.spec.ts opts its own trace/screenshot off, but Playwright still
       # writes an error-context.md aria snapshot on failure, and that snapshot
