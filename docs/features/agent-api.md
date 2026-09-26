@@ -89,7 +89,7 @@ anything agency-level are not on it.
 **Approval classes:** `outbound` (a message to a person), `workflow_activate`,
 `hard_delete`, `spend` (bills or charges), `channel_change` (a contact's phone or
 email, which redirects sends already approved), `public_change` (what the public
-sees, books or is sent from a booking page), and `workflow_enrolment` (engine only,
+sees, books or is sent from a booking page, or a social post going public), and `workflow_enrolment` (engine only,
 below). Some tools need approval only for some calls (e.g. `set_bot_mode` to
 `auto`, `set_event_status` to `cancelled`, `update_workflow` on an active
 workflow); the table's Kind column says when.
@@ -110,9 +110,12 @@ members, no client writes; see
   (`expect`): the review-request text, number and channel; the quote a
   `send_quote` sends; the cancellation notice; the broadcast's approved audience
   size and the values an agent set on it; the social post's approved accounts; the
-  voice call's script fingerprint. A mismatch refuses with nothing sent. Quiet
-  hours, opt-out, the WhatsApp window and channel readiness are decided at approve
-  time with the **approver** as the actor.
+  voice call's script fingerprint. A mismatch refuses with nothing sent. For a
+  manual-origin send, quiet hours, opt-out, the WhatsApp window and channel
+  readiness are decided at approve time with the **approver** as the actor. The
+  review requests `mark_deal_completed` and `mark_quote_paid` cause are automated:
+  quiet hours hold them and release them later (still re-checked against what was
+  approved).
 - **Who approves.** Any sub-account member holding the tool's role (the Role column)
   and passing the territory rule for the proposal's contact; `hard_delete` needs a
   sub-account admin. Both agency gates are re-checked.
@@ -168,9 +171,11 @@ only for callable write tools.
 
 - **Look-alike names.** Names (snippets, products, custom fields and folders,
   booking pages, schedules) are refused when they imitate another with look-alike
-  letters. The check over-refuses a few real names: a word starting with the
-  U+01C1 click letter (reads as "ll", e.g. a Khoekhoe place name) and a one-letter
-  Cyrillic word.
+  letters. A few real names with unusual letters or symbols are refused too: the
+  click letters (U+01C0, U+01C1, U+01C3), Turkish dotless i (U+0131), Afrikaans
+  'n (U+0149), the ordinal indicators (U+00AA, U+00BA), the florin sign (U+0192),
+  an "@" or an arrow between two letters, CJK written straight onto a Latin word,
+  and a one-letter Cyrillic word that looks Latin.
 - **Quote edits during a send.** A person editing a quote in the app while an
   approved `send_quote` goes out is not blocked by the send's claim (the editor
   writes from the browser); the send's fingerprint check refuses a changed quote

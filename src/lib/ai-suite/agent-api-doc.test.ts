@@ -29,5 +29,7 @@ describe("docs/features/agent-api-tools.md", () => {
     const approving = agentTools.filter((c) => c.approval || c.approvalFor).map((c) => c.name);
     expect(approving.filter((n) => !PREVIEW_NOTES[n])).toEqual([]);
     expect(Object.keys(PREVIEW_NOTES).filter((n) => !approving.includes(n))).toEqual([]);
+    // A per-call class the table can't name would show as a plain "write".
+    expect(agentTools.filter((c) => c.approvalFor && !c.approvalHint).map((c) => c.name)).toEqual([]);
   });
 });
