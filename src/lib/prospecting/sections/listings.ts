@@ -1,14 +1,15 @@
 import "server-only";
 
-import { extractContacts, fetchHomepage, withFetchSlot } from "@/lib/get-leads/enrich";
+import { extractContacts, fetchHomepage } from "@/lib/get-leads/enrich";
+import { withReportFetchSlot } from "../fetch-slots";
 import type { ProspectReportInput } from "@/types";
 import { measured, unavailable, type Homepage, type Scored, type SectionInput } from "./types";
 
 /**
  * Section 4 — listings / NAP. Each directory page is fetched through the
  * shared guarded fetcher (publicFetch, manual redirect hops) inside the
- * process-wide fetch slot, and counts as
- * `found` only when BOTH the normalised business name and phone appear in it.
+ * reports' fetch pool (fetch-slots.ts), and counts as `found` only when BOTH
+ * the normalised business name and phone appear in it.
  *
  * Spike 2026-09-26 (honest UA): Brabys and Cylex answer 403 (Cloudflare
  * block); Yellow Pages SA (yep.co.za) redirects search to a client-rendered
@@ -117,7 +118,7 @@ export async function run(input: SectionInput) {
       const url = d.url(business, homepage);
       if (!url) return { directory: d.name, url: null, status: "unknown" };
       input.count("http");
-      const page = await withFetchSlot(() => fetchHomepage(url, signal, PAGE_MAX_BYTES), signal);
+      const page = await withReportFetchSlot(() => fetchHomepage(url, signal, PAGE_MAX_BYTES), signal);
       return { directory: d.name, url, status: classify(page?.html ?? null, business.name, phone) };
     }),
   );

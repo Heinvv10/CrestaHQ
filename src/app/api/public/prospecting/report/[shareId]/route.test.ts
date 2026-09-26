@@ -122,6 +122,23 @@ describe("the business name (L1)", () => {
     expect(JSON.parse(text)).toMatchObject({ businessName: null, sections: [{ details: { category: "Plumber" } }] });
   });
 
+  it("drops the Meta Ad Library link, which searches by that name (NEW-L1)", async () => {
+    mem.seed("contacts/c1", { subAccountId: "sa1", name: "Jane Private", company: "" });
+    const ads = {
+      key: "ads", status: "unavailable", score: null, findings: [], reason: "check manually",
+      raw: {
+        metaAdLibraryUrl: "https://www.facebook.com/ads/library/?q=Jane%20Private",
+        googleAdsTransparencyUrl: "https://adstransparency.google.com/?region=ZA&domain=example.com",
+      },
+    };
+    seed({ sections: [ads] });
+    const text = await (await get(await mint())).text();
+    expect(text).not.toContain("Jane");
+    expect(JSON.parse(text).sections[0].details).toEqual({
+      googleAdsTransparencyUrl: "https://adstransparency.google.com/?region=ZA&domain=example.com",
+    });
+  });
+
   it("a prospecting import's name is the business name", async () => {
     mem.seed("contacts/c1", { subAccountId: "sa1", name: "Jane's Bakery", company: "", source: "prospecting" });
     seed({ sections: [{ ...bd, raw: { name: "Jane's Bakery" } }] });

@@ -89,9 +89,12 @@ const isScalar = (v: unknown): v is Scalar =>
   v === null || ["string", "number", "boolean"].includes(typeof v);
 
 /**
- * `showName: false` drops business_details `name`: for a contact that is not
- * a business (no company, not a prospecting import) it is a person's name.
+ * `showName: false` drops business_details `name` and the ads Meta Ad Library
+ * link (it searches by that name): for a contact that is not a business (no
+ * company, not a prospecting import) the name may be a person's.
  */
+const NAME_BEARING_KEYS = new Set(["name", "metaAdLibraryUrl"]);
+
 export function publicSection(
   s: ProspectSectionResult,
   opts: { showName: boolean },
@@ -99,7 +102,7 @@ export function publicSection(
   const raw = obj(s.raw);
   const details: Record<string, Scalar> = {};
   for (const k of PUBLIC_RAW_KEYS[s.key] ?? []) {
-    if (k === "name" && !opts.showName) continue;
+    if (NAME_BEARING_KEYS.has(k) && !opts.showName) continue;
     if (isScalar(raw[k])) details[k] = raw[k];
   }
   Object.assign(details, PUBLIC_DERIVED[s.key]?.(raw) ?? {});

@@ -1,6 +1,7 @@
 import "server-only";
 
-import { fetchHomepage, withFetchSlot } from "@/lib/get-leads/enrich";
+import { fetchHomepage } from "@/lib/get-leads/enrich";
+import { withReportFetchSlot } from "./fetch-slots";
 import type {
   ProspectReportInput,
   ProspectReportOutcome,
@@ -24,7 +25,7 @@ import type { CostKey, Homepage, Section, SectionInput } from "./sections/types"
  * that overruns is `timeout` — the runner never waits on a section that
  * ignores its signal. The report is `ready` when at least one section
  * measured something (see STORED_FACT_SECTIONS). Never throws. Page fetches
- * take the process-wide slot shared with Get Leads enrichment.
+ * take a slot in the reports' own process-wide pool (fetch-slots.ts).
  */
 
 /** Plan order: sections 1, 2, 3, 4, 6, 9, 10. */
@@ -61,7 +62,7 @@ export async function runProspectReport(
     if (business.website) {
       count("http");
       const website = business.website;
-      homepage = await withFetchSlot(() => fetchHomepage(website, deadline), deadline);
+      homepage = await withReportFetchSlot(() => fetchHomepage(website, deadline), deadline);
     }
     const sections = await Promise.all(
       (opts.sections ?? SECTIONS).map((section) =>

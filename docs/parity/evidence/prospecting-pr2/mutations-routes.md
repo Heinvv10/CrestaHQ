@@ -56,3 +56,21 @@ at the time of the run.
 | L1 | `src/lib/prospecting/public-report.ts:81` | `showName = true` | public route: *a person's name on a non-prospecting contact without a company is never published* |
 | L1 | `src/lib/prospecting/public-report.ts:81` | `showName = company !== null` (prospecting source ignored) | public route: *a prospecting import's name is the business name* |
 | L4 | `src/lib/prospecting/reports.ts:185` | member sections passed through with `raw` | reports route: *… whitelisted details, no raw (L4)* |
+
+Fix round 2 (PR #288). The 5 new tests were run RED against 6ba391fe first
+(the pool tests with only `REPORT_FETCH_CONCURRENCY` in place, so they failed
+on behaviour: peak 6 > 4, and the lead's email `null`), then green. All 6
+mutations went RED.
+
+| Finding | File:line | Mutation | Red test |
+|---|---|---|---|
+| NEW-M1 | `src/app/api/automations/prospecting/report/route.ts:76` | `running` within the window → 200 skipped | worker: *a retry while the report is still within its window answers 503 so QStash retries again* |
+| NEW-L2 | `src/app/api/automations/prospecting/report/route.ts:107` | final write no longer requires `running` | worker: *a report settled while the runner was working keeps its settled state* |
+| NEW-M2 | `src/lib/prospecting/fetch-slots.ts:13` | report pool size 4 → 6 | runner: *three reports at once never exceed REPORT_FETCH_CONCURRENCY page fetches in flight* |
+| NEW-M2 | `src/lib/prospecting/report-runner.ts:65` | homepage fetch outside the report pool | runner: *three reports at once …* |
+| NEW-M2 | `src/lib/prospecting/sections/listings.ts:121` | directory fetch outside the report pool | runner: *three reports at once …* |
+| NEW-L1 | `src/lib/prospecting/public-sections.ts:96` | `metaAdLibraryUrl` removed from `NAME_BEARING_KEYS` | public route: *drops the Meta Ad Library link, which searches by that name* |
+
+The shared-pool regression itself (reports on Get Leads' slot) is what the
+RED run of *six hung reports do not block a Get Leads enrichment from
+fetching its lead* shows.

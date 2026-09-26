@@ -59,9 +59,10 @@ export async function enrichBusinesses(
   );
 }
 
-// ENRICH_CONCURRENCY is a process-wide cap: every enrichBusinesses call —
-// however many searches run at once — shares these slots, and so do the
-// prospect report runner's homepage and directory fetches. A slot is handed
+// createFetchSlots(limit) is a process-wide cap: every caller of one
+// instance — however many run at once — shares its slots. Get Leads
+// enrichment has its own instance (ENRICH_CONCURRENCY); prospect reports have
+// a separate one, so neither can starve the other. A slot is handed
 // straight to the next waiter (FIFO) on release. The per-site timeout starts
 // only once a slot is held, so queued sites never time out while waiting —
 // instead, a waiter that is still queued when its call's deadline fires
@@ -69,52 +70,53 @@ export async function enrichBusinesses(
 // A slot handed over in the same tick the deadline fires still runs fn, whose
 // fetch is refused at once on the aborted signal (at worst one abandoned DNS
 // lookup) and the slot releases in `finally`.
-let activeFetches = 0;
-const fetchQueue: (() => void)[] = [];
+export function createFetchSlots(limit: number) {
+  let active = 0;
+  const queue: (() => void)[] = [];
 
-export async function withFetchSlot<T>(
-  fn: () => Promise<T>,
-  deadline: AbortSignal,
-): Promise<T | null> {
-  if (deadline.aborted) return null;
-  if (activeFetches < ENRICH_CONCURRENCY) {
-    activeFetches++;
-  } else if (!(await waitForSlot(deadline))) {
-    // Deadline fired while queued — this waiter never held a slot, so
-    // there is nothing to release.
-    return null;
+  function release(): void {
+    const next = queue.shift();
+    if (next) next();
+    else active--;
   }
-  try {
-    return await fn();
-  } finally {
-    releaseSlot();
+
+  // Resolves true once a slot is handed to this waiter, or false if the
+  // deadline fires first — removing this waiter from the queue so a later
+  // release never hands a slot to a caller that already gave up.
+  function waitForSlot(deadline: AbortSignal): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const entry = () => {
+        deadline.removeEventListener("abort", onAbort);
+        resolve(true);
+      };
+      const onAbort = () => {
+        const idx = queue.indexOf(entry);
+        if (idx !== -1) queue.splice(idx, 1);
+        resolve(false);
+      };
+      queue.push(entry);
+      deadline.addEventListener("abort", onAbort, { once: true });
+    });
   }
+
+  return async function withSlot<T>(fn: () => Promise<T>, deadline: AbortSignal): Promise<T | null> {
+    if (deadline.aborted) return null;
+    if (active < limit) {
+      active++;
+    } else if (!(await waitForSlot(deadline))) {
+      // Deadline fired while queued — this waiter never held a slot, so
+      // there is nothing to release.
+      return null;
+    }
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
 }
 
-function releaseSlot(): void {
-  const next = fetchQueue.shift();
-  if (next) next();
-  else activeFetches--;
-}
-
-// Resolves true once a slot is handed to this waiter, or false if the
-// deadline fires first — removing this waiter from the queue so a later
-// release never hands a slot to a caller that already gave up.
-function waitForSlot(deadline: AbortSignal): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const entry = () => {
-      deadline.removeEventListener("abort", onAbort);
-      resolve(true);
-    };
-    const onAbort = () => {
-      const idx = fetchQueue.indexOf(entry);
-      if (idx !== -1) fetchQueue.splice(idx, 1);
-      resolve(false);
-    };
-    fetchQueue.push(entry);
-    deadline.addEventListener("abort", onAbort, { once: true });
-  });
-}
+const withFetchSlot = createFetchSlots(ENRICH_CONCURRENCY);
 
 function httpUrl(raw: string, base?: string): URL | null {
   try {

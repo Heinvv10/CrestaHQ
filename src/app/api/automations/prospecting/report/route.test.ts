@@ -98,7 +98,7 @@ describe("a run", () => {
     expect(mem.read(USAGE)?.prospectReports).toBe(2);
   });
 
-  it.each(["running", "failed"])("a report already %s is not re-run", async (status) => {
+  it.each(["ready", "failed"])("a report already %s is not re-run", async (status) => {
     mem.seed("prospectReports/r1", { ...mem.read("prospectReports/r1"), status });
     expect((await call()).status).toBe(200);
     expect(run).not.toHaveBeenCalled();
@@ -153,11 +153,26 @@ describe("interrupted and gated runs (M2, L3)", () => {
     expect(mem.read(USAGE)?.prospectReports).toBe(1);
   });
 
-  it("a retry while the report is still within its deadline leaves it running", async () => {
-    running(REPORT_DEADLINE_MS - 1_000);
-    expect(await (await call()).json()).toMatchObject({ skipped: true });
+  it("a retry while the report is still within its window answers 503 so QStash retries again (NEW-M1)", async () => {
+    running(112_000);
+    const res = await call();
+    expect(res.status).toBe(503);
+    expect(run).not.toHaveBeenCalled();
     expect(mem.read("prospectReports/r1")?.status).toBe("running");
     expect(mem.read(USAGE)?.prospectReports).toBe(2);
+  });
+
+  it("a report settled while the runner was working keeps its settled state (NEW-L2)", async () => {
+    const { failAndRelease } = await import("@/lib/prospecting/reports");
+    run.mockImplementationOnce(async () => {
+      // e.g. the list route's stale sweep releases it mid-run
+      await failAndRelease("r1", { failureReason: "stale" });
+      return READY;
+    });
+    expect((await call()).status).toBe(200);
+    expect(mem.read("prospectReports/r1")).toMatchObject({ status: "failed", failureReason: "stale", headline: null });
+    expect(mem.read(USAGE)?.prospectReports).toBe(1);
+    expect(mem.read("contacts/c1")?.prospecting).not.toHaveProperty("lastReportId");
   });
 
   it("the gate turned off after queueing: not run, settled failed, quota released", async () => {

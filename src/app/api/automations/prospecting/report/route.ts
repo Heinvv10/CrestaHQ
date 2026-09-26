@@ -24,9 +24,13 @@ import {
  * running or settled is a 200 no-op: the runner runs at most once per report.
  *
  * A process that dies mid-run (e.g. a blue/green cut-over) leaves the report
- * `running`; QStash's retry of it then settles it `failed` ("interrupted")
- * with the quota released once it is older than INTERRUPTED_AFTER_MS, and the
- * list route sweeps anything stuck longer (STALE_AFTER_MS). A thrown error is
+ * `running`. A delivery that finds it `running` within INTERRUPTED_AFTER_MS
+ * answers 503 so QStash keeps retrying; once older, it settles it `failed`
+ * ("interrupted") with the quota released. QStash's default schedule (3
+ * retries, backoff ~12 s, ~2.5 min, ~30 min) puts the third retry well past
+ * the window, and the list route sweeps anything stuck past STALE_AFTER_MS
+ * regardless. The final write only lands on a report still `running`, so a
+ * report settled meanwhile (swept, interrupted) keeps its state. A thrown error is
  * caught and settles the report `failed` with the quota released. A report
  * whose sub-account's Prospecting gate went off is not run, and released.
  */
@@ -68,7 +72,12 @@ export async function POST(request: Request) {
       { failureReason: "interrupted" },
       { olderThanMs: INTERRUPTED_AFTER_MS },
     );
-    return NextResponse.json(interrupted ? { ok: true, status: "failed" } : { ok: true, skipped: true });
+    if (interrupted) return NextResponse.json({ ok: true, status: "failed" });
+    if ((await reportRef.get()).data()?.status === "running") {
+      // Possibly still running elsewhere, possibly killed: ask QStash to come back.
+      return NextResponse.json({ error: "report_running" }, { status: 503 });
+    }
+    return NextResponse.json({ ok: true, skipped: true });
   }
 
   try {
@@ -94,7 +103,15 @@ export async function POST(request: Request) {
       await failAndRelease(reportId, result);
       return NextResponse.json({ ok: true, status: "failed" });
     }
-    await reportRef.update({ ...result, status: "ready" });
+    const written = await db.runTransaction(async (tx) => {
+      if ((await tx.get(reportRef)).data()?.status !== "running") return false;
+      tx.update(reportRef, { ...result, status: "ready" });
+      return true;
+    });
+    if (!written) {
+      console.error("[prospecting/report] report settled during the run; result dropped", reportId);
+      return NextResponse.json({ ok: true, status: "settled" });
+    }
     await contactRef.update({ "prospecting.lastReportId": reportId });
     return NextResponse.json({ ok: true, status: "ready" });
   } catch (err) {

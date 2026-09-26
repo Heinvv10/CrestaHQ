@@ -7,7 +7,8 @@ const publicFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/webhooks/public-fetch", () => ({ publicFetch }));
 
 const { runProspectReport } = await import("./report-runner");
-const { ENRICH_CONCURRENCY } = await import("@/lib/get-leads/enrich");
+const { enrichBusinesses } = await import("@/lib/get-leads/enrich");
+const { REPORT_FETCH_CONCURRENCY } = await import("./fetch-slots");
 
 const fetchMock = vi.fn();
 const html = (body: string) => new Response(body, { status: 200, headers: { "content-type": "text/html" } });
@@ -163,8 +164,8 @@ describe("ready needs a section that measured something (M1)", () => {
   });
 });
 
-describe("outbound fetches share the process-wide slot (M3)", () => {
-  it("three reports at once never exceed ENRICH_CONCURRENCY page fetches in flight", async () => {
+describe("report page fetches have their own bounded pool (M3, NEW-M2)", () => {
+  it("three reports at once never exceed REPORT_FETCH_CONCURRENCY page fetches in flight", async () => {
     let inFlight = 0;
     let peak = 0;
     publicFetch.mockImplementation(async (url: string) => {
@@ -178,6 +179,27 @@ describe("outbound fetches share the process-wide slot (M3)", () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify(BARE_DETAILS)));
     await Promise.all([1, 2, 3].map(() => runProspectReport(BUSINESS)));
     expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThanOrEqual(ENRICH_CONCURRENCY);
+    expect(peak).toBeLessThanOrEqual(REPORT_FETCH_CONCURRENCY);
+  });
+
+  it("six hung reports do not block a Get Leads enrichment from fetching its lead", async () => {
+    const LEAD = "https://lead.example.com/";
+    publicFetch.mockImplementation((url: string, init: { signal: AbortSignal }) => {
+      if (url === LEAD) return Promise.resolve(html('<a href="mailto:owner@lead.example.com">mail</a>'));
+      // Every report fetch hangs until its own deadline aborts it.
+      return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new Error("aborted"))));
+    });
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify(BARE_DETAILS)));
+    const reports = Array.from({ length: 6 }, () => runProspectReport(BUSINESS, { deadlineMs: 1500 }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    const lead = {
+      placeId: "p1", googlePlaceId: "p1", name: "Lead", category: null, fullAddress: null, city: null,
+      phone: null, website: LEAD, email: null, facebook: null, instagram: null, rating: null,
+      reviewsCount: null, latitude: null, longitude: null,
+    };
+    const [enriched] = await enrichBusinesses([lead], undefined, 500);
+    expect(enriched!.email).toBe("owner@lead.example.com");
+    await Promise.all(reports);
   });
 });
