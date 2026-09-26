@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import { FIXTURE_ARGS } from "@/test/outbound-fixtures";
+import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
 
 /**
  * The inverted outbound test (AGENT_API_V1_PLAN.md, PR3b): an API agent can
@@ -125,6 +126,9 @@ beforeEach(() => {
   mem.seed("quotes/q_accepted", { ...QUOTE, status: "accepted", quoteNumber: "Q-0002" });
   mem.seed("recurringInvoices/rs1", SCHEDULE);
   mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, name: "Paused retainer", status: "paused" });
+  mem.seed("events/ev_past", pastEvent());
+  mem.seed("subAccounts/sa1/bookingPages/bp1", PAGE);
+  mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", name: "Live consult", status: "published" });
   mem.seed("subAccounts/sa1/pipelines/p1", {
     subAccountId: "sa1", agencyId: "ag1", name: "Installs", isDefault: false, stages: [{ id: "booked", label: "Booked", tone: "" }],
   });
@@ -172,6 +176,10 @@ describe("an agent can never send on its own", () => {
     ["update_workflow", { workflowId: "wf_contact.created", name: "Renamed" }],
     ["set_workflow_status", { workflowId: "wf_draft", status: "active" }],
     ["update_quote", { quoteId: "q_accepted", termsAndNotes: "Due on install" }],
+    ["set_event_status", { eventId: "ev_past", status: "no_show" }],
+    ["set_event_status", { eventId: "ev_past", status: "cancelled" }],
+    ["create_booking_page", pageForm("consult-3", { name: "Third consult", status: "published" })],
+    ["update_booking_page", { slug: "bp-live", durationMinutes: 45 }],
   ];
   it.each(CASES)("%s %j: dispatches fine and reaches no outbound seam", async (name, args) => {
     const cap = agentCaps().find((c) => c.name === name);
@@ -202,6 +210,7 @@ describe("MUTATION PROOF #2: every awaited trigger site returns its held enrolme
     ["update_contact tags (contacts-service update → fireTagsAdded)", "update_contact", "contact.tag.added"],
     ["create_deal (deals-service create)", "create_deal", "deal.created"],
     ["move_deal_stage (deals-service fireDealTrigger)", "move_deal_stage", "pipeline.stage.changed"],
+    ["set_event_status completed (event-status-service -> booking/lifecycle)", "set_event_status", "booking.showed"],
   ])("%s", async (_label, name, trigger) => {
     const r = (await dispatchAgentTool(auth, name, FIXTURE_ARGS[name])) as { held?: Array<{ workflowName: string }> };
     expect(r.held).toEqual([{ proposalId: expect.any(String), workflowName: `Sends on ${trigger}` }]);

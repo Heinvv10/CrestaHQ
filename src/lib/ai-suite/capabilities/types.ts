@@ -72,7 +72,10 @@ export type CapabilityApproval =
   | "spend"
   /** A change to where messages go (a contact's phone / email): pins the
    *  new values, like outbound, since queued sends follow the contact. */
-  | "channel_change";
+  | "channel_change"
+  /** A change to what the public sees or books on a live page (a booking
+   *  page's times, questions, price, confirmation text...). */
+  | "public_change";
 
 export interface ExecuteResult {
   /** Human-readable confirmation appended to the chat (or, for readonly

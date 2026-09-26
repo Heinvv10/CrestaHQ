@@ -1,3 +1,5 @@
+import { pageForm } from "@/test/booking-fixtures";
+
 /** Arg fixtures for outbound-never-sends.test.ts, keyed by capability name. */
 
 export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
@@ -58,6 +60,14 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   complete_task: { taskId: "t1", taskTitle: "Follow up" },
   find_events: { range: "all-upcoming" },
   create_event: { title: "Install", date: "2030-01-10", time: "10:00", contactId: "c1", contactName: "Ann" },
+  update_task: { taskId: "t1", title: "Call back", dueAt: "2030-01-12" },
+  delete_task: { taskId: "t1" },
+  set_event_status: { eventId: "ev_past", status: "completed" },
+  list_booking_pages: {},
+  get_booking_page: { slug: "bp1" },
+  create_booking_page: pageForm("consult-2", { name: "Second consult" }),
+  update_booking_page: { slug: "bp1", durationMinutes: 45 },
+  delete_booking_page: { slug: "bp1" },
   list_members: {},
   get_contact: { contactId: "c1" },
   update_contact: { contactId: "c1", name: "Ann B", tags: ["vip"] },

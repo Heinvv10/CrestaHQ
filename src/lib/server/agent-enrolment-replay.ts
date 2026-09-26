@@ -11,6 +11,7 @@ import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import { readPipelineStages } from "@/lib/pipelines/server";
 import { dealPipelineId } from "@/lib/pipelines/stages";
 import type { WorkflowTriggerType } from "@/types/workflows";
+import { eventStatus, type CalendarEvent } from "@/types/events";
 
 const WHY: Record<string, string> = {
   no_active_workflow: "That workflow is no longer active, so nobody was enrolled.",
@@ -21,7 +22,18 @@ const WHY: Record<string, string> = {
   trigger_mismatch: "The workflow's trigger no longer matches.",
   deal_changed:
     "The deal changed since this was proposed (it moved, left its pipeline or was deleted), so nobody was enrolled (trigger_mismatch).",
+  event_changed:
+    "The appointment's status changed since this was proposed (or it was deleted), so nobody was enrolled (trigger_mismatch).",
 };
+
+/** Booking triggers an agent's status change holds, and the status each needs at replay. */
+const BOOKING_STATUS: Record<string, string> = { "booking.showed": "completed", "booking.no_show": "no_show" };
+
+/** A held booking trigger replays only while the event is still in this sub-account with that status. */
+export async function eventStillMatches(subAccountId: string, type: string, context: Record<string, unknown>): Promise<boolean> {
+  const event = (await getAdminDb().doc(`events/${String(context.eventId)}`).get()).data();
+  return !!event && event.subAccountId === subAccountId && eventStatus(event as Pick<CalendarEvent, "status">) === BOOKING_STATUS[type];
+}
 
 /** Deal triggers a held enrolment re-checks at replay (and the approvals list mirrors). */
 export const DEAL_TRIGGERS = new Set(["deal.created", "deal.won", "deal.lost", "pipeline.stage.changed"]);
@@ -71,6 +83,9 @@ export async function replayHeldEnrolment(
   const workflowId = proposal.workflowId as string;
   if (DEAL_TRIGGERS.has(args.type) && !(await dealStillMatches(subAccountId, args.type, args.context ?? {}))) {
     throw new CapabilityUserError(WHY.deal_changed);
+  }
+  if (args.type in BOOKING_STATUS && !(await eventStillMatches(subAccountId, args.type, args.context ?? {}))) {
+    throw new CapabilityUserError(WHY.event_changed);
   }
   const key = (await getAdminDb().doc(`subAccounts/${subAccountId}/apiKeys/${keyId}`).get()).data();
   const budget = await reserveEnrolment({

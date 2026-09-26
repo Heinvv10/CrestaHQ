@@ -174,7 +174,9 @@ export type EventNotifySkipReason =
   | "contact_opted_out"
   | "missing_records"
   | "bad_timestamps"
-  | "send_failed";
+  | "send_failed"
+  /** An approved agent cancel whose notice no longer matches what was approved. */
+  | "changed_since_approval";
 
 /**
  * Read an event's lifecycle status with the legacy default applied.

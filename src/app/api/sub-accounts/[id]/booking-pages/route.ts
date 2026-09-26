@@ -1,8 +1,4 @@
 import "server-only";
-import {
-  canTakePayment,
-  NO_PAYMENT_RAIL_MESSAGE,
-} from "@/lib/payments/can-take-payment";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
@@ -11,11 +7,7 @@ import {
   requireSubAccountAdmin,
   requireSubAccountMember,
 } from "@/lib/auth/require-tenancy";
-import {
-  validateBookingPageFormData,
-  validateCalendarTypeHosts,
-} from "@/lib/booking/validation";
-import { resolveBookingHosts } from "@/lib/booking/hosts";
+import { prepareBookingPage } from "@/lib/server/booking-page-write";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
 
@@ -62,37 +54,12 @@ export async function POST(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const validated = validateBookingPageFormData(body);
-  if (!validated.ok) {
-    return NextResponse.json({ error: validated.error }, { status: 400 });
+  const prepared = await prepareBookingPage(subAccountId, body);
+  if (!prepared.ok) {
+    return NextResponse.json({ error: prepared.error }, { status: prepared.status });
   }
-  const data = validated.value;
-
+  const { data, agencyId } = prepared;
   const db = getAdminDb();
-  const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  if (!subSnap.exists) {
-    return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
-  }
-  const sub = subSnap.data() ?? {};
-  const agencyId = (sub.agencyId as string | undefined) ?? null;
-  if (!agencyId) {
-    return NextResponse.json(
-      { error: "Sub-account is missing tenancy metadata." },
-      { status: 500 },
-    );
-  }
-
-  // Reject payment block when the sub-account has no payment rail at all
-  // — the public page would render a Pay button that goes nowhere.
-  if (data.payment && !canTakePayment(sub)) {
-    return NextResponse.json(
-      {
-        error:
-          `${NO_PAYMENT_RAIL_MESSAGE} A booking page can't require a deposit until then.`,
-      },
-      { status: 400 },
-    );
-  }
 
   // Defensively land the territoryId — Global by default so the
   // no-unassigned invariant holds even when scoping is off.
@@ -102,14 +69,6 @@ export async function POST(
       ? data.defaultTerritoryId
       : GLOBAL_TERRITORY_ID;
 
-  // Resolve the requested hosts against live membership — keep only active
-  // members + re-snapshot their display names (don't trust client names).
-  const hosts = await resolveBookingHosts(subAccountId, data.hosts);
-  const hostsOk = validateCalendarTypeHosts(data.calendarType, hosts.length);
-  if (!hostsOk.ok) {
-    return NextResponse.json({ error: hostsOk.error }, { status: 400 });
-  }
-
   // Doc id == slug → atomic uniqueness check via create().
   const ref = db.doc(
     `subAccounts/${subAccountId}/bookingPages/${data.slug}`,
@@ -117,7 +76,6 @@ export async function POST(
   const now = FieldValue.serverTimestamp();
   const docPayload = {
     ...data,
-    hosts,
     id: data.slug,
     agencyId,
     subAccountId,

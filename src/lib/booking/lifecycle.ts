@@ -4,7 +4,8 @@ import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { loadEventContact } from "@/lib/server/tenant-ref";
-import { fireWorkflowTrigger } from "@/lib/workflows/engine";
+import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
+import type { AgentActor } from "@/lib/workflows/agent-hold";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import type { ActivityType } from "@/types/contacts";
@@ -117,8 +118,10 @@ export async function fireBookingTrigger(
     "id" | "agencyId" | "subAccountId" | "contactId" | "bookingPageSlug"
   >,
   trigger: Extract<AutomationTriggerType, `event_${string}`>,
-): Promise<void> {
-  if (!event.contactId) return;
+  /** An API agent caused this: the enrolments are held (ruling Q) and the outcome awaited and returned. */
+  actor?: AgentActor,
+): Promise<TriggerOutcome | null> {
+  if (!event.contactId) return null;
   const type =
     trigger === "event_booked"
       ? ("booking.created" as const)
@@ -133,18 +136,23 @@ export async function fireBookingTrigger(
             : trigger === "event_no_show"
               ? ("booking.no_show" as const)
               : null;
-  if (type) {
-    void fireWorkflowTrigger({
-      agencyId: event.agencyId,
-      subAccountId: event.subAccountId,
-      type,
-      contactId: event.contactId,
-      context: {
-        eventId: event.id,
-        bookingPageSlug: event.bookingPageSlug ?? null,
-      },
-    });
+  if (!type) return null;
+  const fired = fireWorkflowTrigger({
+    agencyId: event.agencyId,
+    subAccountId: event.subAccountId,
+    type,
+    contactId: event.contactId,
+    context: {
+      eventId: event.id,
+      bookingPageSlug: event.bookingPageSlug ?? null,
+    },
+    ...(actor ? { hold: actor } : {}),
+  });
+  if (!actor) {
+    void fired;
+    return null;
   }
+  return fired;
 }
 
 /** Booking lifecycle events that have a matching outbound webhook type. */

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
+import { pageForm } from "@/test/booking-fixtures";
 
 /**
  * No agent capability builds a Firestore path from a caller-supplied id that
@@ -65,6 +66,11 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["create_task", { title: "T", contactId: "c1/sub/y", contactName: "Row" }],
   ["complete_task", { taskId: "t1/sub/y", taskTitle: "Row" }],
   ["create_event", { title: "E", date: "2030-01-10", time: "10:00", contactId: "c1/sub/y", contactName: "Row" }],
+  ["update_task", { taskId: "t1/sub/y", title: "X" }],
+  ["delete_task", { taskId: "t1/sub/y" }],
+  ["set_event_status", { eventId: "ev1/sub/y", status: "completed" }],
+  ["create_booking_page", { ...pageForm("new-page"), defaultTerritoryId: "t1/sub/y" }],
+  ["update_booking_page", { slug: "bp1", defaultTerritoryId: "t1/sub/y" }],
   ["update_company", { companyId: "co1/sub/y", name: "X" }],
   ["delete_company", { companyId: "co1/sub/y" }],
   ["get_conversation", { conversationId: "cv1/sub/y" }],
@@ -77,7 +83,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
 ];
 
 beforeEach(() => {
-  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1", "workflows/wf1", "quotes/q1", "recurringInvoices/rs1"]) {
+  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1", "workflows/wf1", "quotes/q1", "recurringInvoices/rs1", "tasks/t1", "events/ev1"]) {
     mem.seed(parent, SUB);
     mem.seed(`${parent}/sub/y`, SUB);
     // A real top-level doc named like the path's last segment: a service

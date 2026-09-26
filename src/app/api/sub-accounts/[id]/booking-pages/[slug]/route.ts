@@ -1,9 +1,4 @@
 import "server-only";
-import {
-  canTakePayment,
-  NO_PAYMENT_RAIL_MESSAGE,
-} from "@/lib/payments/can-take-payment";
-import type { SubAccountDoc } from "@/types/tenancy";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
@@ -12,11 +7,7 @@ import {
   requireSubAccountAdmin,
   requireSubAccountMember,
 } from "@/lib/auth/require-tenancy";
-import {
-  validateBookingPageFormData,
-  validateCalendarTypeHosts,
-} from "@/lib/booking/validation";
-import { resolveBookingHosts } from "@/lib/booking/hosts";
+import { prepareBookingPage, upcomingBookingCount } from "@/lib/server/booking-page-write";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
 
@@ -87,38 +78,11 @@ export async function PATCH(
   const storedType = (snap.data() as BookingPage).calendarType;
 
   // A body without a type has its type fields checked against the stored one.
-  const validated = validateBookingPageFormData(bodyWithSlug, storedType);
-  if (!validated.ok) {
-    return NextResponse.json({ error: validated.error }, { status: 400 });
+  const prepared = await prepareBookingPage(subAccountId, bodyWithSlug, { storedType });
+  if (!prepared.ok) {
+    return NextResponse.json({ error: prepared.error }, { status: prepared.status });
   }
-  const data = validated.value;
-
-  // Same payment gate as create — guard against requiring payment when
-  // No payment rail connected. Edits that toggle payment on still need this.
-  if (data.payment) {
-    const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-    if (!canTakePayment(subSnap.data() as SubAccountDoc | undefined)) {
-      return NextResponse.json(
-        {
-          error:
-            `${NO_PAYMENT_RAIL_MESSAGE} A booking page can't require a deposit until then.`,
-        },
-        { status: 400 },
-      );
-    }
-  }
-
-  // Resolve hosts against live membership (active members only + fresh name
-  // snapshot) — same as create, so a renamed/removed member is reconciled.
-  const hosts = await resolveBookingHosts(subAccountId, data.hosts);
-  // A body without a type keeps the stored one — check hosts against that.
-  const hostsOk = validateCalendarTypeHosts(
-    data.calendarType ?? storedType,
-    hosts.length,
-  );
-  if (!hostsOk.ok) {
-    return NextResponse.json({ error: hostsOk.error }, { status: 400 });
-  }
+  const { data } = prepared;
 
   // territoryId on the config doc stays stable across edits — operators
   // change it via the territory-retag route (future), not the booking
@@ -126,7 +90,6 @@ export async function PATCH(
   // setting that tags inbound contacts).
   const patch = {
     ...data,
-    hosts,
     territoryId: snap.data()?.territoryId ?? GLOBAL_TERRITORY_ID,
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -149,27 +112,11 @@ export async function DELETE(
     return NextResponse.json({ error: "Booking page not found" }, { status: 404 });
   }
 
-  // Block delete when future bookings still reference the slug. Query by
-  // the two equality filters only (no inequality on startAt) and count
-  // future events in memory — same pattern as subscribeToBookingPageEvents.
-  // This keeps the guard working even when the
-  // events(subAccountId, bookingPageSlug, startAt) composite index hasn't
-  // been deployed/built yet (an inequality + count aggregation would throw
-  // FAILED_PRECONDITION and surface as a generic 500). Bookings per page
-  // are bounded, so the in-memory scan is cheap.
-  const nowMs = Date.now();
+  // Block delete when future bookings still reference the slug (counted
+  // without the composite index; see upcomingBookingCount).
   let futureCount: number;
   try {
-    const eventsSnap = await db
-      .collection("events")
-      .where("subAccountId", "==", subAccountId)
-      .where("bookingPageSlug", "==", slug)
-      .get();
-    futureCount = eventsSnap.docs.filter((doc) => {
-      const startAt = doc.get("startAt") as { toMillis?: () => number } | null;
-      const ms = startAt?.toMillis?.();
-      return typeof ms === "number" && ms >= nowMs;
-    }).length;
+    futureCount = await upcomingBookingCount(subAccountId, slug);
   } catch (err) {
     console.error(
       `[booking-pages/delete] future-bookings check failed sa=${subAccountId} slug=${slug}`,

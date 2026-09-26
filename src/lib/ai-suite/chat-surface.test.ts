@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
+import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
 import type { AiSuiteCapability } from "./capabilities";
 
 /**
@@ -197,6 +198,11 @@ describe("registry invariants", () => {
     pause_recurring_schedule: { scheduleId: "rs_sample" },
     resume_recurring_schedule: { scheduleId: "rs_paused" },
     cancel_recurring_schedule: { scheduleId: "rs_sample" },
+    delete_task: { taskId: "t_sample" },
+    set_event_status: { eventId: "ev_sample", status: "cancelled" },
+    create_booking_page: pageForm("consult-2", { name: "Second consult", status: "published" }),
+    update_booking_page: { slug: "bp-live", durationMinutes: 45 },
+    delete_booking_page: { slug: "bp-live" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
@@ -243,6 +249,9 @@ describe("registry invariants", () => {
     mem.seed("quotes/q_accepted", { ...QUOTE, contactId: "c_sample", status: "accepted" });
     mem.seed("recurringInvoices/rs_sample", { ...SCHEDULE, contactId: "c_sample" });
     mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, contactId: "c_sample", status: "paused" });
+    mem.seed("tasks/t_sample", { subAccountId: "sa1", agencyId: "ag1", title: "Call", contactId: "c_sample", territoryId: "global" });
+    mem.seed("events/ev_sample", pastEvent({ contactId: "c_sample" }));
+    mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", status: "published" });
   };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {
