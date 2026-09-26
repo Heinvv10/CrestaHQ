@@ -270,7 +270,8 @@ was enabled on, and the deployment sets the kill switch.
   (`/agency/sub-accounts`), which is `reviewsAutoReplyEnabledByAgency`. Either stops posting within the current run, because both are
   re-checked before every post. Settings and held drafts are kept.
 - **Off EVERYWHERE:** the kill switch, as above.
-- **Alerts:** reviews waiting for approval, Google needing a reconnect, an
+- **Alerts:** reviews waiting for approval, Google needing a reconnect (while
+  auto-reply is on), an
   auto-replied review edited down to ≤3★, and auto-reply switched off by a
   listing change — each recorded in `subAccounts/{id}/reviewAutoReplyAlerts`
   and sent by web push and email. Triggers, recipients and dedupe:

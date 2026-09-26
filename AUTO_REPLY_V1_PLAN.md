@@ -1,6 +1,6 @@
 # Review auto-reply v1
 
-> Status: **BUILT, PARTLY DEPLOYED (2026-09-26)** — PRs 1–3 merged (#284 gate + settings, #287 engine behind the kill switch, #291 UI); PR 4 (alerts, #294) and PR 5 (docs, parity ledger, sentiment fence, #296). **#284 and #287 are live** (release `ac461be1`, 2026-09-26 11:49) but inert — `REVIEWS_AUTO_REPLY_ENABLED` is not set in prod. **#291 (UI) and later are not deployed: do not set the kill switch before they are** (held drafts would be invisible). The live proof on Velocity (#1002) is pending that deploy and the owner steps below. Plan: rev 5 (2026-09-26, PR 2 review).
+> Status: **BUILT, PARTLY DEPLOYED (2026-09-26)** — PRs 1–3 merged (#284 gate + settings, #287 engine behind the kill switch, #291 UI); PR 4 (alerts, #294) and PR 5 (docs, parity ledger, sentiment fence, #296) in review. **#284 and #287 are live** (release `ac461be1`, 2026-09-26 11:49) but inert — `REVIEWS_AUTO_REPLY_ENABLED` is not set in prod. **#291 (UI) and later are not deployed: do not set the kill switch before they are** (held drafts would be invisible). The live proof on Velocity (#1002) is pending that deploy and the owner steps below. Plan: rev 5 (2026-09-26, PR 2 review).
 > **Rev 5 (2026-09-26, PR 2 review)** folds in the PR 2 team review's rulings: a review that has or ever had a
 > reply is never auto-posted to (sticky `hadReply` + a durable `autoReplyNever/{stableReviewKey}` marker outside the
 > cache); markers and Discards are keyed by an ACCOUNT-INDEPENDENT `stableReviewKey` = sha256 of
@@ -125,9 +125,10 @@ does not delete settings or pending drafts.
 ### Kill switch
 
 Env `REVIEWS_AUTO_REPLY_ENABLED` — unset = the engine never runs anywhere on
-this deployment. Merging PR 2 is inert until it is set; unsetting it is the
-incident stop — it needs a restart of both blue/green colours, so it is a
-minutes-scale stop, not instant (RUNBOOK note in PR 5). *PR 5 correction:* the stop is setting it to `0` (not unsetting) and restarting the live colour only — see [RUNBOOK.md](RUNBOOK.md#review-auto-reply). PR 2 is not deployed with it set before PR 3 ships (held drafts
+this deployment. Merging PR 2 is inert until it is set. The incident stop is
+setting it to `0` (not unsetting it) and restarting the live colour — a
+minutes-scale stop, not instant; see [RUNBOOK.md](RUNBOOK.md#review-auto-reply)
+(corrected in PR 5 from "unset + restart both colours"). PR 2 is not deployed with it set before PR 3 ships (held drafts
 would be invisible).
 
 ### Engine — `lib/reputation/auto-reply/`
