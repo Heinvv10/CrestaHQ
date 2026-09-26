@@ -124,9 +124,10 @@ function httpUrl(raw: string, base?: string): URL | null {
   }
 }
 
-async function fetchHomepage(
+export async function fetchHomepage(
   website: string,
   deadline: AbortSignal,
+  maxBytes: number = HOMEPAGE_MAX_BYTES,
 ): Promise<{ html: string; url: string } | null> {
   let url = httpUrl(website);
   const signal = AbortSignal.any([AbortSignal.timeout(SITE_TIMEOUT_MS), deadline]);
@@ -135,7 +136,7 @@ async function fetchHomepage(
       const res = await publicFetch(url.href, {
         headers: { "User-Agent": USER_AGENT, Accept: "text/html" },
         signal,
-        maxBytes: HOMEPAGE_MAX_BYTES,
+        maxBytes,
       });
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {

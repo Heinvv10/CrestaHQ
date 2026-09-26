@@ -21,6 +21,7 @@ vi.mock("@/lib/push/config", () => ({ pushIsConfigured: () => true }));
 import { execWebhook } from "@/lib/workflows/engine";
 import { webinar1Fetcher } from "@/lib/webinar1/client";
 import { renderQuotePdfStream } from "@/lib/quotes/pdf-render";
+import { runProspectReport } from "@/lib/prospecting/report-runner";
 import { POST as subscribePush } from "@/app/api/push/subscriptions/route";
 import type { Quote } from "@/types/quotes";
 
@@ -89,6 +90,19 @@ describe("tenant-URL fetchers refuse internal addresses", () => {
         businessLogoUrl: `${base}/logo.png`,
         recipientName: "R",
       }),
+    );
+    expect(hits).toEqual([]);
+  });
+
+  it("prospect report homepage (shared by every website section)", async () => {
+    // No sections: only the runner's own homepage fetch runs, so nothing
+    // leaves the box (directory searches and Places are fixed public hosts).
+    await runProspectReport(
+      {
+        name: "Biz", phone: null, address: null, website: `${base}/home`, placeId: null,
+        rating: null, reviewsCount: null, category: null, city: null,
+      },
+      { sections: [] },
     );
     expect(hits).toEqual([]);
   });
