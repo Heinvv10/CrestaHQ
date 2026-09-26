@@ -165,12 +165,13 @@ export async function changeEventStatus(
   }
   // The transition is decided on the status read in the write's own
   // transaction: of two callers changing it at once, only the winner writes
-  // and runs the side effects; the other gets a noop (no notice, no trigger).
+  // and runs the side effects, on the event as read there (its live contact).
   const ref = getAdminDb().collection("events").doc(event.id);
   let outcome: "write" | "noop" | string;
+  let live: CalendarEvent = event;
   try {
     outcome = await getAdminDb().runTransaction(async (tx) => {
-      const live = { ...event, ...((await tx.get(ref)).data() as Partial<CalendarEvent> | undefined) };
+      live = { ...event, ...((await tx.get(ref)).data() as Partial<CalendarEvent> | undefined), id: event.id };
       if (eventStatus(live) === next) return "noop";
       const refused = statusChangeError(live, next, Date.now());
       if (refused) return refused;
@@ -183,7 +184,7 @@ export async function changeEventStatus(
   }
   if (outcome === "noop") return { ok: true, httpStatus: 200, status: next, noop: true };
   if (outcome !== "write") return { ok: false, httpStatus: 409, error: outcome };
-  if (next === "cancelled") await pushBookingToGoogle(event.id);
+  if (next === "cancelled") await pushBookingToGoogle(live.id);
 
   // A test-mode event (v1 `lsk_test_*` key) gets the validated status write
   // only — no activity row, no workflow trigger, no email. The public API
@@ -199,7 +200,7 @@ export async function changeEventStatus(
       emailSkipReason: "test_mode",
     };
   }
-  const sideEffects = await runStatusSideEffects(event, next, reason, opts);
+  const sideEffects = await runStatusSideEffects(live, next, reason, opts);
   return {
     ok: true,
     httpStatus: 200,
