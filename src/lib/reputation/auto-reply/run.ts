@@ -13,6 +13,7 @@ import { beginDraftCall, draftInputFor } from "../draft";
 import { reviewBasis } from "../sentiment-basis";
 import { sentimentUsagePath } from "../sentiment-calls";
 import { decide, type DecideCounts, type DecideReview, type DecideSettings, type Decision } from "./decide";
+import { sendAutoReplyAlert } from "./alerts";
 import { autoReplyKillSwitchOn } from "./kill-switch";
 import { postQueued } from "./post";
 import { AUTO_REPLY_DAILY_DRAFT_CAP, readAutoReplySettings } from "./settings";
@@ -29,14 +30,17 @@ import {
  * sub-account (lease); every review decided (decide.ts) newest first; each
  * draft stored on the review BEFORE any post (so a retry posts the same
  * bytes); each post through post.ts. The deadline is checked before every
- * draft and every post. Never throws: a failure is logged by kind and the
- * next sync's run carries on from the stored state.
+ * draft and every post. A run that NEWLY holds ≥1 review for a person
+ * sends one alert (alerts.ts). Never throws: a failure is logged by kind and
+ * the next sync's run carries on from the stored state.
  */
 
 export interface AutoReplyRun {
   drafted: number;
   posted: number;
   held: number;
+  /** Held by THIS run — not already held for the same content and reason before it. */
+  newlyHeld: number;
   stop: string | null;
 }
 
@@ -71,7 +75,7 @@ interface Ctx {
 }
 
 async function runEngine(sa: string, runStartedAt: number, deadline: number): Promise<AutoReplyRun> {
-  const tally: AutoReplyRun = { drafted: 0, posted: 0, held: 0, stop: null };
+  const tally: AutoReplyRun = { drafted: 0, posted: 0, held: 0, newlyHeld: 0, stop: null };
   const db = getAdminDb();
   const sub = (await db.doc(`subAccounts/${sa}`).get()).data() ?? {};
   const gatesOn = sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
@@ -109,6 +113,7 @@ async function runEngine(sa: string, runStartedAt: number, deadline: number): Pr
   } finally {
     await releaseAutoReplyLease(sa, runId);
   }
+  if (tally.newlyHeld > 0) await sendAutoReplyAlert(sa, { kind: "held", runId, count: tally.newlyHeld });
   return tally;
 }
 
@@ -137,7 +142,7 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
   if (d.verdict === "skip") return null;
   if (d.verdict === "to_approval") {
     const p = readPending(data.pendingReply);
-    if (p?.textHash) await holdQueuedForApproval(ctx.sa, docId, p.textHash);
+    if (p?.textHash && (await holdQueuedForApproval(ctx.sa, docId, p.textHash))) ctx.tally.newlyHeld += 1;
     ctx.tally.held += 1;
     return null;
   }
@@ -145,14 +150,16 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
   if (d.verdict === "hold" && !d.draft) {
     const p = review.pending;
     if (!(p?.reason === d.reason && p.basisHash === basisHash)) {
-      await storePending(ctx.sa, docId, { text: null, basisHash, reason: d.reason, model: null }, new Date());
+      if (await storePending(ctx.sa, docId, { text: null, basisHash, reason: d.reason, model: null }, new Date())) {
+        ctx.tally.newlyHeld += 1;
+      }
     }
     ctx.tally.held += 1;
     return null;
   }
   let text = d.verdict === "auto" && d.stored ? readPending(data.pendingReply)?.text ?? null : null;
   if (text === null) {
-    const drafted = await draft(ctx, docId, basisHash, d.verdict === "auto" ? "auto_queued" : d.reason);
+    const drafted = await draft(ctx, docId, basisHash, d.verdict === "auto" ? "auto_queued" : d.reason, review.pending);
     if (drafted !== null && typeof drafted === "object") return drafted.stop;
     if (drafted === null || d.verdict !== "auto") return null;
     text = drafted;
@@ -173,15 +180,18 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
  */
 async function draft(
   ctx: Ctx, docId: string, basisHash: string,
-  reason: "auto_queued" | "approval" | "texted",
+  reason: "auto_queued" | "approval" | "texted", before: DecideReview["pending"],
 ): Promise<string | { stop: string } | null> {
+  // Already held for this reason and content before this run: not news.
+  const heldAlready = (r: string) => before?.reason === r && before.basisHash === basisHash;
   if (Date.now() >= ctx.deadline) return { stop: "deadline" };
   if (!(await renewAutoReplyLease(ctx.sa, ctx.runId, Date.now()))) return { stop: "lease_lost" };
   const stop = await beginDraftCall(ctx.sa, { auto: true });
   if (stop === "gate_off" || stop === "ai_gate_off") return { stop };
   if (stop) {
     ctx.counts.autoDraftsToday = AUTO_REPLY_DAILY_DRAFT_CAP;
-    await storePending(ctx.sa, docId, { text: null, basisHash, reason: "no_budget", model: null }, new Date());
+    const stored = await storePending(ctx.sa, docId, { text: null, basisHash, reason: "no_budget", model: null }, new Date());
+    if (stored && !heldAlready("no_budget")) ctx.tally.newlyHeld += 1;
     ctx.tally.held += 1;
     return null;
   }
@@ -198,6 +208,9 @@ async function draft(
   const stored = await storePending(ctx.sa, docId, { text: result.text, basisHash, reason, model: ctx.ai.model }, new Date());
   if (!stored) return null;
   ctx.tally.drafted += 1;
-  if (reason !== "auto_queued") ctx.tally.held += 1;
+  if (reason !== "auto_queued") {
+    ctx.tally.held += 1;
+    if (!heldAlready(reason)) ctx.tally.newlyHeld += 1;
+  }
   return result.text;
 }

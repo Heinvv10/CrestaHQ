@@ -38,7 +38,7 @@ export async function POST(request: Request, ctx: Ctx) {
   const outcome = await dismissAutoReply(id, target.docId, access.uid, new Date());
   if (outcome === "not_found") return gbpRefusal(404, "not_found", "Review not found.");
   if (outcome === "nothing_to_dismiss") {
-    return gbpRefusal(409, "nothing_to_dismiss", "This review has a reply or no auto-reply draft to discard.");
+    return gbpRefusal(409, "nothing_to_dismiss", "This review changed — the list has been refreshed.");
   }
   return NextResponse.json({ ok: true });
 }

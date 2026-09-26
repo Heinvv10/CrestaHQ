@@ -189,6 +189,15 @@ clear — including the same location through another account — also sets
 "switched off because the listing changed" note; the listing route and
 `clearListing` write it, any admin switch through the settings route clears
 it to null; absent reads as null).
+`subAccounts/{id}/reviewAutoReplyAlerts/{alertId} {agencyId, subAccountId,
+createdByUid: "system", kind, createdAt, count?, star?, reviewDocId?}` — one
+doc per auto-reply alert (`lib/reputation/auto-reply/alerts.ts`), created
+before the push/email so an existing id means "already sent": `held-{runId}`
+(an engine run that newly held reviews; `count`), `edited-{stableReviewKey}`
+(an auto-replied review edited down to ≤3★, once per review ever; `star`),
+and auto ids for `reconnect_required` and `listing_changed` (their writers'
+flips are the dedupe). No review text or reviewer name. Server-only (no
+client rule), no index, no retention yet.
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
 random bytes base64url, never derived from a tenant id) holds the widget config

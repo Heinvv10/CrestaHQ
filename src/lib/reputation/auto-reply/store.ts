@@ -204,11 +204,13 @@ export async function markPostFailed(sa: string, docId: string, textHash: string
 }
 
 /** A queued draft its review no longer qualifies for (step 4b): kept, now waits for a person. */
-export async function holdQueuedForApproval(sa: string, docId: string, textHash: string): Promise<void> {
+export async function holdQueuedForApproval(sa: string, docId: string, textHash: string): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
-  await db.runTransaction(async (tx) => {
+  return db.runTransaction(async (tx) => {
     const d = (await tx.get(ref)).data() as ReviewData | undefined;
-    if (stillQueued(d, textHash)) tx.update(ref, { "pendingReply.reason": "approval" });
+    if (!stillQueued(d, textHash)) return false;
+    tx.update(ref, { "pendingReply.reason": "approval" });
+    return true;
   });
 }

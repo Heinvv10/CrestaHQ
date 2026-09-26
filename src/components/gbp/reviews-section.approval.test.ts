@@ -14,7 +14,7 @@ import { ReviewsSection } from "./reviews-section";
 
 const BASE = "/api/sub-accounts/sa1/gbp/reviews";
 const DRAFT = "Thank you for your 3-star review of Velo Test Fibre.";
-const DISMISS_409 = "This review has a reply or no auto-reply draft to discard.";
+const DISMISS_409 = "This review changed — the list has been refreshed.";
 
 const review = (id: string, over: Record<string, unknown> = {}) => ({
   reviewId: id, docId: `doc-${id}`,

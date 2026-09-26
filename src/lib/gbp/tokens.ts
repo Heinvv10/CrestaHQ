@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 import { GOOGLE_SCOPE, type GoogleTokens } from "@/lib/google/oauth";
 import {
   googleConnectionSecretPath,
@@ -38,6 +39,8 @@ export class GbpNotConnectedError extends Error {
  * instead, unflagged. Returns null when flagged, or when there is no
  * connection at all. Deep-merges into the meta (keeping `connected`,
  * `scopes`…) and keeps the secret so a disconnect can still revoke it.
+ * The flag flipping false→true (seen inside the transaction, so exactly one
+ * writer sees it) sends one alert after the commit.
  */
 export async function markReconnectRequiredIf(
   subAccountId: string,
@@ -46,7 +49,10 @@ export async function markReconnectRequiredIf(
 ): Promise<GoogleConnectionSecret | null> {
   const db = getAdminDb();
   const secretRef = db.doc(googleConnectionSecretPath(subAccountId));
-  return db.runTransaction(async (tx) => {
+  const subRef = db.doc(`subAccounts/${subAccountId}`);
+  let flipped = false;
+  const result = await db.runTransaction(async (tx) => {
+    flipped = false;
     const snap = await tx.get(secretRef);
     const current = snap.exists ? (snap.data() as GoogleConnectionSecret) : null;
     if (!current) return null;
@@ -55,8 +61,10 @@ export async function markReconnectRequiredIf(
         ? current.refreshToken === expected.refreshToken
         : current.accessToken === expected.accessToken;
     if (!unchanged) return current;
+    const sub = (await tx.get(subRef)).data();
+    flipped = sub?.googleConnectionMeta?.reconnectRequired !== true;
     tx.set(
-      db.doc(`subAccounts/${subAccountId}`),
+      subRef,
       {
         googleConnectionMeta: { reconnectRequired: true, reconnectReason: reason },
         updatedAt: FieldValue.serverTimestamp(),
@@ -65,6 +73,8 @@ export async function markReconnectRequiredIf(
     );
     return null;
   });
+  if (flipped) await sendAutoReplyAlert(subAccountId, { kind: "reconnect_required" });
+  return result;
 }
 
 /**
