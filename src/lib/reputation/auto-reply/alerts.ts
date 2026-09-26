@@ -124,7 +124,7 @@ function message(sa: string, alert: AutoReplyAlert): Message {
         title: `An auto-replied review changed to ${alert.star}★`,
         body: text ? `“${text}”` : "No written text",
         url: reviews,
-        detail: `A Google review that was replied to automatically was edited to ${alert.star}★. The automatic reply is still published — check it still fits.${text ? `\n\n“${text}”` : ""}`,
+        detail: `A Google review that was replied to automatically was edited to ${alert.star}★. Check that the reply still fits.${text ? `\n\n“${text}”` : ""}`,
       };
     }
     case "reconnect_required":

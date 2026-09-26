@@ -206,6 +206,25 @@ export async function markPostFailed(sa: string, docId: string, textHash: string
   });
 }
 
+/**
+ * The held alert's dedupe (alerts.ts): true — and recorded as
+ * `heldAlertBasis` on the review — the FIRST time this review, at this
+ * content, is put in front of a person; false every later time, whatever
+ * `pendingReply.reason` it passed through meanwhile (a draft failing, a daily
+ * limit, a retry). New content (another basis) counts again. Outside
+ * `pendingReply`, so reason rewrites never clear it; purged with the review.
+ */
+export async function markHeldAlerted(sa: string, docId: string, basisHash: string): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
+  return db.runTransaction(async (tx) => {
+    const d = (await tx.get(ref)).data();
+    if (!d || d.heldAlertBasis === basisHash) return false;
+    tx.update(ref, { heldAlertBasis: basisHash });
+    return true;
+  });
+}
+
 /** A queued draft its review no longer qualifies for (step 4b): kept, now waits for a person. */
 export async function holdQueuedForApproval(sa: string, docId: string, textHash: string): Promise<boolean> {
   const db = getAdminDb();

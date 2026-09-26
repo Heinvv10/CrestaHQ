@@ -719,9 +719,11 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   already sent); delivery is then background and at most once (a failed send
   is logged, not retried). **held** — an engine run that put ≥1 review in
   front of a person (`approval`/`texted`, or a queued draft moved to approval
-  by a mode switch or a switch off/on — or such a review whose draft failed,
-  once per content, not on its daily retry), sent even if the run then fails;
-  count only. Reviews waiting on a daily limit or an auto post's retry
+  by a mode switch or a switch off/on — or such a review whose draft failed),
+  counted once per review and content whatever states it passes through
+  (`heldAlertBasis` on the review, set by `markHeldAlerted`; purged with the
+  review, so a cache clear can count it once more), sent even if the run then
+  fails; count only. Reviews waiting on a daily limit or an auto post's retry
   (`cap`, `no_budget`, an Auto review's `draft_failed`, `post_failed`) are not
   alerted — they resolve on their own.
   **edited_low** — the sync sees an auto-replied review now at ≤3★ whose star

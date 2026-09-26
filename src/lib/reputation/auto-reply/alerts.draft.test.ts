@@ -38,6 +38,7 @@ vi.mock("./store", async (orig) => {
 import { SA, mem } from "@/test/gbp-sync-harness";
 import { pendingOf, putFixtureReview, resetAutoReply, reviewDoc, syncAndRun } from "@/test/auto-reply-harness";
 import { reviewPath } from "@/test/gbp-reply-harness";
+import { sentimentUsagePath } from "@/lib/reputation/sentiment-calls";
 import { autoReplyAlertsCollection } from "./alerts";
 
 const ORIGINAL = { ...process.env };
@@ -67,6 +68,44 @@ it("an Approval review whose draft fails → one alert; its daily retry failing 
   await syncAndRun();
   expect((pendingOf("fake-h1") as unknown as { at: Date }).at.getTime()).toBeGreaterThan(Date.now() - 60_000);
   expect(held()).toHaveLength(1);
+});
+
+it("a failing draft cycling through the daily limit (draft_failed → no_budget → draft_failed…) → still one alert", async () => {
+  putFixtureReview("fake-h1", 3, "Slow install", 29);
+  f.failDraft = true;
+  await syncAndRun();
+  const day = new Date().toISOString().slice(0, 10);
+  for (let i = 0; i < 3; i++) {
+    const doc = reviewDoc("fake-h1");
+    mem.seed(reviewPath("fake-h1"), { ...doc, pendingReply: { ...(doc.pendingReply as object), at: new Date(Date.now() - 25 * 3600_000) } });
+    mem.seed(sentimentUsagePath(SA), { day, calls: 100, draftsDay: day, draftCalls: 100, autoDraftCalls: 0 });
+    await syncAndRun();
+    expect(pendingOf("fake-h1")).toMatchObject({ reason: "no_budget" });
+    mem.seed(sentimentUsagePath(SA), { day, calls: 0, draftsDay: day, draftCalls: 0, autoDraftCalls: 0 });
+    await syncAndRun();
+    expect(pendingOf("fake-h1")).toMatchObject({ reason: "draft_failed" });
+  }
+  expect(held()).toHaveLength(1);
+});
+
+it("a failed draft, then the retry succeeds → still one alert for that review", async () => {
+  putFixtureReview("fake-h1", 3, "Slow install", 29);
+  f.failDraft = true;
+  await syncAndRun();
+  f.failDraft = false;
+  const doc = reviewDoc("fake-h1");
+  mem.seed(reviewPath("fake-h1"), { ...doc, pendingReply: { ...(doc.pendingReply as object), at: new Date(Date.now() - 25 * 3600_000) } });
+  await syncAndRun();
+  expect(pendingOf("fake-h1")).toMatchObject({ reason: "approval" });
+  expect(held()).toHaveLength(1);
+});
+
+it("the review's content changes → counted again (new content for a person)", async () => {
+  putFixtureReview("fake-h1", 3, "Slow install", 29);
+  await syncAndRun();
+  putFixtureReview("fake-h1", 2, "Slow install, and now it drops", 29);
+  await syncAndRun();
+  expect(held()).toHaveLength(2);
 });
 
 it("an Auto review whose draft fails retries on its own → no alert", async () => {

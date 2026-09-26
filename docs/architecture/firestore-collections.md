@@ -160,7 +160,8 @@ or queued to post — the only place draft text is stored; cleared by any
 posted reply, by a reply appearing at Google and by a tombstone; purged with
 the review; `reason` ∈ auto_queued, approval, texted, draft_failed,
 post_failed, no_budget, cap, dismissed), `autoReplied {at, key}` on a review
-it replied to (kept by the sync's merge), `hadReply: true` on any review ever
+it replied to (kept by the sync's merge; a person's reply sets it null),
+`heldAlertBasis` (the basis hash the held alert last counted — its dedupe), `hadReply: true` on any review ever
 seen with or given a reply (sticky; written by the sync and the reply record,
 never cleared — auto-reply never replaces a deleted reply), `private/autoReplyLease {runId, until}` (one run per
 sub-account), `private/autoReplyUsage {day (SAST), posts}` (the 20/day post
