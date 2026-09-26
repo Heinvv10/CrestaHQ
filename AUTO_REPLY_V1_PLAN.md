@@ -1,6 +1,6 @@
 # Review auto-reply v1
 
-> Status: **PLAN 2026-09-26, rev 3 after two adversarial reviews** (nothing built). Owner rulings locked in a grill
+> Status: **PLAN 2026-09-26, rev 4 after three adversarial reviews** (nothing built). Owner rulings locked in a grill
 > session with Hein on 2026-09-26. This plan **reverses** the SP5 (c) guarantee
 > in [docs/features/reputation.md](docs/features/reputation.md#ai-reply-drafts-sp5-c)
 > ("nothing posts a reply to Google except the admin's click") for sub-accounts
@@ -120,7 +120,7 @@ would be invisible).
 - `decide.ts` — pure: `(review, settings, now, counts) →
   "skip" | "hold" | "auto"`. Skip: reply present or pending in cache,
   tombstoned, not `settings.listingLocationName`, not seen by the run that just
-  finished (`lastSeenAt`/`passId` of this run — stale cache never posts),
+  finished (`lastSeenAt >= runStartedAt` — stale cache never posts),
   before `enabledAt` with backlog off. Hold: mode `approval`, any written text,
   over a cap. Auto otherwise.
 - `run.ts` — `autoReplyAfterSync(subAccountId, runStartedAt, deadline)`:
@@ -139,10 +139,15 @@ would be invisible).
   4. For `auto`: check the deadline; `loadReplyTarget` + `replyPreflight`
      again; then one transaction that re-checks kill switch, all three gates,
      `enabled`, `modes[star]`, `enabledAt`, listing, review `basisHash` and
-     `reply == null`, and counts the post against the 20/day (SAST day). Then
+     `reply == null`, **`pendingReply.reason === "auto_queued"` with the same
+     `textHash`** (a Discard clicked mid-run wins), and counts the post against the 20/day (SAST day). Then
      `postReply` with idempotency key `auto:{reviewDocId}:{textHash}` and
      **`requireNoReply`** (below); `postReply` maps `already_replied` to a skip
      that clears `pendingReply`.
+  4b. A failed step-4 re-check sets the resulting state: mode switched to
+     Approval → `reason: "approval"`, text kept (now waits for a human); gate
+     off, kill switch unset or auto-reply disabled → row kept as
+     `auto_queued`, shown as "Auto-post paused".
   5. A refused/failed draft → `pendingReply {reason: "draft_failed"}` with no
      text; the next run retries the draft once per day.
 - **`pendingReply` state table** — engine behaviour per stored state
@@ -156,6 +161,12 @@ would be invisible).
   | `draft_failed` | retry the draft once `at` is ≥24 h old | re-decide |
   | `no_budget` / `cap` | re-decide next day (may then auto-post if still eligible) | re-decide |
   | `dismissed` (Discard) | skip for good | re-decide (the review changed) |
+
+  Discards also survive a cache clear (`clearGbpCache` deletes review docs
+  when the Google gate is toggled, `feature-gates-service.ts:139-147`): Discard
+  additionally writes `subAccounts/{id}/autoReplyDismissed/{reviewDocId}
+  {basisHash, at, byUid}` — an id and a hash, no Google content — which
+  `decide` treats as `dismissed` when the hash matches.
 
   Every row has a `run.test`, including discard → rerun → no draft, no post.
 - **`requireNoReply`** — a new option on `claimAttempt` (auto path only):
@@ -197,11 +208,12 @@ would be invisible).
   `enabledAt` can exist before the engine and nothing needs resetting. A
   listing change pauses auto-reply (`listingLocationName` mismatch): the card
   shows "Paused: listing changed — re-enable to resume" and one alert is sent.
-- Reviews tab: "Needs approval" filter (`pendingReply` present, fresh, and
-  `reply == null`) with a count, over the same capped 500 served records; each row shows its reason
+- Reviews tab: "Needs approval" filter (`pendingReply` present, fresh,
+  `reason !== "dismissed"`, and `reply == null`) with a count, over the same capped 500 served records; each row shows its reason
   (held for approval vs queued to auto-post);
   the composer opens pre-filled with the draft; **Post** uses the existing
-  human reply route; **Discard** clears `pendingReply`. Auto-posted replies
+  human reply route; **Discard** marks it dismissed (see the state table) and
+  removes it from the filter — E2E asserts the count drops and the row is gone. Auto-posted replies
   show a small "Auto-replied" tag.
 
 ### Alerts
