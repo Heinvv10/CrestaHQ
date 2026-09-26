@@ -317,8 +317,25 @@ jobs:
       - name: Playwright
         run: pnpm exec playwright test
 
-      - name: Upload report
+      # login.spec.ts opts its own trace/screenshot off, but Playwright still
+      # writes an error-context.md aria snapshot on failure, and that snapshot
+      # records input VALUES — including whatever E2E_PASSWORD the spec typed
+      # into the password field. The html reporter embeds it into
+      # playwright-report/, which the next step uploads as an artifact; GitHub
+      # only masks a registered secret in the Actions LOG, never in an
+      # uploaded artifact. Redact before every upload. The upload step below
+      # is gated on `steps.redact.outcome == 'success'` (not `!= 'failure'`),
+      # so a skipped or cancelled redact also blocks the upload — a fail-open
+      # `if: always()` on the upload would make the script's exit 1 cosmetic.
+      # E2E_PASSWORD is already in this job's env block above; no need to
+      # redeclare it here.
+      - name: Redact E2E password from report
+        id: redact
         if: always()
+        run: node scripts/ci/redact-secret-artifacts.mjs playwright-report test-results
+
+      - name: Upload report
+        if: ${{ always() && steps.redact.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report
