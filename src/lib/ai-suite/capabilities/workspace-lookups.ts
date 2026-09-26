@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { PIPELINE_STAGES } from "@/types/deals";
 import {
+  canSeeTerritory,
   collectVisible,
   scopedCount,
   scopedDocs,
@@ -11,6 +12,10 @@ import {
 import { type AiSuiteCapability } from "./types";
 import { str, fmtMoney } from "./helpers";
 import { oneLine } from "./text-safety";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
+
+/** find_contacts' partial-match scan: this many visible contacts, newest first. */
+const SCAN_CAP = 500;
 
 export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -39,36 +44,52 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Search contacts for “${args.query}”.`,
     execute: async (ctx, args) => {
-      const q = (args.query as string).toLowerCase();
+      const raw = (args.query as string).trim();
+      const q = raw.toLowerCase();
       const qDigits = q.replace(/\D/g, "");
       const scope = await territoryScopeFor(ctx);
-      const docs = await scopedDocs(
-        scope,
-        getAdminDb()
-          .collection("contacts")
-          .where("subAccountId", "==", ctx.subAccountId!)
-          .limit(500)
-      );
-      const matches = docs
-        .filter((d) => {
-          const data = d.data();
-          const text = [data.name, data.email, data.company]
-            .filter((v): v is string => typeof v === "string")
-            .join(" ")
-            .toLowerCase();
-          if (text.includes(q)) return true;
-          const phone =
-            typeof data.phone === "string" ? data.phone.replace(/\D/g, "") : "";
-          return qDigits.length >= 4 && phone.includes(qDigits);
-        })
+      const db = getAdminDb();
+      const contacts = db.collection("contacts").where("subAccountId", "==", ctx.subAccountId!);
+      // Exact matches across EVERY contact first: two equality filters need no
+      // composite index. Emails are stored as typed (newer paths lowercase
+      // them) and phones as E.164 where they parse, like the write paths do.
+      const sub = (await db.doc(`subAccounts/${ctx.subAccountId}`).get()).data();
+      const e164 = normalizePhoneE164(raw, sub?.defaultPhoneCountry as string | undefined);
+      const exact = await Promise.all([
+        raw.includes("@") ? contacts.where("email", "in", [...new Set([raw, q])]).limit(10).get() : null,
+        e164 ? contacts.where("phone", "in", [...new Set([e164, raw])]).limit(10).get() : null,
+        contacts.where("name", "==", raw).limit(10).get(),
+      ]);
+      // Then partial matches among the most recently created contacts (the
+      // (subAccountId, createdAt desc) index; the Contacts page orders the same way,
+      // so a contact without createdAt is outside both).
+      const { docs: recent, scanCapped } = await collectVisible(scope, contacts.orderBy("createdAt", "desc"), {
+        want: SCAN_CAP,
+        maxScan: SCAN_CAP * 4,
+      });
+      const partial = recent.filter((d) => {
+        const data = d.data();
+        const text = [data.name, data.email, data.company]
+          .filter((v): v is string => typeof v === "string")
+          .join(" ")
+          .toLowerCase();
+        if (text.includes(q)) return true;
+        const phone =
+          typeof data.phone === "string" ? data.phone.replace(/\D/g, "") : "";
+        return qDigits.length >= 4 && phone.includes(qDigits);
+      });
+      const seen = new Set<string>();
+      const matches = [...exact.flatMap((snap) => snap?.docs ?? []), ...partial]
+        .filter((d) => canSeeTerritory(scope, d.data().territoryId) && !seen.has(d.id) && seen.add(d.id))
         .slice(0, 8);
+      // Every contact the caller can see was scanned only when the scan ended short.
+      const partialNote =
+        recent.length >= SCAN_CAP || scanCapped
+          ? `Exact email, phone and full-name matches were checked across all contacts; partial matches only among the ${recent.length} most recently created.`
+          : "";
       if (matches.length === 0) {
         return {
-          resultText: `No contacts matched “${args.query}”${
-            docs.length >= 500
-              ? " (searched the 500 most recently indexed contacts)"
-              : ""
-          }.`,
+          resultText: `No contacts matched “${args.query}”.${partialNote ? ` ${partialNote}` : ""}`,
         };
       }
       const lines = matches.map((d) => {
@@ -83,7 +104,9 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
         }`;
       });
       return {
-        resultText: `Contacts matching “${args.query}” (${matches.length}):\n${lines.join("\n")}`,
+        resultText: `Contacts matching “${args.query}” (${matches.length}):\n${lines.join("\n")}${
+          partialNote ? `\n${partialNote}` : ""
+        }`,
       };
     },
   },
