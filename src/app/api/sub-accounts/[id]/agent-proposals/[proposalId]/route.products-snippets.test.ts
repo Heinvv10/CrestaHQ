@@ -240,6 +240,21 @@ describe("snippets", () => {
     }
   });
 
+  it("ordinary names in other languages and scripts are accepted", async () => {
+    for (const name of ["Stra\u00dfe", "Caf\u00e9 cr\u00e8me", "Nguy\u1ec5n", "Zo\u00eb", "fa\u00e7ade", "O'Brien", "\u041c\u043e\u0441\u043a\u0432\u0430 office", "\u0391\u03b8\u03ae\u03bd\u03b1 branch", "\u65e5\u672c office", "\u00b5-controller", "\u0394-value"] as const) {
+      expect(await call("create_snippet", { name, type: "text", body: "Hi" }), name).toMatchObject({ ok: true });
+    }
+  });
+
+  it("update_snippet to another snippet's name is refused; another sub-account's same name doesn't count", async () => {
+    mem.seed("snippets/sn2", { ...SNIPPET, name: "Welcome" });
+    expect(await call("update_snippet", { snippetId: "sn1", name: "welcome", type: "text", body: "Hi" })).toMatchObject({
+      ok: false, message: "The name is the same as, or looks like, an existing one (another snippet's).",
+    });
+    mem.seed("snippets/sn9", { ...SNIPPET, subAccountId: "sa2", name: "Pricing" });
+    expect(await call("create_snippet", { name: "Pricing", type: "text", body: "Hi" })).toMatchObject({ ok: true });
+  });
+
   it("an invisible character in the body is refused as such (not as a missing body)", async () => {
     expect(await call("create_snippet", { name: "X", type: "text", body: "Hi\u200bthere" })).toMatchObject({
       ok: false, message: expect.stringMatching(/^the body contains characters/),

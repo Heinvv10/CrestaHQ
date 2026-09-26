@@ -140,9 +140,11 @@ export function skeleton(value: string): string {
 
 const ASCII = /^[\x00-\x7f]*$/;
 
-/** A word mixing Latin with Cyrillic or Greek letters: "B\u0430nk" (a
- *  Cyrillic a) reads as "Bank". A word wholly in one script is fine. */
-const MIXED_SCRIPT_WORD = /(?=\S*\p{Script=Latin})(?=\S*[\p{Script=Cyrillic}\p{Script=Greek}])\S+/u;
+/** A run of letters / digits mixing Latin with Cyrillic or Greek:
+ *  "B\u0430nk" (a Cyrillic a) reads as "Bank". A run wholly in one script is
+ *  fine, and so are scripts joined by punctuation ("\u00b5-controller"; a
+ *  Greek prefix like "\u0394-value" is accepted the same way). */
+const MIXED_SCRIPT_WORD = /(?=[\p{L}\p{M}\p{N}]*\p{Script=Latin})(?=[\p{L}\p{M}\p{N}]*[\p{Script=Cyrillic}\p{Script=Greek}])[\p{L}\p{M}\p{N}]+/u;
 
 /**
  * Why an agent-chosen name could pass for another, or null: a word mixing
