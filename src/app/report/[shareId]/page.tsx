@@ -1,10 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { Badge } from "@/components/ui/badge";
+import { ReportSections } from "@/components/prospecting/report-view";
 import { buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { resolvePublicReport, type PublicReportSection } from "@/lib/prospecting/public-report";
-import type { ProspectSectionKey } from "@/types";
+import { resolvePublicReport } from "@/lib/prospecting/public-report";
 
 export const dynamic = "force-dynamic";
 
@@ -13,25 +11,6 @@ export const metadata: Metadata = {
   title: "Online presence report",
   robots: { index: false, follow: false },
   referrer: "no-referrer",
-};
-
-const LABELS: Record<ProspectSectionKey, string> = {
-  business_details: "Business details",
-  gbp: "Google Business Profile",
-  reputation: "Reviews & reputation",
-  listings: "Directory listings",
-  website_performance: "Website performance",
-  tech_stack: "Website technology",
-  ai_readiness: "AI readiness",
-  ai_presence: "AI search presence",
-  ads: "Advertising",
-  lead_capture: "Lead capture",
-};
-
-const STATUS_NOTE: Record<Exclude<PublicReportSection["status"], "ok">, string> = {
-  unavailable: "Could not be measured",
-  timeout: "Timed out",
-  failed: "Check failed",
 };
 
 /**
@@ -78,32 +57,7 @@ export default async function SharedReportPage({
           ) : null}
         </div>
 
-        {report.sections.map((s) => (
-          <Card key={s.key} data-testid={`report-section-${s.key}`}>
-            <CardHeader className="flex flex-row items-center justify-between gap-3">
-              <CardTitle className="text-base">{LABELS[s.key] ?? s.key}</CardTitle>
-              {s.status === "ok" && s.score !== null ? (
-                <Badge variant="secondary">{s.score}/100</Badge>
-              ) : s.status !== "ok" ? (
-                <Badge variant="outline">{STATUS_NOTE[s.status]}</Badge>
-              ) : null}
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              {s.status !== "ok" && s.reason ? (
-                <p className="text-muted-foreground">{s.reason}</p>
-              ) : null}
-              {s.findings.length > 0 ? (
-                <ul className="list-disc space-y-1 pl-5">
-                  {s.findings.map((f) => (
-                    <li key={f.code}>{f.text}</li>
-                  ))}
-                </ul>
-              ) : s.status === "ok" ? (
-                <p className="text-muted-foreground">No issues found.</p>
-              ) : null}
-            </CardContent>
-          </Card>
-        ))}
+        <ReportSections sections={report.sections} />
 
         {report.cta ? (
           <div className="rounded-xl border bg-card p-6 text-center">

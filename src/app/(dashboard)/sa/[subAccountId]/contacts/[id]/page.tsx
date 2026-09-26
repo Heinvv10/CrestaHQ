@@ -14,6 +14,7 @@ import { ContactConsentCard } from "@/components/contacts/contact-consent-card";
 import { ContactDeals } from "@/components/contacts/contact-deals";
 import { ContactQuotes } from "@/components/contacts/contact-quotes";
 import { ContactPaymentMandates } from "@/components/contacts/contact-payment-mandates";
+import { ContactProspectReports } from "@/components/contacts/contact-prospect-reports";
 import { ContactTasks } from "@/components/contacts/contact-tasks";
 import { ContactMessagesThread } from "@/components/contacts/contact-messages-thread";
 import { ContactWhatsappThread } from "@/components/contacts/contact-whatsapp-thread";
@@ -78,6 +79,7 @@ export default function ContactProfilePage() {
           scope={{ agencyId: agencyId ?? "", subAccountId }}
         />
         <ContactPaymentMandates subAccountId={subAccountId} contactId={contact.id} />
+        <ContactProspectReports contactId={contact.id} />
         <ContactTasks contact={contact} />
         {showMessages && <ContactMessagesThread contact={contact} />}
         {showWhatsapp && <ContactWhatsappThread contact={contact} />}

@@ -27,6 +27,7 @@ beforeEach(() => {
     headline: "No opening hours on Google", generatedAt: new Date("2026-09-20T00:00:00Z"), usageMonth: "2026-09",
     sections: [
       { key: "gbp", status: "ok", score: 60, findings: [{ code: "gbp_no_hours", text: "No opening hours listed." }], raw: { s: "RAW-SENTINEL" } },
+      { key: "lead_capture", status: "ok", score: 20, findings: [], raw: { whatsapp: false, booking: true, s: "RAW-SENTINEL" } },
       { key: "ads", status: "timeout", score: null, findings: [], reason: "The ad library did not answer in time.", raw: {} },
     ],
   });
@@ -44,7 +45,7 @@ async function token(): Promise<string> {
 describe("/report/[token]", () => {
   it("renders the branded report, the honest timeout, and the booking CTA", async () => {
     const html = await render(await token());
-    for (const text of ["Cresta Agency", "Acme Plumbing", "No opening hours on Google", "60/100", "No opening hours listed.", "Timed out", "The ad library did not answer in time.", 'href="/b/sa1/intro"']) {
+    for (const text of ["Cresta Agency", "Acme Plumbing", "No opening hours on Google", "60/100", "No opening hours listed.", "Timed out", "The ad library did not answer in time.", 'href="/b/sa1/intro"', "WhatsApp click-to-chat", "Online booking"]) {
       expect(html).toContain(text);
     }
     expect(html).not.toContain("RAW-SENTINEL");
