@@ -36,6 +36,17 @@ let recordsExist: boolean;
 
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
+    // changeEventStatus decides the transition in a transaction: reads pass
+    // through, writes apply when it commits (a failing write fails it).
+    runTransaction: async (fn: (tx: unknown) => unknown) => {
+      const writes: Array<() => unknown> = [];
+      const result = await fn({
+        get: (r: { get: () => unknown }) => r.get(),
+        update: (r: { update: (p: unknown) => unknown }, p: unknown) => writes.push(() => r.update(p)),
+      });
+      for (const w of writes) await w();
+      return result;
+    },
     collection: () => ({
       doc: () => ({
         get: async () => ({

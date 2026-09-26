@@ -12,7 +12,7 @@ import { CapabilityUserError, type AiSuiteActionContext, type AiSuiteCapability 
 import { agentActor, str } from "./helpers";
 import { oneLine } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
-import { assertPageName, formOf, PAGE_PROPS, pageFields, pageRows, slugParam, tenantPage } from "./booking-page-support";
+import { assertPageName, assertPageTerritory, formOf, PAGE_PROPS, pageFields, pageRows, slugParam, tenantPage } from "./booking-page-support";
 
 /**
  * Booking pages for API agents (AGENT_API_V1_PLAN.md, PR12): list and read;
@@ -28,6 +28,7 @@ async function planCreate(ctx: AiSuiteActionContext, args: Record<string, unknow
   const prepared = await prepareBookingPage(ctx.subAccountId!, args);
   if (!prepared.ok) throw new CapabilityUserError(prepared.error);
   await assertPageName(ctx.subAccountId!, prepared.data.name, null);
+  await assertPageTerritory(ctx.subAccountId!, prepared.data.defaultTerritoryId);
   return prepared;
 }
 

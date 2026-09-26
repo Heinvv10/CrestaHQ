@@ -135,7 +135,8 @@ describe("update_booking_page", () => {
     booking(86_400_000);
     const id = await proposeId("update_booking_page", { slug: "bp1", meetingUrl: "https://meet.example/new", name: "Consult (new)" });
     expect(row(id).approval).toBe("public_change");
-    expect(rowOf(id, "meetingUrl")).toMatch(/\u2192 https:\/\/meet\.example\/new$/);
+    expect(rowOf(id, "meetingUrl")).toBe("https://meet.example/new");
+    expect(rowOf(id, "Changed")).toEqual(expect.stringContaining("meetingUrl"));
     expect(mem.read(`${P}/bp1`)).toEqual(PAGE);
   });
 
@@ -145,6 +146,28 @@ describe("update_booking_page", () => {
       ok: false, message: "This page is published, the edit publishes it, or bookings on it are upcoming, so the change needs approval: send it again.",
     });
     expect(mem.read(`${P}/bp1`)).toEqual(PAGE);
+  });
+
+  it("a draft edited directly, then published: the publish proposal shows the whole page, earlier edits included", async () => {
+    expect(await call("update_booking_page", { slug: "bp1", confirmationMessage: "Pay the deposit to acct 999" })).toMatchObject({ ok: true });
+    const id = await proposeId("update_booking_page", { slug: "bp1", status: "published" });
+    expect(rowOf(id, "Changed")).toBe("status");
+    expect(rowOf(id, "confirmationMessage")).toBe("Pay the deposit to acct 999");
+    expect(rowOf(id, "name")).toBe("Consult");
+  });
+
+  it("an edit of a page with upcoming bookings shows the whole page too", async () => {
+    booking(86_400_000);
+    const id = await proposeId("update_booking_page", { slug: "bp1", durationMinutes: 45 });
+    expect(rowOf(id, "Changed")).toEqual(expect.stringContaining("durationMinutes"));
+    expect(rowOf(id, "name")).toBe("Consult");
+  });
+
+  it("a default territory that isn't this sub-account's -> refused; one that is -> fine", async () => {
+    mem.seed("subAccounts/sa1/territories/north", { name: "North" });
+    expect(await call("update_booking_page", { slug: "bp1", defaultTerritoryId: "t_foreign" })).toMatchObject({ ok: false, message: "That default territory isn't in this workspace." });
+    expect(await call("create_booking_page", pageForm("intro", { name: "Intro", defaultTerritoryId: "t_foreign" }))).toMatchObject({ ok: false, message: "That default territory isn't in this workspace." });
+    expect(await call("update_booking_page", { slug: "bp1", defaultTerritoryId: "north" })).toMatchObject({ ok: true });
   });
 
   it("a draft whose bookings are all past is still edited directly", async () => {
@@ -166,6 +189,11 @@ describe("delete_booking_page", () => {
     expect(rowOf(id, "workingHours")).toBeDefined();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read(`${P}/bp1`)).toBeUndefined();
+  });
+
+  it("a booking in progress (started, not yet over) blocks the delete", async () => {
+    mem.seed("events/ev_now", { subAccountId: "sa1", bookingPageSlug: "bp1", startAt: Timestamp.fromMillis(Date.now() - 600_000), endAt: Timestamp.fromMillis(Date.now() + 600_000) });
+    expect(await call("delete_booking_page", { slug: "bp1" })).toMatchObject({ ok: false, message: expect.stringContaining("1 upcoming booking(s)") });
   });
 
   it("an upcoming booking -> refused at propose", async () => {

@@ -32,6 +32,17 @@ let updatedPaths: string[];
 
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
+    // changeEventStatus decides the transition in a transaction: reads pass
+    // through, writes apply when it commits (a failing write fails it).
+    runTransaction: async (fn: (tx: unknown) => unknown) => {
+      const writes: Array<() => unknown> = [];
+      const result = await fn({
+        get: (r: { get: () => unknown }) => r.get(),
+        update: (r: { update: (p: unknown) => unknown }, p: unknown) => writes.push(() => r.update(p)),
+      });
+      for (const w of writes) await w();
+      return result;
+    },
     collection: (name: string) => ({
       // Honours its argument: only `events/evt1` exists, and a doc built
       // from an undefined id is a different (missing) doc, exactly as in

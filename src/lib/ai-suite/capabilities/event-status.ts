@@ -39,6 +39,25 @@ async function tenantEvent(subAccountId: string, eventId: unknown): Promise<Cale
   return { ...(data as Omit<CalendarEvent, "id">), id: snap!.id };
 }
 
+/** The active booking.cancelled workflows a cancel starts (as a person's
+ *  cancel does), matched as the engine matches them. */
+async function cancelWorkflows(event: CalendarEvent): Promise<Array<{ id: string; name: string }>> {
+  if (!event.contactId) return [];
+  const snap = await getAdminDb()
+    .collection("workflows")
+    .where("subAccountId", "==", event.subAccountId)
+    .where("status", "==", "active")
+    .where("trigger.type", "==", "booking.cancelled")
+    .get();
+  return snap.docs
+    .filter((d) => {
+      const slug = d.data().trigger?.bookingPageSlug as string | null | undefined;
+      return !slug || slug === (event.bookingPageSlug ?? null);
+    })
+    .map((d) => ({ id: d.id, name: oneLine(d.data().name) || "(unnamed)" }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /** The notice a cancel would send (null: none), and how the approver reads it. */
 async function noticePlan(event: CalendarEvent): Promise<{ notice: CancelNoticeExpect | null; rows: PreviewRow[] }> {
   const n = await planCancelNotice(event);
@@ -94,16 +113,20 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       const e = await tenantEvent(ctx.subAccountId!, args.eventId);
       const refused = eventStatus(e) === "cancelled" ? "That appointment is already cancelled." : statusChangeError(e, "cancelled", 0);
       if (refused) throw new CapabilityUserError(refused);
-      const plan = await noticePlan(e);
+      const [plan, workflows] = await Promise.all([noticePlan(e), cancelWorkflows(e)]);
       return {
         rows: [
           { label: "Cancel", value: `${oneLine(e.title) || "Meeting"} at ${toDate(e.startAt)?.toISOString() ?? "(no time)"}` },
           ...recordProvenanceRows(e.id, e),
           ...(args.reason ? [{ label: "Reason (timeline)", value: oneLine(args.reason) }] : []),
           ...plan.rows,
-          { label: "Then", value: "The slot is freed, and workflows that start when a booking is cancelled run, as when a person cancels it." },
+          {
+            label: "Workflows that start",
+            value: workflows.map((w) => `${w.name} (${w.id})`).join(", ") || "none",
+          },
+          { label: "Then", value: "The slot is freed, and those workflows run, as when a person cancels it." },
         ],
-        pinned: { eventId: e.id, notice: plan.notice },
+        pinned: { eventId: e.id, notice: plan.notice, workflowIds: workflows.map((w) => w.id) },
       };
     },
     execute: async (ctx, args) => {
@@ -116,8 +139,12 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
         if (canonical((await noticePlan(e)).notice) !== canonical(pinned)) {
           throw new CapabilityUserError("The appointment's contact or its cancellation notice changed since this was reviewed; nothing was changed.");
         }
+        if (canonical((await cancelWorkflows(e)).map((w) => w.id)) !== canonical(ctx.approved.pinned?.workflowIds ?? [])) {
+          throw new CapabilityUserError("The workflows a cancel starts changed since this was reviewed; nothing was changed.");
+        }
         const out = await changeEventStatus(e, status, reason, { expectNotice: pinned });
         if (!out.ok) throw new CapabilityUserError(out.error ?? "The appointment couldn't be cancelled.");
+        if (out.noop) return { resultText: "It was already cancelled (by someone else); nothing more was done.", ref: { kind: "event", id: e.id } };
         const sent = out.emailSent ? " The attendee was emailed." : out.emailSkipReason === "changed_since_approval" ? " The notice was NOT sent: it changed after approval." : "";
         return { resultText: `Cancelled the appointment.${sent}`, ref: { kind: "event", id: e.id } };
       }

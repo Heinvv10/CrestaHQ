@@ -3,6 +3,7 @@ import "server-only";
 import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BookingPage, BookingPageFormData } from "@/types/booking";
+import { GLOBAL_TERRITORY_ID } from "@/types";
 import { CapabilityUserError, type PreviewRow, type ValidateResult } from "./types";
 import { hasUnsafeText, lookAlikeProblem, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 
@@ -58,6 +59,14 @@ export async function tenantPage(subAccountId: string, slug: unknown, get = (ref
   const data = snap?.data();
   if (!data) throw new CapabilityUserError("That booking page isn't in this workspace.");
   return { ...(data as Omit<BookingPage, "id">), id: snap!.id };
+}
+
+/** Refuses a default territory that isn't one of this sub-account's. */
+export async function assertPageTerritory(subAccountId: string, territoryId: string | null | undefined): Promise<void> {
+  if (!territoryId || territoryId === GLOBAL_TERRITORY_ID) return;
+  if (!(await getAdminDb().doc(`subAccounts/${subAccountId}/territories/${territoryId}`).get()).exists) {
+    throw new CapabilityUserError("That default territory isn't in this workspace.");
+  }
 }
 
 /** Refuses a name that could pass for another booking page's. */

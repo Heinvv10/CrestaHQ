@@ -163,12 +163,26 @@ export async function changeEventStatus(
     patch.cancelledByVisitor = false;
     patch.cancelReason = reason || "by_operator";
   }
+  // The transition is decided on the status read in the write's own
+  // transaction: of two callers changing it at once, only the winner writes
+  // and runs the side effects; the other gets a noop (no notice, no trigger).
+  const ref = getAdminDb().collection("events").doc(event.id);
+  let outcome: "write" | "noop" | string;
   try {
-    await getAdminDb().collection("events").doc(event.id).update(patch);
+    outcome = await getAdminDb().runTransaction(async (tx) => {
+      const live = { ...event, ...((await tx.get(ref)).data() as Partial<CalendarEvent> | undefined) };
+      if (eventStatus(live) === next) return "noop";
+      const refused = statusChangeError(live, next, Date.now());
+      if (refused) return refused;
+      tx.update(ref, patch);
+      return "write";
+    });
   } catch (err) {
     console.error("[event-status-service] update failed", err);
     return { ok: false, httpStatus: 500, error: "Couldn't update event." };
   }
+  if (outcome === "noop") return { ok: true, httpStatus: 200, status: next, noop: true };
+  if (outcome !== "write") return { ok: false, httpStatus: 409, error: outcome };
   if (next === "cancelled") await pushBookingToGoogle(event.id);
 
   // A test-mode event (v1 `lsk_test_*` key) gets the validated status write

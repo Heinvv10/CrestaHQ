@@ -128,6 +128,44 @@ describe("set_event_status", () => {
     expect(mem.read("events/ev1")!.status).toBe("scheduled");
   });
 
+  it("a person cancels while the approved cancel runs -> exactly one notice and one cancelled-workflow run", async () => {
+    workflow("booking.cancelled");
+    const id = await proposeCancel();
+    const { POST } = await import("@/app/api/events/by-id/[id]/mark-status/route");
+    beforeNextTransaction(async () => beforeNextTransaction(async () => {
+      const res = await POST(new Request("http://x", { method: "POST", body: JSON.stringify({ status: "cancelled" }) }), { params: Promise.resolve({ id: "ev1" }) });
+      expect(res.status).toBe(200);
+    }));
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(row(id).result).toMatchObject({ resultText: "It was already cancelled (by someone else); nothing more was done." });
+    await vi.waitFor(() => expect(mem.list("workflowRuns")).toHaveLength(1));
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("the preview names the active booking.cancelled workflows; one activated after the proposal -> preview_changed", async () => {
+    workflow("booking.cancelled");
+    mem.seed("workflows/wf_other_page", {
+      name: "Other page only", subAccountId: "sa1", agencyId: "ag1", status: "active", startNodeId: "n1",
+      trigger: { type: "booking.cancelled", bookingPageSlug: "elsewhere", filters: { all: [] } }, nodes: {},
+    });
+    const id = await proposeCancel();
+    expect(rowOf(id, "Workflows that start")).toBe("Sends on booking.cancelled (wf_booking.cancelled)");
+    expect(row(id).pinned).toMatchObject({ workflowIds: ["wf_booking.cancelled"] });
+    mem.seed("workflows/wf_late", { ...mem.read("workflows/wf_booking.cancelled")!, name: "Late addition" });
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "preview_changed" });
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
+  });
+
+  it("a workflow activated after the approver's preview check -> failed, not cancelled", async () => {
+    const id = await proposeCancel();
+    beforeNextTransaction(async () => workflow("booking.cancelled"));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
   it("the contact's email changed after the preview check -> failed, not cancelled, nothing sent", async () => {
     const id = await proposeCancel();
     beforeNextTransaction(async () => mem.seed("contacts/c1", { ...ANN, email: "other@x.io" }));

@@ -11,7 +11,7 @@ import type { BookingPage } from "@/types/booking";
 import { CapabilityUserError, type AiSuiteActionContext, type AiSuiteCapability } from "./types";
 import { agentActor, str } from "./helpers";
 import { oneLine } from "./text-safety";
-import { assertPageName, FORM_KEYS, formOf, PAGE_PROPS, pageFields, pageRows, slugParam, tenantPage } from "./booking-page-support";
+import { assertPageName, assertPageTerritory, FORM_KEYS, formOf, PAGE_PROPS, pageFields, pageRows, slugParam, tenantPage } from "./booking-page-support";
 
 /**
  * update_booking_page for API agents (AGENT_API_V1_PLAN.md, PR12): the
@@ -33,6 +33,7 @@ async function plan(ctx: AiSuiteActionContext, args: Record<string, unknown>) {
   const prepared = await prepareBookingPage(ctx.subAccountId!, { ...formOf(page), ...fields, slug: page.id }, { storedType: page.calendarType });
   if (!prepared.ok) throw new CapabilityUserError(prepared.error);
   if (typeof fields.name === "string") await assertPageName(ctx.subAccountId!, prepared.data.name, page.id);
+  if (fields.defaultTerritoryId !== undefined) await assertPageTerritory(ctx.subAccountId!, prepared.data.defaultTerritoryId);
   return { page, data: prepared.data };
 }
 
@@ -73,11 +74,18 @@ export const BOOKING_PAGE_EDIT_CAPABILITIES: AiSuiteCapability[] = [
     },
     preview: async (ctx, args) => {
       const { page, data } = await plan(ctx, args);
-      const rows = pageRows(data, formOf(page));
+      const changed = pageRows(data, formOf(page));
+      // Going public, or read by messages to booked customers: the whole
+      // resulting page, since earlier direct edits of a draft were never reviewed.
+      const whole = (page.status !== "published" && data.status === "published") || (await upcomingBookingCount(ctx.subAccountId!, page.id)) > 0;
       return {
         rows: [
           { label: "Edit", value: `${oneLine(page.name) || "(unnamed)"} (/${page.id}), ${page.status}: the public sees the new version` },
-          ...(rows.length ? rows : [{ label: "Changes", value: "none (the page is saved as it is)" }]),
+          ...(whole
+            ? [{ label: "Changed", value: changed.map((r) => r.label).join(", ") || "nothing" }, ...pageRows(data, null)]
+            : changed.length
+              ? changed
+              : [{ label: "Changes", value: "none (the page is saved as it is)" }]),
         ],
         pinned: { slug: page.id, before: canonical(formOf(page)), after: canonical(data) },
       };
