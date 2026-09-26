@@ -86,7 +86,7 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
       const partialNote =
         recent.length >= SCAN_CAP
           ? `Exact matches (email, phone and full name as stored) were checked across all contacts; partial matches only among ${
-              scope.enforce ? `${recent.length} contacts in your territories` : `the ${recent.length} most recently created`
+              scope.enforce ? `${recent.length} contacts in your territories` : `the ${recent.length} most recently created (a contact with no creation date is only matched exactly)`
             }.`
           : "";
       if (matches.length === 0) {

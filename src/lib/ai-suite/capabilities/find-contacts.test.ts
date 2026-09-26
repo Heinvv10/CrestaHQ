@@ -47,6 +47,11 @@ describe("find_contacts beyond the 500-contact scan", () => {
     expect(await run(admin, "Jane@Example.com")).toContain("id: zzz_old");
   });
 
+  it("finds a mixed-case stored email searched with the same casing", async () => {
+    mem.seed("contacts/zzz_mixed", { ...tenant, territoryId: "north", name: "Mixed Case", email: "Jane@Example.com", createdAt: day(1) });
+    expect(await run(admin, "Jane@Example.com")).toContain("id: zzz_mixed");
+  });
+
   it("finds it by phone in E.164 or national format (workspace default country)", async () => {
     expect(await run(admin, "+27821234567")).toContain("id: zzz_old");
     expect(await run(admin, "082 123 4567")).toContain("id: zzz_old");
@@ -62,13 +67,13 @@ describe("find_contacts beyond the 500-contact scan", () => {
     expect(text).toContain("id: zzz_new");
     // A partial query for the old contact is honestly reported as not searched there.
     expect(await run(admin, "oldest")).toBe(
-      "No contacts matched \u201coldest\u201d. Exact matches (email, phone and full name as stored) were checked across all contacts; partial matches only among the 500 most recently created.",
+      "No contacts matched \u201coldest\u201d. Exact matches (email, phone and full name as stored) were checked across all contacts; partial matches only among the 500 most recently created (a contact with no creation date is only matched exactly).",
     );
   });
 
   it("says the partial scan was capped under a result list too", async () => {
     const text = await run(admin, "jane@example.com");
-    expect(text).toMatch(/\nExact matches \(email, phone and full name as stored\) were checked across all contacts; partial matches only among the 500 most recently created\.$/);
+    expect(text).toMatch(/\nExact matches \(email, phone and full name as stored\) were checked across all contacts; partial matches only among the 500 most recently created \(a contact with no creation date is only matched exactly\)\.$/);
     expect(text).not.toContain("indexed");
   });
 
