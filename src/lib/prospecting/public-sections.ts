@@ -12,9 +12,13 @@ import type {
  * is not named here — `raw` is never passed through wholesale.
  */
 
-/** Per section, the scalar `raw` keys safe to show publicly. */
+/**
+ * Per section, the scalar `raw` keys safe to show publicly. business_details
+ * omits phone and address (copied from the CRM contact). "notMeasured" keys
+ * are kept: the report says plainly what it did not measure (decision D2).
+ */
 export const PUBLIC_RAW_KEYS: Record<ProspectSectionKey, readonly string[]> = {
-  business_details: ["category", "https"],
+  business_details: ["name", "website", "category", "https"],
   gbp: ["description"],
   reputation: ["rating", "reviewsCount", "velocity90d", "ownerReplyRate"],
   listings: [],

@@ -30,6 +30,8 @@ const STATUS_NOTE: Record<Exclude<PublicReportSection["status"], "ok">, string> 
 
 /** Human labels for `details` keys. Listing keys are directory names and label themselves. */
 const DETAIL_LABELS: Record<string, string> = {
+  name: "Business name",
+  website: "Website",
   category: "Category",
   https: "Website on HTTPS",
   description: "Business description",
@@ -56,14 +58,14 @@ const LISTING_STATUS: Record<string, string> = {
   unknown: "Could not check",
 };
 
-function DetailValue({ section, value }: { section: ProspectSectionKey; value: Scalar }) {
+function DetailValue({ name, section, value }: { name: string; section: ProspectSectionKey; value: Scalar }) {
   if (typeof value === "boolean") return <>{value ? "Yes" : "No"}</>;
   if (value === "notMeasured") return <span className="text-muted-foreground">Not measured</span>;
   if (section === "listings" && typeof value === "string") return <>{LISTING_STATUS[value] ?? value}</>;
   if (typeof value === "string" && /^https:\/\//i.test(value)) {
     return (
       <a href={value} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
-        Check manually
+        {name === "website" ? value : "Check manually"}
       </a>
     );
   }
@@ -104,7 +106,7 @@ export function ReportSections({ sections }: { sections: PublicReportSection[] }
                     <div key={k} className="contents">
                       <dt className="text-muted-foreground">{DETAIL_LABELS[k] ?? k}</dt>
                       <dd className="text-right">
-                        <DetailValue section={s.key} value={v} />
+                        <DetailValue name={k} section={s.key} value={v} />
                       </dd>
                     </div>
                   ))}

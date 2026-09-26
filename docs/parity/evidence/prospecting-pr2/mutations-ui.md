@@ -11,5 +11,5 @@ afterwards). All 7 went RED. Line numbers are at the time of the run.
 | `src/components/contacts/contact-prospect-reports.tsx:150` | `atQuota` dropped from Generate's `disabled` | card: *enables Generate under quota and disables it at quota with the reason* |
 | `src/components/contacts/contact-prospect-reports.tsx:84` | poll effect ignores `pending` | card: *polls while a report is running and stops once it is ready*; *does not poll when nothing is pending, and stops on unmount* |
 | `src/components/contacts/contact-prospect-reports.tsx:86` | poll cleanup no longer clears the interval | card: *polls while … stops once it is ready*; *… stops on unmount* |
-| `src/lib/prospecting/public-sections.ts:17` | `"phone"` added to the business_details whitelist | public-sections: *emits exactly the named keys per section*; *carries the values*; *leaks nothing identifying* |
-| `src/lib/prospecting/public-sections.ts:58` | listings directory allowlist check deleted | public-sections: *emits exactly the named keys per section*; *carries the values* |
+| `src/lib/prospecting/public-sections.ts:21` | `"phone"` added to the business_details whitelist (re-run after the routes-branch merge: RED) | public-sections: *emits exactly the named keys per section*; *carries the values*; *leaks nothing identifying* |
+| `src/lib/prospecting/public-sections.ts:62` | listings directory allowlist check deleted | public-sections: *emits exactly the named keys per section*; *carries the values* |

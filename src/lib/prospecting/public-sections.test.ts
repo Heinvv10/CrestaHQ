@@ -12,7 +12,7 @@ import type { SectionInput } from "./sections/types";
 /**
  * The public whitelist, run over the raw shapes the real sections produce.
  * Pins the exact detail keys per section, and that nothing identifying
- * (listing phone/address/website, URLs of directory pages, provider ids)
+ * (CRM phone/address, URLs of directory pages, provider ids)
  * leaks through — only what `public-sections.ts` names.
  */
 
@@ -62,7 +62,7 @@ describe("publicSection whitelist", () => {
       results.map((r) => [r.key, Object.keys(publicSection(r).details).sort()]),
     );
     expect(keys).toEqual({
-      business_details: ["category", "https"],
+      business_details: ["category", "https", "name", "website"],
       gbp: ["description", "hoursListed", "phoneListed", "photoCount"],
       reputation: ["ownerReplyRate", "rating", "reviewsCount", "velocity90d"],
       listings: ["Bing", "Brabys", "Facebook"],
@@ -87,6 +87,8 @@ describe("publicSection whitelist", () => {
     const tech = publicSection(await techStack.run(input)).details.technologies;
     expect(tech).toContain("WordPress");
     expect(publicSection(await businessDetails.run(input)).details).toEqual({
+      name: BUSINESS.name,
+      website: BUSINESS.website,
       category: "Plumber",
       https: true,
     });
@@ -99,7 +101,6 @@ describe("publicSection whitelist", () => {
     for (const secret of [
       BUSINESS.phone!,
       BUSINESS.address!,
-      "fixture-plumbing.example.com",
       FULL_DETAILS.nationalPhoneNumber,
       FULL_DETAILS.id,
       "bing.com",
