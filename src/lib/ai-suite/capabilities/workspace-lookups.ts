@@ -25,7 +25,7 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
     readonly: true,
     menuLabel: "Search this workspace's contacts (name, email, phone, company)",
     description:
-      "Search this sub-account's contacts by name, email, phone, or company. Use it to answer 'do I have…' questions, to check for an existing contact before proposing create_contact (avoid duplicates), and to resolve a contact's id before linking a task to them.",
+      "Search this sub-account's contacts by name, email, phone, or company. Use it to answer 'do I have…' questions, to check for an existing contact before proposing create_contact (avoid duplicates), and to resolve a contact's id before linking a task to them. Exact email and phone matches compare the stored value, so a mixed-case email or a phone stored in an old format may only turn up among the recent contacts.",
     parameters: {
       type: "object",
       properties: {
@@ -56,17 +56,17 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
       const sub = (await db.doc(`subAccounts/${ctx.subAccountId}`).get()).data();
       const e164 = normalizePhoneE164(raw, sub?.defaultPhoneCountry as string | undefined);
       const exact = await Promise.all([
-        raw.includes("@") ? contacts.where("email", "in", [...new Set([raw, q])]).limit(10).get() : null,
-        e164 ? contacts.where("phone", "in", [...new Set([e164, raw])]).limit(10).get() : null,
-        contacts.where("name", "==", raw).limit(10).get(),
+        raw.includes("@") ? contacts.where("email", "in", [...new Set([raw, q])]).limit(50).get() : null,
+        e164 ? contacts.where("phone", "in", [...new Set([e164, raw])]).limit(50).get() : null,
+        contacts.where("name", "==", raw).limit(50).get(),
       ]);
-      // Then partial matches among the most recently created contacts (the
-      // (subAccountId, createdAt desc) index; the Contacts page orders the same way,
-      // so a contact without createdAt is outside both).
-      const { docs: recent, scanCapped } = await collectVisible(scope, contacts.orderBy("createdAt", "desc"), {
-        want: SCAN_CAP,
-        maxScan: SCAN_CAP * 4,
-      });
+      // Then partial matches. Unscoped (agents, admins): the newest contacts, on
+      // the (subAccountId, createdAt desc) index the Contacts page orders by, so a
+      // contact without createdAt is outside both. Scoped: territory-filtered in
+      // the query, so other territories' contacts can't use up the scan.
+      const recent = scope.enforce
+        ? await scopedDocs(scope, contacts.limit(SCAN_CAP))
+        : (await contacts.orderBy("createdAt", "desc").limit(SCAN_CAP).get()).docs;
       const partial = recent.filter((d) => {
         const data = d.data();
         const text = [data.name, data.email, data.company]
@@ -84,8 +84,10 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
         .slice(0, 8);
       // Every contact the caller can see was scanned only when the scan ended short.
       const partialNote =
-        recent.length >= SCAN_CAP || scanCapped
-          ? `Exact email, phone and full-name matches were checked across all contacts; partial matches only among the ${recent.length} most recently created.`
+        recent.length >= SCAN_CAP
+          ? `Exact matches (email, phone and full name as stored) were checked across all contacts; partial matches only among ${
+              scope.enforce ? `${recent.length} contacts in your territories` : `the ${recent.length} most recently created`
+            }.`
           : "";
       if (matches.length === 0) {
         return {

@@ -62,13 +62,13 @@ describe("find_contacts beyond the 500-contact scan", () => {
     expect(text).toContain("id: zzz_new");
     // A partial query for the old contact is honestly reported as not searched there.
     expect(await run(admin, "oldest")).toBe(
-      "No contacts matched \u201coldest\u201d. Exact email, phone and full-name matches were checked across all contacts; partial matches only among the 500 most recently created.",
+      "No contacts matched \u201coldest\u201d. Exact matches (email, phone and full name as stored) were checked across all contacts; partial matches only among the 500 most recently created.",
     );
   });
 
   it("says the partial scan was capped under a result list too", async () => {
     const text = await run(admin, "jane@example.com");
-    expect(text).toMatch(/\nExact email, phone and full-name matches were checked across all contacts; partial matches only among the 500 most recently created\.$/);
+    expect(text).toMatch(/\nExact matches \(email, phone and full name as stored\) were checked across all contacts; partial matches only among the 500 most recently created\.$/);
     expect(text).not.toContain("indexed");
   });
 
@@ -77,6 +77,32 @@ describe("find_contacts beyond the 500-contact scan", () => {
     expect(await run(rep, "sam@example.com")).toMatch(/^No contacts matched/);
     expect(await run(admin, "sam@example.com")).toContain("id: zzz_south");
     expect(await run(rep, "jane@example.com")).toContain("id: zzz_old");
+  });
+});
+
+describe("find_contacts for a territory-scoped caller", () => {
+  it("other territories' newer contacts can't use up the scan (breaker repro)", async () => {
+    for (let i = 0; i < 2500; i++) {
+      mem.seed(`contacts/s${String(i).padStart(4, "0")}`, { ...tenant, territoryId: "south", name: `South ${i}`, createdAt: day(10 + i) });
+    }
+    mem.seed("contacts/zz_rep", { ...tenant, territoryId: "north", name: "Zedekiah Rep", createdAt: day(0) });
+    const text = await run(rep, "zedekiah");
+    expect(text).toContain("Zedekiah Rep \u2014 id: zz_rep");
+    expect(text).not.toContain("South");
+  });
+
+  it("names the territory scan in the capped text", async () => {
+    seedFiller(600); // all north
+    expect(await run(rep, "nobody")).toBe(
+      "No contacts matched \u201cnobody\u201d. Exact matches (email, phone and full name as stored) were checked across all contacts; partial matches only among 500 contacts in your territories.",
+    );
+  });
+
+  it("an exact match isn't crowded out by 40 invisible ones", async () => {
+    seedFiller(600); // north, ahead of z_mine in doc-id order: it is outside the rep's partial scan
+    for (let i = 0; i < 40; i++) mem.seed(`contacts/b${i}`, { ...tenant, territoryId: "south", name: "Same Name", createdAt: day(1) });
+    mem.seed("contacts/z_mine", { ...tenant, territoryId: "north", name: "Same Name", createdAt: day(0) });
+    expect(await run(rep, "Same Name")).toContain("id: z_mine");
   });
 });
 
