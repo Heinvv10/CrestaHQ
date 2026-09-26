@@ -5,6 +5,9 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { qstashIsConfigured } from "@/lib/automations/qstash";
 import { checkBroadcast, startBroadcast } from "@/lib/server/broadcast-start";
 import { templateFingerprint } from "@/lib/broadcasts/approved";
+import { agentSetValues, contactTagsUsed } from "@/lib/broadcasts/agent-values";
+import { canonical } from "@/lib/server/agent-proposals-encoding";
+import { createHash } from "node:crypto";
 import type { BroadcastAudienceFilter, BroadcastDoc } from "@/types";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, toDate } from "./helpers";
@@ -42,7 +45,34 @@ async function plan(subAccountId: string, args: Record<string, unknown>) {
   if (messageBody(template.body) !== plainSpaces(template.body) || oneLine(subject) !== plainSpaces(subject)) {
     throw new CapabilityUserError("The template has characters or spacing that can't be shown exactly as sent.");
   }
-  return { template, matching, pinned: { templateId: args.templateId as string, templateFingerprint: templateFingerprint(template), audienceFilter: args.audienceFilter, audienceCount: matching } };
+  // Contact values an API agent set are merged unreviewed unless shown here.
+  const tags = contactTagsUsed(template);
+  const agentValues = await agentSetValues(subAccountId, args.audienceFilter as BroadcastAudienceFilter, tags);
+  if (agentValues === "too_many") throw new CapabilityUserError("Too many contacts have values an API agent set to review here; send this broadcast from the app.");
+  if (agentValues.some((v) => Object.values(v.values).some((x) => hasUnsafeText(x)))) {
+    throw new CapabilityUserError("A value an API agent set has characters that can't be shown safely; send this broadcast from the app.");
+  }
+  const valueRows = tags.length
+    ? [{
+        label: "Agent-set values",
+        value: agentValues.length
+          ? agentValues.map((v) => `${v.contactId}: ${Object.entries(v.values).map(([k, x]) => `${k} = ${JSON.stringify(x)}`).join("; ")}`).join("\n")
+          : "none (no contact in the audience has values an API agent set)",
+        ...(agentValues.length ? { multiline: true as const } : {}),
+      }]
+    : [];
+  return {
+    template,
+    matching,
+    valueRows,
+    pinned: {
+      templateId: args.templateId as string,
+      templateFingerprint: templateFingerprint(template),
+      audienceFilter: args.audienceFilter,
+      audienceCount: matching,
+      agentValuesFingerprint: createHash("sha256").update(canonical(agentValues)).digest("hex"),
+    },
+  };
 }
 
 export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
@@ -99,7 +129,7 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
     summarize: () => "Send an email broadcast.",
     approvalTarget: async () => ({ contactId: null, territoryId: null, scoped: false }),
     preview: async (ctx, args) => {
-      const { template, matching, pinned } = await plan(ctx.subAccountId!, args);
+      const { template, matching, pinned, valueRows } = await plan(ctx.subAccountId!, args);
       return {
         rows: [
           { label: "Email broadcast", value: `${oneLine(template.name) || "(unnamed)"} (${args.templateId})` },
@@ -108,6 +138,7 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
           { label: "Subject", value: oneLine(template.subject ?? "") || "(no subject)" },
           { label: "Message", value: messageBody(template.body)!, multiline: true },
           { label: "Merge tags", value: "Tags like {{contact.firstName}} are filled per contact; each email carries its own unsubscribe link." },
+          ...valueRows,
           { label: "Then", value: `If more than ${matching} contacts match when it is approved, nothing is sent.` },
           { label: "At send", value: "The audience is re-read at send; contacts an API agent edits after approval are skipped." },
         ],
@@ -119,6 +150,7 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
       if (!ctx.approved?.proposalId) throw new CapabilityUserError("A broadcast needs a person's approval.");
       const { template, matching, pinned: now } = await plan(ctx.subAccountId!, args);
       if (now.templateFingerprint !== pinned.templateFingerprint) throw new CapabilityUserError("The template changed since this was reviewed; nothing was sent.");
+      if (now.agentValuesFingerprint !== pinned.agentValuesFingerprint) throw new CapabilityUserError("Values an API agent set on the audience changed since this was reviewed; nothing was sent.");
       const cap = Number(pinned.audienceCount);
       if (matching > cap) throw new CapabilityUserError(`The audience grew to ${matching} contacts since ${cap} were approved; nothing was sent. Propose it again.`);
       // Contacts are skipped if an agent edits them after the PROPOSAL was made (the approver never saw their values).

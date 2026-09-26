@@ -68,6 +68,8 @@ describe("create_broadcast", () => {
   });
 
   it("an agent edit between the proposal and its approval counts as edited (the approver never saw it)", async () => {
+    // A template without contact merge tags shows no agent-set values, so only the skip guards this.
+    mem.seed("message_templates/tpl_email", { ...TEMPLATE, body: "Winter sale. {{unsubscribeLink}}", subject: "Sale" });
     const id = await proposeId();
     await new Promise((r) => setTimeout(r, 5));
     expect(await dispatchAgentTool(auth, "add_tags", { contactId: "c2", tags: ["vip"] })).toMatchObject({ ok: true });
@@ -96,6 +98,56 @@ describe("create_broadcast", () => {
     expect(await cap.execute(ctx("claim1"), ALL)).toMatchObject({ resultText: expect.stringContaining("already started") });
     expect(await cap.execute(ctx("claim2"), ALL)).toMatchObject({ resultText: expect.stringContaining("Started the broadcast") });
     expect(mem.list("broadcasts")).toHaveLength(2);
+  });
+
+  it("an agent edit between the proposal and its approval, with contact merge tags -> the values changed -> preview_changed", async () => {
+    const id = await proposeId();
+    contact("c2", { lastAgentEditAt: new Date(), name: "Evil" });
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "preview_changed" });
+  });
+
+  describe("agent-set values", () => {
+    const NOTE = { ...TEMPLATE, body: "Hi {{contact.firstName}}. {{contact.customFields.note}}\nUnsubscribe: {{unsubscribeLink}}" };
+
+    it("a value an agent set BEFORE the proposal is shown to the approver, exactly", async () => {
+      mem.seed("message_templates/tpl_email", NOTE);
+      // As an agent's update_contact leaves it: the value and the agent's edit stamp.
+      contact("c1", { customFields: { note: "Claim your refund at evil.example" }, lastAgentEditAt: new Date(Date.now() - 60_000), lastAgentEditKey: "abcd1234" });
+      const id = await proposeId();
+      expect(rowOf(id, "Agent-set values")).toBe('c1: contact.customFields.note = "Claim your refund at evil.example"; contact.firstName = "c1"');
+    });
+
+    it("no agent-set values: the row says none", async () => {
+      expect(rowOf(await proposeId(), "Agent-set values")).toBe("none (no contact in the audience has values an API agent set)");
+    });
+
+    it("a template with no contact merge tags: no row, whatever agents set", async () => {
+      mem.seed("message_templates/tpl_email", { ...TEMPLATE, body: "Winter sale. {{unsubscribeLink}}", subject: "Sale" });
+      contact("c1", { lastAgentEditAt: new Date() });
+      expect(rowOf(await proposeId(), "Agent-set values")).toBeUndefined();
+    });
+
+    it("an agent-set value with a hidden character -> refused", async () => {
+      mem.seed("message_templates/tpl_email", NOTE);
+      contact("c1", { customFields: { note: "Pay\u200bhere" }, lastAgentEditAt: new Date() });
+      expect(await call(ALL)).toMatchObject({ ok: false, message: "A value an API agent set has characters that can't be shown safely; send this broadcast from the app." });
+    });
+
+    it("more than 50 agent-set contacts -> refused", async () => {
+      for (let i = 0; i < 51; i++) contact(`ag${String(i).padStart(2, "0")}`, { lastAgentEditAt: new Date() });
+      expect(await call(ALL)).toMatchObject({ ok: false, message: "Too many contacts have values an API agent set to review here; send this broadcast from the app." });
+    });
+
+    it("an agent-set value changed after the approver's preview check -> failed, nothing started", async () => {
+      mem.seed("message_templates/tpl_email", NOTE);
+      contact("c1", { lastAgentEditAt: new Date(Date.now() - 60_000), customFields: { note: "Hello" } });
+      const id = await proposeId();
+      beforeNextTransaction(async () => contact("c1", { lastAgentEditAt: new Date(Date.now() - 60_000), customFields: { note: "Pay here instead" } }));
+      expect((await decide(id, "approve")).status).toBe(422);
+      expect(mem.list("broadcasts")).toEqual([]);
+    });
   });
 
   it("a tag audience counts only its contacts", async () => {
