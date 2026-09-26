@@ -62,9 +62,9 @@ test("x1 manage dialog gates", async ({ page }) => {
   // The frame must show what Firestore holds, so assert it before capturing.
   const doc = (await subRef().get()).data() ?? {};
   const gates: Array<[RegExp, string]> = [
-    [/Google Business Profile/, "googleEnabledByAgency"],
+    [/^Google Business Profile/, "googleEnabledByAgency"],
     [/Google Calendar sync/, "googleCalendarEnabledByAgency"],
-    [/Reviews AI/, "reviewsAiEnabledByAgency"],
+    [/^Reviews AI/, "reviewsAiEnabledByAgency"],
   ];
   for (const [name, field] of gates) {
     const box = page.getByRole("checkbox", { name });
@@ -72,7 +72,7 @@ test("x1 manage dialog gates", async ({ page }) => {
     else await expect(box).not.toBeChecked();
   }
   await page
-    .getByRole("checkbox", { name: /Google Business Profile/ })
+    .getByRole("checkbox", { name: /^Google Business Profile/ })
     .evaluate((el) => el.scrollIntoView({ block: "start" }));
   await shot(page, "x1-manage-dialog-gates.png");
   await page.keyboard.press("Escape");

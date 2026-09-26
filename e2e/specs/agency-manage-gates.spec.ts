@@ -56,7 +56,7 @@ test("two sequential Manage saves both persist", async ({ page }) => {
   try {
     // Save 1 — Google on.
     await openManage(page);
-    const google = page.getByRole("checkbox", { name: /Google Business Profile/ });
+    const google = page.getByRole("checkbox", { name: /^Google Business Profile/ });
     await expect(google).not.toBeChecked();
     await google.check();
     await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -66,7 +66,7 @@ test("two sequential Manage saves both persist", async ({ page }) => {
     await page.reload();
     await openManage(page);
     await expect(
-      page.getByRole("checkbox", { name: /Google Business Profile/ }),
+      page.getByRole("checkbox", { name: /^Google Business Profile/ }),
     ).toBeChecked();
 
     // Save 2 — Labs on. Google must survive it.
