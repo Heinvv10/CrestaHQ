@@ -237,7 +237,8 @@ export async function recordReplyChange(
     if (change.type === "reply_posted" && reviewName) {
       // Outside the cache, so a cache clear cannot forget it (auto-reply never replaces a reply).
       const anchor = { agencyId: target.agencyId, subAccountId: sa, createdByUid: change.auto?.createdByUid ?? change.actorUid };
-      const marker = neverMarker(anchor, change.auto ? "auto_replied" : "replied", change.now, target.docId);
+      const star = typeof d?.starRating === "number" ? d.starRating : null;
+      const marker = neverMarker(anchor, change.auto ? "auto_replied" : "replied", change.now, target.docId, star);
       tx.set(db.doc(autoReplyNeverPath(sa, reviewName)), marker);
     }
     if (change.key) {

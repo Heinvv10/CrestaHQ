@@ -40,7 +40,8 @@ export class GbpNotConnectedError extends Error {
  * connection at all. Deep-merges into the meta (keeping `connected`,
  * `scopes`…) and keeps the secret so a disconnect can still revoke it.
  * The flag flipping false→true (seen inside the transaction, so exactly one
- * writer sees it) sends one alert after the commit.
+ * writer sees it) while review auto-reply is on sends one alert after the
+ * commit — auto-reply cannot post until someone reconnects.
  */
 export async function markReconnectRequiredIf(
   subAccountId: string,
@@ -62,7 +63,7 @@ export async function markReconnectRequiredIf(
         : current.accessToken === expected.accessToken;
     if (!unchanged) return current;
     const sub = (await tx.get(subRef)).data();
-    flipped = sub?.googleConnectionMeta?.reconnectRequired !== true;
+    flipped = sub?.googleConnectionMeta?.reconnectRequired !== true && sub?.reviewsAutoReply?.enabled === true;
     tx.set(
       subRef,
       {

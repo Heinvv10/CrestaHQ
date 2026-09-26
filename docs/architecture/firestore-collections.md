@@ -171,7 +171,9 @@ Discard, outside the review cache so it survives a cache clear; an id and a
 hash, no Google content, so it deliberately outlives review retention.
 Likewise `subAccounts/{id}/autoReplyNever/{stableReviewKey} {agencyId,
 subAccountId, createdByUid, at, reason: "replied" | "auto_replied",
-reviewDocId}` — written by the sync (the first time a review is seen with a
+reviewDocId, star?}` (`star`: the rating when auto-replied, for the
+edited-to-≤3★ alert after a cache clear; the sync never rewrites an existing
+marker) — written by the sync (the first time a review is seen with a
 reply, now or in its cached copy; `createdByUid` is then the listing's
 selector and may be null), by `recordReplyChange` on every posted reply and by
 the engine's finalize of an unrecorded auto post; never deleted, outside the
@@ -193,10 +195,11 @@ it to null; absent reads as null).
 createdByUid: "system", kind, createdAt, count?, star?, reviewDocId?}` — one
 doc per auto-reply alert (`lib/reputation/auto-reply/alerts.ts`), created
 before the push/email so an existing id means "already sent": `held-{runId}`
-(an engine run that newly held reviews; `count`), `edited-{stableReviewKey}`
-(an auto-replied review edited down to ≤3★, once per review ever; `star`),
-and auto ids for `reconnect_required` and `listing_changed` (their writers'
-flips are the dedupe). No review text or reviewer name. Server-only (no
+(an engine run that put reviews in front of a person; `count`),
+`edited-{stableReviewKey}` (an auto-replied review now at ≤3★ after an edit,
+once per review ever; `star`), and auto ids for `reconnect_required` (only
+while auto-reply is on) and `listing_changed` (their writers' flips are the
+dedupe). No review text or reviewer name. Server-only (no
 client rule), no index, no retention yet.
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24

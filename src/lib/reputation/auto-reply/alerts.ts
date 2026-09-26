@@ -14,14 +14,18 @@ import { reviewsAiMode } from "../ai/mode";
  * `subAccounts/{id}/reviewAutoReplyAlerts` with `create()`; an id that
  * exists means it was already sent, so nothing is sent again:
  *
- *   held               `held-{runId}`         one per engine run that newly held ≥1 review
- *   edited_low         `edited-{reviewKey}`   one per review, ever (survives a cache clear)
- *   reconnect_required auto id                the writer's false→true flip is the dedupe
+ *   held               `held-{runId}`         one per engine run that put ≥1 review in front of a person
+ *   edited_low         `edited-{reviewKey}`   one per review, ever (the id survives a cache clear)
+ *   reconnect_required auto id                the writer's false→true flip is the dedupe (auto-reply on only)
  *   listing_changed    auto id                the writer's on→off switch is the dedupe
  *
  * Review content never leaves beyond the star and the first 80 characters
  * of the text (edited_low); the doc holds none. In fake mode (CI and dev on
  * the production Firestore) the doc is written and nothing is delivered.
+ * Delivery is AT MOST ONCE and not awaited: once the doc exists, the push
+ * and the email go out in the background (an SMTP stall must not hold a sync
+ * lease or a user's request), and a failed send is logged, not retried —
+ * the same contract as the WhatsApp quality alert.
  * Never throws: an alert must not fail the sync, the run or the route.
  */
 
@@ -49,7 +53,7 @@ function delivering(): boolean {
   try {
     return gbpProviderMode() !== "fake" && reviewsAiMode() !== "fake";
   } catch {
-    return false; // a misconfigured fake is still a fake
+    return false; // a misconfigured fake: still not a real deployment
   }
 }
 
@@ -78,16 +82,17 @@ export async function sendAutoReplyAlert(sa: string, alert: AutoReplyAlert, now 
       throw err;
     }
     if (!delivering()) {
-      console.warn(`[reputation/auto-reply] fake mode: alert ${alert.kind} not delivered sa=${sa}`);
+      console.warn(`[reputation/auto-reply] fake or misconfigured provider mode: alert ${alert.kind} not delivered sa=${sa}`);
       return;
     }
     const msg = message(sa, alert);
     if (!pushIsConfigured()) console.warn(`[reputation/auto-reply] push not configured, alert not delivered sa=${sa}`);
     void sendPushForEvent({
       subAccountId: sa, agencyId: sub.agencyId, title: msg.title, body: msg.body, url: msg.url,
-      tag: `auto-reply-${alert.kind}-${sa}`,
+      // Per review for edited_low, so a second edited review does not replace the first on the device.
+      tag: alert.kind === "edited_low" ? `auto-reply-edited-${alert.reviewDocId}` : `auto-reply-${alert.kind}-${sa}`,
     });
-    await emailOwner(sa, sub, msg);
+    void emailOwner(sa, sub, msg);
   } catch (err) {
     console.warn(`[reputation/auto-reply] alert ${alert.kind} failed sa=${sa} kind=${kindOf(err)}`);
   }
@@ -126,6 +131,7 @@ function message(sa: string, alert: AutoReplyAlert): Message {
       return {
         title: "Google needs reconnecting",
         body: "Reviews stopped syncing and auto-reply is paused",
+        // Sent only while auto-reply is on (tokens.ts), so "paused" is true.
         url: `/sa/${sa}/reputation`,
         detail: "Google refused this sub-account's Business Profile connection. Reviews stop syncing and review auto-reply cannot post until an admin reconnects Google.",
       };

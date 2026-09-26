@@ -5,10 +5,10 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { withGbpAccess } from "../access";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 import { GbpProviderError, type GbpReview, type GbpReviewsPage } from "../provider/types";
-import { autoReplyNeverPath, neverMarker } from "../auto-reply-never";
+import { autoReplyNeverPath, neverMarker, stableReviewKey } from "../auto-reply-never";
 import { commitGuarded, type GuardedOp } from "./lease";
 import { withRetry, type Sleep } from "./retry";
-import { reviewDocId, upsertFor, type CachedReview, type UpsertContext } from "./store";
+import { loadNeverMarkers, reviewDocId, upsertFor, type CachedReview, type UpsertContext } from "./store";
 import { LEASE_TTL_MS, PASS_MAX_AGE_MS, reviewsCollection, syncStatePath, type SyncPass, type SyncState } from "./types";
 
 /**
@@ -72,6 +72,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
   const db = getAdminDb();
   const stateRef = db.doc(syncStatePath(subAccountId));
   const ctx: UpsertContext = { ...input.ctx, passId };
+  const markers = await loadNeverMarkers(subAccountId);
 
   while (out.pagesFetched < maxPages) {
     let page: GbpReviewsPage;
@@ -98,7 +99,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
     for (const review of page.reviews) {
       const docId = reviewDocId(review.name);
       const cached = cache.get(docId);
-      const { kind, data, merge, markNever, editedLow: lowered } = upsertFor(review, cached, ctx);
+      const { kind, data, merge, markNever, editedLow: lowered } = upsertFor(review, cached, ctx, markers.get(stableReviewKey(review.name)));
       if (lowered) editedLow.push({ review, docId });
       const docRef = db.doc(`${reviewsCollection(subAccountId)}/${docId}`);
       ops.push((tx) => (merge ? tx.set(docRef, data, { merge: true }) : tx.set(docRef, data)));

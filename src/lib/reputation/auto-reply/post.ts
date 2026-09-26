@@ -18,6 +18,7 @@ import { autoReplyKey, finalizeAutoPost, markPostFailed, textHashOf } from "./st
  * with `requireNoReply` (no reply ever, the same queued bytes, still Auto).
  *
  *   posted   Google accepted it; `autoReplied` stamped, audited once
+ *   held     the star was switched to Approval meanwhile: the draft now waits for a person
  *   skipped  this review is not posted now (gone, changed, replied, held,
  *            or Google refused THIS review — `post_failed`, retried in 24 h)
  *   stop     nothing more should post in this run (deadline, pause, cap,
@@ -26,7 +27,7 @@ import { autoReplyKey, finalizeAutoPost, markPostFailed, textHashOf } from "./st
 
 export const AUTO_REPLY_ACTOR = "system:auto-reply";
 
-export type PostResult = "posted" | "skipped" | "stop";
+export type PostResult = "posted" | "held" | "skipped" | "stop";
 
 /** Refusals about this one review (a 404 from Google, a 4xx rejecting the request); anything else stops the run. */
 const PER_REVIEW_CODES = new Set(["not_found", "malformed", "idempotency_key_reused"]);
@@ -66,7 +67,8 @@ export async function postQueued(
   if (await replyPreflight(sa)) return "stop";
 
   const confirmed = await confirmAutoPost(sa, { runId: q.runId, docId: q.docId, textHash }, Date.now());
-  if (confirmed === "stale" || confirmed === "approval") return "skipped";
+  if (confirmed === "approval") return "held";
+  if (confirmed === "stale") return "skipped";
   if (confirmed !== "go") return "stop";
 
   const res = await postReply(

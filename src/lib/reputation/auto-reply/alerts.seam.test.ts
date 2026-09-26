@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
 import { ACCOUNT, AGENCY, LOC_A, LOC_NORTH, SA, asUser, mem } from "@/test/gbp-sync-harness";
-import { A1, patchSettings, pendingOf, putFixtureReview, resetAutoReply, reviewDoc, sync, syncAndRun } from "@/test/auto-reply-harness";
+import { A1, neverPath, patchSettings, pendingOf, putFixtureReview, resetAutoReply, reviewDoc, sync, syncAndRun } from "@/test/auto-reply-harness";
 import { reviewBasis } from "@/lib/reputation/sentiment-basis";
 import { sentimentUsagePath } from "@/lib/reputation/sentiment-calls";
 import { autoReplyAfterSync } from "./run";
@@ -56,29 +56,46 @@ describe("held", () => {
     expect(alerts("held")).toHaveLength(1);
   });
 
-  it("held without a draft (the 100 daily drafts spent): one alert; re-held the same way next run → none", async () => {
+  it("waiting on a daily limit (the shared 100 drafts/day spent → no_budget) is not a person's job → no alert", async () => {
     const day = new Date().toISOString().slice(0, 10);
     mem.seed(sentimentUsagePath(SA), { day, calls: 100, draftsDay: day, draftCalls: 100, autoDraftCalls: 0 });
     await syncAndRun();
     expect(pendingOf("fake-a1")).toMatchObject({ reason: "no_budget" });
-    expect(alerts("held")).toHaveLength(1);
-    expect(alerts("held")[0].count).toBe(2);
+    expect(pendingOf("fake-a2")).toMatchObject({ reason: "no_budget" });
     await syncAndRun();
-    expect(alerts("held")).toHaveLength(1);
+    expect(alerts("held")).toEqual([]);
   });
 
-  it("a queued draft moved to approval (auto-reply switched off and on, backlog off) → one alert", async () => {
+  /** fake-a1 carries a fresh queued draft, as if a run drafted it and stopped before posting. */
+  async function queueA1() {
     const run = await sync();
     const text = "Thank you for the five stars!";
-    const basisHash = reviewBasis(reviewDoc("fake-a1"));
     mem.seed(`subAccounts/${SA}/gbpReviews/${A1}`, {
       ...reviewDoc("fake-a1"),
-      pendingReply: { text, textHash: textHashOf(text), basisHash, reason: "auto_queued", model: "fake", at: new Date() },
+      pendingReply: {
+        text, textHash: textHashOf(text), basisHash: reviewBasis(reviewDoc("fake-a1")), reason: "auto_queued", model: "fake", at: new Date(),
+      },
     });
+    return { run, text };
+  }
+
+  it("a queued draft moved to approval (auto-reply switched off and on, backlog off) → one alert, not again next run", async () => {
+    const { run, text } = await queueA1();
     patchSettings({ enabledAt: new Date("2026-08-30T00:00:00Z") });
     await autoReplyAfterSync(SA, run.startedAt, Date.now() + 240_000);
     expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval", text });
     expect(alerts("held")).toHaveLength(1);
+    await syncAndRun();
+    expect(alerts("held")).toHaveLength(1);
+  });
+
+  it("a queued draft whose star the admin switched to Approval → one alert", async () => {
+    const { run, text } = await queueA1();
+    patchSettings({ modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "approval" } });
+    await autoReplyAfterSync(SA, run.startedAt, Date.now() + 240_000);
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval", text });
+    expect(alerts("held")).toHaveLength(1);
+    expect(alerts("held")[0].count).toBe(1);
   });
 
   it("a run that holds nothing (only auto-posts) → no alert", async () => {
@@ -112,15 +129,43 @@ describe("edited_low", () => {
     expect(alerts("edited_low")).toHaveLength(1);
   });
 
-  it("an auto-replied 5★ edited to 4★, or an auto-replied 3★ whose text changes → no alert", async () => {
-    patchSettings({ modes: { 1: "approval", 2: "approval", 3: "auto", 4: "auto", 5: "auto" } });
-    putFixtureReview("fake-t3", 3, null, 29);
+  it("an auto-replied 5★ edited to 4★ → no alert", async () => {
     await syncAndRun();
-    expect(reviewDoc("fake-t3").autoReplied).toBeTruthy();
     putFixtureReview("fake-a1", 4, null, 28);
-    putFixtureReview("fake-t3", 3, "Added some words", 29);
     await sync();
     expect(alerts("edited_low")).toEqual([]);
+  });
+
+  it("an auto-replied 5★ edited to exactly 3★ → one alert", async () => {
+    await syncAndRun();
+    putFixtureReview("fake-a1", 3, null, 28);
+    await sync();
+    expect(alerts("edited_low")).toMatchObject([{ star: 3 }]);
+  });
+
+  it("an auto-replied 3★ that gains text (star unchanged) → one alert; one that stays blank → none", async () => {
+    patchSettings({ modes: { 1: "approval", 2: "approval", 3: "auto", 4: "auto", 5: "auto" } });
+    putFixtureReview("fake-t3", 3, null, 29);
+    putFixtureReview("fake-t4", 3, null, 27);
+    await syncAndRun();
+    expect(reviewDoc("fake-t3").autoReplied).toBeTruthy();
+    expect(reviewDoc("fake-t4").autoReplied).toBeTruthy();
+    await sync();
+    expect(alerts("edited_low")).toEqual([]);
+    putFixtureReview("fake-t3", 3, "Added some words", 29);
+    await sync();
+    expect(alerts("edited_low")).toMatchObject([{ star: 3 }]);
+  });
+
+  it("after a cache clear (Google gate toggled): an auto-replied review edited to 2★ still alerts once", async () => {
+    await syncAndRun();
+    await clearGbpCache(SA);
+    await sync();
+    expect(mem.read(neverPath("fake-a1"))).toMatchObject({ reason: "auto_replied", star: 5 });
+    expect(alerts("edited_low")).toEqual([]);
+    putFixtureReview("fake-a1", 2, null, 28);
+    await sync();
+    expect(alerts("edited_low")).toMatchObject([{ star: 2 }]);
   });
 
   it("an edit that stays above 3★, or a review that was never auto-replied → no alert", async () => {
@@ -150,6 +195,13 @@ describe("reconnect_required", () => {
     mem.seed(`subAccounts/${SA}`, { ...sub, googleConnectionMeta: { ...(sub.googleConnectionMeta as object), reconnectRequired: false } });
     await markReconnectRequiredIf(SA, "insufficient_scope", expected);
     expect(alerts("reconnect_required")).toHaveLength(2);
+  });
+
+  it("auto-reply off for this sub-account → the flag is set, no alert", async () => {
+    patchSettings({ enabled: false });
+    await markReconnectRequiredIf(SA, "revoked", expected);
+    expect(mem.read(`subAccounts/${SA}`)!.googleConnectionMeta).toMatchObject({ reconnectRequired: true });
+    expect(alerts("reconnect_required")).toEqual([]);
   });
 
   it("a newer grant (secret changed) is not flagged → no alert", async () => {

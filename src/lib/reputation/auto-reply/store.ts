@@ -186,9 +186,11 @@ export async function finalizeAutoPost(
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
   const subRef = db.doc(`subAccounts/${sa}`);
   await db.runTransaction(async (tx) => {
-    const exists = (await tx.get(ref)).exists;
+    const snap = await tx.get(ref);
+    const exists = snap.exists;
+    const star = typeof snap.data()?.starRating === "number" ? (snap.data()!.starRating as number) : null;
     const agencyId = String((await tx.get(subRef)).data()?.agencyId ?? "");
-    tx.set(db.doc(autoReplyNeverPath(sa, reviewName)), neverMarker({ agencyId, subAccountId: sa, createdByUid }, "auto_replied", now, docId));
+    tx.set(db.doc(autoReplyNeverPath(sa, reviewName)), neverMarker({ agencyId, subAccountId: sa, createdByUid }, "auto_replied", now, docId, star));
     if (exists) tx.update(ref, { pendingReply: null, autoReplied: { at: now, key }, hadReply: true });
   });
 }

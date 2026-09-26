@@ -29,11 +29,25 @@ export const autoReplyNeverCollection = (sa: string) => `subAccounts/${sa}/autoR
 export const autoReplyNeverPath = (sa: string, reviewName: string) =>
   `${autoReplyNeverCollection(sa)}/${stableReviewKey(reviewName)}`;
 
+/**
+ * `star` (auto_replied only): the rating when auto-reply answered it — so an
+ * edit down to ≤3★ is still recognised after a cache clear (PR 4 alerts).
+ */
 export function neverMarker(
   t: { agencyId: string; subAccountId: string; createdByUid: string | null },
   reason: NeverReason,
   at: Date,
   reviewDocId: string,
+  star: number | null = null,
 ): Record<string, unknown> {
-  return { agencyId: t.agencyId, subAccountId: t.subAccountId, createdByUid: t.createdByUid, reason, at, reviewDocId };
+  return {
+    agencyId: t.agencyId, subAccountId: t.subAccountId, createdByUid: t.createdByUid, reason, at, reviewDocId,
+    ...(reason === "auto_replied" ? { star } : {}),
+  };
+}
+
+export interface NeverMarkerSeen {
+  reason: NeverReason;
+  /** The star when auto-replied; null when not recorded. */
+  star: number | null;
 }

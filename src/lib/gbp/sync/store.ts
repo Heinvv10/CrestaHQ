@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { autoReplyNeverCollection, type NeverMarkerSeen } from "../auto-reply-never";
 import type { GbpReview } from "../provider/types";
 import {
   LEASE_TTL_MS,
@@ -77,6 +78,20 @@ export async function loadCache(subAccountId: string): Promise<Map<string, Cache
   return out;
 }
 
+/** The sub-account's `autoReplyNever` markers by stableReviewKey — durable, outside the cache. */
+export async function loadNeverMarkers(subAccountId: string): Promise<Map<string, NeverMarkerSeen>> {
+  const snap = await getAdminDb().collection(autoReplyNeverCollection(subAccountId)).get();
+  const out = new Map<string, NeverMarkerSeen>();
+  for (const doc of snap.docs) {
+    const d = doc.data();
+    out.set(doc.id, {
+      reason: d.reason === "auto_replied" ? "auto_replied" : "replied",
+      star: typeof d.star === "number" ? d.star : null,
+    });
+  }
+  return out;
+}
+
 export interface UpsertContext {
   agencyId: string;
   subAccountId: string;
@@ -97,6 +112,8 @@ export function upsertFor(
   review: GbpReview,
   cached: CachedReview | undefined,
   ctx: UpsertContext,
+  /** This review's durable autoReplyNever marker, if any. */
+  marker?: NeverMarkerSeen,
 ): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean; markNever: boolean; editedLow: boolean } {
   const hash = contentHash(review);
   // Seeing a review resets its miss count. A review seen WITH a reply — now,
@@ -105,15 +122,21 @@ export function upsertFor(
   // (outside the cache) the first time: review auto-reply never replaces a
   // reply someone removed.
   const replied = !!review.reply || cached?.replied === true;
-  const markNever = replied && cached?.hadReply !== true;
+  // A marker already there is never rewritten (an `auto_replied` one must stay so).
+  const markNever = replied && cached?.hadReply !== true && !marker;
   const seen = { lastSeenAt: ctx.now, passId: ctx.passId, missedPasses: 0, ...(replied ? { hadReply: true } : {}) };
   // A tombstone's contentHash is null, so a review that comes back is an update.
   if (cached && cached.contentHash === hash) {
     return { kind: "unchanged", data: seen, merge: true, markNever, editedLow: false };
   }
-  // An auto-replied review edited DOWN to ≤3★: the caller sends one alert.
-  const was = cached?.autoRepliedStar;
-  const editedLow = typeof was === "number" && review.starRating <= 3 && review.starRating < was;
+  // An auto-replied review now at ≤3★ after an edit — its star went down, or it
+  // gained text (auto-reply only ever answers rating-only reviews): the caller
+  // sends one alert. Known from the cache, or after a cache clear from the
+  // durable marker.
+  const autoReplied = cached?.autoRepliedStar != null || marker?.reason === "auto_replied";
+  const was = cached?.autoRepliedStar ?? marker?.star ?? null;
+  const editedLow = autoReplied && review.starRating <= 3
+    && ((was !== null && review.starRating < was) || (review.comment ?? "").trim() !== "");
   const content = {
     // A reply from anywhere makes the auto-reply engine's draft moot.
     ...(review.reply ? { pendingReply: null } : {}),
@@ -151,7 +174,7 @@ export function upsertFor(
     missedPasses: 0,
     ...(replied ? { hadReply: true } : {}),
   };
-  return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false, markNever, editedLow: false };
+  return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false, markNever, editedLow };
 }
 
 /**
