@@ -109,4 +109,19 @@ describe("lookAlikeProblem", () => {
     expect(lookAlikeProblem("Follow-up", ["Follow up"])).toBe("is the same as, or looks like, an existing one");
     expect(lookAlikeProblem("0800-123", ["0800 123"])).toBeNull();
   });
+
+  it("every dash and minus is the same dash in the keys, wherever it stands", () => {
+    for (const [name, existing] of [["Plan\u20102", "Plan-2"], ["Plan\u20112", "Plan-2"], ["0800\u2010123", "0800-123"], ["\u2010Promo", "-Promo"], ["Promo\u2010", "Promo-"], ["Plan\u22122", "Plan-2"]]) {
+      expect(lookAlikeProblem(name, [existing]), name).toBe("is the same as, or looks like, an existing one");
+    }
+  });
+
+  it("a symbol at the start or end of a word is refused too; ordinary punctuation there is not", () => {
+    for (const name of ["Bonus \u0966ffer", "Invoic\u212e"]) {
+      expect(lookAlikeProblem(name, []), name).toBe("has a symbol inside a word that can pass for a letter");
+    }
+    for (const name of ["Q&A", "Hi!", "Why?", "Note: call", "Top10%", "(Pro)", "Lead, hot"]) {
+      expect(lookAlikeProblem(name, []), name).toBeNull();
+    }
+  });
 });

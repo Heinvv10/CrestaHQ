@@ -128,8 +128,9 @@ const LOWER_CONFUSABLES = new Map<string, string>([
  *  dashes do ("A+" / "A", "A-" / "A", "1-2" / "12",
  *  "10.0" / "100", emoji). */
 const SEPARATORS = /[\s\p{Pc}\p{Ps}\p{Pe}'"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033\u02bc\uff07]/gu;
+// Every dash (and minus) is "-" first, so "Plan\u20102" = "Plan-2" wherever it stands.
 const dropSeparators = (value: string) =>
-  value.replace(/(?<=[\p{L}\p{M}])\p{Pd}+(?=\p{L})/gu, "").replace(SEPARATORS, "");
+  value.replace(/[\p{Pd}\u2212\ufe63\uff0d]/gu, "-").replace(/(?<=[\p{L}\p{M}])-+(?=\p{L})/gu, "").replace(SEPARATORS, "");
 
 /** A name folded for "is this the same name?": NFKC, case-folded, separators
  *  dropped. */
@@ -194,15 +195,22 @@ function imitatesLatin(ch: string): boolean {
 const IS_SEPARATOR = new RegExp(SEPARATORS.source, "u");
 
 /**
- * A symbol between two ASCII letters with no space (\u212e \u0966 \u0665 \u2229 in
- * "Bank d\u212etails"): only ASCII letters and digits, marks, Latin letters,
- * separators and . & / + belong inside a plain word (a Latin letter that
- * imitates another is refused before this runs).
+ * A symbol touching an ASCII letter in the same word (\u212e \u0966 \u0665 \u2229 in
+ * "Bank d\u212etails", "Invoic\u212e", "B\u0966nus"). Between two letters only ASCII
+ * digits, marks, Latin letters, separators and . & / + belong (a Latin letter
+ * that imitates another is refused before this runs). At the start or end of
+ * a word, also any ASCII punctuation (! ? , : % ( ) ...), a symbol NFKC spells
+ * in ASCII (\u2122 \u00b2 \u2026), and any letter ("\u00b5-controller"; other
+ * scripts have their own checks).
  */
 function symbolInWord(value: string): boolean {
-  for (const [run] of value.normalize("NFC").matchAll(/(?<=[A-Za-z])[^A-Za-z\s]+(?=[A-Za-z])/gu)) {
-    const odd = (c: string) => !/[0-9.&/+\p{M}\p{Pd}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
-    if ([...run].some(odd)) return true;
+  const text = value.normalize("NFC");
+  const asciiLetter = (c: string | undefined) => !!c && /[A-Za-z]/.test(c);
+  const odd = (c: string) => !/[0-9.&/+\p{M}\p{Pd}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
+  const oddAtEdge = (c: string) => odd(c) && !/\p{L}/u.test(c) && !/^[\x21-\x7e]+$/.test(c.normalize("NFKC"));
+  for (const m of text.matchAll(/[^A-Za-z\s]+/gu)) {
+    const [before, after] = [asciiLetter(text[m.index - 1]), asciiLetter(text[m.index + m[0].length])];
+    if (before && after ? [...m[0]].some(odd) : (before || after) && [...m[0]].some(oddAtEdge)) return true;
   }
   return false;
 }
