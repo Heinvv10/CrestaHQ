@@ -23,7 +23,8 @@ const ms = (v: unknown): number | null =>
  */
 export function editedByAgentSinceApproval(b: Pick<BroadcastDoc, "approved">, contact: object): boolean {
   const [edited, approvedAt] = [ms((contact as { lastAgentEditAt?: unknown }).lastAgentEditAt), ms(b.approved?.at)];
-  return edited !== null && approvedAt !== null && edited > approvedAt;
+  // At or after: two server clocks can land in the same millisecond.
+  return edited !== null && approvedAt !== null && edited >= approvedAt;
 }
 
 /** How many more recipients the fan-out may queue (Infinity when nothing was approved). */

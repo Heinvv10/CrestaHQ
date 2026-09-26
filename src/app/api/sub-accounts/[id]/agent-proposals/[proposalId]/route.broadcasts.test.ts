@@ -51,6 +51,8 @@ describe("create_broadcast", () => {
     expect((await decide(id, "approve")).status).toBe(200);
     const [b] = mem.list("broadcasts");
     expect(b).toMatchObject({ status: "queued", templateId: "tpl_email", audienceFilter: { kind: "all" }, approved: { audienceCap: 2, templateFingerprint: templateFingerprint(TEMPLATE as never) } });
+    // Anchored at the proposal's own Firestore server time.
+    expect((b.approved as { at: unknown }).at).toEqual(row(id).createdServerAt);
     expect(publishCallback).toHaveBeenCalledWith(expect.objectContaining({ pathname: "/api/broadcasts/email/fanout" }));
   });
 

@@ -37,6 +37,15 @@ beforeEach(() => {
   for (const id of ["c1", "c2", "c3"]) mem.seed(`contacts/${id}`, { subAccountId: "sa1", agencyId: "ag1", name: id, email: `${id}@x.io`, phone: "" });
 });
 
+describe("edited since approval", () => {
+  it("an edit in the same millisecond as the proposal counts (two server clocks can tie)", async () => {
+    const { editedByAgentSinceApproval } = await import("@/lib/broadcasts/approved");
+    const at = new Date("2030-01-01T00:00:00.000Z");
+    expect(editedByAgentSinceApproval({ approved: { templateFingerprint: "f", audienceCap: 1, at } }, { lastAgentEditAt: new Date(at.getTime()) })).toBe(true);
+    expect(editedByAgentSinceApproval({ approved: { templateFingerprint: "f", audienceCap: 1, at } }, { lastAgentEditAt: new Date(at.getTime() - 1) })).toBe(false);
+  });
+});
+
 describe("the fan-out", () => {
   it("queues only the approved number; the rest are skipped as over the approved audience", async () => {
     broadcast({ templateFingerprint: templateFingerprint(TEMPLATE as never), audienceCap: 2 });

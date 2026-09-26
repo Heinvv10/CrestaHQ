@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createHash, randomBytes } from "node:crypto";
+import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
 import {
@@ -157,6 +158,8 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       status: "pending",
       rev,
       createdAt: new Date(now),
+      // Firestore's own clock, comparable with agent edit stamps (serverTimestamp).
+      createdServerAt: FieldValue.serverTimestamp(),
       expiresAt: new Date(now + TTL_MS),
       claimedAt: null,
       claimId: null,
