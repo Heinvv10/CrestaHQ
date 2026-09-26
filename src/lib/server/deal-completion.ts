@@ -1,6 +1,6 @@
 import "server-only";
 
-import { maybeSendReviewRequest } from "@/lib/reviews/request";
+import { maybeSendReviewRequest, type SendReviewInput } from "@/lib/reviews/request";
 import type { DealWriteResult } from "./deals-service";
 
 /**
@@ -15,6 +15,8 @@ export function askReviewIfNewlyCompleted(opts: {
   before: FirebaseFirestore.DocumentData;
   completed: boolean | undefined;
   result: DealWriteResult;
+  /** An approved agent completion: the reviewed number and channel. */
+  expect?: SendReviewInput["expect"];
 }): void {
   const { before, result } = opts;
   // "Was it already completed?" from the write's own transaction: of two
@@ -26,6 +28,7 @@ export function askReviewIfNewlyCompleted(opts: {
       agencyId: before.agencyId as string,
       contactId: (result.deal.contact_id ?? before.contactId) as string,
       trigger: "deal_completed",
+      ...(opts.expect ? { expect: opts.expect } : {}),
     });
   }
 }

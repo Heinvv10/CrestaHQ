@@ -4,7 +4,7 @@ import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
-import { activeReminder, DEFAULT_REVIEW_COOLDOWN_DAYS, normalizeReviewChannel } from "@/lib/reviews/constants";
+import { activeReminder, DEFAULT_REVIEW_COOLDOWN_DAYS, normalizeReviewChannel, type ReviewChannel } from "@/lib/reviews/constants";
 import { fillPositional, reviewSmsBody, reviewTemplateFill } from "@/lib/reviews/review-body";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -28,6 +28,8 @@ export interface ReviewPlan {
   phone: string;
   /** The exact text, or null when nothing would be sent. */
   body: string | null;
+  /** The configured channel the text goes on (null when nothing is sent). */
+  channel: ReviewChannel | null;
   rows: PreviewRow[];
 }
 
@@ -35,6 +37,7 @@ const none = (contactId: string | null, phone: string, why: string): ReviewPlan 
   contactId,
   phone,
   body: null,
+  channel: null,
   rows: [{ label: "Review request", value: `None: ${why}` }],
 });
 
@@ -81,6 +84,7 @@ export async function reviewPlan(subAccountId: string, deal: FirebaseFirestore.D
     contactId,
     phone,
     body: shown,
+    channel,
     rows: [
       { label: "Review request", value: `Sent to ${oneLine(contact.name) || "(unnamed)"} (${masked("sms", phone)}) by ${label}; quiet hours delay it.${tracked}` },
       { label: "Message", value: shown, multiline: true },

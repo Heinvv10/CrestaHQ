@@ -45,7 +45,7 @@ const rowOf = (id: string, label: string) => (row(id).preview as Array<{ label: 
 const reviewRow = (id: string) => rowOf(id, "Review request");
 /** A write-transaction hook one transaction later than beforeNextTransaction:
  *  after approve's claim, between execute's reads and its deal write. */
-const inExecuteWindow = (change: () => void) => beforeNextTransaction(async () => beforeNextTransaction(async () => change()));
+const inExecuteWindow = (change: () => unknown) => beforeNextTransaction(async () => beforeNextTransaction(async () => { await change(); }));
 
 beforeEach(() => {
   reviewAsk.mockClear();
@@ -60,13 +60,16 @@ describe("mark_deal_completed", () => {
     expect(row(id).approval).toBe("outbound");
     expect(reviewRow(id)).toBe("Sent to Ann Smith (…1111) by SMS; quiet hours delay it.");
     expect(row(id).preview).toContainEqual({ label: "Message", value: SMS_TEXT, multiline: true });
-    expect(row(id).pinned).toEqual({ dealId: "d1", contactId: "c1", phone: "+27821111111", body: SMS_TEXT });
+    expect(row(id).pinned).toEqual({ dealId: "d1", contactId: "c1", phone: "+27821111111", channel: "sms", body: SMS_TEXT });
+    expect(row(id).preview).toContainEqual({ label: "Stage", value: "Won (Won stage)" });
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("deals/d1")!.completed).toBe(true);
     expect(reviewAsk).toHaveBeenCalledTimes(1);
-    expect(reviewAsk).toHaveBeenCalledWith({ subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "deal_completed" });
+    expect(reviewAsk).toHaveBeenCalledWith({
+      subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "deal_completed", expect: { phone: "+27821111111", channel: "sms" },
+    });
   });
 
   it.each([
@@ -128,6 +131,36 @@ describe("mark_deal_completed", () => {
     inExecuteWindow(() => mem.seed("deals/d1", { ...DEAL, completed: true }));
     expect((await decide(id, "approve")).status).toBe(200);
     expect(reviewAsk).not.toHaveBeenCalled();
+  });
+
+  it("review requests off when reviewed: approve completes the deal and asks for nothing", async () => {
+    reviews({ triggerOnDealCompleted: false });
+    const id = await proposeId();
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(mem.read("deals/d1")!.completed).toBe(true);
+    expect(reviewAsk).not.toHaveBeenCalled();
+  });
+
+  it("the deal's contact changed inside the write's window → failed, not completed, nothing sent", async () => {
+    const id = await proposeId();
+    inExecuteWindow(() => (mem.seed("contacts/c2", { ...ANN, name: "Ben" }), mem.seed("deals/d1", { ...DEAL, contactId: "c2" })));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id).error).toBe("The deal's contact changed since this was reviewed; it was not marked completed.");
+    expect(mem.read("deals/d1")!.completed).toBeUndefined();
+    expect(reviewAsk).not.toHaveBeenCalled();
+  });
+
+  it("a person ticks completed while the approved completion runs → exactly one review request in all", async () => {
+    const { PATCH } = await import("@/app/api/deals/[id]/route");
+    const id = await proposeId();
+    inExecuteWindow(async () => {
+      const res = await PATCH(new Request("http://x/api/deals/d1", { method: "PATCH", body: JSON.stringify({ completed: true }) }), {
+        params: Promise.resolve({ id: "d1" }),
+      });
+      expect(res.status).toBe(200);
+    });
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(reviewAsk).toHaveBeenCalledTimes(1);
   });
 
   it("moved out of Won between execute's read and its write → failed, not completed, nothing sent", async () => {

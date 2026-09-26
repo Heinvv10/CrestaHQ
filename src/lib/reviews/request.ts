@@ -20,6 +20,7 @@ import {
   DEFAULT_REVIEW_COOLDOWN_DAYS,
   DEFAULT_REVIEW_SMS_TEMPLATE,
   normalizeReviewChannel,
+  type ReviewChannel,
 } from "@/lib/reviews/constants";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { logReviewRequest } from "@/lib/reviews/request-log";
@@ -67,6 +68,10 @@ export interface SendReviewInput {
   /** SP5 d2: a reminder re-send of this request (trigger "reminder") — same
    *  link, no cooldown, no new log row; the worker records the attempt. */
   reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
+  /** What a person approved (an agent's mark_deal_completed): the send is
+   *  refused if the contact's number or the configured channel now differs.
+   *  Absent for every other caller. */
+  expect?: { phone: string; channel: ReviewChannel };
 }
 
 export interface SendReviewResult {
@@ -76,7 +81,7 @@ export interface SendReviewResult {
    *  whatsapp_not_configured | window_closed | rail_has_no_templates |
    *  no_template | template_not_approved | template_var_missing |
    *  send_failed | error | quiet_hours_held | quiet_hours (reminder: the
-   *  worker reschedules itself with `quietHours`) */
+   *  worker reschedules itself with `quietHours`) | changed_since_approval */
   reason?: string;
   /** Set with reason "quiet_hours": when the quiet window ends. */
   quietHours?: QuietHoursHold;
@@ -132,6 +137,9 @@ export async function maybeSendReviewRequest(
     if (!contact.phone) return { sent: false, reason: "no_phone" };
 
     const channel = normalizeReviewChannel(cfg.channel);
+    if (input.expect && (contact.phone !== input.expect.phone || channel !== input.expect.channel)) {
+      return { sent: false, reason: "changed_since_approval" };
+    }
     const isWhatsapp = channel !== "sms";
     const convoChannel: ConversationChannel = isWhatsapp ? "whatsapp" : "sms";
     // A reminder goes only on the channel its request went on.

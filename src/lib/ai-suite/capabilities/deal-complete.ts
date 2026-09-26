@@ -67,7 +67,7 @@ export const DEAL_COMPLETE_CAPABILITIES: AiSuiteCapability[] = [
         rows: [
           { label: "Mark completed", value: oneLine(d.title) || "(untitled)" },
           ...recordProvenanceRows(args.dealId as string, d),
-          { label: "Stage", value: `${oneLine(stage.label)} (${stage.id}, won)` },
+          { label: "Stage", value: `${oneLine(stage.label)} (Won stage)` },
           ...(edited
             ? [{
                 label: "Warning",
@@ -77,14 +77,14 @@ export const DEAL_COMPLETE_CAPABILITIES: AiSuiteCapability[] = [
           { label: "Value", value: fmtMoney(typeof d.value === "number" ? d.value : 0, (d.currency as string) || "USD") },
           ...plan.rows,
         ],
-        pinned: { dealId: args.dealId, contactId: plan.contactId, phone: plan.phone, body: plan.body },
+        pinned: { dealId: args.dealId, contactId: plan.contactId, phone: plan.phone, channel: plan.channel, body: plan.body },
       };
     },
     execute: async (ctx, args) => {
       const before = await tenantDeal(ctx.subAccountId!, args.dealId);
       const pinned = ctx.approved?.pinned ?? {};
       const plan = await reviewPlan(ctx.subAccountId!, before, Date.now());
-      if (plan.contactId !== pinned.contactId || plan.phone !== pinned.phone || plan.body !== pinned.body) {
+      if (plan.contactId !== pinned.contactId || plan.phone !== pinned.phone || plan.channel !== pinned.channel || plan.body !== pinned.body) {
         throw new CapabilityUserError("The deal's contact, their number or the review request changed since this was reviewed; nothing was changed.");
       }
       const result = await updateDealServerSide({
@@ -94,12 +94,19 @@ export const DEAL_COMPLETE_CAPABILITIES: AiSuiteCapability[] = [
         source: "ai",
         patch: { completed: true },
         // Checked in the write's transaction: the stage may have moved since.
-        guard: (_existing, terminal) => {
+        guard: (existing, terminal) => {
           if (terminal !== "won") throw new CapabilityUserError("The deal is no longer on a Won stage; it was not marked completed.");
+          if (((existing.contactId as string | null) ?? null) !== pinned.contactId) {
+            throw new CapabilityUserError("The deal's contact changed since this was reviewed; it was not marked completed.");
+          }
         },
       }).catch(rethrowStageError);
       if (!result) throw new CapabilityUserError("That deal wasn't found in this workspace.");
-      askReviewIfNewlyCompleted({ before, completed: true, result });
+      // Only a reviewed request is sent, and the send itself refuses a number
+      // or channel that changed after this point.
+      if (plan.channel) {
+        askReviewIfNewlyCompleted({ before, completed: true, result, expect: { phone: plan.phone, channel: plan.channel } });
+      }
       return { resultText: "Marked the deal completed.", ref: { kind: "deal", id: args.dealId as string } };
     },
   },
