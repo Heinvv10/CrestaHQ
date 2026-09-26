@@ -13,11 +13,12 @@ import { beginDraftCall, draftInputFor } from "../draft";
 import { reviewBasis } from "../sentiment-basis";
 import { sentimentUsagePath } from "../sentiment-calls";
 import { decide, type DecideCounts, type DecideReview, type DecideSettings, type Decision } from "./decide";
+import { sendAutoReplyAlert } from "./alerts";
 import { autoReplyKillSwitchOn } from "./kill-switch";
 import { postQueued } from "./post";
 import { AUTO_REPLY_DAILY_DRAFT_CAP, readAutoReplySettings } from "./settings";
 import {
-  acquireAutoReplyLease, autoDraftsToday, autoReplyDismissedCollection, holdQueuedForApproval, postsToday, readPending,
+  acquireAutoReplyLease, markHeldAlerted, autoDraftsToday, autoReplyDismissedCollection, holdQueuedForApproval, postsToday, readPending,
   releaseAutoReplyLease, renewAutoReplyLease, storePending, toDecidePending,
 } from "./store";
 
@@ -29,14 +30,21 @@ import {
  * sub-account (lease); every review decided (decide.ts) newest first; each
  * draft stored on the review BEFORE any post (so a retry posts the same
  * bytes); each post through post.ts. The deadline is checked before every
- * draft and every post. Never throws: a failure is logged by kind and the
- * next sync's run carries on from the stored state.
+ * draft and every post. A run that puts ≥1 review in front of a PERSON for
+ * the first time at its current content (approval / texted — also when its
+ * draft failed, since a person must answer it anyway — or a queued draft
+ * moved to approval; deduped by `heldAlertBasis`, store.ts) sends one alert
+ * (alerts.ts), even when the run then fails. Reviews waiting on a daily
+ * limit or an auto post's retry are not alerted: they resolve on their own. Never throws: a failure is logged by kind and
+ * the next sync's run carries on from the stored state.
  */
 
 export interface AutoReplyRun {
   drafted: number;
   posted: number;
   held: number;
+  /** Put in front of a person for the first time at this content by THIS run (the held alert's count; `markHeldAlerted`). */
+  newlyHeld: number;
   stop: string | null;
 }
 
@@ -71,7 +79,7 @@ interface Ctx {
 }
 
 async function runEngine(sa: string, runStartedAt: number, deadline: number): Promise<AutoReplyRun> {
-  const tally: AutoReplyRun = { drafted: 0, posted: 0, held: 0, stop: null };
+  const tally: AutoReplyRun = { drafted: 0, posted: 0, held: 0, newlyHeld: 0, stop: null };
   const db = getAdminDb();
   const sub = (await db.doc(`subAccounts/${sa}`).get()).data() ?? {};
   const gatesOn = sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
@@ -107,6 +115,10 @@ async function runEngine(sa: string, runStartedAt: number, deadline: number): Pr
       if (tally.stop) break;
     }
   } finally {
+    // Here, not after, and before the release (which may throw): a run that
+    // fails after holding must still say so — the next run sees those reviews
+    // as already held and would never count them.
+    if (tally.newlyHeld > 0) await sendAutoReplyAlert(sa, { kind: "held", runId, count: tally.newlyHeld });
     await releaseAutoReplyLease(sa, runId);
   }
   return tally;
@@ -137,7 +149,7 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
   if (d.verdict === "skip") return null;
   if (d.verdict === "to_approval") {
     const p = readPending(data.pendingReply);
-    if (p?.textHash) await holdQueuedForApproval(ctx.sa, docId, p.textHash);
+    if (p?.textHash && (await holdQueuedForApproval(ctx.sa, docId, p.textHash))) await heldForPerson(ctx, docId, review.basisHash!);
     ctx.tally.held += 1;
     return null;
   }
@@ -162,6 +174,10 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
   if (result === "posted") {
     ctx.tally.posted += 1;
     ctx.counts.postsToday += 1;
+  }
+  if (result === "held") {
+    ctx.tally.held += 1;
+    await heldForPerson(ctx, docId, basisHash);
   }
   return result === "stop" ? "post_stopped" : null;
 }
@@ -192,12 +208,22 @@ async function draft(
   const result = await ctx.ai.draftReply(input);
   if (result.text === null) {
     console.warn(`[reputation/auto-reply] no draft sa=${ctx.sa} failure=${result.failure}`);
-    await storePending(ctx.sa, docId, { text: null, basisHash, reason: "draft_failed", model: ctx.ai.model }, new Date());
+    const stored = await storePending(ctx.sa, docId, { text: null, basisHash, reason: "draft_failed", model: ctx.ai.model }, new Date());
+    // A review a person must answer anyway, now without a draft.
+    if (stored && reason !== "auto_queued") await heldForPerson(ctx, docId, basisHash);
     return null;
   }
   const stored = await storePending(ctx.sa, docId, { text: result.text, basisHash, reason, model: ctx.ai.model }, new Date());
   if (!stored) return null;
   ctx.tally.drafted += 1;
-  if (reason !== "auto_queued") ctx.tally.held += 1;
+  if (reason !== "auto_queued") {
+    ctx.tally.held += 1;
+    await heldForPerson(ctx, docId, basisHash);
+  }
   return result.text;
+}
+
+/** Counted for the held alert only the first time this review, at this content, waits for a person. */
+async function heldForPerson(ctx: Ctx, docId: string, basisHash: string): Promise<void> {
+  if (await markHeldAlerted(ctx.sa, docId, basisHash)) ctx.tally.newlyHeld += 1;
 }

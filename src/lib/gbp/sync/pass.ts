@@ -3,11 +3,12 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withGbpAccess } from "../access";
-import { GbpProviderError, type GbpReviewsPage } from "../provider/types";
-import { autoReplyNeverPath, neverMarker } from "../auto-reply-never";
+import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
+import { GbpProviderError, type GbpReview, type GbpReviewsPage } from "../provider/types";
+import { autoReplyNeverPath, neverMarker, stableReviewKey } from "../auto-reply-never";
 import { commitGuarded, type GuardedOp } from "./lease";
 import { withRetry, type Sleep } from "./retry";
-import { reviewDocId, upsertFor, type CachedReview, type UpsertContext } from "./store";
+import { loadNeverMarkers, reviewDocId, upsertFor, type CachedReview, type UpsertContext } from "./store";
 import { LEASE_TTL_MS, PASS_MAX_AGE_MS, reviewsCollection, syncStatePath, type SyncPass, type SyncState } from "./types";
 
 /**
@@ -71,6 +72,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
   const db = getAdminDb();
   const stateRef = db.doc(syncStatePath(subAccountId));
   const ctx: UpsertContext = { ...input.ctx, passId };
+  const markers = await loadNeverMarkers(subAccountId);
 
   while (out.pagesFetched < maxPages) {
     let page: GbpReviewsPage;
@@ -93,10 +95,12 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
 
     const ops: GuardedOp[] = [];
     const counts = { created: 0, updated: 0, unchanged: 0 };
+    const editedLow: { review: GbpReview; docId: string }[] = [];
     for (const review of page.reviews) {
       const docId = reviewDocId(review.name);
       const cached = cache.get(docId);
-      const { kind, data, merge, markNever } = upsertFor(review, cached, ctx);
+      const { kind, data, merge, markNever, editedLow: lowered } = upsertFor(review, cached, ctx, markers.get(stableReviewKey(review.name)));
+      if (lowered) editedLow.push({ review, docId });
       const docRef = db.doc(`${reviewsCollection(subAccountId)}/${docId}`);
       ops.push((tx) => (merge ? tx.set(docRef, data, { merge: true }) : tx.set(docRef, data)));
       if (markNever) {
@@ -107,7 +111,8 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
       // Run-local view, so a review repeated on a later page is "unchanged".
       const hash = kind === "unchanged" ? (cached?.contentHash ?? null) : (data.contentHash as string);
       const replied = data.hadReply === true || cached?.replied === true;
-      cache.set(docId, { state: "active", passId, lastSeenAt: nowMs, contentHash: hash, replied, hadReply: replied });
+      const autoRepliedStar = cached?.autoRepliedStar == null ? null : review.starRating;
+      cache.set(docId, { state: "active", passId, lastSeenAt: nowMs, contentHash: hash, replied, hadReply: replied, autoRepliedStar });
     }
     const next = page.nextPageToken;
     pagesDone += 1;
@@ -123,6 +128,12 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
       return out;
     }
 
+    // Only once the page is committed: one alert per review, ever (alerts.ts).
+    for (const { review, docId } of editedLow) {
+      await sendAutoReplyAlert(subAccountId, {
+        kind: "edited_low", reviewName: review.name, reviewDocId: docId, star: review.starRating, comment: review.comment,
+      });
+    }
     out.pagesFetched += 1;
     out.reviewsSeen += page.reviews.length;
     out.created += counts.created;

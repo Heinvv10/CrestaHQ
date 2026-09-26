@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { autoReplyNeverCollection, type NeverMarkerSeen } from "../auto-reply-never";
 import type { GbpReview } from "../provider/types";
 import {
   LEASE_TTL_MS,
@@ -54,6 +55,8 @@ export interface CachedReview {
   replied?: boolean;
   /** Already marked `hadReply` (so its autoReplyNever marker is written). */
   hadReply?: boolean;
+  /** The cached star rating of a review the engine auto-replied to; else null. */
+  autoRepliedStar?: number | null;
 }
 
 export async function loadCache(subAccountId: string): Promise<Map<string, CachedReview>> {
@@ -69,6 +72,21 @@ export async function loadCache(subAccountId: string): Promise<Map<string, Cache
       missedPasses: typeof d.missedPasses === "number" ? d.missedPasses : 0,
       replied: !!d.reply || d.hadReply === true,
       hadReply: d.hadReply === true,
+      autoRepliedStar: (d as { autoReplied?: unknown }).autoReplied && typeof d.starRating === "number" ? d.starRating : null,
+    });
+  }
+  return out;
+}
+
+/** The sub-account's `autoReplyNever` markers by stableReviewKey — durable, outside the cache. */
+export async function loadNeverMarkers(subAccountId: string): Promise<Map<string, NeverMarkerSeen>> {
+  const snap = await getAdminDb().collection(autoReplyNeverCollection(subAccountId)).get();
+  const out = new Map<string, NeverMarkerSeen>();
+  for (const doc of snap.docs) {
+    const d = doc.data();
+    out.set(doc.id, {
+      autoReplied: d.reason === "auto_replied" || "star" in d,
+      star: typeof d.star === "number" ? d.star : null,
     });
   }
   return out;
@@ -94,7 +112,9 @@ export function upsertFor(
   review: GbpReview,
   cached: CachedReview | undefined,
   ctx: UpsertContext,
-): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean; markNever: boolean } {
+  /** This review's durable autoReplyNever marker, if any. */
+  marker?: NeverMarkerSeen,
+): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean; markNever: boolean; editedLow: boolean } {
   const hash = contentHash(review);
   // Seeing a review resets its miss count. A review seen WITH a reply — now,
   // or in the cached copy (a reply deleted since) — is marked `hadReply` for
@@ -102,12 +122,21 @@ export function upsertFor(
   // (outside the cache) the first time: review auto-reply never replaces a
   // reply someone removed.
   const replied = !!review.reply || cached?.replied === true;
-  const markNever = replied && cached?.hadReply !== true;
+  // A marker already there is never rewritten (an `auto_replied` one must stay so).
+  const markNever = replied && cached?.hadReply !== true && !marker;
   const seen = { lastSeenAt: ctx.now, passId: ctx.passId, missedPasses: 0, ...(replied ? { hadReply: true } : {}) };
   // A tombstone's contentHash is null, so a review that comes back is an update.
   if (cached && cached.contentHash === hash) {
-    return { kind: "unchanged", data: seen, merge: true, markNever };
+    return { kind: "unchanged", data: seen, merge: true, markNever, editedLow: false };
   }
+  // An auto-replied review now at ≤3★ after an edit — its star went down, or it
+  // gained text (auto-reply only ever answers rating-only reviews): the caller
+  // sends one alert. Known from the cache, or after a cache clear from the
+  // durable marker.
+  const autoReplied = cached?.autoRepliedStar != null || marker?.autoReplied === true;
+  const was = cached?.autoRepliedStar ?? marker?.star ?? null;
+  const editedLow = autoReplied && review.starRating <= 3
+    && ((was !== null && review.starRating < was) || (review.comment ?? "").trim() !== "");
   const content = {
     // A reply from anywhere makes the auto-reply engine's draft moot.
     ...(review.reply ? { pendingReply: null } : {}),
@@ -122,7 +151,7 @@ export function upsertFor(
     contentHash: hash,
     ...seen,
   };
-  if (cached) return { kind: "updated", data: content, merge: true, markNever };
+  if (cached) return { kind: "updated", data: content, merge: true, markNever, editedLow };
   const doc: GbpReviewDoc = {
     agencyId: ctx.agencyId,
     subAccountId: ctx.subAccountId,
@@ -145,7 +174,7 @@ export function upsertFor(
     missedPasses: 0,
     ...(replied ? { hadReply: true } : {}),
   };
-  return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false, markNever };
+  return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false, markNever, editedLow };
 }
 
 /**

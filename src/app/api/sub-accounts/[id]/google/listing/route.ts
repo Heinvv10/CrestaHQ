@@ -10,6 +10,7 @@ import { withGbpAccess } from "@/lib/gbp/access";
 import { clearGbpCache } from "@/lib/gbp/sync/store";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
+import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 
 /**
  * Choose (PUT) or clear (DELETE) the Business Profile listing this
@@ -80,6 +81,7 @@ export async function PUT(
   const { account, location } = match;
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${id}`);
+  let switchedOff = false;
   const changed = await db.runTransaction(async (tx) => {
     const snap = await tx.get(subRef);
     const previous: string | null = snap.data()?.googleListing?.locationName ?? null;
@@ -90,6 +92,7 @@ export async function PUT(
     // enabled for the old one, and resuming needs an explicit re-enable. When
     // it was ON, the card says why it is off now (`disabledReason`).
     const autoReply = snap.data()?.reviewsAutoReply;
+    switchedOff = changed && autoReply?.enabled === true;
     const autoReplyOff = changed && autoReply
       ? { "reviewsAutoReply.enabled": false, ...(autoReply.enabled === true ? { "reviewsAutoReply.disabledReason": "listing_changed" } : {}) }
       : {};
@@ -123,6 +126,8 @@ export async function PUT(
   });
   // The cache only ever holds the current listing: a different one starts empty.
   if (changed) await clearGbpCache(id);
+  // Auto-reply was on and this switched it off: one alert (the card's note).
+  if (switchedOff) await sendAutoReplyAlert(id, { kind: "listing_changed" });
 
   return NextResponse.json({ ok: true });
 }

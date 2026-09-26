@@ -186,9 +186,12 @@ export async function finalizeAutoPost(
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
   const subRef = db.doc(`subAccounts/${sa}`);
   await db.runTransaction(async (tx) => {
-    const exists = (await tx.get(ref)).exists;
+    const snap = await tx.get(ref);
+    const exists = snap.exists;
+    const rating = snap.data()?.starRating;
+    const star = typeof rating === "number" ? rating : null;
     const agencyId = String((await tx.get(subRef)).data()?.agencyId ?? "");
-    tx.set(db.doc(autoReplyNeverPath(sa, reviewName)), neverMarker({ agencyId, subAccountId: sa, createdByUid }, "auto_replied", now, docId));
+    tx.set(db.doc(autoReplyNeverPath(sa, reviewName)), neverMarker({ agencyId, subAccountId: sa, createdByUid }, "auto_replied", now, docId, star));
     if (exists) tx.update(ref, { pendingReply: null, autoReplied: { at: now, key }, hadReply: true });
   });
 }
@@ -203,12 +206,35 @@ export async function markPostFailed(sa: string, docId: string, textHash: string
   });
 }
 
-/** A queued draft its review no longer qualifies for (step 4b): kept, now waits for a person. */
-export async function holdQueuedForApproval(sa: string, docId: string, textHash: string): Promise<void> {
+/**
+ * The held alert's dedupe (alerts.ts): true — and recorded as
+ * `heldAlertBasis` on the review — the FIRST time this review, at this
+ * content, is put in front of a person; false every later time, whatever
+ * `pendingReply.reason` it passed through meanwhile (a draft failing, a daily
+ * limit, a retry). New content (another basis) counts again. Outside
+ * `pendingReply`, so reason rewrites never clear it; purged with the review.
+ * A separate transaction from the state write before it: a process dying in
+ * between leaves that review uncounted — at most once, like the alert itself.
+ */
+export async function markHeldAlerted(sa: string, docId: string, basisHash: string): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
-  await db.runTransaction(async (tx) => {
+  return db.runTransaction(async (tx) => {
+    const d = (await tx.get(ref)).data();
+    if (!d || d.heldAlertBasis === basisHash) return false;
+    tx.update(ref, { heldAlertBasis: basisHash });
+    return true;
+  });
+}
+
+/** A queued draft its review no longer qualifies for (step 4b): kept, now waits for a person. */
+export async function holdQueuedForApproval(sa: string, docId: string, textHash: string): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
+  return db.runTransaction(async (tx) => {
     const d = (await tx.get(ref)).data() as ReviewData | undefined;
-    if (stillQueued(d, textHash)) tx.update(ref, { "pendingReply.reason": "approval" });
+    if (!stillQueued(d, textHash)) return false;
+    tx.update(ref, { "pendingReply.reason": "approval" });
+    return true;
   });
 }

@@ -160,7 +160,8 @@ or queued to post — the only place draft text is stored; cleared by any
 posted reply, by a reply appearing at Google and by a tombstone; purged with
 the review; `reason` ∈ auto_queued, approval, texted, draft_failed,
 post_failed, no_budget, cap, dismissed), `autoReplied {at, key}` on a review
-it replied to (kept by the sync's merge), `hadReply: true` on any review ever
+it replied to (kept by the sync's merge; a person's reply sets it null),
+`heldAlertBasis` (the basis hash the held alert last counted — its dedupe), `hadReply: true` on any review ever
 seen with or given a reply (sticky; written by the sync and the reply record,
 never cleared — auto-reply never replaces a deleted reply), `private/autoReplyLease {runId, until}` (one run per
 sub-account), `private/autoReplyUsage {day (SAST), posts}` (the 20/day post
@@ -171,7 +172,9 @@ Discard, outside the review cache so it survives a cache clear; an id and a
 hash, no Google content, so it deliberately outlives review retention.
 Likewise `subAccounts/{id}/autoReplyNever/{stableReviewKey} {agencyId,
 subAccountId, createdByUid, at, reason: "replied" | "auto_replied",
-reviewDocId}` — written by the sync (the first time a review is seen with a
+reviewDocId, star?}` (`star`: the rating when auto-replied, for the
+edited-to-≤3★ alert after a cache clear; the sync never rewrites an existing
+marker) — written by the sync (the first time a review is seen with a
 reply, now or in its cached copy; `createdByUid` is then the listing's
 selector and may be null), by `recordReplyChange` on every posted reply and by
 the engine's finalize of an unrecorded auto post; never deleted, outside the
@@ -189,6 +192,16 @@ clear — including the same location through another account — also sets
 "switched off because the listing changed" note; the listing route and
 `clearListing` write it, any admin switch through the settings route clears
 it to null; absent reads as null).
+`subAccounts/{id}/reviewAutoReplyAlerts/{alertId} {agencyId, subAccountId,
+createdByUid: "system", kind, createdAt, count?, star?, reviewDocId?}` — one
+doc per auto-reply alert (`lib/reputation/auto-reply/alerts.ts`), created
+before the push/email so an existing id means "already sent": `held-{runId}`
+(an engine run that put reviews in front of a person; `count`),
+`edited-{stableReviewKey}` (an auto-replied review now at ≤3★ after an edit,
+once per review ever; `star`), and auto ids for `reconnect_required` (only
+while auto-reply is on) and `listing_changed` (their writers' flips are the
+dedupe). No review text or reviewer name. Server-only (no
+client rule), no index, no retention yet.
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
 random bytes base64url, never derived from a tenant id) holds the widget config

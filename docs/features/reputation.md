@@ -712,12 +712,41 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
 - **One run per sub-account:** `private/autoReplyLease {runId, until}` (5 min,
   renewed before each draft and in each post's transaction); a second
   concurrent run exits `busy`.
+- **Alerts** (`auto-reply/alerts.ts`, PR 4) — through the WhatsApp quality
+  alerts' rail: a push to the sub-account's active members (the agency owner
+  only by opt-in) and an email to the agency owner. Each is first recorded in
+  `subAccounts/{id}/reviewAutoReplyAlerts` with `create()` (an existing id =
+  already sent); delivery is then background and at most once (a failed send
+  is logged, not retried). **held** — an engine run that put ≥1 review in
+  front of a person (`approval`/`texted`, or a queued draft moved to approval
+  by a mode switch or a switch off/on — or such a review whose draft failed),
+  counted once per review and content whatever states it passes through
+  (`heldAlertBasis` on the review, set by `markHeldAlerted`; purged with the
+  review, so a cache clear can count it once more), sent even if the run then
+  fails; count only. Reviews waiting on a daily limit or an auto post's retry
+  (`cap`, `no_budget`, an Auto review's `draft_failed`, `post_failed`) are not
+  alerted — they resolve on their own.
+  **edited_low** — the sync sees an auto-replied review now at ≤3★ whose star
+  went down or that gained text, once per review ever, after the page
+  commits; "auto-replied" comes from the cached review or, after a cache
+  clear, from the `autoReplyNever` marker (`reason: "auto_replied"` or a
+  `star` field — the rating at posting, which survives a sync's merge; the
+  sync never rewrites an existing marker). A person's reply over an auto one
+  clears `autoReplied` and rewrites the marker without `star`. Star + the first 80
+  characters only; no reviewer name. This is the one alert raised inside a
+  sync — it awaits only the doc, never the send. **reconnect_required** —
+  `markReconnectRequiredIf` flipping the flag false→true while auto-reply is
+  on (switching it on while a reconnect is pending is refused, 409
+  `reconnect_required`). **listing_changed** — a listing change / clear / disconnect that switched
+  auto-reply off. Fake mode writes the doc and delivers nothing.
 - **Tests:** `auto-reply/decide.test.ts` (the matrix + state table),
   `run.test.ts`, `run.midrun.test.ts`, `run.states.test.ts` (seam: real sync,
   fake GBP provider, Reviews AI fake), `run.fence.test.ts`, `run.blast.test.ts`,
   `gbp/reply-attempts.require-no-reply.test.ts`, `reputation/after-sync.test.ts`;
   UI: `auto-reply-card.test.ts`, `gbp/reviews-section.approval.test.ts`,
   `…/gbp/reviews/route.approval.test.ts`, `…/auto-reply/dismiss/route.test.ts`;
+  alerts: `auto-reply/alerts.test.ts`, `alerts.seam.test.ts`,
+  `alerts.commit.test.ts`, `alerts.throw.test.ts`;
   E2E `e2e/specs/gbp-auto-reply.spec.ts`.
 
 ## The review-request log
