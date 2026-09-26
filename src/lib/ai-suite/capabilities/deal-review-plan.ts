@@ -5,7 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 import { activeReminder, DEFAULT_REVIEW_COOLDOWN_DAYS, normalizeReviewChannel, type ReviewChannel } from "@/lib/reviews/constants";
-import { fillPositional, reviewSmsBody, reviewTemplateFill } from "@/lib/reviews/review-body";
+import { reviewBodyNow } from "@/lib/reviews/review-body";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { PreviewRow } from "./types";
@@ -26,7 +26,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface ReviewPlan {
   contactId: string | null;
   phone: string;
-  /** The exact text, or null when nothing would be sent. */
+  /** The exact text (raw, as the send renders it), or null when nothing would be sent. */
   body: string | null;
   /** The configured channel the text goes on (null when nothing is sent). */
   channel: ReviewChannel | null;
@@ -67,23 +67,17 @@ export async function reviewPlan(subAccountId: string, deal: FirebaseFirestore.D
   if (last && nowMs - last < cooldownDays * DAY_MS) {
     return none(contactId, phone, `the contact was asked for a review in the last ${cooldownDays} days.`);
   }
-  let body: string;
-  if (channel === "whatsapp_template") {
-    if (!cfg.whatsappTemplateId) return none(contactId, phone, "no WhatsApp review template is set.");
-    const filled = await reviewTemplateFill(db, subAccountId, cfg.whatsappTemplateId, contact, sub);
-    if (!filled.ok) return none(contactId, phone, `the WhatsApp review template can't be sent (${filled.reason}).`);
-    body = fillPositional(filled.tpl.body, filled.values);
-  } else {
-    body = reviewSmsBody(cfg, contact, sub.name ?? "", reviewUrl);
-  }
-  // Shown exactly as sent; a stored template with hidden characters can't be.
-  const shown = messageBody(body);
+  const now = await reviewBodyNow({ db, subAccountId, subAccount: sub, cfg, channel, contact, reviewUrl });
+  if (!now.ok) return none(contactId, phone, now.why);
+  // The raw text is pinned (the send compares it exactly); the row shows
+  // it as a message body, and a text with hidden characters can't be shown.
+  const shown = messageBody(now.body);
   if (shown === null) return none(contactId, phone, "the review request's text contains characters that can't be shown safely.");
   const tracked = channel === "sms" && activeReminder(cfg.reminder) ? " The link may go as a tracking link that forwards to it." : "";
   return {
     contactId,
     phone,
-    body: shown,
+    body: now.body,
     channel,
     rows: [
       { label: "Review request", value: `Sent to ${oneLine(contact.name) || "(unnamed)"} (${masked("sms", phone)}) by ${label}; quiet hours delay it.${tracked}` },

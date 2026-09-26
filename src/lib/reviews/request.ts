@@ -37,7 +37,7 @@ import {
   type QuietHoursHold,
 } from "@/lib/comms/quiet-hours";
 import { holdForQuietHours } from "@/lib/comms/quiet-hours-hold";
-import { fillPositional, reviewSmsBody, reviewTemplateFill } from "@/lib/reviews/review-body";
+import { fillPositional, reviewBodyNow, reviewSmsBody, reviewTemplateFill } from "@/lib/reviews/review-body";
 
 /**
  * Google review-request dispatcher. Sends a "leave us a review" message over
@@ -69,9 +69,10 @@ export interface SendReviewInput {
    *  link, no cooldown, no new log row; the worker records the attempt. */
   reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
   /** What a person approved (an agent's mark_deal_completed): the send is
-   *  refused if the contact's number or the configured channel now differs.
-   *  Absent for every other caller. */
-  expect?: { phone: string; channel: ReviewChannel };
+   *  refused if the contact's number, the configured channel or the text
+   *  (before any tracking-link swap) now differs, here or when a quiet-hours
+   *  hold releases it. Absent for every other caller. */
+  expect?: { phone: string; channel: ReviewChannel; body: string };
 }
 
 export interface SendReviewResult {
@@ -137,8 +138,11 @@ export async function maybeSendReviewRequest(
     if (!contact.phone) return { sent: false, reason: "no_phone" };
 
     const channel = normalizeReviewChannel(cfg.channel);
-    if (input.expect && (contact.phone !== input.expect.phone || channel !== input.expect.channel)) {
-      return { sent: false, reason: "changed_since_approval" };
+    if (input.expect) {
+      const now = await reviewBodyNow({ db, subAccountId: input.subAccountId, subAccount, cfg, channel, contact, reviewUrl });
+      if (contact.phone !== input.expect.phone || channel !== input.expect.channel || !now.ok || now.body !== input.expect.body) {
+        return { sent: false, reason: "changed_since_approval" };
+      }
     }
     const isWhatsapp = channel !== "sms";
     const convoChannel: ConversationChannel = isWhatsapp ? "whatsapp" : "sms";

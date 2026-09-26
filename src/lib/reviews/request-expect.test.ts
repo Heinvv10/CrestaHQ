@@ -21,34 +21,75 @@ vi.mock("@/lib/comms/twilio", async () => {
     subAccountWhatsappIsConfigured: () => h.subAccountWhatsappIsConfigured(),
   };
 });
+const held = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => true));
+vi.mock("@/lib/comms/quiet-hours-hold", () => ({ holdForQuietHours: held }));
 vi.mock("@/lib/server/conversations-service", async () => {
   const h = await import("@/test/reviews-request-harness");
   return { upsertConversationForMessage: (...a: unknown[]) => h.upsertConversation(...(a as [])) };
 });
 
-import { AG, C, SA, resetHarness, sendSms, setContact, setReviewCfg } from "@/test/reviews-request-harness";
+import { QuietHoursDeferredError } from "@/lib/comms/quiet-hours";
+import type { SendReviewInput } from "./request";
+import { AG, C, SA, SUB_PATH, docs, resetHarness, sendSms, sendWhatsappTemplate, setApprovedTemplate, setContact, setReviewCfg } from "@/test/reviews-request-harness";
 import { maybeSendReviewRequest } from "./request";
 
-const send = (expected: { phone: string; channel: "sms" | "whatsapp_template" | "whatsapp_manual" }) =>
-  maybeSendReviewRequest({ subAccountId: SA, agencyId: AG, contactId: C, trigger: "deal_completed", expect: expected });
+type Expect = NonNullable<SendReviewInput["expect"]>;
+const PHONE = "+61412345678";
+const TEXT = "Hi Jane from Acme Plumbing: https://g.page/r/acme/review";
+const APPROVED: Expect = { phone: PHONE, channel: "sms", body: TEXT };
+const request = (expected: Expect): SendReviewInput => ({ subAccountId: SA, agencyId: AG, contactId: C, trigger: "deal_completed", expect: expected });
+const send = (expected: Expect) => maybeSendReviewRequest(request(expected));
+const REFUSED = { sent: false, reason: "changed_since_approval" };
 
 beforeEach(() => {
   resetHarness();
-  setReviewCfg({ triggerOnDealCompleted: true });
+  setReviewCfg({ triggerOnDealCompleted: true, messageTemplate: "Hi {{firstName}} from {{businessName}}: {{reviewUrl}}" });
 });
 
-it("the reviewed number and channel → sent", async () => {
-  expect(await send({ phone: "+61412345678", channel: "sms" })).toEqual({ sent: true });
+it("the reviewed number, channel and text → sent, that text", async () => {
+  expect(await send(APPROVED)).toEqual({ sent: true });
   expect(sendSms).toHaveBeenCalledTimes(1);
+  expect((sendSms.mock.calls[0] as unknown as [{ body: string }])[0].body).toBe(TEXT);
 });
 
-it("the contact's number changed since approval → refused, nothing sent", async () => {
-  setContact({ phone: "+61499999999" });
-  expect(await send({ phone: "+61412345678", channel: "sms" })).toEqual({ sent: false, reason: "changed_since_approval" });
+it.each([
+  ["the contact's number", () => setContact({ phone: "+61499999999" })],
+  ["the contact's name (so the text)", () => setContact({ name: "visit-evil.example.com Doe" })],
+  ["the message template", () => setReviewCfg({ messageTemplate: "Other {{reviewUrl}}" })],
+])("%s changed since approval → refused, nothing sent", async (_label, change) => {
+  change();
+  expect(await send(APPROVED)).toEqual(REFUSED);
   expect(sendSms).not.toHaveBeenCalled();
 });
 
 it("the configured channel changed since approval → refused, nothing sent", async () => {
-  expect(await send({ phone: "+61412345678", channel: "whatsapp_manual" })).toEqual({ sent: false, reason: "changed_since_approval" });
+  expect(await send({ ...APPROVED, channel: "whatsapp_manual" })).toEqual(REFUSED);
   expect(sendSms).not.toHaveBeenCalled();
+});
+
+it("held for quiet hours, then the name changes before the release → the release sends nothing", async () => {
+  sendSms.mockRejectedValueOnce(new QuietHoursDeferredError({ retryAfterSec: 60, until: new Date(Date.now() + 60_000), timezone: "UTC" }));
+  expect(await send(APPROVED)).toEqual({ sent: false, reason: "quiet_hours_held" });
+  const stored = (held.mock.calls[0]![0] as { payload: { request: SendReviewInput } }).payload.request;
+  expect(stored.expect).toEqual(APPROVED);
+  setContact({ name: "visit-evil.example.com Doe" });
+  // What quiet-hours-release does with a held review request.
+  expect(await maybeSendReviewRequest(stored)).toEqual(REFUSED);
+  expect(sendSms).toHaveBeenCalledTimes(1);
+});
+
+it("a WhatsApp template: its text with the variables filled is compared; a variable's source changing refuses", async () => {
+  setApprovedTemplate();
+  const approved: Expect = { phone: PHONE, channel: "whatsapp_template", body: "Hi Jane, mind leaving us a review?" };
+  expect(await send(approved)).not.toEqual(REFUSED);
+  setContact({ name: "Joan Doe" });
+  expect(await send(approved)).toEqual(REFUSED);
+  expect(sendWhatsappTemplate).not.toHaveBeenCalled();
+});
+
+it("a WhatsApp template that can no longer be filled (deleted since approval) → refused as changed", async () => {
+  setApprovedTemplate();
+  delete docs[`${SUB_PATH}/whatsappTemplates/t1`];
+  expect(await send({ phone: PHONE, channel: "whatsapp_template", body: "Hi Jane, mind leaving us a review?" })).toEqual(REFUSED);
+  expect(sendWhatsappTemplate).not.toHaveBeenCalled();
 });

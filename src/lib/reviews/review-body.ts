@@ -2,7 +2,7 @@ import "server-only";
 
 import type { Firestore } from "firebase-admin/firestore";
 import { resolveTemplateVariables } from "@/lib/comms/whatsapp/resolve-template-variables";
-import { DEFAULT_REVIEW_SMS_TEMPLATE } from "@/lib/reviews/constants";
+import { DEFAULT_REVIEW_SMS_TEMPLATE, type ReviewChannel } from "@/lib/reviews/constants";
 import type { MergeTagSubject } from "@/lib/automations/merge-tags";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
@@ -70,6 +70,30 @@ export async function reviewTemplateFill(
     return { ok: false, reason: "template_var_missing" };
   }
   return { ok: true, tpl, values };
+}
+
+/**
+ * The text a review request would carry right now on `channel`, with the
+ * configured review link (before any per-request tracking-link swap): what
+ * an approver is shown, and what an approved send must still be.
+ */
+export async function reviewBodyNow(opts: {
+  db: Firestore;
+  subAccountId: string;
+  subAccount: SubAccountDoc;
+  cfg: GoogleReviewConfig;
+  channel: ReviewChannel;
+  contact: Contact;
+  reviewUrl: string;
+}): Promise<{ ok: true; body: string } | { ok: false; why: string }> {
+  const { cfg, contact } = opts;
+  if (opts.channel !== "whatsapp_template") {
+    return { ok: true, body: reviewSmsBody(cfg, contact, opts.subAccount.name ?? "", opts.reviewUrl) };
+  }
+  if (!cfg.whatsappTemplateId) return { ok: false, why: "no WhatsApp review template is set." };
+  const filled = await reviewTemplateFill(opts.db, opts.subAccountId, cfg.whatsappTemplateId, contact, opts.subAccount);
+  if (!filled.ok) return { ok: false, why: `the WhatsApp review template can't be sent (${filled.reason}).` };
+  return { ok: true, body: fillPositional(filled.tpl.body, filled.values) };
 }
 
 /** Build the merge-tag subject for WhatsApp template variable resolution. */

@@ -105,7 +105,7 @@ export const DEAL_COMPLETE_CAPABILITIES: AiSuiteCapability[] = [
       // Only a reviewed request is sent, and the send itself refuses a number
       // or channel that changed after this point.
       if (plan.channel) {
-        askReviewIfNewlyCompleted({ before, completed: true, result, expect: { phone: plan.phone, channel: plan.channel } });
+        askReviewIfNewlyCompleted({ before, completed: true, result, expect: { phone: plan.phone, channel: plan.channel, body: plan.body! } });
       }
       return { resultText: "Marked the deal completed.", ref: { kind: "deal", id: args.dealId as string } };
     },

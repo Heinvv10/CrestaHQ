@@ -68,7 +68,7 @@ describe("mark_deal_completed", () => {
     expect(mem.read("deals/d1")!.completed).toBe(true);
     expect(reviewAsk).toHaveBeenCalledTimes(1);
     expect(reviewAsk).toHaveBeenCalledWith({
-      subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "deal_completed", expect: { phone: "+27821111111", channel: "sms" },
+      subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "deal_completed", expect: { phone: "+27821111111", channel: "sms", body: SMS_TEXT },
     });
   });
 
@@ -80,6 +80,7 @@ describe("mark_deal_completed", () => {
     ["a WhatsApp opt-out", () => (reviews({ channel: "whatsapp_manual" }), mem.seed("contacts/c1", { ...ANN, whatsappOptedOut: true })), "None: the contact has opted out of WhatsApp."],
     ["a request within the cooldown", () => mem.seed("contacts/c1", { ...ANN, reviewRequestedAt: Timestamp.fromMillis(Date.now() - 86_400_000) }), "None: the contact was asked for a review in the last 90 days."],
     ["no WhatsApp template set", () => reviews({ channel: "whatsapp_template" }), "None: no WhatsApp review template is set."],
+    ["a template with a hidden character", () => reviews({ messageTemplate: "Hi\u200b{{firstName}} {{reviewUrl}}" }), "None: the review request's text contains characters that can't be shown safely."],
   ])("%s → the preview says so, with no message", async (_label, arrange, text) => {
     arrange();
     const id = await proposeId();
@@ -198,6 +199,7 @@ describe("mark_deal_completed", () => {
   it.each([
     ["the number", () => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" })],
     ["the review request's text", () => reviews({ messageTemplate: "Other words {{reviewUrl}}" })],
+    ["the review request's channel (same text)", () => reviews({ channel: "whatsapp_manual" })],
     // Same number, different person: the contact itself is pinned.
     ["the deal's contact", () => (mem.seed("contacts/c2", { ...ANN, name: "Ben" }), mem.seed("deals/d1", { ...DEAL, contactId: "c2" }))],
   ])("%s changed between the approve-time re-check and the write → failed, not completed, nothing sent", async (_label, change) => {
