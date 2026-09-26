@@ -214,7 +214,11 @@ jobs:
   e2e:
     name: E2E (Playwright)
     runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
-    timeout-minutes: 30
+    # ~11 min on a quiet box, but the runner shares velo-server with every
+    # other CI and dev session: at load avg 45+ the 93 specs ran past 30 min
+    # three times on 2026-09-24/25 with nothing failing (58–76 specs done,
+    # all green) — a timeout there is noise, not a verdict.
+    timeout-minutes: 45
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     env:
       # The build bakes NEXT_PUBLIC_* in, so they must be present at build
