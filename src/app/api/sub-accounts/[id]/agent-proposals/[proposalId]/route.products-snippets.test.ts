@@ -61,9 +61,9 @@ describe("products", () => {
     expect(row(id).approval).toBe("spend");
     expect(row(id).preview).toEqual(expect.arrayContaining([
       { label: "Price", value: "ZAR 499 → ZAR 599" },
-      { label: "Active", value: "true (unchanged)" },
       { label: "Sold by", value: "checkout page Main offer (cp1)" },
     ]));
+    expect(JSON.stringify(row(id).preview)).not.toContain('"Active"');
     expect(mem.read("products/pr1")!.unitPriceCents).toBe(49900);
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("products/pr1")!.unitPriceCents).toBe(59900);
@@ -78,9 +78,37 @@ describe("products", () => {
     expect(mem.read("products/pr1")).toEqual(PRODUCT);
   });
 
-  it("a rename of a sold product, or a price change to an unsold one, is a direct write", async () => {
+  it("any edit of a sold product (what its checkout shows) → a spend proposal with every asked field old → new", async () => {
     page({ productId: "pr1" });
-    expect(await call("update_product", { productId: "pr1", name: "Fibre 100 Pro" })).toMatchObject({ ok: true, resultText: "Updated the product." });
+    mem.seed("products/pr1", { ...PRODUCT, bumpEligible: true, bumpHeadline: "Add speed" });
+    const id = await proposeId("update_product", { productId: "pr1", name: "Fibre 100 Pro", description: "Now faster", bumpHeadline: "Add more speed", bumpEligible: false, active: true });
+    expect(row(id).approval).toBe("spend");
+    expect(row(id).preview).toEqual(expect.arrayContaining([
+      { label: "Name", value: "Fibre 100 → Fibre 100 Pro" },
+      { label: "Description", value: "(none) → Now faster" },
+      { label: "Bump headline", value: "Add speed → Add more speed" },
+      { label: "Offered as an order bump", value: "true → false" },
+      { label: "Active", value: "true (unchanged)" },
+    ]));
+    expect(mem.read("products/pr1")).toMatchObject({ name: "Fibre 100", bumpEligible: true });
+    // A field the edit touches changed since review → refused, nothing written.
+    beforeNextTransaction(async () => mem.seed("products/pr1", { ...PRODUCT, bumpEligible: true, bumpHeadline: "Changed" }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(mem.read("products/pr1")!.name).toBe("Fibre 100");
+  });
+
+  it.each([
+    ["a rename", { name: "Fibre 100 Pro" }],
+    ["a new description", { description: "Now faster" }],
+    ["a new bump headline", { bumpHeadline: "Add speed" }],
+    ["dropping it as an order bump", { bumpEligible: false }],
+  ])("%s alone on a sold product → a spend proposal", async (_label, patch) => {
+    page({ productId: "pr1" });
+    expect(await call("update_product", { productId: "pr1", ...patch })).toMatchObject({ ok: true, proposal: { status: "pending" } });
+    expect(mem.read("products/pr1")).toEqual(PRODUCT);
+  });
+
+  it("a price change to an unsold product is a direct write", async () => {
     mem.seed("products/pr2", { ...PRODUCT, name: "Unsold" });
     expect(await call("update_product", { productId: "pr2", unitPriceCents: 1 })).toMatchObject({ ok: true, resultText: "Updated the product." });
     expect(mem.read("products/pr2")!.unitPriceCents).toBe(1);
@@ -99,7 +127,7 @@ describe("products", () => {
     const id = await proposeId("update_product", { productId: "pr1", unitPriceCents: 59900 });
     beforeNextTransaction(async () => mem.seed("products/pr1", { ...PRODUCT, unitPriceCents: 1 }));
     expect((await decide(id, "approve")).status).toBe(422);
-    expect(row(id).error).toBe("The product's price or status changed since this was reviewed; nothing was changed.");
+    expect(row(id).error).toBe("The product changed since this was reviewed; nothing was changed.");
     expect(mem.read("products/pr1")!.unitPriceCents).toBe(1);
   });
 
@@ -161,6 +189,21 @@ describe("snippets", () => {
     ["an email with no subject", { name: "X", type: "email", body: "Hi" }],
   ])("create_snippet with %s → refused", async (_label, args) => {
     expect(await call("create_snippet", args)).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it.each([
+    ["a word mixing Latin and Cyrillic", { name: "B\u0430nk details" }, "the name mixes Latin with Cyrillic or Greek letters in one word"],
+  ])("a snippet name with %s → refused", async (_label, patch, message) => {
+    expect(await call("create_snippet", { type: "text", body: "Hi", ...patch })).toMatchObject({ ok: false, code: "invalid_args", message });
+  });
+
+  it("a snippet name matching another's once normalised → refused; one wholly in Cyrillic or Greek is fine", async () => {
+    expect(await call("create_snippet", { name: " thanks ", type: "text", body: "Hi" })).toMatchObject({
+      ok: false, message: "The name is the same as an existing one (another snippet's).",
+    });
+    for (const name of ["\u0411\u0430\u043d\u043a", "\u03a4\u03c1\u03ac\u03c0\u03b5\u03b6\u03b1"]) {
+      expect(await call("create_snippet", { name, type: "text", body: "Hi" })).toMatchObject({ ok: true });
+    }
   });
 
   it("an invisible character in the body is refused as such (not as a missing body)", async () => {

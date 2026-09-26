@@ -35,7 +35,7 @@ beforeEach(() => {
 
 describe("custom fields", () => {
   it("create_custom_field generates the key from the label and stamps it", async () => {
-    const r = await call("create_custom_field", { entity: "contact", label: "Install date", type: "dropdown", options: ["AM", "PM"] });
+    const r = await call("create_custom_field", { entity: "contact", label: "Install-date", type: "dropdown", options: ["AM", "PM"] });
     expect(r).toMatchObject({ ok: true, resultText: expect.stringContaining("key: install_date_2") });
     const id = (r as { ref: { id: string } }).ref.id;
     expect(mem.read(`${FIELDS}/${id}`)).toMatchObject({ key: "install_date_2", options: ["AM", "PM"], order: 1, lastAgentEditKey: "abcd1234" });
@@ -46,9 +46,25 @@ describe("custom fields", () => {
     ["an invisible character in an option", { entity: "contact", label: "Slot", type: "dropdown", options: ["AM", "P\u200bM"] }, "an option contains characters"],
     ["an unknown type", { entity: "contact", label: "Slot", type: "rocket" }, "Field type must be one of"],
     ["no options for a dropdown", { entity: "contact", label: "Slot", type: "dropdown" }, "need an options list"],
+    ["a label mixing Latin and Cyrillic", { entity: "contact", label: "B\u0430nk details", type: "text" }, "the label mixes Latin with Cyrillic or Greek"],
+    ["an option mixing Latin and Greek", { entity: "contact", label: "Answer", type: "dropdown", options: ["No", "\u03a5es"] }, 'the option "\u03a5es" mixes Latin'],
+    ["two options alike once normalised", { entity: "contact", label: "Answer", type: "dropdown", options: ["Yes", " YES"] }, 'the option "YES" is the same as an existing one'],
   ])("create_custom_field with %s → refused", async (_label, args, message) => {
     expect(await call("create_custom_field", args)).toMatchObject({ ok: false, code: "invalid_args", message: expect.stringContaining(message) });
     expect(mem.list(FIELDS)).toHaveLength(1);
+  });
+
+  it("a label another field of the entity already has (once normalised) → refused; the other entity's is fine", async () => {
+    mem.seed(`${FIELDS}/cf2`, { ...FIELD, key: "id_number", label: "ID number" });
+    for (const label of ["ID number", " id  NUMBER"]) {
+      expect(await call("create_custom_field", { entity: "contact", label, type: "text" })).toMatchObject({
+        ok: false, message: "The label is the same as an existing one (another contact field's).",
+      });
+    }
+    expect(await call("update_custom_field", { fieldId: "cf1", label: "Id Number" })).toMatchObject({ ok: false, message: expect.stringContaining("is the same as an existing one") });
+    expect(await call("update_custom_field", { fieldId: "cf1", label: "Install date" })).toMatchObject({ ok: true });
+    expect(await call("create_custom_field", { entity: "deal", label: "ID number", type: "text" })).toMatchObject({ ok: true });
+    expect(await call("create_custom_field", { entity: "contact", label: "\u041d\u043e\u043c\u0435\u0440", type: "text" })).toMatchObject({ ok: true });
   });
 
   it("update_custom_field edits label and folder, stamped; a folder of the other entity is refused", async () => {
@@ -126,9 +142,16 @@ describe("folders", () => {
     ["create_custom_field_folder", { name: "Bil\u200bling", entity: "contact" }],
     ["update_custom_field_folder", { folderId: "fo1", name: "Ins\u200btall" }],
     ["reorder_custom_field_folders", { entity: "contact", ids: ["fo1", "fo1"] }],
+    ["create_custom_field_folder", { name: "B\u0430nk", entity: "contact" }],
     ["reorder_custom_field_folders", { entity: "contact", ids: ["fo1/x/y"] }],
   ])("%s with bad input → refused", async (name, args) => {
     expect(await call(name, args)).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it("a folder name the entity already has (once normalised) → refused", async () => {
+    expect(await call("create_custom_field_folder", { name: "install", entity: "contact" })).toMatchObject({ ok: false, message: "The folder name is the same as an existing one." });
+    expect(await call("update_custom_field_folder", { folderId: "fo1", name: "INSTALL" })).toMatchObject({ ok: true });
+    expect(await call("create_custom_field_folder", { name: "install", entity: "deal" })).toMatchObject({ ok: true });
   });
 
   it("delete_custom_field_folder → a proposal saying how many fields move to General; approve moves them", async () => {

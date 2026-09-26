@@ -9,7 +9,7 @@ import type { SnippetInput } from "@/types/snippets";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, str } from "./helpers";
-import { hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { hasUnsafeText, lookAlikeProblem, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 
 /**
@@ -41,7 +41,16 @@ function snippetInput(raw: unknown): { ok: true; value: SnippetInput } | { ok: f
     const value = v.value[k];
     if (typeof value === "string" && hasUnsafeText(value)) return { ok: false, error: `the ${k} ${UNSAFE_TEXT_MESSAGE}` };
   }
+  const mixed = lookAlikeProblem(v.value.name, []);
+  if (mixed) return { ok: false, error: `the name ${mixed}` };
   return v;
+}
+
+/** Refuses a name that could pass for another snippet's in the sub-account. */
+async function assertNameDistinct(subAccountId: string, name: string, selfId: string | null): Promise<void> {
+  const snap = await getAdminDb().collection("snippets").where("subAccountId", "==", subAccountId).get();
+  const problem = lookAlikeProblem(name, snap.docs.filter((d) => d.id !== selfId).map((d) => String(d.data().name ?? "")));
+  if (problem) throw new CapabilityUserError(`The name ${problem} (another snippet's).`);
 }
 
 async function tenantSnippet(subAccountId: string, snippetId: unknown): Promise<FirebaseFirestore.DocumentData & { id: string }> {
@@ -87,6 +96,7 @@ export const SNIPPET_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Create the snippet “${args.name}”.`,
     execute: async (ctx, args) => {
+      await assertNameDistinct(ctx.subAccountId!, args.name as string, null);
       const id = await createSnippet({
         subAccountId: ctx.subAccountId!,
         createdByUid: ctx.uid,
@@ -115,6 +125,7 @@ export const SNIPPET_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       const { snippetId, ...value } = args;
       const s = await tenantSnippet(ctx.subAccountId!, snippetId);
+      await assertNameDistinct(ctx.subAccountId!, value.name as string, s.id);
       await updateSnippet(s.id, value as unknown as SnippetInput, agentActor(ctx, "update_snippet"));
       return { resultText: "Updated the snippet.", ref: { kind: "snippet", id: s.id } };
     },

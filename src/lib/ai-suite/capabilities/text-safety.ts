@@ -98,3 +98,25 @@ export function messageBody(value: string): string | null {
     .trim();
   return UNSAFE_TEXT_RE.test(body.replace(/\n/g, " ").replace(EMOJI_ZWJ, "").replace(EMOJI_PRESENTATION, "")) ? null : body;
 }
+
+/** "Is this the same name?": NFKC, case-folded, whitespace collapsed. */
+export function sameNameKey(value: string): string {
+  return value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** A word mixing Latin with Cyrillic or Greek letters: "B\u0430nk" (a
+ *  Cyrillic a) reads as "Bank". A word wholly in one script is fine. */
+const MIXED_SCRIPT_WORD = /(?=\S*\p{Script=Latin})(?=\S*[\p{Script=Cyrillic}\p{Script=Greek}])\S+/u;
+
+/**
+ * Why an agent-chosen name could pass for another, or null: a word mixing
+ * scripts, or the same name as one of `existing` (same scope) once
+ * normalised. For names a person picks from a list (snippets, field labels,
+ * options, folders).
+ */
+export function lookAlikeProblem(value: string, existing: readonly string[]): string | null {
+  if (MIXED_SCRIPT_WORD.test(value)) return "mixes Latin with Cyrillic or Greek letters in one word";
+  const key = sameNameKey(value);
+  if (existing.some((e) => sameNameKey(e) === key)) return "is the same as an existing one";
+  return null;
+}

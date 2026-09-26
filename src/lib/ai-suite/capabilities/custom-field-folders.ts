@@ -7,7 +7,7 @@ import { createFolder, deleteFolder, reorderFolders, updateFolder } from "@/lib/
 import type { CustomFieldFolder } from "@/types/custom-fields";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, str } from "./helpers";
-import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { hasUnsafeText, lookAlikeProblem, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 
 /**
@@ -24,7 +24,16 @@ function folderName(raw: unknown): { ok: true; name: string } | { ok: false; err
   const name = validateFolderName(raw);
   if (!name) return { ok: false, error: "the folder name must be 1-60 characters" };
   if (hasUnsafeText(name)) return { ok: false, error: `the folder name ${UNSAFE_TEXT_MESSAGE}` };
+  const mixed = lookAlikeProblem(name, []);
+  if (mixed) return { ok: false, error: `the folder name ${mixed}` };
   return { ok: true, name };
+}
+
+/** Refuses a name that could pass for another folder's of the same entity. */
+async function assertNameDistinct(subAccountId: string, entity: unknown, name: string, selfId: string | null): Promise<void> {
+  const snap = await getAdminDb().collection(`subAccounts/${subAccountId}/customFieldFolders`).where("entity", "==", entity).get();
+  const problem = lookAlikeProblem(name, snap.docs.filter((d) => d.id !== selfId).map((d) => String(d.data().name ?? "")));
+  if (problem) throw new CapabilityUserError(`The folder name ${problem}.`);
 }
 
 async function tenantFolder(subAccountId: string, folderId: unknown): Promise<CustomFieldFolder> {
@@ -71,6 +80,7 @@ export const CUSTOM_FIELD_FOLDER_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Create the ${args.entity} field folder “${args.name}”.`,
     execute: async (ctx, args) => {
+      await assertNameDistinct(ctx.subAccountId!, args.entity, args.name as string, null);
       const done = await createFolder({
         subAccountId: ctx.subAccountId!,
         createdByUid: ctx.uid,
@@ -99,6 +109,7 @@ export const CUSTOM_FIELD_FOLDER_CAPABILITIES: AiSuiteCapability[] = [
     summarize: (args) => `Rename the folder ${args.folderId}.`,
     execute: async (ctx, args) => {
       const f = await tenantFolder(ctx.subAccountId!, args.folderId);
+      await assertNameDistinct(ctx.subAccountId!, f.entity, args.name as string, f.id);
       const done = await updateFolder({
         subAccountId: ctx.subAccountId!,
         folderId: f.id,

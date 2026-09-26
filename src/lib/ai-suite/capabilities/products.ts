@@ -16,8 +16,8 @@ import { recordProvenanceRows } from "./record-provenance";
 /**
  * Catalog products for API agents (AGENT_API_V1_PLAN.md, PR10): list,
  * create / update as direct writes (the products route's own sanitizer and
- * writer) — except a price, currency or active change to a product a
- * checkout page or funnel sells, which a person approves — and delete
+ * writer) — except any edit of a product a checkout page or funnel sells,
+ * which a person approves — and delete
  * approved, refused while anything sells the product (it would break that
  * checkout). Text fields must be visible text.
  */
@@ -34,14 +34,18 @@ const PRODUCT_PROPS = {
   bumpHeadline: { type: "string" },
 };
 
-const MONEY = ["unitPriceCents", "currency", "active"] as const;
-const touchesMoney = (args: Record<string, unknown>) => MONEY.some((k) => args[k] !== undefined);
-/** What a buyer pays for it, as stored. */
-const moneyOf = (p: FirebaseFirestore.DocumentData) => ({
-  unitPriceCents: p.unitPriceCents ?? 0,
-  currency: p.currency ?? "USD",
-  active: p.active !== false,
-});
+const PRODUCT_LABELS: Record<string, string> = {
+  name: "Name",
+  description: "Description",
+  price: "Price",
+  active: "Active",
+  bumpEligible: "Offered as an order bump",
+  bumpHeadline: "Bump headline",
+};
+
+/** The stored value of each field the edit touches (null when unset). */
+const valuesOf = (p: FirebaseFirestore.DocumentData, fields: Record<string, unknown>) =>
+  Object.fromEntries(Object.keys(fields).sort().map((k) => [k, p[k] ?? null]));
 
 /** The sanitized payload of the args, or an error for hidden text / bad values. */
 function productFields(raw: unknown): { ok: true; fields: Partial<Product> } | { ok: false; error: string } {
@@ -132,13 +136,14 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
       return { ok: true, args: { productId, ...p.fields } };
     },
     summarize: (args) => `Edit the product ${args.productId}.`,
-    // What buyers pay: a price, currency or active change to a product a
-    // checkout page or funnel sells needs a person (spend: it moves money).
+    // Checkout pages show a product's name, description, price and bump
+    // settings: any change to one a checkout page or funnel sells is what its
+    // buyers see and pay, so a person approves it (spend).
     approvalFor: async (args, ctx) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      return touchesMoney(args) && (await productSellers(ctx.subAccountId!, p.id)).length ? "spend" : undefined;
+      return (await productSellers(ctx.subAccountId!, p.id)).length ? "spend" : undefined;
     },
-    approvalHint: { approval: "spend", when: "it changes the price, currency or active flag of a product a checkout page or funnel sells" },
+    approvalHint: { approval: "spend", when: "the product is sold by a checkout page or funnel" },
     approvalTarget: async (ctx, args) => {
       await tenantProduct(ctx.subAccountId!, args.productId);
       return { contactId: null, territoryId: null, scoped: false };
@@ -146,21 +151,32 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     preview: async (ctx, args) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
       const sellers = await productSellers(ctx.subAccountId!, p.id);
-      const next = { ...p, ...(args as Partial<Product>) };
-      const price = (x: Product) => fmtMoney((x.unitPriceCents ?? 0) / 100, x.currency || "USD");
-      const changed = (k: keyof Product) => args[k] !== undefined && args[k] !== p[k];
+      const { productId: _id, ...fields } = args;
+      const next = { ...p, ...(fields as Partial<Product>) };
+      const shown: Record<string, (x: Product) => string> = {
+        name: (x) => oneLine(x.name),
+        description: (x) => oneLine(x.description),
+        price: (x) => fmtMoney((x.unitPriceCents ?? 0) / 100, x.currency || "USD"),
+        active: (x) => String(x.active !== false),
+        bumpEligible: (x) => String(x.bumpEligible === true),
+        bumpHeadline: (x) => oneLine(x.bumpHeadline),
+      };
+      const asked = (k: string) => (k === "price" ? fields.unitPriceCents !== undefined || fields.currency !== undefined : fields[k] !== undefined);
+      const rows = Object.entries(shown)
+        .filter(([k]) => asked(k))
+        .map(([k, show]) => {
+          const [before, after] = [show(p) || "(none)", show(next) || "(none)"];
+          return { label: PRODUCT_LABELS[k], value: before === after ? `${before} (unchanged)` : `${before} → ${after}` };
+        });
       return {
         rows: [
           { label: "Product", value: `${oneLine(p.name) || "(unnamed)"} (${p.id})` },
           ...recordProvenanceRows(p.id, p),
-          { label: "Price", value: changed("unitPriceCents") || changed("currency") ? `${price(p)} → ${price(next)}` : `${price(p)} (unchanged)` },
-          { label: "Active", value: changed("active") ? `${p.active !== false} → ${next.active !== false}` : `${p.active !== false} (unchanged)` },
-          ...(changed("name") ? [{ label: "Name", value: `${oneLine(p.name)} → ${oneLine(next.name)}` }] : []),
-          ...(changed("description") ? [{ label: "Description", value: `${oneLine(p.description)} → ${oneLine(next.description)}` }] : []),
+          ...rows,
           { label: "Sold by", value: sellers.map((x) => `${x.kind} ${oneLine(x.name) || "(unnamed)"} (${x.id})`).join(", ") || "nothing" },
-          { label: "Then", value: "Buyers of those pay the new price, in the new currency; an inactive product can't be bought." },
+          { label: "Then", value: "Buyers on those see and pay the new version; an inactive product can't be bought." },
         ],
-        pinned: { productId: p.id, before: moneyOf(p) },
+        pinned: { productId: p.id, before: valuesOf(p, fields) },
       };
     },
     execute: async (ctx, args) => {
@@ -171,14 +187,12 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
       await db.runTransaction(async (tx) => {
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That product isn't in this workspace.");
-        if (touchesMoney(fields)) {
-          if (ctx.approved) {
-            if (JSON.stringify(moneyOf(current)) !== JSON.stringify(ctx.approved.pinned?.before)) {
-              throw new CapabilityUserError("The product's price or status changed since this was reviewed; nothing was changed.");
-            }
-          } else if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
-            throw new CapabilityUserError("A checkout page or funnel now sells this product, so this change needs approval: send it again.");
+        if (ctx.approved) {
+          if (JSON.stringify(valuesOf(current, fields)) !== JSON.stringify(ctx.approved.pinned?.before)) {
+            throw new CapabilityUserError("The product changed since this was reviewed; nothing was changed.");
           }
+        } else if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
+          throw new CapabilityUserError("A checkout page or funnel now sells this product, so this change needs approval: send it again.");
         }
         tx.update(ref, { ...fields, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_product")) });
       });

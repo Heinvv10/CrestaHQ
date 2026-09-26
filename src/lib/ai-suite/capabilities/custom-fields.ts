@@ -8,7 +8,7 @@ import { customFieldUsage } from "@/lib/custom-fields/usage";
 import type { CustomFieldDef } from "@/types/custom-fields";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, str } from "./helpers";
-import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { hasUnsafeText, lookAlikeProblem, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 
 /**
@@ -27,7 +27,23 @@ function hiddenText(r: Record<string, unknown>): string | null {
   if (Array.isArray(r.options) && r.options.some((o) => typeof o === "string" && hasUnsafeText(o))) {
     return `an option ${UNSAFE_TEXT_MESSAGE}`;
   }
+  // Look-alikes: a mixed-script label, or an option that could pass for another.
+  const label = typeof r.label === "string" ? lookAlikeProblem(r.label, []) : null;
+  if (label) return `the label ${label}`;
+  const options = Array.isArray(r.options) ? r.options.filter((o): o is string => typeof o === "string") : [];
+  for (const [i, o] of options.entries()) {
+    const problem = lookAlikeProblem(o, options.slice(0, i));
+    if (problem) return `the option "${o.trim()}" ${problem}`;
+  }
   return null;
+}
+
+/** Refuses a label that could pass for another field's of the same entity. */
+async function assertLabelDistinct(subAccountId: string, entity: string, label: string, selfId: string | null): Promise<void> {
+  const snap = await getAdminDb().collection(`subAccounts/${subAccountId}/customFields`).get();
+  const others = snap.docs.filter((d) => d.id !== selfId && d.data().entity === entity).map((d) => String(d.data().label ?? ""));
+  const problem = lookAlikeProblem(label, others);
+  if (problem) throw new CapabilityUserError(`The label ${problem} (another ${entity} field's).`);
 }
 
 async function tenantField(subAccountId: string, fieldId: unknown): Promise<CustomFieldDef> {
@@ -98,6 +114,7 @@ export const CUSTOM_FIELD_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       const v = validateFieldDefInput(args);
       if (!v.ok) throw new CapabilityUserError(v.error);
+      await assertLabelDistinct(ctx.subAccountId!, v.value.entity, v.value.label, null);
       const done = await createCustomField({
         subAccountId: ctx.subAccountId!,
         createdByUid: ctx.uid,
@@ -142,7 +159,8 @@ export const CUSTOM_FIELD_CAPABILITIES: AiSuiteCapability[] = [
     summarize: (args) => `Edit the custom field ${args.fieldId}.`,
     execute: async (ctx, args) => {
       const { fieldId, ...body } = args;
-      await tenantField(ctx.subAccountId!, fieldId);
+      const field = await tenantField(ctx.subAccountId!, fieldId);
+      if (typeof body.label === "string") await assertLabelDistinct(ctx.subAccountId!, field.entity, body.label.trim(), field.id);
       const done = await updateCustomField({
         subAccountId: ctx.subAccountId!,
         fieldId: fieldId as string,
