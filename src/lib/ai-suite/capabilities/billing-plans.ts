@@ -13,6 +13,15 @@ import {
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney, FEATURE_GATES } from "./helpers";
 
+/**
+ * The feature names a plan can bundle: FEATURE_GATES entries whose field is a
+ * plan gate. Standalone gates (Google, Payments, review auto-reply, …) are
+ * neither offered nor accepted.
+ */
+export const PLAN_FEATURES: string[] = Object.keys(FEATURE_GATES).filter((f) =>
+  (PLAN_GATE_KEYS as readonly string[]).includes(FEATURE_GATES[f].field)
+);
+
 export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
   {
     name: "list_billing_plans",
@@ -83,7 +92,7 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
         },
         features: {
           type: "array",
-          items: { type: "string", enum: Object.keys(FEATURE_GATES) },
+          items: { type: "string", enum: PLAN_FEATURES },
           description:
             "Specific features to include when includeAllFeatures is not set. Omit for a bare plan (core CRM is always included).",
         },
@@ -142,11 +151,19 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
         };
       }
       const includeAllFeatures = r.includeAllFeatures === true;
-      const features = Array.isArray(r.features)
-        ? (r.features as unknown[]).filter(
-            (f): f is string => typeof f === "string" && f in FEATURE_GATES
-          )
-        : [];
+      const requested = Array.isArray(r.features) ? (r.features as unknown[]) : [];
+      const notPlan = requested.filter(
+        (f) => typeof f === "string" && f in FEATURE_GATES && !PLAN_FEATURES.includes(f)
+      );
+      if (notPlan.length > 0) {
+        return {
+          ok: false,
+          error: `${notPlan.join(", ")} can't be part of a plan — switch it per sub-account in the Manage dialog`,
+        };
+      }
+      const features = requested.filter(
+        (f): f is string => typeof f === "string" && PLAN_FEATURES.includes(f)
+      );
       return {
         ok: true,
         args: {

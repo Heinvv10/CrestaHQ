@@ -5,10 +5,11 @@ import { metaAppConfigured } from "@/lib/comms/meta";
 import { createSubAccountForAgency } from "@/lib/server/sub-accounts-service";
 import {
   applyFeatureGates,
+  recordGateChanges,
   type AgencyGateField,
 } from "@/lib/server/feature-gates-service";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { SLUG_RE, str, FEATURE_GATES, enabledGateLabels } from "./helpers";
+import { SLUG_RE, str, FEATURE_GATES, enabledGateLabels, assistantEnableRefusal } from "./helpers";
 
 export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -127,7 +128,7 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     menuLabel:
       "Enable or disable a feature (broadcasts, API access, WhatsApp, Community, …) for one of your sub-accounts",
     description:
-      "Enable or disable one feature gate on one sub-account in this agency. Resolve the sub-account's id with list_sub_accounts first — never guess ids. The dedicated email sending domain gate can't be changed here (it has a destructive tear-down); point the user at the sub-account's Manage dialog for that one.",
+      "Enable or disable one feature gate on one sub-account in this agency. Resolve the sub-account's id with list_sub_accounts first — never guess ids. The dedicated email sending domain gate can't be changed here (it has a destructive tear-down); point the user at the sub-account's Manage dialog for that one. Review auto-reply can be switched off here but only switched on in that dialog.",
     parameters: {
       type: "object",
       properties: {
@@ -178,6 +179,8 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
           error: "whether to enable or disable the feature is required",
         };
       }
+      const refusal = assistantEnableRefusal(gateDef, enabled);
+      if (refusal) return { ok: false, error: refusal };
       if (enabled && gateDef.metaRequired && !metaAppConfigured()) {
         return {
           ok: false,
@@ -203,6 +206,8 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const g = FEATURE_GATES[args.gate as string];
+      const refusal = assistantEnableRefusal(g, args.enabled); // validate may be skipped
+      if (refusal) throw new CapabilityUserError(refusal);
       const ref = getAdminDb().doc(
         `subAccounts/${args.subAccountId as string}`
       );
@@ -214,12 +219,11 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
           "That sub-account wasn't found in this agency."
         );
       }
-      // The same chokepoint the Manage dialog's route uses, so a gate's side
-      // effects (e.g. Google off → the synced review cache is deleted) hold
-      // on this path too.
-      await applyFeatureGates(snap.id, {
-        [g.field as AgencyGateField]: args.enabled as boolean,
-      });
+      // Same chokepoint and audit trail as the Manage dialog's route, so gate
+      // side effects (e.g. Google off → review cache deleted) hold here too.
+      const gates = { [g.field as AgencyGateField]: args.enabled as boolean };
+      await applyFeatureGates(snap.id, gates);
+      await recordGateChanges(snap.id, ctx.uid, snap.data() ?? {}, gates);
       const name =
         (snap.data()?.name as string) || (args.subAccountName as string);
       return {

@@ -4,15 +4,14 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
-import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { metaAppConfigured } from "@/lib/comms/meta";
-import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import {
   sanitizeUsageQuotas,
   sanitizeUsageRates,
 } from "@/lib/server/usage-meter";
 import {
   applyFeatureGates,
+  recordGateChanges,
   type AgencyGateField,
 } from "@/lib/server/feature-gates-service";
 
@@ -74,6 +73,7 @@ interface PatchBody {
   googleEnabled?: boolean;
   googleCalendarEnabled?: boolean;
   reviewsAiEnabled?: boolean;
+  reviewsAutoReplyEnabled?: boolean;
   agentApiEnabled?: boolean;
   /**
    * Usage Metering v1 — per-workspace quota override. Not a gate: writes
@@ -164,6 +164,8 @@ export async function PATCH(
   const wantsGoogle = typeof body.googleEnabled === "boolean";
   const wantsGoogleCalendar = typeof body.googleCalendarEnabled === "boolean";
   const wantsReviewsAi = typeof body.reviewsAiEnabled === "boolean";
+  const wantsReviewsAutoReply =
+    typeof body.reviewsAutoReplyEnabled === "boolean";
   const wantsAgentApi = typeof body.agentApiEnabled === "boolean";
   const wantsBroadcastsHidden =
     typeof body.broadcastsHiddenWhenDisabled === "boolean";
@@ -216,6 +218,7 @@ export async function PATCH(
     !wantsGoogle &&
     !wantsGoogleCalendar &&
     !wantsReviewsAi &&
+    !wantsReviewsAutoReply &&
     !wantsAgentApi &&
     !wantsBroadcastsHidden &&
     !wantsWebsiteHidden &&
@@ -342,28 +345,14 @@ export async function PATCH(
   if (typeof body.agentApiEnabled === "boolean") {
     gates.agentApiEnabledByAgency = body.agentApiEnabled;
   }
+  if (typeof body.reviewsAutoReplyEnabled === "boolean") {
+    gates.reviewsAutoReplyEnabledByAgency = body.reviewsAutoReplyEnabled;
+  }
 
   let clearedDomain = false;
   if (Object.keys(gates).length > 0) {
     ({ clearedDomain } = await applyFeatureGates(subAccountId, gates));
-    // Diff against the value the runtime acts on: a missing opt-OUT gate
-    // (SMS / Web Chat / Inbound Voice AI) is already on.
-    const stored = subSnap.data() ?? {};
-    const effective = (field: AgencyGateField): boolean =>
-      typeof stored[field] === "boolean"
-        ? stored[field]
-        : DEFAULT_ON_GATE_FIELDS.has(field);
-    const changes = (Object.entries(gates) as [AgencyGateField, boolean][])
-      .filter(([field, after]) => effective(field) !== after)
-      .map(([field, after]) => ({ field, before: effective(field), after }));
-    if (changes.length > 0) {
-      await recordSubAccountAuditEvent(db, subAccountId, {
-        action: "feature_gates.updated",
-        actor: { type: "user", id: access.uid },
-        target: { type: "subAccount", id: subAccountId },
-        changes,
-      });
-    }
+    await recordGateChanges(subAccountId, access.uid, subSnap.data() ?? {}, gates);
   }
 
   // "Hide instead of lock" overrides. Pure presentation flags — they don't
@@ -466,6 +455,9 @@ export async function PATCH(
       ? { googleCalendarEnabled: body.googleCalendarEnabled }
       : {}),
     ...(wantsReviewsAi ? { reviewsAiEnabled: body.reviewsAiEnabled } : {}),
+    ...(wantsReviewsAutoReply
+      ? { reviewsAutoReplyEnabled: body.reviewsAutoReplyEnabled }
+      : {}),
     ...(wantsAgentApi ? { agentApiEnabled: body.agentApiEnabled } : {}),
     ...(wantsWebinar1Hidden
       ? { webinar1HiddenWhenDisabled: body.webinar1HiddenWhenDisabled }

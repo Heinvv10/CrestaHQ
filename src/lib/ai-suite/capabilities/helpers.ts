@@ -162,10 +162,14 @@ export const WORKFLOW_TEMPLATES: Record<WorkflowTemplate, string> = {
  * omission: `emailDomainEnabled` is excluded because disabling it TEARS DOWN
  * the sub-account's live Resend sending domain; that destructive path stays
  * in the Manage dialog where its warning UI lives.
+ *
+ * `assistantMayEnable: false` — the assistant (and Agent API keys, which run
+ * the same capability) may switch the gate OFF but never ON; enabling stays
+ * with the agency owner in the Manage dialog.
  */
 export const FEATURE_GATES: Record<
   string,
-  { field: string; label: string; metaRequired?: boolean }
+  { field: string; label: string; metaRequired?: boolean; assistantMayEnable?: false }
 > = {
   "api-access": {
     field: "apiAccessEnabledByAgency",
@@ -232,6 +236,12 @@ export const FEATURE_GATES: Record<
     field: "reviewsAiEnabledByAgency",
     label: "Reviews AI (sentiment and reply drafts)",
   },
+  // Posts to Google without a click: the assistant can switch it off, never on.
+  "reviews-auto-reply": {
+    field: "reviewsAutoReplyEnabledByAgency",
+    label: "Review auto-reply (AI posts replies to Google; not live yet)",
+    assistantMayEnable: false,
+  },
   "agent-api": {
     field: "agentApiEnabledByAgency",
     label: "Agent API (external LLM agent access)",
@@ -253,6 +263,20 @@ export const FEATURE_GATES: Record<
         },
       }),
 };
+
+/**
+ * The refusal text when the assistant asks to switch ON a gate whose
+ * `FEATURE_GATES` entry says `assistantMayEnable: false`; null otherwise.
+ * Called from `set_feature_gate`'s validate AND execute.
+ */
+export function assistantEnableRefusal(
+  gate: { label: string; assistantMayEnable?: false },
+  enabled: unknown
+): string | null {
+  return enabled === true && gate.assistantMayEnable === false
+    ? `${gate.label} can only be switched on by the agency owner in the sub-account's Manage dialog.`
+    : null;
+}
 
 /** Enabled-gate labels for one sub-account doc (every gate is opt-in). */
 export function enabledGateLabels(data: Record<string, unknown>): string[] {

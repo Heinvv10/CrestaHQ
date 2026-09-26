@@ -115,6 +115,22 @@ export interface AgencyDoc {
  */
 export type AiSuiteModelChoice = "opus" | "sonnet";
 
+/** Per star rating: the AI posts (`auto`) or a person posts its draft (`approval`). */
+export type AutoReplyMode = "auto" | "approval";
+export type AutoReplyStar = 1 | 2 | 3 | 4 | 5;
+
+/** `subAccounts/{id}.reviewsAutoReply` — see SubAccountDoc.reviewsAutoReply. */
+export interface ReviewsAutoReplySettings {
+  enabled: boolean;
+  modes: Record<AutoReplyStar, AutoReplyMode>;
+  includeBacklog: boolean;
+  enabledAt: Date | null;
+  enabledByUid: string | null;
+  listingLocationName: string | null;
+  updatedAt: Date;
+  updatedByUid: string;
+}
+
 export interface SubAccountDoc {
   id: string;
   agencyId: string;
@@ -506,6 +522,16 @@ export interface SubAccountDoc {
    */
   reviewsAiEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for review auto-reply (AUTO_REPLY_V1_PLAN.md): the
+   * AI posting replies to Google reviews without a click, per the
+   * sub-account's `reviewsAutoReply` settings. Opt-in: `false` at creation,
+   * read `=== true`. Effective only with `reviewsAiEnabledByAgency` AND
+   * `googleEnabledByAgency`. Standalone — NOT in `PLAN_GATE_KEYS` (no plan may
+   * switch public posting on), and the Workspace Assistant may switch it off
+   * but never on. No tear-down: settings are preserved.
+   */
+  reviewsAutoReplyEnabledByAgency?: boolean;
+  /**
    * Agency-controlled gate for the Agent API (v1) — an external LLM agent
    * holding an `agent`-scope key reading/managing this sub-account's CRM
    * over `POST /api/mcp` or `/api/v1/tools[/{name}]`. Layered ON TOP of
@@ -524,6 +550,14 @@ export interface SubAccountDoc {
    * nothing posts to Google without the admin's click.
    */
   reviewsAiConfig?: { replyGuidelines: string; updatedAt: Date; updatedByUid: string } | null;
+  /**
+   * Review auto-reply settings, written only by PUT
+   * /api/sub-accounts/[id]/reputation/auto-reply (admin). Absent reads as the
+   * defaults in lib/reputation/auto-reply/settings.ts (off; 1-3★ approval,
+   * 4-5★ auto; no backlog). The server stamps `enabledAt` / `enabledByUid` /
+   * `listingLocationName` on each off→on transition.
+   */
+  reviewsAutoReply?: ReviewsAutoReplySettings | null;
   /**
    * Non-secret display metadata for the connected Google account (see
    * {@link GoogleConnectionMeta}). Null/absent until connected.
