@@ -100,37 +100,47 @@ export function messageBody(value: string): string | null {
 }
 
 /**
- * Characters that look like a Latin letter, mapped to it: a curated subset
- * of Unicode UTS #39 confusables: the Cyrillic, Greek, Armenian and
- * Cherokee letters that pass for Latin ones (ASCII look-alikes are folded
- * in skeleton). Not complete: enough to stop the common impersonations.
+ * Characters that pass for a Latin letter, mapped to it: a curated subset of
+ * Unicode UTS #39 confusables (Cyrillic, Greek, Armenian, Cherokee), NOT
+ * complete. CAPITAL_CONFUSABLES are capitals whose lowercase no longer looks
+ * Latin (Cyrillic \u0422, Greek \u0397), mapped before lowercasing; the rest
+ * are keyed by their lowercase form, so either case is caught (\u051c, \u054d).
  */
-const CONFUSABLES = new Map<string, string>([
-  ["\u0410", "a"], ["\u0412", "b"], ["\u0415", "e"],
-  ["\u041a", "k"], ["\u041c", "m"], ["\u041d", "h"], ["\u041e", "o"], ["\u0420", "p"], ["\u0421", "c"],
-  ["\u0422", "t"], ["\u0425", "x"], ["\u0423", "y"], ["\u0405", "s"], ["\u0406", "l"], ["\u0408", "j"],
-  ["\u04ae", "y"], ["\u04ba", "h"], ["\u0430", "a"], ["\u0435", "e"], ["\u043e", "o"], ["\u0440", "p"],
-  ["\u0441", "c"], ["\u0443", "y"], ["\u0445", "x"], ["\u0455", "s"], ["\u0456", "i"], ["\u0458", "j"],
-  ["\u0501", "d"], ["\u051b", "q"], ["\u051d", "w"], ["\u04bb", "h"], ["\u04af", "y"], ["\u0391", "a"],
-  ["\u0392", "b"], ["\u0395", "e"], ["\u0396", "z"], ["\u0397", "h"], ["\u0399", "l"], ["\u039a", "k"],
-  ["\u039c", "m"], ["\u039d", "n"], ["\u039f", "o"], ["\u03a1", "p"], ["\u03a4", "t"], ["\u03a5", "y"],
-  ["\u03a7", "x"], ["\u03bf", "o"], ["\u03c1", "p"], ["\u03bd", "v"], ["\u03b9", "i"], ["\u0555", "o"],
-  ["\u0585", "o"], ["\u057d", "u"], ["\u0570", "h"], ["\u0578", "n"], ["\u0566", "q"], ["\u0581", "g"],
-  ["\u13aa", "a"], ["\u13f4", "b"], ["\u13df", "c"], ["\u13a0", "d"], ["\u13ac", "e"], ["\u13c0", "g"],
-  ["\u13bb", "h"], ["\u13ab", "j"], ["\u13e6", "k"], ["\u13de", "l"], ["\u13b7", "m"], ["\u13e2", "p"],
-  ["\u13a1", "r"], ["\u13da", "s"], ["\u13a2", "t"], ["\u13d9", "v"], ["\u13b3", "w"], ["\u13c3", "z"],
+const CAPITAL_CONFUSABLES = new Map<string, string>([
+  ["\u0412", "b"], ["\u041a", "k"], ["\u041c", "m"], ["\u041d", "h"], ["\u0422", "t"], ["\u0392", "b"],
+  ["\u0397", "h"], ["\u0399", "l"], ["\u039a", "k"], ["\u039c", "m"], ["\u039d", "n"], ["\u03a4", "t"],
+  ["\u03a5", "y"], ["\u03a7", "x"], ["\u0396", "z"],
+]);
+const LOWER_CONFUSABLES = new Map<string, string>([
+  ["\u0430", "a"], ["\u0435", "e"], ["\u043e", "o"], ["\u0440", "p"], ["\u0441", "c"], ["\u0443", "y"],
+  ["\u0445", "x"], ["\u0455", "s"], ["\u0456", "i"], ["\u0458", "j"], ["\u04bb", "h"], ["\u04af", "y"],
+  ["\u0501", "d"], ["\u051b", "q"], ["\u051d", "w"], ["\u03b1", "a"], ["\u03b5", "e"], ["\u03bf", "o"],
+  ["\u03c1", "p"], ["\u03bd", "v"], ["\u0585", "o"], ["\u057d", "u"], ["\u0570", "h"], ["\u0578", "n"],
+  ["\u0566", "q"], ["\u0581", "g"], ["\uab7a", "a"], ["\u13fc", "b"], ["\uabaf", "c"], ["\uab70", "d"],
+  ["\uab7c", "e"], ["\uab90", "g"], ["\uab8b", "h"], ["\uab7b", "j"], ["\uabb6", "k"], ["\uabae", "l"],
+  ["\uab87", "m"], ["\uabb2", "p"], ["\uab71", "r"], ["\uabaa", "s"], ["\uab72", "t"], ["\uaba9", "v"],
+  ["\uab83", "w"], ["\uab93", "z"],
 ]);
 
-/** What a name looks like: NFKC, confusables mapped to Latin, case-folded,
- *  i / 1 / | read as l and 0 as o, "rn" / "vv" as "m" / "w", whitespace
- *  collapsed. Two names with the
- *  same skeleton can pass for each other. */
+/** A name folded for "is this the same name?": NFKC, case-folded,
+ *  whitespace collapsed. */
+function casefoldKey(value: string): string {
+  return value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * What a name looks like (UTS #39 style): NFKC; capital I and the capital
+ * confusables mapped; case-folded; the lowercase confusables mapped; 1 and |
+ * read as l, 0 as o; whitespace collapsed. "rn" / "vv" also read as "m" /
+ * "w": deliberately, as a spoof is worse than refusing the odd real pair
+ * (Modern / Modem).
+ */
 export function skeleton(value: string): string {
-  const mapped = [...value.normalize("NFKC")].map((c) => CONFUSABLES.get(c) ?? c).join("");
-  // Folded first, so I / i / l / 1 / | all read alike (and 0 / o).
-  return mapped
-    .toLowerCase()
-    .replace(/[i1|]/g, "l")
+  const capitals = [...value.normalize("NFKC")].map((c) => (c === "I" ? "l" : (CAPITAL_CONFUSABLES.get(c) ?? c))).join("");
+  return [...capitals.toLowerCase()]
+    .map((c) => LOWER_CONFUSABLES.get(c) ?? c)
+    .join("")
+    .replace(/[1|]/g, "l")
     .replace(/0/g, "o")
     .replace(/rn/g, "m")
     .replace(/vv/g, "w")
@@ -174,13 +184,15 @@ function imitatesLatin(ch: string): boolean {
  * options, folders).
  */
 export function lookAlikeProblem(value: string, existing: readonly string[]): string | null {
-  if ([...value].some(imitatesLatin)) return "uses a letter that imitates a plain Latin letter";
+  // Letters only: symbols NFKC turns into ASCII (\u2122 \u00b2 \u2026 \u2163) never count.
+  const letters = (w: string) => [...w].filter((c) => /\p{L}/u.test(c)).join("");
+  if ([...letters(value)].some(imitatesLatin)) return "uses a letter that imitates a plain Latin letter";
   if (MIXED_SCRIPT_WORD.test(value)) return "mixes Latin with Cyrillic or Greek letters in one word";
   // A word made only of letters that pass for Latin ones reads as Latin.
-  if (value.split(/\s+/).some((w) => !ASCII.test(w) && ASCII.test(skeleton(w)))) {
+  if (value.split(/\s+/).map(letters).some((w) => w && !ASCII.test(w) && ASCII.test(skeleton(w)))) {
     return "uses letters from another script that look like Latin ones";
   }
-  const key = skeleton(value);
-  if (existing.some((e) => skeleton(e) === key)) return "is the same as, or looks like, an existing one";
+  const [key, folded] = [skeleton(value), casefoldKey(value)];
+  if (existing.some((e) => skeleton(e) === key || casefoldKey(e) === folded)) return "is the same as, or looks like, an existing one";
   return null;
 }

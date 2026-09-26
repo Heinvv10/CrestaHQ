@@ -21,4 +21,18 @@ describe("lookAlikeProblem", () => {
       expect(lookAlikeProblem(name, []), name).toBeNull();
     }
   });
+
+  it("symbols NFKC turns into ASCII never count as letters", () => {
+    for (const name of ["Fibre\u2122 100", "Speed\u00b2", "Follow up\u2026", "Plan \u2163"]) {
+      expect(lookAlikeProblem(name, []), name).toBeNull();
+    }
+  });
+
+  it("duplicates: a capital look-alike, and the same name in another case, are refused; near words are not", () => {
+    expect(lookAlikeProblem("\u051c\u0415\u0412", ["WEB"])).not.toBeNull();
+    expect(lookAlikeProblem("\u051c\u0435b", ["web"])).not.toBeNull();
+    expect(lookAlikeProblem("ID", ["id"])).toBe("is the same as, or looks like, an existing one");
+    expect(lookAlikeProblem("Mail", ["Mall"])).toBeNull();
+    expect(lookAlikeProblem("lnvoice", ["Invoice"])).toBe("is the same as, or looks like, an existing one");
+  });
 });
