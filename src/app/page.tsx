@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { cache } from "react";
 import { LANDING_VARIANT } from "@/config/landing";
 import { landingDefersToPrimaryDomain } from "@/lib/landing/marketing-host";
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
@@ -51,10 +52,13 @@ import { Footer as CustomFooter } from "@/components/landing-custom/footer";
  * Flip LANDING_VARIANT to swap. Code-level defaults for the custom
  * variant live in src/config/landing.ts (CUSTOM_BRAND).
  */
-/** Keep the app's landing out of search when the brand's site is elsewhere. */
+// One brand read per request, shared by generateMetadata and the page body.
+const getBrand = cache(resolveCustomBrand);
+
+/** Keep the app's landing out of search when it runs on a subdomain of the brand's site. */
 export async function generateMetadata(): Promise<Metadata> {
   if (LANDING_VARIANT !== "custom") return {};
-  const brand = await resolveCustomBrand();
+  const brand = await getBrand();
   return landingDefersToPrimaryDomain(process.env.NEXT_PUBLIC_APP_URL, brand.primaryDomain)
     ? { robots: { index: false, follow: true } }
     : {};
@@ -62,7 +66,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function HomePage() {
   if (LANDING_VARIANT === "custom") {
-    const brand = await resolveCustomBrand();
+    const brand = await getBrand();
     return (
       <div className="flex min-h-screen flex-col">
         <CustomNavbar brand={brand} />

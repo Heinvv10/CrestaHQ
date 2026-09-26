@@ -10,6 +10,11 @@ describe("landingDefersToPrimaryDomain", () => {
     expect(landingDefersToPrimaryDomain("https://www.crestahq.com", "crestahq.com")).toBe(false);
     expect(landingDefersToPrimaryDomain("https://crestahq.com", "www.crestahq.com")).toBe(false);
   });
+  it("does not defer when the app is on an unrelated domain (placeholder primaryDomain left unedited)", () => {
+    expect(landingDefersToPrimaryDomain("https://buyer-agency.co.za", "crestahq.com")).toBe(false);
+    expect(landingDefersToPrimaryDomain("https://app.buyer-agency.co.za", "crestahq.com")).toBe(false);
+    expect(landingDefersToPrimaryDomain("https://notcrestahq.com", "crestahq.com")).toBe(false);
+  });
   it("does not defer when either side is unknown", () => {
     expect(landingDefersToPrimaryDomain(undefined, "crestahq.com")).toBe(false);
     expect(landingDefersToPrimaryDomain("not a url", "crestahq.com")).toBe(false);
