@@ -326,7 +326,9 @@ body for token markers).
   each written in the same transaction as the change it records. No client
   rule (default deny).
 
-Selecting a **different** listing, clearing it, disconnecting, and a reconnect
+Selecting a **different** listing (or the same location through another
+Google account — its reviews come back under new names), clearing it,
+disconnecting, and a reconnect
 re-verification that drops it all also delete the synced review cache, the
 summary and the sync state (`clearGbpCache`, `lib/gbp/sync/store.ts`, reached
 through `clearListing` and the listing PUT). A re-verification that declines

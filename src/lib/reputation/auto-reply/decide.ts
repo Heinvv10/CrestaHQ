@@ -46,7 +46,7 @@ export interface DecideReview {
   hasReply: boolean;
   /** Sticky: the review had a reply at some point — never auto-replied, even after a deletion. */
   hadReply: boolean;
-  /** `autoReplyNever/{reviewDocId}` exists — the same, remembered outside the cache. */
+  /** `autoReplyNever/{stableReviewKey}` exists — the same, remembered outside the cache (and across an account switch). */
   never: boolean;
   /** Another key's reply post holds the review's live in-flight lock. */
   inFlight: boolean;
@@ -54,7 +54,7 @@ export interface DecideReview {
   /** The review's current basis (stars + comment); null without a rating. */
   basisHash: string | null;
   pending: DecidePending | null;
-  /** `autoReplyDismissed/{reviewDocId}.basisHash` — a Discard that survives a cache clear. */
+  /** `autoReplyDismissed/{stableReviewKey}.basisHash` — a Discard that survives a cache clear and an account switch. */
   dismissedBasisHash: string | null;
 }
 

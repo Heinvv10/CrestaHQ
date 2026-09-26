@@ -276,6 +276,10 @@ would be invisible).
   (flip detected inside `markReconnectRequiredIf`, `lib/gbp/tokens.ts:42`), so
   a stalled auto-reply is never silent.
 - An auto-replied review later edited to ≤3★ → one alert.
+- Auto-reply switched off by a listing change (another listing, the same
+  location through another Google account, a clear, a disconnect or a
+  reconnect that drops the listing — rev 5) → one alert, matching the card's
+  "switched off: the listing changed — re-enable to resume" note (PR 4).
 
 ## PR DAG
 
@@ -285,7 +289,7 @@ would be invisible).
 | 1 | Agency gate + settings schema + `auto-reply` route + settings card (hidden) | — | green CI + blind review (Level 3) |
 | 2 | Kill switch, `requireNoReply`, `decide.ts` + `run.ts` + lease + `pendingReply` + post-sync wiring; rewrite the now-false invariants in the same PR (`reputation.md` guarantee + "no draft text is stored", `reply.ts:16-21`, `draft.ts:12`, `firestore-collections.md`) | 0, 1 | green CI + blind review **+ adversarial breaker** + **Hein approves the merge** (posts publicly without a click) |
 | 3 | Reviews tab "Needs approval" filter, pre-filled composer, Discard, "Auto-replied" tag | 2 | green CI + blind review |
-| 4 | Held + reconnect-required alerts | 2 | green CI + blind review |
+| 4 | Held, reconnect-required, edited-to-≤3★ and listing-change (auto-reply switched off) alerts | 2 | green CI + blind review |
 | 5 | Feature-gates + env docs, parity ledger; live proof | 3, 4 | green CI + blind review |
 
 ## Validation
