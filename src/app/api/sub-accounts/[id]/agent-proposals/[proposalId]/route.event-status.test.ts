@@ -77,6 +77,15 @@ describe("set_event_status", () => {
     expect(mem.list("workflowRuns")).toEqual([]);
   });
 
+  it("cancelled by someone between the agent's check and its write -> refused, no trigger, nothing held", async () => {
+    workflow("booking.showed");
+    beforeNextTransaction(async () => mem.seed("events/ev1", pastEvent({ status: "cancelled" })));
+    expect(await call({ status: "completed" })).toMatchObject({ ok: false, message: "This event was cancelled \u2014 its status can't change." });
+    expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    expect(mem.list("agentProposals")).toEqual([]);
+    expect(mem.list("workflowRuns")).toEqual([]);
+  });
+
   it.each([
     ["an appointment that hasn't started", () => mem.seed("events/ev1", pastEvent({ startAt: Timestamp.fromMillis(Date.now() + 3_600_000) })), "completed", "This appointment hasn't happened yet."],
     ["another sub-account's appointment", () => mem.seed("events/ev1", pastEvent({ subAccountId: "sa2" })), "completed", "That appointment isn't in this workspace."],

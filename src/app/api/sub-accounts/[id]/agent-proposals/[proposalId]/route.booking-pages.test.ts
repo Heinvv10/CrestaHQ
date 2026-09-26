@@ -196,6 +196,11 @@ describe("delete_booking_page", () => {
     expect(await call("delete_booking_page", { slug: "bp1" })).toMatchObject({ ok: false, message: expect.stringContaining("1 upcoming booking(s)") });
   });
 
+  it("a cancelled upcoming booking doesn't block the delete", async () => {
+    mem.seed("events/ev_gone", { subAccountId: "sa1", bookingPageSlug: "bp1", status: "cancelled", startAt: Timestamp.fromMillis(Date.now() + 86_400_000) });
+    expect(await call("delete_booking_page", { slug: "bp1" })).toMatchObject({ ok: true, proposal: { status: "pending" } });
+  });
+
   it("an upcoming booking -> refused at propose", async () => {
     booking(86_400_000);
     expect(await call("delete_booking_page", { slug: "bp1" })).toMatchObject({ ok: false, message: expect.stringContaining("1 upcoming booking(s)") });

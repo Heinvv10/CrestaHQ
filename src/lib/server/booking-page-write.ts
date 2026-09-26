@@ -57,7 +57,8 @@ type QueryGet = (q: FirebaseFirestore.Query) => Promise<FirebaseFirestore.QueryS
 
 /**
  * Bookings on this page not yet over (ending now or later, so one in
- * progress counts; an event without an end is judged by its start).
+ * progress counts; an event without an end is judged by its start), and
+ * not cancelled.
  * Equality filters only, counted in memory, so the guard works without the
  * events(subAccountId, bookingPageSlug, startAt) composite index.
  */
@@ -66,6 +67,7 @@ export async function upcomingBookingCount(subAccountId: string, slug: string, g
   const snap = await get(getAdminDb().collection("events").where("subAccountId", "==", subAccountId).where("bookingPageSlug", "==", slug));
   return snap.docs.filter((doc) => {
     const d = doc.data();
+    if (d.status === "cancelled") return false;
     const ms = ((d.endAt ?? d.startAt) as { toMillis?: () => number } | null | undefined)?.toMillis?.();
     return typeof ms === "number" && ms >= nowMs;
   }).length;
