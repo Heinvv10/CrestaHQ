@@ -84,7 +84,7 @@ export function ContactsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!key || wantedKey !== key || !agencyId) return;
-    return subscribeToContacts(
+    const unsubscribe = subscribeToContacts(
       { agencyId, subAccountId },
       { territoryFilter, waitForServer: true },
       (contacts) => setState({ key, contacts, error: null }),
@@ -95,6 +95,13 @@ export function ContactsProvider({ children }: { children: ReactNode }) {
         setWantedKey(null);
       },
     );
+    return () => {
+      unsubscribe();
+      // A list is only current while its listener runs: flipping the filter
+      // away and back must wait for the new listener, not serve the old list.
+      // A failure is kept to be shown until someone retries.
+      setState((s) => (s?.error ? s : null));
+    };
   }, [key, wantedKey, agencyId, subAccountId, territoryFilter]);
 
   const watch = useCallback(() => {

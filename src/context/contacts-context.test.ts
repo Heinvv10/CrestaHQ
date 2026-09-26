@@ -49,6 +49,8 @@ import {
 
 const LIST = [{ id: "c1" }, { id: "c2" }] as Contact[];
 const seen: Record<string, SubAccountContacts> = {};
+// Every value each consumer rendered, so a one-render flash is caught too.
+const renders: Record<string, SubAccountContacts[]> = {};
 
 function Consumer({
   name,
@@ -60,6 +62,7 @@ function Consumer({
   ownsLoadingHint?: boolean;
 }) {
   seen[name] = useSubAccountContacts(enabled, { ownsLoadingHint });
+  (renders[name] ??= []).push(seen[name]);
   return null;
 }
 const Bare = () => null;
@@ -82,6 +85,7 @@ beforeEach(() => {
   state.territory = { ready: true, filter: null };
   state.subs = [];
   for (const k of Object.keys(seen)) delete seen[k];
+  for (const k of Object.keys(renders)) delete renders[k];
   el = document.createElement("div");
   root = createRoot(el);
 });
@@ -145,6 +149,24 @@ it("passes the territory filter through and re-subscribes when it changes", asyn
   expect(latest().opts.territoryFilter).toEqual(["global", "t2"]);
   // The old territory's list is not shown as the new one's.
   expect(seen.a).toMatchObject({ loading: true, contacts: [] });
+});
+
+it("switching back to a territory waits for the server, not the old list", async () => {
+  state.territory = { ready: true, filter: ["t1"] };
+  await render(consumer("a"));
+  await act(async () => latest().deliver(LIST));
+  state.territory = { ready: true, filter: ["t2"] };
+  await render(consumer("a"));
+  // Back to t1 before t2's first answer: t1's old list is not current.
+  const from = renders.a.length;
+  state.territory = { ready: true, filter: ["t1"] };
+  await render(consumer("a"));
+  expect(state.subs).toHaveLength(3);
+  for (const r of renders.a.slice(from)) {
+    expect(r).toMatchObject({ loading: true, contacts: [] });
+  }
+  await act(async () => latest().deliver(LIST));
+  expect(seen.a).toMatchObject({ loading: false, contacts: LIST });
 });
 
 it("waits for the territory filter before subscribing", async () => {

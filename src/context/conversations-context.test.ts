@@ -50,9 +50,12 @@ import {
 
 const LIST = [{ id: "c1" }, { id: "c2" }] as ConversationDoc[];
 const seen: Record<string, SubAccountConversations> = {};
+// Every value each consumer rendered, so a one-render flash is caught too.
+const renders: Record<string, SubAccountConversations[]> = {};
 
 function Consumer({ name }: { name: string }) {
   seen[name] = useSubAccountConversations();
+  (renders[name] ??= []).push(seen[name]);
   return null;
 }
 const Bare = () => null;
@@ -74,6 +77,7 @@ beforeEach(() => {
   state.territory = { ready: true, filter: null };
   state.subs = [];
   for (const k of Object.keys(seen)) delete seen[k];
+  for (const k of Object.keys(renders)) delete renders[k];
   root = createRoot(document.createElement("div"));
 });
 afterEach(async () => {
@@ -120,13 +124,35 @@ it("passes the territory filter through and re-subscribes when it changes", asyn
   await act(async () => latest().deliver(LIST));
   const first = latest();
 
+  const from = renders.a.length;
   state.territory = { ready: true, filter: ["global", "t2"] };
   await render(consumer("a"));
   expect(first.unsub).toHaveBeenCalledTimes(1);
   expect(state.subs).toHaveLength(2);
   expect(latest().territoryFilter).toEqual(["global", "t2"]);
-  // The old territory's list is not shown as the new one's.
-  expect(seen.a).toMatchObject({ loading: true, conversations: [] });
+  // The old territory's list is not shown as the new one's, not even for
+  // the render before the old listener is torn down.
+  for (const r of renders.a.slice(from)) {
+    expect(r).toMatchObject({ loading: true, conversations: [] });
+  }
+});
+
+it("switching back to a territory waits for the server, not the old list", async () => {
+  state.territory = { ready: true, filter: ["t1"] };
+  await render(consumer("a"));
+  await act(async () => latest().deliver(LIST));
+  state.territory = { ready: true, filter: ["t2"] };
+  await render(consumer("a"));
+  // Back to t1 before t2's first answer: t1's old list is not current.
+  const from = renders.a.length;
+  state.territory = { ready: true, filter: ["t1"] };
+  await render(consumer("a"));
+  expect(state.subs).toHaveLength(3);
+  for (const r of renders.a.slice(from)) {
+    expect(r).toMatchObject({ loading: true, conversations: [] });
+  }
+  await act(async () => latest().deliver(LIST));
+  expect(seen.a).toMatchObject({ loading: false, conversations: LIST });
 });
 
 it("waits for the territory filter before subscribing", async () => {
@@ -192,8 +218,11 @@ it("a failed listener stops loading, reports the error, and the next visit retri
   await render(bare());
   await render(consumer("visit2"));
   expect(state.subs).toHaveLength(2);
-  // The retry loads afresh; it does not keep showing the old failure.
-  expect(seen.visit2).toMatchObject({ loading: true, error: null });
+  // The retry loads afresh; it never shows the old failure, not even for
+  // the first render before its request lands.
+  for (const r of renders.visit2) {
+    expect(r).toMatchObject({ loading: true, error: null });
+  }
   await act(async () => latest().deliver(LIST));
   expect(seen.visit2).toMatchObject({ loading: false, conversations: LIST, error: null });
 });

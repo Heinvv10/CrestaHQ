@@ -82,9 +82,7 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!key || wantedKey !== key) return;
-    // A retry after a failure loads afresh rather than showing the error.
-    setState((s) => (s?.error ? null : s));
-    return subscribeToConversations(
+    const unsubscribe = subscribeToConversations(
       subAccountId,
       (conversations) => setState({ key, conversations, error: null }),
       (error) => {
@@ -96,9 +94,20 @@ export function ConversationsProvider({ children }: { children: ReactNode }) {
       territoryFilter,
       { waitForServer: true },
     );
+    return () => {
+      unsubscribe();
+      // A list is only current while its listener runs: flipping the filter
+      // away and back must wait for the new listener, not serve the old list.
+      // A failure is kept to be shown until someone retries.
+      setState((s) => (s?.error ? s : null));
+    };
   }, [key, wantedKey, subAccountId, territoryFilter]);
 
-  const current = state && state.key === key ? state : null;
+  // A failure stops being current once a retry is under way.
+  const current =
+    state && state.key === key && !(state.error && wantedKey === key)
+      ? state
+      : null;
   const value = useMemo<ConversationsContextValue>(
     () => ({
       conversations: current?.conversations ?? [],
@@ -128,11 +137,19 @@ export function useSubAccountConversations(): SubAccountConversations {
     );
   }
   const { request, conversations, loading, error } = ctx;
+  const [requested, setRequested] = useState<(() => void) | null>(null);
   useEffect(() => {
     request();
+    setRequested(() => request);
   }, [request]);
+  // Mounting after a failure retries: report the retry's loading from the
+  // first render, not the old error until the request lands.
+  const retrying = !!error && requested !== request;
   return useMemo(
-    () => ({ conversations, loading, error }),
-    [conversations, loading, error],
+    () =>
+      retrying
+        ? { conversations: [], loading: true, error: null }
+        : { conversations, loading, error },
+    [retrying, conversations, loading, error],
   );
 }
