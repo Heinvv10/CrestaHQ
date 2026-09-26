@@ -13,7 +13,7 @@ import type { NextRequest } from "next/server";
  */
 type MiddlewareOptions = {
   handleValidToken: (
-    result: { decodedToken: { uid: string; email?: string; agencyId?: unknown } },
+    result: { decodedToken: { uid: string; email?: string; agencyId?: unknown; status?: unknown } },
     headers: Headers,
   ) => Promise<unknown>;
   handleInvalidToken: () => Promise<unknown>;
@@ -440,10 +440,23 @@ describe("middleware() — x-agency-id comes only from the verified token", () =
     const req = fullRequest("/agency", { "x-agency-id": "victim-agency" });
     await middleware(req);
     const res = (await capturedOptions!.handleValidToken(
-      { decodedToken: { uid: "u1", agencyId: "real-agency" } },
+      { decodedToken: { uid: "u1", agencyId: "real-agency", status: "active" } },
       new Headers(req.headers),
     )) as Response;
     expect(res.headers.get("x-middleware-request-x-agency-id")).toBe("real-agency");
+  });
+
+  it("a token whose status claim is not active never carries x-agency-id", async () => {
+    const req = fullRequest("/agency", { "x-agency-id": "victim-agency" });
+    await middleware(req);
+    for (const status of ["removed", "disabled", undefined, true]) {
+      const res = (await capturedOptions!.handleValidToken(
+        { decodedToken: { uid: "u1", agencyId: "real-agency", status } },
+        new Headers(req.headers),
+      )) as Response;
+      expect(overriddenHeaderNames(res)).not.toContain("x-agency-id");
+      expect(res.headers.get("x-middleware-request-x-agency-id")).toBeNull();
+    }
   });
 
   it("a valid session with no agencyId claim drops a forged x-agency-id", async () => {
@@ -451,7 +464,7 @@ describe("middleware() — x-agency-id comes only from the verified token", () =
     await middleware(req);
     for (const agencyId of [undefined, "", 42]) {
       const res = (await capturedOptions!.handleValidToken(
-        { decodedToken: { uid: "u1", agencyId } },
+        { decodedToken: { uid: "u1", agencyId, status: "active" } },
         new Headers(req.headers),
       )) as Response;
       expect(overriddenHeaderNames(res)).not.toContain("x-agency-id");

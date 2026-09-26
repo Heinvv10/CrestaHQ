@@ -506,9 +506,15 @@ export default function middleware(request: NextRequest) {
       headers.set("x-user-uid", decodedToken.uid);
       headers.set("x-user-email", decodedToken.email ?? "");
       // Server-seeded dashboard branding. Only ever from the verified
-      // token's claim — a caller-sent value is dropped, never forwarded.
+      // token's claim — a caller-sent value is dropped, never forwarded —
+      // and only for an active user: a removed/disabled member's token
+      // stays valid until it expires (~1 h).
       const agencyId = decodedToken.agencyId;
-      if (typeof agencyId === "string" && agencyId) {
+      if (
+        decodedToken.status === "active" &&
+        typeof agencyId === "string" &&
+        agencyId
+      ) {
         headers.set("x-agency-id", agencyId);
       } else {
         headers.delete("x-agency-id");

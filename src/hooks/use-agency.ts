@@ -30,12 +30,20 @@ interface AgencySummary {
    * "opus" — matches pre-picker behavior for upgrading deployments.
    */
   agencyAssistantModel: "opus" | "sonnet";
-  /** True until the Firestore snapshot has resolved. Server-seeded branding does NOT flip this — the other fields are still defaults until then. */
+  /**
+   * Starts as `!!agencyId` at mount and flips false when the snapshot (or
+   * its error) arrives. On a hard load auth has not resolved at mount, so
+   * it starts — and stays — false even before the doc arrives; only a
+   * mount after auth has settled sees it true. Server-seeded branding does
+   * NOT flip it. Brand chrome should gate on `brandingReady` instead.
+   */
   loading: boolean;
   /**
    * True once name/logoUrl/appTheme are the agency's real values: seeded by
    * the server (AgencyBrandingProvider), delivered by the snapshot, or known
    * to be absent (auth settled with no agency). Brand chrome gates on this.
+   * appTheme is still applied by AppAccent's effect after hydration, so a
+   * seed does not remove the accent-theme swap on first paint.
    */
   brandingReady: boolean;
 }
