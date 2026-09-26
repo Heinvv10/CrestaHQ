@@ -1,6 +1,8 @@
 # Agent API v1
 
-> Status: **PLAN 2026-09-24, rev 5 after four blind reviews** (nothing built). Owner
+> Status: **BUILT 2026-09-26**: PR1 to PR13 merged (last #297, cb23e3cc), PR14 docs in
+> [docs/features/agent-api.md](docs/features/agent-api.md); **live validation pending** until
+> the deploy (checklist below). Plan rev 5 after four blind reviews. Owner
 > rulings locked: sub-account `lsk_` keys first (agency-wide keys are a later
 > PR); one tool registry (`src/lib/ai-suite/capabilities.ts`) exposed over MCP
 > + a REST mirror; outbound-to-humans and workflow activation only ever create

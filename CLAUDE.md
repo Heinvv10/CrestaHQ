@@ -243,6 +243,7 @@ Specs: [AI Agents](docs/features/ai-agents.md) ·
 [Client Billing](docs/features/client-billing.md) ·
 [Booking pages](docs/features/booking-pages.md) ·
 [Public API](docs/features/public-api.md) ·
+[Agent API](docs/features/agent-api.md) ·
 [Broadcasts](docs/features/broadcasts.md) ·
 [Social Planner](docs/features/social-planner.md) ·
 [Website builder](docs/features/website-builder.md) ·
