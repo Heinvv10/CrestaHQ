@@ -18,6 +18,7 @@ import {
   type ClaimedRow,
 } from "@/lib/broadcasts/settle-send";
 import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
+import { templateFingerprint } from "@/lib/broadcasts/approved";
 import type {
   AgencyDoc,
   BroadcastDoc,
@@ -211,6 +212,12 @@ async function deliver(
     return NextResponse.json({ ok: true, status: "failed" });
   }
   const template = templateSnap.data() as MessageTemplateDoc;
+  // An agent's broadcast sends only the template its approver reviewed.
+  if (broadcast.approved && templateFingerprint(template) !== broadcast.approved.templateFingerprint) {
+    await markFailed(row, "The template changed after this broadcast was approved; not sent.");
+    await maybeMarkBroadcastCompleted(broadcastRef);
+    return NextResponse.json({ ok: true, status: "failed" });
+  }
   const agency = agencySnap.exists ? (agencySnap.data() as AgencyDoc) : null;
 
   // Owner snapshot for merge tags (matches the automation executor pattern).

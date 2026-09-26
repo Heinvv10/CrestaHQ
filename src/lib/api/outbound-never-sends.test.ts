@@ -3,6 +3,7 @@ import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harne
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import { FIXTURE_ARGS } from "@/test/outbound-fixtures";
 import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
+import { seedPr13 } from "@/test/pr13-fixtures";
 
 /**
  * The inverted outbound test (AGENT_API_V1_PLAN.md, PR3b): an API agent can
@@ -127,6 +128,7 @@ beforeEach(() => {
   mem.seed("recurringInvoices/rs1", SCHEDULE);
   mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, name: "Paused retainer", status: "paused" });
   mem.seed("events/ev_past", pastEvent());
+  seedPr13(mem);
   mem.seed("subAccounts/sa1/bookingPages/bp1", PAGE);
   mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", name: "Live consult", status: "published" });
   mem.seed("subAccounts/sa1/pipelines/p1", {

@@ -72,6 +72,9 @@ export interface SocialPostDoc {
   results: SocialPostTargetResult[];
   /** QStash message id for the scheduled publish job (debug / future cancel). */
   qstashMessageId: string | null;
+  /** Set when a person approved an API agent's schedule: the accounts they
+   *  reviewed. The publish step refuses any other connected account. */
+  approvedAccounts?: { pageId: string; igUserId: string | null } | null;
 
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;

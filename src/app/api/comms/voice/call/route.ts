@@ -1,12 +1,8 @@
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 
-import { getAdminDb } from "@/lib/firebase/admin";
 import { requireContactAccessible, requireUid } from "@/lib/comms/route-auth";
-import { getAgentProfile, getChannelConfig } from "@/lib/comms/ai/agent";
-import { vapiIsConfigured, createOutboundCall } from "@/lib/comms/voice/vapi";
 import { checkOutboundCompliance } from "@/lib/comms/voice/outbound-compliance";
-import type { SubAccountDoc } from "@/types";
+import { outboundVoiceReady, placeContactCall } from "@/lib/server/voice-call";
 
 type Body = { contactId?: string; consentAck?: boolean };
 
@@ -50,52 +46,12 @@ export async function POST(request: Request) {
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
 
-  const db = getAdminDb();
-
-  // Agency gate.
-  const saSnap = await db.doc(`subAccounts/${contact.subAccountId}`).get();
-  const subAccount = saSnap.exists ? (saSnap.data() as SubAccountDoc) : null;
-  if (subAccount?.outboundVoiceEnabledByAgency !== true) {
-    return NextResponse.json(
-      {
-        error:
-          "Outbound calling is disabled for this workspace. Ask your agency owner to enable it.",
-      },
-      { status: 403 },
-    );
+  const ready = await outboundVoiceReady(contact.subAccountId);
+  if (!ready.ok) {
+    return NextResponse.json({ error: ready.error }, { status: ready.status });
   }
+  const { voice, agentTimezone } = ready;
 
-  // Voice channel config + outbound enablement.
-  const channel = await getChannelConfig(contact.subAccountId, "voice");
-  const voice = channel?.voice ?? null;
-  if (!voice || voice.outboundEnabled !== true) {
-    return NextResponse.json(
-      { error: "Outbound calling isn't enabled in the Voice settings." },
-      { status: 403 },
-    );
-  }
-
-  // Vapi + provisioning prerequisites.
-  if (!vapiIsConfigured()) {
-    return NextResponse.json(
-      { error: "Voice calling isn't configured on this deployment." },
-      { status: 503 },
-    );
-  }
-  if (!voice.vapiAssistantId || !voice.vapiPhoneNumberId) {
-    return NextResponse.json(
-      {
-        error:
-          "Enable the Voice channel first so the calling number is provisioned.",
-      },
-      { status: 400 },
-    );
-  }
-
-  // Native compliance gate.
-  const profile = await getAgentProfile(contact.subAccountId);
-  const agentTimezone =
-    profile?.timezone || voice.outboundWindow?.timezone || "UTC";
   const compliance = await checkOutboundCompliance({
     subAccountId: contact.subAccountId,
     contact,
@@ -118,93 +74,11 @@ export async function POST(request: Request) {
   const customerNumber = compliance.e164 ?? contact.phone;
 
   // Place the call.
-  let callId: string;
-  try {
-    const result = await createOutboundCall({
-      assistantId: voice.vapiAssistantId,
-      phoneNumberId: voice.vapiPhoneNumberId,
-      customerNumber,
-      contactId,
-      firstMessage: voice.outboundFirstMessage,
-    });
-    callId = result.callId;
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to place the call";
-    return NextResponse.json({ ok: false, error: message }, { status: 502 });
+  const placed = await placeContactCall({ contact, contactId, uid: auth.uid, voice, customerNumber });
+  if (!placed.ok) {
+    return NextResponse.json({ ok: false, error: placed.error }, { status: 502 });
   }
-
-  // Placeholder voiceCalls doc — written immediately so the per-number /
-  // daily caps count this call and the operator console shows it. The
-  // end-of-call webhook later merges in the summary + extraction.
-  // callerPhone holds the EXTERNAL party (the contact) — consistent with
-  // inbound — so the frequency query (callerPhone === number) works for
-  // both directions.
-  try {
-    await db
-      .doc(`subAccounts/${contact.subAccountId}/voiceCalls/${callId}`)
-      .set(
-        {
-          id: callId,
-          agencyId: contact.agencyId,
-          subAccountId: contact.subAccountId,
-          callId,
-          direction: "outbound",
-          callerPhone: customerNumber,
-          toPhone: null,
-          durationSec: 0,
-          summary: null,
-          endedReason: null,
-          contactId,
-          contactCreated: false,
-          callbackRequested: false,
-          capturedName: null,
-          capturedEmail: null,
-          capturedPhone: null,
-          taskId: null,
-          escalationEmailSent: false,
-          transcript: [],
-          liveStatus: "queued",
-          liveStatusAt: FieldValue.serverTimestamp(),
-          // Audit: who placed the call + that consent was acknowledged.
-          initiatedByUid: auth.uid,
-          consentAck: true,
-          errors: [],
-          createdAt: FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
-  } catch (err) {
-    console.warn("[voice/call] placeholder doc write failed", err);
-  }
-
-  // Activity row on the contact timeline.
-  try {
-    await db
-      .collection("contacts")
-      .doc(contactId)
-      .collection("activities")
-      .add({
-        type: "voice_call_initiated",
-        content: "Outbound AI call placed",
-        createdBy: auth.uid,
-        meta: { callId },
-        createdAt: FieldValue.serverTimestamp(),
-      });
-  } catch (err) {
-    console.warn("[voice/call] activity write failed", err);
-  }
-
-  // Stamp the contact for cross-campaign suppression (click-to-call counts
-  // as a recent outbound touch; campaign id is null for one-off calls).
-  await db
-    .collection("contacts")
-    .doc(contactId)
-    .update({
-      lastOutboundCallAt: FieldValue.serverTimestamp(),
-      lastOutboundCampaignId: null,
-    })
-    .catch((err) => console.warn("[voice/call] contact stamp failed", err));
+  const { callId } = placed;
 
   return NextResponse.json({ ok: true, callId });
 }

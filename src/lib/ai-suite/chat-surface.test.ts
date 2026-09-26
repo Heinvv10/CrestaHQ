@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
+import { seedPr13 } from "@/test/pr13-fixtures";
 import type { AiSuiteCapability } from "./capabilities";
 
 /**
@@ -12,6 +13,8 @@ import type { AiSuiteCapability } from "./capabilities";
  */
 
 const mem = createMemoryFirestore();
+// Scheduling and bulk sends need the queue configured to be previewed.
+vi.mock("@/lib/automations/qstash", async (orig) => ({ ...((await orig()) as object), qstashIsConfigured: () => true }));
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/auth/require-tenancy", () => ({
   requireSubAccountMember: async () => ({
@@ -203,6 +206,11 @@ describe("registry invariants", () => {
     create_booking_page: pageForm("consult-2", { name: "Second consult", status: "published" }),
     update_booking_page: { slug: "bp-live", durationMinutes: 45 },
     delete_booking_page: { slug: "bp-live" },
+    schedule_social_post: { postId: "sp1", scheduledAt: "2030-01-10T08:00:00.000Z" },
+    delete_social_post: { postId: "sp1" },
+    send_review_request: { contactId: "c_voice" },
+    create_broadcast: { templateId: "tpl_email", audienceFilter: { kind: "all" } },
+    start_voice_call: { contactId: "c_voice" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
@@ -252,6 +260,8 @@ describe("registry invariants", () => {
     mem.seed("tasks/t_sample", { subAccountId: "sa1", agencyId: "ag1", title: "Call", contactId: "c_sample", territoryId: "global" });
     mem.seed("events/ev_sample", pastEvent({ contactId: "c_sample" }));
     mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", status: "published" });
+    seedPr13(mem);
+    mem.seed("contacts/c_voice", { subAccountId: "sa1", agencyId: "ag1", name: "Vee", phone: "+27821234567", email: "vee@x.io", territoryId: "global" });
   };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {

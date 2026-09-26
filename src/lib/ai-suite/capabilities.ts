@@ -58,6 +58,11 @@ import { MEMBER_CAPABILITIES } from "./capabilities/members";
 import { WEBSITE_RESEARCH_CAPABILITIES } from "./capabilities/website-research";
 import { WEBSITE_CREATE_CAPABILITIES } from "./capabilities/website-create";
 import { WEBSITE_STATUS_CAPABILITIES } from "./capabilities/website-status";
+import { SOCIAL_CAPABILITIES } from "./capabilities/social";
+import { SOCIAL_SCHEDULE_CAPABILITIES } from "./capabilities/social-schedule";
+import { REPUTATION_CAPABILITIES } from "./capabilities/reputation";
+import { BROADCAST_CAPABILITIES } from "./capabilities/broadcasts";
+import { VOICE_CAPABILITIES } from "./capabilities/voice";
 
 export { CapabilityOutcomeUnknown, CapabilityUserError } from "./capabilities/types";
 export type {
@@ -141,6 +146,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...WEBSITE_RESEARCH_CAPABILITIES,
   ...WEBSITE_CREATE_CAPABILITIES,
   ...WEBSITE_STATUS_CAPABILITIES,
+  ...SOCIAL_CAPABILITIES,
+  ...SOCIAL_SCHEDULE_CAPABILITIES,
+  ...REPUTATION_CAPABILITIES,
+  ...BROADCAST_CAPABILITIES,
+  ...VOICE_CAPABILITIES,
 ];
 
 /**
