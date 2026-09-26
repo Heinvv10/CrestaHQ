@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ReportSections } from "@/components/prospecting/report-view";
-import { buttonVariants } from "@/components/ui/button";
 import { resolvePublicReport } from "@/lib/prospecting/public-report";
 
 export const dynamic = "force-dynamic";
@@ -64,7 +63,12 @@ export default async function SharedReportPage({
             <p className="text-sm text-muted-foreground">
               Want help fixing these{report.agency.name ? ` with ${report.agency.name}` : ""}?
             </p>
-            <a href={report.cta} className={`${buttonVariants()} mt-3`}>
+            {/* Plain classes: buttonVariants lives in a "use client" module and
+                cannot be called from this server component. */}
+            <a
+              href={report.cta}
+              className="mt-3 inline-flex h-8 items-center justify-center rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/80"
+            >
               Book a call
             </a>
           </div>
