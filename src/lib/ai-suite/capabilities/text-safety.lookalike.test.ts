@@ -35,4 +35,22 @@ describe("lookAlikeProblem", () => {
     expect(lookAlikeProblem("Mail", ["Mall"])).toBeNull();
     expect(lookAlikeProblem("lnvoice", ["Invoice"])).toBe("is the same as, or looks like, an existing one");
   });
+
+  it("a combining mark left on a Latin letter is refused; composed accents and other scripts' marks are fine", () => {
+    expect(lookAlikeProblem("Bank detai\u0307ls", [])).toBe("has a mark that can't combine into a standard accented letter");
+    for (const name of ["Nguy\u1ec5n", "Nguye\u0302\u0303n", "Cafe\u0301", "\u0928\u092e\u0938\u094d\u0924\u0947"]) {
+      expect(lookAlikeProblem(name, []), name).toBeNull();
+    }
+  });
+
+  it.each([
+    ["a divides bar for l", "Bank detai\u2223s", "Bank details"],
+    ["a Hebrew paseq for l", "Bank detai\u05c0s", "Bank details"],
+    ["a hyphen for a hyphen-minus", "Follow\u2010up", "Follow-up"],
+    ["a curly apostrophe", "Don\u2019t reply", "Don't reply"],
+    ["a space for a hyphen", "Follow up", "Follow-up"],
+    ["a bar for l and a hyphen for a space", "Bank-detai\u2223s", "Bank details"],
+  ])("%s: the same as the existing name", (_label, name, existing) => {
+    expect(lookAlikeProblem(name, [existing])).toBe("is the same as, or looks like, an existing one");
+  });
 });

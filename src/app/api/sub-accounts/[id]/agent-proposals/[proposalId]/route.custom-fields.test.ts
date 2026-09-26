@@ -35,7 +35,7 @@ beforeEach(() => {
 
 describe("custom fields", () => {
   it("create_custom_field generates the key from the label and stamps it", async () => {
-    const r = await call("create_custom_field", { entity: "contact", label: "Install-date", type: "dropdown", options: ["AM", "PM"] });
+    const r = await call("create_custom_field", { entity: "contact", label: "Install date \u00e9", type: "dropdown", options: ["AM", "PM"] });
     expect(r).toMatchObject({ ok: true, resultText: expect.stringContaining("key: install_date_2") });
     const id = (r as { ref: { id: string } }).ref.id;
     expect(mem.read(`${FIELDS}/${id}`)).toMatchObject({ key: "install_date_2", options: ["AM", "PM"], order: 1, lastAgentEditKey: "abcd1234" });
