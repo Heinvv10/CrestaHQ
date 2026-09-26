@@ -100,8 +100,8 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
       const docRef = db.doc(`${reviewsCollection(subAccountId)}/${docId}`);
       ops.push((tx) => (merge ? tx.set(docRef, data, { merge: true }) : tx.set(docRef, data)));
       if (markNever) {
-        const marker = neverMarker(ctx, "replied", ctx.now);
-        ops.push((tx) => tx.set(db.doc(autoReplyNeverPath(subAccountId, docId)), marker, { merge: true }));
+        const marker = neverMarker(ctx, "replied", ctx.now, docId);
+        ops.push((tx) => tx.set(db.doc(autoReplyNeverPath(subAccountId, review.name)), marker, { merge: true }));
       }
       counts[kind] += 1;
       // Run-local view, so a review repeated on a later page is "unchanged".

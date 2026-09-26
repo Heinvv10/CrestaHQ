@@ -13,6 +13,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { AGENCY, SA, mem, resetSync } from "@/test/gbp-sync-harness";
 import { attempts, calls, docIdOf, events, reviewPath } from "@/test/gbp-reply-harness";
+import { neverPath } from "@/test/auto-reply-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
 import { loadReplyTarget, postReply } from "./reply";
 import { claimAttempt } from "./reply-attempts";
@@ -52,7 +53,7 @@ describe("claimAttempt with requireNoReply", () => {
   });
 
   it("a review with an autoReplyNever marker (outside the cache) is already_replied", async () => {
-    mem.seed(`subAccounts/${SA}/autoReplyNever/${R4}`, { reason: "replied" });
+    mem.seed(neverPath("fake-r4"), { reason: "replied" });
     expect(await auto(R4)).toEqual({ kind: "already_replied" });
   });
 
@@ -96,7 +97,7 @@ describe("postReply", () => {
     const res = await postReply(SA, (await loadReplyTarget(SA, R4))!, BODY, "uid_admin");
     expect(res.status).toBe(200);
     expect(mem.read(reviewPath("fake-r4"))!.hadReply).toBe(true);
-    expect(mem.read(`subAccounts/${SA}/autoReplyNever/${R4}`)).toMatchObject({ reason: "replied", createdByUid: "uid_admin", agencyId: AGENCY });
+    expect(mem.read(neverPath("fake-r4"))).toMatchObject({ reason: "replied", createdByUid: "uid_admin", agencyId: AGENCY });
   });
 
   it("an auto post over an existing reply is skipped: 200 {skipped}, Google never called", async () => {

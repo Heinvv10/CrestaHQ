@@ -131,8 +131,9 @@ rating/count), `retentionPurgedAt`, the anomaly streak and the Sync-now
 cooldown. Sub-accounts that hold a cache but can no longer sync (gate off,
 disconnected, no listing) get retention-only passes from the sweep. The
 member-readable `gbpSummary` field on the parent carries rating, count,
-freshness and health kinds. Selecting another listing, clearing it or
-disconnecting deletes the reviews, the sync state and the summary.
+freshness and health kinds. Selecting another listing (or the same location
+through another Google account), clearing it or disconnecting deletes the
+reviews, the sync state and the summary.
 
 Review sentiment (SP5 b; written only by `lib/reputation/sentiment.ts`, never by
 the sync): each review may carry `sentiment {label, method, basisHash, model,
@@ -164,18 +165,25 @@ seen with or given a reply (sticky; written by the sync and the reply record,
 never cleared — auto-reply never replaces a deleted reply), `private/autoReplyLease {runId, until}` (one run per
 sub-account), `private/autoReplyUsage {day (SAST), posts}` (the 20/day post
 cap; auto drafts are `autoDraftCalls` in `private/sentimentUsage`, on its
-`draftsDay`), and `subAccounts/{id}/autoReplyDismissed/{reviewDocId}
-{agencyId, subAccountId, createdByUid, byUid, basisHash, at}` — a Discard,
-outside the review cache so it survives a cache clear; an id and a hash, no
-Google content, so it deliberately outlives review retention. Likewise
-`subAccounts/{id}/autoReplyNever/{reviewDocId} {agencyId, subAccountId,
-createdByUid, at, reason: "replied" | "auto_replied"}` — written by the sync
-(the first time a review is seen with a reply, now or in its cached copy), by
-`recordReplyChange` on every posted reply and by the engine's finalize of an
-unrecorded auto post; never deleted, outside the cache so a cache clear cannot
-forget it; an id only, no Google content, so it deliberately outlives review
-retention. The auto-reply engine never posts to a review that has one.
-Server-only (no client rule), no index. Any listing change or clear also sets
+`draftsDay`), and `subAccounts/{id}/autoReplyDismissed/{stableReviewKey}
+{agencyId, subAccountId, createdByUid, byUid, basisHash, at, reviewDocId}` — a
+Discard, outside the review cache so it survives a cache clear; an id and a
+hash, no Google content, so it deliberately outlives review retention.
+Likewise `subAccounts/{id}/autoReplyNever/{stableReviewKey} {agencyId,
+subAccountId, createdByUid, at, reason: "replied" | "auto_replied",
+reviewDocId}` — written by the sync (the first time a review is seen with a
+reply, now or in its cached copy; `createdByUid` is then the listing's
+selector and may be null), by `recordReplyChange` on every posted reply and by
+the engine's finalize of an unrecorded auto post; never deleted, outside the
+cache so a cache clear cannot forget it; an id only, no Google content, so it
+deliberately outlives review retention. The auto-reply engine never posts to a
+review that has one. Both are keyed by `stableReviewKey` = sha256 of
+`locations/{loc}/reviews/{id}` (the `accounts/{a}/` prefix of the review name
+stripped, `lib/gbp/auto-reply-never.ts`), NOT the cache doc id: the same
+location selected through another Google account renames its reviews, so the
+cache doc id changes and this key does not; `reviewDocId` is kept for
+reference. Server-only (no client rule), no index. Any listing change or
+clear — including the same location through another account — also sets
 `reviewsAutoReply.enabled` to false.
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24

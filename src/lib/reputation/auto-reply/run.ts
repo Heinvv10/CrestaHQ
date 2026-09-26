@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { autoReplyNeverCollection } from "@/lib/gbp/auto-reply-never";
+import { autoReplyNeverCollection, stableReviewKey } from "@/lib/gbp/auto-reply-never";
 import { PENDING_MS } from "@/lib/gbp/reply-attempts";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewsAiConfigured } from "../ai/mode";
@@ -93,7 +93,8 @@ async function runEngine(sa: string, runStartedAt: number, deadline: number): Pr
       .map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }))
       .sort((a, b) => (toMillis(b.data.createTime) ?? 0) - (toMillis(a.data.createTime) ?? 0));
     for (const { id, data } of docs) {
-      const review = decideInput(data, dismissed.get(id), never.has(id), Date.now());
+      const key = stableReviewKey(String(data.reviewName ?? ""));
+      const review = decideInput(data, dismissed.get(key), never.has(key), Date.now());
       const decision = decide(review, ctx.settings, { now: Date.now(), runStartedAt }, ctx.counts);
       tally.stop = await act(ctx, id, data, review, decision);
       if (tally.stop) break;
@@ -149,7 +150,8 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
     if (drafted === null || d.verdict !== "auto") return null;
     text = drafted;
   }
-  const result = await postQueued(ctx.sa, { runId: ctx.runId, docId, text, enabledByUid: ctx.enabledByUid, deadline: ctx.deadline });
+  const reviewName = String(data.reviewName ?? "");
+  const result = await postQueued(ctx.sa, { runId: ctx.runId, docId, reviewName, text, enabledByUid: ctx.enabledByUid, deadline: ctx.deadline });
   if (result === "posted") {
     ctx.tally.posted += 1;
     ctx.counts.postsToday += 1;

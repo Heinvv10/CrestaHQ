@@ -38,6 +38,8 @@ const holds = (lock: unknown, key: string) => (lock as { key?: unknown } | null 
 export interface AttemptTarget {
   docId: string;
   agencyId: string;
+  /** The Google review name (ReplyTarget has it); else read from the cached review. */
+  reviewName?: string;
 }
 
 export type Claim =
@@ -99,7 +101,8 @@ export async function claimAttempt(
     if (!data) return { kind: "gone" };
     if (opts.requireNoReply) {
       const refusal = await autoClaimRefusal(
-        tx, db.doc(`subAccounts/${sa}`), db.doc(autoReplyNeverPath(sa, target.docId)), data, opts.requireNoReply.textHash,
+        tx, db.doc(`subAccounts/${sa}`), db.doc(autoReplyNeverPath(sa, String(data.reviewName ?? target.reviewName ?? ""))),
+        data, opts.requireNoReply.textHash,
       );
       if (refusal === "already_replied") {
         tx.update(reviewRef, { pendingReply: null });
@@ -230,10 +233,12 @@ export async function recordReplyChange(
       const auto = change.auto ? { autoReplied: { at: change.now, key: change.key } } : {};
       tx.update(reviewRef, { reply, contentHash: hash, ...release, ...posted, ...auto });
     }
-    if (change.type === "reply_posted") {
+    const reviewName = target.reviewName ?? (typeof d?.reviewName === "string" ? d.reviewName : null);
+    if (change.type === "reply_posted" && reviewName) {
       // Outside the cache, so a cache clear cannot forget it (auto-reply never replaces a reply).
       const anchor = { agencyId: target.agencyId, subAccountId: sa, createdByUid: change.auto?.createdByUid ?? change.actorUid };
-      tx.set(db.doc(autoReplyNeverPath(sa, target.docId)), neverMarker(anchor, change.auto ? "auto_replied" : "replied", change.now));
+      const marker = neverMarker(anchor, change.auto ? "auto_replied" : "replied", change.now, target.docId);
+      tx.set(db.doc(autoReplyNeverPath(sa, reviewName)), marker);
     }
     if (change.key) {
       tx.set(attemptRef(sa, change.key), { status: "succeeded", replyUpdateTime: reply?.updateTime ?? null, errorKind: null }, { merge: true });

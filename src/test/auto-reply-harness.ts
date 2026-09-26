@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { GbpReview } from "@/lib/gbp/provider/types";
 import { fakeLogPath } from "@/lib/reputation/ai/fake";
 import { syncListing } from "@/lib/gbp/sync/run";
@@ -93,3 +94,9 @@ export const pendingOf = (reviewId: string) => reviewDoc(reviewId).pendingReply 
   | undefined;
 export const replyOf = (reviewId: string) => (reviewDoc(reviewId).reply as { comment: string } | null | undefined)?.comment ?? null;
 export const reviewNameOf = (reviewId: string) => `${ACCOUNT}/${LOC_A}/reviews/${reviewId}`;
+
+/** The account-independent key (sha256 of `locations/…/reviews/{id}`), computed here from the spec. */
+export const stableKeyOf = (reviewId: string) =>
+  createHash("sha256").update(`${LOC_A}/reviews/${reviewId}`).digest("hex").slice(0, 40);
+export const neverPath = (reviewId: string, sa = SA) => `subAccounts/${sa}/autoReplyNever/${stableKeyOf(reviewId)}`;
+export const dismissedPath = (reviewId: string, sa = SA) => `subAccounts/${sa}/autoReplyDismissed/${stableKeyOf(reviewId)}`;

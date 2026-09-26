@@ -49,7 +49,8 @@ export async function confirmAutoPost(
     const sub = ((await tx.get(subRef)).data() ?? {}) as Record<string, unknown>;
     const review = (await tx.get(reviewRef)).data() as Record<string, unknown> | undefined;
     const usage = (await tx.get(usageRef)).data() as { day?: string; posts?: number } | undefined;
-    const never = (await tx.get(db.doc(autoReplyNeverPath(sa, p.docId)))).exists;
+    const reviewName = typeof review?.reviewName === "string" ? review.reviewName : null;
+    const never = reviewName ? (await tx.get(db.doc(autoReplyNeverPath(sa, reviewName)))).exists : false;
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
     const sharing = typeof listing === "string"
       ? ((await tx.get(db.collection("subAccounts").where("googleListing.locationName", "==", listing))) as FirebaseFirestore.QuerySnapshot)

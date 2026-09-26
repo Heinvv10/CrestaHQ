@@ -31,10 +31,11 @@ import { AGENCY, SA, mem, setScenario } from "@/test/gbp-sync-harness";
 import { docIdOf, reviewPath } from "@/test/gbp-reply-harness";
 import {
   A1, draftsMade, patchSettings, patchSub, pendingOf, posts, putFixtureReview, replyOf, resetAutoReply, reviewNameOf, sync, syncAndRun,
+  dismissedPath, neverPath,
 } from "@/test/auto-reply-harness";
 import { clearGbpCache } from "@/lib/gbp/sync/store";
 import { sentimentBasis } from "@/lib/reputation/sentiment-basis";
-import { autoReplyDismissedCollection, dismissAutoReply, textHashOf } from "./store";
+import { dismissAutoReply, textHashOf } from "./store";
 
 const ORIGINAL = { ...process.env };
 const A1_BASIS = sentimentBasis(5, null);
@@ -139,12 +140,12 @@ describe("hadReply (sticky)", () => {
     await sync();
     const { hadReply: _dropped, ...legacy } = mem.read(reviewPath("fake-a1"))!;
     mem.seed(reviewPath("fake-a1"), legacy);
-    await mem.db.doc(`subAccounts/${SA}/autoReplyNever/${A1}`).delete();
+    await mem.db.doc(neverPath("fake-a1")).delete();
     replyAtGoogle(null);
     await syncAndRun();
     expect(a1Posts()).toEqual([]);
     expect(mem.read(reviewPath("fake-a1"))!.hadReply).toBe(true);
-    expect(mem.read(`subAccounts/${SA}/autoReplyNever/${A1}`)).toMatchObject({ reason: "replied" });
+    expect(mem.read(neverPath("fake-a1"))).toMatchObject({ reason: "replied" });
   });
 
   it("a review cached WITH a reply before hadReply existed is stamped by the next (unchanged) sync", async () => {
@@ -154,6 +155,22 @@ describe("hadReply (sticky)", () => {
     mem.seed(reviewPath("fake-a1"), legacy);
     await sync();
     expect(mem.read(reviewPath("fake-a1"))!.hadReply).toBe(true);
+  });
+});
+
+describe("markers outside the cache stop the engine before any draft", () => {
+  it("an autoReplyNever marker alone (the cache forgot the reply) → no draft, no post", async () => {
+    mem.seed(neverPath("fake-a1"), { reason: "replied" });
+    await syncAndRun();
+    expect(a1Posts()).toEqual([]);
+    expect(draftsMade()).toBe(1); // a2 only
+  });
+
+  it("a Discard in the set alone (the cache forgot it) → no draft, no post", async () => {
+    mem.seed(dismissedPath("fake-a1"), { basisHash: A1_BASIS });
+    await syncAndRun();
+    expect(a1Posts()).toEqual([]);
+    expect(draftsMade()).toBe(1); // a2 only
   });
 });
 
@@ -178,7 +195,7 @@ describe("an attempt Google already accepted", () => {
     await syncAndRun();
     expect(a1Posts()).toEqual([]);
     expect(mem.read(reviewPath("fake-a1"))).toMatchObject({ pendingReply: null, hadReply: true, autoReplied: { key } });
-    expect(mem.read(`subAccounts/${SA}/autoReplyNever/${A1}`)).toMatchObject({ reason: "auto_replied", agencyId: AGENCY, subAccountId: SA, createdByUid: "uid_admin" });
+    expect(mem.read(neverPath("fake-a1"))).toMatchObject({ reason: "auto_replied", agencyId: AGENCY, subAccountId: SA, createdByUid: "uid_admin" });
     expect(mem.list("auditEvents").filter((r) => (r.target as { id: string }).id === A1)).toEqual([]);
     expect(mem.read(`subAccounts/${SA}/private/autoReplyUsage`)).toMatchObject({ posts: 1 }); // a2 only
   });
@@ -256,9 +273,9 @@ describe("dismissed (Discard)", () => {
     expect(pendingOf("fake-a1")).toBeUndefined();
     expect(a1Posts()).toEqual([]);
     expect(posts()).toHaveLength(1); // a2
-    const row = mem.read(`${autoReplyDismissedCollection(SA)}/${A1}`)!;
+    const row = mem.read(dismissedPath("fake-a1"))!;
     expect(row).toMatchObject({ agencyId: AGENCY, subAccountId: SA, createdByUid: "uid_admin", byUid: "uid_admin", basisHash: A1_BASIS });
-    expect(Object.keys(row).sort()).toEqual(["agencyId", "at", "basisHash", "byUid", "createdByUid", "subAccountId"]);
+    expect(Object.keys(row).sort()).toEqual(["agencyId", "at", "basisHash", "byUid", "createdByUid", "reviewDocId", "subAccountId"]);
   });
 
   it("a dismissed review whose content then changes is decided again", async () => {

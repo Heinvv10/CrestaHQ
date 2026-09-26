@@ -10,7 +10,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { LOC_A, OTHER_SA, SA, mem } from "@/test/gbp-sync-harness";
 import { reviewPath } from "@/test/gbp-reply-harness";
-import { A1, patchSettings, patchSub, resetAutoReply, sync } from "@/test/auto-reply-harness";
+import { A1, neverPath, patchSettings, patchSub, resetAutoReply, sync } from "@/test/auto-reply-harness";
 import { sentimentBasis } from "@/lib/reputation/sentiment-basis";
 import { confirmAutoPost } from "./confirm";
 import { autoReplyLeasePath, autoReplyUsagePath, sastDay, textHashOf } from "./store";
@@ -83,7 +83,7 @@ describe("skip this review (stale)", () => {
   it.each<[string, () => void]>([
     ["replied meanwhile", () => patchReview({ reply: { comment: "Human reply.", updateTime: "2026-09-01T00:00:00Z" } })],
     ["a reply since deleted (hadReply)", () => patchReview({ hadReply: true })],
-    ["an autoReplyNever marker (a reply the cache forgot)", () => mem.seed(`subAccounts/${SA}/autoReplyNever/${A1}`, { reason: "replied" })],
+    ["an autoReplyNever marker (a reply the cache forgot)", () => mem.seed(neverPath("fake-a1"), { reason: "replied" })],
     ["removed", () => patchReview({ state: "removed" })],
     ["another location's review", () => patchReview({ locationName: "locations/x" })],
     ["no draft any more", () => patchReview({ pendingReply: null })],

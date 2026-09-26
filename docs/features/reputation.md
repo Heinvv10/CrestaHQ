@@ -606,7 +606,7 @@ are stored but not shown.
   was enabled for, **never replied to by anyone** (no `reply`, and no sticky
   `hadReply` — set whenever a reply is cached or posted and never cleared, so
   an owner who deleted a reply has chosen "no reply"), no reply in flight,
-  never auto-replied before, **no `autoReplyNever/{reviewDocId}` marker**
+  never auto-replied before, **no `autoReplyNever/{stableReviewKey}` marker**
   (written wherever a reply is first known — the sync, a posted reply, a
   finalized auto post — outside the cache, so a cache clear cannot forget it), **seen by the run that just finished** (`lastSeenAt >= run start` —
   a stale cache never posts), created at/after `enabledAt` unless backlog is
@@ -663,8 +663,13 @@ are stored but not shown.
   `no_budget`/`cap` → re-decided; `dismissed` fresh → skipped for good, stale
   → re-decided. **Discard** (`dismissAutoReply`, wired to a button in PR 3)
   writes `pendingReply {reason: "dismissed"}` AND
-  `subAccounts/{id}/autoReplyDismissed/{reviewDocId} {basisHash, at, byUid}`,
-  which survives a cache clear. A reply appearing at Google clears
+  `subAccounts/{id}/autoReplyDismissed/{stableReviewKey} {basisHash, at, byUid,
+  reviewDocId}`, which survives a cache clear. Markers and Discards are keyed
+  by `stableReviewKey` = sha256 of `locations/{loc}/reviews/{id}` (the
+  `accounts/{a}/` prefix stripped): the same location selected through
+  another Google account renames its reviews, so the cache doc id changes and
+  this key does not. Re-selecting the same location through another account
+  is a listing change (auto-reply off, cache cleared). A reply appearing at Google clears
   `pendingReply` on the next sync; a tombstone drops it.
 - **Success:** `recordReplyChange` clears `pendingReply` (every posted reply,
   human ones too) and, for auto posts, stamps `autoReplied {at, key}` (kept

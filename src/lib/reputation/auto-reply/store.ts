@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { autoReplyNeverPath, neverMarker } from "@/lib/gbp/auto-reply-never";
+import { autoReplyNeverPath, neverMarker, stableReviewKey } from "@/lib/gbp/auto-reply-never";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewBasis } from "../sentiment-basis";
 import { PENDING_REASONS, type DecidePending, type PendingReason } from "./decide";
@@ -14,10 +14,12 @@ import { PENDING_REASONS, type DecidePending, type PendingReason } from "./decid
  *   gbpReviews/{docId}.pendingReply     {text, textHash, basisHash, reason, at, model}
  *                                       — the engine's draft (text null when there
  *                                       is none); purged with the review
- *   subAccounts/{id}/autoReplyDismissed/{reviewDocId}
- *                                       {basisHash, at, byUid} + tenant keys — a
- *                                       Discard, outside the cache so it survives a
- *                                       cache clear; an id and a hash, no content
+ *   subAccounts/{id}/autoReplyDismissed/{stableReviewKey}
+ *                                       {basisHash, at, byUid, reviewDocId} + tenant
+ *                                       keys — a Discard, outside the cache and keyed
+ *                                       account-independently (auto-reply-never.ts) so
+ *                                       it survives a cache clear and an account
+ *                                       switch; an id and a hash, no content
  *   private/autoReplyLease              {runId, until} — one run per sub-account
  *   private/autoReplyUsage              {day (SAST), posts} — the 20 posts a day
  *
@@ -29,6 +31,8 @@ export const AUTO_REPLY_LEASE_TTL_MS = 5 * 60_000;
 export const autoReplyLeasePath = (sa: string) => `subAccounts/${sa}/private/autoReplyLease`;
 export const autoReplyUsagePath = (sa: string) => `subAccounts/${sa}/private/autoReplyUsage`;
 export const autoReplyDismissedCollection = (sa: string) => `subAccounts/${sa}/autoReplyDismissed`;
+const dismissedPath = (sa: string, reviewName: unknown) =>
+  `${autoReplyDismissedCollection(sa)}/${stableReviewKey(String(reviewName ?? ""))}`;
 
 /** The posts cap's day: the calendar date in South Africa (UTC+2, no DST). */
 export const sastDay = (ms: number) => new Date(ms + 2 * 3600_000).toISOString().slice(0, 10);
@@ -116,10 +120,11 @@ export async function storePending(
 ): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
-  const dismissedRef = db.doc(`${autoReplyDismissedCollection(sa)}/${docId}`);
   return db.runTransaction(async (tx) => {
     const d = (await tx.get(ref)).data() as ReviewData | undefined;
-    const dismissed = (await tx.get(dismissedRef)).data() as { basisHash?: unknown } | undefined;
+    const dismissed = d
+      ? ((await tx.get(db.doc(dismissedPath(sa, d.reviewName)))).data() as { basisHash?: unknown } | undefined)
+      : undefined;
     if (!d || d.state !== "active" || d.reply || reviewBasis(d) !== pending.basisHash) return false;
     if (dismissed?.basisHash === pending.basisHash) return false;
     const current = readPending(d.pendingReply);
@@ -146,8 +151,8 @@ export async function dismissAutoReply(sa: string, docId: string, byUid: string,
     const basisHash = d?.state === "active" ? reviewBasis(d) : null;
     if (!basisHash) return false;
     tx.update(ref, { pendingReply: { text: null, textHash: null, basisHash, reason: "dismissed", at: now, model: null } });
-    tx.set(db.doc(`${autoReplyDismissedCollection(sa)}/${docId}`), {
-      agencyId: String(sub?.agencyId ?? ""), subAccountId: sa, createdByUid: byUid, byUid, basisHash, at: now,
+    tx.set(db.doc(dismissedPath(sa, d!.reviewName)), {
+      agencyId: String(sub?.agencyId ?? ""), subAccountId: sa, createdByUid: byUid, byUid, basisHash, at: now, reviewDocId: docId,
     });
     return true;
   });
@@ -165,14 +170,16 @@ function stillQueued(d: ReviewData | undefined, textHash: string): boolean {
  * no draft pending, auto-replied, and replied for good — so no later run
  * posts, counts or audits it again. The reply itself arrives with the next sync.
  */
-export async function finalizeAutoPost(sa: string, docId: string, key: string, createdByUid: string, now: Date): Promise<void> {
+export async function finalizeAutoPost(
+  sa: string, docId: string, reviewName: string, key: string, createdByUid: string, now: Date,
+): Promise<void> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
   const subRef = db.doc(`subAccounts/${sa}`);
   await db.runTransaction(async (tx) => {
     const exists = (await tx.get(ref)).exists;
     const agencyId = String((await tx.get(subRef)).data()?.agencyId ?? "");
-    tx.set(db.doc(autoReplyNeverPath(sa, docId)), neverMarker({ agencyId, subAccountId: sa, createdByUid }, "auto_replied", now));
+    tx.set(db.doc(autoReplyNeverPath(sa, reviewName)), neverMarker({ agencyId, subAccountId: sa, createdByUid }, "auto_replied", now, docId));
     if (exists) tx.update(ref, { pendingReply: null, autoReplied: { at: now, key }, hadReply: true });
   });
 }

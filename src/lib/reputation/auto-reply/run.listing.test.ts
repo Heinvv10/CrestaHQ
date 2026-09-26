@@ -9,8 +9,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { ACCOUNT, LOC_A, LOC_NORTH, SA, asUser, mem } from "@/test/gbp-sync-harness";
-import { patchSettings, posts, resetAutoReply, reviewNameOf, sync, syncAndRun } from "@/test/auto-reply-harness";
+import { ACCOUNT, LOC_A, LOC_NORTH, SA, asUser, mem, setScenario } from "@/test/gbp-sync-harness";
+import { A1, patchSettings, posts, resetAutoReply, reviewNameOf, sync, syncAndRun } from "@/test/auto-reply-harness";
+import { dismissAutoReply } from "./store";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { DELETE, PUT } from "@/app/api/sub-accounts/[id]/google/listing/route";
 import { PUT as PUT_SETTINGS } from "@/app/api/sub-accounts/[id]/reputation/auto-reply/route";
@@ -61,6 +62,50 @@ it("clearing the listing (DELETE, and a disconnect's clear) switches it off", as
   mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, googleListing: listing });
   await clearListing(SA, "uid_admin", "disconnected");
   expect(settings().enabled).toBe(false);
+});
+
+const ACCOUNT2 = "accounts/second-manager";
+const reEnable = () =>
+  PUT_SETTINGS(asUser(`${BASE}/reputation/auto-reply`, "uid_admin", "PUT", JSON.stringify({ enabled: true, modes: MODES, includeBacklog: true })), params);
+/** The same location selected through ANOTHER Google account: Google names its reviews under that account. */
+async function switchAccount() {
+  setScenario(SA, (s) => {
+    s.accounts.push({ ...s.accounts[0], name: ACCOUNT2, accountName: "Second manager" });
+    s.locations[ACCOUNT2] = s.locations[ACCOUNT].filter((l) => l.name === LOC_A);
+  });
+  expect((await PUT(asUser(`${BASE}/google/listing`, "uid_admin", "PUT", JSON.stringify({ accountName: ACCOUNT2, locationName: LOC_A })), params)).status).toBe(200);
+  setScenario(SA, (s) => {
+    for (const r of s.reviews[LOC_A].reviews) r.name = r.name.replace(ACCOUNT, ACCOUNT2);
+  });
+}
+const a1AnyAccount = () => posts().filter((c) => c.reviewName.endsWith("/reviews/fake-a1"));
+
+it("the same location through another Google account is a listing change: auto-reply off, cache cleared", async () => {
+  await sync();
+  await switchAccount();
+  expect(settings()).toMatchObject({ enabled: false, modes: MODES });
+  expect(mem.list(`subAccounts/${SA}/gbpReviews`)).toEqual([]);
+});
+
+it("a deleted reply's marker survives an account switch, even once auto-reply is re-enabled", async () => {
+  setScenario(SA, (s) => void (s.reviews[LOC_A].reviews.find((x) => x.reviewId === "fake-a1")!.reply = { comment: "Human.", updateTime: "2026-08-28T10:00:00Z" }));
+  await sync();
+  setScenario(SA, (s) => void (s.reviews[LOC_A].reviews.find((x) => x.reviewId === "fake-a1")!.reply = null));
+  await sync();
+  await switchAccount();
+  expect((await reEnable()).status).toBe(200);
+  await syncAndRun();
+  expect(a1AnyAccount()).toEqual([]);
+});
+
+it("a Discard survives an account switch, even once auto-reply is re-enabled", async () => {
+  await sync();
+  expect(await dismissAutoReply(SA, A1, "uid_admin", new Date())).toBe(true);
+  await switchAccount();
+  expect((await reEnable()).status).toBe(200);
+  await syncAndRun();
+  expect(a1AnyAccount()).toEqual([]);
+  expect(posts()).toHaveLength(0); // fake-a2 is 4★ = Approval here
 });
 
 it("a sub-account without auto-reply settings gets none written", async () => {

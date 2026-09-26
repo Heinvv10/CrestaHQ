@@ -52,13 +52,13 @@ async function audit(sa: string, docId: string, agencyId: string, enabledByUid: 
 
 export async function postQueued(
   sa: string,
-  q: { runId: string; docId: string; text: string; enabledByUid: string; deadline: number },
+  q: { runId: string; docId: string; reviewName: string; text: string; enabledByUid: string; deadline: number },
 ): Promise<PostResult> {
   if (Date.now() >= q.deadline) return "stop";
   const textHash = textHashOf(q.text);
   const key = autoReplyKey(q.docId, textHash);
   if (await attemptSucceeded(sa, key)) {
-    await finalizeAutoPost(sa, q.docId, key, q.enabledByUid, new Date());
+    await finalizeAutoPost(sa, q.docId, q.reviewName, key, q.enabledByUid, new Date());
     return "skipped";
   }
   const target = await loadReplyTarget(sa, q.docId);
@@ -76,7 +76,7 @@ export async function postQueued(
   const body = (await res.json()) as { reply?: unknown; skipped?: string; code?: string; done?: boolean; localRecordPending?: boolean };
   if (res.status === 200) {
     if (body.skipped) return "skipped";
-    if (body.done || body.localRecordPending) await finalizeAutoPost(sa, q.docId, key, q.enabledByUid, new Date());
+    if (body.done || body.localRecordPending) await finalizeAutoPost(sa, q.docId, q.reviewName, key, q.enabledByUid, new Date());
     if (body.done) return "skipped";
     await audit(sa, q.docId, target.agencyId, q.enabledByUid);
     return "posted";

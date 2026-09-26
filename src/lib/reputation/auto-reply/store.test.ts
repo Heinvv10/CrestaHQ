@@ -11,11 +11,11 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { SA, mem } from "@/test/gbp-sync-harness";
 import { reviewPath } from "@/test/gbp-reply-harness";
-import { A1, resetAutoReply, sync } from "@/test/auto-reply-harness";
+import { A1, dismissedPath, resetAutoReply, sync } from "@/test/auto-reply-harness";
 import { beginDraftCall } from "@/lib/reputation/draft";
 import { sentimentBasis } from "@/lib/reputation/sentiment-basis";
 import { sentimentUsagePath } from "@/lib/reputation/sentiment-calls";
-import { autoReplyDismissedCollection, storePending } from "./store";
+import { storePending } from "./store";
 
 const ORIGINAL = { ...process.env };
 const BASIS = sentimentBasis(5, null);
@@ -42,7 +42,7 @@ it.each<[string, () => void]>([
   ["the review was removed", () => patchReview({ state: "removed" })],
   ["the review changed", () => patchReview({ starRating: 4 })],
   ["it was Discarded (pendingReply)", () => patchReview({ pendingReply: { reason: "dismissed", basisHash: BASIS, text: null, textHash: null } })],
-  ["it was Discarded (the set outside the cache)", () => mem.seed(`${autoReplyDismissedCollection(SA)}/${A1}`, { basisHash: BASIS })],
+  ["it was Discarded (the set outside the cache)", () => mem.seed(dismissedPath("fake-a1"), { basisHash: BASIS })],
 ])("refuses when %s", async (_l, change) => {
   change();
   const before = pendingNow();
@@ -51,7 +51,7 @@ it.each<[string, () => void]>([
 });
 
 it("a Discard of an older basis does not block the changed review", async () => {
-  mem.seed(`${autoReplyDismissedCollection(SA)}/${A1}`, { basisHash: "old" });
+  mem.seed(dismissedPath("fake-a1"), { basisHash: "old" });
   expect(await store()).toBe(true);
 });
 

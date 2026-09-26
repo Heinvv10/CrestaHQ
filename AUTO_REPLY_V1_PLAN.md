@@ -2,8 +2,11 @@
 
 > Status: **PLAN 2026-09-26, rev 5 (2026-09-26, PR 2 review)** — rev 4 after three adversarial reviews; PR 1 merged, PR 2 in review (#287).
 > **Rev 5 (2026-09-26, PR 2 review)** folds in the PR 2 team review's rulings: a review that has or ever had a
-> reply is never auto-posted to (sticky `hadReply` + a durable `autoReplyNever/{reviewDocId}` marker outside the
-> cache); no reviewer name on the auto path; an already-accepted post is only finalized; `requireNoReply` takes
+> reply is never auto-posted to (sticky `hadReply` + a durable `autoReplyNever/{stableReviewKey}` marker outside the
+> cache); markers and Discards are keyed by an ACCOUNT-INDEPENDENT `stableReviewKey` = sha256 of
+> `locations/{loc}/reviews/{id}` (the `accounts/{a}/` prefix stripped), because the same location selected through
+> another Google account renames its reviews (new cache doc ids); re-selecting the same location through another
+> account is a listing change; no reviewer name on the auto path; an already-accepted post is only finalized; `requireNoReply` takes
 > the textHash and can answer `not_queued`; `listing_shared` refuses/pauses; a `post_failed` state; any listing
 > change or clear switches auto-reply off. The sections below are updated to match.
 > Owner rulings locked in a grill
@@ -42,8 +45,9 @@ changes for a sub-account that has not switched it on.
    subject to the same per-star rules.
 5. **Daily cap: 20 auto-posts per sub-account per SAST day**, plus an
    auto-draft budget of **40 of the 100 daily drafts** so humans' "Draft with
-   AI" is never starved. Over either = held without a draft (`reason:
-   "no_budget"`); backlog is simply left for the next day. A failed post is not
+   AI" is never starved. Over either = held without a draft — over the 20
+   posts `reason: "cap"`, over a draft limit `reason: "no_budget"` (rev 5,
+   matching the code); backlog is simply left for the next day. A failed post is not
    refunded.
 6. **Google OAuth client is published** ("In production", unverified,
    2026-09-26). `business.manage` is a sensitive scope, so Google verification
@@ -191,8 +195,9 @@ would be invisible).
 
   Discards also survive a cache clear (`clearGbpCache` deletes review docs
   when the Google gate is toggled, `feature-gates-service.ts:139-147`): Discard
-  additionally writes `subAccounts/{id}/autoReplyDismissed/{reviewDocId}
-  {basisHash, at, byUid}` — an id and a hash, no Google content — which
+  additionally writes `subAccounts/{id}/autoReplyDismissed/{stableReviewKey}
+  {basisHash, at, byUid, reviewDocId}` (rev 5: keyed account-independently,
+  so it also survives an account switch) — an id and a hash, no Google content — which
   `decide` treats as `dismissed` when the hash matches. It carries
   `agencyId`/`subAccountId`/`createdByUid`, is server-only (no client rule),
   is listed in `docs/architecture/firestore-collections.md` in PR 2, and
@@ -202,8 +207,9 @@ would be invisible).
   Every row has a `run.test`, including discard → rerun → no draft, no post.
   Rev 5: the claim can also answer `not_queued` (the stored draft is no longer
   these queued bytes, or the star is no longer Auto) — a skip, nothing written.
-  Likewise `subAccounts/{id}/autoReplyNever/{reviewDocId} {agencyId,
-  subAccountId, createdByUid, at, reason: "replied" | "auto_replied"}` —
+  Likewise `subAccounts/{id}/autoReplyNever/{stableReviewKey} {agencyId,
+  subAccountId, createdByUid, at, reason: "replied" | "auto_replied",
+  reviewDocId}` —
   written by the sync (first sight of a reply, current or cached), every posted
   reply and a finalized auto post; never deleted, outside the cache, an id
   only; `decide`, the step-4 transaction and the claim all refuse a review
@@ -227,8 +233,10 @@ would be invisible).
   clears `pendingReply` when a reply appears (any source). **Discard** writes
   `pendingReply {reason: "dismissed", basisHash}` rather than deleting, so the
   engine never re-drafts or auto-posts that review unless its content changes.
-- **Success path**: `recordReplyChange` clears `pendingReply` and, for auto
-  posts, writes `autoReplied {at, key}`; the sync's merge preserves it. It
+- **Success path**: `recordReplyChange` clears `pendingReply`, sets the sticky
+  `hadReply` and writes the `autoReplyNever` marker (reason `replied`, or
+  `auto_replied` for an auto post) — rev 5 — and, for auto posts, writes
+  `autoReplied {at, key}`; the sync's merge preserves them. It
   drives the "Auto-replied" tag and the edited-to-≤3★ alert.
 - **Retention**: `pendingReply` lives on the review doc, so it is purged with
   the review (30 days *unseen*, per the existing retention rule).
@@ -236,19 +244,22 @@ would be invisible).
   (precedent: `"system:mailbox"`) and `createdByUid: enabledByUid`; nothing
   reads `gbpEvents` today. Also `recordAuditEvent` with
   `actor {type: "system"}` per `docs/architecture/audit-events.md`.
-- Usage docs: `subAccounts/{id}/private/autoReplyUsage` (SAST-date-keyed:
-  posts, drafts). Server-only; no client rules or indexes.
+- Usage docs: `subAccounts/{id}/private/autoReplyUsage {day (SAST), posts}` —
+  posts only; auto drafts are counted as `autoDraftCalls` in
+  `private/sentimentUsage` on its UTC `draftsDay`, inside `beginDraftCall`'s
+  transaction (rev 5, matching the code). Server-only; no client rules or indexes.
 
 ### UI
 
 - Reputation settings: an "Auto-reply" card — master switch, five star rows
   with Auto / Approval, the backlog checkbox, a note that reviews with written
   text always wait for approval, the caps shown read-only. Locked state when
-  the agency gate is off. **Hidden until PR 2 ships**, and the PR 1 route
-  refuses `enabled: true` with 409 `not_available` until PR 2 lifts it — so no
-  `enabledAt` can exist before the engine and nothing needs resetting. A
-  listing change pauses auto-reply (`listingLocationName` mismatch): the card
-  shows "Paused: listing changed — re-enable to resume" and one alert is sent.
+  the agency gate is off. **Hidden until PR 3 ships** (PR 1's route refused
+  `enabled: true` with 409 `not_available`; PR 2 lifted it). **Any listing
+  change or clear switches auto-reply OFF** (`enabled: false`, modes kept —
+  rev 5; the same location through another Google account counts): the card
+  shows it as off with a note that the listing changed — re-enable to resume —
+  and one alert is sent (PR 4).
 - Reviews tab: "Needs approval" filter (`pendingReply` present, fresh,
   `reason !== "dismissed"`, and `reply == null`) with a count, over the same capped 500 served records; each row shows its reason
   (held for approval vs queued to auto-post);
