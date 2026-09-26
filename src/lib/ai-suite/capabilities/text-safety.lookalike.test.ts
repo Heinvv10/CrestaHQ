@@ -113,16 +113,17 @@ describe("lookAlikeProblem", () => {
   });
 
   it("every dash and minus is the same dash in the keys, wherever it stands", () => {
-    for (const [name, existing] of [["Plan\u20102", "Plan-2"], ["Plan\u20112", "Plan-2"], ["0800\u2010123", "0800-123"], ["\u2010Promo", "-Promo"], ["Promo\u2010", "Promo-"], ["Plan\u22122", "Plan-2"]]) {
+    for (const [name, existing] of [["Plan\u20102", "Plan-2"], ["Plan\u20112", "Plan-2"], ["0800\u2010123", "0800-123"], ["\u2010Promo", "-Promo"], ["Promo\u2010", "Promo-"], ["Plan\u22122", "Plan-2"], ["0800\u2043123", "0800-123"], ["0800\u02d7123", "0800-123"]]) {
       expect(lookAlikeProblem(name, [existing]), name).toBe("is the same as, or looks like, an existing one");
     }
   });
 
   it("a symbol at the start or end of a word is refused too; ordinary punctuation there is not", () => {
-    for (const name of ["Bonus \u0966ffer", "Invoic\u212e", "info@acme.co.za"]) {
+    expect(lookAlikeProblem("Hell\u2c9f", ["Hello"])).toBe("has a symbol inside a word that can pass for a letter");
+    for (const name of ["Bonus \u0966ffer", "Invoic\u212e", "info@acme.co.za", "Paypa\u2d4f", "Invoic\u2229"]) {
       expect(lookAlikeProblem(name, []), name).toBe("has a symbol inside a word that can pass for a letter");
     }
-    for (const name of ["Q&A", "Hi!", "Why?", "Note: call", "Top10%", "(Pro)", "Lead, hot", "9:30am", "Mon,Wed,Fri", "https://acme.co.za"]) {
+    for (const name of ["Q&A", "Hi!", "Why?", "Note: call", "Top10%", "(Pro)", "Lead, hot", "9:30am", "Mon,Wed,Fri", "https://acme.co.za", "Brand\u00ae", "Fibre\u00ae 100", "25\u00b0C room", "\u2022Tip", "\u00abQuoted\u00bb", "\u00a1Hola!", "Plan\u00d72", "\u00b5-controller", "\u0394-value"]) {
       expect(lookAlikeProblem(name, []), name).toBeNull();
     }
   });

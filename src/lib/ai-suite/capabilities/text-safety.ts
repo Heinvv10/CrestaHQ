@@ -130,7 +130,7 @@ const LOWER_CONFUSABLES = new Map<string, string>([
 const SEPARATORS = /[\s\p{Pc}\p{Ps}\p{Pe}'"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033\u02bc\uff07]/gu;
 // Every dash (and minus) is "-" first, so "Plan\u20102" = "Plan-2" wherever it stands.
 const dropSeparators = (value: string) =>
-  value.replace(/[\p{Pd}\u2212\ufe63\uff0d]/gu, "-").replace(/(?<=[\p{L}\p{M}])-+(?=\p{L})/gu, "").replace(SEPARATORS, "");
+  value.replace(/[\p{Pd}\u2212\ufe63\uff0d\u2043\u02d7]/gu, "-").replace(/(?<=[\p{L}\p{M}])-+(?=\p{L})/gu, "").replace(SEPARATORS, "");
 
 /** A name folded for "is this the same name?": NFKC, case-folded, separators
  *  dropped. */
@@ -200,15 +200,23 @@ const IS_SEPARATOR = new RegExp(SEPARATORS.source, "u");
  * digits, marks, Latin letters, separators and . & / + : , belong ("@" does not,
  * so an email address is refused as a name) (a Latin letter
  * that imitates another is refused before this runs). At the start or end of
- * a word, also any ASCII punctuation (! ? , : % ( ) ...), a symbol NFKC spells
- * in ASCII (\u2122 \u00b2 \u2026), and any letter ("\u00b5-controller"; other
- * scripts have their own checks).
+ * a word only what passes for a letter is refused: a letterlike symbol NFKC
+ * doesn't spell in ASCII (\u212e), a non-ASCII decimal digit (\u0966), a
+ * mathematical operator (\u2229), and a letter outside Latin, Greek and
+ * Cyrillic (Coptic \u2c9f, Tifinagh \u2d4f), which the other checks cover.
+ * Any other symbol is fine there (\u00ae \u00b0 \u00ab \u00d7).
  */
 function symbolInWord(value: string): boolean {
   const text = value.normalize("NFC");
   const asciiLetter = (c: string | undefined) => !!c && /[A-Za-z]/.test(c);
   const odd = (c: string) => !/[0-9.&/+:,\p{M}\p{Pd}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
-  const oddAtEdge = (c: string) => odd(c) && !/\p{L}/u.test(c) && !/^[\x21-\x7e]+$/.test(c.normalize("NFKC"));
+  const oddAtEdge = (c: string) => {
+    const cp = c.codePointAt(0) ?? 0;
+    if (/\p{L}/u.test(c)) return !/[\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}]/u.test(c.normalize("NFKC"));
+    if (/\p{Nd}/u.test(c)) return !/[0-9]/.test(c);
+    if (cp >= 0x2100 && cp <= 0x214f) return !/^[\x21-\x7e]+$/.test(c.normalize("NFKC"));
+    return cp >= 0x2200 && cp <= 0x22ff;
+  };
   for (const m of text.matchAll(/[^A-Za-z\s]+/gu)) {
     const [before, after] = [asciiLetter(text[m.index - 1]), asciiLetter(text[m.index + m[0].length])];
     if (before && after ? [...m[0]].some(odd) : (before || after) && [...m[0]].some(oddAtEdge)) return true;
