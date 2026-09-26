@@ -146,13 +146,35 @@ const ASCII = /^[\x00-\x7f]*$/;
  *  Greek prefix like "\u0394-value" is accepted the same way). */
 const MIXED_SCRIPT_WORD = /(?=[\p{L}\p{M}\p{N}]*\p{Script=Latin})(?=[\p{L}\p{M}\p{N}]*[\p{Script=Cyrillic}\p{Script=Greek}])[\p{L}\p{M}\p{N}]+/u;
 
+/** Latin letters beyond ASCII (and a base letter with accents) that are
+ *  letters in their own right, not look-alikes: \u00df \u00e6 \u00f8 \u0153 \u00f0 \u00fe \u0142 \u0111. */
+const PLAIN_LATIN_EXTRA = new Set([
+  "\u00df", "\u00e6", "\u00c6", "\u00f8", "\u00d8", "\u0153", "\u0152", "\u00f0",
+  "\u00d0", "\u00fe", "\u00de", "\u0142", "\u0141", "\u0111", "\u0110",
+]);
+
 /**
- * Why an agent-chosen name could pass for another, or null: a word mixing
- * scripts, a word written wholly in Latin look-alikes, or the same skeleton
+ * A letter that imitates a plain Latin one: any Latin-script letter that
+ * isn't ASCII, an ASCII letter with combining marks (\u00e9, \u1ec5, \u00e7)
+ * or one of PLAIN_LATIN_EXTRA (IPA, small capitals, script g, dotless i,
+ * Latin alpha, and so on), and any Lisu letter. An allowlist, so the class is
+ * closed without listing every look-alike.
+ */
+function imitatesLatin(ch: string): boolean {
+  if (/\p{Script=Lisu}/u.test(ch)) return true;
+  if (!/\p{Script=Latin}/u.test(ch) || ch.charCodeAt(0) < 0x80 || PLAIN_LATIN_EXTRA.has(ch)) return false;
+  return !/^[A-Za-z]\p{M}+$/u.test(ch.normalize("NFD"));
+}
+
+/**
+ * Why an agent-chosen name could pass for another, or null: a letter that
+ * imitates a plain Latin one, a run mixing scripts, a word written wholly in
+ * Latin look-alikes, or the same skeleton
  * as one of `existing` (same scope). For names a person picks from a list (snippets, field labels,
  * options, folders).
  */
 export function lookAlikeProblem(value: string, existing: readonly string[]): string | null {
+  if ([...value].some(imitatesLatin)) return "uses a letter that imitates a plain Latin letter";
   if (MIXED_SCRIPT_WORD.test(value)) return "mixes Latin with Cyrillic or Greek letters in one word";
   // A word made only of letters that pass for Latin ones reads as Latin.
   if (value.split(/\s+/).some((w) => !ASCII.test(w) && ASCII.test(skeleton(w)))) {
