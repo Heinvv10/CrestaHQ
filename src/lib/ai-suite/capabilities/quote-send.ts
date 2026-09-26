@@ -124,6 +124,9 @@ export const QUOTE_SEND_CAPABILITIES: AiSuiteCapability[] = [
         if (sent.failure.code === "send_failed") throw new CapabilityOutcomeUnknown(msg);
         throw new CapabilityUserError(msg);
       }
+      if (sent.changedWhileSending) {
+        throw new CapabilityOutcomeUnknown("It was sent, but the quote was edited while the email went out, so its link may not show what the email says: check it.");
+      }
       return { resultText: `Sent ${docLabel(q).toLowerCase()} ${q.quoteNumber} to ${masked("email", sent.sentTo)}.`, ref: { kind: "quote", id: q.id } };
     },
   },

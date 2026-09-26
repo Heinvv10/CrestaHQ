@@ -9,6 +9,7 @@ import { agentActor, str } from "./helpers";
 import { oneLine } from "./text-safety";
 import { cardOutcome, prorationRows, scheduleIdParam, scheduleRows, scheduleState, tenantSchedule, type Schedule } from "./recurring-support";
 import { assertScheduleName, SCHEDULE_PROPS, scheduleFields } from "./recurring-fields";
+import { assertTenantProducts } from "./quote-fields";
 
 /**
  * Editing, pausing, resuming and cancelling a recurring-invoice schedule for
@@ -40,6 +41,7 @@ async function plan(ctx: AiSuiteActionContext, args: Record<string, unknown>, ki
   }
   const checked = kind === "update" ? scheduleFields(fields, "update") : { ok: true as const, args: { status: STATUS[kind].to } };
   if (!checked.ok) throw new CapabilityUserError(checked.error);
+  await assertTenantProducts(ctx.subAccountId!, checked.args.lineItems);
   const planned = planScheduleEdit(s, checked.args, new Date());
   if (!planned.ok) throw new CapabilityUserError(planned.error);
   const { updates, proration } = planned.edit;

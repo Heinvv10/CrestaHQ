@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { checkDealLink, createQuote, sanitizePayload } from "@/lib/server/quote-write";
+import { sendClaimFresh } from "@/lib/server/quote-send-claim";
 import { computeQuoteTotals } from "@/lib/quotes/calc";
 import type { Quote } from "@/types/quotes";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
@@ -240,6 +241,8 @@ export const QUOTE_CAPABILITIES: AiSuiteCapability[] = [
       await db.runTransaction(async (tx) => {
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That quote or invoice isn't in this workspace.");
+        // Not while its email is going out: the link must show what the email says.
+        if (sendClaimFresh(current)) throw new CapabilityUserError("It is being sent right now, so it wasn't changed; try again in a minute.");
         if (ctx.approved) {
           const pinned = ctx.approved.pinned ?? {};
           if (current.status !== pinned.status || canonical(valuesOf(current, patch)) !== canonical(pinned.before)) {

@@ -148,6 +148,16 @@ describe("update_quote", () => {
     expect(await call("update_quote", { quoteId: "q1", globalTaxPercent: 15 })).toMatchObject({ ok: false, message });
   });
 
+  it.each([
+    ["fresh", 60_000, false],
+    ["past its TTL", 11 * 60_000, true],
+  ])("a draft whose send claim is %s: edited = %s", async (_label, age, edited) => {
+    mem.seed("quotes/q1", { ...QUOTE, sendingClaim: { id: "c", at: Date.now() - age, fingerprint: "x" } });
+    const r = await call("update_quote", { quoteId: "q1", globalTaxPercent: 15 });
+    expect(r).toMatchObject(edited ? { ok: true } : { ok: false, message: "It is being sent right now, so it wasn't changed; try again in a minute." });
+    expect(mem.read("quotes/q1")!.globalTaxPercent).toBe(edited ? 15 : null);
+  });
+
   it("nothing to change / a path id -> invalid args", async () => {
     expect(await call("update_quote", { quoteId: "q1" })).toMatchObject({ ok: false, code: "invalid_args" });
     expect(await call("update_quote", { quoteId: "q1/x/y", globalTaxPercent: 1 })).toMatchObject({ ok: false, code: "invalid_args" });

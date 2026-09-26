@@ -13,6 +13,7 @@ import {
 } from "@/lib/quotes/lifecycle";
 import { buildQuoteUrl, issueQuoteToken } from "@/lib/quotes/token";
 import { chooseInvoicePayRail, type PaymentLinkUpdate, type PayRailKind } from "@/lib/server/invoice-pay-rail";
+import { claimQuoteForSend, recordSendAndRelease, releaseSendClaim } from "@/lib/server/quote-send-claim";
 import { differsBeforeRail, differsFromReviewed, quoteFingerprint, type QuoteSendExpect } from "@/lib/quotes/send-preview";
 import type { TerritoryDenial } from "@/lib/auth/territory-filter";
 import type { Quote } from "@/types/quotes";
@@ -84,6 +85,9 @@ export type SendQuoteResult =
       /** Set when a card-mode invoice's card-on-file link couldn't be made
        *  and another rail was used: why, and which. */
       cardLinkFallback: string | null;
+      /** The document changed between the email and the recording of the
+       *  send (a client-side edit): its link may not show what the email said. */
+      changedWhileSending: boolean;
     }
   // `cardLinkFallback` too when the send failed after the rail was chosen.
   | { ok: false; failure: SendQuoteFailure; cardLinkFallback?: string | null };
@@ -175,6 +179,11 @@ export async function sendQuoteServerSide(input: {
   // Checked against the rail it would pick BEFORE any link is minted, then again against the one it used.
   if (input.expect && (await differsBeforeRail(input.expect, reviewed, sub))) return changed();
 
+  // An approved send is claimed until recorded, so an agent can't edit it meanwhile (quote-send-claim.ts).
+  const claimed = input.expect ? await claimQuoteForSend(quoteRef, quote) : ({ ok: true, claim: null } as const);
+  if (!claimed.ok) return fail(claimed.code, 409, claimed.error);
+  const release = async () => (claimed.claim ? releaseSendClaim(quoteRef, claimed.claim.id) : undefined);
+
   // 5a. Invoice path — how the recipient pays. See `chooseInvoicePayRail`.
   let paymentLinkUpdate: PaymentLinkUpdate | null = null;
   let emailPayUrl: string | null = null;
@@ -182,7 +191,7 @@ export async function sendQuoteServerSide(input: {
   let railKind: PayRailKind | null = null;
   if (quote.kind === "invoice") {
     const rail = await chooseInvoicePayRail(quote, sub);
-    if (!rail.ok) return fail(rail.code, rail.status, rail.error);
+    if (!rail.ok) return release().then(() => fail(rail.code, rail.status, rail.error));
     railKind = rail.rail;
     paymentLinkUpdate = rail.update;
     emailPayUrl = rail.emailPayUrl;
@@ -196,8 +205,8 @@ export async function sendQuoteServerSide(input: {
   }
 
   // From here a failure still reports why the card-on-file link wasn't made.
-  const failAfterRail = (code: string, status: number, error: string) => ({ ...fail(code, status, error), cardLinkFallback });
-  if (input.expect && differsFromReviewed(input.expect, reviewed, railKind, !!emailPayUrl)) return { ...changed(), cardLinkFallback };
+  const failAfterRail = async (code: string, status: number, error: string) => (await release(), { ...fail(code, status, error), cardLinkFallback });
+  if (input.expect && differsFromReviewed(input.expect, reviewed, railKind, !!emailPayUrl)) return release().then(() => ({ ...changed(), cardLinkFallback }));
 
   // 6. Issue token (server-only, HMAC + nonce; raw token never persisted)
   let token: string;
@@ -255,18 +264,16 @@ export async function sendQuoteServerSide(input: {
   //    (each new token starts a fresh "have they opened it yet?" cycle).
   const wasResend = quote.status !== "draft";
   //    Re-read in a transaction: a payment recorded while the email was out
-  //    keeps the invoice paid (the paid guard above read it earlier).
+  //    keeps the invoice paid (the paid guard above read it earlier), and a
+  //    document no longer the one the email was rendered from is reported.
+  let changedWhileSending = false;
   try {
-    await db.runTransaction(async (t) => {
-      const paid = (await t.get(quoteRef)).data()?.status === "paid";
-      t.update(quoteRef, {
-        ...(paid ? {} : { status: "sent" }),
-        sentAt: FieldValue.serverTimestamp(),
-        viewedAt: null,
-        publicTokenHash: hash,
-        updatedAt: FieldValue.serverTimestamp(),
-        ...(paymentLinkUpdate ?? {}),
-      });
+    changedWhileSending = await recordSendAndRelease(quoteRef, claimed.claim, {
+      sentAt: FieldValue.serverTimestamp(),
+      viewedAt: null,
+      publicTokenHash: hash,
+      updatedAt: FieldValue.serverTimestamp(),
+      ...(paymentLinkUpdate ?? {}),
     });
   } catch (err) {
     console.error("[quotes/send] quote lifecycle write failed", err);
@@ -286,5 +293,6 @@ export async function sendQuoteServerSide(input: {
       paymentLinkUpdate?.paymentLinkUrl ?? quote.paymentLinkUrl ?? null,
     wasResend,
     cardLinkFallback,
+    changedWhileSending,
   };
 }

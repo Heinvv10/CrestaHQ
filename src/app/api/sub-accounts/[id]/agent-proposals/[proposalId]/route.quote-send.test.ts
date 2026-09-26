@@ -136,11 +136,52 @@ describe("send_quote", () => {
     expect(mem.list("paymentLinks")).toEqual([]);
   });
 
-  it("the provider fails -> unsettled (it may have left), never failed", async () => {
+  it("the provider fails -> unsettled (it may have left), never failed; the send claim is released", async () => {
     sendEmail.mockRejectedValueOnce(new Error("timeout"));
     const id = await proposeId();
     await decide(id, "approve");
     expect(row(id).status).toBe("unsettled");
+    expect(mem.read("quotes/q1")!.sendingClaim).toBeNull();
+  });
+
+  it("an agent edit while the approved email goes out is refused, so the link shows what the email says", async () => {
+    const id = await proposeId();
+    let edit: unknown;
+    sendEmail.mockImplementationOnce(async () => {
+      edit = await dispatchAgentTool(auth, "update_quote", { quoteId: "q1", lineItems: [{ description: "Install", quantity: 10, unitPrice: 500 }] });
+      return { id: "e1" };
+    });
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(edit).toMatchObject({ ok: false, message: "It is being sent right now, so it wasn't changed; try again in a minute." });
+    expect(mem.read("quotes/q1")).toMatchObject({ status: "sent", lineItems: QUOTE.lineItems, sendingClaim: null });
+  });
+
+  it("the document edited another way while the email goes out -> recorded as sent, and unsettled for the approver", async () => {
+    const id = await proposeId();
+    sendEmail.mockImplementationOnce(async () => (mem.seed("quotes/q1", { ...mem.read("quotes/q1")!, lineItems: [{ ...QUOTE.lineItems[0], unitPrice: 5000 }] }), { id: "e1" }));
+    await decide(id, "approve");
+    expect(row(id).status).toBe("unsettled");
+    expect(mem.read("quotes/q1")).toMatchObject({ status: "sent", sendingClaim: null });
+  });
+
+  it("the quote changed between the send's read and its claim -> nothing sent", async () => {
+    const id = await proposeId();
+    const { quoteId: _q, ...expect_ } = row(id).pinned as Record<string, unknown>;
+    beforeNextTransaction(async () => mem.seed("quotes/q1", { ...QUOTE, lineItems: [{ ...QUOTE.lineItems[0], unitPrice: 5000 }] }));
+    const r = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: expect_ as never });
+    expect(r).toMatchObject({ ok: false, failure: { code: "changed_while_sending" } });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a fresh claim", 60_000, "send_in_progress"],
+    ["a claim past its TTL", 11 * 60_000, null],
+  ])("another approved send holding %s", async (_label, age, code) => {
+    const id = await proposeId();
+    const { quoteId: _q, ...expect_ } = row(id).pinned as Record<string, unknown>;
+    mem.seed("quotes/q1", { ...QUOTE, sendingClaim: { id: "other", at: Date.now() - age, fingerprint: "x" } });
+    const r = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: expect_ as never });
+    expect(r).toMatchObject(code ? { ok: false, failure: { code } } : { ok: true });
   });
 
   it.each([

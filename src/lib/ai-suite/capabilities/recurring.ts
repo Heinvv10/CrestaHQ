@@ -13,6 +13,7 @@ import { oneLine } from "./text-safety";
 import { masked } from "./conversation-send-support";
 import { cardOutcome, scheduleRows, scheduleState, type Schedule } from "./recurring-support";
 import { assertScheduleName, SCHEDULE_PROPS, scheduleFields } from "./recurring-fields";
+import { assertTenantProducts } from "./quote-fields";
 
 /**
  * Recurring-invoice schedules for API agents (AGENT_API_V1_PLAN.md, PR11):
@@ -30,6 +31,7 @@ async function plan(ctx: AiSuiteActionContext, args: Record<string, unknown>) {
   // The checked args (numbered line ids), whoever calls: the same call always plans the same schedule.
   const checked = scheduleFields(args);
   if (!checked.ok) throw new CapabilityUserError(checked.error);
+  await assertTenantProducts(ctx.subAccountId!, checked.args.lineItems);
   const parsed = parseScheduleCreate(checked.args, sub?.timezone ?? "UTC");
   if (!parsed.ok) throw new CapabilityUserError(parsed.error);
   // A backdated start raises one invoice per missed cycle, a cycle a night.

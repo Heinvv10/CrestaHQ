@@ -88,6 +88,17 @@ describe("create_recurring_schedule", () => {
     expect(await call("create_recurring_schedule", { ...NEW, startDateString: today })).toMatchObject({ ok: true, proposal: { status: "pending" } });
   });
 
+  it.each([
+    ["create", "create_recurring_schedule", NEW],
+    ["update", "update_recurring_schedule", { scheduleId: "rs1" }],
+  ])("%s: a line naming another sub-account's product -> refused, no proposal", async (_label, name, base) => {
+    mem.seed("products/pr_other", { subAccountId: "sa2", name: "Theirs", unitPriceCents: 1, currency: "ZAR" });
+    expect(await call(name, { ...base, lineItems: [{ description: "X", quantity: 1, unitPrice: 1, productId: "pr_other" }] })).toMatchObject({
+      ok: false, message: "A line names a product that isn't in this workspace.",
+    });
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
   it("an invisible character in the name -> invalid args", async () => {
     expect(await call("create_recurring_schedule", { ...NEW, name: "Support\u200b" })).toMatchObject({ ok: false, code: "invalid_args" });
   });
