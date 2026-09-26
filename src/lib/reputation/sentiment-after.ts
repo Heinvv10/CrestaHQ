@@ -2,7 +2,9 @@ import "server-only";
 
 import { after } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { reviewsAiConfigured } from "./ai/mode";
+import { assertFakeFixtureAgency, gbpProviderMode } from "@/lib/gbp/provider/select";
+import { reviewsAiConfigured, reviewsAiMode } from "./ai/mode";
+import { assertReviewsAiFixtureAgency } from "./ai/select";
 import { classifyPendingSentiment, SENTIMENT_RUN_BUDGET_MS } from "./sentiment";
 import { readLeaseDoc } from "./sentiment-lease";
 
@@ -40,6 +42,12 @@ export async function classifyAfterSync(run: Omit<SyncedRun, "startedAt">, deadl
   try {
     const sub = (await getAdminDb().doc(`subAccounts/${run.subAccountId}`).get()).data() ?? {};
     if (sub.reviewsAiEnabledByAgency !== true || sub.googleEnabledByAgency !== true || !reviewsAiConfigured()) return;
+    // With either fake — GBP or Reviews AI (CI and dev, which run on the
+    // PRODUCTION Firestore) — only that fake's fixture agency is classified:
+    // any other sub-account is refused here (→ logged, skipped), before the
+    // lease, a label or a usage count is written. The batch carries on.
+    if (gbpProviderMode() === "fake") await assertFakeFixtureAgency(run.subAccountId);
+    if (reviewsAiMode() === "fake") await assertReviewsAiFixtureAgency(run.subAccountId);
     if (run.created + run.updated === 0) {
       const { lastCompleteAt } = await readLeaseDoc(run.subAccountId);
       if (typeof lastCompleteAt === "number" && Date.now() - lastCompleteAt < SENTIMENT_RECHECK_MS) return;
