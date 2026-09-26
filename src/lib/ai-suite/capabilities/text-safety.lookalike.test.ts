@@ -88,4 +88,13 @@ describe("lookAlikeProblem", () => {
       expect(lookAlikeProblem(name, [existing]), name).toBeNull();
     }
   });
+
+  it("a symbol between two letters of a word is refused; ordinary in-word punctuation is not", () => {
+    for (const name of ["Bank d\u212etails", "B\u0966nus code", "B\u0665nus code", "Ba\u2229k"]) {
+      expect(lookAlikeProblem(name, []), name).toBe("has a symbol inside a word that can pass for a letter");
+    }
+    for (const name of ["Caf\u00e9", "Caf\u00e9s", "A+", "10.0% off", "Follow-up", "Follow\u2010up", "Don\u2019t reply", "Plan A #2", "R&D", "O'Brien", "24/7", "Cafe\u0301s", "e.g. fibre", "and/or", "Pro+Plan", "Plan \u2122 now", "Ad\u1eb9\u0301y\u1eb9\u0301mi"]) {
+      expect(lookAlikeProblem(name, []), name).toBeNull();
+    }
+  });
 });

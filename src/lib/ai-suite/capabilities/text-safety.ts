@@ -189,6 +189,22 @@ function imitatesLatin(ch: string): boolean {
   return !/^[A-Za-z]\p{M}+$/u.test(ch.normalize("NFD"));
 }
 
+const IS_SEPARATOR = new RegExp(SEPARATORS.source, "u");
+
+/**
+ * A symbol between two ASCII letters with no space (\u212e \u0966 \u0665 \u2229 in
+ * "Bank d\u212etails"): only ASCII letters and digits, marks, Latin letters,
+ * separators and . & / + belong inside a plain word (a Latin letter that
+ * imitates another is refused before this runs).
+ */
+function symbolInWord(value: string): boolean {
+  for (const [run] of value.normalize("NFC").matchAll(/(?<=[A-Za-z])[^A-Za-z\s]+(?=[A-Za-z])/gu)) {
+    const odd = (c: string) => !/[0-9.&/+\p{M}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
+    if ([...run].some(odd)) return true;
+  }
+  return false;
+}
+
 /**
  * A combining mark left after NFC on a bare Latin letter, a digit or a bar: a
  * standard accented letter (\u00e9, \u1ec5) composes, so a leftover mark there
@@ -226,5 +242,6 @@ export function lookAlikeProblem(value: string, existing: readonly string[]): st
   // A name of separators only has an empty key, which matches nothing.
   const [key, folded] = [skeleton(value), casefoldKey(value)];
   if (existing.some((e) => (key && skeleton(e) === key) || (folded && casefoldKey(e) === folded))) return "is the same as, or looks like, an existing one";
+  if (symbolInWord(value)) return "has a symbol inside a word that can pass for a letter";
   return null;
 }
