@@ -28,6 +28,10 @@ import { WORKFLOW_STATUS_CAPABILITIES } from "./capabilities/workflow-status";
 import { DEAL_EDIT_CAPABILITIES } from "./capabilities/deal-edit";
 import { DEAL_COMPLETE_CAPABILITIES } from "./capabilities/deal-complete";
 import { PIPELINE_CAPABILITIES } from "./capabilities/pipelines";
+import { CUSTOM_FIELD_CAPABILITIES } from "./capabilities/custom-fields";
+import { CUSTOM_FIELD_FOLDER_CAPABILITIES } from "./capabilities/custom-field-folders";
+import { PRODUCT_CAPABILITIES } from "./capabilities/products";
+import { SNIPPET_CAPABILITIES } from "./capabilities/snippets";
 import { CONTACT_CAPABILITIES } from "./capabilities/contacts";
 import { CONTACT_EDIT_CAPABILITIES } from "./capabilities/contact-edit";
 import { CONTACT_TAG_CAPABILITIES } from "./capabilities/contact-tags";
@@ -91,6 +95,10 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...DEAL_EDIT_CAPABILITIES,
   ...DEAL_COMPLETE_CAPABILITIES,
   ...PIPELINE_CAPABILITIES,
+  ...CUSTOM_FIELD_CAPABILITIES,
+  ...CUSTOM_FIELD_FOLDER_CAPABILITIES,
+  ...PRODUCT_CAPABILITIES,
+  ...SNIPPET_CAPABILITIES,
   ...WEBHOOK_CAPABILITIES,
   ...WEBHOOK_TEST_CAPABILITIES,
   ...WEBHOOK_URL_CAPABILITIES,
