@@ -13,6 +13,19 @@ export function templateFingerprint(t: Pick<MessageTemplateDoc, "type" | "subjec
   return canonical([t.type, t.subject ?? "", t.body]);
 }
 
+const ms = (v: unknown): number | null =>
+  v instanceof Date ? v.getTime() : typeof (v as { toMillis?: unknown })?.toMillis === "function" ? (v as { toMillis: () => number }).toMillis() : null;
+
+/**
+ * An API agent edited (or created, or tagged) this contact after the
+ * broadcast was approved: its merge-tag values, or its place in the
+ * audience, are not what the approver saw, so it isn't sent to.
+ */
+export function editedByAgentSinceApproval(b: Pick<BroadcastDoc, "approved">, contact: object): boolean {
+  const [edited, approvedAt] = [ms((contact as { lastAgentEditAt?: unknown }).lastAgentEditAt), ms(b.approved?.at)];
+  return edited !== null && approvedAt !== null && edited > approvedAt;
+}
+
 /** How many more recipients the fan-out may queue (Infinity when nothing was approved). */
 export function approvedRoomLeft(b: Pick<BroadcastDoc, "approved" | "totals">): number {
   if (!b.approved) return Infinity;

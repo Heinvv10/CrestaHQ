@@ -54,6 +54,28 @@ describe("create_broadcast", () => {
     expect(publishCallback).toHaveBeenCalledWith(expect.objectContaining({ pathname: "/api/broadcasts/email/fanout" }));
   });
 
+  it("the preview says agent edits after approval are skipped; a contact the agent tags afterwards counts as edited", async () => {
+    const id = await proposeId({ ...ALL, audienceFilter: { kind: "tag", tag: "vip" } });
+    expect(rowOf(id, "At send")).toBe("The audience is re-read at send; contacts an API agent edits after approval are skipped.");
+    expect((await decide(id, "approve")).status).toBe(200);
+    const [b] = mem.list("broadcasts");
+    expect(await dispatchAgentTool(auth, "add_tags", { contactId: "c2", tags: ["vip"] })).toMatchObject({ ok: true });
+    const { editedByAgentSinceApproval } = await import("@/lib/broadcasts/approved");
+    expect(editedByAgentSinceApproval(b as never, mem.read("contacts/c2")!)).toBe(true);
+    expect(editedByAgentSinceApproval(b as never, mem.read("contacts/c1")!)).toBe(false);
+  });
+
+  it("one broadcast per approval: the same claim again is a duplicate, said so; a new approval sends", async () => {
+    const id = await proposeId();
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const cap = getCapability("create_broadcast")!;
+    const ctx = (claimId: string) => ({ uid: "u1", email: "a@x.io", displayName: "A", agencyId: "ag1", subAccountId: "sa1", approved: { pinned: row(id).pinned as Record<string, unknown>, proposalId: id, claimId } });
+    expect(await cap.execute(ctx("claim1"), ALL)).toMatchObject({ resultText: expect.stringContaining("Started the broadcast") });
+    expect(await cap.execute(ctx("claim1"), ALL)).toMatchObject({ resultText: expect.stringContaining("already started") });
+    expect(await cap.execute(ctx("claim2"), ALL)).toMatchObject({ resultText: expect.stringContaining("Started the broadcast") });
+    expect(mem.list("broadcasts")).toHaveLength(2);
+  });
+
   it("a tag audience counts only its contacts", async () => {
     const id = await proposeId({ ...ALL, audienceFilter: { kind: "tag", tag: "vip" } });
     expect(rowOf(id, "To")).toBe('contacts tagged "vip": 1 contact(s) now, less those opted out or without an email');

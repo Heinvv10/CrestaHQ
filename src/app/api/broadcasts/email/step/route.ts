@@ -18,7 +18,7 @@ import {
   type ClaimedRow,
 } from "@/lib/broadcasts/settle-send";
 import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
-import { templateFingerprint } from "@/lib/broadcasts/approved";
+import { editedByAgentSinceApproval, templateFingerprint } from "@/lib/broadcasts/approved";
 import type {
   AgencyDoc,
   BroadcastDoc,
@@ -194,6 +194,11 @@ async function deliver(
   // broadcast or a manual flip in the contact profile.
   if (contact.emailOptedOut) {
     await markSkipped(row, "opt_out");
+    await maybeMarkBroadcastCompleted(broadcastRef);
+    return NextResponse.json({ ok: true, status: "skipped" });
+  }
+  if (editedByAgentSinceApproval(broadcast, contact)) {
+    await markSkipped(row, "edited_by_agent_after_approval");
     await maybeMarkBroadcastCompleted(broadcastRef);
     return NextResponse.json({ ok: true, status: "skipped" });
   }

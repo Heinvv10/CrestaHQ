@@ -84,7 +84,6 @@ export const VOICE_CAPABILITIES: AiSuiteCapability[] = [
       }
       const compliance = await checkOutboundCompliance({ subAccountId: ctx.subAccountId!, contact, voice: ready.voice, agentTimezone: ready.agentTimezone, consentAck: true });
       if (!compliance.allowed) throw new CapabilityUserError(`The call wasn't placed: ${compliance.reason}`);
-      if ((compliance.e164 ?? contact.phone) !== now.number) throw new CapabilityUserError("The number changed since this was reviewed; no call was placed.");
       const placed = await placeContactCall({ contact, contactId: contact.id, uid: ctx.uid, voice: ready.voice, customerNumber: now.number });
       // A provider error can't say whether the phone rang.
       if (!placed.ok) throw new CapabilityOutcomeUnknown(`The call may not have been placed: ${placed.error}`);

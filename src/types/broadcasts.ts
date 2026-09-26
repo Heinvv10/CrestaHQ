@@ -87,7 +87,7 @@ export interface BroadcastDoc {
   fanoutDone?: boolean;
   /** An API agent's broadcast, as a person approved it: the template's
    *  fingerprint (lib/broadcasts/approved.ts) and the recipient count shown. */
-  approved?: { templateFingerprint: string; audienceCap: number } | null;
+  approved?: { templateFingerprint: string; audienceCap: number; at: Date | Timestamp } | null;
 }
 
 /** Reasons the step executor skips a recipient WITHOUT calling Resend. */
@@ -106,6 +106,8 @@ export type BroadcastSkipReason =
   | "cancelled"
   /** Beyond the recipient count a person approved for an API agent's broadcast. */
   | "over_approved_audience"
+  /** An API agent edited the contact after the agent's broadcast was approved. */
+  | "edited_by_agent_after_approval"
   /** The sub-account's automations kill switch was on at send time. */
   | "automations_paused"
   /** The agency turned broadcasts off for the sub-account mid-send. */

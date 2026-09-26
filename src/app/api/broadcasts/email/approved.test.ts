@@ -54,6 +54,16 @@ describe("the fan-out", () => {
     expect(mem.list("broadcasts/b1/sends").filter((r) => r.status === "queued")).toHaveLength(1);
   });
 
+  it("a contact an API agent edited after approval is skipped, the others queued", async () => {
+    broadcast({ templateFingerprint: templateFingerprint(TEMPLATE as never), audienceCap: 3, at: new Date(Date.now() - 60_000) });
+    mem.seed("contacts/c2", { ...mem.read("contacts/c2")!, lastAgentEditAt: new Date(), lastAgentEditKey: "abcd1234" });
+    mem.seed("contacts/c3", { ...mem.read("contacts/c3")!, lastAgentEditAt: new Date(Date.now() - 120_000) });
+    await post(fanout, { broadcastId: "b1", cursor: null, slot: 0 });
+    const rows = mem.list("broadcasts/b1/sends");
+    expect(rows.find((r) => r.id === "c2")).toMatchObject({ status: "skipped", skippedReason: "edited_by_agent_after_approval" });
+    expect(rows.filter((r) => r.status === "queued").map((r) => r.id).sort()).toEqual(["c1", "c3"]);
+  });
+
   it("a person's broadcast queues everyone, as before", async () => {
     broadcast(null);
     await post(fanout, { broadcastId: "b1", cursor: null, slot: 0 });
@@ -72,6 +82,15 @@ describe("the step", () => {
     queued();
     await post(step, { broadcastId: "b1", contactId: "c1" });
     expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("a contact an API agent edited after approval (a queued row) -> skipped at send, not sent", async () => {
+    broadcast({ templateFingerprint: templateFingerprint(TEMPLATE as never), audienceCap: 3, at: new Date(Date.now() - 60_000) });
+    queued();
+    mem.seed("contacts/c1", { ...mem.read("contacts/c1")!, name: "Evil {{link}}", lastAgentEditAt: new Date() });
+    await post(step, { broadcastId: "b1", contactId: "c1" });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(mem.read("broadcasts/b1/sends/c1")).toMatchObject({ status: "skipped", skippedReason: "edited_by_agent_after_approval" });
   });
 
   it("a template edited since approval -> not sent, the row failed", async () => {

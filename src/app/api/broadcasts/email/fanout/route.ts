@@ -9,7 +9,7 @@ import {
   qstashIsConfigured,
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
-import { approvedRoomLeft } from "@/lib/broadcasts/approved";
+import { approvedRoomLeft, editedByAgentSinceApproval } from "@/lib/broadcasts/approved";
 import { resolveAudiencePage } from "@/lib/broadcasts/audience";
 import {
   BROADCAST_FANOUT_RETRIES,
@@ -163,7 +163,8 @@ async function runPage(
   let room = approvedRoomLeft(broadcast);
   for (const { contact, reason: pageReason } of pageContacts) {
     if (existingStatus.has(contact.id)) continue;
-    const reason = pageReason ?? (room > 0 ? null : "over_approved_audience");
+    const reason =
+      pageReason ?? (editedByAgentSinceApproval(broadcast, contact) ? "edited_by_agent_after_approval" : room > 0 ? null : "over_approved_audience");
     if (!reason) room -= 1;
     const row: Omit<BroadcastSendDoc, "id"> = {
       broadcastId,

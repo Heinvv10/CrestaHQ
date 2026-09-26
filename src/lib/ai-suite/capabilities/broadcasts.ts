@@ -109,6 +109,7 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
           { label: "Message", value: messageBody(template.body)!, multiline: true },
           { label: "Merge tags", value: "Tags like {{contact.firstName}} are filled per contact; each email carries its own unsubscribe link." },
           { label: "Then", value: `If more than ${matching} contacts match when it is approved, nothing is sent.` },
+          { label: "At send", value: "The audience is re-read at send; contacts an API agent edits after approval are skipped." },
         ],
         pinned,
       };
@@ -122,17 +123,19 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
       if (matching > cap) throw new CapabilityUserError(`The audience grew to ${matching} contacts since ${cap} were approved; nothing was sent. Propose it again.`);
       const started = await startBroadcast({
         subAccountId: ctx.subAccountId!,
-        // One broadcast per approved proposal, however often approve retries.
-        idempotencyKey: `agent_${ctx.approved.proposalId.replace(/[^A-Za-z0-9]/g, "").slice(0, 48)}`,
+        // One broadcast per approval (its claim): a retry of the same approval
+        // is a duplicate, a fresh approval sends.
+        idempotencyKey: `agent_${String(ctx.approved.claimId ?? ctx.approved.proposalId).replace(/[^A-Za-z0-9]/g, "").slice(0, 48)}`,
         templateId: args.templateId as string,
         template,
         audienceFilter: args.audienceFilter as BroadcastAudienceFilter,
         territoryIds: null,
         createdByUid: ctx.uid,
         createdBy: { displayName: ctx.displayName || ctx.email, email: ctx.email },
-        approved: { templateFingerprint: now.templateFingerprint, audienceCap: cap },
+        approved: { templateFingerprint: now.templateFingerprint, audienceCap: cap, at: new Date() },
       });
       if (!started.ok) throw new CapabilityUserError(started.error);
+      if (started.duplicate) return { resultText: `This approval's broadcast was already started (id: ${started.broadcastId}); nothing more was sent.`, ref: { kind: "broadcast", id: started.broadcastId } };
       return { resultText: `Started the broadcast to up to ${cap} contacts (id: ${started.broadcastId}).`, ref: { kind: "broadcast", id: started.broadcastId } };
     },
   },
