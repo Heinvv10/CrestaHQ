@@ -67,7 +67,7 @@ export default async function SharedReportPage({
                 cannot be called from this server component. */}
             <a
               href={report.cta}
-              className="mt-3 inline-flex h-8 items-center justify-center rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/80"
+              className="mt-3 inline-flex h-8 items-center justify-center whitespace-nowrap rounded-lg border border-transparent bg-primary px-2.5 text-sm font-medium text-primary-foreground outline-none transition-all hover:bg-primary/80 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
             >
               Book a call
             </a>
