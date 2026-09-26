@@ -403,6 +403,9 @@ export function withoutIdentityHeaders(request: NextRequest): NextResponse {
   const headers = new Headers(request.headers);
   headers.delete("x-user-uid");
   headers.delete("x-user-email");
+  // Not identity, but the same trust class: it picks whose agency doc the
+  // dashboard layout reads server-side (lib/server/agency-branding.ts).
+  headers.delete("x-agency-id");
   return NextResponse.next({ request: { headers } });
 }
 
@@ -502,6 +505,14 @@ export default function middleware(request: NextRequest) {
       // Attach user info to headers for downstream use
       headers.set("x-user-uid", decodedToken.uid);
       headers.set("x-user-email", decodedToken.email ?? "");
+      // Server-seeded dashboard branding. Only ever from the verified
+      // token's claim — a caller-sent value is dropped, never forwarded.
+      const agencyId = decodedToken.agencyId;
+      if (typeof agencyId === "string" && agencyId) {
+        headers.set("x-agency-id", agencyId);
+      } else {
+        headers.delete("x-agency-id");
+      }
 
       return NextResponse.next({ request: { headers } });
     },
