@@ -118,7 +118,7 @@ describe("postReply", () => {
     const doc = mem.read(reviewPath("fake-r7"))!;
     expect(doc.pendingReply).toBeNull();
     expect(doc.hadReply).toBe(true);
-    expect(doc.autoReplied).toBeFalsy(); // a person's reply clears it (null)
+    expect(doc.autoReplied).toBeFalsy(); // never auto-replied (null or absent); clearing on a person's reply is proven in alerts.seam.test.ts
     expect(events(SA, "reply_posted")[0]).toMatchObject({ actorUid: "uid_admin", createdByUid: "uid_admin" });
   });
 });

@@ -213,6 +213,8 @@ export async function markPostFailed(sa: string, docId: string, textHash: string
  * `pendingReply.reason` it passed through meanwhile (a draft failing, a daily
  * limit, a retry). New content (another basis) counts again. Outside
  * `pendingReply`, so reason rewrites never clear it; purged with the review.
+ * A separate transaction from the state write before it: a process dying in
+ * between leaves that review uncounted — at most once, like the alert itself.
  */
 export async function markHeldAlerted(sa: string, docId: string, basisHash: string): Promise<boolean> {
   const db = getAdminDb();
