@@ -3,13 +3,17 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { reviewsCollection } from "@/lib/gbp/sync/types";
 import type { DraftInput } from "./ai/types";
+import { AUTO_REPLY_DAILY_DRAFT_CAP } from "./auto-reply/settings";
 import { DAILY_AI_CALL_CAP, sentimentUsagePath } from "./sentiment-calls";
 
 /**
- * Reply drafts (SP5 c) — the bookkeeping around ONE draft call. A draft only
- * ever fills the admin's reply box: nothing here (or in the draft route)
- * reaches the provider's putReply / deleteReply — lib/gbp/reply.ts stays the
- * only poster, on the admin's click. No draft text is stored or logged.
+ * Reply drafts (SP5 c) — the bookkeeping around ONE draft call. Nothing here
+ * (or in the draft route) reaches the provider's putReply / deleteReply —
+ * lib/gbp/reply.ts stays the only poster. A draft from the admin's "Draft
+ * with AI" only fills their reply box and is never stored. A draft made by
+ * the review auto-reply engine (`beginDraftCall(sa, {auto: true})`,
+ * AUTO_REPLY_V1_PLAN.md) IS stored on the review as `pendingReply` — held
+ * for a human, or queued to post automatically. Draft text is never logged.
  *
  *   - Rate: 10 drafts a minute per user and sub-account, in memory, per
  *     instance — an abuse dampener, like the other in-memory limiters.
@@ -22,6 +26,10 @@ import { DAILY_AI_CALL_CAP, sentimentUsagePath } from "./sentiment-calls";
  *     call; over the cap there is no call. No strikes and no refunds: a
  *     draft is one human click, one call, and it counts whether or not the
  *     model then produced a usable draft.
+ *   - Auto drafts count against all of the above AND may use at most
+ *     AUTO_REPLY_DAILY_DRAFT_CAP of drafts' share (`autoDraftCalls`, on the
+ *     same UTC `draftsDay`, in the same transaction), so a human's "Draft
+ *     with AI" always keeps the rest.
  */
 
 export const DRAFTS_PER_MINUTE = 10;
@@ -52,17 +60,17 @@ export function checkDraftRate(subAccountId: string, uid: string, now = Date.now
 /** Drafts' share of DAILY_AI_CALL_CAP per sub-account per UTC day — the rest stays sentiment's. */
 export const DRAFT_DAILY_CAP = 100;
 
-export type DraftStop = "gate_off" | "ai_gate_off" | "daily_cap" | "draft_cap";
+export type DraftStop = "gate_off" | "ai_gate_off" | "daily_cap" | "draft_cap" | "auto_draft_cap";
 
 /** Re-check both gates and the daily cap, and count this call — one transaction, before the call. */
-export async function beginDraftCall(subAccountId: string): Promise<DraftStop | null> {
+export async function beginDraftCall(subAccountId: string, opts: { auto?: boolean } = {}): Promise<DraftStop | null> {
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${subAccountId}`);
   const usageRef = db.doc(sentimentUsagePath(subAccountId));
   return db.runTransaction(async (tx) => {
     const sub = (await tx.get(subRef)).data() as { googleEnabledByAgency?: boolean; reviewsAiEnabledByAgency?: boolean } | undefined;
     const usage = (await tx.get(usageRef)).data() as
-      | { day?: string; calls?: number; draftsDay?: string; draftCalls?: number }
+      | { day?: string; calls?: number; draftsDay?: string; draftCalls?: number; autoDraftCalls?: number }
       | undefined;
     if (sub?.googleEnabledByAgency !== true) return "gate_off";
     if (sub.reviewsAiEnabledByAgency !== true) return "ai_gate_off";
@@ -71,7 +79,13 @@ export async function beginDraftCall(subAccountId: string): Promise<DraftStop | 
     if (calls >= DAILY_AI_CALL_CAP) return "daily_cap";
     const draftCalls = usage?.draftsDay === day ? (usage.draftCalls ?? 0) : 0;
     if (draftCalls >= DRAFT_DAILY_CAP) return "draft_cap";
-    tx.set(usageRef, { day, calls: calls + 1, draftsDay: day, draftCalls: draftCalls + 1 }, { merge: true });
+    const autoDraftCalls = usage?.draftsDay === day ? (usage.autoDraftCalls ?? 0) : 0;
+    if (opts.auto && autoDraftCalls >= AUTO_REPLY_DAILY_DRAFT_CAP) return "auto_draft_cap";
+    tx.set(
+      usageRef,
+      { day, calls: calls + 1, draftsDay: day, draftCalls: draftCalls + 1, autoDraftCalls: autoDraftCalls + (opts.auto ? 1 : 0) },
+      { merge: true },
+    );
     return null;
   });
 }

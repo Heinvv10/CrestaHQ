@@ -9,8 +9,8 @@ import { readLeaseDoc } from "./sentiment-lease";
 /**
  * Sentiment never runs inside a sync (Cloudflare cuts origin requests at
  * 100 s and QStash would retry a slow cron). The sync routes hand the runs
- * they made to `classifyAfterResponse`, which runs AFTER the response via
- * Next's `after()`; outside a request scope (tests, scripts) `after` throws
+ * they made to `afterSyncResponse` (after-sync.ts — auto-reply first, then
+ * `classifySyncedRuns`), which runs AFTER the response via Next's `after()`; outside a request scope (tests, scripts) `after` throws
  * and the work runs detached instead — same pattern as google-calendar/push.ts.
  */
 
@@ -18,6 +18,8 @@ export interface SyncedRun {
   subAccountId: string;
   created: number;
   updated: number;
+  /** The sync run's start: a review with `lastSeenAt >= startedAt` was seen by it (auto-reply). */
+  startedAt: Date;
 }
 
 /** After a sync that changed nothing, classify again once the last complete run is older than this. */
@@ -34,7 +36,7 @@ const kind = (err: unknown) => (err instanceof Error ? err.name : typeof err);
  * `lastCompleteAt`). Otherwise nothing beyond the sub-account read; Analyse
  * now covers "right now". `deadline` is shared by every tenant of one request.
  */
-export async function classifyAfterSync(run: SyncedRun, deadline: number): Promise<void> {
+export async function classifyAfterSync(run: Omit<SyncedRun, "startedAt">, deadline: number): Promise<void> {
   try {
     const sub = (await getAdminDb().doc(`subAccounts/${run.subAccountId}`).get()).data() ?? {};
     if (sub.reviewsAiEnabledByAgency !== true || sub.googleEnabledByAgency !== true || !reviewsAiConfigured()) return;
@@ -62,12 +64,6 @@ export function afterResponse(work: () => Promise<unknown>): void {
 export const requestDeadline = (startedAt = Date.now()) => startedAt + SENTIMENT_RUN_BUDGET_MS;
 
 /** Each run's tenant, one after another, all under the one `deadline`. */
-export async function classifySyncedRuns(runs: SyncedRun[], deadline: number): Promise<void> {
+export async function classifySyncedRuns(runs: Omit<SyncedRun, "startedAt">[], deadline: number): Promise<void> {
   for (const run of runs) await classifyAfterSync(run, deadline);
-}
-
-/** The sync routes: classify after responding, under the request's deadline. */
-export function classifyAfterResponse(runs: SyncedRun[], deadline: number): void {
-  if (!runs.length) return;
-  afterResponse(() => classifySyncedRuns(runs, deadline));
 }

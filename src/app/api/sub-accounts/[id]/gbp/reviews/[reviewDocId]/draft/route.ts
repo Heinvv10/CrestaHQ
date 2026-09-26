@@ -13,8 +13,9 @@ import { DRAFT_DAILY_CAP, beginDraftCall, checkDraftRate, draftInputFor } from "
 /**
  * POST /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/draft → `{draft}` —
  * an AI reply DRAFT for the admin to edit in the composer (SP5 c). It posts
- * NOTHING: this route never reaches putReply / deleteReply; the only poster
- * is POST …/reply on the admin's click (lib/gbp/reply.ts). No draft text is
+ * NOTHING: this route never reaches putReply / deleteReply (lib/gbp/reply.ts
+ * is the only poster: POST …/reply on the admin's click, or the separately
+ * switched review auto-reply engine). This route's draft text is never
  * stored or logged.
  *
  * Sub-account admin only (like the reply), the agency's Google gate (403

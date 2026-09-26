@@ -11,6 +11,9 @@ export const AUDIT_ACTIONS = [
   "member.role_changed",
   // Every direct (non-approval) write an API agent made (lib/api/agent-audit).
   "agent.write",
+  // A Google review reply posted by the auto-reply engine, no click
+  // (lib/reputation/auto-reply/post.ts). Target: the cached review's doc id.
+  "review.auto_replied",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -45,6 +48,8 @@ export const AUDIT_TARGET_TYPES = [
   "deal",
   "task",
   "event",
+  // A cached Google review (`gbpReviews/{docId}`) — review.auto_replied.
+  "review",
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 

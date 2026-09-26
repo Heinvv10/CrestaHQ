@@ -44,7 +44,9 @@ export type Claim =
   | { kind: "in_progress" }
   | { kind: "reused" }
   /** The cached review went away between the lookup and the claim. */
-  | { kind: "gone" };
+  | { kind: "gone" }
+  /** `requireNoReply` only: the cached review already has a reply (any text, any author). */
+  | { kind: "already_replied" };
 
 /**
  * Claim the attempt for `idempotencyKey` in one transaction. A key already
@@ -54,6 +56,12 @@ export type Claim =
  * CACHED reply is already byte-equal is `done` without a call. Otherwise the
  * attempt becomes `pending`, the review's lock is taken, and the caller calls
  * Google exactly once.
+ *
+ * `requireNoReply` (the auto-reply engine only — AUTO_REPLY_V1_PLAN.md): a
+ * review whose cached `reply` is set, whatever its text, is `already_replied`
+ * — nothing is claimed and its `pendingReply` is cleared in the same
+ * transaction — so an automatic post never overwrites a reply. Without it (a
+ * human's explicit reply) a different reply is posted over, as an edit.
  */
 export async function claimAttempt(
   sa: string,
@@ -61,6 +69,7 @@ export async function claimAttempt(
   body: { comment: string; idempotencyKey: string },
   actorUid: string,
   now: Date,
+  opts: { requireNoReply?: boolean } = {},
 ): Promise<Claim> {
   const db = getAdminDb();
   const ref = attemptRef(sa, body.idempotencyKey);
@@ -80,6 +89,10 @@ export async function claimAttempt(
     }
     const data = review.data();
     if (!data) return { kind: "gone" };
+    if (opts.requireNoReply && data.reply) {
+      tx.update(reviewRef, { pendingReply: null });
+      return { kind: "already_replied" };
+    }
     const lock = data.replyInFlight as { key?: unknown; at?: unknown } | null | undefined;
     if (lock && !holds(lock, body.idempotencyKey) && live(lock.at)) return { kind: "in_progress" };
 
@@ -167,12 +180,20 @@ const isoOf = (v: unknown) => {
  * released, the attempt (when there is one) and an audit event, in one
  * transaction. Nothing else on the review moves (pass bookkeeping stays the
  * sync's). Events carry ids, never reply text.
+ *
+ * A posted reply also clears the review's `pendingReply` (a held or queued
+ * draft is moot once a reply exists); an automatic one (`auto`) stamps
+ * `autoReplied {at, key}` and its event carries `createdByUid` = whoever
+ * switched auto-reply on, `actorUid` = "system:auto-reply".
  */
 export async function recordReplyChange(
   sa: string,
   target: AttemptTarget,
   reply: GbpReviewReply | null,
-  change: { type: "reply_posted" | "reply_deleted"; actorUid: string; key: string | null; now: Date },
+  change: {
+    type: "reply_posted" | "reply_deleted"; actorUid: string; key: string | null; now: Date;
+    auto?: { createdByUid: string };
+  },
 ): Promise<void> {
   const db = getAdminDb();
   const reviewRef = reviewRefOf(sa, target.docId);
@@ -185,13 +206,15 @@ export async function recordReplyChange(
         starRating: d.starRating ?? null, comment: d.comment ?? null, updateTime: isoOf(d.updateTime), reply,
       });
       const release = change.key && holds(d.replyInFlight, change.key) ? { replyInFlight: null } : {};
-      tx.update(reviewRef, { reply, contentHash: hash, ...release });
+      const posted = change.type === "reply_posted" ? { pendingReply: null } : {};
+      const auto = change.auto ? { autoReplied: { at: change.now, key: change.key } } : {};
+      tx.update(reviewRef, { reply, contentHash: hash, ...release, ...posted, ...auto });
     }
     if (change.key) {
       tx.set(attemptRef(sa, change.key), { status: "succeeded", replyUpdateTime: reply?.updateTime ?? null, errorKind: null }, { merge: true });
     }
     tx.set(db.collection(`subAccounts/${sa}/gbpEvents`).doc(), {
-      type: change.type, agencyId: target.agencyId, subAccountId: sa, createdByUid: change.actorUid,
+      type: change.type, agencyId: target.agencyId, subAccountId: sa, createdByUid: change.auto?.createdByUid ?? change.actorUid,
       actorUid: change.actorUid, reviewDocId: target.docId, at: change.now,
     });
   });

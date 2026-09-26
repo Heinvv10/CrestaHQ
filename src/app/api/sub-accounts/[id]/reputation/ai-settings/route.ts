@@ -21,7 +21,8 @@ import { DAILY_AI_CALL_CAP } from "@/lib/reputation/sentiment-calls";
  * say; SP5 c, ledger R6). Sub-account admin, the agency's Reviews AI gate
  * (403 `ai_gate_off`). At most 1000 characters, stored trimmed ("" clears
  * them); any other key — an auto-reply switch included — is 400
- * `invalid_body`: there is no auto-reply. Written to
+ * `invalid_body`: auto-reply is switched on only through its own route
+ * (…/reputation/auto-reply, AUTO_REPLY_V1_PLAN.md), never here. Written to
  * `subAccounts/{id}.reviewsAiConfig` (member-readable, server-written).
  */
 

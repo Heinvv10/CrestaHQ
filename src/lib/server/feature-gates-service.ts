@@ -180,7 +180,9 @@ export async function recordGateChanges(
     typeof stored[field] === "boolean"
       ? (stored[field] as boolean)
       : DEFAULT_ON_GATE_FIELDS.has(field);
-  const changes = (Object.entries(gates) as [AgencyGateField, boolean][])
+  // Only a boolean is a gate value; anything else a caller passed through is not a change.
+  const changes = (Object.entries(gates) as [AgencyGateField, unknown][])
+    .filter((e): e is [AgencyGateField, boolean] => typeof e[1] === "boolean")
     .filter(([field, after]) => effective(field) !== after)
     .map(([field, after]) => ({ field, before: effective(field), after }));
   if (changes.length === 0) return;

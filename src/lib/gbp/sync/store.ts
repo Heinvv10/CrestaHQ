@@ -97,6 +97,8 @@ export function upsertFor(
     return { kind: "unchanged", data: seen, merge: true };
   }
   const content = {
+    // A reply from anywhere makes the auto-reply engine's draft moot.
+    ...(review.reply ? { pendingReply: null } : {}),
     reviewer: review.reviewer,
     starRating: review.starRating,
     // Byte-exact: never trimmed, never normalised.
@@ -138,10 +140,12 @@ export function upsertFor(
  * rating. Its `sentiment` / `sentimentAttempt` (a 3-value label and hashes,
  * no content) are kept, so a review restored unchanged is not re-sent to the
  * AI and its strike count survives; retention deletion removes them with the doc.
+ * An auto-reply draft (`pendingReply`, which may quote the reviewer's name) goes.
  */
 export function tombstone(now: Date): Record<string, unknown> {
   return {
     state: "removed", removedAt: now, comment: null, reviewer: null, reply: null, starRating: null, contentHash: null,
+    pendingReply: null,
   };
 }
 

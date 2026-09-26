@@ -148,6 +148,19 @@ includeBacklog, enabledAt, enabledByUid, listingLocationName, updatedAt,
 updatedByUid}` (AUTO_REPLY_V1_PLAN.md) is server-written (PUT
 …/reputation/auto-reply, admin; stamps set on off→on in a transaction),
 member-readable; absent reads as off, 1-3★ approval, 4-5★ auto, no backlog.
+The auto-reply engine (`lib/reputation/auto-reply/`, Admin SDK only; no
+client rule, so default deny; no index) writes: `pendingReply {text,
+textHash, basisHash, reason, at, model}` on a cached review (its draft, held
+or queued to post — the only place draft text is stored; cleared by any
+posted reply, by a reply appearing at Google and by a tombstone; purged with
+the review), `autoReplied {at, key}` on a review it replied to (kept by the
+sync's merge), `private/autoReplyLease {runId, until}` (one run per
+sub-account), `private/autoReplyUsage {day (SAST), posts}` (the 20/day post
+cap; auto drafts are `autoDraftCalls` in `private/sentimentUsage`, on its
+`draftsDay`), and `subAccounts/{id}/autoReplyDismissed/{reviewDocId}
+{agencyId, subAccountId, createdByUid, byUid, basisHash, at}` — a Discard,
+outside the review cache so it survives a cache clear; an id and a hash, no
+Google content, so it deliberately outlives review retention.
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
 random bytes base64url, never derived from a tenant id) holds the widget config

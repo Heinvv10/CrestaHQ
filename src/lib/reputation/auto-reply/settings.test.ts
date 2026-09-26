@@ -6,8 +6,8 @@ import { AUTO_REPLY_ENGINE_AVAILABLE, nextAutoReplySettings, readAutoReplySettin
 
 const MODES = { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" } as const;
 
-it("ships with the engine unavailable (PR 2 flips it)", () => {
-  expect(AUTO_REPLY_ENGINE_AVAILABLE).toBe(false);
+it("the engine is available since PR 2 (the kill switch decides whether it runs)", () => {
+  expect(AUTO_REPLY_ENGINE_AVAILABLE).toBe(true);
 });
 
 describe("readAutoReplySettings", () => {

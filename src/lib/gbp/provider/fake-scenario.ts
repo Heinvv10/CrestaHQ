@@ -52,7 +52,7 @@ export interface FakeScenario {
   /**
    * Every reply call that reached the fake, in order — failed ones too. How
    * tests prove a reply is posted exactly once, and that nothing but an
-   * explicit human submit ever posts one.
+   * explicit human submit or the (kill-switched) auto-reply engine posts one.
    */
   calls?: Array<{ op: "putReply" | "deleteReply"; reviewName: string }>;
   /**

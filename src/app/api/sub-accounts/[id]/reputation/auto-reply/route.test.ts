@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * GET/PUT /api/sub-accounts/[id]/reputation/auto-reply — review auto-reply
  * settings (AUTO_REPLY_V1_PLAN.md, PR 1). Real tenancy and gates, Firestore
  * in memory (transactions honoured). The engine flag is overridable so the
- * enable path is testable before PR 2 ships the engine.
+ * 409 `not_available` refusal PR 1 shipped stays tested now PR 2 lifted it.
  */
 
 const engine = vi.hoisted(() => ({ available: true }));

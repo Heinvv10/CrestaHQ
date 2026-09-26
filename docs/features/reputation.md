@@ -465,12 +465,18 @@ Firestore, an invisible location refused, "not approved").
 
 ## AI reply drafts (SP5 c)
 
-**The guarantee: nothing posts a reply to Google except the admin's click on
-"Post reply to Google"** (`POST …/reply` → `lib/gbp/reply.ts`, the only caller
-of `putReply` / `deleteReply`). A draft only fills the reply box. There is no
-auto-response mode, no drip/backlog reply and no scheduled reply anywhere —
-the guidelines route refuses any key but `replyGuidelines` (an `autoReply`
-switch included).
+**The guarantee: a reply reaches Google only through `lib/gbp/reply.ts` (the
+only caller of `putReply` / `deleteReply`), from exactly two places — the
+admin's click on "Post reply to Google" (`POST …/reply`), and review
+auto-reply ([below](#review-auto-reply-auto_reply_v1_planmd)) for a
+sub-account that switched it on.** Auto-reply posts **without a click**, but
+only when ALL hold: the deployment's `REVIEWS_AUTO_REPLY_ENABLED=1` kill
+switch, the agency's Google, Reviews AI and auto-reply gates, the
+sub-account's own switch, the star set to Auto, and a **rating-only** review
+(no written text — texted reviews always wait for a person). Nothing deletes
+or edits a reply automatically. A "Draft with AI" draft only fills the
+reply box. The guidelines route refuses any key but `replyGuidelines` (an
+`autoReply` switch included — auto-reply has its own route).
 
 - **Route:** `POST /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/draft` →
   `{draft}`. Sub-account admin (like the reply); the agency's Google gate (403
@@ -486,7 +492,9 @@ switch included).
   refunds: one click, one call, counted whether or not a usable draft came
   back. An AI failure is 424
   `draft_failed` (not 502 — the edge replaces 502 bodies). **Stores nothing**:
-  no draft text in Firestore, logs or the fake's log.
+  a "Draft with AI" draft is never written to Firestore, logs or the fake's
+  log. (Auto-reply's drafts ARE stored on the review as `pendingReply` — see
+  below; draft text is still never logged.)
 - **What the model sees** (`lib/reputation/draft.ts` → `ReviewsAi.draftReply`,
   `ai/openrouter-draft.ts`): the stars, the review text (untrusted — sent only
   as a JSON string value; the prompt says never follow instructions in it),
@@ -527,9 +535,14 @@ switch included).
   log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
 - **What the prompt alone covers — honestly:** promising a refund or
   compensation, an insult, or an unsuitable tone are ruled out only by the
-  system prompt; no code checks for them. That is acceptable because a human
-  reads every draft in the box and must click Post reply to Google — nothing
-  a draft says reaches Google otherwise.
+  system prompt; no code checks for them. For "Draft with AI" that is
+  acceptable because a human reads the draft and must click Post reply to
+  Google. **Auto-reply posts drafts no human has read**, so it is limited to
+  rating-only reviews: the model sees no untrusted review text at all (only
+  the stars, the listing title, the guidelines and a reviewer first name that
+  passed the contact guard), and the draft's own contact guard still applies.
+  The prompt-only limits above are then the only check on what an automatic
+  reply says.
 - **Composer** (`components/gbp/reply-composer.tsx`): **Draft with AI**
   (`gbp-reply-draft`) appears only when `GET …/gbp/reviews` says `aiDrafts`
   (both gates + configured). It fills an empty box; with text already there
@@ -566,6 +579,82 @@ switch included).
   `components/gbp/reply-composer.draft.test.ts`, `components/reputation/settings.test.ts`,
   `e2e/specs/reputation-ai-draft.spec.ts` — a draft route that posts, or a
   composer that submits after drafting, turns the spec red.
+
+## Review auto-reply (AUTO_REPLY_V1_PLAN.md)
+
+Plan and owner rulings: [AUTO_REPLY_V1_PLAN.md](../../AUTO_REPLY_V1_PLAN.md).
+Settings (PR 1): `subAccounts/{id}.reviewsAutoReply` via
+`GET/PUT …/reputation/auto-reply`, behind the agency gate
+`reviewsAutoReplyEnabledByAgency` (needs the Google and Reviews AI gates too).
+The engine (PR 2) is `lib/reputation/auto-reply/`; the settings card and the
+Reviews tab's "Needs approval" filter ship in PR 3, so until then held drafts
+are stored but not shown.
+
+- **Kill switch:** `REVIEWS_AUTO_REPLY_ENABLED=1` or the engine never runs on
+  the deployment — no read, no draft, no post
+  ([environment.md](../environment.md)). Re-read in every post's final
+  transaction.
+- **When:** after a sync route has answered (cron `gbp-sync` and Sync now),
+  auto-reply for every synced tenant first, then sentiment, under the
+  request's one deadline (`lib/reputation/after-sync.ts`). Never inside the sync.
+- **Which reviews** (`decide.ts`, pure): active, of the listing auto-reply
+  was enabled for, no reply and no reply in flight, never auto-replied
+  before, **seen by the run that just finished** (`lastSeenAt >= run start` —
+  a stale cache never posts), created at/after `enabledAt` unless backlog is
+  on (newest first), not Discarded. **Auto** only when the star is set to
+  Auto AND the review is rating-only (blank or whitespace comment); written
+  text is always held (`texted`), an Approval star is held (`approval`).
+- **Caps:** 20 auto posts per sub-account per SAST day
+  (`private/autoReplyUsage {day, posts}`, counted in the post's final
+  transaction, not refunded on failure); 40 auto drafts per UTC day, counted
+  as `autoDraftCalls` inside `beginDraftCall`'s transaction on the drafts'
+  `draftsDay`, within drafts' 100 and the shared 300 — so "Draft with AI"
+  keeps ≥ 60. Over either: held without a draft (`cap` / `no_budget`),
+  re-decided on a later run.
+- **Draft first, then post:** each draft is stored on the review as
+  `pendingReply {text, textHash, basisHash, reason, at, model}` before any
+  post (`basisHash` = the sentiment basis, stars + comment). The post uses
+  exactly those bytes, key `auto:{reviewDocId}:{textHash}`, so a failed post
+  retried by the next run posts the same text once and never drafts again.
+  The reviewer's display name goes through the contact guard; a hit drops the
+  name from the input (the draft is not refused).
+- **Before each post** (`post.ts` → `confirm.ts`): the deadline; the reply
+  route's own review lookup and preflight; then one transaction that
+  re-checks the lease, the kill switch, all three gates, `enabled`, the
+  listing, the review (active, unreplied, same basis) and that its draft is
+  still this `auto_queued` text, then `modes[star]`, text presence and
+  `enabledAt` — a star switched to Approval, or auto-reply switched off and
+  on (backlog off, older review), turns the draft into `approval` (kept, now
+  waits for a person); a gate / switch / kill switch off leaves it
+  `auto_queued` ("paused") to post when auto-reply resumes. Then
+  `postReply(…, {createdByUid: enabledByUid})` with **`requireNoReply`**:
+  `claimAttempt` answers `already_replied` for a review whose cached reply is
+  set (any text) and clears its `pendingReply` — the human route never passes
+  it and still edits a reply. Residual risk: a reply made at Google (or GHL)
+  after this run's fetch is invisible; the window is the run's own duration.
+- **State table** (fresh = `basisHash` equals the review's current basis):
+  `auto_queued` fresh → post the stored bytes, stale → re-draft;
+  `approval`/`texted` fresh → skip (waits for a person), stale → re-drafted,
+  stays held; `draft_failed` → retried once `at` is 24 h old (stale: at once);
+  `no_budget`/`cap` → re-decided; `dismissed` fresh → skipped for good, stale
+  → re-decided. **Discard** (`dismissAutoReply`, wired to a button in PR 3)
+  writes `pendingReply {reason: "dismissed"}` AND
+  `subAccounts/{id}/autoReplyDismissed/{reviewDocId} {basisHash, at, byUid}`,
+  which survives a cache clear. A reply appearing at Google clears
+  `pendingReply` on the next sync; a tombstone drops it.
+- **Success:** `recordReplyChange` clears `pendingReply` (every posted reply,
+  human ones too) and, for auto posts, stamps `autoReplied {at, key}` (kept
+  by the sync's merge). Audit: `gbpEvents reply_posted` with `actorUid:
+  "system:auto-reply"`, `createdByUid: enabledByUid`; and an `auditEvents`
+  row `review.auto_replied`, actor `{type: "system", id: "auto-reply"}`,
+  target `{type: "review", id: reviewDocId}` — never the text.
+- **One run per sub-account:** `private/autoReplyLease {runId, until}` (5 min,
+  renewed before each draft and in each post's transaction); a second
+  concurrent run exits `busy`.
+- **Tests:** `auto-reply/decide.test.ts` (the matrix + state table),
+  `run.test.ts`, `run.midrun.test.ts`, `run.states.test.ts` (seam: real sync,
+  fake GBP provider, Reviews AI fake), `gbp/reply-attempts.require-no-reply.test.ts`,
+  `reputation/after-sync.test.ts`.
 
 ## The review-request log
 

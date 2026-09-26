@@ -8,10 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 const handed = vi.hoisted(() => vi.fn());
-// Sentiment runs after the response (SP5 b); here we only see what the route hands it.
-vi.mock("@/lib/reputation/sentiment-after", async (orig) => ({
-  ...(await orig<typeof import("@/lib/reputation/sentiment-after")>()),
-  classifyAfterResponse: handed,
+// Auto-reply then sentiment run after the response; here we only see what the route hands them.
+vi.mock("@/lib/reputation/after-sync", async (orig) => ({
+  ...(await orig<typeof import("@/lib/reputation/after-sync")>()),
+  afterSyncResponse: handed,
 }));
 
 const KEY = "sig_test_current_key_for_gbp_cron";
@@ -177,8 +177,8 @@ describe("manual and scheduled share one core", () => {
   });
 });
 
-describe("sentiment after the response (SP5 b)", () => {
-  it("hands every run the sweep made to sentiment in one deferred batch", async () => {
+describe("auto-reply + sentiment after the response", () => {
+  it("hands every run the sweep made, with its start, to the after-response work in one deferred batch", async () => {
     handed.mockClear();
     // A frozen clock that the SWEEP moves on by a minute: the deadline must be
     // taken at request start, before the sweep, not after it.
@@ -201,11 +201,15 @@ describe("sentiment after the response (SP5 b)", () => {
     }
     expect(moved).toBe(true);
     expect(handed).toHaveBeenCalledTimes(1);
-    const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number }>;
+    const runs = handed.mock.calls[0][0] as Array<{ subAccountId: string; created: number; updated: number; startedAt: Date }>;
     // The one deadline for every tenant: exactly the request's start + 240 s.
     expect(handed.mock.calls[0][1]).toBe(startedAt + 240_000);
     expect(runs.map((r) => r.subAccountId).sort()).toEqual([OTHER_SA, SA].sort());
     expect(runs.every((r) => r.created === 7 && r.updated === 0)).toBe(true);
+    for (const r of runs) {
+      const rec = mem.list(`subAccounts/${r.subAccountId}/gbpSyncRuns`)[0];
+      expect(r.startedAt).toEqual(rec.startedAt);
+    }
   });
 });
 

@@ -4,7 +4,8 @@ import { NextResponse } from "next/server";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
 import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
 import { runGbpRetentionSweep, runGbpSyncSweep } from "@/lib/gbp/sync/sweep";
-import { classifyAfterResponse, requestDeadline, type SyncedRun } from "@/lib/reputation/sentiment-after";
+import { afterSyncResponse } from "@/lib/reputation/after-sync";
+import { requestDeadline, type SyncedRun } from "@/lib/reputation/sentiment-after";
 
 /**
  * Scheduled Google Business Profile review sync — every 6 hours.
@@ -21,11 +22,13 @@ import { classifyAfterResponse, requestDeadline, type SyncedRun } from "@/lib/re
  * retention-only pass as the always-on daily `gbp-retention` cron (every
  * tenant holding a cache, no provider calls).
  *
- * Review sentiment (SP5 b) runs AFTER this responds, one tenant after
- * another under ONE deadline (request start + 240 s), only for tenants with
- * Reviews AI on whose run changed reviews or whose last complete
- * classification is over 24 h old — never inside the request (QStash would
- * retry a slow cron).
+ * Review auto-reply (AUTO_REPLY_V1_PLAN.md; inert unless
+ * REVIEWS_AUTO_REPLY_ENABLED is set) and then review sentiment (SP5 b) run
+ * AFTER this responds, one tenant after another under ONE deadline (request
+ * start + 240 s) — auto-reply for every synced tenant first; sentiment only
+ * for tenants with Reviews AI on whose run changed reviews or whose last
+ * complete classification is over 24 h old — never inside the request
+ * (QStash would retry a slow cron).
  *
  * Each sub-account is isolated inside the sweep, so this answers 200 with the
  * tally even when some tenants failed; 500 only when the sweep could not
@@ -33,7 +36,7 @@ import { classifyAfterResponse, requestDeadline, type SyncedRun } from "@/lib/re
  */
 
 export const dynamic = "force-dynamic";
-/** Sentiment runs after the response inside this invocation (budget 240 s). */
+/** Auto-reply + sentiment run after the response inside this invocation (budget 240 s). */
 export const maxDuration = 300;
 
 export async function POST(request: Request) {
@@ -52,8 +55,10 @@ export async function POST(request: Request) {
   try {
     if (gbpSyncScheduled()) {
       const runs: SyncedRun[] = [];
-      const result = await runGbpSyncSweep({ onRun: (r) => runs.push({ subAccountId: r.subAccountId, created: r.created, updated: r.updated }) });
-      classifyAfterResponse(runs, deadline);
+      const result = await runGbpSyncSweep({
+        onRun: (r) => runs.push({ subAccountId: r.subAccountId, created: r.created, updated: r.updated, startedAt: r.startedAt }),
+      });
+      afterSyncResponse(runs, deadline);
       return NextResponse.json(result);
     }
     // Flag off: behave exactly like the daily retention cron (every tenant
