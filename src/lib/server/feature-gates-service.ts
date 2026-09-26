@@ -5,6 +5,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { removeSendingDomain } from "@/lib/comms/resend-domains";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { clearGbpCache } from "@/lib/gbp/sync/store";
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
+import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import type { ResendConfig } from "@/types";
 import type { PlanGateKey } from "@/types/billing";
 
@@ -159,4 +161,33 @@ export async function applyFeatureGates(
     }
   }
   return result;
+}
+
+/**
+ * Records one `feature_gates.updated` audit event for the gates whose
+ * effective value changed. `stored` is the sub-account doc as read BEFORE
+ * `applyFeatureGates`; a missing opt-OUT gate (SMS / Web Chat / Inbound Voice
+ * AI) already counts as on. Shared by the Manage-dialog PATCH route and the
+ * assistant's `set_feature_gate`, so both leave the same trail.
+ */
+export async function recordGateChanges(
+  subAccountId: string,
+  actorUid: string,
+  stored: Record<string, unknown>,
+  gates: Partial<Record<AgencyGateField, boolean>>
+): Promise<void> {
+  const effective = (field: AgencyGateField): boolean =>
+    typeof stored[field] === "boolean"
+      ? (stored[field] as boolean)
+      : DEFAULT_ON_GATE_FIELDS.has(field);
+  const changes = (Object.entries(gates) as [AgencyGateField, boolean][])
+    .filter(([field, after]) => effective(field) !== after)
+    .map(([field, after]) => ({ field, before: effective(field), after }));
+  if (changes.length === 0) return;
+  await recordSubAccountAuditEvent(getAdminDb(), subAccountId, {
+    action: "feature_gates.updated",
+    actor: { type: "user", id: actorUid },
+    target: { type: "subAccount", id: subAccountId },
+    changes,
+  });
 }

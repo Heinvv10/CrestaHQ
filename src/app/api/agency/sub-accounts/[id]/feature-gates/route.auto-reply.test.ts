@@ -92,6 +92,24 @@ describe("the Workspace Assistant (set_feature_gate)", () => {
     expect(gate()).toBe(false);
   }, 20_000);
 
+  it("switching it off records the same audit row the Manage dialog does; no change records none", async () => {
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`)!, reviewsAutoReplyEnabledByAgency: true });
+    await cap().execute(ctx, assistantArgs(false));
+    expect(auditRows()).toHaveLength(1);
+    expect(auditRows()[0]).toMatchObject({
+      actor: { type: "user", id: "uid_owner" },
+      target: { type: "subAccount", id: SA },
+      changes: [{ field: "reviewsAutoReplyEnabledByAgency", before: true, after: false }],
+    });
+    await cap().execute(ctx, assistantArgs(false));
+    expect(auditRows()).toHaveLength(1);
+  }, 20_000);
+
+  it("audits a default-on gate's missing value as on", async () => {
+    await cap().execute(ctx, { ...assistantArgs(false), gate: "sms-agent" });
+    expect(auditRows()[0]).toMatchObject({ changes: [{ field: "smsAgentEnabledByAgency", before: true, after: false }] });
+  }, 20_000);
+
   it("other gates are still switchable on by the assistant", async () => {
     await cap().execute(ctx, { ...assistantArgs(true), gate: "reviews-ai" });
     expect(mem.read(`subAccounts/${SA}`)?.reviewsAiEnabledByAgency).toBe(true);
@@ -99,6 +117,17 @@ describe("the Workspace Assistant (set_feature_gate)", () => {
 });
 
 describe("never a plan gate", () => {
+  it("create_billing_plan neither offers nor accepts it (nor other standalone gates)", () => {
+    const plan = getCapability("create_billing_plan")!;
+    const params = plan.parameters as { properties: { features: { items: { enum: string[] } } } };
+    const offered = params.properties.features.items.enum;
+    expect(offered).toContain("reviews-ai");
+    for (const f of ["reviews-auto-reply", "google", "payments"]) expect(offered).not.toContain(f);
+    const v = plan.validate({ name: "Pro", priceMonthly: 10, features: ["reviews-ai", "reviews-auto-reply"] });
+    expect(v.ok).toBe(false);
+    expect(plan.validate({ name: "Pro", priceMonthly: 10, features: ["reviews-ai"] })).toMatchObject({ ok: true, args: { features: ["reviews-ai"] } });
+  });
+
   it("is not in PLAN_GATE_KEYS or its labels", () => {
     expect(PLAN_GATE_KEYS).not.toContain("reviewsAutoReplyEnabledByAgency");
     expect(Object.keys(PLAN_GATE_LABELS)).not.toContain("reviewsAutoReplyEnabledByAgency");

@@ -93,7 +93,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
       uid: access.uid,
       listingLocationName: typeof listing === "string" && listing ? listing : null,
     });
-    if (!next.ok) return gbpRefusal(409, "no_listing", "Choose a Google Business listing before turning auto-reply on.");
+    if (!next.ok) return gbpRefusal(409, next.code, "Choose a Google Business listing before turning auto-reply on.");
     tx.set(ref, { reviewsAutoReply: next.value }, { merge: true });
     return next.value;
   });

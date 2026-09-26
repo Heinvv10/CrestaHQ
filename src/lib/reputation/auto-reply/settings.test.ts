@@ -33,6 +33,14 @@ describe("nextAutoReplySettings", () => {
     expect(again).toMatchObject({ ok: true, value: { enabledAt: ctx.now, enabledByUid: "u1", listingLocationName: "locations/a", updatedByUid: "u2" } });
   });
 
+  it("keeps a stored Firestore Timestamp as enabledAt, and drops anything that is not a stamp", () => {
+    const ts = { toMillis: () => 1, toDate: () => new Date(1) };
+    const keep = nextAutoReplySettings({ enabled: true, enabledAt: ts }, on, ctx);
+    expect(keep.ok && keep.value.enabledAt).toBe(ts);
+    const junk = nextAutoReplySettings({ enabled: true, enabledAt: {} }, on, ctx);
+    expect(junk.ok && junk.value.enabledAt).toBeNull();
+  });
+
   it("refuses off→on without a listing, but not a save while off", () => {
     expect(nextAutoReplySettings(undefined, on, { ...ctx, listingLocationName: null })).toEqual({ ok: false, code: "no_listing" });
     expect(nextAutoReplySettings(undefined, { ...on, enabled: false }, { ...ctx, listingLocationName: null }).ok).toBe(true);

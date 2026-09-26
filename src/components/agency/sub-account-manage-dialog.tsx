@@ -580,7 +580,7 @@ function ManageDialogBody({
       if (reviewsAutoReplyDirty) {
         parts.push(
           reviewsAutoReplyEnabled
-            ? "Review auto-reply enabled."
+            ? "Review auto-reply enabled (not live yet)."
             : "Review auto-reply disabled. The sub-account's auto-reply settings are preserved."
         );
       }

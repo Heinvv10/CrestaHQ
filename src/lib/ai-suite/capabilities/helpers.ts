@@ -239,7 +239,7 @@ export const FEATURE_GATES: Record<
   // Posts to Google without a click: the assistant can switch it off, never on.
   "reviews-auto-reply": {
     field: "reviewsAutoReplyEnabledByAgency",
-    label: "Review auto-reply (AI posts replies to Google)",
+    label: "Review auto-reply (AI posts replies to Google; not live yet)",
     assistantMayEnable: false,
   },
   "agent-api": {
@@ -263,6 +263,20 @@ export const FEATURE_GATES: Record<
         },
       }),
 };
+
+/**
+ * The refusal text when the assistant asks to switch ON a gate whose
+ * `FEATURE_GATES` entry says `assistantMayEnable: false`; null otherwise.
+ * Called from `set_feature_gate`'s validate AND execute.
+ */
+export function assistantEnableRefusal(
+  gate: { label: string; assistantMayEnable?: false },
+  enabled: unknown
+): string | null {
+  return enabled === true && gate.assistantMayEnable === false
+    ? `${gate.label} can only be switched on by the agency owner in the sub-account's Manage dialog.`
+    : null;
+}
 
 /** Enabled-gate labels for one sub-account doc (every gate is opt-in). */
 export function enabledGateLabels(data: Record<string, unknown>): string[] {

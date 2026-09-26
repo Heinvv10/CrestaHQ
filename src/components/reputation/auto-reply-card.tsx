@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { AutoReplyStar, ReviewsAutoReplySettings } from "@/types";
 
 /**
  * Reputation → Settings: the "Auto-reply" card (AUTO_REPLY_V1_PLAN.md, UI) —
@@ -15,19 +16,13 @@ import { Button } from "@/components/ui/button";
  */
 export const AUTO_REPLY_UI_ENABLED = false;
 
-type Mode = "auto" | "approval";
-type Modes = Record<"1" | "2" | "3" | "4" | "5", Mode>;
-interface Settings {
-  enabled: boolean;
-  modes: Modes;
-  includeBacklog: boolean;
-}
+type Settings = Pick<ReviewsAutoReplySettings, "enabled" | "modes" | "includeBacklog">;
 type Load =
   | { state: "loading" }
   | { state: "error" }
   | { state: "ready"; gatesOn: boolean; available: boolean; dailyPostCap: number; dailyDraftCap: number };
 
-const STARS = ["1", "2", "3", "4", "5"] as const;
+const STARS: AutoReplyStar[] = [1, 2, 3, 4, 5];
 
 export function AutoReplyCard({ subAccountId, isAdmin }: { subAccountId: string; isAdmin: boolean }) {
   const api = `/api/sub-accounts/${subAccountId}/reputation/auto-reply`;

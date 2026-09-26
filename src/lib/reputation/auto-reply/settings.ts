@@ -7,7 +7,7 @@ import type { AutoReplyMode, AutoReplyStar, ReviewsAutoReplySettings } from "@/t
  * transaction. Nothing here drafts or posts.
  */
 
-export const AUTO_REPLY_STARS: readonly AutoReplyStar[] = [1, 2, 3, 4, 5];
+const AUTO_REPLY_STARS: readonly AutoReplyStar[] = [1, 2, 3, 4, 5];
 
 /** Shown read-only on the settings card; enforced by the engine (PR 2). */
 export const AUTO_REPLY_DAILY_POST_CAP = 20;
@@ -20,7 +20,7 @@ export const AUTO_REPLY_DAILY_DRAFT_CAP = 40;
  */
 export const AUTO_REPLY_ENGINE_AVAILABLE = false;
 
-export const DEFAULT_AUTO_REPLY_MODES: Readonly<Record<AutoReplyStar, AutoReplyMode>> = {
+const DEFAULT_AUTO_REPLY_MODES: Readonly<Record<AutoReplyStar, AutoReplyMode>> = {
   1: "approval",
   2: "approval",
   3: "approval",
@@ -29,14 +29,14 @@ export const DEFAULT_AUTO_REPLY_MODES: Readonly<Record<AutoReplyStar, AutoReplyM
 };
 
 /** What an admin may send: exactly these three keys, nothing else. */
-export interface AutoReplyInput {
+interface AutoReplyInput {
   enabled: boolean;
   modes: Record<AutoReplyStar, AutoReplyMode>;
   includeBacklog: boolean;
 }
 
 const BODY_KEYS = ["enabled", "includeBacklog", "modes"];
-const STAR_KEYS = ["1", "2", "3", "4", "5"];
+const STAR_KEYS = AUTO_REPLY_STARS.map(String);
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -70,7 +70,7 @@ export function readAutoReplySettings(raw: unknown): AutoReplyInput {
   return { enabled: r.enabled === true, modes, includeBacklog: r.includeBacklog === true };
 }
 
-export type NextSettings =
+type NextSettings =
   | { ok: true; value: ReviewsAutoReplySettings }
   | { ok: false; code: "no_listing" };
 
@@ -89,7 +89,9 @@ export function nextAutoReplySettings(
   if (turningOn && !ctx.listingLocationName) return { ok: false, code: "no_listing" };
   const kept = <T>(v: unknown, guard: (x: unknown) => x is T): T | null => (guard(v) ? v : null);
   const isString = (x: unknown): x is string => typeof x === "string";
-  const isStamp = (x: unknown): x is Date => x !== null && x !== undefined && typeof x === "object";
+  // A Date, or a Firestore Timestamp as the admin SDK reads it back.
+  const isStamp = (x: unknown): x is Date =>
+    x instanceof Date || (isPlainObject(x) && typeof x.toMillis === "function");
   return {
     ok: true,
     value: {
