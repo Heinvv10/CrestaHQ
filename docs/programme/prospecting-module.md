@@ -1,6 +1,6 @@
 # Prospecting module — plan
 
-*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Status: PR 1 merged and live (2026-09-24, #245 + #247); PRs 2–6 not started. Grilled with Hein on 2026-09-24; the rulings under "Settled" are closed and are not to be re-opened by an implementer.*
+*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Status: PR 1 merged and live (2026-09-24, #245 + #247); PR 2 built (#288, 2026-09-26); PR 6 live (ApexSignal); PRs 3–5 not started. Grilled with Hein on 2026-09-24; the rulings under "Settled" are closed and are not to be re-opened by an implementer.*
 
 ## Why
 
@@ -38,7 +38,7 @@ Outscraper dropped 2026-09-24 — Hein ruled out paying per search; Get Leads (t
 
 Headline of the report = the single worst finding, ranked by a fixed severity table (no site > no HTTPS > not in any AI answer > no GBP claim > slow mobile > no WhatsApp CTA > …). That sentence is what the outreach merge tag uses.
 
-Report page: `/r/{shareId}`, public, non-enumerating id, branded from agency Company Settings exactly like the GHL share links (logo, colours, agency name, CTA to the agency's booking page). PDF export is v2.
+Report page: `/report/{token}` (see D1 below), public, non-enumerating id, branded from agency Company Settings exactly like the GHL share links (logo, colours, agency name, CTA to the agency's booking page). PDF export is v2.
 
 ## Shape
 
@@ -56,7 +56,7 @@ Report page: `/r/{shareId}`, public, non-enumerating id, branded from agency Com
 - `src/lib/prospecting/` — `sections/*.ts` one module per section with the signature `run(input): Promise<SectionResult>` and a pure `score(raw)` beside it; `severity.ts` (headline ranking); `report-runner.ts` (fan-out, per-section timeouts, partial success); `share.ts`; `quota.ts`; `apexgeo-client.ts`; `approach-guard.ts`.
 - Routes under `src/app/api/sub-accounts/[id]/prospecting/`: `lists`, `reports` (POST = enqueue, quota checked here), `reports/[reportId]`, `reports/[reportId]/share` (POST mint, DELETE revoke), `mystery-shop` (POST, requires `confirm: true` and its own 403 while the comms channel is not connected).
 - QStash callback `api/automations/prospecting/report` — one report per message, idempotent on reportId, section failures recorded, never retried into a second charge. Use `publishCallback` from `src/lib/automations/qstash.ts`.
-- Public: `src/app/r/[shareId]/page.tsx` (server component, no client Firestore) and `api/public/prospecting/report/[shareId]` for the JSON the page renders.
+- Public: `src/app/report/[shareId]/page.tsx` (server component, no client Firestore) and `api/public/prospecting/report/[shareId]` for the JSON the page renders.
 - Get Leads: flip `GET_LEADS_PARKED`, follow the un-park checklist in [get-leads.md](../features/get-leads.md), add "Save as list" to the results bar, and make import write the `prospecting` map.
 - Public API: `POST /api/v1/contacts` already exists; add the `prospecting` map to the contacts serializer so ApexSignal can push it. No new v1 route.
 - Workflows: no engine change. A `prospecting.report.ready` trigger is added to the catalog and fired by the runner, and `{{prospecting.headline}}` / `{{prospecting.reportUrl}}` merge tags are added in `src/lib/messaging/merge-tags.ts`.
@@ -74,12 +74,20 @@ Manage dialog: gate checkbox, quota number field. Sidebar entry "Prospecting" at
 - **ApexGEO**: `POST /api/v1/brands` (name, url) does not exist; audits need a `brand_id`. Add it, or accept `url` without a brand on `POST /api/v1/audits`. One PR in ApexGEO, before PR 3 below. Also confirm that a v1 key with `mcp:read` scope can read `brands/[id]/share-of-voice` and `audits/[id]/decomposition` for a brand it created.
 - **ApexSignal**: a `push_leadstack.py` replacing `push_ghl.py`; reads the CSV, POSTs to `/api/v1/contacts` on #1000 with the `prospecting` map, idempotent on phone. Runs from the same cron after the source cycle. The six "interested" replies from 2026-09-08 go first, tagged `warm-reply`, and become tasks for Hein.
 
+## PR 2 decisions (2026-09-26, recorded from the build)
+
+- **D1 — public URL is `/report/[token]`, not `/r/[shareId]`.** `/r/[token]` is already the compliance-sensitive public review page; a sibling dynamic segment at `/r` is a Next.js build error and would put report code beside the review-gating code.
+- **D2 — Section 3 uses Places `rating` + `userRatingCount` only.** No Atmosphere/reviews SKU: it is paid per call, shares the 30/day SearchText budget, and Places caps the review sample anyway. Review velocity and owner-reply rate are shown as "not measured", never faked. **Revisit when** the first buyer asks for review velocity.
+- **D5 — Section 9 (ads) ships `unavailable`.** Spike: Meta Ad Library answers a keyless GET with 403; Google Ads Transparency Center is a 2.5 MB client-rendered shell backed by an undocumented internal RPC. The section returns manual-check links and never a guessed "no ads". Revisit if either publishes a keyless API.
+- **Section 4 listings:** Brabys and Cylex are behind Cloudflare 403s and Yellow Pages SA serves a JS shell, so they come back `unknown`. Bing (server-rendered, noisy) and the Facebook page linked from the business's own site are checked. `listing_missing` is never emitted, because no directory's "not found" is trustworthy.
+- **Section 2 GBP:** one Places Details call, mask `id,businessStatus,photos,regularOpeningHours,nationalPhoneNumber`. `editorialSummary` is an Enterprise+Atmosphere field, so the description is not measured. Places cannot tell "claimed", so `gbp_unclaimed` is not emitted.
+
 ## PR sequence (each one independently mergeable, each with a blind `/review`)
 
 | PR | Scope | Gate to merge |
 |---|---|---|
 | 1 | **DONE (#245, #247)** — Gate + quota + schema + rules + Manage dialog + `FEATURE_GATES` entry + un-park Get Leads with saved lists and the `prospecting` map on import and on v1 contacts | tests for the gate 403s, rules tests, tenancy check; Level-3 boundary |
-| 2 | `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Google Places/Firecrawl), QStash callback, quota enforcement, share page `/r/[shareId]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
+| 2 | **DONE (#288)** — `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Google Places/Firecrawl), QStash callback, quota enforcement, share page `/report/[token]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
 | 3 | ApexGEO connection + sections 5, 7, 8; "Not connected" state | recorded-response tests against the ApexGEO OpenAPI shapes; live proof on #1000 with a real key |
 | 4 | Workflow trigger + merge tags + approach guard + daily cap | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
 | 5 | Mystery-shop actions (form/call, WhatsApp) with confirm dialog | **human gate**: sends reach a real business; first live run is to a number Hein owns |
