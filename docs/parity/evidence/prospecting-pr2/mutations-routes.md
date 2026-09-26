@@ -33,4 +33,4 @@ Follow-up (public raw whitelist filled in from builder-sections' final raw shape
 
 | File:line | Mutation | Red test |
 |---|---|---|
-| `src/lib/prospecting/public-report.ts:71` | iterate `Object.keys(s.raw)` instead of `PUBLIC_RAW_KEYS[s.key]` | public route: *returns exactly the whitelisted payload*; *pass only whitelisted scalar raw keys* |
+| `src/lib/prospecting/public-report.ts:68` | iterate `Object.keys(s.raw)` instead of `PUBLIC_RAW_KEYS[s.key]` | public route: *returns exactly the whitelisted payload*; *pass only whitelisted scalar raw keys* |
