@@ -2,8 +2,9 @@ import { Button } from "@/components/ui/button";
 
 /**
  * The reviews inbox filter bar. Controlled: the section owns the values and
- * re-asks the API (GET /gbp/reviews?rating=…&replied=…&from=…&to=…&sort=…),
- * which filters in memory over its capped newest-first set.
+ * re-asks the API (GET /gbp/reviews?rating=…&replied=…&from=…&to=…&sort=…&approval=needed),
+ * which filters in memory over its capped newest-first set. "Needs approval"
+ * (review auto-reply drafts waiting for a person) shows its count.
  */
 
 export interface FilterValue {
@@ -12,9 +13,10 @@ export interface FilterValue {
   from: string;
   to: string;
   sort: "newest" | "oldest";
+  needsApproval: boolean;
 }
 
-export const NO_FILTERS: FilterValue = { ratings: [], replied: "all", from: "", to: "", sort: "newest" };
+export const NO_FILTERS: FilterValue = { ratings: [], replied: "all", from: "", to: "", sort: "newest", needsApproval: false };
 
 /**
  * A date input's day as the viewer's LOCAL midnight, `plusDays` later, with
@@ -38,6 +40,7 @@ export function filterQuery(f: FilterValue): string {
   if (f.from) q.set("from", localMidnight(f.from));
   if (f.to) q.set("to", localMidnight(f.to, 1));
   if (f.sort !== "newest") q.set("sort", f.sort);
+  if (f.needsApproval) q.set("approval", "needed");
   const s = q.toString();
   return s ? `?${s}` : "";
 }
@@ -48,6 +51,7 @@ export const FIELD_LABEL: Record<string, string> = {
   from: "“From” date",
   to: "“To” date",
   sort: "sort order",
+  approval: "Needs approval",
 };
 
 const field = "h-8 rounded-md border bg-background px-2 text-xs";
@@ -57,11 +61,14 @@ export function ReviewFilters({
   onChange,
   shown,
   available,
+  needsApproval = 0,
 }: {
   value: FilterValue;
   onChange: (next: FilterValue) => void;
   shown: number;
   available: number;
+  /** Reviews holding an auto-reply draft for a person (GET …/gbp/reviews `needsApproval`). */
+  needsApproval?: number;
 }) {
   const set = (patch: Partial<FilterValue>) => onChange({ ...value, ...patch });
   const toggle = (n: number) =>
@@ -70,6 +77,19 @@ export function ReviewFilters({
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-xl border p-3" data-testid="gbp-filters">
+      {(needsApproval > 0 || value.needsApproval) && (
+        <Button
+          type="button"
+          size="sm"
+          variant={value.needsApproval ? "default" : "outline"}
+          className="h-8 px-2 text-xs"
+          aria-pressed={value.needsApproval}
+          onClick={() => set({ needsApproval: !value.needsApproval })}
+          data-testid="gbp-filter-needs-approval"
+        >
+          Needs approval <span data-testid="gbp-filter-needs-approval-count">({needsApproval})</span>
+        </Button>
+      )}
       <span className="text-xs text-muted-foreground">Stars</span>
       {[5, 4, 3, 2, 1].map((n) => (
         <Button

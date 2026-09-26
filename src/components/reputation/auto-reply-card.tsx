@@ -9,19 +9,29 @@ import type { AutoReplyStar, ReviewsAutoReplySettings } from "@/types";
  * Reputation → Settings: the "Auto-reply" card (AUTO_REPLY_V1_PLAN.md, UI) —
  * master switch, Auto / Approval per star, the backlog option, and the daily
  * caps read-only (the server's constants, via GET). Every save sends the whole
- * `{enabled, modes, includeBacklog}` the route allow-lists.
+ * `{enabled, modes, includeBacklog}` the route allow-lists; a refusal
+ * (`no_listing`, `listing_shared`, a gate) shows inline. Locked, naming the
+ * gate, while any of the three agency gates is off; says so when this
+ * deployment's engine does not run (the kill switch, as a boolean) and when a
+ * listing change switched auto-reply off.
  *
- * Hidden until PR 3 ships this card with the Reviews tab's "Needs approval"
- * UI (the engine shipped in PR 2): `AUTO_REPLY_UI_ENABLED` keeps the
- * settings page from mounting it.
+ * Shown since PR 3, together with the Reviews tab's "Needs approval" filter.
  */
-export const AUTO_REPLY_UI_ENABLED = false;
+export const AUTO_REPLY_UI_ENABLED = true;
 
 type Settings = Pick<ReviewsAutoReplySettings, "enabled" | "modes" | "includeBacklog">;
+type Gate = "gate_off" | "ai_gate_off" | "auto_reply_gate_off";
 type Load =
   | { state: "loading" }
   | { state: "error" }
-  | { state: "ready"; gatesOn: boolean; available: boolean; dailyPostCap: number; dailyDraftCap: number };
+  | { state: "ready"; gate: Gate | null; available: boolean; running: boolean; dailyPostCap: number; dailyDraftCap: number };
+
+const LOCKED: Record<Gate, string> = {
+  gate_off: "Auto-reply is locked: your agency has not enabled Google Business Profile for this sub-account.",
+  ai_gate_off: "Auto-reply is locked: your agency has not enabled Reviews AI for this sub-account.",
+  auto_reply_gate_off: "Auto-reply is locked: your agency has not enabled review auto-reply for this sub-account.",
+};
+const isGate = (v: unknown): v is Gate => typeof v === "string" && v in LOCKED;
 
 const STARS: AutoReplyStar[] = [1, 2, 3, 4, 5];
 
@@ -32,19 +42,26 @@ export function AutoReplyCard({ subAccountId, isAdmin }: { subAccountId: string;
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listingChanged, setListingChanged] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
       const res = await fetch(api, { signal: controller.signal }).catch(() => null);
       const data = (await res?.json().catch(() => null)) as
-        | (Settings & { gatesOn?: boolean; available?: boolean; dailyPostCap?: number; dailyDraftCap?: number })
+        | (Settings & {
+            gatesOn?: boolean; gate?: unknown; available?: boolean; running?: boolean; disabledReason?: unknown;
+            dailyPostCap?: number; dailyDraftCap?: number;
+          })
         | null;
       if (controller.signal.aborted) return;
       if (!res?.ok || !data || typeof data.enabled !== "boolean" || !data.modes) return setLoad({ state: "error" });
       setSettings({ enabled: data.enabled, modes: data.modes, includeBacklog: data.includeBacklog === true });
+      setListingChanged(data.disabledReason === "listing_changed");
+      // Fail closed: gates not reported on reads as locked by the auto-reply gate.
+      const gate = data.gatesOn === true ? null : isGate(data.gate) ? data.gate : "auto_reply_gate_off";
       setLoad({
-        state: "ready", gatesOn: data.gatesOn === true, available: data.available === true,
+        state: "ready", gate, available: data.available === true, running: data.running === true,
         dailyPostCap: Number(data.dailyPostCap), dailyDraftCap: Number(data.dailyDraftCap),
       });
     })();
@@ -62,11 +79,14 @@ export function AutoReplyCard({ subAccountId, isAdmin }: { subAccountId: string;
     setSaved(false);
     setError(null);
     const res = await fetch(api, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(settings) }).catch(() => null);
-    const data = (await res?.json().catch(() => null)) as { error?: string; reviewsAutoReply?: Settings } | null;
+    const data = (await res?.json().catch(() => null)) as
+      | { error?: string; reviewsAutoReply?: Settings & { disabledReason?: unknown } }
+      | null;
     setSaving(false);
     if (res?.ok && data?.reviewsAutoReply) {
       const r = data.reviewsAutoReply;
       setSettings({ enabled: r.enabled, modes: r.modes, includeBacklog: r.includeBacklog });
+      setListingChanged(r.disabledReason === "listing_changed");
       setSaved(true);
     } else {
       setError(data?.error ?? "The auto-reply settings could not be saved. Please try again.");
@@ -90,12 +110,12 @@ export function AutoReplyCard({ subAccountId, isAdmin }: { subAccountId: string;
       {load.state === "error" && (
         <p className="mt-3 text-sm text-destructive" data-testid="rep-settings-autoreply-error">The auto-reply settings could not be loaded.</p>
       )}
-      {load.state === "ready" && !load.gatesOn && (
-        <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground" data-testid="rep-settings-autoreply-locked">
-          <Lock className="h-4 w-4" /> Auto-reply is locked by your agency.
+      {load.state === "ready" && load.gate && (
+        <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground" data-testid="rep-settings-autoreply-locked" data-gate={load.gate}>
+          <Lock className="h-4 w-4 shrink-0" /> {LOCKED[load.gate]}
         </p>
       )}
-      {load.state === "ready" && load.gatesOn && settings && (
+      {load.state === "ready" && !load.gate && settings && (
         <div className="mt-3 space-y-3">
           <label className="flex items-center gap-2 text-sm font-medium">
             <input
@@ -110,6 +130,16 @@ export function AutoReplyCard({ subAccountId, isAdmin }: { subAccountId: string;
           </label>
           {!load.available && (
             <p className="text-xs text-muted-foreground" data-testid="rep-settings-autoreply-unavailable">Auto-reply is not available yet.</p>
+          )}
+          {load.available && !load.running && (
+            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="rep-settings-autoreply-not-running">
+              Auto-reply isn&apos;t running on this deployment yet — settings are saved, but nothing is drafted or posted.
+            </p>
+          )}
+          {listingChanged && !settings.enabled && (
+            <p className="text-xs text-amber-700 dark:text-amber-400" data-testid="rep-settings-autoreply-listing-changed">
+              Switched off because the Google listing changed — switch on again to resume.
+            </p>
           )}
           <p className="text-xs text-muted-foreground" data-testid="rep-settings-autoreply-texted-note">
             Reviews with written text always wait for approval.

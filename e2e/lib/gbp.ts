@@ -77,15 +77,17 @@ export async function setScenario(s: Scenario): Promise<void> {
   await primaryRef().collection("private").doc("gbpFakeScenario").set(s);
 }
 
-/** Remove every GBP trace on the fixture primary: connection, listing, cache, runs, scenario, widget. */
+/** Remove every GBP trace on the fixture primary: connection, listing, cache, runs, scenario, widget, auto-reply state. */
 export async function clearGbp(): Promise<void> {
   await guard();
   const ref = primaryRef();
   // The private docs carry no subAccountId; their parent was asserted above.
-  for (const id of ["googleConnection", "gbpFakeScenario", "gbpSyncState"]) {
+  for (const id of ["googleConnection", "gbpFakeScenario", "gbpSyncState", "autoReplyLease", "autoReplyUsage"]) {
     await ref.collection("private").doc(id).delete();
   }
-  for (const col of ["gbpReviews", "gbpSyncRuns", "gbpEvents", "gbpReplyAttempts"]) {
+  // autoReplyNever / autoReplyDismissed deliberately outlive the review cache
+  // in the app; a spec's fixture reviews must not leave them to the next run.
+  for (const col of ["gbpReviews", "gbpSyncRuns", "gbpEvents", "gbpReplyAttempts", "autoReplyNever", "autoReplyDismissed"]) {
     const snap = await ref.collection(col).get();
     for (const doc of snap.docs) await deleteScoped(doc.ref);
   }
@@ -97,6 +99,8 @@ export async function clearGbp(): Promise<void> {
     googleListing: FieldValue.delete(),
     gbpSummary: FieldValue.delete(),
     gbpWidgetMeta: FieldValue.delete(),
+    // A crashed auto-reply spec must not leave auto-reply on for later specs.
+    reviewsAutoReply: FieldValue.delete(),
   });
 }
 

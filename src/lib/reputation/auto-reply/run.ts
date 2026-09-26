@@ -4,9 +4,10 @@ import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { autoReplyNeverCollection, stableReviewKey } from "@/lib/gbp/auto-reply-never";
 import { PENDING_MS } from "@/lib/gbp/reply-attempts";
+import { assertFakeFixtureAgency, gbpProviderMode } from "@/lib/gbp/provider/select";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
-import { reviewsAiConfigured } from "../ai/mode";
-import { getReviewsAiFor } from "../ai/select";
+import { reviewsAiConfigured, reviewsAiMode } from "../ai/mode";
+import { assertReviewsAiFixtureAgency, getReviewsAiFor } from "../ai/select";
 import type { ReviewsAi } from "../ai/types";
 import { beginDraftCall, draftInputFor } from "../draft";
 import { reviewBasis } from "../sentiment-basis";
@@ -44,6 +45,12 @@ const kind = (err: unknown) => (err instanceof Error ? err.name : typeof err);
 export async function autoReplyAfterSync(sa: string, runStartedAt: Date, deadline: number): Promise<AutoReplyRun | null> {
   if (!autoReplyKillSwitchOn()) return null;
   try {
+    // With either fake — GBP or Reviews AI (CI and dev, which run on the
+    // PRODUCTION Firestore) — only that fake's fixture agency is served: for
+    // any other sub-account the engine reads only its doc (for the agencyId)
+    // and writes nothing, not even the lease. Throws (→ logged, null) otherwise.
+    if (gbpProviderMode() === "fake") await assertFakeFixtureAgency(sa);
+    if (reviewsAiMode() === "fake") await assertReviewsAiFixtureAgency(sa);
     return await runEngine(sa, runStartedAt.getTime(), deadline);
   } catch (err) {
     console.warn(`[reputation/auto-reply] sa=${sa} run failed kind=${kind(err)}`);

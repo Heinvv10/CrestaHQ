@@ -91,6 +91,8 @@ describe("payload", () => {
       updateTime: "2026-08-27T09:00:00.000Z",
       reply: { comment: "Thank you from the fixture team.", updateTime: "2026-08-27T12:00:00Z" },
       sentiment: null,
+      autoReplied: false,
+      approval: null,
     });
     expect(body.reviews[2].comment).toContain("(Translated by Google)");
     expect(body.reviews[6].comment).toBe("  Fixture review with leading and trailing spaces.  ");

@@ -15,7 +15,7 @@ import { AUTO_REPLY_UI_ENABLED, AutoReplyCard } from "@/components/reputation/au
  * section, mounted as it is. Connecting Google and choosing the listing stay
  * on AI Agents → Google Business. Replies are posted by the admin's click,
  * unless review auto-reply is switched on for the sub-account (its card,
- * AutoReplyCard, is hidden until AUTO_REPLY_UI_ENABLED).
+ * AutoReplyCard, below the Reviews AI card).
  */
 
 const MAX = 1000;

@@ -127,6 +127,11 @@ export interface ReviewsAutoReplySettings {
   enabledAt: Date | null;
   enabledByUid: string | null;
   listingLocationName: string | null;
+  /**
+   * Why auto-reply is off when the admin did not switch it off: a listing
+   * change or clear set it (the card says so). Cleared by any admin switch.
+   */
+  disabledReason?: "listing_changed" | null;
   updatedAt: Date;
   updatedByUid: string;
 }

@@ -18,6 +18,12 @@ import type { ReviewView } from "./review-item";
  * when the same text is retried, so a retry after a timeout never posts
  * twice; changed text (typed or drafted) gets a new key. Outcomes show
  * inline (no confirm()/alert()).
+ *
+ * A review holding an auto-reply draft (`review.approval`, "Needs approval")
+ * opens with that draft already in the box — posted, like any reply, only by
+ * the click, through the same reply route — and offers Discard, which marks
+ * the draft dismissed (…/auto-reply/dismiss) so auto-reply leaves the review
+ * alone until it changes.
  */
 
 const newKey = () => crypto.randomUUID();
@@ -27,6 +33,7 @@ const DRAFT_FAILED = "Couldn't draft a reply. Try again, or write your own.";
 const DRAFT_NOTE =
   "AI draft — check it, especially any phone numbers, emails or links, before posting. Nothing is sent until you click Post reply to Google.";
 const DRAFT_DROPPED = "You edited the reply while the draft was on its way, so it wasn't applied.";
+const DISCARD_FAILED = "The draft could not be discarded. Please try again.";
 
 export function ReplyComposer({
   subAccountId,
@@ -50,6 +57,8 @@ export function ReplyComposer({
   const [draftError, setDraftError] = useState<string | null>(null);
   const [confirmReplace, setConfirmReplace] = useState(false);
   const [draftDropped, setDraftDropped] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const [discardError, setDiscardError] = useState<string | null>(null);
   const key = useRef("");
   // A draft response applies only to the composer session and the text it was asked for.
   const session = useRef(0);
@@ -57,12 +66,14 @@ export function ReplyComposer({
   const lastSent = useRef<string | null>(null);
 
   const start = () => {
-    setText(review.reply?.comment ?? "");
+    // The server offers an auto-reply draft only while it is fresh and the review unreplied.
+    const heldDraft = review.reply ? null : (review.approval?.draft ?? null);
+    setText(review.reply?.comment ?? heldDraft ?? "");
     setError(null);
     setNotice(null);
     key.current = newKey();
     lastSent.current = null;
-    setDrafted(false);
+    setDrafted(heldDraft !== null);
     setDraftError(null);
     setConfirmReplace(false);
     setDraftDropped(false);
@@ -135,12 +146,42 @@ export function ReplyComposer({
     }
   };
 
+  const discard = async () => {
+    setDiscarding(true);
+    setDiscardError(null);
+    try {
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/gbp/reviews/${review.docId}/auto-reply/dismiss`, { method: "POST" });
+      const data = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (res.ok) await onPosted();
+      else {
+        setDiscardError(data?.error ?? DISCARD_FAILED);
+        // 409: the row changed under the admin (replied, auto-posted, edited) — show the list as it is now.
+        if (res.status === 409) await onPosted();
+      }
+    } catch (err) {
+      console.warn(`[gbp/auto-reply] discard failed: ${err instanceof Error ? err.name : typeof err}`);
+      setDiscardError(DISCARD_FAILED);
+    } finally {
+      setDiscarding(false);
+    }
+  };
+
   if (!open) {
     return (
       <>
-        <Button type="button" size="sm" variant="outline" className="mt-3" onClick={start} data-testid={`gbp-reply-open-${review.reviewId}`}>
-          {review.reply ? "Edit reply" : "Reply"}
-        </Button>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={start} data-testid={`gbp-reply-open-${review.reviewId}`}>
+            {review.reply ? "Edit reply" : review.approval?.draft ? "Review draft" : "Reply"}
+          </Button>
+          {review.approval && !review.reply && (
+            <Button type="button" size="sm" variant="ghost" onClick={() => void discard()} disabled={discarding} data-testid={`gbp-reply-discard-${review.reviewId}`}>
+              {discarding && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}Discard
+            </Button>
+          )}
+        </div>
+        {discardError && (
+          <p className="mt-2 text-xs text-red-600" role="alert" data-testid="gbp-reply-discard-error">{discardError}</p>
+        )}
         {notice && (
           <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-400" role="status" data-testid="gbp-reply-notice">{notice}</p>
         )}

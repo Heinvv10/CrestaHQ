@@ -1,3 +1,4 @@
+import { publicApproval, type PublicApproval } from "@/lib/reputation/auto-reply/approval";
 import { currentSentiment } from "@/lib/reputation/sentiment-basis";
 import { deriveHealth } from "./health";
 import { retentionBasis } from "./reconcile";
@@ -66,9 +67,14 @@ export interface PublicReview {
   reply: { comment: string; updateTime: string } | null;
   /** SP5 (b): the current label and how it was reached — never its basis, model or time; null when stale. */
   sentiment: { label: string; method: string } | null;
+  /** The reply was posted by review auto-reply. */
+  autoReplied: boolean;
+  /** A fresh auto-reply draft waiting for a person — its reason and text only. */
+  approval: PublicApproval | null;
 }
 
-export function publicReview(d: Record<string, unknown>): PublicReview {
+/** `autoPosts(star)`: whether auto-reply would post that star right now (a queued draft reads as paused otherwise). */
+export function publicReview(d: Record<string, unknown>, autoPosts: (star: number) => boolean = () => false): PublicReview {
   const reviewer = d.reviewer as PublicReview["reviewer"];
   const reply = d.reply as PublicReview["reply"];
   return {
@@ -84,6 +90,8 @@ export function publicReview(d: Record<string, unknown>): PublicReview {
     reply: reply ? { comment: reply.comment, updateTime: reply.updateTime } : null,
     // Only a label derived from the review's CURRENT content — a sync edit keeps the old one on the doc.
     sentiment: currentSentiment(d),
+    autoReplied: !!d.autoReplied,
+    approval: publicApproval(d, autoPosts),
   };
 }
 

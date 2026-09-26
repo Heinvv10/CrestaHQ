@@ -34,6 +34,8 @@ interface Ready {
   reviews: ReviewView[];
   /** Active reviews before the filters. */
   available: number;
+  /** Of those, how many hold an auto-reply draft for a person. */
+  needsApproval: number;
   runs: RunView[];
   scheduled: boolean;
   truncated: boolean;
@@ -75,6 +77,7 @@ export function ReviewsSection({
       setLoad({
         state: "ready", summary: data.summary ?? null, reviews: data.reviews, runs: data.runs ?? [],
         available: typeof data.available === "number" ? data.available : data.reviews.length,
+        needsApproval: typeof data.needsApproval === "number" ? data.needsApproval : 0,
         scheduled: data.scheduled === true, truncated: data.truncated === true, aiDrafts: data.aiDrafts === true,
       });
     }
@@ -155,7 +158,9 @@ export function ReviewsSection({
       )}
 
       {load.available > 0 && (
-        <ReviewFilters value={filters} onChange={setFilters} shown={load.reviews.length} available={load.available} />
+        <ReviewFilters
+          value={filters} onChange={setFilters} shown={load.reviews.length} available={load.available} needsApproval={load.needsApproval}
+        />
       )}
       {filterError && (
         <p className="text-xs text-red-600" data-testid="gbp-filter-error" role="alert">{filterError}</p>

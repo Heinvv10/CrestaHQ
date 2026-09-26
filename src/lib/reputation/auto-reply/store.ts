@@ -139,9 +139,14 @@ export async function storePending(
  * Discard (the Reviews tab's button, PR 3): mark the review's draft
  * `dismissed` for its current basis, AND record it outside the cache so a
  * cache clear cannot resurrect it. The engine never drafts or posts that
- * review again unless its content changes. False when the review is gone.
+ * review again unless its content changes. `not_found` when the review is
+ * gone; `nothing_to_dismiss` when it has a reply, no auto-reply draft, or a
+ * STALE one (drafted for content since edited) — nothing is written. A repeat
+ * Discard is accepted (the dismissed marker carries the current basis).
  */
-export async function dismissAutoReply(sa: string, docId: string, byUid: string, now: Date): Promise<boolean> {
+export async function dismissAutoReply(
+  sa: string, docId: string, byUid: string, now: Date,
+): Promise<"dismissed" | "not_found" | "nothing_to_dismiss"> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
   const subRef = db.doc(`subAccounts/${sa}`);
@@ -149,12 +154,16 @@ export async function dismissAutoReply(sa: string, docId: string, byUid: string,
     const d = (await tx.get(ref)).data() as ReviewData | undefined;
     const sub = (await tx.get(subRef)).data();
     const basisHash = d?.state === "active" ? reviewBasis(d) : null;
-    if (!basisHash) return false;
+    if (!basisHash) return "not_found";
+    // Only the draft the admin saw: a draft of older content (the review was
+    // edited since) is stale — dismissing it would silence the NEW content.
+    const p = readPending(d!.pendingReply);
+    if (d!.reply || !p || p.basisHash !== basisHash) return "nothing_to_dismiss";
     tx.update(ref, { pendingReply: { text: null, textHash: null, basisHash, reason: "dismissed", at: now, model: null } });
     tx.set(db.doc(dismissedPath(sa, d!.reviewName)), {
       agencyId: String(sub?.agencyId ?? ""), subAccountId: sa, createdByUid: byUid, byUid, basisHash, at: now, reviewDocId: docId,
     });
-    return true;
+    return "dismissed";
   });
 }
 

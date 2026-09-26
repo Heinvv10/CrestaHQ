@@ -586,19 +586,51 @@ Plan and owner rulings: [AUTO_REPLY_V1_PLAN.md](../../AUTO_REPLY_V1_PLAN.md).
 Settings (PR 1): `subAccounts/{id}.reviewsAutoReply` via
 `GET/PUT …/reputation/auto-reply`, behind the agency gate
 `reviewsAutoReplyEnabledByAgency` (needs the Google and Reviews AI gates too).
-The engine (PR 2) is `lib/reputation/auto-reply/`; the settings card and the
-Reviews tab's "Needs approval" filter ship in PR 3, so until then held drafts
-are stored but not shown.
+The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
+
+- **Settings card** (Reputation → Settings, `components/reputation/auto-reply-card.tsx`):
+  master switch, Auto / Approval per star, the backlog checkbox, "Reviews with
+  written text always wait for approval", the caps read-only (20 posts, 40
+  drafts a day). **Locked** while any agency gate is off, naming the first
+  one (GET `gate`: `gate_off` / `ai_gate_off` / `auto_reply_gate_off`). A
+  refused save (`no_listing`, `listing_shared`, a gate) shows inline. GET
+  `running` is the kill switch as a boolean (never its value): false shows
+  "Auto-reply isn't running on this deployment yet". GET `disabledReason:
+  "listing_changed"` — set by any listing change or clear that switched an
+  ON auto-reply off, cleared by any admin switch — shows "Switched off
+  because the Google listing changed — switch on again to resume".
+- **Reviews tab** (`components/gbp/reviews-section.tsx` and friends): a
+  **Needs approval** filter (`GET …/gbp/reviews?approval=needed`) with its
+  count (`needsApproval`, over the same capped served records): a review
+  with a `pendingReply` that is fresh (`basisHash` = the review's current
+  basis), not `dismissed`, and unreplied (`auto-reply/approval.ts`). Each
+  row's reason (`approval.state`): Held for approval (`approval`/`texted`),
+  Queued to auto-post (`auto_queued` the engine would post now — kill switch,
+  gates, on for this listing, no other sub-account on the same location,
+  star on Auto), Auto-post paused (`auto_queued`
+  otherwise), Draft failed, Over today's limit (`cap`/`no_budget`), Post
+  failed. Only the reason and the draft text leave the server — never
+  `textHash`, `basisHash`, `model` or `at`. The composer opens **pre-filled**
+  with the draft ("Review draft"); **Post** is the ordinary human reply route.
+  **Discard** is `POST …/gbp/reviews/[reviewDocId]/auto-reply/dismiss`
+  (sub-account admin, Google gate, the reply route's 404 rules; 409
+  `nothing_to_dismiss` for a replied review, one without a draft, or a
+  stale draft — the page then reloads the list) →
+  `dismissAutoReply`. A reply auto-reply posted shows an **Auto-replied** tag
+  (`autoReplied`).
 
 - **Listing:** enabling is refused (409 `listing_shared`) while another
   sub-account has selected the same Google location, and ANY listing change
   or clear (select another, DELETE, disconnect, not accessible after a
   reconnect) switches `reviewsAutoReply.enabled` off (modes kept) — resuming
-  needs an explicit re-enable.
+  needs an explicit re-enable — and, when it was on, notes
+  `disabledReason: "listing_changed"` for the card.
 - **Kill switch:** `REVIEWS_AUTO_REPLY_ENABLED=1` or the engine never runs on
   the deployment — no read, no draft, no post
   ([environment.md](../environment.md)). Re-read in every post's final
-  transaction.
+  transaction. With the GBP or Reviews AI fake (CI, dev) the engine serves
+  only that fake's fixture agency (`run.ts`): another sub-account's doc is
+  read for its agencyId and nothing is written.
 - **When:** after a sync route has answered (cron `gbp-sync` and Sync now),
   auto-reply for every synced tenant first, then sentiment, under the
   request's one deadline (`lib/reputation/after-sync.ts`). Never inside the sync.
@@ -661,7 +693,7 @@ are stored but not shown.
   (stale: re-decided); a queued draft whose review is older than a new
   `enabledAt` (switched off and on, backlog off) → `approval`, text kept;
   `no_budget`/`cap` → re-decided; `dismissed` fresh → skipped for good, stale
-  → re-decided. **Discard** (`dismissAutoReply`, wired to a button in PR 3)
+  → re-decided. **Discard** (`dismissAutoReply`, the Reviews tab's button)
   writes `pendingReply {reason: "dismissed"}` AND
   `subAccounts/{id}/autoReplyDismissed/{stableReviewKey} {basisHash, at, byUid,
   reviewDocId}`, which survives a cache clear. Markers and Discards are keyed
@@ -682,8 +714,11 @@ are stored but not shown.
   concurrent run exits `busy`.
 - **Tests:** `auto-reply/decide.test.ts` (the matrix + state table),
   `run.test.ts`, `run.midrun.test.ts`, `run.states.test.ts` (seam: real sync,
-  fake GBP provider, Reviews AI fake), `gbp/reply-attempts.require-no-reply.test.ts`,
-  `reputation/after-sync.test.ts`.
+  fake GBP provider, Reviews AI fake), `run.fence.test.ts`, `run.blast.test.ts`,
+  `gbp/reply-attempts.require-no-reply.test.ts`, `reputation/after-sync.test.ts`;
+  UI: `auto-reply-card.test.ts`, `gbp/reviews-section.approval.test.ts`,
+  `…/gbp/reviews/route.approval.test.ts`, `…/auto-reply/dismiss/route.test.ts`;
+  E2E `e2e/specs/gbp-auto-reply.spec.ts`.
 
 ## The review-request log
 

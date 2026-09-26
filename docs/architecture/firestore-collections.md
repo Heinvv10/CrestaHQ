@@ -149,8 +149,8 @@ fake's call log (ids + count, and `drafts: [{at, kind, stars}]` — never text).
 `subAccounts/{id}.reviewsAiConfig {replyGuidelines, updatedAt, updatedByUid}`
 (SP5 c) is server-written (PUT …/reputation/ai-settings), member-readable.
 `subAccounts/{id}.reviewsAutoReply {enabled, modes {1..5: auto|approval},
-includeBacklog, enabledAt, enabledByUid, listingLocationName, updatedAt,
-updatedByUid}` (AUTO_REPLY_V1_PLAN.md) is server-written (PUT
+includeBacklog, enabledAt, enabledByUid, listingLocationName, disabledReason,
+updatedAt, updatedByUid}` (AUTO_REPLY_V1_PLAN.md) is server-written (PUT
 …/reputation/auto-reply, admin; stamps set on off→on in a transaction),
 member-readable; absent reads as off, 1-3★ approval, 4-5★ auto, no backlog.
 The auto-reply engine (`lib/reputation/auto-reply/`, Admin SDK only; no
@@ -184,7 +184,11 @@ location selected through another Google account renames its reviews, so the
 cache doc id changes and this key does not; `reviewDocId` is kept for
 reference. Server-only (no client rule), no index. Any listing change or
 clear — including the same location through another account — also sets
-`reviewsAutoReply.enabled` to false.
+`reviewsAutoReply.enabled` to false and, when it was on,
+`reviewsAutoReply.disabledReason: "listing_changed"` (the settings card's
+"switched off because the listing changed" note; the listing route and
+`clearListing` write it, any admin switch through the settings route clears
+it to null; absent reads as null).
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
 random bytes base64url, never derived from a tenant id) holds the widget config

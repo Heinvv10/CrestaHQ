@@ -1,9 +1,11 @@
+import { needsApproval } from "@/lib/reputation/auto-reply/approval";
 import { toMillis } from "./sync/types";
 
 /**
  * The reviews inbox filters: `rating` (comma list 1–5), `replied`
  * (`all|replied|unreplied`), `from` / `to` on createTime, `sort` (`newest` |
- * `oldest`). Applied in memory to the capped newest-first set the route
+ * `oldest`), `approval=needed` (a fresh auto-reply draft waiting for a
+ * person — auto-reply/approval.ts). Applied in memory to the capped newest-first set the route
  * already reads — no composite index.
  *
  * `from` is inclusive, `to` exclusive. Each is an ISO date-time with an
@@ -22,6 +24,7 @@ export interface ReviewFilters {
   /** Exclusive upper bound. */
   toMs: number | null;
   sort: "newest" | "oldest";
+  needsApproval: boolean;
 }
 
 export type ParsedFilters = { ok: true; filters: ReviewFilters } | { ok: false; field: string };
@@ -84,7 +87,10 @@ export function parseReviewFilters(params: URLSearchParams): ParsedFilters {
   }
   if (fromMs !== null && toMs !== null && fromMs >= toMs) return { ok: false, field: "to" };
 
-  return { ok: true, filters: { ratings, replied, fromMs, toMs, sort } };
+  const approval = get("approval");
+  if (approval !== null && approval !== "needed") return { ok: false, field: "approval" };
+
+  return { ok: true, filters: { ratings, replied, fromMs, toMs, sort, needsApproval: approval === "needed" } };
 }
 
 /** Filter + order stored review docs (already newest first by createTime). */
@@ -93,6 +99,7 @@ export function applyReviewFilters<T extends Record<string, unknown>>(docs: T[],
     if (f.ratings && !f.ratings.has(Number(d.starRating))) return false;
     if (f.replied === "replied" && !d.reply) return false;
     if (f.replied === "unreplied" && d.reply) return false;
+    if (f.needsApproval && !needsApproval(d)) return false;
     const created = toMillis(d.createTime);
     if (f.fromMs !== null && (created === null || created < f.fromMs)) return false;
     if (f.toMs !== null && (created === null || created >= f.toMs)) return false;

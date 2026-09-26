@@ -87,9 +87,11 @@ export async function PUT(
     // too: Google names its reviews under that account (new cache doc ids).
     const changed = previous !== location.name || snap.data()?.googleListing?.accountName !== account.name;
     // A different listing switches review auto-reply off (modes kept): it was
-    // enabled for the old one, and resuming needs an explicit re-enable.
-    const autoReplyOff = changed && snap.data()?.reviewsAutoReply
-      ? { "reviewsAutoReply.enabled": false }
+    // enabled for the old one, and resuming needs an explicit re-enable. When
+    // it was ON, the card says why it is off now (`disabledReason`).
+    const autoReply = snap.data()?.reviewsAutoReply;
+    const autoReplyOff = changed && autoReply
+      ? { "reviewsAutoReply.enabled": false, ...(autoReply.enabled === true ? { "reviewsAutoReply.disabledReason": "listing_changed" } : {}) }
       : {};
     tx.update(subRef, {
       ...autoReplyOff,
