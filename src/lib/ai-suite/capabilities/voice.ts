@@ -43,13 +43,14 @@ async function plan(subAccountId: string, contactId: unknown) {
   const agent = await resolveAgent(subAccountId, "voice");
   if (!agent?.effective.systemPrompt.trim()) throw new CapabilityUserError("The Voice channel has no persona configured.");
   const subAccount = (await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() as SubAccountDoc;
-  const built = await voiceCallPrompt({ subAccountId, agent, subAccount, callerPhone: parsed.number as string, outbound: true });
+  const built = await voiceCallPrompt({ subAccountId, agent, subAccount, callerPhone: parsed.number as string, outbound: true, contactId: contact.id });
   const persona = built.outboundPersona ?? agent.effective.systemPrompt.trim();
   if (messageBody(persona) !== plainSpaces(persona)) throw new CapabilityUserError("The call's persona has characters or spacing that can't be shown exactly.");
   return {
     contact,
     ready,
     persona,
+    greets: built.contact?.name?.trim().split(/\s+/)[0] ?? null,
     pinned: {
       contactId: contact.id,
       number: parsed.number as string,
@@ -82,13 +83,14 @@ export const VOICE_CAPABILITIES: AiSuiteCapability[] = [
       return { contactId: contact.id, territoryId: null, scoped: true };
     },
     preview: async (ctx, args) => {
-      const { contact, pinned, persona } = await plan(ctx.subAccountId!, args.contactId);
+      const { contact, pinned, persona, greets } = await plan(ctx.subAccountId!, args.contactId);
       return {
         rows: [
           { label: "Call", value: `${oneLine(contact.name) || "(unnamed)"} (${masked("sms", pinned.number)})` },
           { label: "Assistant", value: `the Voice channel's AI assistant (${pinned.assistantId}), from its calling number (${pinned.phoneNumberId})` },
           { label: "First words", value: messageBody(pinned.firstMessage) || "(the assistant's default greeting)", multiline: true },
           { label: "Script (what the AI is told)", value: messageBody(persona)!, multiline: true },
+          { label: "Greets them as", value: greets ? oneLine(greets) : "(no name)" },
           { label: "Consent", value: "Approving confirms you have this contact's consent to be called." },
           { label: "At dial time", value: "The calling window, daily and per-number caps and the voice-minutes quota are checked; a blocked call isn't placed." },
           { label: "Cost", value: "Uses voice minutes." },

@@ -65,6 +65,17 @@ describe("create_broadcast", () => {
     expect(editedByAgentSinceApproval(b as never, mem.read("contacts/c1")!)).toBe(false);
   });
 
+  it("an agent edit between the proposal and its approval counts as edited (the approver never saw it)", async () => {
+    const id = await proposeId();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await dispatchAgentTool(auth, "add_tags", { contactId: "c2", tags: ["vip"] })).toMatchObject({ ok: true });
+    expect((await decide(id, "approve")).status).toBe(200);
+    const [b] = mem.list("broadcasts");
+    const { editedByAgentSinceApproval } = await import("@/lib/broadcasts/approved");
+    expect(editedByAgentSinceApproval(b as never, mem.read("contacts/c2")!)).toBe(true);
+    expect(editedByAgentSinceApproval(b as never, mem.read("contacts/c1")!)).toBe(false);
+  });
+
   it("a contact whose custom field the agent edits after approval counts as edited too", async () => {
     const id = await proposeId();
     expect((await decide(id, "approve")).status).toBe(200);

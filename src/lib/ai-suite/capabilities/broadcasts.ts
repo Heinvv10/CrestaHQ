@@ -121,6 +121,9 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
       if (now.templateFingerprint !== pinned.templateFingerprint) throw new CapabilityUserError("The template changed since this was reviewed; nothing was sent.");
       const cap = Number(pinned.audienceCount);
       if (matching > cap) throw new CapabilityUserError(`The audience grew to ${matching} contacts since ${cap} were approved; nothing was sent. Propose it again.`);
+      // Contacts are skipped if an agent edits them after the PROPOSAL was made (the approver never saw their values).
+      const proposedAt = (await getAdminDb().doc(`agentProposals/${ctx.approved.proposalId}`).get()).data()?.createdAt;
+      if (!toDate(proposedAt)) throw new CapabilityUserError("The proposal couldn't be read; nothing was sent.");
       const started = await startBroadcast({
         subAccountId: ctx.subAccountId!,
         // One broadcast per approval (its claim): a retry of the same approval
@@ -132,7 +135,7 @@ export const BROADCAST_CAPABILITIES: AiSuiteCapability[] = [
         territoryIds: null,
         createdByUid: ctx.uid,
         createdBy: { displayName: ctx.displayName || ctx.email, email: ctx.email },
-        approved: { templateFingerprint: now.templateFingerprint, audienceCap: cap, at: new Date() },
+        approved: { templateFingerprint: now.templateFingerprint, audienceCap: cap, at: toDate(proposedAt)! },
       });
       if (!started.ok) throw new CapabilityUserError(started.error);
       if (started.duplicate) return { resultText: `This approval's broadcast was already started (id: ${started.broadcastId}); nothing more was sent.`, ref: { kind: "broadcast", id: started.broadcastId } };

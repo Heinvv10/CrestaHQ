@@ -46,6 +46,14 @@ function buildVoiceCallerNameBlock(contact: Contact | null): string | null {
 Their name may be ${firstName}. You may use this to greet them naturally (e.g. "Hi, is this ${firstName}?"). Do NOT mention their company, deals, account status, bookings, or any other detail about their account — you have no way to confirm this caller is who the phone number suggests. Only discuss account-specific details the caller themselves states on the call, or after a human has verified their identity.`;
 }
 
+/** The contact an outbound call was placed to, when it is this sub-account's. */
+async function calledContact(subAccountId: string, contactId: string): Promise<Contact | null> {
+  if (contactId.includes("/")) return null;
+  const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
+  const data = snap.data();
+  return data && data.subAccountId === subAccountId ? { id: snap.id, ...(data as Omit<Contact, "id">) } : null;
+}
+
 /**
  * Outbound calls run a different persona than inbound (the AI is calling the
  * contact about an offer, not answering a query): the outbound persona when
@@ -58,8 +66,16 @@ export async function voiceCallPrompt(opts: {
   subAccount: SubAccountDoc;
   callerPhone: string;
   outbound: boolean;
+  /** An outbound call's own contact (the call metadata's contactId): used instead of
+   *  a phone lookup, which can match another contact sharing the number. */
+  contactId?: string | null;
 }): Promise<{ systemPrompt: string; outboundPersona: string | null; contact: Contact | null }> {
-  const contact = opts.callerPhone ? await findContactByPhone(opts.subAccountId, opts.callerPhone).catch(() => null) : null;
+  const contact =
+    opts.outbound && opts.contactId
+      ? await calledContact(opts.subAccountId, opts.contactId).catch(() => null)
+      : opts.callerPhone
+        ? await findContactByPhone(opts.subAccountId, opts.callerPhone).catch(() => null)
+        : null;
   const outboundPersona = (opts.outbound && opts.agent.channel.voice?.outboundSystemPrompt?.trim()) || null;
   const systemPrompt = buildSystemPrompt({
     agent: opts.agent,

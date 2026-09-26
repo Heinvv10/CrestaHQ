@@ -230,7 +230,9 @@ export async function POST(
 
   const callerPhone = body.call?.customer?.number?.trim() ?? "";
   // The persona and context this call runs on (lib/comms/voice/call-prompt.ts).
-  const built = await voiceCallPrompt({ subAccountId, agent, subAccount, callerPhone, outbound: isOutboundCall });
+  const built = await voiceCallPrompt({
+    subAccountId, agent, subAccount, callerPhone, outbound: isOutboundCall, contactId: body.call?.metadata?.contactId ?? null,
+  });
   const contact = built.contact;
   let systemPrompt = built.systemPrompt;
 

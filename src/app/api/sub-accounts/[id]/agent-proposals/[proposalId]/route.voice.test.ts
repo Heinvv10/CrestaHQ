@@ -53,6 +53,15 @@ describe("start_voice_call", () => {
     expect(mem.read("subAccounts/sa1/voiceCalls/call1")).toMatchObject({ direction: "outbound", initiatedByUid: "u_admin", consentAck: true });
   });
 
+  it("two contacts share the number: the script greets the contact being called", async () => {
+    // The twin is stored first, so a lookup by number alone would find it.
+    await mem.db.doc("contacts/c1").delete();
+    mem.seed("contacts/a_twin", { ...ANN, name: "Zed Twin" });
+    mem.seed("contacts/c1", ANN);
+    const id = await proposeId();
+    expect(rowOf(id, "Greets them as")).toBe("Ann");
+  });
+
   it.each([
     ["a voice opt-out", () => mem.seed("contacts/c1", { ...ANN, voiceOptedOut: true }), "This contact has opted out of voice calls."],
     ["another sub-account's contact", () => mem.seed("contacts/c1", { ...ANN, subAccountId: "sa2" }), "That contact isn't in this workspace."],
