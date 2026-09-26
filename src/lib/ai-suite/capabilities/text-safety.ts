@@ -197,7 +197,8 @@ const IS_SEPARATOR = new RegExp(SEPARATORS.source, "u");
 /**
  * A symbol touching an ASCII letter in the same word (\u212e \u0966 \u0665 \u2229 in
  * "Bank d\u212etails", "Invoic\u212e", "B\u0966nus"). Between two letters only ASCII
- * digits, marks, Latin letters, separators and . & / + belong (a Latin letter
+ * digits, marks, Latin letters, separators and . & / + : , belong ("@" does not,
+ * so an email address is refused as a name) (a Latin letter
  * that imitates another is refused before this runs). At the start or end of
  * a word, also any ASCII punctuation (! ? , : % ( ) ...), a symbol NFKC spells
  * in ASCII (\u2122 \u00b2 \u2026), and any letter ("\u00b5-controller"; other
@@ -206,7 +207,7 @@ const IS_SEPARATOR = new RegExp(SEPARATORS.source, "u");
 function symbolInWord(value: string): boolean {
   const text = value.normalize("NFC");
   const asciiLetter = (c: string | undefined) => !!c && /[A-Za-z]/.test(c);
-  const odd = (c: string) => !/[0-9.&/+\p{M}\p{Pd}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
+  const odd = (c: string) => !/[0-9.&/+:,\p{M}\p{Pd}]/u.test(c) && !IS_SEPARATOR.test(c) && !/\p{Script=Latin}/u.test(c);
   const oddAtEdge = (c: string) => odd(c) && !/\p{L}/u.test(c) && !/^[\x21-\x7e]+$/.test(c.normalize("NFKC"));
   for (const m of text.matchAll(/[^A-Za-z\s]+/gu)) {
     const [before, after] = [asciiLetter(text[m.index - 1]), asciiLetter(text[m.index + m[0].length])];
@@ -225,8 +226,8 @@ function symbolInWord(value: string): boolean {
 function latinMarkLeft(value: string): boolean {
   let base = "";
   for (const c of value.normalize("NFC")) {
-    // Emoji presentation and the keycap ("5\ufe0f\u20e3") are not decorations on a letter.
-    if (c === "\ufe0f" || c === "\u20e3") continue;
+    // Emoji presentation, and the keycap on 0-9 # * ("5\ufe0f\u20e3"), are not decorations on a letter.
+    if (c === "\ufe0f" || (c === "\u20e3" && /^[0-9#*]$/.test(base))) continue;
     if (!/\p{M}/u.test(c)) base = c;
     else if (/\p{N}/u.test(base) || IS_BAR.test(base) || (/\p{Script=Latin}/u.test(base) && !/\p{M}/u.test(base.normalize("NFD")))) return true;
   }
