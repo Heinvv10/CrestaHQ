@@ -230,8 +230,9 @@ Run through this with the client's real details before calling it done:
 - A review removed at Google disappears after two complete passes (~12h
   scheduled). Listings over 1000 reviews never count misses: such a review
   disappears only after 30 days unseen.
-- **Replies** are posted only by an admin's **Post reply to Google** click
-  (nothing automatic, no AI). `in_progress` → an identical submit is still
+- **Replies** are posted only by an admin's **Post reply to Google** click,
+  except where review auto-reply is switched on (see "Review auto-reply"
+  below). `in_progress` → an identical submit is still
   running (at most 2 minutes); `idempotency_key_reused` → the text changed
   after a submit — close and reopen the composer.
 - **Review-request link:** the selected listing's Google review link is only
@@ -239,6 +240,88 @@ Run through this with the client's real details before calling it done:
   review requests send changes only on **Use it** / **Replace with listing
   link**. "The review link changed since you looked" → someone saved a
   different link meanwhile; reload and decide again.
+
+### Review auto-reply
+
+Opt-in per sub-account ([AUTO_REPLY_V1_PLAN.md](AUTO_REPLY_V1_PLAN.md)).
+After every Google review sync (the 6-hourly cron and **Sync now**), the
+engine goes through that sub-account's reviews. Each star rating is set to
+**Auto** or **Approval** on the Auto-reply card (Reputation → Settings). An
+Auto review with no text is drafted by the AI and posted to Google without a
+click. Everything else is drafted and held in the Reviews tab's **Needs
+approval** filter for a person to post or **Discard**; a review with text is
+always held in v1. At most 20 posts per sub-account per SAST day, and at most
+40 auto drafts out of the 100/day draft budget. Posted replies carry an
+"Auto-replied" tag. It runs only where all three agency gates are on
+(`googleEnabledByAgency`, `reviewsAiEnabledByAgency`,
+`reviewsAutoReplyEnabledByAgency`), the card's switch is on for the listing it
+was enabled on, and the deployment sets the kill switch.
+
+- **Kill switch:** `REVIEWS_AUTO_REPLY_ENABLED` in
+  `/home/velo/crestahq-config/.env.production`. Hein edits that file; agents
+  never do. The engine runs only when the value is exactly `1`. A change is
+  picked up only when the app restarts, so stopping it takes minutes, not an
+  instant.
+  - **To stop it, set `REVIEWS_AUTO_REPLY_ENABLED=0`. Do not delete the
+    line.** Each release carries its own copy of `.env.production`, taken at
+    build time (`~/crestahq-releases/<release>/.env.production`), and Next
+    loads that copy for any variable systemd did not set. A deleted line
+    therefore falls back to the release's copy, which may still say `1`. A
+    value systemd sets always wins.
+  - Then restart the **live** colour only. Only one colour runs between
+    deploys, and starting the idle one would boot an older release. As velo
+    (`sudo -u velo -i`):
+
+    ```bash
+    cat ~/crestahq-proxy/upstream.conf     # names the live colour, 4301 or 4302
+    systemctl --user restart crestahq@4301 # the live one
+    ```
+
+    The proxy has no second colour to fall back to during this restart, so
+    expect a few seconds of errors.
+- **Off for ONE sub-account:** switch off the Auto-reply card on Reputation →
+  Settings (an admin of that sub-account can do this). Or turn off
+  **Review auto-reply** in the sub-account's **Manage** dialog
+  (`/agency/sub-accounts`), which is `reviewsAutoReplyEnabledByAgency`. Either stops posting within the current run, because both are
+  re-checked before every post. Settings and held drafts are kept.
+- **Off EVERYWHERE:** the kill switch, as above.
+- **Alerts:** four alerts, sent through the same rail as WhatsApp quality
+  alerts: web push to the sub-account's members, plus email to the agency
+  owner. Each one is also recorded as a server-only doc in
+  `subAccounts/{id}/reviewAutoReplyAlerts` and deduped:
+  1. `held`: one per engine run that newly holds at least one review for
+     approval. It gives the count only, never review text.
+  2. `reconnect_required`: one when `googleConnectionMeta.reconnectRequired`
+     flips from false to true. Auto-reply is stalled until someone reconnects.
+  3. `edited_low`: one per review, ever, when a review that was auto-replied
+     is later edited down to 3★ or lower. It gives the star rating and the
+     first 80 characters of the text, never the reviewer's name.
+  4. `listing_changed`: one when a listing change, clear or disconnect
+     switches auto-reply off. Someone must re-enable it on the card.
+
+  Nothing is delivered when push (`NEXT_PUBLIC_VAPID_PUBLIC_KEY` +
+  `VAPID_PRIVATE_KEY`) or email is not configured; a warning is logged
+  instead. With a fake provider (CI, dev) the doc is written but nothing is
+  sent.
+- **Where to look when something goes wrong:**
+  - `subAccounts/{id}/gbpEvents`: each auto-post is a `reply_posted` row
+    with `actorUid: "system:auto-reply"`. Its `createdByUid` is whoever
+    switched auto-reply on.
+  - `auditEvents`: `review.auto_replied`, actor `{type: "system", id:
+    "auto-reply"}`, `onBehalfOfUid` = whoever switched it on.
+  - The review doc (`subAccounts/{id}/gbpReviews/{docId}`):
+    - `pendingReply.reason` gives the state of a held or queued draft:
+      `auto_queued`, `approval`, `texted`, `draft_failed`, `post_failed`
+      (retried after 24 h), `no_budget`, `cap`, `dismissed`.
+    - `autoReplied` is stamped once the reply is posted.
+  - `subAccounts/{id}/private/autoReplyLease` holds one run at a time (5
+    minutes). `private/autoReplyUsage` counts the day's posts. Auto drafts
+    are counted in `private/sentimentUsage.autoDraftCalls`.
+  - Logs: `journalctl --user -u crestahq@<live colour> -o cat | grep -F
+    '[reputation/auto-reply]'` shows failed runs (`run failed kind=…`), failed
+    drafts, failed posts and unrecorded audit events. A run that simply
+    stopped (switched off, listing changed, another run busy, cap, deadline)
+    logs nothing.
 
 ## Zero-downtime deploys (velo-server only)
 

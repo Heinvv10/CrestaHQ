@@ -1,6 +1,6 @@
 # Review auto-reply v1
 
-> Status: **PLAN 2026-09-26, rev 5 (2026-09-26, PR 2 review)** — rev 4 after three adversarial reviews; PR 1 merged, PR 2 in review (#287).
+> Status: **BUILT, NOT DEPLOYED (2026-09-26)** — PRs 1–3 merged (#284 gate + settings, #287 engine behind the kill switch, #291 UI); PR 4 (alerts) and PR 5 (docs, parity ledger, sentiment fence) in review. Nothing is deployed; the live proof on Velocity (#1002) is pending the deploy and the owner steps below. Plan: rev 5 (2026-09-26, PR 2 review).
 > **Rev 5 (2026-09-26, PR 2 review)** folds in the PR 2 team review's rulings: a review that has or ever had a
 > reply is never auto-posted to (sticky `hadReply` + a durable `autoReplyNever/{stableReviewKey}` marker outside the
 > cache); markers and Discards are keyed by an ACCOUNT-INDEPENDENT `stableReviewKey` = sha256 of
@@ -127,7 +127,7 @@ does not delete settings or pending drafts.
 Env `REVIEWS_AUTO_REPLY_ENABLED` — unset = the engine never runs anywhere on
 this deployment. Merging PR 2 is inert until it is set; unsetting it is the
 incident stop — it needs a restart of both blue/green colours, so it is a
-minutes-scale stop, not instant (RUNBOOK note in PR 5). PR 2 is not deployed with it set before PR 3 ships (held drafts
+minutes-scale stop, not instant (RUNBOOK note in PR 5). *PR 5 correction:* on velo only the live colour runs, and each release keeps a build-time copy of `.env.production` that Next reads for any variable systemd did not set — so the stop is `REVIEWS_AUTO_REPLY_ENABLED=0` (never a deleted line) plus a restart of the live colour ([RUNBOOK.md](RUNBOOK.md#review-auto-reply)). PR 2 is not deployed with it set before PR 3 ships (held drafts
 would be invisible).
 
 ### Engine — `lib/reputation/auto-reply/`
@@ -334,7 +334,9 @@ would be invisible).
   rating labels and a `sentimentLease` written. Unreachable in CI (no foreign
   run is produced), but fence it like auto-reply — in `classifySyncedRuns`,
   skip a sub-account outside the GBP / Reviews AI fake's fixture agency before
-  any write — in PR 5 or a separate hardening PR.
+  any write — in PR 5 or a separate hardening PR. **Done in PR 5**:
+  `classifyAfterSync` (`sentiment-after.ts`) asserts the fixture agency for
+  each fake before any write; `sentiment-after.fence.test.ts`.
 
 ## Explicitly not in v1
 
