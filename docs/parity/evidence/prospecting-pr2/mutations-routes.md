@@ -28,3 +28,9 @@ path never reached `revokedAt` alone. The added test seeds a revoked share the
 report still points at. The settle-guard mutation also survived at the route
 level (the worker's claim prevents a second call) and is covered by
 `reports.test.ts`.
+
+Follow-up (public raw whitelist filled in from builder-sections' final raw shapes):
+
+| File:line | Mutation | Red test |
+|---|---|---|
+| `src/lib/prospecting/public-report.ts:71` | iterate `Object.keys(s.raw)` instead of `PUBLIC_RAW_KEYS[s.key]` | public route: *returns exactly the whitelisted payload*; *pass only whitelisted scalar raw keys* |

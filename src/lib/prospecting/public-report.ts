@@ -22,21 +22,22 @@ import type {
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 
 /**
- * Per section, the `raw` keys safe to show publicly. Scalars only. Empty
- * until each section's raw shape is settled — a key is added here, never
- * passed through wholesale.
+ * Per section, the `raw` keys safe to show publicly — scalars only, a key is
+ * added here, never passed through wholesale. business_details omits phone and
+ * address (copied from the CRM contact); keys that are always "notMeasured"
+ * (gbp's, reputation's velocity/reply rate) are left out as saying nothing.
  */
 const PUBLIC_RAW_KEYS: Record<ProspectSectionKey, readonly string[]> = {
-  business_details: [],
+  business_details: ["name", "website", "category", "https"],
   gbp: [],
-  reputation: [],
+  reputation: ["rating", "reviewsCount"],
   listings: [],
   website_performance: [],
   tech_stack: [],
   ai_readiness: [],
   ai_presence: [],
-  ads: [],
-  lead_capture: [],
+  ads: ["metaAdLibraryUrl", "googleAdsTransparencyUrl"],
+  lead_capture: ["whatsapp", "booking", "contactForm", "phoneLink", "chatWidget"],
 };
 
 type Scalar = string | number | boolean | null;

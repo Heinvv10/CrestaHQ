@@ -85,6 +85,27 @@ describe("a live share", () => {
   });
 });
 
+describe("section details", () => {
+  it("pass only whitelisted scalar raw keys", async () => {
+    mem.seed("prospectReports/r1", {
+      ...mem.read("prospectReports/r1"),
+      sections: [
+        { key: "business_details", status: "ok", score: 50, findings: [], raw: { name: "Acme", website: "https://acme.test", category: "Plumber", https: true, phone: "PHONE-RAW", address: "ADDR-RAW" } },
+        { key: "reputation", status: "ok", score: 70, findings: [], raw: { rating: 4.2, reviewsCount: 12, velocity90d: "notMeasured" } },
+        { key: "lead_capture", status: "ok", score: 40, findings: [], raw: { whatsapp: false, booking: true, contactForm: { nested: 1 } } },
+        { key: "listings", status: "ok", score: 30, findings: [], raw: { checks: [{ directory: "x" }] } },
+      ],
+    });
+    const body = (await (await get(await mint())).json()) as { sections: { details: unknown }[] };
+    expect(body.sections.map((s) => s.details)).toEqual([
+      { name: "Acme", website: "https://acme.test", category: "Plumber", https: true },
+      { rating: 4.2, reviewsCount: 12 },
+      { whatsapp: false, booking: true },
+      {},
+    ]);
+  });
+});
+
 describe("non-enumeration", () => {
   it("unknown, malformed, revoked, not-ready and tenancy-mismatched tokens are byte-identical 404s", async () => {
     const unknown = await snapshot(await get("A".repeat(43)));
