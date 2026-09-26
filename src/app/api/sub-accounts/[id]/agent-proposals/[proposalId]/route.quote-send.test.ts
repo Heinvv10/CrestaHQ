@@ -164,6 +164,35 @@ describe("send_quote", () => {
     expect(mem.read("quotes/q1")).toMatchObject({ status: "sent", sendingClaim: null });
   });
 
+  it("marked paid while the email goes out -> unsettled, and no pay link is written onto the paid invoice", async () => {
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", quoteNumber: "INV-0001" });
+    sub({ paypalConfig: { username: "acme" } });
+    const id = await proposeId();
+    sendEmail.mockImplementationOnce(async () => (mem.seed("quotes/q1", { ...mem.read("quotes/q1")!, status: "paid" }), { id: "e1" }));
+    await decide(id, "approve");
+    expect(row(id).status).toBe("unsettled");
+    expect(mem.read("quotes/q1")).toMatchObject({ status: "paid", sendingClaim: null });
+    expect(mem.read("quotes/q1")!.paymentLinkUrl).toBeUndefined();
+  });
+
+  it("a throw while recording the send still releases the claim", async () => {
+    const id = await proposeId();
+    sendEmail.mockImplementationOnce(async () => {
+      vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async () => { throw new Error("firestore unavailable"); });
+      return { id: "e1" };
+    });
+    await decide(id, "approve");
+    expect(mem.read("quotes/q1")!.sendingClaim).toBeNull();
+  });
+
+  it("a claim taken over by another send meanwhile is left alone", async () => {
+    const id = await proposeId();
+    const other = { id: "other", at: Date.now(), fingerprint: "x" };
+    sendEmail.mockImplementationOnce(async () => (mem.seed("quotes/q1", { ...mem.read("quotes/q1")!, sendingClaim: other }), { id: "e1" }));
+    await decide(id, "approve");
+    expect(mem.read("quotes/q1")!.sendingClaim).toEqual(other);
+  });
+
   it("the quote changed between the send's read and its claim -> nothing sent", async () => {
     const id = await proposeId();
     const { quoteId: _q, ...expect_ } = row(id).pinned as Record<string, unknown>;

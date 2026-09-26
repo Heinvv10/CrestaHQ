@@ -158,6 +158,27 @@ describe("update_quote", () => {
     expect(mem.read("quotes/q1")!.globalTaxPercent).toBe(edited ? 15 : null);
   });
 
+  it.each([
+    ["pending", "draft"],
+    ["paid", "sent"],
+    ["needs_attention", "sent"],
+  ])("a card charge %s on the invoice (%s) -> re-pricing refused, nothing written", async (state, status) => {
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", status, autoCharge: { state } });
+    expect(await call("update_quote", { quoteId: "q1", lineItems: [{ ...LINE, unitPrice: 5000 }] })).toMatchObject({
+      ok: false, message: "A saved card is being charged for this invoice; it can't be re-priced.",
+    });
+    expect(mem.read("quotes/q1")!.lineItems).toEqual(QUOTE.lineItems);
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it("a card charge that started inside the write -> refused; a declined one allows re-pricing", async () => {
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice" });
+    beforeNextTransaction(async () => mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", autoCharge: { state: "pending" } }));
+    expect(await call("update_quote", { quoteId: "q1", globalTaxPercent: 15 })).toMatchObject({ ok: false, message: "A saved card is being charged for this invoice; it can't be re-priced." });
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", autoCharge: { state: "declined" } });
+    expect(await call("update_quote", { quoteId: "q1", globalTaxPercent: 15 })).toMatchObject({ ok: true });
+  });
+
   it("nothing to change / a path id -> invalid args", async () => {
     expect(await call("update_quote", { quoteId: "q1" })).toMatchObject({ ok: false, code: "invalid_args" });
     expect(await call("update_quote", { quoteId: "q1/x/y", globalTaxPercent: 1 })).toMatchObject({ ok: false, code: "invalid_args" });

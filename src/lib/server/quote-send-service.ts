@@ -179,120 +179,122 @@ export async function sendQuoteServerSide(input: {
   // Checked against the rail it would pick BEFORE any link is minted, then again against the one it used.
   if (input.expect && (await differsBeforeRail(input.expect, reviewed, sub))) return changed();
 
-  // An approved send is claimed until recorded, so an agent can't edit it meanwhile (quote-send-claim.ts).
+  // An approved send is claimed until recorded, so an agent can't edit it meanwhile, and whatever
+  // happens the claim is released (a recorded send already cleared it). See quote-send-claim.ts.
   const claimed = input.expect ? await claimQuoteForSend(quoteRef, quote) : ({ ok: true, claim: null } as const);
   if (!claimed.ok) return fail(claimed.code, 409, claimed.error);
-  const release = async () => (claimed.claim ? releaseSendClaim(quoteRef, claimed.claim.id) : undefined);
-
-  // 5a. Invoice path — how the recipient pays. See `chooseInvoicePayRail`.
-  let paymentLinkUpdate: PaymentLinkUpdate | null = null;
-  let emailPayUrl: string | null = null;
-  let cardLinkFallback: string | null = null;
-  let railKind: PayRailKind | null = null;
-  if (quote.kind === "invoice") {
-    const rail = await chooseInvoicePayRail(quote, sub);
-    if (!rail.ok) return release().then(() => fail(rail.code, rail.status, rail.error));
-    railKind = rail.rail;
-    paymentLinkUpdate = rail.update;
-    emailPayUrl = rail.emailPayUrl;
-    cardLinkFallback = rail.cardLinkFallback;
-    if (cardLinkFallback) console.warn(`[quotes/send] ${quoteId}: ${cardLinkFallback}`);
-    if (paymentLinkUpdate) {
-      // Reflect locally so the email + activity see the fresh URL.
-      quote.paymentLinkUrl = paymentLinkUpdate.paymentLinkUrl;
-      quote.paymentLinkId = paymentLinkUpdate.paymentLinkId;
+  try {
+    // 5a. Invoice path — how the recipient pays. See `chooseInvoicePayRail`.
+    let paymentLinkUpdate: PaymentLinkUpdate | null = null;
+    let emailPayUrl: string | null = null;
+    let cardLinkFallback: string | null = null;
+    let railKind: PayRailKind | null = null;
+    if (quote.kind === "invoice") {
+      const rail = await chooseInvoicePayRail(quote, sub);
+      if (!rail.ok) return fail(rail.code, rail.status, rail.error);
+      railKind = rail.rail;
+      paymentLinkUpdate = rail.update;
+      emailPayUrl = rail.emailPayUrl;
+      cardLinkFallback = rail.cardLinkFallback;
+      if (cardLinkFallback) console.warn(`[quotes/send] ${quoteId}: ${cardLinkFallback}`);
+      if (paymentLinkUpdate) {
+        // Reflect locally so the email + activity see the fresh URL.
+        quote.paymentLinkUrl = paymentLinkUpdate.paymentLinkUrl;
+        quote.paymentLinkId = paymentLinkUpdate.paymentLinkId;
+      }
     }
-  }
 
-  // From here a failure still reports why the card-on-file link wasn't made.
-  const failAfterRail = async (code: string, status: number, error: string) => (await release(), { ...fail(code, status, error), cardLinkFallback });
-  if (input.expect && differsFromReviewed(input.expect, reviewed, railKind, !!emailPayUrl)) return release().then(() => ({ ...changed(), cardLinkFallback }));
+    // From here a failure still reports why the card-on-file link wasn't made.
+    const failAfterRail = (code: string, status: number, error: string) => ({ ...fail(code, status, error), cardLinkFallback });
+    if (input.expect && differsFromReviewed(input.expect, reviewed, railKind, !!emailPayUrl)) return { ...changed(), cardLinkFallback };
 
-  // 6. Issue token (server-only, HMAC + nonce; raw token never persisted)
-  let token: string;
-  let hash: string;
-  try {
-    ({ token, hash } = issueQuoteToken(quoteId));
-  } catch (err) {
-    console.error("[quotes/send] issueQuoteToken failed", err);
-    return failAfterRail(
-      "token_mint_failed",
-      500,
-      "Failed to mint quote token. Check AUTOMATIONS_TOKEN_SECRET is configured.",
-    );
-  }
-  const publicUrl = buildQuoteUrl(token);
-  if (!publicUrl) {
-    return failAfterRail(
-      "app_url_not_configured",
-      503,
-      "NEXT_PUBLIC_APP_URL isn't configured — set it so quote links resolve.",
-    );
-  }
+    // 6. Issue token (server-only, HMAC + nonce; raw token never persisted)
+    let token: string;
+    let hash: string;
+    try {
+      ({ token, hash } = issueQuoteToken(quoteId));
+    } catch (err) {
+      console.error("[quotes/send] issueQuoteToken failed", err);
+      return failAfterRail(
+        "token_mint_failed",
+        500,
+        "Failed to mint quote token. Check AUTOMATIONS_TOKEN_SECRET is configured.",
+      );
+    }
+    const publicUrl = buildQuoteUrl(token);
+    if (!publicUrl) {
+      return failAfterRail(
+        "app_url_not_configured",
+        503,
+        "NEXT_PUBLIC_APP_URL isn't configured — set it so quote links resolve.",
+      );
+    }
 
-  // 7. Render + send the email. Reply-To = the caller so recipient replies
-  //    land in the operator's inbox. From = the sub-account's dedicated
-  //    sending domain when verified; falls back to the shared EMAIL_FROM.
-  const email = renderQuoteEmail({
-    quote,
-    businessName,
-    businessLogoUrl,
-    recipientName: reviewed.recipientName,
-    publicUrl,
-    payUrl: emailPayUrl,
-  });
-  try {
-    await sendEmail({
-      to: recipientEmail,
-      subject: email.subject,
-      text: email.text,
-      html: email.html,
-      replyTo: input.replyTo || undefined,
-      from: tenantFrom(sub),
-      subAccount: sub,
-      meter: { subAccountId },
+    // 7. Render + send the email. Reply-To = the caller so recipient replies
+    //    land in the operator's inbox. From = the sub-account's dedicated
+    //    sending domain when verified; falls back to the shared EMAIL_FROM.
+    const email = renderQuoteEmail({
+      quote,
+      businessName,
+      businessLogoUrl,
+      recipientName: reviewed.recipientName,
+      publicUrl,
+      payUrl: emailPayUrl,
     });
-  } catch (err) {
-    if (isEmailSuppressedError(err)) return failAfterRail(err.code, 422, err.message);
-    console.error("[quotes/send] Resend send failed", err);
-    const message =
-      err instanceof Error ? err.message : "Email provider rejected the send";
-    return failAfterRail("send_failed", 502, `Send failed: ${message}`);
-  }
+    try {
+      await sendEmail({
+        to: recipientEmail,
+        subject: email.subject,
+        text: email.text,
+        html: email.html,
+        replyTo: input.replyTo || undefined,
+        from: tenantFrom(sub),
+        subAccount: sub,
+        meter: { subAccountId },
+      });
+    } catch (err) {
+      if (isEmailSuppressedError(err)) return failAfterRail(err.code, 422, err.message);
+      console.error("[quotes/send] Resend send failed", err);
+      const message =
+        err instanceof Error ? err.message : "Email provider rejected the send";
+      return failAfterRail("send_failed", 502, `Send failed: ${message}`);
+    }
 
-  // 8. Persist lifecycle update. Use viewedAt = null to RESET on re-send
-  //    (each new token starts a fresh "have they opened it yet?" cycle).
-  const wasResend = quote.status !== "draft";
-  //    Re-read in a transaction: a payment recorded while the email was out
-  //    keeps the invoice paid (the paid guard above read it earlier), and a
-  //    document no longer the one the email was rendered from is reported.
-  let changedWhileSending = false;
-  try {
-    changedWhileSending = await recordSendAndRelease(quoteRef, claimed.claim, {
-      sentAt: FieldValue.serverTimestamp(),
-      viewedAt: null,
-      publicTokenHash: hash,
-      updatedAt: FieldValue.serverTimestamp(),
-      ...(paymentLinkUpdate ?? {}),
+    // 8. Persist lifecycle update. Use viewedAt = null to RESET on re-send
+    //    (each new token starts a fresh "have they opened it yet?" cycle).
+    const wasResend = quote.status !== "draft";
+    //    Re-read in a transaction: a payment recorded while the email was out
+    //    keeps the invoice paid (the paid guard above read it earlier), and a
+    //    document no longer the one the email was rendered from is reported.
+    let changedWhileSending = false;
+    try {
+      changedWhileSending = await recordSendAndRelease(quoteRef, claimed.claim, {
+        sentAt: FieldValue.serverTimestamp(),
+        viewedAt: null,
+        publicTokenHash: hash,
+        updatedAt: FieldValue.serverTimestamp(),
+      }, paymentLinkUpdate);
+    } catch (err) {
+      console.error("[quotes/send] quote lifecycle write failed", err);
+    }
+
+    // 9. Side-effects: contact activity row + automation trigger + webhook.
+    await recordQuoteActivity(quote, "quote_sent", {
+      extra: wasResend ? "re-sent" : null,
     });
-  } catch (err) {
-    console.error("[quotes/send] quote lifecycle write failed", err);
+    await fireQuoteTrigger(quote, "quote_sent");
+    void emitQuoteWebhook(quote, "quote_sent");
+
+    return {
+      ok: true,
+      sentTo: recipientEmail,
+      paymentLinkUrl:
+        paymentLinkUpdate?.paymentLinkUrl ?? quote.paymentLinkUrl ?? null,
+      wasResend,
+      cardLinkFallback,
+      changedWhileSending,
+    };
+  } finally {
+    if (claimed.claim) await releaseSendClaim(quoteRef, claimed.claim.id);
   }
-
-  // 9. Side-effects: contact activity row + automation trigger + webhook.
-  await recordQuoteActivity(quote, "quote_sent", {
-    extra: wasResend ? "re-sent" : null,
-  });
-  await fireQuoteTrigger(quote, "quote_sent");
-  void emitQuoteWebhook(quote, "quote_sent");
-
-  return {
-    ok: true,
-    sentTo: recipientEmail,
-    paymentLinkUrl:
-      paymentLinkUpdate?.paymentLinkUrl ?? quote.paymentLinkUrl ?? null,
-    wasResend,
-    cardLinkFallback,
-    changedWhileSending,
-  };
 }

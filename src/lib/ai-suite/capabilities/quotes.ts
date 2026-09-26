@@ -7,7 +7,7 @@ import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { checkDealLink, createQuote, sanitizePayload } from "@/lib/server/quote-write";
 import { sendClaimFresh } from "@/lib/server/quote-send-claim";
-import { computeQuoteTotals } from "@/lib/quotes/calc";
+import { cardChargeUnsettled, computeQuoteTotals } from "@/lib/quotes/calc";
 import type { Quote } from "@/types/quotes";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, fmtMoney, str, toDate } from "./helpers";
@@ -36,15 +36,17 @@ const valuesOf = (q: FirebaseFirestore.DocumentData, patch: Record<string, unkno
 const PAY_LINK_REFUSAL = "This invoice's emailed pay link charges the old amount; void it and send a new invoice.";
 type QueryGet = (q: FirebaseFirestore.Query) => Promise<FirebaseFirestore.QuerySnapshot>;
 
-/** Would the patch change what it charges, while an emailed pay link (a pay
- *  URL on it, or an open Paystack link for it) still charges the old amount? */
-async function repricesLiveLink(subAccountId: string, id: string, q: FirebaseFirestore.DocumentData, patch: Record<string, unknown>, get: QueryGet = (x) => x.get()) {
+/** Why the patch may not change what it charges, or null: a saved card is
+ *  being charged for it, or an emailed pay link (a pay URL on it, or an open
+ *  Paystack link for it) still charges the old amount. */
+async function repriceRefusal(subAccountId: string, id: string, q: FirebaseFirestore.DocumentData, patch: Record<string, unknown>, get: QueryGet = (x) => x.get()) {
   const next = { ...q, ...patch } as Quote;
   const cur = (x: FirebaseFirestore.DocumentData) => String(x.currency ?? "").toUpperCase();
-  if (totalCents(next) === totalCents(q as Quote) && cur(next) === cur(q)) return false;
-  if (q.paymentLinkUrl || q.paymentLinkId) return true;
+  if (totalCents(next) === totalCents(q as Quote) && cur(next) === cur(q)) return null;
+  if (cardChargeUnsettled(q as Quote)) return "A saved card is being charged for this invoice; it can't be re-priced.";
+  if (q.paymentLinkUrl || q.paymentLinkId) return PAY_LINK_REFUSAL;
   const links = await get(getAdminDb().collection("paymentLinks").where("subAccountId", "==", subAccountId).where("invoiceId", "==", id).where("status", "==", "open"));
-  return links.docs.some((d) => d.data().active !== false);
+  return links.docs.some((d) => d.data().active !== false) ? PAY_LINK_REFUSAL : null;
 }
 
 /** The checked fields (numbered line ids), whoever calls. */
@@ -198,7 +200,8 @@ export const QUOTE_CAPABILITIES: AiSuiteCapability[] = [
       if (q.status === "paid") throw new CapabilityUserError(`That ${docLabel(q).toLowerCase()} is already paid.`);
       const { quoteId: _id, ...fields } = args;
       const patch = sanitizePayload(checkedFields(fields));
-      if (await repricesLiveLink(ctx.subAccountId!, q.id, q, patch)) throw new CapabilityUserError(PAY_LINK_REFUSAL);
+      const refused = await repriceRefusal(ctx.subAccountId!, q.id, q, patch);
+      if (refused) throw new CapabilityUserError(refused);
       const next: TenantQuote = { ...q, ...patch };
       const shown = (x: TenantQuote) => new Map(quoteRows(x).map((r) => [r.label, r.value]));
       const [before, after] = [shown(q), shown(next)];
@@ -251,7 +254,8 @@ export const QUOTE_CAPABILITIES: AiSuiteCapability[] = [
         } else if (current.status !== "draft") {
           throw new CapabilityUserError("It is no longer a draft, so this edit needs approval: send it again.");
         }
-        if (await repricesLiveLink(ctx.subAccountId!, q.id, current, patch, (x) => tx.get(x))) throw new CapabilityUserError(PAY_LINK_REFUSAL);
+        const refused = await repriceRefusal(ctx.subAccountId!, q.id, current, patch, (x) => tx.get(x));
+        if (refused) throw new CapabilityUserError(refused);
         tx.update(ref, { ...patch, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_quote")) });
       });
       return { resultText: `Updated ${docLabel(q).toLowerCase()} ${q.quoteNumber}.`, ref: { kind: "quote", id: q.id } };

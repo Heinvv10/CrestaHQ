@@ -55,18 +55,26 @@ export async function releaseSendClaim(ref: FirebaseFirestore.DocumentReference,
 }
 
 /** Step 8 of the send: record it (never over a recorded payment) and drop
- *  the claim, if any. True when the document is no longer the one the email
- *  showed (checked only for a claimed send). */
+ *  our claim, if any. True when a claimed send's document is no longer the
+ *  one the email showed, or was paid meanwhile (claims are only taken on an
+ *  unpaid quote); then no pay link is written onto it. */
 export async function recordSendAndRelease(
   ref: FirebaseFirestore.DocumentReference,
   claim: SendClaim | null,
   update: Record<string, unknown>,
+  payLink: Record<string, unknown> | null,
 ): Promise<boolean> {
   let changed = false;
   await getAdminDb().runTransaction(async (tx) => {
     const current = (await tx.get(ref)).data() as Quote | undefined;
-    changed = !!claim && (!current || quoteFingerprint(current) !== claim.fingerprint);
-    tx.update(ref, { ...(current?.status === "paid" ? {} : { status: "sent" }), ...update, ...(claim ? { sendingClaim: null } : {}) });
+    const paid = current?.status === "paid";
+    changed = !!claim && (!current || paid || quoteFingerprint(current) !== claim.fingerprint);
+    tx.update(ref, {
+      ...(paid ? {} : { status: "sent" }),
+      ...update,
+      ...(claim && paid ? {} : (payLink ?? {})),
+      ...(claim && (current as { sendingClaim?: SendClaim | null } | undefined)?.sendingClaim?.id === claim.id ? { sendingClaim: null } : {}),
+    });
   });
   return changed;
 }
