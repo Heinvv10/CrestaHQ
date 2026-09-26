@@ -221,11 +221,17 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      const used = await productUsage(ctx.subAccountId!, p.id);
-      if (used.checkoutPages || used.funnels) {
-        throw new CapabilityUserError("A checkout page or funnel now sells this product; it was not deleted.");
-      }
-      await getAdminDb().doc(`products/${p.id}`).delete();
+      const db = getAdminDb();
+      const ref = db.doc(`products/${p.id}`);
+      // What sells it is re-read in the delete's own transaction.
+      await db.runTransaction(async (tx) => {
+        const current = (await tx.get(ref)).data();
+        if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That product isn't in this workspace.");
+        if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
+          throw new CapabilityUserError("A checkout page or funnel now sells this product; it was not deleted.");
+        }
+        tx.delete(ref);
+      });
       return { resultText: "Deleted the product.", ref: { kind: "product", id: p.id } };
     },
   },

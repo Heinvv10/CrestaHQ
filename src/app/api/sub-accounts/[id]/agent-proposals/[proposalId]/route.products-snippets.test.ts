@@ -116,6 +116,7 @@ describe("products", () => {
   it("delete_product → a proposal counting open quotes; approve deletes; a checkout page added in the window → failed", async () => {
     mem.seed("quotes/q1", { subAccountId: "sa1", status: "sent", lineItems: [{ productId: "pr1" }] });
     mem.seed("quotes/q2", { subAccountId: "sa1", status: "paid", lineItems: [{ productId: "pr1" }] });
+    mem.seed("quotes/q3", { subAccountId: "sa2", status: "sent", lineItems: [{ productId: "pr1" }] });
     const id = await proposeId("delete_product", { productId: "pr1" });
     expect(row(id).preview).toContainEqual({ label: "Open quotes / invoices using it", value: "1 (they keep their own copy of name and price)" });
     beforeNextTransaction(async () => page({ productId: "pr1" }));
@@ -126,6 +127,14 @@ describe("products", () => {
     const id2 = await proposeId("delete_product", { productId: "pr1" });
     expect((await decide(id2, "approve")).status).toBe(200);
     expect(mem.read("products/pr1")).toBeUndefined();
+  });
+
+  it("a checkout page appearing inside the delete's own transaction → refused, product kept", async () => {
+    const id = await proposeId("delete_product", { productId: "pr1" });
+    // After approve's claim, then as the delete's transaction starts.
+    beforeNextTransaction(async () => beforeNextTransaction(async () => page({ productId: "pr1" })));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(mem.read("products/pr1")).toBeDefined();
   });
 
   it("another sub-account's product isn't found", async () => {
@@ -152,6 +161,12 @@ describe("snippets", () => {
     ["an email with no subject", { name: "X", type: "email", body: "Hi" }],
   ])("create_snippet with %s → refused", async (_label, args) => {
     expect(await call("create_snippet", args)).toMatchObject({ ok: false, code: "invalid_args" });
+  });
+
+  it("an invisible character in the body is refused as such (not as a missing body)", async () => {
+    expect(await call("create_snippet", { name: "X", type: "text", body: "Hi\u200bthere" })).toMatchObject({
+      ok: false, message: expect.stringMatching(/^the body contains characters/),
+    });
   });
 
   it("delete_snippet → a proposal with the text and a warning after an agent edit; approve deletes", async () => {

@@ -70,6 +70,8 @@ describe("custom fields", () => {
     mem.seed("snippets/s1", { subAccountId: "sa1", body: "Your install is {{contact.customFields.install_date}}" });
     mem.seed("message_templates/m1", { subAccountId: "sa1", body: "Install: {{contact.customFields.install_date}}" });
     mem.seed("message_templates/m2", { subAccountId: "sa2", body: "Install: {{contact.customFields.install_date}}" });
+    mem.seed("subAccounts/sa1/smartLists/l1", { subAccountId: "sa1", filters: { all: [{ field: "customFields.install_date", op: "is_set" }] } });
+    mem.seed("subAccounts/sa2/smartLists/l2", { subAccountId: "sa2", filters: { all: [{ field: "customFields.install_date", op: "is_set" }] } });
     const id = await proposeId("delete_custom_field", { fieldId: "cf1" });
     expect(row(id).preview).toEqual(expect.arrayContaining([
       { label: "Delete custom field", value: "Install date" },
@@ -77,9 +79,11 @@ describe("custom fields", () => {
       {
         label: "Used by",
         value:
-          "1 workflow(s), 1 email/SMS template(s) (broadcasts send these), 1 WhatsApp template(s), 1 snippet(s): they'll read it as empty. " +
+          "1 workflow(s), 1 email/SMS template(s) (broadcasts send these), 1 WhatsApp template(s), 1 snippet(s), 1 smart list(s). " +
           "Not checked: the agency's template library and snapshots.",
       },
+      { label: "Stored values", value: "Stay on each contact. Everything above keeps reading and writing them, but the app can no longer show or edit them." },
+      { label: "Same key later", value: "A field created later with the same label gets the same key and shows these old values." },
     ]));
     expect(mem.read(`${FIELDS}/cf1`)).toBeDefined();
     expect((await decide(id, "approve")).status).toBe(200);
@@ -90,7 +94,7 @@ describe("custom fields", () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, twilioConfig: { missedCallTextBack: { message: "Sorry {{contact.customFields.install_date}}" } } });
     const id = await proposeId("delete_custom_field", { fieldId: "cf1" });
     expect((row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === "Used by")!.value).toContain(
-      "0 snippet(s), and the workspace settings (e.g. the missed-call text-back): they'll read it as empty."
+      "0 smart list(s), and the workspace settings (e.g. the missed-call text-back)."
     );
   });
 

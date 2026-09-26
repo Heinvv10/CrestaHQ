@@ -183,11 +183,15 @@ export const CUSTOM_FIELD_CAPABILITIES: AiSuiteCapability[] = [
           label: "Used by",
           value:
             `${used.workflows} workflow(s), ${used.messageTemplates} email/SMS template(s) (broadcasts send these), ` +
-            `${used.whatsappTemplates} WhatsApp template(s), ${used.snippets} snippet(s)` +
-            `${used.workspaceSettings ? ", and the workspace settings (e.g. the missed-call text-back)" : ""}: they'll read it as empty. ` +
+            `${used.whatsappTemplates} WhatsApp template(s), ${used.snippets} snippet(s), ${used.smartLists} smart list(s)` +
+            `${used.workspaceSettings ? ", and the workspace settings (e.g. the missed-call text-back)" : ""}. ` +
             `Not checked: ${used.notChecked}.`,
         },
-        { label: "Stored values", value: `Stay on each ${f.entity} but stop showing.` },
+        {
+          label: "Stored values",
+          value: `Stay on each ${f.entity}. Everything above keeps reading and writing them, but the app can no longer show or edit them.`,
+        },
+        { label: "Same key later", value: "A field created later with the same label gets the same key and shows these old values." },
       ];
     },
     execute: async (ctx, args) => {
