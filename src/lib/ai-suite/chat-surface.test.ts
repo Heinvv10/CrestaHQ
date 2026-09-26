@@ -183,6 +183,10 @@ describe("registry invariants", () => {
     delete_deal: { dealId: "d_sample" },
     mark_deal_completed: { dealId: "d_won" },
     delete_pipeline: { pipelineId: "p_sample" },
+    delete_custom_field: { fieldId: "cf_sample" },
+    delete_custom_field_folder: { folderId: "fo_sample" },
+    delete_product: { productId: "pr_sample" },
+    delete_snippet: { snippetId: "sn_sample" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
@@ -217,6 +221,10 @@ describe("registry invariants", () => {
     }
     mem.seed("deals/d_sample", { subAccountId: "sa1", agencyId: "ag1", title: "Sample deal", stageId: "new", territoryId: "global" });
     mem.seed("deals/d_won", { subAccountId: "sa1", agencyId: "ag1", title: "Won deal", stageId: "won", contactId: "c_sample", territoryId: "global" });
+    mem.seed("subAccounts/sa1/customFields/cf_sample", { subAccountId: "sa1", agencyId: "ag1", entity: "contact", key: "k", label: "K", type: "text", options: [], required: false, order: 0 });
+    mem.seed("subAccounts/sa1/customFieldFolders/fo_sample", { subAccountId: "sa1", agencyId: "ag1", name: "F", entity: "contact", order: 0 });
+    mem.seed("products/pr_sample", { subAccountId: "sa1", agencyId: "ag1", name: "P", unitPriceCents: 100, currency: "USD", active: true });
+    mem.seed("snippets/sn_sample", { subAccountId: "sa1", agencyId: "ag1", name: "S", type: "text", body: "Hi", subject: null, folder: null });
     mem.seed("subAccounts/sa1/pipelines/p_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample", isDefault: false, stages: [{ id: "a", label: "A", tone: "" }] });
   };
 

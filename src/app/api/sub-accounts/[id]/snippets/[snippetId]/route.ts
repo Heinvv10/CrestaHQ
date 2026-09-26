@@ -1,10 +1,10 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { validateSnippet } from "@/lib/snippets/validate";
+import { updateSnippet } from "@/lib/snippets/write";
 
 /**
  * One snippet. PATCH replaces the editable fields (the editor always sends
@@ -40,10 +40,7 @@ export async function PATCH(request: Request, ctx: Ctx) {
   const v = validateSnippet(raw);
   if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
 
-  await found.ref.update({
-    ...v.value,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  await updateSnippet(found.snippetId, v.value);
   return NextResponse.json({ ok: true, id: found.snippetId });
 }
 

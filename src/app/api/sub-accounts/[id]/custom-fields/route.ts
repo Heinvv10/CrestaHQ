@@ -1,17 +1,13 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   requireSubAccountAdmin,
   requireSubAccountMember,
 } from "@/lib/auth/require-tenancy";
-import {
-  slugifyFieldKey,
-  validateCustomFieldCapacity,
-  validateFieldDefInput,
-} from "@/lib/custom-fields/validation";
+import { validateFieldDefInput } from "@/lib/custom-fields/validation";
+import { createCustomField } from "@/lib/custom-fields/write";
 import type { CustomFieldDef } from "@/types/custom-fields";
 
 /**
@@ -63,61 +59,13 @@ export async function POST(
   if (!validated.ok) {
     return NextResponse.json({ error: validated.error }, { status: 400 });
   }
-  const data = validated.value;
-
-  const db = getAdminDb();
-  const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  if (!subSnap.exists) {
-    return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
-  }
-  const agencyId = (subSnap.data()?.agencyId as string | undefined) ?? null;
-  if (!agencyId) {
-    return NextResponse.json(
-      { error: "Sub-account is missing tenancy metadata." },
-      { status: 500 },
-    );
-  }
-
-  // Load existing defs for this entity → enforce the cap + unique key.
-  const existingSnap = await db
-    .collection(`subAccounts/${subAccountId}/customFields`)
-    .get();
-  const existing = existingSnap.docs.map(
-    (d) => d.data() as Omit<CustomFieldDef, "id">,
-  );
-  const sameEntity = existing.filter((f) => f.entity === data.entity);
-  const capacity = validateCustomFieldCapacity(sameEntity.length, data.entity);
-  if (!capacity.ok) {
-    return NextResponse.json({ error: capacity.error }, { status: 400 });
-  }
-
-  // Unique snake_case key within (sub-account, entity).
-  const base = slugifyFieldKey(data.label) || "field";
-  const taken = new Set(sameEntity.map((f) => f.key));
-  let key = base;
-  let n = 2;
-  while (taken.has(key)) key = `${base}_${n++}`;
-
-  const nextOrder =
-    sameEntity.reduce((max, f) => Math.max(max, f.order ?? 0), -1) + 1;
-
-  const ref = db.collection(`subAccounts/${subAccountId}/customFields`).doc();
-  const now = FieldValue.serverTimestamp();
-  const docPayload: Omit<CustomFieldDef, "id"> = {
-    entity: data.entity,
-    key,
-    label: data.label,
-    type: data.type,
-    options: data.options,
-    required: data.required,
-    order: nextOrder,
-    agencyId,
+  const created = await createCustomField({
     subAccountId,
     createdByUid: access.uid,
-    createdAt: now,
-    updatedAt: now,
-  };
-  await ref.set(docPayload);
-
-  return NextResponse.json({ ok: true, id: ref.id, key });
+    input: validated.value,
+  });
+  if (!created.ok) {
+    return NextResponse.json({ error: created.error }, { status: created.status });
+  }
+  return NextResponse.json({ ok: true, id: created.id, key: created.key });
 }

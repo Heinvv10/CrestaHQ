@@ -1,11 +1,11 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { validateSnippet } from "@/lib/snippets/validate";
 import { snippetToDto } from "@/lib/snippets/to-dto";
+import { createSnippet } from "@/lib/snippets/write";
 
 /**
  * Snippets (SP2 T3) — top-level `snippets/{id}`, scoped by `subAccountId`.
@@ -54,25 +54,12 @@ export async function POST(
   const v = validateSnippet(raw);
   if (!v.ok) return NextResponse.json({ error: v.error }, { status: 400 });
 
-  const db = getAdminDb();
-  const agencyId = (await db.doc(`subAccounts/${subAccountId}`).get()).data()
-    ?.agencyId as string | undefined;
-  if (!agencyId) {
+  const id = await createSnippet({ subAccountId, createdByUid: access.uid, value: v.value });
+  if (!id) {
     return NextResponse.json(
       { error: "Sub-account not found" },
       { status: 404 }
     );
   }
-
-  const ref = db.collection("snippets").doc();
-  const now = FieldValue.serverTimestamp();
-  await ref.set({
-    ...v.value,
-    agencyId,
-    subAccountId,
-    createdByUid: access.uid,
-    createdAt: now,
-    updatedAt: now,
-  });
-  return NextResponse.json({ ok: true, id: ref.id });
+  return NextResponse.json({ ok: true, id });
 }

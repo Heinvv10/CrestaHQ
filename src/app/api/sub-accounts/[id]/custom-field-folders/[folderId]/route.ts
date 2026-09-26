@@ -1,10 +1,8 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { validateFolderName } from "@/lib/custom-fields/folders";
+import { deleteFolder, updateFolder } from "@/lib/custom-fields/folder-write";
 
 /**
  * Per-folder operations. Sub-account admin only.
@@ -29,40 +27,8 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const db = getAdminDb();
-  const ref = db.doc(
-    `subAccounts/${subAccountId}/customFieldFolders/${folderId}`
-  );
-  const snap = await ref.get();
-  if (!snap.exists) {
-    return NextResponse.json({ error: "Folder not found" }, { status: 404 });
-  }
-
-  const update: Record<string, unknown> = {
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-  if (b.name !== undefined) {
-    const name = validateFolderName(b.name);
-    if (!name) {
-      return NextResponse.json(
-        { error: "Folder name must be 1–60 characters." },
-        { status: 400 }
-      );
-    }
-    update.name = name;
-  }
-  if (b.order !== undefined) {
-    const order = Number(b.order);
-    if (!Number.isFinite(order)) {
-      return NextResponse.json(
-        { error: "Order must be a number." },
-        { status: 400 }
-      );
-    }
-    update.order = Math.max(0, Math.floor(order));
-  }
-
-  await ref.update(update);
+  const done = await updateFolder({ subAccountId, folderId, body: b });
+  if (!done.ok) return NextResponse.json({ error: done.error }, { status: done.status });
   return NextResponse.json({ ok: true, id: folderId });
 }
 
@@ -74,31 +40,11 @@ export async function DELETE(
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
-  const db = getAdminDb();
-  const ref = db.doc(
-    `subAccounts/${subAccountId}/customFieldFolders/${folderId}`
-  );
-  const snap = await ref.get();
-  if (!snap.exists) {
-    return NextResponse.json({ error: "Folder not found" }, { status: 404 });
-  }
-
-  const fields = await db
-    .collection(`subAccounts/${subAccountId}/customFields`)
-    .where("folderId", "==", folderId)
-    .get();
-  const batch = db.batch();
-  for (const f of fields.docs) {
-    batch.update(f.ref, {
-      folderId: null,
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-  }
-  batch.delete(ref);
-  await batch.commit();
+  const done = await deleteFolder(subAccountId, folderId);
+  if (!done.ok) return NextResponse.json({ error: done.error }, { status: done.status });
   return NextResponse.json({
     ok: true,
     id: folderId,
-    movedFields: fields.size,
+    movedFields: done.movedFields,
   });
 }

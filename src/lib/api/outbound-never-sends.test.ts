@@ -90,6 +90,24 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   create_pipeline: { name: "Installs", stages: [{ label: "Booked" }, { label: "Done", terminal: "won" }] },
   update_pipeline: { pipelineId: "p1", name: "Renamed" },
   delete_pipeline: { pipelineId: "p1" },
+  list_custom_fields: {},
+  create_custom_field: { entity: "contact", label: "Install date", type: "text" },
+  update_custom_field: { fieldId: "cf1", label: "Renamed" },
+  delete_custom_field: { fieldId: "cf1" },
+  list_custom_field_folders: {},
+  create_custom_field_folder: { name: "Install", entity: "contact" },
+  update_custom_field_folder: { folderId: "fo1", name: "Renamed" },
+  reorder_custom_field_folders: { entity: "contact", ids: ["fo1"] },
+  delete_custom_field_folder: { folderId: "fo1" },
+  list_products: {},
+  create_product: { name: "Fibre 100", unitPriceCents: 49900, currency: "ZAR" },
+  update_product: { productId: "pr1", unitPriceCents: 59900 },
+  delete_product: { productId: "pr1" },
+  list_snippets: {},
+  create_snippet: { name: "Thanks", type: "text", body: "Thanks {{contact.firstName}}!" },
+  update_snippet: { snippetId: "sn1", name: "Thanks", type: "text", body: "Thank you!" },
+  delete_snippet: { snippetId: "sn1" },
+  list_whatsapp_templates: {},
   list_workflow_runs: { workflowId: "wf_draft" },
   list_webhooks: {},
   create_workflow: { template: "speed-to-lead" },
@@ -165,6 +183,10 @@ beforeEach(() => {
   mem.seed("deals/d_won", {
     subAccountId: "sa1", agencyId: "ag1", mode: "live", title: "Won deal", stageId: "won", contactId: "c1", value: 1, currency: "ZAR", territoryId: "global",
   });
+  mem.seed("subAccounts/sa1/customFields/cf1", { subAccountId: "sa1", agencyId: "ag1", entity: "contact", key: "install_date", label: "Install date", type: "text", options: [], required: false, order: 0 });
+  mem.seed("subAccounts/sa1/customFieldFolders/fo1", { subAccountId: "sa1", agencyId: "ag1", name: "Install", entity: "contact", order: 0 });
+  mem.seed("products/pr1", { subAccountId: "sa1", agencyId: "ag1", name: "Fibre", unitPriceCents: 49900, currency: "ZAR", active: true });
+  mem.seed("snippets/sn1", { subAccountId: "sa1", agencyId: "ag1", name: "Thanks", type: "text", body: "Thanks!", subject: null, folder: null });
   mem.seed("subAccounts/sa1/pipelines/p1", {
     subAccountId: "sa1", agencyId: "ag1", name: "Installs", isDefault: false, stages: [{ id: "booked", label: "Booked", tone: "" }],
   });

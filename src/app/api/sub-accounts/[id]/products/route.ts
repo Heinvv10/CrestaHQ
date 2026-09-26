@@ -1,13 +1,10 @@
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
-import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import {
   sanitizeProductPayload,
   type CreateProductPayload,
 } from "@/lib/products/sanitize";
-import { DEFAULT_PRODUCT } from "@/types/products";
-import type { Product } from "@/types/products";
+import { createProduct } from "@/lib/products/write";
 
 export const dynamic = "force-dynamic";
 
@@ -53,30 +50,14 @@ export async function POST(
     );
   }
 
-  const db = getAdminDb();
-  const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
-  const agencyId =
-    access.agencyId ?? (subSnap.data()?.agencyId as string | undefined);
-  if (!agencyId) {
-    return NextResponse.json(
-      { error: "Sub-account is missing an agencyId" },
-      { status: 500 },
-    );
-  }
-
-  const docRef = db.collection("products").doc();
-  const doc: Omit<Product, "id"> = {
-    ...DEFAULT_PRODUCT,
-    agencyId,
-    subAccountId,
-    createdByUid: access.uid,
-    ...sanitized,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-
+  let id: string | null;
   try {
-    await docRef.set(doc);
+    id = await createProduct({
+      subAccountId,
+      agencyId: access.agencyId,
+      createdByUid: access.uid,
+      sanitized,
+    });
   } catch (err) {
     console.error("[products/create] write failed", err);
     return NextResponse.json(
@@ -84,6 +65,12 @@ export async function POST(
       { status: 500 },
     );
   }
+  if (!id) {
+    return NextResponse.json(
+      { error: "Sub-account is missing an agencyId" },
+      { status: 500 },
+    );
+  }
 
-  return NextResponse.json({ id: docRef.id }, { status: 201 });
+  return NextResponse.json({ id }, { status: 201 });
 }

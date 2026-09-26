@@ -1,11 +1,9 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { CUSTOM_FIELD_OPTION_TYPES } from "@/types/custom-fields";
-import type { CustomFieldDef } from "@/types/custom-fields";
+import { updateCustomField } from "@/lib/custom-fields/write";
 
 /**
  * Per-definition operations. Sub-account admin only.
@@ -33,92 +31,12 @@ export async function PATCH(
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  const b = (body ?? {}) as Record<string, unknown>;
-
-  const db = getAdminDb();
-  const ref = db.doc(`subAccounts/${subAccountId}/customFields/${fieldId}`);
-  const snap = await ref.get();
-  if (!snap.exists) {
-    return NextResponse.json({ error: "Custom field not found" }, { status: 404 });
-  }
-  const def = snap.data() as Omit<CustomFieldDef, "id">;
-
-  const update: Record<string, unknown> = {
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-
-  if (b.label !== undefined) {
-    const label = typeof b.label === "string" ? b.label.trim() : "";
-    if (label.length < 1 || label.length > 60) {
-      return NextResponse.json(
-        { error: "Field label must be 1–60 characters." },
-        { status: 400 },
-      );
-    }
-    update.label = label;
-  }
-
-  if (b.required !== undefined) {
-    update.required = b.required === true;
-  }
-
-  if (b.order !== undefined) {
-    const order = Number(b.order);
-    if (!Number.isFinite(order)) {
-      return NextResponse.json({ error: "Order must be a number." }, { status: 400 });
-    }
-    update.order = Math.max(0, Math.floor(order));
-  }
-
-  if (b.folderId !== undefined) {
-    if (b.folderId === null) {
-      update.folderId = null;
-    } else if (typeof b.folderId === "string" && b.folderId) {
-      const folder = await db
-        .doc(`subAccounts/${subAccountId}/customFieldFolders/${b.folderId}`)
-        .get();
-      if (!folder.exists || folder.data()?.entity !== def.entity) {
-        return NextResponse.json({ error: "Folder not found" }, { status: 404 });
-      }
-      update.folderId = b.folderId;
-    } else {
-      return NextResponse.json(
-        { error: "folderId must be a folder id or null." },
-        { status: 400 },
-      );
-    }
-  }
-
-  if (b.options !== undefined) {
-    if (!CUSTOM_FIELD_OPTION_TYPES.has(def.type)) {
-      return NextResponse.json(
-        { error: "Only dropdown / multi-select fields have options." },
-        { status: 400 },
-      );
-    }
-    if (!Array.isArray(b.options)) {
-      return NextResponse.json({ error: "Options must be a list." }, { status: 400 });
-    }
-    const cleaned = Array.from(
-      new Set(
-        b.options
-          .map((o) => (typeof o === "string" ? o.trim() : ""))
-          .filter((o) => o.length > 0 && o.length <= 100),
-      ),
-    );
-    if (cleaned.length === 0) {
-      return NextResponse.json(
-        { error: "Keep at least one option." },
-        { status: 400 },
-      );
-    }
-    if (cleaned.length > 50) {
-      return NextResponse.json({ error: "At most 50 options." }, { status: 400 });
-    }
-    update.options = cleaned;
-  }
-
-  await ref.update(update);
+  const done = await updateCustomField({
+    subAccountId,
+    fieldId,
+    body: (body ?? {}) as Record<string, unknown>,
+  });
+  if (!done.ok) return NextResponse.json({ error: done.error }, { status: done.status });
   return NextResponse.json({ ok: true, id: fieldId });
 }
 
