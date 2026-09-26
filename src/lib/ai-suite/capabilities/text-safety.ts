@@ -122,10 +122,10 @@ const LOWER_CONFUSABLES = new Map<string, string>([
   ["\uab83", "w"], ["\uab93", "z"],
 ]);
 
-/** Spaces, dashes, connectors and quote marks never tell two names apart
- *  ("Follow-up" = "Follow up", "Don\u2019t" = "Don't"); symbols and other
+/** Spaces, dashes, connectors, brackets and quote marks never tell two names
+ *  apart ("Follow-up" = "Follow up", "Don\u2019t" = "Don't", "(Pro)" = "Pro"); symbols and other
  *  punctuation do ("A+" / "A", "Pro" / "Pro+", "10.0" / "100", emoji). */
-const SEPARATORS = /[\s\p{Pd}\p{Pc}'"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033\u02bc\uff07]/gu;
+const SEPARATORS = /[\s\p{Pd}\p{Pc}\p{Ps}\p{Pe}'"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033\u02bc\uff07]/gu;
 
 /** A name folded for "is this the same name?": NFKC, case-folded, separators
  *  dropped. */

@@ -53,6 +53,7 @@ describe("lookAlikeProblem", () => {
     ["a space for a hyphen", "Follow up", "Follow-up"],
     ["a bar for l and a hyphen for a space", "Bank-detai\u2223s", "Bank details"],
     ["the same name in another case with a hyphen for a space", "ID-card", "id card"],
+    ["brackets", "[Pro]", "(Pro)"],
   ])("%s: the same as the existing name", (_label, name, existing) => {
     expect(lookAlikeProblem(name, [existing])).toBe("is the same as, or looks like, an existing one");
   });
