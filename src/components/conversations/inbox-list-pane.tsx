@@ -10,7 +10,7 @@ import {
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
-import { subscribeToConversations } from "@/lib/firestore/conversations";
+import { useSubAccountConversations } from "@/context/conversations-context";
 import { useConversationsPreview } from "@/hooks/use-conversations-preview";
 import { useLoadingHint } from "@/hooks/use-loading-hint";
 import { RENDER_STEP } from "@/components/show-more-rows";
@@ -29,12 +29,12 @@ import type { ConversationDoc } from "@/types/conversations";
 
 /**
  * Left pane of the Conversations workspace. Lives in the conversations
- * layout, so it stays mounted (and keeps its live subscription) while threads
- * open and close beside it. Tab / scope / filters / sort live in the URL
+ * layout, so it stays mounted while threads open and close beside it; the
+ * live list itself is held by ConversationsProvider across visits. Tab / scope / filters / sort live in the URL
  * query; the search box is local state (the layout keeps it across threads).
  */
 export function InboxListPane() {
-  const { user, loading: authLoading } = useAuth();
+  const { user } = useAuth();
   const { subAccountId, saPath } = useSubAccount();
   const territory = useEffectiveTerritoryFilter();
   const params = useParams<{ contactId?: string }>();
@@ -42,9 +42,12 @@ export function InboxListPane() {
   const router = useRouter();
   const pathname = usePathname();
 
-  const [conversations, setConversations] = useState<ConversationDoc[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // Shared with the sub-account layout, so a revisit renders the list the
+  // listener already holds instead of re-downloading it.
+  const { conversations, loading, error } = useSubAccountConversations();
+  const loadError = error
+    ? "Could not load conversations. Check your access and try again."
+    : null;
   const [search, setSearch] = useState("");
   // Local state is the source of truth, seeded from the URL, mirrored back to
   // it on every change, and re-synced when the URL changes from outside. Deriving filters from useSearchParams alone
@@ -68,33 +71,6 @@ export function InboxListPane() {
     pendingWrites.current = decision.pending;
     if (decision.adopt) setFilterState(urlFilters);
   }, [searchParams]);
-
-  useEffect(() => {
-    if (authLoading || !user || !subAccountId || !territory.ready) {
-      setConversations([]);
-      return;
-    }
-    setLoading(true);
-    setConversations([]);
-    setLoadError(null);
-    const unsub = subscribeToConversations(
-      subAccountId,
-      (list) => {
-        setConversations(list);
-        setLoading(false);
-      },
-      () => {
-        setConversations([]);
-        setLoading(false);
-        setLoadError(
-          "Could not load conversations. Check your access and try again."
-        );
-      },
-      territory.filter,
-      { waitForServer: true }
-    );
-    return () => unsub();
-  }, [user, subAccountId, authLoading, territory.ready, territory.filter]);
 
   // Newest page while the full list loads — only when it is exactly what the
   // list will show: no territory narrowing, filters, non-default sort or search.

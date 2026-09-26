@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { SubAccountProvider } from "@/context/sub-account-context";
 import { ContactsProvider } from "@/context/contacts-context";
+import { ConversationsProvider } from "@/context/conversations-context";
 import { BillingGuard } from "@/components/billing/billing-guard";
 
 export default async function SubAccountLayout({
@@ -14,7 +15,9 @@ export default async function SubAccountLayout({
   return (
     <SubAccountProvider subAccountId={subAccountId}>
       <ContactsProvider>
-        <BillingGuard>{children}</BillingGuard>
+        <ConversationsProvider>
+          <BillingGuard>{children}</BillingGuard>
+        </ConversationsProvider>
       </ContactsProvider>
     </SubAccountProvider>
   );

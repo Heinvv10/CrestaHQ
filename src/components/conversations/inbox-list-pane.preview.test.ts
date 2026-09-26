@@ -16,7 +16,12 @@ const state = vi.hoisted(() => ({
   territoryFilter: null as string[] | null,
   deliver: null as ((list: unknown[]) => void) | null,
   subscribeOpts: null as unknown,
+  subscribeCount: 0,
   fetchNewest: vi.fn(),
+  sub: {
+    subAccountId: "sa1",
+    saPath: (p: string) => `/sa/sa1${p}`,
+  },
 }));
 
 vi.mock("next/navigation", () => ({
@@ -31,10 +36,7 @@ vi.mock("@/hooks/use-auth", () => ({
   useAuth: () => state.auth,
 }));
 vi.mock("@/context/sub-account-context", () => ({
-  useSubAccount: () => ({
-    subAccountId: "sa1",
-    saPath: (p: string) => `/sa/sa1${p}`,
-  }),
+  useSubAccount: () => state.sub,
 }));
 vi.mock("@/hooks/use-effective-territory-filter", () => ({
   useEffectiveTerritoryFilter: () => ({
@@ -51,6 +53,7 @@ vi.mock("@/lib/firestore/conversations", () => ({
     opts: unknown
   ) => {
     state.subscribeOpts = opts;
+    state.subscribeCount += 1;
     state.deliver = cb;
     return () => undefined;
   },
@@ -64,6 +67,7 @@ vi.mock("@/components/conversations/star-toggle", () => ({
 }));
 
 import { InboxListPane } from "./inbox-list-pane";
+import { ConversationsProvider } from "@/context/conversations-context";
 import { SLOW_AFTER_MS } from "@/hooks/use-loading-hint";
 
 const conv = (id: string, name: string) => ({
@@ -77,8 +81,19 @@ const conv = (id: string, name: string) => ({
 let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 
+// The sub-account layout mounts the shared conversations provider above
+// every page; leaving the inbox unmounts the pane but not the provider.
 async function mount() {
-  await act(async () => root.render(createElement(InboxListPane)));
+  await act(async () =>
+    root.render(
+      createElement(ConversationsProvider, null, createElement(InboxListPane))
+    )
+  );
+}
+async function leave() {
+  await act(async () =>
+    root.render(createElement(ConversationsProvider, null))
+  );
 }
 
 beforeEach(() => {
@@ -87,6 +102,7 @@ beforeEach(() => {
   state.territoryFilter = null;
   state.deliver = null;
   state.subscribeOpts = null;
+  state.subscribeCount = 0;
   state.fetchNewest.mockReset();
   host = document.createElement("div");
   root = createRoot(host);
@@ -108,6 +124,22 @@ it("shows the newest page while loading, then the full list replaces it", async 
   );
   expect(host.textContent).toContain("Full Person");
   expect(host.textContent).not.toContain("Loading all conversations");
+});
+
+it("a revisit shows the list at once: no new download, no preview fetch", async () => {
+  state.fetchNewest.mockResolvedValue([conv("c1", "Preview Person")]);
+  await mount();
+  await act(async () => state.deliver!([conv("c2", "Full Person")]));
+  expect(state.subscribeCount).toBe(1);
+  expect(state.fetchNewest).toHaveBeenCalledTimes(1);
+
+  await leave();
+  expect(host.textContent).toBe("");
+  await mount();
+  expect(host.textContent).toContain("Full Person");
+  expect(host.textContent).not.toContain("Loading all conversations");
+  expect(state.subscribeCount).toBe(1);
+  expect(state.fetchNewest).toHaveBeenCalledTimes(1);
 });
 
 it("holds the full listener until the server answers", async () => {
