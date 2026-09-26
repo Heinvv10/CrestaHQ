@@ -10,14 +10,45 @@ import {
 } from "firebase/auth";
 import { getFirebaseAuth } from "./client";
 
+const SIGN_IN_RETRY_DELAYS_MS = [1_000, 2_000];
+const SIGN_IN_MAX_ATTEMPTS = SIGN_IN_RETRY_DELAYS_MS.length + 1;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * CI's self-hosted E2E runner shares a box with heavy Docker veth churn;
+ * Chrome aborts in-flight requests on a network interface change, so
+ * signInWithEmailAndPassword can fail with `auth/network-request-failed`
+ * even though the credentials are correct. Retry only that code — any other
+ * failure (wrong password, too-many-requests, disabled user) is final and
+ * must not be retried.
+ */
+function isNetworkRequestFailed(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === "auth/network-request-failed";
+}
+
 export async function signInWithEmail(email: string, password: string) {
-  const credential = await signInWithEmailAndPassword(
-    getFirebaseAuth(),
-    email,
-    password,
-  );
-  await createSessionCookie(credential.user);
-  return credential;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SIGN_IN_MAX_ATTEMPTS; attempt++) {
+    try {
+      const credential = await signInWithEmailAndPassword(
+        getFirebaseAuth(),
+        email,
+        password,
+      );
+      await createSessionCookie(credential.user);
+      return credential;
+    } catch (err) {
+      lastError = err;
+      if (!isNetworkRequestFailed(err) || attempt === SIGN_IN_MAX_ATTEMPTS) {
+        throw err;
+      }
+      await delay(SIGN_IN_RETRY_DELAYS_MS[attempt - 1]);
+    }
+  }
+  throw lastError;
 }
 
 export async function signUpWithEmail(email: string, password: string) {
