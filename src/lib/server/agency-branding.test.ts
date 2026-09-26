@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
   agencyHeader: null as string | null,
@@ -24,9 +24,6 @@ beforeEach(() => {
   m.get.mockReset();
   m.docPath.mockReset();
   vi.restoreAllMocks();
-});
-afterEach(() => {
-  vi.useRealTimers();
 });
 
 it("returns only the three public branding fields of the header's agency", async () => {
@@ -80,45 +77,14 @@ it("fails open to null and logs when Firestore throws", async () => {
 });
 
 /**
- * Cross-request TTL cache (60 s, per agency id) in front of the Admin read,
- * so hard loads of dashboard routes don't each cost a Firestore read.
+ * No cross-request cache: a hard load right after the owner changes their
+ * logo must seed the NEW logo, or the old one flashes — the bug this fixes.
  */
-const DOC = { exists: true, data: () => ({ name: "Cached Agency" }) };
-
-it("a second call within the TTL does not read Firestore again", async () => {
-  vi.useFakeTimers();
-  m.agencyHeader = "ag-ttl-hit";
-  m.get.mockResolvedValue(DOC);
-  await getInitialAgencyBranding();
-  vi.advanceTimersByTime(59_000);
-  await expect(getInitialAgencyBranding()).resolves.toMatchObject({ name: "Cached Agency" });
-  expect(m.get).toHaveBeenCalledTimes(1);
-});
-
-it("reads again once the TTL has passed", async () => {
-  vi.useFakeTimers();
-  m.agencyHeader = "ag-ttl-expire";
-  m.get.mockResolvedValue(DOC);
-  await getInitialAgencyBranding();
-  vi.advanceTimersByTime(61_000);
-  await getInitialAgencyBranding();
-  expect(m.get).toHaveBeenCalledTimes(2);
-});
-
-it("keys the cache by agency id", async () => {
-  m.get.mockResolvedValue(DOC);
-  m.agencyHeader = "ag-key-a";
-  await getInitialAgencyBranding();
-  m.agencyHeader = "ag-key-b";
-  await getInitialAgencyBranding();
-  expect(m.get).toHaveBeenCalledTimes(2);
-});
-
-it("does not cache a failed read — the next request retries", async () => {
-  m.agencyHeader = "ag-retry";
-  vi.spyOn(console, "error").mockImplementation(() => undefined);
-  m.get.mockRejectedValueOnce(new Error("UNAVAILABLE")).mockResolvedValue(DOC);
-  await expect(getInitialAgencyBranding()).resolves.toBeNull();
-  await expect(getInitialAgencyBranding()).resolves.toMatchObject({ name: "Cached Agency" });
+it("a second request after the doc changes returns the new branding", async () => {
+  m.agencyHeader = "ag-changed";
+  m.get.mockResolvedValueOnce({ exists: true, data: () => ({ logoUrl: "https://cdn.example/old.png" }) });
+  await expect(getInitialAgencyBranding()).resolves.toMatchObject({ logoUrl: "https://cdn.example/old.png" });
+  m.get.mockResolvedValueOnce({ exists: true, data: () => ({ logoUrl: "https://cdn.example/new.png" }) });
+  await expect(getInitialAgencyBranding()).resolves.toMatchObject({ logoUrl: "https://cdn.example/new.png" });
   expect(m.get).toHaveBeenCalledTimes(2);
 });
