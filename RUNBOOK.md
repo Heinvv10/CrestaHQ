@@ -257,52 +257,26 @@ always held in v1. At most 20 posts per sub-account per SAST day, and at most
 `reviewsAutoReplyEnabledByAgency`), the card's switch is on for the listing it
 was enabled on, and the deployment sets the kill switch.
 
-- **Kill switch:** `REVIEWS_AUTO_REPLY_ENABLED` in
-  `/home/velo/crestahq-config/.env.production`. Hein edits that file; agents
-  never do. The engine runs only when the value is exactly `1`. A change is
-  picked up only when the app restarts, so stopping it takes minutes, not an
-  instant.
-  - **To stop it, set `REVIEWS_AUTO_REPLY_ENABLED=0`. Do not delete the
-    line.** Each release carries its own copy of `.env.production`, taken at
-    build time (`~/crestahq-releases/<release>/.env.production`), and Next
-    loads that copy for any variable systemd did not set. A deleted line
-    therefore falls back to the release's copy, which may still say `1`. A
-    value systemd sets always wins.
-  - Then restart the **live** colour only. Only one colour runs between
-    deploys, and starting the idle one would boot an older release. As velo
-    (`sudo -u velo -i`):
-
-    ```bash
-    cat ~/crestahq-proxy/upstream.conf     # names the live colour, 4301 or 4302
-    systemctl --user restart crestahq@4301 # the live one
-    ```
-
-    The proxy has no second colour to fall back to during this restart, so
-    expect a few seconds of errors.
+- **Kill switch:** the `REVIEWS_AUTO_REPLY_ENABLED` environment variable. The
+  engine runs only when it is exactly `1`, and a change is picked up only when
+  the app restarts (or, on Vercel, redeploys) — a minutes-scale stop, not an
+  instant one. **To stop it, set it to `0` rather than deleting it**, then
+  restart or redeploy. On velo-server, see
+  [Stopping review auto-reply](#stopping-review-auto-reply-velo-server) for
+  why `0` and which colour to restart.
 - **Off for ONE sub-account:** switch off the Auto-reply card on Reputation →
   Settings (an admin of that sub-account can do this). Or turn off
   **Review auto-reply** in the sub-account's **Manage** dialog
   (`/agency/sub-accounts`), which is `reviewsAutoReplyEnabledByAgency`. Either stops posting within the current run, because both are
   re-checked before every post. Settings and held drafts are kept.
 - **Off EVERYWHERE:** the kill switch, as above.
-- **Alerts:** four alerts, sent through the same rail as WhatsApp quality
-  alerts: web push to the sub-account's members, plus email to the agency
-  owner. Each one is also recorded as a server-only doc in
-  `subAccounts/{id}/reviewAutoReplyAlerts` and deduped:
-  1. `held`: one per engine run that newly holds at least one review for
-     approval. It gives the count only, never review text.
-  2. `reconnect_required`: one when `googleConnectionMeta.reconnectRequired`
-     flips from false to true. Auto-reply is stalled until someone reconnects.
-  3. `edited_low`: one per review, ever, when a review that was auto-replied
-     is later edited down to 3★ or lower. It gives the star rating and the
-     first 80 characters of the text, never the reviewer's name.
-  4. `listing_changed`: one when a listing change, clear or disconnect
-     switches auto-reply off. Someone must re-enable it on the card.
-
-  Nothing is delivered when push (`NEXT_PUBLIC_VAPID_PUBLIC_KEY` +
-  `VAPID_PRIVATE_KEY`) or email is not configured; a warning is logged
-  instead. With a fake provider (CI, dev) the doc is written but nothing is
-  sent.
+- **Alerts:** reviews waiting for approval, Google needing a reconnect, an
+  auto-replied review edited down to ≤3★, and auto-reply switched off by a
+  listing change — each recorded in `subAccounts/{id}/reviewAutoReplyAlerts`
+  and sent by web push and email. Triggers, recipients and dedupe:
+  [reputation.md](docs/features/reputation.md#review-auto-reply-auto_reply_v1_planmd)
+  ("Alerts"). Push and email are independent: a missing channel (no VAPID
+  keys, no email sender) logs a warning and the other still goes out.
 - **Where to look when something goes wrong:**
   - `subAccounts/{id}/gbpEvents`: each auto-post is a `reply_posted` row
     with `actorUid: "system:auto-reply"`. Its `createdByUid` is whoever
@@ -327,6 +301,23 @@ was enabled on, and the deployment sets the kill switch.
 
 *Operator section for this repo's own deployment on velo-server. Buyer copies
 deploy to Vercel and can ignore it.*
+
+### Stopping review auto-reply (velo-server)
+
+The kill switch lives in `~/crestahq-config/.env.production` (the unit's
+`EnvironmentFile`). Set `REVIEWS_AUTO_REPLY_ENABLED=0` — **do not delete the
+line**: each release keeps its own build-time copy
+(`~/crestahq-releases/<release>/.env.production`) and Next fills any variable
+systemd did not set from that copy, so a deleted line can fall back to `1`. Then
+restart the **live** colour only — one colour runs between deploys, and starting
+the idle one would boot an older release. As velo:
+
+```bash
+cat ~/crestahq-proxy/upstream.conf     # names the live colour, 4301 or 4302
+XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart crestahq@4301   # the live one
+```
+
+With no second colour running, expect a few seconds of errors during the restart.
 
 `scripts/deploy-velo.sh` deploys blue/green, so a deploy no longer refuses
 connections while Next restarts:
