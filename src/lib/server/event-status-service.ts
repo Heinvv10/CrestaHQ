@@ -3,28 +3,21 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { loadEventContact } from "@/lib/server/tenant-ref";
-import {
-  emailIsConfigured,
-  sendEmail,
-  tenantFrom,
-} from "@/lib/comms/resend";
+import { sendEmail, tenantFrom } from "@/lib/comms/resend";
+import { planCancelNotice, type CancelNoticeExpect } from "@/lib/server/event-cancel-notice";
+import { holdFailuresOf, type AgentActor, type HeldEnrolment, type HoldFailure } from "@/lib/workflows/agent-hold";
 import {
   fireBookingTrigger,
   recordBookingActivity,
 } from "@/lib/booking/lifecycle";
-import { bookedEventLabel } from "@/lib/booking/calendar-types";
-import { renderBookingCancelledEmail } from "@/lib/booking/email";
 import { eventStatus, isValidStatusTransition } from "@/types/events";
 import type { ActivityType } from "@/types/contacts";
 import type { AutomationTriggerType } from "@/types";
-import type { BookingPage } from "@/types/booking";
 import type {
   CalendarEvent,
   EventNotifySkipReason,
   EventStatus,
 } from "@/types/events";
-import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
 
 /**
@@ -127,6 +120,17 @@ export interface StatusChangeOutcome {
   error?: string;
   emailSent?: boolean;
   emailSkipReason?: SideEffectResult["emailSkipReason"];
+  /** Agent writes only: the enrolments held for approval, and the matched
+   *  workflows that could be neither held nor run. */
+  held?: HeldEnrolment[];
+  holdFailures?: HoldFailure[];
+}
+
+export interface StatusChangeOptions {
+  /** An API agent made this change: its booking trigger is held and awaited (ruling Q). */
+  actor?: AgentActor;
+  /** An approved agent cancel: send only this notice (null: none), refusing one that now differs. */
+  expectNotice?: CancelNoticeExpect | null;
 }
 
 /**
@@ -139,6 +143,7 @@ export async function changeEventStatus(
   event: CalendarEvent,
   next: EventStatus,
   reason = "",
+  opts: StatusChangeOptions = {},
 ): Promise<StatusChangeOutcome> {
   const current = eventStatus(event);
   if (current === next) {
@@ -158,13 +163,28 @@ export async function changeEventStatus(
     patch.cancelledByVisitor = false;
     patch.cancelReason = reason || "by_operator";
   }
+  // The transition is decided on the status read in the write's own
+  // transaction: of two callers changing it at once, only the winner writes
+  // and runs the side effects, on the event as read there (its live contact).
+  const ref = getAdminDb().collection("events").doc(event.id);
+  let outcome: "write" | "noop" | string;
+  let live: CalendarEvent = event;
   try {
-    await getAdminDb().collection("events").doc(event.id).update(patch);
+    outcome = await getAdminDb().runTransaction(async (tx) => {
+      live = { ...event, ...((await tx.get(ref)).data() as Partial<CalendarEvent> | undefined), id: event.id };
+      if (eventStatus(live) === next) return "noop";
+      const refused = statusChangeError(live, next, Date.now());
+      if (refused) return refused;
+      tx.update(ref, patch);
+      return "write";
+    });
   } catch (err) {
     console.error("[event-status-service] update failed", err);
     return { ok: false, httpStatus: 500, error: "Couldn't update event." };
   }
-  if (next === "cancelled") await pushBookingToGoogle(event.id);
+  if (outcome === "noop") return { ok: true, httpStatus: 200, status: next, noop: true };
+  if (outcome !== "write") return { ok: false, httpStatus: 409, error: outcome };
+  if (next === "cancelled") await pushBookingToGoogle(live.id);
 
   // A test-mode event (v1 `lsk_test_*` key) gets the validated status write
   // only — no activity row, no workflow trigger, no email. The public API
@@ -180,17 +200,20 @@ export async function changeEventStatus(
       emailSkipReason: "test_mode",
     };
   }
-  const sideEffects = await runStatusSideEffects(event, next, reason);
+  const sideEffects = await runStatusSideEffects(live, next, reason, opts);
   return {
     ok: true,
     httpStatus: 200,
     status: next,
     emailSent: sideEffects.emailSent,
     emailSkipReason: sideEffects.emailSkipReason,
+    ...(opts.actor ? { held: sideEffects.held ?? [], holdFailures: sideEffects.holdFailures ?? [] } : {}),
   };
 }
 
 interface SideEffectResult {
+  held?: HeldEnrolment[];
+  holdFailures?: HoldFailure[];
   emailSent: boolean;
   /** Why the cancellation email did NOT send — surfaced to the operator toast. */
   emailSkipReason?: EventNotifySkipReason;
@@ -200,6 +223,7 @@ async function runStatusSideEffects(
   event: CalendarEvent,
   next: EventStatus,
   reason: string,
+  opts: StatusChangeOptions,
 ): Promise<SideEffectResult> {
   if (!event.contactId) {
     return {
@@ -233,7 +257,7 @@ async function runStatusSideEffects(
     activityType satisfies ActivityType,
     { extra: reason || null },
   );
-  await fireBookingTrigger(
+  const fired = await fireBookingTrigger(
     {
       id: event.id,
       agencyId: event.agencyId,
@@ -242,98 +266,35 @@ async function runStatusSideEffects(
       bookingPageSlug: event.bookingPageSlug ?? null,
     },
     triggerType,
+    // Only an agent's call carries the actor: the human call is unchanged.
+    ...(opts.actor ? [opts.actor] : []),
   );
+  const held = fired ? { held: fired.held ?? [], holdFailures: holdFailuresOf(fired) } : {};
 
-  // Operator-cancelled bookings notify the visitor via email.
-  if (next !== "cancelled") return { emailSent: false, emailSkipReason: "not_cancelled" };
-  const db = getAdminDb();
+  // Operator-cancelled bookings notify the visitor via email. An approved
+  // agent cancel sends only the notice its approver saw (`expectNotice`).
+  if (next !== "cancelled") return { ...held, emailSent: false, emailSkipReason: "not_cancelled" };
+  const notice = await planCancelNotice(event);
+  const expect = opts.expectNotice;
+  if (expect !== undefined && notice.ok) {
+    const same = !!expect && notice.to === expect.to && notice.subject === expect.subject && notice.text === expect.text && notice.html === expect.html;
+    if (!same) return { ...held, emailSent: false, emailSkipReason: "changed_since_approval" };
+  }
+  if (!notice.ok) return { ...held, emailSent: false, emailSkipReason: notice.reason };
   try {
-    const [contact, subSnap, pageSnap] = await Promise.all([
-      loadEventContact(event),
-      db.doc(`subAccounts/${event.subAccountId}`).get(),
-      event.bookingPageSlug
-        ? db
-            .doc(
-              `subAccounts/${event.subAccountId}/bookingPages/${event.bookingPageSlug}`,
-            )
-            .get()
-        : Promise.resolve(null),
-    ]);
-    if (!contact || !subSnap.exists) {
-      console.warn(
-        `[event-status-service] missing records: contact=${!!contact} sub=${subSnap.exists} event=${event.id}`,
-      );
-      return { emailSent: false, emailSkipReason: "missing_records" };
-    }
-    const sub = subSnap.data() as SubAccountDoc;
-    if (!emailIsConfigured(sub)) {
-      console.warn(
-        `[event-status-service] email not configured — skipping cancel notify for event=${event.id}`,
-      );
-      return { emailSent: false, emailSkipReason: "email_not_configured" };
-    }
-
-    const page = (pageSnap?.data() ?? null) as BookingPage | null;
-    if (!contact.email) {
-      return { emailSent: false, emailSkipReason: "no_contact_email" };
-    }
-    if (contact.emailOptedOut) {
-      return { emailSent: false, emailSkipReason: "contact_opted_out" };
-    }
-    const startAt = (
-      event.startAt as { toDate?: () => Date } | null
-    )?.toDate?.();
-    const endAt = (
-      event.endAt as { toDate?: () => Date } | null
-    )?.toDate?.();
-    if (!(startAt instanceof Date) || !(endAt instanceof Date)) {
-      console.warn(
-        `[event-status-service] bad timestamps event=${event.id} start=${typeof startAt} end=${typeof endAt}`,
-      );
-      return { emailSent: false, emailSkipReason: "bad_timestamps" };
-    }
-
-    const rendered = renderBookingCancelledEmail(
-      {
-        recipientName: contact.name ?? "",
-        businessName: sub.name ?? "Booking",
-        businessLogoUrl: sub.logoUrl,
-        page: {
-          ...bookedEventLabel(page, event, startAt, endAt),
-          timezone: page?.timezone ?? "UTC",
-          payment: page?.payment ?? null,
-          confirmationMessage: page?.confirmationMessage ?? "",
-        },
-        startAt,
-        endAt,
-        publicEventUrl: "",
-      },
-      "by_operator",
-    );
-    try {
-      await sendEmail({
-        to: contact.email,
-        subject: rendered.subject,
-        text: rendered.text,
-        html: rendered.html,
-        replyTo: sub.replyToEmail ?? undefined,
-        from: tenantFrom(sub),
-        subAccount: sub,
-        meter: { subAccountId: event.subAccountId },
-      });
-      return { emailSent: true };
-    } catch (err) {
-      console.warn(
-        `[event-status-service] cancel notify send failed event=${event.id} to=${contact.email}`,
-        err,
-      );
-      return { emailSent: false, emailSkipReason: "send_failed" };
-    }
+    await sendEmail({
+      to: notice.to,
+      subject: notice.subject,
+      text: notice.text,
+      html: notice.html,
+      replyTo: notice.sub.replyToEmail ?? undefined,
+      from: tenantFrom(notice.sub),
+      subAccount: notice.sub,
+      meter: { subAccountId: event.subAccountId },
+    });
+    return { ...held, emailSent: true };
   } catch (err) {
-    console.warn(
-      `[event-status-service] side-effect read failed event=${event.id}`,
-      err,
-    );
-    return { emailSent: false, emailSkipReason: "missing_records" };
+    console.warn(`[event-status-service] cancel notify send failed event=${event.id} to=${notice.to}`, err);
+    return { ...held, emailSent: false, emailSkipReason: "send_failed" };
   }
 }

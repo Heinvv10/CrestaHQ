@@ -49,7 +49,11 @@ import { CONVERSATION_SCHEDULE_CAPABILITIES } from "./capabilities/conversation-
 import { CONVERSATION_WA_TEMPLATE_CAPABILITIES } from "./capabilities/conversation-wa-template";
 import { TASK_CAPABILITIES } from "./capabilities/tasks";
 import { TASK_COMPLETE_CAPABILITIES } from "./capabilities/task-complete";
+import { TASK_EDIT_CAPABILITIES } from "./capabilities/task-edit";
 import { EVENT_CAPABILITIES } from "./capabilities/events";
+import { EVENT_STATUS_CAPABILITIES } from "./capabilities/event-status";
+import { BOOKING_PAGE_CAPABILITIES } from "./capabilities/booking-pages";
+import { BOOKING_PAGE_EDIT_CAPABILITIES } from "./capabilities/booking-page-edit";
 import { MEMBER_CAPABILITIES } from "./capabilities/members";
 import { WEBSITE_RESEARCH_CAPABILITIES } from "./capabilities/website-research";
 import { WEBSITE_CREATE_CAPABILITIES } from "./capabilities/website-create";
@@ -128,7 +132,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...CONVERSATION_WA_TEMPLATE_CAPABILITIES,
   ...TASK_CAPABILITIES,
   ...TASK_COMPLETE_CAPABILITIES,
+  ...TASK_EDIT_CAPABILITIES,
   ...EVENT_CAPABILITIES,
+  ...EVENT_STATUS_CAPABILITIES,
+  ...BOOKING_PAGE_CAPABILITIES,
+  ...BOOKING_PAGE_EDIT_CAPABILITIES,
   ...MEMBER_CAPABILITIES,
   ...WEBSITE_RESEARCH_CAPABILITIES,
   ...WEBSITE_CREATE_CAPABILITIES,
