@@ -69,19 +69,23 @@ export async function reviewPlan(subAccountId: string, deal: FirebaseFirestore.D
   }
   const now = await reviewBodyNow({ db, subAccountId, subAccount: sub, cfg, channel, contact, reviewUrl });
   if (!now.ok) return none(contactId, phone, now.why);
-  // The raw text is pinned (the send compares it exactly); the row shows
-  // it as a message body, and a text with hidden characters can't be shown.
+  // Shown byte for byte as sent (and pinned so): hidden characters, or
+  // spacing a message body would tidy, can't be shown exactly.
   const shown = messageBody(now.body);
   if (shown === null) return none(contactId, phone, "the review request's text contains characters that can't be shown safely.");
-  const tracked = channel === "sms" && activeReminder(cfg.reminder) ? " The link may go as a tracking link that forwards to it." : "";
+  if (shown !== now.body) return none(contactId, phone, "the review request's text has spacing that can't be shown exactly as sent.");
   return {
     contactId,
     phone,
     body: now.body,
     channel,
     rows: [
-      { label: "Review request", value: `Sent to ${oneLine(contact.name) || "(unnamed)"} (${masked("sms", phone)}) by ${label}; quiet hours delay it.${tracked}` },
+      { label: "Review request", value: `Sent to ${oneLine(contact.name) || "(unnamed)"} (${masked("sms", phone)}) by ${label}; quiet hours delay it.` },
       { label: "Message", value: shown, multiline: true },
+      // The send skips reminders for an approved request (see `expect`).
+      ...(activeReminder(cfg.reminder)
+        ? [{ label: "Reminders", value: "No reminders will follow (reminders apply only to requests people send)." }]
+        : []),
     ],
   };
 }

@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * `expect` on maybeSendReviewRequest: an approved agent completion sends only
@@ -22,6 +22,10 @@ vi.mock("@/lib/comms/twilio", async () => {
   };
 });
 const held = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => true));
+const scheduled = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => undefined));
+vi.mock("@/lib/reviews/reminder", async (orig) => ({
+  ...((await orig()) as object), scheduleReviewReminder: scheduled, supersedeOtherReminders: async () => undefined,
+}));
 vi.mock("@/lib/comms/quiet-hours-hold", () => ({ holdForQuietHours: held }));
 vi.mock("@/lib/server/conversations-service", async () => {
   const h = await import("@/test/reviews-request-harness");
@@ -56,6 +60,7 @@ it.each([
   ["the contact's number", () => setContact({ phone: "+61499999999" })],
   ["the contact's name (so the text)", () => setContact({ name: "visit-evil.example.com Doe" })],
   ["the message template", () => setReviewCfg({ messageTemplate: "Other {{reviewUrl}}" })],
+  ["the template, to the breaker's lure", () => setReviewCfg({ messageTemplate: "URGENT {{firstName}}: claim your prize at {{reviewUrl}}" })],
 ])("%s changed since approval â†’ refused, nothing sent", async (_label, change) => {
   change();
   expect(await send(APPROVED)).toEqual(REFUSED);
@@ -92,4 +97,27 @@ it("a WhatsApp template that can no longer be filled (deleted since approval) â†
   delete docs[`${SUB_PATH}/whatsappTemplates/t1`];
   expect(await send({ phone: PHONE, channel: "whatsapp_template", body: "Hi Jane, mind leaving us a review?" })).toEqual(REFUSED);
   expect(sendWhatsappTemplate).not.toHaveBeenCalled();
+});
+
+describe("reminders", () => {
+  beforeEach(() => {
+    vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", "test-secret");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.example");
+    setReviewCfg({ reminder: { everyDays: 3, maxRetries: 2 } });
+    const sub = docs[SUB_PATH] as { twilioConfig: Record<string, unknown> };
+    sub.twilioConfig = { ...sub.twilioConfig, inboundWebhookConfigured: true };
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("a person's request with reminders on schedules one, through a tracking link", async () => {
+    await maybeSendReviewRequest({ subAccountId: SA, agencyId: AG, contactId: C, trigger: "deal_completed" });
+    expect(scheduled).toHaveBeenCalledTimes(1);
+    expect((sendSms.mock.calls[0] as unknown as [{ body: string }])[0].body).not.toContain("https://g.page/r/acme/review");
+  });
+
+  it("an approved request schedules none, and sends the approved text byte for byte", async () => {
+    expect(await send(APPROVED)).toEqual({ sent: true });
+    expect(scheduled).not.toHaveBeenCalled();
+    expect((sendSms.mock.calls[0] as unknown as [{ body: string }])[0].body).toBe(TEXT);
+  });
 });

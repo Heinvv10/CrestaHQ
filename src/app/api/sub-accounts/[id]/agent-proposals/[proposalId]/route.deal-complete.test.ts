@@ -80,6 +80,7 @@ describe("mark_deal_completed", () => {
     ["a WhatsApp opt-out", () => (reviews({ channel: "whatsapp_manual" }), mem.seed("contacts/c1", { ...ANN, whatsappOptedOut: true })), "None: the contact has opted out of WhatsApp."],
     ["a request within the cooldown", () => mem.seed("contacts/c1", { ...ANN, reviewRequestedAt: Timestamp.fromMillis(Date.now() - 86_400_000) }), "None: the contact was asked for a review in the last 90 days."],
     ["no WhatsApp template set", () => reviews({ channel: "whatsapp_template" }), "None: no WhatsApp review template is set."],
+    ["a template with spacing a message would tidy", () => reviews({ messageTemplate: "Hi {{firstName}}   \n{{reviewUrl}}" }), "None: the review request's text has spacing that can't be shown exactly as sent."],
     ["a template with a hidden character", () => reviews({ messageTemplate: "Hi\u200b{{firstName}} {{reviewUrl}}" }), "None: the review request's text contains characters that can't be shown safely."],
   ])("%s → the preview says so, with no message", async (_label, arrange, text) => {
     arrange();
@@ -105,6 +106,14 @@ describe("mark_deal_completed", () => {
     const id = await proposeId();
     expect(reviewRow(id)).toBe(`Sent to Ann Smith (…1111) by ${channel}; quiet hours delay it.`);
     expect(rowOf(id, "Message")).toBe(text);
+  });
+
+  it("reminders on: the preview says none will follow, and nothing hints at a tracking link", async () => {
+    reviews({ reminder: { everyDays: 3, maxRetries: 2 } });
+    const id = await proposeId();
+    expect(rowOf(id, "Reminders")).toBe("No reminders will follow (reminders apply only to requests people send).");
+    expect(JSON.stringify(row(id).preview)).not.toContain("tracking");
+    expect(rowOf(id, "Message")).toBe(SMS_TEXT);
   });
 
   it("the message template changed since the proposal → preview_changed, nothing sent", async () => {

@@ -69,9 +69,9 @@ export interface SendReviewInput {
    *  link, no cooldown, no new log row; the worker records the attempt. */
   reminderOf?: { requestId: string; tracked: boolean; channel: "sms" | "whatsapp" };
   /** What a person approved (an agent's mark_deal_completed): the send is
-   *  refused if the contact's number, the configured channel or the text
-   *  (before any tracking-link swap) now differs, here or when a quiet-hours
-   *  hold releases it. Absent for every other caller. */
+   *  refused if the contact's number, the configured channel or the text now
+   *  differs, here or when a quiet-hours hold releases it; and it never
+   *  schedules reminders. Absent for every other caller. */
   expect?: { phone: string; channel: ReviewChannel; body: string };
 }
 
@@ -170,7 +170,10 @@ export async function maybeSendReviewRequest(
 
     const businessName = subAccount.name ?? "";
     // SP5 d2: reminders off (the default) → null, and every body below is as before.
-    const plan = planReviewLink({
+    // An approved agent send (expect) never starts reminders: each would be
+    // rendered later, unreviewed. With no plan the link is the configured
+    // one (tracking exists only for reminders), so the text is as approved.
+    const plan = input.expect ? null : planReviewLink({
       config: cfg,
       channel,
       subAccountId: input.subAccountId,
