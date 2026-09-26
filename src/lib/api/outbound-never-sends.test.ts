@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
+import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 
 /**
  * The inverted outbound test (AGENT_API_V1_PLAN.md, PR3b): an API agent can
@@ -108,6 +109,18 @@ const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   update_snippet: { snippetId: "sn1", name: "Thanks", type: "text", body: "Thank you!" },
   delete_snippet: { snippetId: "sn1" },
   list_whatsapp_templates: {},
+  list_quotes: {},
+  get_quote: { quoteId: "q1" },
+  create_quote: { contactId: "c1", lineItems: [{ description: "Install", quantity: 1, unitPrice: 500 }] },
+  update_quote: { quoteId: "q1", termsAndNotes: "Due on install" },
+  send_quote: { quoteId: "q1" },
+  mark_quote_paid: { quoteId: "q_accepted" },
+  list_recurring_schedules: {},
+  create_recurring_schedule: { contactId: "c1", name: "Support", cadence: { unit: "month", interval: 1 }, startDateString: "2030-01-01", lineItems: [{ description: "Support", quantity: 1, unitPrice: 1000 }] },
+  update_recurring_schedule: { scheduleId: "rs1", name: "Support plan" },
+  pause_recurring_schedule: { scheduleId: "rs1" },
+  resume_recurring_schedule: { scheduleId: "rs_paused" },
+  cancel_recurring_schedule: { scheduleId: "rs1" },
   list_workflow_runs: { workflowId: "wf_draft" },
   list_webhooks: {},
   create_workflow: { template: "speed-to-lead" },
@@ -187,6 +200,11 @@ beforeEach(() => {
   mem.seed("subAccounts/sa1/customFieldFolders/fo1", { subAccountId: "sa1", agencyId: "ag1", name: "Install", entity: "contact", order: 0 });
   mem.seed("products/pr1", { subAccountId: "sa1", agencyId: "ag1", name: "Fibre", unitPriceCents: 49900, currency: "ZAR", active: true });
   mem.seed("snippets/sn1", { subAccountId: "sa1", agencyId: "ag1", name: "Thanks", type: "text", body: "Thanks!", subject: null, folder: null });
+  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, ...SMTP });
+  mem.seed("quotes/q1", QUOTE);
+  mem.seed("quotes/q_accepted", { ...QUOTE, status: "accepted", quoteNumber: "Q-0002" });
+  mem.seed("recurringInvoices/rs1", SCHEDULE);
+  mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, name: "Paused retainer", status: "paused" });
   mem.seed("subAccounts/sa1/pipelines/p1", {
     subAccountId: "sa1", agencyId: "ag1", name: "Installs", isDefault: false, stages: [{ id: "booked", label: "Booked", tone: "" }],
   });
@@ -233,6 +251,7 @@ describe("an agent can never send on its own", () => {
     ["set_bot_mode", { conversationId: "c1", mode: "auto" }],
     ["update_workflow", { workflowId: "wf_contact.created", name: "Renamed" }],
     ["set_workflow_status", { workflowId: "wf_draft", status: "active" }],
+    ["update_quote", { quoteId: "q_accepted", termsAndNotes: "Due on install" }],
   ];
   it.each(CASES)("%s %j: dispatches fine and reaches no outbound seam", async (name, args) => {
     const cap = agentCaps().find((c) => c.name === name);

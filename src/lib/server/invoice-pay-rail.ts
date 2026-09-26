@@ -42,9 +42,14 @@ export type PaymentLinkUpdate = {
   paymentLinkMintedAt: ReturnType<typeof FieldValue.serverTimestamp>;
 };
 
+/** Which way the invoice is paid: a Paystack card-on-file link, a plain
+ *  Paystack link, a paypal.me URL, or Stripe's card button on /q/[token]. */
+export type PayRailKind = "paystack_card" | "paystack" | "paypal" | "stripe";
+
 export type InvoicePayRail =
   | {
       ok: true;
+      rail: PayRailKind;
       /** Written onto the invoice with the send; null = nothing minted. */
       update: PaymentLinkUpdate | null;
       /** A Paystack pay URL to put in the email itself; null otherwise. */
@@ -54,25 +59,54 @@ export type InvoicePayRail =
     }
   | { ok: false; code: string; status: number; error: string };
 
+const stripeIsReady = (sub: SubAccountDoc | null) =>
+  sub?.paymentsEnabledByAgency === true && sub?.stripeConnectionMeta?.ready === true;
+
+/** Why Paystack can't take this invoice, or null when it can. */
+async function paystackBlockerFor(quote: Quote, sub: SubAccountDoc | null): Promise<string | null> {
+  return sub?.paymentsEnabledByAgency !== true
+    ? "Payments is off for this workspace"
+    : (quote.currency || "").toUpperCase() !== PAYMENT_LINK_CURRENCY
+      ? "the invoice is not in ZAR"
+      : (await readPaystackConnectionSecret(quote.subAccountId)) === null
+        ? "Paystack is not connected"
+        : null;
+}
+
+/** A card-mode schedule's invoice asks for a card-on-file link first (a pro-rata
+ *  is deliberately not the authorised amount: no link, and nothing to "fix"). */
+async function wantsCardLink(quote: Quote): Promise<boolean> {
+  const schedule = await loadActiveSchedule(quote.subAccountId, quote.recurringInvoiceId);
+  return schedule?.chargeMode === "card" && !quote.prorated;
+}
+
+/**
+ * The rail `chooseInvoicePayRail` would pick if every link it makes can be
+ * made, without making one (an approver's preview). The send re-checks the
+ * rail it actually used.
+ */
+export async function predictInvoicePayRail(
+  quote: Quote,
+  sub: SubAccountDoc | null,
+): Promise<{ ok: true; rail: PayRailKind } | { ok: false; error: string }> {
+  if (cardChargeUnsettled(quote)) return { ok: false, error: UNSETTLED[quote.autoCharge!.state] };
+  const paystackReady = (await paystackBlockerFor(quote, sub)) === null;
+  if ((await wantsCardLink(quote)) && paystackReady) return { ok: true, rail: "paystack_card" };
+  if (sub?.paypalConfig?.username) return { ok: true, rail: "paypal" };
+  if (stripeIsReady(sub)) return { ok: true, rail: "stripe" };
+  if (paystackReady) return { ok: true, rail: "paystack" };
+  return { ok: false, error: NO_RAIL };
+}
+
 export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | null): Promise<InvoicePayRail> {
   if (cardChargeUnsettled(quote)) return fail("card_charge_unsettled", 409, UNSETTLED[quote.autoCharge!.state]);
   const paypal = sub?.paypalConfig ?? null;
-  const stripeReady = sub?.paymentsEnabledByAgency === true && sub?.stripeConnectionMeta?.ready === true;
-  // Why Paystack can't take this invoice, or null when it can.
-  const paystackBlocker =
-    sub?.paymentsEnabledByAgency !== true
-      ? "Payments is off for this workspace"
-      : (quote.currency || "").toUpperCase() !== PAYMENT_LINK_CURRENCY
-        ? "the invoice is not in ZAR"
-        : (await readPaystackConnectionSecret(quote.subAccountId)) === null
-          ? "Paystack is not connected"
-          : null;
+  const stripeReady = stripeIsReady(sub);
+  const paystackBlocker = await paystackBlockerFor(quote, sub);
   const paystackReady = paystackBlocker === null;
 
   let cardLinkError: string | null = null;
-  const schedule = await loadActiveSchedule(quote.subAccountId, quote.recurringInvoiceId);
-  // A pro-rata is deliberately not the authorised amount: no card-on-file link, and nothing to "fix".
-  if (schedule?.chargeMode === "card" && !quote.prorated) {
+  if (await wantsCardLink(quote)) {
     const mandate = paystackReady ? await paystackLink(quote, true) : null;
     if (mandate?.ok) return mandate;
     cardLinkError = mandate ? mandate.error : paystackBlocker;
@@ -88,7 +122,7 @@ export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | nu
     try {
       const url = buildPaypalInvoiceUrl({ paypal, invoice: quote });
       return fellBack(
-        { ok: true, update: minted(url, null), emailPayUrl: null, cardLinkFallback: null },
+        { ok: true, rail: "paypal", update: minted(url, null), emailPayUrl: null, cardLinkFallback: null },
         "a PayPal link",
       );
     } catch (err) {
@@ -101,18 +135,16 @@ export async function chooseInvoicePayRail(quote: Quote, sub: SubAccountDoc | nu
     }
   }
   if (stripeReady) {
-    return fellBack({ ok: true, update: null, emailPayUrl: null, cardLinkFallback: null }, "Stripe card payment");
+    return fellBack({ ok: true, rail: "stripe", update: null, emailPayUrl: null, cardLinkFallback: null }, "Stripe card payment");
   }
   if (paystackReady) {
     const plain = await paystackLink(quote, false);
     return plain.ok ? fellBack(plain, "a Paystack payment link") : plain;
   }
-  return fail(
-    "no_payment_rail",
-    503,
-    "Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.",
-  );
+  return fail("no_payment_rail", 503, NO_RAIL);
 }
+
+const NO_RAIL = "Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.";
 
 /** Why an invoice with a live card charge gets no way to pay, by the charge's state. */
 const UNSETTLED: Record<string, string> = {
@@ -147,5 +179,5 @@ async function paystackLink(quote: Quote, mandate: boolean): Promise<InvoicePayR
   // Same base as the Paystack checkout's callback URL.
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
   const url = `${base}/pay/link/${link.link.token}`;
-  return { ok: true, update: minted(url, link.link.id), emailPayUrl: url, cardLinkFallback: null };
+  return { ok: true, rail: mandate ? "paystack_card" : "paystack", update: minted(url, link.link.id), emailPayUrl: url, cardLinkFallback: null };
 }

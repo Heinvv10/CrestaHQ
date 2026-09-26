@@ -12,7 +12,8 @@ import {
   recordQuoteActivity,
 } from "@/lib/quotes/lifecycle";
 import { buildQuoteUrl, issueQuoteToken } from "@/lib/quotes/token";
-import { chooseInvoicePayRail, type PaymentLinkUpdate } from "@/lib/server/invoice-pay-rail";
+import { chooseInvoicePayRail, type PaymentLinkUpdate, type PayRailKind } from "@/lib/server/invoice-pay-rail";
+import { emailAsReviewed, quoteFingerprint, type QuoteSendExpect } from "@/lib/quotes/send-preview";
 import type { TerritoryDenial } from "@/lib/auth/territory-filter";
 import type { Quote } from "@/types/quotes";
 import type { SubAccountDoc } from "@/types";
@@ -102,6 +103,9 @@ export async function sendQuoteServerSide(input: {
   replyTo?: string | null;
   /** Who is sending. See {@link SendQuoteActor}. */
   actor: SendQuoteActor;
+  /** An approved agent send: refused unless the recipient, document, rail
+   *  and email are what the approver reviewed (lib/quotes/send-preview.ts). */
+  expect?: QuoteSendExpect;
 }): Promise<SendQuoteResult> {
   const { subAccountId, quoteId } = input;
 
@@ -150,6 +154,9 @@ export async function sendQuoteServerSide(input: {
     );
   }
 
+  const changed = () => fail("changed_since_approval", 409, "The recipient, the document or the email changed since it was approved; nothing was sent.");
+  if (input.expect && (recipientEmail !== input.expect.to || quoteFingerprint(quote) !== input.expect.fingerprint)) return changed();
+
   // 5. Sub-account doc for business name + PayPal config + logo
   const subSnap = await db.doc(`subAccounts/${subAccountId}`).get();
   const sub = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
@@ -169,9 +176,11 @@ export async function sendQuoteServerSide(input: {
   let paymentLinkUpdate: PaymentLinkUpdate | null = null;
   let emailPayUrl: string | null = null;
   let cardLinkFallback: string | null = null;
+  let railKind: PayRailKind | null = null;
   if (quote.kind === "invoice") {
     const rail = await chooseInvoicePayRail(quote, sub);
     if (!rail.ok) return fail(rail.code, rail.status, rail.error);
+    railKind = rail.rail;
     paymentLinkUpdate = rail.update;
     emailPayUrl = rail.emailPayUrl;
     cardLinkFallback = rail.cardLinkFallback;
@@ -185,6 +194,12 @@ export async function sendQuoteServerSide(input: {
 
   // From here a failure still reports why the card-on-file link wasn't made.
   const failAfterRail = (code: string, status: number, error: string) => ({ ...fail(code, status, error), cardLinkFallback });
+  const recipientName = contact.name?.trim() || "";
+  if (input.expect) {
+    const shown = emailAsReviewed({ quote, businessName, businessLogoUrl, recipientName, payLink: !!emailPayUrl });
+    const e = input.expect;
+    if (railKind !== e.rail || shown.subject !== e.subject || shown.text !== e.text || shown.html !== e.html) return { ...changed(), cardLinkFallback };
+  }
 
   // 6. Issue token (server-only, HMAC + nonce; raw token never persisted)
   let token: string;
@@ -215,7 +230,7 @@ export async function sendQuoteServerSide(input: {
     quote,
     businessName,
     businessLogoUrl,
-    recipientName: contact.name?.trim() || "",
+    recipientName,
     publicUrl,
     payUrl: emailPayUrl,
   });

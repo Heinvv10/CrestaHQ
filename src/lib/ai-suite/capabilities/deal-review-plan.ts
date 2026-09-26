@@ -15,11 +15,11 @@ import { masked } from "./conversation-send-support";
 import { millis } from "@/lib/server/agent-proposals-encoding";
 
 /**
- * What completing a Won deal would send: the Google review request
- * maybeSendReviewRequest makes for `deal_completed`, worked out from the
- * same stored config, contact and template (lib/reviews/review-body.ts), so
- * the approver reads the actual text. Shared by the preview and the
- * approve-time re-check.
+ * What completing a Won deal (or marking a quote paid) would send: the
+ * Google review request maybeSendReviewRequest makes for `deal_completed`
+ * (`quote_paid`), worked out from the same stored config, contact and
+ * template (lib/reviews/review-body.ts), so the approver reads the actual
+ * text. Shared by the previews and the approve-time re-checks.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -45,9 +45,14 @@ const none = (contactId: string | null, phone: string, why: string): ReviewPlan 
   rows: [{ label: "Review request", value: `None: ${why}` }],
 });
 
-export async function reviewPlan(subAccountId: string, deal: FirebaseFirestore.DocumentData, nowMs: number): Promise<ReviewPlan> {
+export async function reviewPlan(
+  subAccountId: string,
+  record: FirebaseFirestore.DocumentData,
+  nowMs: number,
+  trigger: "deal_completed" | "quote_paid" = "deal_completed"
+): Promise<ReviewPlan> {
   const db = getAdminDb();
-  const contactId = (deal.contactId as string | null) ?? null;
+  const contactId = (record.contactId as string | null) ?? null;
   const [contactSnap, sub] = await Promise.all([
     isDocId(contactId) ? db.doc(`contacts/${contactId}`).get() : null,
     db.doc(`subAccounts/${subAccountId}`).get().then((s) => s.data() as SubAccountDoc | undefined),
@@ -57,10 +62,11 @@ export async function reviewPlan(subAccountId: string, deal: FirebaseFirestore.D
   const phone = typeof contact?.phone === "string" ? contact.phone : "";
   const cfg = sub?.googleReviewConfig;
   const reviewUrl = resolveReviewUrl(sub).configured;
-  if (!sub || !cfg?.enabled || cfg.triggerOnDealCompleted !== true || !reviewUrl) {
-    return none(contactId, phone, "review requests for completed deals are off in this workspace.");
+  const quote = trigger === "quote_paid";
+  if (!sub || !cfg?.enabled || (quote ? cfg.triggerOnQuotePaid : cfg.triggerOnDealCompleted) !== true || !reviewUrl) {
+    return none(contactId, phone, `review requests for ${quote ? "paid quotes" : "completed deals"} are off in this workspace.`);
   }
-  if (!contact || !phone) return none(contactId, phone, "the deal's contact has no phone number.");
+  if (!contact || !phone) return none(contactId, phone, `the ${quote ? "quote" : "deal"}'s contact has no phone number.`);
   const channel = normalizeReviewChannel(cfg.channel);
   const label = channel === "sms" ? "SMS" : "WhatsApp";
   if (channel === "sms" ? smsSendBlock(contact) : contact.whatsappOptedOut) {
