@@ -107,13 +107,14 @@ export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
         expectTotalCents: now.pinned.totalCents,
         expectCurrency: now.pinned.currency,
         reviewExpect: review.channel
-          ? { phone: review.phone, channel: review.channel, body: review.body!, ...(review.fingerprint ? { fingerprint: review.fingerprint } : {}) }
+          ? { contactId: review.contactId!, phone: review.phone, channel: review.channel, body: review.body!, ...(review.fingerprint ? { fingerprint: review.fingerprint } : {}) }
           : null,
       });
       if (!result.ok) {
         const why: Record<string, string> = {
           already_paid: "It was marked paid meanwhile (by someone else); nothing more was done.",
           amount_changed: "The total or currency changed since this was reviewed; it was not marked paid.",
+          contact_changed: "The quote's contact changed since this was reviewed; it was not marked paid.",
           bad_status: `${result.message}; it was not marked paid.`,
         };
         throw new CapabilityUserError(why[result.code] ?? "That quote or invoice isn't in this workspace.");

@@ -127,6 +127,15 @@ describe("mark_quote_paid", () => {
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
+  it("the quote's contact changed inside the paid write's transaction -> failed, not paid, nothing asked", async () => {
+    const id = await proposeId();
+    inPaidWrite(() => (mem.seed("contacts/c2", ANN), mem.seed("quotes/q1", { ...ACCEPTED, contactId: "c2" })));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id).error).toBe("The quote's contact changed since this was reviewed; it was not marked paid.");
+    expect(mem.read("quotes/q1")!.status).toBe("accepted");
+    expect(reviewAsk).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["the contact's number", () => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" })],
     ["the currency", () => mem.seed("quotes/q1", { ...ACCEPTED, currency: "USD" })],

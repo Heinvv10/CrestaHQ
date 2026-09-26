@@ -1,7 +1,8 @@
 import "server-only";
 
 import { renderQuoteEmail, type RenderQuoteEmailInput, type RenderedQuoteEmail } from "@/lib/quotes/email";
-import type { PayRailKind } from "@/lib/server/invoice-pay-rail";
+import { predictInvoicePayRail, type PayRailKind } from "@/lib/server/invoice-pay-rail";
+import type { SubAccountDoc } from "@/types";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import type { Quote } from "@/types/quotes";
 
@@ -43,4 +44,20 @@ export function emailAsReviewed(
 ): RenderedQuoteEmail {
   const { payLink, ...rest } = input;
   return renderQuoteEmail({ ...rest, publicUrl: QUOTE_LINK_SHOWN, payUrl: payLink ? PAY_LINK_SHOWN : null });
+}
+
+type Reviewed = Omit<RenderQuoteEmailInput, "publicUrl" | "payUrl">;
+const payLinkOn = (rail: PayRailKind | null) => rail === "paystack" || rail === "paystack_card";
+
+/** Does the email, sent with this rail, differ from what was approved? */
+export function differsFromReviewed(e: QuoteSendExpect, input: Reviewed, rail: PayRailKind | null, payLink = payLinkOn(rail)): boolean {
+  const shown = emailAsReviewed({ ...input, payLink });
+  return rail !== e.rail || shown.subject !== e.subject || shown.text !== e.text || shown.html !== e.html;
+}
+
+/** The same, with the rail the send would pick, before it mints a link. */
+export async function differsBeforeRail(e: QuoteSendExpect, input: Reviewed, sub: SubAccountDoc | null): Promise<boolean> {
+  if (input.quote.kind !== "invoice") return differsFromReviewed(e, input, null);
+  const predicted = await predictInvoicePayRail(input.quote, sub);
+  return !predicted.ok || differsFromReviewed(e, input, predicted.rail);
 }

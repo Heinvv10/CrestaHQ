@@ -75,6 +75,19 @@ describe("create_recurring_schedule", () => {
     expect(mem.list("recurringInvoices")).toHaveLength(1);
   });
 
+  it("a weekly schedule starting a year ago -> refused (it would bill every missed cycle), no proposal", async () => {
+    const yearAgo = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+    expect(await call("create_recurring_schedule", { ...NEW, cadence: { unit: "week", interval: 1 }, startDateString: yearAgo })).toMatchObject({
+      ok: false, message: "The start date is in the past, which would bill every missed cycle; pick today or later.",
+    });
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it("a start date of today is fine", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    expect(await call("create_recurring_schedule", { ...NEW, startDateString: today })).toMatchObject({ ok: true, proposal: { status: "pending" } });
+  });
+
   it("an invisible character in the name -> invalid args", async () => {
     expect(await call("create_recurring_schedule", { ...NEW, name: "Support\u200b" })).toMatchObject({ ok: false, code: "invalid_args" });
   });
@@ -142,6 +155,7 @@ describe("pause / resume / cancel / update", () => {
   it.each([
     ["resuming an active schedule", "resume_recurring_schedule", {}, "That schedule is active, so it can't be resumed."],
     ["pausing a cancelled schedule", "pause_recurring_schedule", { status: "cancelled" }, "That schedule is cancelled, so it can't be paused."],
+    ["resuming a cancelled schedule", "resume_recurring_schedule", { status: "cancelled" }, "That schedule is cancelled, so it can't be resumed."],
     ["editing a completed schedule", "update_recurring_schedule", { status: "completed" }, "A completed schedule can't be changed."],
     ["another sub-account's schedule", "cancel_recurring_schedule", { subAccountId: "sa2" }, "That recurring schedule isn't in this workspace."],
   ])("%s -> refused at propose", async (_label, name, patch, message) => {

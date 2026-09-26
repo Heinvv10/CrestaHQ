@@ -13,7 +13,7 @@ import { agentActor, fmtMoney, str, toDate } from "./helpers";
 import { oneLine } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
 import { assertTenantProducts, QUOTE_FIELD_KEYS, QUOTE_FIELD_PROPS, quoteFields } from "./quote-fields";
-import { docLabel, quoteIdParam, quoteRows, tenantQuote, type TenantQuote } from "./quote-support";
+import { docLabel, quoteIdParam, quoteRows, tenantQuote, totalCents, type TenantQuote } from "./quote-support";
 
 /**
  * Quotes and invoices for API agents (AGENT_API_V1_PLAN.md, PR11): list and
@@ -31,6 +31,20 @@ const total = (q: Quote) => fmtMoney(computeQuoteTotals(q).total, q.currency || 
 /** The stored value of each asked field (validUntil as its instant). */
 const valuesOf = (q: FirebaseFirestore.DocumentData, patch: Record<string, unknown>) =>
   Object.fromEntries(Object.keys(patch).sort().map((k) => [k, k === "validUntil" ? (toDate(q[k])?.toISOString() ?? null) : (q[k] ?? null)]));
+
+const PAY_LINK_REFUSAL = "This invoice's emailed pay link charges the old amount; void it and send a new invoice.";
+type QueryGet = (q: FirebaseFirestore.Query) => Promise<FirebaseFirestore.QuerySnapshot>;
+
+/** Would the patch change what it charges, while an emailed pay link (a pay
+ *  URL on it, or an open Paystack link for it) still charges the old amount? */
+async function repricesLiveLink(subAccountId: string, id: string, q: FirebaseFirestore.DocumentData, patch: Record<string, unknown>, get: QueryGet = (x) => x.get()) {
+  const next = { ...q, ...patch } as Quote;
+  const cur = (x: FirebaseFirestore.DocumentData) => String(x.currency ?? "").toUpperCase();
+  if (totalCents(next) === totalCents(q as Quote) && cur(next) === cur(q)) return false;
+  if (q.paymentLinkUrl || q.paymentLinkId) return true;
+  const links = await get(getAdminDb().collection("paymentLinks").where("subAccountId", "==", subAccountId).where("invoiceId", "==", id).where("status", "==", "open"));
+  return links.docs.some((d) => d.data().active !== false);
+}
 
 /** The checked fields (numbered line ids), whoever calls. */
 function checkedFields(fields: Record<string, unknown>): Record<string, unknown> {
@@ -183,6 +197,7 @@ export const QUOTE_CAPABILITIES: AiSuiteCapability[] = [
       if (q.status === "paid") throw new CapabilityUserError(`That ${docLabel(q).toLowerCase()} is already paid.`);
       const { quoteId: _id, ...fields } = args;
       const patch = sanitizePayload(checkedFields(fields));
+      if (await repricesLiveLink(ctx.subAccountId!, q.id, q, patch)) throw new CapabilityUserError(PAY_LINK_REFUSAL);
       const next: TenantQuote = { ...q, ...patch };
       const shown = (x: TenantQuote) => new Map(quoteRows(x).map((r) => [r.label, r.value]));
       const [before, after] = [shown(q), shown(next)];
@@ -233,6 +248,7 @@ export const QUOTE_CAPABILITIES: AiSuiteCapability[] = [
         } else if (current.status !== "draft") {
           throw new CapabilityUserError("It is no longer a draft, so this edit needs approval: send it again.");
         }
+        if (await repricesLiveLink(ctx.subAccountId!, q.id, current, patch, (x) => tx.get(x))) throw new CapabilityUserError(PAY_LINK_REFUSAL);
         tx.update(ref, { ...patch, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_quote")) });
       });
       return { resultText: `Updated ${docLabel(q).toLowerCase()} ${q.quoteNumber}.`, ref: { kind: "quote", id: q.id } };

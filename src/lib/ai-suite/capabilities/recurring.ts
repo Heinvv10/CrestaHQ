@@ -4,6 +4,7 @@ import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { parseScheduleCreate } from "@/lib/recurring/schedule-input";
+import { startOfLocalDay } from "@/lib/recurring/cadence";
 import { scheduleCreateDoc } from "@/lib/server/recurring-schedule-write";
 import type { SubAccountDoc } from "@/types";
 import { CapabilityUserError, type AiSuiteActionContext, type AiSuiteCapability } from "./types";
@@ -31,6 +32,10 @@ async function plan(ctx: AiSuiteActionContext, args: Record<string, unknown>) {
   if (!checked.ok) throw new CapabilityUserError(checked.error);
   const parsed = parseScheduleCreate(checked.args, sub?.timezone ?? "UTC");
   if (!parsed.ok) throw new CapabilityUserError(parsed.error);
+  // A backdated start raises one invoice per missed cycle, a cycle a night.
+  if (parsed.value.startAt.getTime() < startOfLocalDay(new Date(), parsed.value.timezone).getTime()) {
+    throw new CapabilityUserError("The start date is in the past, which would bill every missed cycle; pick today or later.");
+  }
   const contact = contactSnap.data();
   if (!contact || contact.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That contact isn't in this workspace.");
   const email = typeof contact.email === "string" ? contact.email.trim() : "";

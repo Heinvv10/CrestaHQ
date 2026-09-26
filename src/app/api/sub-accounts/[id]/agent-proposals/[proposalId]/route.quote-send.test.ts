@@ -24,7 +24,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
 setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 const { sendQuoteServerSide } = await import("@/lib/server/quote-send-service");
-const { QUOTE_LINK_SHOWN } = await import("@/lib/quotes/send-preview");
+const { QUOTE_LINK_SHOWN, PAY_LINK_SHOWN } = await import("@/lib/quotes/send-preview");
 
 const ANN = { subAccountId: "sa1", agencyId: "ag1", name: "Ann Smith", email: "ann@x.io", phone: "+27821111111", territoryId: "global" };
 const call = (args: Record<string, unknown> = {}) => dispatchAgentTool(auth, "send_quote", { quoteId: "q1", ...args });
@@ -35,6 +35,7 @@ async function proposeId(): Promise<string> {
 }
 const rowOf = (id: string, label: string) => (row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === label)?.value;
 const sub = (patch: Record<string, unknown>) => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, ...patch });
+const paystackReady = () => (sub({ paymentsEnabledByAgency: true }), mem.seed("subAccounts/sa1/private/paystackConnection", { secretKey: "sk_test_1" }));
 
 beforeEach(() => {
   sendEmail.mockClear();
@@ -87,6 +88,7 @@ describe("send_quote", () => {
     ["the contact's email", () => mem.seed("contacts/c1", { ...ANN, email: "other@x.io" })],
     ["a line", () => mem.seed("quotes/q1", { ...QUOTE, lineItems: [{ ...QUOTE.lineItems[0], unitPrice: 5 }] })],
     ["the business name", () => sub({ name: "Other" })],
+    ["a line's wording (the total and email unchanged)", () => mem.seed("quotes/q1", { ...QUOTE, lineItems: [{ ...QUOTE.lineItems[0], description: "Removal" }] })],
   ])("%s changed after the approver's preview check -> failed, nothing sent", async (_label, change) => {
     const id = await proposeId();
     beforeNextTransaction(async () => change());
@@ -111,6 +113,27 @@ describe("send_quote", () => {
     expect(sendEmail).not.toHaveBeenCalled();
     const ok = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: expect_ as never });
     expect(ok).toMatchObject({ ok: true });
+  });
+
+  it("an invoice from a card-mode schedule with Paystack ready: the card-on-file link is named and shown", async () => {
+    paystackReady();
+    mem.seed("recurringInvoices/rs1", { subAccountId: "sa1", status: "active", chargeMode: "card" });
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", recurringInvoiceId: "rs1" });
+    const id = await proposeId();
+    expect(row(id).pinned).toMatchObject({ rail: "paystack_card" });
+    expect(rowOf(id, "Payment")).toBe("a Paystack card-on-file link: paying it also saves the card for this invoice's recurring schedule");
+    expect(rowOf(id, "Message")).toContain(PAY_LINK_SHOWN);
+  });
+
+  it("a send refused against the reviewed email mints no payment link", async () => {
+    paystackReady();
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice" });
+    const id = await proposeId();
+    expect(row(id).pinned).toMatchObject({ rail: "paystack" });
+    const { quoteId: _q, ...expect_ } = row(id).pinned as Record<string, unknown>;
+    const r = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: { ...expect_, text: "Other" } as never });
+    expect(r).toMatchObject({ ok: false, failure: { code: "changed_since_approval" } });
+    expect(mem.list("paymentLinks")).toEqual([]);
   });
 
   it("the provider fails -> unsettled (it may have left), never failed", async () => {

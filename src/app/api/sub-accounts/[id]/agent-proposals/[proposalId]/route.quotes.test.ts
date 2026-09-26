@@ -98,6 +98,32 @@ describe("update_quote", () => {
     expect(mem.read("quotes/q1")).not.toHaveProperty("lastAgentEditKey");
   });
 
+  it.each([
+    ["a pay URL on the invoice", () => mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", status: "sent", paymentLinkUrl: "https://app.example/pay/link/t", paymentLinkId: "pl1" })],
+    ["an open Paystack link for it", () => (mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", status: "sent" }), mem.seed("paymentLinks/pl1", { subAccountId: "sa1", invoiceId: "q1", status: "open", active: true }))],
+  ])("a price change while %s is live -> refused, no proposal", async (_label, arrange) => {
+    arrange();
+    expect(await call("update_quote", { quoteId: "q1", globalTaxPercent: 15 })).toMatchObject({
+      ok: false, message: "This invoice's emailed pay link charges the old amount; void it and send a new invoice.",
+    });
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it.each([
+    ["the terms", { termsAndNotes: "Due on install" }],
+    ["the lines, with the same total", { lineItems: [LINE] }],
+  ])("with a live pay link, changing %s is still a spend proposal", async (_label, patch) => {
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice", status: "sent", paymentLinkUrl: "https://app.example/pay/link/t", paymentLinkId: "pl1" });
+    expect(await call("update_quote", { quoteId: "q1", ...patch })).toMatchObject({ ok: true, proposal: { status: "pending" } });
+  });
+
+  it("a draft price change when a pay link is minted inside the write -> refused, unchanged", async () => {
+    mem.seed("quotes/q1", { ...QUOTE, kind: "invoice" });
+    beforeNextTransaction(async () => mem.seed("paymentLinks/pl1", { subAccountId: "sa1", invoiceId: "q1", status: "open", active: true }));
+    expect(await call("update_quote", { quoteId: "q1", globalTaxPercent: 15 })).toMatchObject({ ok: false, message: "This invoice's emailed pay link charges the old amount; void it and send a new invoice." });
+    expect(mem.read("quotes/q1")!.globalTaxPercent).toBeNull();
+  });
+
   it("a sent quote edited by someone inside the approved write's window -> failed, unchanged", async () => {
     mem.seed("quotes/q1", { ...QUOTE, status: "sent" });
     const id = ((await call("update_quote", { quoteId: "q1", globalTaxPercent: 15 })) as { proposal: { id: string } }).proposal.id;

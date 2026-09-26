@@ -13,7 +13,7 @@ import {
 } from "@/lib/quotes/lifecycle";
 import { buildQuoteUrl, issueQuoteToken } from "@/lib/quotes/token";
 import { chooseInvoicePayRail, type PaymentLinkUpdate, type PayRailKind } from "@/lib/server/invoice-pay-rail";
-import { emailAsReviewed, quoteFingerprint, type QuoteSendExpect } from "@/lib/quotes/send-preview";
+import { differsBeforeRail, differsFromReviewed, quoteFingerprint, type QuoteSendExpect } from "@/lib/quotes/send-preview";
 import type { TerritoryDenial } from "@/lib/auth/territory-filter";
 import type { Quote } from "@/types/quotes";
 import type { SubAccountDoc } from "@/types";
@@ -171,6 +171,9 @@ export async function sendQuoteServerSide(input: {
 
   const businessName = sub?.name || "Your business";
   const businessLogoUrl = sub?.logoUrl ?? null;
+  const reviewed = { quote, businessName, businessLogoUrl, recipientName: contact.name?.trim() || "" };
+  // Checked against the rail it would pick BEFORE any link is minted, then again against the one it used.
+  if (input.expect && (await differsBeforeRail(input.expect, reviewed, sub))) return changed();
 
   // 5a. Invoice path — how the recipient pays. See `chooseInvoicePayRail`.
   let paymentLinkUpdate: PaymentLinkUpdate | null = null;
@@ -194,12 +197,7 @@ export async function sendQuoteServerSide(input: {
 
   // From here a failure still reports why the card-on-file link wasn't made.
   const failAfterRail = (code: string, status: number, error: string) => ({ ...fail(code, status, error), cardLinkFallback });
-  const recipientName = contact.name?.trim() || "";
-  if (input.expect) {
-    const shown = emailAsReviewed({ quote, businessName, businessLogoUrl, recipientName, payLink: !!emailPayUrl });
-    const e = input.expect;
-    if (railKind !== e.rail || shown.subject !== e.subject || shown.text !== e.text || shown.html !== e.html) return { ...changed(), cardLinkFallback };
-  }
+  if (input.expect && differsFromReviewed(input.expect, reviewed, railKind, !!emailPayUrl)) return { ...changed(), cardLinkFallback };
 
   // 6. Issue token (server-only, HMAC + nonce; raw token never persisted)
   let token: string;
@@ -230,7 +228,7 @@ export async function sendQuoteServerSide(input: {
     quote,
     businessName,
     businessLogoUrl,
-    recipientName,
+    recipientName: reviewed.recipientName,
     publicUrl,
     payUrl: emailPayUrl,
   });
