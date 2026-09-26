@@ -15,7 +15,8 @@ import { masked } from "./conversation-send-support";
 import { millis } from "@/lib/server/agent-proposals-encoding";
 
 /**
- * What completing a Won deal (or marking a quote paid) would send: the
+ * What completing a Won deal (or marking a quote paid, or an agent's
+ * send_review_request, `manual`) would send: the
  * Google review request maybeSendReviewRequest makes for `deal_completed`
  * (`quote_paid`), worked out from the same stored config, contact and
  * template (lib/reviews/review-body.ts), so the approver reads the actual
@@ -49,7 +50,7 @@ export async function reviewPlan(
   subAccountId: string,
   record: FirebaseFirestore.DocumentData,
   nowMs: number,
-  trigger: "deal_completed" | "quote_paid" = "deal_completed"
+  trigger: "deal_completed" | "quote_paid" | "manual" = "deal_completed"
 ): Promise<ReviewPlan> {
   const db = getAdminDb();
   const contactId = (record.contactId as string | null) ?? null;
@@ -63,10 +64,12 @@ export async function reviewPlan(
   const cfg = sub?.googleReviewConfig;
   const reviewUrl = resolveReviewUrl(sub).configured;
   const quote = trigger === "quote_paid";
-  if (!sub || !cfg?.enabled || (quote ? cfg.triggerOnQuotePaid : cfg.triggerOnDealCompleted) !== true || !reviewUrl) {
-    return none(contactId, phone, `review requests for ${quote ? "paid quotes" : "completed deals"} are off in this workspace.`);
+  // A manual request needs only the configured link, as the Send button does.
+  const off = trigger === "manual" ? false : !cfg?.enabled || (quote ? cfg.triggerOnQuotePaid : cfg.triggerOnDealCompleted) !== true;
+  if (!sub || !cfg || !reviewUrl || off) {
+    return none(contactId, phone, trigger === "manual" ? "review requests aren't set up in this workspace." : `review requests for ${quote ? "paid quotes" : "completed deals"} are off in this workspace.`);
   }
-  if (!contact || !phone) return none(contactId, phone, `the ${quote ? "quote" : "deal"}'s contact has no phone number.`);
+  if (!contact || !phone) return none(contactId, phone, trigger === "manual" ? "the contact has no phone number." : `the ${quote ? "quote" : "deal"}'s contact has no phone number.`);
   const channel = normalizeReviewChannel(cfg.channel);
   const label = channel === "sms" ? "SMS" : "WhatsApp";
   if (channel === "sms" ? smsSendBlock(contact) : contact.whatsappOptedOut) {
@@ -92,7 +95,18 @@ export async function reviewPlan(
     channel,
     fingerprint: now.template?.fingerprint ?? null,
     rows: [
-      { label: "Review request", value: `Sent to ${oneLine(contact.name) || "(unnamed)"} (${masked("sms", phone)}) by ${label}; quiet hours delay it.` },
+      {
+        label: "Review request",
+        value: `Sent to ${oneLine(contact.name) || "(unnamed)"} (${masked("sms", phone)}) by ${label}${
+          trigger === "manual" ? " when approved (quiet hours don't hold a request a person sends)." : "; quiet hours delay it."
+        }`,
+      },
+      ...(trigger === "manual"
+        ? [
+            { label: "Last asked", value: `${last ? new Date(last).toISOString() : "never"} (at most once every ${cooldownDays} days)` },
+            { label: `Opted out of ${label}`, value: "no" },
+          ]
+        : []),
       ...(now.template
         ? [
             { label: "Template", value: `${oneLine(now.template.tpl.displayName) || "(unnamed)"} (${oneLine(now.template.tpl.name)})` },

@@ -8,11 +8,8 @@ import {
   requireSubAccountMember,
 } from "@/lib/auth/require-tenancy";
 import { publishSocialPost, qstashIsConfigured } from "@/lib/automations/qstash";
-import { metaCanPublish } from "@/lib/comms/meta-capabilities";
-import { SOCIAL_CAPTION_MAX } from "@/types/social";
+import { parsePostInput, scheduleRefusal } from "@/lib/social/post-rules";
 import type {
-  MetaConfig,
-  SocialPlatform,
   SocialPostDoc,
   SocialPostTargetResult,
   SubAccountDoc,
@@ -28,8 +25,6 @@ import type {
  *        Scheduling requires a connected Meta Page (and, for IG targets, a
  *        linked IG business account + image URL) and QStash configured.
  */
-
-const PLATFORMS: SocialPlatform[] = ["facebook", "instagram"];
 
 export async function GET(
   request: Request,
@@ -81,86 +76,13 @@ export async function POST(
   }
   const b = (body ?? {}) as Record<string, unknown>;
 
-  // ── Validate caption ──────────────────────────────────────────────
-  const caption =
-    typeof b.caption === "string" ? b.caption.trim() : "";
-  if (caption.length > SOCIAL_CAPTION_MAX) {
-    return NextResponse.json(
-      { error: `Caption is too long (max ${SOCIAL_CAPTION_MAX} characters).` },
-      { status: 400 },
-    );
-  }
-
-  // ── Validate image URL ────────────────────────────────────────────
-  let imageUrl: string | null = null;
-  if (b.imageUrl != null && b.imageUrl !== "") {
-    if (typeof b.imageUrl !== "string" || !/^https:\/\//i.test(b.imageUrl.trim())) {
-      return NextResponse.json(
-        { error: "Image URL must start with https://." },
-        { status: 400 },
-      );
-    }
-    imageUrl = b.imageUrl.trim().slice(0, 2000);
-  }
-
-  // ── Validate targets ──────────────────────────────────────────────
-  const targets: SocialPlatform[] = Array.isArray(b.targets)
-    ? PLATFORMS.filter((p) => (b.targets as unknown[]).includes(p))
-    : [];
-
-  // ── Validate status ───────────────────────────────────────────────
+  const parsed = parsePostInput(b);
+  if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 });
+  const { caption, imageUrl, targets } = parsed;
   const status = b.status === "scheduled" ? "scheduled" : "draft";
-
-  // Drafts can be incomplete; scheduling enforces the full contract.
   if (status === "scheduled") {
-    if (!caption && !imageUrl) {
-      return NextResponse.json(
-        { error: "Add a caption or an image before scheduling." },
-        { status: 400 },
-      );
-    }
-    if (targets.length === 0) {
-      return NextResponse.json(
-        { error: "Pick at least one platform to publish to." },
-        { status: 400 },
-      );
-    }
-    if (targets.includes("instagram") && !imageUrl) {
-      return NextResponse.json(
-        { error: "Instagram posts require an image URL." },
-        { status: 400 },
-      );
-    }
-
-    // Connection checks against the shared Meta config — must be publish-capable.
-    const meta = sub.metaConfig as MetaConfig | null | undefined;
-    if (!metaCanPublish(meta) || !meta?.pageId) {
-      return NextResponse.json(
-        {
-          error:
-            "Connect a Facebook Page with posting permission first (Connections tab → Manage in Settings).",
-        },
-        { status: 400 },
-      );
-    }
-    if (targets.includes("instagram") && !meta.instagramBusinessAccountId) {
-      return NextResponse.json(
-        {
-          error:
-            "No Instagram business account is linked to the connected Page. Reconnect or remove Instagram as a target.",
-        },
-        { status: 400 },
-      );
-    }
-    if (!qstashIsConfigured()) {
-      return NextResponse.json(
-        {
-          error:
-            "Scheduling isn't available — QStash isn't configured on this deployment.",
-        },
-        { status: 503 },
-      );
-    }
+    const refused = scheduleRefusal(parsed, sub, qstashIsConfigured());
+    if (refused) return NextResponse.json({ error: refused.error }, { status: refused.status });
   }
 
   // ── Validate schedule time ────────────────────────────────────────

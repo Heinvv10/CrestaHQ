@@ -75,6 +75,13 @@ vi.mock("@/lib/firebase/admin", () => ({
       return q;
     },
     doc: (path: string) => {
+      // The contact an outbound call was placed to (its metadata.contactId).
+      if (path === "contacts/c_called") {
+        return { get: async () => ({ id: "c_called", exists: true, data: () => ({ name: "Ann Called", phone: "+27821112222", subAccountId: "sa_1" }) }) };
+      }
+      if (path === "contacts/c_foreign") {
+        return { get: async () => ({ id: "c_foreign", exists: true, data: () => ({ name: "Other Tenant", subAccountId: "sa_2" }) }) };
+      }
       if (path !== "subAccounts/sa_1") throw new Error(`unexpected doc ${path}`);
       return {
         get: async () => ({
@@ -83,6 +90,7 @@ vi.mock("@/lib/firebase/admin", () => ({
             agencyId: "ag_1",
             name: "Acme Fibre",
             inboundVoiceEnabledByAgency: true,
+            outboundVoiceEnabledByAgency: true,
           }),
         }),
       };
@@ -115,4 +123,22 @@ it("hands the voice agent only the caller's first name — never company or acco
   expect(block).not.toContain("Doe");
   expect(block).not.toContain("Acme Widgets Ltd");
   expect((block ?? "").toLowerCase()).toContain("verified");
+});
+
+it("an outbound call greets the contact it was placed to, not another contact sharing the number", async () => {
+  await POST(
+    makeRequest({ stream: false, messages: [], call: { customer: { number: "+27821112222" }, metadata: { direction: "outbound", contactId: "c_called" } } }),
+    { params: Promise.resolve({ subAccountId: "sa_1" }) },
+  );
+  const block = promptArgs[0].contactContextBlock ?? "";
+  expect(block).toContain("Ann");
+  expect(block).not.toContain("Jane");
+});
+
+it("an outbound call's contactId from another sub-account greets nobody", async () => {
+  await POST(
+    makeRequest({ stream: false, messages: [], call: { customer: { number: "+27821112222" }, metadata: { direction: "outbound", contactId: "c_foreign" } } }),
+    { params: Promise.resolve({ subAccountId: "sa_1" }) },
+  );
+  expect(promptArgs[0].contactContextBlock).toBeNull();
 });
