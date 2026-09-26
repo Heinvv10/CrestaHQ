@@ -147,7 +147,11 @@ would be invisible).
   4b. A failed step-4 re-check sets the resulting state: mode switched to
      Approval → `reason: "approval"`, text kept (now waits for a human); gate
      off, kill switch unset or auto-reply disabled → row kept as
-     `auto_queued`, shown as "Auto-post paused".
+     `auto_queued`, shown as "Auto-post paused"; `enabledAt` re-check failed
+     (auto-reply switched off and on, backlog off) → `reason: "approval"`, text
+     kept. A paused `auto_queued` draft may post long after it was written when
+     auto-reply resumes — intended: the `basisHash` check guarantees the review
+     itself has not changed.
   5. A refused/failed draft → `pendingReply {reason: "draft_failed"}` with no
      text; the next run retries the draft once per day.
 - **`pendingReply` state table** — engine behaviour per stored state
@@ -166,7 +170,11 @@ would be invisible).
   when the Google gate is toggled, `feature-gates-service.ts:139-147`): Discard
   additionally writes `subAccounts/{id}/autoReplyDismissed/{reviewDocId}
   {basisHash, at, byUid}` — an id and a hash, no Google content — which
-  `decide` treats as `dismissed` when the hash matches.
+  `decide` treats as `dismissed` when the hash matches. It carries
+  `agencyId`/`subAccountId`/`createdByUid`, is server-only (no client rule),
+  is listed in `docs/architecture/firestore-collections.md` in PR 2, and
+  deliberately outlives review retention — it holds only a review id and a
+  hash, no Google content.
 
   Every row has a `run.test`, including discard → rerun → no draft, no post.
 - **`requireNoReply`** — a new option on `claimAttempt` (auto path only):
