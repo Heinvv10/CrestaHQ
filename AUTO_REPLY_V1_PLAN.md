@@ -1,10 +1,11 @@
 # Review auto-reply v1
 
-> Status: **PLAN 2026-09-26, rev 2 after one adversarial review** (nothing built). Owner rulings locked in a grill
+> Status: **PLAN 2026-09-26, rev 3 after two adversarial reviews** (nothing built). Owner rulings locked in a grill
 > session with Hein on 2026-09-26. This plan **reverses** the SP5 (c) guarantee
 > in [docs/features/reputation.md](docs/features/reputation.md#ai-reply-drafts-sp5-c)
 > ("nothing posts a reply to Google except the admin's click") for sub-accounts
-> that opt in; that doc is rewritten in PR 5, not before.
+> that opt in; that doc (and every other "nothing posts" invariant) is rewritten
+in PR 2, the PR that makes it false.
 
 ## Goal
 
@@ -99,8 +100,10 @@ clients. Effective only with `reviewsAiEnabledByAgency` **and**
 `googleEnabledByAgency`. Full 5-step wiring (schema → creation defaults →
 PATCH branch → runtime 403 → manage-dialog checkbox → `FEATURE_GATES` entry),
 plus `GATE_FIELDS` in `lib/audit/record.ts`, plus a manage-dialog test that
-reopening shows the saved value. The `FEATURE_GATES` entry must not let the
-Workspace Assistant turn it on (agency-owner UI only). Turning the gate off
+reopening shows the saved value. The `FEATURE_GATES` entry carries `assistantMayEnable: false`, checked in
+`set_feature_gate`'s validate (`lib/ai-suite/capabilities/agency.ts`), so the
+Workspace Assistant and Agent API keys can disable the gate but never enable
+it. Turning the gate off
 stops posting **within the current run** (re-checked before every post); it
 does not delete settings or pending drafts.
 
@@ -108,7 +111,8 @@ does not delete settings or pending drafts.
 
 Env `REVIEWS_AUTO_REPLY_ENABLED` — unset = the engine never runs anywhere on
 this deployment. Merging PR 2 is inert until it is set; unsetting it is the
-incident stop. PR 2 is not deployed with it set before PR 3 ships (held drafts
+incident stop — it needs a restart of both blue/green colours, so it is a
+minutes-scale stop, not instant (RUNBOOK note in PR 5). PR 2 is not deployed with it set before PR 3 ships (held drafts
 would be invisible).
 
 ### Engine — `lib/reputation/auto-reply/`
@@ -119,23 +123,41 @@ would be invisible).
   finished (`lastSeenAt`/`passId` of this run — stale cache never posts),
   before `enabledAt` with backlog off. Hold: mode `approval`, any written text,
   over a cap. Auto otherwise.
-- `run.ts` — `autoReplyAfterSync(subAccountId, runId, deadline)`:
+- `run.ts` — `autoReplyAfterSync(subAccountId, runStartedAt, deadline)`:
+  0. "Seen this run" means `lastSeenAt >= runStartedAt`, passed through
+     `onRun` (a `passId` spans several runs, so it is not used).
   1. Take an `autoReplyLease` per sub-account (sentiment-lease pattern) — a
      second concurrent run exits.
   2. Re-read kill switch, gates, settings; list eligible reviews newest first.
-  3. Per review: check the deadline; reserve auto-draft budget; draft via the
-     existing pipeline (same contact guard, also applied to the reviewer's
-     display name). **Store the draft on the review first** as `pendingReply
+  3. Per review: check the deadline; reserve the auto-draft share **inside
+     `beginDraftCall`'s transaction on its UTC `draftsDay`** (one day boundary,
+     one transaction, no race with human drafts); draft via the existing
+     pipeline (same contact guard; the reviewer's display name is checked too —
+     a hit drops the name from the input, it does not refuse the draft). **Store the draft on the review first** as `pendingReply
      {text, textHash, basisHash, reason, at, model}` so a retry reuses the
      exact bytes (no redraft, no `reused` dead end).
   4. For `auto`: check the deadline; `loadReplyTarget` + `replyPreflight`
      again; then one transaction that re-checks kill switch, all three gates,
      `enabled`, `modes[star]`, `enabledAt`, listing, review `basisHash` and
-     `reply == null`, and counts the post against the 20/day. Then `postReply`
-     with idempotency key `auto:{reviewDocId}:{textHash}` and
-     **`requireNoReply`** (below).
+     `reply == null`, and counts the post against the 20/day (SAST day). Then
+     `postReply` with idempotency key `auto:{reviewDocId}:{textHash}` and
+     **`requireNoReply`** (below); `postReply` maps `already_replied` to a skip
+     that clears `pendingReply`.
   5. A refused/failed draft → `pendingReply {reason: "draft_failed"}` with no
      text; the next run retries the draft once per day.
+- **`pendingReply` state table** — engine behaviour per stored state
+  (fresh = `basisHash` equals the review's current hash):
+
+  | `pendingReply.reason` | fresh | stale |
+  |---|---|---|
+  | none | decide from scratch | — |
+  | `auto_queued` (stored, post not yet succeeded) | post the stored bytes; no new draft | drop bytes, re-decide + re-draft |
+  | `approval` / `texted` (held) | skip — waits for a human | re-draft, stays held |
+  | `draft_failed` | retry the draft once `at` is ≥24 h old | re-decide |
+  | `no_budget` / `cap` | re-decide next day (may then auto-post if still eligible) | re-decide |
+  | `dismissed` (Discard) | skip for good | re-decide (the review changed) |
+
+  Every row has a `run.test`, including discard → rerun → no draft, no post.
 - **`requireNoReply`** — a new option on `claimAttempt` (auto path only):
   inside the transaction, return `already_replied` when the cached review has
   any `reply`. Today `claimAttempt` short-circuits only on a byte-equal reply
@@ -150,7 +172,12 @@ would be invisible).
   never inside the sync itself.
 - **Held-draft freshness**: `pendingReply.basisHash` ≠ the review's current
   hash → stale: not served, not pre-filled, re-drafted next run. The sync
-  clears `pendingReply` when a reply appears (any source). Discard clears it.
+  clears `pendingReply` when a reply appears (any source). **Discard** writes
+  `pendingReply {reason: "dismissed", basisHash}` rather than deleting, so the
+  engine never re-drafts or auto-posts that review unless its content changes.
+- **Success path**: `recordReplyChange` clears `pendingReply` and, for auto
+  posts, writes `autoReplied {at, key}`; the sync's merge preserves it. It
+  drives the "Auto-replied" tag and the edited-to-≤3★ alert.
 - **Retention**: `pendingReply` lives on the review doc, so it is purged with
   the review (30 days *unseen*, per the existing retention rule).
 - **Audit**: `gbpEvents reply_posted` with `actorUid: "system:auto-reply"`
@@ -165,10 +192,14 @@ would be invisible).
 - Reputation settings: an "Auto-reply" card — master switch, five star rows
   with Auto / Approval, the backlog checkbox, a note that reviews with written
   text always wait for approval, the caps shown read-only. Locked state when
-  the agency gate is off. **Hidden until PR 2 ships** (PR 1 stores nothing an
-  admin can switch on); PR 2 resets any `enabledAt` written before it.
+  the agency gate is off. **Hidden until PR 2 ships**, and the PR 1 route
+  refuses `enabled: true` with 409 `not_available` until PR 2 lifts it — so no
+  `enabledAt` can exist before the engine and nothing needs resetting. A
+  listing change pauses auto-reply (`listingLocationName` mismatch): the card
+  shows "Paused: listing changed — re-enable to resume" and one alert is sent.
 - Reviews tab: "Needs approval" filter (`pendingReply` present, fresh, and
-  `reply == null`) with a count, over the same capped 500 served records;
+  `reply == null`) with a count, over the same capped 500 served records; each row shows its reason
+  (held for approval vs queued to auto-post);
   the composer opens pre-filled with the draft; **Post** uses the existing
   human reply route; **Discard** clears `pendingReply`. Auto-posted replies
   show a small "Auto-replied" tag.
@@ -178,7 +209,7 @@ would be invisible).
 - A sync that holds ≥1 review → one push/email per sync run, through the
   existing notification rail (the one WhatsApp alerts use).
 - `googleConnectionMeta.reconnectRequired` flipping false→true → one alert
-  (flip detected inside `markReconnectRequiredIf`, `lib/google/tokens.ts`), so
+  (flip detected inside `markReconnectRequiredIf`, `lib/gbp/tokens.ts:42`), so
   a stalled auto-reply is never silent.
 - An auto-replied review later edited to ≤3★ → one alert.
 
