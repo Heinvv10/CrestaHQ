@@ -1,8 +1,11 @@
 # Agent API v1
 
-> Status: **BUILT 2026-09-26**: PR1 to PR13 merged (last #297, cb23e3cc), PR14 docs in
-> [docs/features/agent-api.md](docs/features/agent-api.md); **live validation pending** until
-> the deploy (checklist below). Plan rev 5 after four blind reviews. Owner
+> Status: **LIVE-VALIDATED 2026-09-26 on #1000 at cb23e3cc**: 94 tools listed; cross-tenant
+> get_contact refused; held workflow_enrolment approved → run; delete_contact via approval;
+> set_workflow_status active rejected → stays draft; REST agent 200 / admin insufficient_scope.
+> Step 4 (send_message) skipped: needs an existing conversation. PR1 to PR13 merged (last
+> #297), PR14 docs in [docs/features/agent-api.md](docs/features/agent-api.md). Plan rev 5
+> after four blind reviews. Owner
 > rulings locked: sub-account `lsk_` keys first (agency-wide keys are a later
 > PR); one tool registry (`src/lib/ai-suite/capabilities.ts`) exposed over MCP
 > + a REST mirror; outbound-to-humans and workflow activation only ever create
@@ -401,7 +404,8 @@ Later (out of v1): agency-wide keys.
   (it iterates the registry, so a new cap is covered the moment it is
   registered — no per-file static check).
 - **Held enrolments change timing.** A "speed-to-lead" workflow approved an
-  hour later still runs its first step immediately; the preview says so.
+  hour later still runs its first step immediately. The preview does NOT say so:
+  it shows only Workflow, Trigger and Contact (plus Deal and Stage for a deal trigger).
 - **MCP SDK version** (1.27 via shadcn; v2 renames packages). No idempotency
   on MCP; REST covers it. Rate limit is per-process memory (single unit here).
 - **Agent acts as sub-account admin** (territory bypass by design); approvals

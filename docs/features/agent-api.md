@@ -129,9 +129,10 @@ members, no client writes; see
   ACTIVE workflow it would enrol the contact in becomes a `workflow_enrolment`
   proposal instead (returned as `held: [{proposalId, workflowName}]`). Approving
   replays that one trigger for that one workflow, with filters, re-entry and the
-  enrolment cap checked again; rejecting leaves the write and enrols nobody. A
-  speed-to-lead workflow approved an hour later still runs its first step at
-  approval. An **approved** action runs as the approver did it, so its own
+  enrolment cap checked again; rejecting leaves the write and enrols nobody. Its
+  preview shows only the workflow, the trigger and the contact (plus the deal and
+  stage for a deal trigger), not the workflow's steps and not that a speed-to-lead
+  workflow approved an hour later still runs its first step at approval. An **approved** action runs as the approver did it, so its own
   triggers enrol normally. Tenant webhook subscriptions are not held.
 - **Identity.** Proposal ids are deterministic (sub-account, tool, canonical args),
   so the same action proposed twice is one pending row, whichever key proposes it.
@@ -182,6 +183,9 @@ only for callable write tools.
 - **Clocks.** A proposal's `createdAt` is the app server's clock; broadcast edits
   anchor on `createdServerAt` (Firestore's), falling back to `createdAt` for older
   rows.
+- **`find_contacts` scans at most 500 contacts**, in document-id order, so in a
+  large sub-account it can miss a contact that exists, and an agent that then
+  creates it makes a duplicate. A fix is to follow.
 - **Territory of deal and task proposals** is fixed at propose time; only contact
   targets re-sync when a contact is re-tagged.
 - **No notification** for new proposals in v1; the sidebar badge counts pending and
