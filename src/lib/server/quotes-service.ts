@@ -9,7 +9,7 @@ import {
   fireQuoteTrigger,
   recordQuoteActivity,
 } from "@/lib/quotes/lifecycle";
-import { maybeSendReviewRequest } from "@/lib/reviews/request";
+import { maybeSendReviewRequest, type SendReviewInput } from "@/lib/reviews/request";
 import type { Quote, QuotePaidVia } from "@/types/quotes";
 
 /**
@@ -32,7 +32,7 @@ export type MarkQuotePaidOutcome =
   | { ok: true; quote: Quote & { id: string } }
   | {
       ok: false;
-      code: "not_found" | "wrong_tenant" | "already_paid" | "bad_status" | "amount_changed";
+      code: "not_found" | "wrong_tenant" | "already_paid" | "bad_status" | "amount_changed" | "contact_changed";
       message: string;
       /** On `already_paid`: who paid it, so a retrying caller can tell its
        *  own earlier success from someone else's. */
@@ -55,6 +55,11 @@ export async function markQuotePaidServerSide(input: {
    */
   expectTotalCents?: number;
   expectCurrency?: string;
+  /** An approved agent mark (mark_quote_paid): the review request the
+   *  approver saw and its contact (the contact checked in the transaction,
+   *  the rest again at send, `expect`), or null when they saw none, so none
+   *  is asked. Omitted = the configured request, as before. */
+  reviewExpect?: (NonNullable<SendReviewInput["expect"]> & { contactId: string }) | null;
 }): Promise<MarkQuotePaidOutcome> {
   const db = getAdminDb();
   const ref = db.collection("quotes").doc(input.quoteId);
@@ -113,6 +118,10 @@ export async function markQuotePaidServerSide(input: {
       };
     }
 
+    if (input.reviewExpect && quote.contactId !== input.reviewExpect.contactId) {
+      return { ok: false, code: "contact_changed", message: "The quote's contact changed since it was approved" };
+    }
+
     if (
       (input.expectTotalCents !== undefined &&
         Math.round(computeQuoteTotals(quote).total * 100) !== input.expectTotalCents) ||
@@ -151,12 +160,16 @@ export async function markQuotePaidServerSide(input: {
     console.error(`[quotes-service] trigger failed quote=${input.quoteId}`, err),
   );
   void emitQuoteWebhook(withId, "quote_marked_paid");
-  void maybeSendReviewRequest({
-    subAccountId: quote.subAccountId,
-    agencyId: quote.agencyId,
-    contactId: quote.contactId,
-    trigger: "quote_paid",
-  });
+  if (input.reviewExpect !== null) {
+    const { contactId: _reviewed, ...expect } = input.reviewExpect ?? {};
+    void maybeSendReviewRequest({
+      subAccountId: quote.subAccountId,
+      agencyId: quote.agencyId,
+      contactId: quote.contactId,
+      trigger: "quote_paid",
+      ...(input.reviewExpect ? { expect: expect as NonNullable<SendReviewInput["expect"]> } : {}),
+    });
+  }
 
   return { ok: true, quote: withId };
 }

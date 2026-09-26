@@ -46,6 +46,17 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["delete_product", { productId: "pr1/sub/y" }],
   ["update_snippet", { snippetId: "sn1/sub/y", name: "X", type: "text", body: "Hi" }],
   ["delete_snippet", { snippetId: "sn1/sub/y" }],
+  ["list_quotes", { contactId: "c1/sub/y" }],
+  ["get_quote", { quoteId: "q1/sub/y" }],
+  ["create_quote", { contactId: "c1/sub/y", lineItems: [{ description: "X", quantity: 1, unitPrice: 1 }] }],
+  ["update_quote", { quoteId: "q1/sub/y", termsAndNotes: "X" }],
+  ["send_quote", { quoteId: "q1/sub/y" }],
+  ["mark_quote_paid", { quoteId: "q1/sub/y" }],
+  ["create_recurring_schedule", { contactId: "c1/sub/y", name: "R", cadence: { unit: "month", interval: 1 }, startDateString: "2030-01-01", lineItems: [{ description: "X", quantity: 1, unitPrice: 1 }] }],
+  ["update_recurring_schedule", { scheduleId: "rs1/sub/y", name: "X" }],
+  ["pause_recurring_schedule", { scheduleId: "rs1/sub/y" }],
+  ["resume_recurring_schedule", { scheduleId: "rs1/sub/y" }],
+  ["cancel_recurring_schedule", { scheduleId: "rs1/sub/y" }],
   ["list_workflow_runs", { workflowId: "wf1/sub/y" }],
   ["get_workflow", { workflowId: "wf1/sub/y" }],
   ["update_workflow", { workflowId: "wf1/sub/y", name: "X" }],
@@ -66,7 +77,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
 ];
 
 beforeEach(() => {
-  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1", "workflows/wf1"]) {
+  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1", "workflows/wf1", "quotes/q1", "recurringInvoices/rs1"]) {
     mem.seed(parent, SUB);
     mem.seed(`${parent}/sub/y`, SUB);
     // A real top-level doc named like the path's last segment: a service

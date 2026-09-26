@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
+import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
+import { FIXTURE_ARGS } from "@/test/outbound-fixtures";
 
 /**
  * The inverted outbound test (AGENT_API_V1_PLAN.md, PR3b): an API agent can
@@ -76,75 +78,6 @@ const { AI_SUITE_CAPABILITIES, availableOn } = await import("@/lib/ai-suite/capa
 
 setupAgentProposalTests();
 
-const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
-  find_contacts: { query: "ann" },
-  workspace_stats: {},
-  find_deals: { query: "fibre" },
-  create_deal: { title: "Fibre 100", value: 500, currency: "ZAR", contactId: "c1", contactName: "Ann", stage: "new" },
-  move_deal_stage: { dealId: "d1", dealTitle: "Fibre", stage: "contacted" },
-  update_deal: { dealId: "d1", title: "Fibre 200", value: 700 },
-  delete_deal: { dealId: "d1" },
-  mark_deal_completed: { dealId: "d_won" },
-  list_pipelines: {},
-  get_pipeline: { pipelineId: "p1" },
-  create_pipeline: { name: "Installs", stages: [{ label: "Booked" }, { label: "Done", terminal: "won" }] },
-  update_pipeline: { pipelineId: "p1", name: "Renamed" },
-  delete_pipeline: { pipelineId: "p1" },
-  list_custom_fields: {},
-  create_custom_field: { entity: "contact", label: "Install slot", type: "text" },
-  update_custom_field: { fieldId: "cf1", label: "Renamed" },
-  delete_custom_field: { fieldId: "cf1" },
-  list_custom_field_folders: {},
-  create_custom_field_folder: { name: "Billing", entity: "contact" },
-  update_custom_field_folder: { folderId: "fo1", name: "Renamed" },
-  reorder_custom_field_folders: { entity: "contact", ids: ["fo1"] },
-  delete_custom_field_folder: { folderId: "fo1" },
-  list_products: {},
-  create_product: { name: "Fibre 100", unitPriceCents: 49900, currency: "ZAR" },
-  update_product: { productId: "pr1", unitPriceCents: 59900 },
-  delete_product: { productId: "pr1" },
-  list_snippets: {},
-  create_snippet: { name: "Welcome", type: "text", body: "Thanks {{contact.firstName}}!" },
-  update_snippet: { snippetId: "sn1", name: "Thanks", type: "text", body: "Thank you!" },
-  delete_snippet: { snippetId: "sn1" },
-  list_whatsapp_templates: {},
-  list_workflow_runs: { workflowId: "wf_draft" },
-  list_webhooks: {},
-  create_workflow: { template: "speed-to-lead" },
-  list_workflows: {},
-  get_workflow: { workflowId: "wf_draft" },
-  update_workflow: { workflowId: "wf_draft", name: "Renamed" },
-  set_workflow_status: { workflowId: "wf_draft", status: "paused" },
-  delete_workflow: { workflowId: "wf_draft" },
-  create_contact: { name: "Agent Contact", email: "agent@x.io", phone: "+27821234567" },
-  create_task: { title: "Call Ann", contactId: "c1", contactName: "Ann" },
-  find_tasks: { filter: "all-open" },
-  complete_task: { taskId: "t1", taskTitle: "Follow up" },
-  find_events: { range: "all-upcoming" },
-  create_event: { title: "Install", date: "2030-01-10", time: "10:00", contactId: "c1", contactName: "Ann" },
-  list_members: {},
-  get_contact: { contactId: "c1" },
-  update_contact: { contactId: "c1", name: "Ann B", tags: ["vip"] },
-  add_tags: { contactId: "c1", tags: ["vip"] },
-  remove_tags: { contactId: "c1", tags: ["vip"] },
-  update_contact_channels: { contactId: "c1", phone: "+27829999999" },
-  delete_contact: { contactId: "c1" },
-  list_companies: {},
-  create_company: { name: "Agent Co", email: "hi@agent.co" },
-  update_company: { companyId: "co1", phone: "+27820000001" },
-  delete_company: { companyId: "co1" },
-  find_conversations: {},
-  get_conversation: { conversationId: "c1" },
-  list_scheduled_messages: { contactId: "c1" },
-  set_bot_mode: { conversationId: "c1", mode: "off" },
-  cancel_scheduled_message: { contactId: "c1", scheduledMessageId: "s1" },
-  send_message: { conversationId: "c1", channel: "sms", body: "Hi Ann" },
-  schedule_message: { conversationId: "c1", channel: "sms", body: "Later", sendAt: new Date(Date.now() + 3_600_000).toISOString() },
-  send_whatsapp_template: { conversationId: "c1", templateId: "wt1", variables: { "1": "Tuesday" } },
-  // The harness's test-only approval capability: the approval path must queue
-  // exactly one proposal and send nothing.
-  __test_outbound: { body: "hi" },
-};
 // An ACTIVE workflow for EVERY trigger type (TRIGGER_LABELS is exhaustive over
 // WorkflowTriggerType), with no narrowing config, so any trigger matches.
 const TRIGGERS = Object.keys(TRIGGER_LABELS);
@@ -187,6 +120,11 @@ beforeEach(() => {
   mem.seed("subAccounts/sa1/customFieldFolders/fo1", { subAccountId: "sa1", agencyId: "ag1", name: "Install", entity: "contact", order: 0 });
   mem.seed("products/pr1", { subAccountId: "sa1", agencyId: "ag1", name: "Fibre", unitPriceCents: 49900, currency: "ZAR", active: true });
   mem.seed("snippets/sn1", { subAccountId: "sa1", agencyId: "ag1", name: "Thanks", type: "text", body: "Thanks!", subject: null, folder: null });
+  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, ...SMTP });
+  mem.seed("quotes/q1", QUOTE);
+  mem.seed("quotes/q_accepted", { ...QUOTE, status: "accepted", quoteNumber: "Q-0002" });
+  mem.seed("recurringInvoices/rs1", SCHEDULE);
+  mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, name: "Paused retainer", status: "paused" });
   mem.seed("subAccounts/sa1/pipelines/p1", {
     subAccountId: "sa1", agencyId: "ag1", name: "Installs", isDefault: false, stages: [{ id: "booked", label: "Booked", tone: "" }],
   });
@@ -233,6 +171,7 @@ describe("an agent can never send on its own", () => {
     ["set_bot_mode", { conversationId: "c1", mode: "auto" }],
     ["update_workflow", { workflowId: "wf_contact.created", name: "Renamed" }],
     ["set_workflow_status", { workflowId: "wf_draft", status: "active" }],
+    ["update_quote", { quoteId: "q_accepted", termsAndNotes: "Due on install" }],
   ];
   it.each(CASES)("%s %j: dispatches fine and reaches no outbound seam", async (name, args) => {
     const cap = agentCaps().find((c) => c.name === name);

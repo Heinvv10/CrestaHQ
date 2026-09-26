@@ -1,18 +1,8 @@
 import { NextResponse } from "next/server";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGate } from "@/lib/auth/territory-filter";
-import { issueQuoteNumber } from "@/lib/quotes/number";
-import { sanitizeQuoteTemplate } from "@/lib/quotes/sanitize";
-import { GLOBAL_TERRITORY_ID } from "@/types";
-import { DEFAULT_QUOTE } from "@/types/quotes";
-import type {
-  Quote,
-  QuoteDiscount,
-  QuoteKind,
-  QuoteLineItem,
-} from "@/types/quotes";
+import { createQuote, type CreateQuotePayload } from "@/lib/server/quote-write";
 
 export const dynamic = "force-dynamic";
 
@@ -90,140 +80,20 @@ export async function POST(
   );
   if (gate) return gate;
 
-  const sanitized = sanitizePayload(body);
-  const kind: QuoteKind = body.kind === "invoice" ? "invoice" : "quote";
-
-  // Optional link to an existing pipeline deal (quote-only). Validated
-  // hard: the deal must exist, live in this sub-account, and belong to
-  // the quote's contact — a linked accept moves that deal to Won, so a
-  // bad link would progress someone else's deal. Absent/null = the
-  // pre-linkage behavior (auto-create on accept), unchanged.
-  let dealId: string | null = null;
-  if (typeof body.dealId === "string" && body.dealId.trim() && kind === "quote") {
-    const candidate = body.dealId.trim();
-    const dealSnap = await db.doc(`deals/${candidate}`).get();
-    const deal = dealSnap.data();
-    if (!dealSnap.exists || deal?.subAccountId !== subAccountId) {
-      return NextResponse.json({ error: "Linked deal not found" }, { status: 404 });
-    }
-    if (deal?.contactId !== contactId) {
-      return NextResponse.json(
-        { error: "Linked deal belongs to a different contact" },
-        { status: 400 },
-      );
-    }
-    dealId = candidate;
-  }
-
-  // A quote / invoice with zero line items isn't a useful document and
-  // can't have a meaningful total — reject up-front. UI also gates this
-  // (catalog-only line items, save disabled when empty) but the server
-  // is the source of truth.
-  if (!sanitized.lineItems || sanitized.lineItems.length === 0) {
-    return NextResponse.json(
-      { error: "Add at least one product from the catalog before saving." },
-      { status: 400 },
-    );
-  }
-
-  let quoteNumber: string;
-  try {
-    quoteNumber = await issueQuoteNumber(subAccountId, kind);
-  } catch (err) {
-    console.error("[quotes/create] issueQuoteNumber failed", err);
-    return NextResponse.json(
-      { error: "Failed to allocate quote number" },
-      { status: 500 },
-    );
-  }
-
-  const docRef = db.collection("quotes").doc();
-  // Build the document. Use FieldValue.serverTimestamp() for createdAt /
-  // updatedAt so they sort consistently with everything else in the
-  // tenancy. publicTokenHash is empty until the first send.
-  const doc: Omit<Quote, "id"> = {
-    ...DEFAULT_QUOTE,
-    kind,
-    agencyId: access.agencyId ?? (contact.agencyId as string),
+  const created = await createQuote({
     subAccountId,
+    agencyId: access.agencyId ?? (contact.agencyId as string),
     createdByUid: access.uid,
     contactId,
-    quoteNumber,
-    publicTokenHash: "",
-    // Inherit territory from the contact this quote is for — quotes
-    // follow their account's territory (Global fallback).
-    territoryId:
-      (contact.territoryId as string | null | undefined) ??
-      GLOBAL_TERRITORY_ID,
-    ...sanitized,
-    dealId,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-
-  try {
-    await docRef.set(doc);
-  } catch (err) {
-    console.error("[quotes/create] write failed", err);
-    return NextResponse.json(
-      { error: "Failed to create quote" },
-      { status: 500 },
-    );
+    contact,
+    body,
+  });
+  if (!created.ok) {
+    return NextResponse.json({ error: created.error }, { status: created.status });
   }
 
   return NextResponse.json(
-    { id: docRef.id, quoteNumber },
+    { id: created.id, quoteNumber: created.quoteNumber },
     { status: 201 },
   );
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────
-
-interface CreateQuotePayload {
-  contactId?: string;
-  kind?: QuoteKind;
-  lineItems?: QuoteLineItem[];
-  currency?: string;
-  globalDiscount?: QuoteDiscount;
-  globalTaxPercent?: number | null;
-  termsAndNotes?: string;
-  billedToOrganization?: string | null;
-  billingAddress?: string | null;
-  validUntilDateString?: string | null;
-  paymentDueDays?: number | null;
-  autoCreateDealOnAccept?: boolean;
-  dealId?: string | null;
-}
-
-/**
- * Clean + clamp the operator-supplied payload before writing. The money and
- * document fields are shared with the recurring-invoice template and are
- * cleaned by `sanitizeQuoteTemplate`; only the quote-only fields are handled
- * here.
- */
-function sanitizePayload(body: CreateQuotePayload): Partial<Quote> {
-  const out: Partial<Quote> = sanitizeQuoteTemplate(body);
-
-  if (typeof body.autoCreateDealOnAccept === "boolean") {
-    out.autoCreateDealOnAccept = body.autoCreateDealOnAccept;
-  }
-
-  if (body.validUntilDateString === null) {
-    out.validUntil = null;
-  } else if (
-    typeof body.validUntilDateString === "string" &&
-    /^\d{4}-\d{2}-\d{2}$/.test(body.validUntilDateString)
-  ) {
-    // Treat the picked date as end-of-day local time. Convert to an
-    // admin Timestamp so the cast to the Quote type (which uses client
-    // SDK's Timestamp) is structurally honest — admin + client
-    // Timestamps share the same shape at runtime, TS just treats them
-    // as different nominal types.
-    const d = new Date(`${body.validUntilDateString}T23:59:59`);
-    if (!Number.isNaN(d.getTime())) {
-      out.validUntil = Timestamp.fromDate(d) as unknown as Quote["validUntil"];
-    }
-  }
-
-  return out;
 }

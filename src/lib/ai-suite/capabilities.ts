@@ -32,6 +32,11 @@ import { CUSTOM_FIELD_CAPABILITIES } from "./capabilities/custom-fields";
 import { CUSTOM_FIELD_FOLDER_CAPABILITIES } from "./capabilities/custom-field-folders";
 import { PRODUCT_CAPABILITIES } from "./capabilities/products";
 import { SNIPPET_CAPABILITIES } from "./capabilities/snippets";
+import { QUOTE_CAPABILITIES } from "./capabilities/quotes";
+import { QUOTE_SEND_CAPABILITIES } from "./capabilities/quote-send";
+import { QUOTE_PAID_CAPABILITIES } from "./capabilities/quote-paid";
+import { RECURRING_CAPABILITIES } from "./capabilities/recurring";
+import { RECURRING_EDIT_CAPABILITIES } from "./capabilities/recurring-edit";
 import { CONTACT_CAPABILITIES } from "./capabilities/contacts";
 import { CONTACT_EDIT_CAPABILITIES } from "./capabilities/contact-edit";
 import { CONTACT_TAG_CAPABILITIES } from "./capabilities/contact-tags";
@@ -99,6 +104,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...CUSTOM_FIELD_FOLDER_CAPABILITIES,
   ...PRODUCT_CAPABILITIES,
   ...SNIPPET_CAPABILITIES,
+  ...QUOTE_CAPABILITIES,
+  ...QUOTE_SEND_CAPABILITIES,
+  ...QUOTE_PAID_CAPABILITIES,
+  ...RECURRING_CAPABILITIES,
+  ...RECURRING_EDIT_CAPABILITIES,
   ...WEBHOOK_CAPABILITIES,
   ...WEBHOOK_TEST_CAPABILITIES,
   ...WEBHOOK_URL_CAPABILITIES,

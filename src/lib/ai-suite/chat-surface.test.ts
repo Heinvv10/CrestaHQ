@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
+import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import type { AiSuiteCapability } from "./capabilities";
 
 /**
@@ -188,6 +189,14 @@ describe("registry invariants", () => {
     delete_product: { productId: "pr_sample" },
     update_product: { productId: "pr_sold", unitPriceCents: 200 },
     delete_snippet: { snippetId: "sn_sample" },
+    update_quote: { quoteId: "q_accepted", termsAndNotes: "New terms" },
+    send_quote: { quoteId: "q_sample" },
+    mark_quote_paid: { quoteId: "q_accepted" },
+    create_recurring_schedule: { contactId: "c_sample", name: "Support", cadence: { unit: "month", interval: 1 }, startDateString: "2030-01-01", lineItems: [{ description: "Support", quantity: 1, unitPrice: 1000 }] },
+    update_recurring_schedule: { scheduleId: "rs_sample", name: "Support plan" },
+    pause_recurring_schedule: { scheduleId: "rs_sample" },
+    resume_recurring_schedule: { scheduleId: "rs_paused" },
+    cancel_recurring_schedule: { scheduleId: "rs_sample" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
@@ -229,6 +238,11 @@ describe("registry invariants", () => {
     mem.seed("subAccounts/sa1/checkoutPages/cp_sample", { subAccountId: "sa1", name: "Offer", productId: "pr_sold", bumpProductIds: [] });
     mem.seed("snippets/sn_sample", { subAccountId: "sa1", agencyId: "ag1", name: "S", type: "text", body: "Hi", subject: null, folder: null });
     mem.seed("subAccounts/sa1/pipelines/p_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample", isDefault: false, stages: [{ id: "a", label: "A", tone: "" }] });
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), ...SMTP });
+    mem.seed("quotes/q_sample", { ...QUOTE, contactId: "c_sample" });
+    mem.seed("quotes/q_accepted", { ...QUOTE, contactId: "c_sample", status: "accepted" });
+    mem.seed("recurringInvoices/rs_sample", { ...SCHEDULE, contactId: "c_sample" });
+    mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, contactId: "c_sample", status: "paused" });
   };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {

@@ -1,15 +1,13 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { Timestamp } from "firebase-admin/firestore";
 
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { parseScheduleCreate } from "@/lib/recurring/schedule-input";
-import {
-  RECURRING_INVOICE_DEFAULTS,
-  type RecurringInvoiceDoc,
-} from "@/types/recurring-invoices";
+import { scheduleCreateDoc } from "@/lib/server/recurring-schedule-write";
+import type { RecurringInvoiceDoc } from "@/types/recurring-invoices";
 import type { SubAccountDoc } from "@/types";
 
 export const dynamic = "force-dynamic";
@@ -98,42 +96,13 @@ export async function POST(
   }
 
   const ref = db.collection("recurringInvoices").doc();
-  const doc: Omit<RecurringInvoiceDoc, "id"> = {
+  const doc = scheduleCreateDoc({
     agencyId: auth.agencyId ?? (contact.agencyId as string),
     subAccountId,
     createdByUid: auth.uid,
     contactId,
-    name: fields.name,
-    status: RECURRING_INVOICE_DEFAULTS.status,
-    currency: fields.currency,
-    lineItems: fields.lineItems ?? [],
-    globalDiscount: fields.globalDiscount,
-    globalTaxPercent: fields.globalTaxPercent,
-    termsAndNotes: fields.termsAndNotes,
-    billedToOrganization: fields.billedToOrganization,
-    billingAddress: fields.billingAddress,
-    paymentDueDays: fields.paymentDueDays,
-    cadence: fields.cadence,
-    anchorDay: fields.anchorDay,
-    timezone: fields.timezone,
-    startAt: Timestamp.fromDate(fields.startAt),
-    nextRunAt: Timestamp.fromDate(fields.nextRunAt),
-    endMode: fields.endMode,
-    endAt: fields.endAt ? Timestamp.fromDate(fields.endAt) : null,
-    maxCycles: fields.maxCycles,
-    reviewFirst: fields.reviewFirst,
-    chargeMode: fields.chargeMode,
-    unpaidEscalationThreshold: fields.unpaidEscalationThreshold,
-    cyclesGenerated: RECURRING_INVOICE_DEFAULTS.cyclesGenerated,
-    lastRunAt: null,
-    lastInvoiceId: null,
-    outstandingInvoices: RECURRING_INVOICE_DEFAULTS.outstandingInvoices,
-    lastEscalatedAt: null,
-    lastEscalatedCount: null,
-    lastError: null,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
+    fields,
+  });
 
   try {
     await ref.set(doc);
