@@ -1,6 +1,6 @@
 # Review auto-reply v1
 
-> Status: **PLAN 2026-09-26, rev 5 (2026-09-26, PR 2 review)** — rev 4 after three adversarial reviews; PR 1 merged, PR 2 in review (#287).
+> Status: **BUILT, PARTLY DEPLOYED (2026-09-26)** — PRs 1–3 merged (#284 gate + settings, #287 engine behind the kill switch, #291 UI); PR 4 (alerts, #294) and PR 5 (docs, parity ledger, sentiment fence, #296) in review. **#284 and #287 are live** (release `ac461be1`, 2026-09-26 11:49) but inert — `REVIEWS_AUTO_REPLY_ENABLED` is not set in prod. **#291 (UI) and later are not deployed: do not set the kill switch before they are** (held drafts would be invisible). The live proof on Velocity (#1002) is pending that deploy and the owner steps below. Plan: rev 5 (2026-09-26, PR 2 review).
 > **Rev 5 (2026-09-26, PR 2 review)** folds in the PR 2 team review's rulings: a review that has or ever had a
 > reply is never auto-posted to (sticky `hadReply` + a durable `autoReplyNever/{stableReviewKey}` marker outside the
 > cache); markers and Discards are keyed by an ACCOUNT-INDEPENDENT `stableReviewKey` = sha256 of
@@ -125,9 +125,10 @@ does not delete settings or pending drafts.
 ### Kill switch
 
 Env `REVIEWS_AUTO_REPLY_ENABLED` — unset = the engine never runs anywhere on
-this deployment. Merging PR 2 is inert until it is set; unsetting it is the
-incident stop — it needs a restart of both blue/green colours, so it is a
-minutes-scale stop, not instant (RUNBOOK note in PR 5). PR 2 is not deployed with it set before PR 3 ships (held drafts
+this deployment. Merging PR 2 is inert until it is set. The incident stop is
+setting it to `0` (not unsetting it) and restarting the live colour — a
+minutes-scale stop, not instant; see [RUNBOOK.md](RUNBOOK.md#review-auto-reply)
+(corrected in PR 5 from "unset + restart both colours"). PR 2 is not deployed with it set before PR 3 ships (held drafts
 would be invisible).
 
 ### Engine — `lib/reputation/auto-reply/`
@@ -334,7 +335,9 @@ would be invisible).
   rating labels and a `sentimentLease` written. Unreachable in CI (no foreign
   run is produced), but fence it like auto-reply — in `classifySyncedRuns`,
   skip a sub-account outside the GBP / Reviews AI fake's fixture agency before
-  any write — in PR 5 or a separate hardening PR.
+  any write — in PR 5 or a separate hardening PR. **Done in PR 5**:
+  `classifyAfterSync` (`sentiment-after.ts`) asserts the fixture agency for
+  each fake before any write; `sentiment-after.fence.test.ts`.
 
 ## Explicitly not in v1
 

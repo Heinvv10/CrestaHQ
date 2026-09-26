@@ -230,8 +230,9 @@ Run through this with the client's real details before calling it done:
 - A review removed at Google disappears after two complete passes (~12h
   scheduled). Listings over 1000 reviews never count misses: such a review
   disappears only after 30 days unseen.
-- **Replies** are posted only by an admin's **Post reply to Google** click
-  (nothing automatic, no AI). `in_progress` → an identical submit is still
+- **Replies** are posted only by an admin's **Post reply to Google** click,
+  except where review auto-reply is switched on (see "Review auto-reply"
+  below). `in_progress` → an identical submit is still
   running (at most 2 minutes); `idempotency_key_reused` → the text changed
   after a submit — close and reopen the composer.
 - **Review-request link:** the selected listing's Google review link is only
@@ -240,10 +241,84 @@ Run through this with the client's real details before calling it done:
   link**. "The review link changed since you looked" → someone saved a
   different link meanwhile; reload and decide again.
 
+### Review auto-reply
+
+Opt-in per sub-account ([AUTO_REPLY_V1_PLAN.md](AUTO_REPLY_V1_PLAN.md)).
+After every Google review sync (the 6-hourly cron and **Sync now**), the
+engine goes through that sub-account's reviews. Each star rating is set to
+**Auto** or **Approval** on the Auto-reply card (Reputation → Settings). An
+Auto review with no text is drafted by the AI and posted to Google without a
+click. Everything else is drafted and held in the Reviews tab's **Needs
+approval** filter for a person to post or **Discard**; a review with text is
+always held in v1. At most 20 posts per sub-account per SAST day, and at most
+40 auto drafts out of the 100/day draft budget. Posted replies carry an
+"Auto-replied" tag. It runs only where all three agency gates are on
+(`googleEnabledByAgency`, `reviewsAiEnabledByAgency`,
+`reviewsAutoReplyEnabledByAgency`), the card's switch is on for the listing it
+was enabled on, and the deployment sets the kill switch.
+
+- **Kill switch:** the `REVIEWS_AUTO_REPLY_ENABLED` environment variable. The
+  engine runs only when it is exactly `1`, and a change is picked up only when
+  the app restarts (or, on Vercel, redeploys) — a minutes-scale stop, not an
+  instant one. **To stop it, set it to `0` rather than deleting it**, then
+  restart or redeploy. On velo-server, see
+  [Stopping review auto-reply](#stopping-review-auto-reply-velo-server) for
+  why `0` and which colour to restart.
+- **Off for ONE sub-account:** switch off the Auto-reply card on Reputation →
+  Settings (an admin of that sub-account can do this). Or turn off
+  **Review auto-reply** in the sub-account's **Manage** dialog
+  (`/agency/sub-accounts`), which is `reviewsAutoReplyEnabledByAgency`. Either stops posting within the current run, because both are
+  re-checked before every post. Settings and held drafts are kept.
+- **Off EVERYWHERE:** the kill switch, as above.
+- **Alerts:** reviews waiting for approval, Google needing a reconnect (while
+  auto-reply is on), an
+  auto-replied review edited down to ≤3★, and auto-reply switched off by a
+  listing change — each recorded in `subAccounts/{id}/reviewAutoReplyAlerts`
+  and sent by web push and email. Triggers, recipients and dedupe:
+  [reputation.md](docs/features/reputation.md#review-auto-reply-auto_reply_v1_planmd)
+  ("Alerts"). Push and email are independent: a missing channel (no VAPID
+  keys, no email sender) logs a warning and the other still goes out.
+- **Where to look when something goes wrong:**
+  - `subAccounts/{id}/gbpEvents`: each auto-post is a `reply_posted` row
+    with `actorUid: "system:auto-reply"`. Its `createdByUid` is whoever
+    switched auto-reply on.
+  - `auditEvents`: `review.auto_replied`, actor `{type: "system", id:
+    "auto-reply"}`, `onBehalfOfUid` = whoever switched it on.
+  - The review doc (`subAccounts/{id}/gbpReviews/{docId}`):
+    - `pendingReply.reason` gives the state of a held or queued draft:
+      `auto_queued`, `approval`, `texted`, `draft_failed`, `post_failed`
+      (retried after 24 h), `no_budget`, `cap`, `dismissed`.
+    - `autoReplied` is stamped once the reply is posted.
+  - `subAccounts/{id}/private/autoReplyLease` holds one run at a time (5
+    minutes). `private/autoReplyUsage` counts the day's posts. Auto drafts
+    are counted in `private/sentimentUsage.autoDraftCalls`.
+  - Logs: `journalctl --user -u crestahq@<live colour> -o cat | grep -F
+    '[reputation/auto-reply]'` shows failed runs (`run failed kind=…`), failed
+    drafts, failed posts and unrecorded audit events. A run that simply
+    stopped (switched off, listing changed, another run busy, cap, deadline)
+    logs nothing.
+
 ## Zero-downtime deploys (velo-server only)
 
 *Operator section for this repo's own deployment on velo-server. Buyer copies
 deploy to Vercel and can ignore it.*
+
+### Stopping review auto-reply (velo-server)
+
+The kill switch lives in `~/crestahq-config/.env.production` (the unit's
+`EnvironmentFile`). Set `REVIEWS_AUTO_REPLY_ENABLED=0` — **do not delete the
+line**: each release keeps its own build-time copy
+(`~/crestahq-releases/<release>/.env.production`) and Next fills any variable
+systemd did not set from that copy, so a deleted line can fall back to `1`. Then
+restart the **live** colour only — one colour runs between deploys, and starting
+the idle one would boot an older release. As velo:
+
+```bash
+cat ~/crestahq-proxy/upstream.conf     # names the live colour, 4301 or 4302
+XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart crestahq@4301   # the live one
+```
+
+With no second colour running, expect a few seconds of errors during the restart.
 
 `scripts/deploy-velo.sh` deploys blue/green, so a deploy no longer refuses
 connections while Next restarts:
