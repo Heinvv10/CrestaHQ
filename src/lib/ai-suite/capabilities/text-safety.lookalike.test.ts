@@ -37,8 +37,10 @@ describe("lookAlikeProblem", () => {
   });
 
   it("a combining mark left on a Latin letter is refused; composed accents and other scripts' marks are fine", () => {
-    expect(lookAlikeProblem("Bank detai\u0307ls", [])).toBe("has a mark that can't combine into a standard accented letter");
-    for (const name of ["Nguy\u1ec5n", "Nguye\u0302\u0303n", "Cafe\u0301", "\u0928\u092e\u0938\u094d\u0924\u0947"]) {
+    for (const name of ["Bank detai\u0307ls", "deta1\u0307ls", "deta\u2223\u0307ls", "\u00f8\u0307"]) {
+      expect(lookAlikeProblem(name, []), name).toBe("has a mark that can't combine into a standard accented letter");
+    }
+    for (const name of ["\u1ecc\u0301y\u1ecd\u0301", "\u0130stanbul", "Nguy\u1ec5n", "Nguye\u0302\u0303n", "Cafe\u0301", "\u0928\u092e\u0938\u094d\u0924\u0947"]) {
       expect(lookAlikeProblem(name, []), name).toBeNull();
     }
   });
@@ -50,12 +52,13 @@ describe("lookAlikeProblem", () => {
     ["a curly apostrophe", "Don\u2019t reply", "Don't reply"],
     ["a space for a hyphen", "Follow up", "Follow-up"],
     ["a bar for l and a hyphen for a space", "Bank-detai\u2223s", "Bank details"],
+    ["the same name in another case with a hyphen for a space", "ID-card", "id card"],
   ])("%s: the same as the existing name", (_label, name, existing) => {
     expect(lookAlikeProblem(name, [existing])).toBe("is the same as, or looks like, an existing one");
   });
 
   it("each run of letters is judged alone: a Greek letter joined by a hyphen is fine, a look-alike between dots is not", () => {
-    for (const name of ["\u03b1-test", "\u0394-value", "\u01c2Khomani", "\u01c3X\u00f3\u00f5"]) {
+    for (const name of ["\u03b1-test", "\u0394-value", "\u01c2Khomani"]) {
       expect(lookAlikeProblem(name, []), name).toBeNull();
     }
     expect(lookAlikeProblem("B.\u0430.nk", [])).toBe("uses letters from another script that look like Latin ones");
@@ -63,10 +66,25 @@ describe("lookAlikeProblem", () => {
     expect(lookAlikeProblem("\u0441\u0430\u0440-\u0434\u043e\u043c", [])).toBe("uses letters from another script that look like Latin ones");
     expect(lookAlikeProblem("\u0422\u0410\u0425 INFO", [])).toBe("uses letters from another script that look like Latin ones");
     expect(lookAlikeProblem("\u01c0nvoice", [])).toBe("uses a letter that imitates a plain Latin letter");
+    expect(lookAlikeProblem("\u0422.\u0410.\u0425", ["T.A.X"])).toBe("uses letters from another script that look like Latin ones");
+  });
+
+  it("the click \u01c3 reads as \"!\" and is refused; \u01c1 reads as ll", () => {
+    expect(lookAlikeProblem("Hello\u01c3", ["Hello!"])).toBe("uses a letter that imitates a plain Latin letter");
+    expect(lookAlikeProblem("Ca\u01c1 me", ["Call me"])).not.toBeNull();
+    expect(skeleton("Ca\u01c1")).toBe("call");
   });
 
   it("Cyrillic \u0406 / \u0456 read as l, like Latin I", () => {
     expect(skeleton("\u0406\u0456")).toBe("ll");
     expect(skeleton("ID")).toBe("ld");
+    // NFC after mapping: a Greek capital Kappa with an acute reads as the accented Latin k.
+    expect(skeleton("\u039a\u0301")).toBe(skeleton("\u1e31"));
+  });
+
+  it("symbols, digits and emoji tell names apart; a name of separators only matches nothing", () => {
+    for (const [name, existing] of [["A+", "A"], ["$$", "$"], ["\u{1f44e}", "\u{1f44d}"], ["Fibre 10.0", "Fibre 100"], ["Pro+", "Pro"], ["\u{1f4e7} Follow up", "\u{1f4de} Follow up"], ["-", "_"]]) {
+      expect(lookAlikeProblem(name, [existing]), name).toBeNull();
+    }
   });
 });

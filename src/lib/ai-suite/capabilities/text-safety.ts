@@ -122,37 +122,40 @@ const LOWER_CONFUSABLES = new Map<string, string>([
   ["\uab83", "w"], ["\uab93", "z"],
 ]);
 
-/** Only letters and digits tell two names apart: spaces, dashes, quotes
- *  and other punctuation never do ("Follow-up" = "Follow up"). */
-const nameChars = (value: string) => [...value].filter((c) => /[\p{L}\p{N}]/u.test(c)).join("");
+/** Spaces, dashes, connectors and quote marks never tell two names apart
+ *  ("Follow-up" = "Follow up", "Don\u2019t" = "Don't"); symbols and other
+ *  punctuation do ("A+" / "A", "Pro" / "Pro+", "10.0" / "100", emoji). */
+const SEPARATORS = /[\s\p{Pd}\p{Pc}'"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u2032\u2033\u02bc\uff07]/gu;
 
-/** A name folded for "is this the same name?": NFKC, case-folded, letters
- *  and digits only. */
+/** A name folded for "is this the same name?": NFKC, case-folded, separators
+ *  dropped. */
 function casefoldKey(value: string): string {
-  return nameChars(value.normalize("NFKC").toLowerCase());
+  return value.normalize("NFKC").toLowerCase().replace(SEPARATORS, "");
 }
 
 /** Vertical bars that pass for an l (\u2223 \u05c0 \u2502 \u23d0 \ufe31 \u01c0 | \uff5c),
- *  mapped before NFKC can turn them into dashes. */
+ *  mapped before NFKC can turn them into dashes; the double bar \u01c1 reads as ll. */
 const BAR_LIKE = /[\u2223\u05c0\u2502\u23d0\ufe31\u01c0|\uff5c]/g;
+const IS_BAR = /[\u2223\u05c0\u2502\u23d0\ufe31\u01c0\u01c1|\uff5c]/u;
 
 /**
  * What a name looks like (UTS #39 style): bar-like symbols read as l; NFKC;
- * capital I and the capital confusables mapped; case-folded; the lowercase
- * confusables mapped; 1 read as l, 0 as o; letters and digits only. "rn" / "vv" also read as "m" /
+ * capital I and the capital confusables mapped; case-folded, then NFC (so
+ * "\u0130" keeps its dot); the lowercase confusables mapped; 1 read as l, 0 as
+ * o; separators dropped. "rn" / "vv" also read as "m" /
  * "w": deliberately, as a spoof is worse than refusing the odd real pair
  * (Modern / Modem).
  */
 export function skeleton(value: string): string {
-  const capitals = [...value.replace(BAR_LIKE, "l").normalize("NFKC")].map((c) => (c === "I" ? "l" : (CAPITAL_CONFUSABLES.get(c) ?? c))).join("");
-  return [...capitals.toLowerCase()]
+  const capitals = [...value.replace(/\u01c1/g, "ll").replace(BAR_LIKE, "l").normalize("NFKC")].map((c) => (c === "I" ? "l" : (CAPITAL_CONFUSABLES.get(c) ?? c))).join("");
+  return [...capitals.toLowerCase().normalize("NFC")]
     .map((c) => LOWER_CONFUSABLES.get(c) ?? c)
     .join("")
     .replace(/1/g, "l")
     .replace(/0/g, "o")
     .replace(/rn/g, "m")
     .replace(/vv/g, "w")
-    .replace(/[^\p{L}\p{N}]/gu, "");
+    .replace(SEPARATORS, "");
 }
 
 const ASCII = /^[\x00-\x7f]*$/;
@@ -168,8 +171,9 @@ const MIXED_SCRIPT_WORD = /(?=[\p{L}\p{M}\p{N}]*\p{Script=Latin})(?=[\p{L}\p{M}\
 const PLAIN_LATIN_EXTRA = new Set([
   "\u00df", "\u00e6", "\u00c6", "\u00f8", "\u00d8", "\u0153", "\u0152", "\u00f0",
   "\u00d0", "\u00fe", "\u00de", "\u0142", "\u0141", "\u0111", "\u0110",
-  // Khoisan clicks imitate nothing (\u01c0, which reads as l, is not here).
-  "\u01c1", "\u01c2", "\u01c3",
+  // Khoisan clicks: \u01c2 imitates nothing, and \u01c1 is read as "ll" in the skeleton.
+  // \u01c0 (reads as l) and \u01c3 (reads as "!") are not here, so both are refused.
+  "\u01c1", "\u01c2",
 ]);
 
 /**
@@ -186,19 +190,17 @@ function imitatesLatin(ch: string): boolean {
 }
 
 /**
- * A combining mark left on a Latin letter after NFC: a standard accented
- * letter (\u00e9, \u1ec5) composes, so a leftover mark is a decoration that can
- * make one letter pass for another (i + \u0307). Marks on other scripts
- * (Devanagari, Thai, Arabic, ...) are how those scripts are written.
+ * A combining mark left after NFC on a bare Latin letter, a digit or a bar: a
+ * standard accented letter (\u00e9, \u1ec5) composes, so a leftover mark there
+ * is a decoration that can make one character pass for another (i + \u0307,
+ * 1 + \u0307). A mark stacked on an already-accented letter is fine (Yoruba
+ * \u1ecd + \u0301), and so are marks on other scripts (Devanagari, Thai, ...).
  */
 function latinMarkLeft(value: string): boolean {
   let base = "";
   for (const c of value.normalize("NFC")) {
-    if (/\p{M}/u.test(c)) {
-      if (/\p{Script=Latin}/u.test(base)) return true;
-    } else {
-      base = c;
-    }
+    if (!/\p{M}/u.test(c)) base = c;
+    else if (/\p{N}/u.test(base) || IS_BAR.test(base) || (/\p{Script=Latin}/u.test(base) && !/\p{M}/u.test(base.normalize("NFD")))) return true;
   }
   return false;
 }
@@ -221,7 +223,8 @@ export function lookAlikeProblem(value: string, existing: readonly string[]): st
   if (value.split(/[^\p{L}\p{M}]+/u).map(letters).some((w) => w && !ASCII.test(w) && ASCII.test(skeleton(w)))) {
     return "uses letters from another script that look like Latin ones";
   }
+  // A name of separators only has an empty key, which matches nothing.
   const [key, folded] = [skeleton(value), casefoldKey(value)];
-  if (existing.some((e) => skeleton(e) === key || casefoldKey(e) === folded)) return "is the same as, or looks like, an existing one";
+  if (existing.some((e) => (key && skeleton(e) === key) || (folded && casefoldKey(e) === folded))) return "is the same as, or looks like, an existing one";
   return null;
 }
