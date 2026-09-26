@@ -614,7 +614,8 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   with the draft ("Review draft"); **Post** is the ordinary human reply route.
   **Discard** is `POST …/gbp/reviews/[reviewDocId]/auto-reply/dismiss`
   (sub-account admin, Google gate, the reply route's 404 rules; 409
-  `nothing_to_dismiss` for a replied review or one without a draft) →
+  `nothing_to_dismiss` for a replied review, one without a draft, or a
+  stale draft — the page then reloads the list) →
   `dismissAutoReply`. A reply auto-reply posted shows an **Auto-replied** tag
   (`autoReplied`).
 

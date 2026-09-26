@@ -14,6 +14,7 @@ import { ReviewsSection } from "./reviews-section";
 
 const BASE = "/api/sub-accounts/sa1/gbp/reviews";
 const DRAFT = "Thank you for your 3-star review of Velo Test Fibre.";
+const DISMISS_409 = "This review has a reply or no auto-reply draft to discard.";
 
 const review = (id: string, over: Record<string, unknown> = {}) => ({
   reviewId: id, docId: `doc-${id}`,
@@ -45,6 +46,7 @@ beforeEach(() => {
     if (method === "GET" && url.startsWith(BASE)) return json(payload);
     if (method === "POST" && url === `${BASE}/doc-held/reply`) return json({ ok: true, reply: { comment: DRAFT } });
     if (method === "POST" && url.endsWith("/auto-reply/dismiss")) {
+      if (dismissStatus === 409) return json({ code: "nothing_to_dismiss", error: DISMISS_409 }, 409);
       return dismissStatus < 400 ? json({ ok: true }) : json({ code: "not_found", error: "Review not found." }, dismissStatus);
     }
     throw new Error(`unexpected fetch ${method} ${url}`);
@@ -171,6 +173,20 @@ describe("Discard", () => {
     expect(byId("gbp-reply-discard-error")?.textContent).toBe("Review not found.");
     expect(calls("GET")).toHaveLength(gets);
     expect(byId("gbp-review-held")).not.toBeNull();
+  });
+
+  it("a 409 (the row changed meanwhile, e.g. auto-posted) shows why and reloads the list as it is now", async () => {
+    dismissStatus = 409;
+    await render();
+    const gets = calls("GET").length;
+    const autoPosted = review("held", { reply: { comment: "Thanks!", updateTime: "2026-08-21T09:00:00Z" }, autoReplied: true });
+    payload = { ...payload, needsApproval: 1, reviews: [autoPosted, (payload.reviews as object[])[1]] };
+    await click("gbp-reply-discard-held");
+    expect(byId("gbp-reply-discard-error")?.textContent).toBe(DISMISS_409);
+    expect(calls("GET")).toHaveLength(gets + 1);
+    expect(byId("gbp-review-auto-replied-held")).not.toBeNull();
+    expect(byId("gbp-reply-discard-held")).toBeNull();
+    expect(byId("gbp-filter-needs-approval-count")?.textContent).toBe("(1)");
   });
 
   it("is offered only on rows waiting for a person, and only to admins", async () => {

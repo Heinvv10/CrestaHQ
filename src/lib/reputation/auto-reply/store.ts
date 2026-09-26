@@ -140,8 +140,9 @@ export async function storePending(
  * `dismissed` for its current basis, AND record it outside the cache so a
  * cache clear cannot resurrect it. The engine never drafts or posts that
  * review again unless its content changes. `not_found` when the review is
- * gone; `nothing_to_dismiss` when it has a reply or no auto-reply draft at
- * all (nothing is written). A repeat Discard is accepted (idempotent).
+ * gone; `nothing_to_dismiss` when it has a reply, no auto-reply draft, or a
+ * STALE one (drafted for content since edited) — nothing is written. A repeat
+ * Discard is accepted (the dismissed marker carries the current basis).
  */
 export async function dismissAutoReply(
   sa: string, docId: string, byUid: string, now: Date,
@@ -154,7 +155,10 @@ export async function dismissAutoReply(
     const sub = (await tx.get(subRef)).data();
     const basisHash = d?.state === "active" ? reviewBasis(d) : null;
     if (!basisHash) return "not_found";
-    if (d!.reply || !readPending(d!.pendingReply)) return "nothing_to_dismiss";
+    // Only the draft the admin saw: a draft of older content (the review was
+    // edited since) is stale — dismissing it would silence the NEW content.
+    const p = readPending(d!.pendingReply);
+    if (d!.reply || !p || p.basisHash !== basisHash) return "nothing_to_dismiss";
     tx.update(ref, { pendingReply: { text: null, textHash: null, basisHash, reason: "dismissed", at: now, model: null } });
     tx.set(db.doc(dismissedPath(sa, d!.reviewName)), {
       agencyId: String(sub?.agencyId ?? ""), subAccountId: sa, createdByUid: byUid, byUid, basisHash, at: now, reviewDocId: docId,

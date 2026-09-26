@@ -268,11 +268,17 @@ would be invisible).
   `reason !== "dismissed"`, and `reply == null`) with a count, over the same capped 500 served records; each row shows its reason
   (held for approval, queued to auto-post, auto-post paused, draft failed,
   over today's limit, post failed — only the reason and draft text are
-  served);
+  served; a queued draft reads "Queued to auto-post" only while the engine
+  would post it now — kill switch, gates, on for this listing, star on Auto
+  and no other sub-account sharing the location — else "Auto-post paused");
   the composer opens pre-filled with the draft; **Post** uses the existing
   human reply route; **Discard** (`POST …/gbp/reviews/[reviewDocId]/auto-reply/dismiss`,
   guarded like the reply route) marks it dismissed (see the state table) and
-  removes it from the filter — E2E asserts the count drops and the row is gone. Auto-posted replies
+  removes it from the filter — E2E asserts the count drops and the row is gone.
+  It refuses with 409 `nothing_to_dismiss` (nothing written) unless the review
+  is unreplied with a FRESH pending draft — a draft of since-edited content
+  would otherwise silence the new content; a repeat Discard is accepted; on a
+  409 the page reloads the list. Auto-posted replies
   show a small "Auto-replied" tag.
 
 ### Alerts
@@ -320,6 +326,15 @@ would be invisible).
   posts.
 - Live, after PR 5 deploys: enable on Velocity (#1002) with backlog off; the
   first new 4★/5★ rating-only review is auto-replied and visible on Google.
+
+## Follow-ups
+
+- Sentiment has no fixture-agency fence on the after-sync path (PR #291
+  breaker): in a fake-provider env a foreign run handed to `runAfterSync` gets
+  rating labels and a `sentimentLease` written. Unreachable in CI (no foreign
+  run is produced), but fence it like auto-reply — in `classifySyncedRuns`,
+  skip a sub-account outside the GBP / Reviews AI fake's fixture agency before
+  any write — in PR 5 or a separate hardening PR.
 
 ## Explicitly not in v1
 

@@ -153,7 +153,11 @@ export function ReplyComposer({
       const res = await fetch(`/api/sub-accounts/${subAccountId}/gbp/reviews/${review.docId}/auto-reply/dismiss`, { method: "POST" });
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
       if (res.ok) await onPosted();
-      else setDiscardError(data?.error ?? DISCARD_FAILED);
+      else {
+        setDiscardError(data?.error ?? DISCARD_FAILED);
+        // 409: the row changed under the admin (replied, auto-posted, edited) — show the list as it is now.
+        if (res.status === 409) await onPosted();
+      }
     } catch (err) {
       console.warn(`[gbp/auto-reply] discard failed: ${err instanceof Error ? err.name : typeof err}`);
       setDiscardError(DISCARD_FAILED);

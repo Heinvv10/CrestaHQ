@@ -12,9 +12,13 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { AGENCY, LEAK_MARKERS, OTHER_SA, SA, mem, resetSync } from "@/test/gbp-sync-harness";
 import { calls, docIdOf, reviewPath } from "@/test/gbp-reply-harness";
-import { A1, dismissedPath, draftsMade, patchSettings, pendingOf, posts, resetAutoReply, sync } from "@/test/auto-reply-harness";
+import {
+  A1, dismissedPath, draftsMade, patchSettings, pendingOf, posts, putFixtureReview, resetAutoReply, sync, syncAndRun,
+} from "@/test/auto-reply-harness";
 import { autoReplyAfterSync } from "@/lib/reputation/auto-reply/run";
+import { autoReplyLeasePath } from "@/lib/reputation/auto-reply/store";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { reviewBasis } from "@/lib/reputation/sentiment-basis";
 import { POST } from "./route";
 
 const R6 = docIdOf("fake-r6");
@@ -33,7 +37,7 @@ async function dismiss(uid: string, sa: string, docId: string) {
 function hold(reviewId: string, sa = SA) {
   const d = mem.read(reviewPath(reviewId, sa))!;
   mem.seed(reviewPath(reviewId, sa), {
-    ...d, pendingReply: { text: "Held draft.", textHash: "h", basisHash: "b", reason: "approval", at: new Date(), model: "fake" },
+    ...d, pendingReply: { text: "Held draft.", textHash: "h", basisHash: reviewBasis(d as never), reason: "approval", at: new Date(), model: "fake" },
   });
 }
 
@@ -147,6 +151,34 @@ describe("what may be dismissed", () => {
   });
 });
 
+describe("a stale draft (the review was edited since)", () => {
+  it("a held row without text (no_budget / draft_failed / cap) can be Discarded", async () => {
+    resetAutoReply();
+    await sync();
+    for (const reason of ["no_budget", "draft_failed", "cap"]) {
+      const d = mem.read(reviewPath("fake-a1"))!;
+      mem.seed(reviewPath("fake-a1"), {
+        ...d, pendingReply: { text: null, textHash: null, basisHash: reviewBasis(d as never), reason, at: new Date(), model: null },
+      });
+      expect((await dismiss("uid_admin", SA, A1)).status).toBe(200);
+    }
+  });
+
+  it("Discard on a page loaded before a 5★ became a 1★ complaint is refused: the complaint is not silenced", async () => {
+    resetAutoReply();
+    patchSettings({ modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "approval" } });
+    await syncAndRun();
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval" }); // the row the admin saw
+    putFixtureReview("fake-a1", 1, "Fixture: edited — now a real complaint.", 28);
+    await sync(); // the edit lands; the engine has not run since
+    const d = mem.read(reviewPath("fake-a1"))!;
+    expect((d.pendingReply as { basisHash: string }).basisHash).not.toBe(reviewBasis(d as never));
+    expect(await dismiss("uid_admin", SA, A1)).toMatchObject({ status: 409, body: { code: "nothing_to_dismiss" } });
+    expect(mem.read(dismissedPath("fake-a1"))).toBeUndefined();
+    expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval" });
+  });
+});
+
 describe("the engine honours it", () => {
   it("a held draft Discarded through the route is never re-drafted or auto-posted", async () => {
     resetAutoReply();
@@ -156,11 +188,18 @@ describe("the engine honours it", () => {
     expect(pendingOf("fake-a1")).toMatchObject({ reason: "approval" });
     expect((await dismiss("uid_admin", SA, A1)).status).toBe(200);
     patchSettings({ modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" } });
+    // The control: a new rating-only 5★ the second run MUST draft and post, and
+    // the lease it must take and release — so "nothing for a1" cannot pass vacuously.
+    putFixtureReview("fake-a3", 5, null, 29);
+    await mem.db.doc(autoReplyLeasePath(SA)).delete();
     const drafts = draftsMade();
     const second = await sync();
-    await autoReplyAfterSync(SA, second.startedAt, Date.now() + 240_000);
+    const run = await autoReplyAfterSync(SA, second.startedAt, Date.now() + 240_000);
+    expect(run).toMatchObject({ stop: null, posted: 1 });
+    expect(mem.read(autoReplyLeasePath(SA))).toMatchObject({ runId: null });
+    expect(posts().filter((c) => c.reviewName.endsWith("/reviews/fake-a3"))).toHaveLength(1);
     expect(posts().filter((c) => c.reviewName.endsWith("/reviews/fake-a1"))).toEqual([]);
     expect(pendingOf("fake-a1")).toMatchObject({ reason: "dismissed" });
-    expect(draftsMade()).toBe(drafts);
+    expect(draftsMade()).toBe(drafts + 1); // a3 only
   });
 });
