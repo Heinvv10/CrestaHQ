@@ -6,7 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { callAi, type AiChatMessage } from "@/lib/comms/ai/openrouter";
 import { replyModelFallback } from "@/lib/comms/ai/model-policy";
 import { incrementChannelTokens, resolveAgent } from "@/lib/comms/ai/agent";
-import { buildSystemPrompt } from "@/lib/comms/ai/prompt";
+import { voiceCallPrompt } from "@/lib/comms/voice/call-prompt";
 import {
   bookVoiceSlot,
   formatSlotForSpeech,
@@ -16,7 +16,6 @@ import {
 import { hostSelectionEnabled } from "@/lib/booking/page-slots";
 import type { BookingHost, BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
-import type { Contact } from "@/types/contacts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -73,39 +72,6 @@ interface VapiLlmBody {
 
 function badRequest(message: string, status: number): NextResponse {
   return NextResponse.json({ error: { message } }, { status });
-}
-
-async function findContactByPhone(
-  subAccountId: string,
-  phone: string,
-): Promise<Contact | null> {
-  const snap = await getAdminDb()
-    .collection("contacts")
-    .where("subAccountId", "==", subAccountId)
-    .where("phone", "==", phone)
-    .limit(1)
-    .get();
-  if (snap.empty) return null;
-  const doc = snap.docs[0];
-  return { id: doc.id, ...(doc.data() as Omit<Contact, "id">) };
-}
-
-/**
- * Voice-only, minimal contact context. Caller ID is trivially spoofable
- * (inbound) and an outbound call can be answered by anyone who picks up
- * the dialed handset — neither case is a verified identity. So unlike
- * SMS / web-chat's buildContactContextBlock(), the voice agent is NEVER
- * handed company name, deals, account status, or any other account
- * detail from the matched contact — only a first name, explicitly
- * flagged as unconfirmed, for a natural greeting. Anything else about
- * the account requires the caller to state it themselves, or must wait
- * for the operator's own verification step.
- */
-function buildVoiceCallerNameBlock(contact: Contact | null): string | null {
-  const firstName = contact?.name?.trim().split(/\s+/)[0];
-  if (!firstName) return null;
-  return `## Caller (from caller ID — a name match only, NOT a verified identity)
-Their name may be ${firstName}. You may use this to greet them naturally (e.g. "Hi, is this ${firstName}?"). Do NOT mention their company, deals, account status, bookings, or any other detail about their account — you have no way to confirm this caller is who the phone number suggests. Only discuss account-specific details the caller themselves states on the call, or after a human has verified their identity.`;
 }
 
 function openAiCompletion(text: string, model: string): unknown {
@@ -263,29 +229,10 @@ export async function POST(
   }
 
   const callerPhone = body.call?.customer?.number?.trim() ?? "";
-  const contact = callerPhone
-    ? await findContactByPhone(subAccountId, callerPhone).catch(() => null)
-    : null;
-
-  const contextBlock = buildVoiceCallerNameBlock(contact);
-
-  // Outbound calls run a different persona than inbound (the AI is calling
-  // the contact about an offer, not answering a query). We stamp
-  // direction:"outbound" into the call metadata at createOutboundCall; when
-  // present AND an outbound persona is configured, swap it in. Falls back to
-  // the shared persona when blank or for inbound calls.
-  const outboundPersona = agent.channel.voice?.outboundSystemPrompt?.trim();
-  const personaOverride =
-    isOutboundCall && outboundPersona ? outboundPersona : null;
-
-  let systemPrompt = buildSystemPrompt({
-    agent,
-    channelId: "voice",
-    fallbackBusinessName: subAccount.name ?? "the business",
-    contactContextBlock: contextBlock,
-    personaOverride,
-    bookingLink: subAccount.bookingLink ?? null,
-  });
+  // The persona and context this call runs on (lib/comms/voice/call-prompt.ts).
+  const built = await voiceCallPrompt({ subAccountId, agent, subAccount, callerPhone, outbound: isOutboundCall });
+  const contact = built.contact;
+  let systemPrompt = built.systemPrompt;
 
   // ── Voice Booking v1 — live booking tools (inbound calls only) ──────
   // When the voice channel designates a bookable page, append the marker

@@ -16,9 +16,11 @@ const { POST } = await import("./route");
 const run = () =>
   POST(new Request("https://app.test/api/social/publish/step", { method: "POST", headers: { "upstash-signature": "sig" }, body: JSON.stringify({ postId: "sp1", subAccountId: "sa1" }) }));
 const post = (patch: Record<string, unknown> = {}) =>
-  mem.seed("socialPosts/sp1", { subAccountId: "sa1", agencyId: "ag1", caption: "Hi", imageUrl: "https://x.io/a.png", targets: ["facebook", "instagram"], status: "scheduled", ...patch });
+  mem.seed("socialPosts/sp1", { subAccountId: "sa1", agencyId: "ag1", caption: "Hi", imageUrl: OWN, targets: ["facebook", "instagram"], status: "scheduled", ...patch });
+const OWN = "https://firebasestorage.googleapis.com/v0/b/app.appspot.com/o/media%2Fsa1%2Fm1%2Fa.png?alt=media&token=t";
 
 beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "app.appspot.com");
   mem.clear();
   meta.publishToFacebookPage.mockClear();
   meta.publishToInstagram.mockClear();
@@ -41,11 +43,18 @@ describe("social publish step, approved accounts", () => {
     await run();
     expect(meta.publishToFacebookPage).not.toHaveBeenCalled();
     expect(meta.publishToInstagram).not.toHaveBeenCalled();
-    expect(mem.read("socialPosts/sp1")).toMatchObject({ status: "failed", results: [{ error: "The connected account changed since this post was approved; it was not published." }, expect.anything()] });
+    expect(mem.read("socialPosts/sp1")).toMatchObject({ status: "failed", results: [{ error: "The connected account (or the image's storage) isn't what was approved; it was not published." }, expect.anything()] });
   });
 
-  it("a person's own scheduled post (no approval record) publishes as before", async () => {
-    post();
+  it("an approved post whose image isn't in the workspace's own storage -> nothing published", async () => {
+    post({ approvedAccounts: { pageId: "page1", igUserId: "ig1" }, imageUrl: "https://x.io/a.png" });
+    await run();
+    expect(meta.publishToFacebookPage).not.toHaveBeenCalled();
+    expect(mem.read("socialPosts/sp1")!.status).toBe("failed");
+  });
+
+  it("a person's own scheduled post (no approval record) publishes as before, any image host", async () => {
+    post({ imageUrl: "https://x.io/a.png" });
     await run();
     expect(meta.publishToFacebookPage).toHaveBeenCalledTimes(1);
   });

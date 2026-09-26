@@ -65,6 +65,15 @@ describe("create_broadcast", () => {
     expect(editedByAgentSinceApproval(b as never, mem.read("contacts/c1")!)).toBe(false);
   });
 
+  it("a contact whose custom field the agent edits after approval counts as edited too", async () => {
+    const id = await proposeId();
+    expect((await decide(id, "approve")).status).toBe(200);
+    const [b] = mem.list("broadcasts");
+    expect(await dispatchAgentTool(auth, "update_contact", { contactId: "c1", customFields: { plan: "Evil" } })).toMatchObject({ ok: true });
+    const { editedByAgentSinceApproval } = await import("@/lib/broadcasts/approved");
+    expect(editedByAgentSinceApproval(b as never, mem.read("contacts/c1")!)).toBe(true);
+  });
+
   it("one broadcast per approval: the same claim again is a duplicate, said so; a new approval sends", async () => {
     const id = await proposeId();
     const { getCapability } = await import("@/lib/ai-suite/capabilities");

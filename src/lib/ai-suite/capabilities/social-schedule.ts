@@ -5,7 +5,7 @@ import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { publishSocialPost, qstashIsConfigured } from "@/lib/automations/qstash";
-import { scheduleRefusal } from "@/lib/social/post-rules";
+import { NOT_OWN_MEDIA, ownMediaUrl, scheduleRefusal } from "@/lib/social/post-rules";
 import type { MetaConfig, SubAccountDoc } from "@/types";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
@@ -26,6 +26,7 @@ import { plannerSub, postIdParam, postRows, tenantPost, type Post } from "./soci
 function planOf(post: Post, sub: SubAccountDoc, scheduledAt: string) {
   const refused = post.status !== "draft" ? { error: `Only a draft can be scheduled (this post is ${post.status}).` } : scheduleRefusal(post, sub, qstashIsConfigured());
   if (refused) throw new CapabilityUserError(refused.error);
+  if (post.imageUrl && !ownMediaUrl(post.imageUrl, post.subAccountId)) throw new CapabilityUserError(NOT_OWN_MEDIA);
   const meta = sub.metaConfig as MetaConfig;
   const igUserId = post.targets.includes("instagram") ? (meta.instagramBusinessAccountId ?? null) : null;
   return { caption: post.caption, imageUrl: post.imageUrl, targets: post.targets, pageId: meta.pageId!, igUserId, scheduledAt };

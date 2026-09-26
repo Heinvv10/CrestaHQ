@@ -48,3 +48,24 @@ export function scheduleRefusal(post: PostInput, sub: SubAccountDoc, queueReady:
   if (!queueReady) return { status: 503, error: "Scheduling isn't available \u2014 QStash isn't configured on this deployment." };
   return null;
 }
+
+/**
+ * An image in this sub-account's own Media Library storage: a download URL
+ * of the app's bucket under `media/{subAccountId}/`. What an API agent's
+ * approved post may publish, so the image can't be swapped at its host
+ * after approval.
+ */
+export function ownMediaUrl(url: string, subAccountId: string, bucket = process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  const m = u.pathname.match(/^\/v0\/b\/([^/]+)\/o\/([^/]+)$/);
+  if (!bucket || u.protocol !== "https:" || u.hostname !== "firebasestorage.googleapis.com" || u.port || !m) return false;
+  const path = decodeURIComponent(m[2]);
+  return decodeURIComponent(m[1]) === bucket && path.startsWith(`media/${subAccountId}/`) && !path.split("/").includes("..");
+}
+
+export const NOT_OWN_MEDIA = "Upload the image to the media library first: an API agent's post can publish only images in this workspace's own storage.";

@@ -9,6 +9,7 @@ import {
 } from "@/lib/automations/qstash";
 import { publishToFacebookPage, publishToInstagram } from "@/lib/comms/meta";
 import { metaCanPublish } from "@/lib/comms/meta-capabilities";
+import { ownMediaUrl } from "@/lib/social/post-rules";
 import type {
   MetaConfig,
   SocialPostDoc,
@@ -114,7 +115,11 @@ export async function POST(request: Request) {
   // A post a person approved for an API agent publishes only to the accounts
   // they reviewed; a reconnected Page (or Instagram account) gets nothing.
   const approved = post.approvedAccounts;
-  const moved = !!approved && (meta?.pageId !== approved.pageId || (post.targets.includes("instagram") && meta?.instagramBusinessAccountId !== approved.igUserId));
+  const moved =
+    !!approved &&
+    (meta?.pageId !== approved.pageId ||
+      (post.targets.includes("instagram") && meta?.instagramBusinessAccountId !== approved.igUserId) ||
+      (!!post.imageUrl && !ownMediaUrl(post.imageUrl, post.subAccountId)));
   for (const platform of moved ? [] : post.targets) {
     if (!metaCanPublish(meta) || !meta?.pageId) {
       results.push({
@@ -165,7 +170,7 @@ export async function POST(request: Request) {
 
   if (moved) {
     for (const platform of post.targets) {
-      results.push({ platform, status: "failed", externalId: null, error: "The connected account changed since this post was approved; it was not published." });
+      results.push({ platform, status: "failed", externalId: null, error: "The connected account (or the image's storage) isn't what was approved; it was not published." });
     }
   }
   const anyFailed = results.some((r) => r.status === "failed");

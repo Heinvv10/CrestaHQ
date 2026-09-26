@@ -95,6 +95,19 @@ describe("schedule_social_post", () => {
     expect(await call("schedule_social_post", { postId: "sp1", scheduledAt: WHEN })).toMatchObject({ ok: false, message });
   });
 
+  it.each([
+    ["an image on another host", "https://cdn.example/a.png", false],
+    ["another sub-account's storage", "https://firebasestorage.googleapis.com/v0/b/app.appspot.com/o/media%2Fsa2%2Fm1%2Fa.png?alt=media", false],
+    ["another bucket", "https://firebasestorage.googleapis.com/v0/b/evil.appspot.com/o/media%2Fsa1%2Fm1%2Fa.png?alt=media", false],
+    ["a path climbing out", "https://firebasestorage.googleapis.com/v0/b/app.appspot.com/o/media%2Fsa1%2F..%2Fsa2%2Fa.png?alt=media", false],
+    ["this workspace's media library", "https://firebasestorage.googleapis.com/v0/b/app.appspot.com/o/media%2Fsa1%2Fm1%2Fa.png?alt=media&token=t", true],
+  ])("%s -> %s", async (_label, imageUrl, accepted) => {
+    vi.stubEnv("NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET", "app.appspot.com");
+    mem.seed("socialPosts/sp1", { ...POST, imageUrl });
+    const r = await call("schedule_social_post", { postId: "sp1", scheduledAt: WHEN });
+    expect(r).toMatchObject(accepted ? { ok: true, proposal: { status: "pending" } } : { ok: false, message: "Upload the image to the media library first: an API agent's post can publish only images in this workspace's own storage." });
+  });
+
   it("a time already past when approved -> failed", async () => {
     const id = await proposeId("schedule_social_post", { postId: "sp1", scheduledAt: "2020-01-01T00:00:00.000Z" });
     expect((await decide(id, "approve")).status).toBe(422);

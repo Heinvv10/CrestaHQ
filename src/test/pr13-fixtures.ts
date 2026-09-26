@@ -15,7 +15,10 @@ export const TEMPLATE = {
   body: "Hi {{contact.firstName}}, fibre is half price.\n\nUnsubscribe: {{unsubscribeLink}}", createdByUid: "u1",
 };
 export const POST = { subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", caption: "Fast fibre, now in your street.", imageUrl: null, targets: ["facebook"], status: "draft", scheduledAt: null, publishedAt: null, results: [], qstashMessageId: null };
-export const VOICE = { outboundEnabled: true, vapiAssistantId: "asst1", vapiPhoneNumberId: "pn1", outboundFirstMessage: "Hi, this is Acme's assistant calling about your install." };
+export const VOICE = {
+  outboundEnabled: true, vapiAssistantId: "asst1", vapiPhoneNumberId: "pn1", outboundFirstMessage: "Hi, this is Acme's assistant calling about your install.",
+  outboundSystemPrompt: "You are calling to confirm the customer's fibre install date.",
+};
 
 export function seedPr13(mem: Mem) {
   vi.stubEnv("VAPI_API_KEY", "vapi_test");
@@ -29,6 +32,6 @@ export function seedPr13(mem: Mem) {
   });
   mem.seed("message_templates/tpl_email", TEMPLATE);
   mem.seed("socialPosts/sp1", POST);
-  mem.seed("subAccounts/sa1/aiAgent/profile", { timezone: "UTC" });
-  mem.seed("subAccounts/sa1/aiAgent/voice", { voice: VOICE });
+  mem.seed("subAccounts/sa1/aiAgent/profile", { timezone: "UTC", systemPrompt: "You are Acme's helpful assistant.", businessName: "Acme", escalationKeywords: [] });
+  mem.seed("subAccounts/sa1/aiAgent/voice", { enabled: true, voice: VOICE });
 }

@@ -43,7 +43,10 @@ describe("start_voice_call", () => {
     expect(rowOf(id, "Call")).toBe("Ann Smith (\u20261111)");
     expect(rowOf(id, "Assistant")).toContain("asst1");
     expect(row(id).preview).toContainEqual({ label: "First words", value: VOICE.outboundFirstMessage, multiline: true });
-    expect(row(id).pinned).toEqual({ contactId: "c1", number: "+27821111111", assistantId: "asst1", phoneNumberId: "pn1", firstMessage: VOICE.outboundFirstMessage });
+    expect(row(id).preview).toContainEqual({ label: "Script (what the AI is told)", value: VOICE.outboundSystemPrompt, multiline: true });
+    expect(row(id).pinned).toEqual({
+      contactId: "c1", number: "+27821111111", assistantId: "asst1", phoneNumberId: "pn1", firstMessage: VOICE.outboundFirstMessage, promptFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(createOutboundCall).not.toHaveBeenCalled();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(createOutboundCall).toHaveBeenCalledWith(expect.objectContaining({ assistantId: "asst1", phoneNumberId: "pn1", customerNumber: "+27821111111", contactId: "c1", firstMessage: VOICE.outboundFirstMessage }));
@@ -57,6 +60,8 @@ describe("start_voice_call", () => {
     ["outbound calling off", () => voice({ outboundEnabled: false }), "Outbound calling isn't enabled in the Voice settings."],
     ["the agency gate off", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, outboundVoiceEnabledByAgency: false }), expect.stringContaining("Outbound calling is disabled")],
     ["an opening line with a hidden character", () => voice({ outboundFirstMessage: "Hi\u200b there" }), "The opening line has characters or spacing that can't be shown exactly."],
+    ["no persona", () => mem.seed("subAccounts/sa1/aiAgent/profile", { timezone: "UTC", systemPrompt: " " }), "The Voice channel has no persona configured."],
+    ["a script with a hidden character", () => voice({ outboundSystemPrompt: "Call\u200b them" }), "The call's persona has characters or spacing that can't be shown exactly."],
   ])("%s -> refused at propose", async (_label, arrange, message) => {
     arrange();
     expect(await call()).toMatchObject({ ok: false, message });
@@ -66,6 +71,8 @@ describe("start_voice_call", () => {
   it.each([
     ["the opening line", () => voice({ outboundFirstMessage: "Something else" })],
     ["the number", () => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" })],
+    ["the outbound script", () => voice({ outboundSystemPrompt: "You are selling a new plan." })],
+    ["the shared knowledge the script is built on", () => mem.seed("subAccounts/sa1/aiAgent/profile", { ...mem.read("subAccounts/sa1/aiAgent/profile")!, websiteKb: { summary: "New facts" } })],
   ])("%s changed after the approver's preview check -> failed, no call", async (_label, change) => {
     const id = await proposeId();
     beforeNextTransaction(async () => change());
