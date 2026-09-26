@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { autoReplyNeverCollection } from "@/lib/gbp/auto-reply-never";
 import { PENDING_MS } from "@/lib/gbp/reply-attempts";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewsAiConfigured } from "../ai/mode";
@@ -87,11 +88,12 @@ async function runEngine(sa: string, runStartedAt: number, deadline: number): Pr
     };
     const dismissed = new Map<string, unknown>();
     for (const d of (await db.collection(autoReplyDismissedCollection(sa)).get()).docs) dismissed.set(d.id, d.data().basisHash);
+    const never = new Set((await db.collection(autoReplyNeverCollection(sa)).get()).docs.map((d) => d.id));
     const docs = (await db.collection(reviewsCollection(sa)).get()).docs
       .map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }))
       .sort((a, b) => (toMillis(b.data.createTime) ?? 0) - (toMillis(a.data.createTime) ?? 0));
     for (const { id, data } of docs) {
-      const review = decideInput(data, dismissed.get(id), Date.now());
+      const review = decideInput(data, dismissed.get(id), never.has(id), Date.now());
       const decision = decide(review, ctx.settings, { now: Date.now(), runStartedAt }, ctx.counts);
       tally.stop = await act(ctx, id, data, review, decision);
       if (tally.stop) break;
@@ -102,7 +104,7 @@ async function runEngine(sa: string, runStartedAt: number, deadline: number): Pr
   return tally;
 }
 
-function decideInput(d: Record<string, unknown>, dismissedBasis: unknown, now: number): DecideReview {
+function decideInput(d: Record<string, unknown>, dismissedBasis: unknown, never: boolean, now: number): DecideReview {
   const lock = d.replyInFlight as { at?: unknown } | null | undefined;
   return {
     state: String(d.state ?? ""),
@@ -113,6 +115,7 @@ function decideInput(d: Record<string, unknown>, dismissedBasis: unknown, now: n
     lastSeenAtMs: toMillis(d.lastSeenAt),
     hasReply: !!d.reply,
     hadReply: d.hadReply === true,
+    never,
     inFlight: !!lock && now - (toMillis(lock.at) ?? 0) < PENDING_MS,
     autoReplied: !!d.autoReplied,
     basisHash: d.state === "active" ? reviewBasis(d) : null,

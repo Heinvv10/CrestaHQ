@@ -538,9 +538,9 @@ reply box. The guidelines route refuses any key but `replyGuidelines` (an
   system prompt; no code checks for them. For "Draft with AI" that is
   acceptable because a human reads the draft and must click Post reply to
   Google. **Auto-reply posts drafts no human has read**, so it is limited to
-  rating-only reviews: the model sees no untrusted review text at all (only
-  the stars, the listing title, the guidelines and a reviewer first name that
-  passed the contact guard), and the draft's own contact guard still applies.
+  rating-only reviews: the model sees no untrusted review text at all — only
+  the stars, the listing title and the guidelines (**no reviewer name** on the
+  auto path) — and the draft's own contact guard still applies.
   The prompt-only limits above are then the only check on what an automatic
   reply says.
 - **Composer** (`components/gbp/reply-composer.tsx`): **Draft with AI**
@@ -590,6 +590,11 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the settings card and the
 Reviews tab's "Needs approval" filter ship in PR 3, so until then held drafts
 are stored but not shown.
 
+- **Listing:** enabling is refused (409 `listing_shared`) while another
+  sub-account has selected the same Google location, and ANY listing change
+  or clear (select another, DELETE, disconnect, not accessible after a
+  reconnect) switches `reviewsAutoReply.enabled` off (modes kept) — resuming
+  needs an explicit re-enable.
 - **Kill switch:** `REVIEWS_AUTO_REPLY_ENABLED=1` or the engine never runs on
   the deployment — no read, no draft, no post
   ([environment.md](../environment.md)). Re-read in every post's final
@@ -601,7 +606,9 @@ are stored but not shown.
   was enabled for, **never replied to by anyone** (no `reply`, and no sticky
   `hadReply` — set whenever a reply is cached or posted and never cleared, so
   an owner who deleted a reply has chosen "no reply"), no reply in flight,
-  never auto-replied before, **seen by the run that just finished** (`lastSeenAt >= run start` —
+  never auto-replied before, **no `autoReplyNever/{reviewDocId}` marker**
+  (written wherever a reply is first known — the sync, a posted reply, a
+  finalized auto post — outside the cache, so a cache clear cannot forget it), **seen by the run that just finished** (`lastSeenAt >= run start` —
   a stale cache never posts), created at/after `enabledAt` unless backlog is
   on (newest first), not Discarded. **Auto** only when the star is set to
   Auto AND the review is rating-only (blank or whitespace comment); written

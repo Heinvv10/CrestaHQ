@@ -51,6 +51,11 @@ describe("claimAttempt with requireNoReply", () => {
     expect((doc.reply as { comment: string }).comment).toBe("Thank you from the fixture team.");
   });
 
+  it("a review with an autoReplyNever marker (outside the cache) is already_replied", async () => {
+    mem.seed(`subAccounts/${SA}/autoReplyNever/${R4}`, { reason: "replied" });
+    expect(await auto(R4)).toEqual({ kind: "already_replied" });
+  });
+
   it("a review whose reply was deleted (hadReply) is already_replied too", async () => {
     patch("fake-r4", { hadReply: true });
     expect(await auto(R4)).toEqual({ kind: "already_replied" });
@@ -87,6 +92,13 @@ describe("claimAttempt with requireNoReply", () => {
 });
 
 describe("postReply", () => {
+  it("a human post to a never-replied review stamps hadReply and the marker", async () => {
+    const res = await postReply(SA, (await loadReplyTarget(SA, R4))!, BODY, "uid_admin");
+    expect(res.status).toBe(200);
+    expect(mem.read(reviewPath("fake-r4"))!.hadReply).toBe(true);
+    expect(mem.read(`subAccounts/${SA}/autoReplyNever/${R4}`)).toMatchObject({ reason: "replied", createdByUid: "uid_admin", agencyId: AGENCY });
+  });
+
   it("an auto post over an existing reply is skipped: 200 {skipped}, Google never called", async () => {
     const target = (await loadReplyTarget(SA, R7))!;
     const res = await postReply(SA, target, BODY, "system:auto-reply", { createdByUid: "uid_admin", textHash: HASH });

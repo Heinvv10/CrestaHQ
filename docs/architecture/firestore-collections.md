@@ -167,7 +167,16 @@ cap; auto drafts are `autoDraftCalls` in `private/sentimentUsage`, on its
 `draftsDay`), and `subAccounts/{id}/autoReplyDismissed/{reviewDocId}
 {agencyId, subAccountId, createdByUid, byUid, basisHash, at}` — a Discard,
 outside the review cache so it survives a cache clear; an id and a hash, no
-Google content, so it deliberately outlives review retention.
+Google content, so it deliberately outlives review retention. Likewise
+`subAccounts/{id}/autoReplyNever/{reviewDocId} {agencyId, subAccountId,
+createdByUid, at, reason: "replied" | "auto_replied"}` — written by the sync
+(the first time a review is seen with a reply, now or in its cached copy), by
+`recordReplyChange` on every posted reply and by the engine's finalize of an
+unrecorded auto post; never deleted, outside the cache so a cache clear cannot
+forget it; an id only, no Google content, so it deliberately outlives review
+retention. The auto-reply engine never posts to a review that has one.
+Server-only (no client rule), no index. Any listing change or clear also sets
+`reviewsAutoReply.enabled` to false.
 
 Public reviews widget: `gbpWidgets/{publicId}` (top level; `publicId` = 24
 random bytes base64url, never derived from a tenant id) holds the widget config

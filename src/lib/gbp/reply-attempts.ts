@@ -3,6 +3,7 @@ import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { GbpReviewReply } from "./provider/types";
+import { autoReplyNeverPath, neverMarker } from "./auto-reply-never";
 import { autoClaimRefusal } from "./reply-auto-guard";
 import { contentHash } from "./sync/store";
 import { reviewsCollection, toMillis } from "./sync/types";
@@ -97,7 +98,9 @@ export async function claimAttempt(
     const data = review.data();
     if (!data) return { kind: "gone" };
     if (opts.requireNoReply) {
-      const refusal = await autoClaimRefusal(tx, db.doc(`subAccounts/${sa}`), data, opts.requireNoReply.textHash);
+      const refusal = await autoClaimRefusal(
+        tx, db.doc(`subAccounts/${sa}`), db.doc(autoReplyNeverPath(sa, target.docId)), data, opts.requireNoReply.textHash,
+      );
       if (refusal === "already_replied") {
         tx.update(reviewRef, { pendingReply: null });
         return { kind: "already_replied" };
@@ -226,6 +229,11 @@ export async function recordReplyChange(
       const posted = change.type === "reply_posted" ? { pendingReply: null, hadReply: true } : {};
       const auto = change.auto ? { autoReplied: { at: change.now, key: change.key } } : {};
       tx.update(reviewRef, { reply, contentHash: hash, ...release, ...posted, ...auto });
+    }
+    if (change.type === "reply_posted") {
+      // Outside the cache, so a cache clear cannot forget it (auto-reply never replaces a reply).
+      const anchor = { agencyId: target.agencyId, subAccountId: sa, createdByUid: change.auto?.createdByUid ?? change.actorUid };
+      tx.set(db.doc(autoReplyNeverPath(sa, target.docId)), neverMarker(anchor, change.auto ? "auto_replied" : "replied", change.now));
     }
     if (change.key) {
       tx.set(attemptRef(sa, change.key), { status: "succeeded", replyUpdateTime: reply?.updateTime ?? null, errorKind: null }, { merge: true });

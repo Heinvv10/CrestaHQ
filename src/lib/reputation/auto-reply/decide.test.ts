@@ -27,7 +27,7 @@ const settings = (o: Partial<DecideSettings> = {}): DecideSettings => ({
 });
 const review = (o: Partial<DecideReview> = {}): DecideReview => ({
   state: "active", locationName: LOC, starRating: 5, comment: null, createTimeMs: ENABLED_AT + DAY, lastSeenAtMs: RUN,
-  hasReply: false, hadReply: false, inFlight: false, autoReplied: false, basisHash: BASIS, pending: null, dismissedBasisHash: null, ...o,
+  hasReply: false, hadReply: false, never: false, inFlight: false, autoReplied: false, basisHash: BASIS, pending: null, dismissedBasisHash: null, ...o,
 });
 const pending = (reason: DecidePending["reason"], o: Partial<DecidePending> = {}): DecidePending => ({
   reason, basisHash: BASIS, atMs: NOW - 60_000, hasText: reason === "auto_queued" || reason === "approval" || reason === "texted", ...o,
@@ -112,6 +112,7 @@ describe("skips", () => {
     ["no enabled listing", {}, { listingLocationName: null }, "other_listing"],
     ["replied", { hasReply: true }, {}, "replied"],
     ["ever replied (a reply since deleted)", { hadReply: true }, {}, "had_reply"],
+    ["marked never (autoReplyNever, survives a cache clear)", { never: true }, {}, "never"],
     ["a reply in flight", { inFlight: true }, {}, "in_flight"],
     ["auto-replied before", { autoReplied: true }, {}, "auto_replied"],
     ["not seen by this run (stale cache)", { lastSeenAtMs: RUN - 1 }, {}, "not_seen"],

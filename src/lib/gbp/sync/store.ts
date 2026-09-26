@@ -50,6 +50,10 @@ export interface CachedReview {
   contentHash: string | null;
   /** Stored misses; read only for reviews a pass did NOT see (absent = 0). */
   missedPasses?: number;
+  /** The cached doc holds a reply, or was marked `hadReply` (auto-reply never replaces one). */
+  replied?: boolean;
+  /** Already marked `hadReply` (so its autoReplyNever marker is written). */
+  hadReply?: boolean;
 }
 
 export async function loadCache(subAccountId: string): Promise<Map<string, CachedReview>> {
@@ -63,6 +67,8 @@ export async function loadCache(subAccountId: string): Promise<Map<string, Cache
       lastSeenAt: toMillis(d.lastSeenAt),
       contentHash: d.contentHash ?? null,
       missedPasses: typeof d.missedPasses === "number" ? d.missedPasses : 0,
+      replied: !!d.reply || d.hadReply === true,
+      hadReply: d.hadReply === true,
     });
   }
   return out;
@@ -88,15 +94,19 @@ export function upsertFor(
   review: GbpReview,
   cached: CachedReview | undefined,
   ctx: UpsertContext,
-): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean } {
+): { kind: UpsertKind; data: Record<string, unknown>; merge: boolean; markNever: boolean } {
   const hash = contentHash(review);
-  // Seeing a review resets its miss count. A review seen WITH a reply is
-  // marked `hadReply` for good (never cleared, so a reply deleted later still
-  // counts): review auto-reply never replaces a reply someone removed.
-  const seen = { lastSeenAt: ctx.now, passId: ctx.passId, missedPasses: 0, ...(review.reply ? { hadReply: true } : {}) };
+  // Seeing a review resets its miss count. A review seen WITH a reply — now,
+  // or in the cached copy (a reply deleted since) — is marked `hadReply` for
+  // good, and `markNever` asks the caller to write its autoReplyNever marker
+  // (outside the cache) the first time: review auto-reply never replaces a
+  // reply someone removed.
+  const replied = !!review.reply || cached?.replied === true;
+  const markNever = replied && cached?.hadReply !== true;
+  const seen = { lastSeenAt: ctx.now, passId: ctx.passId, missedPasses: 0, ...(replied ? { hadReply: true } : {}) };
   // A tombstone's contentHash is null, so a review that comes back is an update.
   if (cached && cached.contentHash === hash) {
-    return { kind: "unchanged", data: seen, merge: true };
+    return { kind: "unchanged", data: seen, merge: true, markNever };
   }
   const content = {
     // A reply from anywhere makes the auto-reply engine's draft moot.
@@ -112,7 +122,7 @@ export function upsertFor(
     contentHash: hash,
     ...seen,
   };
-  if (cached) return { kind: "updated", data: content, merge: true };
+  if (cached) return { kind: "updated", data: content, merge: true, markNever };
   const doc: GbpReviewDoc = {
     agencyId: ctx.agencyId,
     subAccountId: ctx.subAccountId,
@@ -133,9 +143,9 @@ export function upsertFor(
     passId: ctx.passId,
     contentHash: hash,
     missedPasses: 0,
-    ...(review.reply ? { hadReply: true } : {}),
+    ...(replied ? { hadReply: true } : {}),
   };
-  return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false };
+  return { kind: "created", data: doc as unknown as Record<string, unknown>, merge: false, markNever };
 }
 
 /**

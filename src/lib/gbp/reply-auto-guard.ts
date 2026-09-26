@@ -8,7 +8,8 @@ import { readAutoReplySettings } from "@/lib/reputation/auto-reply/settings";
  * before Google is called, after the engine's own final re-check:
  *
  *   already_replied  the review has, or ever had, a reply (any author) —
- *                    an owner who deleted one chose "no reply"
+ *                    an owner who deleted one chose "no reply"; the
+ *                    autoReplyNever marker remembers it across a cache clear
  *   not_queued       its draft is no longer these queued bytes (a Discard
  *                    or an edit landed), or its star is no longer Auto
  */
@@ -23,11 +24,14 @@ export const everReplied = (review: Data) => !!review.reply || review.hadReply =
 export async function autoClaimRefusal(
   tx: Tx,
   subRef: FirebaseFirestore.DocumentReference,
+  neverRef: FirebaseFirestore.DocumentReference,
   review: Data,
   textHash: string,
 ): Promise<"already_replied" | "not_queued" | null> {
   const sub = (await tx.get(subRef)).data() ?? {};
+  const never = (await tx.get(neverRef)).exists;
   if (everReplied(review)) return "already_replied";
+  if (never) return "already_replied";
   const pending = review.pendingReply as { reason?: unknown; textHash?: unknown } | null | undefined;
   if (!pending || !QUEUED_REASONS.includes(String(pending.reason)) || pending.textHash !== textHash) return "not_queued";
   const star = review.starRating as 1 | 2 | 3 | 4 | 5;

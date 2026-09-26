@@ -46,6 +46,8 @@ export interface DecideReview {
   hasReply: boolean;
   /** Sticky: the review had a reply at some point — never auto-replied, even after a deletion. */
   hadReply: boolean;
+  /** `autoReplyNever/{reviewDocId}` exists — the same, remembered outside the cache. */
+  never: boolean;
   /** Another key's reply post holds the review's live in-flight lock. */
   inFlight: boolean;
   autoReplied: boolean;
@@ -73,7 +75,7 @@ export interface DecideCounts {
 
 export type SkipWhy =
   | "disabled" | "tombstoned" | "other_listing" | "replied" | "in_flight" | "auto_replied" | "not_seen"
-  | "no_rating" | "before_enabled" | "dismissed" | "held" | "draft_retry_wait" | "cap_wait" | "had_reply"
+  | "no_rating" | "before_enabled" | "dismissed" | "held" | "draft_retry_wait" | "cap_wait" | "had_reply" | "never"
   | "post_retry_wait";
 
 export type Decision =
@@ -106,6 +108,7 @@ export function decide(
   if (!settings.listingLocationName || r.locationName !== settings.listingLocationName) return skip("other_listing");
   if (r.hasReply) return skip("replied");
   if (r.hadReply) return skip("had_reply");
+  if (r.never) return skip("never");
   if (r.inFlight) return skip("in_flight");
   if (r.autoReplied) return skip("auto_replied");
   // Stale cache never posts: only a review the run that just finished saw.

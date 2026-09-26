@@ -83,6 +83,7 @@ describe("skip this review (stale)", () => {
   it.each<[string, () => void]>([
     ["replied meanwhile", () => patchReview({ reply: { comment: "Human reply.", updateTime: "2026-09-01T00:00:00Z" } })],
     ["a reply since deleted (hadReply)", () => patchReview({ hadReply: true })],
+    ["an autoReplyNever marker (a reply the cache forgot)", () => mem.seed(`subAccounts/${SA}/autoReplyNever/${A1}`, { reason: "replied" })],
     ["removed", () => patchReview({ state: "removed" })],
     ["another location's review", () => patchReview({ locationName: "locations/x" })],
     ["no draft any more", () => patchReview({ pendingReply: null })],

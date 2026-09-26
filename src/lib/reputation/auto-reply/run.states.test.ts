@@ -134,6 +134,19 @@ describe("hadReply (sticky)", () => {
     expect(a1Posts()).toEqual([]);
   });
 
+  it("a pre-PR cached reply (no hadReply, no marker) deleted at Google before the next sync → stamped from the cached copy, never auto-replied", async () => {
+    replyAtGoogle({ comment: "Old reply.", updateTime: "2026-08-29T10:00:00Z" });
+    await sync();
+    const { hadReply: _dropped, ...legacy } = mem.read(reviewPath("fake-a1"))!;
+    mem.seed(reviewPath("fake-a1"), legacy);
+    await mem.db.doc(`subAccounts/${SA}/autoReplyNever/${A1}`).delete();
+    replyAtGoogle(null);
+    await syncAndRun();
+    expect(a1Posts()).toEqual([]);
+    expect(mem.read(reviewPath("fake-a1"))!.hadReply).toBe(true);
+    expect(mem.read(`subAccounts/${SA}/autoReplyNever/${A1}`)).toMatchObject({ reason: "replied" });
+  });
+
   it("a review cached WITH a reply before hadReply existed is stamped by the next (unchanged) sync", async () => {
     replyAtGoogle({ comment: "Old reply.", updateTime: "2026-08-29T10:00:00Z" });
     await sync();
@@ -165,6 +178,7 @@ describe("an attempt Google already accepted", () => {
     await syncAndRun();
     expect(a1Posts()).toEqual([]);
     expect(mem.read(reviewPath("fake-a1"))).toMatchObject({ pendingReply: null, hadReply: true, autoReplied: { key } });
+    expect(mem.read(`subAccounts/${SA}/autoReplyNever/${A1}`)).toMatchObject({ reason: "auto_replied", agencyId: AGENCY, subAccountId: SA, createdByUid: "uid_admin" });
     expect(mem.list("auditEvents").filter((r) => (r.target as { id: string }).id === A1)).toEqual([]);
     expect(mem.read(`subAccounts/${SA}/private/autoReplyUsage`)).toMatchObject({ posts: 1 }); // a2 only
   });

@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { autoReplyNeverPath, neverMarker } from "@/lib/gbp/auto-reply-never";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewBasis } from "../sentiment-basis";
 import { PENDING_REASONS, type DecidePending, type PendingReason } from "./decide";
@@ -164,12 +165,15 @@ function stillQueued(d: ReviewData | undefined, textHash: string): boolean {
  * no draft pending, auto-replied, and replied for good — so no later run
  * posts, counts or audits it again. The reply itself arrives with the next sync.
  */
-export async function finalizeAutoPost(sa: string, docId: string, key: string, now: Date): Promise<void> {
+export async function finalizeAutoPost(sa: string, docId: string, key: string, createdByUid: string, now: Date): Promise<void> {
   const db = getAdminDb();
   const ref = db.doc(`${reviewsCollection(sa)}/${docId}`);
+  const subRef = db.doc(`subAccounts/${sa}`);
   await db.runTransaction(async (tx) => {
-    if (!(await tx.get(ref)).exists) return;
-    tx.update(ref, { pendingReply: null, autoReplied: { at: now, key }, hadReply: true });
+    const exists = (await tx.get(ref)).exists;
+    const agencyId = String((await tx.get(subRef)).data()?.agencyId ?? "");
+    tx.set(db.doc(autoReplyNeverPath(sa, docId)), neverMarker({ agencyId, subAccountId: sa, createdByUid }, "auto_replied", now));
+    if (exists) tx.update(ref, { pendingReply: null, autoReplied: { at: now, key }, hadReply: true });
   });
 }
 

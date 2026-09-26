@@ -83,7 +83,13 @@ export async function PUT(
   const previous = await db.runTransaction(async (tx) => {
     const snap = await tx.get(subRef);
     const previous: string | null = snap.data()?.googleListing?.locationName ?? null;
+    // A different listing switches review auto-reply off (modes kept): it was
+    // enabled for the old one, and resuming needs an explicit re-enable.
+    const autoReplyOff = previous !== location.name && snap.data()?.reviewsAutoReply
+      ? { "reviewsAutoReply.enabled": false }
+      : {};
     tx.update(subRef, {
+      ...autoReplyOff,
       googleListing: {
         accountName: account.name,
         accountDisplayName: account.accountName,

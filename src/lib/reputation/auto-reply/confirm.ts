@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { autoReplyNeverPath } from "@/lib/gbp/auto-reply-never";
 import { everReplied, QUEUED_REASONS } from "@/lib/gbp/reply-auto-guard";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewBasis } from "../sentiment-basis";
@@ -48,6 +49,7 @@ export async function confirmAutoPost(
     const sub = ((await tx.get(subRef)).data() ?? {}) as Record<string, unknown>;
     const review = (await tx.get(reviewRef)).data() as Record<string, unknown> | undefined;
     const usage = (await tx.get(usageRef)).data() as { day?: string; posts?: number } | undefined;
+    const never = (await tx.get(db.doc(autoReplyNeverPath(sa, p.docId)))).exists;
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
     const sharing = typeof listing === "string"
       ? ((await tx.get(db.collection("subAccounts").where("googleListing.locationName", "==", listing))) as FirebaseFirestore.QuerySnapshot)
@@ -65,7 +67,7 @@ export async function confirmAutoPost(
 
     const pending = readPending(review?.pendingReply);
     const basis = review ? reviewBasis(review) : null;
-    if (!review || review.state !== "active" || review.locationName !== listing || everReplied(review)) return "stale";
+    if (!review || review.state !== "active" || review.locationName !== listing || everReplied(review) || never) return "stale";
     if (!pending || !QUEUED_REASONS.includes(pending.reason) || pending.textHash !== p.textHash) return "stale";
     if (basis === null || pending.basisHash !== basis) return "stale";
 
