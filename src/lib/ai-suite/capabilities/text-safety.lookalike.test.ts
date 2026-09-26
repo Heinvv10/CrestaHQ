@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lookAlikeProblem } from "./text-safety";
+import { lookAlikeProblem, skeleton } from "./text-safety";
 
 /** lookAlikeProblem: names that imitate plain Latin are refused; real names in
  *  other languages and scripts are not. (Route wiring: route.custom-fields /
@@ -52,5 +52,21 @@ describe("lookAlikeProblem", () => {
     ["a bar for l and a hyphen for a space", "Bank-detai\u2223s", "Bank details"],
   ])("%s: the same as the existing name", (_label, name, existing) => {
     expect(lookAlikeProblem(name, [existing])).toBe("is the same as, or looks like, an existing one");
+  });
+
+  it("each run of letters is judged alone: a Greek letter joined by a hyphen is fine, a look-alike between dots is not", () => {
+    for (const name of ["\u03b1-test", "\u0394-value", "\u01c2Khomani", "\u01c3X\u00f3\u00f5"]) {
+      expect(lookAlikeProblem(name, []), name).toBeNull();
+    }
+    expect(lookAlikeProblem("B.\u0430.nk", [])).toBe("uses letters from another script that look like Latin ones");
+    // "\u0441\u0430\u0440" spells "cap" on its own, even beside a word that imitates nothing.
+    expect(lookAlikeProblem("\u0441\u0430\u0440-\u0434\u043e\u043c", [])).toBe("uses letters from another script that look like Latin ones");
+    expect(lookAlikeProblem("\u0422\u0410\u0425 INFO", [])).toBe("uses letters from another script that look like Latin ones");
+    expect(lookAlikeProblem("\u01c0nvoice", [])).toBe("uses a letter that imitates a plain Latin letter");
+  });
+
+  it("Cyrillic \u0406 / \u0456 read as l, like Latin I", () => {
+    expect(skeleton("\u0406\u0456")).toBe("ll");
+    expect(skeleton("ID")).toBe("ld");
   });
 });

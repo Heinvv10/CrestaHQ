@@ -109,12 +109,12 @@ export function messageBody(value: string): string | null {
 const CAPITAL_CONFUSABLES = new Map<string, string>([
   ["\u0412", "b"], ["\u041a", "k"], ["\u041c", "m"], ["\u041d", "h"], ["\u0422", "t"], ["\u0392", "b"],
   ["\u0397", "h"], ["\u0399", "l"], ["\u039a", "k"], ["\u039c", "m"], ["\u039d", "n"], ["\u03a4", "t"],
-  ["\u03a5", "y"], ["\u03a7", "x"], ["\u0396", "z"],
+  ["\u03a5", "y"], ["\u03a7", "x"], ["\u0396", "z"], ["\u0391", "a"], ["\u0395", "e"],
 ]);
 const LOWER_CONFUSABLES = new Map<string, string>([
   ["\u0430", "a"], ["\u0435", "e"], ["\u043e", "o"], ["\u0440", "p"], ["\u0441", "c"], ["\u0443", "y"],
-  ["\u0445", "x"], ["\u0455", "s"], ["\u0456", "i"], ["\u0458", "j"], ["\u04bb", "h"], ["\u04af", "y"],
-  ["\u0501", "d"], ["\u051b", "q"], ["\u051d", "w"], ["\u03b1", "a"], ["\u03b5", "e"], ["\u03bf", "o"],
+  ["\u0445", "x"], ["\u0455", "s"], ["\u0456", "l"], ["\u0458", "j"], ["\u04bb", "h"], ["\u04af", "y"],
+  ["\u0501", "d"], ["\u051b", "q"], ["\u051d", "w"], ["\u03bf", "o"],
   ["\u03c1", "p"], ["\u03bd", "v"], ["\u0585", "o"], ["\u057d", "u"], ["\u0570", "h"], ["\u0578", "n"],
   ["\u0566", "q"], ["\u0581", "g"], ["\uab7a", "a"], ["\u13fc", "b"], ["\uabaf", "c"], ["\uab70", "d"],
   ["\uab7c", "e"], ["\uab90", "g"], ["\uab8b", "h"], ["\uab7b", "j"], ["\uabb6", "k"], ["\uabae", "l"],
@@ -168,6 +168,8 @@ const MIXED_SCRIPT_WORD = /(?=[\p{L}\p{M}\p{N}]*\p{Script=Latin})(?=[\p{L}\p{M}\
 const PLAIN_LATIN_EXTRA = new Set([
   "\u00df", "\u00e6", "\u00c6", "\u00f8", "\u00d8", "\u0153", "\u0152", "\u00f0",
   "\u00d0", "\u00fe", "\u00de", "\u0142", "\u0141", "\u0111", "\u0110",
+  // Khoisan clicks imitate nothing (\u01c0, which reads as l, is not here).
+  "\u01c1", "\u01c2", "\u01c3",
 ]);
 
 /**
@@ -215,7 +217,8 @@ export function lookAlikeProblem(value: string, existing: readonly string[]): st
   if ([...letters(value)].some(imitatesLatin)) return "uses a letter that imitates a plain Latin letter";
   if (MIXED_SCRIPT_WORD.test(value)) return "mixes Latin with Cyrillic or Greek letters in one word";
   // A word made only of letters that pass for Latin ones reads as Latin.
-  if (value.split(/\s+/).map(letters).some((w) => w && !ASCII.test(w) && ASCII.test(skeleton(w)))) {
+  // Each run of letters alone ("\u03b1-test": "\u03b1" and "test"; "B.\u0430.nk": "\u0430").
+  if (value.split(/[^\p{L}\p{M}]+/u).map(letters).some((w) => w && !ASCII.test(w) && ASCII.test(skeleton(w)))) {
     return "uses letters from another script that look like Latin ones";
   }
   const [key, folded] = [skeleton(value), casefoldKey(value)];
