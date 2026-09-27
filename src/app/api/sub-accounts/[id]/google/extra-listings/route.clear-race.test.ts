@@ -25,6 +25,7 @@ import { SUB, resetHarness, state } from "@/test/google-oauth-harness";
 import { DEFAULT_ACCOUNT, LOC_NORTH, enableFakeMode, seedConnection } from "@/test/gbp-route-harness";
 import { listingCacheLeft, pair, putExtras, seedListingCache, seedMainAndScenario, subDoc } from "@/test/extra-listings-harness";
 import { PUT as PUT_MAIN } from "@/app/api/sub-accounts/[id]/google/listing/route";
+import { syncStatePath } from "@/lib/gbp/sync/types";
 
 const putMain = async (locationName: string) => {
   const req = new Request(`http://127.0.0.1:3100/api/sub-accounts/${SUB}/google/listing`, {
@@ -60,6 +61,25 @@ it("a main PUT committing between clearRemoved's re-read and the clear's lease k
   release();
   expect((await removal).status).toBe(200);
   expect(listingCacheLeft(LOC_NORTH).reviews).toBe(2);
+});
+
+it("the re-check runs AFTER the lease: a main committed just before it keeps its reviews, cursor and a free lease", async () => {
+  expect((await putExtras({ listings: [pair(LOC_NORTH)] })).status).toBe(200);
+  const statePath = syncStatePath(SUB, LOC_NORTH);
+  seedListingCache(LOC_NORTH); // the listing's synced cache…
+  state.docs.set(statePath, { pass: { cursor: "c1" }, anomalyStreak: 1 }); // …and its sync cursor
+  let fired = false;
+  state.afterWrite = async (w) => {
+    if (fired || w.path !== statePath || (w.data as { lease?: { runId?: string } })?.lease?.runId !== "clearing") return;
+    fired = true;
+    // Stands in for a main PUT that committed right after the lease write, before the re-read.
+    const sub = subDoc();
+    state.docs.set(`subAccounts/${SUB}`, { ...sub, googleListing: { ...(sub.googleListing as object), locationName: LOC_NORTH } });
+  };
+  expect((await putExtras({ listings: [] })).status).toBe(200);
+  expect(fired).toBe(true);
+  expect(listingCacheLeft(LOC_NORTH).reviews).toBe(2);
+  expect(state.docs.get(statePath)).toMatchObject({ lease: null, pass: { cursor: "c1" }, anomalyStreak: 1 });
 });
 
 it("after the clear takes its lease, a main PUT on that location is refused listing_clearing", async () => {

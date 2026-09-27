@@ -47,11 +47,16 @@ export async function clearGbpCache(subAccountId: string, extra: string | null =
   // The first write also drops the cursor and the anomaly streak, so a clear
   // that dies midway leaves no stale pass for the next run to resume.
   const lease = { runId: CLEARING_RUN_ID, until: Date.now() + LEASE_TTL_MS };
-  await stateRef.set({ lease, pass: null, anomalyStreak: null }, { merge: true });
-  // Re-check AFTER the lease: a main PUT either saw the lease (listing_clearing) or committed before this read.
-  if (opts.unlessHeld && extra !== null && locationNamesOf((await subRef.get()).data() ?? {}).includes(extra)) {
-    await stateRef.set({ lease: null }, { merge: true });
-    return;
+  const reset = { pass: null, anomalyStreak: null };
+  await stateRef.set(opts.unlessHeld ? { lease } : { lease, ...reset }, { merge: true });
+  if (opts.unlessHeld) {
+    // Re-check AFTER the lease: a main PUT either saw the lease (listing_clearing)
+    // or committed before this read. Held again → release, leaving its cursor alone.
+    if (extra !== null && locationNamesOf((await subRef.get()).data() ?? {}).includes(extra)) {
+      await stateRef.set({ lease: null }, { merge: true });
+      return;
+    }
+    await stateRef.set(reset, { merge: true });
   }
   const reviews = db.collection(reviewsCollection(subAccountId));
   let ids: string[];
