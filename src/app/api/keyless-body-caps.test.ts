@@ -12,7 +12,7 @@ const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
 const KB = 1024;
-const SECRET = "keyless-caps-secret-0123456789abcdef";
+const SECRET = "test-secret-keyless-caps-fixture";
 
 type Route = (r: Request, c: { params: Promise<Record<string, string>> }) => Promise<Response>;
 const ROUTES: Array<[string, number, () => Promise<{ handler: Route; path: string; params: Record<string, string> }>]> = [];

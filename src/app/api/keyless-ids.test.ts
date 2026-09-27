@@ -12,7 +12,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const SECRET = "keyless-ids-secret-0123456789abcdef";
+const SECRET = "test-secret-keyless-ids-fixture";
 const BAD = ["a/b", "..", "__x__"];
 const SESSION = "0123456789abcdef0123456789abcdef";
 type Route = (r: Request, c: { params: Promise<Record<string, string>> }) => Promise<Response>;
