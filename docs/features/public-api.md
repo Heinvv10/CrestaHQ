@@ -13,6 +13,26 @@ A versioned REST surface under `/api/v1/*` for the sub-account-scoped resources 
   3. Returns a `{ subAccountId, agencyId, keyId, mode }` context. Every downstream Firestore query filters by `subAccountId` so a leaked key only ever sees its own sub-account.
 - **Test mode** (`lsk_test_*`) lets the buyer's clients exercise the API without firing real automations / SMS / emails — the form-submission route, for example, gates `fireTriggers()` on `ctx.mode === "live"`.
 
+## Request limits and id errors
+
+- **Body size.** Every `/api/v1/*` route taking a key refuses a body over
+  **256 KB** with **`413`** `body_too_large` (one record per request; a form
+  submission is text fields only). The agent tools (`POST /api/v1/tools/{name}`
+  and `POST /api/mcp`) allow **1 MiB**: `update_workflow` takes up to 50,000
+  characters each of trigger and steps, and MCP batches several calls. An MCP batch
+  over 1 MiB (e.g. two maximal `update_workflow` calls) gets a `413`: split it into
+  separate requests. The keyless
+  heartbeat (`/api/v1/leadstack/heartbeat`) allows 16 KB. The cap holds whether
+  `Content-Length` is truthful, absent (chunked) or too small: bytes are counted as
+  they stream (`lib/api/body-limit.ts`).
+- **Ids.** A route param (`/contacts/{id}`, `/forms/{formId}/submissions`, …) or a
+  body id that names a document (`contact_id`, `deal_id`, `event_id`,
+  `pipeline_id`, `prospecting.list_id`) must be a Firestore document id: no `/`,
+  not `.` / `..`, not `__…__`. Otherwise **`400`** `invalid_id`, before anything
+  is read (a URL-encoded `%2F` arrives decoded). A `starting_after` cursor that
+  isn't one is **`400`** `invalid_cursor`. A tool name is not an id: a bad one is
+  the unknown-tool `404`.
+
 ## Infrastructure modules
 
 All under `src/lib/api/`:

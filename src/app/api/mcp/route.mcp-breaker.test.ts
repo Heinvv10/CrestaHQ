@@ -55,8 +55,8 @@ const call = (id: number, name: string, args: unknown) => ({ jsonrpc: "2.0", id,
 const keyLogs = () => mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.keyId === keyId);
 const contactsNamed = (name: string) =>
   mem.all().filter((d) => d.path.startsWith("contacts/") && JSON.stringify(d.data).includes(name));
-/** 200k-deep JSON, built as text: JSON.stringify itself overflows on it. */
-const DEEP = `${'{"a":'.repeat(200_000)}1${"}".repeat(200_000)}`;
+/** 150k-deep JSON (900 KB, under the 1 MiB agent body cap), built as text: JSON.stringify itself overflows on it. */
+const DEEP = `${'{"a":'.repeat(150_000)}1${"}".repeat(150_000)}`;
 const rawText = (text: string) =>
   POST(new Request(URL_, {
     method: "POST",
@@ -90,7 +90,7 @@ describe("REPRO 2: an exhausted key cannot amplify one request into many log row
 });
 
 describe("REPRO 3: a write whose raw args can't be serialised still returns its normal result", () => {
-  it("MCP: 200k-nested args → the normal result, one contact, one log row", async () => {
+  it("MCP: 150k-nested args → the normal result, one contact, one log row", async () => {
     const res = await rawText(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_contact","arguments":{"name":"Deep Nest","junk":${DEEP}}}}`);
     expect(res.status).toBe(200);
     const text = JSON.stringify(await res.json());

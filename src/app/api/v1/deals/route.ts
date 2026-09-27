@@ -3,6 +3,7 @@ import "server-only";
 import { FieldPath, FieldValue, type Query } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
+import { isDocId } from "@/lib/server/doc-id";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitDealEvents } from "@/lib/server/deals-service";
 import { appendStageEntry } from "@/lib/server/deal-stage-history";
@@ -63,6 +64,9 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
     .orderBy(FieldPath.documentId(), "desc");
 
   if (startingAfter) {
+    if (!isDocId(startingAfter)) {
+      return apiError(ctx, "invalid_request", "invalid_cursor", "starting_after is not a valid id.");
+    }
     const cursorSnap = await db.doc(`deals/${startingAfter}`).get();
     if (!cursorSnap.exists) {
       return apiError(
@@ -104,7 +108,7 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
 export const POST = withApiAuth(async ({ body, ctx }) => {
   const parsed = parseDealCreate(body);
   if (!parsed.ok) {
-    return apiError(ctx, "invalid_request", "invalid_body", parsed.error!);
+    return apiError(ctx, "invalid_request", parsed.code ?? "invalid_body", parsed.error!);
   }
   const input = parsed.value!;
 
@@ -151,11 +155,10 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     );
   }
 
-  // A "/" would make the member path name a collection and throw, not 400.
+  // parseDealCreate already refused a uid that isn't a doc id (invalid_id).
   if (
     input.assignedToUid !== null &&
-    (input.assignedToUid.includes("/") ||
-      !(await isAssignableMember(ctx.subAccountId, input.assignedToUid)))
+    !(await isAssignableMember(ctx.subAccountId, input.assignedToUid))
   ) {
     return apiError(
       ctx,

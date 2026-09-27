@@ -59,7 +59,7 @@ describe("POST /api/v1/deals assigned_to_uid", () => {
     expect(mem.read(`deals/${dealOf(res.json).id as string}`)?.assignedToUid).toBe("u_active");
   });
 
-  it.each(["u_removed", "u_elsewhere", "u_ghost", "a/b"])(
+  it.each(["u_removed", "u_elsewhere", "u_ghost"])(
     "%s is refused with 400 invalid_request and nothing is written",
     async (uid) => {
       const res = await post({ ...base, assigned_to_uid: uid });
@@ -69,6 +69,13 @@ describe("POST /api/v1/deals assigned_to_uid", () => {
       expect(mem.list("deals")).toHaveLength(0);
     },
   );
+
+  it.each(["a/b", "..", "__x__"])("%s is not a doc id: 400 invalid_id, nothing written", async (uid) => {
+    const res = await post({ ...base, assigned_to_uid: uid });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toMatchObject({ type: "invalid_request", code: "invalid_id" });
+    expect(mem.list("deals")).toHaveLength(0);
+  });
 
   it("a non-string is refused", async () => {
     const res = await post({ ...base, assigned_to_uid: 42 });

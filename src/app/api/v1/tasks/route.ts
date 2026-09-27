@@ -3,6 +3,7 @@ import "server-only";
 import { FieldPath, FieldValue, type Query } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
+import { isDocId } from "@/lib/server/doc-id";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { writeTaskCreatedActivity } from "@/lib/server/contact-activities";
@@ -39,6 +40,9 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
     .orderBy(FieldPath.documentId(), "desc");
 
   if (startingAfter) {
+    if (!isDocId(startingAfter)) {
+      return apiError(ctx, "invalid_request", "invalid_cursor", "starting_after is not a valid id.");
+    }
     const cursorSnap = await db.doc(`tasks/${startingAfter}`).get();
     if (!cursorSnap.exists) {
       return apiError(
@@ -76,7 +80,7 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
 export const POST = withApiAuth(async ({ body, ctx }) => {
   const parsed = parseTaskCreate(body);
   if (!parsed.ok) {
-    return apiError(ctx, "invalid_request", "invalid_body", parsed.error!);
+    return apiError(ctx, "invalid_request", parsed.code ?? "invalid_body", parsed.error!);
   }
   const input = parsed.value!;
   const db = getAdminDb();
