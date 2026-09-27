@@ -26,6 +26,8 @@ export interface PassInput {
   subAccountId: string;
   runId: string;
   ref: { accountName: string; locationName: string };
+  /** The EXTRA listing being fetched (its own state doc and lease); null = the main listing. */
+  extra: string | null;
   ctx: Omit<UpsertContext, "passId">;
   cache: Map<string, CachedReview>;
   pass: SyncState["pass"];
@@ -70,7 +72,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
   };
   let mayRestart = out.resumed;
   const db = getAdminDb();
-  const stateRef = db.doc(syncStatePath(subAccountId));
+  const stateRef = db.doc(syncStatePath(subAccountId, input.extra));
   const ctx: UpsertContext = { ...input.ctx, passId };
   const markers = await loadNeverMarkers(subAccountId);
 
@@ -122,7 +124,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
     const lease = { runId, until: input.clock().getTime() + LEASE_TTL_MS };
     ops.push((tx) => tx.set(stateRef, { pass, lease }, { merge: true }));
     try {
-      await commitGuarded(subAccountId, runId, ops);
+      await commitGuarded(subAccountId, runId, ops, input.extra);
     } catch (err) {
       out.error = err;
       return out;

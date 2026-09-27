@@ -29,7 +29,7 @@ async function listing(subAccountId: string) {
   if (!(await googleGateOn(subAccountId))) throw new CapabilityUserError("Google reviews are locked by your agency.");
   const sub = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubAccountDoc & { gbpSummary?: GbpSummary | null };
   const locationName = sub.googleListing?.locationName ?? null;
-  return { sub, locationName, served: await loadServedReviews(subAccountId, locationName, new Date()) };
+  return { sub, locationName, served: await loadServedReviews(subAccountId, locationName ? [locationName] : [], new Date()) };
 }
 
 async function plan(subAccountId: string, contactId: string) {

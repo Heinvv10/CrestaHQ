@@ -16,7 +16,7 @@ import { reviewBasis } from "@/lib/reputation/sentiment-basis";
 import { sentimentUsagePath } from "@/lib/reputation/sentiment-calls";
 import { autoReplyAfterSync } from "./run";
 import { textHashOf } from "./store";
-import { clearGbpCache } from "@/lib/gbp/sync/store";
+import { clearGbpCache } from "@/lib/gbp/sync/clear";
 import { markReconnectRequiredIf } from "@/lib/gbp/tokens";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { PUT } from "@/app/api/sub-accounts/[id]/google/listing/route";

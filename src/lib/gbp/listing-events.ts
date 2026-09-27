@@ -5,7 +5,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 import type { GoogleListing } from "@/types/google";
 import { findAccessibleLocation } from "./discovery";
-import { clearGbpCache } from "./sync/store";
+import { clearAllGbpCaches } from "./sync/clear";
+import { extraLocationNames } from "./sync/scope";
 import type { GbpProvider } from "./provider/types";
 
 /**
@@ -13,7 +14,8 @@ import type { GbpProvider } from "./provider/types";
  * The clear and its `gbpEvents` entry commit in ONE transaction, and nothing
  * is logged when there was no listing to clear. Every clear — admin, disconnect,
  * reconnect re-verification — also drops the synced review cache, summary and
- * sync state (`clearGbpCache`): the cache only ever holds the current listing.
+ * sync state of every listing (`clearAllGbpCaches`): the cache only ever
+ * holds the current listings.
  * Every clear also switches review auto-reply off (`reviewsAutoReply.enabled`),
  * noting `disabledReason: "listing_changed"` when it was on — and then sends
  * one alert (it was on, so exactly one writer switches it off).
@@ -41,9 +43,11 @@ export async function clearListing(
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${subAccountId}`);
   let switchedOff = false;
+  let extras: string[] = [];
   const cleared = await db.runTransaction(async (tx) => {
     switchedOff = false;
     const sub = (await tx.get(subRef)).data() ?? {};
+    extras = extraLocationNames(sub);
     const previous: string | null = sub.googleListing?.locationName ?? null;
     if (opts.onlyIf !== undefined && previous !== opts.onlyIf) return false;
     // Review auto-reply was enabled for this listing: switched off (modes kept);
@@ -72,7 +76,7 @@ export async function clearListing(
     return true;
   });
   // A declined onlyIf means a NEWER listing is selected: its cache stays.
-  if (cleared) await clearGbpCache(subAccountId);
+  if (cleared) await clearAllGbpCaches(subAccountId, extras);
   if (switchedOff) await sendAutoReplyAlert(subAccountId, { kind: "listing_changed" });
 }
 

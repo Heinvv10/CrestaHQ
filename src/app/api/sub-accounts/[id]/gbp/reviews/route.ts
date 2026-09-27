@@ -81,7 +81,7 @@ export async function GET(
   const locationName = sub.googleListing?.locationName ?? null;
   const now = new Date();
   const [served, runSnap] = await Promise.all([
-    loadServedReviews(id, locationName, now),
+    loadServedReviews(id, locationName ? [locationName] : [], now),
     db.collection(runsCollection(id)).orderBy("finishedAt", "desc").limit(RUN_CAP).get(),
   ]);
 

@@ -9,7 +9,7 @@ import { gbpRefusal } from "@/lib/gbp/route-support";
 import { claimManualSlot } from "@/lib/gbp/sync/lease";
 import { publicRun } from "@/lib/gbp/sync/public";
 import { recordFailedRun } from "@/lib/gbp/sync/record";
-import { syncListing } from "@/lib/gbp/sync/run";
+import { syncSubAccount } from "@/lib/gbp/sync/sub-account";
 import { afterSyncResponse } from "@/lib/reputation/after-sync";
 import { requestDeadline } from "@/lib/reputation/sentiment-after";
 import type { SubAccountDoc } from "@/types";
@@ -19,9 +19,10 @@ import type { SubAccountDoc } from "@/types";
  *
  * Sub-account admin only, agency-gated, at most once a minute per
  * sub-account (409 `too_soon`). Runs the SAME core the scheduled cron runs
- * (`syncListing`), inline, as a `manual` run by this admin, and answers with
- * the run's public subset — a skip or a failure is a result, not an HTTP
- * error. A sync that throws is recorded as a failed run and still answered
+ * (`syncSubAccount` — every listing), inline, as a `manual` run by this
+ * admin, and answers with the main listing's run as `run` and every
+ * listing's as `runs`, public subset only — a skip or a failure is a result,
+ * not an HTTP error. A sync that throws is recorded as a failed run and still answered
  * as JSON.
  */
 
@@ -54,14 +55,14 @@ export async function POST(
   }
 
   try {
-    const run = await syncListing(id, { trigger: "manual", actorUid: access.uid });
-    // Auto-reply, then sentiment for what this run changed, after the response.
-    afterSyncResponse([{ subAccountId: id, created: run.created, updated: run.updated, startedAt: run.startedAt }], deadline);
-    return NextResponse.json({ run: publicRun(run) });
+    const { runs, synced } = await syncSubAccount(id, { trigger: "manual", actorUid: access.uid });
+    // Auto-reply, then sentiment for what this sync changed, after the response — once per sub-account.
+    afterSyncResponse([synced], deadline);
+    return NextResponse.json({ run: publicRun(runs[0]), runs: runs.map(publicRun) });
   } catch (err) {
     console.error(`[gbp/sync-now] sync threw sa=${id}: ${err instanceof Error ? err.name : typeof err}`);
     const sub = ((await getAdminDb().doc(`subAccounts/${id}`).get()).data() ?? {}) as SubAccountDoc;
     const run = await recordFailedRun(id, sub, "manual", access.uid, now);
-    return NextResponse.json({ run: publicRun(run) });
+    return NextResponse.json({ run: publicRun(run), runs: [publicRun(run)] });
   }
 }

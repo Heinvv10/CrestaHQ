@@ -1,4 +1,5 @@
 import { claims, mem } from "@/test/gbp-sync-store";
+import type { GbpReview } from "@/lib/gbp/provider/types";
 import {
   defaultFakeScenario,
   fakeScenarioPath,
@@ -116,6 +117,37 @@ export function setScenario(sa: string, mutate: (s: FakeScenario) => void) {
   const s = current ?? defaultFakeScenario();
   mutate(s);
   mem.seed(fakeScenarioPath(sa), s as unknown as Record<string, unknown>);
+}
+
+/** A review at Google on `loc` (the fake's review names carry their location). */
+export function reviewOn(loc: string, id: string, starRating: GbpReview["starRating"], day: number, reply?: string): GbpReview {
+  const time = `2026-08-${String(day).padStart(2, "0")}T09:00:00Z`;
+  return {
+    name: `${ACCOUNT}/${loc}/reviews/${id}`, reviewId: id,
+    reviewer: { displayName: `Fixture Reviewer ${id}`, profilePhotoUrl: null, isAnonymous: false },
+    starRating, comment: `Fixture review ${id}.`, createTime: time, updateTime: time,
+    reply: reply ? { comment: reply, updateTime: time } : null,
+  };
+}
+
+/**
+ * Connect `loc` (default: the fake's second location) as an EXTRA listing of
+ * `sa` (MULTI_LISTING_V1_PLAN.md) — `googleExtraListings` + the flat
+ * `googleLocationNames` — and give it these reviews at Google (default: 3).
+ */
+export function seedExtraListing(sa: string, loc = LOC_NORTH, list?: GbpReview[]) {
+  const sub = mem.read(`subAccounts/${sa}`)!;
+  const main = sub.googleListing as { locationName: string } & Record<string, unknown>;
+  const extra = { ...main, locationName: loc, title: "Velo Test Fibre — Gqeberha North" };
+  mem.seed(`subAccounts/${sa}`, { ...sub, googleExtraListings: [extra], googleLocationNames: [main.locationName, loc] });
+  const on = list ?? [reviewOn(loc, "north-3", 5, 20), reviewOn(loc, "north-2", 4, 14), reviewOn(loc, "north-1", 2, 8)];
+  setScenario(sa, (s) => void (s.reviews[loc] = { averageRating: 3.7, totalReviewCount: on.length, reviews: on }));
+}
+
+/** Drop the extra listings from `sa`'s doc (what PR 3's removal writes before it clears). */
+export function removeExtraListings(sa: string) {
+  const sub = mem.read(`subAccounts/${sa}`)!;
+  mem.seed(`subAccounts/${sa}`, { ...sub, googleExtraListings: [], googleLocationNames: [(sub.googleListing as { locationName: string }).locationName] });
 }
 
 export const reviews = (sa = SA) => mem.list(`subAccounts/${sa}/gbpReviews`);

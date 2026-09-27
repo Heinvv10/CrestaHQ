@@ -1,10 +1,14 @@
+import { locId } from "../listings";
+
 /**
  * Review sync — the Firestore model and the run record.
  *
- *   subAccounts/{id}/gbpReviews/{docId}      cached reviews of the CURRENT listing
- *   subAccounts/{id}/gbpSyncRuns/{runId}     append-only, one per run, created at its end
- *   subAccounts/{id}/private/gbpSyncState    lease + pass cursor (locked)
- *   subAccounts/{id}.gbpSummary              member-readable summary — kinds only
+ *   subAccounts/{id}/gbpReviews/{docId}      cached reviews of the CURRENT listings (`locationName` scopes them)
+ *   subAccounts/{id}/gbpSyncRuns/{runId}     append-only, one per listing per run, created at its end
+ *   subAccounts/{id}/private/gbpSyncState    main listing: lease + pass cursor (locked); Sync-now cooldown
+ *   subAccounts/{id}/private/gbpSyncState_{locId}  the same per EXTRA listing
+ *   subAccounts/{id}.gbpSummary              main listing's member-readable summary — kinds only
+ *   subAccounts/{id}.gbpSummaries.{locId}    the same per EXTRA listing
  *
  * No client Firestore rules: every read is an API route on the Admin SDK and
  * the new subcollections fall under default deny.
@@ -151,7 +155,9 @@ export interface GbpReviewDoc {
 
 export const reviewsCollection = (sa: string) => `subAccounts/${sa}/gbpReviews`;
 export const runsCollection = (sa: string) => `subAccounts/${sa}/gbpSyncRuns`;
-export const syncStatePath = (sa: string) => `subAccounts/${sa}/private/gbpSyncState`;
+/** Main listing (no `extra`) → the legacy path; an EXTRA listing → its own state doc. */
+export const syncStatePath = (sa: string, extra: string | null = null) =>
+  `subAccounts/${sa}/private/gbpSyncState${extra === null ? "" : `_${locId(extra)}`}`;
 
 /** Firestore returns Timestamps, tests hand back Dates; both become epoch ms. */
 export function toMillis(v: unknown): number | null {

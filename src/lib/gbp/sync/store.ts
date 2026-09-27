@@ -4,18 +4,13 @@ import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { autoReplyNeverCollection, type NeverMarkerSeen } from "../auto-reply-never";
 import type { GbpReview } from "../provider/types";
-import {
-  LEASE_TTL_MS,
-  reviewsCollection,
-  syncStatePath,
-  toMillis,
-  type GbpReviewDoc,
-} from "./types";
+import { ownsDoc, type ListingScope } from "./scope";
+import { reviewsCollection, toMillis, type GbpReviewDoc } from "./types";
 
 /**
  * The review cache: deterministic doc ids (so an upsert is idempotent by
- * construction), a content hash (so an unchanged review is never rewritten),
- * and the one helper that throws the whole cache away.
+ * construction) and a content hash (so an unchanged review is never
+ * rewritten). Clearing it lives in clear.ts.
  */
 
 /** sha256(review.name) — the provider identity, never the Place ID. */
@@ -59,11 +54,17 @@ export interface CachedReview {
   autoRepliedStar?: number | null;
 }
 
-export async function loadCache(subAccountId: string): Promise<Map<string, CachedReview>> {
+/**
+ * ONE listing's cache (see scope.ts): the read is the whole collection, as
+ * before, filtered in memory by each doc's `locationName`, so reconciliation
+ * and retention only ever see — and act on — that listing's reviews.
+ */
+export async function loadCache(subAccountId: string, scope: ListingScope): Promise<Map<string, CachedReview>> {
   const snap = await getAdminDb().collection(reviewsCollection(subAccountId)).get();
   const out = new Map<string, CachedReview>();
   for (const doc of snap.docs) {
     const d = doc.data() as Partial<GbpReviewDoc>;
+    if (!ownsDoc(scope, d.locationName)) continue;
     out.set(doc.id, {
       state: d.state === "removed" ? "removed" : "active",
       passId: d.passId ?? "",
@@ -189,43 +190,4 @@ export function tombstone(now: Date): Record<string, unknown> {
     state: "removed", removedAt: now, comment: null, reviewer: null, reply: null, starRating: null, contentHash: null,
     pendingReply: null,
   };
-}
-
-const BATCH = 400;
-
-async function deleteAll(paths: string[]): Promise<void> {
-  const db = getAdminDb();
-  for (let i = 0; i < paths.length; i += BATCH) {
-    const batch = db.batch();
-    for (const p of paths.slice(i, i + BATCH)) batch.delete(db.doc(p));
-    await batch.commit();
-  }
-}
-
-/** The lease a cache clear holds while it deletes (an ordinary lease: it expires). */
-export const CLEARING_RUN_ID = "clearing";
-
-/**
- * Drop EVERYTHING synced for a sub-account: every cached review, the summary
- * and the sync state (lease + cursor). Called whenever the listing is cleared
- * or replaced, or the agency gate goes off — the cache only ever holds the
- * current listing.
- *
- * FIRST it takes the lease (`runId: "clearing"`): a run in flight fails its
- * next guarded write (lease lost) and a run starting now is refused
- * (`already_running`), so nothing lands behind the deletes. The state doc —
- * and with it the clearing lease — goes LAST. A clear that dies midway leaves
- * the lease to expire after its TTL.
- */
-export async function clearGbpCache(subAccountId: string): Promise<void> {
-  const db = getAdminDb();
-  const stateRef = db.doc(syncStatePath(subAccountId));
-  // The first write also drops the cursor and the anomaly streak, so a clear
-  // that dies midway leaves no stale pass for the next run to resume.
-  const lease = { runId: CLEARING_RUN_ID, until: Date.now() + LEASE_TTL_MS };
-  await stateRef.set({ lease, pass: null, anomalyStreak: null }, { merge: true });
-  const snap = await db.collection(reviewsCollection(subAccountId)).get();
-  await deleteAll(snap.docs.map((d) => `${reviewsCollection(subAccountId)}/${d.id}`));
-  await db.doc(`subAccounts/${subAccountId}`).set({ gbpSummary: null }, { merge: true });
-  await stateRef.delete();
 }

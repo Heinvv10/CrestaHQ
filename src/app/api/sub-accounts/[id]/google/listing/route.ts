@@ -7,7 +7,7 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { findAccessibleLocation } from "@/lib/gbp/discovery";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { withGbpAccess } from "@/lib/gbp/access";
-import { clearGbpCache } from "@/lib/gbp/sync/store";
+import { clearGbpCache } from "@/lib/gbp/sync/clear";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
@@ -132,7 +132,8 @@ export async function PUT(
     });
     return changed;
   });
-  // The cache only ever holds the current listing: a different one starts empty.
+  // A different main listing starts empty: the previous main's cache goes
+  // (the main scope — extra listings' caches are untouched).
   if (changed) await clearGbpCache(id);
   // Auto-reply was on and this switched it off: one alert (the card's note).
   if (switchedOff) await sendAutoReplyAlert(id, { kind: "listing_changed" });

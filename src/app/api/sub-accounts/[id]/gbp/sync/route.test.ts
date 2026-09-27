@@ -26,6 +26,7 @@ import {
   resetSync,
   reviews,
   runs,
+  seedExtraListing,
   seedSub,
 } from "@/test/gbp-sync-harness";
 import { storeDb } from "@/test/gbp-sync-store";
@@ -144,6 +145,26 @@ describe("auto-reply + sentiment after the response", () => {
     const deadline = handed.mock.calls[0][1] as number;
     expect(deadline - Date.now()).toBeGreaterThan(230_000);
     expect(deadline - Date.now()).toBeLessThanOrEqual(240_000);
+  });
+});
+
+describe("two listings (MULTI_LISTING_V1_PLAN.md PR 2)", () => {
+  it("syncs both: `run` is the main listing's, `runs` has each; ONE aggregate goes to the after-response work", async () => {
+    handed.mockClear();
+    seedExtraListing(SA);
+    const { status, body } = await syncNow("uid_admin");
+    expect(status).toBe(200);
+    const all = body.runs as unknown as Array<Record<string, unknown>>;
+    expect(all.map((r) => [r.status, r.created])).toEqual([["success", 7], ["success", 3]]);
+    expect(body.run).toEqual(all[0]);
+    const earliest = runs().map((r) => r.startedAt as Date).sort((a, b) => a.getTime() - b.getTime())[0];
+    expect(handed).toHaveBeenCalledTimes(1);
+    expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 10, updated: 0, startedAt: earliest }], expect.any(Number));
+  });
+
+  it("single listing: unchanged — `runs` is just the one run", async () => {
+    const { body } = await syncNow("uid_admin");
+    expect(body.runs).toEqual([body.run]);
   });
 });
 

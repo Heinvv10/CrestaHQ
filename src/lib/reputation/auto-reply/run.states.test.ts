@@ -33,7 +33,7 @@ import {
   A1, draftsMade, patchSettings, patchSub, pendingOf, posts, putFixtureReview, replyOf, resetAutoReply, reviewNameOf, sync, syncAndRun,
   dismissedPath, neverPath,
 } from "@/test/auto-reply-harness";
-import { clearGbpCache } from "@/lib/gbp/sync/store";
+import { clearGbpCache } from "@/lib/gbp/sync/clear";
 import { sentimentBasis } from "@/lib/reputation/sentiment-basis";
 import { dismissAutoReply, textHashOf } from "./store";
 

@@ -919,6 +919,20 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "gbpReviews",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "locationName",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createTime",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [
