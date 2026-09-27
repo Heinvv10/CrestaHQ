@@ -9,6 +9,8 @@ import type {
   ProspectSectionResult,
 } from "@/types";
 import { headline } from "./severity";
+import type { ApexgeoConnection } from "./apexgeo-client";
+import { startReportScan } from "./apexgeo-report";
 import * as ads from "./sections/ads";
 import * as businessDetails from "./sections/business-details";
 import * as gbp from "./sections/gbp";
@@ -26,6 +28,11 @@ import type { CostKey, Homepage, Section, SectionInput } from "./sections/types"
  * ignores its signal. The report is `ready` when at least one section
  * measured something (see STORED_FACT_SECTIONS). Never throws. Page fetches
  * take a slot in the reports' own process-wide pool (fetch-slots.ts).
+ *
+ * Alongside the homepage fetch it starts the report's ApexGEO scan
+ * (`apexgeo-report.ts`) and appends sections 5/7/8 as placeholders — pending,
+ * or unavailable with the reason. They never decide `ready`: the scan
+ * finishes after the report does and the poll worker fills them in.
  */
 
 /** Plan order: sections 1, 2, 3, 4, 6, 9, 10. */
@@ -45,6 +52,8 @@ export const REPORT_DEADLINE_MS = 100_000;
 const HOMEPAGE_TIMEOUT_MS = 15_000;
 
 export interface RunnerOptions {
+  /** The sub-account's ApexGEO connection (null = not connected) and this report's id. */
+  apexgeo?: { connection: ApexgeoConnection | null; reportId: string };
   sections?: Section[];
   sectionTimeoutMs?: number;
   deadlineMs?: number;
@@ -61,6 +70,12 @@ export async function runProspectReport(
   try {
     const deadline = AbortSignal.timeout(opts.deadlineMs ?? REPORT_DEADLINE_MS);
     const business = { ...input, website: withScheme(input.website) };
+    const apexgeo = startReportScan(
+      opts.apexgeo?.connection ?? null,
+      business,
+      opts.apexgeo?.reportId ?? "",
+      deadline,
+    );
     let homepage: Homepage | null = null;
     if (business.website) {
       count("http");
@@ -83,17 +98,20 @@ export async function runProspectReport(
         ),
       ),
     );
+    const scan = await apexgeo;
+    if (scan.scanId) count("apexgeoScans");
     return {
       status: sections.some((s) => s.status === "ok" && !STORED_FACT_SECTIONS.has(s.key))
         ? "ready"
         : "failed",
-      sections,
+      sections: [...sections, ...scan.sections],
       headline: headline(sections),
       cost,
+      apexgeo: scan.scanId ? { scanId: scan.scanId } : null,
     };
   } catch (err) {
     console.error("[prospecting] report runner failed", err);
-    return { status: "failed", sections: [], headline: null, cost };
+    return { status: "failed", sections: [], headline: null, cost, apexgeo: null };
   }
 }
 

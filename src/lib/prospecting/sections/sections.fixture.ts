@@ -10,6 +10,7 @@ export const BUSINESS: ProspectReportInput = {
   rating: 4.6,
   reviewsCount: 37,
   category: "Plumber",
+  countryCode: null,
   city: "Gqeberha",
 };
 

@@ -50,6 +50,29 @@ const DETAIL_LABELS: Record<string, string> = {
   contactForm: "Contact form",
   phoneLink: "Tap-to-call link",
   chatWidget: "Live chat",
+  lcpSeconds: "Main content shown on a phone (s)",
+  fcpSeconds: "First content shown (s)",
+  speedIndexSeconds: "Speed index (s)",
+  tbtMs: "Blocking time (ms)",
+  cls: "Layout shift",
+  mobileViewport: "Mobile-friendly layout",
+  GPTBot: "ChatGPT crawler (GPTBot)",
+  ClaudeBot: "Claude crawler (ClaudeBot)",
+  PerplexityBot: "Perplexity crawler",
+  "Google-Extended": "Google AI (Google-Extended)",
+  robotsTxt: "robots.txt",
+  localBusinessSchema: "LocalBusiness structured data",
+  mentionedIn: "AI answers naming the business",
+  answersMeasured: "AI answers checked",
+  models: "AI models asked",
+  topCompetitors: "Businesses named instead",
+};
+
+const WORD_VALUE: Record<string, string> = {
+  allowed: "Allowed",
+  blocked: "Blocked",
+  found: "Found",
+  missing: "Missing",
 };
 
 const LISTING_STATUS: Record<string, string> = {
@@ -62,6 +85,7 @@ function DetailValue({ name, section, value }: { name: string; section: Prospect
   if (typeof value === "boolean") return <>{value ? "Yes" : "No"}</>;
   if (value === "notMeasured") return <span className="text-muted-foreground">Not measured</span>;
   if (section === "listings" && typeof value === "string") return <>{LISTING_STATUS[value] ?? value}</>;
+  if (section === "ai_readiness" && typeof value === "string") return <>{WORD_VALUE[value] ?? value}</>;
   if (typeof value === "string" && /^https:\/\//i.test(value)) {
     return (
       <a href={value} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
@@ -72,7 +96,17 @@ function DetailValue({ name, section, value }: { name: string; section: Prospect
   return <>{String(value)}</>;
 }
 
-export function ReportSections({ sections }: { sections: PublicReportSection[] }) {
+/**
+ * `connectHref` (member view only): where a section left out for want of an
+ * ApexGEO key links to connect one. The public page never passes it.
+ */
+export function ReportSections({
+  sections,
+  connectHref,
+}: {
+  sections: PublicReportSection[];
+  connectHref?: string;
+}) {
   return (
     <>
       {sections.map((s) => {
@@ -90,6 +124,11 @@ export function ReportSections({ sections }: { sections: PublicReportSection[] }
             <CardContent className="space-y-2 text-sm">
               {s.status !== "ok" && s.reason ? (
                 <p className="text-muted-foreground">{s.reason}</p>
+              ) : null}
+              {connectHref && s.reasonCode === "not_connected" ? (
+                <a href={connectHref} className="inline-block text-sm underline underline-offset-2">
+                  Connect ApexGEO
+                </a>
               ) : null}
               {s.findings.length > 0 ? (
                 <ul className="list-disc space-y-1 pl-5">

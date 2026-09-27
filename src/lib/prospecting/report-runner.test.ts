@@ -58,6 +58,10 @@ describe("runProspectReport partial failure", () => {
       ["gbp", "failed"],
       ["listings", "timeout"],
       ["tech_stack", "ok"],
+      // No ApexGEO connection: sections 5/7/8 appended, unavailable.
+      ["website_performance", "unavailable"],
+      ["ai_readiness", "unavailable"],
+      ["ai_presence", "unavailable"],
     ]);
     expect(out.sections[1]).toMatchObject({ score: null, findings: [], reason: "The check failed." });
     expect(out.headline).toBe("business_details says no_https");
@@ -109,9 +113,10 @@ describe("runProspectReport with the real sections", () => {
 
     expect(out.sections.map((s) => s.key)).toEqual([
       "business_details", "gbp", "reputation", "listings", "tech_stack", "ads", "lead_capture",
+      "website_performance", "ai_readiness", "ai_presence",
     ]);
     expect(out.sections.map((s) => s.status)).toEqual([
-      "ok", "ok", "ok", "unavailable", "ok", "unavailable", "ok",
+      "ok", "ok", "ok", "unavailable", "ok", "unavailable", "ok", "unavailable", "unavailable", "unavailable",
     ]);
     const homepageHits = publicFetch.mock.calls.filter(([u]) => (u as string).includes("fixture-plumbing.example.com"));
     expect(homepageHits).toHaveLength(2); // one fetch: the http hop + the https redirect target
@@ -120,6 +125,7 @@ describe("runProspectReport with the real sections", () => {
     // homepage 1 + listings: 4 directory searches (no Facebook link on the bare page)
     expect(out.cost).toEqual({ http: 5, placesDetails: 1 });
     expect(out.status).toBe("ready");
+    expect(out.apexgeo).toBeNull();
     expect(out.headline).toBe("The website has no WhatsApp click-to-chat button.");
   });
 
@@ -145,7 +151,7 @@ describe("runProspectReport with the real sections", () => {
 describe("ready needs a section that measured something (M1)", () => {
   const EMPTY = {
     name: "", phone: null, address: null, website: null, placeId: null,
-    rating: null, reviewsCount: null, category: null, city: null,
+    rating: null, reviewsCount: null, category: null, city: null, countryCode: null,
   };
 
   it("an all-null contact is failed: business_details alone restates the CRM", async () => {
@@ -235,5 +241,114 @@ describe("runProspectReport homepage budget", () => {
       "[prospecting] homepage not fetched",
       expect.objectContaining({ website: BUSINESS.website }),
     );
+  });
+});
+
+describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
+  const CONN = { apiKey: "apx_test_1", baseUrl: "https://apex.example" };
+  const SCAN_URL = "https://apex.example/api/v1/scans";
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
+  const apexCalls = () => publicFetch.mock.calls.filter(([u]) => (u as string).startsWith("https://apex.example"));
+  const apexSections = (out: { sections: ProspectSectionResult[] }) =>
+    out.sections.filter((s) => ["website_performance", "ai_readiness", "ai_presence"].includes(s.key));
+  const techStack = () => import("./sections/tech-stack");
+
+  function site(scan: () => Response | Promise<Response>) {
+    publicFetch.mockImplementation(async (url: string) => {
+      if (url === SCAN_URL) return scan();
+      if (url.includes("fixture-plumbing.example.com")) return html(BARE_HOMEPAGE);
+      throw new Error("blocked");
+    });
+  }
+
+  it("not connected: three not_connected sections, nothing sent to ApexGEO, no scan recorded", async () => {
+    site(() => json(202, {}));
+    const out = await runProspectReport(BUSINESS, { sections: [await techStack()], apexgeo: { connection: null, reportId: "r1" } });
+    expect(apexCalls()).toHaveLength(0);
+    expect(out.apexgeo).toBeNull();
+    expect(apexSections(out)).toEqual(
+      ["website_performance", "ai_readiness", "ai_presence"].map((key) => ({
+        key, status: "unavailable", score: null, findings: [], raw: {},
+        reason: "Not connected — add an ApexGEO key in Settings to measure this.", reasonCode: "not_connected",
+      })),
+    );
+    expect(out.status).toBe("ready");
+  });
+
+  it("connected: starts the scan keyed on the report, sections pending, cost counted — ready is unchanged", async () => {
+    site(() => json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } }));
+    const out = await runProspectReport(
+      { ...BUSINESS, countryCode: "NA" },
+      { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } },
+    );
+    expect(apexCalls()).toHaveLength(1);
+    expect(JSON.parse(apexCalls()[0][1].body)).toMatchObject({
+      url: BUSINESS.website, business_name: BUSINESS.name, niche: "Plumber", city: BUSINESS.city,
+      country: "NA", external_ref: "leadstack:report:r1", probe: { engines: ["gemini", "chatgpt"], prompts: 3 },
+    });
+    expect(out.apexgeo).toEqual({ scanId: "scan_9" });
+    expect(apexSections(out).map((s) => [s.status, s.reasonCode, s.reason])).toEqual(
+      Array(3).fill(["unavailable", "pending", "ApexGEO scan in progress."]),
+    );
+    expect(out.cost).toMatchObject({ apexgeoScans: 1 });
+    expect(out.status).toBe("ready");
+  });
+
+  it("country defaults to ZA", async () => {
+    site(() => json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } }));
+    await runProspectReport(BUSINESS, { sections: [], apexgeo: { connection: CONN, reportId: "r1" } });
+    expect(JSON.parse(apexCalls()[0][1].body).country).toBe("ZA");
+  });
+
+  it("the scan starts alongside the homepage fetch, not after it", async () => {
+    const events: string[] = [];
+    publicFetch.mockImplementation(async (url: string) => {
+      if (url === SCAN_URL) {
+        events.push("scan");
+        return json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } });
+      }
+      await new Promise((r) => setTimeout(r, 100));
+      events.push("homepage done");
+      return html(BARE_HOMEPAGE);
+    });
+    await runProspectReport(BUSINESS, { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } });
+    expect(events.indexOf("scan")).toBeLessThan(events.indexOf("homepage done"));
+  });
+
+  it.each([
+    ["website", { website: null }, "website"],
+    ["category", { category: null }, "category"],
+    ["city", { city: null }, "city"],
+    ["category and city", { category: null, city: null }, "category or city"],
+  ])("no %s: the scan is not started and the reason names it (never a guessed niche)", async (_n, patch, named) => {
+    site(() => json(202, {}));
+    const out = await runProspectReport({ ...BUSINESS, ...patch }, { sections: [], apexgeo: { connection: CONN, reportId: "r1" } });
+    expect(apexCalls()).toHaveLength(0);
+    expect(apexSections(out)[0]).toMatchObject({
+      status: "unavailable", reasonCode: "missing_input", reason: `Not measured: the contact has no ${named} for the scan.`,
+    });
+  });
+
+  it("out of ApexGEO credits: unavailable with that reason; the report is still ready", async () => {
+    site(() => json(409, { error: { code: "insufficient_credits", message: "This scan needs 7 credits; 2 are available." } }));
+    const out = await runProspectReport(BUSINESS, { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } });
+    expect(out.apexgeo).toBeNull();
+    expect(apexSections(out)[0]).toMatchObject({
+      status: "unavailable", reasonCode: "out_of_credits", reason: "ApexGEO account is out of credits.",
+    });
+    expect(out.cost).not.toHaveProperty("apexgeoScans");
+    expect(out.status).toBe("ready");
+  });
+
+  it.each([
+    ["a 500", () => json(500, { error: { code: "internal_error", message: "db down at 10.1.2.3" } })],
+    ["a network failure", () => Promise.reject(new Error("ECONNRESET"))],
+  ])("%s starting the scan: sections failed with a generic reason, the report unaffected", async (_n, scan) => {
+    site(scan);
+    const out = await runProspectReport(BUSINESS, { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } });
+    expect(apexSections(out)[0]).toMatchObject({ status: "failed", reasonCode: "failed", reason: "The ApexGEO scan failed." });
+    expect(JSON.stringify(out.sections)).not.toContain("10.1.2.3");
+    expect(out.status).toBe("ready");
+    expect(out.sections.find((s) => s.key === "tech_stack")?.status).toBe("ok");
   });
 });

@@ -8,6 +8,8 @@ import * as leadCapture from "./sections/lead-capture";
 import * as reputation from "./sections/reputation";
 import * as techStack from "./sections/tech-stack";
 import type { SectionInput } from "./sections/types";
+import { apexgeoFromScan } from "./apexgeo-sections";
+import { completedScan } from "./apexgeo.fixture";
 
 /**
  * The public whitelist, run over the raw shapes the real sections produce.
@@ -119,5 +121,37 @@ describe("publicSection whitelist", () => {
       raw: { rating: { html: "<p>x</p>" }, reviewsCount: 12 },
     }, { showName: true });
     expect(r.details).toEqual({ reviewsCount: 12 });
+  });
+});
+
+describe("publicSection — ApexGEO sections 5/7/8", () => {
+  const scan = completedScan();
+  scan.ai_visibility.prompts[0].engines[0].cited_url = "https://cited.example/x";
+  const results = apexgeoFromScan(scan as never).map((r) => ({
+    ...r,
+    // A raw key a future scorer might add must still not pass.
+    raw: { ...r.raw, answers: "ANSWER-SENTINEL", error: "ERR-SENTINEL", issues: "ISSUE-SENTINEL" },
+  }));
+
+  it("emits exactly the named keys", () => {
+    expect(Object.fromEntries(results.map((r) => [r.key, Object.keys(publicSection(r, { showName: true }).details).sort()]))).toEqual({
+      website_performance: ["cls", "fcpSeconds", "lcpSeconds", "mobileViewport", "speedIndexSeconds", "tbtMs"],
+      ai_readiness: ["ClaudeBot", "GPTBot", "Google-Extended", "PerplexityBot", "localBusinessSchema", "robotsTxt"],
+      ai_presence: ["answersMeasured", "mentionedIn", "models", "topCompetitors"],
+    });
+  });
+
+  it("no answer text, cited URL, provider error or unnamed raw key leaks", () => {
+    const all = JSON.stringify(results.map((r) => publicSection(r, { showName: true })));
+    for (const leak of ["SENTINEL", "cited.example", "best plumber", "insufficient_quota", "No FAQ Schema"]) {
+      expect(all).not.toContain(leak);
+    }
+  });
+
+  it("carries a known reasonCode and drops an unknown one", () => {
+    const base = { key: "ai_presence" as const, status: "unavailable" as const, score: null, findings: [], raw: {} };
+    expect(publicSection({ ...base, reasonCode: "pending" }, { showName: true }).reasonCode).toBe("pending");
+    expect(publicSection({ ...base, reasonCode: "<b>x</b>" as never }, { showName: true }).reasonCode).toBeNull();
+    expect(publicSection(base, { showName: true }).reasonCode).toBeNull();
   });
 });

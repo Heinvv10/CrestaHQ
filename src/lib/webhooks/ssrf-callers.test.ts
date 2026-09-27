@@ -22,6 +22,7 @@ import { execWebhook } from "@/lib/workflows/engine";
 import { webinar1Fetcher } from "@/lib/webinar1/client";
 import { renderQuotePdfStream } from "@/lib/quotes/pdf-render";
 import { runProspectReport } from "@/lib/prospecting/report-runner";
+import { getScan, probeKey, startScan } from "@/lib/prospecting/apexgeo-client";
 import { POST as subscribePush } from "@/app/api/push/subscriptions/route";
 import type { Quote } from "@/types/quotes";
 
@@ -100,11 +101,26 @@ describe("tenant-URL fetchers refuse internal addresses", () => {
     await runProspectReport(
       {
         name: "Biz", phone: null, address: null, website: `${base}/home`, placeId: null,
-        rating: null, reviewsCount: null, category: null, city: null,
+        rating: null, reviewsCount: null, category: null, city: null, countryCode: null,
       },
       { sections: [] },
     );
     expect(hits).toEqual([]);
+  });
+
+  it("ApexGEO client: a tenant base URL on an internal address is never reached", async () => {
+    const conn = { apiKey: "apx_k", baseUrl: base };
+    const input = { url: "https://acme.test", businessName: "B", niche: "n", city: "c", country: "ZA", externalRef: "r" };
+    expect(await probeKey(conn)).toMatchObject({ ok: false, error: { kind: "network" } });
+    expect(await startScan(conn, input)).toMatchObject({ ok: false, error: { kind: "network" } });
+    expect(await getScan(conn, "s1")).toMatchObject({ ok: false, error: { kind: "network" } });
+    expect(hits).toEqual([]);
+  });
+
+  it("control: outside production the ApexGEO client DOES reach the loopback server", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    await probeKey({ apiKey: "apx_k", baseUrl: base });
+    expect(hits).toEqual(["/api/v1/scans?limit=1"]);
   });
 
   it("push subscription endpoint is refused at save time", async () => {

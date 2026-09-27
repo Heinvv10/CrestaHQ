@@ -13,6 +13,12 @@ vi.mock("@/lib/prospecting/report-runner", async (orig) => ({
   runProspectReport: (...a: unknown[]) => run(...a),
 }));
 
+const publish = vi.fn();
+vi.mock("@/lib/automations/qstash", async (orig) => ({
+  ...(await orig<typeof import("@/lib/automations/qstash")>()),
+  publishCallback: (...a: unknown[]) => publish(...a),
+}));
+
 const KEY = "sig_test_current_key_for_prospect_reports";
 process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
 process.env.QSTASH_NEXT_SIGNING_KEY = "sig_test_next_key_for_prospect_reports";
@@ -41,6 +47,7 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
   vi.spyOn(console, "error").mockImplementation(() => {});
   run.mockReset().mockResolvedValue(READY);
+  publish.mockReset().mockResolvedValue({ messageId: "m1" });
   mem.clear();
   mem.seed(USAGE, { prospectReports: 2 });
   mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
@@ -76,10 +83,13 @@ describe("a run", () => {
   it("builds the input from the contact, writes the result and stamps lastReportId", async () => {
     const res = await call();
     expect(res.status).toBe(200);
-    expect(run).toHaveBeenCalledWith({
-      name: "Acme Plumbing", phone: "+27 41 000 0000", address: "1 Main Rd", website: "https://acme.test",
-      placeId: "p1", rating: 4.2, reviewsCount: 12, category: "Plumber", city: "Gqeberha",
-    });
+    expect(run).toHaveBeenCalledWith(
+      {
+        name: "Acme Plumbing", phone: "+27 41 000 0000", address: "1 Main Rd", website: "https://acme.test",
+        placeId: "p1", rating: 4.2, reviewsCount: 12, category: "Plumber", city: "Gqeberha", countryCode: null,
+      },
+      { apexgeo: { connection: null, reportId: "r1" } },
+    );
     const report = mem.read("prospectReports/r1");
     expect(report).toMatchObject({ status: "ready", sections: SECTIONS, headline: "No hours", cost: { http: 3 } });
     expect(report?.generatedAt).toBeInstanceOf(Date);
@@ -181,5 +191,61 @@ describe("interrupted and gated runs (M2, L3)", () => {
     expect(run).not.toHaveBeenCalled();
     expect(mem.read("prospectReports/r1")?.status).toBe("failed");
     expect(mem.read(USAGE)?.prospectReports).toBe(1);
+  });
+});
+
+describe("the ApexGEO scan (phase 1)", () => {
+  const PENDING = [
+    { key: "website_performance", status: "unavailable", score: null, findings: [], reason: "ApexGEO scan in progress.", reasonCode: "pending", raw: {} },
+  ];
+  type Rep = { status: string; apexgeo: Record<string, unknown>; sections: Array<{ key: string }> };
+  const rep = () => mem.read("prospectReports/r1") as unknown as Rep;
+  const STARTED = { ...READY, sections: [...SECTIONS, ...PENDING], apexgeo: { scanId: "scan_9" } };
+
+  it("hands the runner the stored connection and the report id", async () => {
+    mem.seed("subAccounts/sa1/private/apexgeoConnection", { apiKey: "apx_k1", baseUrl: "https://apexgeo.app" });
+    await call();
+    expect(run.mock.calls[0][1]).toEqual({
+      apexgeo: { connection: { apiKey: "apx_k1", baseUrl: "https://apexgeo.app" }, reportId: "r1" },
+    });
+  });
+
+  it("a started scan is recorded pending on the ready report and the first poll is queued", async () => {
+    run.mockResolvedValueOnce(STARTED);
+    expect((await call()).status).toBe(200);
+    const report = rep();
+    expect(report).toMatchObject({ status: "ready", apexgeo: { scanId: "scan_9", status: "pending", attempts: 0 } });
+    expect(report.apexgeo.startedAt).toBeInstanceOf(Date);
+    expect(publish).toHaveBeenCalledWith({
+      pathname: "/api/automations/prospecting/apexgeo",
+      body: { reportId: "r1", attempt: 0 },
+      delaySeconds: 45,
+      deduplicationId: "apexgeo_r1_0",
+    });
+  });
+
+  it("no scan started: nothing queued, apexgeo null", async () => {
+    expect((await call()).status).toBe(200);
+    expect(publish).not.toHaveBeenCalled();
+    expect(mem.read("prospectReports/r1")?.apexgeo).toBeNull();
+  });
+
+  it("a poll that cannot be queued settles the ApexGEO sections failed at once; the report stays ready", async () => {
+    run.mockResolvedValueOnce(STARTED);
+    publish.mockResolvedValueOnce(null);
+    expect((await call()).status).toBe(200);
+    const report = rep();
+    expect(report.status).toBe("ready");
+    expect(report.apexgeo.status).toBe("failed");
+    const apex = report.sections.filter((s) => s.key === "website_performance");
+    expect(apex).toHaveLength(1);
+    expect(apex[0]).toMatchObject({ status: "failed", reasonCode: "failed" });
+    expect(report.sections.find((s) => s.key === "gbp")).toMatchObject({ status: "ok" });
+  });
+
+  it("a failed report never queues a poll", async () => {
+    run.mockResolvedValueOnce({ ...STARTED, status: "failed" });
+    await call();
+    expect(publish).not.toHaveBeenCalled();
   });
 });

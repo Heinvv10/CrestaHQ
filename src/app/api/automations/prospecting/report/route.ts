@@ -6,6 +6,9 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyQStashSignature } from "@/lib/automations/qstash";
 import { runProspectReport } from "@/lib/prospecting/report-runner";
 import { prospectingEnabled } from "@/lib/prospecting/gate";
+import { readApexgeoConnection } from "@/lib/prospecting/apexgeo-connection";
+import { schedulePoll, settleApexgeo } from "@/lib/prospecting/apexgeo-report";
+import { APEXGEO_REASON, apexgeoPlaceholders } from "@/lib/prospecting/apexgeo-sections";
 import {
   INTERRUPTED_AFTER_MS,
   REPORT_ID,
@@ -33,6 +36,11 @@ import {
  * report settled meanwhile (swept, interrupted) keeps its state. A thrown error is
  * caught and settles the report `failed` with the quota released. A report
  * whose sub-account's Prospecting gate went off is not run, and released.
+ *
+ * When the runner started an ApexGEO scan, the ready write records it
+ * (`apexgeo`, pending) and the first poll of `/api/automations/prospecting/apexgeo`
+ * is queued after it. A poll that cannot be queued settles the three ApexGEO
+ * sections `failed` at once, rather than leaving them "in progress".
  */
 
 export const dynamic = "force-dynamic";
@@ -91,7 +99,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, status: "failed" });
     }
 
-    const outcome = await runProspectReport(reportInputOf(contact));
+    const connection = await readApexgeoConnection(claimed.subAccountId);
+    const outcome = await runProspectReport(reportInputOf(contact), { apexgeo: { connection, reportId } });
     const result = {
       sections: outcome.sections,
       headline: outcome.headline,
@@ -105,7 +114,13 @@ export async function POST(request: Request) {
     }
     const written = await db.runTransaction(async (tx) => {
       if ((await tx.get(reportRef)).data()?.status !== "running") return false;
-      tx.update(reportRef, { ...result, status: "ready" });
+      tx.update(reportRef, {
+        ...result,
+        status: "ready",
+        apexgeo: outcome.apexgeo
+          ? { scanId: outcome.apexgeo.scanId, status: "pending", attempts: 0, startedAt: new Date() }
+          : null,
+      });
       return true;
     });
     if (!written) {
@@ -113,6 +128,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, status: "settled" });
     }
     await contactRef.update({ "prospecting.lastReportId": reportId });
+    if (outcome.apexgeo && !(await schedulePoll(reportId, 0))) {
+      console.error("[prospecting/report] ApexGEO poll not queued", reportId);
+      await settleApexgeo(reportId, {
+        sections: apexgeoPlaceholders("failed", APEXGEO_REASON.failed),
+        status: "failed",
+      });
+    }
     return NextResponse.json({ ok: true, status: "ready" });
   } catch (err) {
     console.error("[prospecting/report] run failed", reportId, err);

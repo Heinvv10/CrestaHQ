@@ -326,6 +326,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Prospect report worker — QStash callback, signature-verified inside the
   // route and bound to its URL.
   /^\/api\/automations\/prospecting\/report$/,
+  // Prospect report ApexGEO poll worker (Prospecting PR 3) — QStash callback,
+  // signature-verified inside the route and bound to its URL.
+  /^\/api\/automations\/prospecting\/apexgeo$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {

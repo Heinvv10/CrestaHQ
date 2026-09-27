@@ -13,7 +13,7 @@ export interface Homepage {
 }
 
 /** Provider calls counted into `ProspectReportDoc.cost`. */
-export type CostKey = "placesDetails" | "http";
+export type CostKey = "placesDetails" | "http" | "apexgeoScans";
 
 export interface SectionInput {
   business: ProspectReportInput;

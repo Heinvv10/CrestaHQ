@@ -5,6 +5,7 @@ import { hashShareToken } from "@/lib/snapshots/share";
 import { toIso } from "@/lib/prospecting/reports";
 import { prospectingEnabled } from "@/lib/prospecting/gate";
 import { publicSection, type PublicReportSection } from "@/lib/prospecting/public-sections";
+import { displaySections } from "@/lib/prospecting/apexgeo-sections";
 import type { AppTheme, ProspectSectionResult } from "@/types";
 
 export type { PublicReportSection };
@@ -17,7 +18,9 @@ export type { PublicReportSection };
  * about which. The business name is published only for a business: a contact
  * with a company, or a prospecting import (else it may be a person's name). The payload is built field
  * by field: nothing reaches the public that is not named here (sections via
- * `public-sections.ts`).
+ * `public-sections.ts`). ApexGEO sections left out because the sub-account
+ * has no ApexGEO key are dropped: a prospect should not see the agency's
+ * setup gaps (decision D6). Pending, timed-out and failed ones stay.
  */
 
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -84,7 +87,9 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     businessName: company ?? (showName ? str(contact.name) : null),
     headline: str(report.headline),
     generatedAt: toIso(report.generatedAt),
-    sections: ((report.sections ?? []) as ProspectSectionResult[]).map((s) => publicSection(s, { showName })),
+    sections: displaySections((report.sections ?? []) as ProspectSectionResult[], report.apexgeo)
+      .filter((s) => s.reasonCode !== "not_connected")
+      .map((s) => publicSection(s, { showName })),
     agency: {
       name: str(agency.name),
       logoUrl: logoUrl && /^https:\/\//i.test(logoUrl) ? logoUrl : null,
