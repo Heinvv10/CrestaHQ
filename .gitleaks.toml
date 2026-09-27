@@ -56,4 +56,11 @@ regexes = [
   # low-entropy fixture; this anchor exists only so that commit's diff stops
   # tripping the history scan.
   '''^0123456789abcdef01234567$''',
+  # ApexGEO connection test fixture: only exists in commit d9f45ce7's diff
+  # (src/components/settings/sub-account-apexgeo-section.test.ts line 15 and
+  # src/app/api/sub-accounts/[id]/apexgeo-connection/route.test.ts line 19 at
+  # that point in history) as a made-up apx_ key. Never a credential.
+  # Replaced at the tip by a low-entropy fixture; this anchor exists only so
+  # that commit's diff stops tripping the history scan.
+  '''^apx_live_abcdef123456$''',
 ]
