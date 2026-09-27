@@ -84,7 +84,8 @@ run on the server, applied while scanning one single-field query
 request scans at most 1,000 rows; a sparse filter can return a short (or empty)
 page with a cursor to keep looking, and the page says so. Anything else in a
 filter → 400 `invalid_filter` with `field`. Each row: `id, contactId,
-contactName, channel, source, trigger, status, failureKind, sentAt` — the name
+contactName, channel, source, trigger, status, failureKind, sentAt,
+listingTitle` — the name
 is joined at read time from the contact doc, **only when that contact is in this
 sub-account** (else null, shown as "Deleted contact"). For a **territory-scoped
 collaborator** (`loadEffectiveTerritoryScope`, the same rule as
@@ -107,6 +108,26 @@ shown inline in plain words (`components/reputation/send-result.ts`: e.g.
 the page's data, and Send stays off for the contact just sent to (re-picking
 them does not re-arm it) until the dialog is reopened. Contacts
 that fail to load say so rather than showing an empty picker.
+
+**Per listing (MULTI_LISTING_V1_PLAN.md PR 5).** With extra Google listings the
+dialog shows a **listing select** (hidden with one listing; defaults to the
+main). The main listing sends exactly today's body (no `locationName` in the
+POST). Picking an extra POSTs `locationName`, which the route checks is one of
+the contact's sub-account's listings (else 400 `invalid_listing`, nothing
+sent). The dispatcher (`SendReviewInput.locationName`) then sends **that
+listing's adopted link** (`googleReviewConfig.listingUrls[locId]`, adopted on
+the Google Business page), never its proposed link and never the main's:
+none adopted → `listing_url_not_configured`. Only `sms` and
+`whatsapp_manual` can carry it — an approved template bakes in the main's link
+→ `listing_needs_template`. An extra-listing send has **no reminders and no
+/rr click tracking** in v1. The recipient is the same contact either way; only
+the link differs. The log row gets `locationName` (absent = the main), and the
+Requests list shows that listing's title under the channel (`listingTitle`;
+"Removed listing" once it is disconnected). Proof:
+`lib/reviews/request.listing.test.ts`,
+`app/api/comms/review-request/send/route.test.ts`,
+`components/reputation/send-review-request.listing.test.ts`,
+E2E `e2e/specs/gbp-review-request-listing.spec.ts`.
 
 Statuses are what LeadStack can observe truthfully: **sent**, **failed** and —
 for requests sent while reminders are on, over SMS or in-window WhatsApp —

@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ContactPicker } from "@/components/quotes/contact-picker";
 import { useSubAccountContacts } from "@/context/contacts-context";
+import { useSubAccount } from "@/context/sub-account-context";
+import { allListings } from "@/lib/gbp/listings";
 import { sendResultMessage } from "./send-result";
 
 /**
@@ -13,6 +15,10 @@ import { sendResultMessage } from "./send-result";
  * configured review request to them now through the existing manual route —
  * the same dispatcher as the contact profile's Request review, which skips the
  * cooldown for a manual send. The dispatcher's answer is shown inline.
+ *
+ * With extra Google listings (MULTI_LISTING_V1_PLAN.md PR 5) a listing select
+ * picks whose review link is sent; it defaults to the main listing, whose
+ * request is exactly today's (no `locationName` in the body).
  */
 
 type Result = { state: "sent" | "refused" | "error"; message: string } | null;
@@ -22,7 +28,12 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
   // Only starts the sub-account's contacts download once the dialog opens.
   const shared = useSubAccountContacts(open);
   const contacts = shared.error ? "error" : shared.loading ? null : shared.contacts;
+  const { subAccount } = useSubAccount();
+  const listings = subAccount ? allListings(subAccount) : [];
+  const mainLoc = subAccount?.googleListing?.locationName;
   const [contactId, setContactId] = useState("");
+  /** "" = the main listing. */
+  const [locationName, setLocationName] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<Result>(null);
   /** Who this dialog last sent to: Send stays off for them, however they are re-picked. */
@@ -30,6 +41,7 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
 
   function openDialog() {
     setContactId("");
+    setLocationName("");
     setResult(null);
     setSentTo(null);
     setOpen(true);
@@ -42,7 +54,7 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
       const res = await fetch("/api/comms/review-request/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contactId }),
+        body: JSON.stringify(locationName ? { contactId, locationName } : { contactId }),
       });
       const data = (await res.json().catch(() => ({}))) as { sent?: boolean; reason?: string; error?: string };
       if (!res.ok) setResult({ state: "error", message: data.error ?? sendResultMessage(undefined) });
@@ -89,6 +101,24 @@ export function SendReviewRequestButton({ onSent }: { onSent?: () => void }) {
               }}
               title="Who should get the review request?"
             />
+          )}
+          {listings.length > 1 && (
+            <label className="block text-sm">
+              <span className="mb-1 block font-medium">Which listing&apos;s review link?</span>
+              <select
+                value={locationName}
+                onChange={(e) => {
+                  setLocationName(e.target.value);
+                  setResult(null);
+                }}
+                className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+                data-testid="rep-send-listing"
+              >
+                {listings.map((l) => (
+                  <option key={l.locationName} value={l.locationName === mainLoc ? "" : l.locationName}>{l.title}</option>
+                ))}
+              </select>
+            </label>
           )}
           {result && (
             <p

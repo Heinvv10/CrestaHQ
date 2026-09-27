@@ -35,6 +35,8 @@ export interface RequestRow {
     nextAt: string | null;
     lastAttemptAt: string | null;
   } | null;
+  /** MULTI_LISTING PR 5: the extra listing it was sent for; null = the main. */
+  listingTitle?: string | null;
 }
 
 type Filters = { status: string; channel: string; source: string };
@@ -248,7 +250,10 @@ export function ReputationRequests() {
                       <span className="text-muted-foreground">Deleted contact</span>
                     )}
                   </td>
-                  <td className="px-3 py-2">{CHANNEL_LABEL[r.channel] ?? r.channel}</td>
+                  <td className="px-3 py-2">
+                    {CHANNEL_LABEL[r.channel] ?? r.channel}
+                    {r.listingTitle && <span className="block text-xs text-muted-foreground" data-testid="rep-req-listing">{r.listingTitle}</span>}
+                  </td>
                   <td className="px-3 py-2">{sentBy(r)}</td>
                   <td className="whitespace-nowrap px-3 py-2">{fmtSentAt(r.sentAt)}</td>
                   <td className="px-3 py-2">

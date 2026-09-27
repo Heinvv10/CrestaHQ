@@ -980,6 +980,12 @@ export interface GoogleReviewConfig {
   /** Google review link, e.g. https://g.page/r/<id>/review. */
   reviewUrl: string;
   /**
+   * MULTI_LISTING_V1_PLAN.md PR 5: the adopted review link per EXTRA listing,
+   * keyed by `locId(locationName)`. The main listing keeps `reviewUrl`.
+   * Written only by the adopt-listing-url compare-and-set.
+   */
+  listingUrls?: Record<string, string>;
+  /**
    * "sms" | "whatsapp_template" (approved template) | "whatsapp_manual"
    * (free-form WhatsApp, in-window only). Legacy docs may store "whatsapp" —
    * normalize via `normalizeReviewChannel`.

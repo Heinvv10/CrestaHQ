@@ -256,3 +256,11 @@ describe("the list", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("the listing a request was for (MULTI_LISTING_V1_PLAN.md PR 5)", () => {
+  it("shows the extra listing's title on its row only", async () => {
+    pages[""] = { body: { requests: [row("a", { listingTitle: "Fixture North" }), row("b", { listingTitle: null })], nextCursor: null } };
+    await render();
+    expect(rows().map((r) => within(r, "rep-req-listing"))).toEqual(["Fixture North", null]);
+  });
+});

@@ -294,7 +294,7 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `POST /api/cron/gbp-retention` | QStash signature bound to this URL | the always-on daily retention housekeeping: a retention-only pass (no provider calls) for every sub-account holding a cache; `{retained}`; 500 only when the sweep cannot start |
 | `POST` / `DELETE /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply` | admin, gated | the explicit human reply — see "Explicit owner reply (PR 4)" |
 | `POST /api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/auto-reply/dismiss` | admin, gated | review auto-reply's Discard: `{ok: true}`; the reply route's 403 / 404 rules; 409 `nothing_to_dismiss` for a review with a reply, no auto-reply draft, or a stale one drafted for since-edited content (nothing written); a repeat Discard is accepted. Never calls Google |
-| `POST /api/sub-accounts/[id]/google-review/adopt-listing-url` | admin, gated | `{expectedCurrentUrl}` — see "Review-request compatibility (PR 4)" |
+| `POST /api/sub-accounts/[id]/google-review/adopt-listing-url` | admin, gated | `{expectedCurrentUrl, locationName?}` — see "Review-request compatibility (PR 4)" |
 | `GET/PUT/DELETE /api/sub-accounts/[id]/gbp/widget`, `POST …/gbp/widget/rotate` | admin, gated — **DELETE ungated** | the public reviews widget (below) |
 | `GET/OPTIONS /api/public/gbp/feed/[publicId]` | **public** (no session) | the public feed (below) |
 | `POST /api/cron/gbp-sync` | QStash signature bound to this URL | the 6-hourly sweep; `{processed, byStatus, retained, stoppedOnRateLimit}`; 401 unsigned/invalid; 500 only when the sweep cannot start |
@@ -359,7 +359,8 @@ PR 4 adds:
   hash recomputed from the stored doc equals the next sync's.
 - `subAccounts/{id}.googleReviewConfig.reviewUrl` (+ `updatedAt`) — only via
   the adopt compare-and-set; a missing config is created with the config
-  route's defaults (auto-send off).
+  route's defaults (auto-send off). An extra listing's link goes to
+  `googleReviewConfig.listingUrls.{locId}` the same way (multi-listing PR 5).
 
 **No Firestore rules or indexes change anywhere in this stack** (PR 1–4): every
 new collection (`gbpReviews`, `gbpSyncRuns`, `gbpReplyAttempts`, top-level
@@ -1115,6 +1116,22 @@ links + **Replace with listing link**; `matches` → a quiet confirmation;
 changed link is reported inline. Test ids `gbp-reviewurl-proposal` (with
 `data-state`), `gbp-reviewurl-adopt`, `gbp-reviewurl-matches`,
 `gbp-reviewurl-done`, `gbp-reviewurl-error`.
+
+**Per listing (MULTI_LISTING_V1_PLAN.md PR 5).** `resolveReviewUrl(sub,
+locationName?)`: no location, or the main's, answers exactly as above. For an
+EXTRA listing `configured` is `googleReviewConfig.listingUrls[locId]` and
+`proposed` that listing's own `newReviewUri`; a location the sub-account does
+not manage has neither (`canonical-url.listing.test.ts`). The adopt route takes
+an optional `locationName` — one of this sub-account's listings, else 400
+`unknown_listing` — and compare-and-sets **that listing's key**
+(`googleReviewConfig.listingUrls.{locId}`), never the main's `reviewUrl`; a
+config created this way has `reviewUrl: ""`; the event carries `locationName`.
+The reminders-on Google-link rule applies to the main only (extra-listing
+sends have no reminders). `…/adopt-listing-url/route.listing.test.ts`. The
+Google Business page shows one card per listing: the main's unchanged, then
+each extra's (`<ReviewUrlCard locationName>`), test ids
+`gbp-listing-reviewurl-*` with `data-location`. Sending for a listing:
+reputation.md → Requests.
 
 **Pre-existing bug fixed here, because it is this seam:** `/r/[token]` read
 `sub.googleReview`, a field that does not exist (the config is
