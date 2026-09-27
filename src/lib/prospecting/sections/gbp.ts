@@ -10,6 +10,11 @@ import { measured, unavailable, type Scored, type SectionInput } from "./types";
  * `editorialSummary` is Enterprise + Atmosphere, so the description is not
  * requested and is reported as not measured. Places cannot tell whether a
  * profile is claimed, so `gbp_unclaimed` is never emitted here.
+ *
+ * `addressComponents` (an Essentials field, so no higher SKU) is not scored:
+ * it gives the ApexGEO scan the business's town and country (`placeLocation`),
+ * which the runner prefers over the contact's — prospect imports rarely carry
+ * a city, and a form contact's city is an IP guess.
  */
 
 export const key = "gbp" as const;
@@ -18,7 +23,34 @@ const DETAILS_URL = "https://places.googleapis.com/v1/places/";
 /** Places ids are URL-safe tokens; anything else never reaches the request path. */
 const PLACE_ID = /^[A-Za-z0-9_-]{1,300}$/;
 
-export const GBP_FIELD_MASK = "id,businessStatus,photos,regularOpeningHours,nationalPhoneNumber";
+export const GBP_FIELD_MASK = "id,businessStatus,photos,regularOpeningHours,nationalPhoneNumber,addressComponents";
+
+/**
+ * Town and ISO country code from the Places Details `addressComponents` a
+ * gbp section kept, or nulls. Town = `locality`, else `postal_town`; never a
+ * suburb or a municipality, which would make odd local-search prompts.
+ */
+export function placeLocation(sections: { key: string; raw: Record<string, unknown> }[]): {
+  city: string | null;
+  countryCode: string | null;
+} {
+  const details = sections.find((s) => s.key === key)?.raw.details as { addressComponents?: unknown } | undefined;
+  const components = Array.isArray(details?.addressComponents) ? details.addressComponents : [];
+  const text = (type: string, field: "longText" | "shortText") => {
+    for (const c of components as { types?: unknown; longText?: unknown; shortText?: unknown }[]) {
+      const value = c?.[field];
+      if (Array.isArray(c?.types) && c.types.includes(type) && typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return null;
+  };
+  const country = text("country", "shortText");
+  return {
+    city: text("locality", "longText") ?? text("postal_town", "longText"),
+    countryCode: country && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : null,
+  };
+}
 
 export function score(details: Record<string, unknown>): Scored {
   const hours = details.regularOpeningHours as { weekdayDescriptions?: unknown[] } | undefined;

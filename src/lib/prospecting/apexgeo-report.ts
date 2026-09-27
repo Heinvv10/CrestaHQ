@@ -54,7 +54,7 @@ export async function startReportScan(
     !business.city && "city",
   ].filter((m): m is string => Boolean(m));
   if (missing.length > 0) {
-    return none("missing_input", `Not measured: the contact has no ${listOf(missing)} for the scan.`);
+    return none("missing_input", `Not measured: no ${listOf(missing)} is known for this business.`);
   }
   const res = await startScan(
     conn,

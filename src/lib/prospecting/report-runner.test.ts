@@ -324,6 +324,80 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
     expect(apexSections(out)).toEqual([]);
   });
 
+  describe("the scan's town and country fall back to the Google listing (Places addressComponents)", () => {
+    const gbpWith = (addressComponents: unknown[]): Section => ({
+      key: "gbp",
+      run: async () => ({ key: "gbp", status: "ok", score: 100, findings: [], raw: { details: { addressComponents } } }),
+    });
+    const LISTING = [
+      { longText: "Brackendowns", shortText: "Brackendowns", types: ["sublocality_level_1", "sublocality", "political"] },
+      { longText: "Alberton", shortText: "Alberton", types: ["locality", "political"] },
+      { longText: "Ekurhuleni Metropolitan Municipality", shortText: "Ekurhuleni", types: ["administrative_area_level_2", "political"] },
+      { longText: "Namibia", shortText: "na", types: ["country", "political"] }, // not the ZA default, so the fallback shows
+    ];
+    const body = () => JSON.parse(apexCalls()[0][1].body);
+    const started = () => site(() => json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } }));
+
+    it("a contact with no city or country gets the listing's locality and country", async () => {
+      started();
+      await runProspectReport({ ...BUSINESS, city: null, countryCode: null }, { sections: [gbpWith(LISTING)], apexgeo: { connection: CONN, reportId: "r1" } });
+      expect(body()).toMatchObject({ city: "Alberton", country: "NA" });
+    });
+
+    it("the listing wins over the contact's city (which may be an IP guess), town and country as one pair", async () => {
+      started();
+      await runProspectReport({ ...BUSINESS, city: "Gqeberha", countryCode: "BW" }, { sections: [gbpWith(LISTING)], apexgeo: { connection: CONN, reportId: "r1" } });
+      expect(body()).toMatchObject({ city: "Alberton", country: "NA" });
+    });
+
+    it("a listing town with no country keeps the contact's country rather than defaulting to ZA", async () => {
+      started();
+      await runProspectReport({ ...BUSINESS, city: null, countryCode: "BW" }, {
+        sections: [gbpWith([{ longText: "Gaborone", types: ["locality"] }])],
+        apexgeo: { connection: CONN, reportId: "r1" },
+      });
+      expect(body()).toMatchObject({ city: "Gaborone", country: "BW" });
+    });
+
+    it("a listing with no town leaves the contact's own city and country, as a pair", async () => {
+      started();
+      await runProspectReport({ ...BUSINESS, city: "Gqeberha", countryCode: "BW" }, {
+        sections: [gbpWith([{ longText: "Namibia", shortText: "NA", types: ["country"] }])],
+        apexgeo: { connection: CONN, reportId: "r1" },
+      });
+      expect(body()).toMatchObject({ city: "Gqeberha", country: "BW" });
+    });
+
+    it("postal_town is used when there is no locality", async () => {
+      started();
+      await runProspectReport({ ...BUSINESS, city: null }, {
+        sections: [gbpWith([{ longText: "Hermanus", types: ["postal_town"] }, { longText: "Overberg", types: ["administrative_area_level_2"] }])],
+        apexgeo: { connection: CONN, reportId: "r1" },
+      });
+      expect(body().city).toBe("Hermanus");
+    });
+
+    it("a listing with only a suburb or municipality gives no town: not measured, never guessed", async () => {
+      site(() => json(202, {}));
+      const out = await runProspectReport({ ...BUSINESS, city: null }, {
+        sections: [gbpWith(LISTING.filter((c) => !c.types.includes("locality")))],
+        apexgeo: { connection: CONN, reportId: "r1" },
+      });
+      expect(apexCalls()).toHaveLength(0);
+      expect(apexSections(out)[0]).toMatchObject({ reasonCode: "missing_input", reason: "Not measured: no city is known for this business." });
+    });
+
+    it("a gbp section that did not measure gives nothing", async () => {
+      site(() => json(202, {}));
+      const failedGbp: Section = { key: "gbp", run: async () => { throw new Error("places down"); } };
+      await runProspectReport({ ...BUSINESS, city: null }, {
+        sections: [failedGbp, okSection("tech_stack", "no_analytics")],
+        apexgeo: { connection: CONN, reportId: "r1" },
+      });
+      expect(apexCalls()).toHaveLength(0);
+    });
+  });
+
   it.each([
     ["website", { website: null }, "website"],
     ["category", { category: null }, "category"],
@@ -334,7 +408,7 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
     const out = await runProspectReport({ ...BUSINESS, ...patch }, { sections: [okSection("tech_stack", "no_analytics")], apexgeo: { connection: CONN, reportId: "r1" } });
     expect(apexCalls()).toHaveLength(0);
     expect(apexSections(out)[0]).toMatchObject({
-      status: "unavailable", reasonCode: "missing_input", reason: `Not measured: the contact has no ${named} for the scan.`,
+      status: "unavailable", reasonCode: "missing_input", reason: `Not measured: no ${named} is known for this business.`,
     });
   });
 
