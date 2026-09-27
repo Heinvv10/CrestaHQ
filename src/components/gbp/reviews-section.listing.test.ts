@@ -145,6 +145,40 @@ describe("two listings", () => {
     expect(lastUrl()).toBe(BASE);
   });
 
+  it("rows key off docId, not reviewId — Google's reviewId is only unique within a listing", async () => {
+    // Same reviewId ("dup") on two different listings, distinguished by docId.
+    respond = () => ({
+      summary: SUMMARY,
+      reviews: [
+        { ...review("dup", NORTH), docId: "doc-north-dup" },
+        { ...review("dup", MAIN), docId: "doc-main-dup" },
+      ],
+      available: 2, runs: [], scheduled: true, truncated: false, listings: [MAIN, NORTH],
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await render();
+    const duplicateKeyWarning = errorSpy.mock.calls.some((c) => String(c[0]).includes("same key"));
+    expect(duplicateKeyWarning).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  it("a removed listing's 400 resets the filter to All listings and refetches, with no user action", async () => {
+    await render();
+    await pick(NORTH.locationName);
+    expect(new URL(lastUrl(), "http://x").searchParams.get("listing")).toBe(NORTH.locationName);
+
+    // The listing was removed server-side: the next fetch (Sync now's
+    // refresh) 400s on the now-stale filter.
+    fetchMock.mockImplementationOnce(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST") return { ok: true, status: 200, json: async () => ({ run: run(NORTH.locationName) }) };
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 400, json: async () => ({ code: "invalid_filter", field: "listing" }) }));
+    await act(async () => (byId("gbp-sync-now") as HTMLButtonElement).click());
+    expect(lastUrl()).toBe(BASE);
+    expect((byId("gbp-filter-listing") as HTMLSelectElement | null)?.value).toBe("");
+  });
+
   it("keeps the dropdown when the picked listing has no reviews, so another can be picked", async () => {
     respond = (url) => ({
       summary: null, reviews: url === BASE ? [review("r1", MAIN)] : [], available: url === BASE ? 1 : 0,

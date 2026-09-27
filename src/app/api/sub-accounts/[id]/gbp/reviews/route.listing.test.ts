@@ -168,6 +168,19 @@ describe("two listings", () => {
   });
 });
 
+describe("main also present in googleExtraListings (the state locationNamesOf/listingFor defend against)", () => {
+  it("does not double the main listing's reviews or counts", async () => {
+    const clean = await read();
+    const sub = mem.read(`subAccounts/${SA}`)!;
+    mem.seed(`subAccounts/${SA}`, { ...sub, googleExtraListings: [...(sub.googleExtraListings as unknown[]), sub.googleListing] });
+    const dup = await read();
+    expect(dup.status).toBe(200);
+    expect(dup.body.listings.length).toBe(clean.body.listings.length);
+    expect(dup.body.available).toBe(clean.body.available);
+    expect(dup.body.reviews.length).toBe(clean.body.reviews.length);
+  });
+});
+
 describe("single listing: unchanged but for `listings` and each review's `listing`", () => {
   it("listings is [main]; every review is main's; no listing filter needed", async () => {
     resetSync();

@@ -71,6 +71,12 @@ export function ReviewsSection({
     const data = (await res?.json().catch(() => null)) as (Partial<Omit<Ready, "state">> & { code?: string; field?: string }) | null;
     if (signal?.aborted) return;
     if (res?.status === 400 && data?.code === "invalid_filter") {
+      if (data.field === "listing") {
+        // The selected listing was removed server-side: fall back to "All
+        // listings" and refetch, with no user action.
+        setFilters((f) => ({ ...f, listing: "" }));
+        return;
+      }
       // Keep what is on screen; say which filter the server refused.
       setFilterError(`Check the ${FIELD_LABEL[data.field ?? ""] ?? "filter"} filter.`);
       return;
@@ -187,7 +193,7 @@ export function ReviewsSection({
       ) : (
         <ul className="space-y-3" data-testid="gbp-reviews">
           {load.reviews.map((r) => (
-            <ReviewItem key={r.reviewId} review={r} showListing={several}>
+            <ReviewItem key={r.docId} review={r} showListing={several}>
               {/* Admins only, and not while Google needs a reconnect. */}
               {canSync && !reconnect && <ReplyComposer subAccountId={subAccountId} review={r} onPosted={refresh} aiDrafts={load.aiDrafts} />}
             </ReviewItem>
