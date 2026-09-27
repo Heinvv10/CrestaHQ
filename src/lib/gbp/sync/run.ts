@@ -10,7 +10,7 @@ import { acquireLease, commitGuarded, LeaseLostError, releaseLease, type Guarded
 import { fetchPass, type PassOutcome } from "./pass";
 import { planReconcile, planRetention } from "./reconcile";
 import { realSleep, type Sleep } from "./retry";
-import { scopeOf, summaryIn, summaryPatch, type WithSummaries } from "./scope";
+import { extraLocationNames, scopeOf, summaryIn, summaryPatch, type WithSummaries } from "./scope";
 import { loadCache, tombstone } from "./store";
 import { nextSummary } from "./summary";
 import {
@@ -119,7 +119,7 @@ async function runLeased(
   }
   // The sweep finds a tenant by `gbpSummary` alone: the main one stays while
   // any extra still has a summary, or that extra's cache would never expire.
-  const extrasCached = extra === null && Object.keys(sub.gbpSummaries ?? {}).length > 0;
+  const extrasCached = extra === null && extraLocationNames(sub).some((l) => summaryIn(sub, l) !== null);
   if (!syncs && !canSync && cache.size === 0 && !extrasCached) {
     // A cache that can no longer sync drops its (Google-sourced) summary
     // once it holds no reviews — after an expiry purge, or when a

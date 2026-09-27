@@ -49,7 +49,13 @@ async function reviewScan(publicId: string, subAccountId: string, locationName: 
   const key = `${publicId}|${locationName}`;
   const hit = memo.get(key);
   if (hit && now - hit.at < SCAN_MEMO_MS) return hit.scan;
-  const snap = await getAdminDb().collection(reviewsCollection(subAccountId)).orderBy("createTime", "desc").limit(SCAN_CAP).get();
+  // Scoped to the listing, so another listing's newer reviews never crowd it out of the cap.
+  const snap = await getAdminDb()
+    .collection(reviewsCollection(subAccountId))
+    .where("locationName", "==", locationName)
+    .orderBy("createTime", "desc")
+    .limit(SCAN_CAP)
+    .get();
   const scan = snap.docs.map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }));
   memo.set(key, { at: now, scan });
   while (memo.size > MAX_MEMO) memo.delete(memo.keys().next().value!);
