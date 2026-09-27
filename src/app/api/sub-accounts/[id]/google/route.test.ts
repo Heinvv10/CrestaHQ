@@ -143,6 +143,7 @@ describe("disconnect", () => {
           googleConnectionMeta: null,
           // The chosen listing belongs to the connection it was picked through.
           googleListing: null,
+          googleLocationNames: [],
           updatedAt: "SERVER_TS",
         },
       },

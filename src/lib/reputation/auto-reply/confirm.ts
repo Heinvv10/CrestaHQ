@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { autoReplyNeverPath } from "@/lib/gbp/auto-reply-never";
 import { everReplied, QUEUED_REASONS } from "@/lib/gbp/reply-auto-guard";
+import { heldByAnotherSubAccount } from "@/lib/gbp/shared-location";
 import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
 import { reviewBasis } from "../sentiment-basis";
 import { isTexted } from "./decide";
@@ -52,10 +53,7 @@ export async function confirmAutoPost(
     const reviewName = typeof review?.reviewName === "string" ? review.reviewName : null;
     const never = reviewName ? (await tx.get(db.doc(autoReplyNeverPath(sa, reviewName)))).exists : false;
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
-    const sharing = typeof listing === "string"
-      ? ((await tx.get(db.collection("subAccounts").where("googleListing.locationName", "==", listing))) as FirebaseFirestore.QuerySnapshot)
-        .docs.some((d) => d.id !== sa)
-      : false;
+    const sharing = typeof listing === "string" ? await heldByAnotherSubAccount(db, tx, listing, sa) : false;
 
     if (lease?.runId !== p.runId) return "lease_lost";
     if (!autoReplyKillSwitchOn()) return "paused";

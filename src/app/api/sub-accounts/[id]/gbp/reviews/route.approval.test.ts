@@ -124,6 +124,10 @@ describe("each row's reason", () => {
         const other = mem.read(`subAccounts/${OTHER_SA}`)!;
         mem.seed(`subAccounts/${OTHER_SA}`, { ...other, googleListing: { ...(other.googleListing as object), locationName: LOC_A } });
       }],
+      ["another sub-account holding the location only as an extra listing (listing_shared)", () => {
+        const other = mem.read(`subAccounts/${OTHER_SA}`)!;
+        mem.seed(`subAccounts/${OTHER_SA}`, { ...other, googleLocationNames: [(other.googleListing as { locationName: string }).locationName, LOC_A] });
+      }],
     ];
     for (const [label, pause] of pausedBy) {
       resetAutoReply();

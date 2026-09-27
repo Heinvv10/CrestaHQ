@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin, requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { gbpRefusal } from "@/lib/gbp/route-support";
+import { heldByAnotherSubAccount } from "@/lib/gbp/shared-location";
 import { toMillis } from "@/lib/gbp/sync/types";
 import {
   AUTO_REPLY_DAILY_DRAFT_CAP,
@@ -118,8 +119,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
     }
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
     if (input.enabled && typeof listing === "string" && listing) {
-      const same = (await tx.get(db.collection("subAccounts").where("googleListing.locationName", "==", listing))) as FirebaseFirestore.QuerySnapshot;
-      if (same.docs.some((d) => d.id !== id)) {
+      if (await heldByAnotherSubAccount(db, tx, listing, id)) {
         return gbpRefusal(409, "listing_shared", "Another sub-account uses this Google listing — auto-reply can't be switched on here.");
       }
     }

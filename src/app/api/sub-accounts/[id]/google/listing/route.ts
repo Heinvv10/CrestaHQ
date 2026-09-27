@@ -11,6 +11,7 @@ import { clearGbpCache } from "@/lib/gbp/sync/store";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
+import type { GoogleListing } from "@/types/google";
 
 /**
  * Choose (PUT) or clear (DELETE) the Business Profile listing this
@@ -111,6 +112,8 @@ export async function PUT(
         selectedAt: FieldValue.serverTimestamp(),
         selectedByUid: access.uid,
       },
+      // The flat list the listing_shared query reads: this main, then the extras.
+      googleLocationNames: [location.name, ...((snap.data()?.googleExtraListings ?? []) as GoogleListing[]).map((l) => l.locationName)],
       updatedAt: FieldValue.serverTimestamp(),
     });
     tx.set(db.collection(`subAccounts/${id}/gbpEvents`).doc(), {

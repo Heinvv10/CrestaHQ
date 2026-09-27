@@ -169,7 +169,16 @@ describe("PUT selection", () => {
     ]);
     // Nothing but the listing (and its timestamp) changed on the member-readable doc.
     const docWrite = state.writes.find((w) => w.path === SUB_PATH);
-    expect(Object.keys(docWrite?.data ?? {}).sort()).toEqual(["googleListing", "updatedAt"]);
+    expect(Object.keys(docWrite?.data ?? {}).sort()).toEqual(["googleListing", "googleLocationNames", "updatedAt"]);
+    expect(state.docs.get(SUB_PATH)?.googleLocationNames).toEqual([LOC_NORTH]);
+  });
+
+  it("googleLocationNames is the new main followed by the stored extras", async () => {
+    const extra = { locationName: "locations/extra-1", title: "Extra" };
+    state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleExtraListings: [extra], googleLocationNames: ["locations/stale"] });
+    await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A });
+    expect(state.docs.get(SUB_PATH)?.googleLocationNames).toEqual([LOC_A, "locations/extra-1"]);
+    expect(state.docs.get(SUB_PATH)?.googleExtraListings).toEqual([extra]);
   });
 
   it("takes the account display name from the account actually selected", async () => {
@@ -219,6 +228,7 @@ describe("DELETE", () => {
     state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleEnabledByAgency: false });
     expect(await del()).toEqual({ status: 200, body: { ok: true } });
     expect(listing()).toBeNull();
+    expect(state.docs.get(SUB_PATH)?.googleLocationNames).toEqual([]);
   });
 
   it("audits the clear with who did it and what was cleared", async () => {

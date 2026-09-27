@@ -1,5 +1,6 @@
 import type { StripeConnectionMeta } from "@/types/payments";
 import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
+import type { GbpSummary } from "@/lib/gbp/sync/types";
 import type { PaystackConnectionMeta } from "@/types/paystack-connection";
 import type { Webinar1ConnectionMeta } from "@/types/webinar1";
 import type { WhatsappCloudMeta } from "@/types/whatsapp-cloud";
@@ -588,6 +589,22 @@ export interface SubAccountDoc {
    * {@link GoogleListing}). Null/absent until selected; cleared on disconnect.
    */
   googleListing?: GoogleListing | null;
+  /**
+   * The non-main listings managed from the same Google connection, same shape
+   * as `googleListing`, server-written from the provider re-fetch, at most
+   * `MAX_EXTRA_LISTINGS` (lib/gbp/listings.ts). Absent = none. Extras imply a
+   * main (MULTI_LISTING_V1_PLAN.md).
+   */
+  googleExtraListings?: GoogleListing[];
+  /**
+   * Flat `[main.locationName, ...extras.locationName]`, rewritten by every
+   * writer of either listing field, for the `array-contains` listing_shared
+   * query (lib/gbp/shared-location.ts). Absent on docs written before it
+   * existed — read listings through `allListings`, never from this array.
+   */
+  googleLocationNames?: string[];
+  /** Per-EXTRA-listing sync summaries keyed by `locId`; main stays in `gbpSummary`. */
+  gbpSummaries?: Record<string, GbpSummary>;
   /**
    * The public reviews widget for the selected listing (see
    * {@link GbpWidgetMeta}); null/absent when none. Written only by the server.
