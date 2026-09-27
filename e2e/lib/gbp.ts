@@ -16,6 +16,8 @@ import { signQStashBody } from "./qstash";
 
 export const ACCOUNT = "accounts/e2e-fixture-group";
 export const LOC_A = "locations/e2e-velo-gqeberha";
+/** The second fixture location — an EXTRA listing in the multi-listing specs. */
+export const LOC_B = "locations/e2e-velo-gqeberha-north";
 const SCOPE = "https://www.googleapis.com/auth/business.manage";
 export const TRANSLATED =
   "(Translated by Google) Fixture review: the connection is okay.\n\n(Original)\nFixture-resensie: die verbinding is okay.";
@@ -32,10 +34,10 @@ export type Scenario = {
 };
 
 /** The fake's built-in default (fake-scenario.ts), written out so a spec can change it. */
-function review(id: string, star: number, comment: string | null, day: number, opts: { anonymous?: boolean; reply?: string } = {}) {
+function review(id: string, star: number, comment: string | null, day: number, opts: { anonymous?: boolean; reply?: string; loc?: string } = {}) {
   const d = String(day).padStart(2, "0");
   return {
-    name: `${ACCOUNT}/${LOC_A}/reviews/${id}`,
+    name: `${ACCOUNT}/${opts.loc ?? LOC_A}/reviews/${id}`,
     reviewId: id,
     reviewer: { displayName: opts.anonymous ? "" : `Fixture Reviewer ${id}`, profilePhotoUrl: null, isAnonymous: !!opts.anonymous },
     starRating: star,
@@ -72,6 +74,23 @@ export function defaultScenario(): Scenario {
   };
 }
 
+const LOC_B_LOCATION = {
+  name: LOC_B, title: "Velo Test Fibre — Gqeberha North", address: "9 Fixture Avenue, Gqeberha North, 6100", websiteUri: null,
+  placeId: "fake-place-gqeberha-north", mapsUri: null, newReviewUri: null,
+};
+
+/** The default scenario plus the second location, LOC_B, with two reviews of its own. */
+export function twoListingScenario(): Scenario {
+  const s = defaultScenario();
+  s.locations[ACCOUNT].push(LOC_B_LOCATION);
+  s.reviews[LOC_B] = {
+    averageRating: 4.5,
+    totalReviewCount: 2,
+    reviews: [review("fake-b2", 5, "Fixture review B: great service north.", 26, { loc: LOC_B }), review("fake-b1", 4, null, 20, { loc: LOC_B })],
+  };
+  return s;
+}
+
 export async function setScenario(s: Scenario): Promise<void> {
   await guard();
   await primaryRef().collection("private").doc("gbpFakeScenario").set(s);
@@ -84,6 +103,10 @@ export async function clearGbp(): Promise<void> {
   // The private docs carry no subAccountId; their parent was asserted above.
   for (const id of ["googleConnection", "gbpFakeScenario", "gbpSyncState", "autoReplyLease", "autoReplyUsage"]) {
     await ref.collection("private").doc(id).delete();
+  }
+  // Each extra listing's own sync state (private/gbpSyncState_{locId}).
+  for (const doc of (await ref.collection("private").get()).docs) {
+    if (doc.id.startsWith("gbpSyncState_")) await doc.ref.delete();
   }
   // autoReplyNever / autoReplyDismissed deliberately outlive the review cache
   // in the app; a spec's fixture reviews must not leave them to the next run.
@@ -100,14 +123,18 @@ export async function clearGbp(): Promise<void> {
     googleExtraListings: FieldValue.delete(),
     googleLocationNames: FieldValue.delete(),
     gbpSummary: FieldValue.delete(),
+    gbpSummaries: FieldValue.delete(),
     gbpWidgetMeta: FieldValue.delete(),
     // A crashed auto-reply spec must not leave auto-reply on for later specs.
     reviewsAutoReply: FieldValue.delete(),
   });
 }
 
-/** A live fake connection with the first fixture location selected — as PR 1's flow leaves it. */
-export async function seedConnectedListing(): Promise<void> {
+/**
+ * A live fake connection with the first fixture location selected — as PR 1's
+ * flow leaves it; `extras` also connects LOC_B as an extra listing.
+ */
+export async function seedConnectedListing(opts: { extras?: boolean } = {}): Promise<void> {
   await guard();
   const sa = primaryId();
   const ownerUid = (await adminDb().doc(`agencies/${readEnv().E2E_AGENCY_ID}`).get()).data()?.ownerUid ?? null;
@@ -124,6 +151,16 @@ export async function seedConnectedListing(): Promise<void> {
       title: "Velo Test Fibre — Gqeberha", address: "1 Fixture Road, Gqeberha, 6001", websiteUri: null,
       placeId: "fake-place-gqeberha", mapsUri: null, newReviewUri: null, selectedAt: new Date(), selectedByUid: ownerUid,
     },
+    ...(opts.extras
+      ? {
+          googleExtraListings: [{
+            accountName: ACCOUNT, accountDisplayName: "E2E Fixture Group", locationName: LOC_B, title: LOC_B_LOCATION.title,
+            address: LOC_B_LOCATION.address, websiteUri: null, placeId: LOC_B_LOCATION.placeId, mapsUri: null, newReviewUri: null,
+            selectedAt: new Date(), selectedByUid: ownerUid,
+          }],
+          googleLocationNames: [LOC_A, LOC_B],
+        }
+      : {}),
   });
 }
 

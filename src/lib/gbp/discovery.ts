@@ -78,12 +78,37 @@ export async function findAccessibleLocation(
   accessToken: string,
   accountName: string,
   locationName: string,
-): Promise<{ account: GbpAccount; location: GbpLocation } | null | "unknown"> {
+): Promise<Access> {
+  return (await findAccessibleLocations(provider, accessToken, [{ accountName, locationName }]))[0];
+}
+
+type Access = { account: GbpAccount; location: GbpLocation } | null | "unknown";
+
+/**
+ * {@link findAccessibleLocation} for several pairs, in order, with ONE walk of
+ * the accounts and at most one walk of each named account's locations.
+ */
+export async function findAccessibleLocations(
+  provider: GbpProvider,
+  accessToken: string,
+  pairs: Array<{ accountName: string; locationName: string }>,
+): Promise<Access[]> {
   const accounts = await walk((p) => provider.listAccounts(accessToken, p));
-  const account = accounts.items.find((a) => a.name === accountName);
-  if (!account) return accounts.truncated ? "unknown" : null;
-  const locations = await walk((p) => provider.listLocations(accessToken, accountName, p));
-  const location = locations.items.find((l) => l.name === locationName);
-  if (!location) return locations.truncated ? "unknown" : null;
-  return { account, location };
+  const walked = new Map<string, { items: GbpLocation[]; truncated: boolean }>();
+  const out: Access[] = [];
+  for (const { accountName, locationName } of pairs) {
+    const account = accounts.items.find((a) => a.name === accountName);
+    if (!account) {
+      out.push(accounts.truncated ? "unknown" : null);
+      continue;
+    }
+    let locations = walked.get(accountName);
+    if (!locations) {
+      locations = await walk((p) => provider.listLocations(accessToken, accountName, p));
+      walked.set(accountName, locations);
+    }
+    const location = locations.items.find((l) => l.name === locationName);
+    out.push(location ? { account, location } : locations.truncated ? "unknown" : null);
+  }
+  return out;
 }

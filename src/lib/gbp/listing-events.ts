@@ -4,7 +4,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 import type { GoogleListing } from "@/types/google";
-import { findAccessibleLocation } from "./discovery";
+import { findAccessibleLocation, findAccessibleLocations } from "./discovery";
+import { removeExtraListings, storedExtras } from "./extra-listings";
 import { clearAllGbpCaches } from "./sync/clear";
 import { extraLocationNames } from "./sync/scope";
 import type { GbpProvider } from "./provider/types";
@@ -18,7 +19,8 @@ import type { GbpProvider } from "./provider/types";
  * holds the current listings.
  * Every clear also switches review auto-reply off (`reviewsAutoReply.enabled`),
  * noting `disabledReason: "listing_changed"` when it was on — and then sends
- * one alert (it was on, so exactly one writer switches it off).
+ * one alert (it was on, so exactly one writer switches it off). Each extra
+ * listing cleared with it gets its own `extra_listing_removed` event.
  */
 
 export type ListingClearedReason =
@@ -62,6 +64,18 @@ export async function clearListing(
       { ...opts.alsoSet, ...autoReplyOff, googleListing: null, googleExtraListings: [], googleLocationNames: [], updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
+    // Each extra cleared with it is audited on its own, with the same reason.
+    for (const loc of extras) {
+      tx.set(db.collection(`subAccounts/${subAccountId}/gbpEvents`).doc(), {
+        type: "extra_listing_removed",
+        reason,
+        agencyId: sub.agencyId,
+        subAccountId,
+        createdByUid: byUid,
+        at: FieldValue.serverTimestamp(),
+        locationName: loc,
+      });
+    }
     if (!previous) return true;
     tx.set(db.collection(`subAccounts/${subAccountId}/gbpEvents`).doc(), {
       type: "listing_cleared",
@@ -108,5 +122,32 @@ export async function reverifyListingAfterReconnect(
     await clearListing(subAccountId, byUid, "not_accessible_after_reconnect", {
       onlyIf: listing.locationName,
     });
+    return;
   }
+  await reverifyExtrasAfterReconnect(subAccountId, byUid, provider, accessToken);
+}
+
+/**
+ * The main listing stays: each EXTRA listing the new grant provably cannot see
+ * is removed on its own (audited, only its synced data dropped). Same rules as
+ * the main: a failed or truncated check keeps the listing.
+ */
+async function reverifyExtrasAfterReconnect(
+  subAccountId: string,
+  byUid: string,
+  provider: GbpProvider,
+  accessToken: string,
+): Promise<void> {
+  const extras = storedExtras((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {});
+  if (extras.length === 0) return;
+  let matches: Awaited<ReturnType<typeof findAccessibleLocations>>;
+  try {
+    matches = await findAccessibleLocations(provider, accessToken, extras);
+  } catch (err) {
+    const reason = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+    console.warn(`[google/callback] extra listings re-verify failed, keeping them sa=${subAccountId}`, reason);
+    return;
+  }
+  const missing = extras.filter((_, i) => matches[i] === null);
+  if (missing.length > 0) await removeExtraListings(subAccountId, byUid, missing, "not_accessible_after_reconnect");
 }
