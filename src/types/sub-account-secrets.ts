@@ -1,6 +1,7 @@
 /**
  * Where the per-sub-account integration credentials live — the Twilio auth
- * token, the Meta Page access token and the GHL Private Integration Token.
+ * token, the Meta Page access token, the GHL Private Integration Token and
+ * the ApexGEO API key.
  *
  * SECRET SPLIT, same as `@/types/payments` and `@/types/whatsapp-cloud`: the
  * value lives at `subAccounts/{id}/private/{docId}`, covered by the generic
@@ -16,6 +17,10 @@ export const SUB_ACCOUNT_SECRETS = {
   twilio: { docId: "twilioCredentials", field: "authToken", parent: "twilioConfig" },
   meta: { docId: "metaCredentials", field: "pageAccessToken", parent: "metaConfig" },
   ghl: { docId: "ghlImportCredentials", field: "token", parent: "ghlImportConfig" },
+  // Prospecting PR 3. Never stored on the parent: `apexgeoConfig` does not
+  // exist, so there is no legacy field to migrate. The private doc also holds
+  // the non-secret `baseUrl` (src/lib/prospecting/apexgeo-connection.ts).
+  apexgeo: { docId: "apexgeoConnection", field: "apiKey", parent: "apexgeoConfig" },
 } as const;
 
 export type SubAccountSecretKind = keyof typeof SUB_ACCOUNT_SECRETS;

@@ -22,7 +22,7 @@ const ALL_CODES: Record<ProspectFindingCode, true> = {
   no_whatsapp_cta: true, no_reviews: true, low_rating: true, few_reviews: true, no_booking: true,
   no_contact_form: true, no_phone_link: true, gbp_no_hours: true, gbp_no_photos: true,
   gbp_no_description: true, gbp_no_phone: true, listing_missing: true, no_analytics: true,
-  no_chat_widget: true, no_ads_running: true,
+  no_chat_widget: true, no_ads_running: true, ai_crawlers_blocked: true, no_local_business_schema: true,
 };
 
 describe("SEVERITY_ORDER", () => {
@@ -30,10 +30,17 @@ describe("SEVERITY_ORDER", () => {
     expect([...SEVERITY_ORDER].sort()).toEqual(Object.keys(ALL_CODES).sort());
   });
 
-  it("starts with the plan's fixed order", () => {
-    expect(SEVERITY_ORDER.slice(0, 6)).toEqual([
-      "no_website", "no_https", "not_in_ai_answers", "gbp_unclaimed", "slow_mobile", "no_whatsapp_cta",
+  it("starts with the plan's fixed order (PR 3's ai_crawlers_blocked sits inside it, above no_whatsapp_cta)", () => {
+    expect(SEVERITY_ORDER.slice(0, 7)).toEqual([
+      "no_website", "no_https", "not_in_ai_answers", "gbp_unclaimed", "slow_mobile", "ai_crawlers_blocked",
+      "no_whatsapp_cta",
     ]);
+  });
+
+  it("no_local_business_schema ranks below listing_missing's neighbours, above chat and analytics", () => {
+    const at = (c: string) => SEVERITY_ORDER.indexOf(c as never);
+    expect(at("no_local_business_schema")).toBeGreaterThan(at("listing_missing"));
+    expect(at("no_local_business_schema")).toBeLessThan(at("no_chat_widget"));
   });
 });
 

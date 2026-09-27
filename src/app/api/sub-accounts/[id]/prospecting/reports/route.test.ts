@@ -239,7 +239,7 @@ describe("GET /[reportId]", () => {
     const { report } = (await res.json()) as { report: Record<string, unknown> };
     expect(report).toMatchObject({ id: "r1", status: "ready", generatedAt: "2026-09-20T00:00:00.000Z" });
     expect(report.sections).toEqual([
-      { key: "reputation", status: "ok", score: 80, findings: [], reason: null, details: { rating: 4.5 } },
+      { key: "reputation", status: "ok", score: 80, findings: [], reason: null, reasonCode: null, details: { rating: 4.5 } },
     ]);
     expect(JSON.stringify(report)).not.toContain("RAW-SENTINEL");
     expect(JSON.stringify(report)).not.toContain('"raw"');
@@ -247,6 +247,17 @@ describe("GET /[reportId]", () => {
     const missing = await item.GET(req("GET", "sa1/prospecting/reports/zz"), ctx("zz"));
     expect(theirs.status).toBe(404);
     expect(await theirs.text()).toBe(await missing.text());
+  });
+  it("keeps not-connected ApexGEO sections for members (the public page hides them, D6)", async () => {
+    const { apexgeoPlaceholders, APEXGEO_REASON } = await import("@/lib/prospecting/apexgeo-sections");
+    seedReport("r1", { sections: apexgeoPlaceholders("not_connected", APEXGEO_REASON.not_connected) });
+    const { report } = (await (await item.GET(req("GET", "sa1/prospecting/reports/r1"), ctx("r1"))).json()) as {
+      report: { sections: { key: string; reasonCode: string; reason: string }[] };
+    };
+    expect(report.sections.map((s) => [s.key, s.reasonCode])).toEqual([
+      ["website_performance", "not_connected"], ["ai_readiness", "not_connected"], ["ai_presence", "not_connected"],
+    ]);
+    expect(report.sections[0].reason).toMatch(/add an ApexGEO key/);
   });
 });
 

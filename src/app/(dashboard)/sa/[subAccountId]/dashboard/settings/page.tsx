@@ -38,6 +38,7 @@ import { SubAccountGoogleReviewSection } from "@/components/settings/sub-account
 import { SubAccountStripeSection } from "@/components/settings/sub-account-stripe-section";
 import { SubAccountPaystackSection } from "@/components/settings/sub-account-paystack-section";
 import { SubAccountWebinar1Section } from "@/components/settings/sub-account-webinar1-section";
+import { SubAccountApexgeoSection } from "@/components/settings/sub-account-apexgeo-section";
 import { SubAccountApiKeysSection } from "@/components/settings/sub-account-api-keys-section";
 import { SubAccountApiRecipesSection } from "@/components/settings/sub-account-api-recipes-section";
 import { SubAccountCalendarSyncSection } from "@/components/settings/sub-account-calendar-sync-section";
@@ -252,6 +253,10 @@ export default function SettingsPage() {
           {/* Webinar1 — connect a self-hosted webinar deployment (create
               webinars from the CRM, sync registrations/attendance back). */}
           <SubAccountWebinar1Section />
+
+          {/* ApexGEO — the key behind prospect reports' website speed, AI
+              readiness and AI search presence sections. */}
+          <SubAccountApexgeoSection />
 
           {/* Data export */}
           <section className="bg-card rounded-2xl border p-5">

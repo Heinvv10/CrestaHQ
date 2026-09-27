@@ -5,6 +5,7 @@ import { hashShareToken } from "@/lib/snapshots/share";
 import { toIso } from "@/lib/prospecting/reports";
 import { prospectingEnabled } from "@/lib/prospecting/gate";
 import { publicSection, type PublicReportSection } from "@/lib/prospecting/public-sections";
+import { displaySections } from "@/lib/prospecting/apexgeo-sections";
 import type { AppTheme, ProspectSectionResult } from "@/types";
 
 export type { PublicReportSection };
@@ -17,10 +18,16 @@ export type { PublicReportSection };
  * about which. The business name is published only for a business: a contact
  * with a company, or a prospecting import (else it may be a person's name). The payload is built field
  * by field: nothing reaches the public that is not named here (sections via
- * `public-sections.ts`).
+ * `public-sections.ts`). ApexGEO sections left out because of the agency's
+ * own setup — no ApexGEO key, or its account out of credits — are dropped:
+ * a prospect should not see those gaps (decision D6). Pending, timed-out,
+ * failed and missing-input ones stay.
  */
 
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
+
+/** ApexGEO sections not measured because of the agency's own setup (D6). */
+const HIDDEN_PUBLICLY: ReadonlySet<string | undefined> = new Set(["not_connected", "out_of_credits"]);
 
 export interface PublicReport {
   businessName: string | null;
@@ -84,7 +91,9 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     businessName: company ?? (showName ? str(contact.name) : null),
     headline: str(report.headline),
     generatedAt: toIso(report.generatedAt),
-    sections: ((report.sections ?? []) as ProspectSectionResult[]).map((s) => publicSection(s, { showName })),
+    sections: displaySections((report.sections ?? []) as ProspectSectionResult[], report.apexgeo)
+      .filter((s) => !HIDDEN_PUBLICLY.has(s.reasonCode))
+      .map((s) => publicSection(s, { showName })),
     agency: {
       name: str(agency.name),
       logoUrl: logoUrl && /^https:\/\//i.test(logoUrl) ? logoUrl : null,

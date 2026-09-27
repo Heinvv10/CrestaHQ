@@ -475,6 +475,15 @@ export interface SubAccountDoc {
    */
   paystackConnectionMeta?: PaystackConnectionMeta | null;
   /**
+   * ApexGEO (Prospecting report sections 5/7/8) — display status only. The
+   * API key lives at `subAccounts/{id}/private/apexgeoConnection` (locked;
+   * Admin SDK only). Written by `/api/sub-accounts/[id]/apexgeo-connection`.
+   */
+  apexgeoConnected?: boolean;
+  apexgeoKeyLast4?: string | null;
+  /** Null = ApexGEO's production URL. */
+  apexgeoBaseUrl?: string | null;
+  /**
    * Webinar1 (webinar platform) connection — display metadata only. The API
    * key + webhook signing secret live at
    * `subAccounts/{id}/private/webinar1Connection` (locked; Admin SDK only),

@@ -11,6 +11,8 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 const { mem } = await import("@/test/gbp-sync-store");
 const { mintReportShare, revokeReportShare } = await import("@/lib/prospecting/share");
 const { GET } = await import("./route");
+const { apexgeoFromScan, apexgeoPlaceholders, APEXGEO_REASON } = await import("@/lib/prospecting/apexgeo-sections");
+const { completedScan } = await import("@/lib/prospecting/apexgeo.fixture");
 
 const get = (token: string) =>
   GET(new Request(`https://app.test/api/public/prospecting/report/${token}`), { params: Promise.resolve({ shareId: token }) });
@@ -63,7 +65,7 @@ describe("a live share", () => {
     const body = (await res.json()) as Record<string, unknown> & { sections: Record<string, unknown>[] };
     expect(Object.keys(body).sort()).toEqual(["agency", "businessName", "cta", "generatedAt", "headline", "sections"]);
     for (const s of body.sections) {
-      expect(Object.keys(s).sort()).toEqual(["details", "findings", "key", "reason", "score", "status"]);
+      expect(Object.keys(s).sort()).toEqual(["details", "findings", "key", "reason", "reasonCode", "score", "status"]);
     }
     expect(body).toMatchObject({
       businessName: "Acme Plumbing",
@@ -72,7 +74,7 @@ describe("a live share", () => {
       agency: { name: "Cresta Agency", logoUrl: "https://cdn.test/logo.png", appTheme: "green" },
       cta: "/b/sa1/first",
     });
-    expect(body.sections[1]).toEqual({ key: "ads", status: "unavailable", score: null, findings: [], reason: "No ad library source", details: {} });
+    expect(body.sections[1]).toEqual({ key: "ads", status: "unavailable", score: null, findings: [], reason: "No ad library source", reasonCode: null, details: {} });
     for (const leak of ["RAW-SENTINEL", "UID-SENTINEL", "OWNER-SENTINEL", "EMAIL-SENTINEL", "PHONE-SENTINEL", "\"raw\"", "createdByUid", "agencyId", "subAccountId", "contactId", "usageMonth", "cost"]) {
       expect(text).not.toContain(leak);
     }
@@ -214,5 +216,73 @@ describe("non-enumeration", () => {
     const fresh = await mint();
     expect((await get(old)).status).toBe(404);
     expect((await get(fresh)).status).toBe(200);
+  });
+});
+
+describe("ApexGEO sections (decision D6)", () => {
+  const keysOf = async () =>
+    ((await (await get(await mint())).json()) as { sections: { key: string; status: string; reasonCode: string | null }[] })
+      .sections;
+
+  it("not connected: the three sections are absent from the public page", async () => {
+    seed({ sections: [...SECTIONS, ...apexgeoPlaceholders("not_connected", APEXGEO_REASON.not_connected)] });
+    const text = await (await get(await mint())).clone().text();
+    expect(JSON.parse(text).sections.map((s: { key: string }) => s.key)).toEqual(["gbp", "ads"]);
+    expect(text).not.toContain("ApexGEO key");
+  });
+
+  it("out of ApexGEO credits: also the agency's setup, also hidden", async () => {
+    seed({ sections: [...SECTIONS, ...apexgeoPlaceholders("out_of_credits", APEXGEO_REASON.out_of_credits)] });
+    expect((await keysOf()).map((s) => s.key)).toEqual(["gbp", "ads"]);
+  });
+
+  it.each(["pending", "timeout", "failed", "missing_input"] as const)(
+    "%s sections stay on the public page, honestly",
+    async (code) => {
+      seed({ sections: [...SECTIONS, ...apexgeoPlaceholders(code, "some reason")] });
+      const sections = await keysOf();
+      expect(sections.map((s) => s.key)).toEqual(["gbp", "ads", "website_performance", "ai_readiness", "ai_presence"]);
+      expect(sections[2].reasonCode).toBe(code);
+    },
+  );
+
+  it.each(["pending", "timeout", "failed"] as const)("a %s section's public reason never names the vendor (white-label)", async (code) => {
+    seed({ sections: [...SECTIONS, ...apexgeoPlaceholders(code, APEXGEO_REASON[code])] });
+    const text = await (await get(await mint())).text();
+    expect(text).toContain(APEXGEO_REASON[code]);
+    expect(text).not.toMatch(/apexgeo/i);
+  });
+
+  it("filled sections show counts and competitor names, never answer text, cited URLs or provider errors", async () => {
+    const scan = completedScan();
+    scan.ai_visibility.prompts[0].engines[0].cited_url = "https://cited.example/page";
+    seed({ sections: [...SECTIONS, ...apexgeoFromScan(scan as never)] });
+    const res = await get(await mint());
+    const text = await res.clone().text();
+    const body = (await res.json()) as { sections: { key: string; details: Record<string, unknown> }[] };
+    expect(body.sections.find((s) => s.key === "ai_presence")?.details).toEqual({
+      mentionedIn: 0, answersMeasured: 6, models: "gemini-2.5-flash, gpt-4o-mini",
+      topCompetitors: "Alpha Plumbing, Beta Drains, Gamma Plumbing Exampletown",
+    });
+    for (const leak of ["cited.example", "best plumber in", "insufficient_quota", "perplexity.ai", "No FAQ Schema", "WebPage"]) {
+      expect(text).not.toContain(leak);
+    }
+  });
+
+  it("a scan pending for over 30 minutes shows as timed out, not in progress forever", async () => {
+    seed({
+      sections: [...SECTIONS, ...apexgeoPlaceholders("pending", APEXGEO_REASON.pending)],
+      apexgeo: { scanId: "s1", status: "pending", attempts: 2, startedAt: new Date(Date.now() - 31 * 60_000) },
+    });
+    const sections = await keysOf();
+    expect(sections.slice(2).map((s) => [s.status, s.reasonCode])).toEqual(Array(3).fill(["timeout", "timeout"]));
+  });
+
+  it("a scan pending for under 30 minutes is still in progress", async () => {
+    seed({
+      sections: [...SECTIONS, ...apexgeoPlaceholders("pending", APEXGEO_REASON.pending)],
+      apexgeo: { scanId: "s1", status: "pending", attempts: 2, startedAt: new Date(Date.now() - 29 * 60_000) },
+    });
+    expect((await keysOf())[2].reasonCode).toBe("pending");
   });
 });

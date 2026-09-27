@@ -110,7 +110,7 @@ export default function ProspectReportPage() {
           {report.headline ?? (report.status === "ready" ? "No issues found" : `Report ${report.status}`)}
         </h1>
       </div>
-      <ReportSections sections={report.sections} />
+      <ReportSections sections={report.sections} connectHref={saPath("/dashboard/settings")} />
     </div>
   );
 }

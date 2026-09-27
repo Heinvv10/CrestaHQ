@@ -562,3 +562,16 @@ describe("isPublicPath — prospect report share links + worker", () => {
     expect(isPublicPath("/api/sub-accounts/sa1/prospecting/reports")).toBe(false);
   });
 });
+
+describe("isPublicPath — the ApexGEO poll worker (Prospecting PR 3)", () => {
+  it("opens the exact path the report worker queues polls to, and nothing under it", async () => {
+    const { APEXGEO_POLL_PATH } = await import("@/lib/prospecting/apexgeo-report");
+    expect(isPublicPath(APEXGEO_POLL_PATH)).toBe(true);
+    expect(isPublicPath(`${APEXGEO_POLL_PATH}/x`)).toBe(false);
+  });
+
+  it("keeps the key routes behind a session", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/apexgeo-connection")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/apexgeo-connection/test")).toBe(false);
+  });
+});

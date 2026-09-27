@@ -30,9 +30,10 @@ export type ProspectReportStatus = "queued" | "running" | "ready" | "failed";
 
 /**
  * Report section keys (docs/programme/prospecting-module.md, "Report
- * sections"). PR 2 runs business_details, gbp, reputation, listings,
- * tech_stack, ads, lead_capture. website_performance, ai_readiness and
- * ai_presence are ApexGEO sections (PR 3); only their keys exist here.
+ * sections"). The runner measures business_details, gbp, reputation,
+ * listings, tech_stack, ads, lead_capture. website_performance, ai_readiness
+ * and ai_presence come from one ApexGEO scan, filled in after the report is
+ * ready (PR 3, `ProspectReportDoc.apexgeo`).
  */
 export type ProspectSectionKey =
   | "business_details"
@@ -74,7 +75,9 @@ export type ProspectFindingCode =
   | "listing_missing"
   | "no_analytics"
   | "no_chat_widget"
-  | "no_ads_running";
+  | "no_ads_running"
+  | "ai_crawlers_blocked"
+  | "no_local_business_schema";
 
 export interface ProspectFinding {
   code: ProspectFindingCode;
@@ -92,6 +95,33 @@ export interface ProspectSectionResult {
   reason?: string | null;
   /** Section-specific measured values, rendered by the report page. */
   raw: Record<string, unknown>;
+  /**
+   * ApexGEO sections only: why the section is not (yet) measured, in a form
+   * code can act on. `not_connected` sections are hidden on the public page.
+   */
+  reasonCode?: ApexgeoReasonCode;
+}
+
+export type ApexgeoReasonCode =
+  | "not_connected"
+  | "pending"
+  | "missing_input"
+  | "out_of_credits"
+  | "timeout"
+  | "failed"
+  | "gate_off";
+
+/**
+ * `prospectReports/{id}.apexgeo` — the report's ApexGEO scan (PR 3). Written
+ * by the report worker when the scan starts; settled by the ApexGEO poll
+ * worker. `attempts` counts polls made, and each poll message carries the
+ * number it expects, so a duplicate delivery cannot start a second chain.
+ */
+export interface ProspectReportApexgeo {
+  scanId: string;
+  status: "pending" | "done" | "failed" | "timeout" | "stopped";
+  attempts: number;
+  startedAt: Timestamp | FieldValue | Date | null;
 }
 
 /**
@@ -115,6 +145,8 @@ export interface ProspectReportDoc {
   usageMonth?: string;
   /** Provider calls made, per provider (e.g. `{ placesDetails: 1, http: 9 }`). */
   cost?: Record<string, number>;
+  /** The ApexGEO scan behind sections 5/7/8; absent when none was started. */
+  apexgeo?: ProspectReportApexgeo | null;
 }
 
 /**
@@ -160,6 +192,8 @@ export interface ProspectReportInput {
   category: string | null;
   /** Town/city, used by listing searches when known. */
   city: string | null;
+  /** ISO country code from the contact, when known (ApexGEO scans default to ZA). */
+  countryCode: string | null;
 }
 
 /** What `runProspectReport` hands back to the QStash callback. Never throws. */
@@ -168,4 +202,6 @@ export interface ProspectReportOutcome {
   sections: ProspectSectionResult[];
   headline: string | null;
   cost: Record<string, number>;
+  /** Set when an ApexGEO scan was started for this report. */
+  apexgeo: { scanId: string } | null;
 }

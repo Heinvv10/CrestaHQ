@@ -8,6 +8,7 @@ import { prospectingEnabled, prospectingGateOff } from "@/lib/prospecting/gate";
 import { usageMonthKey } from "@/lib/server/usage-meter";
 import { REPORT_DEADLINE_MS } from "@/lib/prospecting/report-runner";
 import { publicSection } from "@/lib/prospecting/public-sections";
+import { displaySections } from "@/lib/prospecting/apexgeo-sections";
 import type {
   ContactProspecting,
   ProspectReportInput,
@@ -163,6 +164,9 @@ export function reportInputOf(contact: FirebaseFirestore.DocumentData): Prospect
     reviewsCount: num(p.reviewsCount),
     category: str(p.category),
     city: str(contact.city),
+    countryCode: typeof contact.countryCode === "string" && /^[A-Za-z]{2}$/.test(contact.countryCode)
+      ? contact.countryCode.toUpperCase()
+      : null,
   };
 }
 
@@ -182,7 +186,7 @@ export function serializeReport(id: string, d: FirebaseFirestore.DocumentData) {
     contactId: d.contactId as string,
     createdByUid: d.createdByUid as string,
     status: d.status as string,
-    sections: ((d.sections ?? []) as ProspectSectionResult[]).map((s) =>
+    sections: displaySections((d.sections ?? []) as ProspectSectionResult[], d.apexgeo).map((s) =>
       publicSection(s, { showName: true }),
     ),
     headline: (d.headline ?? null) as string | null,

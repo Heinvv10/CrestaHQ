@@ -2,7 +2,7 @@
 
 *Part of the [LeadStack CRM](../../CLAUDE.md) docs. Feature index: [docs/features](README.md). Plan and PR sequence: [docs/programme/prospecting-module.md](../programme/prospecting-module.md) (plan, PR #244).*
 
-Status: **PR 2 of 6** — gate, quota, collections, saved lists (PR 1) and audit reports with share links (PR 2). No message is sent yet.
+Status: **PR 3 of 6** — gate, quota, collections, saved lists (PR 1), audit reports with share links (PR 2) and the ApexGEO sections 5/7/8 (PR 3). No message is sent yet.
 
 ## What exists
 
@@ -37,6 +37,27 @@ Status: **PR 2 of 6** — gate, quota, collections, saved lists (PR 1) and audit
 
 **Interrupted and stale reports.** A worker killed mid-run (a blue/green cut-over drains for 60 s, less than the 100 s deadline) leaves its report `running`. A delivery that finds it `running` inside the deadline + 60 s answers 503, so QStash keeps retrying (default schedule: ~12 s, ~2.5 min, ~30 min); the first delivery past that window settles it `failed` (`failureReason: "interrupted"`, quota released). The worker's final `ready` write only lands on a report still `running`, so one settled meanwhile keeps its state. Independently, the list route settles any queued/running report older than 10 minutes (`failureReason: "stale"`, quota released) before answering, so a polling card always settles. Both checks re-read the report's age inside the release transaction.
 
+## ApexGEO sections (PR 3)
+
+Sections 5 (website performance), 7 (AI-agent readiness) and 8 (AI answer-engine presence) come from **one brand-less ApexGEO scan per report**, over ApexGEO's v1 API with the sub-account's own key (`lib/prospecting/apexgeo-client.ts`; responses zod-validated — a shape that does not match is `failed`, never a partial fill).
+
+**Connecting.** Settings → Admin → *ApexGEO* card (`components/settings/sub-account-apexgeo-section.tsx`). Every member sees the status; owners/admins paste the key, **Test** it (`POST /api/sub-accounts/[id]/apexgeo-connection/test` → `GET /api/v1/scans?limit=1`, no credits spent; proves the key and its `read` scope — `write` cannot be probed for free), **Save** (`PUT …/apexgeo-connection`, which checks again before storing) and **Remove** (`DELETE`, through an AlertDialog). Not gated on Prospecting. The key lives only in `subAccounts/{id}/private/apexgeoConnection` `{ apiKey, baseUrl }` (the `apexgeo` kind in `SUB_ACCOUNT_SECRETS`; locked by the generic `private/` rule); the sub-account doc carries `apexgeoConnected`, `apexgeoKeyLast4`, `apexgeoBaseUrl`. No response ever carries the key. The default base URL is `https://apexgeo.app`; a custom one must be plain `https://` on the default port, and every call goes through `publicFetch` (public addresses only, no redirects).
+
+**Two phases (D1) — the report never waits for ApexGEO.** A scan takes ~47 s; a report worker has 100 s.
+- *Phase 1*, in the report worker: with a key, once the report's own sections make it `ready`, `POST /api/v1/scans` starts with `external_ref = leadstack:report:<reportId>` (a retry replays; nothing is charged twice). A report that fails never starts a scan, so it spends no ApexGEO credits and probe `{ engines: ["gemini", "chatgpt"], prompts: 3 }` (D4 — Perplexity answered `insufficient_quota` on every prompt in ApexGEO's live proof). Niche = `prospecting.category`, city = the contact's `city`, country = its `countryCode` or `ZA`. No website, category or city → the scan is not started and the sections say which field is missing (never a guessed niche). The report is written `ready` as before, with the three sections `pending` and `apexgeo: { scanId, status: "pending", attempts: 0, startedAt }`; then the first poll is queued (45 s). A poll that cannot be queued settles the sections `failed` at once.
+- *Phase 2*, `POST /api/automations/prospecting/apexgeo` (QStash, signature bound to the route, public path): `GET /api/v1/scans/{id}`. Completed → the sections are filled, the headline recomputed, `apexgeo.status = "done"`, `cost.apexgeoCredits` recorded. Queued/running → the next poll is queued (45, 90, 180, 240 s — about 10 minutes in all) under a per-attempt dedup id, then `attempts` advances; the last one settles `timeout`. A transient ApexGEO error (network, 429, 5xx) is polled again like a running scan. A failed scan or any other ApexGEO error → `failed` with a generic reason; the real one is only logged. Every poll re-checks the gate (off → stopped) and the key (removed → "disconnected"). Every settle is a transaction that lands only on a report still `ready` whose scan is `pending` at that attempt, so replays and duplicate deliveries are no-ops and concurrent deliveries fill once. A scan still `pending` 30 minutes after it started is shown as timed out.
+- The ApexGEO sections never decide `ready` and are never in `STORED_FACT_SECTIONS`. The LeadStack quota is charged once, as before; ApexGEO credits are the agency's own. Out of credits → "ApexGEO account is out of credits", report still `ready`.
+
+**Scoring (D5).**
+
+| Section | Measures | Findings |
+|---|---|---|
+| website_performance | PageSpeed (mobile) via ApexGEO: LCP ≤ 2.5 s → 100, ≤ 4 s → 70, else 30; −20 without a mobile viewport. A Core Web Vitals error = not measured (unavailable), never slow. | `slow_mobile` (LCP > 4 s). `no_https` stays in business_details. |
+| ai_readiness | robots.txt rules for GPTBot, ClaudeBot, PerplexityBot, Google-Extended (Bingbot is not an AI crawler); LocalBusiness schema. 100 −60 −30. An unreadable robots rule is not measured, never blocked. | `ai_crawlers_blocked` (ranked just under `slow_mobile`: a blocked crawler removes the business from those answers), `no_local_business_schema` (ranked beside `listing_missing`: it weakens, it does not remove). |
+| ai_presence | Share of voice = answers naming the business / measured answers. An engine answer with `error` is **not measured** — never "not mentioned". Top 3 competitors named (counted once per answer). No engine answered → unavailable. | `not_in_ai_answers` only when every measured engine answered every prompt and none named the business. |
+
+**Public page (D6).** Sections left out because of the agency's own setup — no key (`not_connected`) or its ApexGEO account out of credits (`out_of_credits`) — are **hidden on `/report/[token]`**: a prospect should not see those gaps. The member view shows them, with a *Connect ApexGEO* link for `not_connected`. Pending, timed-out, failed and missing-input sections show honestly on both. The public whitelist shows counts, the models asked and competitor names (public business names) — never the answers' text, `cited_url` or a provider error.
+
 ## Not yet
 
-ApexGEO sections, workflow trigger and merge tags, approach guard, mystery shop, ApexSignal push — each its own PR in the plan. `POST /api/v1/contacts` ignores a `prospecting` field (like any unknown top-level field) and `POST /api/v1/contacts/upsert` refuses it with a 400 — ApexSignal's push (PR 6) either PATCHes after create or extends one of them.
+Workflow trigger and merge tags, approach guard, mystery shop, ApexSignal push — each its own PR in the plan. `POST /api/v1/contacts` ignores a `prospecting` field (like any unknown top-level field) and `POST /api/v1/contacts/upsert` refuses it with a 400 — ApexSignal's push (PR 6) either PATCHes after create or extends one of them.

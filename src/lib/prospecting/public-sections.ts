@@ -1,4 +1,5 @@
 import type {
+  ApexgeoReasonCode,
   ProspectFindingCode,
   ProspectSectionKey,
   ProspectSectionResult,
@@ -22,10 +23,12 @@ export const PUBLIC_RAW_KEYS: Record<ProspectSectionKey, readonly string[]> = {
   gbp: ["description"],
   reputation: ["rating", "reviewsCount", "velocity90d", "ownerReplyRate"],
   listings: [],
-  website_performance: [],
+  website_performance: ["lcpSeconds", "fcpSeconds", "speedIndexSeconds", "tbtMs", "cls", "mobileViewport"],
   tech_stack: [],
-  ai_readiness: [],
-  ai_presence: [],
+  // Robots rules per AI crawler, as ApexGEO read them ("allowed" / "blocked" / "notMeasured").
+  ai_readiness: ["GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended", "robotsTxt", "localBusinessSchema"],
+  // Counts, the models asked and the competitors they named — never the answers' text or cited URLs.
+  ai_presence: ["mentionedIn", "answersMeasured", "models", "topCompetitors"],
   ads: ["metaAdLibraryUrl", "googleAdsTransparencyUrl"],
   lead_capture: ["whatsapp", "booking", "contactForm", "phoneLink", "chatWidget"],
 };
@@ -82,8 +85,14 @@ export interface PublicReportSection {
   score: number | null;
   findings: { code: ProspectFindingCode; text: string }[];
   reason: string | null;
+  /** ApexGEO sections: why not measured, for the member view's connect link. */
+  reasonCode: ApexgeoReasonCode | null;
   details: Record<string, Scalar>;
 }
+
+const REASON_CODES: ReadonlySet<string> = new Set<ApexgeoReasonCode>([
+  "not_connected", "pending", "missing_input", "out_of_credits", "timeout", "failed", "gate_off",
+]);
 
 const isScalar = (v: unknown): v is Scalar =>
   v === null || ["string", "number", "boolean"].includes(typeof v);
@@ -112,6 +121,7 @@ export function publicSection(
     score: typeof s.score === "number" ? s.score : null,
     findings: (s.findings ?? []).map((f) => ({ code: f.code, text: String(f.text) })),
     reason: typeof s.reason === "string" && s.reason ? s.reason : null,
+    reasonCode: typeof s.reasonCode === "string" && REASON_CODES.has(s.reasonCode) ? s.reasonCode : null,
     details,
   };
 }
