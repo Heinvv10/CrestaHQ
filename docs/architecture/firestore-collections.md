@@ -111,8 +111,9 @@ rewritten by every listing writer — `[]` when cleared — and read only by the
 `lib/gbp/shared-location.ts`; absent on docs written before it existed, so
 that check also keeps the `googleListing.locationName ==` query; backfill:
 `scripts/backfill-google-location-names.ts`) and `gbpSummaries` (per-extra
-summaries keyed by the id after `locations/`) — all member-readable display
-data on the parent, no rules change, no index. `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
+sync summaries keyed by the id after `locations/`, same shape as
+`gbpSummary`) — all member-readable display data on the parent, no rules
+change; the one index is under Review sync below. `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
 append-only audit log (`listing_selected`, `listing_cleared` with a `reason`;
 `reply_posted` / `reply_deleted` with `actorUid` + `reviewDocId` — never the
 reply text; `review_url_adopted` with `previousUrl`, `url`, `actorUid`;
@@ -131,18 +132,26 @@ changes the cached review's `reply` and `contentHash`; a posted one also
 clears `pendingReply` and sets `hadReply` (and `autoReplied` for an auto post).
 
 Review sync (all written by the sync core only, Admin SDK; no client rule, so
-default deny; no composite index): `subAccounts/{id}/gbpReviews/{sha256(review.name)[:40]}`
-caches the CURRENT listing's reviews (tenant-anchored; `state` active/removed
-tombstones; deleted after 30 days unseen); `subAccounts/{id}/gbpSyncRuns/{runId}`
-is an append-only run record (created once per run, kinds and counts only);
-`private/gbpSyncState` holds the run lease, the pass cursor (with the pass's
-rating/count), `retentionPurgedAt`, the anomaly streak and the Sync-now
-cooldown. Sub-accounts that hold a cache but can no longer sync (gate off,
-disconnected, no listing) get retention-only passes from the sweep. The
-member-readable `gbpSummary` field on the parent carries rating, count,
-freshness and health kinds. Selecting another listing (or the same location
-through another Google account), clearing it or disconnecting deletes the
-reviews, the sync state and the summary.
+default deny): `subAccounts/{id}/gbpReviews/{sha256(review.name)[:40]}`
+caches the reviews of every connected listing, each doc carrying its
+`locationName` (tenant-anchored; `state` active/removed tombstones; deleted
+after 30 days unseen). Served reads query it per listing — composite index
+`gbpReviews (locationName ASC, createTime DESC)`. `subAccounts/{id}/gbpSyncRuns/{runId}`
+is an append-only run record (created once per listing run, kinds and counts
+and its `locationName`). Per listing
+([MULTI_LISTING_V1_PLAN.md](../../MULTI_LISTING_V1_PLAN.md) H2): the main
+listing's state is `private/gbpSyncState`, an extra's is
+`private/gbpSyncState_{locId}` — each holds that listing's run lease, pass
+cursor (with the pass's rating/count), `retentionPurgedAt` and anomaly
+streak; the Sync-now cooldown lives on the main doc only. Sub-accounts that
+hold a cache but can no longer sync (gate off, disconnected, no listing) get
+retention-only passes from the sweep, which finds them by
+`gbpSummary.lastRunAt` (kept while any `gbpSummaries` entry exists). The
+member-readable `gbpSummary` (main) and `gbpSummaries.{locId}` (extras)
+fields on the parent carry rating, count, freshness and health kinds.
+Selecting another main listing (or the same location through another Google
+account) or clearing a listing deletes that listing's reviews, sync state and
+summary; disconnecting deletes every listing's.
 
 Review sentiment (SP5 b; written only by `lib/reputation/sentiment.ts`, never by
 the sync): each review may carry `sentiment {label, method, basisHash, model,

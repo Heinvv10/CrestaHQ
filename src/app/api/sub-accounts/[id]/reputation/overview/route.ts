@@ -59,7 +59,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   const log = db.collection(`subAccounts/${id}/reviewRequests`);
   const since = previousPeriodStart(range, now);
   const [served, requestSnap, oldestSnap, sentSnap, lease] = await Promise.all([
-    unavailable ? null : loadServedReviews(id, locationName, now),
+    unavailable ? null : loadServedReviews(id, locationName ? [locationName] : [], now),
     (since ? log.where("sentAt", ">=", since) : log).orderBy("sentAt", "desc").limit(REQUEST_CAP + 1).get(),
     log.orderBy("sentAt", "asc").limit(1).get(),
     // The checklist's "first request": one that was actually sent, not a failed ask.

@@ -181,11 +181,24 @@ describe("PUT selection", () => {
     expect(state.docs.get(SUB_PATH)?.googleExtraListings).toEqual([extra]);
   });
 
-  it("a new main that is also stored as an extra is listed once", async () => {
+  it("a main re-selected while a stale extra entry names it too is listed once", async () => {
+    await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A });
     const extras = [{ locationName: LOC_A, title: "A" }, { locationName: "locations/extra-1", title: "Extra" }];
     state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleExtraListings: extras });
-    await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A });
+    expect((await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A })).status).toBe(200);
     expect(state.docs.get(SUB_PATH)?.googleLocationNames).toEqual([LOC_A, "locations/extra-1"]);
+  });
+
+  it("refuses 409 already_extra when the new main is currently an extra listing, and writes nothing", async () => {
+    await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A });
+    const extras = [{ locationName: LOC_NORTH, title: "North" }];
+    state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleExtraListings: extras });
+    const before = structuredClone(state.docs.get(SUB_PATH));
+    const writes = state.writes.length;
+    const res = await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_NORTH });
+    expect(res).toEqual({ status: 409, body: { error: expect.any(String), code: "already_extra" } });
+    expect(state.writes.length).toBe(writes);
+    expect(state.docs.get(SUB_PATH)).toEqual(before);
   });
 
   it("takes the account display name from the account actually selected", async () => {

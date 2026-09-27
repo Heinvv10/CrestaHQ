@@ -2,10 +2,12 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { SubAccountDoc } from "@/types";
+import type { SyncedRun } from "@/lib/reputation/sentiment-after";
 import { GbpFakeRefusedError, gbpProviderMode } from "../provider/select";
 import { recordFailedRun } from "./record";
 import type { Sleep } from "./retry";
-import { retainListing, skipReasonFor, syncListing } from "./run";
+import { skipReasonFor } from "./run";
+import { retainSubAccount, syncSubAccount } from "./sub-account";
 import { toMillis, type GbpSummary, type SyncRunRecord } from "./types";
 
 /**
@@ -13,17 +15,18 @@ import { toMillis, type GbpSummary, type SyncRunRecord } from "./types";
  *
  *  - `runGbpSyncSweep` (POST /api/cron/gbp-sync, every 6 hours, only while
  *    GBP_SYNC_SCHEDULE_ENABLED=1): SYNC gated, connected sub-accounts with a
- *    listing via `syncListing` — least recently run first (never-run first),
+ *    listing via `syncSubAccount` (every listing) — least recently run first (never-run first),
  *    at most {@link SWEEP_CAP} per invocation, {@link CONCURRENCY} at a time;
  *    the first rate_limited or access_not_approved result stops new tenants
  *    from starting (the quota is project-wide; `stoppedOnRateLimit` covers both). Then a retention-only pass for caches that can no
  *    longer sync (gate off, disconnected, no listing).
  *  - `runGbpRetentionSweep` (POST /api/cron/gbp-retention, daily, always on —
  *    and the sync cron while its flag is off): a retention-only pass via
- *    `retainListing` for EVERY sub-account holding a cache, sync-eligible or
+ *    `retainSubAccount` for EVERY sub-account holding a cache, sync-eligible or
  *    not. Never reaches the provider — Google's 30-day rule is not a matter
  *    of configuration. A cache is found by `gbpSummary.lastRunAt`, which the
- *    lease transaction stamps before any review page can land.
+ *    lease transaction stamps before any review page can land (extra
+ *    listings imply a main one, whose summary finds the tenant).
  *
  * Queries are equality or single-field inequality only — no composite
  * index. In fake mode ONE query fenced to GBP_FAKE_AGENCY_ID feeds both
@@ -41,6 +44,7 @@ type Candidate = { id: string; sub: Sub };
 export interface SweepResult {
   /** Tenants synced this invocation. */
   processed: number;
+  /** One per listing run (a tenant with extra listings counts each). */
   byStatus: Record<string, number>;
   /** Retention-only passes run. */
   retained: number;
@@ -92,16 +96,17 @@ export interface RetentionTally {
   failed: number;
 }
 
-/** Retention-only passes (`retainListing`, no provider calls), each tenant isolated. */
+/** Retention-only passes (`retainSubAccount`, no provider calls), each tenant isolated; tallied per listing. */
 async function retainAll(list: Candidate[]): Promise<RetentionTally> {
   const tally: RetentionTally = { retained: 0, refused: 0, failed: 0 };
   await pool(list, async (c) => {
     const now = new Date();
     try {
-      const rec = await retainListing(c.id, { now });
-      if (rec.skipReason === "already_running" || rec.skipReason === "listing_changed") tally.refused += 1;
-      else if (rec.status === "failed") tally.failed += 1;
-      else tally.retained += 1;
+      for (const rec of await retainSubAccount(c.id, { now })) {
+        if (rec.skipReason === "already_running" || rec.skipReason === "listing_changed") tally.refused += 1;
+        else if (rec.status === "failed") tally.failed += 1;
+        else tally.retained += 1;
+      }
     } catch (err) {
       console.error(`[cron/gbp-retention] retention threw sa=${c.id}: ${err instanceof Error ? err.name : typeof err}`);
       await recordFailedRun(c.id, c.sub, "scheduled", null, now, "retention");
@@ -122,7 +127,11 @@ export async function runGbpRetentionSweep(): Promise<RetentionTally> {
 }
 
 export async function runGbpSyncSweep(
-  opts: { sleep?: Sleep; /** Each completed run (the cron hands them to sentiment, after responding). */ onRun?: (run: SyncRunRecord) => void } = {},
+  opts: {
+    sleep?: Sleep;
+    /** Each synced tenant, aggregated over its listings (the cron hands them to auto-reply + sentiment, after responding). */
+    onRun?: (run: SyncedRun) => void;
+  } = {},
 ): Promise<SweepResult> {
   const { sync, cached } = await candidates();
   const byStatus: Record<string, number> = {};
@@ -131,30 +140,33 @@ export async function runGbpSyncSweep(
   let retained = 0;
   let rateLimited = false;
 
-  const one = async (c: Candidate, onDone: (status: string, errorKind: string | null) => void) => {
+  type Done = Pick<SyncRunRecord, "status" | "errorKind"> | { status: "refused"; errorKind: null };
+  const one = async (c: Candidate, onDone: (runs: Done[]) => void) => {
     const now = new Date();
     try {
-      const run = await syncListing(c.id, { trigger: "scheduled", sleep: opts.sleep });
-      opts.onRun?.(run);
-      onDone(run.status, run.errorKind);
+      const { runs, synced } = await syncSubAccount(c.id, { trigger: "scheduled", sleep: opts.sleep });
+      opts.onRun?.(synced);
+      onDone(runs);
     } catch (err) {
       if (err instanceof GbpFakeRefusedError) {
         // Outside the fake's fence: touch nothing of that tenant's.
         console.error(`[cron/gbp-sync] fake refused sa=${c.id}`);
-        onDone("refused", null);
+        onDone([{ status: "refused", errorKind: null }]);
         return;
       }
       console.error(`[cron/gbp-sync] sync threw sa=${c.id}: ${err instanceof Error ? err.name : typeof err}`);
       await recordFailedRun(c.id, c.sub, "scheduled", null, now);
-      onDone("failed", "internal");
+      onDone([{ status: "failed", errorKind: "internal" }]);
     }
   };
 
-  await pool(sync, (c) => one(c, (status, errorKind) => {
+  await pool(sync, (c) => one(c, (done) => {
     processed += 1;
-    count(status);
-    // access_not_approved is Google's quota-0 429: the same project-wide wall, only permanent.
-    if (errorKind === "rate_limited" || errorKind === "access_not_approved") rateLimited = true;
+    for (const { status, errorKind } of done) {
+      count(status);
+      // access_not_approved is Google's quota-0 429: the same project-wide wall, only permanent.
+      if (errorKind === "rate_limited" || errorKind === "access_not_approved") rateLimited = true;
+    }
   }), () => rateLimited);
   // Caches that cannot sync: retention only (no provider calls, no quota to
   // protect — always runs). Eligible tenants get retention inside their sync.

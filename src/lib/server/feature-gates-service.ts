@@ -4,7 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { removeSendingDomain } from "@/lib/comms/resend-domains";
 import { metaAppConfigured } from "@/lib/comms/meta";
-import { clearGbpCache } from "@/lib/gbp/sync/store";
+import { clearAllGbpCaches } from "@/lib/gbp/sync/clear";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import type { ResendConfig } from "@/types";
@@ -144,7 +144,7 @@ export async function applyFeatureGates(
   // retention sweep is the backstop, and re-saving the gate retries safely.
   if (gates.googleEnabledByAgency === false) {
     try {
-      await clearGbpCache(subAccountId);
+      await clearAllGbpCaches(subAccountId);
     } catch (err) {
       console.error(
         `[feature-gates] GBP cache clear failed sa=${subAccountId} kind=${err instanceof Error ? err.name : typeof err}`,

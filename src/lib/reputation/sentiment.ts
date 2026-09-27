@@ -205,7 +205,7 @@ export async function classifyPendingSentiment(
       return { status: "skipped", skipReason, stopped, aiConfigured, ...counts };
     }
 
-    const { reviews } = await loadServedReviews(subAccountId, locationName!, now);
+    const { reviews } = await loadServedReviews(subAccountId, [locationName!], now);
     let waiting = 0; // text reviews in their retry hour (not given up): a later run owes them a call
     const eligible = reviews.flatMap((r) => {
       const basis = reviewBasis(r);

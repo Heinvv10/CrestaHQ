@@ -4,11 +4,13 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import type { SubAccountDoc } from "@/types";
 import { getGbpProviderFor } from "../provider/select";
 import { GbpProviderError } from "../provider/types";
+import { listingFor } from "../listings";
 import { GbpNotConnectedError } from "../tokens";
 import { acquireLease, commitGuarded, LeaseLostError, releaseLease, type GuardedOp } from "./lease";
 import { fetchPass, type PassOutcome } from "./pass";
 import { planReconcile, planRetention } from "./reconcile";
 import { realSleep, type Sleep } from "./retry";
+import { extraLocationNames, scopeOf, summaryIn, summaryPatch, type WithSummaries } from "./scope";
 import { loadCache, tombstone } from "./store";
 import { nextSummary } from "./summary";
 import {
@@ -24,8 +26,10 @@ import {
 } from "./types";
 
 /**
- * `syncListing` — the ONE sync core. "Sync now" and the scheduled cron both
- * call it; they differ only in `trigger` (and the manual actor).
+ * `syncListing` — the ONE sync core, for ONE listing of a sub-account
+ * (`extra` null = the main listing; sub-account.ts loops every listing).
+ * "Sync now" and the scheduled cron both reach it; they differ only in
+ * `trigger` (and the manual actor).
  *
  *   1. classify (gate, connection, listing, reconnect flag)
  *   2. lease — refused as `already_running`, or as `listing_changed` when the
@@ -50,7 +54,7 @@ export interface SyncOptions {
   clock?: () => Date;
 }
 
-type SubWithSummary = SubAccountDoc & { gbpSummary?: GbpSummary | null };
+type SubWithSummary = SubAccountDoc & WithSummaries;
 
 export function skipReasonFor(sub: SubAccountDoc): SkipReason | null {
   if (sub.googleEnabledByAgency !== true) return "gate_off";
@@ -76,26 +80,33 @@ function classify(rec: SyncRunRecord, outcome: PassOutcome): void {
   console.warn(`[gbp/sync] sa=${rec.subAccountId} run=${rec.runId} stopped kind=${err.kind} pages=${outcome.pagesFetched}`);
 }
 
+/** The listing this run is for: the main listing, or that extra. */
+const listingOf = (sub: SubWithSummary, extra: string | null) => (extra === null ? sub.googleListing : listingFor(sub, extra));
+
 /** The summary this run continues from — only if it belongs to the same listing. */
-function previousSummary(sub: SubWithSummary): GbpSummary | null {
-  const s = sub.gbpSummary ?? null;
-  if (!sub.googleListing) return s;
-  return s?.locationName === sub.googleListing.locationName ? s : null;
+function previousSummary(sub: SubWithSummary, extra: string | null): GbpSummary | null {
+  const s = summaryIn(sub, extra);
+  const listing = listingOf(sub, extra);
+  if (!listing) return s;
+  return s?.locationName === listing.locationName ? s : null;
 }
 
-async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncState, opts: SyncOptions, now: Date) {
+async function runLeased(
+  rec: SyncRunRecord, sub: SubWithSummary, state: SyncState, opts: SyncOptions, now: Date, extra: string | null,
+) {
   const sa = rec.subAccountId;
   const db = getAdminDb();
   const reviewRef = (id: string) => db.doc(`${reviewsCollection(sa)}/${id}`);
-  const stateRef = db.doc(syncStatePath(sa));
+  const stateRef = db.doc(syncStatePath(sa, extra));
   const subRef = db.doc(`subAccounts/${sa}`);
-  const prev = previousSummary(sub);
+  const role = { extra, locationName: rec.locationName };
+  const prev = previousSummary(sub, extra);
   const retainOnly = rec.skipReason === "retention_only";
   const syncs = !retainOnly && (rec.skipReason === null || rec.skipReason === "reconnect_required");
   const cls = skipReasonFor(sub);
   const canSync = cls === null || cls === "reconnect_required";
 
-  const cache = await loadCache(sa);
+  const cache = await loadCache(sa, scopeOf(sub, extra));
   const retention = planRetention(cache, prev, state.retentionPurgedAt, now);
   rec.purged = retention.remove.length;
   const purge: GuardedOp[] = retention.remove.map((id) => (tx) => tx.delete(reviewRef(id)));
@@ -106,29 +117,33 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     const reset = { retentionPurgedAt: now.getTime(), pass: null, anomalyStreak: null };
     purge.push((tx) => tx.set(stateRef, reset, { merge: true }));
   }
-  if (!syncs && !canSync && cache.size === 0) {
+  // The sweep finds a tenant by `gbpSummary` alone: the main one stays while
+  // any extra still has a summary, or that extra's cache would never expire.
+  const extrasCached = extra === null && extraLocationNames(sub).some((l) => summaryIn(sub, l) !== null);
+  if (!syncs && !canSync && cache.size === 0 && !extrasCached) {
     // A cache that can no longer sync drops its (Google-sourced) summary
     // once it holds no reviews — after an expiry purge, or when a
     // never-successful one has nothing left that could ever expire — and so
     // leaves the sweep's retention list.
-    purge.push((tx) => tx.set(subRef, { gbpSummary: null }, { merge: true }));
+    purge.push((tx) => tx.set(subRef, summaryPatch(extra, null), { merge: true }));
   } else if (retainOnly && retention.expired) {
     // Housekeeping on a tenant that CAN sync: the expired rating/count go
     // too, and the summary says why (health error, retention_expired).
     const summary = nextSummary(rec, prev, { expired: true, rating: null }, now);
-    purge.push((tx) => tx.set(subRef, { gbpSummary: summary }, { merge: true }));
+    purge.push((tx) => tx.set(subRef, summaryPatch(extra, summary), { merge: true }));
   }
-  await commitGuarded(sa, rec.runId, purge);
+  await commitGuarded(sa, rec.runId, purge, role);
   if (!syncs) return;
 
   const finalOps: GuardedOp[] = [];
   let rating: { averageRating: number | null; totalReviewCount: number | null } | null = null;
   if (rec.skipReason === null) {
-    const listing = sub.googleListing!;
+    const listing = listingOf(sub, extra)!;
     const outcome = await fetchPass({
       subAccountId: sa,
       runId: rec.runId,
       ref: { accountName: listing.accountName, locationName: listing.locationName },
+      role,
       ctx: { agencyId: rec.agencyId, subAccountId: sa, createdByUid: rec.createdByUid, locationName: listing.locationName, now },
       cache,
       pass: retention.expired ? null : state.pass,
@@ -145,7 +160,9 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     else if (!outcome.complete) rec.status = "partial";
     else {
       const streak = retention.expired ? null : (state.anomalyStreak ?? null);
-      const plan = planReconcile(cache, outcome.passId, !outcome.resumed, streak, now);
+      // Orphans (another listing's leftovers) are retention's alone.
+      const own = new Map([...cache].filter(([, c]) => !c.orphan));
+      const plan = planReconcile(own, outcome.passId, !outcome.resumed, streak, now);
       rec.reconciliation = plan.reconciliation;
       rec.status = plan.reconciliation === "skipped_anomaly" ? "partial" : "success";
       rec.removed = plan.remove.length;
@@ -155,24 +172,24 @@ async function runLeased(rec: SyncRunRecord, sub: SubWithSummary, state: SyncSta
     }
   }
   const summary = nextSummary(rec, prev, { expired: retention.expired, rating }, now);
-  finalOps.push((tx) => tx.set(subRef, { gbpSummary: summary }, { merge: true }));
-  await commitGuarded(sa, rec.runId, finalOps);
+  finalOps.push((tx) => tx.set(subRef, summaryPatch(extra, summary), { merge: true }));
+  await commitGuarded(sa, rec.runId, finalOps, role);
 }
 
 /** Best effort after a non-provider failure: the summary must not keep saying "up to date". */
-async function recordInternalFailure(rec: SyncRunRecord, sub: SubWithSummary, now: Date): Promise<void> {
+async function recordInternalFailure(rec: SyncRunRecord, sub: SubWithSummary, now: Date, extra: string | null): Promise<void> {
   try {
-    const summary = nextSummary(rec, previousSummary(sub), { expired: false, rating: null }, now);
+    const summary = nextSummary(rec, previousSummary(sub, extra), { expired: false, rating: null }, now);
     await commitGuarded(rec.subAccountId, rec.runId, [
-      (tx) => tx.set(getAdminDb().doc(`subAccounts/${rec.subAccountId}`), { gbpSummary: summary }, { merge: true }),
-    ]);
+      (tx) => tx.set(getAdminDb().doc(`subAccounts/${rec.subAccountId}`), summaryPatch(extra, summary), { merge: true }),
+    ], { extra, locationName: rec.locationName });
   } catch (e) {
     console.error(`[gbp/sync] sa=${rec.subAccountId} run=${rec.runId} summary not updated: ${e instanceof Error ? e.name : typeof e}`);
   }
 }
 
-function newRecord(subAccountId: string, sub: SubWithSummary, opts: SyncOptions, now: Date): SyncRunRecord {
-  const listing = sub.googleListing ?? null;
+function newRecord(subAccountId: string, sub: SubWithSummary, opts: SyncOptions, now: Date, extra: string | null): SyncRunRecord {
+  const listing = listingOf(sub, extra) ?? null;
   return {
     runId: getAdminDb().collection(runsCollection(subAccountId)).doc().id,
     agencyId: sub.agencyId,
@@ -182,13 +199,14 @@ function newRecord(subAccountId: string, sub: SubWithSummary, opts: SyncOptions,
     actorUid: opts.actorUid ?? null,
     startedAt: now,
     finishedAt: now,
-    locationName: listing?.locationName ?? null,
+    locationName: extra ?? listing?.locationName ?? null,
     status: "skipped",
     pagesFetched: 0, reviewsSeen: 0, created: 0, updated: 0, unchanged: 0, removed: 0, purged: 0,
     reconciliation: "deferred",
     resumedFromCursor: false,
     errorKind: null,
-    skipReason: skipReasonFor(sub),
+    // An extra removed since the caller read the sub-account is simply gone.
+    skipReason: extra !== null && !listing ? "listing_changed" : skipReasonFor(sub),
   };
 }
 
@@ -196,7 +214,9 @@ function newRecord(subAccountId: string, sub: SubWithSummary, opts: SyncOptions,
  * Take the lease (refused if the sub-account no longer classifies as `cls`),
  * run, release. The run continues from the sub-account read INSIDE the lease.
  */
-async function underLease(rec: SyncRunRecord, cls: SkipReason | null, opts: SyncOptions, now: Date, syncs: boolean) {
+async function underLease(
+  rec: SyncRunRecord, cls: SkipReason | null, opts: SyncOptions, now: Date, syncs: boolean, extra: string | null,
+) {
   const sa = rec.subAccountId;
   // Only a run that will fetch (and so commit review pages) stamps the marker.
   const stampIfAbsent: GbpSummary | undefined =
@@ -209,6 +229,7 @@ async function underLease(rec: SyncRunRecord, cls: SkipReason | null, opts: Sync
       : undefined;
   const lease = await acquireLease(sa, rec.runId, now, {
     locationName: rec.locationName,
+    extra,
     skipReason: cls,
     classify: skipReasonFor,
     stampIfAbsent,
@@ -218,15 +239,15 @@ async function underLease(rec: SyncRunRecord, cls: SkipReason | null, opts: Sync
     return;
   }
   try {
-    await runLeased(rec, lease.sub as SubWithSummary, lease.state, opts, now);
+    await runLeased(rec, lease.sub as SubWithSummary, lease.state, opts, now, extra);
   } catch (err) {
     rec.status = "failed";
     rec.errorKind = err instanceof LeaseLostError ? "lease_lost" : "internal";
     const reason = err instanceof Error ? err.name : typeof err;
     console.error(`[gbp/sync] sa=${sa} run=${rec.runId} ${rec.errorKind}: ${reason}`);
-    if (syncs && rec.errorKind === "internal") await recordInternalFailure(rec, lease.sub as SubWithSummary, now);
+    if (syncs && rec.errorKind === "internal") await recordInternalFailure(rec, lease.sub as SubWithSummary, now, extra);
   } finally {
-    await releaseLease(sa, rec.runId);
+    await releaseLease(sa, rec.runId, extra);
   }
 }
 
@@ -236,18 +257,18 @@ async function finish(rec: SyncRunRecord, opts: { now?: Date }, now: Date): Prom
   return rec;
 }
 
-export async function syncListing(subAccountId: string, opts: SyncOptions): Promise<SyncRunRecord> {
+export async function syncListing(subAccountId: string, opts: SyncOptions, extra: string | null = null): Promise<SyncRunRecord> {
   const now = opts.now ?? new Date();
   // The fence FIRST: in fake mode this throws for a sub-account outside the
   // fixture agency before anything of ours is read or written.
   await getGbpProviderFor(subAccountId);
 
   const sub = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubWithSummary;
-  const rec = newRecord(subAccountId, sub, opts, now);
+  const rec = newRecord(subAccountId, sub, opts, now, extra);
   // Syncable, reconnect-flagged (retention still runs), or holding a cache
   // that can no longer sync (retention only) → take the lease.
   const syncs = rec.skipReason === null || rec.skipReason === "reconnect_required";
-  if (syncs || sub.gbpSummary) await underLease(rec, rec.skipReason, opts, now, syncs);
+  if (syncs || summaryIn(sub, extra)) await underLease(rec, rec.skipReason, opts, now, syncs, extra);
   return finish(rec, opts, now);
 }
 
@@ -258,13 +279,15 @@ export async function syncListing(subAccountId: string, opts: SyncOptions): Prom
  * sync cron while the sync schedule is off. Callers pick tenants from
  * fenced queries (sweep.ts), so fake mode still never touches a real tenant.
  */
-export async function retainListing(subAccountId: string, opts: { now?: Date } = {}): Promise<SyncRunRecord> {
+export async function retainListing(
+  subAccountId: string, opts: { now?: Date } = {}, extra: string | null = null,
+): Promise<SyncRunRecord> {
   const now = opts.now ?? new Date();
   const sub = ((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {}) as SubWithSummary;
-  const rec = newRecord(subAccountId, sub, { trigger: "scheduled" }, now);
+  const rec = newRecord(subAccountId, sub, { trigger: "scheduled" }, now, extra);
   const cls = rec.skipReason;
   rec.skipReason = "retention_only";
-  if (sub.gbpSummary) await underLease(rec, cls, { trigger: "scheduled" }, now, false);
+  if (summaryIn(sub, extra)) await underLease(rec, cls, { trigger: "scheduled" }, now, false, extra);
   // Housekeeping leaves a record only when it did something (or failed), so
   // Recent syncs stays about real syncs.
   if (rec.purged === 0 && rec.status !== "failed") return rec;

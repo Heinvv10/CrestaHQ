@@ -22,7 +22,7 @@ import {
 } from "@/test/gbp-sync-harness";
 import { storeDb } from "@/test/gbp-sync-store";
 import { syncListing, type SyncOptions } from "./run";
-import { clearGbpCache } from "./store";
+import { clearGbpCache } from "./clear";
 
 const ORIGINAL = { ...process.env };
 const DAY = 24 * 3600_000;

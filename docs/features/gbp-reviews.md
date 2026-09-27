@@ -357,24 +357,54 @@ PR 4 adds:
 new collection (`gbpReviews`, `gbpSyncRuns`, `gbpReplyAttempts`, top-level
 `gbpWidgets`) has no client rule, so default deny, and every query is a
 single-field one (the inbox filters run in memory). Re-check after the PR 2
-rebase.
+rebase. (Multi-listing PR 2 later added one composite index for the
+per-listing served query — see "Firestore model" below.)
 
 ## Review sync (PR 2)
 
 ### Firestore model
 
-No client rules and no composite indexes: every read is an API route on the
-Admin SDK, and the new subcollections fall under default deny.
+No client rules: every read is an API route on the Admin SDK, and the new
+subcollections fall under default deny. One composite index —
+`gbpReviews` (COLLECTION): `locationName ASC, createTime DESC`, for the
+per-listing served query (multi-listing PR 2; deploy it and wait for READY
+**before** that code ships, or the served query fails `FAILED_PRECONDITION`).
 
 | Path | Written by | Content |
 |---|---|---|
 | `subAccounts/{id}/gbpReviews/{docId}` | sync (content); sentiment classifier (`sentiment` only) | `docId = sha256(review.name).hex[:40]` (deterministic → idempotent). `agencyId, subAccountId, createdByUid` (= `googleListing.selectedByUid`), `locationName, reviewName, reviewId, reviewer, starRating, comment` (byte-exact or null), `createTime, updateTime, reply, state` (`active`/`removed`), `firstSeenAt, lastSeenAt, removedAt, passId, contentHash` (sha256 of rating, comment, updateTime, reply), `missedPasses` (consecutive complete single-run passes it was missing from), `sentiment` `{label, method, basisHash, model, at}` and `sentimentAttempt` `{basisHash, failures, lastAt}` (SP5 b — see [reputation.md](reputation.md#sentiment-sp5-b); kept by a tombstone — a label and hashes, no content; never written by the sync) |
 | `subAccounts/{id}/gbpSyncRuns/{runId}` | sync only, `create()` once at the end of a run — never updated | `agencyId, subAccountId, createdByUid, trigger, actorUid, startedAt, finishedAt, locationName, status, pagesFetched, reviewsSeen, created, updated, unchanged, removed, purged, reconciliation, resumedFromCursor, errorKind, skipReason`. No provider body, token or review text |
-| `subAccounts/{id}/private/gbpSyncState` | sync only (locked) | `lease {runId, until}`, `pass {passId, pageToken, pagesDone, startedAt, averageRating, totalReviewCount}`, `retentionPurgedAt`, `anomalyStreak {removals, count, lastAt}`, `lastManualAt` (Sync-now cooldown) |
-| `subAccounts/{id}.gbpSummary` | sync only (member-readable) | `locationName, averageRating, totalReviewCount, lastSuccessfulSyncAt, lastRunAt, lastRunStatus, lastErrorKind, lastReconciliation, health` — kinds only |
+| `subAccounts/{id}/private/gbpSyncState` | sync only (locked) | MAIN listing: `lease {runId, until}`, `pass {passId, pageToken, pagesDone, startedAt, averageRating, totalReviewCount}`, `retentionPurgedAt`, `anomalyStreak {removals, count, lastAt}`; plus the sub-account-wide `lastManualAt` (Sync-now cooldown) |
+| `subAccounts/{id}/private/gbpSyncState_{locId}` | sync only (locked) | The same per EXTRA listing (`locId` = `locationName` after `locations/`): its own lease, pass, `retentionPurgedAt`, `anomalyStreak` |
+| `subAccounts/{id}.gbpSummary` | sync only (member-readable) | MAIN listing: `locationName, averageRating, totalReviewCount, lastSuccessfulSyncAt, lastRunAt, lastRunStatus, lastErrorKind, lastReconciliation, health` — kinds only |
+| `subAccounts/{id}.gbpSummaries.{locId}` | sync only (member-readable) | The same per EXTRA listing |
 
-The review collection only ever holds the **current** listing (see "Data
-written"), which is why a query on `createTime` alone serves the page.
+The review collection holds the sub-account's **current** listings — the
+main one (`googleListing`) and any extras (`googleExtraListings`,
+[MULTI_LISTING_V1_PLAN.md](../../MULTI_LISTING_V1_PLAN.md)); each doc's
+`locationName` scopes it. Per listing (`src/lib/gbp/sync/scope.ts`): an
+extra's cache is its own docs; the main listing's is every doc not belonging
+to a current extra — so a sub-account without extras has exactly one
+listing, the legacy paths and the whole collection, as before. A pass of one
+listing never counts a miss for, tombstones or purges another's reviews.
+
+- **Sync:** `syncSubAccount` (`sync/sub-account.ts`) runs `syncListing` for
+  the main listing (exactly the single-listing run), then each extra, one
+  after another, each under its own lease; an extra's throw becomes that
+  extra's failed run. One aggregate (`created + updated`, earliest start)
+  goes to auto-reply + sentiment, once per sub-account. Sync now answers
+  `{run: <main's>, runs: [<each listing's>]}`; one `gbpSyncRuns` record per
+  listing.
+- **Served reads:** `loadServedReviews(sa, locationNames, now)` runs one
+  `locationName ==` + `createTime desc` + `limit 501` query per listing and
+  merges newest first; `truncated` when any listing hit the cap. The
+  main-only readers (inbox, Overview, sentiment, agent capability) pass the
+  main listing only.
+- **Clearing:** `clearGbpCache(sa, extra?)` (`sync/clear.ts`) clears ONE
+  listing under its lease — the main scope (listing change) or one extra.
+  `clearAllGbpCaches(sa)` clears every listing plus a failed clear's
+  leftovers (Google gate off, disconnect, listing cleared). Markers
+  (`autoReplyNever`, `autoReplyDismissed`, alerts) are never touched.
 
 ### Algorithm — `syncListing(subAccountId, {trigger, actorUid?, now?, maxPages?})`
 

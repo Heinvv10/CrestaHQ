@@ -55,9 +55,7 @@ export async function POST(request: Request) {
   try {
     if (gbpSyncScheduled()) {
       const runs: SyncedRun[] = [];
-      const result = await runGbpSyncSweep({
-        onRun: (r) => runs.push({ subAccountId: r.subAccountId, created: r.created, updated: r.updated, startedAt: r.startedAt }),
-      });
+      const result = await runGbpSyncSweep({ onRun: (r) => runs.push(r) });
       afterSyncResponse(runs, deadline);
       return NextResponse.json(result);
     }

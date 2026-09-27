@@ -7,7 +7,8 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { findAccessibleLocation } from "@/lib/gbp/discovery";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { withGbpAccess } from "@/lib/gbp/access";
-import { clearGbpCache } from "@/lib/gbp/sync/store";
+import { clearGbpCache } from "@/lib/gbp/sync/clear";
+import { extraLocationNames } from "@/lib/gbp/sync/scope";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
@@ -27,7 +28,8 @@ import type { GoogleListing } from "@/types/google";
  * through the provider and refuses unless THIS connection can see it —
  * 400 unknown_location when the full walk proves it is not there, 400
  * unverifiable_truncated when the 20-page walk stopped before finding it
- * (unproven either way, so still refused). Every display field written comes from that
+ * (unproven either way, so still refused); 409 already_extra when the pair
+ * is currently one of this sub-account's extra listings. Every display field written comes from that
  * re-fetch, never from the request. Each selection or clear appends an audit
  * event to `subAccounts/{id}/gbpEvents`, in the same transaction as the write.
  */
@@ -85,6 +87,9 @@ export async function PUT(
   let switchedOff = false;
   const changed = await db.runTransaction(async (tx) => {
     const snap = await tx.get(subRef);
+    // One listing, one role: an extra becomes the main only once removed as
+    // an extra (its sync would otherwise run in both roles at once).
+    if (extraLocationNames(snap.data() ?? {}).includes(location.name)) return "already_extra" as const;
     const previous: string | null = snap.data()?.googleListing?.locationName ?? null;
     // The same location through ANOTHER Google account is a different listing
     // too: Google names its reviews under that account (new cache doc ids).
@@ -132,7 +137,11 @@ export async function PUT(
     });
     return changed;
   });
-  // The cache only ever holds the current listing: a different one starts empty.
+  if (changed === "already_extra") {
+    return gbpRefusal(409, "already_extra", "That listing is connected as an extra listing — remove it there first.");
+  }
+  // A different main listing starts empty: the previous main's cache goes
+  // (the main scope — extra listings' caches are untouched).
   if (changed) await clearGbpCache(id);
   // Auto-reply was on and this switched it off: one alert (the card's note).
   if (switchedOff) await sendAutoReplyAlert(id, { kind: "listing_changed" });

@@ -8,7 +8,7 @@ import {
   A1, patchSettings, patchSub, pendingOf, posts, replyOf, resetAutoReply, reviewDoc, reviewNameOf, sync, syncAndRun,
 } from "@/test/auto-reply-harness";
 import { loadReplyTarget, postReply } from "@/lib/gbp/reply";
-import { clearGbpCache } from "@/lib/gbp/sync/store";
+import { clearGbpCache } from "@/lib/gbp/sync/clear";
 
 const ORIGINAL = { ...process.env };
 const a1Posts = () => posts().filter((c) => c.reviewName === reviewNameOf("fake-a1"));
