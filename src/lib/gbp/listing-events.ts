@@ -59,9 +59,11 @@ export async function clearListing(
     const autoReplyOff = sub.reviewsAutoReply
       ? { reviewsAutoReply: { enabled: false, ...(wasOn ? { disabledReason: "listing_changed" } : {}) } }
       : {};
+    // The extras' adopted review links go with them; the main's link is kept.
+    const dropUrls = sub.googleReviewConfig?.listingUrls ? { googleReviewConfig: { listingUrls: FieldValue.delete() } } : {};
     tx.set(
       subRef,
-      { ...opts.alsoSet, ...autoReplyOff, googleListing: null, googleExtraListings: [], googleLocationNames: [], updatedAt: FieldValue.serverTimestamp() },
+      { ...opts.alsoSet, ...autoReplyOff, ...dropUrls, googleListing: null, googleExtraListings: [], googleLocationNames: [], updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
     // Each extra cleared with it is audited on its own, with the same reason.
