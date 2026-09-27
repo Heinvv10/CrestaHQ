@@ -3,7 +3,8 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createProposal } from "@/lib/server/agent-proposals";
 import { normalizePreview } from "@/lib/server/agent-proposals-encoding";
-import { readableJson, workflowStepsFingerprint } from "@/lib/ai-suite/capabilities/workflow-support";
+import { readableJson } from "@/lib/ai-suite/capabilities/workflow-support";
+import { workflowStepsFingerprint } from "@/lib/workflows/steps-fingerprint";
 import type { PreviewRow } from "@/lib/ai-suite/capabilities/types";
 import type { FireInput } from "@/lib/workflows/engine";
 import type { HeldEnrolment } from "@/lib/workflows/agent-hold";
@@ -13,7 +14,7 @@ import type { WorkflowDoc } from "@/types/workflows";
 function stepsRows(wf: WorkflowDoc): PreviewRow[] {
   return [
     { label: "Steps (exact)", value: readableJson({ startNodeId: wf.startNodeId ?? null, nodes: wf.nodes ?? {} }), multiline: true },
-    { label: "When", value: "The first step runs as soon as this is approved." },
+    { label: "When", value: "The first step runs as soon as this is approved. Each step runs as the workflow reads when it is reached, so an edit after approval applies to steps not yet run." },
   ];
 }
 const STEPS_LABELS = new Set(stepsRows({ nodes: {} } as unknown as WorkflowDoc).map((r) => r.label));

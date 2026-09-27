@@ -44,7 +44,7 @@ describe("held enrolment preview: the workflow's steps", () => {
       nodes: { n1: { config: { tag: "x" }, id: "n1", next: null, type: "add_tag" } },
       startNodeId: "n1",
     });
-    expect(rowsOf(p)).toContainEqual({ label: "When", value: "The first step runs as soon as this is approved." });
+    expect(rowsOf(p)).toContainEqual({ label: "When", value: "The first step runs as soon as this is approved. Each step runs as the workflow reads when it is reached, so an edit after approval applies to steps not yet run." });
     expect((p.pinned as Record<string, unknown>).stepsFingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 

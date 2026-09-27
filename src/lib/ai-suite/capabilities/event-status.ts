@@ -139,11 +139,21 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
           throw new CapabilityUserError("The workflows a cancel starts (or their steps) changed since this was reviewed; nothing was changed.");
         }
         // The contact is re-checked in the write's own read: re-linked since, and no workflows start.
-        const out = await changeEventStatus(e, status, reason, { expectNotice: pinned, expectContactId: contactId });
+        // The engine starts only the reviewed workflows, steps unchanged at the fire.
+        const reviewed = (ctx.approved.pinned?.workflows ?? []) as Array<{ id: string; stepsFingerprint: string }>;
+        const out = await changeEventStatus(e, status, reason, {
+          expectNotice: pinned,
+          expectContactId: contactId,
+          expectedStepsFingerprints: Object.fromEntries(reviewed.map((w) => [w.id, w.stepsFingerprint])),
+        });
         if (!out.ok) throw new CapabilityUserError(out.error ?? "The appointment couldn't be cancelled.");
         if (out.noop) return { resultText: "It was already cancelled (by someone else); nothing more was done.", ref: { kind: "event", id: e.id } };
         const sent = out.emailSent ? " The attendee was emailed." : out.emailSkipReason === "changed_since_approval" ? " The notice was NOT sent: it changed after approval." : "";
-        const skipped = out.workflowsSkipped ? " Its workflows were NOT started: the appointment's contact changed after approval." : "";
+        const skipped = out.workflowsSkipped
+          ? " Its workflows were NOT started: the appointment's contact changed after approval."
+          : out.workflowsStepsChanged?.length
+            ? ` Not started, their steps changed after approval: ${out.workflowsStepsChanged.join(", ")}.`
+            : "";
         return { resultText: `Cancelled the appointment.${sent}${skipped}`, ref: { kind: "event", id: e.id } };
       }
       const out = await changeEventStatus(e, status, reason, { actor: agentActor(ctx, "set_event_status") });

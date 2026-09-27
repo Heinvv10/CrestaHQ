@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { getWorkflow } from "@/lib/server/workflows-service";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { TRIGGER_LABELS } from "@/lib/workflows/catalog";
+import { workflowStepsFingerprint } from "@/lib/workflows/steps-fingerprint";
 import type { WorkflowDoc } from "@/types/workflows";
 import { CapabilityUserError, type PreviewRow } from "./types";
 import { oneLine } from "./text-safety";
@@ -28,13 +29,6 @@ export function workflowFingerprint(wf: WorkflowDoc): string {
   return createHash("sha256")
     .update(canonical([wf.name, wf.status, wf.trigger ?? null, wf.reentry ?? "every_time", wf.startNodeId ?? null, wf.nodes ?? {}]))
     .digest("hex");
-}
-
-/** A hash of a workflow's steps alone (the start step and the nodes), for
- *  approvals that start a workflow without changing it: a steps edit after
- *  the review changes it, a pause or a rename doesn't. */
-export function workflowStepsFingerprint(wf: Pick<WorkflowDoc, "startNodeId" | "nodes">): string {
-  return createHash("sha256").update(canonical([wf.startNodeId ?? null, wf.nodes ?? {}])).digest("hex");
 }
 
 /** The ACTIVE workflows of a sub-account on one trigger, as the engine

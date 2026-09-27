@@ -136,6 +136,15 @@ describe("mark_quote_paid", () => {
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
+  it("with review requests off, the quote's contact changing inside the paid write still refuses it (D2)", async () => {
+    reviews({ triggerOnQuotePaid: false });
+    const id = await proposeId();
+    inPaidWrite(() => (mem.seed("contacts/c2", ANN), mem.seed("quotes/q1", { ...ACCEPTED, contactId: "c2" })));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id).error).toBe("The quote's contact changed since this was reviewed; it was not marked paid.");
+    expect(mem.read("quotes/q1")!.status).toBe("accepted");
+  });
+
   it.each([
     ["the contact's number", () => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" })],
     ["the currency", () => mem.seed("quotes/q1", { ...ACCEPTED, currency: "USD" })],
@@ -188,6 +197,31 @@ describe("mark_quote_paid", () => {
       seedPaidWorkflow("Pay us more");
       expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
       expect(mem.read("quotes/q1")!.status).toBe("accepted");
+    });
+
+    it("unchanged steps -> the reviewed workflow starts", async () => {
+      seedPaidWorkflow();
+      const id = await proposeId();
+      expect((await decide(id, "approve")).status).toBe(200);
+      expect(mem.list("workflowRuns")).toEqual([expect.objectContaining({ workflowId: "wf_paid" })]);
+    });
+
+    it("steps edited inside the paid write (after execute's checks) -> paid, but that workflow isn't started, and the result says so", async () => {
+      seedPaidWorkflow();
+      const id = await proposeId();
+      inPaidWrite(() => seedPaidWorkflow("Pay us more"));
+      const res = await decide(id, "approve");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("their steps changed after approval: wf_paid") });
+      expect(mem.read("quotes/q1")!.status).toBe("paid");
+      expect(mem.list("workflowRuns")).toEqual([]);
+    });
+
+    it("a quote.paid workflow activated inside the paid write (never reviewed) isn't started", async () => {
+      const id = await proposeId();
+      inPaidWrite(() => seedPaidWorkflow());
+      expect((await decide(id, "approve")).status).toBe(200);
+      expect(mem.list("workflowRuns")).toEqual([]);
     });
 
     it("steps edited after the approver's preview check -> failed, not marked paid", async () => {

@@ -10,8 +10,7 @@ import { reserveEnrolment, resolveEnrolmentCapPerHour } from "@/lib/api/enrolmen
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import { readPipelineStages } from "@/lib/pipelines/server";
 import { dealPipelineId } from "@/lib/pipelines/stages";
-import { workflowStepsFingerprint } from "@/lib/ai-suite/capabilities/workflow-support";
-import type { WorkflowDoc, WorkflowTriggerType } from "@/types/workflows";
+import type { WorkflowTriggerType } from "@/types/workflows";
 import { eventStatus, type CalendarEvent } from "@/types/events";
 
 const WHY: Record<string, string> = {
@@ -88,12 +87,7 @@ export async function replayHeldEnrolment(
   const subAccountId = proposal.subAccountId as string;
   const keyId = proposal.keyId as string;
   const workflowId = proposal.workflowId as string;
-  // Steps edited after the approver reviewed them: nobody is enrolled. (A
-  // missing or paused workflow is left to the engine's own reason.)
-  const wf = (await getAdminDb().doc(`workflows/${workflowId}`).get()).data();
-  if (wf && workflowStepsFingerprint(wf as WorkflowDoc) !== approver.approved?.pinned?.stepsFingerprint) {
-    throw new CapabilityUserError(WHY.steps_changed);
-  }
+  const stepsFingerprint = approver.approved?.pinned?.stepsFingerprint;
   if (DEAL_TRIGGERS.has(args.type) && !(await dealStillMatches(subAccountId, args.type, args.context ?? {}))) {
     throw new CapabilityUserError(WHY.deal_changed);
   }
@@ -118,6 +112,8 @@ export async function replayHeldEnrolment(
     contactId: args.contactId,
     context: args.context ?? {},
     onlyWorkflowId: workflowId,
+    // The engine enrols only while the live steps are the reviewed ones.
+    expectedStepsFingerprints: { [workflowId]: typeof stepsFingerprint === "string" ? stepsFingerprint : "" },
     // Only a charged reservation is reconciled by the engine's finally.
     ...(budget.charged ? { apiKeyId: keyId } : {}),
   });

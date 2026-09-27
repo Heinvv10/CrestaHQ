@@ -113,6 +113,9 @@ export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
         ...(now.paidVia ? { paidVia: now.paidVia } : {}),
         expectTotalCents: now.pinned.totalCents,
         expectCurrency: now.pinned.currency,
+        // Checked in the paid transaction, whether or not a review is asked.
+        expectContactId: now.pinned.contactId,
+        expectWorkflows: Object.fromEntries(now.pinned.workflows.map((w) => [w.id, w.stepsFingerprint])),
         reviewExpect: review.channel
           ? { contactId: review.contactId!, phone: review.phone, channel: review.channel, body: review.body!, ...(review.fingerprint ? { fingerprint: review.fingerprint } : {}) }
           : null,
@@ -126,7 +129,8 @@ export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
         };
         throw new CapabilityUserError(why[result.code] ?? "That quote or invoice isn't in this workspace.");
       }
-      return { resultText: `Marked ${docLabel(q).toLowerCase()} ${q.quoteNumber} paid.`, ref: { kind: "quote", id: q.id } };
+      const changed = result.workflowsStepsChanged?.length ? ` Not started, their steps changed after approval: ${result.workflowsStepsChanged.join(", ")}.` : "";
+      return { resultText: `Marked ${docLabel(q).toLowerCase()} ${q.quoteNumber} paid.${changed}`, ref: { kind: "quote", id: q.id } };
     },
   },
 ];

@@ -231,6 +231,20 @@ describe("set_event_status", () => {
     expect(mem.read("events/ev1")!.status).toBe("scheduled");
   });
 
+  it("a started workflow's steps edited inside the cancel's transaction -> cancelled, that workflow not started, the result says so", async () => {
+    workflow("booking.cancelled");
+    const id = await proposeCancel();
+    beforeNextTransaction(async () => beforeNextTransaction(async () =>
+      mem.seed("workflows/wf_booking.cancelled", { ...mem.read("workflows/wf_booking.cancelled")!, nodes: {} })
+    ));
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("their steps changed after approval: wf_booking.cancelled") });
+    expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mem.list("workflowRuns")).toEqual([]);
+  });
+
   it("a started workflow's steps edited after the approver's preview check -> failed, not cancelled", async () => {
     workflow("booking.cancelled");
     const id = await proposeCancel();

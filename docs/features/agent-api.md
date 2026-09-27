@@ -102,16 +102,20 @@ members, no client writes; see
 
 - **Preview and pins.** At propose time the tool builds the preview: the exact text,
   resolved recipient, channel, amount, or the record about to go. The values the
-  send depends on (recipient, channel, body, the SMS / WhatsApp / voice number it
-  goes out from, fingerprints of the quote, workflow or call script) are **pinned**
-  with it. On approve the preview is rebuilt; if
+  send depends on (recipient, channel, body, the number it goes out from: the SMS
+  Twilio number, the WhatsApp rail's connected number, the number the voice line was
+  imported to Vapi from; fingerprints of the quote, workflow or call script) are
+  **pinned** with it. A scheduled message re-checks its recipient and number when it
+  fires. On approve the preview is rebuilt; if
   anything differs the approve is refused `preview_changed` and the page reloads
   the new preview, and execute sends only to the pinned values.
 - **Checks at send.** The downstream send re-checks what the approver saw
   (`expect`): the review-request text, number and channel; the quote a
   `send_quote` sends; the cancellation notice and the appointment's contact (a cancel
   whose appointment is re-linked mid-flight sends no notice and starts no workflows);
-  the steps of the workflows a cancel or mark-paid starts; the broadcast's approved audience
+  the steps of the workflows a cancel, mark-paid or held enrolment starts (only the
+  reviewed workflows start, and only while their steps are unchanged; a run then reads
+  each step when it reaches it); the broadcast's approved audience
   size and the values an agent set on it; the social post's approved accounts; the
   voice call's script fingerprint. A mismatch refuses with nothing sent. For a
   manual-origin send, quiet hours, opt-out, the WhatsApp window and channel

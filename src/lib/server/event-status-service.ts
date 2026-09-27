@@ -120,6 +120,7 @@ export interface StatusChangeOutcome {
   emailSent?: boolean;
   emailSkipReason?: SideEffectResult["emailSkipReason"];
   workflowsSkipped?: true;
+  workflowsStepsChanged?: string[];
   /** Agent writes only: the enrolments held for approval, and the matched
    *  workflows that could be neither held nor run. */
   held?: HeldEnrolment[];
@@ -133,6 +134,8 @@ export interface StatusChangeOptions {
   expectNotice?: CancelNoticeExpect | null;
   /** An approved agent cancel: the contact its approver saw; another one starts no workflows. */
   expectContactId?: string | null;
+  /** An approved agent cancel: the workflows its approver saw (id -> steps fingerprint); only those, unchanged, start. */
+  expectedStepsFingerprints?: Record<string, string>;
 }
 
 /**
@@ -210,6 +213,7 @@ export async function changeEventStatus(
     emailSent: sideEffects.emailSent,
     emailSkipReason: sideEffects.emailSkipReason,
     ...(sideEffects.workflowsSkipped ? { workflowsSkipped: true as const } : {}),
+    ...(sideEffects.workflowsStepsChanged ? { workflowsStepsChanged: sideEffects.workflowsStepsChanged } : {}),
     ...(opts.actor ? { held: sideEffects.held ?? [], holdFailures: sideEffects.holdFailures ?? [] } : {}),
   };
 }
@@ -222,6 +226,8 @@ interface SideEffectResult {
   emailSkipReason?: EventNotifySkipReason;
   /** An approved cancel whose contact was re-linked: its workflows were not started. */
   workflowsSkipped?: true;
+  /** An approved cancel: reviewed workflows not started because their steps changed. */
+  workflowsStepsChanged?: string[];
 }
 
 async function runStatusSideEffects(
@@ -274,10 +280,14 @@ async function runStatusSideEffects(
       bookingPageSlug: event.bookingPageSlug ?? null,
     },
     triggerType,
-    // Only an agent's call carries the actor: the human call is unchanged.
-    ...(opts.actor ? [opts.actor] : []),
+    // Only an agent's call carries the actor or the reviewed workflows: the human call is unchanged.
+    ...((opts.expectedStepsFingerprints
+      ? [opts.actor, opts.expectedStepsFingerprints]
+      : opts.actor ? [opts.actor] : []) as [AgentActor?, Record<string, string>?]),
   );
   const held = fired ? { held: fired.held ?? [], holdFailures: holdFailuresOf(fired) } : {};
+  const changed = fired?.skipped.filter((s) => s.reason === "steps_changed").map((s) => s.workflowId) ?? [];
+  if (changed.length) Object.assign(held, { workflowsStepsChanged: changed });
 
   // Operator-cancelled bookings notify the visitor via email. An approved
   // agent cancel sends only the notice its approver saw (`expectNotice`),
