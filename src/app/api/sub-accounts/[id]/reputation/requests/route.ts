@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { loadEffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import { toMillis } from "@/lib/gbp/sync/types";
+import { listingFor, type ListingFields } from "@/lib/gbp/listings";
 import { requestKeys } from "@/lib/reputation/overview";
 import { REVIEW_REQUEST_CHANNELS, REVIEW_REQUEST_SOURCES, REVIEW_REQUEST_STATUSES } from "@/lib/reviews/request-log";
 
@@ -18,7 +19,9 @@ import { REVIEW_REQUEST_CHANNELS, REVIEW_REQUEST_SOURCES, REVIEW_REQUEST_STATUSE
  * joined at read time from THIS sub-account's contacts, and for a
  * territory-scoped collaborator only from contacts in their territories (an
  * out-of-scope contact's row stays, without its id or name). Never a message
- * body, phone number or email address.
+ * body, phone number or email address. A request made for an EXTRA listing
+ * (MULTI_LISTING_V1_PLAN.md PR 5) carries that listing's title, or "Removed
+ * listing" once it is no longer connected; every other row `listingTitle: null`.
  */
 
 const PAGE = 50;
@@ -134,6 +137,11 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     }),
   );
 
+  const byListing = page.some((d) => typeof d.data()?.locationName === "string");
+  const sub = byListing ? (((await db.doc(`subAccounts/${id}`).get()).data() ?? {}) as ListingFields) : {};
+  const listingTitle = (loc: unknown) =>
+    typeof loc === "string" ? (listingFor(sub, loc)?.title ?? "Removed listing") : null;
+
   return NextResponse.json({
     requests: page.map((d) => {
       const data = d.data() ?? {};
@@ -152,6 +160,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
         clickedAt: iso(data.clickedAt),
         tracked: data.tracked === true,
         reminder: reminderOf(data.reminder),
+        listingTitle: listingTitle(data.locationName),
       };
     }),
     nextCursor,

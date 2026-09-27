@@ -28,6 +28,7 @@ import { planReviewLink, scheduleReviewReminder, supersedeOtherReminders } from 
 import { phoneHash, templateHash } from "@/lib/reviews/reminder-checks";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { isGoogleReviewUrl } from "@/lib/reviews/review-url";
+import { isMain } from "@/lib/gbp/listings";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { ConversationChannel } from "@/types/conversations";
@@ -74,6 +75,11 @@ export interface SendReviewInput {
    *  differs, here or when a quiet-hours hold releases it; and it never
    *  schedules reminders. Absent for every other caller. */
   expect?: { phone: string; channel: ReviewChannel; body: string; /** whatsapp_template only. */ fingerprint?: string };
+  /** MULTI_LISTING_V1_PLAN.md PR 5: the listing asked about. Absent or the
+   *  main listing = today's send; an EXTRA sends its own adopted link only
+   *  (else `listing_url_not_configured`), free-form channels only (else
+   *  `listing_needs_template`), with no reminder or click tracking in v1. */
+  locationName?: string;
 }
 
 export interface SendReviewResult {
@@ -83,7 +89,8 @@ export interface SendReviewResult {
    *  whatsapp_not_configured | window_closed | rail_has_no_templates |
    *  no_template | template_not_approved | template_var_missing |
    *  send_failed | error | quiet_hours_held | quiet_hours (reminder: the
-   *  worker reschedules itself with `quietHours`) | changed_since_approval */
+   *  worker reschedules itself with `quietHours`) | changed_since_approval |
+   *  listing_url_not_configured | listing_needs_template */
   reason?: string;
   /** Set with reason "quiet_hours": when the quiet window ends. */
   quietHours?: QuietHoursHold;
@@ -102,8 +109,10 @@ export async function maybeSendReviewRequest(
     const subSnap = await db.doc(`subAccounts/${input.subAccountId}`).get();
     const subAccount = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
     const cfg = subAccount?.googleReviewConfig ?? null;
+    const extraListing = subAccount && input.locationName && !isMain(subAccount, input.locationName) ? input.locationName : null;
     // The configured URL only — a listing's proposed link is never sent.
-    const reviewUrl = resolveReviewUrl(subAccount).configured;
+    const reviewUrl = resolveReviewUrl(subAccount, input.locationName).configured;
+    if (extraListing && cfg && !reviewUrl) return { sent: false, reason: "listing_url_not_configured" };
     if (!subAccount || !cfg || !reviewUrl) {
       return { sent: false, reason: "not_configured" };
     }
@@ -139,6 +148,10 @@ export async function maybeSendReviewRequest(
     if (!contact.phone) return { sent: false, reason: "no_phone" };
 
     const channel = normalizeReviewChannel(cfg.channel);
+    // An approved template carries the main listing's link in its body.
+    if (extraListing && channel !== "sms" && channel !== "whatsapp_manual") {
+      return { sent: false, reason: "listing_needs_template" };
+    }
     // The template fill an approved send was checked against, sent as is.
     let approvedTemplate: { tpl: WhatsappTemplateDoc; values: string[] } | undefined;
     if (input.expect) {
@@ -183,7 +196,7 @@ export async function maybeSendReviewRequest(
     // An approved agent send (expect) never starts reminders: each would be
     // rendered later, unreviewed. With no plan the link is the configured
     // one (tracking exists only for reminders), so the text is as approved.
-    const plan = input.expect ? null : planReviewLink({
+    const plan = input.expect || extraListing ? null : planReviewLink({
       config: cfg,
       channel,
       subAccountId: input.subAccountId,
@@ -410,6 +423,7 @@ export async function maybeSendReviewRequest(
       trigger: input.trigger,
       status: "sent",
       messageSid: sid,
+      ...(extraListing ? { locationName: extraListing } : {}),
       // With a reminder: a hash of the number it went to (never the number), so a
       // reminder can stop if the contact's number changes.
       ...(plan

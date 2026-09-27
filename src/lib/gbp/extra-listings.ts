@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { GoogleListing } from "@/types/google";
-import { locationNamesOf, type ListingFields } from "./listings";
+import { locId, locationNamesOf, type ListingFields } from "./listings";
 import type { GbpAccount, GbpLocation } from "./provider/types";
 import { heldByAnotherSubAccount } from "./shared-location";
 import { clearGbpCache } from "./sync/clear";
@@ -28,7 +28,7 @@ export interface ListingPair {
 
 export type ExtraRemovedReason = "admin_removed" | "not_accessible_after_reconnect";
 
-type Sub = ListingFields & { agencyId?: string };
+type Sub = ListingFields & { agencyId?: string; googleReviewConfig?: { listingUrls?: Record<string, string> } | null };
 
 const keyOf = (l: ListingPair) => `${l.accountName}|${l.locationName}`;
 
@@ -66,9 +66,19 @@ function writeExtras(
   byUid: string,
 ): void {
   const db = getAdminDb();
+  // A removed listing's adopted review link goes with it, so a re-add starts unadopted.
+  const urls = sub.googleReviewConfig?.listingUrls ?? {};
+  const dropUrls = Object.fromEntries(
+    changes.flatMap((c, i) =>
+      c.type === "extra_listing_removed" && locId(locations[i]) in urls
+        ? [[`googleReviewConfig.listingUrls.${locId(locations[i])}`, FieldValue.delete()]]
+        : [],
+    ),
+  );
   tx.update(db.doc(`subAccounts/${subAccountId}`), {
     googleExtraListings: next,
     googleLocationNames: locationNamesOf({ googleListing: sub.googleListing, googleExtraListings: next }),
+    ...dropUrls,
     updatedAt: FieldValue.serverTimestamp(),
   });
   changes.forEach((change, i) =>

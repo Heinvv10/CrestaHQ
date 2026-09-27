@@ -20,6 +20,10 @@ const REASONS: Record<string, string> = {
   no_template: "No WhatsApp review template is chosen in the review-request settings.",
   template_not_approved: "The WhatsApp review template isn't approved yet.",
   template_var_missing: "The WhatsApp review template needs a value this contact doesn't have (for example a first name).",
+  listing_url_not_configured:
+    "This listing has no review link yet. Adopt it on the Google Business page first.",
+  listing_needs_template:
+    "An approved WhatsApp template carries the main listing's link. Switch review requests to SMS or the in-window WhatsApp message to send for this listing.",
 };
 
 export function sendResultMessage(reason: string | undefined): string {

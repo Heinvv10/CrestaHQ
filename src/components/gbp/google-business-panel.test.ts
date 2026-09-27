@@ -252,4 +252,16 @@ describe("additional listings", () => {
     expect(byId("gbp-extra-listings")?.textContent).toContain("Fixture Fibre — South");
     expect(byId("gbp-manage-extra-listings")).toBeNull();
   });
+
+  it("one review-link card per listing: the main's, then each extra's own (MULTI_LISTING PR 5)", async () => {
+    ctx.subAccount = {
+      googleEnabledByAgency: true, googleConnectionMeta: CONNECTED, googleListing: { ...LISTING, newReviewUri: "https://review.fixture.example/main" },
+      googleExtraListings: [{ ...EXTRA, newReviewUri: "https://review.fixture.example/south" }],
+    };
+    await render();
+    expect(byId("gbp-reviewurl-proposal")?.textContent).toContain("https://review.fixture.example/main");
+    const extra = byId("gbp-listing-reviewurl-proposal");
+    expect(extra?.getAttribute("data-location")).toBe("locations/l2");
+    expect(extra?.textContent).toContain("https://review.fixture.example/south");
+  });
 });

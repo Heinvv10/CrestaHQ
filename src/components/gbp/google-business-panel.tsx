@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, Loader2, Lock, MapPin } from "lucide-react
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import type { GoogleListing } from "@/types/google";
+import { allListings } from "@/lib/gbp/listings";
 import { ExtraListings } from "./extra-listings";
 import { InlineConfirm } from "./inline-confirm";
 import { ListingPicker } from "./listing-picker";
@@ -236,6 +237,9 @@ export function GoogleBusinessPanel() {
       <ListingSummary listing={listing} />
       <ExtraListings subAccountId={subAccountId} main={listing.locationName} extras={subAccount.googleExtraListings ?? []} canEdit />
       <ReviewUrlCard />
+      {allListings(subAccount).filter((l) => l.locationName !== listing.locationName).map((l) => (
+        <ReviewUrlCard key={l.locationName} locationName={l.locationName} />
+      ))}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button type="button" size="sm" variant="outline" onClick={() => setChanging(true)} data-testid="gbp-change-listing">
           Change listing

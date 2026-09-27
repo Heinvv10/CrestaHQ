@@ -74,19 +74,18 @@ function docRef(path: string) {
       state.writes.push({ op: "update", path, data });
       const next: Record<string, unknown> = { ...cur };
       for (const [k, v] of Object.entries(data)) {
-        // Firestore semantics for a dotted path: one level of nesting, and
-        // FieldValue.delete() (the "DELETE_FIELD" sentinel) removes the key.
-        const [head, ...rest] = k.split(".");
-        if (rest.length === 0) {
-          if (v === "DELETE_FIELD") delete next[k];
-          else next[k] = v;
-          continue;
+        // Firestore semantics for a dotted path: each segment nests one map
+        // deeper, and FieldValue.delete() (the "DELETE_FIELD" sentinel) removes the key.
+        const keys = k.split(".");
+        const leaf = keys.pop()!;
+        let obj = next;
+        for (const key of keys) {
+          const inner = { ...((obj[key] as Record<string, unknown> | undefined) ?? {}) };
+          obj[key] = inner;
+          obj = inner;
         }
-        if (rest.length > 1) throw new Error("harness: only one level of dotted path is modelled");
-        const inner = { ...((next[head] as Record<string, unknown> | undefined) ?? {}) };
-        if (v === "DELETE_FIELD") delete inner[rest[0]];
-        else inner[rest[0]] = v;
-        next[head] = inner;
+        if (v === "DELETE_FIELD") delete obj[leaf];
+        else obj[leaf] = v;
       }
       state.docs.set(path, next);
       await state.afterWrite?.({ op: "update", path, data });

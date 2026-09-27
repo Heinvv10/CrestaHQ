@@ -45,6 +45,8 @@ export interface ReviewRequestLogInput {
   toHash?: string;
   /** SHA-256 of the message template used — never the body. */
   templateHash?: string;
+  /** MULTI_LISTING_V1_PLAN.md PR 5: the EXTRA listing the request was for; absent = the main. */
+  locationName?: string;
 }
 
 export async function logReviewRequest(input: ReviewRequestLogInput): Promise<void> {
@@ -68,6 +70,7 @@ export async function logReviewRequest(input: ReviewRequestLogInput): Promise<vo
       ...(input.reminder ? { reminder: input.reminder } : {}),
       ...(input.toHash ? { toHash: input.toHash } : {}),
       ...(input.templateHash ? { templateHash: input.templateHash } : {}),
+      ...(input.locationName ? { locationName: input.locationName } : {}),
     };
     await (input.id ? log.doc(input.id).set(row) : log.add(row));
   } catch (err) {

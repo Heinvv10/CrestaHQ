@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { AGENCY, OTHER_SA, SA, asUser, mem, resetSync } from "@/test/gbp-sync-harness";
+import { AGENCY, LOC_NORTH, OTHER_SA, SA, asUser, mem, resetSync, seedExtraListing } from "@/test/gbp-sync-harness";
 import { GET } from "./route";
 
 const NOW = Date.parse("2026-09-14T10:00:00Z");
@@ -79,7 +79,7 @@ describe("the list", () => {
     expect(body.requests[0]).toEqual({
       id: "r001", contactId: "c_one", contactName: "Fixture One", channel: "sms", source: "dispatcher",
       trigger: "manual", status: "sent", failureKind: null, sentAt: new Date(NOW - 60_000).toISOString(),
-      clickedAt: null, tracked: false, reminder: null,
+      clickedAt: null, tracked: false, reminder: null, listingTitle: null,
     });
     expect(body.requests[1]).toMatchObject({ contactName: "Fixture Two", source: "workflow", trigger: null });
     expect(body.requests[2]).toMatchObject({ status: "failed", failureKind: "send_failed", channel: "email" });
@@ -198,5 +198,16 @@ describe("paging", () => {
     expect((await read("?channel=whatsapp")).body.requests.map((r: Body) => r.id)).toEqual(["r003"]);
     expect((await read("?source=inbox")).body.requests.map((r: Body) => r.id)).toEqual(["r002"]);
     expect((await read("?source=dispatcher&channel=email")).body.requests).toEqual([]);
+  });
+});
+
+describe("the listing a request was for (MULTI_LISTING_V1_PLAN.md PR 5)", () => {
+  it("an extra listing's row carries its title; a main row none; a removed listing says so", async () => {
+    seedExtraListing(SA);
+    seedRow(SA, 1, { locationName: LOC_NORTH });
+    seedRow(SA, 2);
+    seedRow(SA, 3, { locationName: "locations/e2e-removed" });
+    const titles = (await read()).body.requests.map((r: Body) => r.listingTitle);
+    expect(titles).toEqual(["Velo Test Fibre — Gqeberha North", null, "Removed listing"]);
   });
 });
