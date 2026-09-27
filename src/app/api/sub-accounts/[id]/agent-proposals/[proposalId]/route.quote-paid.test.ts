@@ -199,6 +199,22 @@ describe("mark_quote_paid", () => {
       expect(mem.read("quotes/q1")!.status).toBe("accepted");
     });
 
+    it("a paused quote.paid workflow isn't listed or pinned", async () => {
+      seedPaidWorkflow();
+      mem.seed("workflows/wf_paid", { ...mem.read("workflows/wf_paid")!, status: "paused" });
+      const id = await proposeId();
+      expect(rowOf(id, "Workflows that start")).toBe("none");
+      expect(row(id).pinned).toMatchObject({ workflows: [] });
+    });
+
+    it("a quote with no contact starts none (the engine enrols nobody), so it lists none", async () => {
+      seedPaidWorkflow();
+      mem.seed("quotes/q1", { ...ACCEPTED, contactId: null });
+      const id = await proposeId();
+      expect(rowOf(id, "Workflows that start")).toBe("none");
+      expect(row(id).pinned).toMatchObject({ workflows: [] });
+    });
+
     it("unchanged steps -> the reviewed workflow starts", async () => {
       seedPaidWorkflow();
       const id = await proposeId();

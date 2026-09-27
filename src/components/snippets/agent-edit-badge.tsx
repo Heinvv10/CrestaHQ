@@ -3,8 +3,10 @@ import type { SnippetDto } from "@/types/snippets";
 const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
 
 /**
- * "edited by API agent <key> <date>" on a snippet an API agent last wrote
- * (its text may be the agent's, not a teammate's). Nothing otherwise.
+ * "edited by API agent <key> <date>" on a snippet an API agent has edited
+ * (the key and date of its latest agent write; a later teammate's edit does
+ * not clear it, so some of its text may still be the agent's). Nothing on a
+ * snippet no agent has written.
  */
 export function AgentEditBadge({ snippet }: { snippet: Pick<SnippetDto, "lastAgentEditKey" | "lastAgentEditAt"> }) {
   if (!snippet.lastAgentEditKey) return null;

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { seedPr13, VOICE } from "@/test/pr13-fixtures";
 
@@ -77,6 +77,33 @@ describe("send_message", () => {
     expect(row(id).pinned).toMatchObject({ from: null });
   });
 
+  describe("shared SMS sender", () => {
+    beforeEach(async () => {
+      vi.stubEnv("TWILIO_ACCOUNT_SID", "AC_shared");
+      vi.stubEnv("TWILIO_AUTH_TOKEN", "tok");
+      vi.stubEnv("TWILIO_FROM_NUMBER", "+27870000099");
+      (await import("@/lib/agency/policy")).invalidateAgencyPolicyCache("ag1");
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("the shared number when the agency allows it", async () => {
+      mem.seed("agencies/ag1", { sharedSmsAllowed: true });
+      expect(fromOf(await sms())).toBe("+27870000099");
+    });
+
+    it("none when the agency disallows shared SMS", async () => {
+      mem.seed("agencies/ag1", { sharedSmsAllowed: false });
+      expect(fromOf(await sms())).toBe("No sms sender is set up: it will not be sent.");
+    });
+  });
+
+  it("whatsapp with no usable sender says it won't be sent", async () => {
+    setSub({ whatsappSenders: [{ id: "s1", label: "Sales", provider: "cloud", phoneNumber: "+27811111111", isDefault: true, credentialsId: "own" }] });
+    const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
+    expect(fromOf(id)).toBe("No whatsapp sender is set up: it will not be sent.");
+    expect(row(id).pinned).toMatchObject({ from: null });
+  });
+
   it("whatsapp: the rail's connected number beside the sender's label, not the typed registry number", async () => {
     setSub(cloud("+27870000011", "+27899999999"));
     const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
@@ -123,6 +150,20 @@ describe("start_voice_call (twilio-byoc)", () => {
     voice({ numberMode: "twilio-byoc", vapiPhoneNumber: "+27870000031" });
     expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
     expect(createOutboundCall).not.toHaveBeenCalled();
+  });
+
+  it("the provisioned number changed after the approve's check -> failed, no call (execute re-checks from)", async () => {
+    voice({ numberMode: "twilio-byoc", vapiPhoneNumber: "+27870000021" });
+    const id = await propose("start_voice_call", { contactId: "c1" });
+    beforeNextTransaction(async () => voice({ numberMode: "twilio-byoc", vapiPhoneNumber: "+27870000031" }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(createOutboundCall).not.toHaveBeenCalled();
+  });
+
+  it("vapi-managed: names the Vapi number resource (its number isn't recorded)", async () => {
+    voice({ numberMode: "vapi-managed" });
+    const id = await propose("start_voice_call", { contactId: "c1" });
+    expect(fromOf(id)).toBe(`the Vapi-managed number ${VOICE.vapiPhoneNumberId} (its number isn't recorded here)`);
   });
 
   it("legacy config without the provisioned number: names the Vapi resource and pins that", async () => {

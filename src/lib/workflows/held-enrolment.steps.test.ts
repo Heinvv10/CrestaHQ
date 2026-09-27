@@ -61,6 +61,31 @@ describe("held enrolment preview: the workflow's steps", () => {
     expect(runs()).toHaveLength(1);
   });
 
+  it("moving only the start step is a steps change: preview_changed", async () => {
+    const p = await hold();
+    mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), startNodeId: "n9" });
+    expect(await (await decide(p.id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    expect(runs()).toEqual([]);
+  });
+
+  it("moving only the start step after the approve's check enrols nobody (the fingerprint covers it)", async () => {
+    const p = await hold();
+    mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), nodes: { n1: (mem.read("workflows/wf1")!.nodes as Record<string, unknown>).n1, n2: { id: "n2", type: "add_tag", config: { tag: "y" }, next: null } } });
+    expect(await (await decide(p.id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    beforeNextTransaction(async () => mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), startNodeId: "n2" }));
+    expect((await decide(p.id, "approve")).status).toBe(422);
+    expect(runs()).toEqual([]);
+  });
+
+  it("a workflow now in another sub-account is never read into the preview; nobody is enrolled", async () => {
+    const p = await hold();
+    mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), subAccountId: "sa2", nodes: { n1: { id: "n1", type: "send_sms", config: { body: "Foreign" }, next: null } } });
+    const res = await decide(p.id, "approve");
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(row(p.id).preview)).not.toContain("Foreign");
+    expect(runs()).toEqual([]);
+  });
+
   it("a pause or rename alone is not a steps change: no preview_changed", async () => {
     const p = await hold();
     mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), name: "Renamed" });
