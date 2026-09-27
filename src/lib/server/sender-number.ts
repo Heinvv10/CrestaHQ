@@ -7,29 +7,35 @@ import type { SubAccountDoc } from "@/types";
 import type { VoiceChannelConfig } from "@/types/ai";
 
 /**
- * The number an agent's SMS, WhatsApp message or voice call goes out from,
- * resolved the way the send resolves it (without reading any secret), for
- * the approval preview's "From" row and its pin: a default sender changed
- * after the proposal changes the preview. Null when there is none (the send
- * is then refused).
+ * The number an agent's SMS or WhatsApp message goes out from, resolved the
+ * way the send resolves it (without reading any secret): `number` is what
+ * is pinned and re-checked (at send, at a scheduled fire), `display` what
+ * the approval preview's "From" row shows. For WhatsApp the pin is
+ * `<rail>:<number>` (a switch to another rail at the same number is a
+ * different sender) and the display adds the sender's label, so a label
+ * rename re-shows the preview but refuses nothing.
+ * Null when there is none (the send is then refused).
  */
-export async function messageSenderNumber(
+export async function messageSender(
   sub: SubAccountDoc | undefined,
   channel: "sms" | "whatsapp"
-): Promise<string | null> {
+): Promise<{ number: string; display: string } | null> {
   if (channel === "whatsapp") {
     // The default sender, as dispatchWhatsappSend resolves it (no senderId),
-    // shown by its rail's CONNECTED number (what the rail sends from), not
-    // the number typed into the registry.
+    // by its rail's CONNECTED number (what the rail sends from), not the
+    // number typed into the registry.
     const r = resolveWhatsappSender(sub);
-    return r.ok ? `${railNumber(sub, r.provider) || "(no number connected)"} (${r.sender.label})` : null;
+    if (!r.ok) return null;
+    const number = railNumber(sub, r.provider);
+    return { number: `${r.provider}:${number}`, display: `${number || "(no number connected)"} (${r.sender.label})` };
   }
   // getTwilioForSubAccount: the dedicated number, else the shared one if the agency allows it.
-  if (subAccountTwilioIsConfigured(sub?.twilioConfig)) return sub!.twilioConfig!.fromNumber;
-  if (smsIsConfigured() && (await agencyAllowsSharedSms(sub?.agencyId ?? null))) {
-    return process.env.TWILIO_FROM_NUMBER?.trim() || null;
-  }
-  return null;
+  const number = subAccountTwilioIsConfigured(sub?.twilioConfig)
+    ? sub!.twilioConfig!.fromNumber
+    : smsIsConfigured() && (await agencyAllowsSharedSms(sub?.agencyId ?? null))
+      ? process.env.TWILIO_FROM_NUMBER?.trim() || null
+      : null;
+  return number ? { number, display: number } : null;
 }
 
 /** The number a voice call rings from. Calls go out through the Vapi phone

@@ -108,7 +108,7 @@ describe("send_message", () => {
     setSub(cloud("+27870000011", "+27899999999"));
     const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
     expect(fromOf(id)).toBe("+27870000011 (Sales)");
-    expect(row(id).pinned).toMatchObject({ from: "+27870000011 (Sales)" });
+    expect(row(id).pinned).toMatchObject({ from: "cloud:+27870000011" }); // rail and number, no label
   });
 
   it("whatsapp: a cloud reconnect to another number after propose is preview_changed, nothing sent", async () => {
@@ -116,6 +116,20 @@ describe("send_message", () => {
     const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
     setSub(cloud("+27870000012"));
     expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("whatsapp: the default moved to a bridge sender at the same number after the approve's check -> refused, nothing sent (W1)", async () => {
+    setSub(cloud("+27870000011"));
+    const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
+    beforeNextTransaction(async () =>
+      setSub({
+        whatsappSenders: [{ id: "s2", label: "Sales", provider: "bridge", phoneNumber: "+27000000000", isDefault: true }],
+        whatsappBridgeMeta: { displayPhoneNumber: "+27870000011" },
+      })
+    );
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id)).toMatchObject({ status: "failed", error: "The number it would be sent from changed since this was reviewed; nothing was sent." });
     expect(send).not.toHaveBeenCalled();
   });
 

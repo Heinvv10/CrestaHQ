@@ -120,7 +120,6 @@ export interface StatusChangeOutcome {
   emailSent?: boolean;
   emailSkipReason?: SideEffectResult["emailSkipReason"];
   workflowsSkipped?: true;
-  workflowsStepsChanged?: string[];
   /** Agent writes only: the enrolments held for approval, and the matched
    *  workflows that could be neither held nor run. */
   held?: HeldEnrolment[];
@@ -213,7 +212,6 @@ export async function changeEventStatus(
     emailSent: sideEffects.emailSent,
     emailSkipReason: sideEffects.emailSkipReason,
     ...(sideEffects.workflowsSkipped ? { workflowsSkipped: true as const } : {}),
-    ...(sideEffects.workflowsStepsChanged ? { workflowsStepsChanged: sideEffects.workflowsStepsChanged } : {}),
     ...(opts.actor ? { held: sideEffects.held ?? [], holdFailures: sideEffects.holdFailures ?? [] } : {}),
   };
 }
@@ -226,8 +224,6 @@ interface SideEffectResult {
   emailSkipReason?: EventNotifySkipReason;
   /** An approved cancel whose contact was re-linked: its workflows were not started. */
   workflowsSkipped?: true;
-  /** An approved cancel: reviewed workflows not started because their steps changed. */
-  workflowsStepsChanged?: string[];
 }
 
 async function runStatusSideEffects(
@@ -286,8 +282,6 @@ async function runStatusSideEffects(
       : opts.actor ? [opts.actor] : []) as [AgentActor?, Record<string, string>?]),
   );
   const held = fired ? { held: fired.held ?? [], holdFailures: holdFailuresOf(fired) } : {};
-  const changed = fired?.skipped.filter((s) => s.reason === "steps_changed").map((s) => s.workflowId) ?? [];
-  if (changed.length) Object.assign(held, { workflowsStepsChanged: changed });
 
   // Operator-cancelled bookings notify the visitor via email. An approved
   // agent cancel sends only the notice its approver saw (`expectNotice`),

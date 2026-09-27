@@ -29,12 +29,7 @@ import type { Quote, QuotePaidVia } from "@/types/quotes";
  */
 
 export type MarkQuotePaidOutcome =
-  | {
-      ok: true;
-      quote: Quote & { id: string };
-      /** With expectWorkflows: reviewed workflows not started, their steps changed. */
-      workflowsStepsChanged?: string[];
-    }
+  | { ok: true; quote: Quote & { id: string } }
   | {
       ok: false;
       code: "not_found" | "wrong_tenant" | "already_paid" | "bad_status" | "amount_changed" | "contact_changed";
@@ -170,11 +165,9 @@ export async function markQuotePaidServerSide(input: {
   await recordQuoteActivity(withId, "quote_marked_paid").catch((err: unknown) =>
     console.error(`[quotes-service] activity failed quote=${input.quoteId}`, err),
   );
-  const fired = await fireQuoteTrigger(withId, "quote_marked_paid", input.expectWorkflows).catch((err: unknown) => {
-    console.error(`[quotes-service] trigger failed quote=${input.quoteId}`, err);
-    return null;
-  });
-  const changed = fired?.skipped.filter((s) => s.reason === "steps_changed").map((s) => s.workflowId) ?? [];
+  await fireQuoteTrigger(withId, "quote_marked_paid", input.expectWorkflows).catch((err: unknown) =>
+    console.error(`[quotes-service] trigger failed quote=${input.quoteId}`, err),
+  );
   void emitQuoteWebhook(withId, "quote_marked_paid");
   if (input.reviewExpect !== null) {
     const { contactId: _reviewed, ...expect } = input.reviewExpect ?? {};
@@ -187,5 +180,5 @@ export async function markQuotePaidServerSide(input: {
     });
   }
 
-  return { ok: true, quote: withId, ...(changed.length ? { workflowsStepsChanged: changed } : {}) };
+  return { ok: true, quote: withId };
 }

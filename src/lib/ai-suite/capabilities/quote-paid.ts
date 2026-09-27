@@ -129,8 +129,7 @@ export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
         };
         throw new CapabilityUserError(why[result.code] ?? "That quote or invoice isn't in this workspace.");
       }
-      const changed = result.workflowsStepsChanged?.length ? ` Not started, their steps changed after approval: ${result.workflowsStepsChanged.join(", ")}.` : "";
-      return { resultText: `Marked ${docLabel(q).toLowerCase()} ${q.quoteNumber} paid.${changed}`, ref: { kind: "quote", id: q.id } };
+      return { resultText: `Marked ${docLabel(q).toLowerCase()} ${q.quoteNumber} paid.`, ref: { kind: "quote", id: q.id } };
     },
   },
 ];
