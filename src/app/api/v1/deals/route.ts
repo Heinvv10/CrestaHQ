@@ -3,6 +3,7 @@ import "server-only";
 import { FieldPath, FieldValue, type Query } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { withApiAuth } from "@/lib/api/auth";
+import { isDocId } from "@/lib/server/doc-id";
 import { apiError, apiOk } from "@/lib/api/responses";
 import { emitDealEvents } from "@/lib/server/deals-service";
 import { appendStageEntry } from "@/lib/server/deal-stage-history";
@@ -63,6 +64,9 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
     .orderBy(FieldPath.documentId(), "desc");
 
   if (startingAfter) {
+    if (!isDocId(startingAfter)) {
+      return apiError(ctx, "invalid_request", "invalid_cursor", "starting_after is not a valid id.");
+    }
     const cursorSnap = await db.doc(`deals/${startingAfter}`).get();
     if (!cursorSnap.exists) {
       return apiError(

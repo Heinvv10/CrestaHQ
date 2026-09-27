@@ -7,6 +7,7 @@ import { captureRequestLog } from "@/lib/api/logs";
 import { checkAndCount } from "@/lib/api/rate-limit";
 import { agentPrecheck } from "@/lib/api/agent-precheck";
 import { handleMcpRequest } from "@/lib/api/agent-mcp";
+import { MAX_AGENT_BODY_BYTES, readBodyCapped } from "@/lib/api/body-limit";
 
 /**
  * POST /api/mcp — the Agent API over MCP (Streamable HTTP, stateless).
@@ -80,10 +81,10 @@ export async function POST(request: Request): Promise<Response> {
       .catch(() => "refused");
     return refuse(refused, code);
   }
-  // Read the body here (capped like the transport's own read) so a batch
-  // can be checked before any message runs; the transport then uses this
-  // parse instead of re-reading.
-  const raw = await readCappedBody(request);
+  // Read the body here (capped, see body-limit) so a batch can be checked
+  // before any message runs; the transport then uses this parse instead of
+  // re-reading.
+  const raw = await readBodyCapped(request, MAX_AGENT_BODY_BYTES);
   if (raw === null) return refuse(jsonRpcError(413, -32000, "Request body too large."), "body_too_large");
   let parsed: unknown;
   try {
@@ -105,28 +106,6 @@ export async function POST(request: Request): Promise<Response> {
 
 const internalError = (auth: ApiAuthContext) =>
   apiError(auth, "internal_error", "internal_error", "Something went wrong on our end. Quote this request_id in support.");
-
-/** The transport's default body bound (4 MiB). */
-const MAX_BODY_BYTES = 4 * 1024 * 1024;
-
-/** The body as text, or null past MAX_BODY_BYTES (read no further). */
-async function readCappedBody(request: Request): Promise<string | null> {
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
 
 /** Two requests (messages with a method and an id) sharing one id. */
 function hasDuplicateRequestId(batch: unknown[]): boolean {

@@ -33,6 +33,8 @@ import {
 } from "@/lib/api/rate-limit";
 import { resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { captureRequestLog } from "@/lib/api/logs";
+import { MAX_BODY_BYTES, readBodyCapped } from "@/lib/api/body-limit";
+import { isDocId } from "@/lib/server/doc-id";
 import type { ApiKeyMode, ApiKeyScope } from "@/types/api";
 
 /**
@@ -119,6 +121,12 @@ export interface WithApiAuthOptions {
      *  anything below 500). */
     outcome?: { status: number; body: unknown },
   ) => boolean;
+  /** Body cap in bytes (default MAX_BODY_BYTES); over it -> 413 body_too_large. */
+  maxBodyBytes?: number;
+  /** Route params are doc ids, refused with 400 invalid_id unless isDocId
+   *  (default true). The agent tools route sets false: a tool name is a
+   *  registry key, never a path, and a bad one is the unknown-tool 404. */
+  docIdParams?: boolean;
 }
 
 export interface ApiHandlerInput<P extends Record<string, string> = Record<string, string>> {
@@ -306,12 +314,14 @@ export function requireApiScope(
  */
 async function readBody(
   request: Request,
-): Promise<{ rawBody: string; body: unknown }> {
+  maxBytes: number,
+): Promise<{ rawBody: string; body: unknown; tooLarge?: true }> {
   // GET / HEAD never carry a body in Next's Request shape.
   if (request.method === "GET" || request.method === "HEAD") {
     return { rawBody: "", body: null };
   }
-  const rawBody = await request.text();
+  const rawBody = await readBodyCapped(request, maxBytes);
+  if (rawBody === null) return { rawBody: "", body: null, tooLarge: true };
   if (!rawBody) return { rawBody: "", body: null };
   try {
     return { rawBody, body: JSON.parse(rawBody) };
@@ -357,7 +367,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     // it in scope for the log capture. GET / HEAD short-circuit inside
     // readBody so this is essentially free for read paths.
     const params = await routeCtx.params;
-    const { rawBody, body } = await readBody(request);
+    const maxBytes = opts.maxBodyBytes ?? MAX_BODY_BYTES;
+    const { rawBody, body, tooLarge } = await readBody(request, maxBytes);
     const redact = opts.redactLog?.(params) ?? { requestBody: false, responseBody: false };
 
     // Helper that captures the log + returns the response. Used at every
@@ -395,6 +406,14 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       return response;
     };
 
+    if (tooLarge) {
+      return finalize(
+        apiError(ctx, "invalid_request", "body_too_large", `The request body is over ${maxBytes} bytes.`, { status: 413 }),
+        undefined,
+        "body_too_large",
+      );
+    }
+
     const scopeErr = requireApiScope(ctx, requireScope);
     if (scopeErr) return finalize(scopeErr, undefined, "insufficient_scope");
 
@@ -422,6 +441,17 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         },
       );
       return finalize(rlResp, undefined, "rate_limited");
+    }
+
+    // Next decodes %2F in a route param, so "c1%2Fsub%2Fs1" would reach
+    // `contacts/${id}` as a subcollection path; refuse before any read.
+    const badParam = opts.docIdParams === false ? undefined : Object.entries(params).find(([, v]) => !isDocId(v));
+    if (badParam) {
+      return finalize(
+        apiError(ctx, "invalid_request", "invalid_id", `\`${badParam[0]}\` is not a valid id.`),
+        undefined,
+        "invalid_id",
+      );
     }
 
     if (opts.precheck) {
