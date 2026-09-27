@@ -83,11 +83,11 @@ Prefixes: S5/S7/S8 = section scorers (every `score()` branch), P1 = phase 1 (rep
 
 ## Follow-up: town from the Google listing (2026-09-27, #308)
 
-After review: the listing wins over the contact (a form contact's city is an IP guess), with town and country taken as one pair. 11 of 11 killed.
+After two reviews: the listing's town wins over the contact's (a form contact's city is an IP guess), with the listing's country, else the contact's (never a silent ZA when the contact has one). 12 of 12 killed.
 
 | Mutant | Outcome |
 |---|---|
-| C1 locality ignored | killed — 2 failed \| 30 passed (32) |
+| C1 locality ignored | killed — 3 failed \| 30 passed (33) |
 | C2 no postal_town fallback | killed — 1 failed \| 31 passed (32) |
 | C5 country not upper-cased | killed — 2 failed \| 30 passed (32) |
 | C6 component type not checked | killed — 4 failed \| 28 passed (32) |
@@ -98,3 +98,4 @@ After review: the listing wins over the contact (a form contact's city is an IP 
 | D3 blank locality accepted | killed — 1 failed \| 15 passed (16) (survived the reviewer's run; fixture added) |
 | D4 any country string accepted | killed — 1 failed \| 15 passed (16) (survived the reviewer's run; fixture added) |
 | D5 section found by shape, not key | killed — 1 failed \| 15 passed (16) (survived the reviewer's run; fixture added) |
+| D6 listing town drops contact country | killed — 1 failed \| 32 passed (33) (review round 2 fix) |

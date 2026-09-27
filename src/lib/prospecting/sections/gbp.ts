@@ -12,8 +12,9 @@ import { measured, unavailable, type Scored, type SectionInput } from "./types";
  * profile is claimed, so `gbp_unclaimed` is never emitted here.
  *
  * `addressComponents` (an Essentials field, so no higher SKU) is not scored:
- * it gives the ApexGEO scan the business's town and country when the contact
- * has none (`placeLocation`). Prospect imports rarely carry a city.
+ * it gives the ApexGEO scan the business's town and country (`placeLocation`),
+ * which the runner prefers over the contact's — prospect imports rarely carry
+ * a city, and a form contact's city is an IP guess.
  */
 
 export const key = "gbp" as const;

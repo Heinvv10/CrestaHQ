@@ -350,6 +350,15 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
       expect(body()).toMatchObject({ city: "Alberton", country: "NA" });
     });
 
+    it("a listing town with no country keeps the contact's country rather than defaulting to ZA", async () => {
+      started();
+      await runProspectReport({ ...BUSINESS, city: null, countryCode: "BW" }, {
+        sections: [gbpWith([{ longText: "Gaborone", types: ["locality"] }])],
+        apexgeo: { connection: CONN, reportId: "r1" },
+      });
+      expect(body()).toMatchObject({ city: "Gaborone", country: "BW" });
+    });
+
     it("a listing with no town leaves the contact's own city and country, as a pair", async () => {
       started();
       await runProspectReport({ ...BUSINESS, city: "Gqeberha", countryCode: "BW" }, {
