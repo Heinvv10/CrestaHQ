@@ -27,7 +27,7 @@ export const POST = withApiAuth<{ id: string }>(
   async ({ body, params, ctx }) => {
     const parsed = parseLinkRecipientCreate(body);
     if (!parsed.ok) {
-      return apiError(ctx, "invalid_request", "invalid_body", parsed.error!);
+      return apiError(ctx, "invalid_request", parsed.code ?? "invalid_body", parsed.error!);
     }
     const input = parsed.value!;
 

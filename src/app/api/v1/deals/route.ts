@@ -155,11 +155,10 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     );
   }
 
-  // A "/" would make the member path name a collection and throw, not 400.
+  // parseDealCreate already refused a uid that isn't a doc id (invalid_id).
   if (
     input.assignedToUid !== null &&
-    (input.assignedToUid.includes("/") ||
-      !(await isAssignableMember(ctx.subAccountId, input.assignedToUid)))
+    !(await isAssignableMember(ctx.subAccountId, input.assignedToUid))
   ) {
     return apiError(
       ctx,

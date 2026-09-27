@@ -85,12 +85,16 @@ export async function POST(request: Request) {
   // real deployment.
   const raw = await readBodyCapped(request, 16 * 1024);
   if (raw === null) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
-  let body: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    body = JSON.parse(raw) as Record<string, unknown>;
+    parsed = JSON.parse(raw);
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return NextResponse.json({ error: "Body must be a JSON object" }, { status: 400 });
+  }
+  const body = parsed as Record<string, unknown>;
 
   const instanceId = cap(body.instanceId, 128);
   const ownerEmail = cap(body.ownerEmail, 320);

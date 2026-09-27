@@ -19,7 +19,9 @@ A versioned REST surface under `/api/v1/*` for the sub-account-scoped resources 
   **256 KB** with **`413`** `body_too_large` (one record per request; a form
   submission is text fields only). The agent tools (`POST /api/v1/tools/{name}`
   and `POST /api/mcp`) allow **1 MiB**: `update_workflow` takes up to 50,000
-  characters each of trigger and steps, and MCP batches several calls. The keyless
+  characters each of trigger and steps, and MCP batches several calls. An MCP batch
+  over 1 MiB (e.g. two maximal `update_workflow` calls) gets a `413`: split it into
+  separate requests. The keyless
   heartbeat (`/api/v1/leadstack/heartbeat`) allows 16 KB. The cap holds whether
   `Content-Length` is truthful, absent (chunked) or too small: bytes are counted as
   they stream (`lib/api/body-limit.ts`).

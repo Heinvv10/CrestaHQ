@@ -189,6 +189,8 @@ export function parseDealCreate(raw: unknown): ParseResult<DealCreateInput> {
   if (assignedToUid === null) {
     return { ok: false, error: "`assigned_to_uid` must be a string or null." };
   }
+  const badAssignee = badBodyId("assigned_to_uid", assignedToUid);
+  if (badAssignee) return badAssignee;
 
   return {
     ok: true,

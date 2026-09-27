@@ -33,8 +33,8 @@ import {
 } from "@/lib/api/rate-limit";
 import { resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { captureRequestLog } from "@/lib/api/logs";
-import { MAX_BODY_BYTES, readBodyCapped } from "@/lib/api/body-limit";
-import { isDocId } from "@/lib/server/doc-id";
+import { MAX_BODY_BYTES } from "@/lib/api/body-limit";
+import { bodyTooLarge, invalidParam, readJsonBody } from "@/lib/api/request-guards";
 import type { ApiKeyMode, ApiKeyScope } from "@/types/api";
 
 /**
@@ -305,32 +305,6 @@ export function requireApiScope(
 }
 
 /**
- * Read the request body exactly once and parse to JSON. Returns
- * `{rawBody, body}` — `body` is null when the request has no body or the
- * body isn't valid JSON.
- *
- * The HOF below uses this once per request and forwards both forms to the
- * handler so a handler never accidentally re-consumes the stream.
- */
-async function readBody(
-  request: Request,
-  maxBytes: number,
-): Promise<{ rawBody: string; body: unknown; tooLarge?: true }> {
-  // GET / HEAD never carry a body in Next's Request shape.
-  if (request.method === "GET" || request.method === "HEAD") {
-    return { rawBody: "", body: null };
-  }
-  const rawBody = await readBodyCapped(request, maxBytes);
-  if (rawBody === null) return { rawBody: "", body: null, tooLarge: true };
-  if (!rawBody) return { rawBody: "", body: null };
-  try {
-    return { rawBody, body: JSON.parse(rawBody) };
-  } catch {
-    return { rawBody, body: null };
-  }
-}
-
-/**
  * High-level wrapper. Use for nearly every v1 route handler — handles
  * auth, body parsing, scope check, idempotency, response headers.
  *
@@ -368,7 +342,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     // readBody so this is essentially free for read paths.
     const params = await routeCtx.params;
     const maxBytes = opts.maxBodyBytes ?? MAX_BODY_BYTES;
-    const { rawBody, body, tooLarge } = await readBody(request, maxBytes);
+    const { rawBody, body, tooLarge } = await readJsonBody(request, maxBytes);
     const redact = opts.redactLog?.(params) ?? { requestBody: false, responseBody: false };
 
     // Helper that captures the log + returns the response. Used at every
@@ -406,13 +380,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       return response;
     };
 
-    if (tooLarge) {
-      return finalize(
-        apiError(ctx, "invalid_request", "body_too_large", `The request body is over ${maxBytes} bytes.`, { status: 413 }),
-        undefined,
-        "body_too_large",
-      );
-    }
+    if (tooLarge) return finalize(bodyTooLarge(ctx, maxBytes), undefined, "body_too_large");
 
     const scopeErr = requireApiScope(ctx, requireScope);
     if (scopeErr) return finalize(scopeErr, undefined, "insufficient_scope");
@@ -443,16 +411,9 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       return finalize(rlResp, undefined, "rate_limited");
     }
 
-    // Next decodes %2F in a route param, so "c1%2Fsub%2Fs1" would reach
-    // `contacts/${id}` as a subcollection path; refuse before any read.
-    const badParam = opts.docIdParams === false ? undefined : Object.entries(params).find(([, v]) => !isDocId(v));
-    if (badParam) {
-      return finalize(
-        apiError(ctx, "invalid_request", "invalid_id", `\`${badParam[0]}\` is not a valid id.`),
-        undefined,
-        "invalid_id",
-      );
-    }
+    // Route params become doc paths: refuse a non-doc id before any read.
+    const badParam = opts.docIdParams === false ? null : invalidParam(ctx, params);
+    if (badParam) return finalize(badParam, undefined, "invalid_id");
 
     if (opts.precheck) {
       let refused: NextResponse | null;

@@ -20,6 +20,7 @@ const deals = await import("./deals/route");
 const events = await import("./events/route");
 const event = await import("./events/[id]/route");
 const contact = await import("./contacts/[id]/route");
+const recipients = await import("./links/[id]/recipients/route");
 
 const BAD = ["c1/sub/s1", "..", "__x__"];
 const own = { subAccountId: "sa1", agencyId: "ag1", mode: "live" };
@@ -75,6 +76,7 @@ describe.each(BAD)("bad id %j", (bad) => {
   it.each([
     ["contact_id", { contact_id: bad }],
     ["pipeline_id", { contact_id: "c1", pipeline_id: bad }],
+    ["assigned_to_uid", { contact_id: "c1", assigned_to_uid: bad }],
   ])("POST /deals %s -> 400, no deal", async (field, extra) => {
     await expectInvalidId(await call(deals.POST, "POST", { title: "D", value: 10, currency: "USD", stage: "new", ...extra }), field);
     expect(docsIn("deals")).toEqual([]);
@@ -91,10 +93,22 @@ describe.each(BAD)("bad id %j", (bad) => {
     expect(mem.read("events/e1")).toMatchObject({ contactId: null });
   });
 
+  it("POST /links/:id/recipients contact_id -> 400, no recipient", async () => {
+    mem.seed("trackedLinks/l1", { ...own, destinationUrl: "https://example.com" });
+    await expectInvalidId(await call(recipients.POST, "POST", { contact_id: bad }, { id: "l1" }), "contact_id");
+    expect(mem.list("trackedLinks/l1/recipients")).toEqual([]);
+  });
+
   it("PATCH /contacts/:id prospecting.list_id -> 400, unchanged", async () => {
     await expectInvalidId(await call(contact.PATCH, "PATCH", { prospecting: { list_id: bad } }, { id: "c1" }), "prospecting.list_id");
     expect(mem.read("contacts/c1")).toEqual({ ...own, name: "Ann" });
   });
+});
+
+it("a missing links contact_id stays invalid_body", async () => {
+  mem.seed("trackedLinks/l1", { ...own, destinationUrl: "https://example.com" });
+  const res = await call(recipients.POST, "POST", {}, { id: "l1" });
+  expect(await res.json()).toMatchObject({ error: { code: "invalid_body" } });
 });
 
 it("good ids still link", async () => {

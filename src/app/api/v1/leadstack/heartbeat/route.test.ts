@@ -76,6 +76,13 @@ describe("POST /api/v1/leadstack/heartbeat body and instanceId", () => {
     expect(mem.list("leadstackInstances")).toEqual([]);
   });
 
+  it.each(["null", "42", '"text"', "[]"])("a %s JSON body is a 400, not a 500", async (body) => {
+    const res = await send(body);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Body must be a JSON object" });
+    expect(mem.list("leadstackInstances")).toEqual([]);
+  });
+
   it.each(["__x__", "a/b", ".."])("instanceId %j is accepted (200) but nothing is written", async (instanceId) => {
     const res = await send(payload(0, instanceId));
     expect(res.status).toBe(200);
