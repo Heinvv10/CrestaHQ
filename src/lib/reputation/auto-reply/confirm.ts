@@ -27,8 +27,10 @@ import {
  *                queued and posts when auto-reply resumes      → stop the run
  *   listing_paused only the review's listing waits: it is connected but
  *                auto-reply is off for it now (another listing is on), or
- *                another sub-account manages this EXTRA listing too; the
- *                draft stays queued (MULTI_LISTING_V1_PLAN.md) → skip it
+ *                another sub-account manages this EXTRA listing too, or it
+ *                was switched on again by someone other than the `enabledByUid`
+ *                the run would post under (a later run posts under the current
+ *                one); the draft stays queued (MULTI_LISTING_V1_PLAN.md) → skip it
  *   cap          20 posts today; the draft stays queued        → stop the run
  *   stale        the review changed, has or ever had a reply, was removed, is
  *                on a listing no longer connected, or
@@ -43,7 +45,7 @@ export type Confirm = "go" | "lease_lost" | "paused" | "listing_paused" | "cap" 
 
 export async function confirmAutoPost(
   sa: string,
-  p: { runId: string; docId: string; textHash: string },
+  p: { runId: string; docId: string; textHash: string; enabledByUid?: string },
   now: number,
 ): Promise<Confirm> {
   const db = getAdminDb();
@@ -83,6 +85,8 @@ export async function confirmAutoPost(
     const basis = review ? reviewBasis(review) : null;
     const on = reviewLoc ? listingOn(listings, reviewLoc) : null;
     if (!review || review.state !== "active" || !on || everReplied(review) || never) return "stale";
+    // The post goes out in the name of whoever switched THIS listing on NOW.
+    if (p.enabledByUid !== undefined && on.enabledByUid !== p.enabledByUid) return "listing_paused";
     if (!pending || !QUEUED_REASONS.includes(pending.reason) || pending.textHash !== p.textHash) return "stale";
     if (basis === null || pending.basisHash !== basis) return "stale";
 

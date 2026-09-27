@@ -47,12 +47,14 @@ import { autoReplyKillSwitchOn } from "@/lib/reputation/auto-reply/kill-switch";
  *
  * Per listing (MULTI_LISTING_V1_PLAN.md PR 6): `enabled` stays the MAIN
  * listing's switch. The PUT may also carry `listings: {locationName: on}`
- * for EXTRA listings — each must be one of this sub-account's connected
- * extras (else 400 `unknown_listing`); switching one on takes the same gates
+ * for EXTRA listings — each switched ON must be one of this sub-account's
+ * connected extras (else 400 `unknown_listing`; an off for a listing no
+ * longer connected is dropped); switching one off→on takes the same gates
  * and refusals as the main one, `listing_shared` asked of THAT listing, and
  * stamps its own `enabledAt` / `enabledByUid` in
- * `reviewsAutoReply.extraListings.{locId}`; off deletes the key; a listing
- * left out keeps its state. Modes, backlog and the daily caps are shared.
+ * `reviewsAutoReply.extraListings.{locId}` (an extra already on is kept as
+ * it is, unchecked); off deletes the key; a listing left out keeps its
+ * state. Any off→on clears main's `disabledReason`. Modes, backlog and the daily caps are shared.
  * GET and PUT also answer `listings: [{locationName, title, main, enabled,
  * enabledAt}]`, main first.
  */
@@ -138,15 +140,20 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
   const outcome = await db.runTransaction(async (tx) => {
     const sub = ((await tx.get(ref)).data() ?? {}) as Sub;
     const prev = sub.reviewsAutoReply as Record<string, unknown> | undefined;
-    const listings = input.listings ?? {};
-    const extras = locationNamesOf(sub as ListingFields).filter((l) => !isMain(sub as ListingFields, l));
+    const connected = locationNamesOf(sub as ListingFields);
+    // Switching off is always allowed: an off for a listing no longer connected
+    // (a card still showing a removed extra) is dropped, not refused.
+    const listings = Object.fromEntries(Object.entries(input.listings ?? {}).filter(([loc, on]) => on || connected.includes(loc)));
+    const extras = connected.filter((l) => !isMain(sub as ListingFields, l));
     if (Object.keys(listings).some((loc) => !extras.includes(loc))) {
       return gbpRefusal(400, "unknown_listing", "Auto-reply can be switched per listing only for this sub-account's additional listings.");
     }
     const was = readAutoReplyListings(prev, sub as ListingFields);
-    const extrasOn = Object.keys(listings).filter((loc) => listings[loc]);
-    const turningOnExtra = extrasOn.some((loc) => !listingOn(was, loc));
-    if (input.enabled || extrasOn.length > 0) {
+    // Only an extra switching OFF→ON is checked; one already on stays as it is
+    // (the engine pauses it while it is shared).
+    const extrasTurningOn = Object.keys(listings).filter((loc) => listings[loc] && !listingOn(was, loc));
+    const turningOnExtra = extrasTurningOn.length > 0;
+    if (input.enabled || turningOnExtra) {
       const refused = gateRefusal(sub);
       if (refused) return refused;
       // Switching it ON while it could not post (and the reconnect alert, sent
@@ -159,7 +166,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
     }
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
     // Each listing it would be on for: no other sub-account may manage it (H1, per listing).
-    const shared = [...(input.enabled && typeof listing === "string" && listing ? [listing] : []), ...extrasOn];
+    const shared = [...(input.enabled && typeof listing === "string" && listing ? [listing] : []), ...extrasTurningOn];
     for (const loc of shared) {
       if (await heldByAnotherSubAccount(db, tx, loc, id)) {
         return gbpRefusal(409, "listing_shared", "Another sub-account uses this Google listing — auto-reply can't be switched on here.");
@@ -170,6 +177,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
       now,
       uid: access.uid,
       listingLocationName: typeof listing === "string" && listing ? listing : null,
+      extraTurningOn: turningOnExtra,
     });
     if (!next.ok) return gbpRefusal(409, next.code, "Choose a Google Business listing before turning auto-reply on.");
     const writes = extraListingWrites(prev, sub as ListingFields, listings, { now, uid: access.uid });

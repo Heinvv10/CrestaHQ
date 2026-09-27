@@ -137,7 +137,7 @@ type NextSettings =
 export function nextAutoReplySettings(
   prev: unknown,
   input: AutoReplyInput,
-  ctx: { now: Date; uid: string; listingLocationName: string | null },
+  ctx: { now: Date; uid: string; listingLocationName: string | null; extraTurningOn?: boolean },
 ): NextSettings {
   const p = isPlainObject(prev) ? prev : {};
   const turningOn = input.enabled && p.enabled !== true;
@@ -157,8 +157,9 @@ export function nextAutoReplySettings(
       enabledByUid: turningOn ? ctx.uid : kept(p.enabledByUid, isString),
       listingLocationName: turningOn ? ctx.listingLocationName : kept(p.listingLocationName, isString),
       // "Switched off because the listing changed" lasts only while it stays
-      // off without an admin's switch: any on, or an admin's on→off, clears it.
-      disabledReason: input.enabled || p.enabled === true ? null : readDisabledReason(p),
+      // off without an admin's switch: any on (an extra listing's off→on
+      // too), or an admin's on→off, clears it.
+      disabledReason: input.enabled || p.enabled === true || ctx.extraTurningOn ? null : readDisabledReason(p),
       updatedAt: ctx.now,
       updatedByUid: ctx.uid,
     },

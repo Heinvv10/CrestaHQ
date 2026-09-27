@@ -656,11 +656,15 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   switch and stamps; `reviewsAutoReply.extraListings.{locId}` =
   `{enabledAt, enabledByUid}` marks an extra that is on (a missing key is
   off). The PUT takes an optional `listings: {locationName: on}` for extras
-  only (400 `unknown_listing` for anything else; a listing left out keeps its
-  state); switching one on takes the same gates and refusals as main, with
-  `listing_shared` asked of THAT listing, and stamps its own `enabledAt`
+  only (400 `unknown_listing` for switching anything else on; an off for a
+  listing no longer connected is dropped; a listing left out keeps its
+  state); switching one off→on takes the same gates and refusals as main,
+  with `listing_shared` asked of THAT listing, stamps its own `enabledAt`
   (backlog off counts from it) and `enabledByUid` (the posts'
-  `createdByUid`); off deletes the key. GET/PUT answer `listings:
+  `createdByUid`, re-checked in the final transaction — switched on again by
+  someone else mid-run, the review waits for the next run), and clears
+  main's `disabledReason`; an extra already on is kept as it is, unchecked
+  (turning auto-reply off is always allowed); off deletes the key. GET/PUT answer `listings:
   [{locationName, title, main, enabled, enabledAt}]`. `readAutoReplyListings`
   (`auto-reply/settings.ts`) derives the listings it is on for — an extra
   only while its key exists AND it is still connected, so a key left behind

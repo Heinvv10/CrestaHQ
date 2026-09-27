@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { LOC_A, LOC_NORTH, OTHER_SA, SA, asUser, mem, resetSync, seedExtraListing } from "@/test/gbp-sync-harness";
+import { LOC_A, LOC_NORTH, OTHER_SA, SA, asUser, mem, removeExtraListings, resetSync, seedExtraListing } from "@/test/gbp-sync-harness";
 import { locId } from "@/lib/gbp/listings";
 import { GET, PUT } from "./route";
 
@@ -114,5 +114,60 @@ describe("PUT listings", () => {
     patchSub({ googleConnectionMeta: { ...(mem.read(`subAccounts/${SA}`)!.googleConnectionMeta as object), reconnectRequired: true } });
     const res = await put({ ...OFF, listings: { [B]: true } });
     expect([res.status, res.body.code]).toEqual([409, "reconnect_required"]);
+  });
+});
+
+describe("switching off is always allowed; only off→on is checked", () => {
+  const shareB = () => patchSub({ googleExtraListings: [{ locationName: B }], googleLocationNames: ["locations/elsewhere", B] }, OTHER_SA);
+
+  it("(a) the card still holds a removed extra: main off plus {B: false} is 200, the entry dropped", async () => {
+    await put({ ...ON, listings: { [B]: true } });
+    removeExtraListings(SA);
+    const res = await put({ ...OFF, listings: { [B]: false } });
+    expect(res.status).toBe(200);
+    expect(stored()).toMatchObject({ enabled: false });
+  });
+
+  it("(b) B on, then another sub-account takes B: main off plus {B: true} is 200 and B stays on, stamps kept", async () => {
+    await put({ ...ON, listings: { [B]: true } });
+    const was = extras()[B_KEY];
+    shareB();
+    const res = await put({ ...OFF, listings: { [B]: true } });
+    expect(res.status).toBe(200);
+    expect(stored()).toMatchObject({ enabled: false });
+    expect(extras()[B_KEY]).toEqual(was);
+  });
+
+  it("(b) the gates off do not refuse keeping an already-on extra on while switching main off", async () => {
+    await put({ ...ON, listings: { [B]: true } });
+    patchSub({ reviewsAutoReplyEnabledByAgency: false });
+    expect((await put({ ...OFF, listings: { [B]: true } })).status).toBe(200);
+  });
+
+  it("(c) switching B on while it is shared is still 409 listing_shared", async () => {
+    shareB();
+    const res = await put({ ...OFF, listings: { [B]: true } });
+    expect([res.status, res.body.code]).toEqual([409, "listing_shared"]);
+  });
+
+  it("(d) switching an unknown listing on is still 400, even beside a dropped off entry", async () => {
+    const res = await put({ ...OFF, listings: { "locations/not-connected": true, "locations/gone": false } });
+    expect([res.status, res.body.code]).toEqual([400, "unknown_listing"]);
+  });
+});
+
+describe("main's disabledReason", () => {
+  it("is cleared when only an extra is switched on", async () => {
+    patchSub({ reviewsAutoReply: { enabled: false, modes: MODES, includeBacklog: false, disabledReason: "listing_changed" } });
+    expect((await get()).disabledReason).toBe("listing_changed");
+    expect((await put({ ...OFF, listings: { [B]: true } })).status).toBe(200);
+    expect(stored()?.disabledReason).toBeNull();
+    expect((await get()).disabledReason).toBeNull();
+  });
+
+  it("is kept when an extra is switched off (no off→on)", async () => {
+    patchSub({ reviewsAutoReply: { enabled: false, modes: MODES, includeBacklog: false, disabledReason: "listing_changed" } });
+    expect((await put({ ...OFF, listings: { [B]: false } })).status).toBe(200);
+    expect(stored()?.disabledReason).toBe("listing_changed");
   });
 });
