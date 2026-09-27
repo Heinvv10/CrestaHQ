@@ -81,15 +81,20 @@ Prefixes: S5/S7/S8 = section scorers (every `score()` branch), P1 = phase 1 (rep
 | G2 scan start bound to report deadline | killed — 1 failed \| 25 passed (26) (review round 2 fix; survived once — the 1 ms deadline had not fired when checked, test now checks after it passes) |
 | G3 public reason names the vendor | killed — 1 failed \| 20 passed (21) (review round 2 fix) |
 
-## Follow-up: town from the Google listing (2026-09-27)
+## Follow-up: town from the Google listing (2026-09-27, #308)
+
+After review: the listing wins over the contact (a form contact's city is an IP guess), with town and country taken as one pair. 11 of 11 killed.
 
 | Mutant | Outcome |
 |---|---|
-| C1 locality ignored | killed — 1 failed \| 30 passed (31) |
-| C2 no postal_town fallback | killed — 1 failed \| 30 passed (31) |
-| C3 listing overrides contact city | killed — 1 failed \| 30 passed (31) |
-| C4 listing country not used | killed (survived once: the fixture's country equalled the ZA default; fixture now Namibia) |
-| C5 country not upper-cased | killed — 1 failed \| 30 passed (31) |
-| C6 component type not checked | killed — 2 failed \| 29 passed (31) |
-| C7 addressComponents not requested | killed — 1 failed \| 12 passed (13) |
-| C8 listing town not passed to the scan | killed — 2 failed \| 29 passed (31) |
+| C1 locality ignored | killed — 2 failed \| 30 passed (32) |
+| C2 no postal_town fallback | killed — 1 failed \| 31 passed (32) |
+| C5 country not upper-cased | killed — 2 failed \| 30 passed (32) |
+| C6 component type not checked | killed — 4 failed \| 28 passed (32) |
+| C7 addressComponents not requested | killed — 1 failed \| 15 passed (16) |
+| C8 listing town not passed to the scan | killed — 3 failed \| 29 passed (32) |
+| D1 contact city wins again | killed — 1 failed \| 31 passed (32) |
+| D2 town/country pair broken | killed — 1 failed \| 31 passed (32) |
+| D3 blank locality accepted | killed — 1 failed \| 15 passed (16) (survived the reviewer's run; fixture added) |
+| D4 any country string accepted | killed — 1 failed \| 15 passed (16) (survived the reviewer's run; fixture added) |
+| D5 section found by shape, not key | killed — 1 failed \| 15 passed (16) (survived the reviewer's run; fixture added) |

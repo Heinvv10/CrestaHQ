@@ -344,9 +344,18 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
       expect(body()).toMatchObject({ city: "Alberton", country: "NA" });
     });
 
-    it("the contact's own city and country win over the listing", async () => {
+    it("the listing wins over the contact's city (which may be an IP guess), town and country as one pair", async () => {
       started();
       await runProspectReport({ ...BUSINESS, city: "Gqeberha", countryCode: "BW" }, { sections: [gbpWith(LISTING)], apexgeo: { connection: CONN, reportId: "r1" } });
+      expect(body()).toMatchObject({ city: "Alberton", country: "NA" });
+    });
+
+    it("a listing with no town leaves the contact's own city and country, as a pair", async () => {
+      started();
+      await runProspectReport({ ...BUSINESS, city: "Gqeberha", countryCode: "BW" }, {
+        sections: [gbpWith([{ longText: "Namibia", shortText: "NA", types: ["country"] }])],
+        apexgeo: { connection: CONN, reportId: "r1" },
+      });
       expect(body()).toMatchObject({ city: "Gqeberha", country: "BW" });
     });
 
