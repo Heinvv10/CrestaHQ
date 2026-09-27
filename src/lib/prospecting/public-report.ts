@@ -92,7 +92,6 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     headline: str(report.headline),
     generatedAt: toIso(report.generatedAt),
     sections: displaySections((report.sections ?? []) as ProspectSectionResult[], report.apexgeo)
-      .filter((s) => !HIDDEN_PUBLICLY.has(s.reasonCode))
       .map((s) => publicSection(s, { showName })),
     agency: {
       name: str(agency.name),
