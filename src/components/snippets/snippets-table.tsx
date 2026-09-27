@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { deleteSnippet } from "@/lib/snippets/client";
+import { AgentEditBadge } from "./agent-edit-badge";
 import type { SnippetDto } from "@/types/snippets";
 
 const dateFmt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium" });
@@ -70,7 +71,9 @@ export function SnippetsTable({
                 data-testid="snippet-row"
                 className="border-b last:border-0"
               >
-                <td className="px-3 py-2 font-medium">{s.name}</td>
+                <td className="px-3 py-2 font-medium">
+                  {s.name} <AgentEditBadge snippet={s} />
+                </td>
                 <td className="text-muted-foreground max-w-xs truncate px-3 py-2">
                   {s.body}
                 </td>
