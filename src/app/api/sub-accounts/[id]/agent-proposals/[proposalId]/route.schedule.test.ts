@@ -215,10 +215,30 @@ describe("fire", () => {
     const id = await proposeId({ channel: "whatsapp" });
     await decide(id, "approve");
     const doc = booked()[0]!;
-    expect(doc).toMatchObject({ pinnedFrom: "+27870000011" });
+    expect(doc).toMatchObject({ pinnedFrom: "cloud:+27870000011" });
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, ...sender("Support") });
     const r = await fireScheduledMessage("c1", doc.id as string, (doc.sendAt as { toMillis(): number }).toMillis());
     expect(r).toMatchObject({ outcome: "sent" });
+  });
+
+  it("whatsapp: the default moved to a bridge sender at the same number before firing -> sender_changed, 0 sends (W1)", async () => {
+    mem.seed("subAccounts/sa1", {
+      ...mem.read("subAccounts/sa1")!,
+      whatsappSenders: [{ id: "s1", label: "Sales", provider: "cloud", phoneNumber: "+27800000000", isDefault: true }],
+      whatsappCloudMeta: { displayPhoneNumber: "+27870000011", phoneNumberId: "pnid1" },
+    });
+    const id = await proposeId({ channel: "whatsapp" });
+    await decide(id, "approve");
+    const doc = booked()[0]!;
+    mem.seed("subAccounts/sa1", {
+      ...mem.read("subAccounts/sa1")!,
+      whatsappSenders: [{ id: "s2", label: "Sales", provider: "bridge", phoneNumber: "+27800000000", isDefault: true }],
+      whatsappBridgeMeta: { displayPhoneNumber: "+27870000011" },
+    });
+    const r = await fireScheduledMessage("c1", doc.id as string, (doc.sendAt as { toMillis(): number }).toMillis());
+    expect(r).toMatchObject({ outcome: "failed" });
+    expect(booked()[0]).toMatchObject({ failureCode: "sender_changed" });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("a retry of the same booking id with another pinned sender is not the same booking", async () => {

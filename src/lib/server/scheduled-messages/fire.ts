@@ -138,8 +138,9 @@ export async function fireScheduledMessage(
   if (doc.pinnedFrom !== undefined && (doc.channel === "sms" || doc.channel === "whatsapp")) {
     const sub = (await getAdminDb().doc(`subAccounts/${doc.subAccountId}`).get()).data() as SubAccountDoc | undefined;
     const live = await messageSender(sub, doc.channel);
-    // The number only (a label rename refuses nothing); a doc booked before
-    // that pinned the shown value, label included, and still matches it.
+    // The number (WhatsApp: rail:number; a label rename refuses nothing); a
+    // doc booked before that pinned the shown value, label included, and
+    // still matches it.
     if ((live?.number ?? null) !== doc.pinnedFrom && (live?.display ?? null) !== doc.pinnedFrom) {
       return record("failed", "The number it would go out from changed since this was approved, so it was not sent.", "sender_changed");
     }

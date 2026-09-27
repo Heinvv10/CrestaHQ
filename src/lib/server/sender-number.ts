@@ -10,8 +10,10 @@ import type { VoiceChannelConfig } from "@/types/ai";
  * The number an agent's SMS or WhatsApp message goes out from, resolved the
  * way the send resolves it (without reading any secret): `number` is what
  * is pinned and re-checked (at send, at a scheduled fire), `display` what
- * the approval preview's "From" row shows (a WhatsApp sender's label beside
- * its number, so a label rename re-shows the preview but refuses nothing).
+ * the approval preview's "From" row shows. For WhatsApp the pin is
+ * `<rail>:<number>` (a switch to another rail at the same number is a
+ * different sender) and the display adds the sender's label, so a label
+ * rename re-shows the preview but refuses nothing.
  * Null when there is none (the send is then refused).
  */
 export async function messageSender(
@@ -25,7 +27,7 @@ export async function messageSender(
     const r = resolveWhatsappSender(sub);
     if (!r.ok) return null;
     const number = railNumber(sub, r.provider);
-    return { number, display: `${number || "(no number connected)"} (${r.sender.label})` };
+    return { number: `${r.provider}:${number}`, display: `${number || "(no number connected)"} (${r.sender.label})` };
   }
   // getTwilioForSubAccount: the dedicated number, else the shared one if the agency allows it.
   const number = subAccountTwilioIsConfigured(sub?.twilioConfig)

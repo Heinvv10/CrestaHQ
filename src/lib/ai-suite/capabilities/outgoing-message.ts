@@ -102,7 +102,7 @@ export async function outgoingPreview(
       channel,
       to,
       ...(env ? { inReplyTo: env.inReplyTo, references: env.references } : {}),
-      // The number alone is pinned (a WhatsApp label rename refuses nothing).
+      // The number (WhatsApp: rail and number) is pinned, never the label.
       ...(from !== undefined ? { from: from?.number ?? null } : {}),
     },
   };
