@@ -20,7 +20,7 @@ import { gbpRefusal } from "@/lib/gbp/route-support";
  *
  * An explicit, authenticated human action and nothing else: sub-account admin
  * only, agency-gated (403 `gate_off`), and the review must be an active cached
- * review of this sub-account's current listing (else 404 — a guessed id from
+ * review of one of this sub-account's current listings, main or extra (else 404 — a guessed id from
  * another tenant names nothing here). See lib/gbp/reply.ts for the
  * idempotency and failure contract.
  */

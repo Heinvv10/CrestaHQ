@@ -4,8 +4,17 @@ import { Button } from "@/components/ui/button";
  * The reviews inbox filter bar. Controlled: the section owns the values and
  * re-asks the API (GET /gbp/reviews?rating=…&replied=…&from=…&to=…&sort=…&approval=needed),
  * which filters in memory over its capped newest-first set. "Needs approval"
- * (review auto-reply drafts waiting for a person) shows its count.
+ * (review auto-reply drafts waiting for a person) shows its count. With more
+ * than one connected listing, a listing dropdown ("All listings" + each by
+ * title) narrows the list to one (`?listing=`).
  */
+
+/** A connected listing, as GET /gbp/reviews `listings` returns it. */
+export interface ListingOption {
+  locationName: string;
+  title: string;
+  main: boolean;
+}
 
 export interface FilterValue {
   ratings: number[];
@@ -14,9 +23,11 @@ export interface FilterValue {
   to: string;
   sort: "newest" | "oldest";
   needsApproval: boolean;
+  /** One listing's `locations/{id}`; "" = all listings. */
+  listing: string;
 }
 
-export const NO_FILTERS: FilterValue = { ratings: [], replied: "all", from: "", to: "", sort: "newest", needsApproval: false };
+export const NO_FILTERS: FilterValue = { ratings: [], replied: "all", from: "", to: "", sort: "newest", needsApproval: false, listing: "" };
 
 /**
  * A date input's day as the viewer's LOCAL midnight, `plusDays` later, with
@@ -35,6 +46,7 @@ function localMidnight(date: string, plusDays = 0): string {
 /** The API query string, "" when nothing is filtered (the plain list URL). `to` is exclusive: the local midnight after the last day. */
 export function filterQuery(f: FilterValue): string {
   const q = new URLSearchParams();
+  if (f.listing) q.set("listing", f.listing);
   if (f.ratings.length) q.set("rating", [...f.ratings].sort().join(","));
   if (f.replied !== "all") q.set("replied", f.replied);
   if (f.from) q.set("from", localMidnight(f.from));
@@ -52,6 +64,7 @@ export const FIELD_LABEL: Record<string, string> = {
   to: "“To” date",
   sort: "sort order",
   approval: "Needs approval",
+  listing: "listing",
 };
 
 const field = "h-8 rounded-md border bg-background px-2 text-xs";
@@ -62,6 +75,7 @@ export function ReviewFilters({
   shown,
   available,
   needsApproval = 0,
+  listings = [],
 }: {
   value: FilterValue;
   onChange: (next: FilterValue) => void;
@@ -69,6 +83,8 @@ export function ReviewFilters({
   available: number;
   /** Reviews holding an auto-reply draft for a person (GET …/gbp/reviews `needsApproval`). */
   needsApproval?: number;
+  /** The connected listings; the dropdown is shown only with more than one. */
+  listings?: ListingOption[];
 }) {
   const set = (patch: Partial<FilterValue>) => onChange({ ...value, ...patch });
   const toggle = (n: number) =>
@@ -77,6 +93,20 @@ export function ReviewFilters({
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-xl border p-3" data-testid="gbp-filters">
+      {listings.length > 1 && (
+        <select
+          aria-label="Listing"
+          className={field}
+          value={value.listing}
+          onChange={(e) => set({ listing: e.target.value })}
+          data-testid="gbp-filter-listing"
+        >
+          <option value="">All listings</option>
+          {listings.map((l) => (
+            <option key={l.locationName} value={l.locationName}>{l.title}</option>
+          ))}
+        </select>
+      )}
       {(needsApproval > 0 || value.needsApproval) && (
         <Button
           type="button"

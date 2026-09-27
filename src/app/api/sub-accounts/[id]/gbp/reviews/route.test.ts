@@ -93,6 +93,7 @@ describe("payload", () => {
       sentiment: null,
       autoReplied: false,
       approval: null,
+      listing: { locationName: LOC_A, title: "Velo Test Fibre — Gqeberha" },
     });
     expect(body.reviews[2].comment).toContain("(Translated by Google)");
     expect(body.reviews[6].comment).toBe("  Fixture review with leading and trailing spaces.  ");

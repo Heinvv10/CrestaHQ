@@ -46,6 +46,13 @@ describe("listings", () => {
     expect(listingFor(sub, "locations/333")).toBeNull();
   });
 
+  it("an extra sharing the main's locationName is dropped, not duplicated", () => {
+    const sub = { googleListing: MAIN, googleExtraListings: [MAIN, B] };
+    expect(allListings(sub)).toEqual([MAIN, B]);
+    expect(locationNamesOf(sub)).toEqual(["locations/111", "locations/222"]);
+    expect(listingFor(sub, "locations/111")).toBe(MAIN);
+  });
+
   it("isMain is true only for the main listing", () => {
     const sub = { googleListing: MAIN, googleExtraListings: [B] };
     expect(isMain(sub, "locations/111")).toBe(true);

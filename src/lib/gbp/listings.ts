@@ -20,9 +20,11 @@ export function locId(locationName: string): string {
   return locationName.slice("locations/".length);
 }
 
-/** `[main, ...extras]` in stored order; none without a listing. */
+/** `[main, ...extras]` in stored order; none without a listing; an extra sharing main's locationName is dropped. */
 export function allListings(sub: ListingFields): GoogleListing[] {
-  return [...(sub.googleListing ? [sub.googleListing] : []), ...(sub.googleExtraListings ?? [])];
+  const main = sub.googleListing;
+  const extras = sub.googleExtraListings ?? [];
+  return main ? [main, ...extras.filter((l) => l.locationName !== main.locationName)] : extras;
 }
 
 export function locationNamesOf(sub: ListingFields): string[] {

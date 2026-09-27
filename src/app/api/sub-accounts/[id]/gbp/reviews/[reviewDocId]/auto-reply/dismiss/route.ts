@@ -16,7 +16,7 @@ import { dismissAutoReply } from "@/lib/reputation/auto-reply/store";
  *
  * Addressed and guarded exactly like the reply route: sub-account admin only,
  * agency-gated (403 `gate_off`), and the review must be an active cached
- * review of this sub-account's current listing (else 404 — a guessed id from
+ * review of one of this sub-account's current listings (else 404 — a guessed id from
  * another tenant names nothing here). A review with a reply, without an
  * auto-reply draft, or with a STALE one (drafted for since-edited content) is
  * 409 `nothing_to_dismiss` (nothing written); a repeat Discard is accepted.

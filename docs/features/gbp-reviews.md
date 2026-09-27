@@ -912,6 +912,22 @@ owner reply below) or `gbp-reviews-empty`, `gbp-banner-pending` (reconnected,
 sync pending), `gbp-reviews-truncated` (the 500-record cap was hit),
 `gbp-reviews-load-error`, and `gbp-runs` (recent syncs). Each is rendered by
 `components/gbp/reviews-section.test.ts`.
+**Across listings (MULTI_LISTING_V1_PLAN.md PR 4):** the reviews are every
+connected listing's combined, newest first (GET `…/gbp/reviews` answers
+`listings: [{locationName, title, main}]`, and each review carries
+`listing: {locationName, title}`). With more than one listing the filter bar
+gains `gbp-filter-listing` — "All listings" (the default) then each listing by
+title — which sends `?listing=locations/…` (a current listing of this
+sub-account, else 400 `invalid_filter` field `listing`); the summary card then
+shows that listing's summary ("All" shows the main listing's) and
+`needsApproval` counts only the served set. Only then does each row carry
+`gbp-review-listing-<reviewId>` and each recent sync `gbp-run-listing` (its
+listing's title); with one listing the page looks exactly as before. Reply,
+Draft with AI and Discard work on a review of any connected listing and go to
+that review's own listing. Auto-reply stays main-only until PR 6, so an extra
+listing's queued draft reads "Auto-post paused" —
+`components/gbp/reviews-section.listing.test.ts`,
+`…/gbp/reviews/route.listing.test.ts`, E2E `gbp-reply-listings.spec.ts`.
 PR 4 adds, over the reviews: the filter bar `gbp-filters` —
 `gbp-filter-rating-<1…5>` (toggles, `aria-pressed`), `gbp-filter-replied`,
 `gbp-filter-from`, `gbp-filter-to`, `gbp-filter-sort`, `gbp-filter-clear`,
@@ -988,9 +1004,13 @@ Order of checks, each refusal writing nothing and calling Google zero times:
 1. `requireSubAccountAdmin` — collaborator, non-member and other-sub admin 403.
 2. Agency gate — 403 `gate_off`, answered before the review is looked up.
 3. The review — 404 `not_found` unless `reviewDocId` is 40 lower-case hex
-   characters naming an **active** cached review of the **current** listing
-   under **this** sub-account. A guessed id from another tenant, a tombstone,
-   another listing's review and a smuggled path (`a/b/c`) all 404.
+   characters naming an **active** cached review of one of the **current**
+   listings (main or extra — `locationNamesOf(sub)`) under **this**
+   sub-account. A guessed id from another tenant, a tombstone, a review of a
+   removed or never-connected listing and a smuggled path (`a/b/c`) all 404
+   (`…/reply/route.multi.test.ts`). The Google call uses the review's own
+   `reviewName`, so a reply goes to that review's own listing; Draft with AI
+   names that listing's title as the business.
 4. Body — `comment` a string of 1–4000 characters, trimmed only to test for
    emptiness and sent exactly as typed; `idempotencyKey` 8–128 characters,
    made by the browser when the composer opens. Else 400 `invalid_body`.

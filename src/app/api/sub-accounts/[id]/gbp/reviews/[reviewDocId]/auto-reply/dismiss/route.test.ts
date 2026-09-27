@@ -10,7 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { AGENCY, LEAK_MARKERS, OTHER_SA, SA, mem, resetSync } from "@/test/gbp-sync-harness";
+import { createHash } from "node:crypto";
+import { ACCOUNT, AGENCY, LEAK_MARKERS, LOC_NORTH, OTHER_SA, SA, mem, removeExtraListings, resetSync, seedExtraListing } from "@/test/gbp-sync-harness";
 import { calls, docIdOf, reviewPath } from "@/test/gbp-reply-harness";
 import {
   A1, dismissedPath, draftsMade, patchSettings, pendingOf, posts, putFixtureReview, resetAutoReply, sync, syncAndRun,
@@ -18,6 +19,8 @@ import {
 import { autoReplyAfterSync } from "@/lib/reputation/auto-reply/run";
 import { autoReplyLeasePath } from "@/lib/reputation/auto-reply/store";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { syncSubAccount } from "@/lib/gbp/sync/sub-account";
+import { reviewsCollection } from "@/lib/gbp/sync/types";
 import { reviewBasis } from "@/lib/reputation/sentiment-basis";
 import { POST } from "./route";
 
@@ -201,5 +204,29 @@ describe("the engine honours it", () => {
     expect(posts().filter((c) => c.reviewName.endsWith("/reviews/fake-a1"))).toEqual([]);
     expect(pendingOf("fake-a1")).toMatchObject({ reason: "dismissed" });
     expect(draftsMade()).toBe(drafts + 1); // a3 only
+  });
+});
+
+describe("a review on an extra listing (MULTI_LISTING_V1_PLAN.md H4)", () => {
+  const n1 = createHash("sha256").update(`${ACCOUNT}/${LOC_NORTH}/reviews/north-1`).digest("hex").slice(0, 40);
+  const n1Path = () => `${reviewsCollection(SA)}/${n1}`;
+  beforeEach(async () => {
+    seedExtraListing(SA);
+    await syncSubAccount(SA, { trigger: "scheduled" });
+    const d = mem.read(n1Path())!;
+    mem.seed(n1Path(), { ...d, pendingReply: { text: "Held.", textHash: "h", basisHash: reviewBasis(d as never), reason: "approval", at: new Date(), model: "fake" } });
+  });
+
+  it("can be dismissed, and the Discard is recorded for it", async () => {
+    expect(await dismiss("uid_admin", SA, n1)).toEqual({ status: 200, body: { ok: true } });
+    expect(mem.read(n1Path())!.pendingReply).toMatchObject({ reason: "dismissed" });
+    expect(mem.list(`subAccounts/${SA}/autoReplyDismissed`).map((d) => d.reviewDocId)).toEqual([n1]);
+    expect(calls(SA)).toEqual([]);
+  });
+
+  it("404s once that listing is removed", async () => {
+    removeExtraListings(SA);
+    expect((await dismiss("uid_admin", SA, n1)).status).toBe(404);
+    expect(mem.read(n1Path())!.pendingReply).toMatchObject({ reason: "approval" });
   });
 });

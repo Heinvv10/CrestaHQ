@@ -9,6 +9,7 @@ import {
   claimAttempt, claimDeleteLock, failAttempt, markAttemptSucceeded, recordReplyChange, releaseLock,
   type AttemptTarget,
 } from "./reply-attempts";
+import { locationNamesOf } from "./listings";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "./route-support";
 import { reviewsCollection } from "./sync/types";
 import { GbpNotConnectedError } from "./tokens";
@@ -35,16 +36,17 @@ export interface ReplyTarget extends AttemptTarget {
 
 /**
  * The review an admin of THIS sub-account may reply to: a well-formed cache
- * id naming an ACTIVE review of the CURRENT listing under this sub-account.
- * Anything else — a guessed id from another tenant included — is null (404).
+ * id naming an ACTIVE review of one of its CURRENT listings — main or extra
+ * (MULTI_LISTING_V1_PLAN.md H4). Anything else — a guessed id from another
+ * tenant, a removed or never-connected listing — is null (404). The reply
+ * goes to the review's own `reviewName`, so to its own listing at Google.
  */
 export async function loadReplyTarget(subAccountId: string, docId: string): Promise<ReplyTarget | null> {
   if (!DOC_ID_RE.test(docId)) return null;
   const db = getAdminDb();
   const sub = (await db.doc(`subAccounts/${subAccountId}`).get()).data();
   const review = (await db.doc(`${reviewsCollection(subAccountId)}/${docId}`).get()).data();
-  const listing = sub?.googleListing?.locationName ?? null;
-  if (!review || review.state !== "active" || !listing || review.locationName !== listing) return null;
+  if (!review || review.state !== "active" || !locationNamesOf(sub ?? {}).includes(review.locationName)) return null;
   return { docId, agencyId: String(sub?.agencyId ?? ""), reviewName: String(review.reviewName) };
 }
 

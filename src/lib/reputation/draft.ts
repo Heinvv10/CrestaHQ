@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { listingFor } from "@/lib/gbp/listings";
 import { reviewsCollection } from "@/lib/gbp/sync/types";
 import type { DraftInput } from "./ai/types";
 import { AUTO_REPLY_DAILY_DRAFT_CAP } from "./auto-reply/settings";
@@ -102,7 +103,8 @@ export async function draftInputFor(subAccountId: string, docId: string): Promis
     starRating: Number(review.starRating),
     comment: typeof review.comment === "string" ? review.comment : null,
     reviewerFirstName: name ? name.split(/\s+/)[0] : null,
-    businessName: String(sub.googleListing?.title || sub.name || "our business"),
+    // The review's OWN listing (a sub-account may have several — MULTI_LISTING_V1_PLAN.md H4).
+    businessName: String(listingFor(sub, String(review.locationName ?? ""))?.title || sub.name || "our business"),
     guidelines: typeof guidelines === "string" && guidelines.trim() ? guidelines : null,
   };
 }

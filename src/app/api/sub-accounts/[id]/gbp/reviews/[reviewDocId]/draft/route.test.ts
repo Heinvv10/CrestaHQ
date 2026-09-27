@@ -22,9 +22,11 @@ vi.mock("@/lib/reputation/ai/select", async (orig) => {
   };
 });
 
-import { AGENCY, OTHER_SA, SA, mem, resetSync } from "@/test/gbp-sync-harness";
+import { createHash } from "node:crypto";
+import { ACCOUNT, AGENCY, LOC_NORTH, OTHER_SA, SA, mem, resetSync, seedExtraListing } from "@/test/gbp-sync-harness";
 import { calls, callReply, docIdOf, reviewPath } from "@/test/gbp-reply-harness";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { syncSubAccount } from "@/lib/gbp/sync/sub-account";
 import { fakeLogPath } from "@/lib/reputation/ai/fake";
 import { DAILY_AI_CALL_CAP, sentimentUsagePath } from "@/lib/reputation/sentiment-calls";
 import { DRAFT_DAILY_CAP, resetDraftLimiter } from "@/lib/reputation/draft";
@@ -201,5 +203,18 @@ describe("who and what", () => {
   it("an anonymous reviewer gets no name", async () => {
     const anon = docIdOf("fake-r4");
     expect(String((await draft("uid_admin", anon)).body.draft)).toMatch(/^Thank you for your 5-star review/);
+  });
+});
+
+describe("a review on an extra listing (MULTI_LISTING_V1_PLAN.md H4)", () => {
+  it("is drafted with THAT listing's title as the business name", async () => {
+    seedExtraListing(SA);
+    await syncSubAccount(SA, { trigger: "scheduled" });
+    const n1 = createHash("sha256").update(`${ACCOUNT}/${LOC_NORTH}/reviews/north-1`).digest("hex").slice(0, 40);
+    const { status, body } = await draft("uid_admin", n1);
+    expect(status).toBe(200);
+    expect(body.draft).toBe(`Hi Fixture, thank you for your 2-star review of Velo Test Fibre — Gqeberha North.\n${GUIDE}`);
+    // Main's review still names the main listing.
+    expect((await draft()).body.draft).toBe(`Hi Fixture, thank you for your 2-star review of Velo Test Fibre — Gqeberha.\n${GUIDE}`);
   });
 });

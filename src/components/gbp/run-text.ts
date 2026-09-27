@@ -1,6 +1,8 @@
 /** A run as GET /gbp/reviews and POST /gbp/sync return it (lib/gbp/sync/public.ts). */
 export interface RunView {
   trigger?: string;
+  /** The listing the run was for. */
+  locationName?: string | null;
   status: string;
   finishedAt?: string | null;
   created?: number;

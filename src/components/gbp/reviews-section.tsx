@@ -7,14 +7,16 @@ import type { GbpHealth } from "@/lib/gbp/sync/types";
 import { fmtRating } from "@/components/reputation/format";
 import { absoluteTime, relativeTime } from "./format-time";
 import { RecentSyncs } from "./recent-syncs";
-import { FIELD_LABEL, NO_FILTERS, ReviewFilters, filterQuery, type FilterValue } from "./review-filters";
+import { FIELD_LABEL, NO_FILTERS, ReviewFilters, filterQuery, type FilterValue, type ListingOption } from "./review-filters";
 import { ReplyComposer } from "./reply-composer";
 import { ReviewItem, type ReviewView } from "./review-item";
 import { describeRun, type RunView } from "./run-text";
 import { HealthBadge, HealthBanner } from "./sync-health";
 
 /**
- * The synced reviews of the selected listing: a summary card (rating, count,
+ * The synced reviews of every connected listing (or the one picked in the
+ * filter bar's listing dropdown, shown only with more than one — each row
+ * then carries its listing's label): a summary card (rating, count,
  * honest freshness + cadence, health), a banner for any degraded state, admin
  * "Sync now" with its result inline (no confirm()/alert()), and the reviews,
  * newest first, exactly as Google returned them.
@@ -41,6 +43,8 @@ interface Ready {
   truncated: boolean;
   /** "Draft with AI" can work here (both gates + Reviews AI configured). */
   aiDrafts: boolean;
+  /** The connected listings, main first. */
+  listings: ListingOption[];
 }
 type Load = { state: "loading" } | { state: "error" } | Ready;
 
@@ -67,6 +71,12 @@ export function ReviewsSection({
     const data = (await res?.json().catch(() => null)) as (Partial<Omit<Ready, "state">> & { code?: string; field?: string }) | null;
     if (signal?.aborted) return;
     if (res?.status === 400 && data?.code === "invalid_filter") {
+      if (data.field === "listing") {
+        // The selected listing was removed server-side: fall back to "All
+        // listings" and refetch, with no user action.
+        setFilters((f) => ({ ...f, listing: "" }));
+        return;
+      }
       // Keep what is on screen; say which filter the server refused.
       setFilterError(`Check the ${FIELD_LABEL[data.field ?? ""] ?? "filter"} filter.`);
       return;
@@ -79,6 +89,7 @@ export function ReviewsSection({
         available: typeof data.available === "number" ? data.available : data.reviews.length,
         needsApproval: typeof data.needsApproval === "number" ? data.needsApproval : 0,
         scheduled: data.scheduled === true, truncated: data.truncated === true, aiDrafts: data.aiDrafts === true,
+        listings: Array.isArray(data.listings) ? data.listings : [],
       });
     }
   }, [base, filters]);
@@ -111,6 +122,7 @@ export function ReviewsSection({
   }
 
   const s = load.summary;
+  const several = load.listings.length > 1;
   const health: GbpHealth = reconnect ? "reconnect_required" : (s?.health ?? "never_synced");
   return (
     <div className="mt-6 space-y-4">
@@ -157,9 +169,11 @@ export function ReviewsSection({
         </p>
       )}
 
-      {load.available > 0 && (
+      {/* With several listings, also when the picked one has no reviews — so another can be picked. */}
+      {(load.available > 0 || several) && (
         <ReviewFilters
           value={filters} onChange={setFilters} shown={load.reviews.length} available={load.available} needsApproval={load.needsApproval}
+          listings={load.listings}
         />
       )}
       {filterError && (
@@ -179,7 +193,7 @@ export function ReviewsSection({
       ) : (
         <ul className="space-y-3" data-testid="gbp-reviews">
           {load.reviews.map((r) => (
-            <ReviewItem key={r.reviewId} review={r}>
+            <ReviewItem key={r.docId} review={r} showListing={several}>
               {/* Admins only, and not while Google needs a reconnect. */}
               {canSync && !reconnect && <ReplyComposer subAccountId={subAccountId} review={r} onPosted={refresh} aiDrafts={load.aiDrafts} />}
             </ReviewItem>
@@ -187,7 +201,7 @@ export function ReviewsSection({
         </ul>
       )}
 
-      <RecentSyncs runs={load.runs} />
+      <RecentSyncs runs={load.runs} listings={load.listings} />
     </div>
   );
 }

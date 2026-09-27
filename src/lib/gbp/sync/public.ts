@@ -74,10 +74,25 @@ export interface PublicReview {
   autoReplied: boolean;
   /** A fresh auto-reply draft waiting for a person — its reason and text only. */
   approval: PublicApproval | null;
+  /** The listing the review is on (a sub-account may have several); null when the caller did not say. */
+  listing: PublicListing | null;
 }
 
-/** `autoPosts(star)`: whether auto-reply would post that star right now (a queued draft reads as paused otherwise). */
-export function publicReview(d: Record<string, unknown>, autoPosts: (star: number) => boolean = () => false): PublicReview {
+export interface PublicListing {
+  locationName: string;
+  title: string;
+}
+
+/**
+ * `autoPosts(star)`: whether auto-reply would post that star of THIS review
+ * right now (a queued draft reads as paused otherwise). `listing`: the
+ * review's listing, looked up by the caller from its `locationName`.
+ */
+export function publicReview(
+  d: Record<string, unknown>,
+  autoPosts: (star: number) => boolean = () => false,
+  listing: PublicListing | null = null,
+): PublicReview {
   const reviewer = d.reviewer as PublicReview["reviewer"];
   const reply = d.reply as PublicReview["reply"];
   return {
@@ -95,6 +110,7 @@ export function publicReview(d: Record<string, unknown>, autoPosts: (star: numbe
     sentiment: currentSentiment(d),
     autoReplied: !!d.autoReplied,
     approval: publicApproval(d, autoPosts),
+    listing: listing ? { locationName: listing.locationName, title: listing.title } : null,
   };
 }
 
