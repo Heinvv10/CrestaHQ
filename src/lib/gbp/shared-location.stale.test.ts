@@ -37,7 +37,7 @@ describe("clearListing keeps the flat array equal to the listing fields", () => 
 });
 
 describe("a stale googleLocationNames never refuses", () => {
-  it("OTHER_SA no longer has any listing but a stale array → SA wrongly refused", async () => {
+  it("OTHER_SA with no listing but a stale array does not refuse SA", async () => {
     // State left by: e2e resetConnection (FieldValue.delete googleListing only), or an old-code clear after a blue/green --rollback.
     patch(OTHER_SA, { googleListing: null, googleLocationNames: [LOC_A] });
     expect(allListings(mem.read(`subAccounts/${OTHER_SA}`) as never)).toEqual([]);

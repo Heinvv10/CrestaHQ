@@ -181,6 +181,13 @@ describe("PUT selection", () => {
     expect(state.docs.get(SUB_PATH)?.googleExtraListings).toEqual([extra]);
   });
 
+  it("a new main that is also stored as an extra is listed once", async () => {
+    const extras = [{ locationName: LOC_A, title: "A" }, { locationName: "locations/extra-1", title: "Extra" }];
+    state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleExtraListings: extras });
+    await put({ accountName: DEFAULT_ACCOUNT, locationName: LOC_A });
+    expect(state.docs.get(SUB_PATH)?.googleLocationNames).toEqual([LOC_A, "locations/extra-1"]);
+  });
+
   it("takes the account display name from the account actually selected", async () => {
     setScenario((s) => {
       s.accounts.push({ name: "accounts/second", accountName: "Second Fixture Group", type: "PERSONAL" });
