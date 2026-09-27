@@ -1,11 +1,14 @@
 import { needsApproval } from "@/lib/reputation/auto-reply/approval";
+import { LOCATION_NAME_RE } from "./provider/types";
 import { toMillis } from "./sync/types";
 
 /**
  * The reviews inbox filters: `rating` (comma list 1–5), `replied`
  * (`all|replied|unreplied`), `from` / `to` on createTime, `sort` (`newest` |
  * `oldest`), `approval=needed` (a fresh auto-reply draft waiting for a
- * person — auto-reply/approval.ts). Applied in memory to the capped newest-first set the route
+ * person — auto-reply/approval.ts), `listing` (one of the sub-account's
+ * CURRENT listings — `locationNames` — by its `locations/{id}`; absent = all;
+ * the route queries only that listing rather than filtering here). Applied in memory to the capped newest-first set the route
  * already reads — no composite index.
  *
  * `from` is inclusive, `to` exclusive. Each is an ISO date-time with an
@@ -25,6 +28,8 @@ export interface ReviewFilters {
   toMs: number | null;
   sort: "newest" | "oldest";
   needsApproval: boolean;
+  /** The one listing to serve; null = every connected listing. */
+  listing: string | null;
 }
 
 export type ParsedFilters = { ok: true; filters: ReviewFilters } | { ok: false; field: string };
@@ -49,7 +54,7 @@ function parseDate(v: string): { ms: number; dateOnly: boolean } | null {
   return Number.isNaN(ms) ? null : { ms, dateOnly: false };
 }
 
-export function parseReviewFilters(params: URLSearchParams): ParsedFilters {
+export function parseReviewFilters(params: URLSearchParams, locationNames: string[] = []): ParsedFilters {
   const get = (name: string) => {
     const v = params.get(name);
     return v === null || v === "" ? null : v;
@@ -90,7 +95,10 @@ export function parseReviewFilters(params: URLSearchParams): ParsedFilters {
   const approval = get("approval");
   if (approval !== null && approval !== "needed") return { ok: false, field: "approval" };
 
-  return { ok: true, filters: { ratings, replied, fromMs, toMs, sort, needsApproval: approval === "needed" } };
+  const listing = get("listing");
+  if (listing !== null && (!LOCATION_NAME_RE.test(listing) || !locationNames.includes(listing))) return { ok: false, field: "listing" };
+
+  return { ok: true, filters: { ratings, replied, fromMs, toMs, sort, needsApproval: approval === "needed", listing } };
 }
 
 /** Filter + order stored review docs (already newest first by createTime). */

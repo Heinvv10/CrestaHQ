@@ -11,8 +11,10 @@ Tabs today: **Overview** · **Reviews** · **Requests** · **Widgets** · **Insi
 **Settings** (SP5 PRs a, d1, f, c, d2).
 
 - **Reviews** mounts the existing reviews inbox (`components/gbp/reviews-section.tsx`)
-  unchanged — same route, filters, Sync now and reply. Members read; admins sync
-  and reply. With the Google gate off, or before Google is connected and a listing
+  unchanged — same route, filters, Sync now and reply. With more than one
+  connected listing it shows all of them combined, a listing dropdown and a
+  listing label per row ([gbp-reviews.md › UI](gbp-reviews.md#ui)). Members
+  read; admins sync and reply. With the Google gate off, or before Google is connected and a listing
   chosen, it says so and links to **AI Agents → Google Business**, which stays the
   place to connect and pick the listing. When the deployment has no Google OAuth
   client configured (the same `google/status` check the Google Business page

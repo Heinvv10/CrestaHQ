@@ -19,6 +19,8 @@ export interface ReviewView {
   autoReplied?: boolean;
   /** A fresh auto-reply draft waiting for a person: why, and its text for the composer. */
   approval?: { state: ApprovalState; draft: string | null } | null;
+  /** The listing the review is on (a sub-account may have several). */
+  listing?: { locationName: string; title: string } | null;
 }
 
 /** Each "Needs approval" row's reason, as the page says it. */
@@ -68,7 +70,16 @@ function Stars({ rating }: { rating: number }) {
  * in `whitespace-pre-wrap` (never truncated, never rewritten — Google's
  * "(Translated by Google) … (Original) …" block shows as it came).
  */
-export function ReviewItem({ review, children }: { review: ReviewView; children?: React.ReactNode }) {
+export function ReviewItem({
+  review,
+  showListing = false,
+  children,
+}: {
+  review: ReviewView;
+  /** Label the row with its listing — the page passes true when more than one listing is connected. */
+  showListing?: boolean;
+  children?: React.ReactNode;
+}) {
   const name =
     !review.reviewer || review.reviewer.isAnonymous || !review.reviewer.displayName
       ? "Anonymous"
@@ -78,6 +89,11 @@ export function ReviewItem({ review, children }: { review: ReviewView; children?
       <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
         <span className="font-medium">{name}</span>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
+          {showListing && review.listing && (
+            <span className="rounded-full bg-muted px-2 py-0.5 font-medium" data-testid={`gbp-review-listing-${review.reviewId}`}>
+              {review.listing.title}
+            </span>
+          )}
           {review.approval && (
             <span
               className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-400"

@@ -20,7 +20,7 @@ import { DRAFT_DAILY_CAP, beginDraftCall, checkDraftRate, draftInputFor } from "
  *
  * Sub-account admin only (like the reply), the agency's Google gate (403
  * `gate_off`) AND Reviews AI gate (403 `ai_gate_off`), an active cached
- * review of the current listing (the reply route's lookup — else 404), Reviews
+ * review of a current listing (the reply route's lookup — else 404), Reviews
  * AI configured here (503 `ai_not_configured`), 10 drafts a minute per user
  * (429 `rate_limited`, Retry-After), the shared daily AI cap (429
  * `daily_cap`) and drafts' 100-a-day share of it (429 `draft_cap`). An AI failure is 424 `draft_failed` (not 502: the edge

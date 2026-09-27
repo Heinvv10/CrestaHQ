@@ -5,52 +5,55 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
 import { applyReviewFilters, parseReviewFilters } from "@/lib/gbp/inbox-filters";
+import { allListings, isMain } from "@/lib/gbp/listings";
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { heldByAnotherSubAccount } from "@/lib/gbp/shared-location";
 import { publicReview, publicRun, publicSummary } from "@/lib/gbp/sync/public";
 import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
+import { summaryIn, type WithSummaries } from "@/lib/gbp/sync/scope";
 import { loadServedReviews } from "@/lib/gbp/sync/served";
 import { reviewsAiConfigured } from "@/lib/reputation/ai/mode";
 import { needsApproval } from "@/lib/reputation/auto-reply/approval";
 import { autoReplyKillSwitchOn } from "@/lib/reputation/auto-reply/kill-switch";
 import { readAutoReplySettings } from "@/lib/reputation/auto-reply/settings";
-import { runsCollection, type GbpSummary } from "@/lib/gbp/sync/types";
+import { runsCollection } from "@/lib/gbp/sync/types";
 import type { AutoReplyStar, SubAccountDoc } from "@/types";
 
 /**
- * GET /api/sub-accounts/[id]/gbp/reviews — the synced reviews of the selected
- * listing (newest first, at most 500 records — `truncated` says when the cap
- * was hit), the summary with health derived NOW from the live connection,
- * the last 10 runs, whether this deployment schedules syncs, and how many
- * reviews hold an auto-reply draft waiting for a person (`needsApproval`;
- * filter `approval=needed`; each review's `approval` carries only its reason
- * and draft text). Nothing
- * older than Google's 30-day storage limit is served, whether or not a sync
- * has purged it yet (`withinRetention`, the same rule the sync applies). Any active member (read-only collaborators included);
- * agency-gated. Admin SDK only — the review collections have no client rules.
- *
- * Single-field queries only (no composite index): active/listing filtering
- * happens here, which is cheap because the collection only ever holds the
- * current listing (a listing change clears it) plus tombstones younger than
- * 30 days.
+ * GET /api/sub-accounts/[id]/gbp/reviews — the synced reviews of every
+ * connected listing combined (MULTI_LISTING_V1_PLAN.md PR 4), or of the one
+ * `?listing=` names (a current listing of THIS sub-account, else 400
+ * `invalid_filter` field `listing`), newest first, each labelled with its
+ * listing — at most 500 records per listing, `truncated` says when a cap was
+ * hit; the selected listing's summary (main's for "All") with health derived
+ * NOW from the live connection; `listings` (`[{locationName, title, main}]`,
+ * for the page's dropdown); the last 10 runs; whether this deployment
+ * schedules syncs; and how many of the served reviews hold an auto-reply draft
+ * waiting for a person (`needsApproval`; filter `approval=needed`; each
+ * review's `approval` carries only its reason and draft text). Nothing older
+ * than Google's 30-day storage limit is served, whether or not a sync has
+ * purged it yet (`withinRetention`, the same rule the sync applies). Any
+ * active member (read-only collaborators included); agency-gated. Admin SDK
+ * only — the review collections have no client rules.
  */
 
 const RUN_CAP = 10;
 
 /**
- * Whether auto-reply would post a star right now — the kill switch, all three
- * gates, switched on for THIS listing, no other sub-account on the same
- * location (`listing_shared` pauses posting), the star on Auto. A queued
- * draft it would not post is shown as "Auto-post paused".
+ * Whether auto-reply would post a star of a review on `locationName` right
+ * now — the kill switch, all three gates, switched on for the MAIN listing and
+ * the review on it (auto-reply is main-only until PR 6), no other sub-account
+ * on the same location (`listing_shared` pauses posting), the star on Auto. A
+ * queued draft it would not post is shown as "Auto-post paused".
  */
-async function autoPostsFor(id: string, sub: SubAccountDoc, locationName: string | null): Promise<(star: number) => boolean> {
+async function autoPostsFor(id: string, sub: SubAccountDoc, locationName: string | null): Promise<(star: number, reviewLocation: unknown) => boolean> {
   const raw = sub.reviewsAutoReply;
   const settings = readAutoReplySettings(raw);
   let on = autoReplyKillSwitchOn() && sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
     && sub.reviewsAutoReplyEnabledByAgency === true && settings.enabled
     && !!locationName && raw?.listingLocationName === locationName;
   if (on && locationName) on = !(await heldByAnotherSubAccount(getAdminDb(), null, locationName, id));
-  return (star) => on && settings.modes[star as AutoReplyStar] === "auto";
+  return (star, reviewLocation) => on && reviewLocation === locationName && settings.modes[star as AutoReplyStar] === "auto";
 }
 
 export const dynamic = "force-dynamic";
@@ -66,7 +69,10 @@ export async function GET(
     return gbpRefusal(403, "gate_off", "This feature is locked by your agency.");
   }
 
-  const parsed = parseReviewFilters(new URL(request.url).searchParams);
+  const db = getAdminDb();
+  const sub = ((await db.doc(`subAccounts/${id}`).get()).data() ?? {}) as SubAccountDoc & WithSummaries;
+  const listings = allListings(sub);
+  const parsed = parseReviewFilters(new URL(request.url).searchParams, listings.map((l) => l.locationName));
   if (!parsed.ok) {
     return NextResponse.json(
       { error: `Invalid filter: ${parsed.field}`, code: "invalid_filter", field: parsed.field },
@@ -74,23 +80,27 @@ export async function GET(
     );
   }
 
-  const db = getAdminDb();
-  const sub = ((await db.doc(`subAccounts/${id}`).get()).data() ?? {}) as SubAccountDoc & {
-    gbpSummary?: GbpSummary | null;
-  };
   const locationName = sub.googleListing?.locationName ?? null;
+  const selected = parsed.filters.listing;
   const now = new Date();
   const [served, runSnap] = await Promise.all([
-    loadServedReviews(id, locationName ? [locationName] : [], now),
+    loadServedReviews(id, selected ? [selected] : listings.map((l) => l.locationName), now),
     db.collection(runsCollection(id)).orderBy("finishedAt", "desc").limit(RUN_CAP).get(),
   ]);
 
   const active = served.reviews;
   const autoPosts = await autoPostsFor(id, sub, locationName);
-  const reviews = applyReviewFilters(active, parsed.filters).map((d) => publicReview(d, autoPosts));
+  const titles = new Map(listings.map((l) => [l.locationName, l.title]));
+  const reviews = applyReviewFilters(active, parsed.filters).map((d) => {
+    const loc = String(d.locationName ?? "");
+    return publicReview(d, (star) => autoPosts(star, d.locationName), { locationName: loc, title: titles.get(loc) ?? "" });
+  });
+  // The selected listing's summary; "All" shows the main listing's.
+  const summaryLoc = selected ?? locationName;
+  const stored = summaryLoc ? summaryIn(sub, isMain(sub, summaryLoc) ? null : summaryLoc) : null;
   const summary =
-    locationName && sub.gbpSummary?.locationName === locationName
-      ? publicSummary(sub.gbpSummary, now, { reconnectRequired: sub.googleConnectionMeta?.reconnectRequired })
+    summaryLoc && stored?.locationName === summaryLoc
+      ? publicSummary(stored, now, { reconnectRequired: sub.googleConnectionMeta?.reconnectRequired })
       : null;
 
   return NextResponse.json({
@@ -107,5 +117,7 @@ export async function GET(
     scheduled: gbpSyncScheduled(),
     /** "Draft with AI" can work: the Google gate (checked above), the Reviews AI gate, and AI configured here. */
     aiDrafts: sub.reviewsAiEnabledByAgency === true && reviewsAiConfigured(),
+    /** The connected listings, main first — the page's listing dropdown. */
+    listings: listings.map((l) => ({ locationName: l.locationName, title: l.title, main: isMain(sub, l.locationName) })),
   });
 }
