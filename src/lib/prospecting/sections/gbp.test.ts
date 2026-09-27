@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GBP_FIELD_MASK, run, score } from "./gbp";
+import { GBP_FIELD_MASK, placeLocation, run, score } from "./gbp";
 import { BARE_DETAILS, BUSINESS, FULL_DETAILS } from "./sections.fixture";
 
 const fetchMock = vi.fn();
@@ -63,6 +63,10 @@ describe("gbp run", () => {
     expect(out.raw).toEqual({ details: FULL_DETAILS, description: "notMeasured", claimed: "notMeasured" });
   });
 
+  it("requests addressComponents (the ApexGEO scan's town fallback)", () => {
+    expect(GBP_FIELD_MASK.split(",")).toContain("addressComponents");
+  });
+
   it("requests no Atmosphere or review fields", () => {
     for (const f of ["reviews", "editorialSummary", "rating", "userRatingCount"]) {
       expect(GBP_FIELD_MASK.split(",")).not.toContain(f);
@@ -85,5 +89,25 @@ describe("gbp run", () => {
   it("throws on a non-2xx answer (the runner records it as failed)", async () => {
     fetchMock.mockResolvedValueOnce(new Response("denied", { status: 403 }));
     await expect(run(input())).rejects.toThrow(/403/);
+  });
+});
+
+describe("placeLocation", () => {
+  const gbpRaw = (addressComponents: unknown[]) => ({ key: "gbp", raw: { details: { addressComponents } } });
+
+  it("skips a blank locality and falls through to postal_town", () => {
+    expect(placeLocation([gbpRaw([{ longText: "  ", types: ["locality"] }, { longText: "Hermanus", types: ["postal_town"] }])]).city).toBe("Hermanus");
+  });
+
+  it("accepts only a two-letter country code", () => {
+    expect(placeLocation([gbpRaw([{ longText: "Alberton", types: ["locality"] }, { shortText: "Namibia", types: ["country"] }])]).countryCode).toBeNull();
+    expect(placeLocation([gbpRaw([{ shortText: "za", types: ["country"] }])]).countryCode).toBe("ZA");
+  });
+
+  it("reads only the gbp section, never another section's raw details", () => {
+    expect(placeLocation([{ key: "listings", raw: { details: { addressComponents: [{ longText: "Elsewhere", types: ["locality"] }] } } }])).toEqual({
+      city: null,
+      countryCode: null,
+    });
   });
 });

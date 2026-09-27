@@ -99,7 +99,15 @@ export async function runProspectReport(
     if (!ready) return { status: "failed", sections, headline: headline(sections), cost, apexgeo: null };
     // Its own budget (the client's 15 s), not what is left of the report's:
     // a POST cut off after ApexGEO accepted it would be a charged, unpolled scan.
-    const scan = await startReportScan(opts.apexgeo?.connection ?? null, business, opts.apexgeo?.reportId ?? "");
+    // The Google listing names where the business is; a contact's city may be
+    // a form submitter's IP guess. When the listing names a town it supplies
+    // the town and its country (the contact's country only if the listing has
+    // none — better than the ZA default); otherwise the contact's own values.
+    const place = gbp.placeLocation(sections);
+    const scanned = place.city
+      ? { ...business, city: place.city, countryCode: place.countryCode ?? business.countryCode }
+      : business;
+    const scan = await startReportScan(opts.apexgeo?.connection ?? null, scanned, opts.apexgeo?.reportId ?? "");
     if (scan.scanId) count("apexgeoScans");
     return {
       status: "ready",
