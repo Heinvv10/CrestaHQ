@@ -13,6 +13,7 @@ import {
   REVIEW_FOLLOW_UP_THRESHOLD,
   REVIEW_PII_RETENTION_DAYS,
 } from "@/types/review-feedback";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 /**
  * PUBLIC endpoint — anyone holding a valid `/r/[token]` link can POST here.
@@ -71,12 +72,14 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: Body;
-  try {
-    body = (await request.json()) as Body;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  // A token, a rating and a comment of up to 2,000 characters: 16 KB.
+  const read = await readJsonCapped(request, 16 * 1024);
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? NextResponse.json({ error: "Request body too large" }, { status: 413 })
+      : NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const body = (read.value ?? {}) as Body;
 
   const token = request.headers.get("x-review-token") ?? "";
   if (!token) {

@@ -8,6 +8,8 @@ import { logWebinarActivity } from "@/lib/webinar1/activities";
 import { createContactServerSide } from "@/lib/server/contacts-service";
 import type { ActivityType } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types";
+import { isDocId } from "@/lib/server/doc-id";
+import { readBodyCapped } from "@/lib/api/body-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -119,7 +121,14 @@ export async function POST(
   ctx: { params: Promise<{ subAccountId: string }> }
 ) {
   const { subAccountId } = await ctx.params;
-  const rawBody = await request.text();
+  // Not a doc id: nothing can be configured there. Same answer as unconfigured.
+  if (!isDocId(subAccountId)) return NextResponse.json({ ok: true, ignored: "not_configured" });
+  // Provider events are a few KB; 1 MiB is generous and still bounded.
+  const rawBody = await readBodyCapped(request, 1024 * 1024);
+  if (rawBody === null) {
+    console.warn(`[webhooks/webinar1] 413: body over the cap sa=${subAccountId} content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  }
 
   const secret = await readWebinar1ConnectionSecret(subAccountId);
   if (!secret?.webhookSecret) {

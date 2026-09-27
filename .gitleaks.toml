@@ -56,6 +56,14 @@ regexes = [
   # low-entropy fixture; this anchor exists only so that commit's diff stops
   # tripping the history scan.
   '''^0123456789abcdef01234567$''',
+  # Keyless-hardening test fixtures: only exist in commit f384dbfe's diff
+  # (src/app/api/keyless-ids.test.ts and keyless-body-caps.test.ts line 15
+  # at that point in history) as the VAPI / token HMAC secret the tests set.
+  # Never credentials — a counting sequence. Replaced at the tip by
+  # low-entropy fixtures; these anchors exist only so that commit's diff
+  # stops tripping the history scan.
+  '''^keyless-ids-secret-0123456789abcdef$''',
+  '''^keyless-caps-secret-0123456789abcdef$''',
   # ApexGEO connection test fixture: only exists in commit d9f45ce7's diff
   # (src/components/settings/sub-account-apexgeo-section.test.ts line 15 and
   # src/app/api/sub-accounts/[id]/apexgeo-connection/route.test.ts line 19 at

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isValidSessionId } from "@/lib/comms/web-chat/session";
+import { isDocId } from "@/lib/server/doc-id";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,7 @@ export async function GET(request: Request) {
   const sessionId = url.searchParams.get("sessionId")?.trim();
   const afterMs = Number(url.searchParams.get("after") ?? "0") || 0;
 
-  if (!subAccountId || !isValidSessionId(sessionId)) {
+  if (!subAccountId || !isDocId(subAccountId) || !isValidSessionId(sessionId)) {
     return NextResponse.json(
       { messages: [], serverNowMs: Date.now() },
       { status: 200, headers },

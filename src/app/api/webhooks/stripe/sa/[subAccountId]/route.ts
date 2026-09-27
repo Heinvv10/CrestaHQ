@@ -5,6 +5,8 @@ import Stripe from "stripe";
 
 import { readStripeConnectionSecret } from "@/lib/stripe/sub-account-client";
 import { reconcileStripeEvent } from "@/lib/stripe/order-reconciler";
+import { isDocId } from "@/lib/server/doc-id";
+import { readBodyCapped } from "@/lib/api/body-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -41,8 +43,15 @@ export async function POST(
   ctx: { params: Promise<{ subAccountId: string }> },
 ) {
   const { subAccountId } = await ctx.params;
+  // Not a doc id: no connection can live there. Same answer as a disconnected one.
+  if (!isDocId(subAccountId)) return NextResponse.json({ received: true, ignored: "not_connected" });
 
-  const body = await request.text();
+  // Provider events are a few KB; 1 MiB is generous and still bounded.
+  const body = await readBodyCapped(request, 1024 * 1024);
+  if (body === null) {
+    console.warn(`[webhooks/stripe/sa] 413: body over the cap sa=${subAccountId} content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  }
   const signature = request.headers.get("stripe-signature");
   if (!signature) {
     return NextResponse.json(

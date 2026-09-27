@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
 import type { Contact } from "@/types/contacts";
 
 /**
@@ -18,7 +19,7 @@ export async function refInSubAccount(
   subAccountId: string,
   mode?: string,
 ): Promise<boolean> {
-  if (!id || id.includes("/")) return false;
+  if (!isDocId(id)) return false;
   const snap = await getAdminDb().collection(collection).doc(id).get();
   if (!snap.exists) return false;
   const data = snap.data() ?? {};

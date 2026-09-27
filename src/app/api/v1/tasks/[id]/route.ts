@@ -24,7 +24,7 @@ export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
 export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) => {
   const parsed = parseTaskPatch(body);
   if (!parsed.ok) {
-    return apiError(ctx, "invalid_request", "invalid_body", parsed.error!);
+    return apiError(ctx, "invalid_request", parsed.code ?? "invalid_body", parsed.error!);
   }
   const result = await patchTaskServerSide({
     taskId: params.id,

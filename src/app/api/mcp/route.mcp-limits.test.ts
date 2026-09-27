@@ -149,8 +149,8 @@ describe("refused before any message runs", () => {
     expect(contactsNamed("Dup Seven")).toEqual([]);
   });
 
-  it("a body over 4 MiB is a 413, never parsed", async () => {
-    const res = await post(`"${"x".repeat(4 * 1024 * 1024)}"`);
+  it("a body over 1 MiB is a 413, never parsed", async () => {
+    const res = await post(`"${"x".repeat(1024 * 1024)}"`);
     expect(res.status).toBe(413);
   });
 

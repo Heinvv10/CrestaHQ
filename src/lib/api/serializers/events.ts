@@ -1,5 +1,6 @@
 import "server-only";
 
+import { badBodyId } from "./ids";
 import type { Timestamp } from "firebase-admin/firestore";
 import type { EventStatus, EventSource } from "@/types/events";
 
@@ -72,6 +73,8 @@ export interface ParseResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  /** "invalid_id" when a body id isn't a doc id (the route's error code). */
+  code?: "invalid_id";
 }
 
 function asString(v: unknown, max: number): string | null {
@@ -119,6 +122,8 @@ export function parseEventCreate(raw: unknown): ParseResult<EventCreateInput> {
   if (territoryId === null) {
     return { ok: false, error: "`territory_id` must be a string." };
   }
+  const badId = badBodyId("contact_id", contactId);
+  if (badId) return badId;
   return {
     ok: true,
     value: {
@@ -197,6 +202,8 @@ export function parseEventPatch(raw: unknown): ParseResult<EventPatchInput> {
     else {
       const v = asString(b.contact_id, 200);
       if (v === null) return { ok: false, error: "`contact_id` must be a string." };
+      const badId = badBodyId("contact_id", v);
+      if (badId) return badId;
       patch.contactId = v.length === 0 ? null : v;
     }
   }

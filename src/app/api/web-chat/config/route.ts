@@ -5,6 +5,7 @@ import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { checkOriginAllowed } from "@/lib/comms/web-chat/origin";
 import { DEFAULT_WEB_CHAT_CONFIG } from "@/types/ai";
 import type { SubAccountDoc } from "@/types";
+import { isDocId } from "@/lib/server/doc-id";
 
 export const dynamic = "force-dynamic";
 
@@ -43,7 +44,7 @@ export async function GET(request: Request) {
   const origin = request.headers.get("origin");
   const headers = corsHeaders(origin);
 
-  if (!subAccountId) {
+  if (!subAccountId || !isDocId(subAccountId)) {
     return NextResponse.json(
       { error: "Missing sa param" },
       { status: 400, headers },

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { badBodyId } from "./ids";
 import type { Timestamp } from "firebase-admin/firestore";
 import type { ContactAttribution } from "@/types/contacts";
 import type { CustomFieldValue } from "@/types/custom-fields";
@@ -221,6 +222,8 @@ export interface ParseResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  /** "invalid_id" when a body id isn't a doc id (the route's error code). */
+  code?: "invalid_id";
 }
 
 const MAX_NAME = 200;
@@ -363,9 +366,11 @@ function parseProspecting(v: unknown): ParseResult<ContactProspecting> {
     }
     out[field] = p[key] as string;
   }
-  if (out.listId !== undefined && (!out.listId.trim() || out.listId.includes("/"))) {
+  if (out.listId !== undefined && !out.listId.trim()) {
     return { ok: false, error: "`prospecting.list_id` must be a list id." };
   }
+  const badList = badBodyId("prospecting.list_id", out.listId);
+  if (badList) return badList;
   if (p.rating !== undefined) {
     if (typeof p.rating !== "number" || !(p.rating >= 0 && p.rating <= 5)) {
       return { ok: false, error: "`prospecting.rating` must be a number from 0 to 5." };
@@ -458,7 +463,7 @@ export function parseContactPatch(
   }
   if (b.prospecting !== undefined) {
     const v = parseProspecting(b.prospecting);
-    if (!v.ok) return { ok: false, error: v.error };
+    if (!v.ok) return { ok: false, error: v.error, code: v.code };
     patch.prospecting = v.value;
   }
 

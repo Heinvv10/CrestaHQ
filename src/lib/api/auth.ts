@@ -33,6 +33,8 @@ import {
 } from "@/lib/api/rate-limit";
 import { resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { captureRequestLog } from "@/lib/api/logs";
+import { MAX_BODY_BYTES } from "@/lib/api/body-limit";
+import { bodyTooLarge, invalidParam, readJsonBody } from "@/lib/api/request-guards";
 import type { ApiKeyMode, ApiKeyScope } from "@/types/api";
 
 /**
@@ -119,6 +121,12 @@ export interface WithApiAuthOptions {
      *  anything below 500). */
     outcome?: { status: number; body: unknown },
   ) => boolean;
+  /** Body cap in bytes (default MAX_BODY_BYTES); over it -> 413 body_too_large. */
+  maxBodyBytes?: number;
+  /** Route params are doc ids, refused with 400 invalid_id unless isDocId
+   *  (default true). The agent tools route sets false: a tool name is a
+   *  registry key, never a path, and a bad one is the unknown-tool 404. */
+  docIdParams?: boolean;
 }
 
 export interface ApiHandlerInput<P extends Record<string, string> = Record<string, string>> {
@@ -297,30 +305,6 @@ export function requireApiScope(
 }
 
 /**
- * Read the request body exactly once and parse to JSON. Returns
- * `{rawBody, body}` — `body` is null when the request has no body or the
- * body isn't valid JSON.
- *
- * The HOF below uses this once per request and forwards both forms to the
- * handler so a handler never accidentally re-consumes the stream.
- */
-async function readBody(
-  request: Request,
-): Promise<{ rawBody: string; body: unknown }> {
-  // GET / HEAD never carry a body in Next's Request shape.
-  if (request.method === "GET" || request.method === "HEAD") {
-    return { rawBody: "", body: null };
-  }
-  const rawBody = await request.text();
-  if (!rawBody) return { rawBody: "", body: null };
-  try {
-    return { rawBody, body: JSON.parse(rawBody) };
-  } catch {
-    return { rawBody, body: null };
-  }
-}
-
-/**
  * High-level wrapper. Use for nearly every v1 route handler — handles
  * auth, body parsing, scope check, idempotency, response headers.
  *
@@ -357,7 +341,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     // it in scope for the log capture. GET / HEAD short-circuit inside
     // readBody so this is essentially free for read paths.
     const params = await routeCtx.params;
-    const { rawBody, body } = await readBody(request);
+    const maxBytes = opts.maxBodyBytes ?? MAX_BODY_BYTES;
+    const { rawBody, body, tooLarge } = await readJsonBody(request, maxBytes);
     const redact = opts.redactLog?.(params) ?? { requestBody: false, responseBody: false };
 
     // Helper that captures the log + returns the response. Used at every
@@ -395,6 +380,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       return response;
     };
 
+    if (tooLarge) return finalize(bodyTooLarge(ctx, maxBytes), undefined, "body_too_large");
+
     const scopeErr = requireApiScope(ctx, requireScope);
     if (scopeErr) return finalize(scopeErr, undefined, "insufficient_scope");
 
@@ -423,6 +410,10 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       );
       return finalize(rlResp, undefined, "rate_limited");
     }
+
+    // Route params become doc paths: refuse a non-doc id before any read.
+    const badParam = opts.docIdParams === false ? null : invalidParam(ctx, params);
+    if (badParam) return finalize(badParam, undefined, "invalid_id");
 
     if (opts.precheck) {
       let refused: NextResponse | null;

@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
   serializeEventForApi,
@@ -21,7 +22,7 @@ import { isLongEvent } from "@/lib/booking/long-event";
 type Mode = "live" | "test";
 
 async function territoryForContact(contactId: string | null): Promise<string> {
-  if (!contactId) return GLOBAL_TERRITORY_ID;
+  if (!contactId || !isDocId(contactId)) return GLOBAL_TERRITORY_ID;
   try {
     const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
     const raw = snap.data()?.territoryId;
@@ -89,7 +90,7 @@ export async function createEventServerSide(
   await ref.set(doc);
 
   // Mirror the client's activity write so the contact timeline is unchanged.
-  if (input.contactId) {
+  if (input.contactId && isDocId(input.contactId)) {
     try {
       await db
         .collection("contacts")

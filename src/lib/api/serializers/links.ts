@@ -4,6 +4,7 @@ import type { Timestamp } from "firebase-admin/firestore";
 
 import { normalizeDestinationUrl } from "@/lib/tracked-links/destination";
 import { isTokenSafeId } from "@/lib/tracked-links/token";
+import { isDocId } from "@/lib/server/doc-id";
 
 /** Public-API wire shape for TrackedLink. Frozen contract. */
 
@@ -55,6 +56,8 @@ export interface ParseResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  /** "invalid_id" when a body id isn't usable as one (the route's error code). */
+  code?: "invalid_id";
 }
 
 export interface LinkCreateInput {
@@ -95,8 +98,11 @@ export function parseLinkRecipientCreate(
   }
   const b = raw as Record<string, unknown>;
   const contactId = typeof b.contact_id === "string" ? b.contact_id.trim() : "";
-  if (!contactId || !isTokenSafeId(contactId)) {
-    return { ok: false, error: "`contact_id` is required." };
+  if (!contactId) return { ok: false, error: "`contact_id` is required." };
+  // A doc id AND token-safe: the token packs `linkId.contactId`, and "__x__"
+  // is token-safe but a reserved doc id.
+  if (!isTokenSafeId(contactId) || !isDocId(contactId)) {
+    return { ok: false, code: "invalid_id", error: "`contact_id` is not a valid id." };
   }
   if (b.destination_url === undefined || b.destination_url === null) {
     return { ok: true, value: { contactId, destinationUrl: null } };

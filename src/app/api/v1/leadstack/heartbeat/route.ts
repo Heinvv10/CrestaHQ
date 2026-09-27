@@ -5,6 +5,8 @@ import { LANDING_VARIANT } from "@/config/landing";
 import { sendNewInstanceAlert } from "@/lib/affiliate/instances-data";
 import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { createFixedWindowLimiter } from "@/lib/server/fixed-window-limit";
+import { isDocId } from "@/lib/server/doc-id";
+import { readBodyCapped } from "@/lib/api/body-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -78,12 +80,21 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: Record<string, unknown>;
+  // The sender's payload (lib/gitpage/heartbeat.ts) is nine short fields,
+  // well under 1 KB; 16 KB bounds a keyless caller without ever refusing a
+  // real deployment.
+  const raw = await readBodyCapped(request, 16 * 1024);
+  if (raw === null) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  let parsed: unknown;
   try {
-    body = (await request.json()) as Record<string, unknown>;
+    parsed = JSON.parse(raw);
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return NextResponse.json({ error: "Body must be a JSON object" }, { status: 400 });
+  }
+  const body = parsed as Record<string, unknown>;
 
   const instanceId = cap(body.instanceId, 128);
   const ownerEmail = cap(body.ownerEmail, 320);
@@ -94,8 +105,8 @@ export async function POST(request: Request) {
   if (!instanceId || !ownerEmail) {
     return NextResponse.json(OK_RESPONSE);
   }
-  // Reject an instanceId with characters that can't be a Firestore doc id.
-  if (instanceId.includes("/") || instanceId === "." || instanceId === "..") {
+  // Reject an instanceId that can't be a Firestore doc id.
+  if (!isDocId(instanceId)) {
     return NextResponse.json(OK_RESPONSE);
   }
 

@@ -62,7 +62,7 @@ export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
 export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) => {
   const parsed = parseContactPatch(body);
   if (!parsed.ok) {
-    return apiError(ctx, "invalid_request", "invalid_body", parsed.error!);
+    return apiError(ctx, "invalid_request", parsed.code ?? "invalid_body", parsed.error!);
   }
   // `parseContactPatch` already emits the internal camelCase field names,
   // which is exactly the service's patch shape. It never populates

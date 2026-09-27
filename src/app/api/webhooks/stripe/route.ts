@@ -8,11 +8,17 @@ import {
 } from "@/lib/stripe/webhooks";
 import { handleChargeDispute } from "@/lib/stripe/dispute";
 import type Stripe from "stripe";
+import { readBodyCapped } from "@/lib/api/body-limit";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const body = await request.text();
+  // Provider events are a few KB; 1 MiB is generous and still bounded.
+  const body = await readBodyCapped(request, 1024 * 1024);
+  if (body === null) {
+    console.warn(`[webhooks/stripe] 413: body over the cap content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  }
   const signature = request.headers.get("stripe-signature");
 
   if (!signature) {

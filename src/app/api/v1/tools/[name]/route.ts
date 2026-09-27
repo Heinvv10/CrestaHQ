@@ -4,6 +4,7 @@ import { withApiAuth } from "@/lib/api/auth";
 import { apiError, apiOk, type ErrorType } from "@/lib/api/responses";
 import { dispatchAgentTool, isAgentReadTool, isAgentWriteTool } from "@/lib/api/agent-dispatch";
 import { agentPrecheck } from "@/lib/api/agent-precheck";
+import { MAX_AGENT_BODY_BYTES } from "@/lib/api/body-limit";
 
 const TYPE_FOR_STATUS: Record<number, ErrorType> = {
   400: "invalid_request",
@@ -49,6 +50,8 @@ export const POST = withApiAuth<{ name: string }>(
   },
   {
     requireScope: "agent",
+    maxBodyBytes: MAX_AGENT_BODY_BYTES,
+    docIdParams: false,
     precheck: agentPrecheck,
     // Bodies are kept only for a callable write: a read's are PII, and so
     // may be an unknown name's (a misspelled read).

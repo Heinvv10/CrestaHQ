@@ -1,5 +1,6 @@
 import "server-only";
 
+import { badBodyId } from "./ids";
 import type { Timestamp } from "firebase-admin/firestore";
 
 /** Public-API wire shape for Task. Frozen contract. */
@@ -74,6 +75,8 @@ export interface ParseResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  /** "invalid_id" when a body id isn't a doc id (the route's error code). */
+  code?: "invalid_id";
 }
 
 function asString(v: unknown, max: number): string | null {
@@ -118,6 +121,9 @@ export function parseTaskCreate(raw: unknown): ParseResult<TaskCreateInput> {
   if (territoryId === null) {
     return { ok: false, error: "`territory_id` must be a string." };
   }
+  const badId =
+    badBodyId("contact_id", contactId) ?? badBodyId("deal_id", dealId) ?? badBodyId("event_id", eventId);
+  if (badId) return badId;
 
   return {
     ok: true,
@@ -180,6 +186,8 @@ export function parseTaskPatch(raw: unknown): ParseResult<TaskPatchInput> {
     else {
       const v = asString(b.contact_id, 200);
       if (v === null) return { ok: false, error: "`contact_id` must be a string." };
+      const badId = badBodyId("contact_id", v);
+      if (badId) return badId;
       patch.contactId = v.length === 0 ? null : v;
     }
   }
@@ -188,6 +196,8 @@ export function parseTaskPatch(raw: unknown): ParseResult<TaskPatchInput> {
     else {
       const v = asString(b.deal_id, 200);
       if (v === null) return { ok: false, error: "`deal_id` must be a string." };
+      const badId = badBodyId("deal_id", v);
+      if (badId) return badId;
       patch.dealId = v.length === 0 ? null : v;
     }
   }
@@ -196,6 +206,8 @@ export function parseTaskPatch(raw: unknown): ParseResult<TaskPatchInput> {
     else {
       const v = asString(b.event_id, 200);
       if (v === null) return { ok: false, error: "`event_id` must be a string." };
+      const badId = badBodyId("event_id", v);
+      if (badId) return badId;
       patch.eventId = v.length === 0 ? null : v;
     }
   }
