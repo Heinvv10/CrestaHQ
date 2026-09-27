@@ -6,6 +6,7 @@ import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { googleGateOn } from "@/lib/google/gate";
 import { applyReviewFilters, parseReviewFilters } from "@/lib/gbp/inbox-filters";
 import { gbpRefusal } from "@/lib/gbp/route-support";
+import { heldByAnotherSubAccount } from "@/lib/gbp/shared-location";
 import { publicReview, publicRun, publicSummary } from "@/lib/gbp/sync/public";
 import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
 import { loadServedReviews } from "@/lib/gbp/sync/served";
@@ -48,10 +49,7 @@ async function autoPostsFor(id: string, sub: SubAccountDoc, locationName: string
   let on = autoReplyKillSwitchOn() && sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
     && sub.reviewsAutoReplyEnabledByAgency === true && settings.enabled
     && !!locationName && raw?.listingLocationName === locationName;
-  if (on) {
-    const same = await getAdminDb().collection("subAccounts").where("googleListing.locationName", "==", locationName).get();
-    on = !same.docs.some((d) => d.id !== id);
-  }
+  if (on && locationName) on = !(await heldByAnotherSubAccount(getAdminDb(), null, locationName, id));
   return (star) => on && settings.modes[star as AutoReplyStar] === "auto";
 }
 

@@ -103,7 +103,16 @@ Both are Admin SDK only under the existing `private/{docId}` deny rule. The
 parent carries display data only: `googleConnectionMeta` (incl.
 `reconnectRequired` / `reconnectReason`) and `googleListing` (the selected
 `accounts/…` + `locations/…` pair plus title/address/links — Place ID is
-display-only). `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
+display-only). Multiple listings ([MULTI_LISTING_V1_PLAN.md](../../MULTI_LISTING_V1_PLAN.md)):
+`googleExtraListings` (the non-main listings, same shape, server-written,
+at most 9), `googleLocationNames` (flat `[main, ...extras]` location names,
+rewritten by every listing writer — `[]` when cleared — and read only by the
+`array-contains` half of the `listing_shared` check in
+`lib/gbp/shared-location.ts`; absent on docs written before it existed, so
+that check also keeps the `googleListing.locationName ==` query; backfill:
+`scripts/backfill-google-location-names.ts`) and `gbpSummaries` (per-extra
+summaries keyed by the id after `locations/`) — all member-readable display
+data on the parent, no rules change, no index. `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
 append-only audit log (`listing_selected`, `listing_cleared` with a `reason`;
 `reply_posted` / `reply_deleted` with `actorUid` + `reviewDocId` — never the
 reply text; `review_url_adopted` with `previousUrl`, `url`, `actorUid`;

@@ -55,7 +55,7 @@ export async function clearListing(
       : {};
     tx.set(
       subRef,
-      { ...opts.alsoSet, ...autoReplyOff, googleListing: null, updatedAt: FieldValue.serverTimestamp() },
+      { ...opts.alsoSet, ...autoReplyOff, googleListing: null, googleExtraListings: [], googleLocationNames: [], updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
     if (!previous) return true;
