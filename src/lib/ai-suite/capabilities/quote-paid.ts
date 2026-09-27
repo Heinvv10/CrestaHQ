@@ -8,6 +8,7 @@ import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { fmtMoney, str } from "./helpers";
 import { recordProvenanceRows } from "./record-provenance";
 import { reviewPlan } from "./deal-review-plan";
+import { activeWorkflowsOn } from "./workflow-support";
 import { docLabel, quoteIdParam, quoteRows, tenantQuote, totalCents, type TenantQuote } from "./quote-support";
 
 /**
@@ -33,9 +34,11 @@ function notPayable(q: TenantQuote): string | null {
 }
 
 async function plan(subAccountId: string, q: TenantQuote) {
-  const [review, paidVia] = await Promise.all([
+  const [review, paidVia, workflows] = await Promise.all([
     reviewPlan(subAccountId, q, Date.now(), "quote_paid"),
     unsettledPaystackLinkPayment(subAccountId, q.id),
+    // The quote.paid workflows the paid write starts (for its contact; none without one).
+    isDocId(q.contactId) ? activeWorkflowsOn(subAccountId, "quote.paid") : Promise.resolve([]),
   ]);
   const pinned = {
     quoteId: q.id,
@@ -47,8 +50,9 @@ async function plan(subAccountId: string, q: TenantQuote) {
     channel: review.channel,
     body: review.body,
     fingerprint: review.fingerprint,
+    workflows: workflows.map((w) => ({ id: w.id, stepsFingerprint: w.stepsFingerprint })),
   };
-  return { review, paidVia, pinned };
+  return { review, paidVia, pinned, workflows };
 }
 
 export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
@@ -75,7 +79,7 @@ export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
       const q = await tenantQuote(ctx.subAccountId!, args.quoteId);
       const why = notPayable(q);
       if (why) throw new CapabilityUserError(why);
-      const { review, paidVia, pinned } = await plan(ctx.subAccountId!, q);
+      const { review, paidVia, pinned, workflows } = await plan(ctx.subAccountId!, q);
       return {
         rows: [
           { label: "Mark paid", value: `${docLabel(q)} ${q.quoteNumber}` },
@@ -86,7 +90,10 @@ export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
             label: "Recorded as",
             value: paidVia ? `paid by the Paystack payment link already paid for it (${"reference" in paidVia ? paidVia.reference : paidVia.rail})` : "paid by hand (no card or link payment is recorded)",
           },
-          { label: "Automations", value: "Workflows that start when a quote is paid run, as when a person marks it paid." },
+          {
+            label: "Workflows that start",
+            value: workflows.map((w) => `${w.name} (${w.id})`).join(", ") || "none",
+          },
           ...review.rows,
         ],
         pinned,
@@ -97,7 +104,7 @@ export const QUOTE_PAID_CAPABILITIES: AiSuiteCapability[] = [
       const pinned = ctx.approved?.pinned ?? {};
       const now = await plan(ctx.subAccountId!, q);
       if (canonical(now.pinned) !== canonical(pinned)) {
-        throw new CapabilityUserError("The amount, how it is recorded, the contact or the review request changed since this was reviewed; nothing was changed.");
+        throw new CapabilityUserError("The amount, how it is recorded, the contact, the review request or the workflows it starts changed since this was reviewed; nothing was changed.");
       }
       const { review } = now;
       const result = await markQuotePaidServerSide({

@@ -159,7 +159,7 @@ describe("set_event_status", () => {
     });
     const id = await proposeCancel();
     expect(rowOf(id, "Workflows that start")).toBe("Sends on booking.cancelled (wf_booking.cancelled)");
-    expect(row(id).pinned).toMatchObject({ workflowIds: ["wf_booking.cancelled"] });
+    expect(row(id).pinned).toMatchObject({ workflows: [{ id: "wf_booking.cancelled", stepsFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) }] });
     mem.seed("workflows/wf_late", { ...mem.read("workflows/wf_booking.cancelled")!, name: "Late addition" });
     const res = await decide(id, "approve");
     expect(res.status).toBe(409);
@@ -200,6 +200,27 @@ describe("set_event_status", () => {
     google.during = () => mem.seed("contacts/c1", { ...ANN, email: "other@x.io" });
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a started workflow's steps edited after the proposal -> preview_changed, not cancelled", async () => {
+    workflow("booking.cancelled");
+    const id = await proposeCancel();
+    mem.seed("workflows/wf_booking.cancelled", { ...mem.read("workflows/wf_booking.cancelled")!, nodes: { n1: { id: "n1", type: "send_sms", config: { body: "Changed" }, next: null } } });
+    expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
+  });
+
+  it("a started workflow's steps edited after the approver's preview check -> failed, not cancelled", async () => {
+    workflow("booking.cancelled");
+    const id = await proposeCancel();
+    beforeNextTransaction(async () =>
+      mem.seed("workflows/wf_booking.cancelled", { ...mem.read("workflows/wf_booking.cancelled")!, nodes: {} })
+    );
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining("or their steps") });
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });

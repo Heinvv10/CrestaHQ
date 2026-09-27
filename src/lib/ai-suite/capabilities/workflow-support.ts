@@ -2,6 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { isDocId } from "@/lib/server/doc-id";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { getWorkflow } from "@/lib/server/workflows-service";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { TRIGGER_LABELS } from "@/lib/workflows/catalog";
@@ -34,6 +35,24 @@ export function workflowFingerprint(wf: WorkflowDoc): string {
  *  the review changes it, a pause or a rename doesn't. */
 export function workflowStepsFingerprint(wf: Pick<WorkflowDoc, "startNodeId" | "nodes">): string {
   return createHash("sha256").update(canonical([wf.startNodeId ?? null, wf.nodes ?? {}])).digest("hex");
+}
+
+/** The ACTIVE workflows of a sub-account on one trigger, as the engine
+ *  queries them, each with its steps' fingerprint (sorted by id): what an
+ *  approved action that fires the trigger shows and pins. */
+export async function activeWorkflowsOn(subAccountId: string, type: string) {
+  const snap = await getAdminDb()
+    .collection("workflows")
+    .where("subAccountId", "==", subAccountId)
+    .where("status", "==", "active")
+    .where("trigger.type", "==", type)
+    .get();
+  return snap.docs
+    .map((d) => {
+      const wf = d.data() as WorkflowDoc;
+      return { id: d.id, name: oneLine(wf.name) || "(unnamed)", trigger: wf.trigger, stepsFingerprint: workflowStepsFingerprint(wf) };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** Keys sorted, so a value reads the same however it was stored. */

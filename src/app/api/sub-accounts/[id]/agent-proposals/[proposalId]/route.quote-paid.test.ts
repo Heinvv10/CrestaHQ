@@ -67,7 +67,7 @@ describe("mark_quote_paid", () => {
     expect(row(id).preview).toContainEqual({ label: "Message", value: SMS_TEXT, multiline: true });
     expect(row(id).preview).toContainEqual({ label: "Line items", value: "1 \u00d7 Install @ ZAR 500 = ZAR 500", multiline: true });
     expect(row(id).pinned).toEqual({
-      quoteId: "q1", totalCents: 50000, currency: "ZAR", paidVia: null, contactId: "c1", phone: "+27821111111", channel: "sms", body: SMS_TEXT, fingerprint: null,
+      quoteId: "q1", totalCents: 50000, currency: "ZAR", paidVia: null, contactId: "c1", phone: "+27821111111", channel: "sms", body: SMS_TEXT, fingerprint: null, workflows: [],
     });
     expect(markPaid.spy).not.toHaveBeenCalled();
     expect(reviewAsk).not.toHaveBeenCalled();
@@ -166,5 +166,37 @@ describe("mark_quote_paid", () => {
     mem.seed("quotes/q1", { ...ACCEPTED, ...patch });
     expect(await call()).toMatchObject({ ok: false, message });
     expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  describe("the quote.paid workflows it starts", () => {
+    const seedPaidWorkflow = (body = "Thanks for paying") =>
+      mem.seed("workflows/wf_paid", {
+        name: "After payment", subAccountId: "sa1", agencyId: "ag1", status: "active", startNodeId: "n1",
+        trigger: { type: "quote.paid", filters: { all: [] } }, nodes: { n1: { id: "n1", type: "send_sms", config: { body }, next: null } },
+      });
+
+    it("are shown and pinned with their steps' fingerprint", async () => {
+      seedPaidWorkflow();
+      const id = await proposeId();
+      expect(rowOf(id, "Workflows that start")).toBe("After payment (wf_paid)");
+      expect(row(id).pinned).toMatchObject({ workflows: [{ id: "wf_paid", stepsFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) }] });
+    });
+
+    it("steps edited after the proposal -> preview_changed, not marked paid", async () => {
+      seedPaidWorkflow();
+      const id = await proposeId();
+      seedPaidWorkflow("Pay us more");
+      expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+      expect(mem.read("quotes/q1")!.status).toBe("accepted");
+    });
+
+    it("steps edited after the approver's preview check -> failed, not marked paid", async () => {
+      seedPaidWorkflow();
+      const id = await proposeId();
+      beforeNextTransaction(async () => seedPaidWorkflow("Pay us more"));
+      expect((await decide(id, "approve")).status).toBe(422);
+      expect(mem.read("quotes/q1")!.status).toBe("accepted");
+      expect(markPaid.spy).not.toHaveBeenCalled();
+    });
   });
 });
