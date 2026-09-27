@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Firestore, QuerySnapshot, Transaction } from "firebase-admin/firestore";
+import { locationNamesOf } from "./listings";
 
 /**
  * Whether a sub-account OTHER than `exceptId` manages this Google location —
@@ -8,7 +9,9 @@ import type { Firestore, QuerySnapshot, Transaction } from "firebase-admin/fires
  * unioned: `googleListing.locationName ==` catches every main listing,
  * including docs written before `googleLocationNames` existed (no backfill
  * needed), and `googleLocationNames array-contains` catches extra listings.
- * Either alone fails OPEN. Pass `tx` to read inside a transaction.
+ * Either alone fails OPEN. A hit counts only while the doc's own listing
+ * fields still name the location, so a stale flat array never refuses.
+ * Pass `tx` to read inside a transaction.
  */
 export async function heldByAnotherSubAccount(
   db: Firestore,
@@ -22,5 +25,7 @@ export async function heldByAnotherSubAccount(
     subs.where("googleLocationNames", "array-contains", locationName),
   ];
   const snaps: QuerySnapshot[] = await Promise.all(queries.map((q) => (tx ? tx.get(q) : q.get())));
-  return snaps.some((s) => s.docs.some((d) => d.id !== exceptId));
+  return snaps.some((s) =>
+    s.docs.some((d) => d.id !== exceptId && locationNamesOf(d.data()).includes(locationName)),
+  );
 }

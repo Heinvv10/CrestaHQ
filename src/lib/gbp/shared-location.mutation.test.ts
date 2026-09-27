@@ -112,7 +112,10 @@ describe("heldByAnotherSubAccount", () => {
   it("never counts the asking sub-account itself, as main or as extra", async () => {
     const db = getAdminDb();
     expect(await heldByAnotherSubAccount(db, null, LOC_A, SA)).toBe(false); // SA's own main
-    patch(OTHER_SA, { googleLocationNames: [LOC_NORTH, "locations/x"] });
+    patch(OTHER_SA, {
+      googleExtraListings: [{ ...listingOf(OTHER_SA), locationName: "locations/x" }],
+      googleLocationNames: [LOC_NORTH, "locations/x"],
+    });
     expect(await heldByAnotherSubAccount(db, null, "locations/x", OTHER_SA)).toBe(false); // its own extra
     expect(await heldByAnotherSubAccount(db, null, "locations/x", SA)).toBe(true);
   });

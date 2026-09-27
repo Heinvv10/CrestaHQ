@@ -97,6 +97,8 @@ export async function clearGbp(): Promise<void> {
   await ref.update({
     googleConnectionMeta: FieldValue.delete(),
     googleListing: FieldValue.delete(),
+    googleExtraListings: FieldValue.delete(),
+    googleLocationNames: FieldValue.delete(),
     gbpSummary: FieldValue.delete(),
     gbpWidgetMeta: FieldValue.delete(),
     // A crashed auto-reply spec must not leave auto-reply on for later specs.

@@ -113,7 +113,12 @@ export async function PUT(
         selectedByUid: access.uid,
       },
       // The flat list the listing_shared query reads: this main, then the extras.
-      googleLocationNames: [location.name, ...((snap.data()?.googleExtraListings ?? []) as GoogleListing[]).map((l) => l.locationName)],
+      googleLocationNames: [
+        location.name,
+        ...((snap.data()?.googleExtraListings ?? []) as GoogleListing[])
+          .map((l) => l.locationName)
+          .filter((n) => n !== location.name),
+      ],
       updatedAt: FieldValue.serverTimestamp(),
     });
     tx.set(db.collection(`subAccounts/${id}/gbpEvents`).doc(), {
