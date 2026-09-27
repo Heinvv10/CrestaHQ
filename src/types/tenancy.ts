@@ -133,6 +133,12 @@ export interface ReviewsAutoReplySettings {
    * change or clear set it (the card says so). Cleared by any admin switch.
    */
   disabledReason?: "listing_changed" | null;
+  /**
+   * EXTRA listings auto-reply is on for, keyed by `locId` (MULTI_LISTING_V1_PLAN.md
+   * PR 6); a missing key is off. Deleted with its listing. `enabled` /
+   * `enabledAt` / `listingLocationName` above are the MAIN listing's.
+   */
+  extraListings?: Record<string, { enabledAt: Date; enabledByUid: string }>;
   updatedAt: Date;
   updatedByUid: string;
 }

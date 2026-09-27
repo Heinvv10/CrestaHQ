@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue, type Transaction } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { GoogleListing } from "@/types/google";
+import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 import { locId, locationNamesOf, type ListingFields } from "./listings";
 import type { GbpAccount, GbpLocation } from "./provider/types";
 import { heldByAnotherSubAccount } from "./shared-location";
@@ -14,7 +15,9 @@ import { clearGbpCache } from "./sync/clear";
  * same transaction, with one `gbpEvents` entry per listing added or removed.
  * A removed listing's synced data goes AFTER the doc write, one listing at a
  * time (`clearGbpCache(id, loc)`): the main listing's cache, summary, drafts
- * and auto-reply settings are never touched. A listing connected AGAIN by the
+ * and auto-reply settings are never touched. A removed listing's auto-reply
+ * switch is deleted in the doc write itself, with one `listing_changed` alert
+ * when it was on (PR 6). A listing connected AGAIN by the
  * time its clear starts (made the main, or re-added) is skipped; the listing
  * PUT refuses 409 `listing_clearing` while a clear holds its lease. A clear
  * that fails is logged and left to the retention / orphan sweeps — the save
@@ -28,7 +31,11 @@ export interface ListingPair {
 
 export type ExtraRemovedReason = "admin_removed" | "not_accessible_after_reconnect";
 
-type Sub = ListingFields & { agencyId?: string; googleReviewConfig?: { listingUrls?: Record<string, string> } | null };
+type Sub = ListingFields & {
+  agencyId?: string;
+  googleReviewConfig?: { listingUrls?: Record<string, string> } | null;
+  reviewsAutoReply?: { extraListings?: Record<string, unknown> } | null;
+};
 
 const keyOf = (l: ListingPair) => `${l.accountName}|${l.locationName}`;
 
@@ -56,6 +63,12 @@ export function storedExtras(sub: Sub): GoogleListing[] {
   return (sub.googleExtraListings ?? []).filter((l) => l.locationName !== main);
 }
 
+/**
+ * Write the extras. A removed listing's auto-reply switch
+ * (`reviewsAutoReply.extraListings.{locId}`) goes in the SAME write, so no
+ * run can ever see it on for a listing that is gone; true when one existed
+ * (the caller sends one `listing_changed` alert after the commit).
+ */
 function writeExtras(
   tx: Transaction,
   subAccountId: string,
@@ -64,7 +77,7 @@ function writeExtras(
   changes: Array<{ type: "extra_listing_added" } | { type: "extra_listing_removed"; reason: ExtraRemovedReason }>,
   locations: string[],
   byUid: string,
-): void {
+): boolean {
   const db = getAdminDb();
   // A removed listing's adopted review link goes with it, so a re-add starts unadopted.
   const urls = sub.googleReviewConfig?.listingUrls ?? {};
@@ -75,10 +88,15 @@ function writeExtras(
         : [],
     ),
   );
+  const autoReply = { ...(sub.reviewsAutoReply?.extraListings ?? {}) };
+  const removed = locations.filter((_, i) => changes[i].type === "extra_listing_removed");
+  const switchedOff = removed.filter((loc) => Object.hasOwn(autoReply, locId(loc)));
+  for (const loc of switchedOff) delete autoReply[locId(loc)];
   tx.update(db.doc(`subAccounts/${subAccountId}`), {
     googleExtraListings: next,
     googleLocationNames: locationNamesOf({ googleListing: sub.googleListing, googleExtraListings: next }),
     ...dropUrls,
+    ...(switchedOff.length > 0 ? { "reviewsAutoReply.extraListings": autoReply } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
   changes.forEach((change, i) =>
@@ -91,6 +109,7 @@ function writeExtras(
       locationName: locations[i],
     }),
   );
+  return switchedOff.length > 0;
 }
 
 /** Clear each removed listing's synced data; true when a clear failed (data left behind). */
@@ -137,7 +156,9 @@ export async function saveExtraListings(
 ): Promise<SaveResult> {
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${subAccountId}`);
+  let switchedOff = false;
   const result = await db.runTransaction(async (tx): Promise<SaveResult> => {
+    switchedOff = false;
     const sub = ((await tx.get(subRef)).data() ?? {}) as Sub;
     const main = sub.googleListing?.locationName;
     // Extras always sit beside a main listing.
@@ -166,9 +187,10 @@ export async function saveExtraListings(
       ...removed.map(() => ({ type: "extra_listing_removed" as const, reason: "admin_removed" as const })),
       ...added.map(() => ({ type: "extra_listing_added" as const })),
     ];
-    writeExtras(tx, subAccountId, sub, next, changes, [...removed, ...added], byUid);
+    switchedOff = writeExtras(tx, subAccountId, sub, next, changes, [...removed, ...added], byUid);
     return { ok: true, added, removed };
   });
+  if (switchedOff) await sendAutoReplyAlert(subAccountId, { kind: "listing_changed" });
   // A location removed and re-added under another Google account starts empty.
   if (result.ok && (await clearRemoved(subAccountId, result.removed))) return { ...result, cachePending: true };
   return result;
@@ -186,16 +208,19 @@ export async function removeExtraListings(
 ): Promise<string[]> {
   const db = getAdminDb();
   const subRef = db.doc(`subAccounts/${subAccountId}`);
+  let switchedOff = false;
   const removed = await db.runTransaction(async (tx) => {
+    switchedOff = false;
     const sub = ((await tx.get(subRef)).data() ?? {}) as Sub;
     const current = storedExtras(sub);
     const checked = new Set(pairs.map(keyOf));
     const gone = current.filter((l) => checked.has(keyOf(l))).map((l) => l.locationName);
     if (gone.length === 0) return [];
     const next = current.filter((l) => !gone.includes(l.locationName));
-    writeExtras(tx, subAccountId, sub, next, gone.map(() => ({ type: "extra_listing_removed", reason })), gone, byUid);
+    switchedOff = writeExtras(tx, subAccountId, sub, next, gone.map(() => ({ type: "extra_listing_removed", reason })), gone, byUid);
     return gone;
   });
+  if (switchedOff) await sendAutoReplyAlert(subAccountId, { kind: "listing_changed" });
   await clearRemoved(subAccountId, removed);
   return removed;
 }

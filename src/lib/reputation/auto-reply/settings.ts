@@ -1,4 +1,7 @@
 import type { AutoReplyMode, AutoReplyStar, ReviewsAutoReplySettings } from "@/types";
+import { locId, locationNamesOf, type ListingFields } from "@/lib/gbp/listings";
+import { LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
+import { toMillis } from "@/lib/gbp/sync/types";
 
 /**
  * Review auto-reply settings (AUTO_REPLY_V1_PLAN.md, PR 1): the shape stored
@@ -29,14 +32,20 @@ const DEFAULT_AUTO_REPLY_MODES: Readonly<Record<AutoReplyStar, AutoReplyMode>> =
   5: "auto",
 };
 
-/** What an admin may send: exactly these three keys, nothing else. */
+/**
+ * What an admin may send: exactly these three keys, plus optionally
+ * `listings` — `{locationName: on}` for EXTRA listings only (the main
+ * listing's switch is `enabled`). A listing left out keeps its state.
+ */
 interface AutoReplyInput {
   enabled: boolean;
   modes: Record<AutoReplyStar, AutoReplyMode>;
   includeBacklog: boolean;
+  listings?: Record<string, boolean>;
 }
 
 const BODY_KEYS = ["enabled", "includeBacklog", "modes"];
+const BODY_KEYS_WITH_LISTINGS = ["enabled", "includeBacklog", "listings", "modes"];
 const STAR_KEYS = AUTO_REPLY_STARS.map(String);
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -49,14 +58,54 @@ const sameKeys = (obj: Record<string, unknown>, keys: string[]) => {
 
 /** The PUT body, or null when it is anything but the exact allow-listed shape. */
 export function parseAutoReplyBody(body: unknown): AutoReplyInput | null {
-  if (!isPlainObject(body) || !sameKeys(body, BODY_KEYS)) return null;
-  const { enabled, includeBacklog, modes } = body;
+  if (!isPlainObject(body) || !(sameKeys(body, BODY_KEYS) || sameKeys(body, BODY_KEYS_WITH_LISTINGS))) return null;
+  const { enabled, includeBacklog, modes, listings } = body;
   if (typeof enabled !== "boolean" || typeof includeBacklog !== "boolean") return null;
   if (!isPlainObject(modes) || !sameKeys(modes, STAR_KEYS)) return null;
   if (!STAR_KEYS.every((k) => isMode(modes[k]))) return null;
   const parsed = {} as Record<AutoReplyStar, AutoReplyMode>;
   for (const star of AUTO_REPLY_STARS) parsed[star] = modes[String(star)] as AutoReplyMode;
-  return { enabled, includeBacklog, modes: parsed };
+  if (listings === undefined) return { enabled, includeBacklog, modes: parsed };
+  if (!isPlainObject(listings)) return null;
+  const entries = Object.entries(listings);
+  if (!entries.every(([loc, on]) => LOCATION_NAME_RE.test(loc) && typeof on === "boolean")) return null;
+  return { enabled, includeBacklog, modes: parsed, listings: Object.fromEntries(entries) as Record<string, boolean> };
+}
+
+/** One listing auto-reply is ON for: when it was switched on, and by whom (the posts' `createdByUid`). */
+export interface ListingOn {
+  enabledAtMs: number | null;
+  enabledByUid: string | null;
+}
+/** Keyed by `locationName`; a listing that is absent is off. */
+export type AutoReplyListings = Record<string, ListingOn>;
+
+/** The entry for `locationName`, or null — own keys only. */
+export const listingOn = (map: AutoReplyListings, locationName: string): ListingOn | null =>
+  Object.hasOwn(map, locationName) ? map[locationName] : null;
+
+/**
+ * The listings auto-reply is ON for right now (MULTI_LISTING_V1_PLAN.md H4).
+ * The MAIN listing only while `enabled` and it is still the listing it was
+ * enabled for; an EXTRA only while `extraListings.{locId}` exists (with its
+ * stamps) AND it is still one of this sub-account's connected extras — a key
+ * left behind for a listing no longer connected never counts.
+ */
+export function readAutoReplyListings(raw: unknown, sub: ListingFields): AutoReplyListings {
+  const r = isPlainObject(raw) ? raw : {};
+  const out: AutoReplyListings = {};
+  const main = sub.googleListing?.locationName;
+  if (r.enabled === true && typeof main === "string" && main && r.listingLocationName === main) {
+    out[main] = { enabledAtMs: toMillis(r.enabledAt), enabledByUid: typeof r.enabledByUid === "string" ? r.enabledByUid : null };
+  }
+  const extras = isPlainObject(r.extraListings) ? r.extraListings : {};
+  for (const loc of locationNamesOf(sub)) {
+    if (loc === main || !Object.hasOwn(extras, locId(loc))) continue;
+    const e = extras[locId(loc)];
+    if (!isPlainObject(e) || typeof e.enabledByUid !== "string") continue;
+    out[loc] = { enabledAtMs: toMillis(e.enabledAt), enabledByUid: e.enabledByUid };
+  }
+  return out;
 }
 
 /** The stored settings as the card sees them; absent or malformed fields read as the defaults. */
@@ -114,4 +163,27 @@ export function nextAutoReplySettings(
       updatedByUid: ctx.uid,
     },
   };
+}
+
+/**
+ * The `reviewsAutoReply.extraListings` changes a PUT's `listings` makes, by
+ * `locId`: off→on stamps `enabledAt` / `enabledByUid`, on→on keeps the
+ * original stamps (no write), on→off deletes the key (`null` here). The
+ * caller has checked every location is a connected extra.
+ */
+export function extraListingWrites(
+  prev: unknown,
+  sub: ListingFields,
+  listings: Record<string, boolean>,
+  ctx: { now: Date; uid: string },
+): Record<string, { enabledAt: Date; enabledByUid: string } | null> {
+  const p = isPlainObject(prev) ? prev : {};
+  const stored = isPlainObject(p.extraListings) ? p.extraListings : {};
+  const on = readAutoReplyListings(prev, sub);
+  const writes: Record<string, { enabledAt: Date; enabledByUid: string } | null> = {};
+  for (const [loc, want] of Object.entries(listings)) {
+    if (want && !listingOn(on, loc)) writes[locId(loc)] = { enabledAt: ctx.now, enabledByUid: ctx.uid };
+    if (!want && Object.hasOwn(stored, locId(loc))) writes[locId(loc)] = null;
+  }
+  return writes;
 }

@@ -16,7 +16,7 @@ import { decide, type DecideCounts, type DecideReview, type DecideSettings, type
 import { sendAutoReplyAlert } from "./alerts";
 import { autoReplyKillSwitchOn } from "./kill-switch";
 import { postQueued } from "./post";
-import { AUTO_REPLY_DAILY_DRAFT_CAP, readAutoReplySettings } from "./settings";
+import { AUTO_REPLY_DAILY_DRAFT_CAP, listingOn, readAutoReplyListings, readAutoReplySettings } from "./settings";
 import {
   acquireAutoReplyLease, markHeldAlerted, autoDraftsToday, autoReplyDismissedCollection, holdQueuedForApproval, postsToday, readPending,
   releaseAutoReplyLease, renewAutoReplyLease, storePending, toDecidePending,
@@ -25,8 +25,10 @@ import {
 /**
  * The review auto-reply engine (AUTO_REPLY_V1_PLAN.md) — one sub-account,
  * after a sync, never inside it. Inert unless the deployment's kill switch
- * is set (no read at all otherwise). Then: the three gates, auto-reply on,
- * the listing it was enabled for, Reviews AI configured; one run per
+ * is set (no read at all otherwise). Then: the three gates, auto-reply on
+ * for at least one listing (the main one it was enabled for and/or switched-on
+ * extras — MULTI_LISTING_V1_PLAN.md PR 6; settings and caps shared), Reviews
+ * AI configured; one run per
  * sub-account (lease); every review decided (decide.ts) newest first; each
  * draft stored on the review BEFORE any post (so a retry posts the same
  * bytes); each post through post.ts. The deadline is checked before every
@@ -72,7 +74,6 @@ interface Ctx {
   runStartedAt: number;
   deadline: number;
   settings: DecideSettings;
-  enabledByUid: string;
   counts: DecideCounts;
   ai: ReviewsAi;
   tally: AutoReplyRun;
@@ -84,20 +85,21 @@ async function runEngine(sa: string, runStartedAt: number, deadline: number): Pr
   const sub = (await db.doc(`subAccounts/${sa}`).get()).data() ?? {};
   const gatesOn = sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
     && sub.reviewsAutoReplyEnabledByAgency === true;
-  const raw = (sub.reviewsAutoReply ?? {}) as { enabledAt?: unknown; enabledByUid?: unknown; listingLocationName?: unknown };
-  const stored = readAutoReplySettings(raw);
-  const listing = sub.googleListing?.locationName;
-  if (!gatesOn || !stored.enabled) return { ...tally, stop: "off" };
-  if (typeof listing !== "string" || raw.listingLocationName !== listing) return { ...tally, stop: "listing_changed" };
-  if (typeof raw.enabledByUid !== "string" || !reviewsAiConfigured()) return { ...tally, stop: "not_configured" };
+  const stored = readAutoReplySettings(sub.reviewsAutoReply);
+  // The listings it is on for: main (still the listing it was enabled for) and each switched-on extra.
+  const listings = readAutoReplyListings(sub.reviewsAutoReply, sub);
+  const none = Object.keys(listings).length === 0;
+  if (!gatesOn || (none && !stored.enabled)) return { ...tally, stop: "off" };
+  if (none) return { ...tally, stop: "listing_changed" };
+  if (Object.values(listings).some((l) => l.enabledByUid === null) || !reviewsAiConfigured()) return { ...tally, stop: "not_configured" };
 
   const runId = randomUUID();
   if (!(await acquireAutoReplyLease(sa, runId, Date.now()))) return { ...tally, stop: "busy" };
   try {
     const now = Date.now();
     const ctx: Ctx = {
-      sa, runId, runStartedAt, deadline, tally, enabledByUid: raw.enabledByUid,
-      settings: { ...stored, enabledAtMs: toMillis(raw.enabledAt), listingLocationName: listing },
+      sa, runId, runStartedAt, deadline, tally,
+      settings: { modes: stored.modes, includeBacklog: stored.includeBacklog, listings },
       counts: { postsToday: await postsToday(sa, now), autoDraftsToday: await autoDraftsToday(sentimentUsagePath(sa), now) },
       ai: await getReviewsAiFor(sa),
     };
@@ -170,7 +172,9 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
     text = drafted;
   }
   const reviewName = String(data.reviewName ?? "");
-  const result = await postQueued(ctx.sa, { runId: ctx.runId, docId, reviewName, text, enabledByUid: ctx.enabledByUid, deadline: ctx.deadline });
+  // Posted on behalf of whoever switched auto-reply on for this review's listing (decide found it on).
+  const enabledByUid = listingOn(ctx.settings.listings, review.locationName)!.enabledByUid!;
+  const result = await postQueued(ctx.sa, { runId: ctx.runId, docId, reviewName, text, enabledByUid, deadline: ctx.deadline });
   if (result === "posted") {
     ctx.tally.posted += 1;
     ctx.counts.postsToday += 1;

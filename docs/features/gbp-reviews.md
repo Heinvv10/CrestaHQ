@@ -334,6 +334,9 @@ body for token markers).
   `googleListing` (`selectedAt` a timestamp, not a server sentinel: Firestore
   refuses one inside an array), written with `googleLocationNames` in the same
   transaction.
+  Removing one also deletes its auto-reply switch
+  (`reviewsAutoReply.extraListings.{locId}`) in that same write, with one
+  `listing_changed` alert when it was on.
 
 Selecting a **different** listing (or the same location through another
 Google account — its reviews come back under new names), clearing it,
@@ -925,8 +928,10 @@ shows that listing's summary ("All" shows the main listing's) and
 `gbp-review-listing-<reviewId>` and each recent sync `gbp-run-listing` (its
 listing's title); with one listing the page looks exactly as before. Reply,
 Draft with AI and Discard work on a review of any connected listing and go to
-that review's own listing. Auto-reply stays main-only until PR 6, so an extra
-listing's queued draft reads "Auto-post paused" —
+that review's own listing. Auto-reply is switched on per listing (PR 6,
+[reputation.md](reputation.md#review-auto-reply-auto_reply_v1_planmd)): a queued
+draft reads "Auto-post paused" unless auto-reply is on for its own listing and
+no other sub-account manages that listing —
 `components/gbp/reviews-section.listing.test.ts`,
 `…/gbp/reviews/route.listing.test.ts`, E2E `gbp-reply-listings.spec.ts`.
 PR 4 adds, over the reviews: the filter bar `gbp-filters` —

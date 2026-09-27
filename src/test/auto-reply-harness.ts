@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { GbpReview } from "@/lib/gbp/provider/types";
 import { fakeLogPath } from "@/lib/reputation/ai/fake";
 import { syncListing } from "@/lib/gbp/sync/run";
+import { syncSubAccount } from "@/lib/gbp/sync/sub-account";
 import { autoReplyAfterSync } from "@/lib/reputation/auto-reply/run";
 import { AGENCY, ACCOUNT, LOC_A, LOC_NORTH, OTHER_SA, SA, mem, resetSync, setScenario } from "@/test/gbp-sync-harness";
 import { calls, docIdOf, reviewPath } from "@/test/gbp-reply-harness";
@@ -100,3 +101,34 @@ export const stableKeyOf = (reviewId: string) =>
   createHash("sha256").update(`${LOC_A}/reviews/${reviewId}`).digest("hex").slice(0, 40);
 export const neverPath = (reviewId: string, sa = SA) => `subAccounts/${sa}/autoReplyNever/${stableKeyOf(reviewId)}`;
 export const dismissedPath = (reviewId: string, sa = SA) => `subAccounts/${sa}/autoReplyDismissed/${stableKeyOf(reviewId)}`;
+
+/* ── Several listings (MULTI_LISTING_V1_PLAN.md PR 6) ── */
+
+/** Rating-only (blank comment) review on `loc` — auto-reply's "auto" verdict unless something stops it. */
+export const ratingOnlyOn = (loc: string, id: string, star: GbpReview["starRating"], day: number): GbpReview =>
+  ({ ...reviewOnLoc(loc, id, star, day), comment: null });
+
+function reviewOnLoc(loc: string, id: string, starRating: GbpReview["starRating"], day: number): GbpReview {
+  const time = `2026-08-${String(day).padStart(2, "0")}T09:00:00Z`;
+  return {
+    name: `${ACCOUNT}/${loc}/reviews/${id}`, reviewId: id,
+    reviewer: { displayName: `Fixture Reviewer ${id}`, profilePhotoUrl: null, isAnonymous: false },
+    starRating, comment: `Fixture review ${id}.`, createTime: time, updateTime: time, reply: null,
+  };
+}
+
+/** Switch auto-reply on for the extra listing `loc` as the settings route stores it. */
+export function switchExtraOn(loc: string, enabledAt: Date = ENABLED_AT, enabledByUid = "uid_extra_admin") {
+  const cur = mem.read(`subAccounts/${SA}`)!.reviewsAutoReply as Record<string, unknown>;
+  const extras = (cur.extraListings ?? {}) as Record<string, unknown>;
+  patchSettings({ extraListings: { ...extras, [loc.slice("locations/".length)]: { enabledAt, enabledByUid } } });
+}
+
+/** Every listing synced (one aggregate), then the engine once — as the after-sync hook runs them. */
+export async function syncAllAndRun(deadline = Date.now() + 240_000) {
+  const { synced } = await syncSubAccount(SA, { trigger: "manual", actorUid: "uid_admin" });
+  return { startedAt: synced.startedAt, run: await autoReplyAfterSync(SA, synced.startedAt, deadline) };
+}
+
+/** The putReply calls for reviews on `loc`. */
+export const postsOn = (loc: string) => posts().filter((c) => String(c.reviewName).includes(`/${loc}/reviews/`));

@@ -342,10 +342,23 @@ would be invisible).
 ## Explicitly not in v1
 
 Auto-posting reviews that have written text;
-auto-reply for any source but Google; per-listing settings when a sub-account
-has several listings (settings apply to the current listing); editing or
+auto-reply for any source but Google; per-listing settings (star modes,
+backlog, caps) when a sub-account has several listings — the settings stay
+shared; editing or
 deleting replies automatically; templates without AI; sentiment-based routing
 (star rating + text presence only).
+
+> **Revision 2026-09-27 (MULTI_LISTING_V1_PLAN.md PR 6):** "multi-listing" is no
+> longer out of scope. Auto-reply is switched on **per listing**
+> (`reviewsAutoReply.extraListings.{locId}` for extra listings; `enabled` /
+> `enabledAt` / `listingLocationName` stay the main listing's), while modes,
+> backlog and the daily caps (20 posts / 40 drafts per SAST day) stay shared
+> per sub-account. Every invariant above holds per listing: `other_listing` =
+> not a listing it is on for; `before_enabled` uses that listing's
+> `enabledAt`; the final re-check re-derives the listings inside its
+> transaction and asks `listing_shared` of the REVIEW's listing; removing an
+> extra deletes its switch in the same write (one `listing_changed` alert).
+> See [reputation.md](docs/features/reputation.md#review-auto-reply-auto_reply_v1_planmd).
 
 ## Owner steps (Hein)
 

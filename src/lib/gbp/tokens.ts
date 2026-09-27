@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
+import { readAutoReplyListings } from "@/lib/reputation/auto-reply/settings";
 import { GOOGLE_SCOPE, type GoogleTokens } from "@/lib/google/oauth";
 import {
   googleConnectionSecretPath,
@@ -63,7 +64,10 @@ export async function markReconnectRequiredIf(
         : current.accessToken === expected.accessToken;
     if (!unchanged) return current;
     const sub = (await tx.get(subRef)).data();
-    flipped = sub?.googleConnectionMeta?.reconnectRequired !== true && sub?.reviewsAutoReply?.enabled === true;
+    // "On" = the main switch, or any connected extra listing switched on.
+    const autoReplyOn = sub?.reviewsAutoReply?.enabled === true
+      || Object.keys(readAutoReplyListings(sub?.reviewsAutoReply, sub ?? {})).length > 0;
+    flipped = sub?.googleConnectionMeta?.reconnectRequired !== true && autoReplyOn;
     tx.set(
       subRef,
       {

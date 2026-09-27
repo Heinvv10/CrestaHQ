@@ -15,7 +15,7 @@ import { loadServedReviews } from "@/lib/gbp/sync/served";
 import { reviewsAiConfigured } from "@/lib/reputation/ai/mode";
 import { needsApproval } from "@/lib/reputation/auto-reply/approval";
 import { autoReplyKillSwitchOn } from "@/lib/reputation/auto-reply/kill-switch";
-import { readAutoReplySettings } from "@/lib/reputation/auto-reply/settings";
+import { readAutoReplyListings, readAutoReplySettings } from "@/lib/reputation/auto-reply/settings";
 import { runsCollection } from "@/lib/gbp/sync/types";
 import type { AutoReplyStar, SubAccountDoc } from "@/types";
 
@@ -40,20 +40,26 @@ import type { AutoReplyStar, SubAccountDoc } from "@/types";
 const RUN_CAP = 10;
 
 /**
- * Whether auto-reply would post a star of a review on `locationName` right
- * now — the kill switch, all three gates, switched on for the MAIN listing and
- * the review on it (auto-reply is main-only until PR 6), no other sub-account
- * on the same location (`listing_shared` pauses posting), the star on Auto. A
- * queued draft it would not post is shown as "Auto-post paused".
+ * Whether auto-reply would post a star of a review on its listing right now —
+ * the kill switch, all three gates, switched on for THAT listing
+ * (`readAutoReplyListings`: main and/or extras, MULTI_LISTING_V1_PLAN.md PR 6),
+ * no other sub-account managing that location (`listing_shared` pauses
+ * posting — asked per listing), the star on Auto. A queued draft it would not
+ * post is shown as "Auto-post paused".
  */
-async function autoPostsFor(id: string, sub: SubAccountDoc, locationName: string | null): Promise<(star: number, reviewLocation: unknown) => boolean> {
+async function autoPostsFor(id: string, sub: SubAccountDoc): Promise<(star: number, reviewLocation: unknown) => boolean> {
   const raw = sub.reviewsAutoReply;
   const settings = readAutoReplySettings(raw);
-  let on = autoReplyKillSwitchOn() && sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
-    && sub.reviewsAutoReplyEnabledByAgency === true && settings.enabled
-    && !!locationName && raw?.listingLocationName === locationName;
-  if (on && locationName) on = !(await heldByAnotherSubAccount(getAdminDb(), null, locationName, id));
-  return (star, reviewLocation) => on && reviewLocation === locationName && settings.modes[star as AutoReplyStar] === "auto";
+  const gatesOn = autoReplyKillSwitchOn() && sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
+    && sub.reviewsAutoReplyEnabledByAgency === true;
+  const on = new Set<string>();
+  if (gatesOn) {
+    for (const loc of Object.keys(readAutoReplyListings(raw, sub))) {
+      if (!(await heldByAnotherSubAccount(getAdminDb(), null, loc, id))) on.add(loc);
+    }
+  }
+  return (star, reviewLocation) =>
+    typeof reviewLocation === "string" && on.has(reviewLocation) && settings.modes[star as AutoReplyStar] === "auto";
 }
 
 export const dynamic = "force-dynamic";
@@ -89,7 +95,7 @@ export async function GET(
   ]);
 
   const active = served.reviews;
-  const autoPosts = await autoPostsFor(id, sub, locationName);
+  const autoPosts = await autoPostsFor(id, sub);
   const titles = new Map(listings.map((l) => [l.locationName, l.title]));
   const reviews = applyReviewFilters(active, parsed.filters).map((d) => {
     const loc = String(d.locationName ?? "");

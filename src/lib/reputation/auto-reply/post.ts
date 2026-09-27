@@ -68,7 +68,7 @@ export async function postQueued(
 
   const confirmed = await confirmAutoPost(sa, { runId: q.runId, docId: q.docId, textHash }, Date.now());
   if (confirmed === "approval") return "held";
-  if (confirmed === "stale") return "skipped";
+  if (confirmed === "stale" || confirmed === "listing_paused") return "skipped";
   if (confirmed !== "go") return "stop";
 
   const res = await postReply(

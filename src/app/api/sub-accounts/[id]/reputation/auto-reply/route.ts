@@ -1,8 +1,10 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin, requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { allListings, isMain, locationNamesOf, type ListingFields } from "@/lib/gbp/listings";
 import { gbpRefusal } from "@/lib/gbp/route-support";
 import { heldByAnotherSubAccount } from "@/lib/gbp/shared-location";
 import { toMillis } from "@/lib/gbp/sync/types";
@@ -10,8 +12,11 @@ import {
   AUTO_REPLY_DAILY_DRAFT_CAP,
   AUTO_REPLY_DAILY_POST_CAP,
   AUTO_REPLY_ENGINE_AVAILABLE,
+  extraListingWrites,
+  listingOn,
   nextAutoReplySettings,
   parseAutoReplyBody,
+  readAutoReplyListings,
   readAutoReplySettings,
   readDisabledReason,
 } from "@/lib/reputation/auto-reply/settings";
@@ -39,6 +44,17 @@ import { autoReplyKillSwitchOn } from "@/lib/reputation/auto-reply/kill-switch";
  * only while it is on); turning it off is always allowed. The server stamps `enabledAt`,
  * `enabledByUid` and `listingLocationName` on the off→on transition, inside
  * a transaction. See AUTO_REPLY_V1_PLAN.md.
+ *
+ * Per listing (MULTI_LISTING_V1_PLAN.md PR 6): `enabled` stays the MAIN
+ * listing's switch. The PUT may also carry `listings: {locationName: on}`
+ * for EXTRA listings — each must be one of this sub-account's connected
+ * extras (else 400 `unknown_listing`); switching one on takes the same gates
+ * and refusals as the main one, `listing_shared` asked of THAT listing, and
+ * stamps its own `enabledAt` / `enabledByUid` in
+ * `reviewsAutoReply.extraListings.{locId}`; off deletes the key; a listing
+ * left out keeps its state. Modes, backlog and the daily caps are shared.
+ * GET and PUT also answer `listings: [{locationName, title, main, enabled,
+ * enabledAt}]`, main first.
  */
 
 export const dynamic = "force-dynamic";
@@ -64,12 +80,26 @@ function gateRefusal(sub: Sub): NextResponse | null {
   return code ? gbpRefusal(403, code, GATE_MESSAGES[code]) : null;
 }
 
-function view(raw: unknown) {
+/** The settings as the card sees them, with one row per connected listing (main first) and whether it is on. */
+function view(raw: unknown, sub: Sub) {
   const at = toMillis((raw as { enabledAt?: unknown } | null | undefined)?.enabledAt);
+  const settings = readAutoReplySettings(raw);
+  const on = readAutoReplyListings(raw, sub as ListingFields);
+  const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
   return {
-    ...readAutoReplySettings(raw),
-    enabledAt: at === null ? null : new Date(at).toISOString(),
+    ...settings,
+    enabledAt: iso(at),
     disabledReason: readDisabledReason(raw),
+    listings: allListings(sub as ListingFields).map((l) => {
+      const main = isMain(sub as ListingFields, l.locationName);
+      const entry = listingOn(on, l.locationName);
+      return {
+        locationName: l.locationName, title: l.title, main,
+        // Main: the master switch as stored. Extra: its own switch.
+        enabled: main ? settings.enabled : entry !== null,
+        enabledAt: main ? iso(at) : iso(entry?.enabledAtMs ?? null),
+      };
+    }),
   };
 }
 
@@ -80,7 +110,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   const sub = (await getAdminDb().doc(`subAccounts/${id}`).get()).data() ?? {};
   const gate = gateOff(sub);
   return NextResponse.json({
-    ...view(sub.reviewsAutoReply),
+    ...view(sub.reviewsAutoReply, sub),
     gatesOn: gate === null,
     gate,
     available: AUTO_REPLY_ENGINE_AVAILABLE,
@@ -99,7 +129,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
   if (!input) {
     return gbpRefusal(400, "invalid_body", "Send enabled, includeBacklog and a mode (auto or approval) for every star 1–5.");
   }
-  if (input.enabled && !AUTO_REPLY_ENGINE_AVAILABLE) {
+  if ((input.enabled || Object.values(input.listings ?? {}).includes(true)) && !AUTO_REPLY_ENGINE_AVAILABLE) {
     return gbpRefusal(409, "not_available", "Review auto-reply is not available yet.");
   }
 
@@ -107,31 +137,54 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
   const ref = db.doc(`subAccounts/${id}`);
   const outcome = await db.runTransaction(async (tx) => {
     const sub = ((await tx.get(ref)).data() ?? {}) as Sub;
-    if (input.enabled) {
+    const prev = sub.reviewsAutoReply as Record<string, unknown> | undefined;
+    const listings = input.listings ?? {};
+    const extras = locationNamesOf(sub as ListingFields).filter((l) => !isMain(sub as ListingFields, l));
+    if (Object.keys(listings).some((loc) => !extras.includes(loc))) {
+      return gbpRefusal(400, "unknown_listing", "Auto-reply can be switched per listing only for this sub-account's additional listings.");
+    }
+    const was = readAutoReplyListings(prev, sub as ListingFields);
+    const extrasOn = Object.keys(listings).filter((loc) => listings[loc]);
+    const turningOnExtra = extrasOn.some((loc) => !listingOn(was, loc));
+    if (input.enabled || extrasOn.length > 0) {
       const refused = gateRefusal(sub);
       if (refused) return refused;
       // Switching it ON while it could not post (and the reconnect alert, sent
       // only while it is on, already went unsent) would stall silently.
       const meta = sub.googleConnectionMeta as { reconnectRequired?: unknown } | null | undefined;
-      if ((sub.reviewsAutoReply as { enabled?: unknown } | undefined)?.enabled !== true && meta?.reconnectRequired === true) {
+      const turningOnMain = input.enabled && prev?.enabled !== true;
+      if ((turningOnMain || turningOnExtra) && meta?.reconnectRequired === true) {
         return gbpRefusal(409, "reconnect_required", "Reconnect Google before turning auto-reply on.");
       }
     }
     const listing = (sub.googleListing as { locationName?: unknown } | null | undefined)?.locationName;
-    if (input.enabled && typeof listing === "string" && listing) {
-      if (await heldByAnotherSubAccount(db, tx, listing, id)) {
+    // Each listing it would be on for: no other sub-account may manage it (H1, per listing).
+    const shared = [...(input.enabled && typeof listing === "string" && listing ? [listing] : []), ...extrasOn];
+    for (const loc of shared) {
+      if (await heldByAnotherSubAccount(db, tx, loc, id)) {
         return gbpRefusal(409, "listing_shared", "Another sub-account uses this Google listing — auto-reply can't be switched on here.");
       }
     }
-    const next = nextAutoReplySettings(sub.reviewsAutoReply, input, {
-      now: new Date(),
+    const now = new Date();
+    const next = nextAutoReplySettings(prev, input, {
+      now,
       uid: access.uid,
       listingLocationName: typeof listing === "string" && listing ? listing : null,
     });
     if (!next.ok) return gbpRefusal(409, next.code, "Choose a Google Business listing before turning auto-reply on.");
-    tx.set(ref, { reviewsAutoReply: next.value }, { merge: true });
-    return next.value;
+    const writes = extraListingWrites(prev, sub as ListingFields, listings, { now, uid: access.uid });
+    const extraListings = Object.fromEntries(
+      Object.entries(writes).map(([k, v]) => [k, v ?? FieldValue.delete()]),
+    );
+    // Merged: an extra listing's switch not in this body keeps its state.
+    tx.set(ref, { reviewsAutoReply: { ...next.value, ...(Object.keys(writes).length ? { extraListings } : {}) } }, { merge: true });
+    const kept = { ...((prev?.extraListings ?? {}) as Record<string, unknown>) };
+    for (const [k, v] of Object.entries(writes)) {
+      if (v) kept[k] = v;
+      else delete kept[k];
+    }
+    return { ...sub, reviewsAutoReply: { ...next.value, extraListings: kept } } as Sub;
   });
   if (outcome instanceof NextResponse) return outcome;
-  return NextResponse.json({ reviewsAutoReply: view(outcome) });
+  return NextResponse.json({ reviewsAutoReply: view(outcome.reviewsAutoReply, outcome) });
 }
