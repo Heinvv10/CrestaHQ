@@ -1,5 +1,6 @@
 import "server-only";
 
+import { badBodyId } from "./ids";
 import type { Timestamp } from "firebase-admin/firestore";
 import type { DealPriority, PipelineStageId } from "@/types/deals";
 import type { CustomFieldValue } from "@/types/custom-fields";
@@ -110,6 +111,8 @@ export interface ParseResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  /** "invalid_id" when a body id isn't a doc id (the route's error code). */
+  code?: "invalid_id";
 }
 
 const MAX_TITLE = 200;
@@ -151,6 +154,8 @@ export function parseDealCreate(raw: unknown): ParseResult<DealCreateInput> {
   if (contactId === null || contactId.length === 0) {
     return { ok: false, error: "`contact_id` is required." };
   }
+  const badContact = badBodyId("contact_id", contactId);
+  if (badContact) return badContact;
 
   const stageRaw = asString(b.stage, 40);
   if (stageRaw === null || stageRaw.length === 0) {
@@ -161,6 +166,8 @@ export function parseDealCreate(raw: unknown): ParseResult<DealCreateInput> {
   if (pipelineId === null) {
     return { ok: false, error: "`pipeline_id` must be a string." };
   }
+  const badPipeline = badBodyId("pipeline_id", pipelineId);
+  if (badPipeline) return badPipeline;
 
   const priorityRaw = b.priority ?? "medium";
   if (

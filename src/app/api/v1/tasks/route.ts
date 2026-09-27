@@ -80,7 +80,7 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
 export const POST = withApiAuth(async ({ body, ctx }) => {
   const parsed = parseTaskCreate(body);
   if (!parsed.ok) {
-    return apiError(ctx, "invalid_request", "invalid_body", parsed.error!);
+    return apiError(ctx, "invalid_request", parsed.code ?? "invalid_body", parsed.error!);
   }
   const input = parsed.value!;
   const db = getAdminDb();

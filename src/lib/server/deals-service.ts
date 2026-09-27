@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
@@ -124,7 +125,7 @@ function summaryFromContactData(
 export async function fetchDealContactSummary(
   contactId: string | null | undefined,
 ): Promise<DealContactSummary | null> {
-  if (!contactId) return null;
+  if (!contactId || !isDocId(contactId)) return null;
   try {
     const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
     if (!snap.exists) return null;
@@ -183,6 +184,7 @@ async function writePipelineActivity(
     meta: Record<string, unknown>;
   },
 ): Promise<void> {
+  if (!isDocId(contactId)) return;
   await getAdminDb()
     .collection("contacts")
     .doc(contactId)

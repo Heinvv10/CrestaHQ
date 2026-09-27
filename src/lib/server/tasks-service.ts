@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { writeTaskCreatedActivity } from "@/lib/server/contact-activities";
 import {
@@ -25,7 +26,7 @@ type Mode = "live" | "test";
 export async function territoryForContact(
   contactId: string | null,
 ): Promise<string> {
-  if (!contactId) return GLOBAL_TERRITORY_ID;
+  if (!contactId || !isDocId(contactId)) return GLOBAL_TERRITORY_ID;
   try {
     const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
     const raw = snap.data()?.territoryId;
@@ -101,7 +102,7 @@ export async function createTaskServerSide(
     payload: { task },
   });
 
-  if (input.contactId) {
+  if (input.contactId && isDocId(input.contactId)) {
     await writeTaskCreatedActivity(db, {
       contactId: input.contactId,
       taskId: ref.id,
@@ -169,7 +170,7 @@ export async function setTaskCompletedServerSide(opts: {
   if (contactId) {
     try {
       contactOk =
-        !contactId.includes("/") &&
+        isDocId(contactId) &&
         (await db.collection("contacts").doc(contactId).get()).data()?.subAccountId ===
           existing.subAccountId;
       if (!contactOk) {

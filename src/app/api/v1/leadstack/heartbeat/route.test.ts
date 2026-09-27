@@ -36,3 +36,50 @@ describe("POST /api/v1/leadstack/heartbeat rate limit", () => {
     expect((await ping("198.51.100.21")).status).toBe(200);
   });
 });
+
+describe("POST /api/v1/leadstack/heartbeat body and instanceId", () => {
+  let ip = 0;
+  const send = (body: BodyInit, headers: Record<string, string> = {}, init: RequestInit = {}) =>
+    POST(
+      new Request("https://app.test/api/v1/leadstack/heartbeat", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": `203.0.113.${++ip}`, ...headers },
+        body,
+        ...init,
+      } as RequestInit),
+    );
+  const payload = (pad: number, instanceId = "inst-ok") =>
+    JSON.stringify({ instanceId, ownerEmail: "o@example.com", pad: "x".repeat(pad) });
+  const streamOf = (text: string) =>
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(text));
+        c.close();
+      },
+    });
+  const CAP = 16 * 1024;
+
+  it("a normal ping (just under 16 KB) is written", async () => {
+    const body = payload(CAP - 200);
+    expect(body.length).toBeLessThanOrEqual(CAP);
+    expect((await send(body)).status).toBe(200);
+    expect(mem.list("leadstackInstances").map((d) => d.id)).toEqual(["inst-ok"]);
+  });
+
+  it.each([
+    ["a truthful Content-Length", (b: string) => send(b)],
+    ["no Content-Length (chunked)", (b: string) => send(streamOf(b), {}, { duplex: "half" } as RequestInit)],
+    ["a lying small Content-Length", (b: string) => send(streamOf(b), { "content-length": "20" }, { duplex: "half" } as RequestInit)],
+  ])("over 16 KB with %s is a 413 and writes nothing", async (_label, go) => {
+    const res = await go(payload(CAP));
+    expect(res.status).toBe(413);
+    expect(mem.list("leadstackInstances")).toEqual([]);
+  });
+
+  it.each(["__x__", "a/b", ".."])("instanceId %j is accepted (200) but nothing is written", async (instanceId) => {
+    const res = await send(payload(0, instanceId));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true });
+    expect(mem.all().filter((d) => d.path.startsWith("leadstackInstances"))).toEqual([]);
+  });
+});
