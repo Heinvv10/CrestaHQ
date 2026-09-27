@@ -2,7 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { loadEventContact } from "@/lib/server/tenant-ref";
-import { emailIsConfigured } from "@/lib/comms/resend";
+import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
 import type { BookingPage } from "@/types/booking";
@@ -77,5 +77,38 @@ export async function planCancelNotice(event: CalendarEvent): Promise<CancelNoti
   } catch (err) {
     console.warn(`[event-status-service] side-effect read failed event=${event.id}`, err);
     return { ok: false, reason: "missing_records" };
+  }
+}
+
+/**
+ * Send an operator cancel's notice to the visitor. An approved agent cancel
+ * (`expect` given) sends only the notice its approver saw (null: none),
+ * skipping one that now differs.
+ */
+export async function sendCancelNotice(
+  event: CalendarEvent,
+  expect: CancelNoticeExpect | null | undefined,
+): Promise<{ emailSent: boolean; emailSkipReason?: EventNotifySkipReason }> {
+  const notice = await planCancelNotice(event);
+  if (expect !== undefined && notice.ok) {
+    const same = !!expect && notice.to === expect.to && notice.subject === expect.subject && notice.text === expect.text && notice.html === expect.html;
+    if (!same) return { emailSent: false, emailSkipReason: "changed_since_approval" };
+  }
+  if (!notice.ok) return { emailSent: false, emailSkipReason: notice.reason };
+  try {
+    await sendEmail({
+      to: notice.to,
+      subject: notice.subject,
+      text: notice.text,
+      html: notice.html,
+      replyTo: notice.sub.replyToEmail ?? undefined,
+      from: tenantFrom(notice.sub),
+      subAccount: notice.sub,
+      meter: { subAccountId: event.subAccountId },
+    });
+    return { emailSent: true };
+  } catch (err) {
+    console.warn(`[event-status-service] cancel notify send failed event=${event.id} to=${notice.to}`, err);
+    return { emailSent: false, emailSkipReason: "send_failed" };
   }
 }

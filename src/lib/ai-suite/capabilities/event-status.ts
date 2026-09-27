@@ -121,7 +121,7 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
           },
           { label: "Then", value: "The slot is freed, and those workflows run, as when a person cancels it." },
         ],
-        pinned: { eventId: e.id, notice: plan.notice, workflows: workflowPin(workflows) },
+        pinned: { eventId: e.id, contactId: e.contactId ?? null, notice: plan.notice, workflows: workflowPin(workflows) },
       };
     },
     execute: async (ctx, args) => {
@@ -131,17 +131,20 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       if (status === "cancelled") {
         if (!ctx.approved) throw new CapabilityUserError("Cancelling an appointment needs a person's approval.");
         const pinned = (ctx.approved.pinned?.notice ?? null) as CancelNoticeExpect | null;
-        if (canonical((await noticePlan(e)).notice) !== canonical(pinned)) {
+        const contactId = (ctx.approved.pinned?.contactId ?? null) as string | null;
+        if ((e.contactId ?? null) !== contactId || canonical((await noticePlan(e)).notice) !== canonical(pinned)) {
           throw new CapabilityUserError("The appointment's contact or its cancellation notice changed since this was reviewed; nothing was changed.");
         }
         if (canonical(workflowPin(await cancelWorkflows(e))) !== canonical(ctx.approved.pinned?.workflows ?? [])) {
           throw new CapabilityUserError("The workflows a cancel starts (or their steps) changed since this was reviewed; nothing was changed.");
         }
-        const out = await changeEventStatus(e, status, reason, { expectNotice: pinned });
+        // The contact is re-checked in the write's own read: re-linked since, and no workflows start.
+        const out = await changeEventStatus(e, status, reason, { expectNotice: pinned, expectContactId: contactId });
         if (!out.ok) throw new CapabilityUserError(out.error ?? "The appointment couldn't be cancelled.");
         if (out.noop) return { resultText: "It was already cancelled (by someone else); nothing more was done.", ref: { kind: "event", id: e.id } };
         const sent = out.emailSent ? " The attendee was emailed." : out.emailSkipReason === "changed_since_approval" ? " The notice was NOT sent: it changed after approval." : "";
-        return { resultText: `Cancelled the appointment.${sent}`, ref: { kind: "event", id: e.id } };
+        const skipped = out.workflowsSkipped ? " Its workflows were NOT started: the appointment's contact changed after approval." : "";
+        return { resultText: `Cancelled the appointment.${sent}${skipped}`, ref: { kind: "event", id: e.id } };
       }
       const out = await changeEventStatus(e, status, reason, { actor: agentActor(ctx, "set_event_status") });
       if (!out.ok) throw new CapabilityUserError(out.error ?? "The appointment's status couldn't be changed.");

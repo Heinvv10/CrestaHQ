@@ -109,7 +109,9 @@ members, no client writes; see
   the new preview, and execute sends only to the pinned values.
 - **Checks at send.** The downstream send re-checks what the approver saw
   (`expect`): the review-request text, number and channel; the quote a
-  `send_quote` sends; the cancellation notice; the broadcast's approved audience
+  `send_quote` sends; the cancellation notice and the appointment's contact (a cancel
+  whose appointment is re-linked mid-flight sends no notice and starts no workflows);
+  the steps of the workflows a cancel or mark-paid starts; the broadcast's approved audience
   size and the values an agent set on it; the social post's approved accounts; the
   voice call's script fingerprint. A mismatch refuses with nothing sent. For a
   manual-origin send, quiet hours, opt-out, the WhatsApp window and channel

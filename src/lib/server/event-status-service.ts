@@ -3,8 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { sendEmail, tenantFrom } from "@/lib/comms/resend";
-import { planCancelNotice, type CancelNoticeExpect } from "@/lib/server/event-cancel-notice";
+import { sendCancelNotice, type CancelNoticeExpect } from "@/lib/server/event-cancel-notice";
 import { holdFailuresOf, type AgentActor, type HeldEnrolment, type HoldFailure } from "@/lib/workflows/agent-hold";
 import {
   fireBookingTrigger,
@@ -120,6 +119,7 @@ export interface StatusChangeOutcome {
   error?: string;
   emailSent?: boolean;
   emailSkipReason?: SideEffectResult["emailSkipReason"];
+  workflowsSkipped?: true;
   /** Agent writes only: the enrolments held for approval, and the matched
    *  workflows that could be neither held nor run. */
   held?: HeldEnrolment[];
@@ -131,6 +131,8 @@ export interface StatusChangeOptions {
   actor?: AgentActor;
   /** An approved agent cancel: send only this notice (null: none), refusing one that now differs. */
   expectNotice?: CancelNoticeExpect | null;
+  /** An approved agent cancel: the contact its approver saw; another one starts no workflows. */
+  expectContactId?: string | null;
 }
 
 /**
@@ -207,6 +209,7 @@ export async function changeEventStatus(
     status: next,
     emailSent: sideEffects.emailSent,
     emailSkipReason: sideEffects.emailSkipReason,
+    ...(sideEffects.workflowsSkipped ? { workflowsSkipped: true as const } : {}),
     ...(opts.actor ? { held: sideEffects.held ?? [], holdFailures: sideEffects.holdFailures ?? [] } : {}),
   };
 }
@@ -217,6 +220,8 @@ interface SideEffectResult {
   emailSent: boolean;
   /** Why the cancellation email did NOT send — surfaced to the operator toast. */
   emailSkipReason?: EventNotifySkipReason;
+  /** An approved cancel whose contact was re-linked: its workflows were not started. */
+  workflowsSkipped?: true;
 }
 
 async function runStatusSideEffects(
@@ -257,7 +262,10 @@ async function runStatusSideEffects(
     activityType satisfies ActivityType,
     { extra: reason || null },
   );
-  const fired = await fireBookingTrigger(
+  // An approved agent cancel whose event was re-linked to another contact
+  // since the approver's check starts no workflows (and sends no notice).
+  const relinked = opts.expectContactId !== undefined && event.contactId !== opts.expectContactId;
+  const fired = relinked ? null : await fireBookingTrigger(
     {
       id: event.id,
       agencyId: event.agencyId,
@@ -272,29 +280,9 @@ async function runStatusSideEffects(
   const held = fired ? { held: fired.held ?? [], holdFailures: holdFailuresOf(fired) } : {};
 
   // Operator-cancelled bookings notify the visitor via email. An approved
-  // agent cancel sends only the notice its approver saw (`expectNotice`).
+  // agent cancel sends only the notice its approver saw (`expectNotice`),
+  // and none at all when its contact was re-linked since.
   if (next !== "cancelled") return { ...held, emailSent: false, emailSkipReason: "not_cancelled" };
-  const notice = await planCancelNotice(event);
-  const expect = opts.expectNotice;
-  if (expect !== undefined && notice.ok) {
-    const same = !!expect && notice.to === expect.to && notice.subject === expect.subject && notice.text === expect.text && notice.html === expect.html;
-    if (!same) return { ...held, emailSent: false, emailSkipReason: "changed_since_approval" };
-  }
-  if (!notice.ok) return { ...held, emailSent: false, emailSkipReason: notice.reason };
-  try {
-    await sendEmail({
-      to: notice.to,
-      subject: notice.subject,
-      text: notice.text,
-      html: notice.html,
-      replyTo: notice.sub.replyToEmail ?? undefined,
-      from: tenantFrom(notice.sub),
-      subAccount: notice.sub,
-      meter: { subAccountId: event.subAccountId },
-    });
-    return { ...held, emailSent: true };
-  } catch (err) {
-    console.warn(`[event-status-service] cancel notify send failed event=${event.id} to=${notice.to}`, err);
-    return { ...held, emailSent: false, emailSkipReason: "send_failed" };
-  }
+  if (relinked) return { emailSent: false, emailSkipReason: "changed_since_approval", workflowsSkipped: true };
+  return { ...held, ...(await sendCancelNotice(event, opts.expectNotice)) };
 }
