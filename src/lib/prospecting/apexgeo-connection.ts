@@ -13,8 +13,8 @@ import { APEXGEO_DEFAULT_BASE_URL, type ApexgeoConnection, type ApexgeoError } f
 export const apexgeoSecretPath = (subAccountId: string) => subAccountSecretPath(subAccountId, "apexgeo");
 
 /**
- * A custom base URL must be plain `https://host[/path]` — no credentials,
- * query or fragment. Empty means ApexGEO's production URL. Null = refused.
+ * A custom base URL must be plain `https://host[/path]` — no port,
+ * credentials, query or fragment. Empty means ApexGEO's production URL. Null = refused.
  * Whether the host is public is decided at connect time by `publicFetch`.
  */
 export function normalizeBaseUrl(input: unknown): string | null {
@@ -28,7 +28,8 @@ export function normalizeBaseUrl(input: unknown): string | null {
   } catch {
     return null;
   }
-  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return null;
+  // Default port only: a custom port would let an admin probe services on public hosts.
+  if (url.protocol !== "https:" || url.port || url.username || url.password || url.search || url.hash) return null;
   return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
 }
 

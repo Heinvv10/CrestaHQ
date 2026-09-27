@@ -37,7 +37,7 @@ test("ApexGEO sections render on the public page; not-connected ones are hidden 
   await assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
   const env = readEnv();
   const uid = await ownerUid(env.E2E_AGENCY_ID);
-  const businessName = `E2E ApexGEO Prospect ${Date.now()}`;
+  const businessName = `E2E Geo Prospect ${Date.now()}`;
 
   const priorGate = (await primaryRef().get()).data()?.prospectingEnabledByAgency;
   await primaryRef().update({ prospectingEnabledByAgency: true });
@@ -80,7 +80,7 @@ test("ApexGEO sections render on the public page; not-connected ones are hidden 
         contactId: contactRef.id,
         status: "ready",
         sections,
-        headline: "Headline for the ApexGEO spec",
+        headline: "Headline for the geo spec",
         shareId: null,
         apexgeo: null,
         generatedAt: FieldValue.serverTimestamp(),
@@ -120,7 +120,8 @@ test("ApexGEO sections render on the public page; not-connected ones are hidden 
     for (const key of ["website_performance", "ai_readiness", "ai_presence"]) {
       await expect(visitor.getByTestId(`report-section-${key}`)).toHaveCount(0);
     }
-    await expect(visitor.getByText("ApexGEO")).toHaveCount(0);
+    // Nothing about the agency's setup reaches the prospect.
+    await expect(visitor.getByText(/ApexGEO/)).toHaveCount(0);
     await context.close();
 
     // --- B, member view: shown, with the connect link ---------------------

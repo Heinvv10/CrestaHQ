@@ -68,6 +68,9 @@ const DETAIL_LABELS: Record<string, string> = {
   topCompetitors: "Businesses named instead",
 };
 
+/** Only these details render as links; any other text stays text. */
+const LINK_KEYS = new Set(["website", "metaAdLibraryUrl", "googleAdsTransparencyUrl"]);
+
 const WORD_VALUE: Record<string, string> = {
   allowed: "Allowed",
   blocked: "Blocked",
@@ -86,7 +89,7 @@ function DetailValue({ name, section, value }: { name: string; section: Prospect
   if (value === "notMeasured") return <span className="text-muted-foreground">Not measured</span>;
   if (section === "listings" && typeof value === "string") return <>{LISTING_STATUS[value] ?? value}</>;
   if (section === "ai_readiness" && typeof value === "string") return <>{WORD_VALUE[value] ?? value}</>;
-  if (typeof value === "string" && /^https:\/\//i.test(value)) {
+  if (LINK_KEYS.has(name) && typeof value === "string" && /^https:\/\//i.test(value)) {
     return (
       <a href={value} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
         {name === "website" ? value : "Check manually"}

@@ -12,7 +12,9 @@ const ctx = vi.hoisted(() => ({
 }));
 vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ctx }));
 
-const KEY = "apx_live_abcdef123456";
+// Deliberately tiny: gitleaks' generic-api-key rule reads a longer
+// `KEY = "apx_…"` literal as a real credential, and the secret scan blocks.
+const KEY = "apx_q3456";
 let container: HTMLDivElement;
 let root: Root;
 const fetchMock = vi.fn();

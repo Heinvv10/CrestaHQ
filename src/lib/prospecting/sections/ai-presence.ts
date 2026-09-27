@@ -73,7 +73,7 @@ export function score(visibility: ApexgeoScan["ai_visibility"]): Scored | null {
   if (t.mentioned === 0 && t.complete) {
     findings.push({
       code: "not_in_ai_answers",
-      text: `AI assistants did not name the business in any of ${t.measured} answers to local searches for its services.`,
+      text: `AI assistants (${t.models.join(", ")}) did not name the business in any of ${t.measured} answers to local searches for its services.`,
     });
   }
   return { score: Math.round((t.mentioned / t.measured) * 100), findings };

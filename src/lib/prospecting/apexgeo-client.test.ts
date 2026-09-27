@@ -12,7 +12,7 @@ vi.mock("@/lib/webhooks/public-fetch", () => ({ publicFetch: (...a: unknown[]) =
 const { getScan, probeKey, startScan } = await import("./apexgeo-client");
 const { RESPONSES, allEnginesErrored, completedScan } = await import("./apexgeo.fixture");
 
-const CONN = { apiKey: "apx_test_key_123", baseUrl: "https://apex.example/" };
+const CONN = { apiKey: "apx_t1", baseUrl: "https://apex.example/" };
 const INPUT = {
   url: "https://acme.test",
   businessName: "Acme Plumbing",
@@ -37,7 +37,7 @@ describe("startScan", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://apex.example/api/v1/scans");
     expect(init.method).toBe("POST");
-    expect(init.headers.Authorization).toBe("Bearer apx_test_key_123");
+    expect(init.headers.Authorization).toBe("Bearer apx_t1");
     expect(JSON.parse(init.body)).toEqual({
       url: "https://acme.test",
       business_name: "Acme Plumbing",

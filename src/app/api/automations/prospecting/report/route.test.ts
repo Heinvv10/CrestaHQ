@@ -243,6 +243,33 @@ describe("the ApexGEO scan (phase 1)", () => {
     expect(report.sections.find((s) => s.key === "gbp")).toMatchObject({ status: "ok" });
   });
 
+  it("the poll is queued even when stamping the contact then throws", async () => {
+    run.mockResolvedValueOnce(STARTED);
+    mem.clear();
+    mem.seed(USAGE, { prospectReports: 2 });
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
+    mem.seed("prospectReports/r1", {
+      agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1",
+      status: "queued", sections: [], headline: null, shareId: null, generatedAt: null, usageMonth: "2026-09",
+    });
+    mem.seed("contacts/c1", { subAccountId: "sa1", name: "Acme" });
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const realDoc = storeDb.doc;
+    vi.spyOn(storeDb, "doc").mockImplementation((path: string) => {
+      const ref = realDoc(path);
+      return path === "contacts/c1"
+        ? Object.assign(Object.create(Object.getPrototypeOf(ref)), ref, {
+            update: async () => {
+              throw new Error("contact write failed");
+            },
+          })
+        : ref;
+    });
+    await call();
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ deduplicationId: "apexgeo_r1_0" }));
+    expect(rep().apexgeo.status).toBe("pending");
+  });
+
   it("a failed report never queues a poll", async () => {
     run.mockResolvedValueOnce({ ...STARTED, status: "failed" });
     await call();

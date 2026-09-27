@@ -118,7 +118,7 @@ describe("completed", () => {
     ]);
     expect(report.sections[0]).toEqual(GBP);
     // not_in_ai_answers outranks the old headline (gbp_no_hours).
-    expect(report.headline).toMatch(/^AI assistants did not name the business/);
+    expect(report.headline).toMatch(/^AI assistants \(gemini-2\.5-flash, gpt-4o-mini\) did not name the business/);
   });
 
   it("all engines errored: presence unavailable, never 'not in AI answers'", async () => {
@@ -203,7 +203,6 @@ describe("ApexGEO errors", () => {
   it.each([
     ["404 (not this org's scan)", () => reply(RESPONSES.notFound)],
     ["401 (key revoked)", () => reply(RESPONSES.unauthorized)],
-    ["500", () => reply(RESPONSES.serverError)],
     ["malformed JSON", () => new Response("<html>", { status: 200 })],
     ["schema drift", () => scanReply({ ...completedScan(), technical: { overall_score: "high" } })],
     ["a failed scan", () => scanReply({ ...completedScan(), status: "failed", error: "PageSpeed quota at 10.9.8.7" })],
@@ -217,6 +216,28 @@ describe("ApexGEO errors", () => {
     const stored = JSON.stringify(report);
     expect(stored).not.toContain("10.9.8.7");
     expect(stored).not.toContain("Missing or invalid credentials");
+  });
+});
+
+describe("transient ApexGEO errors — the scan is charged and still finishing", () => {
+  it.each([
+    ["500", () => reply(RESPONSES.serverError)],
+    ["429", () => reply({ status: 429, body: { error: { code: "rate_limited", message: "slow down" } } })],
+    ["a network failure", () => Promise.reject(new Error("ECONNRESET"))],
+  ])("%s → polled again, not failed", async (_n, r) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchMock.mockImplementation(r);
+    expect(await (await call()).json()).toEqual({ ok: true, status: "polling" });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ body: { reportId: "r1", attempt: 1 } }));
+    expect(rep().apexgeo).toMatchObject({ status: "pending", attempts: 1 });
+  });
+
+  it("still failing on the last attempt → timeout, the chain ends", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValue(reply(RESPONSES.serverError));
+    seedReport({ attempts: 4 });
+    expect(await (await call(body(4))).json()).toEqual({ ok: true, status: "timeout" });
+    expect(publish).not.toHaveBeenCalled();
   });
 });
 

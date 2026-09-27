@@ -127,7 +127,8 @@ export async function POST(request: Request) {
       console.error("[prospecting/report] report settled during the run; result dropped", reportId);
       return NextResponse.json({ ok: true, status: "settled" });
     }
-    await contactRef.update({ "prospecting.lastReportId": reportId });
+    // Before anything else can throw: a retry of this delivery finds the
+    // report settled and skips, so an unqueued poll would never be queued.
     if (outcome.apexgeo && !(await schedulePoll(reportId, 0))) {
       console.error("[prospecting/report] ApexGEO poll not queued", reportId);
       await settleApexgeo(reportId, {
@@ -135,6 +136,7 @@ export async function POST(request: Request) {
         status: "failed",
       });
     }
+    await contactRef.update({ "prospecting.lastReportId": reportId });
     return NextResponse.json({ ok: true, status: "ready" });
   } catch (err) {
     console.error("[prospecting/report] run failed", reportId, err);

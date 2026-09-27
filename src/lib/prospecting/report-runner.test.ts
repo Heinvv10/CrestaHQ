@@ -296,23 +296,20 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
 
   it("country defaults to ZA", async () => {
     site(() => json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } }));
-    await runProspectReport(BUSINESS, { sections: [], apexgeo: { connection: CONN, reportId: "r1" } });
+    await runProspectReport(BUSINESS, { sections: [okSection("tech_stack", "no_analytics")], apexgeo: { connection: CONN, reportId: "r1" } });
     expect(JSON.parse(apexCalls()[0][1].body).country).toBe("ZA");
   });
 
-  it("the scan starts alongside the homepage fetch, not after it", async () => {
-    const events: string[] = [];
+  it("a report that will fail never starts a scan (no ApexGEO credits spent)", async () => {
     publicFetch.mockImplementation(async (url: string) => {
-      if (url === SCAN_URL) {
-        events.push("scan");
-        return json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } });
-      }
-      await new Promise((r) => setTimeout(r, 100));
-      events.push("homepage done");
-      return html(BARE_HOMEPAGE);
+      if (url === SCAN_URL) return json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } });
+      throw new Error("homepage down");
     });
-    await runProspectReport(BUSINESS, { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } });
-    expect(events.indexOf("scan")).toBeLessThan(events.indexOf("homepage done"));
+    const out = await runProspectReport(BUSINESS, { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } });
+    expect(out.status).toBe("failed");
+    expect(apexCalls()).toHaveLength(0);
+    expect(out.apexgeo).toBeNull();
+    expect(apexSections(out)).toEqual([]);
   });
 
   it.each([
@@ -322,7 +319,7 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
     ["category and city", { category: null, city: null }, "category or city"],
   ])("no %s: the scan is not started and the reason names it (never a guessed niche)", async (_n, patch, named) => {
     site(() => json(202, {}));
-    const out = await runProspectReport({ ...BUSINESS, ...patch }, { sections: [], apexgeo: { connection: CONN, reportId: "r1" } });
+    const out = await runProspectReport({ ...BUSINESS, ...patch }, { sections: [okSection("tech_stack", "no_analytics")], apexgeo: { connection: CONN, reportId: "r1" } });
     expect(apexCalls()).toHaveLength(0);
     expect(apexSections(out)[0]).toMatchObject({
       status: "unavailable", reasonCode: "missing_input", reason: `Not measured: the contact has no ${named} for the scan.`,

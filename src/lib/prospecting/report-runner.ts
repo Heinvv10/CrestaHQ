@@ -29,10 +29,13 @@ import type { CostKey, Homepage, Section, SectionInput } from "./sections/types"
  * measured something (see STORED_FACT_SECTIONS). Never throws. Page fetches
  * take a slot in the reports' own process-wide pool (fetch-slots.ts).
  *
- * Alongside the homepage fetch it starts the report's ApexGEO scan
+ * Once the report is known to be `ready` it starts the report's ApexGEO scan
  * (`apexgeo-report.ts`) and appends sections 5/7/8 as placeholders — pending,
  * or unavailable with the reason. They never decide `ready`: the scan
- * finishes after the report does and the poll worker fills them in.
+ * finishes after the report does and the poll worker fills them in. The
+ * scan is started only for a ready report, so a failed one (quota released)
+ * never spends the agency's ApexGEO credits. It costs no report time to wait:
+ * the scan itself runs asynchronously at ApexGEO either way.
  */
 
 /** Plan order: sections 1, 2, 3, 4, 6, 9, 10. */
@@ -70,12 +73,6 @@ export async function runProspectReport(
   try {
     const deadline = AbortSignal.timeout(opts.deadlineMs ?? REPORT_DEADLINE_MS);
     const business = { ...input, website: withScheme(input.website) };
-    const apexgeo = startReportScan(
-      opts.apexgeo?.connection ?? null,
-      business,
-      opts.apexgeo?.reportId ?? "",
-      deadline,
-    );
     let homepage: Homepage | null = null;
     if (business.website) {
       count("http");
@@ -98,12 +95,12 @@ export async function runProspectReport(
         ),
       ),
     );
-    const scan = await apexgeo;
+    const ready = sections.some((s) => s.status === "ok" && !STORED_FACT_SECTIONS.has(s.key));
+    if (!ready) return { status: "failed", sections, headline: headline(sections), cost, apexgeo: null };
+    const scan = await startReportScan(opts.apexgeo?.connection ?? null, business, opts.apexgeo?.reportId ?? "", deadline);
     if (scan.scanId) count("apexgeoScans");
     return {
-      status: sections.some((s) => s.status === "ok" && !STORED_FACT_SECTIONS.has(s.key))
-        ? "ready"
-        : "failed",
+      status: "ready",
       sections: [...sections, ...scan.sections],
       headline: headline(sections),
       cost,

@@ -231,7 +231,12 @@ describe("ApexGEO sections (decision D6)", () => {
     expect(text).not.toContain("ApexGEO key");
   });
 
-  it.each(["pending", "timeout", "failed", "out_of_credits", "missing_input"] as const)(
+  it("out of ApexGEO credits: also the agency's setup, also hidden", async () => {
+    seed({ sections: [...SECTIONS, ...apexgeoPlaceholders("out_of_credits", APEXGEO_REASON.out_of_credits)] });
+    expect((await keysOf()).map((s) => s.key)).toEqual(["gbp", "ads"]);
+  });
+
+  it.each(["pending", "timeout", "failed", "missing_input"] as const)(
     "%s sections stay on the public page, honestly",
     async (code) => {
       seed({ sections: [...SECTIONS, ...apexgeoPlaceholders(code, "some reason")] });

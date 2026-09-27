@@ -28,8 +28,10 @@ import { APEXGEO_REASON, apexgeoFromScan, apexgeoPlaceholders } from "@/lib/pros
  *   completed → sections 5/7/8 filled, headline recomputed, `done`
  *   queued/running → the next poll is queued (longer delay), then `attempts`
  *     advances; the last attempt instead settles the sections `timeout`
- *   failed, or any ApexGEO error → sections `failed` with a generic reason
- *     (the real one is logged)
+ *   a transient ApexGEO error (network, 429, 5xx) → treated like running:
+ *     the scan is charged and still finishing, so the next poll retries it
+ *   failed, or any other ApexGEO error → sections `failed` with a generic
+ *     reason (the real one is logged)
  *
  * Every settle is a transaction that lands only on a report still `ready`
  * whose scan is `pending` at this poll's attempt, so a replay, a duplicate
@@ -41,6 +43,9 @@ import { APEXGEO_REASON, apexgeoFromScan, apexgeoPlaceholders } from "@/lib/pros
  */
 
 export const dynamic = "force-dynamic";
+
+/** Errors that say nothing about the scan itself: poll again. */
+const TRANSIENT: ReadonlySet<string> = new Set(["network", "rate_limited", "server"]);
 
 export async function POST(request: Request) {
   const signature = request.headers.get("upstash-signature");
@@ -98,10 +103,11 @@ export async function POST(request: Request) {
       });
       return settled(written, "failed");
     };
-    if (!res.ok) return failed(res.error);
-    const { scan } = res;
+    if (!res.ok && !TRANSIENT.has(res.error.kind)) return failed(res.error);
+    const scan = res.ok ? res.scan : null;
+    if (!res.ok) console.warn("[prospecting/apexgeo] poll error, will retry", reportId, res.error);
 
-    if (scan.status === "completed") {
+    if (scan?.status === "completed") {
       const written = await settleApexgeo(reportId, {
         attempt,
         sections: apexgeoFromScan(scan),
@@ -110,7 +116,7 @@ export async function POST(request: Request) {
       });
       return settled(written, "done");
     }
-    if (scan.status === "failed") return failed({ scanStatus: "failed", error: scan.error });
+    if (scan?.status === "failed") return failed({ scanStatus: "failed", error: scan.error });
 
     const next = attempt + 1;
     if (next >= POLL_DELAYS_S.length) {
