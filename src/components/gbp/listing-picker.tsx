@@ -11,6 +11,9 @@ import { ACCESS_NOT_APPROVED_TEXT } from "@/lib/gbp/error-text";
  * of each location (title, address, website, Place ID) that two similarly
  * named listings can be told apart. The server re-verifies the choice — this
  * component only ever sends the two resource names.
+ *
+ * `mode="multi"` picks the ADDITIONAL listings instead: checkboxes, the main
+ * listing left out, "Save additional listings" sending the whole set.
  */
 
 interface PickerLocation {
@@ -51,19 +54,35 @@ const ERROR_TEXT: Record<string, string> = {
   unknown_location: "That listing isn't available to this Google connection. Reload the list and pick again.",
   unverifiable_truncated:
     "This Google account has too many listings to verify that one here, so it can't be selected. Contact support to manage it.",
+  too_many: "That is more additional listings than a workspace can manage.",
+  is_main: "That listing is already the main listing.",
+  no_listing: "Choose the main listing first.",
+  listing_shared: "Another workspace already manages that listing.",
+  listings_changed: "The additional listings changed meanwhile. Reload and try again.",
 };
 
 export function ListingPicker({
   subAccountId,
   onClose,
+  mode = "single",
+  main,
+  selected = [],
 }: {
   subAccountId: string;
   /** Present when a listing is already selected (the "Change listing" path). */
   onClose?: () => void;
+  mode?: "single" | "multi";
+  /** multi: the main listing's location name, left out of the options. */
+  main?: string;
+  /** multi: the connected extras, as `accountName|locationName`. */
+  selected?: string[];
 }) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [choice, setChoice] = useState<string | null>(null);
+  // Insertion order = the saved order: connected extras first, then new ticks.
+  const [picked, setPicked] = useState<string[]>(selected);
   const [saving, setSaving] = useState(false);
+  const multi = mode === "multi";
 
   const fetchLocations = useCallback(async () => {
     setLoad({ kind: "loading" });
@@ -83,21 +102,24 @@ export function ListingPicker({
   }, [fetchLocations]);
 
   async function select() {
-    if (!choice) return;
-    const [accountName, locationName] = choice.split("|");
+    if (!multi && !choice) return;
+    const pairOf = (v: string) => {
+      const [accountName, locationName] = v.split("|");
+      return { accountName, locationName };
+    };
     setSaving(true);
     try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/google/listing`, {
+      const res = await fetch(`/api/sub-accounts/${subAccountId}/google/${multi ? "extra-listings" : "listing"}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ accountName, locationName }),
+        body: JSON.stringify(multi ? { listings: picked.map(pairOf) } : pairOf(choice!)),
       });
       const data = (await res.json().catch(() => ({}))) as { ok?: boolean; code?: string; error?: string };
       if (!res.ok || !data.ok) {
         toast.error(ERROR_TEXT[data.code ?? ""] ?? data.error ?? "Couldn't save the listing.");
         return;
       }
-      toast.success("Listing selected.");
+      toast.success(multi ? "Additional listings saved." : "Listing selected.");
       onClose?.();
     } catch {
       toast.error("Couldn't reach the server. Check your connection and try again.");
@@ -140,12 +162,15 @@ export function ListingPicker({
     );
   }
 
-  const options = load.accounts.flatMap((a) => a.locations.map((l) => ({ account: a, location: l })));
+  const accounts = load.accounts.map((a) => ({ ...a, locations: a.locations.filter((l) => !multi || l.name !== main) }));
+  const options = accounts.flatMap((a) => a.locations.map((l) => ({ account: a, location: l })));
   if (options.length === 0) {
     return (
       <div className="space-y-3">
         <p className="text-sm text-muted-foreground" data-testid="gbp-picker-empty">
-          This Google account doesn&apos;t manage any Business Profile locations.
+          {multi
+            ? "This Google account doesn't manage any other Business Profile locations."
+            : "This Google account doesn't manage any Business Profile locations."}
         </p>
         {cancel}
       </div>
@@ -160,7 +185,7 @@ export function ListingPicker({
           This Google account has more listings than can be shown here; only the first ones are listed.
         </p>
       )}
-      {load.accounts.map((account) => (
+      {accounts.filter((a) => a.locations.length > 0).map((account) => (
         <fieldset key={account.name} className="space-y-2">
           <legend className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
             {account.accountName}
@@ -174,11 +199,15 @@ export function ListingPicker({
                 className="flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3 has-[:checked]:border-primary"
               >
                 <input
-                  type="radio"
+                  type={multi ? "checkbox" : "radio"}
                   name="gbp-location"
                   value={value}
-                  checked={choice === value}
-                  onChange={() => setChoice(value)}
+                  checked={multi ? picked.includes(value) : choice === value}
+                  onChange={() =>
+                    multi
+                      ? setPicked((p) => (p.includes(value) ? p.filter((v) => v !== value) : [...p, value]))
+                      : setChoice(value)
+                  }
                   className="mt-1"
                 />
                 <span className="min-w-0 space-y-0.5 text-sm">
@@ -193,9 +222,15 @@ export function ListingPicker({
         </fieldset>
       ))}
       <div className="flex gap-2">
-        <Button type="button" size="sm" disabled={!choice || saving} onClick={() => void select()} data-testid="gbp-select-listing">
+        <Button
+          type="button"
+          size="sm"
+          disabled={(!multi && !choice) || saving}
+          onClick={() => void select()}
+          data-testid={multi ? "gbp-save-extra-listings" : "gbp-select-listing"}
+        >
           {saving && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
-          Select listing
+          {multi ? "Save additional listings" : "Select listing"}
         </Button>
         {cancel}
       </div>

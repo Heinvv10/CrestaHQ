@@ -115,6 +115,8 @@ sync summaries keyed by the id after `locations/`, same shape as
 `gbpSummary`) — all member-readable display data on the parent, no rules
 change; the one index is under Review sync below. `subAccounts/{id}/gbpEvents/{auto}` is a server-only,
 append-only audit log (`listing_selected`, `listing_cleared` with a `reason`;
+`extra_listing_added` and `extra_listing_removed` with a `reason`
+(`admin_removed` / `not_accessible_after_reconnect`), each with `locationName`;
 `reply_posted` / `reply_deleted` with `actorUid` + `reviewDocId` — never the
 reply text; `review_url_adopted` with `previousUrl`, `url`, `actorUid`;
 tenant-anchored with `agencyId`, `subAccountId`, `createdByUid`); no client

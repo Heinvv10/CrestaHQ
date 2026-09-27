@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, Loader2, Lock, MapPin } from "lucide-react
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import type { GoogleListing } from "@/types/google";
+import { ExtraListings } from "./extra-listings";
 import { InlineConfirm } from "./inline-confirm";
 import { ListingPicker } from "./listing-picker";
 import { ReviewUrlCard } from "./review-url-card";
@@ -144,6 +145,9 @@ export function GoogleBusinessPanel() {
           Only sub-account admins can connect Google or change the listing.
         </p>
         {listing && <div className="mt-3"><ListingSummary listing={listing} /></div>}
+        {listing && (subAccount.googleExtraListings?.length ?? 0) > 0 && (
+          <ExtraListings subAccountId={subAccountId} main={listing.locationName} extras={subAccount.googleExtraListings ?? []} canEdit={false} />
+        )}
         {/* Members may read the synced reviews; only admins sync. */}
         {listing && meta?.connected && (
           <ReviewsSection subAccountId={subAccountId} canSync={false} reconnect={!!meta.reconnectRequired} />
@@ -230,6 +234,7 @@ export function GoogleBusinessPanel() {
         <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" /> Managing this listing
       </p>
       <ListingSummary listing={listing} />
+      <ExtraListings subAccountId={subAccountId} main={listing.locationName} extras={subAccount.googleExtraListings ?? []} canEdit />
       <ReviewUrlCard />
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button type="button" size="sm" variant="outline" onClick={() => setChanging(true)} data-testid="gbp-change-listing">

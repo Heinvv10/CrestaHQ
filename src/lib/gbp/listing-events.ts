@@ -4,7 +4,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 import type { GoogleListing } from "@/types/google";
-import { findAccessibleLocation } from "./discovery";
+import { findAccessibleLocation, findAccessibleLocations } from "./discovery";
+import { removeExtraListings, storedExtras } from "./extra-listings";
 import { clearAllGbpCaches } from "./sync/clear";
 import { extraLocationNames } from "./sync/scope";
 import type { GbpProvider } from "./provider/types";
@@ -108,5 +109,32 @@ export async function reverifyListingAfterReconnect(
     await clearListing(subAccountId, byUid, "not_accessible_after_reconnect", {
       onlyIf: listing.locationName,
     });
+    return;
   }
+  await reverifyExtrasAfterReconnect(subAccountId, byUid, provider, accessToken);
+}
+
+/**
+ * The main listing stays: each EXTRA listing the new grant provably cannot see
+ * is removed on its own (audited, only its synced data dropped). Same rules as
+ * the main: a failed or truncated check keeps the listing.
+ */
+async function reverifyExtrasAfterReconnect(
+  subAccountId: string,
+  byUid: string,
+  provider: GbpProvider,
+  accessToken: string,
+): Promise<void> {
+  const extras = storedExtras((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {});
+  if (extras.length === 0) return;
+  let matches: Awaited<ReturnType<typeof findAccessibleLocations>>;
+  try {
+    matches = await findAccessibleLocations(provider, accessToken, extras);
+  } catch (err) {
+    const reason = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
+    console.warn(`[google/callback] extra listings re-verify failed, keeping them sa=${subAccountId}`, reason);
+    return;
+  }
+  const missing = extras.filter((_, i) => matches[i] === null).map((l) => l.locationName);
+  if (missing.length > 0) await removeExtraListings(subAccountId, byUid, missing, "not_accessible_after_reconnect");
 }

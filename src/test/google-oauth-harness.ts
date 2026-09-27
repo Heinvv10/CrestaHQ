@@ -45,7 +45,9 @@ function deepMerge(
 ): Record<string, unknown> {
   const out = { ...base };
   for (const [k, v] of Object.entries(patch)) {
-    out[k] = isPlain(v) && isPlain(base[k]) ? deepMerge(base[k], v) : v;
+    // FieldValue.delete() (the "DELETE_FIELD" sentinel) removes the key.
+    if (v === "DELETE_FIELD") delete out[k];
+    else out[k] = isPlain(v) && isPlain(base[k]) ? deepMerge(base[k], v) : v;
   }
   return out;
 }
@@ -102,19 +104,28 @@ function listUnder(path: string) {
   return { empty: docs.length === 0, size: docs.length, docs };
 }
 
-function collectionRef(path: string, filters: Array<[string, unknown]> = []) {
+type Filter = [field: string, op: "==" | "array-contains", value: unknown];
+
+/** A dotted field path read the way Firestore does (`googleListing.locationName`). */
+const fieldOf = (d: Record<string, unknown> | undefined, field: string): unknown =>
+  field.split(".").reduce<unknown>((v, k) => (isPlain(v) ? v[k] : undefined), d);
+
+function collectionRef(path: string, filters: Filter[] = []) {
   const matches = (d: Record<string, unknown> | undefined) =>
-    filters.every(([field, value]) => d?.[field] === value);
+    filters.every(([field, op, value]) => {
+      const v = fieldOf(d, field);
+      return op === "==" ? v === value : Array.isArray(v) && v.includes(value);
+    });
   return {
     get: async () => {
       const all = listUnder(path);
       const docs = all.docs.filter((d) => matches(d.data()));
       return { empty: docs.length === 0, size: docs.length, docs };
     },
-    /** Equality on a top-level field only — add operators when a test needs them. */
-    where: (field: string, op: "==", value: unknown) => {
-      if (op !== "==") throw new Error("harness: only == is modelled");
-      return collectionRef(path, [...filters, [field, value]]);
+    /** `==` and `array-contains` only — add operators when a test needs them. */
+    where: (field: string, op: Filter[1], value: unknown) => {
+      if (op !== "==" && op !== "array-contains") throw new Error(`harness: ${op} is not modelled`);
+      return collectionRef(path, [...filters, [field, op, value]]);
     },
     doc: (id?: string) => docRef(`${path}/${id ?? `auto_${++autoId}`}`),
     add: async (data: Record<string, unknown>) => {

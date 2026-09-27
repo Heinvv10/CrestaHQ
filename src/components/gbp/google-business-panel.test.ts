@@ -231,3 +231,25 @@ describe("review-request link on the selected listing", () => {
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("adopt-listing-url"))).toBe(false);
   });
 });
+
+describe("additional listings", () => {
+  const EXTRA = { ...LISTING, locationName: "locations/l2", title: "Fixture Fibre — South" };
+
+  it("lists the extras under the main listing; the location walk runs only on Manage", async () => {
+    ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: CONNECTED, googleListing: LISTING, googleExtraListings: [EXTRA] };
+    await render();
+    const block = byId("gbp-state-selected")?.querySelector('[data-testid="gbp-extra-listings"]');
+    expect(block?.textContent).toContain("Fixture Fibre — South");
+    expect(calls("GET", "/api/sub-accounts/sa1/google/locations")).toHaveLength(0);
+    await click("Manage additional listings");
+    expect(calls("GET", "/api/sub-accounts/sa1/google/locations")).toHaveLength(1);
+  });
+
+  it("shows members the extras read-only", async () => {
+    ctx.isAdmin = false;
+    ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: CONNECTED, googleListing: LISTING, googleExtraListings: [EXTRA] };
+    await render();
+    expect(byId("gbp-extra-listings")?.textContent).toContain("Fixture Fibre — South");
+    expect(byId("gbp-manage-extra-listings")).toBeNull();
+  });
+});

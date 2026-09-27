@@ -280,12 +280,13 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | Route | Who | Notes |
 |---|---|---|
 | `GET /api/sub-accounts/[id]/google/connect[?return=gbp]` | admin, gated | redirects to Google (or the fake callback) |
-| `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split; on reconnect re-verifies an existing listing with the new token — cleared (audited `not_accessible_after_reconnect`, and only if the stored listing is still the one checked) when provably not visible; kept if the check fails or the 20-page walk was truncated before finding it |
+| `GET /api/google/callback` | admin, gated | state + uid check, exchange, token split; on reconnect re-verifies an existing listing with the new token — cleared (audited `not_accessible_after_reconnect`, and only if the stored listing is still the one checked) when provably not visible, with every extra listing; kept if the check fails or the 20-page walk was truncated before finding it. When the main is kept, each extra is re-verified the same way (one walk) and one provably not visible is removed on its own (`extra_listing_removed`, reason `not_accessible_after_reconnect`; only its synced data cleared) |
 | `GET /api/sub-accounts/[id]/google/status` | any member | `{configured}` — deployment-level boolean only |
 | `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke, skipped when a requested fake is refused (nothing to revoke with) — on a dev machine (loopback app URL) the fixture-agency fence still applies first; clears meta **and** `googleListing` (audited `disconnected`) |
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
 | `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused) |
-| `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`) |
+| `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`); 409 `has_extra_listings` while extra listings are connected — remove them first (disconnect still clears everything) |
+| `PUT /api/sub-accounts/[id]/google/extra-listings` | admin, gated | `{listings:[{accountName, locationName}]}` — the whole new set of EXTRA listings, in order ([MULTI_LISTING_V1_PLAN.md](../../MULTI_LISTING_V1_PLAN.md) PR 3). Body ≤ 8 KB (413 `body_too_large`); 400 `invalid_body` (a malformed pair or a location twice), `too_many` (above 9), `is_main`; each NEW pair is re-fetched in one provider walk (400 `unknown_location` / `unverifiable_truncated`, as the listing PUT) and only that re-fetch is stored, a pair already connected keeps its stored listing (so removing needs no Google call); 409 `no_listing` (no main listing), `listing_shared` (another sub-account holds a new pair as main or extra — `heldByAnotherSubAccount`, inside the transaction), `listings_changed` (a concurrent save). One transaction writes `googleExtraListings` + `googleLocationNames` and a `gbpEvents` entry per change; then each removed listing's synced data is cleared (`clearGbpCache(id, loc)`) — the main listing's cache, drafts, summary and `reviewsAutoReply` are untouched. `{ok, added, removed}` |
 | `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
 | `GET /api/sub-accounts/[id]/gbp/reviews[?rating=&replied=&from=&to=&sort=&approval=]` | any member, gated | `{summary, reviews, available, needsApproval, runs, scheduled, truncated, aiDrafts}` — active reviews of the current listing seen within 30 days, newest first (cap 500 records), each with its cache `docId`; `available` = active reviews before the filters; summary with health derived now from the live connection, last 10 runs; never `passId`, `contentHash`, `reviewName` or anything under `private/`. Filters (in memory over the capped set, no composite index): `rating` comma list of 1–5, `replied` `all\|replied\|unreplied`, `from` / `to` on `createTime` — an ISO date-time WITH an offset (the page sends the viewer's local midnights: `from` = local 00:00 of the first day, `to` = local 00:00 after the last, exclusive — so filtered days match the local dates the list shows) or a bare ISO date, read as that UTC day (a date-only `to` covers the whole UTC day), `sort` `newest\|oldest`, `approval` `needed` (review auto-reply's "Needs approval": a fresh, undismissed auto-reply draft on an unreplied review); an empty value is ignored, anything else malformed is 400 `invalid_filter` with `field`. `needsApproval` = how many served reviews that filter holds (before the other filters). Each review also carries `autoReplied` (its reply was posted by auto-reply) and `approval` — `{state: held\|queued\|paused\|draft_failed\|over_limit\|post_failed, draft}` or null; only the reason and draft text, never `textHash` / `basisHash` / `model` ([reputation.md](reputation.md#review-auto-reply-auto_reply_v1_planmd)) |
 | `GET /api/sub-accounts/[id]/reputation/overview[?range=]` | any member | aggregates over the SAME reviews this route serves (shared `loadServedReviews`, `lib/gbp/sync/served.ts`) plus the review-request log — see [reputation.md](reputation.md) |
@@ -300,9 +301,9 @@ grant without `business.manage` (`?google=insufficient_scope`).
 
 Refusals are `{error, code}`: 403 `gate_off`, 503 `not_configured`, 404
 `not_found` (reply: not an active cached review of this sub-account's listing),
-409 `not_connected` / `reconnect_required` / `idempotency_key_reused` /
+409 `not_connected` / `reconnect_required` / `idempotency_key_reused` / `has_extra_listings` / `no_listing` / `listing_shared` / `listings_changed` /
 `in_progress` / `changed` (+ `currentUrl`) / `no_proposal` / `nothing_to_dismiss`, 400 `invalid_body` /
-`unknown_location` / `unverifiable_truncated` / `invalid_filter` (+ `field`), **424** `<provider kind>`
+`unknown_location` / `unverifiable_truncated` / `too_many` / `is_main` / `invalid_filter` (+ `field`), 413 `body_too_large`, **424** `<provider kind>`
 (`access_not_approved` carries the fixed "not approved" sentence as `error`; every other kind "Google request failed").
 A provider failure is **424, never 502** (`gbpErrorResponse`): crm.crestahq.com
 is served through Cloudflare, which "returns a Cloudflare-branded HTTP 502 or
@@ -324,8 +325,14 @@ body for token markers).
 - `subAccounts/{id}/gbpEvents/{auto}` — `{type:"listing_selected", agencyId,
   subAccountId, createdByUid, at, locationName, previousLocationName}` or
   `{type:"listing_cleared", reason, …, locationName:null, previousLocationName}`,
+  or `{type:"extra_listing_added", …, locationName}` / `{type:"extra_listing_removed",
+  reason: "admin_removed" | "not_accessible_after_reconnect", …, locationName}`,
   each written in the same transaction as the change it records. No client
   rule (default deny).
+- `subAccounts/{id}.googleExtraListings` — the extra listings, same shape as
+  `googleListing` (`selectedAt` a timestamp, not a server sentinel: Firestore
+  refuses one inside an array), written with `googleLocationNames` in the same
+  transaction.
 
 Selecting a **different** listing (or the same location through another
 Google account — its reviews come back under new names), clearing it,
@@ -881,6 +888,14 @@ Disconnect for an existing connection),
 `gbp-location-option-<n>`, button `gbp-select-listing`; Cancel in every picker
 state when changing), `gbp-state-selected` (Change listing / Stop managing this
 listing). Destructive actions use an inline confirm — never `confirm()`/`alert()`.
+Under the selected listing, `gbp-extra-listings` ("Additional listings",
+`extra-listings.tsx`): each extra as `gbp-extra-listing`; for admins
+`gbp-manage-extra-listings` opens the picker in multi mode (checkboxes, the
+main listing left out, connected extras ticked; the location walk runs only
+then) with `gbp-save-extra-listings` ("Save additional listings", sends the
+whole set). Non-admins see the list read-only, only when extras exist —
+`google-business-panel.test.ts`, `listing-picker.multi.test.ts`, E2E
+`gbp-extra-listings.spec.ts`.
 Under the selected listing (and, read-only, for non-admins and on the
 reconnect screen) the synced reviews (`reviews-section.tsx`): `gbp-summary`
 (rating, count, last synced, cadence, `gbp-health-<health>`), `gbp-sync-now`

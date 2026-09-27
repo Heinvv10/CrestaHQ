@@ -22,7 +22,8 @@ import type { GoogleListing } from "@/types/google";
  *   DELETE /api/sub-accounts/[id]/google/listing
  *
  * Sub-account admin only. PUT is agency-gated; DELETE is not (like
- * disconnect, clearing must always be possible).
+ * disconnect, clearing must always be possible) — but DELETE refuses 409
+ * has_extra_listings while extra listings are connected.
  *
  * PUT trusts only the two resource names: the server re-fetches the pair
  * through the provider and refuses unless THIS connection can see it —
@@ -157,6 +158,13 @@ export async function DELETE(
   const access = await requireSubAccountAdmin(request, id);
   if (access instanceof NextResponse) return access;
 
+  // Extras always sit beside a main listing: remove them first. (Disconnect
+  // still clears everything; an extra added after this read is cleared with
+  // the main by clearListing.)
+  const sub = (await getAdminDb().doc(`subAccounts/${id}`).get()).data() ?? {};
+  if (extraLocationNames(sub).length > 0) {
+    return gbpRefusal(409, "has_extra_listings", "Remove the additional listings first.");
+  }
   await clearListing(id, access.uid, "admin_cleared");
   return NextResponse.json({ ok: true });
 }
