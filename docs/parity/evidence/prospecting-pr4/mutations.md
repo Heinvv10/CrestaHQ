@@ -17,7 +17,7 @@ Files: `G` = `src/lib/workflows/prospecting-approach-guard.test.ts` (9 tests), `
 | M6 | Guard fails open: `guardProspectSend(...).catch(() => null)` | G | **RED 1/9** — guard transaction throws → no send (8) |
 | M7 | `mergeSubject` drops the headline (`headline: ""`) | R | **RED 1/3** — workflow WhatsApp carries headline + link (1) |
 | M8 | Same-workflow pass removed (`approachedWorkflowId === workflowId` → `false`) | G | **RED 1/9** — same workflow's second send (4) |
-| M9 | Cap parser accepts any number (`typeof cap === "number"`), so NaN/Infinity/negative pass | `quota.test.ts` | **RED 1/4** — falls back to the default for an unreachable value |
+| M9 | Cap parser accepts any number (`typeof cap === "number"`), so NaN/Infinity/negative pass | `quota.test.ts` | **RED 1/22** — falls back to the default for an unreachable value |
 
 All restored; both files green afterwards (G 9/9, R 3/3).
 
