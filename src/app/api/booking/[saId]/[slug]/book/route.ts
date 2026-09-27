@@ -152,8 +152,9 @@ export async function POST(
     );
   }
 
-  // Up to 10 intake answers of 2,000 characters plus contact fields: 64 KB.
-  const read = await readJsonCapped(request, 64 * 1024);
+  // Up to 10 intake answers of 2,000 characters (~80 KB if every one is
+  // 4-byte UTF-8) plus contact fields: 128 KB.
+  const read = await readJsonCapped(request, 128 * 1024);
   if (!read.ok) {
     return read.reason === "too_large"
       ? NextResponse.json({ error: "Request body too large" }, { status: 413 })

@@ -44,6 +44,9 @@ export async function POST(
   // A status update is a few KB; 1 MiB is generous and still bounded.
   const read = await readJsonCapped(request, 1024 * 1024);
   if (!read.ok) {
+    if (read.reason === "too_large") {
+      console.warn(`[vapi/status] 413: body over the cap sa=${subAccountId} content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    }
     return read.reason === "too_large"
       ? NextResponse.json({ error: "Request body too large" }, { status: 413 })
       : NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });

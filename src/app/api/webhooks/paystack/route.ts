@@ -30,7 +30,10 @@ export async function POST(request: Request) {
   // change the bytes and fail every signature.
   // Provider events are a few KB; 1 MiB is generous and still bounded.
   const rawBody = await readBodyCapped(request, 1024 * 1024);
-  if (rawBody === null) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  if (rawBody === null) {
+    console.warn(`[paystack] 413: body over the cap content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  }
   if (
     !verifyPaystackSignature(
       rawBody,

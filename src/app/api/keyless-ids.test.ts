@@ -89,11 +89,11 @@ describe.each(BAD)("id %j", (bad) => {
     expect(reads).toEqual([]);
   });
 
-  it("webhooks/vapi/end-of-call: a bad sa -> 404, a bad call id -> 400, no read", async () => {
+  it("webhooks/vapi/end-of-call: a bad sa or call id is ignored (200, like /status), no read", async () => {
     const { POST } = await import("./webhooks/vapi/end-of-call/[subAccountId]/route");
     const msg = (id: string) => ({ message: { type: "end-of-call-report", call: { id } } });
-    expect((await call(POST, `/v?s=${SECRET}`, { subAccountId: bad }, msg("call1"))).status).toBe(404);
-    expect(await call(POST, `/v?s=${SECRET}`, { subAccountId: "sa1" }, msg(bad))).toEqual({ status: 400, body: { error: "Invalid call.id" } });
+    expect(await call(POST, `/v?s=${SECRET}`, { subAccountId: bad }, msg("call1"))).toEqual({ status: 200, body: { ok: true, ignored: "invalid id" } });
+    expect(await call(POST, `/v?s=${SECRET}`, { subAccountId: "sa1" }, msg(bad))).toEqual({ status: 200, body: { ok: true, ignored: "invalid id" } });
     expect(reads).toEqual([]);
   });
 

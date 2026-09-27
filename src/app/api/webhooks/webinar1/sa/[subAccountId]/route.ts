@@ -125,7 +125,10 @@ export async function POST(
   if (!isDocId(subAccountId)) return NextResponse.json({ ok: true, ignored: "not_configured" });
   // Provider events are a few KB; 1 MiB is generous and still bounded.
   const rawBody = await readBodyCapped(request, 1024 * 1024);
-  if (rawBody === null) return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  if (rawBody === null) {
+    console.warn(`[webhooks/webinar1] 413: body over the cap sa=${subAccountId} content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  }
 
   const secret = await readWebinar1ConnectionSecret(subAccountId);
   if (!secret?.webhookSecret) {

@@ -4,7 +4,7 @@ import { SA, mem, post, resetBookingHarness, seedEvent, seedPage, slot } from "@
 /**
  * The public booking routes: a saId / slug that isn't a doc id is the
  * page's own 404 before any read; `excludeEventId` that isn't one is
- * ignored (it can't free a slot); the book body is capped at 64 KB.
+ * ignored (it can't free a slot); the book body is capped at 128 KB.
  */
 
 const h = () => import("@/test/booking-harness");
@@ -71,7 +71,7 @@ it("availability: excludeEventId that isn't a doc id can't free its slot", async
   expect(freed).not.toEqual(busy); // a real id still frees its own slot
 });
 
-describe("book body cap (64 KB)", () => {
+describe("book body cap (128 KB)", () => {
   const padded = (size: number) => {
     const base = JSON.stringify({ ...visitor, extras: { pad: "" } });
     return JSON.stringify({ ...visitor, extras: { pad: "x".repeat(size - base.length) } });
@@ -86,15 +86,15 @@ describe("book body cap (64 KB)", () => {
   const send = (r: Request) => POST(r, { params: Promise.resolve({ saId: SA, slug: "p" }) });
 
   it("an at-cap body is read and booked", async () => {
-    const body = padded(64 * 1024);
-    expect(new TextEncoder().encode(body).length).toBe(64 * 1024);
+    const body = padded(128 * 1024);
+    expect(new TextEncoder().encode(body).length).toBe(128 * 1024);
     expect((await book(SA, "p", JSON.parse(body))).status).toBe(200);
   });
 
   it.each([
-    ["a truthful Content-Length", () => post(JSON.parse(padded(64 * 1024 + 1)))],
-    ["no Content-Length (chunked)", () => chunked(padded(64 * 1024 + 1))],
-    ["a lying small Content-Length", () => chunked(padded(64 * 1024 + 1), { "content-length": "10" })],
+    ["a truthful Content-Length", () => post(JSON.parse(padded(128 * 1024 + 1)))],
+    ["no Content-Length (chunked)", () => chunked(padded(128 * 1024 + 1))],
+    ["a lying small Content-Length", () => chunked(padded(128 * 1024 + 1), { "content-length": "10" })],
   ])("over the cap with %s is a 413 and books nothing", async (_l, make) => {
     const res = await send(make());
     expect(res.status).toBe(413);

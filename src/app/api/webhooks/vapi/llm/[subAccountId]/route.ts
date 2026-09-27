@@ -187,6 +187,9 @@ export async function POST(
   // The conversation so far plus the request fields; 1 MiB is generous.
   const read = await readJsonCapped(request, 1024 * 1024);
   if (!read.ok) {
+    if (read.reason === "too_large") {
+      console.warn(`[vapi/llm] 413: body over the cap sa=${subAccountId} content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    }
     return read.reason === "too_large" ? badRequest("Request body too large", 413) : badRequest("Invalid JSON body", 400);
   }
   const body = (read.value ?? {}) as VapiLlmBody;

@@ -68,6 +68,22 @@ function request(path: string, text: string, frame: "plain" | "chunked" | "lying
   return new Request(`http://localhost${path}`, { method: "POST", headers, body, duplex: "half" } as RequestInit);
 }
 
+describe.each(ROUTES.filter(([n]) => n.startsWith("webhooks/")))("%s logs its 413", (_name, cap, load) => {
+  it("one line: route, sub-account if known, declared length; never the body", async () => {
+    const { handler, path, params } = await load();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await handler(request(path, jsonOf(cap + 1), "lying"), { params: Promise.resolve(params) });
+    const lines = warn.mock.calls.map((c) => c.map(String).join(" "));
+    warn.mockRestore();
+    expect(res.status).toBe(413);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/\] 413: body over the cap/);
+    expect(lines[0]).toContain("content-length=8");
+    if (params.subAccountId) expect(lines[0]).toContain(`sa=${params.subAccountId}`);
+    expect(lines[0]).not.toContain("xxxx");
+  });
+});
+
 describe.each(ROUTES)("%s (cap %i bytes)", (_name, cap, load) => {
   it.each(["plain", "chunked", "lying"] as const)("one byte over the cap, %s framing -> 413", async (frame) => {
     const { handler, path, params } = await load();
