@@ -65,6 +65,7 @@ describe("propose", () => {
       { label: "Template", value: "Install day (install_day)" },
       { label: "Language", value: "en_US" },
       { label: "When", value: "Sends immediately when approved (quiet hours don't hold it). WhatsApp's 24-hour reply window doesn't apply to templates." },
+      { label: "From", value: expect.any(String) }, // sender-number.test.ts
       { label: "Message", value: RENDERED, multiline: true },
       { label: "Buttons", value: 'quick reply "YES" · link "Reschedule" (https://x.io/r)' },
     ]);

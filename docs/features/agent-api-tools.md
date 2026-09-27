@@ -79,7 +79,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `cancel_scheduled_message` | write | member | Cancel a pending scheduled message (or dismiss a failed one). |  |
 | `send_message` | `outbound` | member | Send a message to a conversation's contact on sms, whatsapp, email (needs a subject), messenger or instagram. | to, from, channel, consent, the exact text (subject and reply-to for email), when |
 | `schedule_message` | `outbound` | member | Schedule a message to a conversation's contact for a later time (at least a minute and at most 7 days ahead), on sms, whatsapp, email (needs a subject), messenger or instagram. | to, from, channel, consent, the exact text, when it sends and what then happens |
-| `send_whatsapp_template` | `outbound` | member | Send one of the sub-account's approved WhatsApp templates to a conversation's contact; the only WhatsApp message allowed after the contact's 24-hour reply window has closed. | to, template, language, the filled text and buttons, when |
+| `send_whatsapp_template` | `outbound` | member | Send one of the sub-account's approved WhatsApp templates to a conversation's contact; the only WhatsApp message allowed after the contact's 24-hour reply window has closed. | to, from (the sending number), template, language, the filled text and buttons, when |
 | `create_task` | write | member | Create a task (to-do) in this sub-account, optionally with a due date and linked to a contact. |  |
 | `find_tasks` | read | member | List this workspace's open (incomplete) tasks, filtered to today / overdue / upcoming, or everything open. |  |
 | `complete_task` | write | member | Mark one of this workspace's tasks as completed. |  |
@@ -103,4 +103,4 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `send_review_request` | `outbound` | member | Text a contact the Google review request (SMS or WhatsApp, as set up in Reputation settings). | the exact text, recipient, channel and template, or why none would send |
 | `list_broadcasts` | read | member | List the sub-account's email broadcasts, newest first: template, audience, status and totals. |  |
 | `create_broadcast` | `outbound` | admin | Send an email template to every contact matching an audience (all; a tag; or a pipeline stage), skipping opted-out contacts. | channel, audience and matched count, exact subject and message, merge tags, what is checked at send |
-| `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, first words, greeting name, the script, consent, cost, what is checked at dial time |
+| `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time |

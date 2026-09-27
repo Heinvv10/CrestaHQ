@@ -102,8 +102,9 @@ members, no client writes; see
 
 - **Preview and pins.** At propose time the tool builds the preview: the exact text,
   resolved recipient, channel, amount, or the record about to go. The values the
-  send depends on (recipient, channel, body, fingerprints of the quote, workflow or
-  call script) are **pinned** with it. On approve the preview is rebuilt; if
+  send depends on (recipient, channel, body, the SMS / WhatsApp / voice number it
+  goes out from, fingerprints of the quote, workflow or call script) are **pinned**
+  with it. On approve the preview is rebuilt; if
   anything differs the approve is refused `preview_changed` and the page reloads
   the new preview, and execute sends only to the pinned values.
 - **Checks at send.** The downstream send re-checks what the approver saw

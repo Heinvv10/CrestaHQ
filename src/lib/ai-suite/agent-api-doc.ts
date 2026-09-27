@@ -35,7 +35,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   set_bot_mode: "the conversation, the AI mode, its effect and any held replies",
   send_message: "to, from, channel, consent, the exact text (subject and reply-to for email), when",
   schedule_message: "to, from, channel, consent, the exact text, when it sends and what then happens",
-  send_whatsapp_template: "to, template, language, the filled text and buttons, when",
+  send_whatsapp_template: "to, from (the sending number), template, language, the filled text and buttons, when",
   delete_task: "the task: due, done, assignee, what it links to, notes",
   set_event_status: "cancelling: the appointment, the timeline reason, the exact notice or why none, the workflows that start",
   create_booking_page: "every field of the page to be published",
@@ -45,7 +45,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   schedule_social_post: "the exact post (caption, image), the Facebook Page / Instagram account, when it publishes",
   send_review_request: "the exact text, recipient, channel and template, or why none would send",
   create_broadcast: "channel, audience and matched count, exact subject and message, merge tags, what is checked at send",
-  start_voice_call: "the number, assistant, first words, greeting name, the script, consent, cost, what is checked at dial time",
+  start_voice_call: "the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time",
 };
 
 const ROLE: Record<string, string> = { subAccountMember: "member", subAccountAdmin: "admin", agencyOwner: "agency owner" };

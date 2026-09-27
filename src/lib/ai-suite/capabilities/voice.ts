@@ -14,6 +14,7 @@ import { CapabilityOutcomeUnknown, CapabilityUserError, type AiSuiteCapability }
 import { str } from "./helpers";
 import { messageBody, oneLine, plainSpaces } from "./text-safety";
 import { masked } from "./conversation-send-support";
+import { voiceSenderNumber } from "./sender-number";
 
 /**
  * start_voice_call for API agents (AGENT_API_V1_PLAN.md, PR13): the Voice
@@ -56,6 +57,7 @@ async function plan(subAccountId: string, contactId: unknown) {
       number: parsed.number as string,
       assistantId: ready.voice.vapiAssistantId,
       phoneNumberId: ready.voice.vapiPhoneNumberId,
+      from: voiceSenderNumber(subAccount, ready.voice),
       firstMessage,
       promptFingerprint: createHash("sha256").update(built.systemPrompt).digest("hex"),
     },
@@ -88,6 +90,7 @@ export const VOICE_CAPABILITIES: AiSuiteCapability[] = [
         rows: [
           { label: "Call", value: `${oneLine(contact.name) || "(unnamed)"} (${masked("sms", pinned.number)})` },
           { label: "Assistant", value: `the Voice channel's AI assistant (${pinned.assistantId}), from its calling number (${pinned.phoneNumberId})` },
+          { label: "From", value: pinned.from },
           { label: "First words", value: messageBody(pinned.firstMessage) || "(the assistant's default greeting)", multiline: true },
           { label: "Script (what the AI is told)", value: messageBody(persona)!, multiline: true },
           { label: "Greets them as", value: greets ? oneLine(greets) : "(no name)" },
@@ -102,9 +105,9 @@ export const VOICE_CAPABILITIES: AiSuiteCapability[] = [
       const pinned = ctx.approved?.pinned ?? {};
       if (!ctx.approved) throw new CapabilityUserError("A call needs a person's approval.");
       const { contact, ready, pinned: now } = await plan(ctx.subAccountId!, args.contactId);
-      const keys = ["contactId", "number", "assistantId", "phoneNumberId", "firstMessage", "promptFingerprint"] as const;
+      const keys = ["contactId", "number", "assistantId", "phoneNumberId", "from", "firstMessage", "promptFingerprint"] as const;
       if (keys.some((k) => now[k] !== pinned[k])) {
-        throw new CapabilityUserError("The number, the assistant, its opening line or its script changed since this was reviewed; no call was placed.");
+        throw new CapabilityUserError("The number, the assistant, its calling number, its opening line or its script changed since this was reviewed; no call was placed.");
       }
       const compliance = await checkOutboundCompliance({ subAccountId: ctx.subAccountId!, contact, voice: ready.voice, agentTimezone: ready.agentTimezone, consentAck: true });
       if (!compliance.allowed) throw new CapabilityUserError(`The call wasn't placed: ${compliance.reason}`);
