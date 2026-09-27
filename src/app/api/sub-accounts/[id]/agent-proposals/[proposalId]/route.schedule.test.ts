@@ -65,7 +65,7 @@ describe("propose", () => {
     vi.useRealTimers();
     expect(row(id).preview).toEqual(expect.arrayContaining([
       { label: "When", value: expect.stringMatching(/10:00 AM \(Africa\/Johannesburg\) — 2030-01-10T08:00:00\.000Z$/) },
-      { label: "Then", value: "Fires at that time; the recipient is re-checked then, and it won't send if it changed. SMS has no quiet hours; it sends at that time." },
+      { label: "Then", value: "Fires at that time; the recipient and the number it goes out from are re-checked then, and it won't send if either changed. SMS has no quiet hours; it sends at that time." },
       { label: "Message", value: "Your install is tomorrow.", multiline: true },
     ]));
     expect(row(id).pinned).toMatchObject({ contactId: "c1", channel: "sms", to: "+27821111111" });
@@ -83,7 +83,10 @@ describe("propose", () => {
     mem.seed("contacts/c1", { ...ANN, metaUserId: "psid_1" });
     const id = await proposeId({ channel, ...extra });
     expect(row(id).preview).toContainEqual({
-      label: "Then", value: `Fires at that time; the recipient is re-checked then, and it won't send if it changed. ${then}`,
+      label: "Then",
+      value: channel === "whatsapp"
+        ? `Fires at that time; the recipient and the number it goes out from are re-checked then, and it won't send if either changed. ${then}`
+        : `Fires at that time; the recipient is re-checked then, and it won't send if it changed. ${then}`,
     });
   });
 
@@ -188,6 +191,18 @@ describe("fire", () => {
     const r = await approveAndFire(() => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" }));
     expect(r).toMatchObject({ outcome: "failed", reason: "The recipient changed since this was approved, so it was not sent." });
     expect(booked()[0]).toMatchObject({ status: "failed", failureCode: "recipient_changed" });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("the sending number changed between approval and firing -> refused sender_changed, 0 sends", async () => {
+    const twilio = (fromNumber: string) => ({ enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber });
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, twilioConfig: twilio("+27870000001") });
+    const r = await approveAndFire(() => {
+      expect(booked()[0]).toMatchObject({ pinnedFrom: "+27870000001" });
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, twilioConfig: twilio("+27870000002") });
+    });
+    expect(r).toMatchObject({ outcome: "failed", reason: "The number it would go out from changed since this was approved, so it was not sent." });
+    expect(booked()[0]).toMatchObject({ status: "failed", failureCode: "sender_changed" });
     expect(send).not.toHaveBeenCalled();
   });
 

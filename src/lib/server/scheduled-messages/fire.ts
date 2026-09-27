@@ -14,6 +14,8 @@ import {
 import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 import { scheduledMessagesPath, scheduledSendBlock } from "./service";
 import { recipientOf } from "@/lib/server/conversation-send/recipient";
+import { messageSenderNumber } from "@/lib/server/sender-number";
+import type { SubAccountDoc } from "@/types";
 
 export type FireResult =
   | { outcome: "skipped"; reason: string }
@@ -35,6 +37,8 @@ interface ScheduledDoc {
   status: ScheduledMessageStatus;
   /** Set by an approved agent booking: the only address it may go to. */
   pinnedTo?: string;
+  /** Set by an approved agent booking (SMS / WhatsApp): the only number it may go out from. */
+  pinnedFrom?: string | null;
 }
 
 /**
@@ -130,6 +134,12 @@ export async function fireScheduledMessage(
   }
   if (typeof doc.pinnedTo === "string" && recipientOf(doc.channel, contact as unknown as Record<string, unknown>) !== doc.pinnedTo) {
     return record("failed", "The recipient changed since this was approved, so it was not sent.", "recipient_changed");
+  }
+  if (doc.pinnedFrom !== undefined && (doc.channel === "sms" || doc.channel === "whatsapp")) {
+    const sub = (await getAdminDb().doc(`subAccounts/${doc.subAccountId}`).get()).data() as SubAccountDoc | undefined;
+    if ((await messageSenderNumber(sub, doc.channel)) !== doc.pinnedFrom) {
+      return record("failed", "The number it would go out from changed since this was approved, so it was not sent.", "sender_changed");
+    }
   }
   const blocked = scheduledSendBlock(doc.channel, contact);
   if (blocked) return record("failed", blocked.error, blocked.code ?? null);

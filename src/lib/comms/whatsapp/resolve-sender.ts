@@ -49,7 +49,7 @@ const RAIL_LABEL: Record<WhatsAppProviderId, string> = {
   bridge: "Linked device",
 };
 
-function railNumber(
+export function railNumber(
   sub: WhatsappSenderSource | null | undefined,
   provider: WhatsAppProviderId,
 ): string {

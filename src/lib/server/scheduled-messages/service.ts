@@ -59,6 +59,9 @@ export async function scheduleConversationMessage(input: {
    * Absent = today's behaviour (the address at fire time).
    */
   pinnedTo?: string;
+  /** The sending number an approver reviewed (SMS / WhatsApp; null: none).
+   *  The worker refuses to send from another. Absent = not checked. */
+  pinnedFrom?: string | null;
   /**
    * A caller-chosen doc id. A second call with the same id books nothing
    * more: it returns the existing id only when that booking is this same
@@ -98,6 +101,7 @@ export async function scheduleConversationMessage(input: {
     qstashMessageId: null,
     sentMessageId: null,
     ...(input.pinnedTo !== undefined ? { pinnedTo: input.pinnedTo } : {}),
+    ...(input.pinnedFrom !== undefined ? { pinnedFrom: input.pinnedFrom } : {}),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
@@ -113,6 +117,7 @@ export async function scheduleConversationMessage(input: {
         existing?.body === doc.body &&
         existing?.channel === doc.channel &&
         existing?.pinnedTo === input.pinnedTo &&
+        existing?.pinnedFrom === input.pinnedFrom &&
         LIVE_STATUSES.includes(existing?.status)
       ) {
         return { ok: true, id: ref.id };

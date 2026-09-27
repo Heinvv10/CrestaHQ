@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { auth, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
-import { seedPr13 } from "@/test/pr13-fixtures";
+import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
+import { seedPr13, VOICE } from "@/test/pr13-fixtures";
 
 /**
  * The number an agent's SMS, WhatsApp message, WhatsApp template or voice
- * call goes out from is shown ("From") and pinned: the default sender
- * changing after the proposal makes the approve a preview_changed, and
- * nothing goes out until the approver has seen the new number.
+ * call goes out from is shown ("From") and pinned, as the send resolves it:
+ * SMS the Twilio number; WhatsApp the default sender's rail's CONNECTED
+ * number (beside the sender's label); a voice call the number its Vapi phone
+ * resource was provisioned from. A change after the proposal is a
+ * preview_changed; one after the approve's check refuses the send.
  */
 
 const send = vi.hoisted(() => vi.fn(async (..._a: unknown[]): Promise<unknown> => ({ ok: true, messageId: "SM1", response: {} })));
@@ -22,8 +24,12 @@ setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 
 const twilio = (fromNumber: string) => ({ enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber });
-const waSender = (phoneNumber: string) => [{ id: "s1", label: "Sales", provider: "cloud", phoneNumber, isDefault: true }];
+const cloud = (displayPhoneNumber: string, typed = "+27000000000") => ({
+  whatsappSenders: [{ id: "s1", label: "Sales", provider: "cloud", phoneNumber: typed, isDefault: true }],
+  whatsappCloudMeta: { displayPhoneNumber, phoneNumberId: "pnid1" },
+});
 const setSub = (patch: Record<string, unknown>) => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), ...patch });
+const voice = (patch: Record<string, unknown>) => mem.seed("subAccounts/sa1/aiAgent/voice", { voice: { ...VOICE, ...patch } });
 const fromOf = (id: string) => (row(id).preview as Array<{ label: string; value: string }>).find((r) => r.label === "From")?.value;
 
 async function propose(tool: string, args: Record<string, unknown>) {
@@ -31,6 +37,7 @@ async function propose(tool: string, args: Record<string, unknown>) {
   if (!("proposal" in r)) throw new Error(`expected a proposal, got ${JSON.stringify(r)}`);
   return r.proposal.id;
 }
+const sms = () => propose("send_message", { conversationId: "c1", channel: "sms", body: "Hi" });
 
 beforeEach(() => {
   send.mockClear();
@@ -41,14 +48,13 @@ beforeEach(() => {
 });
 
 describe("send_message", () => {
-  it("sms: shows and pins the sub-account's Twilio number; a change after propose is preview_changed, nothing sent", async () => {
+  it("sms: shows and pins the Twilio number; a change after propose is preview_changed, nothing sent until re-approved", async () => {
     setSub({ twilioConfig: twilio("+27870000001") });
-    const id = await propose("send_message", { conversationId: "c1", channel: "sms", body: "Hi" });
+    const id = await sms();
     expect(fromOf(id)).toBe("+27870000001");
     expect(row(id).pinned).toMatchObject({ from: "+27870000001" });
     setSub({ twilioConfig: twilio("+27870000002") });
     const res = await decide(id, "approve");
-    expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: "preview_changed" });
     expect(fromOf(id)).toBe("+27870000002");
     expect(send).not.toHaveBeenCalled();
@@ -56,19 +62,41 @@ describe("send_message", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("sms: the number changed after the approve's check -> failed, nothing sent", async () => {
+    setSub({ twilioConfig: twilio("+27870000001") });
+    const id = await sms();
+    beforeNextTransaction(async () => setSub({ twilioConfig: twilio("+27870000002") }));
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id)).toMatchObject({ status: "failed", error: "The number it would be sent from changed since this was reviewed; nothing was sent." });
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("sms with no dedicated or shared sender says it won't be sent", async () => {
-    const id = await propose("send_message", { conversationId: "c1", channel: "sms", body: "Hi" });
+    const id = await sms();
     expect(fromOf(id)).toBe("No sms sender is set up: it will not be sent.");
     expect(row(id).pinned).toMatchObject({ from: null });
   });
 
-  it("whatsapp: shows and pins the default sender; a new default after propose is preview_changed", async () => {
-    setSub({ whatsappSenders: waSender("+27870000011") });
+  it("whatsapp: the rail's connected number beside the sender's label, not the typed registry number", async () => {
+    setSub(cloud("+27870000011", "+27899999999"));
     const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
     expect(fromOf(id)).toBe("+27870000011 (Sales)");
-    setSub({ whatsappSenders: waSender("+27870000012") });
+    expect(row(id).pinned).toMatchObject({ from: "+27870000011 (Sales)" });
+  });
+
+  it("whatsapp: a cloud reconnect to another number after propose is preview_changed, nothing sent", async () => {
+    setSub(cloud("+27870000011"));
+    const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
+    setSub(cloud("+27870000012"));
     expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("whatsapp: editing only the typed registry number changes nothing", async () => {
+    setSub(cloud("+27870000011", "+27811111111"));
+    const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
+    setSub(cloud("+27870000011", "+27822222222"));
+    expect((await decide(id, "approve")).status).toBe(200);
   });
 
   it("email has no number row (its From is the mailbox)", async () => {
@@ -78,13 +106,29 @@ describe("send_message", () => {
   });
 });
 
-describe("start_voice_call", () => {
-  it("twilio-byoc: shows and pins the Twilio number it rings from; a change is preview_changed, no call", async () => {
+describe("start_voice_call (twilio-byoc)", () => {
+  it("shows and pins the number the Vapi resource was provisioned from; a Twilio number change doesn't move it", async () => {
     setSub({ twilioConfig: twilio("+27870000021") });
+    voice({ numberMode: "twilio-byoc", vapiPhoneNumber: "+27870000021" });
     const id = await propose("start_voice_call", { contactId: "c1" });
     expect(fromOf(id)).toBe("+27870000021");
     setSub({ twilioConfig: twilio("+27870000022") });
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(createOutboundCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("a re-provisioned resource (another number) after propose is preview_changed, no call", async () => {
+    voice({ numberMode: "twilio-byoc", vapiPhoneNumber: "+27870000021" });
+    const id = await propose("start_voice_call", { contactId: "c1" });
+    voice({ numberMode: "twilio-byoc", vapiPhoneNumber: "+27870000031" });
     expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
     expect(createOutboundCall).not.toHaveBeenCalled();
+  });
+
+  it("legacy config without the provisioned number: names the Vapi resource and pins that", async () => {
+    voice({ numberMode: "twilio-byoc", vapiPhoneNumber: undefined });
+    const id = await propose("start_voice_call", { contactId: "c1" });
+    expect(fromOf(id)).toBe(`the number imported to Vapi as ${VOICE.vapiPhoneNumberId}`);
+    expect(row(id).pinned).toMatchObject({ from: `the number imported to Vapi as ${VOICE.vapiPhoneNumberId}` });
   });
 });

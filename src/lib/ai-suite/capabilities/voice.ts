@@ -14,7 +14,7 @@ import { CapabilityOutcomeUnknown, CapabilityUserError, type AiSuiteCapability }
 import { str } from "./helpers";
 import { messageBody, oneLine, plainSpaces } from "./text-safety";
 import { masked } from "./conversation-send-support";
-import { voiceSenderNumber } from "./sender-number";
+import { voiceSenderNumber } from "@/lib/server/sender-number";
 
 /**
  * start_voice_call for API agents (AGENT_API_V1_PLAN.md, PR13): the Voice
@@ -57,7 +57,7 @@ async function plan(subAccountId: string, contactId: unknown) {
       number: parsed.number as string,
       assistantId: ready.voice.vapiAssistantId,
       phoneNumberId: ready.voice.vapiPhoneNumberId,
-      from: voiceSenderNumber(subAccount, ready.voice),
+      from: voiceSenderNumber(ready.voice),
       firstMessage,
       promptFingerprint: createHash("sha256").update(built.systemPrompt).digest("hex"),
     },

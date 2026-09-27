@@ -2,7 +2,7 @@ import "server-only";
 
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { smsIsConfigured, subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
-import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
+import { railNumber, resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import type { SubAccountDoc } from "@/types";
 import type { VoiceChannelConfig } from "@/types/ai";
 
@@ -18,9 +18,11 @@ export async function messageSenderNumber(
   channel: "sms" | "whatsapp"
 ): Promise<string | null> {
   if (channel === "whatsapp") {
-    // The default sender, as dispatchWhatsappSend resolves it (no senderId).
+    // The default sender, as dispatchWhatsappSend resolves it (no senderId),
+    // shown by its rail's CONNECTED number (what the rail sends from), not
+    // the number typed into the registry.
     const r = resolveWhatsappSender(sub);
-    return r.ok ? `${r.sender.phoneNumber || "(number not recorded)"} (${r.sender.label})` : null;
+    return r.ok ? `${railNumber(sub, r.provider) || "(no number connected)"} (${r.sender.label})` : null;
   }
   // getTwilioForSubAccount: the dedicated number, else the shared one if the agency allows it.
   if (subAccountTwilioIsConfigured(sub?.twilioConfig)) return sub!.twilioConfig!.fromNumber;
@@ -30,10 +32,14 @@ export async function messageSenderNumber(
   return null;
 }
 
-/** The number a voice call rings from: the sub-account's Twilio number in
- *  twilio-byoc mode; a Vapi-managed number is only known by its Vapi id. */
-export function voiceSenderNumber(sub: SubAccountDoc | undefined, voice: Pick<VoiceChannelConfig, "numberMode" | "vapiPhoneNumberId">): string {
-  return (voice.numberMode ?? "twilio-byoc") === "vapi-managed"
-    ? `the Vapi-managed number ${voice.vapiPhoneNumberId} (its number isn't recorded here)`
-    : sub?.twilioConfig?.fromNumber || "(no Twilio number on this workspace)";
+/** The number a voice call rings from. Calls go out through the Vapi phone
+ *  resource (vapiPhoneNumberId), so it is the number that resource was
+ *  provisioned from (recorded at provisioning as vapiPhoneNumber), not the
+ *  Twilio number now: a Twilio number change doesn't move it. Without the
+ *  record (legacy, or vapi-managed) only the Vapi id is known. */
+export function voiceSenderNumber(voice: Pick<VoiceChannelConfig, "numberMode" | "vapiPhoneNumberId" | "vapiPhoneNumber">): string {
+  if ((voice.numberMode ?? "twilio-byoc") === "vapi-managed") {
+    return `the Vapi-managed number ${voice.vapiPhoneNumberId} (its number isn't recorded here)`;
+  }
+  return voice.vapiPhoneNumber || `the number imported to Vapi as ${voice.vapiPhoneNumberId}`;
 }

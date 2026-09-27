@@ -191,6 +191,10 @@ export interface VoiceChannelConfig {
    *      surfaces an input that PATCHes this; the provisioning
    *      side-effect just binds our assistant to it. */
   vapiPhoneNumberId: string | null;
+  /** twilio-byoc only: the number the Vapi phone resource was provisioned
+   *  from (server-managed, stamped when it is created). Calls ring from it
+   *  whatever the Twilio number is now. Absent on older configs. */
+  vapiPhoneNumber?: string | null;
 
   // ── Outbound calling (operator-initiated click-to-call) ──────────────
   // Reuses the same provisioned assistant + phone number as inbound. The

@@ -9,7 +9,7 @@ import { str } from "./helpers";
 import { hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { conversationIdParam, conversationTarget } from "./conversations-read";
 import { consentBlock, emailEnvelope, masked, recipientOf, resolveContact, withRecipient } from "./conversation-send-support";
-import { messageSenderNumber } from "./sender-number";
+import { messageSenderNumber } from "@/lib/server/sender-number";
 
 /**
  * The machinery every agent message capability shares (send_message,
@@ -131,6 +131,13 @@ export async function approvedRecipient(
   }
   const blocked = consentBlock(channel, contact);
   if (blocked) throw new CapabilityUserError(blocked);
+  // The sending number, resolved again right before the send resolves it.
+  if ("from" in pinned && (channel === "sms" || channel === "whatsapp")) {
+    const sub = (await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() as SubAccountDoc | undefined;
+    if ((await messageSenderNumber(sub, channel)) !== pinned.from) {
+      throw new CapabilityUserError("The number it would be sent from changed since this was reviewed; nothing was sent.");
+    }
+  }
   const sendTo = { ...withRecipient(channel, contact, pinned.to), id: contactId } as Contact;
   return { channel, contactId, sendTo, pinned, to: pinned.to };
 }

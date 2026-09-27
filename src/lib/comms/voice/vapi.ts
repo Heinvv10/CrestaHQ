@@ -445,7 +445,7 @@ export async function ensureVapiPhoneNumber(input: {
   authToken: string;
   assistantId: string;
   existingPhoneNumberId: string | null;
-}): Promise<{ phoneNumberId: string }> {
+}): Promise<{ phoneNumberId: string; /** Set when a resource was (re)registered from this number. */ number?: string }> {
   if (input.existingPhoneNumberId) {
     try {
       await vapiFetch(`/phone-number/${input.existingPhoneNumberId}`, {
@@ -477,7 +477,7 @@ export async function ensureVapiPhoneNumber(input: {
         name: `LeadStack sa:${input.subAccountId}`.slice(0, 40),
       }),
     });
-    return { phoneNumberId: created.id };
+    return { phoneNumberId: created.id, number: input.twilioConfig.fromNumber };
   } catch (err) {
     // Self-heal: Vapi refuses to create a second phone-number resource for
     // a Twilio number it already has registered — it 400s with "Existing
@@ -503,7 +503,7 @@ export async function ensureVapiPhoneNumber(input: {
           method: "PATCH",
           body: JSON.stringify({ assistantId: input.assistantId }),
         });
-        return { phoneNumberId: existingId };
+        return { phoneNumberId: existingId, number: input.twilioConfig.fromNumber };
       }
     }
     throw err;
