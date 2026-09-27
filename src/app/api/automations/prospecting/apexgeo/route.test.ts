@@ -71,7 +71,7 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
   errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
   publish.mockReset().mockResolvedValue({ messageId: "m1" });
-  fetchMock.mockReset().mockResolvedValue(scanReply(completedScan()));
+  fetchMock.mockReset().mockImplementation(async () => scanReply(completedScan()));
   mem.clear();
   mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
   mem.seed("subAccounts/sa1/private/apexgeoConnection", { apiKey: "apx_k1", baseUrl: "https://apex.example" });
@@ -138,6 +138,8 @@ describe("completed", () => {
   });
 
   it("two concurrent deliveries fill exactly once", async () => {
+    // A fresh response per call: both deliveries really reach the settle.
+    fetchMock.mockImplementation(async () => scanReply(completedScan()));
     const outcomes = await Promise.all([call(), call()]).then((rs) => Promise.all(rs.map((r) => r.json())));
     expect(outcomes.map((o) => o.status ?? "skipped").sort()).toEqual(["done", "skipped"]);
     expect(apexOf()).toHaveLength(3);
