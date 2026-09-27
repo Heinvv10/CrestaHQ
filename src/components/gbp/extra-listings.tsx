@@ -47,7 +47,7 @@ export function ExtraListings({
               subAccountId={subAccountId}
               mode="multi"
               main={main}
-              selected={shown.map((l) => `${l.accountName}|${l.locationName}`)}
+              selected={shown}
               onClose={() => setEditing(false)}
             />
           </div>

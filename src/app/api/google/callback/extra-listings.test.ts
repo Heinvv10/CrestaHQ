@@ -88,6 +88,9 @@ describe("reconnect with extra listings", () => {
     await callback();
     expect(subDoc()).toMatchObject({ googleListing: null, googleExtraListings: [], googleLocationNames: [] });
     expect(listingCacheLeft(LOC_NORTH)).toEqual({ reviews: 0, summary: null, syncState: false });
+    expect(events().filter((e) => e.type === "extra_listing_removed").map((e) => [e.reason, e.locationName, e.agencyId, e.createdByUid])).toEqual(
+      [LOC_NORTH, GONE, LOC_C].map((loc) => ["not_accessible_after_reconnect", loc, "ag_1", "uid_admin"]),
+    );
   });
 
   it("single listing: no extras, no extra walk, nothing removed", async () => {

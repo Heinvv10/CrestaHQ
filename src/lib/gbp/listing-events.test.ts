@@ -69,3 +69,29 @@ describe("reverifyListingAfterReconnect", () => {
     expect(state.docs.get(SUB_PATH)?.googleListing).toEqual({ locationName: "locations/new" });
   });
 });
+
+describe("reconnect removes an extra only if it is still the pair that was checked", () => {
+  it("keeps an extra re-added under another Google account while the walk was in flight", async () => {
+    const GONE = "locations/gone";
+    const extra = (accountName: string) => ({ accountName, locationName: GONE, title: "Gone" });
+    state.docs.set(SUB_PATH, {
+      ...state.docs.get(SUB_PATH),
+      googleListing: { accountName: "accounts/a", locationName: "locations/main" },
+      googleExtraListings: [extra("accounts/a")],
+      googleLocationNames: ["locations/main", GONE],
+    });
+    let walks = 0;
+    const provider = {
+      listAccounts: async () => ({ items: [{ name: "accounts/a", accountName: "A", type: "PERSONAL" }], nextPageToken: null }),
+      listLocations: async () => {
+        // The second walk is the extras' re-verify: an admin swaps the extra's account meanwhile.
+        if (++walks === 2) state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleExtraListings: [extra("accounts/b")] });
+        return { items: [{ name: "locations/main", title: "Main" }], nextPageToken: null };
+      },
+    } as unknown as GbpProvider;
+    await reverifyListingAfterReconnect(SUB, "uid_admin", provider, "tok", { accountName: "accounts/a", locationName: "locations/main" });
+    expect(walks).toBe(2);
+    expect(state.docs.get(SUB_PATH)?.googleExtraListings).toEqual([extra("accounts/b")]);
+    expect(state.writes.filter((w) => w.path.includes("/gbpEvents/"))).toEqual([]);
+  });
+});

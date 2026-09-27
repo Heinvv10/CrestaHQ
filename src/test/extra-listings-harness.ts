@@ -13,11 +13,23 @@ import { PUT } from "@/app/api/sub-accounts/[id]/google/extra-listings/route";
 export const LOC_C = "locations/e2e-velo-third";
 const URL_ = `http://127.0.0.1:3100/api/sub-accounts/${SUB}/google/extra-listings`;
 
+/** The extras as stored — what a freshly opened picker sends as `expected`. */
+export function storedPairs() {
+  const sub = state.docs.get(SUB_PATH) ?? {};
+  const main = (sub.googleListing as { locationName?: string } | null | undefined)?.locationName;
+  return ((sub.googleExtraListings ?? []) as Array<{ accountName: string; locationName: string }>)
+    .filter((l) => l.locationName !== main)
+    .map(({ accountName, locationName }) => ({ accountName, locationName }));
+}
+
+/** PUT the extras; a body with `listings` and no `expected` is sent as a fresh client would. */
 export async function putExtras(body: unknown, uid = "uid_admin") {
+  const fresh = !!body && typeof body === "object" && "listings" in body && !("expected" in body);
+  const sent = fresh ? { ...body, expected: storedPairs() } : body;
   const req = new Request(URL_, {
     method: "PUT",
     headers: { "x-user-uid": uid, "content-type": "application/json" },
-    body: typeof body === "string" ? body : JSON.stringify(body),
+    body: typeof sent === "string" ? sent : JSON.stringify(sent),
   });
   const res = await PUT(req, { params: Promise.resolve({ id: SUB }) });
   const text = await res.text();

@@ -16,7 +16,8 @@ import type { GoogleListing } from "@/types/google";
  * main one (MULTI_LISTING_V1_PLAN.md PR 3).
  *
  *   PUT /api/sub-accounts/[id]/google/extra-listings
- *       { listings: [{ accountName, locationName }, …] }   — the full new set, in order
+ *       { listings: [{ accountName, locationName }, …],   — the full new set, in order
+ *         expected: [{ accountName, locationName }, …] }  — the extras the client believes are stored
  *
  * Sub-account admin only, agency-gated like the listing PUT. Trusts only the
  * resource names: every NEW pair is re-fetched through the provider in one
@@ -25,8 +26,15 @@ import type { GoogleListing } from "@/types/google";
  * listing. Refusals: 400 invalid_body, 400 too_many (above
  * MAX_EXTRA_LISTINGS), 400 is_main, 409 no_listing (no main listing), 409
  * listing_shared (another sub-account manages a new pair, as main or extra),
- * 409 listings_changed (a concurrent save; reload). Removing a listing drops
- * only that listing's synced data.
+ * 409 listings_changed (the stored extras are not `expected` — a stale or
+ * concurrent save; nothing written). Removing a listing drops only that
+ * listing's synced data, after the commit; if that clear fails the save
+ * still stands: 200 with `cachePending: true` (retention / the orphan sweep
+ * purge it later).
+ *
+ * Sharing: `listing_shared` is refused when adding an EXTRA. The main listing
+ * PUT keeps its rule (a main shared with another sub-account may be
+ * selected); any sharing blocks auto-reply.
  */
 
 const MAX_BODY_BYTES = 8 * 1024;
@@ -38,8 +46,7 @@ const TEXT: Record<string, [number, string]> = {
   listings_changed: [409, "The additional listings changed meanwhile. Reload and try again."],
 };
 
-function parse(value: unknown): ListingPair[] | "too_many" | null {
-  const listings = (value as { listings?: unknown } | null)?.listings;
+function parsePairs(listings: unknown): ListingPair[] | "too_many" | null {
   if (!Array.isArray(listings)) return null;
   if (listings.length > MAX_EXTRA_LISTINGS) return "too_many";
   const pairs: ListingPair[] = [];
@@ -53,6 +60,15 @@ function parse(value: unknown): ListingPair[] | "too_many" | null {
   return pairs;
 }
 
+function parse(value: unknown): { listings: ListingPair[]; expected: ListingPair[] } | "too_many" | null {
+  const body = value as { listings?: unknown; expected?: unknown } | null;
+  const listings = parsePairs(body?.listings);
+  const expected = parsePairs(body?.expected);
+  if (listings === null || expected === null) return null;
+  if (listings === "too_many" || expected === "too_many") return "too_many";
+  return { listings, expected };
+}
+
 export async function PUT(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const access = await requireSubAccountAdmin(request, id);
@@ -63,11 +79,14 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
 
   const body = await readJsonCapped(request, MAX_BODY_BYTES);
   if (!body.ok && body.reason === "too_large") return gbpRefusal(413, "body_too_large", "Request body too large.");
-  const pairs = body.ok ? parse(body.value) : null;
-  if (pairs === "too_many") {
+  const parsed = body.ok ? parse(body.value) : null;
+  if (parsed === "too_many") {
     return gbpRefusal(400, "too_many", `At most ${MAX_EXTRA_LISTINGS} additional listings.`);
   }
-  if (!pairs) return gbpRefusal(400, "invalid_body", "listings must be a list of { accountName, locationName }.");
+  if (!parsed) {
+    return gbpRefusal(400, "invalid_body", "listings and expected must be lists of { accountName, locationName }.");
+  }
+  const pairs = parsed.listings;
 
   // Only pairs not already connected are re-fetched: removing a listing
   // never needs Google.
@@ -92,7 +111,8 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
     }
   }
 
-  const result = await saveExtraListings(id, access.uid, pairs, fetched);
+  const result = await saveExtraListings(id, access.uid, pairs, parsed.expected, fetched);
   if (!result.ok) return gbpRefusal(TEXT[result.code][0], result.code, TEXT[result.code][1]);
-  return NextResponse.json({ ok: true, added: result.added, removed: result.removed });
+  const { added, removed, cachePending } = result;
+  return NextResponse.json({ ok: true, added, removed, ...(cachePending ? { cachePending } : {}) });
 }

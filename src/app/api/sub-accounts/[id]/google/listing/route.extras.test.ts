@@ -11,7 +11,7 @@ vi.mock("firebase-admin/firestore", async () => (await import("@/test/google-oau
 
 import { SUB, SUB_PATH, request, resetHarness, state } from "@/test/google-oauth-harness";
 import { LOC_A, LOC_NORTH, enableFakeMode, seedConnection } from "@/test/gbp-route-harness";
-import { listingCacheLeft, pair, putExtras, seedListingCache, seedMainAndScenario, subDoc } from "@/test/extra-listings-harness";
+import { events, listingCacheLeft, pair, putExtras, seedListingCache, seedMainAndScenario, subDoc } from "@/test/extra-listings-harness";
 import { DELETE as DISCONNECT } from "../route";
 import { DELETE } from "./route";
 
@@ -62,4 +62,8 @@ it("disconnect still clears the main, every extra and all their synced data", as
   expect(subDoc().gbpSummaries).toBeUndefined();
   for (const loc of [LOC_A, LOC_NORTH]) expect(listingCacheLeft(loc)).toEqual({ reviews: 0, summary: null, syncState: false });
   expect(state.docs.has(`${SUB_PATH}/private/gbpSyncState`)).toBe(false);
+  // Each extra's removal is audited on its own, with the clear's reason.
+  expect(events().filter((e) => e.type === "extra_listing_removed")).toEqual([
+    { type: "extra_listing_removed", reason: "disconnected", agencyId: "ag_1", subAccountId: SUB, createdByUid: "uid_admin", at: "SERVER_TS", locationName: LOC_NORTH },
+  ]);
 });

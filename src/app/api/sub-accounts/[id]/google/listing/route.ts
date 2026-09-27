@@ -7,7 +7,8 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { findAccessibleLocation } from "@/lib/gbp/discovery";
 import { clearListing } from "@/lib/gbp/listing-events";
 import { withGbpAccess } from "@/lib/gbp/access";
-import { clearGbpCache } from "@/lib/gbp/sync/clear";
+import { CLEARING_RUN_ID, clearGbpCache } from "@/lib/gbp/sync/clear";
+import { syncStatePath } from "@/lib/gbp/sync/types";
 import { extraLocationNames } from "@/lib/gbp/sync/scope";
 import { ACCOUNT_NAME_RE, LOCATION_NAME_RE } from "@/lib/gbp/provider/types";
 import { gbpErrorResponse, gbpPreconditions, gbpRefusal } from "@/lib/gbp/route-support";
@@ -30,9 +31,16 @@ import type { GoogleListing } from "@/types/google";
  * 400 unknown_location when the full walk proves it is not there, 400
  * unverifiable_truncated when the 20-page walk stopped before finding it
  * (unproven either way, so still refused); 409 already_extra when the pair
- * is currently one of this sub-account's extra listings. Every display field written comes from that
- * re-fetch, never from the request. Each selection or clear appends an audit
- * event to `subAccounts/{id}/gbpEvents`, in the same transaction as the write.
+ * is currently one of this sub-account's extra listings; 409 listing_clearing
+ * while a just-removed extra's cache clear for that location still holds its
+ * lease (the clear would otherwise delete the new main's reviews). Every
+ * display field written comes from that re-fetch, never from the request.
+ * Each selection or clear appends an audit event to
+ * `subAccounts/{id}/gbpEvents`, in the same transaction as the write.
+ *
+ * Sharing: a main listing another sub-account also manages MAY be selected
+ * here, as before extra listings existed. `listing_shared` is refused only
+ * when adding an EXTRA (extra-listings PUT); any sharing blocks auto-reply.
  */
 
 export async function PUT(
@@ -87,7 +95,10 @@ export async function PUT(
   const subRef = db.doc(`subAccounts/${id}`);
   let switchedOff = false;
   const changed = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(subRef);
+    const [snap, clearing] = [await tx.get(subRef), await tx.get(db.doc(syncStatePath(id, location.name)))];
+    // A removed extra's clear in flight for this location: wait for it.
+    const lease = clearing.data()?.lease as { runId?: string; until?: number } | null | undefined;
+    if (lease?.runId === CLEARING_RUN_ID && (lease.until ?? 0) > Date.now()) return "listing_clearing" as const;
     // One listing, one role: an extra becomes the main only once removed as
     // an extra (its sync would otherwise run in both roles at once).
     if (extraLocationNames(snap.data() ?? {}).includes(location.name)) return "already_extra" as const;
@@ -140,6 +151,9 @@ export async function PUT(
   });
   if (changed === "already_extra") {
     return gbpRefusal(409, "already_extra", "That listing is connected as an extra listing — remove it there first.");
+  }
+  if (changed === "listing_clearing") {
+    return gbpRefusal(409, "listing_clearing", "That listing was just removed and is still being cleared. Try again in a minute.");
   }
   // A different main listing starts empty: the previous main's cache goes
   // (the main scope — extra listings' caches are untouched).

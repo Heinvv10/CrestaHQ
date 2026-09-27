@@ -33,6 +33,8 @@ export const state = {
   writes: [] as Write[],
   /** Every document path read, so a test can prove a path was never touched. */
   reads: [] as string[],
+  /** Runs after each doc write lands — a test pauses or fails the caller here. */
+  afterWrite: undefined as ((w: Write) => Promise<void> | void) | undefined,
 };
 
 function isPlain(v: unknown): v is Record<string, unknown> {
@@ -64,6 +66,7 @@ function docRef(path: string) {
       state.writes.push({ op: "set", path, data });
       const cur = state.docs.get(path);
       state.docs.set(path, opts?.merge && cur ? deepMerge(cur, data) : { ...data });
+      await state.afterWrite?.({ op: "set", path, data });
     },
     update: async (data: Record<string, unknown>) => {
       const cur = state.docs.get(path);
@@ -86,6 +89,7 @@ function docRef(path: string) {
         next[head] = inner;
       }
       state.docs.set(path, next);
+      await state.afterWrite?.({ op: "update", path, data });
     },
     delete: async () => {
       state.writes.push({ op: "delete", path });
@@ -193,6 +197,7 @@ export const firestoreMock = () => ({
 export function resetHarness(opts: { gateOn?: boolean } = {}) {
   state.writes = [];
   state.reads = [];
+  state.afterWrite = undefined;
   state.docs = new Map<string, Record<string, unknown>>([
     [
       SUB_PATH,

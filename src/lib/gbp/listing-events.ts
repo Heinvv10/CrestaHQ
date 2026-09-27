@@ -19,7 +19,8 @@ import type { GbpProvider } from "./provider/types";
  * holds the current listings.
  * Every clear also switches review auto-reply off (`reviewsAutoReply.enabled`),
  * noting `disabledReason: "listing_changed"` when it was on — and then sends
- * one alert (it was on, so exactly one writer switches it off).
+ * one alert (it was on, so exactly one writer switches it off). Each extra
+ * listing cleared with it gets its own `extra_listing_removed` event.
  */
 
 export type ListingClearedReason =
@@ -63,6 +64,18 @@ export async function clearListing(
       { ...opts.alsoSet, ...autoReplyOff, googleListing: null, googleExtraListings: [], googleLocationNames: [], updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
+    // Each extra cleared with it is audited on its own, with the same reason.
+    for (const loc of extras) {
+      tx.set(db.collection(`subAccounts/${subAccountId}/gbpEvents`).doc(), {
+        type: "extra_listing_removed",
+        reason,
+        agencyId: sub.agencyId,
+        subAccountId,
+        createdByUid: byUid,
+        at: FieldValue.serverTimestamp(),
+        locationName: loc,
+      });
+    }
     if (!previous) return true;
     tx.set(db.collection(`subAccounts/${subAccountId}/gbpEvents`).doc(), {
       type: "listing_cleared",
@@ -135,6 +148,6 @@ async function reverifyExtrasAfterReconnect(
     console.warn(`[google/callback] extra listings re-verify failed, keeping them sa=${subAccountId}`, reason);
     return;
   }
-  const missing = extras.filter((_, i) => matches[i] === null).map((l) => l.locationName);
+  const missing = extras.filter((_, i) => matches[i] === null);
   if (missing.length > 0) await removeExtraListings(subAccountId, byUid, missing, "not_accessible_after_reconnect");
 }

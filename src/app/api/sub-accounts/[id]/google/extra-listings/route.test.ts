@@ -67,6 +67,10 @@ describe("body", () => {
     ["a bad location name", { listings: [pair(`${DEFAULT_ACCOUNT}/${LOC_NORTH}`)] }],
     ["a null entry", { listings: [null] }],
     ["the same location twice", { listings: [pair(LOC_NORTH), pair(LOC_NORTH)] }],
+    ["no expected", JSON.stringify({ listings: [pair(LOC_NORTH)] })],
+    ["expected not a list", { listings: [pair(LOC_NORTH)], expected: pair(LOC_NORTH) }],
+    ["a bad pair in expected", { listings: [], expected: [pair(LOC_NORTH, "x")] }],
+    ["expected with a location twice", { listings: [], expected: [pair(LOC_NORTH), pair(LOC_NORTH)] }],
   ])("refuses %s as invalid_body", async (_l, body) => {
     await refused(body, 400, "invalid_body");
   });
@@ -74,6 +78,7 @@ describe("body", () => {
   it("refuses more than MAX_EXTRA_LISTINGS (9) as too_many", async () => {
     const ten = Array.from({ length: 10 }, (_, i) => pair(`locations/l${i}`));
     await refused({ listings: ten }, 400, "too_many");
+    await refused({ listings: [], expected: ten }, 400, "too_many");
   });
 
   it("refuses a body over 8 KB with 413", async () => {
