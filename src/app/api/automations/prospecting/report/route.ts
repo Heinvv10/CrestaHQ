@@ -8,6 +8,7 @@ import { runProspectReport } from "@/lib/prospecting/report-runner";
 import { prospectingEnabled } from "@/lib/prospecting/gate";
 import { readApexgeoConnection } from "@/lib/prospecting/apexgeo-connection";
 import { schedulePoll, settleApexgeo } from "@/lib/prospecting/apexgeo-report";
+import { announceReadyReport } from "@/lib/prospecting/report-ready";
 import { APEXGEO_REASON, apexgeoPlaceholders } from "@/lib/prospecting/apexgeo-sections";
 import {
   INTERRUPTED_AFTER_MS,
@@ -41,6 +42,10 @@ import {
  * (`apexgeo`, pending) and the first poll of `/api/automations/prospecting/apexgeo`
  * is queued after it. A poll that cannot be queued settles the three ApexGEO
  * sections `failed` at once, rather than leaving them "in progress".
+ *
+ * A ready report then gets its share link, is stamped on the contact and
+ * fires `prospecting.report.ready` (lib/prospecting/report-ready.ts). The
+ * claim above is what makes that once per report. A failed report fires nothing.
  */
 
 export const dynamic = "force-dynamic";
@@ -136,10 +141,16 @@ export async function POST(request: Request) {
         status: "failed",
       });
     }
-    // The report is settled: a failed stamp is logged, never reported as a failed run.
-    await contactRef.update({ "prospecting.lastReportId": reportId }).catch((e) =>
-      console.error("[prospecting/report] lastReportId not stamped", reportId, e),
-    );
+    // The report is settled: share link, contact stamp and the
+    // prospecting.report.ready trigger. Never throws; failures are logged.
+    await announceReadyReport({
+      reportId,
+      subAccountId: claimed.subAccountId,
+      agencyId: claimed.agencyId,
+      contactId: claimed.contactId,
+      createdByUid: claimed.createdByUid,
+      headline: outcome.headline,
+    });
     return NextResponse.json({ ok: true, status: "ready" });
   } catch (err) {
     console.error("[prospecting/report] run failed", reportId, err);

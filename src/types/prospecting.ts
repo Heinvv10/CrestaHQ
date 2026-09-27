@@ -173,6 +173,12 @@ export interface ContactProspecting {
   category?: string;
   /** Stamped by the approach guard (Prospecting PR 4). Null until then. */
   approachedAt?: Timestamp | FieldValue | null;
+  /** The workflow whose send stamped `approachedAt` — the campaign key. */
+  approachedWorkflowId?: string | null;
+  /** Headline of the latest ready report, for `{{prospecting.headline}}`. */
+  lastReportHeadline?: string | null;
+  /** Share link to the latest ready report, for `{{prospecting.reportUrl}}`. */
+  lastReportUrl?: string | null;
   /** Latest `prospectReports/{id}` for this contact (PR 2). Null until then. */
   lastReportId?: string | null;
 }

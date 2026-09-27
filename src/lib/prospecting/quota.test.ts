@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { PROSPECT_REPORT_QUOTA_DEFAULT, parseProspectReportQuota, prospectReportQuota } from "./quota";
+import {
+  PROSPECT_REPORT_QUOTA_DEFAULT,
+  PROSPECTING_FIRST_TOUCH_CAP_DEFAULT,
+  parseProspectReportQuota,
+  prospectReportQuota,
+  prospectingFirstTouchCap,
+} from "./quota";
 
 describe("prospectReportQuota", () => {
   it("defaults to 50 when the sub-account has no quota set", () => {
@@ -30,4 +36,17 @@ describe("parseProspectReportQuota (the Manage dialog's quota field)", () => {
       expect(parseProspectReportQuota(input)).toBeNull();
     },
   );
+});
+
+describe("prospectingFirstTouchCap", () => {
+  it("defaults to 20 when unset or the sub-account is missing", () => {
+    expect(PROSPECTING_FIRST_TOUCH_CAP_DEFAULT).toBe(20);
+    expect(prospectingFirstTouchCap({})).toBe(20);
+    expect(prospectingFirstTouchCap(null)).toBe(20);
+  });
+
+  it("returns the agency-set cap, including 0", () => {
+    expect(prospectingFirstTouchCap({ prospectingDailyFirstTouchCap: 2 })).toBe(2);
+    expect(prospectingFirstTouchCap({ prospectingDailyFirstTouchCap: 0 })).toBe(0);
+  });
 });

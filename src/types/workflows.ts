@@ -52,7 +52,10 @@ export type WorkflowTriggerType =
   // webhook, or declined (the invoice was emailed instead). Fired from
   // lib/server/recurring-auto-charge.ts and lib/paystack/auto-charge-reconciler.ts.
   | "invoice.charge_succeeded"
-  | "invoice.charge_failed";
+  | "invoice.charge_failed"
+  // A prospect report became ready; its headline and share link are on the
+  // contact. Fired from api/automations/prospecting/report.
+  | "prospecting.report.ready";
 
 /* ------------------------------ Conditions ----------------------------- */
 

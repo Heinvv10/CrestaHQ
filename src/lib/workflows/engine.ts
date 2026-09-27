@@ -43,6 +43,7 @@ import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask"
 import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
+import { APPROACH_CAP_LOG, guardProspectSend } from "@/lib/prospecting/approach-guard";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { evalConditionGroup } from "./conditions";
 import {
@@ -190,6 +191,23 @@ function deferForQuietHours(hold: QuietHoursHold): { result: StepResult; log: st
   };
 }
 
+/**
+ * The channel opt-out each send executor refuses on first. Shared with the
+ * approach guard in runStep, which runs only past it (and past a missing
+ * address), so an opted-out prospect is never stamped or counted.
+ */
+function channelOptedOut(type: WorkflowNodeType, contact: Contact): boolean {
+  if (type === "send_email") return Boolean(contact.emailOptedOut);
+  if (type === "send_sms") return Boolean(smsSendBlock(contact));
+  return Boolean(contact.whatsappOptedOut);
+}
+
+/** The send executor will skip without sending: opted out, or no address. */
+function sendSkips(type: WorkflowNodeType, contact: Contact): boolean {
+  const address = type === "send_email" ? contact.email : contact.phone;
+  return channelOptedOut(type, contact) || !address;
+}
+
 function mergeSubject(
   ctx: NodeContext,
   unsubscribeLink: string
@@ -205,13 +223,17 @@ function mergeSubject(
     workspace: { name: ctx.subAccount?.name ?? "" },
     bookingLink: ctx.subAccount?.bookingLink ?? "",
     unsubscribeLink,
+    prospecting: {
+      headline: ctx.contact.prospecting?.lastReportHeadline ?? "",
+      reportUrl: ctx.contact.prospecting?.lastReportUrl ?? "",
+    },
   };
 }
 
 const execSendEmail: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as SendEmailConfig;
   const contact = ctx.contact;
-  if (contact.emailOptedOut)
+  if (channelOptedOut(ctx.node.type, contact))
     return { result: { kind: "next" }, log: "skipped:opt_out" };
   const to = contact.email;
   if (!to) return { result: { kind: "next" }, log: "skipped:no_email" };
@@ -310,7 +332,7 @@ const execSendEmail: NodeExecutor = async (ctx) => {
 const execSendSms: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as SendSmsConfig;
   const contact = ctx.contact;
-  if (smsSendBlock(contact))
+  if (channelOptedOut(ctx.node.type, contact))
     return { result: { kind: "next" }, log: "skipped:opt_out" };
   const to = contact.phone;
   if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
@@ -459,7 +481,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
 export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as WhatsappTemplateConfig;
   const contact = ctx.contact;
-  if (contact.whatsappOptedOut)
+  if (channelOptedOut(ctx.node.type, contact))
     return { result: { kind: "next" }, log: "skipped:opt_out" };
   const to = contact.phone;
   if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
@@ -633,7 +655,7 @@ export const execWhatsappTemplate: NodeExecutor = async (ctx) => {
 export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   const cfg = ctx.node.config as unknown as SendWhatsappConfig;
   const contact = ctx.contact;
-  if (contact.whatsappOptedOut)
+  if (channelOptedOut(ctx.node.type, contact))
     return { result: { kind: "next" }, log: "skipped:opt_out" };
   const to = contact.phone;
   if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
@@ -1983,7 +2005,22 @@ export async function runStep(
   };
   let executed: Awaited<ReturnType<NodeExecutor>>;
   try {
-    executed = await exec(stepCtx);
+    // Prospecting approach guard: past the opt-out / no-address skip, before
+    // the send. Refuses (ends the run), holds (daily cap) or stamps + sends.
+    // Throws on an infrastructure error: claim released, nothing sent.
+    const refused =
+      atMostOnce && !sendSkips(node.type, contact)
+        ? await guardProspectSend({
+            contactId: contact.id,
+            subAccountId: run.subAccountId,
+            agencyId: run.agencyId,
+            subAccount,
+            workflowId: run.workflowId,
+            runId,
+            nodeId,
+          })
+        : null;
+    executed = refused ?? (await exec(stepCtx));
   } catch (err) {
     // Thrown before any provider call (`sent` is set just before one): nothing
     // went out, so release the claim and let QStash retry normally. Once a
@@ -2001,13 +2038,17 @@ export async function runStep(
   // step done). Release the claim and run this same step again when they end.
   // Keyed on the window's end, so a redelivery of this defer is one publish
   // and one timeline row, not one per delivery.
+  // The prospecting daily first-touch cap takes the same path to tomorrow.
   if (result.kind === "defer") {
     const { hold } = result;
-    const key = `${runId}_${nodeId}_qh_${hold.until.getTime()}`;
+    const cap = log === APPROACH_CAP_LOG;
+    const key = `${runId}_${nodeId}_${cap ? "cap" : "qh"}_${hold.until.getTime()}`;
     if (atMostOnce) await runRef.update({ stepClaim: null });
     await writeHoldActivity(
       contact.id,
-      `Workflow step (${node.type}) held for quiet hours; it goes out at ${formatHoldUntil(hold)}.`,
+      cap
+        ? `Workflow step (${node.type}) held: today's prospect first-touch cap is reached; it goes out at ${formatHoldUntil(hold)}.`
+        : `Workflow step (${node.type}) held for quiet hours; it goes out at ${formatHoldUntil(hold)}.`,
       `qh_${key}`,
     );
     await scheduleNode(runRef, nodeId, hold.retryAfterSec, run, wf, `wf_${key}`);

@@ -384,6 +384,12 @@ export interface SubAccountDoc {
    */
   prospectingReportQuota?: number;
   /**
+   * First-touch prospect sends a day, set by the agency owner (integer
+   * 0–1000). Undefined reads as `PROSPECTING_FIRST_TOUCH_CAP_DEFAULT` (20) —
+   * see lib/prospecting/quota.ts. Enforced by the approach guard.
+   */
+  prospectingDailyFirstTouchCap?: number;
+  /**
    * Get Leads: operator-defined custom service types shown in the business-
    * type picker alongside the curated list. Plain display labels (each
    * doubles as the Google Maps query, ≤60 chars, ≤30 entries). Written only

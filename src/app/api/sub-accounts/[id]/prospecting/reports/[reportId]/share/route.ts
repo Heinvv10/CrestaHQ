@@ -2,7 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { REPORT_ID, prospectingAccess } from "@/lib/prospecting/reports";
-import { mintReportShare, revokeReportShare } from "@/lib/prospecting/share";
+import { mintReportShare, reportShareUrl, revokeReportShare } from "@/lib/prospecting/share";
 
 /**
  * Public share link for a ready report.
@@ -29,8 +29,7 @@ export async function POST(request: Request, ctx: Ctx) {
   if (minted === "not_ready") {
     return NextResponse.json({ error: "Only a finished report can be shared." }, { status: 409 });
   }
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
-  return NextResponse.json({ url: `${appUrl}/report/${minted.token}` });
+  return NextResponse.json({ url: reportShareUrl(minted.token) });
 }
 
 export async function DELETE(request: Request, ctx: Ctx) {

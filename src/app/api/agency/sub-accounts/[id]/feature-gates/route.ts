@@ -68,6 +68,8 @@ interface PatchBody {
    * directly like the hide flags. Anything else is refused with a 400.
    */
   prospectingReportQuota?: number;
+  /** First-touch prospect sends a day (integer 0–1000), written like the quota. */
+  prospectingDailyFirstTouchCap?: number;
   paymentsEnabled?: boolean;
   webinar1Enabled?: boolean;
   googleEnabled?: boolean;
@@ -159,6 +161,20 @@ export async function PATCH(
       { status: 400 }
     );
   }
+  const wantsFirstTouchCap = body.prospectingDailyFirstTouchCap !== undefined;
+  if (
+    wantsFirstTouchCap &&
+    !(
+      Number.isInteger(body.prospectingDailyFirstTouchCap) &&
+      (body.prospectingDailyFirstTouchCap as number) >= 0 &&
+      (body.prospectingDailyFirstTouchCap as number) <= 1000
+    )
+  ) {
+    return NextResponse.json(
+      { error: "prospectingDailyFirstTouchCap must be a whole number from 0 to 1000." },
+      { status: 400 }
+    );
+  }
   const wantsPayments = typeof body.paymentsEnabled === "boolean";
   const wantsWebinar1 = typeof body.webinar1Enabled === "boolean";
   const wantsGoogle = typeof body.googleEnabled === "boolean";
@@ -213,6 +229,7 @@ export async function PATCH(
     !wantsGetLeads &&
     !wantsProspecting &&
     !wantsProspectingQuota &&
+    !wantsFirstTouchCap &&
     !wantsPayments &&
     !wantsWebinar1 &&
     !wantsGoogle &&
@@ -392,6 +409,10 @@ export async function PATCH(
   if (wantsProspectingQuota) {
     hiddenUpdates.prospectingReportQuota = body.prospectingReportQuota;
   }
+  if (wantsFirstTouchCap) {
+    hiddenUpdates.prospectingDailyFirstTouchCap =
+      body.prospectingDailyFirstTouchCap;
+  }
   if (wantsAiSuiteHidden) {
     hiddenUpdates.aiSuiteHiddenWhenDisabled = body.aiSuiteHiddenWhenDisabled;
   }
@@ -448,6 +469,9 @@ export async function PATCH(
       : {}),
     ...(wantsProspectingQuota
       ? { prospectingReportQuota: body.prospectingReportQuota }
+      : {}),
+    ...(wantsFirstTouchCap
+      ? { prospectingDailyFirstTouchCap: body.prospectingDailyFirstTouchCap }
       : {}),
     ...(wantsWebinar1 ? { webinar1Enabled: body.webinar1Enabled } : {}),
     ...(wantsGoogle ? { googleEnabled: body.googleEnabled } : {}),
