@@ -26,6 +26,8 @@ import { defaultSmsConsentText } from "@/types/forms";
 import type { FormField, LeadForm } from "@/types/forms";
 import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 import type { Contact, ContactAttribution } from "@/types/contacts";
+import { isDocId } from "@/lib/server/doc-id";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 type SubmitBody = {
   values: Record<string, string>;
@@ -144,12 +146,14 @@ async function handleSubmit(
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id } = await ctx.params;
-  let body: SubmitBody;
-  try {
-    body = (await request.json()) as SubmitBody;
-  } catch {
-    return jsonWithCors({ error: "Invalid JSON" }, { status: 400 });
+  // A form's text answers plus attribution fields (500 chars each): 64 KB.
+  const read = await readJsonCapped(request, 64 * 1024);
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? jsonWithCors({ error: "Request body too large" }, { status: 413 })
+      : jsonWithCors({ error: "Invalid JSON" }, { status: 400 });
   }
+  const body = read.value as SubmitBody;
 
   if (!body || typeof body.values !== "object") {
     return jsonWithCors({ error: "Missing values" }, { status: 400 });
@@ -178,6 +182,7 @@ async function handleSubmit(
     );
   }
 
+  if (!isDocId(id)) return jsonWithCors({ error: "Form not found" }, { status: 404 });
   const db = getAdminDb();
   const formRef = db.collection("forms").doc(id);
   const formSnap = await formRef.get();

@@ -4,6 +4,8 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { vapiWebhookAuthorized } from "@/lib/comms/voice/webhook-auth";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { isDocId } from "@/lib/server/doc-id";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,12 +41,14 @@ export async function POST(
 
   const { subAccountId } = await ctx.params;
 
-  let body: VapiStatusMessage;
-  try {
-    body = (await request.json()) as VapiStatusMessage;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  // A status update is a few KB; 1 MiB is generous and still bounded.
+  const read = await readJsonCapped(request, 1024 * 1024);
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? NextResponse.json({ error: "Request body too large" }, { status: 413 })
+      : NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const body = (read.value ?? {}) as VapiStatusMessage;
 
   const message = body.message ?? {};
   if (message.type !== "status-update") {
@@ -55,6 +59,10 @@ export async function POST(
   const status = message.status;
   if (!callId || !status) {
     return NextResponse.json({ ok: true, ignored: "missing call.id or status" });
+  }
+  // Both become a doc path; a non-doc id would address something else.
+  if (!isDocId(subAccountId) || !isDocId(callId)) {
+    return NextResponse.json({ ok: true, ignored: "invalid id" });
   }
 
   try {

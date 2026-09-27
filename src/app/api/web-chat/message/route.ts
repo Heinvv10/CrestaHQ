@@ -7,6 +7,8 @@ import { isValidSessionId } from "@/lib/comms/web-chat/session";
 import { respondToWebChat } from "@/lib/comms/web-chat/respond";
 import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import type { SubAccountDoc } from "@/types";
+import { isDocId } from "@/lib/server/doc-id";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -52,27 +54,29 @@ export async function POST(request: Request) {
   const origin = request.headers.get("origin");
   const headers = corsHeaders(origin);
 
-  let body: {
+  type Body = {
     sa?: string;
     sessionId?: string;
     message?: string;
     pageUrl?: string;
     referrer?: string;
   };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
+  // A message of up to 2,000 characters and two URLs: 16 KB.
+  const read = await readJsonCapped(request, 16 * 1024);
+  if (!read.ok) {
+    const tooLarge = read.reason === "too_large";
     return NextResponse.json(
-      { error: "Invalid JSON" },
-      { status: 400, headers },
+      { error: tooLarge ? "Request body too large" : "Invalid JSON" },
+      { status: tooLarge ? 413 : 400, headers },
     );
   }
+  const body = (read.value ?? {}) as Body;
 
   const subAccountId = body.sa?.trim();
   const sessionId = body.sessionId?.trim();
   const message = body.message?.trim();
 
-  if (!subAccountId) {
+  if (!subAccountId || !isDocId(subAccountId)) {
     return NextResponse.json(
       { error: "Missing sa" },
       { status: 400, headers },

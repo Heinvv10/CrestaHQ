@@ -53,6 +53,8 @@ import {
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { isDocId } from "@/lib/server/doc-id";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 /**
  * Public booking submission. Unauthenticated; security comes from:
@@ -150,12 +152,14 @@ export async function POST(
     );
   }
 
-  let body: BookBody;
-  try {
-    body = (await request.json()) as BookBody;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  // Up to 10 intake answers of 2,000 characters plus contact fields: 64 KB.
+  const read = await readJsonCapped(request, 64 * 1024);
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? NextResponse.json({ error: "Request body too large" }, { status: 413 })
+      : NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const body = (read.value ?? {}) as BookBody;
 
   const name = (body.name ?? "").trim();
   const email = (body.email ?? "").trim().toLowerCase();
@@ -198,6 +202,9 @@ export async function POST(
     );
   }
 
+  if (!isDocId(saId) || !isDocId(slug)) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
   const db = getAdminDb();
   const pageSnap = await db
     .doc(`subAccounts/${saId}/bookingPages/${slug}`)

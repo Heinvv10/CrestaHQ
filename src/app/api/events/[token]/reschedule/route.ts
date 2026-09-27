@@ -25,6 +25,7 @@ import { loadGoogleBusyForEvent } from "@/lib/google-calendar/busy";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 /**
  * Public reschedule endpoint. The HMAC token IS the credential. On
@@ -63,12 +64,14 @@ export async function POST(
     return NextResponse.json({ error: "Invalid link" }, { status: 404 });
   }
 
-  let body: RescheduleBody;
-  try {
-    body = (await request.json()) as RescheduleBody;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  // The new slot (two timestamps): 16 KB.
+  const read = await readJsonCapped(request, 16 * 1024);
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? NextResponse.json({ error: "Request body too large" }, { status: 413 })
+      : NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
+  const body = (read.value ?? {}) as RescheduleBody;
   const newStart = body.slot?.startAt ? new Date(body.slot.startAt) : null;
   const newEnd = body.slot?.endAt ? new Date(body.slot.endAt) : null;
   if (

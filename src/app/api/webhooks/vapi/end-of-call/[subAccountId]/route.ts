@@ -3,6 +3,8 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { vapiWebhookAuthorized } from "@/lib/comms/voice/webhook-auth";
 import { handleVapiEndOfCall } from "@/lib/comms/voice/end-of-call";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { isDocId } from "@/lib/server/doc-id";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -132,12 +134,14 @@ export async function POST(
 
   const { subAccountId } = await ctx.params;
 
-  let body: VapiServerMessage;
-  try {
-    body = (await request.json()) as VapiServerMessage;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  // The report carries the whole transcript, messages and analysis: 4 MiB.
+  const read = await readJsonCapped(request, 4 * 1024 * 1024);
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? NextResponse.json({ error: "Request body too large" }, { status: 413 })
+      : NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const body = (read.value ?? {}) as VapiServerMessage;
 
   const message = body.message ?? {};
   if (message.type !== "end-of-call-report") {
@@ -149,6 +153,13 @@ export async function POST(
   const callId = asString(message.call?.id);
   if (!callId) {
     return NextResponse.json({ error: "Missing call.id" }, { status: 400 });
+  }
+  // Both become a doc path; a non-doc id would address something else.
+  if (!isDocId(subAccountId)) {
+    return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
+  }
+  if (!isDocId(callId)) {
+    return NextResponse.json({ error: "Invalid call.id" }, { status: 400 });
   }
 
   // Test calls (placed from the Outbound settings page) leave no trace —
