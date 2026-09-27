@@ -38,7 +38,10 @@ export const PROSPECTING_FIRST_TOUCH_CAP_DEFAULT = 20;
 export function prospectingFirstTouchCap(
   sub: Pick<SubAccountDoc, "prospectingDailyFirstTouchCap"> | null | undefined,
 ): number {
-  return typeof sub?.prospectingDailyFirstTouchCap === "number"
-    ? sub.prospectingDailyFirstTouchCap
+  // A NaN, Infinity or negative value (written outside the PATCH route) would
+  // leave the cap unenforceable; it falls back to the default instead.
+  const cap = sub?.prospectingDailyFirstTouchCap;
+  return Number.isInteger(cap) && (cap as number) >= 0
+    ? (cap as number)
     : PROSPECTING_FIRST_TOUCH_CAP_DEFAULT;
 }

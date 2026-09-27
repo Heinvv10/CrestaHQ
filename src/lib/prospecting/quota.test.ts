@@ -49,4 +49,10 @@ describe("prospectingFirstTouchCap", () => {
     expect(prospectingFirstTouchCap({ prospectingDailyFirstTouchCap: 2 })).toBe(2);
     expect(prospectingFirstTouchCap({ prospectingDailyFirstTouchCap: 0 })).toBe(0);
   });
+
+  it("falls back to the default for a value that could never be reached", () => {
+    for (const bad of [NaN, Infinity, -1, 2.5]) {
+      expect(prospectingFirstTouchCap({ prospectingDailyFirstTouchCap: bad })).toBe(20);
+    }
+  });
 });

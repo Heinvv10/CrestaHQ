@@ -21,3 +21,4 @@ Files: `G` = `src/lib/workflows/prospecting-approach-guard.test.ts` (9 tests), `
 All restored; both files green afterwards (G 9/9, R 3/3).
 
 Test 9 (a person's composer WhatsApp still reaches an approached prospect) guards against the guard spreading to manual sends; no production mutation applies to it in this PR, because the manual path was deliberately left untouched.
+| M9 | Cap parser accepts any number (`typeof cap === "number"`), so NaN/Infinity/negative pass | RED: quota.test "falls back to the default…" |
