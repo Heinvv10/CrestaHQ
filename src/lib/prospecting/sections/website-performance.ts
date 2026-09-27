@@ -29,7 +29,7 @@ export function score(technical: ApexgeoScan["technical"]): Scored | null {
     });
   }
   if (technical.mobile_viewport === false) score -= 20;
-  return { score: Math.max(0, score), findings };
+  return { score, findings };
 }
 
 export function result(scan: ApexgeoScan): ProspectSectionResult {

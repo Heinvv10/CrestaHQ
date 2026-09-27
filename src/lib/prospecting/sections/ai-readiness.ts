@@ -40,7 +40,7 @@ export function score(readiness: ApexgeoScan["ai_readiness"]): Scored | null {
       text: "The website has no LocalBusiness structured data telling search and AI engines what the business is and where.",
     });
   }
-  return { score: Math.max(0, score), findings };
+  return { score, findings };
 }
 
 export function blockedCrawlers(readiness: Readiness): string[] {

@@ -111,7 +111,7 @@ describe("section 7 — AI readiness", () => {
     expect(r.raw).toMatchObject({ GPTBot: "notMeasured", robotsTxt: "notMeasured" });
   });
 
-  it("both problems floor at 10", () => {
+  it("both problems: 10", () => {
     const r = aiReadiness.result(scan((s) => void (s.ai_readiness.robots.GPTBot = "blocked")));
     expect(r.score).toBe(10);
     expect(codes(r)).toEqual(["ai_crawlers_blocked", "no_local_business_schema"]);
@@ -176,6 +176,18 @@ describe("section 8 — AI presence", () => {
     );
     // Zeta 3 answers (shown as first spelled); Alpha 2, Beta 2 (seen before Gamma 1).
     expect(r.raw.topCompetitors).toBe("zeta plumbing, Alpha Plumbing, Beta Drains");
+  });
+
+  it("a name repeated inside one answer counts once; a blank name is never listed", () => {
+    const r = aiPresence.result(
+      scan((s) => {
+        const lists = [["X Co", "x co", "X CO", "  "], ["Y Co"], ["Y Co", ""], [], [], []];
+        s.ai_visibility.prompts.flatMap((p) => p.engines.filter((e) => e.error === null)).forEach((e, i) => {
+          e.competitors_named = lists[i];
+        });
+      }),
+    );
+    expect(r.raw.topCompetitors).toBe("Y Co, X Co");
   });
 
   it("no competitors named → null, not an empty string", () => {
