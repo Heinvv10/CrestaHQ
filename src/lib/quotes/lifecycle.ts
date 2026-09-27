@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { fireWorkflowTrigger } from "@/lib/workflows/engine";
+import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import {
   DealStageError,
@@ -143,7 +143,10 @@ function defaultActivityContent(
 export async function fireQuoteTrigger(
   quote: Pick<Quote, "agencyId" | "subAccountId" | "contactId">,
   trigger: Extract<AutomationTriggerType, `quote_${string}`>,
-): Promise<void> {
+  /** An approved agent action: enrol only these reviewed workflows, steps
+   *  unchanged; the outcome is then awaited and returned. */
+  expectedStepsFingerprints?: Record<string, string>,
+): Promise<TriggerOutcome | null> {
   // Workflow Builder triggers: accepted (v1), paid (v2 — covers invoices
   // too; both document kinds share the mark-paid route).
   const type =
@@ -152,14 +155,19 @@ export async function fireQuoteTrigger(
       : trigger === "quote_marked_paid"
         ? ("quote.paid" as const)
         : null;
-  if (type) {
-    void fireWorkflowTrigger({
-      agencyId: quote.agencyId,
-      subAccountId: quote.subAccountId,
-      type,
-      contactId: quote.contactId,
-    });
+  if (!type) return null;
+  const fired = fireWorkflowTrigger({
+    agencyId: quote.agencyId,
+    subAccountId: quote.subAccountId,
+    type,
+    contactId: quote.contactId,
+    ...(expectedStepsFingerprints ? { expectedStepsFingerprints } : {}),
+  });
+  if (!expectedStepsFingerprints) {
+    void fired;
+    return null;
   }
+  return fired;
 }
 
 /**

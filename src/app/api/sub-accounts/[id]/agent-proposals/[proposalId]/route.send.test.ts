@@ -49,6 +49,7 @@ describe("propose", () => {
       { label: "Channel", value: "sms" },
       { label: "Consent", value: "Not opted out of sms." },
       { label: "When", value: "Sends immediately when approved (quiet hours don't hold it)." },
+      { label: "From", value: expect.any(String) }, // sender-number.test.ts
       { label: "Message", value: "Your install is booked for Tuesday.", multiline: true },
     ]);
     expect(row(id)).toMatchObject({ approval: "outbound", contactId: "c1", pinned: { contactId: "c1", channel: "sms", to: "+27821111111" } });

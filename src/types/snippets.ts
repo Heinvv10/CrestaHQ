@@ -36,4 +36,8 @@ export interface SnippetInput {
 export type SnippetDto = Omit<Snippet, "createdAt" | "updatedAt"> & {
   createdAt: number | null;
   updatedAt: number | null;
+  /** The API key prefix of the agent that last wrote it (lastAgentEditKey),
+   *  and when; null when no API agent has. */
+  lastAgentEditKey: string | null;
+  lastAgentEditAt: number | null;
 };

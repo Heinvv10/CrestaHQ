@@ -52,6 +52,7 @@ import {
   type HoldFailure,
 } from "./agent-hold";
 import { writeHeldEnrolment } from "@/lib/server/agent-held-enrolment";
+import { workflowStepsFingerprint } from "@/lib/workflows/steps-fingerprint";
 import { publicFetch } from "@/lib/webhooks/public-fetch";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
@@ -1264,6 +1265,12 @@ export interface FireInput {
   hold?: AgentActor;
   /** Approve-time replay of a held enrolment: match this workflow only. */
   onlyWorkflowId?: string;
+  /**
+   * An approved action's reviewed workflows: id -> steps fingerprint
+   * (workflowStepsFingerprint). Only a workflow listed here whose live steps
+   * still match enrols; any other is skipped `steps_changed`.
+   */
+  expectedStepsFingerprints?: Record<string, string>;
 }
 
 /** Why a matching-type workflow did not take the contact. */
@@ -1274,6 +1281,8 @@ export type EnrolSkipReason =
   /** The re-entry transaction errored; not enrolled (fails closed). */
   | "reentry_check_failed"
   | "no_start_node"
+  /** Not a workflow the approver reviewed, or its steps changed since. */
+  | "steps_changed"
   /** An agent's hold could not be written (e.g. an unsettled earlier
    *  approval of it); nothing was enrolled. */
   | "hold_refused";
@@ -1346,6 +1355,13 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
       };
       if (!wf.startNodeId) {
         skip("no_start_node");
+        continue;
+      }
+      if (
+        input.expectedStepsFingerprints &&
+        input.expectedStepsFingerprints[wf.id] !== workflowStepsFingerprint(wf)
+      ) {
+        skip("steps_changed");
         continue;
       }
 

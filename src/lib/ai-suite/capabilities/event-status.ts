@@ -11,6 +11,7 @@ import { agentActor, str, toDate } from "./helpers";
 import { hasUnsafeText, messageBody, oneLine, plainSpaces, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { masked } from "./conversation-send-support";
 import { recordProvenanceRows } from "./record-provenance";
+import { activeWorkflowsOn } from "./workflow-support";
 
 /**
  * set_event_status for API agents (AGENT_API_V1_PLAN.md, PR12), through the
@@ -40,23 +41,17 @@ async function tenantEvent(subAccountId: string, eventId: unknown): Promise<Cale
 }
 
 /** The active booking.cancelled workflows a cancel starts (as a person's
- *  cancel does), matched as the engine matches them. */
-async function cancelWorkflows(event: CalendarEvent): Promise<Array<{ id: string; name: string }>> {
+ *  cancel does), matched as the engine matches them, with their steps'
+ *  fingerprints. */
+async function cancelWorkflows(event: CalendarEvent) {
   if (!event.contactId) return [];
-  const snap = await getAdminDb()
-    .collection("workflows")
-    .where("subAccountId", "==", event.subAccountId)
-    .where("status", "==", "active")
-    .where("trigger.type", "==", "booking.cancelled")
-    .get();
-  return snap.docs
-    .filter((d) => {
-      const slug = d.data().trigger?.bookingPageSlug as string | null | undefined;
-      return !slug || slug === (event.bookingPageSlug ?? null);
-    })
-    .map((d) => ({ id: d.id, name: oneLine(d.data().name) || "(unnamed)" }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+  return (await activeWorkflowsOn(event.subAccountId, "booking.cancelled")).filter((w) => {
+    const slug = (w.trigger as { bookingPageSlug?: string | null } | undefined)?.bookingPageSlug;
+    return !slug || slug === (event.bookingPageSlug ?? null);
+  });
 }
+/** What is pinned of those workflows: which, and their exact steps. */
+const workflowPin = (ws: Awaited<ReturnType<typeof cancelWorkflows>>) => ws.map((w) => ({ id: w.id, stepsFingerprint: w.stepsFingerprint }));
 
 /** The notice a cancel would send (null: none), and how the approver reads it. */
 async function noticePlan(event: CalendarEvent): Promise<{ notice: CancelNoticeExpect | null; rows: PreviewRow[] }> {
@@ -126,7 +121,7 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
           },
           { label: "Then", value: "The slot is freed, and those workflows run, as when a person cancels it." },
         ],
-        pinned: { eventId: e.id, notice: plan.notice, workflowIds: workflows.map((w) => w.id) },
+        pinned: { eventId: e.id, contactId: e.contactId ?? null, notice: plan.notice, workflows: workflowPin(workflows) },
       };
     },
     execute: async (ctx, args) => {
@@ -136,17 +131,30 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       if (status === "cancelled") {
         if (!ctx.approved) throw new CapabilityUserError("Cancelling an appointment needs a person's approval.");
         const pinned = (ctx.approved.pinned?.notice ?? null) as CancelNoticeExpect | null;
-        if (canonical((await noticePlan(e)).notice) !== canonical(pinned)) {
+        const contactId = (ctx.approved.pinned?.contactId ?? null) as string | null;
+        if ((e.contactId ?? null) !== contactId || canonical((await noticePlan(e)).notice) !== canonical(pinned)) {
           throw new CapabilityUserError("The appointment's contact or its cancellation notice changed since this was reviewed; nothing was changed.");
         }
-        if (canonical((await cancelWorkflows(e)).map((w) => w.id)) !== canonical(ctx.approved.pinned?.workflowIds ?? [])) {
-          throw new CapabilityUserError("The workflows a cancel starts changed since this was reviewed; nothing was changed.");
+        if (canonical(workflowPin(await cancelWorkflows(e))) !== canonical(ctx.approved.pinned?.workflows ?? [])) {
+          throw new CapabilityUserError("The workflows a cancel starts (or their steps) changed since this was reviewed; nothing was changed.");
         }
-        const out = await changeEventStatus(e, status, reason, { expectNotice: pinned });
+        // The contact is re-checked in the write's own read: re-linked since, and no workflows start.
+        // The engine starts only the reviewed workflows, steps unchanged at the fire.
+        const reviewed = (ctx.approved.pinned?.workflows ?? []) as Array<{ id: string; stepsFingerprint: string }>;
+        const out = await changeEventStatus(e, status, reason, {
+          expectNotice: pinned,
+          expectContactId: contactId,
+          expectedStepsFingerprints: Object.fromEntries(reviewed.map((w) => [w.id, w.stepsFingerprint])),
+        });
         if (!out.ok) throw new CapabilityUserError(out.error ?? "The appointment couldn't be cancelled.");
         if (out.noop) return { resultText: "It was already cancelled (by someone else); nothing more was done.", ref: { kind: "event", id: e.id } };
         const sent = out.emailSent ? " The attendee was emailed." : out.emailSkipReason === "changed_since_approval" ? " The notice was NOT sent: it changed after approval." : "";
-        return { resultText: `Cancelled the appointment.${sent}`, ref: { kind: "event", id: e.id } };
+        const skipped = out.workflowsSkipped
+          ? " Its workflows were NOT started: the appointment's contact changed after approval."
+          : out.workflowsStepsChanged?.length
+            ? ` Not started, their steps changed after approval: ${out.workflowsStepsChanged.join(", ")}.`
+            : "";
+        return { resultText: `Cancelled the appointment.${sent}${skipped}`, ref: { kind: "event", id: e.id } };
       }
       const out = await changeEventStatus(e, status, reason, { actor: agentActor(ctx, "set_event_status") });
       if (!out.ok) throw new CapabilityUserError(out.error ?? "The appointment's status couldn't be changed.");

@@ -8,6 +8,7 @@ import { useSnippets } from "@/hooks/use-snippets";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MergeFieldMenu } from "@/components/snippets/merge-field-menu";
+import { AgentEditBadge } from "@/components/snippets/agent-edit-badge";
 import {
   renderMergeTags,
   type MergeTagContext,
@@ -159,6 +160,11 @@ export function ComposerInserts({
                     <span className="text-muted-foreground block truncate text-[11px]">
                       {s.body}
                     </span>
+                    {s.lastAgentEditKey && (
+                      <span className="mt-0.5 block">
+                        <AgentEditBadge snippet={s} />
+                      </span>
+                    )}
                   </button>
                 ))
               )}

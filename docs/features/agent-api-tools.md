@@ -46,7 +46,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `create_quote` | write | member | Draft a quote (or invoice, kind:"invoice") for a contact, with at least one line. |  |
 | `update_quote` | write; `spend` when the quote or invoice is no longer a draft | member | Edit a quote's or invoice's lines, currency, discount, tax, terms, billing details, dates or linked deal. | every asked field old -> new, the line items before and after, and the total |
 | `send_quote` | `outbound` | member | Email a quote or invoice to its contact with a link to view (and for an invoice, pay) it, as the Send button does. | to, from, reply-to, channel (email), payment rail, exact subject and message (links as placeholders), what happens next |
-| `mark_quote_paid` | `outbound` | member | Record that an accepted quote or a sent invoice was paid, as its Mark as paid button does. | amount and currency, how it is recorded, the automations it starts (the exact review request or why none) |
+| `mark_quote_paid` | `outbound` | member | Record that an accepted quote or a sent invoice was paid, as its Mark as paid button does. | amount and currency, how it is recorded, the quote.paid workflows it starts (their steps pinned), the exact review request or why none |
 | `list_recurring_schedules` | read | admin | List recurring invoice schedules: id, name, status, contact, frequency and next billing date. |  |
 | `create_recurring_schedule` | `spend` | admin | Set up a schedule that raises and emails (or card-charges) an invoice to a contact every cycle. | the whole schedule, where invoices go, whether a card is charged |
 | `update_recurring_schedule` | `spend` | admin | Change a recurring schedule's name, lines, amounts, frequency, billing day, ending, review or card settings. | the schedule old -> new, the card outcome, any pro-rata |
@@ -79,7 +79,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `cancel_scheduled_message` | write | member | Cancel a pending scheduled message (or dismiss a failed one). |  |
 | `send_message` | `outbound` | member | Send a message to a conversation's contact on sms, whatsapp, email (needs a subject), messenger or instagram. | to, from, channel, consent, the exact text (subject and reply-to for email), when |
 | `schedule_message` | `outbound` | member | Schedule a message to a conversation's contact for a later time (at least a minute and at most 7 days ahead), on sms, whatsapp, email (needs a subject), messenger or instagram. | to, from, channel, consent, the exact text, when it sends and what then happens |
-| `send_whatsapp_template` | `outbound` | member | Send one of the sub-account's approved WhatsApp templates to a conversation's contact; the only WhatsApp message allowed after the contact's 24-hour reply window has closed. | to, template, language, the filled text and buttons, when |
+| `send_whatsapp_template` | `outbound` | member | Send one of the sub-account's approved WhatsApp templates to a conversation's contact; the only WhatsApp message allowed after the contact's 24-hour reply window has closed. | to, from (the sending number), template, language, the filled text and buttons, when |
 | `create_task` | write | member | Create a task (to-do) in this sub-account, optionally with a due date and linked to a contact. |  |
 | `find_tasks` | read | member | List this workspace's open (incomplete) tasks, filtered to today / overdue / upcoming, or everything open. |  |
 | `complete_task` | write | member | Mark one of this workspace's tasks as completed. |  |
@@ -87,7 +87,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `delete_task` | `hard_delete` | member | Delete a task permanently. | the task: due, done, assignee, what it links to, notes |
 | `find_events` | read | member | List this workspace's upcoming calendar events (today / next 7 days / everything upcoming), in the workspace's timezone. |  |
 | `create_event` | write | member | Create a calendar event in this workspace. |  |
-| `set_event_status` | write; `outbound` when status=cancelled | member | Set an appointment's status, as the calendar's status buttons do: completed or no_show (only once it has started) or cancelled. | cancelling: the appointment, the timeline reason, the exact notice or why none, the workflows that start |
+| `set_event_status` | write; `outbound` when status=cancelled | member | Set an appointment's status, as the calendar's status buttons do: completed or no_show (only once it has started) or cancelled. | cancelling: the appointment, the timeline reason, the exact notice or why none, the workflows that start (their steps pinned) |
 | `list_booking_pages` | read | member | List the sub-account's booking pages: slug, name, status (draft or published) and meeting length. |  |
 | `get_booking_page` | read | member | Read a booking page's settings: times, questions, hosts, reminders, payment and confirmation text. |  |
 | `create_booking_page` | write; `public_change` when status=published | admin | Create a booking page with the booking editor's fields (slug, name, workingHours, timezone... | every field of the page to be published |
@@ -103,4 +103,4 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `send_review_request` | `outbound` | member | Text a contact the Google review request (SMS or WhatsApp, as set up in Reputation settings). | the exact text, recipient, channel and template, or why none would send |
 | `list_broadcasts` | read | member | List the sub-account's email broadcasts, newest first: template, audience, status and totals. |  |
 | `create_broadcast` | `outbound` | admin | Send an email template to every contact matching an audience (all; a tag; or a pipeline stage), skipping opted-out contacts. | channel, audience and matched count, exact subject and message, merge tags, what is checked at send |
-| `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, first words, greeting name, the script, consent, cost, what is checked at dial time |
+| `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time |

@@ -27,6 +27,7 @@ import {
 } from "@/lib/server/agent-proposals";
 import { executeAndSettle } from "@/lib/server/agent-proposals-settle";
 import { replayHeldEnrolment } from "@/lib/server/agent-enrolment-replay";
+import { currentHeldEnrolmentPreview } from "@/lib/server/agent-held-enrolment";
 
 const DECISIONS = ["approve", "reject", "mark_sent", "mark_not_sent"] as const;
 type Decision = (typeof DECISIONS)[number];
@@ -199,9 +200,12 @@ export async function POST(
   // execute reads live data; the preview was computed when proposed. If
   // what would happen now differs, store it and make the approver look again.
   // Same neutral ctx as at propose time, so who approves cannot change it.
+  // A held enrolment's preview is rebuilt from the workflow's current steps.
   let pinned = (proposal.pinned ?? null) as Record<string, unknown> | null;
-  if (!enrolment && cap?.preview) {
-    let fresh: ReturnType<typeof normalizePreview>;
+  let fresh: ReturnType<typeof normalizePreview> | null = null;
+  if (enrolment) {
+    fresh = await currentHeldEnrolmentPreview(proposal);
+  } else if (cap?.preview) {
     try {
       fresh = normalizePreview(
         await cap.preview(buildPreviewContext(proposal.agencyId as string, subAccountId), args),
@@ -220,6 +224,8 @@ export async function POST(
       console.error(`[agent-proposals] ${proposalId}:`, err);
       return NextResponse.json({ error: "The preview could not be built." }, { status: 500 });
     }
+  }
+  if (fresh) {
     const stored = { rows: proposal.preview, pinned };
     if (canonical(fresh) !== canonical(stored)) {
       // Grown past what a row can hold (e.g. the record was edited since):

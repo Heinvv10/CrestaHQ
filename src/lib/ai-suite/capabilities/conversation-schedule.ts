@@ -86,7 +86,10 @@ export const CONVERSATION_SCHEDULE_CAPABILITIES: AiSuiteCapability[] = [
       const at = new Date(args.sendAt as string);
       return outgoingPreview(ctx, args, [
         { label: "When", value: `${fmtInTz(at, tz)} (${tz}) — ${at.toISOString()}` },
-        { label: "Then", value: `Fires at that time; the recipient is re-checked then, and it won't send if it changed. ${AT_FIRE[args.channel as string]}` },
+        {
+          label: "Then",
+          value: `Fires at that time; the recipient${args.channel === "sms" || args.channel === "whatsapp" ? " and the number it goes out from are" : " is"} re-checked then, and it won't send if ${args.channel === "sms" || args.channel === "whatsapp" ? "either" : "it"} changed. ${AT_FIRE[args.channel as string]}`,
+        },
       ]);
     },
     execute: async (ctx, args) => {
@@ -111,6 +114,7 @@ export const CONVERSATION_SCHEDULE_CAPABILITIES: AiSuiteCapability[] = [
           actorUid: ctx.uid,
           nowMs: Date.now(),
           pinnedTo: to,
+          ...("from" in pinned ? { pinnedFrom: pinned.from as string | null } : {}),
           id: `agent_${ctx.approved!.proposalId}_${ctx.approved!.claimId}`,
         });
       } catch (err) {

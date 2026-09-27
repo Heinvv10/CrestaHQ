@@ -45,7 +45,7 @@ describe("start_voice_call", () => {
     expect(row(id).preview).toContainEqual({ label: "First words", value: VOICE.outboundFirstMessage, multiline: true });
     expect(row(id).preview).toContainEqual({ label: "Script (what the AI is told)", value: VOICE.outboundSystemPrompt, multiline: true });
     expect(row(id).pinned).toEqual({
-      contactId: "c1", number: "+27821111111", assistantId: "asst1", phoneNumberId: "pn1", firstMessage: VOICE.outboundFirstMessage, promptFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
+      contactId: "c1", number: "+27821111111", assistantId: "asst1", phoneNumberId: "pn1", from: expect.any(String), firstMessage: VOICE.outboundFirstMessage, promptFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(createOutboundCall).not.toHaveBeenCalled();
     expect((await decide(id, "approve")).status).toBe(200);

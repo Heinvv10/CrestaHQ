@@ -159,7 +159,7 @@ describe("set_event_status", () => {
     });
     const id = await proposeCancel();
     expect(rowOf(id, "Workflows that start")).toBe("Sends on booking.cancelled (wf_booking.cancelled)");
-    expect(row(id).pinned).toMatchObject({ workflowIds: ["wf_booking.cancelled"] });
+    expect(row(id).pinned).toMatchObject({ workflows: [{ id: "wf_booking.cancelled", stepsFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) }] });
     mem.seed("workflows/wf_late", { ...mem.read("workflows/wf_booking.cancelled")!, name: "Late addition" });
     const res = await decide(id, "approve");
     expect(res.status).toBe(409);
@@ -175,16 +175,36 @@ describe("set_event_status", () => {
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
-  it("re-linked to another contact inside the cancel's transaction -> no notice to either; the trigger enrols the new contact", async () => {
+  it("re-linked to another contact inside the cancel's transaction -> cancelled, but no notice and no workflow for either; the result says so", async () => {
     workflow("booking.cancelled");
     const id = await proposeCancel();
+    expect(row(id).pinned).toMatchObject({ contactId: "c1" });
     mem.seed("contacts/c2", { ...ANN, name: "Ben", email: "ben@x.io" });
     beforeNextTransaction(async () => beforeNextTransaction(async () => mem.seed("events/ev1", pastEvent({ contactId: "c2" }))));
-    expect((await decide(id, "approve")).status).toBe(200);
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("workflows were NOT started") });
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
     expect(sendEmail).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(mem.list("workflowRuns")).toHaveLength(1));
-    expect(mem.list("workflowRuns")[0]).toMatchObject({ contactId: "c2" });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mem.list("workflowRuns")).toEqual([]);
+  });
+
+  it("re-linked (same name and email) after the proposal -> preview_changed, not cancelled", async () => {
+    const id = await proposeCancel();
+    mem.seed("contacts/c2", { ...ANN }); // same name and email: only the contact pin differs
+    mem.seed("events/ev1", pastEvent({ contactId: "c2" }));
+    expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
+  });
+
+  it("re-linked (same name and email) after the approve's check -> failed, not cancelled", async () => {
+    const id = await proposeCancel();
+    mem.seed("contacts/c2", { ...ANN });
+    beforeNextTransaction(async () => mem.seed("events/ev1", pastEvent({ contactId: "c2" })));
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(422);
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
   });
 
   it("the contact's email changed after the preview check -> failed, not cancelled, nothing sent", async () => {
@@ -200,6 +220,41 @@ describe("set_event_status", () => {
     google.during = () => mem.seed("contacts/c1", { ...ANN, email: "other@x.io" });
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a started workflow's steps edited after the proposal -> preview_changed, not cancelled", async () => {
+    workflow("booking.cancelled");
+    const id = await proposeCancel();
+    mem.seed("workflows/wf_booking.cancelled", { ...mem.read("workflows/wf_booking.cancelled")!, nodes: { n1: { id: "n1", type: "send_sms", config: { body: "Changed" }, next: null } } });
+    expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
+  });
+
+  it("a started workflow's steps edited inside the cancel's transaction -> cancelled, that workflow not started, the result says so", async () => {
+    workflow("booking.cancelled");
+    const id = await proposeCancel();
+    beforeNextTransaction(async () => beforeNextTransaction(async () =>
+      mem.seed("workflows/wf_booking.cancelled", { ...mem.read("workflows/wf_booking.cancelled")!, nodes: {} })
+    ));
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("their steps changed after approval: wf_booking.cancelled") });
+    expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(mem.list("workflowRuns")).toEqual([]);
+  });
+
+  it("a started workflow's steps edited after the approver's preview check -> failed, not cancelled", async () => {
+    workflow("booking.cancelled");
+    const id = await proposeCancel();
+    beforeNextTransaction(async () =>
+      mem.seed("workflows/wf_booking.cancelled", { ...mem.read("workflows/wf_booking.cancelled")!, nodes: {} })
+    );
+    const res = await decide(id, "approve");
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ error: expect.stringContaining("or their steps") });
+    expect(mem.read("events/ev1")!.status).toBe("scheduled");
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });

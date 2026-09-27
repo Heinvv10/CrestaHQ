@@ -65,6 +65,7 @@ describe("propose", () => {
       { label: "Template", value: "Install day (install_day)" },
       { label: "Language", value: "en_US" },
       { label: "When", value: "Sends immediately when approved (quiet hours don't hold it). WhatsApp's 24-hour reply window doesn't apply to templates." },
+      { label: "From", value: expect.any(String) }, // sender-number.test.ts
       { label: "Message", value: RENDERED, multiline: true },
       { label: "Buttons", value: 'quick reply "YES" · link "Reschedule" (https://x.io/r)' },
     ]);
@@ -201,17 +202,19 @@ describe("approve", () => {
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  const TEMPLATE_CHANGED = "The template or its values changed since this was reviewed; nothing was sent.";
   it.each([
-    ["the provider's template id (sid)", () => editTemplate({ contentSid: "HX2" })],
-    ["the rail", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, whatsappProvider: "cloud" })],
-    ["a merge-tag value (the contact's name)", () => mem.seed("contacts/c1", { ...ANN, name: "Bob Smith" })],
-  ])("%s changed between the approve-time re-check and the send → failed, 0 sends", async (_label, change) => {
+    ["the provider's template id (sid)", () => editTemplate({ contentSid: "HX2" }), TEMPLATE_CHANGED],
+    // A rail switch also moves the sending number, which is re-checked first.
+    ["the rail", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, whatsappProvider: "cloud" }), "The number it would be sent from changed since this was reviewed; nothing was sent."],
+    ["a merge-tag value (the contact's name)", () => mem.seed("contacts/c1", { ...ANN, name: "Bob Smith" }), TEMPLATE_CHANGED],
+  ])("%s changed between the approve-time re-check and the send → failed, 0 sends", async (_label, change, error) => {
     // The same id on both rails, so a rail switch changes nothing but the rail.
     editTemplate({ registrations: { cloud: { externalId: "HX1", status: "approved", rejectionReason: null } } });
     const id = await proposeId();
     beforeNextTransaction(async () => change());
     expect((await decide(id, "approve")).status).toBe(422);
-    expect(row(id)).toMatchObject({ status: "failed", error: "The template or its values changed since this was reviewed; nothing was sent." });
+    expect(row(id)).toMatchObject({ status: "failed", error });
     expect(dispatch).not.toHaveBeenCalled();
   });
 

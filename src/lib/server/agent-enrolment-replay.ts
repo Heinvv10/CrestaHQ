@@ -20,6 +20,7 @@ const WHY: Record<string, string> = {
   reentry_blocked: "The contact is already in (or has already been through) that workflow.",
   filters_not_met: "The contact no longer matches that workflow's filters.",
   trigger_mismatch: "The workflow's trigger no longer matches.",
+  steps_changed: "The workflow's steps changed since this was reviewed, so nobody was enrolled.",
   deal_changed:
     "The deal changed since this was proposed (it moved, left its pipeline or was deleted), so nobody was enrolled (trigger_mismatch).",
   event_changed:
@@ -80,12 +81,13 @@ export async function dealStillMatches(
  */
 export async function replayHeldEnrolment(
   proposal: Record<string, unknown>,
-  _approver: AiSuiteActionContext
+  approver: AiSuiteActionContext
 ): Promise<ExecuteResult> {
   const args = proposal.args as { type: WorkflowTriggerType; contactId: string; context?: Record<string, unknown> };
   const subAccountId = proposal.subAccountId as string;
   const keyId = proposal.keyId as string;
   const workflowId = proposal.workflowId as string;
+  const stepsFingerprint = approver.approved?.pinned?.stepsFingerprint;
   if (DEAL_TRIGGERS.has(args.type) && !(await dealStillMatches(subAccountId, args.type, args.context ?? {}))) {
     throw new CapabilityUserError(WHY.deal_changed);
   }
@@ -110,6 +112,8 @@ export async function replayHeldEnrolment(
     contactId: args.contactId,
     context: args.context ?? {},
     onlyWorkflowId: workflowId,
+    // The engine enrols only while the live steps are the reviewed ones.
+    expectedStepsFingerprints: { [workflowId]: typeof stepsFingerprint === "string" ? stepsFingerprint : "" },
     // Only a charged reservation is reconciled by the engine's finally.
     ...(budget.charged ? { apiKeyId: keyId } : {}),
   });

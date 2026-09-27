@@ -20,7 +20,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   delete_snippet: "the snippet's subject and body",
   update_quote: "every asked field old -> new, the line items before and after, and the total",
   send_quote: "to, from, reply-to, channel (email), payment rail, exact subject and message (links as placeholders), what happens next",
-  mark_quote_paid: "amount and currency, how it is recorded, the automations it starts (the exact review request or why none)",
+  mark_quote_paid: "amount and currency, how it is recorded, the quote.paid workflows it starts (their steps pinned), the exact review request or why none",
   create_recurring_schedule: "the whole schedule, where invoices go, whether a card is charged",
   update_recurring_schedule: "the schedule old -> new, the card outcome, any pro-rata",
   pause_recurring_schedule: "the schedule old -> new and the card outcome",
@@ -35,9 +35,9 @@ export const PREVIEW_NOTES: Record<string, string> = {
   set_bot_mode: "the conversation, the AI mode, its effect and any held replies",
   send_message: "to, from, channel, consent, the exact text (subject and reply-to for email), when",
   schedule_message: "to, from, channel, consent, the exact text, when it sends and what then happens",
-  send_whatsapp_template: "to, template, language, the filled text and buttons, when",
+  send_whatsapp_template: "to, from (the sending number), template, language, the filled text and buttons, when",
   delete_task: "the task: due, done, assignee, what it links to, notes",
-  set_event_status: "cancelling: the appointment, the timeline reason, the exact notice or why none, the workflows that start",
+  set_event_status: "cancelling: the appointment, the timeline reason, the exact notice or why none, the workflows that start (their steps pinned)",
   create_booking_page: "every field of the page to be published",
   delete_booking_page: "the page and that its link stops working; refused while bookings are upcoming",
   update_booking_page: "changed fields old -> new (the whole page when it goes public or has upcoming bookings)",
@@ -45,7 +45,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   schedule_social_post: "the exact post (caption, image), the Facebook Page / Instagram account, when it publishes",
   send_review_request: "the exact text, recipient, channel and template, or why none would send",
   create_broadcast: "channel, audience and matched count, exact subject and message, merge tags, what is checked at send",
-  start_voice_call: "the number, assistant, first words, greeting name, the script, consent, cost, what is checked at dial time",
+  start_voice_call: "the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time",
 };
 
 const ROLE: Record<string, string> = { subAccountMember: "member", subAccountAdmin: "admin", agencyOwner: "agency owner" };

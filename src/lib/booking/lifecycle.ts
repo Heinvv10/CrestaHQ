@@ -120,6 +120,8 @@ export async function fireBookingTrigger(
   trigger: Extract<AutomationTriggerType, `event_${string}`>,
   /** An API agent caused this: the enrolments are held (ruling Q) and the outcome awaited and returned. */
   actor?: AgentActor,
+  /** An approved agent action: enrol only these reviewed workflows, steps unchanged (awaited and returned). */
+  expectedStepsFingerprints?: Record<string, string>,
 ): Promise<TriggerOutcome | null> {
   if (!event.contactId) return null;
   const type =
@@ -147,8 +149,9 @@ export async function fireBookingTrigger(
       bookingPageSlug: event.bookingPageSlug ?? null,
     },
     ...(actor ? { hold: actor } : {}),
+    ...(expectedStepsFingerprints ? { expectedStepsFingerprints } : {}),
   });
-  if (!actor) {
+  if (!actor && !expectedStepsFingerprints) {
     void fired;
     return null;
   }

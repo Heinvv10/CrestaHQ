@@ -778,6 +778,7 @@ async function runVoiceProvisioningSideEffect(input: {
         // (we owned it and just deleted it).
         vapiPhoneNumberId:
           mode === "vapi-managed" ? voice?.vapiPhoneNumberId ?? null : null,
+        vapiPhoneNumber: null,
       };
       await upsertChannelConfig(subAccountId, "voice", { voice: cleared });
     }
@@ -812,6 +813,8 @@ async function runVoiceProvisioningSideEffect(input: {
     });
 
     let phoneNumberId: string;
+    // The number the Vapi resource rings from; kept when an existing one is only rebound.
+    let phoneNumber: string | null = null;
     if (mode === "twilio-byoc") {
       // We own the resource — create-or-update via BYOC creds.
       if (!subAccount.twilioConfig) {
@@ -829,6 +832,8 @@ async function runVoiceProvisioningSideEffect(input: {
         existingPhoneNumberId: voice.vapiPhoneNumberId,
       });
       phoneNumberId = result.phoneNumberId;
+      phoneNumber =
+        result.number ?? (result.phoneNumberId === voice.vapiPhoneNumberId ? (voice.vapiPhoneNumber ?? null) : null);
     } else {
       // Operator owns the resource — just bind our assistant to it.
       // voice.vapiPhoneNumberId is guaranteed by the gate above.
@@ -843,6 +848,7 @@ async function runVoiceProvisioningSideEffect(input: {
       ...voice,
       vapiAssistantId: assistantId,
       vapiPhoneNumberId: phoneNumberId,
+      vapiPhoneNumber: phoneNumber,
     };
     await upsertChannelConfig(subAccountId, "voice", { voice: stamped });
     return null;

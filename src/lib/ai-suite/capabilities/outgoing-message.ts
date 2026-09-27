@@ -1,12 +1,15 @@
 import "server-only";
 
 import type { SendableChannel } from "@/lib/server/conversation-send";
+import { getAdminDb } from "@/lib/firebase/admin";
+import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import { CapabilityUserError, type AiSuiteCapability, type PreviewRow } from "./types";
 import { str } from "./helpers";
 import { hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { conversationIdParam, conversationTarget } from "./conversations-read";
 import { consentBlock, emailEnvelope, masked, recipientOf, resolveContact, withRecipient } from "./conversation-send-support";
+import { messageSenderNumber } from "@/lib/server/sender-number";
 
 /**
  * The machinery every agent message capability shares (send_message,
@@ -76,6 +79,11 @@ export async function outgoingPreview(
   // An opt-out after the proposal changes this row: the approver looks again.
   const blocked = consentBlock(channel, contact);
   const env = channel === "email" ? await emailEnvelope(ctx.subAccountId!, contactId) : null;
+  // SMS / WhatsApp: the sending number is shown and pinned (a default-sender change re-shows it).
+  const from =
+    channel === "sms" || channel === "whatsapp"
+      ? await messageSenderNumber((await getAdminDb().doc(`subAccounts/${ctx.subAccountId}`).get()).data() as SubAccountDoc | undefined, channel)
+      : undefined;
   return {
     rows: [
       { label: "To", value: `${oneLine(contact.name) || "(unnamed)"} (${masked(channel, to)})` },
@@ -83,12 +91,19 @@ export async function outgoingPreview(
       { label: "Consent", value: blocked ? `${blocked} It will not be sent.` : `Not opted out of ${channel}.` },
       ...whenRows,
       ...(env ? [{ label: "From", value: env.from }, { label: "Reply-To", value: env.replyTo }] : []),
+      ...(from !== undefined ? [{ label: "From", value: from ?? `No ${channel} sender is set up: it will not be sent.` }] : []),
       ...(env?.inReplyToLabel ? [{ label: "In reply to", value: env.inReplyToLabel }] : []),
       ...(args.subject ? [{ label: "Subject", value: String(args.subject) }] : []),
       // Exactly as it will be sent, line breaks included.
       { label: "Message", value: String(args.body), multiline: true as const },
     ],
-    pinned: { contactId, channel, to, ...(env ? { inReplyTo: env.inReplyTo, references: env.references } : {}) },
+    pinned: {
+      contactId,
+      channel,
+      to,
+      ...(env ? { inReplyTo: env.inReplyTo, references: env.references } : {}),
+      ...(from !== undefined ? { from } : {}),
+    },
   };
 }
 
@@ -116,6 +131,13 @@ export async function approvedRecipient(
   }
   const blocked = consentBlock(channel, contact);
   if (blocked) throw new CapabilityUserError(blocked);
+  // The sending number, resolved again right before the send resolves it.
+  if ("from" in pinned && (channel === "sms" || channel === "whatsapp")) {
+    const sub = (await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() as SubAccountDoc | undefined;
+    if ((await messageSenderNumber(sub, channel)) !== pinned.from) {
+      throw new CapabilityUserError("The number it would be sent from changed since this was reviewed; nothing was sent.");
+    }
+  }
   const sendTo = { ...withRecipient(channel, contact, pinned.to), id: contactId } as Contact;
   return { channel, contactId, sendTo, pinned, to: pinned.to };
 }

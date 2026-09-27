@@ -20,5 +20,7 @@ export function snippetToDto(
     createdByUid: String(d.createdByUid ?? ""),
     createdAt: ms(d.createdAt),
     updatedAt: ms(d.updatedAt),
+    lastAgentEditKey: typeof d.lastAgentEditKey === "string" && d.lastAgentEditKey ? d.lastAgentEditKey : null,
+    lastAgentEditAt: ms(d.lastAgentEditAt),
   };
 }
