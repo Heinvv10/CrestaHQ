@@ -26,7 +26,9 @@ import type { GoogleListing } from "@/types/google";
  * listing. Refusals: 400 invalid_body, 400 too_many (above
  * MAX_EXTRA_LISTINGS), 400 is_main, 409 no_listing (no main listing), 409
  * listing_shared (another sub-account manages a new pair, as main or extra),
- * 409 listings_changed (the stored extras are not `expected` — a stale or
+ * 409 account_changed (one location's Google account switched in one save —
+ * remove, save, then re-add, so the old account's cache is cleared), 409
+ * listings_changed (the stored extras are not `expected` — a stale or
  * concurrent save; nothing written). Removing a listing drops only that
  * listing's synced data, after the commit; if that clear fails the save
  * still stands: 200 with `cachePending: true` (retention / the orphan sweep
@@ -44,6 +46,7 @@ const TEXT: Record<string, [number, string]> = {
   is_main: [400, "That is already the main listing."],
   listing_shared: [409, "Another workspace already manages that listing."],
   listings_changed: [409, "The additional listings changed meanwhile. Reload and try again."],
+  account_changed: [409, "That listing is connected through another Google account. Untick it and save, then add it under the new account."],
 };
 
 function parsePairs(listings: unknown): ListingPair[] | "too_many" | null {

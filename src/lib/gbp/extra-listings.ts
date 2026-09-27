@@ -107,7 +107,7 @@ const sameSet = (a: ListingPair[], b: ListingPair[]) => {
 
 export type SaveResult =
   | { ok: true; added: string[]; removed: string[]; cachePending?: true }
-  | { ok: false; code: "no_listing" | "is_main" | "listing_shared" | "listings_changed" };
+  | { ok: false; code: "no_listing" | "is_main" | "listing_shared" | "listings_changed" | "account_changed" };
 
 /**
  * Replace the extras with `requested`, in that order — only if the stored
@@ -145,6 +145,9 @@ export async function saveExtraListings(
     const nextKeys = new Set(next.map(keyOf));
     const added = next.filter((l) => !stored.has(keyOf(l))).map((l) => l.locationName);
     const removed = current.filter((l) => !nextKeys.has(keyOf(l))).map((l) => l.locationName);
+    // One location, one account per save: switching its Google account must go
+    // remove → save → re-add, so the old account's cache is cleared on its own.
+    if (added.some((loc) => removed.includes(loc))) return { ok: false, code: "account_changed" };
     for (const loc of added) {
       if (await heldByAnotherSubAccount(db, tx, loc, subAccountId)) return { ok: false, code: "listing_shared" };
     }
