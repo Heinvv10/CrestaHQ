@@ -87,6 +87,7 @@ const TRIGGER_TYPES: WorkflowTriggerType[] = [
   "invoice.charge_failed",
   "message.received",
   "link.clicked",
+  "prospecting.report.ready",
 ];
 
 const MESSAGE_CHANNELS: { value: string; label: string }[] = [

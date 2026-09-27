@@ -31,6 +31,10 @@ import type { CustomFieldValue } from "@/types/custom-fields";
  *                            write (lib/custom-fields/validation), so nothing
  *                            is re-checked here; an unset or unknown key
  *                            resolves to empty string like any other tag.
+ *   {{prospecting.headline}}, {{prospecting.reportUrl}}
+ *                          — the contact's latest ready prospect report:
+ *                            its headline and share link, stamped on the
+ *                            contact by the report worker. Empty otherwise.
  *
  * Per-type slugged booking tags ({{bookingLink:30min}}) are reserved for a
  * future multi-link booking integration.
@@ -64,6 +68,8 @@ export interface MergeTagSubject {
   bookingLink: string;
   /** Pre-built fully-qualified unsubscribe URL. Empty string for SMS templates. */
   unsubscribeLink: string;
+  /** The contact's latest ready prospect report. Optional: absent → empty. */
+  prospecting?: { headline: string; reportUrl: string } | null;
 }
 
 const TAG_RE = /\{\{\s*([a-zA-Z0-9_.:-]+)\s*\}\}/g;
@@ -154,6 +160,10 @@ function resolveTag(tag: string, subject: MergeTagSubject): string {
       return subject.bookingLink ?? "";
     case "unsubscribeLink":
       return subject.unsubscribeLink ?? "";
+    case "prospecting.headline":
+      return subject.prospecting?.headline ?? "";
+    case "prospecting.reportUrl":
+      return subject.prospecting?.reportUrl ?? "";
     default:
       if (tag.startsWith(CUSTOM_FIELD_PREFIX)) {
         const key = tag.slice(CUSTOM_FIELD_PREFIX.length);

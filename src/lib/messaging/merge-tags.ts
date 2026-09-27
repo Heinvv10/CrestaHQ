@@ -22,6 +22,11 @@ export interface MergeTagContext {
     email?: string | null;
     phone?: string | null;
     company?: string | null;
+    /** The contact's latest ready prospect report (Prospecting PR 4). */
+    prospecting?: {
+      lastReportHeadline?: string | null;
+      lastReportUrl?: string | null;
+    } | null;
   } | null;
   /** The sub-account's name. */
   businessName?: string | null;
@@ -55,6 +60,9 @@ const CANONICAL: Record<string, Resolve> = {
   "contact.company": (ctx) => ctx.contact?.company,
   "business.name": (ctx) => ctx.businessName,
   "user.name": (ctx) => ctx.userName,
+  // Keys are matched lower-cased: this is {{prospecting.reportUrl}}.
+  "prospecting.headline": (ctx) => ctx.contact?.prospecting?.lastReportHeadline,
+  "prospecting.reporturl": (ctx) => ctx.contact?.prospecting?.lastReportUrl,
 };
 
 const LEGACY: Record<string, Resolve> = {
@@ -75,6 +83,8 @@ export const MERGE_FIELDS: ReadonlyArray<{ tag: string; label: string }> = [
   { tag: "{{contact.company}}", label: "Contact company" },
   { tag: "{{business.name}}", label: "Business name" },
   { tag: "{{user.name}}", label: "Your name" },
+  { tag: "{{prospecting.headline}}", label: "Prospect report headline" },
+  { tag: "{{prospecting.reportUrl}}", label: "Prospect report link" },
 ];
 
 // `[^{}]` (not `[^}]`) so "{{{firstName}}}" matches the inner tag, the same

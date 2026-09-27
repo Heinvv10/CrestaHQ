@@ -14,6 +14,12 @@ import { hashShareToken } from "@/lib/snapshots/share";
 
 type Tenant = { reportId: string; subAccountId: string };
 
+/** The public URL for a minted token — the one place `/report/{token}` is spelled. */
+export function reportShareUrl(token: string): string {
+  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
+  return `${appUrl}/report/${token}`;
+}
+
 export async function mintReportShare(
   input: Tenant & { uid: string },
 ): Promise<{ token: string } | "not_found" | "not_ready"> {

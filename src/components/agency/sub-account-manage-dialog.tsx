@@ -42,7 +42,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { GET_LEADS_PARKED } from "@/lib/get-leads/business-types";
-import { parseProspectReportQuota, prospectReportQuota } from "@/lib/prospecting/quota";
+import {
+  parseProspectReportQuota,
+  prospectReportQuota,
+  prospectingFirstTouchCap,
+} from "@/lib/prospecting/quota";
 import { SubAccountBillingSection } from "@/components/agency/sub-account-billing-section";
 import { SubAccountUsageSection } from "@/components/agency/sub-account-usage-section";
 import { effectiveBillingState } from "@/lib/billing/status";
@@ -142,6 +146,8 @@ function ManageDialogBody({
   const initialProspecting = subAccount.prospectingEnabledByAgency === true;
   // Shown as the effective quota (50 when unset); only sent when edited.
   const initialProspectingQuota = String(prospectReportQuota(subAccount));
+  // Same for the daily first-touch cap (20 when unset).
+  const initialFirstTouchCap = String(prospectingFirstTouchCap(subAccount));
   // "Hide vs. show as Locked" flag for the sidebar-gated features. HIDDEN is the
   // default — a disabled feature is omitted from the tenant's sidebar unless the
   // owner explicitly opts it into the greyed "Locked" row (field set to `false`).
@@ -201,6 +207,7 @@ function ManageDialogBody({
   const [prospectingQuota, setProspectingQuota] = useState(
     initialProspectingQuota
   );
+  const [firstTouchCap, setFirstTouchCap] = useState(initialFirstTouchCap);
   const [broadcastsHidden, setBroadcastsHidden] = useState(
     initialBroadcastsHidden
   );
@@ -274,6 +281,7 @@ function ManageDialogBody({
   const prospectingDirty = prospectingEnabled !== initialProspecting;
   const prospectingQuotaDirty =
     prospectingQuota.trim() !== initialProspectingQuota;
+  const firstTouchCapDirty = firstTouchCap.trim() !== initialFirstTouchCap;
   const broadcastsHiddenDirty = broadcastsHidden !== initialBroadcastsHidden;
   const websiteHiddenDirty = websiteHidden !== initialWebsiteHidden;
   const socialHiddenDirty = socialHidden !== initialSocialHidden;
@@ -313,6 +321,7 @@ function ManageDialogBody({
     getLeadsDirty ||
     prospectingDirty ||
     prospectingQuotaDirty ||
+    firstTouchCapDirty ||
     broadcastsHiddenDirty ||
     websiteHiddenDirty ||
     socialHiddenDirty ||
@@ -331,6 +340,12 @@ function ManageDialogBody({
     const quota = parseProspectReportQuota(prospectingQuota);
     if (prospectingQuotaDirty && quota === null) {
       toast.error("Monthly report quota must be a whole number from 0 to 1000.");
+      return;
+    }
+    // Same 0–1000 whole-number rule as the quota.
+    const cap = parseProspectReportQuota(firstTouchCap);
+    if (firstTouchCapDirty && cap === null) {
+      toast.error("Daily first-touch cap must be a whole number from 0 to 1000.");
       return;
     }
     setSaving(true);
@@ -368,6 +383,7 @@ function ManageDialogBody({
         getLeadsEnabled?: boolean;
         prospectingEnabled?: boolean;
         prospectingReportQuota?: number;
+        prospectingDailyFirstTouchCap?: number;
         broadcastsHiddenWhenDisabled?: boolean;
         websiteHiddenWhenDisabled?: boolean;
         socialPlannerHiddenWhenDisabled?: boolean;
@@ -416,6 +432,8 @@ function ManageDialogBody({
       if (prospectingDirty) payload.prospectingEnabled = prospectingEnabled;
       if (prospectingQuotaDirty && quota !== null)
         payload.prospectingReportQuota = quota;
+      if (firstTouchCapDirty && cap !== null)
+        payload.prospectingDailyFirstTouchCap = cap;
       if (broadcastsHiddenDirty)
         payload.broadcastsHiddenWhenDisabled = broadcastsHidden;
       if (websiteHiddenDirty) payload.websiteHiddenWhenDisabled = websiteHidden;
@@ -628,6 +646,9 @@ function ManageDialogBody({
       }
       if (prospectingQuotaDirty) {
         parts.push(`Prospect report quota set to ${quota} a month.`);
+      }
+      if (firstTouchCapDirty) {
+        parts.push(`Prospect first-touch cap set to ${cap} a day.`);
       }
       if (labsDirty) {
         parts.push(
@@ -1223,6 +1244,24 @@ function ManageDialogBody({
                 <span>
                   Prospect audit reports this sub-account may generate each
                   month (0–1000).
+                </span>
+                <span className="text-foreground font-medium">
+                  Daily first-touch cap
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={1}
+                  value={firstTouchCap}
+                  onChange={(e) => setFirstTouchCap(e.target.value)}
+                  disabled={saving}
+                  className="h-8 w-24 text-xs"
+                  aria-label="Daily prospect first-touch cap"
+                />
+                <span>
+                  Workflow messages to prospects never contacted before, per
+                  day (0–1000).
                 </span>
               </label>
             }
