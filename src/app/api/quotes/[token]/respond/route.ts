@@ -16,6 +16,7 @@ import {
   type QuoteRespondPayload,
 } from "@/types/quotes";
 import type { Quote } from "@/types/quotes";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -54,12 +55,14 @@ export async function POST(
     );
   }
 
-  let payload: QuoteRespondPayload;
-  try {
-    payload = (await request.json()) as QuoteRespondPayload;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  // An action, a decline reason and a note of up to 2,000 characters: 16 KB.
+  const read = await readJsonCapped(request, 16 * 1024);
+  if (!read.ok) {
+    return read.reason === "too_large"
+      ? NextResponse.json({ error: "Request body too large" }, { status: 413 })
+      : NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const payload = (read.value ?? {}) as QuoteRespondPayload;
   if (payload.action !== "accept" && payload.action !== "decline") {
     return NextResponse.json(
       { error: "action must be 'accept' or 'decline'" },

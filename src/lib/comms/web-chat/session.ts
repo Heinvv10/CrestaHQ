@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
 import type { AiChatMessage } from "@/lib/comms/ai/openrouter";
 import type { WebChatSession, WebChatMessage } from "@/types/web-chat";
 
@@ -18,8 +19,10 @@ import type { WebChatSession, WebChatMessage } from "@/types/web-chat";
 
 const SESSION_ID_RE = /^[a-zA-Z0-9_-]{16,64}$/;
 
+/** The shape the widget generates, and a doc id ("__...__" fits the shape
+ *  but is reserved: Firestore refuses it). */
 export function isValidSessionId(s: unknown): s is string {
-  return typeof s === "string" && SESSION_ID_RE.test(s);
+  return typeof s === "string" && SESSION_ID_RE.test(s) && isDocId(s);
 }
 
 function sessionDocPath(subAccountId: string, sessionId: string): string {

@@ -16,6 +16,8 @@ import {
 import { hostSelectionEnabled } from "@/lib/booking/page-slots";
 import type { BookingHost, BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { isDocId } from "@/lib/server/doc-id";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -182,12 +184,16 @@ export async function POST(
 
   const { subAccountId } = await ctx.params;
 
-  let body: VapiLlmBody;
-  try {
-    body = (await request.json()) as VapiLlmBody;
-  } catch {
-    return badRequest("Invalid JSON body", 400);
+  // The conversation so far plus the request fields; 1 MiB is generous.
+  const read = await readJsonCapped(request, 1024 * 1024);
+  if (!read.ok) {
+    if (read.reason === "too_large") {
+      console.warn(`[vapi/llm] 413: body over the cap sa=${subAccountId} content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    }
+    return read.reason === "too_large" ? badRequest("Request body too large", 413) : badRequest("Invalid JSON body", 400);
   }
+  const body = (read.value ?? {}) as VapiLlmBody;
+  if (!isDocId(subAccountId)) return badRequest("Sub-account not found", 404);
 
   // Everything below is wrapped so ANY unexpected throw degrades to a
   // graceful spoken fallback (HTTP 200) instead of a hard 500 that drops
@@ -308,7 +314,7 @@ export async function POST(
               callerPhone,
               callerEmail: contact?.email ?? null,
               contactId: contact?.id ?? null,
-              callId: body.call?.id ?? null,
+              callId: isDocId(body.call?.id) ? body.call.id : null,
             })
           : null;
       if (!toolResult) break;

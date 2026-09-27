@@ -21,6 +21,7 @@ import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
 import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
+import { isDocId } from "@/lib/server/doc-id";
 
 /**
  * Public availability endpoint for a booking page. Unauthenticated;
@@ -77,6 +78,10 @@ export async function GET(
     );
   }
 
+  // A non-doc id would make the path address something else: same 404.
+  if (!isDocId(saId) || !isDocId(slug)) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
   const db = getAdminDb();
   const pageSnap = await db
     .doc(`subAccounts/${saId}/bookingPages/${slug}`)
@@ -121,7 +126,7 @@ export async function GET(
   // narrows anything: naming someone else's booking must not free its time.
   let movingEvent: ResolveAvailabilityOptions["movingEvent"] = null;
   let eventServiceId: string | null = null;
-  if (excludeEventId && !excludeEventId.includes("/")) {
+  if (excludeEventId && isDocId(excludeEventId)) {
     const evSnap = await db.collection("events").doc(excludeEventId).get();
     const ev = evSnap.exists ? (evSnap.data() as CalendarEvent) : null;
     if (ev && ev.subAccountId === saId && ev.bookingPageSlug === slug) {

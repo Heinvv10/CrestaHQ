@@ -20,6 +20,8 @@ import {
 import type { CheckoutPage } from "@/types/checkout-pages";
 import type { Product } from "@/types/products";
 import type { OrderLineItem } from "@/types/orders";
+import { isDocId } from "@/lib/server/doc-id";
+import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 export const dynamic = "force-dynamic";
 
@@ -77,13 +79,12 @@ export async function POST(
     );
   }
 
-  let body: PostBody;
-  try {
-    body = (await request.json()) as PostBody;
-  } catch {
-    return fail("Invalid request.");
-  }
+  // Name, email, phone, a funnel slug and a few bump ids: 16 KB.
+  const read = await readJsonCapped(request, 16 * 1024);
+  if (!read.ok) return read.reason === "too_large" ? fail("Request too large.", 413) : fail("Invalid request.");
+  const body = (read.value ?? {}) as PostBody;
 
+  if (!isDocId(subAccountId)) return fail("This checkout link isn't available.", 404);
   const db = getAdminDb();
 
   // ── Tenant + gate ────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import {
   handlePaystackEvent,
   type PaystackEvent,
 } from "@/lib/paystack/webhooks";
+import { readBodyCapped } from "@/lib/api/body-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,12 @@ export async function POST(request: Request) {
 
   // The RAW body is what was signed — parsing first and re-serializing would
   // change the bytes and fail every signature.
-  const rawBody = await request.text();
+  // Provider events are a few KB; 1 MiB is generous and still bounded.
+  const rawBody = await readBodyCapped(request, 1024 * 1024);
+  if (rawBody === null) {
+    console.warn(`[paystack] 413: body over the cap content-length=${request.headers.get("content-length")?.slice(0, 20) ?? "none"}`);
+    return NextResponse.json({ error: "Request body too large" }, { status: 413 });
+  }
   if (
     !verifyPaystackSignature(
       rawBody,
