@@ -206,6 +206,38 @@ describe("fire", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("whatsapp: renaming the sender's label before firing refuses nothing (only the number is pinned)", async () => {
+    const sender = (label: string) => ({
+      whatsappSenders: [{ id: "s1", label, provider: "cloud", phoneNumber: "+27800000000", isDefault: true }],
+      whatsappCloudMeta: { displayPhoneNumber: "+27870000011", phoneNumberId: "pnid1" },
+    });
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, ...sender("Sales") });
+    const id = await proposeId({ channel: "whatsapp" });
+    await decide(id, "approve");
+    const doc = booked()[0]!;
+    expect(doc).toMatchObject({ pinnedFrom: "+27870000011" });
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, ...sender("Support") });
+    const r = await fireScheduledMessage("c1", doc.id as string, (doc.sendAt as { toMillis(): number }).toMillis());
+    expect(r).toMatchObject({ outcome: "sent" });
+  });
+
+  it("a retry of the same booking id with another pinned sender is not the same booking", async () => {
+    const { scheduleConversationMessage } = await import("@/lib/server/scheduled-messages/service");
+    const book = (pinnedFrom: string) =>
+      scheduleConversationMessage({
+        request: { contactId: "c1", channel: "sms", body: "Hi", subject: null, inReplyTo: null, references: null, sendAt: new Date(Date.now() + 3_600_000) },
+        contact: { ...ANN, id: "c1" } as never,
+        actorUid: "u_admin",
+        nowMs: Date.now(),
+        pinnedTo: "+27821111111",
+        pinnedFrom,
+        id: "agent_retry",
+      });
+    expect(await book("+27870000001")).toMatchObject({ ok: true, id: "agent_retry" });
+    expect(await book("+27870000001")).toMatchObject({ ok: true, id: "agent_retry" });
+    await expect(book("+27870000002")).rejects.toThrow("already exists and is not this booking");
+  });
+
   it("unchanged → it sends, to the pinned number, as the approver", async () => {
     const r = await approveAndFire(() => undefined);
     expect(r).toMatchObject({ outcome: "sent" });

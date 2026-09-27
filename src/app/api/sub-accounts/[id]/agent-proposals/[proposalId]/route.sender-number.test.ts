@@ -108,7 +108,7 @@ describe("send_message", () => {
     setSub(cloud("+27870000011", "+27899999999"));
     const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
     expect(fromOf(id)).toBe("+27870000011 (Sales)");
-    expect(row(id).pinned).toMatchObject({ from: "+27870000011 (Sales)" });
+    expect(row(id).pinned).toMatchObject({ from: "+27870000011" }); // the number alone
   });
 
   it("whatsapp: a cloud reconnect to another number after propose is preview_changed, nothing sent", async () => {

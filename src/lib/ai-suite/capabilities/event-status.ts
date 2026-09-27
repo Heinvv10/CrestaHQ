@@ -149,11 +149,7 @@ export const EVENT_STATUS_CAPABILITIES: AiSuiteCapability[] = [
         if (!out.ok) throw new CapabilityUserError(out.error ?? "The appointment couldn't be cancelled.");
         if (out.noop) return { resultText: "It was already cancelled (by someone else); nothing more was done.", ref: { kind: "event", id: e.id } };
         const sent = out.emailSent ? " The attendee was emailed." : out.emailSkipReason === "changed_since_approval" ? " The notice was NOT sent: it changed after approval." : "";
-        const skipped = out.workflowsSkipped
-          ? " Its workflows were NOT started: the appointment's contact changed after approval."
-          : out.workflowsStepsChanged?.length
-            ? ` Not started, their steps changed after approval: ${out.workflowsStepsChanged.join(", ")}.`
-            : "";
+        const skipped = out.workflowsSkipped ? " Its workflows were NOT started: the appointment's contact changed after approval." : "";
         return { resultText: `Cancelled the appointment.${sent}${skipped}`, ref: { kind: "event", id: e.id } };
       }
       const out = await changeEventStatus(e, status, reason, { actor: agentActor(ctx, "set_event_status") });

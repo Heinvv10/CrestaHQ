@@ -9,7 +9,7 @@ import { str } from "./helpers";
 import { hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { conversationIdParam, conversationTarget } from "./conversations-read";
 import { consentBlock, emailEnvelope, masked, recipientOf, resolveContact, withRecipient } from "./conversation-send-support";
-import { messageSenderNumber } from "@/lib/server/sender-number";
+import { messageSender } from "@/lib/server/sender-number";
 
 /**
  * The machinery every agent message capability shares (send_message,
@@ -82,7 +82,7 @@ export async function outgoingPreview(
   // SMS / WhatsApp: the sending number is shown and pinned (a default-sender change re-shows it).
   const from =
     channel === "sms" || channel === "whatsapp"
-      ? await messageSenderNumber((await getAdminDb().doc(`subAccounts/${ctx.subAccountId}`).get()).data() as SubAccountDoc | undefined, channel)
+      ? await messageSender((await getAdminDb().doc(`subAccounts/${ctx.subAccountId}`).get()).data() as SubAccountDoc | undefined, channel)
       : undefined;
   return {
     rows: [
@@ -91,7 +91,7 @@ export async function outgoingPreview(
       { label: "Consent", value: blocked ? `${blocked} It will not be sent.` : `Not opted out of ${channel}.` },
       ...whenRows,
       ...(env ? [{ label: "From", value: env.from }, { label: "Reply-To", value: env.replyTo }] : []),
-      ...(from !== undefined ? [{ label: "From", value: from ?? `No ${channel} sender is set up: it will not be sent.` }] : []),
+      ...(from !== undefined ? [{ label: "From", value: from?.display ?? `No ${channel} sender is set up: it will not be sent.` }] : []),
       ...(env?.inReplyToLabel ? [{ label: "In reply to", value: env.inReplyToLabel }] : []),
       ...(args.subject ? [{ label: "Subject", value: String(args.subject) }] : []),
       // Exactly as it will be sent, line breaks included.
@@ -102,7 +102,8 @@ export async function outgoingPreview(
       channel,
       to,
       ...(env ? { inReplyTo: env.inReplyTo, references: env.references } : {}),
-      ...(from !== undefined ? { from } : {}),
+      // The number alone is pinned (a WhatsApp label rename refuses nothing).
+      ...(from !== undefined ? { from: from?.number ?? null } : {}),
     },
   };
 }
@@ -134,7 +135,7 @@ export async function approvedRecipient(
   // The sending number, resolved again right before the send resolves it.
   if ("from" in pinned && (channel === "sms" || channel === "whatsapp")) {
     const sub = (await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() as SubAccountDoc | undefined;
-    if ((await messageSenderNumber(sub, channel)) !== pinned.from) {
+    if (((await messageSender(sub, channel))?.number ?? null) !== pinned.from) {
       throw new CapabilityUserError("The number it would be sent from changed since this was reviewed; nothing was sent.");
     }
   }

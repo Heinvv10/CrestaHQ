@@ -1357,13 +1357,6 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         skip("no_start_node");
         continue;
       }
-      if (
-        input.expectedStepsFingerprints &&
-        input.expectedStepsFingerprints[wf.id] !== workflowStepsFingerprint(wf)
-      ) {
-        skip("steps_changed");
-        continue;
-      }
 
       // Trigger-specific narrowing.
       if (
@@ -1433,6 +1426,17 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
       }
       if (!evalConditionGroup(wf.trigger.filters, contact)) {
         skip("filters_not_met");
+        continue;
+      }
+      // After the narrowing and filters: only a workflow that would take the
+      // contact can be a steps change (another page's workflow isn't one).
+      if (
+        input.expectedStepsFingerprints &&
+        input.expectedStepsFingerprints[wf.id] !== workflowStepsFingerprint(wf)
+      ) {
+        // The approved action's result was already returned: the log is the record.
+        console.warn(`[workflows] ${wf.id} not started for ${input.type}: not the steps the approver reviewed`);
+        skip("steps_changed");
         continue;
       }
       if (agentHold.shouldHold(input)) {
