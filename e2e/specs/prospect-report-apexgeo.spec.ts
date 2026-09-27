@@ -121,7 +121,7 @@ test("ApexGEO sections render on the public page; not-connected ones are hidden 
       await expect(visitor.getByTestId(`report-section-${key}`)).toHaveCount(0);
     }
     // Nothing about the agency's setup reaches the prospect.
-    await expect(visitor.getByText(/ApexGEO/)).toHaveCount(0);
+    await expect(visitor.getByText(/apexgeo/i)).toHaveCount(0);
     await context.close();
 
     // --- B, member view: shown, with the connect link ---------------------

@@ -288,10 +288,22 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
     });
     expect(out.apexgeo).toEqual({ scanId: "scan_9" });
     expect(apexSections(out).map((s) => [s.status, s.reasonCode, s.reason])).toEqual(
-      Array(3).fill(["unavailable", "pending", "ApexGEO scan in progress."]),
+      Array(3).fill(["unavailable", "pending", "Scan in progress — check back in a few minutes."]),
     );
     expect(out.cost).toMatchObject({ apexgeoScans: 1 });
     expect(out.status).toBe("ready");
+  });
+
+  it("the scan start has its own budget, not what is left of the report's deadline", async () => {
+    site(() => json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } }));
+    await runProspectReport(BUSINESS, {
+      sections: [okSection("tech_stack", "no_analytics")],
+      apexgeo: { connection: CONN, reportId: "r1" },
+      deadlineMs: 20,
+    });
+    expect(apexCalls()).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 60)); // the report's deadline has now passed
+    expect(apexCalls()[0][1].signal.aborted).toBe(false);
   });
 
   it("country defaults to ZA", async () => {
@@ -343,7 +355,7 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
   ])("%s starting the scan: sections failed with a generic reason, the report unaffected", async (_n, scan) => {
     site(scan);
     const out = await runProspectReport(BUSINESS, { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } });
-    expect(apexSections(out)[0]).toMatchObject({ status: "failed", reasonCode: "failed", reason: "The ApexGEO scan failed." });
+    expect(apexSections(out)[0]).toMatchObject({ status: "failed", reasonCode: "failed", reason: "The scan failed." });
     expect(JSON.stringify(out.sections)).not.toContain("10.1.2.3");
     expect(out.status).toBe("ready");
     expect(out.sections.find((s) => s.key === "tech_stack")?.status).toBe("ok");

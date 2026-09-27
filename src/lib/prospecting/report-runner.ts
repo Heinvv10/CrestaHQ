@@ -34,8 +34,8 @@ import type { CostKey, Homepage, Section, SectionInput } from "./sections/types"
  * or unavailable with the reason. They never decide `ready`: the scan
  * finishes after the report does and the poll worker fills them in. The
  * scan is started only for a ready report, so a failed one (quota released)
- * never spends the agency's ApexGEO credits. It costs no report time to wait:
- * the scan itself runs asynchronously at ApexGEO either way.
+ * never spends the agency's ApexGEO credits. Waiting costs one request (the
+ * scan itself runs asynchronously at ApexGEO).
  */
 
 /** Plan order: sections 1, 2, 3, 4, 6, 9, 10. */
@@ -97,7 +97,9 @@ export async function runProspectReport(
     );
     const ready = sections.some((s) => s.status === "ok" && !STORED_FACT_SECTIONS.has(s.key));
     if (!ready) return { status: "failed", sections, headline: headline(sections), cost, apexgeo: null };
-    const scan = await startReportScan(opts.apexgeo?.connection ?? null, business, opts.apexgeo?.reportId ?? "", deadline);
+    // Its own budget (the client's 15 s), not what is left of the report's:
+    // a POST cut off after ApexGEO accepted it would be a charged, unpolled scan.
+    const scan = await startReportScan(opts.apexgeo?.connection ?? null, business, opts.apexgeo?.reportId ?? "");
     if (scan.scanId) count("apexgeoScans");
     return {
       status: "ready",

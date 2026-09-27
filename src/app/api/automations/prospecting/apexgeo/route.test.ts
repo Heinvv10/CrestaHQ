@@ -49,7 +49,7 @@ interface Rep {
 const rep = () => mem.read(REPORT) as unknown as Rep;
 
 const pending = (key: string) => ({
-  key, status: "unavailable", score: null, findings: [], reason: "ApexGEO scan in progress.", reasonCode: "pending", raw: {},
+  key, status: "unavailable", score: null, findings: [], reason: "Scan in progress — check back in a few minutes.", reasonCode: "pending", raw: {},
 });
 const GBP = { key: "gbp", status: "ok", score: 60, findings: [{ code: "gbp_no_hours", text: "No hours" }], raw: {} };
 const apexOf = () =>
@@ -184,7 +184,7 @@ describe("still running", () => {
     expect(publish).not.toHaveBeenCalled();
     expect(rep().apexgeo.status).toBe("timeout");
     expect(apexOf().map((s) => [s.status, s.reason])).toEqual(
-      Array(3).fill(["timeout", "ApexGEO did not finish the scan in time."]),
+      Array(3).fill(["timeout", "The scan did not finish in time."]),
     );
   });
 
@@ -213,7 +213,7 @@ describe("ApexGEO errors", () => {
     expect(await (await call()).json()).toEqual({ ok: true, status: "failed" });
     const report = rep();
     expect(report.apexgeo.status).toBe("failed");
-    expect(apexOf().map((s) => [s.status, s.reason])).toEqual(Array(3).fill(["failed", "The ApexGEO scan failed."]));
+    expect(apexOf().map((s) => [s.status, s.reason])).toEqual(Array(3).fill(["failed", "The scan failed."]));
     expect(errorLog).toHaveBeenCalledWith("[prospecting/apexgeo] scan failed", "r1", expect.anything());
     const stored = JSON.stringify(report);
     expect(stored).not.toContain("10.9.8.7");

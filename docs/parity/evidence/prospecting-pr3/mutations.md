@@ -2,9 +2,9 @@
 
 Each row: one production line changed (script-applied text replacement, asserted to match exactly once), the named test file run, the line restored. Run 2026-09-27 on `feat/prospecting-apexgeo`.
 
-**Result: 69 mutants, 69 killed**, on the code after review round 1. One more candidate, the score floor `Math.max(0, …)` in sections 5 and 7, survived round 1 because it could never act (the minimum is 10); it was removed as dead code rather than tested.
+**Result: 72 mutants, 72 killed**, on the code after review rounds 1–2. One more candidate, the score floor `Math.max(0, …)` in sections 5 and 7, survived round 1 because it could never act (the minimum is 10); it was removed as dead code rather than tested.
 
-Prefixes: S5/S7/S8 = section scorers (every `score()` branch), P1 = phase 1 (report worker + runner), P2 = phase 2 (poll worker), D6 = public-page hiding / stale pending, WL = public whitelist, CR = connection routes, CL = ApexGEO client, SSRF = `publicFetch` guard, MW = middleware public path, F = the review-round-1 fixes.
+Prefixes: S5/S7/S8 = section scorers (every `score()` branch), P1 = phase 1 (report worker + runner), P2 = phase 2 (poll worker), D6 = public-page hiding / stale pending, WL = public whitelist, CR = connection routes, CL = ApexGEO client, SSRF = `publicFetch` guard, MW = middleware public path, F = the review-round-1 fixes, G = the review-round-2 fixes.
 
 | Mutant | Outcome |
 |---|---|
@@ -77,3 +77,6 @@ Prefixes: S5/S7/S8 = section scorers (every `score()` branch), P1 = phase 1 (rep
 | P2-9 failed scan filled | killed — Tests  1 failed \| 29 passed (30) |
 | D6-1 not-connected shown publicly | killed — Tests  2 failed \| 16 passed (18) |
 | CR-2 http base URL accepted | killed — Tests  2 failed \| 23 passed (25) |
+| G1 failed stamp reported as failed run | killed — 1 failed \| 19 passed (20) (review round 2 fix) |
+| G2 scan start bound to report deadline | killed — 1 failed \| 25 passed (26) (review round 2 fix; survived once — the 1 ms deadline had not fired when checked, test now checks after it passes) |
+| G3 public reason names the vendor | killed — 1 failed \| 20 passed (21) (review round 2 fix) |

@@ -136,7 +136,10 @@ export async function POST(request: Request) {
         status: "failed",
       });
     }
-    await contactRef.update({ "prospecting.lastReportId": reportId });
+    // The report is settled: a failed stamp is logged, never reported as a failed run.
+    await contactRef.update({ "prospecting.lastReportId": reportId }).catch((e) =>
+      console.error("[prospecting/report] lastReportId not stamped", reportId, e),
+    );
     return NextResponse.json({ ok: true, status: "ready" });
   } catch (err) {
     console.error("[prospecting/report] run failed", reportId, err);

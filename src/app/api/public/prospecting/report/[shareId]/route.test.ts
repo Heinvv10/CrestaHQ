@@ -246,6 +246,13 @@ describe("ApexGEO sections (decision D6)", () => {
     },
   );
 
+  it.each(["pending", "timeout", "failed"] as const)("a %s section's public reason never names the vendor (white-label)", async (code) => {
+    seed({ sections: [...SECTIONS, ...apexgeoPlaceholders(code, APEXGEO_REASON[code])] });
+    const text = await (await get(await mint())).text();
+    expect(text).toContain(APEXGEO_REASON[code]);
+    expect(text).not.toMatch(/apexgeo/i);
+  });
+
   it("filled sections show counts and competitor names, never answer text, cited URLs or provider errors", async () => {
     const scan = completedScan();
     scan.ai_visibility.prompts[0].engines[0].cited_url = "https://cited.example/page";

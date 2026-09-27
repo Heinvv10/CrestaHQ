@@ -196,7 +196,7 @@ describe("interrupted and gated runs (M2, L3)", () => {
 
 describe("the ApexGEO scan (phase 1)", () => {
   const PENDING = [
-    { key: "website_performance", status: "unavailable", score: null, findings: [], reason: "ApexGEO scan in progress.", reasonCode: "pending", raw: {} },
+    { key: "website_performance", status: "unavailable", score: null, findings: [], reason: "Scan in progress — check back in a few minutes.", reasonCode: "pending", raw: {} },
   ];
   type Rep = { status: string; apexgeo: Record<string, unknown>; sections: Array<{ key: string }> };
   const rep = () => mem.read("prospectReports/r1") as unknown as Rep;
@@ -265,7 +265,10 @@ describe("the ApexGEO scan (phase 1)", () => {
           })
         : ref;
     });
-    await call();
+    const res = await call();
+    // The report succeeded: a failed stamp is not a failed run.
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, status: "ready" });
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ deduplicationId: "apexgeo_r1_0" }));
     expect(rep().apexgeo.status).toBe("pending");
   });

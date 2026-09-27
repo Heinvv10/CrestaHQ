@@ -40,7 +40,7 @@ export async function startReportScan(
   conn: ApexgeoConnection | null,
   business: ProspectReportInput,
   reportId: string,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ): Promise<StartOutcome> {
   const none = (code: ApexgeoReasonCode, reason = APEXGEO_REASON[code as keyof typeof APEXGEO_REASON]) => ({
     scanId: null,

@@ -24,14 +24,19 @@ const APEXGEO_KEYS: ReadonlySet<ProspectSectionKey> = new Set(APEXGEO_SECTION_KE
 
 export const isApexgeoSection = (key: ProspectSectionKey) => APEXGEO_KEYS.has(key);
 
-/** Reasons shown on the report. Generic by design: a provider's own error text is logged, never shown. */
+/**
+ * Reasons shown on the report. Generic by design: a provider's own error
+ * text is logged, never shown. The ones a prospect can see on the public
+ * page (pending, timeout, failed) never name the vendor — this is a
+ * white-label product; not_connected and out_of_credits are member-only.
+ */
 export const APEXGEO_REASON: Record<Exclude<ApexgeoReasonCode, "missing_input">, string> = {
   not_connected: "Not connected — add an ApexGEO key in Settings to measure this.",
-  pending: "ApexGEO scan in progress.",
+  pending: "Scan in progress — check back in a few minutes.",
   out_of_credits: "ApexGEO account is out of credits.",
-  timeout: "ApexGEO did not finish the scan in time.",
-  failed: "The ApexGEO scan failed.",
-  gate_off: "Prospecting was switched off before the ApexGEO scan finished.",
+  timeout: "The scan did not finish in time.",
+  failed: "The scan failed.",
+  gate_off: "Prospecting was switched off before the scan finished.",
 };
 
 const STATUS_OF: Record<ApexgeoReasonCode, ProspectSectionResult["status"]> = {
