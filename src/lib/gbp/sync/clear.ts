@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { extraLocationNames, ownsDoc, scopeOf, summaryPatch } from "./scope";
+import { locationNamesOf } from "../listings";
 import { LEASE_TTL_MS, reviewsCollection, syncStatePath } from "./types";
 
 /**
@@ -39,7 +40,7 @@ export const CLEARING_RUN_ID = "clearing";
  * and with it the clearing lease — goes LAST. A clear that dies midway leaves
  * the lease to expire after its TTL.
  */
-export async function clearGbpCache(subAccountId: string, extra: string | null = null): Promise<void> {
+export async function clearGbpCache(subAccountId: string, extra: string | null = null, opts: { unlessHeld?: boolean } = {}): Promise<void> {
   const db = getAdminDb();
   const stateRef = db.doc(syncStatePath(subAccountId, extra));
   const subRef = db.doc(`subAccounts/${subAccountId}`);
@@ -47,6 +48,11 @@ export async function clearGbpCache(subAccountId: string, extra: string | null =
   // that dies midway leaves no stale pass for the next run to resume.
   const lease = { runId: CLEARING_RUN_ID, until: Date.now() + LEASE_TTL_MS };
   await stateRef.set({ lease, pass: null, anomalyStreak: null }, { merge: true });
+  // Re-check AFTER the lease: a main PUT either saw the lease (listing_clearing) or committed before this read.
+  if (opts.unlessHeld && extra !== null && locationNamesOf((await subRef.get()).data() ?? {}).includes(extra)) {
+    await stateRef.set({ lease: null }, { merge: true });
+    return;
+  }
   const reviews = db.collection(reviewsCollection(subAccountId));
   let ids: string[];
   if (extra !== null) {

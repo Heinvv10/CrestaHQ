@@ -91,7 +91,7 @@ async function clearRemoved(subAccountId: string, removed: string[]): Promise<bo
     try {
       // Connected again meanwhile (e.g. made the main): its cache is live data now.
       if (locationNamesOf(((await subRef.get()).data() ?? {}) as Sub).includes(loc)) continue;
-      await clearGbpCache(subAccountId, loc);
+      await clearGbpCache(subAccountId, loc, { unlessHeld: true });
     } catch (err) {
       pending = true;
       console.error(`[gbp/extra-listings] removed listing's cache not cleared sa=${subAccountId} loc=${loc}: ${err instanceof Error ? err.name : typeof err}`);
