@@ -18,6 +18,8 @@ const iso = (v: unknown): string | null => {
 
 export interface PublicRun {
   trigger: string;
+  /** The listing this run was for (a sub-account may have several). */
+  locationName: string | null;
   status: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -37,6 +39,7 @@ export interface PublicRun {
 export function publicRun(r: Partial<SyncRunRecord>): PublicRun {
   return {
     trigger: String(r.trigger ?? ""),
+    locationName: r.locationName ?? null,
     status: String(r.status ?? ""),
     startedAt: iso(r.startedAt),
     finishedAt: iso(r.finishedAt),

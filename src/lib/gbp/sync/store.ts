@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { autoReplyNeverCollection, type NeverMarkerSeen } from "../auto-reply-never";
 import type { GbpReview } from "../provider/types";
-import { ownsDoc, type ListingScope } from "./scope";
+import { ownsDoc, reconcilesDoc, type ListingScope } from "./scope";
 import { reviewsCollection, toMillis, type GbpReviewDoc } from "./types";
 
 /**
@@ -52,12 +52,15 @@ export interface CachedReview {
   hadReply?: boolean;
   /** The cached star rating of a review the engine auto-replied to; else null. */
   autoRepliedStar?: number | null;
+  /** Owned for retention only — never reconciled (another listing's leftover; see scope.ts). */
+  orphan?: boolean;
 }
 
 /**
  * ONE listing's cache (see scope.ts): the read is the whole collection, as
  * before, filtered in memory by each doc's `locationName`, so reconciliation
- * and retention only ever see — and act on — that listing's reviews.
+ * and retention only ever see — and act on — that listing's reviews
+ * (`orphan` docs: retention only).
  */
 export async function loadCache(subAccountId: string, scope: ListingScope): Promise<Map<string, CachedReview>> {
   const snap = await getAdminDb().collection(reviewsCollection(subAccountId)).get();
@@ -74,6 +77,7 @@ export async function loadCache(subAccountId: string, scope: ListingScope): Prom
       replied: !!d.reply || d.hadReply === true,
       hadReply: d.hadReply === true,
       autoRepliedStar: (d as { autoReplied?: unknown }).autoReplied && typeof d.starRating === "number" ? d.starRating : null,
+      ...(reconcilesDoc(scope, d.locationName) ? {} : { orphan: true }),
     });
   }
   return out;

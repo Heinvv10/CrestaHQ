@@ -51,6 +51,25 @@ export interface LeaseExpectation {
   stampIfAbsent?: GbpSummary;
 }
 
+/**
+ * The location connected in this ROLE right now: the main listing's
+ * (`extra` null), or `extra` itself while it is still a current extra — else
+ * null. Derived from the listing fields, never the flat array.
+ */
+export function roleLocation(sub: SubAccountDoc | undefined, extra: string | null): string | null {
+  if (!sub) return null;
+  if (extra === null) return sub.googleListing?.locationName ?? null;
+  return extraLocationNames(sub).includes(extra) ? extra : null;
+}
+
+/** Which listing, in which role, a run's writes are for. */
+export interface ListingRole {
+  /** The EXTRA listing; null = the main listing. */
+  extra: string | null;
+  /** The location the run was started for in that role. */
+  locationName: string | null;
+}
+
 export type LeaseResult =
   /** `sub` is the sub-account as read INSIDE the lease transaction. */
   | { ok: true; state: SyncState; sub: SubAccountDoc }
@@ -68,13 +87,8 @@ export async function acquireLease(
   return db.runTransaction(async (tx) => {
     const [snap, subSnap] = [await tx.get(ref), await tx.get(subRef)];
     const sub = (subSnap.data() ?? {}) as SubAccountDoc;
-    // The listing must still be connected in the SAME role (main or extra):
-    // derived from the listing fields, never the flat array.
-    const current = expect.extra === null
-      ? (sub.googleListing?.locationName ?? null)
-      : (extraLocationNames(sub).includes(expect.extra) ? expect.extra : null);
     if (
-      current !== expect.locationName ||
+      roleLocation(sub, expect.extra) !== expect.locationName ||
       expect.classify(sub) !== expect.skipReason
     ) {
       return { ok: false, reason: "listing_changed" } as const;
@@ -107,25 +121,29 @@ const CHUNK = 400;
 
 /**
  * Apply `ops` in transactions of at most {@link CHUNK} writes, each of which
- * first confirms the lease is still `runId`'s. Throws LeaseLostError (having
- * written nothing in that chunk) when it is not. Callers write each doc at
- * most once per call — the page commit renews the lease inside its own
- * state write.
+ * first confirms the lease is still `runId`'s AND the listing is still
+ * connected in the role the run started in (the same check as
+ * {@link acquireLease}: an extra promoted to main mid-pass is cleared under
+ * the MAIN lease, which does not fence the extra's). Throws LeaseLostError
+ * (having written nothing in that chunk) when either fails. Callers write
+ * each doc at most once per call — the page commit renews the lease inside
+ * its own state write.
  */
 export async function commitGuarded(
   subAccountId: string,
   runId: string,
   ops: GuardedOp[],
-  /** The EXTRA listing whose lease guards the writes; null = the main listing. */
-  extra: string | null = null,
+  role: ListingRole,
 ): Promise<void> {
   const db = getAdminDb();
-  const ref = db.doc(syncStatePath(subAccountId, extra));
+  const ref = db.doc(syncStatePath(subAccountId, role.extra));
+  const subRef = db.doc(`subAccounts/${subAccountId}`);
   for (let i = 0; i < ops.length; i += CHUNK) {
     const chunk = ops.slice(i, i + CHUNK);
     await db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
+      const [snap, subSnap] = [await tx.get(ref), await tx.get(subRef)];
       if (!snap.exists || readState(snap.data()).lease?.runId !== runId) throw new LeaseLostError();
+      if (roleLocation(subSnap.data() as SubAccountDoc | undefined, role.extra) !== role.locationName) throw new LeaseLostError();
       for (const op of chunk) op(tx);
     });
   }

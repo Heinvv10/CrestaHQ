@@ -3,7 +3,8 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { SubAccountDoc } from "@/types";
 import { listingFor } from "../listings";
-import { extraLocationNames, summaryIn, summaryPatch, type WithSummaries } from "./scope";
+import { roleLocation } from "./lease";
+import { summaryIn, summaryPatch, type WithSummaries } from "./scope";
 import { nextSummary } from "./summary";
 import { runsCollection, type SyncRunRecord, type SyncTrigger } from "./types";
 
@@ -43,10 +44,7 @@ export async function recordFailedRun(
       const subRef = db.doc(`subAccounts/${subAccountId}`);
       await db.runTransaction(async (tx) => {
         const fresh = (await tx.get(subRef)).data() as typeof sub | undefined;
-        const current = extra === null
-          ? fresh?.googleListing?.locationName
-          : (fresh && extraLocationNames(fresh).includes(extra) ? extra : null);
-        if (!fresh || current !== locationName) return;
+        if (!fresh || roleLocation(fresh, extra) !== locationName) return;
         const stored = summaryIn(fresh, extra);
         const prev = stored?.locationName === locationName ? stored : null;
         const summary = nextSummary(rec, prev, { expired: false, rating: null }, startedAt);

@@ -6,7 +6,7 @@ import { withGbpAccess } from "../access";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
 import { GbpProviderError, type GbpReview, type GbpReviewsPage } from "../provider/types";
 import { autoReplyNeverPath, neverMarker, stableReviewKey } from "../auto-reply-never";
-import { commitGuarded, type GuardedOp } from "./lease";
+import { commitGuarded, type GuardedOp, type ListingRole } from "./lease";
 import { withRetry, type Sleep } from "./retry";
 import { loadNeverMarkers, reviewDocId, upsertFor, type CachedReview, type UpsertContext } from "./store";
 import { LEASE_TTL_MS, PASS_MAX_AGE_MS, reviewsCollection, syncStatePath, type SyncPass, type SyncState } from "./types";
@@ -26,8 +26,8 @@ export interface PassInput {
   subAccountId: string;
   runId: string;
   ref: { accountName: string; locationName: string };
-  /** The EXTRA listing being fetched (its own state doc and lease); null = the main listing. */
-  extra: string | null;
+  /** The listing being fetched and its role (an extra has its own state doc and lease). */
+  role: ListingRole;
   ctx: Omit<UpsertContext, "passId">;
   cache: Map<string, CachedReview>;
   pass: SyncState["pass"];
@@ -72,7 +72,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
   };
   let mayRestart = out.resumed;
   const db = getAdminDb();
-  const stateRef = db.doc(syncStatePath(subAccountId, input.extra));
+  const stateRef = db.doc(syncStatePath(subAccountId, input.role.extra));
   const ctx: UpsertContext = { ...input.ctx, passId };
   const markers = await loadNeverMarkers(subAccountId);
 
@@ -124,7 +124,7 @@ export async function fetchPass(input: PassInput): Promise<PassOutcome> {
     const lease = { runId, until: input.clock().getTime() + LEASE_TTL_MS };
     ops.push((tx) => tx.set(stateRef, { pass, lease }, { merge: true }));
     try {
-      await commitGuarded(subAccountId, runId, ops, input.extra);
+      await commitGuarded(subAccountId, runId, ops, input.role);
     } catch (err) {
       out.error = err;
       return out;

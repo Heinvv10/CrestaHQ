@@ -18,6 +18,8 @@ import {
   FOREIGN_AGENCY,
   FOREIGN_SA,
   LEAK_MARKERS,
+  LOC_A,
+  LOC_NORTH,
   OTHER_SA,
   SA,
   activeReviews,
@@ -86,7 +88,7 @@ describe("an admin's Sync now", () => {
     const { status, body } = await syncNow("uid_admin");
     expect(status).toBe(200);
     expect(body.run).toEqual({
-      trigger: "manual", status: "success", startedAt: expect.any(String), finishedAt: expect.any(String),
+      trigger: "manual", locationName: LOC_A, status: "success", startedAt: expect.any(String), finishedAt: expect.any(String),
       pagesFetched: 3, reviewsSeen: 7, created: 7, updated: 0, unchanged: 0, removed: 0, purged: 0,
       reconciliation: "full", resumedFromCursor: false, errorKind: null, skipReason: null,
     });
@@ -155,11 +157,42 @@ describe("two listings (MULTI_LISTING_V1_PLAN.md PR 2)", () => {
     const { status, body } = await syncNow("uid_admin");
     expect(status).toBe(200);
     const all = body.runs as unknown as Array<Record<string, unknown>>;
-    expect(all.map((r) => [r.status, r.created])).toEqual([["success", 7], ["success", 3]]);
+    expect(all.map((r) => [r.locationName, r.status, r.created])).toEqual([[LOC_A, "success", 7], [LOC_NORTH, "success", 3]]);
     expect(body.run).toEqual(all[0]);
     const earliest = runs().map((r) => r.startedAt as Date).sort((a, b) => a.getTime() - b.getTime())[0];
     expect(handed).toHaveBeenCalledTimes(1);
     expect(handed).toHaveBeenCalledWith([{ subAccountId: SA, created: 10, updated: 0, startedAt: earliest }], expect.any(Number));
+  });
+
+  it("a failure reading the extras after the main run leaves the main run a success, and after-sync still runs", async () => {
+    handed.mockClear();
+    seedExtraListing(SA);
+    // Throw once, on the first read of the sub-account after the main run's record is written.
+    const real = storeDb.doc.bind(storeDb);
+    let armed = false;
+    vi.spyOn(storeDb, "doc").mockImplementation((path: string) => {
+      const ref = real(path);
+      if (path.startsWith(`subAccounts/${SA}/gbpSyncRuns/`)) {
+        const create = ref.create.bind(ref);
+        return { ...ref, create: async (d: Record<string, unknown>) => { await create(d); armed = true; } } as typeof ref;
+      }
+      if (path === `subAccounts/${SA}`) {
+        const get = ref.get.bind(ref);
+        return { ...ref, get: async () => {
+          if (armed) { armed = false; throw new Error("14 UNAVAILABLE"); }
+          return get();
+        } } as typeof ref;
+      }
+      return ref;
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { status, body } = await syncNow("uid_admin");
+    expect(status).toBe(200);
+    expect(body.run).toMatchObject({ locationName: LOC_A, status: "success", created: 7 });
+    expect(runs().map((r) => [r.locationName, r.status])).toEqual([[LOC_A, "success"]]);
+    expect(mem.read(`subAccounts/${SA}`)?.gbpSummary).toMatchObject({ lastRunStatus: "success" });
+    expect(handed).toHaveBeenCalledTimes(1);
+    expect(handed).toHaveBeenCalledWith([expect.objectContaining({ subAccountId: SA, created: 7 })], expect.any(Number));
   });
 
   it("single listing: unchanged — `runs` is just the one run", async () => {

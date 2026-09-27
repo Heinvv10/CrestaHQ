@@ -99,6 +99,7 @@ async function runLeased(
   const reviewRef = (id: string) => db.doc(`${reviewsCollection(sa)}/${id}`);
   const stateRef = db.doc(syncStatePath(sa, extra));
   const subRef = db.doc(`subAccounts/${sa}`);
+  const role = { extra, locationName: rec.locationName };
   const prev = previousSummary(sub, extra);
   const retainOnly = rec.skipReason === "retention_only";
   const syncs = !retainOnly && (rec.skipReason === null || rec.skipReason === "reconnect_required");
@@ -116,7 +117,10 @@ async function runLeased(
     const reset = { retentionPurgedAt: now.getTime(), pass: null, anomalyStreak: null };
     purge.push((tx) => tx.set(stateRef, reset, { merge: true }));
   }
-  if (!syncs && !canSync && cache.size === 0) {
+  // The sweep finds a tenant by `gbpSummary` alone: the main one stays while
+  // any extra still has a summary, or that extra's cache would never expire.
+  const extrasCached = extra === null && Object.keys(sub.gbpSummaries ?? {}).length > 0;
+  if (!syncs && !canSync && cache.size === 0 && !extrasCached) {
     // A cache that can no longer sync drops its (Google-sourced) summary
     // once it holds no reviews — after an expiry purge, or when a
     // never-successful one has nothing left that could ever expire — and so
@@ -128,7 +132,7 @@ async function runLeased(
     const summary = nextSummary(rec, prev, { expired: true, rating: null }, now);
     purge.push((tx) => tx.set(subRef, summaryPatch(extra, summary), { merge: true }));
   }
-  await commitGuarded(sa, rec.runId, purge, extra);
+  await commitGuarded(sa, rec.runId, purge, role);
   if (!syncs) return;
 
   const finalOps: GuardedOp[] = [];
@@ -139,7 +143,7 @@ async function runLeased(
       subAccountId: sa,
       runId: rec.runId,
       ref: { accountName: listing.accountName, locationName: listing.locationName },
-      extra,
+      role,
       ctx: { agencyId: rec.agencyId, subAccountId: sa, createdByUid: rec.createdByUid, locationName: listing.locationName, now },
       cache,
       pass: retention.expired ? null : state.pass,
@@ -156,7 +160,9 @@ async function runLeased(
     else if (!outcome.complete) rec.status = "partial";
     else {
       const streak = retention.expired ? null : (state.anomalyStreak ?? null);
-      const plan = planReconcile(cache, outcome.passId, !outcome.resumed, streak, now);
+      // Orphans (another listing's leftovers) are retention's alone.
+      const own = new Map([...cache].filter(([, c]) => !c.orphan));
+      const plan = planReconcile(own, outcome.passId, !outcome.resumed, streak, now);
       rec.reconciliation = plan.reconciliation;
       rec.status = plan.reconciliation === "skipped_anomaly" ? "partial" : "success";
       rec.removed = plan.remove.length;
@@ -167,7 +173,7 @@ async function runLeased(
   }
   const summary = nextSummary(rec, prev, { expired: retention.expired, rating }, now);
   finalOps.push((tx) => tx.set(subRef, summaryPatch(extra, summary), { merge: true }));
-  await commitGuarded(sa, rec.runId, finalOps, extra);
+  await commitGuarded(sa, rec.runId, finalOps, role);
 }
 
 /** Best effort after a non-provider failure: the summary must not keep saying "up to date". */
@@ -176,7 +182,7 @@ async function recordInternalFailure(rec: SyncRunRecord, sub: SubWithSummary, no
     const summary = nextSummary(rec, previousSummary(sub, extra), { expired: false, rating: null }, now);
     await commitGuarded(rec.subAccountId, rec.runId, [
       (tx) => tx.set(getAdminDb().doc(`subAccounts/${rec.subAccountId}`), summaryPatch(extra, summary), { merge: true }),
-    ], extra);
+    ], { extra, locationName: rec.locationName });
   } catch (e) {
     console.error(`[gbp/sync] sa=${rec.subAccountId} run=${rec.runId} summary not updated: ${e instanceof Error ? e.name : typeof e}`);
   }

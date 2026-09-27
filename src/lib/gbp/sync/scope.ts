@@ -9,15 +9,20 @@ import type { GbpSummary } from "./types";
  * review doc that does not belong to a CURRENT extra listing — so a
  * sub-account without extras keeps exactly today's paths and whole-collection
  * cache (a failed clear's leftovers included, so retention still reaches
- * them). An extra listing has its own state doc, `gbpSummaries.{locId}`, and
- * only its own docs: a pass of one listing can never miss-count, tombstone
- * or purge another's reviews.
+ * them). But only the main listing's OWN docs (or docs with no
+ * `locationName`) are reconciled — see {@link reconcilesDoc}: an orphan from
+ * a removed listing is never miss-counted or tombstoned, only purged. An
+ * extra listing has its own state doc, `gbpSummaries.{locId}`, and only its
+ * own docs: a pass of one listing can never miss-count, tombstone or purge
+ * another's reviews.
  */
 export interface ListingScope {
   /** The EXTRA listing's location name; null = the main listing. */
   extra: string | null;
   /** The sub-account's current extra listings (never the main). */
   extras: string[];
+  /** The main listing's location name, if any. */
+  main: string | null;
 }
 
 export type WithSummaries = ListingFields & {
@@ -32,13 +37,24 @@ export function extraLocationNames(sub: ListingFields): string[] {
 }
 
 export function scopeOf(sub: ListingFields, extra: string | null): ListingScope {
-  return { extra, extras: extraLocationNames(sub) };
+  return { extra, extras: extraLocationNames(sub), main: sub.googleListing?.locationName ?? null };
 }
 
 /** Whether a cached review doc (by its `locationName`) belongs to this scope's cache. */
 export function ownsDoc(scope: ListingScope, docLocationName: unknown): boolean {
   if (scope.extra !== null) return docLocationName === scope.extra;
   return !scope.extras.includes(docLocationName as string);
+}
+
+/**
+ * Whether a doc this scope owns is also RECONCILED by its passes (miss
+ * counts, tombstones, the anomaly brake): the listing's own docs, and for the
+ * main listing also docs with no `locationName`. Retention covers every
+ * owned doc.
+ */
+export function reconcilesDoc(scope: ListingScope, docLocationName: unknown): boolean {
+  if (scope.extra !== null) return docLocationName === scope.extra;
+  return docLocationName == null || docLocationName === scope.main;
 }
 
 /** The listing's stored summary: `gbpSummary` for main, `gbpSummaries.{locId}` for an extra. */

@@ -14,8 +14,9 @@ import type { SyncRunRecord } from "./types";
  * H2). The MAIN listing goes first and is exactly the single-listing run of
  * before — a throw there propagates as it always did (the caller records it).
  * Then each extra listing, each under its own lease: an extra's throw becomes
- * that extra's failed run and the rest carry on. A sub-account without extras
- * makes exactly one call.
+ * that extra's failed run and the rest carry on; any other failure of the
+ * extras phase is logged and the main run returned as it ended. A
+ * sub-account without extras makes exactly one call.
  */
 
 type Sub = SubAccountDoc & WithSummaries;
@@ -32,17 +33,26 @@ async function eachExtra(
   onThrow: (sub: Sub, extra: string) => Promise<SyncRunRecord>,
 ): Promise<SyncRunRecord[]> {
   const runs = [first];
-  const sub = await readSub(sa);
-  for (const extra of extraLocationNames(sub)) {
-    if (quotaStop(runs[runs.length - 1])) break;
-    try {
-      runs.push(await run(extra));
-    } catch (err) {
-      // The fake's fence refuses the whole tenant: never write anything of ours there.
-      if (err instanceof GbpFakeRefusedError) throw err;
-      console.error(`[gbp/sync] listing threw sa=${sa}: ${err instanceof Error ? err.name : typeof err}`);
-      runs.push(await onThrow(sub, extra));
+  const why = (err: unknown) => (err instanceof Error ? err.name : typeof err);
+  try {
+    const sub = await readSub(sa);
+    for (const extra of extraLocationNames(sub)) {
+      if (quotaStop(runs[runs.length - 1])) break;
+      try {
+        runs.push(await run(extra));
+      } catch (err) {
+        // The fake's fence refuses the whole tenant: never write anything of ours there.
+        if (err instanceof GbpFakeRefusedError) throw err;
+        console.error(`[gbp/sync] listing threw sa=${sa}: ${why(err)}`);
+        runs.push(await onThrow(sub, extra));
+      }
     }
+  } catch (err) {
+    if (err instanceof GbpFakeRefusedError) throw err;
+    // The main run has already returned: a failure among the extras (the
+    // re-read included) must not turn it into a failed sync, nor skip the
+    // after-sync work its caller runs. No extra to record it against — log it.
+    console.error(`[gbp/sync] extra listings not synced sa=${sa}: ${why(err)}`);
   }
   return runs;
 }
