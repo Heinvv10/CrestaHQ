@@ -63,6 +63,10 @@ describe("gbp run", () => {
     expect(out.raw).toEqual({ details: FULL_DETAILS, description: "notMeasured", claimed: "notMeasured" });
   });
 
+  it("requests addressComponents (the ApexGEO scan's town fallback)", () => {
+    expect(GBP_FIELD_MASK.split(",")).toContain("addressComponents");
+  });
+
   it("requests no Atmosphere or review fields", () => {
     for (const f of ["reviews", "editorialSummary", "rating", "userRatingCount"]) {
       expect(GBP_FIELD_MASK.split(",")).not.toContain(f);
