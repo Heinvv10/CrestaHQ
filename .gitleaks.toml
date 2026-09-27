@@ -56,6 +56,11 @@ regexes = [
   # low-entropy fixture; this anchor exists only so that commit's diff stops
   # tripping the history scan.
   '''^0123456789abcdef01234567$''',
+  # Multi-listing review-link test fixture
+  # (src/app/api/sub-accounts/[id]/google-review/adopt-listing-url/route.listing.test.ts):
+  # a fake-provider location id held in a constant named KEY, which trips
+  # generic-api-key by name. Never a credential; the anchor matches only it.
+  '''^e2e-velo-gqeberha-north$''',
   # Keyless-hardening test fixtures: only exist in commit f384dbfe's diff
   # (src/app/api/keyless-ids.test.ts and keyless-body-caps.test.ts line 15
   # at that point in history) as the VAPI / token HMAC secret the tests set.
