@@ -71,7 +71,7 @@ Manage dialog: gate checkbox, quota number field. Sidebar entry "Prospecting" at
 
 ## Dependencies outside this repo
 
-- **ApexGEO**: `POST /api/v1/brands` (name, url) does not exist; audits need a `brand_id`. Add it, or accept `url` without a brand on `POST /api/v1/audits`. One PR in ApexGEO, before PR 3 below. Also confirm that a v1 key with `mcp:read` scope can read `brands/[id]/share-of-voice` and `audits/[id]/decomposition` for a brand it created.
+- **ApexGEO**: resolved with a brand-less `POST /api/v1/scans` + `GET /api/v1/scans/{id}` (ApexGEO plan PR #880, live-proven 2026-09-25), used by PR 3.
 - **ApexSignal**: a `push_leadstack.py` replacing `push_ghl.py`; reads the CSV, POSTs to `/api/v1/contacts` on #1000 with the `prospecting` map, idempotent on phone. Runs from the same cron after the source cycle. The six "interested" replies from 2026-09-08 go first, tagged `warm-reply`, and become tasks for Hein.
 
 ## PR 2 decisions (2026-09-26, recorded from the build)
@@ -82,13 +82,20 @@ Manage dialog: gate checkbox, quota number field. Sidebar entry "Prospecting" at
 - **Section 4 listings:** Brabys and Cylex are behind Cloudflare 403s and Yellow Pages SA serves a JS shell, so they come back `unknown`. Bing (server-rendered, noisy) and the Facebook page linked from the business's own site are checked. `listing_missing` is never emitted, because no directory's "not found" is trustworthy.
 - **Section 2 GBP:** one Places Details call, mask `id,businessStatus,photos,regularOpeningHours,nationalPhoneNumber`. `editorialSummary` is an Enterprise+Atmosphere field, so the description is not measured. Places cannot tell "claimed", so `gbp_unclaimed` is not emitted.
 
+## PR 3 decisions (2026-09-27, recorded from the build)
+
+- **D1 — two-phase, asynchronous.** The report never waits for ApexGEO (a scan takes ~47 s; a worker has 100 s). Once the report's own sections make it `ready`, the worker starts one scan (`external_ref = leadstack:report:<id>`, so a retry replays and is not charged), writes the three sections `pending`, and queues a QStash poll (`/api/automations/prospecting/apexgeo`, 45/45/90/180/240 s, about 10 minutes, transient ApexGEO errors polled again). Polling won over ApexGEO's webhook: no new public route or signing-secret storage. A failed report never starts a scan.
+- **D4 — probe `{ engines: [gemini, chatgpt], prompts: 3 }`.** Perplexity answered `insufficient_quota` on every prompt in ApexGEO's live proof. Niche = `prospecting.category`, city = the contact's `city`, country = its `countryCode` or `ZA`. With no website, category or city the scan is not started and the sections say which is missing; a niche or city is never guessed.
+- **D6 — the agency's own setup gaps are hidden from the prospect.** On `/report/[token]`, sections not measured because there is no ApexGEO key, or its account is out of credits, are left out. The member view shows them (with a *Connect ApexGEO* link). Pending, timed-out, failed and missing-input sections show on both, and the reasons a prospect can see never name the vendor (white-label).
+- **Gap found in the live proof — prospects have no city.** On #1000, 0 of 648 prospects with a website carry `city`: ApexSignal pushes send `address: "ZA"`, and Get Leads' Places rows rarely supply a city. So under D4 most real prospects get "not measured: no city". **Revisit when** Hein picks a source: Places Details `addressComponents` (the GBP section already makes that call), ApexSignal sending the city it searched, or the saved list's `placeName`.
+
 ## PR sequence (each one independently mergeable, each with a blind `/review`)
 
 | PR | Scope | Gate to merge |
 |---|---|---|
 | 1 | **DONE (#245, #247)** — Gate + quota + schema + rules + Manage dialog + `FEATURE_GATES` entry + un-park Get Leads with saved lists and the `prospecting` map on import and on v1 contacts | tests for the gate 403s, rules tests, tenancy check; Level-3 boundary |
 | 2 | **DONE (#288)** — `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Google Places/Firecrawl), QStash callback, quota enforcement, share page `/report/[token]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
-| 3 | ApexGEO connection + sections 5, 7, 8; "Not connected" state | recorded-response tests against the ApexGEO OpenAPI shapes; live proof on #1000 with a real key |
+| 3 | **DONE (#302)** — ApexGEO connection + sections 5, 7, 8; "Not connected" state; deployed 7f7b4882, proven on #1000 2026-09-27 ([evidence](../parity/evidence/prospecting-pr3/README.md)) | recorded-response tests against the ApexGEO OpenAPI shapes; live proof on #1000 with a real key |
 | 4 | Workflow trigger + merge tags + approach guard + daily cap | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
 | 5 | Mystery-shop actions (form/call, WhatsApp) with confirm dialog | **human gate**: sends reach a real business; first live run is to a number Hein owns |
 | 6 | ApexSignal `push_leadstack.py` + cron; warm replies imported | proof: contacts visible in #1000 with tags; Hein's tasks created |

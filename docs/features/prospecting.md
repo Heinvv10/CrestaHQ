@@ -58,6 +58,8 @@ Sections 5 (website performance), 7 (AI-agent readiness) and 8 (AI answer-engine
 
 **Public page (D6).** Sections left out because of the agency's own setup — no key (`not_connected`) or its ApexGEO account out of credits (`out_of_credits`) — are **hidden on `/report/[token]`**: a prospect should not see those gaps. The member view shows them, with a *Connect ApexGEO* link for `not_connected`. Pending, timed-out, failed and missing-input sections show honestly on both. The public whitelist shows counts, the models asked and competitor names (public business names) — never the answers' text, `cited_url` or a provider error.
 
+**Known gap (2026-09-27 live proof):** most real prospects carry no `city` (ApexSignal pushes `address: "ZA"`; Places rows rarely give a city), so sections 5/7/8 say "not measured: no city" for them. Source to be chosen — see the plan's [PR 3 decisions](../programme/prospecting-module.md#pr-3-decisions-2026-09-27-recorded-from-the-build).
+
 ## Not yet
 
 Workflow trigger and merge tags, approach guard, mystery shop, ApexSignal push — each its own PR in the plan. `POST /api/v1/contacts` ignores a `prospecting` field (like any unknown top-level field) and `POST /api/v1/contacts/upsert` refuses it with a 400 — ApexSignal's push (PR 6) either PATCHes after create or extends one of them.
