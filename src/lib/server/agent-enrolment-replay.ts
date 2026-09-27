@@ -10,7 +10,8 @@ import { reserveEnrolment, resolveEnrolmentCapPerHour } from "@/lib/api/enrolmen
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import { readPipelineStages } from "@/lib/pipelines/server";
 import { dealPipelineId } from "@/lib/pipelines/stages";
-import type { WorkflowTriggerType } from "@/types/workflows";
+import { workflowStepsFingerprint } from "@/lib/ai-suite/capabilities/workflow-support";
+import type { WorkflowDoc, WorkflowTriggerType } from "@/types/workflows";
 import { eventStatus, type CalendarEvent } from "@/types/events";
 
 const WHY: Record<string, string> = {
@@ -20,6 +21,7 @@ const WHY: Record<string, string> = {
   reentry_blocked: "The contact is already in (or has already been through) that workflow.",
   filters_not_met: "The contact no longer matches that workflow's filters.",
   trigger_mismatch: "The workflow's trigger no longer matches.",
+  steps_changed: "The workflow's steps changed since this was reviewed, so nobody was enrolled.",
   deal_changed:
     "The deal changed since this was proposed (it moved, left its pipeline or was deleted), so nobody was enrolled (trigger_mismatch).",
   event_changed:
@@ -80,12 +82,18 @@ export async function dealStillMatches(
  */
 export async function replayHeldEnrolment(
   proposal: Record<string, unknown>,
-  _approver: AiSuiteActionContext
+  approver: AiSuiteActionContext
 ): Promise<ExecuteResult> {
   const args = proposal.args as { type: WorkflowTriggerType; contactId: string; context?: Record<string, unknown> };
   const subAccountId = proposal.subAccountId as string;
   const keyId = proposal.keyId as string;
   const workflowId = proposal.workflowId as string;
+  // Steps edited after the approver reviewed them: nobody is enrolled. (A
+  // missing or paused workflow is left to the engine's own reason.)
+  const wf = (await getAdminDb().doc(`workflows/${workflowId}`).get()).data();
+  if (wf && workflowStepsFingerprint(wf as WorkflowDoc) !== approver.approved?.pinned?.stepsFingerprint) {
+    throw new CapabilityUserError(WHY.steps_changed);
+  }
   if (DEAL_TRIGGERS.has(args.type) && !(await dealStillMatches(subAccountId, args.type, args.context ?? {}))) {
     throw new CapabilityUserError(WHY.deal_changed);
   }

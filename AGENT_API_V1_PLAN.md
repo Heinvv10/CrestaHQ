@@ -404,8 +404,8 @@ Later (out of v1): agency-wide keys.
   (it iterates the registry, so a new cap is covered the moment it is
   registered — no per-file static check).
 - **Held enrolments change timing.** A "speed-to-lead" workflow approved an
-  hour later still runs its first step immediately. The preview does NOT say so:
-  it shows only Workflow, Trigger and Contact (plus Deal and Stage for a deal trigger).
+  hour later still runs its first step immediately. **REVISED 2026-09-27:** the
+  preview now says so and shows the exact steps, their fingerprint pinned.
 - **MCP SDK version** (1.27 via shadcn; v2 renames packages). No idempotency
   on MCP; REST covers it. Rate limit is per-process memory (single unit here).
 - **Agent acts as sub-account admin** (territory bypass by design); approvals

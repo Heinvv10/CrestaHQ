@@ -29,6 +29,13 @@ export function workflowFingerprint(wf: WorkflowDoc): string {
     .digest("hex");
 }
 
+/** A hash of a workflow's steps alone (the start step and the nodes), for
+ *  approvals that start a workflow without changing it: a steps edit after
+ *  the review changes it, a pause or a rename doesn't. */
+export function workflowStepsFingerprint(wf: Pick<WorkflowDoc, "startNodeId" | "nodes">): string {
+  return createHash("sha256").update(canonical([wf.startNodeId ?? null, wf.nodes ?? {}])).digest("hex");
+}
+
 /** Keys sorted, so a value reads the same however it was stored. */
 function sorted(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(sorted);
