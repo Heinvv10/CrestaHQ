@@ -283,7 +283,7 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
     );
     expect(apexCalls()).toHaveLength(1);
     expect(JSON.parse(apexCalls()[0][1].body)).toMatchObject({
-      url: BUSINESS.website, business_name: BUSINESS.name, niche: "Plumber", city: BUSINESS.city,
+      url: BUSINESS.website, business_name: BUSINESS.name, niche: "plumber", city: BUSINESS.city,
       country: "NA", external_ref: "leadstack:report:r1", probe: { engines: ["gemini", "chatgpt"], prompts: 3 },
     });
     expect(out.apexgeo).toEqual({ scanId: "scan_9" });
@@ -304,6 +304,17 @@ describe("runProspectReport — the ApexGEO scan (phase 1)", () => {
     expect(apexCalls()).toHaveLength(1);
     await new Promise((r) => setTimeout(r, 60)); // the report's deadline has now passed
     expect(apexCalls()[0][1].signal.aborted).toBe(false);
+  });
+
+  it("the niche is lowercased for the AI question ('best plumber…' not 'best Plumber…'); the city keeps its case", async () => {
+    site(() => json(202, { data: { id: "scan_9", status: "queued", credits_reserved: 7 } }));
+    await runProspectReport(
+      { ...BUSINESS, category: "Plumber", city: "Johannesburg" },
+      { sections: [await techStack()], apexgeo: { connection: CONN, reportId: "r1" } },
+    );
+    const body = JSON.parse(apexCalls()[0][1].body);
+    expect(body.niche).toBe("plumber");
+    expect(body.city).toBe("Johannesburg");
   });
 
   it("country defaults to ZA", async () => {

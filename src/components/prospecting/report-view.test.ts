@@ -76,6 +76,44 @@ it("orders rows worst score first, unscored and unmeasured after", () => {
   expect(order).toEqual(["reputation", "tech_stack", "gbp", "listings"]);
 });
 
+it("hideEmpty drops a section with no score, no findings and no rows — the member view (no hideEmpty) still shows it", () => {
+  const emptyListings = { ...section("listings", {}), score: null };
+  const scoredGbp = { ...section("gbp", {}), score: 100 };
+  const withFindings: PublicReportSection = {
+    ...section("reputation", {}),
+    score: null,
+    findings: [{ code: "low_rating", text: "finding", impact: null, cta: null }],
+  };
+  const render = (hideEmpty: boolean) =>
+    renderToStaticMarkup(
+      createElement(ReportSections, { sections: [emptyListings, scoredGbp, withFindings], hideEmpty }),
+    );
+  const member = render(false);
+  expect(member).toContain("report-section-listings");
+  const publicHtml = render(true);
+  expect(publicHtml).not.toContain("report-section-listings");
+  expect(publicHtml).toContain("report-section-gbp");
+  expect(publicHtml).toContain("report-section-reputation");
+});
+
+it("hideEmpty keeps an unscored section that still has rows to show (listings with a found match)", () => {
+  const withRows = { ...section("listings", { Facebook: "found" }), score: null };
+  const html = renderToStaticMarkup(createElement(ReportSections, { sections: [withRows], hideEmpty: true }));
+  expect(html).toContain("report-section-listings");
+});
+
+it("hideEmpty never drops a failed/timed-out/unavailable section — the reason still matters", () => {
+  const timedOut: PublicReportSection = {
+    ...section("listings", {}),
+    status: "timeout",
+    score: null,
+    reason: "The directories did not answer in time.",
+  };
+  const html = renderToStaticMarkup(createElement(ReportSections, { sections: [timedOut], hideEmpty: true }));
+  expect(html).toContain("report-section-listings");
+  expect(html).toContain("The directories did not answer in time.");
+});
+
 it("AI presence: questions show for a non-ok section too, and the counts never render twice with showAll", () => {
   const pending: PublicReportSection = {
     ...section("ai_presence", { question1: "best plumber in Exampletown" }), status: "timeout", score: null, reason: "Timed out.",

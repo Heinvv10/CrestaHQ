@@ -32,6 +32,7 @@ const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const token = () => randomBytes(32).toString("base64url");
 
 const EVIDENCE = "docs/parity/evidence/prospecting-r3";
+const FONT_EVIDENCE = "docs/parity/evidence/report-polish";
 const BRAND = "#0F766E";
 const FIXTURE_WHATSAPP = "+27000000000";
 
@@ -147,7 +148,14 @@ test("the Story report renders at phone and desktop, with the hero picked by the
     await expect(p.getByText("Application error")).toHaveCount(0);
     // No horizontal scroll at phone width.
     expect(await p.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    // App-wide font fix (globals.css): body copy is Geist, and the report's
+    // own display font (Instrument Serif, via font-serif) is unchanged.
+    expect(await p.evaluate(() => getComputedStyle(document.body).fontFamily)).toContain("Geist");
+    expect(await p.getByRole("heading", { level: 1 }).evaluate((el) => getComputedStyle(el).fontFamily)).toContain(
+      "Instrument Serif",
+    );
     await p.screenshot({ path: `${EVIDENCE}/01-ai-hero-phone.png`, fullPage: true });
+    await p.screenshot({ path: `${FONT_EVIDENCE}/report-page-font.png`, fullPage: true });
     await phone.close();
 
     // --- A at 1280×900: the ring grid shows ---------------------------------
@@ -164,7 +172,7 @@ test("the Story report renders at phone and desktop, with the hero picked by the
     await expect(other.page.getByRole("heading", { level: 1 })).toHaveText(bHeadline);
     await expect(other.page.getByTestId("hero-headline")).toContainText("Customers who prefer WhatsApp");
     await expect(other.page.getByRole("heading", { name: "Want customers to reach you on WhatsApp in one tap?" })).toBeVisible();
-    await expect(other.page.getByTestId("top-fixes")).toContainText("below the 4.8 that wins close calls");
+    await expect(other.page.getByTestId("top-fixes")).toContainText("below the 4.8 threshold");
     await other.page.screenshot({ path: `${EVIDENCE}/03-headline-hero-phone.png`, fullPage: true });
     await other.close();
 

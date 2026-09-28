@@ -17,6 +17,12 @@ test("creates, edits and deletes a contact", async ({ page }) => {
 
   await page.goto(`/sa/${env.E2E_SUBACCOUNT_ID}/contacts`);
 
+  // App-wide font fix (globals.css): a logged-in dashboard page renders in
+  // Geist, not the browser's serif fallback.
+  await expect(page.locator("h1, h2").first()).toBeVisible({ timeout: 30_000 });
+  expect(await page.evaluate(() => getComputedStyle(document.body).fontFamily)).toContain("Geist");
+  await page.screenshot({ path: "docs/parity/evidence/report-polish/dashboard-contacts-font.png", fullPage: true });
+
   // --- create -----------------------------------------------------------
   await page.getByRole("button", { name: "Add Contact" }).first().click();
   const addSheet = page.getByRole("dialog");

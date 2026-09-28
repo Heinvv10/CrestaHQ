@@ -61,7 +61,9 @@ export async function startReportScan(
     {
       url: business.website!,
       businessName: business.name,
-      niche: business.category!,
+      // Lowercased: ApexGEO's AI question reads "best {niche} in {city}" —
+      // "best Plumber in Johannesburg" reads wrong with the stored category case.
+      niche: business.category!.toLowerCase(),
       city: business.city!,
       country: business.countryCode ?? "ZA",
       externalRef: `leadstack:report:${reportId}`,

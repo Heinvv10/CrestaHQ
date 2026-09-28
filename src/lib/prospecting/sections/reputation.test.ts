@@ -32,17 +32,17 @@ describe("reputation score", () => {
 
   it("singular review text", () => {
     expect(score({ rating: 5, reviewsCount: 1 }).findings[0]!.text).toBe(
-      "Only 1 Google review, too few for people to trust the business over one with dozens.",
+      "Only 1 Google review, well under the 10 most people expect to see.",
     );
   });
 
-  it("each finding's text reads as a problem, not a bare fact", () => {
+  it("each finding's text states the fact and the gap; the impact (not the text) carries the consequence", () => {
     expect(score({ rating: 4.5, reviewsCount: 33 }).findings.map((f) => f.text)).toEqual([
-      "Only 33 Google reviews: businesses with 50 or more get picked first.",
-      "The Google rating is 4.5 out of 5, below the 4.8 that wins close calls.",
+      "Only 33 Google reviews, under the 50 competitors typically have.",
+      "The Google rating is 4.5 out of 5, below the 4.8 threshold.",
     ]);
     expect(score({ rating: 3.5, reviewsCount: 60 }).findings[0]!.text).toBe(
-      "The Google rating is 3.5 out of 5, below the 4.0 many people will not look past.",
+      "The Google rating is 3.5 out of 5, below the 4.0 threshold.",
     );
   });
 
