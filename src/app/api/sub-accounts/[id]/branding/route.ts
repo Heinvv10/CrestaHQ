@@ -64,7 +64,12 @@ export async function PATCH(
   if ("whatsappNumber" in body) {
     if (body.whatsappNumber === null || body.whatsappNumber === "") {
       updates.whatsappNumber = null;
-    } else if (typeof body.whatsappNumber === "string") {
+    } else if (typeof body.whatsappNumber !== "string") {
+      return NextResponse.json(
+        { error: "whatsappNumber must be a string or null." },
+        { status: 400 },
+      );
+    } else {
       const e164 = normalizePhoneE164(body.whatsappNumber);
       if (!e164) {
         return NextResponse.json(

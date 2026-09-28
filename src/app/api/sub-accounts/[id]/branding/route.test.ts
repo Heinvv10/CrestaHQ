@@ -52,6 +52,14 @@ it("clears the WhatsApp number with null or empty string", async () => {
   expect(m.set).toHaveBeenCalledWith("subAccounts/sa1", expect.objectContaining({ whatsappNumber: null }), { merge: true });
 });
 
+it("rejects a whatsappNumber that is neither a string nor null", async () => {
+  const res = await patch({ whatsappNumber: 12345 });
+  expect(res.status).toBe(400);
+  const body = (await res.json()) as { error: string };
+  expect(body.error).toMatch(/string or null/);
+  expect(m.set).not.toHaveBeenCalled();
+});
+
 it("still validates logoUrl independently of whatsappNumber", async () => {
   const res = await patch({ logoUrl: "not-a-url" });
   expect(res.status).toBe(400);

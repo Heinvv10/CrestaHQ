@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { invalidateAgencyPolicyCache } from "@/lib/agency/policy";
-import { contrastOnWhite } from "@/lib/branding/brand-color";
+import { MIN_CONTRAST, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 import type { MemberStatus, Role } from "@/types";
 
 /**
@@ -127,11 +127,11 @@ export async function PATCH(request: Request) {
       );
     } else {
       const hex = body.brandColor.toUpperCase();
-      const ratio = contrastOnWhite(hex);
-      if (ratio < 4.5) {
+      if (!isUsableBrandColor(hex)) {
+        const ratio = contrastOnWhite(hex);
         return NextResponse.json(
           {
-            error: `Brand colour is too pale for white text — ${hex} measures ${ratio.toFixed(2)}:1 contrast, and needs at least 4.5:1.`,
+            error: `Brand colour is too pale for white text — ${hex} measures ${ratio.toFixed(2)}:1 contrast, and needs at least ${MIN_CONTRAST}:1.`,
           },
           { status: 400 },
         );

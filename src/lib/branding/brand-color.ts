@@ -15,7 +15,7 @@ const HEX_RE = /^#[0-9a-f]{6}$/i;
 export const DEFAULT_BRAND_COLOR = "#2563EB";
 
 /** Minimum WCAG AA contrast ratio required for white text on the colour. */
-const MIN_CONTRAST = 4.5;
+export const MIN_CONTRAST = 4.5;
 
 function srgbToLinear(channel: number): number {
   const c = channel / 255;
