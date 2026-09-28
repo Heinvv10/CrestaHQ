@@ -40,9 +40,13 @@ export function contrastOnWhite(hex: string): number {
   return 1.05 / (relativeLuminance(hex) + 0.05);
 }
 
-/** True for a well-formed `#RRGGBB` value that clears the AA contrast bar. */
+/**
+ * True for a well-formed `#RRGGBB` value that clears the AA contrast bar.
+ * No separate format check: `contrastOnWhite` already returns 0 for a
+ * malformed hex, which always fails `MIN_CONTRAST`.
+ */
 export function isUsableBrandColor(hex: string): boolean {
-  return HEX_RE.test(hex) && contrastOnWhite(hex) >= MIN_CONTRAST;
+  return contrastOnWhite(hex) >= MIN_CONTRAST;
 }
 
 /**

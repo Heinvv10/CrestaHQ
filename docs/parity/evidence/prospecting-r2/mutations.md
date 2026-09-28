@@ -7,7 +7,7 @@ Each mutation was applied to the production code with `sed`, the test set below 
 | # | Mutation | Result (first failing test) |
 |---|---|---|
 | 1 | `brand-color.ts`: `MIN_CONTRAST` dropped from 4.5 to 0 | **RED 3** — `isUsableBrandColor`: rejects a pale colour that fails 4.5:1; `resolveBrandColor`: falls back for null/invalid; `public-report`: falls back for a stored value that fails contrast |
-| 2 | `brand-color.ts`: the `HEX_RE.test(hex)` clause dropped from `isUsableBrandColor` | **Survivor — accepted.** `contrastOnWhite()` already returns `0` for a malformed hex (its own internal `HEX_RE` guard), and `0 < MIN_CONTRAST` fails regardless, so no hex string can be malformed AND pass contrast. The clause is defense-in-depth against a future change to `contrastOnWhite`'s own guard, not reachable given today's implementation. Kept rather than deleted — the guard names an invariant (`isUsableBrandColor` must never depend on `contrastOnWhite`'s internal validation alone) that a later refactor of either function could silently break. |
+| 2 | `brand-color.ts`: the `HEX_RE.test(hex)` clause dropped from `isUsableBrandColor` | **Removed, unreachable.** `contrastOnWhite()` already returns `0` for a malformed hex (its own internal `HEX_RE` guard), and `0 < MIN_CONTRAST` fails regardless, so no hex string can be malformed AND pass contrast — no test could reach this clause. Deleted rather than shipped untested. |
 | 3 | `brand-color.ts`: `resolveBrandColor`'s `isUsableBrandColor(value)` check dropped (falls back only on falsy) | **RED 3** — `resolveBrandColor`: falls back for null/invalid; `public-report`: falls back for a malformed stored value; falls back for a value that fails contrast |
 | 4 | `app/api/agency/route.ts`: the hex-format check (`typeof ... \|\| !HEX_COLOR_RE.test`) short-circuited to never trigger | **RED 1** — agency route: rejects a malformed hex value |
 | 5 | `app/api/agency/route.ts`: the `ratio < 4.5` contrast check short-circuited to never trigger | **RED 1** — agency route: rejects a pale colour with the measured ratio in the error |
@@ -19,4 +19,4 @@ Each mutation was applied to the production code with `sed`, the test set below 
 | 11 | `public-report.ts`: fallback chain extended to a bridge sender's `displayPhoneNumber` | **RED 1** — public-report: never falls back to a bridge sender's number |
 | 12 | `public-report.ts`: `resolveBrandColor()` call replaced with the raw stored value (defaulting only on absence) | **RED 2** — public-report: falls back to the default for a malformed stored value; falls back to the default for a stored value that fails contrast |
 
-12 of 13 attempted mutations turned red; the one survivor (#2) is a documented, deliberately-kept redundant guard rather than a test gap.
+12 of 13 attempted mutations turned red; the one survivor (#2) was unreachable dead code and was removed rather than kept.
