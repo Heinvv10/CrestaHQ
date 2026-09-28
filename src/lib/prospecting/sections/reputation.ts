@@ -32,14 +32,14 @@ export function score(raw: ReputationRaw): Scored {
   }
   const findings: ProspectFinding[] = [];
   if (count < FEW_REVIEWS) {
-    findings.push(finding("few_reviews", `Only ${count} Google review${count === 1 ? "" : "s"}.`));
+    findings.push(finding("few_reviews", `Only ${count} Google review${count === 1 ? "" : "s"}, too few for people to trust the business over one with dozens.`));
   } else if (count < REVIEWS_TARGET) {
-    findings.push(finding("reviews_under_50", `There are ${count} Google reviews, fewer than 50.`));
+    findings.push(finding("reviews_under_50", `Only ${count} Google reviews: businesses with 50 or more get picked first.`));
   }
   if (raw.rating !== null && raw.rating < LOW_RATING) {
-    findings.push(finding("low_rating", `The Google rating is ${raw.rating.toFixed(1)} out of 5, below 4.0.`));
+    findings.push(finding("low_rating", `The Google rating is ${raw.rating.toFixed(1)} out of 5, below the 4.0 many people will not look past.`));
   } else if (raw.rating !== null && raw.rating < RATING_TARGET) {
-    findings.push(finding("rating_under_4_8", `The Google rating is ${raw.rating.toFixed(1)} out of 5, below 4.8.`));
+    findings.push(finding("rating_under_4_8", `The Google rating is ${raw.rating.toFixed(1)} out of 5, below the 4.8 that wins close calls.`));
   }
   return { score: scoreOf(findings), findings };
 }

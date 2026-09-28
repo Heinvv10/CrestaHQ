@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
 import { createMemoryFirestore } from "../../src/test/memory-firestore";
 import { MODEL_ID, backfillR0b, parseArgs, planReport } from "./backfill-r0b";
+import { aiMentionsPartialText } from "../../src/lib/prospecting/sections/ai-presence";
 
 /**
  * The R0b backfill over an in-memory Firestore shaped like #1000's pre-R0
@@ -151,5 +152,24 @@ describe("--write", () => {
     await backfillR0b(db(), { write: true });
     const again = await backfillR0b(db(), { write: false });
     expect(again.planned).toEqual([]);
+  });
+});
+
+describe("ai_mentions_partial", () => {
+  it("rewrites the stored text in the scorer's own wording", async () => {
+    mem.seed("prospectReports/partial", {
+      agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c9", status: "ready", headline: "x",
+      sections: [
+        {
+          key: "ai_presence", status: "ok", score: 75,
+          findings: [{ code: "ai_mentions_partial", text: "AI assistants like ChatGPT and Gemini named the business in 2 of 6 answers." }],
+          raw: { mentionedIn: 2, answersMeasured: 6 },
+        },
+      ],
+    });
+    await backfillR0b(db(), { write: true });
+    const sections = mem.read("prospectReports/partial")!.sections as { findings: { text: string }[] }[];
+    expect(sections[0]!.findings[0]!.text).toBe(aiMentionsPartialText(2, 6));
+    expect(aiMentionsPartialText(2, 6)).toContain("in only 2 of 6 answers");
   });
 });

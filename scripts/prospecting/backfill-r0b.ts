@@ -6,6 +6,7 @@
  *   - rescores the sections that are pure over stored `raw`: listings (no
  *     score), reputation and lead_capture (score from findings, with copy);
  *   - rewrites the `not_in_ai_answers` text that named model ids (C4);
+ *     and the `ai_mentions_partial` text, in the scorer's own wording;
  *   - recomputes `headline`, and re-stamps `prospecting.lastReportHeadline`
  *     on the contact whose `lastReportId` it is, in the same transaction, so
  *     the page and `{{prospecting.headline}}` never diverge;
@@ -31,7 +32,7 @@ import { pathToFileURL } from "node:url";
 import { cert, initializeApp } from "firebase-admin/app";
 import { FieldValue, getFirestore, type Firestore } from "firebase-admin/firestore";
 // Relative `.ts` imports: `node --experimental-strip-types` cannot resolve `@/`.
-import { notInAiAnswersText } from "../../src/lib/prospecting/sections/ai-presence.ts";
+import { aiMentionsPartialText, notInAiAnswersText } from "../../src/lib/prospecting/sections/ai-presence.ts";
 import { finding } from "../../src/lib/prospecting/sections/findings.ts";
 import * as leadCapture from "../../src/lib/prospecting/sections/lead-capture.ts";
 import * as reputation from "../../src/lib/prospecting/sections/reputation.ts";
@@ -91,10 +92,15 @@ export function rescore(s: ProspectSectionResult): ProspectSectionResult {
     case "ai_presence": {
       const answers = num(raw.answersMeasured);
       if (answers === null) return s;
+      const mentioned = num(raw.mentionedIn);
       return {
         ...s,
         findings: s.findings.map((f) =>
-          f.code === "not_in_ai_answers" ? finding("not_in_ai_answers", notInAiAnswersText(answers)) : f,
+          f.code === "not_in_ai_answers"
+            ? finding("not_in_ai_answers", notInAiAnswersText(answers))
+            : f.code === "ai_mentions_partial" && mentioned !== null
+              ? finding("ai_mentions_partial", aiMentionsPartialText(mentioned, answers))
+              : f,
         ),
       };
     }

@@ -71,6 +71,13 @@ describe("whatsappNumber precedence", () => {
     expect(report?.whatsappNumber).toBe("+27110000000");
   });
 
+  it("normalises Meta's formatted Cloud display number to E.164, and drops one that does not parse", async () => {
+    seed({}, { whatsappCloudMeta: { displayPhoneNumber: "+27 68 760 0000" } });
+    expect((await resolvePublicReport(TOKEN))?.whatsappNumber).toBe("+27687600000");
+    seed({}, { whatsappCloudMeta: { displayPhoneNumber: "call us!" } });
+    expect((await resolvePublicReport(TOKEN))?.whatsappNumber).toBeNull();
+  });
+
   it("never falls back to a bridge sender's number", async () => {
     seed({}, { whatsappBridgeMeta: { displayPhoneNumber: "+27820000001" } });
     const report = await resolvePublicReport(TOKEN);
@@ -86,4 +93,21 @@ describe("whatsappNumber precedence", () => {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("raw speed metrics", () => {
+  it("are stripped from the public sections; the plain LCP fact stays", async () => {
+    seed();
+    await mem.db.doc("prospectReports/r1").update({
+      sections: [
+        {
+          key: "website_performance", status: "ok", score: 30,
+          findings: [{ code: "slow_mobile", text: "Slow." }],
+          raw: { lcpSeconds: 6.2, fcpSeconds: 2.1, speedIndexSeconds: 7.4, tbtMs: 900, cls: 0.2, mobileViewport: true },
+        },
+      ],
+    });
+    const report = await resolvePublicReport(TOKEN);
+    expect(report?.sections[0]?.details).toEqual({ lcpSeconds: 6.2, mobileViewport: true });
+  });
 });

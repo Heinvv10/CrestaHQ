@@ -11,8 +11,9 @@ import type { ProspectReportStatus } from "@/types/prospecting";
 
 /**
  * One prospect report, for members of the sub-account (opened from the
- * contact's Prospect reports card). Renders the same section cards as the
- * public share page, from GET /api/sub-accounts/[id]/prospecting/reports/[reportId].
+ * contact's Prospect reports card). Renders the same section rows as the
+ * public share page, from GET /api/sub-accounts/[id]/prospecting/reports/[reportId],
+ * with a toggle that lists the raw metrics and the rows the public page hides.
  */
 
 interface MemberReport {
@@ -35,6 +36,7 @@ export default function ProspectReportPage() {
   const { reportId } = useParams<{ reportId: string }>();
   const { subAccountId, saPath } = useSubAccount();
   const [state, setState] = useState<State>({ kind: "loading" });
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     if (!subAccountId || !reportId) return;
@@ -110,7 +112,17 @@ export default function ProspectReportPage() {
           {report.headline ?? (report.status === "ready" ? "No issues found" : `Report ${report.status}`)}
         </h1>
       </div>
-      <ReportSections sections={report.sections} connectHref={saPath("/dashboard/settings")} />
+      <div className="flex justify-end">
+        <button
+          type="button"
+          aria-pressed={showAll}
+          onClick={() => setShowAll((v) => !v)}
+          className="text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          {showAll ? "Hide raw metrics and hidden rows" : "Show raw metrics and hidden rows"}
+        </button>
+      </div>
+      <ReportSections sections={report.sections} connectHref={saPath("/dashboard/settings")} showAll={showAll} />
     </div>
   );
 }
