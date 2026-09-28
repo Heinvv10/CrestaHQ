@@ -19,9 +19,8 @@ import { sweepAgentProposals } from "@/lib/server/agent-proposals-sweeps";
  * onboarding model. This route does the same job using infrastructure
  * the buyer is already configuring (QStash).
  *
- * Wiring (one-time, in the QStash dashboard):
- *   Schedule: cron `0 4 * * *` (or any daily slot)
- *   Target:   ${NEXT_PUBLIC_APP_URL}/api/cron/api-cleanup
+ * Scheduled as a job of `/api/cron/daily-housekeeping` (03:00 UTC); this
+ * route runs it by hand and takes the continuations below.
  *
  * Cost: at moderate API volume (~50k requests/month) this sweep deletes
  * ~50k apiRequestLogs/month + smaller volumes of apiIdempotency and
@@ -205,6 +204,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
+  const body = await runApiCleanup();
+  return NextResponse.json(body, { status: body.ok ? 200 : 500 });
+}
+
+/**
+ * The whole sweep, minus the signature check — also run by the daily
+ * housekeeping dispatcher (`/api/cron/daily-housekeeping`). `ok: false` means
+ * a sweep failed; this route answers that with a 500 so QStash retries.
+ */
+export async function runApiCleanup() {
   const startedAt = Date.now();
   const now = new Date();
 
@@ -272,14 +281,11 @@ export async function POST(request: Request) {
     if (!continuationScheduled) console.error("[cron/api-cleanup] continuation not queued");
   }
 
-  return NextResponse.json(
-    {
-      ok: failures.length === 0,
-      ...(failures.length > 0 ? { error: "sweep_failed", failures } : {}),
-      durationMs: Date.now() - startedAt,
-      results,
-      continuationScheduled,
-    },
-    { status: failures.length > 0 ? 500 : 200 },
-  );
+  return {
+    ok: failures.length === 0,
+    ...(failures.length > 0 ? { error: "sweep_failed", failures } : {}),
+    durationMs: Date.now() - startedAt,
+    results,
+    continuationScheduled,
+  };
 }

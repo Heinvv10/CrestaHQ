@@ -517,8 +517,8 @@ says content "…stored temporarily for no more than 30 calendar days…". So:
   `health:"error"`, `lastErrorKind:"retention_expired"`. The purge restarts
   the clock, so later runs resume the new pass and a listing too big for one
   run can finish it.
-- **Always-on housekeeping:** a daily `leadstack-gbp-retention` schedule
-  (registered unconditionally, like api-cleanup) runs a retention-only pass
+- **Always-on housekeeping:** the daily `leadstack-gbp-retention` job
+  (a step of the unconditional `leadstack-daily-housekeeping` schedule) runs a retention-only pass
   — Firestore only, never the provider — for EVERY sub-account holding a
   cache, sync-eligible or not. `GBP_SYNC_SCHEDULE_ENABLED` controls only the
   Google sync; with it off, the sync cron (if a schedule is left) does the
@@ -594,9 +594,9 @@ syncs a day. Beyond ~25 connected listings each is synced less often than every
 continues itself.
 
 **Owner checklist** (not run): the next production deploy registers
-`leadstack-gbp-retention` — daily at 04:30 UTC, Firestore-only, no Google
-calls, unconditionally (Google's 30-day storage limit) — verify it in the
-QStash schedules list after the deploy. Then, for the Google sync: set
+`leadstack-daily-housekeeping` — daily at 03:00 UTC, whose `gbp-retention`
+job is Firestore-only, no Google calls, unconditional (Google's 30-day
+storage limit) — verify it in the QStash schedules list after the deploy. Then, for the Google sync: set
 `GBP_SYNC_SCHEDULE_ENABLED=1` in the
 production env, then an approved after-hours deploy (`bash
 scripts/deploy-velo.sh`) — the next cold start registers `leadstack-gbp-sync`
@@ -1288,10 +1288,10 @@ edits; both paths name the same file.
    refuses a fake-provider setting or a missing `TRUST_CF_CONNECTING_IP`).
 4. **Verify the schedules registered** — the next cold start after this
    deploy registers `leadstack-gbp-sync` (`0 */6 * * *`, only when
-   `GBP_SYNC_SCHEDULE_ENABLED=1`) and, unconditionally, `leadstack-gbp-retention`
-   (`30 4 * * *` daily, registered regardless of that flag). Confirm both exist:
+   `GBP_SYNC_SCHEDULE_ENABLED=1`) and, unconditionally, `leadstack-daily-housekeeping`
+   (`0 3 * * *`, which runs GBP retention, registered regardless of that flag). Confirm both exist:
    `curl -s "${QSTASH_URL:-https://qstash.upstash.io}/v2/schedules" -H "Authorization: Bearer $QSTASH_TOKEN" | jq '.[].scheduleId'`
-   should list `leadstack-gbp-sync` and `leadstack-gbp-retention`. Without a
+   should list `leadstack-gbp-sync` and `leadstack-daily-housekeeping`. Without a
    deploy, register the sync schedule by running the exact curl under "Sweep,
    capacity and schedule" above instead.
 5. **v4 approval** — `gcloud services list --available --project crestahq-app | grep mybusiness.googleapis.com`.

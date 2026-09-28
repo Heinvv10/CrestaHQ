@@ -55,6 +55,10 @@ const PUBLIC_PATHS = [
   "/api/cron/whatsapp-staging-cleanup",
   // Daily OpenRouter model-list refresh. Same auth: the signature.
   "/api/cron/ai-models",
+  // Daily housekeeping: ONE schedule running gitpage-heartbeat, ai-models,
+  // api-cleanup, gbp-retention and whatsapp-staging-cleanup in sequence (the
+  // QStash plan caps schedules at 10). Same auth: the signature, bound to the URL.
+  "/api/cron/daily-housekeeping",
   // Review-request reminders (SP5 d2) — one QStash message per scheduled
   // reminder. Same auth: the signature, bound to this route's URL.
   "/api/cron/review-reminder",

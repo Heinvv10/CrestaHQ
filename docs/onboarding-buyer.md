@@ -190,8 +190,9 @@ Schedules registered automatically (declared in [src/lib/qstash/register-schedul
 
 | scheduleId | Cron | Purpose |
 |---|---|---|
-| `leadstack-gitpage-heartbeat` | `0 3 * * *` | Daily gitpage subscription status refresh. |
-| `leadstack-api-cleanup` | `0 4 * * *` | Daily sweep of expired public-API logs, idempotency cache, and webhook event archive. Replaces Firestore native TTL so no console click needed. |
+| `leadstack-daily-housekeeping` | `0 3 * * *` | One schedule for every daily chore, run in sequence by `/api/cron/daily-housekeeping`: gitpage subscription status refresh, OpenRouter model-list refresh, the expired public-API logs / idempotency / webhook-event sweep (replaces Firestore native TTL so no console click needed), GBP review retention, and abandoned WhatsApp upload cleanup. Each job's own `/api/cron/*` route still works for a manual run. |
+
+The QStash plan caps an account at **10 schedules**, which is why the daily chores share one. Registration also deletes the five schedules that preceded it (`leadstack-gitpage-heartbeat`, `-ai-models`, `-api-cleanup`, `-gbp-retention`, `-whatsapp-staging-cleanup`) before creating anything, so an account already at the cap is not blocked.
 
 Auto-registration only fires when `NODE_ENV === "production"` AND `QSTASH_TOKEN` AND `NEXT_PUBLIC_APP_URL` are set. Local dev does nothing. If `NEXT_PUBLIC_APP_URL` changes (e.g. moving from a tunnel to Vercel), the marker is invalidated and the next cold start re-registers against the new URL. You can verify schedules landed by visiting the **Schedules** tab in the Upstash QStash dashboard after your first production deploy.
 

@@ -32,6 +32,13 @@ import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
  *
  * To add a new schedule: append to `SCHEDULES`. Stable scheduleId is
  * required (no random ids — that's how you end up with duplicates).
+ *
+ * Slot budget: the QStash plan caps a deployment at 10 schedules. Daily
+ * housekeeping therefore shares ONE schedule (`leadstack-daily-housekeeping`)
+ * rather than holding one per job — add a new daily chore to that route's job
+ * list, not here. After the consolidation production holds 7: email-sync,
+ * daily-housekeeping, recurring-invoices, agents-watchdog, whatsapp-quality,
+ * prospect-announce, and the opt-in gbp-sync (6 without it).
  */
 
 interface ScheduleSpec {
@@ -49,26 +56,13 @@ const SCHEDULES: ScheduleSpec[] = [
     description: "Read-only mailbox sync for connected sub-accounts.",
   },
   {
-    scheduleId: "leadstack-gitpage-heartbeat",
-    path: "/api/cron/gitpage-heartbeat",
+    scheduleId: "leadstack-daily-housekeeping",
+    path: "/api/cron/daily-housekeeping",
+    // 03:00 UTC — the earliest slot of the five schedules it replaced, and
+    // ahead of recurring-invoices at 05:00 as api-cleanup always was.
     cron: "0 3 * * *",
-    description: "Daily gitpage telemetry + subscription status cache.",
-  },
-  {
-    scheduleId: "leadstack-api-cleanup",
-    path: "/api/cron/api-cleanup",
-    cron: "0 4 * * *",
     description:
-      "Daily sweep of expired apiRequestLogs / apiIdempotency / webhookEvents.",
-  },
-  {
-    // Always on, unlike the GBP sync below: Google's 30-day storage limit
-    // must not depend on whether the sync is scheduled. Firestore only.
-    scheduleId: "leadstack-gbp-retention",
-    path: "/api/cron/gbp-retention",
-    cron: "30 4 * * *",
-    description:
-      "Daily GBP review-cache retention (Google's 30-day storage limit); no Google API calls.",
+      "Daily housekeeping: gitpage heartbeat, AI model-list refresh, API TTL cleanup, GBP retention, WhatsApp staging cleanup.",
   },
   {
     scheduleId: "leadstack-recurring-invoices",
@@ -94,20 +88,6 @@ const SCHEDULES: ScheduleSpec[] = [
       "Hourly WhatsApp Cloud sender quality-rating poll; alerts on a drop from GREEN.",
   },
   {
-    scheduleId: "leadstack-whatsapp-staging-cleanup",
-    path: "/api/cron/whatsapp-staging-cleanup",
-    cron: "45 4 * * *",
-    description:
-      "Daily delete of abandoned WhatsApp composer uploads (whatsapp-staging/ objects over an hour old).",
-  },
-  {
-    scheduleId: "leadstack-ai-models",
-    path: "/api/cron/ai-models",
-    cron: "20 3 * * *",
-    description:
-      "Daily refresh of the cached OpenRouter model list (AI model allow-list).",
-  },
-  {
     scheduleId: "leadstack-prospect-announce",
     path: "/api/automations/prospecting/announce-sweep",
     // 96 messages a day per deployment (the QStash cap has been hit before).
@@ -117,7 +97,21 @@ const SCHEDULES: ScheduleSpec[] = [
   },
 ];
 
-const BASE_SCHEDULE_VERSION = "2026-09-28-prospect-announce";
+const BASE_SCHEDULE_VERSION = "2026-09-28-daily-housekeeping";
+
+/**
+ * Schedules folded into `leadstack-daily-housekeeping`. Registration deletes
+ * them BEFORE creating anything: they hold 5 of the 10 slots, so with the plan
+ * full a create would otherwise fail on quota before the deletes freed room.
+ * Deleting one that is already gone is a no-op. Their routes still exist.
+ */
+const RETIRED_SCHEDULE_IDS = [
+  "leadstack-gitpage-heartbeat",
+  "leadstack-ai-models",
+  "leadstack-api-cleanup",
+  "leadstack-gbp-retention",
+  "leadstack-whatsapp-staging-cleanup",
+];
 
 /**
  * The Google Business Profile review sync is OPT-IN per deployment
@@ -197,6 +191,20 @@ export async function ensureSchedulesRegistered(): Promise<void> {
   });
 
   const results: Array<{ id: string; ok: boolean; error?: string }> = [];
+  for (const id of RETIRED_SCHEDULE_IDS) {
+    try {
+      await client.schedules.delete(id);
+      results.push({ id: `${id} (deleted)`, ok: true });
+    } catch (err) {
+      if ((err as { status?: number }).status === 404) {
+        results.push({ id: `${id} (deleted)`, ok: true });
+        continue;
+      }
+      const message = err instanceof Error ? err.message : "unknown";
+      console.warn(`[schedules] failed to delete retired ${id}: ${message}`);
+      results.push({ id: `${id} (deleted)`, ok: false, error: message });
+    }
+  }
   for (const s of activeSchedules()) {
     try {
       await client.schedules.create({

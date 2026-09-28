@@ -1,12 +1,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 const mock = vi.hoisted(() => ({
   create: vi.fn(),
+  delete: vi.fn(),
   get: vi.fn(),
   set: vi.fn(),
 }));
 vi.mock("@upstash/qstash", () => ({
   Client: class {
-    schedules = { create: mock.create };
+    schedules = { create: mock.create, delete: mock.delete };
   },
 }));
 vi.mock("@/lib/firebase/admin", () => ({
@@ -36,12 +37,12 @@ it("registers the new mailbox schedule immediately despite a fresh older cache",
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-28-prospect-announce" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-28-daily-housekeeping" }),
     { merge: true }
   );
 });
 
-it("always registers the daily GBP retention housekeeping — flag or no flag", async () => {
+it("always registers the daily housekeeping (which carries GBP retention) — flag or no flag", async () => {
   for (const flag of ["", "1"]) {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("QSTASH_TOKEN", "test");
@@ -52,9 +53,9 @@ it("always registers the daily GBP retention housekeeping — flag or no flag", 
     await ensureSchedulesRegistered();
     expect(mock.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        scheduleId: "leadstack-gbp-retention",
-        cron: "30 4 * * *",
-        destination: "https://app.example.com/api/cron/gbp-retention",
+        scheduleId: "leadstack-daily-housekeeping",
+        cron: "0 3 * * *",
+        destination: "https://app.example.com/api/cron/daily-housekeeping",
       })
     );
   }
@@ -97,7 +98,7 @@ it("registers the 6-hourly GBP sync when GBP_SYNC_SCHEDULE_ENABLED=1 — even ov
     })
   );
   expect(mock.set).toHaveBeenCalledWith(
-    expect.objectContaining({ scheduleVersion: "2026-09-28-prospect-announce+gbp-sync" }),
+    expect.objectContaining({ scheduleVersion: "2026-09-28-daily-housekeeping+gbp-sync" }),
     { merge: true }
   );
 });
@@ -116,36 +117,6 @@ it("registers the hourly WhatsApp quality poll (SP15) with the base schedules", 
   );
 });
 
-it("registers the daily WhatsApp staging cleanup — over a marker fresh from the previous version", async () => {
-  productionEnv();
-  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
-  // The marker production holds today. Without a version bump it would skip
-  // registration for 24h at a time, and the schedule would never exist.
-  freshMarker({ scheduleVersion: "2026-09-17-email-sync-15m" });
-  await ensureSchedulesRegistered();
-  expect(mock.create).toHaveBeenCalledWith(
-    expect.objectContaining({
-      scheduleId: "leadstack-whatsapp-staging-cleanup",
-      cron: "45 4 * * *",
-      destination: "https://app.example.com/api/cron/whatsapp-staging-cleanup",
-    })
-  );
-});
-
-it("registers the daily OpenRouter model-list refresh — over a marker fresh from the previous version", async () => {
-  productionEnv();
-  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
-  freshMarker({ scheduleVersion: "2026-09-19-whatsapp-staging-cleanup" });
-  await ensureSchedulesRegistered();
-  expect(mock.create).toHaveBeenCalledWith(
-    expect.objectContaining({
-      scheduleId: "leadstack-ai-models",
-      cron: "20 3 * * *",
-      destination: "https://app.example.com/api/cron/ai-models",
-    })
-  );
-});
-
 it("registers the 15-minute prospect report announce sweep — over a marker fresh from the previous version", async () => {
   productionEnv();
   vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
@@ -158,4 +129,97 @@ it("registers the 15-minute prospect report announce sweep — over a marker fre
       destination: "https://app.example.com/api/automations/prospecting/announce-sweep",
     })
   );
+});
+
+const RETIRED = [
+  "leadstack-gitpage-heartbeat",
+  "leadstack-ai-models",
+  "leadstack-api-cleanup",
+  "leadstack-gbp-retention",
+  "leadstack-whatsapp-staging-cleanup",
+];
+
+/**
+ * A QStash account at its 10-schedule cap, holding exactly what production
+ * held on 2026-09-28. `create` of a NEW id fails on quota like the real API;
+ * `delete` of an unknown id answers 404.
+ */
+function fullQStash() {
+  const held = new Set([
+    "leadstack-agents-watchdog",
+    "leadstack-email-sync",
+    "leadstack-gbp-sync",
+    "leadstack-recurring-invoices",
+    "leadstack-whatsapp-quality",
+    ...RETIRED,
+  ]);
+  let peak = held.size;
+  mock.create.mockReset();
+  mock.delete.mockReset();
+  mock.create.mockImplementation(async ({ scheduleId }: { scheduleId: string }) => {
+    if (!held.has(scheduleId) && held.size >= 10) {
+      throw new Error('{"error":"quota maxSchedules exceeded, current limit: 10"}');
+    }
+    held.add(scheduleId);
+    peak = Math.max(peak, held.size);
+  });
+  mock.delete.mockImplementation(async (id: string) => {
+    if (!held.delete(id)) throw Object.assign(new Error("schedule not found"), { status: 404 });
+  });
+  return { held, peak: () => peak };
+}
+
+it("frees the five retired slots BEFORE creating, so a full plan still gets daily-housekeeping and announce", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "1");
+  freshMarker({ scheduleVersion: "2026-09-28-prospect-announce" });
+  const qstash = fullQStash();
+  await ensureSchedulesRegistered();
+
+  expect(mock.delete.mock.calls.map(([id]) => id)).toEqual(RETIRED);
+  const lastDelete = Math.max(...mock.delete.mock.invocationCallOrder);
+  expect(Math.min(...mock.create.mock.invocationCallOrder)).toBeGreaterThan(lastDelete);
+  expect([...qstash.held].sort()).toEqual([
+    "leadstack-agents-watchdog",
+    "leadstack-daily-housekeeping",
+    "leadstack-email-sync",
+    "leadstack-gbp-sync",
+    "leadstack-prospect-announce",
+    "leadstack-recurring-invoices",
+    "leadstack-whatsapp-quality",
+  ]);
+  expect(qstash.peak()).toBeLessThanOrEqual(10);
+  const { lastResults } = mock.set.mock.calls[0][0] as { lastResults: Array<{ ok: boolean }> };
+  expect(lastResults.every((r) => r.ok)).toBe(true);
+  // None of the retired ids is ever re-created.
+  for (const id of RETIRED) {
+    expect(mock.create).not.toHaveBeenCalledWith(expect.objectContaining({ scheduleId: id }));
+  }
+});
+
+it("treats an already-deleted retired schedule as a no-op on the next run", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "1");
+  freshMarker({ scheduleVersion: "2026-09-28-prospect-announce" });
+  const qstash = fullQStash();
+  await ensureSchedulesRegistered();
+  mock.set.mockReset();
+  mock.get.mockResolvedValue({ exists: false, data: () => ({}) });
+  await ensureSchedulesRegistered(); // every delete now answers 404
+  expect(qstash.held.size).toBe(7);
+  const { lastResults } = mock.set.mock.calls[0][0] as { lastResults: Array<{ ok: boolean }> };
+  expect(lastResults.every((r) => r.ok)).toBe(true);
+});
+
+it("reports a retired delete that fails for another reason, and still registers the rest", async () => {
+  productionEnv();
+  vi.stubEnv("GBP_SYNC_SCHEDULE_ENABLED", "");
+  freshMarker({ scheduleVersion: "2026-09-28-prospect-announce" });
+  mock.delete.mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 }));
+  await ensureSchedulesRegistered();
+  const { lastResults } = mock.set.mock.calls[0][0] as {
+    lastResults: Array<{ id: string; ok: boolean; error?: string }>;
+  };
+  expect(lastResults.filter((r) => !r.ok).map((r) => r.id)).toEqual(RETIRED.map((id) => `${id} (deleted)`));
+  expect(mock.create).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: "leadstack-daily-housekeeping" }));
 });

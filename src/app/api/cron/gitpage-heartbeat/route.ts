@@ -17,13 +17,8 @@ export const dynamic = "force-dynamic";
  * the boot ping plus subAccountCount and buildsLastDay so gitpage can see
  * usage telemetry rather than just liveness.
  *
- * Set up the QStash schedule once via the Upstash dashboard or CLI:
- *
- *   curl -X POST 'https://qstash.upstash.io/v2/schedules/{base}/api/cron/gitpage-heartbeat' \
- *     -H 'Authorization: Bearer YOUR_QSTASH_TOKEN' \
- *     -H 'Upstash-Cron: 0 3 * * *'
- *
- * (or use `client.schedules.create({ destination, cron: "0 3 * * *" })`).
+ * Scheduled as a job of `/api/cron/daily-housekeeping` (03:00 UTC); this
+ * route runs it by hand.
  *
  * The middleware lets this path through unauthenticated; security comes
  * from QStash's Upstash-Signature header.
