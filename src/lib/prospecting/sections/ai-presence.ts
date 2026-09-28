@@ -1,5 +1,6 @@
 import type { ProspectFinding, ProspectSectionResult } from "@/types";
 import type { ApexgeoEngineResult, ApexgeoScan } from "../apexgeo-client";
+// Relative `.ts` imports: scripts/prospecting/backfill-r0b.ts imports this file.
 import { isCompetitorName } from "./competitors.ts";
 import { finding, scoreOf } from "./findings.ts";
 import { measured, unavailable, type Scored } from "./types.ts";

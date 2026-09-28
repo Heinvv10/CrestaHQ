@@ -139,7 +139,8 @@ export function ReportSections({
                     <li key={f.code}>{f.text}</li>
                   ))}
                 </ul>
-              ) : s.status === "ok" ? (
+              ) : s.status === "ok" && s.score !== null ? (
+                // An unscored section (listings; AI presence left open) found nothing to judge.
                 <p className="text-muted-foreground">No issues found.</p>
               ) : null}
               {details.length > 0 ? (

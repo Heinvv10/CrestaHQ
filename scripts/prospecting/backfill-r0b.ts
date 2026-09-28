@@ -1,7 +1,7 @@
 /**
  * One-off backfill for prospect reports stored before R0
  * (docs/programme/prospect-report-redesign-sow.md, "Existing reports").
- * Per report without `announceProtocol`:
+ * Per settled (ready/failed) report without `announceProtocol`:
  *
  *   - rescores the sections that are pure over stored `raw`: listings (no
  *     score), reputation and lead_capture (score from findings, with copy);
@@ -9,12 +9,12 @@
  *   - recomputes `headline`, and re-stamps `prospecting.lastReportHeadline`
  *     on the contact whose `lastReportId` it is, in the same transaction, so
  *     the page and `{{prospecting.headline}}` never diverge;
- *   - on a settled (ready/failed) report with no `announcedAt`, sets
- *     `announcedAt` with `announceReason: "pre-R0"`: it already fired
- *     `prospecting.report.ready` at ready. A queued/running report is left
- *     alone, so the R0 worker that claims it still announces it once.
+ *   - with no `announcedAt`, sets `announcedAt` with `announceReason:
+ *     "pre-R0"`: it already fired `prospecting.report.ready` at ready.
  *
- * A report carrying `announceProtocol` was made by R0 and is never touched.
+ * Never touched: a report carrying `announceProtocol` (made by R0), and a
+ * queued/running one (the R0 worker that claims it scores it with R0 code
+ * and announces it once).
  * Nothing external is called.
  *
  * Run with Node 22:
@@ -118,6 +118,7 @@ const codesOf = (s: ProspectSectionResult) => (s.findings ?? []).map((f) => f.co
 /** Null = nothing to change (or an R0 report, which is never touched). Pure. */
 export function planReport(reportId: string, report: Data, contactId: string | null, contact: Data | undefined): ReportPlan | null {
   if (report.announceProtocol !== undefined) return null;
+  if (report.status !== "ready" && report.status !== "failed") return null;
   const changes: string[] = [];
   const patch: Data = {};
 
@@ -142,7 +143,7 @@ export function planReport(reportId: string, report: Data, contactId: string | n
     changes.push(`headline ${JSON.stringify(storedHeadline)} → ${JSON.stringify(nextHeadline)}`);
   }
 
-  const markPreR0 = (report.announcedAt ?? null) === null && (report.status === "ready" || report.status === "failed");
+  const markPreR0 = (report.announcedAt ?? null) === null;
   if (markPreR0) changes.push('announcedAt set, announceReason "pre-R0"');
 
   const prospecting = (contact?.prospecting ?? {}) as Data;

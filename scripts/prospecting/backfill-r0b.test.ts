@@ -47,6 +47,11 @@ function seed() {
   mem.seed("contacts/c2", { subAccountId: "sa1", prospecting: { lastReportId: "r0", lastReportHeadline: OLD_AI_TEXT } });
   // Queued before the deploy: must stay unannounced so the R0 worker announces it once.
   mem.seed("prospectReports/queued", { ...base, contactId: "c3", status: "queued", sections: [], headline: null });
+  // Running with pre-R0-shaped sections: not settled, so never rescored or marked.
+  mem.seed("prospectReports/running", {
+    ...base, contactId: "c4", status: "running", sections: preR0Sections(), headline: OLD_AI_TEXT,
+  });
+  mem.seed("contacts/c4", { subAccountId: "sa1", prospecting: { lastReportId: "running", lastReportHeadline: OLD_AI_TEXT } });
   // Already announced, nothing to rescore: unchanged.
   mem.seed("prospectReports/done", {
     ...base, contactId: "c3", status: "failed", sections: [], headline: null, announcedAt: new Date(), announceReason: "pre-R0",
@@ -55,7 +60,7 @@ function seed() {
 
 const snapshotAll = () =>
   Object.fromEntries(
-    ["prospectReports/old1", "prospectReports/old0", "prospectReports/r0", "prospectReports/queued", "prospectReports/done", "contacts/c1", "contacts/c2"].map(
+    ["prospectReports/old1", "prospectReports/old0", "prospectReports/r0", "prospectReports/queued", "prospectReports/running", "prospectReports/done", "contacts/c1", "contacts/c2", "contacts/c4"].map(
       (p) => [p, JSON.stringify(mem.read(p))],
     ),
   );
@@ -76,7 +81,7 @@ describe("dry run", () => {
     const before = snapshotAll();
     const r = await backfillR0b(db(), { write: false });
     expect(snapshotAll()).toEqual(before);
-    expect(r).toMatchObject({ scanned: 5, stampedSkipped: 1, unchanged: 2, written: 0, modelIdsRemaining: [] });
+    expect(r).toMatchObject({ scanned: 6, stampedSkipped: 1, unchanged: 3, written: 0, modelIdsRemaining: [] });
     expect(r.planned.map((p) => p.report).sort()).toEqual(["prospectReports/old0", "prospectReports/old1"]);
     const old1 = r.planned.find((p) => p.report === "prospectReports/old1")!.changes;
     expect(old1).toEqual([
@@ -134,6 +139,12 @@ describe("--write", () => {
     expect(mem.read("prospectReports/r0")!.announcedAt).toBeNull();
     expect(mem.read("prospectReports/r0")!.announceReason).toBeUndefined();
     expect(mem.read("prospectReports/queued")!.announcedAt).toBeUndefined();
+  });
+
+  it("a queued/running report is skipped entirely, even with pre-R0 sections: no rescore, no headline, no re-stamp", async () => {
+    const before = [mem.read("prospectReports/running"), mem.read("contacts/c4")].map((d) => JSON.stringify(d));
+    await backfillR0b(db(), { write: true });
+    expect([mem.read("prospectReports/running"), mem.read("contacts/c4")].map((d) => JSON.stringify(d))).toEqual(before);
   });
 
   it("is idempotent: a second run plans nothing", async () => {

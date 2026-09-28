@@ -47,7 +47,7 @@ export const DEDUCTIONS: Record<ProspectFindingCode, number> = {
   no_local_business_schema: 30,
   // ai_presence
   not_in_ai_answers: 100,
-  ai_mentions_partial: 50,
+  ai_mentions_partial: 25,
   // lead_capture
   no_whatsapp_cta: 20,
   no_booking: 20,

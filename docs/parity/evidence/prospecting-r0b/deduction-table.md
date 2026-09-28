@@ -26,7 +26,7 @@ A section's score is 100 minus the deductions of its findings, floored at 0. A s
 | ai_readiness | `ai_crawlers_blocked` | 60 | Unchanged. | 40 |
 | ai_readiness | `no_local_business_schema` | 30 | Unchanged. | 70 |
 | ai_presence | `not_in_ai_answers` | 100 | Unchanged: the old score was 0. | 0 |
-| ai_presence | `ai_mentions_partial` | 50 | **New.** The old score was the share of answers naming the business. A fixed value loses that granularity; the finding's text keeps the count ("in 2 of 6 answers"). | share of voice |
+| ai_presence | `ai_mentions_partial` | 25 | **New.** The old score was the share of answers naming the business. A flat, light deduction (review round 1): being named at all is most of the battle, and it ranks last. The finding's text keeps the count ("in 2 of 6 answers"). | share of voice |
 | ads | `no_ads_running` | 0 | Never emitted, and the section has no score (D5). | n/a |
 | lead_capture | `no_whatsapp_cta`, `no_booking`, `no_contact_form`, `no_phone_link`, `no_chat_widget` | 20 each | Unchanged: five equal checks. | same |
 

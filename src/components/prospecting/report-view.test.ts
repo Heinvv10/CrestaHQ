@@ -29,3 +29,12 @@ it("the connect link shows only where a not-connected section meets a connectHre
     'href="/sa/x/dashboard/settings"',
   );
 });
+
+it("says 'No issues found.' only for a scored section — never for an unscored one (listings, AI presence left open)", () => {
+  const html = (s: PublicReportSection) => renderToStaticMarkup(createElement(ReportSections, { sections: [s] }));
+  expect(html({ ...section("gbp", {}), score: 100 })).toContain("No issues found.");
+  expect(html({ ...section("listings", { Facebook: "found" }), score: null })).not.toContain("No issues found.");
+  expect(html({ ...section("ai_presence", { mentionedIn: 0, answersMeasured: 5 }), score: null })).not.toContain(
+    "No issues found.",
+  );
+});

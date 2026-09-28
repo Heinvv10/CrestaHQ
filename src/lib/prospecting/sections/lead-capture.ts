@@ -1,4 +1,5 @@
 import type { ProspectFinding } from "@/types";
+// Relative `.ts` imports: scripts/prospecting/backfill-r0b.ts imports this file.
 import { finding, scoreOf } from "./findings.ts";
 import { detectTech } from "./tech-rules.ts";
 import { measured, unavailable, type Scored, type SectionInput } from "./types.ts";

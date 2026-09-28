@@ -121,6 +121,19 @@ describe("completed", () => {
     expect(report.headline).toMatch(/^AI assistants like ChatGPT and Gemini did not name the business/);
   });
 
+  it("the prospect named by AI is never stored as its own competitor (C5)", async () => {
+    const scan = completedScan();
+    scan.ai_visibility.prompts[0].engines[0].competitors_named = ["Acme Plumbing", "Alpha Plumbing"];
+    fetchMock.mockImplementation(async () => scanReply(scan));
+    const bd = { key: "business_details", status: "ok", score: 100, findings: [], raw: { name: "Acme Plumbing (Pty) Ltd" } };
+    seedReport({}, { sections: [bd, GBP, pending("website_performance"), pending("ai_readiness"), pending("ai_presence")] });
+    expect(await (await call()).json()).toEqual({ ok: true, status: "done" });
+    const presence = mem.read(REPORT)!.sections as { key: string; raw: { topCompetitors: string; prompts: { competitors: string[] }[] } }[];
+    const raw = presence.find((s) => s.key === "ai_presence")!.raw;
+    expect(raw.topCompetitors).not.toContain("Acme");
+    expect(raw.prompts[0]!.competitors).toEqual(["Alpha Plumbing"]);
+  });
+
   it("all engines errored: presence unavailable, never 'not in AI answers'", async () => {
     fetchMock.mockResolvedValue(scanReply(allEnginesErrored()));
     await call();

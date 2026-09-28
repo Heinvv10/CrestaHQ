@@ -155,7 +155,7 @@ describe("section 8 — AI presence", () => {
         s.ai_visibility.prompts[1].engines[1].mentioned = true;
       }),
     );
-    expect(r).toMatchObject({ score: 50, raw: { mentionedIn: 1, answersMeasured: 6 } });
+    expect(r).toMatchObject({ score: 75, raw: { mentionedIn: 1, answersMeasured: 6 } });
     expect(codes(r)).toEqual(["ai_mentions_partial"]);
     expect(r.findings[0].text).toContain("1 of 6 answers");
   });
@@ -245,9 +245,17 @@ describe("section 8 — competitor filter (C5)", () => {
     warn.mockRestore();
   });
 
-  it("drops names made only of generic nouns, keeps a one-word brand", () => {
-    const r = named(["Plumbers", "Local Plumbing Services", "24/7 Emergency Plumber", "Plumbquick", "The Drain Doctor"]);
-    expect(r.raw.topCompetitors).toBe("Plumbquick, The Drain Doctor");
+  it("drops a single trade noun and names made only of common words; keeps a one-word brand", () => {
+    const r = named(["Plumbers", "The Best", "Local Services", "24/7", "Plumbquick", "The Drain Doctor"]);
+    expect((r.raw.prompts as { competitors: string[] }[])[0].competitors).toEqual(["Plumbquick", "The Drain Doctor"]);
+  });
+
+  it("keeps every multi-word name with a trade noun in it", () => {
+    const names = [
+      "Affordable Plumbing", "Reliable Plumbers", "Emergency Plumbers", "Best Electrical", "Trusted Electricians",
+      "Local Locksmiths", "24/7 Plumbing", "Local Plumbing Services",
+    ];
+    expect((named(names).raw.prompts as { competitors: string[] }[])[0].competitors).toEqual(names);
   });
 
   it("drops the prospect's own name, ignoring case, punctuation and (Pty) Ltd", () => {
