@@ -43,12 +43,13 @@ These are bugs or leaks in the live page, and each ships whatever design is pick
 
 ### Announce protocol (C1)
 
+0. **Only R0-era reports.** R0 writes `announceProtocol: 1` on every report it creates. The settle-announce, recovery and sweep steps below act only on reports carrying it. The absence of `announceDueAt` is never taken to mean "not yet announced". Every report made before R0 already fired `prospecting.report.ready` at ready, so announcing it again would send the prospect a second message. The backfill also sets `announcedAt` with the reason "pre-R0" on every existing report.
 1. **Settle.** Every final-settle path writes `announceDueAt` in the same transaction that makes the report final. The paths are:
    - the poll's `done`, `failed`, `timeout` and `stopped`;
    - the worker's own settle when `schedulePoll` fails;
    - ready with no scan started;
    - the sweep.
-2. **Announce.** Stamp `lastReportHeadline` from the final report, fire the trigger, then write `announcedAt`. Announcing is only ever done for a report with `announceDueAt` set and `announcedAt` null.
+2. **Announce.** Announcing is only ever done for a report with `announceProtocol: 1`, `announceDueAt` set and `announcedAt` null. If the contact's `lastReportId` is no longer this report (a newer report was generated meanwhile), record `announcedAt` with the reason "superseded" and fire nothing. Otherwise stamp `lastReportHeadline` from the final report, fire the trigger, then write `announcedAt`.
 3. **Recovery.** Two things pick up a report that is due but unannounced: the poll's "no longer pending" skip path (`apexgeo/route.ts:65`), and a 15-minute QStash sweep. The sweep also settles, as a timeout, any report still pending 30 minutes after its scan started. A crash anywhere between settle and `announcedAt` is therefore finished by the next poll delivery or the next sweep.
    - The sweep's "due and unannounced" query needs a composite index on `prospectReports`. R0 names it in `firestore.indexes.json`, and its deploy runs `firebase deploy --only firestore:indexes`.
    - The sweep is a new QStash schedule: 96 messages a day per deployment, stated because the QStash cap has been hit before.
@@ -56,6 +57,8 @@ These are bugs or leaks in the live page, and each ships whatever design is pick
 5. **The link a member re-mints or revokes.** When the report is the contact's `lastReportId`:
    - a member **re-mint** (which revokes the worker's share, `share.ts:34-36`) re-stamps `lastReportUrl`;
    - a member **revoke** clears `lastReportUrl`.
+
+   Both happen inside `mintReportShare`'s and `revokeReportShare`'s own transactions, so a crash cannot leave a live share next to a stale link.
 
    The announce fires only when the report has a live share (`report.shareId` non-null) and `lastReportUrl` is set. Otherwise it records `announcedAt` with the reason "no live link" and fires nothing. Outreach never sends a dead link.
 
@@ -86,15 +89,16 @@ Built on the mockup Hein picks. Every direction must include:
 
 - `agencies/{id}.brandColor`: `#RRGGBB`, set in Company Settings. It is rejected at save unless white text on it reaches WCAG AA 4.5:1, and re-validated at read time before it reaches a style attribute, the preview image or the PDF (an invalid value falls back to the default). Agency members can already read the agency doc (`firestore.rules:198`) and the client cannot write it, so no rules change.
 - `subAccounts/{id}.whatsappNumber`: E.164, optional, set in the sub-account's settings through the existing server route. When unset, the button falls back to a connected **WhatsApp Cloud** sender's `displayPhoneNumber`, which is a business number by definition. A **bridge** sender never fills it in. A bridge pairs a personal or staff handset and may forward for another business, so publishing it takes the explicit field.
-- `prospectReports`: `announcedAt` (C1); findings gain `impact` and the CTA line; `ai_presence.raw` gains the questions (C7).
+- `prospectReports`: `announceProtocol`, `announceDueAt`, `announcedAt` and its reason (C1). Findings gain `impact` and the CTA line; `ai_presence.raw` gains the questions (C7).
+- **New collection `workflowEnrolmentKeys`**, the keyed enrolment dedupe (`{workflowId}_{contactId}_{enrolmentKey}`). It is server-only: default-deny rules with a rules test, and an entry in `docs/architecture/firestore-collections.md`.
 - `public-sections.ts`: add the questions; drop `models`. `serializeReport` gets the member whitelist (C6).
-- No new collection.
+
 
 ## PR sequence (each independently mergeable, each with a blind `/review`)
 
 | PR | Scope | Gate to merge |
 |---|---|---|
-| R0 | C1–C7 with the announce protocol; the finding-driven scores with the **deduction table** (a named deliverable, reviewed before merge); the stored `impact`/CTA copy; the backfill script. Also updates `prospecting-module.md` (PR 4's "once through the queued→running claim", "PDF export is v2", D2's public exception). | Seam tests through the real worker and poll, one per settle path (done, failed, timeout, stopped, schedule failure, no scan, sweep): each announces exactly once with the final headline. **Crash tests after the settle transaction commits:** a crash before the fire, and a crash after the fire but before `announcedAt`, each end with exactly one enrolment after recovery. This runs under `every_time` and against a workflow whose first run has already completed. A member revoke during the pending window: nothing is sent, and the report is marked announced with its reason. A member re-mint during the pending window: the workflow's message carries the **new** link, and it resolves. No model id appears in any stored or public text. A score below 100 with no finding fails. The JSON route carries no hidden row. Mutation-tested. |
+| R0 | C1–C7 with the announce protocol; the finding-driven scores with the **deduction table** (a named deliverable, reviewed before merge); the stored `impact`/CTA copy; the backfill script. Also updates `prospecting-module.md` (PR 4's "once through the queued→running claim", "PDF export is v2", D2's public exception). | Seam tests through the real worker and poll, one per settle path (done, failed, timeout, stopped, schedule failure, no scan, sweep): each announces exactly once with the final headline. **Crash tests after the settle transaction commits:** a crash before the fire, and a crash after the fire but before `announcedAt`, each end with exactly one enrolment after recovery. This runs under `every_time` and against a workflow whose first run has already completed. A member revoke during the pending window: nothing is sent, and the report is marked announced with its reason. A pre-R0-shaped report pending for 40 minutes: the sweep fires nothing for it. A second report generated while the first is pending: the first is marked "superseded" and fires nothing, and the second's message carries the second's headline and link. A member re-mint during the pending window: the workflow's message carries the **new** link, and it resolves. No model id appears in any stored or public text. A score below 100 with no finding fails. The JSON route carries no hidden row. Mutation-tested. |
 | R1 | Mockups (not merged code): 2–3 original directions plus one in the style of analyzemy/Snapshot (original, not copied), published as a private clickable page on the Plumbing Johannesburg data | **Human gate:** Hein picks a direction. |
 | R2 | Agency `brandColor` + sub-account `whatsappNumber` (schema, PATCH, settings UI, contrast check, read-time validation) | Contrast-rejection and read-time fallback tests, mutation-tested; tenancy check. |
 | R3 | Redesigned public page and member toggle, on the picked direction. Needs R0 (copy, questions) and R2 (colour, number). | Playwright spec through the real server at 390 px and desktop, with screenshots in the PR. A visual check against the mockup. The existing share and ApexGEO specs stay green. |
