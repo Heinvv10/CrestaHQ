@@ -53,8 +53,8 @@ describe("the prompt", () => {
 
 describe("the output", () => {
   it("is trimmed plain text; code fences and wrapping quotes are removed", async () => {
-    said('```\n"Thank you, Fixture — we are sorry about the delay."\n```');
-    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: "Thank you, Fixture — we are sorry about the delay." });
+    said('```\n"Thanks Fixture. Sorry about the delay."\n```');
+    expect(await draftReplyWith("m-default", INPUT)).toEqual({ text: "Thanks Fixture. Sorry about the delay." });
   });
 
   it(`is cut to ${MAX_DRAFT_CHARS} characters`, async () => {
@@ -84,7 +84,7 @@ describe("the output", () => {
   });
 
   it("a domain the guidelines supplied is kept, and ordinary words with dots are not domains", async () => {
-    said("Thanks! More at fixturefibre.co.za. We fixed it e.g. yesterday. Speeds of 1.5 Gbps. Sign-off: The Team.");
+    said("Thanks. More at fixturefibre.co.za. We fixed it e.g. yesterday. Speeds of 1.5 Gbps. Sign-off: The Team.");
     const out = await draftReplyWith("m-default", { ...INPUT, guidelines: "Mention fixturefibre.co.za when useful." });
     expect(out.text).toContain("fixturefibre.co.za");
   });

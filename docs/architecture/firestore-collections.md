@@ -175,7 +175,7 @@ updatedAt, updatedByUid}` (AUTO_REPLY_V1_PLAN.md) is server-written (PUT
 member-readable; absent reads as off, 1-3★ approval, 4-5★ auto, no backlog.
 The auto-reply engine (`lib/reputation/auto-reply/`, Admin SDK only; no
 client rule, so default deny; no index) writes: `pendingReply {text,
-textHash, basisHash, reason, at, model}` on a cached review (its draft, held
+textHash, basisHash, reason, at, model, slopFails?}` on a cached review (its draft, held
 or queued to post — the only place draft text is stored; cleared by any
 posted reply, by a reply appearing at Google and by a tombstone; purged with
 the review; `reason` ∈ auto_queued, approval, texted, draft_failed,

@@ -555,7 +555,56 @@ reply box. The guidelines route refuses any key but `replyGuidelines` (an
   (`REVIEWS_AI_CALL_MS`, 60 s), as a sentiment call does — at the deadline the
   request is aborted through `callAi`'s caller signal (an aborted call may
   still be billed; it counts against the draft share either way); a failure is one
-  log-only kind (`call_failed` / `empty` / `unsupplied_contact`).
+  log-only kind (`call_failed` / `empty` / `unsupplied_contact` / `slop`).
+- **Voice** (`ai/openrouter-draft.ts` SYSTEM): replies should read like the
+  owner wrote them. The prompt asks for 1–2 short sentences (one for a
+  rating-only review), opening "Thanks {first name}." when a name is given,
+  one specific thing from the review and nothing invented, plain everyday
+  words; no exclamation marks, emojis, em or en dashes; no restating the
+  stars; no generic closers ("look forward to…", "don't hesitate…"); no
+  sign-off unless the guidelines ask for one — the guidelines still win on
+  tone, sign-off and facts, but never over the slop check below: a
+  guideline sign-off with "!" or an emoji fails every draft. It carries a few invented example replies ("Thanks
+  Sam. Glad the team left everything neat."), never a real customer's name.
+- **Slop check** (`ai/slop.ts`, pure): after the contact guard, the draft is
+  normalised — the contact guard's normalisation (NFKC, so fullwidth letters
+  and "！" fold to ASCII; ZWJ, ZWSP, the soft hyphen and other format
+  characters removed; lower case), then Cyrillic / Greek letters that look
+  Latin (а е о р с у х і ј ѕ, ο α ε ι ν) read as Latin — and the reviewer's
+  first name and the business name are removed as whole tokens (a reviewer
+  called "Truly", a business called "Delighted Cleaning"). It is then
+  checked against ONE list of tells (`SLOP_RULES`): "!" "！" "¡" "‼" "⁉", any
+  emoji (Extended_Pictographic except © ® ™, flags, and ":)" ":-)" ":D"
+  ";)"), a clause dash ("‒ – — ― ⸺ ⸻ ﹘ ﹣", a spaced " - " / " -- ", or
+  "--" — an en or em dash BETWEEN DIGITS is a range and allowed: "08:00–17:00",
+  "5–10"; "Wi-Fi" and "rating-only" are fine), and case-insensitive whole-word phrases
+  (thrilled, delighted, truly, genuinely, "appreciate your support", "don't /
+  do not hesitate", "reach out", "look(ing) forward to serving / welcoming /
+  helping", "fifth / 5th star", "valued customer(s)", "we value your
+  feedback", "means the world", "rest assured", "above and beyond",
+  "wonderful review", "kind words", "we're / we are so glad"). "Appreciate",
+  "glad" and "thanks" alone are fine. "Reach out", "kind words" and "above
+  and beyond" are banned even where innocent ("reach out to your provider"):
+  they fail safe. **The business's guidelines never switch a rule off — they
+  only ever add bans** (through the prompt). Guidelines whose sign-off carries
+  "!" or an emoji ("Cheers! The Team") therefore fail every draft; write the
+  sign-off without them. A hit gets **exactly one retry**: the same call plus
+  one user message, "Write the reply again. Your previous draft was rejected
+  for: {rule id}. Keep it plain." (never the review or the rejected draft —
+  the model never saw its rejected draft). The retry is skipped when the
+  caller's deadline leaves no room for a second bounded call (`Date.now() +
+  REVIEWS_AI_CALL_MS > deadlineMs`): auto-reply passes its run deadline, so a
+  hit near the end of a run is refused (`slop`) at once and never posts;
+  "Draft with AI" passes none. A second hit is no draft, failure
+  `slop` — "Draft with AI" shows its usual "Couldn't draft a reply. Try
+  again, or write your own."; auto-reply stores `draft_failed` (below), never
+  posts. **Budget:** the draft is counted once, before the call
+  (`beginDraftCall`), so a retry costs no second unit of the 100 drafts, the
+  40 auto drafts or the shared 300 — but it is a second billed model call,
+  so real spend is at most 2× the counted drafts, and a draft's worst-case
+  latency doubles to two `REVIEWS_AI_CALL_MS` bounds (120 s) — which is why
+  auto-reply skips the retry near its deadline. Voice problems the list does
+  not name are left to the prompt.
 - **What the prompt alone covers — honestly:** promising a refund or
   compensation, an insult, or an unsuitable tone are ruled out only by the
   system prompt; no code checks for them. For "Draft with AI" that is
@@ -702,8 +751,19 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   `draftsDay`, within drafts' 100 and the shared 300 — so "Draft with AI"
   keeps ≥ 60. Over either: held without a draft (`cap` / `no_budget`),
   re-decided on a later run.
+- **Voice:** an auto draft goes through the same slop check and single
+  retry (skipped near the run deadline); a draft that fails it is stored as
+  `draft_failed` (no text, shown under "Needs approval" as "Draft failed",
+  retried after 24 h) and is never posted. The retry is inside the one
+  auto-draft unit. **Re-draft cap:** `pendingReply.slopFails` counts
+  consecutive `slop` failures at the same basis (any other outcome, or new
+  content, resets it). At `SLOP_REDRAFT_CAP` (2) the review stays
+  `draft_failed` for a person — alerted through the held alert, deduped by
+  `heldAlertBasis`, even for an Auto star — and is not re-drafted again
+  until its content changes: at most 2 drafts (4 model calls) per content,
+  then none.
 - **Draft first, then post:** each draft is stored on the review as
-  `pendingReply {text, textHash, basisHash, reason, at, model}` before any
+  `pendingReply {text, textHash, basisHash, reason, at, model, slopFails?}` before any
   post (`basisHash` = the sentiment basis, stars + comment). The post uses
   exactly those bytes, key `auto:{reviewDocId}:{textHash}`, so a failed post
   retried by the next run posts the same text once and never drafts again.

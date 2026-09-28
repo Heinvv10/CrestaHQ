@@ -12,7 +12,9 @@ import type { ReviewsAi } from "../ai/types";
 import { beginDraftCall, draftInputFor } from "../draft";
 import { reviewBasis } from "../sentiment-basis";
 import { sentimentUsagePath } from "../sentiment-calls";
-import { decide, type DecideCounts, type DecideReview, type DecideSettings, type Decision } from "./decide";
+import {
+  decide, SLOP_REDRAFT_CAP, type DecideCounts, type DecidePending, type DecideReview, type DecideSettings, type Decision,
+} from "./decide";
 import { sendAutoReplyAlert } from "./alerts";
 import { autoReplyKillSwitchOn } from "./kill-switch";
 import { postQueued } from "./post";
@@ -166,7 +168,7 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
   }
   let text = d.verdict === "auto" && d.stored ? readPending(data.pendingReply)?.text ?? null : null;
   if (text === null) {
-    const drafted = await draft(ctx, docId, basisHash, d.verdict === "auto" ? "auto_queued" : d.reason);
+    const drafted = await draft(ctx, docId, basisHash, d.verdict === "auto" ? "auto_queued" : d.reason, review.pending);
     if (drafted !== null && typeof drafted === "object") return drafted.stop;
     if (drafted === null || d.verdict !== "auto") return null;
     text = drafted;
@@ -189,11 +191,13 @@ async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, revie
 /**
  * Draft one review and store it as `reason`. The stored text when it was
  * stored; `{stop}` to end the run; null when this review is done for now
- * (held for lack of budget, draft failed, or changed during the call).
+ * (held for lack of budget, draft failed, or changed during the call). The
+ * SLOP_REDRAFT_CAP-th consecutive voice failure at this content is held for a
+ * person (and alerted) whatever `reason` was — an Auto review included.
  */
 async function draft(
   ctx: Ctx, docId: string, basisHash: string,
-  reason: "auto_queued" | "approval" | "texted",
+  reason: "auto_queued" | "approval" | "texted", prior: DecidePending | null,
 ): Promise<string | { stop: string } | null> {
   if (Date.now() >= ctx.deadline) return { stop: "deadline" };
   if (!(await renewAutoReplyLease(ctx.sa, ctx.runId, Date.now()))) return { stop: "lease_lost" };
@@ -209,12 +213,19 @@ async function draft(
   // No reviewer name on the auto path: a display name is untrusted text a
   // member of the public chose, and this draft may be posted unread.
   const input = { ...(await draftInputFor(ctx.sa, docId)), reviewerFirstName: null };
-  const result = await ctx.ai.draftReply(input);
+  // The run's deadline: no voice retry without room for a second bounded call.
+  const result = await ctx.ai.draftReply(input, ctx.deadline);
   if (result.text === null) {
     console.warn(`[reputation/auto-reply] no draft sa=${ctx.sa} failure=${result.failure}`);
-    const stored = await storePending(ctx.sa, docId, { text: null, basisHash, reason: "draft_failed", model: ctx.ai.model }, new Date());
-    // A review a person must answer anyway, now without a draft.
-    if (stored && reason !== "auto_queued") await heldForPerson(ctx, docId, basisHash);
+    const priorFails = prior?.reason === "draft_failed" && prior.basisHash === basisHash ? prior.slopFails ?? 0 : 0;
+    // A voice failure increments; any other failure (a skipped-deadline retry included) carries
+    // the count forward unchanged — only a successful draft or a change of content clears it.
+    const slopFails = result.failure === "slop" ? priorFails + 1 : priorFails;
+    const stored = await storePending(
+      ctx.sa, docId, { text: null, basisHash, reason: "draft_failed", model: ctx.ai.model, slopFails }, new Date(),
+    );
+    // A review a person must answer anyway, now without a draft — or one whose drafts keep failing the voice check.
+    if (stored && (reason !== "auto_queued" || slopFails >= SLOP_REDRAFT_CAP)) await heldForPerson(ctx, docId, basisHash);
     return null;
   }
   const stored = await storePending(ctx.sa, docId, { text: result.text, basisHash, reason, model: ctx.ai.model }, new Date());

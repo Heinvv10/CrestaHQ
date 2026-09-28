@@ -4,6 +4,7 @@ import { callAi } from "@/lib/comms/ai/openrouter";
 import { draftReplyWith, type BoundedCall } from "./openrouter-draft";
 import {
   REVIEWS_AI_BATCH,
+  REVIEWS_AI_CALL_MS,
   SENTIMENT_LABELS,
   type ReviewsAi,
   type SentimentFailure,
@@ -26,12 +27,12 @@ import {
 export const BATCH_SIZE = REVIEWS_AI_BATCH;
 
 /**
- * The whole call — headers AND body — gets this long. At the deadline the
+ * The whole call — headers AND body — gets REVIEWS_AI_CALL_MS (types.ts). At the deadline the
  * request is ABORTED (callAi's caller `signal`, armed through the body read)
  * and the item is a failed call; the provider may still bill an aborted call.
  * Well under the classifier's 5-minute lease.
  */
-export const REVIEWS_AI_CALL_MS = 60_000;
+export { REVIEWS_AI_CALL_MS };
 
 class CallTimeout extends Error {
   constructor() {
@@ -164,6 +165,6 @@ export function openRouterReviewsAi(model: string): ReviewsAi {
       for (let i = 0; i < items.length; i += BATCH_SIZE) out.push(...(await classifyBatch(model, items.slice(i, i + BATCH_SIZE))));
       return out;
     },
-    draftReply: (input) => draftReplyWith(model, input, boundedCall),
+    draftReply: (input, deadlineMs) => draftReplyWith(model, input, boundedCall, deadlineMs),
   };
 }

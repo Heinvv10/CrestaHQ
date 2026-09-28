@@ -11,9 +11,10 @@ import { PENDING_REASONS, type DecidePending, type PendingReason } from "./decid
  * The auto-reply engine's Firestore state (AUTO_REPLY_V1_PLAN.md). All server
  * only (no client rule: default deny), no index:
  *
- *   gbpReviews/{docId}.pendingReply     {text, textHash, basisHash, reason, at, model}
- *                                       — the engine's draft (text null when there
- *                                       is none); purged with the review
+ *   gbpReviews/{docId}.pendingReply     {text, textHash, basisHash, reason, at, model,
+ *                                       slopFails?} — the engine's draft (text null when
+ *                                       there is none; slopFails counts consecutive voice
+ *                                       failures, decide.ts SLOP_REDRAFT_CAP); purged with the review
  *   subAccounts/{id}/autoReplyDismissed/{stableReviewKey}
  *                                       {basisHash, at, byUid, reviewDocId} + tenant
  *                                       keys — a Discard, outside the cache and keyed
@@ -47,6 +48,7 @@ export interface StoredPending {
   reason: PendingReason;
   at: unknown;
   model: string | null;
+  slopFails: number;
 }
 
 export function readPending(raw: unknown): StoredPending | null {
@@ -59,11 +61,14 @@ export function readPending(raw: unknown): StoredPending | null {
     reason: p.reason as PendingReason,
     at: p.at ?? null,
     model: typeof p.model === "string" ? p.model : null,
+    slopFails: typeof p.slopFails === "number" ? p.slopFails : 0,
   };
 }
 
 export const toDecidePending = (p: StoredPending | null): DecidePending | null =>
-  p && { reason: p.reason, basisHash: p.basisHash, atMs: toMillis(p.at), hasText: p.text !== null && p.textHash !== null };
+  p && {
+    reason: p.reason, basisHash: p.basisHash, atMs: toMillis(p.at), hasText: p.text !== null && p.textHash !== null, slopFails: p.slopFails,
+  };
 
 const leaseRef = (sa: string) => getAdminDb().doc(autoReplyLeasePath(sa));
 
@@ -115,7 +120,9 @@ type ReviewData = Record<string, unknown>;
 export async function storePending(
   sa: string,
   docId: string,
-  pending: { text: string | null; basisHash: string; reason: Exclude<PendingReason, "dismissed">; model: string | null },
+  pending: {
+    text: string | null; basisHash: string; reason: Exclude<PendingReason, "dismissed">; model: string | null; slopFails?: number;
+  },
   now: Date,
 ): Promise<boolean> {
   const db = getAdminDb();
@@ -130,7 +137,8 @@ export async function storePending(
     const current = readPending(d.pendingReply);
     if (current?.reason === "dismissed" && current.basisHash === pending.basisHash) return false;
     const textHash = pending.text === null ? null : textHashOf(pending.text);
-    tx.update(ref, { pendingReply: { ...pending, textHash, at: now } });
+    const { slopFails, ...rest } = pending;
+    tx.update(ref, { pendingReply: { ...rest, textHash, at: now, ...(slopFails ? { slopFails } : {}) } });
     return true;
   });
 }
