@@ -1,6 +1,6 @@
 # Prospecting module — plan
 
-*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Status: PR 1 merged and live (2026-09-24, #245 + #247); PR 2 built (#288, 2026-09-26); PR 6 live (ApexSignal); PRs 3–5 not started. Grilled with Hein on 2026-09-24; the rulings under "Settled" are closed and are not to be re-opened by an implementer.*
+*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Status: PR 1 merged and live (2026-09-24, #245 + #247); PR 2 built (#288, 2026-09-26); PR 3 live (#302); PR 4 built (2026-09-27, not merged); PR 6 live (ApexSignal); PR 5 not started. Grilled with Hein on 2026-09-24; the rulings under "Settled" are closed and are not to be re-opened by an implementer.*
 
 ## Why
 
@@ -59,7 +59,7 @@ Report page: `/report/{token}` (see D1 below), public, non-enumerating id, brand
 - Public: `src/app/report/[shareId]/page.tsx` (server component, no client Firestore) and `api/public/prospecting/report/[shareId]` for the JSON the page renders.
 - Get Leads: flip `GET_LEADS_PARKED`, follow the un-park checklist in [get-leads.md](../features/get-leads.md), add "Save as list" to the results bar, and make import write the `prospecting` map.
 - Public API: `POST /api/v1/contacts` already exists; add the `prospecting` map to the contacts serializer so ApexSignal can push it. No new v1 route.
-- Workflows: no engine change. A `prospecting.report.ready` trigger is added to the catalog and fired by the runner, and `{{prospecting.headline}}` / `{{prospecting.reportUrl}}` merge tags are added in `src/lib/messaging/merge-tags.ts`.
+- Workflows: one engine seam, the approach guard in `runStep` (see "PR 4 decisions"). A `prospecting.report.ready` trigger is added to the catalog and fired by the runner, and `{{prospecting.headline}}` / `{{prospecting.reportUrl}}` merge tags are added in `src/lib/messaging/merge-tags.ts`.
 
 ### Approach guard (ported from ApexSignal `send_batch.py`)
 
@@ -89,6 +89,22 @@ Manage dialog: gate checkbox, quota number field. Sidebar entry "Prospecting" at
 - **D6 — the agency's own setup gaps are hidden from the prospect.** On `/report/[token]`, sections not measured because there is no ApexGEO key, or its account is out of credits, are left out. The member view shows them (with a *Connect ApexGEO* link). Pending, timed-out, failed and missing-input sections show on both, and the reasons a prospect can see never name the vendor (white-label).
 - **Gap found in the live proof — prospects had no city. Resolved (Hein, 2026-09-27: option a).** On #1000, 0 of 648 prospects with a website carried `city` (ApexSignal pushes `address: "ZA"`; Places rows rarely give one), but all 648 have a place id. The GBP section's Places Details call now also requests `addressComponents` (an Essentials field, no higher SKU); the scan takes the town from the listing (`locality`, else `postal_town`) when it names one, with the listing's country (else the contact's), otherwise the contact's city and country — listing first, because a form contact's city is an IP guess (review of #308). A listing with neither still gives "not measured", never a guess.
 
+## PR 4 decisions (2026-09-27, recorded from the build)
+
+These replace the "Approach guard" section above where they differ (it named the contacts service and a campaign tag).
+
+- **Prospect** = `contact.source === "prospecting"` or a `prospecting` map present.
+- **Campaign key = workflow id.** The guard stamps `prospecting.approachedAt` and `prospecting.approachedWorkflowId`; a send from any other workflow is refused. The same workflow's later sends pass and are not counted again. A prospect stamped before this PR with no workflow id is refused by every workflow.
+- **First touch** = a guarded send that found `approachedAt` unset; only first touches count toward `prospectingDailyFirstTouchCap` (Manage dialog, 0–1000, default 20).
+- **Stamp before the send**, in the same transaction that takes one from `subAccounts/{id}/prospectingFirstTouch/{YYYY-MM-DD}` (day in the send-window timezone, else Africa/Johannesburg; server-only, default-deny rules). A stamped step that then fails for another reason (e.g. WhatsApp not configured) keeps its stamp and count.
+- **Seam:** `runStep` in `lib/workflows/engine.ts`, after the at-most-once claim, before the executor, for `send_email`, `send_sms`, `send_whatsapp`, `whatsapp_template`. The channel opt-out / missing-address skip runs first (`channelOptedOut`, now shared with the executors), so an opted-out prospect is never stamped or counted.
+- **Refusal `already_approached`:** the run ends (completed), history `skipped:approach_guard:already_approached`, an `automation_step_skipped` row on the contact.
+- **Refusal `daily_cap`:** the step is held to 08:00 local **the next day** through the quiet-hours defer path. That path writes no history entry (an entry marks the step done), so `deferred:approach_cap` is the log string and the contact timeline row says the cap is reached.
+- **Guard infra error fails closed:** it throws, the claim is released, QStash retries; nothing is sent.
+- **Not guarded:** manual conversation sends, AI capability sends, broadcasts.
+- **Trigger `prospecting.report.ready`:** once a report is `ready` the worker mints a share (creator = the report's requester), stamps `prospecting.lastReportId`, `lastReportHeadline`, `lastReportUrl` on the contact and fires the trigger with `{ reportId }`. Once per report, through the worker's existing `queued → running` claim. A failed report, or a share that could not be minted, fires nothing; a firing failure is logged and never fails the report. Minting a share from the UI later revokes this link.
+- **Merge tags** `{{prospecting.headline}}` / `{{prospecting.reportUrl}}` read the contact's `lastReportHeadline` / `lastReportUrl` in both renderers (workflow sends and the composer, which lists them in its picker).
+
 ## PR sequence (each one independently mergeable, each with a blind `/review`)
 
 | PR | Scope | Gate to merge |
@@ -96,7 +112,7 @@ Manage dialog: gate checkbox, quota number field. Sidebar entry "Prospecting" at
 | 1 | **DONE (#245, #247)** — Gate + quota + schema + rules + Manage dialog + `FEATURE_GATES` entry + un-park Get Leads with saved lists and the `prospecting` map on import and on v1 contacts | tests for the gate 403s, rules tests, tenancy check; Level-3 boundary |
 | 2 | **DONE (#288)** — `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Google Places/Firecrawl), QStash callback, quota enforcement, share page `/report/[token]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
 | 3 | **DONE (#302)** — ApexGEO connection + sections 5, 7, 8; "Not connected" state; deployed 7f7b4882, proven on #1000 2026-09-27 ([evidence](../parity/evidence/prospecting-pr3/README.md)) | recorded-response tests against the ApexGEO OpenAPI shapes; live proof on #1000 with a real key |
-| 4 | Workflow trigger + merge tags + approach guard + daily cap | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
+| 4 | **BUILT (2026-09-27)** — Workflow trigger + merge tags + approach guard + daily cap ([mutations](../parity/evidence/prospecting-pr4/mutations.md)) | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
 | 5 | Mystery-shop actions (form/call, WhatsApp) with confirm dialog | **human gate**: sends reach a real business; first live run is to a number Hein owns |
 | 6 | ApexSignal `push_leadstack.py` + cron; warm replies imported | proof: contacts visible in #1000 with tags; Hein's tasks created |
 

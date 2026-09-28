@@ -231,18 +231,34 @@ describe("set_event_status", () => {
     expect(mem.read("events/ev1")!.status).toBe("scheduled");
   });
 
-  it("a started workflow's steps edited inside the cancel's transaction -> cancelled, that workflow not started, the result says so", async () => {
+  it("a started workflow's steps edited inside the cancel's transaction -> cancelled, that workflow not started (checked at enrolment)", async () => {
     workflow("booking.cancelled");
     const id = await proposeCancel();
     beforeNextTransaction(async () => beforeNextTransaction(async () =>
       mem.seed("workflows/wf_booking.cancelled", { ...mem.read("workflows/wf_booking.cancelled")!, nodes: {} })
     ));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining("wf_booking.cancelled not started")));
+    warn.mockRestore();
+    expect(mem.list("workflowRuns")).toEqual([]);
+  });
+
+  it("another page's booking.cancelled workflow is a trigger mismatch, not a steps change (E6)", async () => {
+    workflow("booking.cancelled");
+    mem.seed("workflows/wf_other_page", {
+      name: "Other page only", subAccountId: "sa1", agencyId: "ag1", status: "active", startNodeId: "n1",
+      trigger: { type: "booking.cancelled", bookingPageSlug: "elsewhere", filters: { all: [] } }, nodes: {},
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const id = await proposeCancel();
     const res = await decide(id, "approve");
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("their steps changed after approval: wf_booking.cancelled") });
-    expect(mem.read("events/ev1")!.status).toBe("cancelled");
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mem.list("workflowRuns")).toEqual([]);
+    expect(JSON.stringify(await res.json())).not.toContain("wf_other_page");
+    await vi.waitFor(() => expect(mem.list("workflowRuns")).toHaveLength(1));
+    expect(warn.mock.calls.flat().join(" ")).not.toContain("wf_other_page");
+    warn.mockRestore();
   });
 
   it("a started workflow's steps edited after the approver's preview check -> failed, not cancelled", async () => {

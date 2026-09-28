@@ -91,3 +91,29 @@ describe("prospectingReportQuota", () => {
     expect(sub().prospectingReportQuota).toBeUndefined();
   });
 });
+
+describe("prospectingDailyFirstTouchCap", () => {
+  it("stores an integer in 0–1000, bounds included", async () => {
+    expect(await patch({ prospectingDailyFirstTouchCap: 0 })).toBe(200);
+    expect(sub().prospectingDailyFirstTouchCap).toBe(0);
+    expect(await patch({ prospectingDailyFirstTouchCap: 1000 })).toBe(200);
+    expect(sub().prospectingDailyFirstTouchCap).toBe(1000);
+    expect(await patch({ prospectingDailyFirstTouchCap: 5 })).toBe(200);
+    expect(sub().prospectingDailyFirstTouchCap).toBe(5);
+  });
+
+  it.each([[-1], [1001], [2.5], ["20"], [null], [true]])(
+    "refuses %s with 400 and writes nothing",
+    async (bad) => {
+      mem.seed(`subAccounts/${SA}`, { ...sub(), prospectingDailyFirstTouchCap: 12 });
+      expect(await patch({ prospectingDailyFirstTouchCap: bad, prospectingEnabled: true })).toBe(400);
+      expect(sub().prospectingDailyFirstTouchCap).toBe(12);
+      expect(sub().prospectingEnabledByAgency).toBeUndefined();
+    },
+  );
+
+  it("only the agency owner may set it", async () => {
+    expect(await patch({ prospectingDailyFirstTouchCap: 10 }, "uid_admin")).toBe(403);
+    expect(sub().prospectingDailyFirstTouchCap).toBeUndefined();
+  });
+});

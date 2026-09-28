@@ -61,6 +61,12 @@ describe("PATCH voice (twilio-byoc) records the provisioned number", () => {
     expect(stored()).toMatchObject({ vapiPhoneNumberId: "pn1", vapiPhoneNumber: "+27870000001" });
   });
 
+  it("disabling voice clears the recorded number with the resource", async () => {
+    mem.seed(`subAccounts/${SA}/aiAgent/voice`, { enabled: false, voice: { numberMode: "twilio-byoc", vapiAssistantId: "asst1", vapiPhoneNumberId: "pn1", vapiPhoneNumber: "+27870000001" } });
+    expect((await save({ maxCallSeconds: 300 })).status).toBe(200);
+    expect(stored()).toMatchObject({ vapiPhoneNumberId: null, vapiPhoneNumber: null });
+  });
+
   it("another resource id with no number back leaves no stale number", async () => {
     mem.seed(`subAccounts/${SA}/aiAgent/voice`, { enabled: true, voice: { numberMode: "twilio-byoc", vapiAssistantId: "asst1", vapiPhoneNumberId: "pn1", vapiPhoneNumber: "+27870000001" } });
     ensure.mockResolvedValueOnce({ phoneNumberId: "pn2" });

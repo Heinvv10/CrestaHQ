@@ -108,3 +108,16 @@ describe("WhatsApp template variables — custom-field merge tags", () => {
     ).toEqual([""]);
   });
 });
+
+describe("resolveMergeTags — prospecting report tags", () => {
+  it("resolves the headline and report link from the subject", () => {
+    const s = { ...subject(), prospecting: { headline: "No HTTPS", reportUrl: "https://x.test/report/t" } };
+    expect(resolveMergeTags("{{prospecting.headline}} {{prospecting.reportUrl}}", s)).toBe(
+      "No HTTPS https://x.test/report/t",
+    );
+  });
+
+  it("renders empty, never the raw tag, when the subject has none", () => {
+    expect(resolveMergeTags("[{{prospecting.headline}}][{{prospecting.reportUrl}}]", subject())).toBe("[][]");
+  });
+});

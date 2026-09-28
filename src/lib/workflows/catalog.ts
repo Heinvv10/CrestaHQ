@@ -28,6 +28,7 @@ export const TRIGGER_LABELS: Record<WorkflowTriggerType, string> = {
   "invoice.charge_succeeded": "Invoice card charge succeeded",
   "invoice.charge_failed": "Invoice card charge failed",
   "link.clicked": "Tracked link clicked",
+  "prospecting.report.ready": "Prospect report ready",
 };
 
 export const NODE_LABELS: Record<WorkflowNodeType, string> = {

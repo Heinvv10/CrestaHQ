@@ -26,3 +26,22 @@ export function parseProspectReportQuota(input: string): number | null {
   const n = Number(t);
   return n <= 1000 ? n : null;
 }
+
+/**
+ * First-touch prospect sends a day per sub-account (the approach guard's cap,
+ * lib/prospecting/approach-guard.ts). The agency owner sets
+ * `prospectingDailyFirstTouchCap` in the Manage dialog (integer 0–1000,
+ * parsed like the report quota); unset gets this default.
+ */
+export const PROSPECTING_FIRST_TOUCH_CAP_DEFAULT = 20;
+
+export function prospectingFirstTouchCap(
+  sub: Pick<SubAccountDoc, "prospectingDailyFirstTouchCap"> | null | undefined,
+): number {
+  // A NaN, Infinity or negative value (written outside the PATCH route) would
+  // leave the cap unenforceable; it falls back to the default instead.
+  const cap = sub?.prospectingDailyFirstTouchCap;
+  return Number.isInteger(cap) && (cap as number) >= 0
+    ? (cap as number)
+    : PROSPECTING_FIRST_TOUCH_CAP_DEFAULT;
+}

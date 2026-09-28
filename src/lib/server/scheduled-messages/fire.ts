@@ -14,7 +14,7 @@ import {
 import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
 import { scheduledMessagesPath, scheduledSendBlock } from "./service";
 import { recipientOf } from "@/lib/server/conversation-send/recipient";
-import { messageSenderNumber } from "@/lib/server/sender-number";
+import { messageSender } from "@/lib/server/sender-number";
 import type { SubAccountDoc } from "@/types";
 
 export type FireResult =
@@ -137,7 +137,11 @@ export async function fireScheduledMessage(
   }
   if (doc.pinnedFrom !== undefined && (doc.channel === "sms" || doc.channel === "whatsapp")) {
     const sub = (await getAdminDb().doc(`subAccounts/${doc.subAccountId}`).get()).data() as SubAccountDoc | undefined;
-    if ((await messageSenderNumber(sub, doc.channel)) !== doc.pinnedFrom) {
+    const live = await messageSender(sub, doc.channel);
+    // The number (WhatsApp: rail:number; a label rename refuses nothing); a
+    // doc booked before that pinned the shown value, label included, and
+    // still matches it.
+    if ((live?.number ?? null) !== doc.pinnedFrom && (live?.display ?? null) !== doc.pinnedFrom) {
       return record("failed", "The number it would go out from changed since this was approved, so it was not sent.", "sender_changed");
     }
   }

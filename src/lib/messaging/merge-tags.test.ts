@@ -12,6 +12,10 @@ const ctx: MergeTagContext = {
     email: "thabo@example.com",
     phone: "+27825550100",
     company: "Mokoena Fibre",
+    prospecting: {
+      lastReportHeadline: "Your site has no HTTPS",
+      lastReportUrl: "https://crm.example.com/report/tok",
+    },
   },
   businessName: "Velo Desk",
   userName: "Anele",
@@ -151,5 +155,21 @@ describe("values are inserted once, verbatim", () => {
   it("leaves text without tags untouched", () => {
     const text = "Price: {not a tag} }} {{ done";
     expect(render(text)).toEqual({ text, unresolved: [] });
+  });
+});
+
+describe("prospecting tags (Prospecting PR 4)", () => {
+  it("render the contact's latest report headline and link, any case", () => {
+    expect(render("{{prospecting.headline}} — {{ Prospecting.ReportUrl }}")).toEqual({
+      text: "Your site has no HTTPS — https://crm.example.com/report/tok",
+      unresolved: [],
+    });
+  });
+
+  it("are unresolved (send refused) for a contact without a report", () => {
+    const r = render("{{prospecting.headline}} {{prospecting.reportUrl}}", {
+      contact: { name: "Thabo", prospecting: { lastReportHeadline: null } },
+    });
+    expect(r.unresolved).toEqual(["{{prospecting.headline}}", "{{prospecting.reportUrl}}"]);
   });
 });

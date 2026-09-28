@@ -148,6 +148,7 @@ const CON = "contacts/c1";
 const LST = "prospectLists/list1";
 const RPT = "prospectReports/r1";
 const SHR = "prospectReportShares/share1";
+const FTC = "subAccounts/sa_1/prospectingFirstTouch/2026-09-27";
 
 const CASES: [string, Case, Outcome][] = [
   // ---- prospectLists: member-read, server-only write ----
@@ -183,9 +184,14 @@ const CASES: [string, Case, Outcome][] = [
   ["shares: admin cannot create one", { caller: saAdmin, method: "create", path: SHR, after: SHARE }, "deny"],
   ["shares: owner cannot revoke one", { caller: owner, method: "update", path: SHR, before: SHARE, after: { ...SHARE, revokedAt: 1 } }, "deny"],
 
+  // ---- prospectingFirstTouch day counters (approach guard): no client at all ----
+  ["first-touch counter: sub-account admin cannot read it", { caller: saAdmin, method: "get", path: FTC, before: { count: 3 } }, "deny"],
+  ["first-touch counter: agency owner cannot reset it", { caller: owner, method: "update", path: FTC, before: { count: 20 }, after: { count: 0 } }, "deny"],
+
   // ---- contacts.prospecting: server-owned ----
   ["contacts: collaborator edits a prospect's name (map unchanged)", { caller: collaborator, method: "update", path: CON, before: PROSPECT, after: { ...PROSPECT, name: "Aqua Plumbing (Pty)" }, gets: SA_DOC }, "allow"],
   ["contacts: collaborator cannot stamp prospecting.approachedAt", { caller: collaborator, method: "update", path: CON, before: PROSPECT, after: { ...PROSPECT, prospecting: { ...PROSPECT.prospecting, approachedAt: 1 } }, gets: SA_DOC }, "deny"],
+  ["contacts: admin cannot stamp prospecting.approachedWorkflowId", { caller: saAdmin, method: "update", path: CON, before: PROSPECT, after: { ...PROSPECT, prospecting: { ...PROSPECT.prospecting, approachedWorkflowId: "wf1" } }, gets: SA_DOC }, "deny"],
   ["contacts: admin cannot add a prospecting map to a contact", { caller: saAdmin, method: "update", path: CON, before: CONTACT, after: PROSPECT }, "deny"],
   ["contacts: collaborator creates a contact without the map", { caller: collaborator, method: "create", path: CON, after: CONTACT }, "allow"],
   ["contacts: collaborator cannot create a contact carrying the map", { caller: collaborator, method: "create", path: CON, after: PROSPECT }, "deny"],
