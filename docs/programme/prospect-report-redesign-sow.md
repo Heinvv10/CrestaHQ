@@ -43,7 +43,7 @@ These are bugs or leaks in the live page, and each ships whatever design is pick
 
 ### Announce protocol (C1)
 
-0. **Only R0-era reports.** The R0 worker writes `announceProtocol: 1` when it claims a report (`queued → running`), the point where the old code would have announced. That way a report queued before the deploy but run after it is still announced once. The settle-announce, recovery and sweep steps below act only on reports carrying it. The absence of `announceDueAt` is never taken to mean "not yet announced". Every report made before R0 already fired `prospecting.report.ready` at ready, so announcing it again would send the prospect a second message. The backfill also sets `announcedAt` with the reason "pre-R0" on every existing report.
+0. **Only R0-era reports.** The R0 worker writes `announceProtocol: 1` when it claims a report (`queued → running`), the point where the old code would have announced. That way a report queued before the deploy but run after it is still announced once. The settle-announce, recovery and sweep steps below act only on reports carrying it. The absence of `announceDueAt` is never taken to mean "not yet announced". Every report made before R0 already fired `prospecting.report.ready` at ready, so announcing it again would send the prospect a second message. The backfill also sets `announcedAt` with the reason "pre-R0" on every existing report **without** `announceProtocol`, and its dry-run listing shows that no stamped report is touched.
 1. **Settle.** Every final-settle path writes `announceDueAt` in the same transaction that makes the report final. The paths are:
    - the poll's `done`, `failed`, `timeout` and `stopped`;
    - the worker's own settle when `schedulePoll` fails;
