@@ -74,7 +74,8 @@ describe("a live share", () => {
       agency: { name: "Cresta Agency", logoUrl: "https://cdn.test/logo.png", appTheme: "green" },
       cta: "/b/sa1/first",
     });
-    expect(body.sections[1]).toEqual({ key: "ads", status: "unavailable", score: null, findings: [], reason: "No ad library source", reasonCode: null, details: {} });
+    // The ads section is only manual-check links: never public (C6).
+    expect(body.sections.map((s) => s.key)).toEqual(["gbp"]);
     for (const leak of ["RAW-SENTINEL", "UID-SENTINEL", "OWNER-SENTINEL", "EMAIL-SENTINEL", "PHONE-SENTINEL", "\"raw\"", "createdByUid", "agencyId", "subAccountId", "contactId", "usageMonth", "cost"]) {
       expect(text).not.toContain(leak);
     }
@@ -104,7 +105,7 @@ describe("section details", () => {
     const body = (await (await get(await mint())).json()) as { sections: { details: unknown }[] };
     expect(body.sections.map((s) => s.details)).toEqual([
       { name: "Acme", website: "https://acme.test", category: "Plumber", https: true },
-      { rating: 4.2, reviewsCount: 12, velocity90d: "notMeasured" },
+      { rating: 4.2, reviewsCount: 12 },
       { whatsapp: false, booking: true },
       {},
     ]);
@@ -124,7 +125,7 @@ describe("the business name (L1)", () => {
     expect(JSON.parse(text)).toMatchObject({ businessName: null, sections: [{ details: { category: "Plumber" } }] });
   });
 
-  it("drops the Meta Ad Library link, which searches by that name (NEW-L1)", async () => {
+  it("the ads section, whose Meta Ad Library link searches by that name (NEW-L1), never reaches the public page (C6)", async () => {
     mem.seed("contacts/c1", { subAccountId: "sa1", name: "Jane Private", company: "" });
     const ads = {
       key: "ads", status: "unavailable", score: null, findings: [], reason: "check manually",
@@ -136,9 +137,8 @@ describe("the business name (L1)", () => {
     seed({ sections: [ads] });
     const text = await (await get(await mint())).text();
     expect(text).not.toContain("Jane");
-    expect(JSON.parse(text).sections[0].details).toEqual({
-      googleAdsTransparencyUrl: "https://adstransparency.google.com/?region=ZA&domain=example.com",
-    });
+    expect(text).not.toContain("adstransparency");
+    expect(JSON.parse(text).sections).toEqual([]);
   });
 
   it("a prospecting import's name is the business name", async () => {
@@ -227,13 +227,13 @@ describe("ApexGEO sections (decision D6)", () => {
   it("not connected: the three sections are absent from the public page", async () => {
     seed({ sections: [...SECTIONS, ...apexgeoPlaceholders("not_connected", APEXGEO_REASON.not_connected)] });
     const text = await (await get(await mint())).clone().text();
-    expect(JSON.parse(text).sections.map((s: { key: string }) => s.key)).toEqual(["gbp", "ads"]);
+    expect(JSON.parse(text).sections.map((s: { key: string }) => s.key)).toEqual(["gbp"]);
     expect(text).not.toContain("ApexGEO key");
   });
 
   it("out of ApexGEO credits: also the agency's setup, also hidden", async () => {
     seed({ sections: [...SECTIONS, ...apexgeoPlaceholders("out_of_credits", APEXGEO_REASON.out_of_credits)] });
-    expect((await keysOf()).map((s) => s.key)).toEqual(["gbp", "ads"]);
+    expect((await keysOf()).map((s) => s.key)).toEqual(["gbp"]);
   });
 
   it.each(["pending", "timeout", "failed", "missing_input"] as const)(
@@ -241,8 +241,8 @@ describe("ApexGEO sections (decision D6)", () => {
     async (code) => {
       seed({ sections: [...SECTIONS, ...apexgeoPlaceholders(code, "some reason")] });
       const sections = await keysOf();
-      expect(sections.map((s) => s.key)).toEqual(["gbp", "ads", "website_performance", "ai_readiness", "ai_presence"]);
-      expect(sections[2].reasonCode).toBe(code);
+      expect(sections.map((s) => s.key)).toEqual(["gbp", "website_performance", "ai_readiness", "ai_presence"]);
+      expect(sections[1].reasonCode).toBe(code);
     },
   );
 
@@ -261,10 +261,14 @@ describe("ApexGEO sections (decision D6)", () => {
     const text = await res.clone().text();
     const body = (await res.json()) as { sections: { key: string; details: Record<string, unknown> }[] };
     expect(body.sections.find((s) => s.key === "ai_presence")?.details).toEqual({
-      mentionedIn: 0, answersMeasured: 6, models: "gemini-2.5-flash, gpt-4o-mini",
+      mentionedIn: 0, answersMeasured: 6,
       topCompetitors: "Alpha Plumbing, Beta Drains, Gamma Plumbing Exampletown",
+      question1: "best plumber in Exampletown",
+      question2: "plumber near me in Exampletown, who should I call",
+      question3: "recommended plumber Exampletown reviews",
     });
-    for (const leak of ["cited.example", "best plumber in", "insufficient_quota", "perplexity.ai", "No FAQ Schema", "WebPage"]) {
+    // The question text is public (C7); model ids (C4) and per-question competitor lists are not.
+    for (const leak of ["cited.example", "gemini-2.5", "gpt-4o", "sonar", "Delta Plumbquick", "insufficient_quota", "perplexity.ai", "No FAQ Schema", "WebPage"]) {
       expect(text).not.toContain(leak);
     }
   });
@@ -275,7 +279,7 @@ describe("ApexGEO sections (decision D6)", () => {
       apexgeo: { scanId: "s1", status: "pending", attempts: 2, startedAt: new Date(Date.now() - 31 * 60_000) },
     });
     const sections = await keysOf();
-    expect(sections.slice(2).map((s) => [s.status, s.reasonCode])).toEqual(Array(3).fill(["timeout", "timeout"]));
+    expect(sections.slice(1).map((s) => [s.status, s.reasonCode])).toEqual(Array(3).fill(["timeout", "timeout"]));
   });
 
   it("a scan pending for under 30 minutes is still in progress", async () => {
@@ -283,6 +287,57 @@ describe("ApexGEO sections (decision D6)", () => {
       sections: [...SECTIONS, ...apexgeoPlaceholders("pending", APEXGEO_REASON.pending)],
       apexgeo: { scanId: "s1", status: "pending", attempts: 2, startedAt: new Date(Date.now() - 29 * 60_000) },
     });
-    expect((await keysOf())[2].reasonCode).toBe("pending");
+    expect((await keysOf())[1].reasonCode).toBe("pending");
+  });
+});
+
+describe("hidden rows (C6) and unexplained scores", () => {
+  const listings = {
+    key: "listings", status: "ok", score: null, findings: [],
+    raw: { checks: [
+      { directory: "Facebook", url: null, status: "found" },
+      { directory: "Bing", url: null, status: "not_found" },
+      { directory: "Brabys", url: null, status: "unknown" },
+    ] },
+  };
+  const reputation = {
+    key: "reputation", status: "ok", score: 85, findings: [],
+    raw: { rating: 4.6, reviewsCount: 37, velocity90d: "notMeasured", ownerReplyRate: "notMeasured" },
+  };
+  const gbp = { key: "gbp", status: "ok", score: 100, findings: [], raw: { details: {}, description: "notMeasured" } };
+  const ads = {
+    key: "ads", status: "unavailable", score: null, findings: [], reason: "check manually",
+    raw: { metaAdLibraryUrl: "https://www.facebook.com/ads/library/?q=Acme", googleAdsTransparencyUrl: null },
+  };
+  const sections = [listings, reputation, gbp, ads, ...apexgeoFromScan(completedScan() as never)];
+
+  it("the JSON route carries no not-measured, could-not-check, not-found or manual-check row, and no ads section", async () => {
+    seed({ sections });
+    const text = await (await get(await mint())).text();
+    const body = JSON.parse(text) as { sections: { key: string; details: Record<string, unknown> }[] };
+    expect(body.sections.map((s) => s.key)).not.toContain("ads");
+    expect(body.sections.find((s) => s.key === "listings")?.details).toEqual({ Facebook: "found" });
+    expect(body.sections.find((s) => s.key === "reputation")?.details).toEqual({ rating: 4.6, reviewsCount: 37 });
+    expect(body.sections.find((s) => s.key === "gbp")?.details).not.toHaveProperty("description");
+    for (const hidden of ["notMeasured", "not_found", "unknown", "ads/library", "adstransparency", "check manually"]) {
+      expect(text).not.toContain(hidden);
+    }
+  });
+
+  it("a score below 100 with no finding is dropped; one with a finding, or 100, is kept", async () => {
+    seed({ sections: [reputation, gbp, SECTIONS[0]] });
+    const body = (await (await get(await mint())).json()) as { sections: { key: string; score: number | null }[] };
+    expect(body.sections.map((s) => [s.key, s.score])).toEqual([["reputation", null], ["gbp", 100], ["gbp", 60]]);
+  });
+
+  it("the member view keeps every hidden row, the ads section and the models (serializeReport)", async () => {
+    const { serializeReport } = await import("@/lib/prospecting/reports");
+    const member = serializeReport("r1", { ...mem.read("prospectReports/r1"), sections });
+    const text = JSON.stringify(member);
+    expect(member.sections.map((s) => s.key)).toContain("ads");
+    expect(member.sections.find((s) => s.key === "listings")?.details).toEqual({ Facebook: "found", Bing: "not_found", Brabys: "unknown" });
+    expect(member.sections.find((s) => s.key === "reputation")).toMatchObject({ score: 85, details: { velocity90d: "notMeasured" } });
+    expect(member.sections.find((s) => s.key === "ai_presence")?.details.models).toBe("gemini-2.5-flash, gpt-4o-mini");
+    expect(text).toContain("ads/library");
   });
 });

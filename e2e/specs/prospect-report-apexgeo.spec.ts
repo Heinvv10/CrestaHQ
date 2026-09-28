@@ -111,7 +111,9 @@ test("ApexGEO sections render on the public page; not-connected ones are hidden 
     const presence = visitor.getByTestId("report-section-ai_presence");
     await expect(presence).toContainText("did not name the business in any of 6 answers");
     await expect(presence).toContainText("Alpha Plumbing, Beta Drains, Gamma Plumbing Exampletown");
-    await expect(presence).toContainText("gemini-2.5-flash, gpt-4o-mini");
+    await expect(presence).toContainText("best plumber in Exampletown");
+    // Model ids are member-only (C4).
+    await expect(presence).not.toContainText("gemini-2.5-flash");
     await expect(visitor.getByText("Application error")).toHaveCount(0);
 
     // --- B: not connected → absent from the public page -------------------

@@ -5,6 +5,9 @@ import type { ProspectFindingCode, ProspectSectionResult } from "@/types";
  * are the plan's order (docs/programme/prospecting-module.md); the rest put
  * what loses a customer today (no way to reach or trust the business) ahead
  * of what only limits growth (listings, analytics, ads).
+ *
+ * Imports types only: scripts/prospecting/backfill-r0b.ts runs it under
+ * `node --experimental-strip-types`.
  */
 export const SEVERITY_ORDER = [
   "no_website",
@@ -29,6 +32,13 @@ export const SEVERITY_ORDER = [
   "no_chat_widget",
   "no_analytics",
   "no_ads_running",
+  // R0b: codes for deductions that had no finding before. Ranked below every
+  // other code, so they are the headline only when nothing worse exists.
+  "no_mobile_viewport",
+  "lcp_needs_improvement",
+  "ai_mentions_partial",
+  "rating_under_4_8",
+  "reviews_under_50",
 ] as const satisfies readonly ProspectFindingCode[];
 
 // Compile-time exhaustiveness: adding a finding code without ranking it here

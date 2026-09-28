@@ -62,9 +62,13 @@ export function apexgeoPlaceholders(code: ApexgeoReasonCode, reason: string): Pr
   }));
 }
 
-/** The three sections measured from a completed scan. */
-export function apexgeoFromScan(scan: ApexgeoScan): ProspectSectionResult[] {
-  return [websitePerformance.result(scan), aiReadiness.result(scan), aiPresence.result(scan)];
+/**
+ * The three sections measured from a completed scan. `businessName` (the
+ * report's business_details `raw.name`) keeps the prospect's own name out of
+ * its competitors (C5).
+ */
+export function apexgeoFromScan(scan: ApexgeoScan, businessName: string | null = null): ProspectSectionResult[] {
+  return [websitePerformance.result(scan), aiReadiness.result(scan), aiPresence.result(scan, businessName)];
 }
 
 /** `sections` with its ApexGEO sections replaced by `next` (appended when absent). */

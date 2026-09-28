@@ -1,5 +1,6 @@
 import type { ProspectFinding, ProspectSectionResult } from "@/types";
 import type { ApexgeoScan } from "../apexgeo-client";
+import { finding, scoreOf } from "./findings";
 import { measured, unavailable, type Scored } from "./types";
 
 /**
@@ -24,23 +25,24 @@ type Readiness = NonNullable<ApexgeoScan["ai_readiness"]>;
 export function score(readiness: ApexgeoScan["ai_readiness"]): Scored | null {
   if (!readiness) return null;
   const findings: ProspectFinding[] = [];
-  let score = 100;
   const blocked = blockedCrawlers(readiness);
   if (blocked.length > 0) {
-    score -= 60;
-    findings.push({
-      code: "ai_crawlers_blocked",
-      text: `The website's robots.txt blocks AI crawlers (${blocked.join(", ")}), so those assistants cannot read it.`,
-    });
+    findings.push(
+      finding(
+        "ai_crawlers_blocked",
+        `The website's robots.txt blocks AI crawlers (${blocked.join(", ")}), so those assistants cannot read it.`,
+      ),
+    );
   }
   if (!readiness.local_business_schema) {
-    score -= 30;
-    findings.push({
-      code: "no_local_business_schema",
-      text: "The website has no LocalBusiness structured data telling search and AI engines what the business is and where.",
-    });
+    findings.push(
+      finding(
+        "no_local_business_schema",
+        "The website has no LocalBusiness structured data telling search and AI engines what the business is and where.",
+      ),
+    );
   }
-  return { score, findings };
+  return { score: scoreOf(findings), findings };
 }
 
 export function blockedCrawlers(readiness: Readiness): string[] {

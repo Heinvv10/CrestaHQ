@@ -1,5 +1,6 @@
 import type { ProspectFinding, ProspectSectionResult } from "@/types";
 import type { ApexgeoScan } from "../apexgeo-client";
+import { finding, scoreOf } from "./findings";
 import { measured, unavailable, type Scored } from "./types";
 
 /**
@@ -21,15 +22,26 @@ export function score(technical: ApexgeoScan["technical"]): Scored | null {
   const vitals = technical?.core_web_vitals;
   if (!technical || !vitals) return null;
   const findings: ProspectFinding[] = [];
-  let score = vitals.lcp_ms <= GOOD_LCP_MS ? 100 : vitals.lcp_ms <= SLOW_LCP_MS ? 70 : 30;
+  const lcp = seconds(vitals.lcp_ms);
+  // One code per measure: slow_mobile replaces lcp_needs_improvement.
   if (vitals.lcp_ms > SLOW_LCP_MS) {
-    findings.push({
-      code: "slow_mobile",
-      text: `On a phone the homepage takes ${seconds(vitals.lcp_ms)}s to show its main content (slow is over 4s).`,
-    });
+    findings.push(
+      finding("slow_mobile", `On a phone the homepage takes ${lcp}s to show its main content (slow is over 4s).`),
+    );
+  } else if (vitals.lcp_ms > GOOD_LCP_MS) {
+    findings.push(
+      finding(
+        "lcp_needs_improvement",
+        `On a phone the homepage takes ${lcp}s to show its main content (fast is under 2.5s).`,
+      ),
+    );
   }
-  if (technical.mobile_viewport === false) score -= 20;
-  return { score, findings };
+  if (technical.mobile_viewport === false) {
+    findings.push(
+      finding("no_mobile_viewport", "The website has no mobile layout, so phones show a shrunken desktop page."),
+    );
+  }
+  return { score: scoreOf(findings), findings };
 }
 
 export function result(scan: ApexgeoScan): ProspectSectionResult {

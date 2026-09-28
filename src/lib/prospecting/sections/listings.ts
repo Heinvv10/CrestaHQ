@@ -101,11 +101,11 @@ export function classify(html: string | null, name: string, phone: string): List
   return nameHit && phoneHit ? "found" : "not_found";
 }
 
-export function score(checks: ListingCheck[]): Scored {
-  const found = checks.filter((c) => c.status === "found").length;
-  const readable = checks.filter((c) => c.status !== "unknown").length;
-  return { score: Math.round((found / readable) * 100), findings: [] };
-}
+/**
+ * No score: a miss here cannot be trusted (see above), so nothing can be
+ * deducted reliably. The section shows the directories it found.
+ */
+const UNSCORED: Scored = { score: null, findings: [] };
 
 export async function run(input: SectionInput) {
   const { business, homepage, signal } = input;
@@ -125,5 +125,5 @@ export async function run(input: SectionInput) {
   if (checks.every((c) => c.status === "unknown")) {
     return unavailable(key, "No directory could be read (blocked, timed out or client-rendered).", { checks });
   }
-  return measured(key, score(checks), { checks });
+  return measured(key, UNSCORED, { checks });
 }

@@ -23,7 +23,14 @@ const ALL_CODES: Record<ProspectFindingCode, true> = {
   no_contact_form: true, no_phone_link: true, gbp_no_hours: true, gbp_no_photos: true,
   gbp_no_description: true, gbp_no_phone: true, listing_missing: true, no_analytics: true,
   no_chat_widget: true, no_ads_running: true, ai_crawlers_blocked: true, no_local_business_schema: true,
+  no_mobile_viewport: true, lcp_needs_improvement: true, ai_mentions_partial: true, rating_under_4_8: true,
+  reviews_under_50: true,
 };
+
+// R0b's codes for deductions that had no finding before.
+const R0B_CODES: ProspectFindingCode[] = [
+  "no_mobile_viewport", "lcp_needs_improvement", "ai_mentions_partial", "rating_under_4_8", "reviews_under_50",
+];
 
 describe("SEVERITY_ORDER", () => {
   it("ranks every finding code exactly once", () => {
@@ -35,6 +42,14 @@ describe("SEVERITY_ORDER", () => {
       "no_website", "no_https", "not_in_ai_answers", "gbp_unclaimed", "slow_mobile", "ai_crawlers_blocked",
       "no_whatsapp_cta",
     ]);
+  });
+
+  it("ranks R0b's new codes below every existing code", () => {
+    const at = (c: string) => SEVERITY_ORDER.indexOf(c as never);
+    const lowestExisting = Math.max(
+      ...Object.keys(ALL_CODES).filter((c) => !R0B_CODES.includes(c as ProspectFindingCode)).map(at),
+    );
+    for (const code of R0B_CODES) expect(at(code)).toBeGreaterThan(lowestExisting);
   });
 
   it("no_local_business_schema ranks below listing_missing's neighbours, above chat and analytics", () => {

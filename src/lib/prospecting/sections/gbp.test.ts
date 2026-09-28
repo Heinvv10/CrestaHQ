@@ -34,7 +34,8 @@ describe("gbp score", () => {
     expect(codes({ ...FULL_DETAILS, regularOpeningHours: { weekdayDescriptions: [] } })).toEqual(["gbp_no_hours"]);
     expect(codes({ ...FULL_DETAILS, photos: [] })).toEqual(["gbp_no_photos"]);
     expect(codes({ ...FULL_DETAILS, nationalPhoneNumber: "  " })).toEqual(["gbp_no_phone"]);
-    expect(score({ ...FULL_DETAILS, photos: [] }).score).toBe(67);
+    expect(score({ ...FULL_DETAILS, photos: [] }).score).toBe(70);
+    expect(score({ ...FULL_DETAILS, nationalPhoneNumber: "" }).score).toBe(65);
   });
 
   it("never emits gbp_unclaimed or gbp_no_description (not measurable here)", () => {

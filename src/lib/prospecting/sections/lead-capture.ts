@@ -1,6 +1,8 @@
 import type { ProspectFinding } from "@/types";
-import { detectTech } from "./tech-rules";
-import { measured, unavailable, type Scored, type SectionInput } from "./types";
+// Relative `.ts` imports: scripts/prospecting/backfill-r0b.ts imports this file.
+import { finding, scoreOf } from "./findings.ts";
+import { detectTech } from "./tech-rules.ts";
+import { measured, unavailable, type Scored, type SectionInput } from "./types.ts";
 
 /**
  * Section 10 — the ways a visitor can reach the business from the homepage.
@@ -36,19 +38,16 @@ export function detect(html: string): LeadCaptureRaw {
 }
 
 const CHECKS: [keyof LeadCaptureRaw, ProspectFinding][] = [
-  ["whatsapp", { code: "no_whatsapp_cta", text: "The website has no WhatsApp click-to-chat button." }],
-  ["booking", { code: "no_booking", text: "The website has no online booking." }],
-  ["contactForm", { code: "no_contact_form", text: "The website has no contact form." }],
-  ["phoneLink", { code: "no_phone_link", text: "The website has no tap-to-call phone link." }],
-  ["chatWidget", { code: "no_chat_widget", text: "The website has no live chat." }],
+  ["whatsapp", finding("no_whatsapp_cta", "The website has no WhatsApp click-to-chat button.")],
+  ["booking", finding("no_booking", "The website has no online booking.")],
+  ["contactForm", finding("no_contact_form", "The website has no contact form.")],
+  ["phoneLink", finding("no_phone_link", "The website has no tap-to-call phone link.")],
+  ["chatWidget", finding("no_chat_widget", "The website has no live chat.")],
 ];
 
 export function score(raw: LeadCaptureRaw): Scored {
-  const passed = CHECKS.filter(([field]) => raw[field]).length;
-  return {
-    score: Math.round((passed / CHECKS.length) * 100),
-    findings: CHECKS.filter(([field]) => !raw[field]).map(([, finding]) => finding),
-  };
+  const findings = CHECKS.filter(([field]) => !raw[field]).map(([, f]) => f);
+  return { score: scoreOf(findings), findings };
 }
 
 export async function run(input: SectionInput) {

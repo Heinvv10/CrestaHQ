@@ -77,18 +77,34 @@ export type ProspectFindingCode =
   | "no_chat_widget"
   | "no_ads_running"
   | "ai_crawlers_blocked"
-  | "no_local_business_schema";
+  | "no_local_business_schema"
+  | "no_mobile_viewport"
+  | "lcp_needs_improvement"
+  | "ai_mentions_partial"
+  | "rating_under_4_8"
+  | "reviews_under_50";
 
 export interface ProspectFinding {
   code: ProspectFindingCode;
   /** Sentence shown on the report; the top-ranked one is the headline. */
   text: string;
+  /**
+   * What the finding costs the business, and the call-to-action line tied to
+   * it. Written by the scorer (`sections/findings.ts`); absent on reports
+   * scored before R0.
+   */
+  impact?: string;
+  cta?: string;
 }
 
 export interface ProspectSectionResult {
   key: ProspectSectionKey;
   status: ProspectSectionStatus;
-  /** 0–100, null when the section did not measure (status ≠ ok). */
+  /**
+   * 0–100, 100 minus the findings' deductions (`sections/findings.ts`). Null
+   * when the section did not measure (status ≠ ok), or measured but cannot
+   * deduct reliably (listings; see `sections/listings.ts`).
+   */
   score: number | null;
   findings: ProspectFinding[];
   /** Why the section is failed/unavailable/timeout, for the report page. */

@@ -139,14 +139,17 @@ export function ReportSections({
                     <li key={f.code}>{f.text}</li>
                   ))}
                 </ul>
-              ) : s.status === "ok" ? (
+              ) : s.status === "ok" && s.score !== null ? (
+                // An unscored section (listings; AI presence left open) found nothing to judge.
                 <p className="text-muted-foreground">No issues found.</p>
               ) : null}
               {details.length > 0 ? (
                 <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 border-t pt-2 text-xs">
                   {details.map(([k, v]) => (
                     <div key={k} className="contents">
-                      <dt className="text-muted-foreground">{DETAIL_LABELS[k] ?? k}</dt>
+                      <dt className="text-muted-foreground">
+                        {DETAIL_LABELS[k] ?? (/^question\d+$/.test(k) ? "Question asked" : k)}
+                      </dt>
                       <dd className="text-right">
                         <DetailValue name={k} section={s.key} value={v} />
                       </dd>
