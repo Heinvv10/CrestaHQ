@@ -8,15 +8,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LogoMark } from "@/components/brand/logo-mark";
+import { DEFAULT_BRAND_COLOR, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 
 const URL_RE = /^https?:\/\/.+/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DOMAIN_RE = /^[a-z0-9.-]+\.[a-z]{2,}$/i;
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
 export function BrandingSection() {
   const agency = useAgency();
   const [name, setName] = useState<string>("");
   const [logoUrl, setLogoUrl] = useState<string>("");
+  const [brandColor, setBrandColor] = useState<string>("");
   const [supportEmail, setSupportEmail] = useState<string>("");
   const [primaryDomain, setPrimaryDomain] = useState<string>("");
   const [saving, setSaving] = useState(false);
@@ -29,6 +32,7 @@ export function BrandingSection() {
     if (!agency.loading && !hydrated) {
       setName(agency.name === "LeadStack" ? "" : agency.name);
       setLogoUrl(agency.logoUrl ?? "");
+      setBrandColor(agency.brandColor ?? "");
       setSupportEmail(agency.supportEmail ?? "");
       setPrimaryDomain(agency.primaryDomain ?? "");
       setHydrated(true);
@@ -37,6 +41,7 @@ export function BrandingSection() {
     agency.loading,
     agency.name,
     agency.logoUrl,
+    agency.brandColor,
     agency.supportEmail,
     agency.primaryDomain,
     hydrated,
@@ -46,6 +51,7 @@ export function BrandingSection() {
     e.preventDefault();
     const trimmedName = name.trim();
     const trimmedLogo = logoUrl.trim();
+    const trimmedColor = brandColor.trim();
     const trimmedEmail = supportEmail.trim().toLowerCase();
     const trimmedDomain = primaryDomain
       .trim()
@@ -59,6 +65,15 @@ export function BrandingSection() {
     }
     if (trimmedLogo && !URL_RE.test(trimmedLogo)) {
       toast.error("Logo URL must start with http:// or https://.");
+      return;
+    }
+    if (trimmedColor && !HEX_COLOR_RE.test(trimmedColor)) {
+      toast.error("Brand colour must be a hex value like #2563EB.");
+      return;
+    }
+    if (trimmedColor && !isUsableBrandColor(trimmedColor)) {
+      const ratio = contrastOnWhite(trimmedColor).toFixed(2);
+      toast.error(`Brand colour is too pale for white text — ${trimmedColor.toUpperCase()} measures ${ratio}:1 contrast, and needs at least 4.5:1.`);
       return;
     }
     if (trimmedEmail && !EMAIL_RE.test(trimmedEmail)) {
@@ -78,6 +93,7 @@ export function BrandingSection() {
         body: JSON.stringify({
           name: trimmedName,
           logoUrl: trimmedLogo || null,
+          brandColor: trimmedColor || null,
           supportEmail: trimmedEmail || null,
           primaryDomain: trimmedDomain || null,
         }),
@@ -139,6 +155,34 @@ export function BrandingSection() {
           Public https URL pointing at your logo (SVG or PNG, transparent
           background works best). Renders in the sidebar at 24px tall. Leave
           blank to fall back to the LeadStack chevron mark.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="brand-color">Brand colour</Label>
+        <div className="flex items-center gap-2">
+          <input
+            id="brand-color-picker"
+            type="color"
+            aria-label="Pick a brand colour"
+            value={HEX_COLOR_RE.test(brandColor.trim()) ? brandColor.trim() : DEFAULT_BRAND_COLOR}
+            onChange={(e) => setBrandColor(e.target.value)}
+            className="h-9 w-9 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
+          />
+          <Input
+            id="brand-color"
+            value={brandColor}
+            onChange={(e) => setBrandColor(e.target.value)}
+            placeholder={DEFAULT_BRAND_COLOR}
+            maxLength={7}
+            className="max-w-[140px]"
+          />
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Header, accents and call-to-action colour on the public prospect
+          report. Rejected at save unless white text on it reaches WCAG AA
+          contrast (4.5:1) — traffic-light colours (good/warning/bad) are
+          fixed and never follow this. Blank falls back to {DEFAULT_BRAND_COLOR}.
         </p>
       </div>
 

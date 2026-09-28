@@ -4,11 +4,13 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { invalidateAgencyPolicyCache } from "@/lib/agency/policy";
+import { MIN_CONTRAST, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 import type { MemberStatus, Role } from "@/types";
 
 /**
- * Agency-level updates. PATCH allows the owner to update name + logoUrl
- * plus the public-landing brand fields (supportEmail, primaryDomain).
+ * Agency-level updates. PATCH allows the owner to update name + logoUrl +
+ * brandColor (the public report's brand colour, R2) plus the public-landing
+ * brand fields (supportEmail, primaryDomain).
  * Custom domains, theme tokens, and SaaS Mode rebilling are explicitly
  * out of scope here.
  */
@@ -23,6 +25,7 @@ interface CallerClaims {
 interface PatchBody {
   name?: string;
   logoUrl?: string | null;
+  brandColor?: string | null;
   supportEmail?: string | null;
   primaryDomain?: string | null;
   sharedSmsAllowed?: boolean;
@@ -34,6 +37,7 @@ interface PatchBody {
 const APP_THEMES = new Set(["leadstack", "green", "neutral"]);
 
 const URL_RE = /^https?:\/\/.+/i;
+const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DOMAIN_RE = /^[a-z0-9.-]+\.[a-z]{2,}$/i;
 
@@ -110,6 +114,29 @@ export async function PATCH(request: Request) {
         );
       }
       update.logoUrl = trimmed;
+    }
+  }
+
+  if (body.brandColor !== undefined) {
+    if (body.brandColor === null || body.brandColor === "") {
+      update.brandColor = null;
+    } else if (typeof body.brandColor !== "string" || !HEX_COLOR_RE.test(body.brandColor)) {
+      return NextResponse.json(
+        { error: "Brand colour must be a hex value like #2563EB." },
+        { status: 400 },
+      );
+    } else {
+      const hex = body.brandColor.toUpperCase();
+      if (!isUsableBrandColor(hex)) {
+        const ratio = contrastOnWhite(hex);
+        return NextResponse.json(
+          {
+            error: `Brand colour is too pale for white text — ${hex} measures ${ratio.toFixed(2)}:1 contrast, and needs at least ${MIN_CONTRAST}:1.`,
+          },
+          { status: 400 },
+        );
+      }
+      update.brandColor = hex;
     }
   }
 

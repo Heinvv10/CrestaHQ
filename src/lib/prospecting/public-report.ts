@@ -6,6 +6,7 @@ import { toIso } from "@/lib/prospecting/reports";
 import { prospectingEnabled } from "@/lib/prospecting/gate";
 import { publicSection, type PublicReportSection } from "@/lib/prospecting/public-sections";
 import { displaySections } from "@/lib/prospecting/apexgeo-sections";
+import { resolveBrandColor } from "@/lib/branding/brand-color";
 import type { AppTheme, ProspectSectionResult } from "@/types";
 
 export type { PublicReportSection };
@@ -54,9 +55,16 @@ export interface PublicReport {
   headline: string | null;
   generatedAt: string | null;
   sections: PublicReportSection[];
-  agency: { name: string | null; logoUrl: string | null; appTheme: AppTheme | null };
+  agency: { name: string | null; logoUrl: string | null; appTheme: AppTheme | null; brandColor: string };
   /** The sub-account's booking page path, or null when it has none published. */
   cta: string | null;
+  /**
+   * WhatsApp CTA number: the sub-account's explicit `whatsappNumber`, else a
+   * connected WhatsApp Cloud sender's `displayPhoneNumber`, else null. Never
+   * a bridge sender's number — a bridge pairs a personal/staff handset and
+   * may forward for another business (see the SOW's data-changes section).
+   */
+  whatsappNumber: string | null;
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
@@ -98,8 +106,9 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     db.doc(`contacts/${report.contactId}`).get(),
     bookingCta(report.subAccountId),
   ]);
+  const sub = subSnap.data() ?? {};
   const contact = contactSnap.data();
-  if (!prospectingEnabled(subSnap.data() ?? {}) || !contact || contact.subAccountId !== report.subAccountId) {
+  if (!prospectingEnabled(sub) || !contact || contact.subAccountId !== report.subAccountId) {
     return null;
   }
   const agency = agencySnap.data() ?? {};
@@ -118,7 +127,9 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
       name: str(agency.name),
       logoUrl: logoUrl && /^https:\/\//i.test(logoUrl) ? logoUrl : null,
       appTheme: (str(agency.appTheme) as AppTheme | null) ?? null,
+      brandColor: resolveBrandColor(str(agency.brandColor)),
     },
     cta,
+    whatsappNumber: str(sub.whatsappNumber) ?? str(sub.whatsappCloudMeta?.displayPhoneNumber),
   };
 }
