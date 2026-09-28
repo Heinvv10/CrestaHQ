@@ -13,6 +13,11 @@ interface AgencySummary {
   name: string;
   /** Optional logo URL — when set, sidebar swaps the LeadStack chevron mark for this. */
   logoUrl: string | null;
+  /**
+   * Public report brand colour (`#RRGGBB`). Null until set in Agency →
+   * Settings; drives `/report/[shareId]`, never the dashboard chrome.
+   */
+  brandColor: string | null;
   /** Public support / contact email. Null until set in Agency → Settings. */
   supportEmail: string | null;
   /** Bare public domain (no scheme). Null until set in Agency → Settings. */
@@ -51,6 +56,7 @@ interface AgencySummary {
 interface AgencyData {
   name: string;
   logoUrl: string | null;
+  brandColor: string | null;
   supportEmail: string | null;
   primaryDomain: string | null;
   appTheme: AppTheme | null;
@@ -75,6 +81,7 @@ export function useAgency(): AgencySummary {
     // client-visible chrome (sidebar wordmark, header title) pre-hydration.
     name: seed?.name || CUSTOM_BRAND.name,
     logoUrl: seed?.logoUrl ?? null,
+    brandColor: null,
     supportEmail: null,
     primaryDomain: null,
     appTheme: seed?.appTheme ?? null,
@@ -97,6 +104,7 @@ export function useAgency(): AgencySummary {
           setData({
             name: (d.name as string) || CUSTOM_BRAND.name,
             logoUrl: (d.logoUrl as string | null) ?? null,
+            brandColor: (d.brandColor as string | null) ?? null,
             supportEmail: (d.supportEmail as string | null) ?? null,
             primaryDomain: (d.primaryDomain as string | null) ?? null,
             appTheme: (d.appTheme as AppTheme | null) ?? null,

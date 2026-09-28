@@ -4,26 +4,29 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
 
 /**
  * PATCH /api/sub-accounts/[id]/branding
  *
- * Update this sub-account's external-facing branding. v1 = logo URL only
- * (paste a public https URL). Renders on quote/invoice emails, public
- * /q/[token] pages, and PDFs — the surfaces this client's customers see.
+ * Update this sub-account's external-facing branding. Logo URL (paste a
+ * public https URL) renders on quote/invoice emails, public /q/[token]
+ * pages, and PDFs. whatsappNumber (R2) is the optional WhatsApp CTA number
+ * on the public prospect report — the surfaces this client's customers see.
  *
  * Auth: sub-account admin OR agency owner (via requireSubAccountAdmin).
  *
- * Body: { logoUrl: string | null }
- *   - null  → wipe the logo
- *   - ""    → wipe the logo
- *   - any other string → must start with http(s)://
+ * Body: { logoUrl?: string | null, whatsappNumber?: string | null }
+ *   - null / "" → clear the field
+ *   - logoUrl: any other string must start with http(s)://
+ *   - whatsappNumber: any other string must parse as a valid E.164 number
  */
 
 const URL_RE = /^https?:\/\/.+/i;
 
 interface PatchBody {
   logoUrl?: string | null;
+  whatsappNumber?: string | null;
 }
 
 export async function PATCH(
@@ -55,6 +58,21 @@ export async function PATCH(
         );
       }
       updates.logoUrl = trimmed.slice(0, 2_000);
+    }
+  }
+
+  if ("whatsappNumber" in body) {
+    if (body.whatsappNumber === null || body.whatsappNumber === "") {
+      updates.whatsappNumber = null;
+    } else if (typeof body.whatsappNumber === "string") {
+      const e164 = normalizePhoneE164(body.whatsappNumber);
+      if (!e164) {
+        return NextResponse.json(
+          { error: "whatsappNumber must be a valid E.164 phone number, e.g. +27821234567." },
+          { status: 400 },
+        );
+      }
+      updates.whatsappNumber = e164;
     }
   }
 

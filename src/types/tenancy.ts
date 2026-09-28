@@ -55,6 +55,14 @@ export interface AgencyDoc {
    */
   logoUrl: string | null;
   /**
+   * Public report brand colour (`#RRGGBB`, prospect report redesign R2):
+   * header, accents and call-to-action on `/report/[shareId]`. Rejected at
+   * save unless white text on it reaches WCAG AA (4.5:1) — see
+   * `lib/branding/brand-color.ts`. Undefined/invalid resolves to the
+   * default at read time, never rendered raw.
+   */
+  brandColor?: string | null;
+  /**
    * Public support / contact email for the agency. Surfaced on the custom
    * landing page ("Talk to us" CTAs, FAQ "email us" line, footer). Null
    * falls back to CUSTOM_BRAND.supportEmail from src/config/landing.ts.
@@ -758,6 +766,15 @@ export interface SubAccountDoc {
    * sub-account name shows alone.
    */
   logoUrl: string | null;
+  /**
+   * Optional E.164 WhatsApp number for the public prospect report's CTA
+   * button (prospect report redesign R2), set through Settings → Branding.
+   * When unset, `resolvePublicReport` falls back to a connected WhatsApp
+   * Cloud sender's `displayPhoneNumber` — never a bridge sender's number,
+   * which pairs a personal/staff handset and may forward for another
+   * business.
+   */
+  whatsappNumber?: string | null;
   /**
    * Opt-in territory scoping. When true, collaborators only see deals
    * and contacts whose `territoryId` is in their `assignedTerritoryIds`.

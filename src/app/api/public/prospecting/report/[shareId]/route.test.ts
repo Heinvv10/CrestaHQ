@@ -63,7 +63,7 @@ describe("a live share", () => {
     expect(res.status).toBe(200);
     const text = await res.clone().text();
     const body = (await res.json()) as Record<string, unknown> & { sections: Record<string, unknown>[] };
-    expect(Object.keys(body).sort()).toEqual(["agency", "businessName", "cta", "generatedAt", "headline", "sections"]);
+    expect(Object.keys(body).sort()).toEqual(["agency", "businessName", "cta", "generatedAt", "headline", "sections", "whatsappNumber"]);
     for (const s of body.sections) {
       expect(Object.keys(s).sort()).toEqual(["details", "findings", "key", "reason", "reasonCode", "score", "status"]);
     }
@@ -71,8 +71,9 @@ describe("a live share", () => {
       businessName: "Acme Plumbing",
       headline: "No opening hours on Google",
       generatedAt: "2026-09-20T00:00:00.000Z",
-      agency: { name: "Cresta Agency", logoUrl: "https://cdn.test/logo.png", appTheme: "green" },
+      agency: { name: "Cresta Agency", logoUrl: "https://cdn.test/logo.png", appTheme: "green", brandColor: "#2563EB" },
       cta: "/b/sa1/first",
+      whatsappNumber: null,
     });
     // The ads section is only manual-check links: never public (C6).
     expect(body.sections.map((s) => s.key)).toEqual(["gbp"]);

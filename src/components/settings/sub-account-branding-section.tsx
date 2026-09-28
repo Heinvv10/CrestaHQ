@@ -7,11 +7,12 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
 
 /**
- * Sub-account branding settings. v1 supports a single field — logo URL —
- * which renders on quote/invoice emails, public /q/[token] pages, and
- * PDFs (the surfaces this client's customers see).
+ * Sub-account branding settings: logo URL, which renders on quote/invoice
+ * emails, public /q/[token] pages, and PDFs; and (R2) an optional WhatsApp
+ * number for the public prospect report's CTA button.
  *
  * Distinct from agency-level branding (which controls the CRM sidebar +
  * landing page). Agency owners and sub-account admins can both edit.
@@ -22,6 +23,7 @@ const URL_RE = /^https?:\/\/.+/i;
 export function SubAccountBrandingSection() {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
   const [logoUrl, setLogoUrl] = useState("");
+  const [whatsappNumber, setWhatsappNumber] = useState("");
   const [saving, setSaving] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
@@ -31,6 +33,7 @@ export function SubAccountBrandingSection() {
   useEffect(() => {
     if (!hydrated && subAccount) {
       setLogoUrl(subAccount.logoUrl ?? "");
+      setWhatsappNumber(subAccount.whatsappNumber ?? "");
       setHydrated(true);
     }
   }, [hydrated, subAccount]);
@@ -44,12 +47,18 @@ export function SubAccountBrandingSection() {
       toast.error("Logo URL must start with http:// or https://.");
       return;
     }
+    const trimmedNumber = whatsappNumber.trim();
+    const e164 = trimmedNumber ? normalizePhoneE164(trimmedNumber, subAccount?.defaultPhoneCountry) : null;
+    if (trimmedNumber && !e164) {
+      toast.error("WhatsApp number must be a valid E.164 phone number, e.g. +27821234567.");
+      return;
+    }
     setSaving(true);
     try {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/branding`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ logoUrl: trimmed || null }),
+        body: JSON.stringify({ logoUrl: trimmed || null, whatsappNumber: e164 }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -58,7 +67,7 @@ export function SubAccountBrandingSection() {
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? "Couldn't save branding.");
       }
-      toast.success(trimmed ? "Logo saved." : "Logo cleared.");
+      toast.success("Branding saved.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't save.");
     } finally {
@@ -101,6 +110,22 @@ export function SubAccountBrandingSection() {
           Public https URL pointing at {businessName}&apos;s logo (PNG with
           transparent background works best). Renders at 32&ndash;40px
           tall. Leave blank to fall back to &ldquo;{businessName}&rdquo; in text.
+        </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="sa-whatsapp-number">WhatsApp number</Label>
+        <Input
+          id="sa-whatsapp-number"
+          type="tel"
+          value={whatsappNumber}
+          onChange={(e) => setWhatsappNumber(e.target.value)}
+          placeholder="+27821234567"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Powers the WhatsApp button on {businessName}&apos;s public prospect
+          report. Leave blank to use the connected WhatsApp Cloud number
+          instead; the button is hidden when neither is set.
         </p>
       </div>
 
