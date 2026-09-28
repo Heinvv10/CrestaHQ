@@ -31,54 +31,124 @@ import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 
 export const ANNOUNCE_PROTOCOL = 1;
 
-export type AnnounceReason = "fired" | "superseded" | "no live link";
+export type AnnounceReason = "fired" | "not enrolled" | "superseded" | "no live link" | "gave up";
+
+/** Transient failures retried (by the next poll or sweep) before giving up. */
+export const MAX_ANNOUNCE_ATTEMPTS = 8;
 
 /**
  * Announce one report if it is due. Returns what it recorded, or null when
- * the report was not due (or the fire errored, so the next caller retries).
- * Never throws.
+ * the report was not due or the attempt failed transiently (the next caller
+ * retries). Never throws.
+ *
+ * Recorded outcomes are final:
+ *   - "fired": at least one workflow enrolled, now or (a re-fire after a
+ *     crash, refused by its enrolment key) on an earlier attempt;
+ *   - "not enrolled": the trigger ran and no workflow took the contact (a
+ *     once_ever workflow, unmet filters, none active, automations paused).
+ *     The owner's configuration said no; retrying could one day message
+ *     someone they chose not to. The reasons are kept in `announceSkips`;
+ *   - "superseded" / "no live link": nothing fired (see above);
+ *   - "gave up": MAX_ANNOUNCE_ATTEMPTS transient failures in a row.
+ * A transient failure (the trigger errored, or a workflow's re-entry
+ * transaction failed) records nothing but `announceAttempts`.
  */
 export async function announceReport(reportId: string): Promise<AnnounceReason | null> {
+  const db = getAdminDb();
+  const reportRef = db.doc(`prospectReports/${reportId}`);
+  const recorded = (reason: AnnounceReason, extra: Record<string, unknown> = {}) => ({
+    announcedAt: FieldValue.serverTimestamp(),
+    announceReason: reason,
+    ...extra,
+  });
   try {
-    const db = getAdminDb();
-    const reportRef = db.doc(`prospectReports/${reportId}`);
-    const report = (await reportRef.get()).data();
-    if (
-      !report ||
-      report.announceProtocol !== ANNOUNCE_PROTOCOL ||
-      !report.announceDueAt ||
-      report.announcedAt
-    ) {
-      return null;
-    }
-    const contactRef = db.doc(`contacts/${report.contactId}`);
-    const prospecting = (await contactRef.get()).data()?.prospecting;
-    const record = async (reason: AnnounceReason) => {
-      await reportRef.update({ announcedAt: FieldValue.serverTimestamp(), announceReason: reason });
-      return reason;
-    };
+    // One transaction decides: the superseded check and the headline stamp
+    // cannot straddle a newer report taking the contact.
+    const decided = await db.runTransaction(async (tx) => {
+      const report = (await tx.get(reportRef)).data();
+      if (
+        !report ||
+        report.announceProtocol !== ANNOUNCE_PROTOCOL ||
+        !report.announceDueAt ||
+        report.announcedAt
+      ) {
+        return null;
+      }
+      const contactRef = db.doc(`contacts/${report.contactId}`);
+      const contact = (await tx.get(contactRef)).data();
+      const prospecting = contact?.prospecting;
+      // A newer report owns the contact's headline and link now.
+      if (prospecting?.lastReportId !== reportId) {
+        tx.update(reportRef, recorded("superseded"));
+        return "superseded" as const;
+      }
+      // Outreach never sends a dead link.
+      if (typeof report.shareId !== "string" || !prospecting?.lastReportUrl) {
+        tx.update(reportRef, recorded("no live link"));
+        return "no live link" as const;
+      }
+      tx.update(contactRef, { "prospecting.lastReportHeadline": report.headline ?? null });
+      return { report };
+    });
+    if (decided === null || typeof decided === "string") return decided;
 
-    // A newer report owns the contact's headline and link now.
-    if (prospecting?.lastReportId !== reportId) return await record("superseded");
-    // Outreach never sends a dead link.
-    if (typeof report.shareId !== "string" || !prospecting?.lastReportUrl) return await record("no live link");
-
-    await contactRef.update({ "prospecting.lastReportHeadline": report.headline ?? null });
+    const { report } = decided;
+    const enrolmentKey = `report:${reportId}`;
     const outcome = await fireWorkflowTrigger({
       type: "prospecting.report.ready",
       subAccountId: report.subAccountId,
       agencyId: report.agencyId,
       contactId: report.contactId,
       context: { reportId },
-      enrolmentKey: `report:${reportId}`,
+      enrolmentKey,
     });
-    if (outcome.reason === "error") {
+    if (outcome.reason === "error" || outcome.skipped.some((s) => s.reason === "reentry_check_failed")) {
       console.error("[prospecting/report] prospecting.report.ready trigger failed; retried later", reportId);
-      return null;
+      return await retryLater(reportRef, reportId);
     }
-    return await record("fired");
+    // A re-fire after a crash is refused by the key an earlier fire wrote:
+    // that is this report's own enrolment, so it did fire.
+    const keyed = await Promise.all(
+      outcome.skipped
+        .filter((s) => s.reason === "reentry_blocked")
+        .map((s) => db.doc(`workflowEnrolmentKeys/${s.workflowId}_${report.contactId}_${enrolmentKey}`).get()),
+    );
+    if (outcome.enrolled.length === 0 && !keyed.some((k) => k.exists)) {
+      const skips: Array<{ workflowId: string | null; reason: string }> = outcome.skipped.map((s) => ({ ...s }));
+      if (outcome.reason) skips.push({ workflowId: null, reason: outcome.reason });
+      await reportRef.update(recorded("not enrolled", { announceSkips: skips }));
+      return "not enrolled";
+    }
+    await reportRef.update(recorded("fired"));
+    return "fired";
   } catch (err) {
     console.error("[prospecting/report] announce failed; retried later", reportId, err);
-    return null;
+    return retryLater(reportRef, reportId).catch((e) => {
+      console.error("[prospecting/report] announce attempt not counted", reportId, e);
+      return null;
+    });
   }
+}
+
+/** Count a transient failure; the last allowed one records "gave up". */
+async function retryLater(
+  reportRef: FirebaseFirestore.DocumentReference,
+  reportId: string,
+): Promise<"gave up" | null> {
+  return getAdminDb().runTransaction(async (tx) => {
+    const report = (await tx.get(reportRef)).data();
+    if (!report || report.announcedAt) return null;
+    const attempts = ((report.announceAttempts as number | undefined) ?? 0) + 1;
+    if (attempts < MAX_ANNOUNCE_ATTEMPTS) {
+      tx.update(reportRef, { announceAttempts: attempts });
+      return null;
+    }
+    console.error("[prospecting/report] announce gave up after repeated failures", reportId, attempts);
+    tx.update(reportRef, {
+      announceAttempts: attempts,
+      announcedAt: FieldValue.serverTimestamp(),
+      announceReason: "gave up",
+    });
+    return "gave up" as const;
+  });
 }

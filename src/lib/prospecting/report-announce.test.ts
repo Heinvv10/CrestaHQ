@@ -36,6 +36,21 @@ vi.mock("@/lib/comms/whatsapp/readiness", () => ({
 }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMessage: async () => undefined }));
+/** One-shot: the process dies after the decision commits, before the trigger runs. */
+let crashBeforeFire = false;
+vi.mock("@/lib/workflows/engine", async (orig) => {
+  const real = await orig<typeof import("@/lib/workflows/engine")>();
+  return {
+    ...real,
+    fireWorkflowTrigger: (...a: Parameters<typeof real.fireWorkflowTrigger>) => {
+      if (crashBeforeFire) {
+        crashBeforeFire = false;
+        throw new Error("process killed");
+      }
+      return real.fireWorkflowTrigger(...a);
+    },
+  };
+});
 
 const KEY = "sig_test_current_key_for_report_announce";
 process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
@@ -111,6 +126,7 @@ function seedReport(id: string, extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  crashBeforeFire = false;
   process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
   process.env.NEXT_PUBLIC_APP_URL = APP;
   vi.restoreAllMocks();
@@ -292,9 +308,10 @@ describe("a crash after the settle transaction commits", () => {
     ["the sweep", () => callSweep()],
   ])("before the fire: nothing enrolled; %s announces it once", async (_n, recover) => {
     await callWorker();
-    const crashed = crashOnce("contacts/c1", "prospecting.lastReportHeadline");
+    crashBeforeFire = true;
     await callPoll(0);
-    expect(crashed()).toBe(true);
+    expect(crashBeforeFire).toBe(false);
+    expect(report().announceAttempts).toBe(1);
     expect(report().announceDueAt).toBeTruthy();
     expect(report().announcedAt).toBeNull();
     expect(runs()).toEqual([]);
@@ -441,5 +458,150 @@ describe("a second report while the first is pending", () => {
     const { final } = await expectOneMessage("r2");
     expect(final).toBe(R2_HEADLINE);
     expect(prospecting()).toMatchObject({ lastReportHeadline: R2_HEADLINE });
+  });
+});
+
+/** Fail (throw) any transaction that reads a doc whose path matches, while `on()` holds. */
+function failTxReading(match: (path: string) => boolean, on: () => boolean = () => true) {
+  const runTransaction = storeDb.runTransaction;
+  vi.spyOn(storeDb, "runTransaction").mockImplementation(((fn: Parameters<typeof runTransaction>[0]) =>
+    runTransaction((tx) =>
+      fn({
+        ...tx,
+        get: (async (target: { path?: string }) => {
+          if (typeof target.path === "string" && match(target.path) && on()) throw new Error("10 ABORTED: contention");
+          return tx.get(target as never);
+        }) as typeof tx.get,
+      }),
+    )) as typeof runTransaction);
+}
+
+describe("what the trigger did decides what is recorded", () => {
+  it("a failed re-entry transaction is transient: nothing recorded, one attempt counted; the sweep sends it once", async () => {
+    run.mockResolvedValue(READY_NO_SCAN);
+    let down = true;
+    failTxReading((p) => p.startsWith("workflowEnrolmentKeys/"), () => down);
+    await callWorker();
+    expect(runs()).toEqual([]);
+    expect(report().announcedAt).toBeNull();
+    expect(report().announceAttempts).toBe(1);
+    down = false;
+    await callSweep();
+    await expectOneMessage();
+    await callSweep();
+    expect(runs()).toHaveLength(1);
+  });
+
+  it("once_ever refusing a second report: 'not enrolled' with its reason, no second message, not retried", async () => {
+    mem.seed("workflows/wfR", { ...mem.read("workflows/wfR")!, reentry: "once_ever" });
+    run.mockResolvedValue(READY_NO_SCAN);
+    await callWorker("r1");
+    await expectOneMessage("r1");
+    seedReport("r2");
+    await callWorker("r2");
+    expect(report("r2")).toMatchObject({
+      announceReason: "not enrolled",
+      announceSkips: [{ workflowId: "wfR", reason: "reentry_blocked" }],
+    });
+    expect(report("r2").announcedAt).toBeTruthy();
+    await callSweep();
+    expect(runs()).toHaveLength(1);
+    expect(dispatchWhatsappSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("filters not met under every_time: 'not enrolled' with the reason, nothing sent, not retried", async () => {
+    mem.seed("workflows/wfR", {
+      ...mem.read("workflows/wfR")!,
+      trigger: { type: "prospecting.report.ready", filters: { all: [{ field: "tags", op: "has_tag", value: "vip" }] } },
+    });
+    run.mockResolvedValue(READY_NO_SCAN);
+    await callWorker();
+    expect(report()).toMatchObject({
+      announceReason: "not enrolled",
+      announceSkips: [{ workflowId: "wfR", reason: "filters_not_met" }],
+    });
+    await callSweep();
+    expect(runs()).toEqual([]);
+  });
+
+  it("no active workflow: 'not enrolled', recorded with why", async () => {
+    await mem.db.doc("workflows/wfR").update({ status: "paused" });
+    run.mockResolvedValue(READY_NO_SCAN);
+    await callWorker();
+    expect(report()).toMatchObject({
+      announceReason: "not enrolled",
+      announceSkips: [{ workflowId: null, reason: "no_active_workflow" }],
+    });
+  });
+});
+
+describe("the superseded check and the headline stamp are one transaction", () => {
+  it("a newer report taking the contact mid-decision: superseded, nothing stamped or sent", async () => {
+    run.mockResolvedValue(READY_NO_SCAN);
+    const runTransaction = storeDb.runTransaction;
+    let raced = false;
+    vi.spyOn(storeDb, "runTransaction").mockImplementation(((fn: Parameters<typeof runTransaction>[0]) =>
+      runTransaction((tx) =>
+        fn({
+          ...tx,
+          get: (async (target: { path?: string }) => {
+            const snap = await tx.get(target as never);
+            const data = (snap as { data: () => Record<string, unknown> | undefined }).data();
+            const p = data?.prospecting as Record<string, unknown> | undefined;
+            if (!raced && target.path === "contacts/c1" && p?.lastReportId === "r1" && data?.["prospecting"] && p.lastReportUrl) {
+              raced = true;
+              await mem.db.doc("contacts/c1").update({ "prospecting.lastReportId": "r2", "prospecting.lastReportHeadline": "r2 headline" });
+            }
+            return snap;
+          }) as typeof tx.get,
+        }),
+      )) as typeof runTransaction);
+    await callWorker();
+    expect(raced).toBe(true);
+    expect(report()).toMatchObject({ announceReason: "superseded" });
+    expect(prospecting().lastReportHeadline).toBe("r2 headline");
+    expect(runs()).toEqual([]);
+  });
+});
+
+describe("sweep robustness", () => {
+  it("a report failing transiently is given up on its 8th attempt, and left alone after", async () => {
+    run.mockResolvedValue(READY_NO_SCAN);
+    const collection = storeDb.collection;
+    vi.spyOn(storeDb, "collection").mockImplementation((name: string) => {
+      if (name === "workflows") throw new Error("UNAVAILABLE");
+      return collection(name);
+    });
+    await callWorker(); // attempt 1
+    for (let i = 2; i <= 7; i++) {
+      await callSweep();
+      expect(report()).toMatchObject({ announceAttempts: i, announcedAt: null });
+    }
+    await callSweep(); // attempt 8
+    expect(report()).toMatchObject({ announceAttempts: 8, announceReason: "gave up" });
+    expect(report().announcedAt).toBeTruthy();
+    expect(console.error).toHaveBeenCalledWith(
+      "[prospecting/report] announce gave up after repeated failures", "r1", 8,
+    );
+    await callSweep();
+    expect(report().announceAttempts).toBe(8);
+    expect(runs()).toEqual([]);
+  });
+
+  it("one report whose settle throws does not stop the tick: the next is settled and announced", async () => {
+    publish.mockImplementation(async (m: { pathname: string }) =>
+      m.pathname === "/api/automations/prospecting/apexgeo" ? { messageId: "lost" } : { messageId: "q1" },
+    );
+    await callWorker();
+    const old = new Date(Date.now() - 31 * 60_000);
+    mem.seed("prospectReports/r1", { ...report(), apexgeo: { ...(report().apexgeo as object), startedAt: old } });
+    // An older stuck report (first in the batch) whose settle always throws.
+    mem.seed("prospectReports/a_bad", { ...report(), contactId: "c_other", apexgeo: { ...(report().apexgeo as object), startedAt: old } });
+    failTxReading((p) => p === "prospectReports/a_bad");
+    const res = await callSweep();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ settled: 1, announced: 1 });
+    expect(mem.read("prospectReports/a_bad")).toMatchObject({ apexgeo: { status: "pending" } });
+    await expectOneMessage();
   });
 });

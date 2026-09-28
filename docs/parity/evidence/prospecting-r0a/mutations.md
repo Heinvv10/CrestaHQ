@@ -39,3 +39,23 @@ Each mutation was applied to the production code by a script (exact string repla
 | 31 | Rules: `workflowEnrolmentKeys` opened to any signed-in user | **RED 4/39** — every enrolment-key case |
 
 One survivor was found and removed rather than kept: the sweep also announced each report it had just settled, directly, in case its server-stamped `announceDueAt` sorts after the due query's clock. The in-memory store has one clock, so no test could tell it apart; the code was dropped and the due query now takes a fresh `new Date()` after the settle pass. A report whose `announceDueAt` is a few ms ahead is announced by the next sweep.
+
+## Review round 1 (PR #319)
+
+Same method, and the same test set as above, minus the schedule, middleware and public-report files that these guards do not reach. Report-announce now has 29 tests.
+
+| # | Mutation | Result (first failing test) |
+|---|---|---|
+| N1 | Transient: a skipped `reentry_check_failed` is not treated as transient | **RED 1** — A: a failed re-entry transaction records nothing, counts one attempt, and the sweep sends it once |
+| N2 | Transient: a trigger `error` is not treated as transient | **RED 2** — A: a trigger that errors, and the sweep fires it |
+| N3 | Zero enrolments recorded as "fired" | **RED 3** — A: once_ever refusing a second report is "not enrolled" |
+| N4 | A re-fire refused by this report's own enrolment key is not counted as "fired" | **RED 2** — A: crash after the fire, before `announcedAt` |
+| N5 | `announceSkips` not stored | **RED 3** — A: once_ever |
+| N6 | The trigger-level reason (`no_active_workflow`) not kept | **RED 1** — A: no active workflow |
+| N7 | The contact read outside the decision transaction (the superseded race) | **RED 1** — A: a newer report takes the contact mid-decision |
+| N8 | Give-up threshold off by one (`<` → `<=`) | **RED 1** — A: given up on the 8th attempt |
+| N9 | `announceAttempts` not incremented | **RED 4** — A: crash before the fire counts one attempt |
+| N10 | "gave up" records nothing | **RED 1** — A: given up on the 8th attempt |
+| N11 | A thrown announce does not count an attempt | **RED 2** — A: crash before the fire |
+| N12 | Sweep settle loop: the per-doc try/catch removed | **RED 1** — A: one report whose settle throws does not stop the tick |
+| N13 | Sweep announce loop: the per-doc try/catch removed | **GREEN (survivor)**: `announceReport` catches everything itself, including a failure to count the attempt, so no test can reach this catch. It is kept as asked in review, as a backstop against a future change to `announceReport`. |

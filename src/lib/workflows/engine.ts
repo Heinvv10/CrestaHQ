@@ -1298,7 +1298,9 @@ export interface FireInput {
    * carrying it is refused `reentry_blocked` while
    * `workflowEnrolmentKeys/{workflowId}_{contactId}_{key}` exists — under
    * every re-entry policy, and after that run has finished. Makes an
-   * at-least-once caller's re-fire harmless.
+   * at-least-once caller's re-fire harmless. Checked at run creation only:
+   * the agent-hold path (`reentryWouldBlock`, held enrolments) does not
+   * check keys, and the report trigger (the only keyed caller) never holds.
    */
   enrolmentKey?: string;
 }
