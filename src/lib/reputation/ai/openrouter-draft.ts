@@ -2,6 +2,7 @@ import "server-only";
 
 import type { callAi } from "@/lib/comms/ai/openrouter";
 import { unsuppliedContact } from "./contact-guard";
+import { slopHit } from "./slop";
 import type { DraftFailure, DraftInput, DraftResult } from "./types";
 
 /**
@@ -13,7 +14,11 @@ import type { DraftFailure, DraftInput, DraftResult } from "./types";
  * answer is checked, not trusted: plain text, trimmed, cut to the reply
  * route's 4000-character limit, and REFUSED (nothing is shown) when it
  * carries any contact the guidelines did not supply (contact-guard.ts). A
- * failure is one kind, for the log only. Never logs review or draft text.
+ * draft that reads as machine-written (slop.ts) gets exactly ONE retry — the
+ * same call plus a note naming the rule — and is refused (`slop`) when the
+ * rewrite hits too. Both calls sit under ONE draft budget unit: the caller
+ * counts the draft (beginDraftCall) once, before this runs. A failure is one
+ * kind, for the log only. Never logs review or draft text.
  */
 
 export const MAX_DRAFT_CHARS = 4000;
@@ -27,7 +32,25 @@ const SYSTEM = [
   "Never include a phone number, email address, URL or link unless it appears in the guidelines.",
   "Never mention that you are an AI or that the reply was generated.",
   "Answer with the reply only, as plain text: no quotes, no markdown, no preamble.",
+  "Voice: sound like a real owner, not a marketing team.",
+  "Write 1-2 short sentences. A rating-only review (no text) gets one sentence.",
+  'Open with "Thanks {first name}." when a first name is given.',
+  "Mention one specific thing from the review. Never invent details the review does not give.",
+  "Use plain everyday words.",
+  "No exclamation marks, no emojis, no em dashes or en dashes.",
+  "Do not restate the star rating.",
+  'No generic closers such as "look forward to serving you" or "don\'t hesitate to contact us".',
+  "No sign-off unless the guidelines ask for one. The guidelines still win on tone, sign-off and facts.",
+  "Example replies in this voice:",
+  '- "Thanks Sam. Glad the team left everything neat."',
+  '- "Thanks Lee. Good to hear it went quickly."',
+  '- "Sorry about the missed appointment, Jo. That shouldn\'t happen, and we\'ve passed it to the team."',
+  '- "Thanks for taking the time to rate us."',
 ].join("\n");
+
+/** The one retry's note: the rule id only — never the review or the rejected draft. */
+const retryNote = (rule: string) =>
+  `That reply broke the voice rule "${rule}". Write it again, plainer and shorter, following every rule above.`;
 
 function clean(raw: string): string {
   let t = raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```$/, "").trim();
@@ -49,31 +72,40 @@ export type BoundedCall = (args: Parameters<typeof callAi>[0]) => ReturnType<typ
  * this file never imports openrouter.ts back and the bound lives in ONE helper.
  */
 export async function draftReplyWith(model: string, input: DraftInput, call: BoundedCall): Promise<DraftResult> {
+  const messages: Message[] = [
+    { role: "system", content: SYSTEM },
+    {
+      role: "user",
+      content: JSON.stringify({
+        review: { stars: input.starRating, text: input.comment, reviewerFirstName: input.reviewerFirstName },
+        business: input.businessName,
+        guidelines: input.guidelines,
+      }),
+    },
+  ];
+  const first = await attempt(model, messages, input.guidelines, call);
+  if (!("slop" in first)) return first;
+  // Exactly one retry, bounded here — never a loop.
+  const second = await attempt(model, [...messages, { role: "user", content: retryNote(first.slop) }], input.guidelines, call);
+  if (!("slop" in second)) return second;
+  return fail("slop", second.slop);
+}
+
+type Message = Parameters<BoundedCall>[0]["messages"][number];
+
+/** One model call and the output checks; a voice hit is returned (not failed) so the caller may retry once. */
+async function attempt(model: string, messages: Message[], guidelines: string | null, call: BoundedCall): Promise<DraftResult | { slop: string }> {
   let raw: string;
   try {
-    const res = await call({
-      model,
-      temperature: 0.4,
-      maxTokens: 400,
-      messages: [
-        { role: "system", content: SYSTEM },
-        {
-          role: "user",
-          content: JSON.stringify({
-            review: { stars: input.starRating, text: input.comment, reviewerFirstName: input.reviewerFirstName },
-            business: input.businessName,
-            guidelines: input.guidelines,
-          }),
-        },
-      ],
-    });
-    raw = res.text;
+    raw = (await call({ model, temperature: 0.4, maxTokens: 400, messages })).text;
   } catch (err) {
     return fail("call_failed", err instanceof Error ? err.name : typeof err);
   }
   const text = clean(raw);
   if (!text) return fail("empty");
-  const contact = unsuppliedContact(text, input.guidelines);
+  const contact = unsuppliedContact(text, guidelines);
   if (contact) return fail("unsupplied_contact", contact);
+  const rule = slopHit(text, guidelines);
+  if (rule) return { slop: rule };
   return { text };
 }

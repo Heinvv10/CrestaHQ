@@ -40,7 +40,7 @@ export interface DraftInput {
   guidelines: string | null;
 }
 /** Why there is no draft — for logs only; the admin just sees "try again or write your own". */
-export type DraftFailure = "call_failed" | "empty" | "unsupplied_contact";
+export type DraftFailure = "call_failed" | "empty" | "unsupplied_contact" | "slop";
 /** A draft, or none. Every attempt counts against the daily AI cap either way (no strikes, no refunds). */
 export type DraftResult = { text: string; failure?: undefined } | { text: null; failure: DraftFailure };
 
