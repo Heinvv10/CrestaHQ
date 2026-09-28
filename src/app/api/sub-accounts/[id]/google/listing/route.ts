@@ -40,7 +40,8 @@ import type { GoogleListing } from "@/types/google";
  *
  * Sharing: a main listing another sub-account also manages MAY be selected
  * here, as before extra listings existed. `listing_shared` is refused only
- * when adding an EXTRA (extra-listings PUT); any sharing blocks auto-reply.
+ * when adding an EXTRA (extra-listings PUT). Auto-reply asks per listing:
+ * a shared listing cannot be switched on, and pauses while shared.
  */
 
 export async function PUT(

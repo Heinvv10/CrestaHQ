@@ -66,9 +66,9 @@ export async function postQueued(
   if (!target) return "skipped";
   if (await replyPreflight(sa)) return "stop";
 
-  const confirmed = await confirmAutoPost(sa, { runId: q.runId, docId: q.docId, textHash }, Date.now());
+  const confirmed = await confirmAutoPost(sa, { runId: q.runId, docId: q.docId, textHash, enabledByUid: q.enabledByUid }, Date.now());
   if (confirmed === "approval") return "held";
-  if (confirmed === "stale") return "skipped";
+  if (confirmed === "stale" || confirmed === "listing_paused") return "skipped";
   if (confirmed !== "go") return "stop";
 
   const res = await postReply(

@@ -62,6 +62,7 @@ describe("GET", () => {
       enabled: false, modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: false,
       enabledAt: null, disabledReason: null, gatesOn: true, gate: null, available: true, running: false,
       dailyPostCap: 20, dailyDraftCap: 40,
+      listings: [{ locationName: LOC_A, title: "Velo Test Fibre — Gqeberha", main: true, enabled: false, enabledAt: null }],
     });
   });
 

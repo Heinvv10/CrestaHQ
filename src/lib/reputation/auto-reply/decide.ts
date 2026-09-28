@@ -1,5 +1,5 @@
 import type { AutoReplyMode, AutoReplyStar } from "@/types";
-import { AUTO_REPLY_DAILY_DRAFT_CAP, AUTO_REPLY_DAILY_POST_CAP } from "./settings";
+import { AUTO_REPLY_DAILY_DRAFT_CAP, AUTO_REPLY_DAILY_POST_CAP, listingOn, type AutoReplyListings } from "./settings";
 
 /**
  * What the auto-reply engine does with ONE cached review (AUTO_REPLY_V1_PLAN.md
@@ -59,11 +59,10 @@ export interface DecideReview {
 }
 
 export interface DecideSettings {
-  enabled: boolean;
   modes: Record<AutoReplyStar, AutoReplyMode>;
   includeBacklog: boolean;
-  enabledAtMs: number | null;
-  listingLocationName: string | null;
+  /** The listings auto-reply is on for (`readAutoReplyListings`), each with its own `enabledAt`. */
+  listings: AutoReplyListings;
 }
 
 export interface DecideCounts {
@@ -103,9 +102,10 @@ export function decide(
   ctx: { now: number; runStartedAt: number },
   counts: DecideCounts,
 ): Decision {
-  if (!settings.enabled) return skip("disabled");
+  if (Object.keys(settings.listings).length === 0) return skip("disabled");
   if (r.state !== "active") return skip("tombstoned");
-  if (!settings.listingLocationName || r.locationName !== settings.listingLocationName) return skip("other_listing");
+  const listing = listingOn(settings.listings, r.locationName);
+  if (!listing) return skip("other_listing");
   if (r.hasReply) return skip("replied");
   if (r.hadReply) return skip("had_reply");
   if (r.never) return skip("never");
@@ -117,7 +117,8 @@ export function decide(
   const p = r.pending;
   const fresh = p !== null && p.basisHash === r.basisHash;
   if (!settings.includeBacklog) {
-    if (settings.enabledAtMs === null || r.createTimeMs === null || r.createTimeMs < settings.enabledAtMs) {
+    // Backlog off: older than when auto-reply was switched on for THIS review's listing.
+    if (listing.enabledAtMs === null || r.createTimeMs === null || r.createTimeMs < listing.enabledAtMs) {
       // Queued before auto-reply was switched off and on: kept, now waits for a person.
       return p && fresh && queued(p) ? { verdict: "to_approval" } : skip("before_enabled");
     }

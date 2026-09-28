@@ -21,10 +21,22 @@ const DAY = 24 * 3600_000;
 const ALL_AUTO: Record<AutoReplyStar, AutoReplyMode> = { 1: "auto", 2: "auto", 3: "auto", 4: "auto", 5: "auto" };
 const ALL_APPROVAL: Record<AutoReplyStar, AutoReplyMode> = { 1: "approval", 2: "approval", 3: "approval", 4: "approval", 5: "approval" };
 
-const settings = (o: Partial<DecideSettings> = {}): DecideSettings => ({
-  enabled: true, modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: false,
-  enabledAtMs: ENABLED_AT, listingLocationName: LOC, ...o,
-});
+/**
+ * Written as the single-listing settings (on, `enabledAtMs`, the listing it
+ * is on for), turned into the per-listing map decide() reads; `listings`
+ * overrides the map outright (MULTI_LISTING_V1_PLAN.md PR 6).
+ */
+type SettingsIn = Partial<Omit<DecideSettings, "listings">> & {
+  enabled?: boolean; enabledAtMs?: number | null; listingLocationName?: string | null; listings?: DecideSettings["listings"];
+};
+const settings = (o: SettingsIn = {}): DecideSettings => {
+  const { enabled = true, enabledAtMs = ENABLED_AT, listingLocationName = LOC, listings, ...rest } = o;
+  const single = enabled && listingLocationName ? { [listingLocationName]: { enabledAtMs, enabledByUid: "u1" } } : {};
+  return {
+    modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: false,
+    listings: listings ?? single, ...rest,
+  };
+};
 const review = (o: Partial<DecideReview> = {}): DecideReview => ({
   state: "active", locationName: LOC, starRating: 5, comment: null, createTimeMs: ENABLED_AT + DAY, lastSeenAtMs: RUN,
   hasReply: false, hadReply: false, never: false, inFlight: false, autoReplied: false, basisHash: BASIS, pending: null, dismissedBasisHash: null, ...o,
@@ -33,7 +45,7 @@ const pending = (reason: DecidePending["reason"], o: Partial<DecidePending> = {}
   reason, basisHash: BASIS, atMs: NOW - 60_000, hasText: reason === "auto_queued" || reason === "approval" || reason === "texted", ...o,
 });
 const counts = (postsToday = 0, autoDraftsToday = 0) => ({ postsToday, autoDraftsToday });
-const run = (r: Partial<DecideReview> = {}, s: Partial<DecideSettings> = {}, c = counts()) =>
+const run = (r: Partial<DecideReview> = {}, s: SettingsIn = {}, c = counts()) =>
   decide(review(r), settings(s), { now: NOW, runStartedAt: RUN }, c);
 
 describe("star × mode × texted/blank", () => {
@@ -105,11 +117,12 @@ describe("caps", () => {
 });
 
 describe("skips", () => {
-  it.each<[string, Partial<DecideReview>, Partial<DecideSettings>, string]>([
+  it.each<[string, Partial<DecideReview>, SettingsIn, string]>([
     ["auto-reply off", {}, { enabled: false }, "disabled"],
     ["tombstoned", { state: "removed" }, {}, "tombstoned"],
     ["another listing", { locationName: "locations/other" }, {}, "other_listing"],
-    ["no enabled listing", {}, { listingLocationName: null }, "other_listing"],
+    // PR 6: no listing it is on for = an empty map = off (the engine stops before deciding anyway).
+    ["no enabled listing", {}, { listingLocationName: null }, "disabled"],
     ["replied", { hasReply: true }, {}, "replied"],
     ["ever replied (a reply since deleted)", { hadReply: true }, {}, "had_reply"],
     ["marked never (autoReplyNever, survives a cache clear)", { never: true }, {}, "never"],
@@ -201,5 +214,31 @@ describe("the pendingReply state table", () => {
     const withBacklog = reason === "auto_queued" ? { verdict: "auto", stored: true } : { verdict: "skip", why: "post_retry_wait" };
     expect(run({ pending: p, createTimeMs: ENABLED_AT - 1 }, { includeBacklog: true })).toEqual(withBacklog);
     expect(run({ pending: { ...p, basisHash: "old" }, createTimeMs: ENABLED_AT - 1 })).toEqual({ verdict: "skip", why: "before_enabled" });
+  });
+});
+
+describe("per listing (MULTI_LISTING_V1_PLAN.md PR 6)", () => {
+  const B = "locations/extra-b";
+  const LATER = ENABLED_AT + 5 * DAY;
+  const both = { [LOC]: { enabledAtMs: ENABLED_AT, enabledByUid: "u1" }, [B]: { enabledAtMs: LATER, enabledByUid: "u2" } };
+
+  it("a review on a listing in the map is decided; one not in it is other_listing", () => {
+    const onlyB = { listings: { [B]: both[B] } };
+    expect(run({ locationName: B, createTimeMs: LATER + DAY }, onlyB)).toEqual({ verdict: "auto", stored: false });
+    expect(run({ locationName: LOC, createTimeMs: LATER + DAY }, onlyB)).toEqual({ verdict: "skip", why: "other_listing" });
+  });
+
+  it("an empty map is disabled", () => {
+    expect(run({}, { listings: {} })).toEqual({ verdict: "skip", why: "disabled" });
+  });
+
+  it("before_enabled uses the review's OWN listing's enabledAt", () => {
+    const between = ENABLED_AT + DAY; // after main's enabledAt, before B's
+    expect(run({ locationName: B, createTimeMs: between }, { listings: both })).toEqual({ verdict: "skip", why: "before_enabled" });
+    expect(run({ locationName: LOC, createTimeMs: between }, { listings: both })).toEqual({ verdict: "auto", stored: false });
+  });
+
+  it("a prototype key is never a listing", () => {
+    expect(run({ locationName: "constructor" }, { listings: both })).toEqual({ verdict: "skip", why: "other_listing" });
   });
 });

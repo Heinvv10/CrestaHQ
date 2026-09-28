@@ -158,8 +158,8 @@ describe("two listings", () => {
         pending: null, dismissedBasisHash: null,
       },
       {
-        enabled: true, modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: true,
-        enabledAtMs: 0, listingLocationName: LOC_NORTH,
+        modes: { 1: "approval", 2: "approval", 3: "approval", 4: "auto", 5: "auto" }, includeBacklog: true,
+        listings: { [LOC_NORTH]: { enabledAtMs: 0, enabledByUid: "uid_admin" } },
       },
       { now, runStartedAt: now - 1000 },
       { postsToday: 0, autoDraftsToday: 0 },

@@ -629,8 +629,8 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   basis), not `dismissed`, and unreplied (`auto-reply/approval.ts`). Each
   row's reason (`approval.state`): Held for approval (`approval`/`texted`),
   Queued to auto-post (`auto_queued` the engine would post now — kill switch,
-  gates, on for this listing, no other sub-account on the same location,
-  star on Auto), Auto-post paused (`auto_queued`
+  gates, on for the review's listing, no other sub-account managing that
+  location, star on Auto), Auto-post paused (`auto_queued`
   otherwise), Draft failed, Over today's limit (`cap`/`no_budget`), Post
   failed. Only the reason and the draft text leave the server — never
   `textHash`, `basisHash`, `model` or `at`. The composer opens **pre-filled**
@@ -648,6 +648,32 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
   reconnect) switches `reviewsAutoReply.enabled` off (modes kept) — resuming
   needs an explicit re-enable — and, when it was on, notes
   `disabledReason: "listing_changed"` for the card.
+- **Per listing** ([MULTI_LISTING_V1_PLAN.md](../../MULTI_LISTING_V1_PLAN.md)
+  PR 6): with extra listings connected, auto-reply is switched on or off **per
+  listing**; the star modes, the backlog option and the daily caps (20 posts,
+  40 drafts per SAST day) stay **shared** — one budget across all listings.
+  `enabled` / `enabledAt` / `listingLocationName` remain the MAIN listing's
+  switch and stamps; `reviewsAutoReply.extraListings.{locId}` =
+  `{enabledAt, enabledByUid}` marks an extra that is on (a missing key is
+  off). The PUT takes an optional `listings: {locationName: on}` for extras
+  only (400 `unknown_listing` for switching anything else on; an off for a
+  listing no longer connected is dropped; a listing left out keeps its
+  state); switching one off→on takes the same gates and refusals as main,
+  with `listing_shared` asked of THAT listing, stamps its own `enabledAt`
+  (backlog off counts from it) and `enabledByUid` (the posts'
+  `createdByUid`, re-checked in the final transaction — switched on again by
+  someone else mid-run, the review waits for the next run), and clears
+  main's `disabledReason`; an extra already on is kept as it is, unchecked
+  (turning auto-reply off is always allowed); off deletes the key. GET/PUT answer `listings:
+  [{locationName, title, main, enabled, enabledAt}]`. `readAutoReplyListings`
+  (`auto-reply/settings.ts`) derives the listings it is on for — an extra
+  only while its key exists AND it is still connected, so a key left behind
+  never posts. Removing an extra (admin, or not accessible after a
+  reconnect) deletes its key in the same write as the removal and sends one
+  `listing_changed` alert when it was on; a MAIN change switches only main
+  off (extras keep posting); clearing everything (DELETE, disconnect) deletes
+  every key. The card shows one switch per listing by title (main's is the
+  master switch) and says the settings and limits are shared.
 - **Kill switch:** `REVIEWS_AUTO_REPLY_ENABLED=1` or the engine never runs on
   the deployment — no read, no draft, no post
   ([environment.md](../environment.md)). Re-read in every post's final
@@ -657,8 +683,9 @@ The engine (PR 2) is `lib/reputation/auto-reply/`; the UI (PR 3) is below.
 - **When:** after a sync route has answered (cron `gbp-sync` and Sync now),
   auto-reply for every synced tenant first, then sentiment, under the
   request's one deadline (`lib/reputation/after-sync.ts`). Never inside the sync.
-- **Which reviews** (`decide.ts`, pure): active, of the listing auto-reply
-  was enabled for, **never replied to by anyone** (no `reply`, and no sticky
+- **Which reviews** (`decide.ts`, pure): active, of a listing auto-reply
+  is on for (the per-listing map; backlog off compares with THAT listing's
+  `enabledAt`), **never replied to by anyone** (no `reply`, and no sticky
   `hadReply` — set whenever a reply is cached or posted and never cleared, so
   an owner who deleted a reply has chosen "no reply"), no reply in flight,
   never auto-replied before, **no `autoReplyNever/{stableReviewKey}` marker**

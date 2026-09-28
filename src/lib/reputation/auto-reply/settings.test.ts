@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { AUTO_REPLY_ENGINE_AVAILABLE, nextAutoReplySettings, readAutoReplySettings } from "./settings";
+import {
+  AUTO_REPLY_ENGINE_AVAILABLE, extraListingWrites, nextAutoReplySettings, parseAutoReplyBody, readAutoReplyListings, readAutoReplySettings,
+} from "./settings";
 
 /** Pure settings helpers (AUTO_REPLY_V1_PLAN.md, PR 1); the route test covers the wiring. */
 
@@ -59,5 +61,45 @@ describe("nextAutoReplySettings", () => {
     // Anything but the one known value reads as none.
     expect(nextAutoReplySettings({ enabled: false, disabledReason: "other" }, off, ctx))
       .toMatchObject({ ok: true, value: { disabledReason: null } });
+  });
+});
+
+describe("per listing (MULTI_LISTING_V1_PLAN.md PR 6)", () => {
+  const MAIN = "locations/main";
+  const B = "locations/b";
+  const at = new Date("2026-09-27T08:00:00Z");
+  const listing = (locationName: string) => ({ locationName, title: locationName }) as never;
+  const sub = { googleListing: listing(MAIN), googleExtraListings: [listing(B)] };
+  const raw = { enabled: true, listingLocationName: MAIN, enabledAt: at, enabledByUid: "u1", extraListings: { b: { enabledAt: at, enabledByUid: "u2" } } };
+
+  it("main while enabled for the current main; an extra while its key exists AND it is connected", () => {
+    expect(readAutoReplyListings(raw, sub)).toEqual({
+      [MAIN]: { enabledAtMs: at.getTime(), enabledByUid: "u1" },
+      [B]: { enabledAtMs: at.getTime(), enabledByUid: "u2" },
+    });
+    expect(Object.keys(readAutoReplyListings({ ...raw, enabled: false }, sub))).toEqual([B]);
+    expect(Object.keys(readAutoReplyListings({ ...raw, listingLocationName: "locations/old" }, sub))).toEqual([B]);
+    // A stale key: B no longer connected.
+    expect(Object.keys(readAutoReplyListings(raw, { googleListing: listing(MAIN) }))).toEqual([MAIN]);
+    // A key without its stamp is off.
+    expect(Object.keys(readAutoReplyListings({ ...raw, extraListings: { b: {} } }, sub))).toEqual([MAIN]);
+    // Legacy: no extraListings.
+    expect(Object.keys(readAutoReplyListings({ enabled: true, listingLocationName: MAIN }, sub))).toEqual([MAIN]);
+    expect(readAutoReplyListings(undefined, sub)).toEqual({});
+  });
+
+  it("parseAutoReplyBody accepts an optional listings map of booleans only", () => {
+    const base = { enabled: false, modes: MODES, includeBacklog: false };
+    expect(parseAutoReplyBody({ ...base, listings: { [B]: true } })).toMatchObject({ listings: { [B]: true } });
+    expect(parseAutoReplyBody(base)).not.toHaveProperty("listings");
+    for (const bad of [{ [B]: 1 }, { b: true }, [B], null]) expect(parseAutoReplyBody({ ...base, listings: bad })).toBeNull();
+  });
+
+  it("extraListingWrites: off→on stamps, on→on keeps (no write), on→off deletes, off→off nothing", () => {
+    const ctx = { now: new Date("2026-09-28T08:00:00Z"), uid: "u3" };
+    expect(extraListingWrites(raw, sub, { [B]: true }, ctx)).toEqual({});
+    expect(extraListingWrites(raw, sub, { [B]: false }, ctx)).toEqual({ b: null });
+    expect(extraListingWrites({}, sub, { [B]: true }, ctx)).toEqual({ b: { enabledAt: ctx.now, enabledByUid: "u3" } });
+    expect(extraListingWrites({}, sub, { [B]: false }, ctx)).toEqual({});
   });
 });

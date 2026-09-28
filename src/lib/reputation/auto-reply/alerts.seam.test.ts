@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 
-import { ACCOUNT, AGENCY, LOC_A, LOC_NORTH, SA, asUser, mem } from "@/test/gbp-sync-harness";
-import { A1, neverPath, patchSettings, pendingOf, putFixtureReview, resetAutoReply, reviewDoc, sync, syncAndRun } from "@/test/auto-reply-harness";
+import { ACCOUNT, AGENCY, LOC_A, LOC_NORTH, SA, asUser, mem, seedExtraListing } from "@/test/gbp-sync-harness";
+import {
+  A1, neverPath, patchSettings, pendingOf, putFixtureReview, resetAutoReply, reviewDoc, switchExtraOn, sync, syncAndRun,
+} from "@/test/auto-reply-harness";
 import { reviewBasis } from "@/lib/reputation/sentiment-basis";
 import { sentimentUsagePath } from "@/lib/reputation/sentiment-calls";
 import { autoReplyAfterSync } from "./run";
@@ -228,6 +230,14 @@ describe("reconnect_required", () => {
     await markReconnectRequiredIf(SA, "revoked", expected);
     expect(mem.read(`subAccounts/${SA}`)!.googleConnectionMeta).toMatchObject({ reconnectRequired: true });
     expect(alerts("reconnect_required")).toEqual([]);
+  });
+
+  it("main off but an extra listing on (MULTI_LISTING PR 6) → one alert", async () => {
+    patchSettings({ enabled: false });
+    seedExtraListing(SA, LOC_NORTH, []);
+    switchExtraOn(LOC_NORTH);
+    await markReconnectRequiredIf(SA, "revoked", expected);
+    expect(alerts("reconnect_required")).toHaveLength(1);
   });
 
   it("switching auto-reply ON while Google needs reconnecting is refused; editing it while on is not", async () => {

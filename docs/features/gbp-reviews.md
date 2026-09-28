@@ -284,7 +284,7 @@ grant without `business.manage` (`?google=insufficient_scope`).
 | `GET /api/sub-accounts/[id]/google/status` | any member | `{configured}` — deployment-level boolean only |
 | `DELETE /api/sub-accounts/[id]/google` | admin, **ungated** | best-effort revoke, skipped when a requested fake is refused (nothing to revoke with) — on a dev machine (loopback app URL) the fixture-agency fence still applies first; clears meta, `googleListing` (audited `listing_cleared`, reason `disconnected`) **and** every extra listing (one `extra_listing_removed` each, reason `disconnected`), then the synced data of all of them (`clearAllGbpCaches`) |
 | `GET /api/sub-accounts/[id]/google/locations` | admin, gated | `{accounts:[{name, accountName, locations:[{name,title,address,websiteUri,placeId,mapsUri}]}], truncated}` — every page, bounded at 20 |
-| `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused); 409 `already_extra` (it is one of this sub-account's extra listings — remove it there first), 409 `listing_clearing` (that location was just removed as an extra and its cache clear still holds the `clearing` lease on `private/gbpSyncState_{locId}` — retry in a minute; read inside the transaction). **Sharing:** a main listing another sub-account also manages may still be selected, as before extras existed — `listing_shared` is refused only when adding an EXTRA; any sharing blocks auto-reply |
+| `PUT /api/sub-accounts/[id]/google/listing` | admin, gated | `{accountName, locationName}`; server re-fetch, else 400 `unknown_location` (provably not visible) or `unverifiable_truncated` (past the 20-page bound — unproven, still refused); 409 `already_extra` (it is one of this sub-account's extra listings — remove it there first), 409 `listing_clearing` (that location was just removed as an extra and its cache clear still holds the `clearing` lease on `private/gbpSyncState_{locId}` — retry in a minute; read inside the transaction). **Sharing:** a main listing another sub-account also manages may still be selected, as before extras existed — `listing_shared` is refused only when adding an EXTRA; auto-reply asks per listing — a shared listing cannot be switched on and pauses while shared |
 | `DELETE /api/sub-accounts/[id]/google/listing` | admin, **ungated** | clears `googleListing` (audited `admin_cleared`); 409 `has_extra_listings` while extra listings are connected — remove them first (disconnect still clears everything) |
 | `PUT /api/sub-accounts/[id]/google/extra-listings` | admin, gated | `{listings:[{accountName, locationName}], expected:[{accountName, locationName}]}` — the whole new set of EXTRA listings, in order, and (required, validated the same way) the extras the client believes are stored ([MULTI_LISTING_V1_PLAN.md](../../MULTI_LISTING_V1_PLAN.md) PR 3). Body ≤ 8 KB (413 `body_too_large`); 400 `invalid_body` (a malformed pair or a location twice, in either list; `expected` missing), `too_many` (above 9, either list), `is_main`; each NEW pair is re-fetched in one provider walk (400 `unknown_location` / `unverifiable_truncated`, as the listing PUT) and only that re-fetch is stored, a pair already connected keeps its stored listing (so removing needs no Google call); 409 `no_listing` (no main listing), `listing_shared` (another sub-account holds a new pair as main or extra — `heldByAnotherSubAccount`, inside the transaction; refused for EXTRAS only — see the listing PUT), `account_changed` (a location's Google account switched in one save — untick, save, then re-add, so the old account's cache is cleared first), `listings_changed` (the stored extras' `accountName`+`locationName` set is not `expected` — a stale or concurrent save; nothing written; the picker re-seeds from the live doc). One transaction writes `googleExtraListings` + `googleLocationNames` and a `gbpEvents` entry per change; then each removed listing's synced data is cleared (`clearGbpCache(id, loc)`), skipped for a location connected again by then (re-read just before each clear) — the main listing's cache, drafts, summary and `reviewsAutoReply` are untouched. `{ok, added, removed}`; a clear that fails after the commit is logged (`[gbp/extra-listings]`) and answers 200 `{…, cachePending: true}` — retention and the orphan sweep purge it later |
 | `POST /api/sub-accounts/[id]/gbp/sync` | admin, gated, 1/min (409 `too_soon`) | "Sync now": runs `syncListing` inline (`trigger:"manual"`); `{run:{trigger,status,startedAt,finishedAt,pagesFetched,reviewsSeen,created,updated,unchanged,removed,purged,reconciliation,resumedFromCursor,errorKind,skipReason}}` — a skip or failure is a 200 result |
@@ -334,6 +334,9 @@ body for token markers).
   `googleListing` (`selectedAt` a timestamp, not a server sentinel: Firestore
   refuses one inside an array), written with `googleLocationNames` in the same
   transaction.
+  Removing one also deletes its auto-reply switch
+  (`reviewsAutoReply.extraListings.{locId}`) in that same write, with one
+  `listing_changed` alert when it was on.
 
 Selecting a **different** listing (or the same location through another
 Google account — its reviews come back under new names), clearing it,
@@ -925,8 +928,10 @@ shows that listing's summary ("All" shows the main listing's) and
 `gbp-review-listing-<reviewId>` and each recent sync `gbp-run-listing` (its
 listing's title); with one listing the page looks exactly as before. Reply,
 Draft with AI and Discard work on a review of any connected listing and go to
-that review's own listing. Auto-reply stays main-only until PR 6, so an extra
-listing's queued draft reads "Auto-post paused" —
+that review's own listing. Auto-reply is switched on per listing (PR 6,
+[reputation.md](reputation.md#review-auto-reply-auto_reply_v1_planmd)): a queued
+draft reads "Auto-post paused" unless auto-reply is on for its own listing and
+no other sub-account manages that listing —
 `components/gbp/reviews-section.listing.test.ts`,
 `…/gbp/reviews/route.listing.test.ts`, E2E `gbp-reply-listings.spec.ts`.
 PR 4 adds, over the reviews: the filter bar `gbp-filters` —

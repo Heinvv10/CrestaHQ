@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendAutoReplyAlert } from "@/lib/reputation/auto-reply/alerts";
+import { readAutoReplyListings } from "@/lib/reputation/auto-reply/settings";
 import type { GoogleListing } from "@/types/google";
 import { findAccessibleLocation, findAccessibleLocations } from "./discovery";
 import { removeExtraListings, storedExtras } from "./extra-listings";
@@ -17,8 +18,9 @@ import type { GbpProvider } from "./provider/types";
  * reconnect re-verification — also drops the synced review cache, summary and
  * sync state of every listing (`clearAllGbpCaches`): the cache only ever
  * holds the current listings.
- * Every clear also switches review auto-reply off (`reviewsAutoReply.enabled`),
- * noting `disabledReason: "listing_changed"` when it was on — and then sends
+ * Every clear also switches review auto-reply off (`reviewsAutoReply.enabled`,
+ * and every extra listing's `extraListings` key deleted), noting
+ * `disabledReason: "listing_changed"` when it was on for any listing — and then sends
  * one alert (it was on, so exactly one writer switches it off). Each extra
  * listing cleared with it gets its own `extra_listing_removed` event.
  */
@@ -52,12 +54,15 @@ export async function clearListing(
     extras = extraLocationNames(sub);
     const previous: string | null = sub.googleListing?.locationName ?? null;
     if (opts.onlyIf !== undefined && previous !== opts.onlyIf) return false;
-    // Review auto-reply was enabled for this listing: switched off (modes kept);
-    // resuming needs an explicit re-enable. When it was ON, the card says why.
-    const wasOn = sub.reviewsAutoReply?.enabled === true;
+    // Review auto-reply was enabled for these listings: switched off (modes
+    // kept), every extra listing's switch deleted with them; resuming needs an
+    // explicit re-enable. When any was ON, the card says why.
+    const wasOn = sub.reviewsAutoReply?.enabled === true
+      || Object.keys(readAutoReplyListings(sub.reviewsAutoReply, sub)).length > 0;
     switchedOff = wasOn;
+    const extrasSwitch = sub.reviewsAutoReply?.extraListings !== undefined ? { extraListings: FieldValue.delete() } : {};
     const autoReplyOff = sub.reviewsAutoReply
-      ? { reviewsAutoReply: { enabled: false, ...(wasOn ? { disabledReason: "listing_changed" } : {}) } }
+      ? { reviewsAutoReply: { enabled: false, ...extrasSwitch, ...(wasOn ? { disabledReason: "listing_changed" } : {}) } }
       : {};
     // The extras' adopted review links go with them; the main's link is kept.
     const dropUrls = sub.googleReviewConfig?.listingUrls ? { googleReviewConfig: { listingUrls: FieldValue.delete() } } : {};
