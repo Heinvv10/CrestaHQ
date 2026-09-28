@@ -64,6 +64,7 @@ const { POST: sweepRoute } = await import("@/app/api/automations/prospecting/ann
 const { runStep } = await import("@/lib/workflows/engine");
 const { resolvePublicReport } = await import("@/lib/prospecting/public-report");
 const { mintReportShare, revokeReportShare } = await import("@/lib/prospecting/share");
+const { announceReport } = await import("@/lib/prospecting/report-ready");
 const { completedScan } = await import("@/lib/prospecting/apexgeo.fixture");
 
 const APP = "http://127.0.0.1:3100";
@@ -603,5 +604,44 @@ describe("sweep robustness", () => {
     expect(await res.json()).toMatchObject({ settled: 1, announced: 1 });
     expect(mem.read("prospectReports/a_bad")).toMatchObject({ apexgeo: { status: "pending" } });
     await expectOneMessage();
+  });
+});
+
+describe("attempts count only once a report is due", () => {
+  let failNext = false;
+  /** The next transaction (the announce's decision) throws; the attempt count's runs. */
+  function failDecisions() {
+    const runTransaction = storeDb.runTransaction;
+    vi.spyOn(storeDb, "runTransaction").mockImplementation(((fn: Parameters<typeof runTransaction>[0]) => {
+      if (failNext) {
+        failNext = false;
+        return Promise.reject(new Error("UNAVAILABLE"));
+      }
+      return runTransaction(fn);
+    }) as typeof runTransaction);
+  }
+
+  it("8 thrown announces before it is due count nothing; once due it fires once", async () => {
+    await callWorker(); // ready, scan pending: not due
+    failDecisions();
+    for (let i = 0; i < 8; i++) {
+      failNext = true;
+      expect(await announceReport("r1")).toBeNull();
+      expect(failNext).toBe(false);
+    }
+    expect(report().announceAttempts).toBeUndefined();
+    expect(report().announcedAt).toBeNull();
+
+    await callPoll(0);
+    await expectOneMessage();
+  });
+
+  it("a due report from before the protocol: a thrown announce counts nothing", async () => {
+    seedReport("r1", { status: "ready", announceDueAt: new Date(), shareId: null });
+    failDecisions();
+    failNext = true;
+    expect(await announceReport("r1")).toBeNull();
+    expect(report().announceAttempts).toBeUndefined();
+    expect(report().announcedAt).toBeUndefined();
   });
 });

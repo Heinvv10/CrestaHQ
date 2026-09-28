@@ -59,3 +59,13 @@ Same method, and the same test set as above, minus the schedule, middleware and 
 | N11 | A thrown announce does not count an attempt | **RED 2** — A: crash before the fire |
 | N12 | Sweep settle loop: the per-doc try/catch removed | **RED 1** — A: one report whose settle throws does not stop the tick |
 | N13 | Sweep announce loop: per-doc try/catch | **Removed, unreachable.** `announceReport` catches everything itself, including a failure to count the attempt, so no test could reach this catch (the mutation survived). It was deleted rather than shipped untested. |
+
+## Review round 2 (PR #319)
+
+`retryLater` counts an attempt only for a report the announce acts on: `announceProtocol === 1`, `announceDueAt` set, and `announcedAt` unset.
+
+| # | Mutation | Result (first failing test) |
+|---|---|---|
+| N14 | `retryLater`: the whole due gate reduced to `announcedAt` only | **RED 1** — A: 8 thrown announces before it is due count nothing; once due it fires once |
+| N15 | `retryLater`: the `announceProtocol` clause removed | **RED 1** — A: a due report from before the protocol, a thrown announce counts nothing |
+| N16 | `retryLater`: the `announceDueAt` clause removed | **RED 1** — A: 8 thrown announces before it is due |

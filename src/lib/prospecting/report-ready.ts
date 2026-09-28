@@ -137,7 +137,16 @@ async function retryLater(
 ): Promise<"gave up" | null> {
   return getAdminDb().runTransaction(async (tx) => {
     const report = (await tx.get(reportRef)).data();
-    if (!report || report.announcedAt) return null;
+    // Only a report the announce acts on: a failure before it is due must
+    // never run down its attempts.
+    if (
+      !report ||
+      report.announceProtocol !== ANNOUNCE_PROTOCOL ||
+      !report.announceDueAt ||
+      report.announcedAt
+    ) {
+      return null;
+    }
     const attempts = ((report.announceAttempts as number | undefined) ?? 0) + 1;
     if (attempts < MAX_ANNOUNCE_ATTEMPTS) {
       tx.update(reportRef, { announceAttempts: attempts });
