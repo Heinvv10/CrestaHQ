@@ -58,4 +58,4 @@ Same method, and the same test set as above, minus the schedule, middleware and 
 | N10 | "gave up" records nothing | **RED 1** — A: given up on the 8th attempt |
 | N11 | A thrown announce does not count an attempt | **RED 2** — A: crash before the fire |
 | N12 | Sweep settle loop: the per-doc try/catch removed | **RED 1** — A: one report whose settle throws does not stop the tick |
-| N13 | Sweep announce loop: the per-doc try/catch removed | **GREEN (survivor)**: `announceReport` catches everything itself, including a failure to count the attempt, so no test can reach this catch. It is kept as asked in review, as a backstop against a future change to `announceReport`. |
+| N13 | Sweep announce loop: per-doc try/catch | **Removed, unreachable.** `announceReport` catches everything itself, including a failure to count the attempt, so no test could reach this catch (the mutation survived). It was deleted rather than shipped untested. |

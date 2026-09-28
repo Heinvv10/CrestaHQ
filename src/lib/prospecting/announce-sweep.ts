@@ -58,11 +58,8 @@ export async function sweepReportAnnounces(): Promise<{ settled: number; announc
     .get();
   let announced = 0;
   for (const doc of due.docs) {
-    try {
-      if ((await announceReport(doc.id)) === "fired") announced += 1;
-    } catch (err) {
-      console.error("[prospecting/announce-sweep] announce failed", doc.id, err);
-    }
+    // announceReport never throws: it counts its own failures.
+    if ((await announceReport(doc.id)) === "fired") announced += 1;
   }
   return { settled, announced };
 }
