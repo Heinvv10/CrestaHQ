@@ -75,3 +75,16 @@ it("orders rows worst score first, unscored and unmeasured after", () => {
   const order = [...html.matchAll(/report-section-([a-z_]+)/g)].map((m) => m[1]);
   expect(order).toEqual(["reputation", "tech_stack", "gbp", "listings"]);
 });
+
+it("AI presence: questions show for a non-ok section too, and the counts never render twice with showAll", () => {
+  const pending: PublicReportSection = {
+    ...section("ai_presence", { question1: "best plumber in Exampletown" }), status: "timeout", score: null, reason: "Timed out.",
+  };
+  expect(renderToStaticMarkup(createElement(ReportSections, { sections: [pending] }))).toContain("best plumber in Exampletown");
+  const ok = section("ai_presence", { mentionedIn: 2, answersMeasured: 6, topCompetitors: "Alpha", models: "m1", question1: "q" });
+  const all = renderToStaticMarkup(createElement(ReportSections, { sections: [ok], showAll: true }));
+  expect(all.match(/Alpha/g)).toHaveLength(1);
+  expect(all).not.toContain("AI answers checked");
+  expect(all).not.toContain("AI answers naming the business");
+  expect(all).toContain("AI models asked");
+});

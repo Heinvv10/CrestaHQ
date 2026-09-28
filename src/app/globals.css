@@ -116,7 +116,10 @@ body {
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-:root {
+/* `.light` pins a subtree to these light tokens under a dark <html> (the
+   public prospect report is always light, whatever the device theme). */
+:root,
+.light {
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);

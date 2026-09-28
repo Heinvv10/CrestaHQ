@@ -7,6 +7,7 @@ import { prospectingEnabled } from "@/lib/prospecting/gate";
 import { publicSection, type PublicReportSection } from "@/lib/prospecting/public-sections";
 import { displaySections } from "@/lib/prospecting/apexgeo-sections";
 import { resolveBrandColor } from "@/lib/branding/brand-color";
+import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import type { AppTheme, ProspectSectionResult } from "@/types";
 
 export type { PublicReportSection };
@@ -28,7 +29,8 @@ export type { PublicReportSection };
  * left out, not labelled — "notMeasured" details, listings that were not
  * found or could not be checked, and the ads section, which is only
  * manual-check links. The JSON route and the page both read this, so hiding
- * them here keeps them out of both. The member view (`serializeReport`)
+ * them here keeps them out of both. So are the raw speed metrics (FCP, speed
+ * index, blocking time, layout shift). The member view (`serializeReport`)
  * keeps them. A score below 100 with no finding is dropped too: a report
  * scored before R0 never shows a score without a reason.
  */
@@ -41,10 +43,15 @@ const HIDDEN_PUBLICLY: ReadonlySet<string | undefined> = new Set(["not_connected
 /** Sections that carry nothing measured, only manual-check links (C6). */
 const MANUAL_ONLY_SECTIONS: ReadonlySet<string> = new Set(["ads"]);
 
+/** Raw speed metrics: member view only (SOW, section cards), and never in the JSON or the PDF. */
+const RAW_METRIC_KEYS: ReadonlySet<string> = new Set(["fcpSeconds", "speedIndexSeconds", "tbtMs", "cls"]);
+
 /** The public rows of a section: see C6 above. */
 function measuredOnly(s: PublicReportSection): PublicReportSection {
   const details = Object.fromEntries(
-    Object.entries(s.details).filter(([, v]) => v !== "notMeasured" && (s.key !== "listings" || v === "found")),
+    Object.entries(s.details).filter(
+      ([k, v]) => v !== "notMeasured" && !RAW_METRIC_KEYS.has(k) && (s.key !== "listings" || v === "found"),
+    ),
   );
   const unexplained = s.score !== null && s.score < 100 && s.findings.length === 0;
   return { ...s, details, score: unexplained ? null : s.score };
@@ -130,6 +137,9 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
       brandColor: resolveBrandColor(str(agency.brandColor)),
     },
     cta,
-    whatsappNumber: str(sub.whatsappNumber) ?? str(sub.whatsappCloudMeta?.displayPhoneNumber),
+    // The Cloud display number is Meta's formatting ("+27 68 …"): E.164 or nothing.
+    whatsappNumber:
+      str(sub.whatsappNumber) ??
+      normalizePhoneE164(str(sub.whatsappCloudMeta?.displayPhoneNumber), str(sub.defaultPhoneCountry)),
   };
 }

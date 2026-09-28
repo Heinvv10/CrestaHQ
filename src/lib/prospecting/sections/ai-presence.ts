@@ -92,6 +92,11 @@ export function notInAiAnswersText(measuredAnswers: number): string {
   return `AI assistants like ChatGPT and Gemini did not name the business in any of ${measuredAnswers} answers to local searches for its services.`;
 }
 
+/** The `ai_mentions_partial` sentence. Also used by the R0b backfill. */
+export function aiMentionsPartialText(mentioned: number, measuredAnswers: number): string {
+  return `AI assistants like ChatGPT and Gemini named the business in only ${mentioned} of ${measuredAnswers} answers to local searches for its services.`;
+}
+
 export function score(visibility: ApexgeoScan["ai_visibility"]): Scored | null {
   const t = tally(visibility);
   if (t.measured === 0) return null;
@@ -101,12 +106,7 @@ export function score(visibility: ApexgeoScan["ai_visibility"]): Scored | null {
     if (!t.complete) return { score: null, findings };
     findings.push(finding("not_in_ai_answers", notInAiAnswersText(t.measured)));
   } else if (t.mentioned < t.measured) {
-    findings.push(
-      finding(
-        "ai_mentions_partial",
-        `AI assistants like ChatGPT and Gemini named the business in ${t.mentioned} of ${t.measured} answers to local searches for its services.`,
-      ),
-    );
+    findings.push(finding("ai_mentions_partial", aiMentionsPartialText(t.mentioned, t.measured)));
   }
   return { score: scoreOf(findings), findings };
 }

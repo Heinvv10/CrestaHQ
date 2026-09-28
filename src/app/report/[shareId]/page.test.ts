@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * The public report page (/report/[token]), rendered to HTML through the real
  * resolver on the in-memory store: a live share renders, a dead one 404s, and
- * the "Story" layout (R3) picks its hero, Top 3, count and CTA from the data.
+ * the "Story" layout (R3) picks its hero, "Fix these next", count and CTA from the data.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
@@ -126,23 +126,30 @@ describe("hero choice", () => {
   });
 });
 
-describe("Top 3, count and fallbacks", () => {
-  it("lists the three worst findings by severity, with impact when stored and text alone before R0", async () => {
+describe("Fix these next, count and fallbacks", () => {
+  it("lists the next three findings after the headline, by severity, with impact when stored and text alone before R0", async () => {
     seedReport([
       { key: "reputation", status: "ok", score: 35, findings: [{ code: "reviews_under_50", text: "F-REVIEWS" }, { code: "low_rating", text: "F-RATING", impact: "IMPACT-RATING" }], raw: {} },
-      { key: "lead_capture", status: "ok", score: 60, findings: [{ code: "no_booking", text: "F-BOOKING" }, { code: "no_whatsapp_cta", text: "F-WHATSAPP", impact: "IMPACT-WA" }], raw: {} },
+      { key: "lead_capture", status: "ok", score: 40, findings: [{ code: "no_booking", text: "F-BOOKING" }, { code: "no_whatsapp_cta", text: "F-WHATSAPP", impact: "IMPACT-WA" }, { code: "no_chat_widget", text: "F-CHAT" }], raw: {} },
       { key: "gbp", status: "ok", score: 100, findings: [], raw: {} },
-    ]);
+    ], "F-WHATSAPP");
     const html = await page();
-    const top = html.slice(html.indexOf('data-testid="top-fixes"'), html.indexOf("The rest of your check-up"));
-    // SEVERITY_ORDER: no_whatsapp_cta < low_rating < no_booking < reviews_under_50.
-    expect([...top.matchAll(/F-[A-Z]+/g)].map((m) => m[0])).toEqual(["F-WHATSAPP", "F-RATING", "F-BOOKING"]);
-    expect(top).toContain("IMPACT-WA");
-    expect(top).toContain("Three things to fix first");
+    const next = html.slice(html.indexOf('data-testid="top-fixes"'), html.indexOf("The rest of your check-up"));
+    // SEVERITY_ORDER: no_whatsapp_cta (the hero) < low_rating < no_booking < no_chat_widget < reviews_under_50.
+    expect([...next.matchAll(/F-[A-Z]+/g)].map((m) => m[0])).toEqual(["F-RATING", "F-BOOKING", "F-CHAT"]);
+    expect(next).toContain("IMPACT-RATING");
+    expect(next).toContain("Fix these next");
+    expect(html).toMatch(/<h1[^>]*>F-WHATSAPP<\/h1>/);
     expect(html).toMatch(/2 of 3<\/span>\s*areas need work/);
   });
 
-  it("with no findings reads 'No major issues found' and hides the Top 3 and the count", async () => {
+  it("hides 'Fix these next' when the headline is the only finding", async () => {
+    const html = await page();
+    expect(html).toContain("No opening hours listed.");
+    expect(html).not.toContain('data-testid="top-fixes"');
+  });
+
+  it("with no findings reads 'No major issues found' and hides 'Fix these next' and the count", async () => {
     seedReport([{ key: "gbp", status: "ok", score: 100, findings: [], raw: {} }], null);
     const html = await page();
     expect(html).toContain("No major issues found");
@@ -185,6 +192,10 @@ describe("CTA and brand", () => {
     const neither = await page();
     expect(neither).not.toContain("Book a call");
     expect(neither).not.toContain('data-testid="report-cta"');
+  });
+
+  it("pins the light scheme whatever the device theme", async () => {
+    expect(await page()).toMatch(/<main class="light [^"]*" style="[^"]*color-scheme:light/);
   });
 
   it("sets the agency brand colour as a CSS variable, falling back to the default for an unusable one", async () => {

@@ -42,9 +42,10 @@ export default async function SharedReportPage({
   return (
     // Geist named directly: the global `--font-sans` token is self-referential
     // (globals.css), so `font-sans` falls back to the browser's serif.
+    // `light` + color-scheme: always the light scheme, whatever the device's.
     <main
-      className="min-h-screen bg-background font-[family-name:var(--font-geist-sans)]"
-      style={{ "--report-brand": report.agency.brandColor } as CSSProperties}
+      className="light min-h-screen bg-background text-foreground font-[family-name:var(--font-geist-sans)]"
+      style={{ "--report-brand": report.agency.brandColor, colorScheme: "light" } as CSSProperties}
     >
       <header className="border-b bg-card">
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-4">
@@ -83,7 +84,8 @@ export default async function SharedReportPage({
 
       <div className="mx-auto w-full max-w-3xl space-y-12 px-4 py-10">
         <RingGrid sections={report.sections} />
-        <TopFixes findings={ranked.slice(0, 3)} />
+        {/* The hero already leads with ranked[0]. */}
+        <TopFixes findings={ranked.slice(1, 4)} />
         <section>
           <h2 className="mb-4 font-serif text-3xl">The rest of your check-up</h2>
           <ReportSections sections={report.sections} />

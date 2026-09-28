@@ -32,7 +32,7 @@ export function score(technical: ApexgeoScan["technical"]): Scored | null {
     findings.push(
       finding(
         "lcp_needs_improvement",
-        `On a phone the homepage takes ${lcp}s to show its main content (fast is under 2.5s).`,
+        `On a phone the homepage takes ${lcp}s to show its main content, slower than the 2.5s that counts as fast.`,
       ),
     );
   }

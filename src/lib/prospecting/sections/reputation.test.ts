@@ -31,7 +31,19 @@ describe("reputation score", () => {
   });
 
   it("singular review text", () => {
-    expect(score({ rating: 5, reviewsCount: 1 }).findings[0]!.text).toBe("Only 1 Google review.");
+    expect(score({ rating: 5, reviewsCount: 1 }).findings[0]!.text).toBe(
+      "Only 1 Google review, too few for people to trust the business over one with dozens.",
+    );
+  });
+
+  it("each finding's text reads as a problem, not a bare fact", () => {
+    expect(score({ rating: 4.5, reviewsCount: 33 }).findings.map((f) => f.text)).toEqual([
+      "Only 33 Google reviews: businesses with 50 or more get picked first.",
+      "The Google rating is 4.5 out of 5, below the 4.8 that wins close calls.",
+    ]);
+    expect(score({ rating: 3.5, reviewsCount: 60 }).findings[0]!.text).toBe(
+      "The Google rating is 3.5 out of 5, below the 4.0 many people will not look past.",
+    );
   });
 
   it("a rating below 4.0 is low_rating, which replaces rating_under_4_8; 4.0–4.7 is rating_under_4_8; 4.8 is neither", () => {

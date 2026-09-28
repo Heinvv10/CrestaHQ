@@ -6,7 +6,7 @@ import type { AiHook, RankedFinding } from "@/lib/prospecting/report-story";
 
 /**
  * The blocks of the public report page (direction C "Story", picked by Hein
- * 2026-09-28): the dark hero, the desktop ring grid, the Top 3 and the call
+ * 2026-09-28): the dark hero, the desktop ring grid, "Fix these next" and the call
  * to action. Server components, no hooks: the page is a server component and
  * a client import crashed it once (#293). Brand-coloured parts read the
  * `--report-brand` variable the page sets; the traffic-light colours live in
@@ -57,7 +57,7 @@ export function ReportHero({
               </p>
               {hook.competitors ? (
                 <p className="max-w-[85%] self-start rounded-2xl rounded-bl-sm bg-white/10 px-4 py-2.5 text-sm text-gray-100">
-                  They named: <span className="font-semibold text-white">{hook.competitors}</span>
+                  Across our questions, AI named: <span className="font-semibold text-white">{hook.competitors}</span>
                 </p>
               ) : null}
             </div>
@@ -72,21 +72,25 @@ export function ReportHero({
               {hook.mentioned === 0 ? "None of the answers named you." : `Only ${hook.mentioned} named you.`}
               {finding?.impact ? ` ${finding.impact}` : ""}
             </p>
-            <ul aria-label={`${hook.mentioned} of ${hook.measured} AI answers named the business`} className="mt-5 flex flex-wrap gap-2">
+            <div
+              role="img"
+              aria-label={`${hook.mentioned} of ${hook.measured} AI answers named the business`}
+              className="mt-5 flex flex-wrap gap-2"
+            >
               {Array.from({ length: hook.measured }, (_, i) => {
                 const named = i < hook.mentioned;
                 return (
-                  <li
+                  <span
                     key={i}
                     aria-hidden="true"
                     className="flex size-6 items-center justify-center rounded-full text-xs font-bold text-white"
                     style={{ backgroundColor: named ? "#1E874B" : "#9F1D1D" }}
                   >
                     {named ? "✓" : "✕"}
-                  </li>
+                  </span>
                 );
               })}
-            </ul>
+            </div>
           </>
         ) : (
           <>
@@ -127,14 +131,15 @@ export function RingGrid({ sections }: { sections: PublicReportSection[] }) {
   );
 }
 
-/** The three worst findings, each with its stored impact (none before R0). */
+/**
+ * The findings after the headline (the hero already shows the worst), up to
+ * three, each with its stored impact (none before R0). Hidden when none.
+ */
 export function TopFixes({ findings }: { findings: RankedFinding[] }) {
   if (findings.length === 0) return null;
   return (
     <section data-testid="top-fixes">
-      <h2 className="font-serif text-3xl">
-        {findings.length === 3 ? "Three things to fix first" : "What to fix first"}
-      </h2>
+      <h2 className="font-serif text-3xl">Fix these next</h2>
       <ol className="mt-4 space-y-4">
         {findings.map((f, i) => (
           <li key={`${f.section}-${f.code}`} className="flex gap-4">

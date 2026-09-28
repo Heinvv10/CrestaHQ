@@ -17,3 +17,19 @@ and the source was restored. Script: one mutant at a time, exact-string replace,
 | M9 | WhatsApp hidden | CTA block shown only with a booking page (WhatsApp-only CTA dropped) | KILLED (after adding the WhatsApp-only case; it survived the first run) | `the WhatsApp button … is hidden with no number…` |
 
 9 mutants, 9 killed.
+
+## Round 1 (PR #322 review fixes)
+
+Same method; suites: `src/app/report`, `src/lib/prospecting`, `src/components/prospecting`, `src/app/api/public/prospecting`.
+
+| # | Rule | Mutant | Result | Killed by |
+|---|---|---|---|---|
+| R1a | Fixed light scheme | wrapper drops the `light` class | KILLED | `pins the light scheme whatever the device theme` |
+| R1b | Fixed light scheme | wrapper drops `color-scheme: light` | KILLED | `pins the light scheme whatever the device theme` |
+| R1c | Fixed light scheme | `globals.css` drops the `.light` selector from the light tokens (rebuilt, E2E) | KILLED | `prospect-report-story.spec.ts`: dark-device `main` background was `lab(2.75381 0 0)`, expected white |
+| R3a | Fix these next | `ranked.slice(0, 3)` (repeats the hero's finding) | KILLED | `lists the next three findings after the headline…`; `hides 'Fix these next' when the headline is the only finding` |
+| R3b | Fix these next | block rendered with no findings | KILLED | `hides 'Fix these next'…`; `with no findings reads 'No major issues found'…` |
+| R4 | Raw metrics public | `resolvePublicReport` keeps fcp/speed index/TBT/CLS | KILLED | `raw speed metrics are stripped from the public sections` |
+| R7 | Cloud number E.164 | display number used raw, unnormalised | KILLED | `normalises Meta's formatted Cloud display number to E.164…` |
+
+7 mutants, 7 killed.

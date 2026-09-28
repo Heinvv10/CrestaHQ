@@ -7,7 +7,8 @@ import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
 import { ensureBookingStatusSeed, ownerUid } from "../lib/seed";
 import { apexgeoFromScan } from "@/lib/prospecting/apexgeo-sections";
 import { completedScan } from "@/lib/prospecting/apexgeo.fixture";
-import { finding } from "@/lib/prospecting/sections/findings";
+import * as leadCapture from "@/lib/prospecting/sections/lead-capture";
+import * as reputation from "@/lib/prospecting/sections/reputation";
 import type { ProspectSectionResult } from "@/types";
 
 /**
@@ -21,6 +22,10 @@ import type { ProspectSectionResult } from "@/types";
  *       hook hero, the Top 3, the ring grid (desktop only), the CTA with
  *       both buttons in the agency brand colour.
  *   B — the headline is another finding: the same dark hero leads with it.
+ *
+ * Finding text comes from the real scorers, so the screenshots show the
+ * stored copy. A last pass opens A on a dark-scheme device: the page stays
+ * light and the traffic-light colours stay fixed.
  */
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -76,6 +81,8 @@ test("the Story report renders at phone and desktop, with the hero picked by the
     });
     created.push(contactRef);
 
+    const leadRaw = { whatsapp: false, booking: true, contactForm: true, phoneLink: true, chatWidget: false };
+    const reviewsRaw = { rating: 4.5, reviewsCount: 33 };
     const base: ProspectSectionResult[] = [
       {
         key: "business_details",
@@ -84,26 +91,8 @@ test("the Story report renders at phone and desktop, with the hero picked by the
         findings: [],
         raw: { name: businessName, website: "https://example.com", category: "Plumber", https: true },
       },
-      {
-        key: "lead_capture",
-        status: "ok",
-        score: 60,
-        findings: [
-          finding("no_whatsapp_cta", "No WhatsApp button on the website."),
-          finding("no_chat_widget", "No live chat on the website."),
-        ],
-        raw: { whatsapp: false, booking: true, contactForm: true, phoneLink: true, chatWidget: false },
-      },
-      {
-        key: "reputation",
-        status: "ok",
-        score: 75,
-        findings: [
-          finding("rating_under_4_8", "4.5 stars on Google."),
-          finding("reviews_under_50", "33 Google reviews."),
-        ],
-        raw: { rating: 4.5, reviewsCount: 33, velocity90d: 4, ownerReplyRate: 0.5 },
-      },
+      { key: "lead_capture", status: "ok", ...leadCapture.score(leadRaw), raw: leadRaw },
+      { key: "reputation", status: "ok", ...reputation.score(reviewsRaw), raw: { ...reviewsRaw, velocity90d: 4, ownerReplyRate: 0.5 } },
     ];
 
     async function seedReport(sections: ProspectSectionResult[], headline: string) {
@@ -130,7 +119,8 @@ test("the Story report renders at phone and desktop, with the hero picked by the
     const geo = apexgeoFromScan(completedScan() as never);
     const aiHeadline = geo.find((s) => s.key === "ai_presence")!.findings[0]!.text;
     const { id: aId, token: a } = await seedReport([...base, ...geo], aiHeadline);
-    const { token: b } = await seedReport(base, "No WhatsApp button on the website.");
+    const bHeadline = base[1]!.findings[0]!.text;
+    const { token: b } = await seedReport(base, bHeadline);
 
     // --- A at 390×844: the AI hook hero ------------------------------------
     const phone = await visit(browser, `/report/${a}`, { width: 390, height: 844 });
@@ -140,8 +130,10 @@ test("the Story report renders at phone and desktop, with the hero picked by the
     await expect(p.getByRole("heading", { level: 1 })).toHaveText(`${businessName} wasn’t mentioned.`);
     await expect(p.getByLabel("0 of 6 AI answers named the business")).toBeVisible();
     await expect(p.getByTestId("area-count")).toBeVisible();
+    // The hero shows the worst finding; "Fix these next" the three after it.
     await expect(p.getByTestId("top-fixes").locator("li")).toHaveCount(3);
-    await expect(p.getByTestId("top-fixes")).toContainText("People who ask AI for a recommendation");
+    await expect(p.getByTestId("top-fixes")).not.toContainText("did not name the business");
+    await expect(p.getByTestId("top-fixes")).toContainText("Most visitors on a phone leave");
     // Desktop only.
     await expect(p.getByTestId("ring-grid")).toBeHidden();
     await expect(p.getByRole("img", { name: "Website speed: 30 out of 100" })).toBeVisible();
@@ -169,11 +161,29 @@ test("the Story report renders at phone and desktop, with the hero picked by the
     const other = await visit(browser, `/report/${b}`, { width: 390, height: 844 });
     await expect(other.page.getByTestId("hero-headline")).toBeVisible({ timeout: 30_000 });
     await expect(other.page.getByTestId("hero-ai")).toHaveCount(0);
-    await expect(other.page.getByRole("heading", { level: 1 })).toHaveText("No WhatsApp button on the website.");
+    await expect(other.page.getByRole("heading", { level: 1 })).toHaveText(bHeadline);
     await expect(other.page.getByTestId("hero-headline")).toContainText("Customers who prefer WhatsApp");
     await expect(other.page.getByRole("heading", { name: "Want customers to reach you on WhatsApp in one tap?" })).toBeVisible();
+    await expect(other.page.getByTestId("top-fixes")).toContainText("below the 4.8 that wins close calls");
     await other.page.screenshot({ path: `${EVIDENCE}/03-headline-hero-phone.png`, fullPage: true });
     await other.close();
+
+    // --- A on a dark-scheme phone: the page stays light ---------------------
+    const darkContext = await browser.newContext({
+      storageState: { cookies: [], origins: [] },
+      viewport: { width: 390, height: 844 },
+      colorScheme: "dark",
+    });
+    const dark = await darkContext.newPage();
+    expect((await dark.goto(`/report/${a}`))?.status()).toBe(200);
+    await expect(dark.getByTestId("hero-ai")).toBeVisible({ timeout: 30_000 });
+    // next-themes follows the device: <html> really is dark here.
+    await expect(dark.locator("html")).toHaveClass(/\bdark\b/);
+    // White, however Chromium spells it (it serialises oklch tokens as lab()).
+    await expect(dark.locator("main")).toHaveCSS("background-color", /^(rgb\(255, 255, 255\)|oklch\(1 0 0\)|lab\(100 0 0\))$/);
+    await expect(dark.getByText("Poor").first()).toHaveCSS("color", "rgb(159, 29, 29)");
+    await dark.screenshot({ path: `${EVIDENCE}/05-dark-device-phone.png`, fullPage: true });
+    await darkContext.close();
 
     // --- member view: raw metrics only behind the toggle ---------------------
     await page.goto(`/sa/${primaryId()}/prospecting/reports/${aId}`);

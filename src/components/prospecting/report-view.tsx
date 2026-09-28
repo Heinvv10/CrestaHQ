@@ -117,7 +117,10 @@ const MAX_FACTS = 3;
  * the business was found in. `showAll` (the member toggle) lists every row.
  */
 function factsOf(s: PublicReportSection, showAll: boolean): [string, Scalar][] {
-  const rows = Object.entries(s.details).filter(([k, v]) => v !== null && !/^question\d+$/.test(k));
+  // Questions and the AI presence counts render as sentences (AiPresenceBody), never as rows too.
+  const rows = Object.entries(s.details).filter(
+    ([k, v]) => v !== null && !/^question\d+$/.test(k) && !(s.key === "ai_presence" && AI_PRESENCE_KEYS.has(k)),
+  );
   if (showAll) return rows;
   return rows
     .filter(
@@ -125,7 +128,6 @@ function factsOf(s: PublicReportSection, showAll: boolean): [string, Scalar][] {
         v !== "notMeasured" &&
         !RAW_METRIC_KEYS.has(k) &&
         !MANUAL_CHECK_KEYS.has(k) &&
-        !(s.key === "ai_presence" && AI_PRESENCE_KEYS.has(k)) &&
         (s.key !== "listings" || v === "found"),
     )
     .slice(0, MAX_FACTS);
@@ -226,7 +228,7 @@ export function ReportSections({
                 // An unscored section (listings; AI presence left open) found nothing to judge.
                 <p className="text-muted-foreground">No issues found.</p>
               ) : null}
-              {s.key === "ai_presence" && s.status === "ok" ? <AiPresenceBody s={s} /> : null}
+              {s.key === "ai_presence" ? <AiPresenceBody s={s} /> : null}
               {facts.length > 0 ? (
                 <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 text-xs">
                   {facts.map(([k, v]) => (
