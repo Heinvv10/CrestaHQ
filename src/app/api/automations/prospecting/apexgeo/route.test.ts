@@ -118,7 +118,7 @@ describe("completed", () => {
     ]);
     expect(report.sections[0]).toEqual(GBP);
     // not_in_ai_answers outranks the old headline (gbp_no_hours).
-    expect(report.headline).toMatch(/^AI assistants \(gemini-2\.5-flash, gpt-4o-mini\) did not name the business/);
+    expect(report.headline).toMatch(/^AI assistants like ChatGPT and Gemini did not name the business/);
   });
 
   it("all engines errored: presence unavailable, never 'not in AI answers'", async () => {

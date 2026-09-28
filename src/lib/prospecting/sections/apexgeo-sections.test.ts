@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { allEnginesErrored, completedScan } from "../apexgeo.fixture";
 import type { ApexgeoScan } from "../apexgeo-client";
 import * as aiPresence from "./ai-presence";
@@ -27,8 +27,8 @@ describe("section 5 — website performance", () => {
 
   it.each([
     [2500, 100, []],
-    [2501, 70, []],
-    [4000, 70, []],
+    [2501, 70, ["lcp_needs_improvement"]],
+    [4000, 70, ["lcp_needs_improvement"]],
     [4001, 30, ["slow_mobile"]],
   ])("LCP %i ms scores %i", (lcp, expected, findings) => {
     const r = websitePerformance.result(scan((s) => void (s.technical.core_web_vitals.lcp_ms = lcp)));
@@ -42,7 +42,8 @@ describe("section 5 — website performance", () => {
         s.technical.core_web_vitals.lcp_ms = 2000;
         (s.technical as { mobile_viewport: boolean | null }).mobile_viewport = v;
       });
-    expect(websitePerformance.result(fast(false)).score).toBe(80);
+    expect(websitePerformance.result(fast(false))).toMatchObject({ score: 80 });
+    expect(codes(websitePerformance.result(fast(false)))).toEqual(["no_mobile_viewport"]);
     expect(websitePerformance.result(fast(null))).toMatchObject({ score: 100, raw: { mobileViewport: "notMeasured" } });
   });
 
@@ -135,10 +136,18 @@ describe("section 8 — AI presence", () => {
       answersMeasured: 6,
       models: "gemini-2.5-flash, gpt-4o-mini",
       topCompetitors: "Alpha Plumbing, Beta Drains, Gamma Plumbing Exampletown",
+      prompts: [
+        { text: "best plumber in Exampletown", competitors: ["Alpha Plumbing", "Beta Drains", "Gamma Plumbing Exampletown"] },
+        { text: "plumber near me in Exampletown, who should I call", competitors: ["Delta Plumbquick"] },
+        {
+          text: "recommended plumber Exampletown reviews",
+          competitors: ["Alpha Plumbing", "Beta Drains", "Epsilon Electrical", "Zeta Plumbing"],
+        },
+      ],
     });
   });
 
-  it("share of voice counts only measured answers", () => {
+  it("named in some answers is ai_mentions_partial; only measured answers count", () => {
     const r = aiPresence.result(
       scan((s) => {
         s.ai_visibility.prompts[0].engines[0].mentioned = true;
@@ -146,14 +155,23 @@ describe("section 8 — AI presence", () => {
         s.ai_visibility.prompts[1].engines[1].mentioned = true;
       }),
     );
-    expect(r).toMatchObject({ score: 17, findings: [], raw: { mentionedIn: 1, answersMeasured: 6 } });
+    expect(r).toMatchObject({ score: 50, raw: { mentionedIn: 1, answersMeasured: 6 } });
+    expect(codes(r)).toEqual(["ai_mentions_partial"]);
+    expect(r.findings[0].text).toContain("1 of 6 answers");
   });
 
-  it("an engine that errored on SOME prompts leaves the question open: no not_in_ai_answers", () => {
+  it("named in every measured answer scores 100 with no finding", () => {
+    const r = aiPresence.result(
+      scan((s) => s.ai_visibility.prompts.forEach((p) => p.engines.forEach((e) => (e.mentioned = true)))),
+    );
+    expect(r).toMatchObject({ score: 100, findings: [] });
+  });
+
+  it("an engine that errored on SOME prompts leaves the question open: no not_in_ai_answers, and no score", () => {
     const r = aiPresence.result(
       scan((s) => void (s.ai_visibility.prompts[2].engines[2].error = "API error: timeout")),
     );
-    expect(r).toMatchObject({ status: "ok", score: 0, findings: [], raw: { answersMeasured: 5 } });
+    expect(r).toMatchObject({ status: "ok", score: null, findings: [], raw: { answersMeasured: 5 } });
   });
 
   it("every engine errored: unavailable, never 'not mentioned'", () => {
@@ -197,12 +215,47 @@ describe("section 8 — AI presence", () => {
     expect(r.raw.topCompetitors).toBeNull();
   });
 
-  it("the answers' text and cited URLs never reach raw", () => {
+  it("the answers' text and cited URLs never reach raw; each question keeps only its text and competitors (C7)", () => {
     const r = aiPresence.result(
       scan((s) => void (s.ai_visibility.prompts[0].engines[0].cited_url = "https://secret.example/x")),
     );
     const json = JSON.stringify(r);
     expect(json).not.toContain("secret.example");
-    expect(json).not.toContain("best plumber in Exampletown");
+    for (const p of r.raw.prompts as Record<string, unknown>[]) expect(Object.keys(p).sort()).toEqual(["competitors", "text"]);
+  });
+});
+
+describe("section 8 — competitor filter (C5)", () => {
+  const named = (names: string[], businessName: string | null = null) =>
+    aiPresence.result(
+      scan((s) =>
+        s.ai_visibility.prompts.forEach((p, i) =>
+          p.engines.forEach((e) => (e.competitors_named = i === 0 ? names : [])),
+        ),
+      ),
+      businessName,
+    );
+
+  it("drops a single common word such as 'Coverage', and logs it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = named(["Coverage", "Alpha Plumbing"]);
+    expect(r.raw.topCompetitors).toBe("Alpha Plumbing");
+    expect((r.raw.prompts as { competitors: string[] }[])[0].competitors).toEqual(["Alpha Plumbing"]);
+    expect(warn).toHaveBeenCalledWith("[prospecting/ai_presence] competitor names dropped", { dropped: ["Coverage"] });
+    warn.mockRestore();
+  });
+
+  it("drops names made only of generic nouns, keeps a one-word brand", () => {
+    const r = named(["Plumbers", "Local Plumbing Services", "24/7 Emergency Plumber", "Plumbquick", "The Drain Doctor"]);
+    expect(r.raw.topCompetitors).toBe("Plumbquick, The Drain Doctor");
+  });
+
+  it("drops the prospect's own name, ignoring case, punctuation and (Pty) Ltd", () => {
+    const r = named(["fixture plumbing", "Alpha Plumbing"], "Fixture Plumbing (Pty) Ltd");
+    expect(r.raw.topCompetitors).toBe("Alpha Plumbing");
+  });
+
+  it("without the prospect's name, a name that merely resembles it is kept", () => {
+    expect(named(["Fixture Plumbing"]).raw.topCompetitors).toBe("Fixture Plumbing");
   });
 });

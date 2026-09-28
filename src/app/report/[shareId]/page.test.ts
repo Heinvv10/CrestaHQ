@@ -28,7 +28,9 @@ beforeEach(() => {
     sections: [
       { key: "gbp", status: "ok", score: 60, findings: [{ code: "gbp_no_hours", text: "No opening hours listed." }], raw: { s: "RAW-SENTINEL" } },
       { key: "lead_capture", status: "ok", score: 20, findings: [], raw: { whatsapp: false, booking: true, s: "RAW-SENTINEL" } },
-      { key: "ads", status: "timeout", score: null, findings: [], reason: "The ad library did not answer in time.", raw: {} },
+      { key: "listings", status: "timeout", score: null, findings: [], reason: "The directories did not answer in time.", raw: {} },
+      // Only manual-check links: never on the public page (C6).
+      { key: "ads", status: "unavailable", score: null, findings: [], reason: "ADS-SENTINEL", raw: {} },
     ],
   });
   mem.seed("agencies/ag1", { name: "Cresta Agency", logoUrl: "https://cdn.test/logo.png" });
@@ -46,10 +48,11 @@ async function token(): Promise<string> {
 describe("/report/[token]", () => {
   it("renders the branded report, the honest timeout, and the booking CTA", async () => {
     const html = await render(await token());
-    for (const text of ["Cresta Agency", "Acme Plumbing", "No opening hours on Google", "60/100", "No opening hours listed.", "Timed out", "The ad library did not answer in time.", 'href="/b/sa1/intro"', "WhatsApp click-to-chat", "Online booking"]) {
+    for (const text of ["Cresta Agency", "Acme Plumbing", "No opening hours on Google", "60/100", "No opening hours listed.", "Timed out", "The directories did not answer in time.", 'href="/b/sa1/intro"', "WhatsApp click-to-chat", "Online booking"]) {
       expect(html).toContain(text);
     }
     expect(html).not.toContain("RAW-SENTINEL");
+    expect(html).not.toContain("ADS-SENTINEL");
   });
 
   it("404s for a revoked or unknown token", async () => {

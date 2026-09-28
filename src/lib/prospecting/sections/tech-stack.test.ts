@@ -50,13 +50,13 @@ describe("tech_stack score", () => {
     });
   });
 
-  it("analytics alone scores 60", () => {
-    expect(score({ detected: [{ name: "GA", category: "analytics" }] })).toEqual({ score: 60, findings: [] });
+  it("analytics alone scores 100: a missing ads pixel is not a finding, so it deducts nothing", () => {
+    expect(score({ detected: [{ name: "GA", category: "analytics" }] })).toEqual({ score: 100, findings: [] });
   });
 
-  it("no analytics is no_analytics; a pixel alone scores 40", () => {
+  it("no analytics is no_analytics, and deducts 40", () => {
     const out = score({ detected: [{ name: "Pixel", category: "ads_pixel" }] });
-    expect(out.score).toBe(40);
+    expect(out.score).toBe(60);
     expect(out.findings.map((f) => f.code)).toEqual(["no_analytics"]);
   });
 

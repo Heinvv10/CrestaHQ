@@ -30,9 +30,12 @@ export interface Section {
   run: (input: SectionInput) => Promise<ProspectSectionResult>;
 }
 
-/** What every pure `score(raw)` returns. */
+/**
+ * What every pure `score(raw)` returns. `score` is `scoreOf(findings)`
+ * (findings.ts), or null for a section that cannot deduct reliably.
+ */
 export interface Scored {
-  score: number;
+  score: number | null;
   findings: ProspectFinding[];
 }
 

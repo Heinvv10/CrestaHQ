@@ -1,5 +1,6 @@
 import type { ProspectFinding } from "@/types";
-import { measured, unavailable, type Scored, type SectionInput } from "./types";
+import { finding, scoreOf } from "./findings.ts";
+import { measured, unavailable, type Scored, type SectionInput } from "./types.ts";
 
 /**
  * Section 3 — reputation from the Places rating + review count the contact
@@ -17,30 +18,29 @@ export interface ReputationRaw {
 
 const FEW_REVIEWS = 10;
 const LOW_RATING = 4.0;
-/** Review count at which the volume half of the score is full. */
-const VOLUME_CAP = 50;
+/** Below these a business is behind the ones customers compare it with. */
+const REVIEWS_TARGET = 50;
+const RATING_TARGET = 4.8;
 
+/** Each measure raises at most one code: the stricter replaces the milder. */
 export function score(raw: ReputationRaw): Scored {
   const count = raw.reviewsCount ?? 0;
   if (count === 0) {
-    return {
-      score: 0,
-      findings: [{ code: "no_reviews", text: "There are no Google reviews yet." }],
-    };
+    const findings = [finding("no_reviews", "There are no Google reviews yet.")];
+    return { score: scoreOf(findings), findings };
   }
   const findings: ProspectFinding[] = [];
   if (count < FEW_REVIEWS) {
-    findings.push({ code: "few_reviews", text: `Only ${count} Google review${count === 1 ? "" : "s"}.` });
+    findings.push(finding("few_reviews", `Only ${count} Google review${count === 1 ? "" : "s"}.`));
+  } else if (count < REVIEWS_TARGET) {
+    findings.push(finding("reviews_under_50", `There are ${count} Google reviews, fewer than 50.`));
   }
   if (raw.rating !== null && raw.rating < LOW_RATING) {
-    findings.push({
-      code: "low_rating",
-      text: `The Google rating is ${raw.rating.toFixed(1)} out of 5, below 4.0.`,
-    });
+    findings.push(finding("low_rating", `The Google rating is ${raw.rating.toFixed(1)} out of 5, below 4.0.`));
+  } else if (raw.rating !== null && raw.rating < RATING_TARGET) {
+    findings.push(finding("rating_under_4_8", `The Google rating is ${raw.rating.toFixed(1)} out of 5, below 4.8.`));
   }
-  const volume = Math.min(count, VOLUME_CAP) / VOLUME_CAP;
-  const points = raw.rating === null ? volume * 100 : volume * 40 + (raw.rating / 5) * 60;
-  return { score: Math.round(points), findings };
+  return { score: scoreOf(findings), findings };
 }
 
 export async function run(input: SectionInput) {

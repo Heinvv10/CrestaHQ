@@ -15,7 +15,7 @@ describe("reputation score", () => {
   it("no reviews (0) scores 0 with only no_reviews", () => {
     expect(score({ rating: 4.9, reviewsCount: 0 })).toEqual({
       score: 0,
-      findings: [{ code: "no_reviews", text: "There are no Google reviews yet." }],
+      findings: [expect.objectContaining({ code: "no_reviews", text: "There are no Google reviews yet." })],
     });
   });
 
@@ -23,28 +23,33 @@ describe("reputation score", () => {
     expect(codes({ rating: 4.2, reviewsCount: null })).toEqual(["no_reviews"]);
   });
 
-  it("fewer than 10 reviews is few_reviews; 10 is not", () => {
-    expect(codes({ rating: 4.5, reviewsCount: 9 })).toEqual(["few_reviews"]);
-    expect(codes({ rating: 4.5, reviewsCount: 10 })).toEqual([]);
+  it("fewer than 10 reviews is few_reviews, which replaces reviews_under_50; 10–49 is reviews_under_50; 50 is neither", () => {
+    expect(codes({ rating: 4.9, reviewsCount: 9 })).toEqual(["few_reviews"]);
+    expect(codes({ rating: 4.9, reviewsCount: 10 })).toEqual(["reviews_under_50"]);
+    expect(codes({ rating: 4.9, reviewsCount: 49 })).toEqual(["reviews_under_50"]);
+    expect(codes({ rating: 4.9, reviewsCount: 50 })).toEqual([]);
   });
 
   it("singular review text", () => {
     expect(score({ rating: 5, reviewsCount: 1 }).findings[0]!.text).toBe("Only 1 Google review.");
   });
 
-  it("a rating below 4.0 is low_rating; exactly 4.0 is not", () => {
-    expect(codes({ rating: 3.9, reviewsCount: 40 })).toEqual(["low_rating"]);
-    expect(codes({ rating: 4.0, reviewsCount: 40 })).toEqual([]);
+  it("a rating below 4.0 is low_rating, which replaces rating_under_4_8; 4.0–4.7 is rating_under_4_8; 4.8 is neither", () => {
+    expect(codes({ rating: 3.9, reviewsCount: 60 })).toEqual(["low_rating"]);
+    expect(codes({ rating: 4.0, reviewsCount: 60 })).toEqual(["rating_under_4_8"]);
+    expect(codes({ rating: 4.7, reviewsCount: 60 })).toEqual(["rating_under_4_8"]);
+    expect(codes({ rating: 4.8, reviewsCount: 60 })).toEqual([]);
   });
 
-  it("weights volume 40 (capped at 50 reviews) and rating 60", () => {
+  it("scores 100 minus the deductions", () => {
     expect(score({ rating: 5, reviewsCount: 50 }).score).toBe(100);
-    expect(score({ rating: 5, reviewsCount: 500 }).score).toBe(100);
-    expect(score({ rating: 4, reviewsCount: 25 }).score).toBe(68);
+    expect(score({ rating: 4.6, reviewsCount: 37 }).score).toBe(75);
+    expect(score({ rating: 3.5, reviewsCount: 5 }).score).toBe(10);
   });
 
-  it("without a rating, the score is volume alone", () => {
-    expect(score({ rating: null, reviewsCount: 25 })).toEqual({ score: 50, findings: [] });
+  it("without a rating, only the count can deduct", () => {
+    expect(codes({ rating: null, reviewsCount: 25 })).toEqual(["reviews_under_50"]);
+    expect(score({ rating: null, reviewsCount: 60 })).toEqual({ score: 100, findings: [] });
   });
 });
 

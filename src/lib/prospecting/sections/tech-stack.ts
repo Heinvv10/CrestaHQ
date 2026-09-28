@@ -1,4 +1,5 @@
 import type { ProspectFinding } from "@/types";
+import { finding, scoreOf } from "./findings";
 import { detectTech, type TechCategory } from "./tech-rules";
 import { measured, unavailable, type Scored, type SectionInput } from "./types";
 
@@ -14,22 +15,16 @@ export interface TechStackRaw {
   detected: { name: string; category: TechCategory }[];
 }
 
-const ANALYTICS_POINTS = 60;
-const PIXEL_POINTS = 40;
-
+/** An ads pixel is listed but not scored: a business that runs no ads needs none. */
 export function score(raw: TechStackRaw): Scored {
   const has = (category: TechCategory) => raw.detected.some((t) => t.category === category);
   const findings: ProspectFinding[] = [];
-  let points = 0;
-  if (has("analytics")) points += ANALYTICS_POINTS;
-  else {
-    findings.push({
-      code: "no_analytics",
-      text: "The website has no analytics, so visits and enquiries are not being measured.",
-    });
+  if (!has("analytics")) {
+    findings.push(
+      finding("no_analytics", "The website has no analytics, so visits and enquiries are not being measured."),
+    );
   }
-  if (has("ads_pixel")) points += PIXEL_POINTS;
-  return { score: points, findings };
+  return { score: scoreOf(findings), findings };
 }
 
 export async function run(input: SectionInput) {

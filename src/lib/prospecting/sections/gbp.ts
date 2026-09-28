@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { ProspectFinding } from "@/types";
+import { finding, scoreOf } from "./findings";
 import { measured, unavailable, type Scored, type SectionInput } from "./types";
 
 /**
@@ -57,22 +58,19 @@ export function score(details: Record<string, unknown>): Scored {
   const checks: [boolean, ProspectFinding][] = [
     [
       Array.isArray(hours?.weekdayDescriptions) && hours.weekdayDescriptions.length > 0,
-      { code: "gbp_no_hours", text: "The Google Business Profile shows no opening hours." },
+      finding("gbp_no_hours", "The Google Business Profile shows no opening hours."),
     ],
     [
       Array.isArray(details.photos) && details.photos.length > 0,
-      { code: "gbp_no_photos", text: "The Google Business Profile has no photos." },
+      finding("gbp_no_photos", "The Google Business Profile has no photos."),
     ],
     [
       typeof details.nationalPhoneNumber === "string" && details.nationalPhoneNumber.trim() !== "",
-      { code: "gbp_no_phone", text: "The Google Business Profile has no phone number." },
+      finding("gbp_no_phone", "The Google Business Profile has no phone number."),
     ],
   ];
-  const passed = checks.filter(([ok]) => ok).length;
-  return {
-    score: Math.round((passed / checks.length) * 100),
-    findings: checks.filter(([ok]) => !ok).map(([, finding]) => finding),
-  };
+  const findings = checks.filter(([ok]) => !ok).map(([, f]) => f);
+  return { score: scoreOf(findings), findings };
 }
 
 export async function run(input: SectionInput) {

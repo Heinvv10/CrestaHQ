@@ -15,8 +15,9 @@ import type {
 
 /**
  * Per section, the scalar `raw` keys safe to show publicly. business_details
- * omits phone and address (copied from the CRM contact). "notMeasured" keys
- * are kept: the report says plainly what it did not measure (decision D2).
+ * omits phone and address (copied from the CRM contact). "notMeasured" values
+ * are kept here, so the member view shows what was not measured (decision
+ * D2); `resolvePublicReport` drops them from the public page (C6).
  */
 export const PUBLIC_RAW_KEYS: Record<ProspectSectionKey, readonly string[]> = {
   business_details: ["name", "website", "category", "https"],
@@ -27,10 +28,17 @@ export const PUBLIC_RAW_KEYS: Record<ProspectSectionKey, readonly string[]> = {
   tech_stack: [],
   // Robots rules per AI crawler, as ApexGEO read them ("allowed" / "blocked" / "notMeasured").
   ai_readiness: ["GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended", "robotsTxt", "localBusinessSchema"],
-  // Counts, the models asked and the competitors they named — never the answers' text or cited URLs.
-  ai_presence: ["mentionedIn", "answersMeasured", "models", "topCompetitors"],
+  // Counts and the competitors named — never the answers' text or cited URLs,
+  // and never the model ids (C4: members only, MEMBER_RAW_KEYS).
+  ai_presence: ["mentionedIn", "answersMeasured", "topCompetitors"],
   ads: ["metaAdLibraryUrl", "googleAdsTransparencyUrl"],
   lead_capture: ["whatsapp", "booking", "contactForm", "phoneLink", "chatWidget"],
+};
+
+/** The member view (`serializeReport`): the public keys plus the models AI was asked. */
+export const MEMBER_RAW_KEYS: Record<ProspectSectionKey, readonly string[]> = {
+  ...PUBLIC_RAW_KEYS,
+  ai_presence: [...PUBLIC_RAW_KEYS.ai_presence, "models"],
 };
 
 /** The directories `sections/listings.ts` checks — the only listing keys shown. */
@@ -43,6 +51,8 @@ export type Scalar = string | number | boolean | null;
 const obj = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+const MAX_QUESTIONS = 10;
 
 /** Structured `raw` values flattened into named scalars. Again, only what is named. */
 const PUBLIC_DERIVED: Partial<Record<ProspectSectionKey, (raw: Record<string, unknown>) => Record<string, Scalar>>> = {
@@ -77,13 +87,25 @@ const PUBLIC_DERIVED: Partial<Record<ProspectSectionKey, (raw: Record<string, un
       .filter((n): n is string => typeof n === "string" && n !== "");
     return { technologies: names.length > 0 ? names.join(", ") : null };
   },
+  // The questions put to AI (C7), as question1, question2… Their text only:
+  // the competitors named per question stay in `raw`.
+  ai_presence: (raw) => {
+    const out: Record<string, Scalar> = {};
+    arr(raw.prompts)
+      .map((p) => obj(p).text)
+      .filter((t): t is string => typeof t === "string" && t.trim() !== "")
+      .slice(0, MAX_QUESTIONS)
+      .forEach((text, i) => (out[`question${i + 1}`] = text.slice(0, 200)));
+    return out;
+  },
 };
 
 export interface PublicReportSection {
   key: ProspectSectionKey;
   status: ProspectSectionStatus;
   score: number | null;
-  findings: { code: ProspectFindingCode; text: string }[];
+  /** `impact` and `cta` are null on findings scored before R0. */
+  findings: { code: ProspectFindingCode; text: string; impact: string | null; cta: string | null }[];
   reason: string | null;
   /** ApexGEO sections: why not measured, for the member view's connect link. */
   reasonCode: ApexgeoReasonCode | null;
@@ -98,6 +120,9 @@ const isScalar = (v: unknown): v is Scalar =>
   v === null || ["string", "number", "boolean"].includes(typeof v);
 
 /**
+ * `keys` is the raw-key whitelist: PUBLIC_RAW_KEYS unless the member view
+ * passes MEMBER_RAW_KEYS.
+ *
  * `showName: false` drops business_details `name` and the ads Meta Ad Library
  * link (it searches by that name): for a contact that is not a business (no
  * company, not a prospecting import) the name may be a person's.
@@ -106,11 +131,11 @@ const NAME_BEARING_KEYS = new Set(["name", "metaAdLibraryUrl"]);
 
 export function publicSection(
   s: ProspectSectionResult,
-  opts: { showName: boolean },
+  opts: { showName: boolean; keys?: Record<ProspectSectionKey, readonly string[]> },
 ): PublicReportSection {
   const raw = obj(s.raw);
   const details: Record<string, Scalar> = {};
-  for (const k of PUBLIC_RAW_KEYS[s.key] ?? []) {
+  for (const k of (opts.keys ?? PUBLIC_RAW_KEYS)[s.key] ?? []) {
     if (NAME_BEARING_KEYS.has(k) && !opts.showName) continue;
     if (isScalar(raw[k])) details[k] = raw[k];
   }
@@ -119,7 +144,12 @@ export function publicSection(
     key: s.key,
     status: s.status,
     score: typeof s.score === "number" ? s.score : null,
-    findings: (s.findings ?? []).map((f) => ({ code: f.code, text: String(f.text) })),
+    findings: (s.findings ?? []).map((f) => ({
+      code: f.code,
+      text: String(f.text),
+      impact: typeof f.impact === "string" ? f.impact : null,
+      cta: typeof f.cta === "string" ? f.cta : null,
+    })),
     reason: typeof s.reason === "string" && s.reason ? s.reason : null,
     reasonCode: typeof s.reasonCode === "string" && REASON_CODES.has(s.reasonCode) ? s.reasonCode : null,
     details,

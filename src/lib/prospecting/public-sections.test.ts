@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProspectSectionResult } from "@/types";
-import { publicSection } from "./public-sections";
+import { MEMBER_RAW_KEYS, publicSection } from "./public-sections";
 import { BUSINESS, FULL_DETAILS, RICH_HOMEPAGE } from "./sections/sections.fixture";
 import * as ads from "./sections/ads";
 import * as businessDetails from "./sections/business-details";
@@ -137,13 +137,26 @@ describe("publicSection — ApexGEO sections 5/7/8", () => {
     expect(Object.fromEntries(results.map((r) => [r.key, Object.keys(publicSection(r, { showName: true }).details).sort()]))).toEqual({
       website_performance: ["cls", "fcpSeconds", "lcpSeconds", "mobileViewport", "speedIndexSeconds", "tbtMs"],
       ai_readiness: ["ClaudeBot", "GPTBot", "Google-Extended", "PerplexityBot", "localBusinessSchema", "robotsTxt"],
-      ai_presence: ["answersMeasured", "mentionedIn", "models", "topCompetitors"],
+      ai_presence: ["answersMeasured", "mentionedIn", "question1", "question2", "question3", "topCompetitors"],
     });
+  });
+
+  it("the questions asked are public; the models asked are members-only (C4, C7)", () => {
+    const presence = results.find((r) => r.key === "ai_presence")!;
+    expect(publicSection(presence, { showName: true }).details).toMatchObject({
+      question1: "best plumber in Exampletown",
+      question3: "recommended plumber Exampletown reviews",
+    });
+    expect(publicSection(presence, { showName: true }).details).not.toHaveProperty("models");
+    expect(publicSection(presence, { showName: true, keys: MEMBER_RAW_KEYS }).details.models).toBe(
+      "gemini-2.5-flash, gpt-4o-mini",
+    );
   });
 
   it("no answer text, cited URL, provider error or unnamed raw key leaks", () => {
     const all = JSON.stringify(results.map((r) => publicSection(r, { showName: true })));
-    for (const leak of ["SENTINEL", "cited.example", "best plumber", "insufficient_quota", "No FAQ Schema"]) {
+    // Per-question competitor lists stay in raw: only the question text is derived.
+    for (const leak of ["SENTINEL", "cited.example", "Delta Plumbquick", "insufficient_quota", "No FAQ Schema"]) {
       expect(all).not.toContain(leak);
     }
   });
