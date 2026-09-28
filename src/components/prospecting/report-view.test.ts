@@ -13,7 +13,7 @@ it("only URL details render as links — a competitor name that looks like a URL
     createElement(ReportSections, {
       sections: [
         section("business_details", { website: "https://acme.test" }),
-        section("ai_presence", { topCompetitors: "https://evil.example, Beta" }),
+        section("ai_presence", { mentionedIn: 0, answersMeasured: 6, topCompetitors: "https://evil.example, Beta" }),
       ],
     }),
   );
@@ -37,4 +37,41 @@ it("says 'No issues found.' only for a scored section — never for an unscored 
   expect(html({ ...section("ai_presence", { mentionedIn: 0, answersMeasured: 5 }), score: null })).not.toContain(
     "No issues found.",
   );
+});
+
+it("by default lists at most three plain facts; showAll (member toggle) adds the raw metrics and hidden rows", () => {
+  const perf = section("website_performance", {
+    lcpSeconds: 6.2, fcpSeconds: 2.1, speedIndexSeconds: 7.4, tbtMs: 900, cls: 0.2, mobileViewport: "notMeasured",
+  });
+  const listings = { ...section("listings", { Facebook: "found", Bing: "not_found", Cylex: "unknown" }), score: null };
+  const ads = section("ads", { metaAdLibraryUrl: "https://ads.test/meta" });
+  const render = (showAll: boolean) =>
+    renderToStaticMarkup(createElement(ReportSections, { sections: [perf, listings, ads], showAll }));
+  const compact = render(false);
+  expect(compact).toContain("Main content shown on a phone (s)");
+  for (const hidden of ["Speed index (s)", "Blocking time (ms)", "Layout shift", "First content shown (s)", "Not measured", "No match", "Could not check", "https://ads.test/meta"]) {
+    expect(compact).not.toContain(hidden);
+  }
+  const all = render(true);
+  for (const shown of ["Speed index (s)", "Blocking time (ms)", "Layout shift", "Not measured", "No match", "Could not check", "https://ads.test/meta"]) {
+    expect(all).toContain(shown);
+  }
+  const many = section("lead_capture", { whatsapp: true, booking: true, contactForm: true, phoneLink: true, chatWidget: true });
+  const html = renderToStaticMarkup(createElement(ReportSections, { sections: [many] }));
+  expect(html.match(/<dt/g)).toHaveLength(3);
+});
+
+it("orders rows worst score first, unscored and unmeasured after", () => {
+  const html = renderToStaticMarkup(
+    createElement(ReportSections, {
+      sections: [
+        { ...section("gbp", {}), score: 100 },
+        { ...section("listings", {}), score: null },
+        { ...section("reputation", {}), score: 20 },
+        { ...section("tech_stack", {}), score: 60 },
+      ],
+    }),
+  );
+  const order = [...html.matchAll(/report-section-([a-z_]+)/g)].map((m) => m[1]);
+  expect(order).toEqual(["reputation", "tech_stack", "gbp", "listings"]);
 });

@@ -1,20 +1,21 @@
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScoreRing, StatusPill } from "@/components/prospecting/score-ring";
+import { aiQuestions } from "@/lib/prospecting/report-story";
 import type { PublicReportSection, Scalar } from "@/lib/prospecting/public-sections";
 import type { ProspectSectionKey } from "@/types";
 
 /**
- * The section cards of a prospect report, shared by the public page
+ * The section rows of a prospect report, shared by the public page
  * (`/report/[token]`) and the member view. Renders only the whitelisted
  * `PublicReportSection` shape. No hooks — safe in a server component.
  */
 
-const LABELS: Record<ProspectSectionKey, string> = {
+export const LABELS: Record<ProspectSectionKey, string> = {
   business_details: "Business details",
   gbp: "Google Business Profile",
   reputation: "Reviews & reputation",
   listings: "Directory listings",
-  website_performance: "Website performance",
+  website_performance: "Website speed",
   tech_stack: "Website technology",
   ai_readiness: "AI readiness",
   ai_presence: "AI search presence",
@@ -99,57 +100,138 @@ function DetailValue({ name, section, value }: { name: string; section: Prospect
   return <>{String(value)}</>;
 }
 
+/** Raw metrics: member view only, behind the "show everything" toggle (SOW, section cards). */
+const RAW_METRIC_KEYS = new Set(["fcpSeconds", "speedIndexSeconds", "tbtMs", "cls"]);
+
+/** Manual-check links: members only (C6). */
+const MANUAL_CHECK_KEYS = new Set(["metaAdLibraryUrl", "googleAdsTransparencyUrl"]);
+
+/** AI presence details the card renders as sentences rather than rows. */
+const AI_PRESENCE_KEYS = new Set(["mentionedIn", "answersMeasured", "topCompetitors"]);
+
+const MAX_FACTS = 3;
+
 /**
+ * The rows a card lists. By default at most three plain-language facts: no
+ * raw metrics, nothing unmeasured, no manual-check links, only directories
+ * the business was found in. `showAll` (the member toggle) lists every row.
+ */
+function factsOf(s: PublicReportSection, showAll: boolean): [string, Scalar][] {
+  const rows = Object.entries(s.details).filter(([k, v]) => v !== null && !/^question\d+$/.test(k));
+  if (showAll) return rows;
+  return rows
+    .filter(
+      ([k, v]) =>
+        v !== "notMeasured" &&
+        !RAW_METRIC_KEYS.has(k) &&
+        !MANUAL_CHECK_KEYS.has(k) &&
+        !(s.key === "ai_presence" && AI_PRESENCE_KEYS.has(k)) &&
+        (s.key !== "listings" || v === "found"),
+    )
+    .slice(0, MAX_FACTS);
+}
+
+/** Worst score first; unscored and unmeasured sections after, in stored order. */
+function checkUpOrder(sections: PublicReportSection[]): PublicReportSection[] {
+  const scoreOf = (s: PublicReportSection) => (s.status === "ok" && s.score !== null ? s.score : 101);
+  return sections.map((s, i) => ({ s, i })).sort((a, b) => scoreOf(a.s) - scoreOf(b.s) || a.i - b.i).map(({ s }) => s);
+}
+
+function AiPresenceBody({ s }: { s: PublicReportSection }) {
+  const questions = aiQuestions(s);
+  const { mentionedIn, answersMeasured, topCompetitors } = s.details;
+  return (
+    <>
+      {typeof mentionedIn === "number" && typeof answersMeasured === "number" ? (
+        <p>
+          Named in {mentionedIn} of {answersMeasured} AI answers.
+          {typeof topCompetitors === "string" ? (
+            <>
+              {" "}
+              Named instead: <span className="font-medium text-foreground">{topCompetitors}</span>.
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {questions.length > 0 ? (
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Questions we asked</p>
+          <ul className="mt-1 space-y-1">
+            {questions.map((q, i) => (
+              <li key={i} className="rounded-md bg-muted px-2.5 py-1.5 text-foreground">
+                &ldquo;{q}&rdquo;
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The section rows of a prospect report ("the rest of your check-up"),
+ * shared by the public page and the member view: a score ring in the
+ * traffic-light colour, the finding sentences and at most three facts.
+ *
  * `connectHref` (member view only): where a section left out for want of an
- * ApexGEO key links to connect one. The public page never passes it.
+ * ApexGEO key links to connect one. `showAll` (member view only): list the
+ * raw metrics and the rows the public page hides. The public page passes
+ * neither.
  */
 export function ReportSections({
   sections,
   connectHref,
+  showAll = false,
 }: {
   sections: PublicReportSection[];
   connectHref?: string;
+  showAll?: boolean;
 }) {
   return (
-    <>
-      {sections.map((s) => {
-        const details = Object.entries(s.details).filter(([, v]) => v !== null);
+    <ul className="divide-y border-y">
+      {checkUpOrder(sections).map((s) => {
+        const label = LABELS[s.key] ?? s.key;
+        const facts = factsOf(s, showAll);
+        const scored = s.status === "ok" && s.score !== null;
         return (
-          <Card key={s.key} data-testid={`report-section-${s.key}`}>
-            <CardHeader className="flex flex-row items-center justify-between gap-3">
-              <CardTitle className="text-base">{LABELS[s.key] ?? s.key}</CardTitle>
-              {s.status === "ok" && s.score !== null ? (
-                <Badge variant="secondary">{s.score}/100</Badge>
-              ) : s.status !== "ok" ? (
-                <Badge variant="outline">{STATUS_NOTE[s.status]}</Badge>
-              ) : null}
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              {s.status !== "ok" && s.reason ? (
-                <p className="text-muted-foreground">{s.reason}</p>
-              ) : null}
+          <li key={s.key} data-testid={`report-section-${s.key}`} className="flex gap-3 py-4">
+            {scored ? (
+              <ScoreRing score={s.score!} label={label} />
+            ) : (
+              <span aria-hidden="true" className="size-11 shrink-0 rounded-full border-4 border-dashed border-muted" />
+            )}
+            <div className="min-w-0 flex-1 space-y-2 text-sm">
+              <div className="flex items-start justify-between gap-3">
+                <h3 className="pt-0.5 font-medium">{label}</h3>
+                {scored ? (
+                  <StatusPill score={s.score!} />
+                ) : s.status !== "ok" ? (
+                  <Badge variant="outline">{STATUS_NOTE[s.status]}</Badge>
+                ) : null}
+              </div>
+              {s.status !== "ok" && s.reason ? <p className="text-muted-foreground">{s.reason}</p> : null}
               {connectHref && s.reasonCode === "not_connected" ? (
                 <a href={connectHref} className="inline-block text-sm underline underline-offset-2">
                   Connect ApexGEO
                 </a>
               ) : null}
               {s.findings.length > 0 ? (
-                <ul className="list-disc space-y-1 pl-5">
+                <ul className="space-y-1 text-muted-foreground">
                   {s.findings.map((f) => (
                     <li key={f.code}>{f.text}</li>
                   ))}
                 </ul>
-              ) : s.status === "ok" && s.score !== null ? (
+              ) : scored ? (
                 // An unscored section (listings; AI presence left open) found nothing to judge.
                 <p className="text-muted-foreground">No issues found.</p>
               ) : null}
-              {details.length > 0 ? (
-                <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 border-t pt-2 text-xs">
-                  {details.map(([k, v]) => (
+              {s.key === "ai_presence" && s.status === "ok" ? <AiPresenceBody s={s} /> : null}
+              {facts.length > 0 ? (
+                <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1 text-xs">
+                  {facts.map(([k, v]) => (
                     <div key={k} className="contents">
-                      <dt className="text-muted-foreground">
-                        {DETAIL_LABELS[k] ?? (/^question\d+$/.test(k) ? "Question asked" : k)}
-                      </dt>
+                      <dt className="text-muted-foreground">{DETAIL_LABELS[k] ?? k}</dt>
                       <dd className="text-right">
                         <DetailValue name={k} section={s.key} value={v} />
                       </dd>
@@ -157,10 +239,10 @@ export function ReportSections({
                   ))}
                 </dl>
               ) : null}
-            </CardContent>
-          </Card>
+            </div>
+          </li>
         );
       })}
-    </>
+    </ul>
   );
 }
