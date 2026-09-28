@@ -4,7 +4,7 @@ import { BUSINESS, DIRECTORY_HIT, DIRECTORY_MISS, DIRECTORY_SHELL, RICH_HOMEPAGE
 const publicFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/webhooks/public-fetch", () => ({ publicFetch }));
 
-const { classify, run, score } = await import("./listings");
+const { classify, run } = await import("./listings");
 
 const html = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "text/html" } });
 const PHONE = "+27 41 555 0100";
@@ -70,20 +70,6 @@ describe("listings classify", () => {
   });
 });
 
-describe("listings score", () => {
-  const c = (status: "found" | "not_found" | "unknown") => ({ directory: "d", url: "u", status });
-
-  it("scores found over readable directories; unknown is not counted", () => {
-    expect(score([c("found"), c("not_found"), c("unknown"), c("unknown")])).toEqual({ score: 50, findings: [] });
-    expect(score([c("found"), c("unknown")]).score).toBe(100);
-    expect(score([c("not_found"), c("unknown")]).score).toBe(0);
-  });
-
-  it("never emits listing_missing (no directory gives a trustworthy miss)", () => {
-    expect(score([c("not_found"), c("not_found")]).findings).toEqual([]);
-  });
-});
-
 describe("listings run", () => {
   it("checks the website's Facebook page and four directory searches concurrently, one http each", async () => {
     route({
@@ -95,7 +81,8 @@ describe("listings run", () => {
     const i = input();
     const out = await run(i);
     expect(out.status).toBe("ok");
-    expect(out.score).toBe(50);
+    // No score and never listing_missing: no directory gives a trustworthy miss (C2).
+    expect(out.score).toBeNull();
     expect(out.findings).toEqual([]);
     expect((out.raw.checks as { directory: string; status: string }[]).map((c) => [c.directory, c.status])).toEqual([
       ["Facebook", "found"],

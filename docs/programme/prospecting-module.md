@@ -38,7 +38,7 @@ Outscraper dropped 2026-09-24 — Hein ruled out paying per search; Get Leads (t
 
 Headline of the report = the single worst finding, ranked by a fixed severity table (no site > no HTTPS > not in any AI answer > no GBP claim > slow mobile > no WhatsApp CTA > …). That sentence is what the outreach merge tag uses.
 
-Report page: `/report/{token}` (see D1 below), public, non-enumerating id, branded from agency Company Settings exactly like the GHL share links (logo, colours, agency name, CTA to the agency's booking page). PDF export is v2.
+Report page: `/report/{token}` (see D1 below), public, non-enumerating id, branded from agency Company Settings exactly like the GHL share links (logo, colours, agency name, CTA to the agency's booking page). PDF export is now scoped in the [prospect report redesign SOW](prospect-report-redesign-sow.md) (R5).
 
 ## Shape
 
@@ -77,7 +77,7 @@ Manage dialog: gate checkbox, quota number field. Sidebar entry "Prospecting" at
 ## PR 2 decisions (2026-09-26, recorded from the build)
 
 - **D1 — public URL is `/report/[token]`, not `/r/[shareId]`.** `/r/[token]` is already the compliance-sensitive public review page; a sibling dynamic segment at `/r` is a Next.js build error and would put report code beside the review-gating code.
-- **D2 — Section 3 uses Places `rating` + `userRatingCount` only.** No Atmosphere/reviews SKU: it is paid per call, shares the 30/day SearchText budget, and Places caps the review sample anyway. Review velocity and owner-reply rate are shown as "not measured", never faked. **Revisit when** the first buyer asks for review velocity.
+- **D2 — Section 3 uses Places `rating` + `userRatingCount` only.** No Atmosphere/reviews SKU: it is paid per call, shares the 30/day SearchText budget, and Places caps the review sample anyway. Review velocity and owner-reply rate are shown as "not measured", never faked. **Public exception (R0, C6 in the [redesign SOW](prospect-report-redesign-sow.md)):** the public page leaves unmeasured rows out rather than labelling them; the member view still shows "not measured". **Revisit when** the first buyer asks for review velocity.
 - **D5 — Section 9 (ads) ships `unavailable`.** Spike: Meta Ad Library answers a keyless GET with 403; Google Ads Transparency Center is a 2.5 MB client-rendered shell backed by an undocumented internal RPC. The section returns manual-check links and never a guessed "no ads". Revisit if either publishes a keyless API.
 - **Section 4 listings:** Brabys and Cylex are behind Cloudflare 403s and Yellow Pages SA serves a JS shell, so they come back `unknown`. Bing (server-rendered, noisy) and the Facebook page linked from the business's own site are checked. `listing_missing` is never emitted, because no directory's "not found" is trustworthy.
 - **Section 2 GBP:** one Places Details call, mask `id,businessStatus,photos,regularOpeningHours,nationalPhoneNumber`. `editorialSummary` is an Enterprise+Atmosphere field, so the description is not measured. Places cannot tell "claimed", so `gbp_unclaimed` is not emitted.

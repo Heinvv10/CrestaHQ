@@ -1,4 +1,5 @@
 import type { ProspectFinding } from "@/types";
+import { finding, scoreOf } from "./findings";
 import { measured, type Scored, type SectionInput } from "./types";
 
 /**
@@ -19,25 +20,20 @@ export interface BusinessDetailsRaw {
   https: boolean | null;
 }
 
-const HTTPS_PENALTY = 20;
-
+/**
+ * A missing phone, address or category is a gap in the CRM contact, not a
+ * problem the business has, so it is shown but not scored.
+ */
 export function score(raw: BusinessDetailsRaw): Scored {
-  const fields = [raw.name, raw.phone, raw.address, raw.website, raw.category];
-  let points = Math.round((fields.filter(Boolean).length / fields.length) * 100);
   const findings: ProspectFinding[] = [];
   if (!raw.website) {
-    findings.push({
-      code: "no_website",
-      text: "There is no website, so customers searching online only find the Google listing.",
-    });
+    findings.push(
+      finding("no_website", "There is no website, so customers searching online only find the Google listing."),
+    );
   } else if (raw.https === false) {
-    points -= HTTPS_PENALTY;
-    findings.push({
-      code: "no_https",
-      text: "The website is not on HTTPS, so browsers mark it as \"Not secure\".",
-    });
+    findings.push(finding("no_https", "The website is not on HTTPS, so browsers mark it as \"Not secure\"."));
   }
-  return { score: points, findings };
+  return { score: scoreOf(findings), findings };
 }
 
 export async function run(input: SectionInput) {

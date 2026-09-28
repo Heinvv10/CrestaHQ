@@ -22,12 +22,32 @@ export type { PublicReportSection };
  * own setup — no ApexGEO key, or its account out of credits — are dropped:
  * a prospect should not see those gaps (decision D6). Pending, timed-out,
  * failed and missing-input ones stay.
+ *
+ * C6 (supersedes D2 for the public page only): rows we did not measure are
+ * left out, not labelled — "notMeasured" details, listings that were not
+ * found or could not be checked, and the ads section, which is only
+ * manual-check links. The JSON route and the page both read this, so hiding
+ * them here keeps them out of both. The member view (`serializeReport`)
+ * keeps them. A score below 100 with no finding is dropped too: a report
+ * scored before R0 never shows a score without a reason.
  */
 
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 
 /** ApexGEO sections not measured because of the agency's own setup (D6). */
 const HIDDEN_PUBLICLY: ReadonlySet<string | undefined> = new Set(["not_connected", "out_of_credits"]);
+
+/** Sections that carry nothing measured, only manual-check links (C6). */
+const MANUAL_ONLY_SECTIONS: ReadonlySet<string> = new Set(["ads"]);
+
+/** The public rows of a section: see C6 above. */
+function measuredOnly(s: PublicReportSection): PublicReportSection {
+  const details = Object.fromEntries(
+    Object.entries(s.details).filter(([, v]) => v !== "notMeasured" && (s.key !== "listings" || v === "found")),
+  );
+  const unexplained = s.score !== null && s.score < 100 && s.findings.length === 0;
+  return { ...s, details, score: unexplained ? null : s.score };
+}
 
 export interface PublicReport {
   businessName: string | null;
@@ -92,8 +112,8 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     headline: str(report.headline),
     generatedAt: toIso(report.generatedAt),
     sections: displaySections((report.sections ?? []) as ProspectSectionResult[], report.apexgeo)
-      .filter((s) => !HIDDEN_PUBLICLY.has(s.reasonCode))
-      .map((s) => publicSection(s, { showName })),
+      .filter((s) => !HIDDEN_PUBLICLY.has(s.reasonCode) && !MANUAL_ONLY_SECTIONS.has(s.key))
+      .map((s) => measuredOnly(publicSection(s, { showName }))),
     agency: {
       name: str(agency.name),
       logoUrl: logoUrl && /^https:\/\//i.test(logoUrl) ? logoUrl : null,

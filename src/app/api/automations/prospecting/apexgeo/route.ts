@@ -120,9 +120,13 @@ export async function POST(request: Request) {
     if (!res.ok) console.warn("[prospecting/apexgeo] poll error, will retry", reportId, res.error);
 
     if (scan?.status === "completed") {
+      // The prospect's own name is never listed as its competitor (C5).
+      const name = (report!.sections as { key?: unknown; raw?: { name?: unknown } }[] | undefined)?.find(
+        (s) => s.key === "business_details",
+      )?.raw?.name;
       const written = await settleApexgeo(reportId, {
         attempt,
-        sections: apexgeoFromScan(scan),
+        sections: apexgeoFromScan(scan, typeof name === "string" && name.trim() ? name : null),
         status: "done",
         credits: scan.credits_charged,
       });

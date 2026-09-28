@@ -23,13 +23,13 @@ describe("business_details score", () => {
     expect(score(complete)).toEqual({ score: 100, findings: [] });
   });
 
-  it("scores by completeness: two of five fields missing is 60", () => {
-    expect(score({ ...complete, phone: null, category: null }).score).toBe(60);
+  it("a CRM contact missing phone or category is not a finding, so it deducts nothing", () => {
+    expect(score({ ...complete, phone: null, category: null })).toEqual({ score: 100, findings: [] });
   });
 
-  it("flags no_website and loses the website's share", () => {
+  it("flags no_website and deducts 50", () => {
     const out = score({ ...complete, website: null, https: null });
-    expect(out.score).toBe(80);
+    expect(out.score).toBe(50);
     expect(out.findings.map((f) => f.code)).toEqual(["no_website"]);
   });
 

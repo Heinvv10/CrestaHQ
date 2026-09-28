@@ -7,7 +7,7 @@ import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { prospectingEnabled, prospectingGateOff } from "@/lib/prospecting/gate";
 import { usageMonthKey } from "@/lib/server/usage-meter";
 import { REPORT_DEADLINE_MS } from "@/lib/prospecting/report-runner";
-import { publicSection } from "@/lib/prospecting/public-sections";
+import { MEMBER_RAW_KEYS, publicSection } from "@/lib/prospecting/public-sections";
 import { displaySections } from "@/lib/prospecting/apexgeo-sections";
 import type {
   ContactProspecting,
@@ -177,8 +177,10 @@ export function toIso(v: unknown): string | null {
 }
 
 /**
- * The member view of a report: timestamps ISO-ified, sections through the same
- * whitelist as the public page (no `raw`), with the business name kept.
+ * The member view of a report: timestamps ISO-ified, sections through the
+ * member whitelist (the public keys plus the models asked; no `raw`), with the
+ * business name kept. Unlike the public page it keeps the not-measured,
+ * could-not-check and manual-check rows and the ads section (C6).
  */
 export function serializeReport(id: string, d: FirebaseFirestore.DocumentData) {
   return {
@@ -187,7 +189,7 @@ export function serializeReport(id: string, d: FirebaseFirestore.DocumentData) {
     createdByUid: d.createdByUid as string,
     status: d.status as string,
     sections: displaySections((d.sections ?? []) as ProspectSectionResult[], d.apexgeo).map((s) =>
-      publicSection(s, { showName: true }),
+      publicSection(s, { showName: true, keys: MEMBER_RAW_KEYS }),
     ),
     headline: (d.headline ?? null) as string | null,
     shared: typeof d.shareId === "string",
