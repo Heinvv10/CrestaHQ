@@ -8,7 +8,8 @@ import { runProspectReport } from "@/lib/prospecting/report-runner";
 import { prospectingEnabled } from "@/lib/prospecting/gate";
 import { readApexgeoConnection } from "@/lib/prospecting/apexgeo-connection";
 import { schedulePoll, settleApexgeo } from "@/lib/prospecting/apexgeo-report";
-import { announceReadyReport } from "@/lib/prospecting/report-ready";
+import { ANNOUNCE_PROTOCOL, announceReport } from "@/lib/prospecting/report-ready";
+import { createShare, reportShareUrl } from "@/lib/prospecting/share";
 import { APEXGEO_REASON, apexgeoPlaceholders } from "@/lib/prospecting/apexgeo-sections";
 import {
   INTERRUPTED_AFTER_MS,
@@ -43,9 +44,13 @@ import {
  * is queued after it. A poll that cannot be queued settles the three ApexGEO
  * sections `failed` at once, rather than leaving them "in progress".
  *
- * A ready report then gets its share link, is stamped on the contact and
- * fires `prospecting.report.ready` (lib/prospecting/report-ready.ts). The
- * claim above is what makes that once per report. A failed report fires nothing.
+ * The claim stamps `announceProtocol`. The ready write also mints the share
+ * link and stamps `lastReportId` / `lastReportUrl` on the contact, in the same
+ * transaction, so the link is stable from `ready` on. The headline and
+ * `prospecting.report.ready` wait for the report to be FINAL: a report with no
+ * scan is final at `ready` (the ready write sets `announceDueAt`); one with a
+ * scan is final when the poll settles it (lib/prospecting/report-ready.ts).
+ * A failed report fires nothing.
  */
 
 export const dynamic = "force-dynamic";
@@ -76,7 +81,12 @@ export async function POST(request: Request) {
   const claimed = await db.runTransaction(async (tx) => {
     const report = (await tx.get(reportRef)).data();
     if (!report || report.status !== "queued") return null;
-    tx.update(reportRef, { status: "running", startedAt: FieldValue.serverTimestamp() });
+    tx.update(reportRef, {
+      status: "running",
+      startedAt: FieldValue.serverTimestamp(),
+      announceProtocol: ANNOUNCE_PROTOCOL,
+      announcedAt: null,
+    });
     return report;
   });
   if (!claimed) {
@@ -118,14 +128,26 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, status: "failed" });
     }
     const written = await db.runTransaction(async (tx) => {
-      if ((await tx.get(reportRef)).data()?.status !== "running") return false;
+      const report = (await tx.get(reportRef)).data();
+      if (report?.status !== "running") return false;
+      const contactExists = (await tx.get(contactRef)).exists;
+      const { token, shareId } = createShare(tx, report, reportId, claimed.createdByUid);
       tx.update(reportRef, {
         ...result,
         status: "ready",
+        shareId,
         apexgeo: outcome.apexgeo
           ? { scanId: outcome.apexgeo.scanId, status: "pending", attempts: 0, startedAt: new Date() }
           : null,
+        // No scan: this write makes the report final.
+        ...(outcome.apexgeo ? {} : { announceDueAt: FieldValue.serverTimestamp() }),
       });
+      if (contactExists) {
+        tx.update(contactRef, {
+          "prospecting.lastReportId": reportId,
+          "prospecting.lastReportUrl": reportShareUrl(token),
+        });
+      }
       return true;
     });
     if (!written) {
@@ -141,16 +163,8 @@ export async function POST(request: Request) {
         status: "failed",
       });
     }
-    // The report is settled: share link, contact stamp and the
-    // prospecting.report.ready trigger. Never throws; failures are logged.
-    await announceReadyReport({
-      reportId,
-      subAccountId: claimed.subAccountId,
-      agencyId: claimed.agencyId,
-      contactId: claimed.contactId,
-      createdByUid: claimed.createdByUid,
-      headline: outcome.headline,
-    });
+    // A no-op unless the report is final by now. Never throws.
+    await announceReport(reportId);
     return NextResponse.json({ ok: true, status: "ready" });
   } catch (err) {
     console.error("[prospecting/report] run failed", reportId, err);

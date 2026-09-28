@@ -107,9 +107,17 @@ const SCHEDULES: ScheduleSpec[] = [
     description:
       "Daily refresh of the cached OpenRouter model list (AI model allow-list).",
   },
+  {
+    scheduleId: "leadstack-prospect-announce",
+    path: "/api/automations/prospecting/announce-sweep",
+    // 96 messages a day per deployment (the QStash cap has been hit before).
+    cron: "*/15 * * * *",
+    description:
+      "Prospect report announce sweep: times out lost ApexGEO polls and announces due reports.",
+  },
 ];
 
-const BASE_SCHEDULE_VERSION = "2026-09-24-ai-models";
+const BASE_SCHEDULE_VERSION = "2026-09-28-prospect-announce";
 
 /**
  * The Google Business Profile review sync is OPT-IN per deployment

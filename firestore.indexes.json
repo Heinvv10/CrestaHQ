@@ -933,6 +933,42 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "prospectReports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "announceProtocol",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "apexgeo.status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "apexgeo.startedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "prospectReports",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "announceProtocol",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "announcedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "announceDueAt",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [
