@@ -134,10 +134,10 @@ describe("the slop check", () => {
 });
 
 describe("the retry and the caller's deadline", () => {
-  it("no room left for a second bounded call before the deadline → no retry, `slop`", async () => {
+  it("no room left for a second bounded call before the deadline → no retry, `slop_deadline`", async () => {
     const call = fakeCall("Thanks Sam!", "Thanks Sam. Glad the team was quick.");
     const out = await draftReplyWith("m", INPUT, call, Date.now() + REVIEWS_AI_CALL_MS - 1_000);
-    expect(out).toEqual({ text: null, failure: "slop" });
+    expect(out).toEqual({ text: null, failure: "slop_deadline" });
     expect(call).toHaveBeenCalledTimes(1);
   });
 
@@ -155,7 +155,7 @@ describe("the retry and the caller's deadline", () => {
       now.mockReturnValue(t0 + 30_000);
       return { text: "Thanks Sam!", model: "m", promptTokens: 1, completionTokens: 1, totalTokens: 2 };
     });
-    expect(await draftReplyWith("m", INPUT, call, t0 + REVIEWS_AI_CALL_MS + 10_000)).toEqual({ text: null, failure: "slop" });
+    expect(await draftReplyWith("m", INPUT, call, t0 + REVIEWS_AI_CALL_MS + 10_000)).toEqual({ text: null, failure: "slop_deadline" });
     expect(call).toHaveBeenCalledTimes(1);
     now.mockRestore();
     now.mockRestore();

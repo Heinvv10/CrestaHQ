@@ -24,6 +24,7 @@ vi.mock("@/lib/reputation/ai/select", async (orig) => {
           // A runaway retry loop fails the test instead of hanging it.
           if (model.calls > 20) throw new Error("runaway retries");
           const text = model.answers.shift() ?? model.fallback;
+          if (text === "__THROW__") throw new Error("call_failed_test");
           return { text, model: "m-voice", promptTokens: 1, completionTokens: 1, totalTokens: 2 };
         }, deadlineMs),
     }),
@@ -123,6 +124,95 @@ describe("a review whose drafts keep failing the voice check", () => {
       const before = model.calls;
       await syncAndRun();
       expect(model.calls - before).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+const rawPendingOf = (id: string) => mem.read(reviewPath(id))?.pendingReply as { reason: string; slopFails?: number } | undefined;
+// storePending omits `slopFails` from the write entirely when it is 0 (falsy) — so "0" reads as absent.
+const slopFailsOf = (id: string) => rawPendingOf(id)?.slopFails ?? 0;
+
+describe("slopFails resets when the review's content changes (run.ts, prior.basisHash === basisHash)", () => {
+  it("capped at 2 on content A, then edited to content B: still redrafted (not capped), slopFails 1", async () => {
+    const t0 = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    try {
+      await syncAndRun(); // day 0: first slop on content A
+      expect(rawPendingOf("fake-a1")).toMatchObject({ reason: "draft_failed", slopFails: 1 });
+
+      vi.setSystemTime(t0 + 25 * 3600_000);
+      await syncAndRun(); // day 1: second slop on content A → hits the cap, held for a person
+      expect(rawPendingOf("fake-a1")).toMatchObject({ reason: "draft_failed", slopFails: 2 });
+
+      // Content changes: no wait needed (the pending draft is no longer "fresh" for the new basis).
+      putFixtureReview("fake-a1", 4, null, 28);
+      const before = model.calls;
+      await syncAndRun();
+      // Redrafted, not skipped as capped: one attempt + its one retry, both slop.
+      expect(model.calls - before).toBe(2);
+      expect(rawPendingOf("fake-a1")).toMatchObject({ reason: "draft_failed", slopFails: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("a retry skipped for the deadline does not count toward the cap", () => {
+  it("two near-deadline runs give slopFails 0 and are not capped; a later run with time available retries", async () => {
+    const t0 = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    const nearDeadline = () => Date.now() + REVIEWS_AI_CALL_MS - 5_000;
+    try {
+      await syncAndRun(nearDeadline()); // day 0: slop, no room for the retry → held_deadline, never counted
+      expect(model.calls).toBe(2); // one attempt per eligible review, no retry
+      for (const id of ["fake-a1", "fake-a2"]) {
+        expect(rawPendingOf(id)).toMatchObject({ reason: "draft_failed" });
+        expect(slopFailsOf(id)).toBe(0);
+      }
+
+      vi.setSystemTime(t0 + 25 * 3600_000);
+      const before = model.calls;
+      await syncAndRun(nearDeadline()); // day 1: same again
+      expect(model.calls - before).toBe(2);
+      for (const id of ["fake-a1", "fake-a2"]) {
+        expect(rawPendingOf(id)).toMatchObject({ reason: "draft_failed" });
+        expect(slopFailsOf(id)).toBe(0);
+      }
+
+      // Not capped: a later run with a full deadline does the retry (one attempt + one retry, per review).
+      vi.setSystemTime(t0 + 50 * 3600_000);
+      const before2 = model.calls;
+      await syncAndRun();
+      expect(model.calls - before2).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("a non-slop failure (call_failed) does not reset slopFails", () => {
+  it("slop, call_failed, slop: caps at 2 and sends a held alert", async () => {
+    const t0 = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+    try {
+      await syncAndRun(); // day 0: slop
+      expect(rawPendingOf("fake-a1")).toMatchObject({ reason: "draft_failed", slopFails: 1 });
+
+      // Fake-a1 is drafted first (newest content): its one attempt call_fails, no retry is attempted.
+      vi.setSystemTime(t0 + 25 * 3600_000);
+      model.answers = ["__THROW__"];
+      await syncAndRun(); // day 1: call_failed — carried forward unchanged, never reset to 0
+      expect(rawPendingOf("fake-a1")).toMatchObject({ reason: "draft_failed", slopFails: 1 });
+      expect(mem.read(reviewPath("fake-a1"))?.heldAlertBasis).toBeUndefined();
+
+      vi.setSystemTime(t0 + 50 * 3600_000);
+      const alertsBefore = heldAlerts().length;
+      await syncAndRun(); // day 2: slop again → 1 + 1 = 2, hits the cap, held for a person
+      expect(rawPendingOf("fake-a1")).toMatchObject({ reason: "draft_failed", slopFails: 2 });
+      expect(mem.read(reviewPath("fake-a1"))?.heldAlertBasis).toBeDefined();
+      expect(heldAlerts().length).toBeGreaterThan(alertsBefore);
     } finally {
       vi.useRealTimers();
     }

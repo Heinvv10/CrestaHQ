@@ -33,6 +33,13 @@ const HITS: Array<[string, string]> = [
   ["kind_words", "Thanks for the kind words."],
   ["so_glad", "We're so glad it worked."],
   ["so_glad", "We are so glad it worked."],
+  ["symbol", "Thanks for the ★★★★★ review."],
+  ["emoji", "<3 thanks for that."],
+  ["emoji", "Sorry to hear that :("],
+  ["emoji", "Thanks Sam :P"],
+  ["emoji", "Glad it worked xD"],
+  ["emoji", "^_^ so glad."],
+  ["emoji", "Thanks:)"],
 ];
 
 const CLEAN = [
@@ -51,6 +58,9 @@ const CLEAN = [
   "A kind word goes far.",
   "We're glad it worked.",
   "Well-done install, 3-4 days early.",
+  "Floor plan: D block",
+  "d) other",
+  "Note: done",
 ];
 
 describe("slopHit", () => {
@@ -107,6 +117,11 @@ const BYPASSES: Array<[string, string]> = [
   ["emoji", "Thanks Sam :-)"],
   ["emoji", "Thanks Sam :D"],
   ["emoji", "Thanks Sam ;)"],
+  ["dash", "Thanks Sam \u2010 glad it worked."],
+  ["dash", "Thanks Sam \u2212 glad it worked."],
+  // "g\u00E9nuinely" (NFKD-decomposable accent) reads as plain "genuinely" after stripping \p{M}.
+  ["genuinely", "We g\u00E9nuinely care."],
+  ["truly", "We tr\u00FCly care."],
 ];
 
 const STAYS_CLEAN = [
@@ -120,6 +135,10 @@ const STAYS_CLEAN = [
   "Thanks Theo. Glad the installation team left everything neat and tidy.",
   "Dankie, Morn\u00E9. Goed om te hoor ons span was vriendelik en doeltreffend en dat jy ons kan aanbeveel.",
   "Thanks Hennie. We install and maintain the fibre line itself, so patchy Wi-Fi in certain rooms is usually a router or coverage matter for your internet provider.",
+  "Our technician drove in from e-Durban this morning.",
+  "Sy s\u00EA die tegnikus was baie vriendelik en het alles netjies gelos.",
+  "Ons waardeer dat u die tyd geneem het om \u2019n resensie te skryf.",
+  "Dit was \u2019n voorreg om u te help met u fibre-verbinding.",
 ];
 
 describe("slopHit after normalisation", () => {

@@ -46,8 +46,14 @@ export interface DraftInput {
   /** The sub-account's reply guidelines (tone, sign-off, never-say), or null. */
   guidelines: string | null;
 }
-/** Why there is no draft — for logs only; the admin just sees "try again or write your own". */
-export type DraftFailure = "call_failed" | "empty" | "unsupplied_contact" | "slop";
+/**
+ * Why there is no draft — for logs only; the admin just sees "try again or
+ * write your own". `slop_deadline` — the first attempt was `slop` and the
+ * caller's deadline left no room for the one retry: distinct from `slop` so
+ * the auto-reply engine's consecutive-failure count (run.ts) never counts a
+ * retry that was never attempted.
+ */
+export type DraftFailure = "call_failed" | "empty" | "unsupplied_contact" | "slop" | "slop_deadline";
 /** A draft, or none. Every attempt counts against the daily AI cap either way (no strikes, no refunds). */
 export type DraftResult = { text: string; failure?: undefined } | { text: null; failure: DraftFailure };
 

@@ -29,10 +29,17 @@ const phrase = (id: string, words: string): SlopRule => ({ id, re: new RegExp(`\
 /** Every rule, in the order they are checked. Word-boundary phrases, case-insensitive, on normalised text. */
 export const SLOP_RULES: readonly SlopRule[] = [
   { id: "exclamation", re: /[!！¡‼⁉]/u },
-  // Pictographs except © ® ™, flags, and the common text emoticons.
-  { id: "emoji", re: /(?![©®™])\p{Extended_Pictographic}|\p{Regional_Indicator}|(?<!\S)[:;]-?[)d](?![\p{L}\p{N}])/iu },
-  // An en or em dash BETWEEN DIGITS is a range ("08:00–17:00", "5–10"), not a clause dash.
-  { id: "dash", re: /[‒―⸺⸻﹘﹣]|(?<!\d)[–—]|[–—](?!\d)|\s-{1,2}\s|--/u },
+  // Pictographs except © ® ™, flags, and the common text emoticons (":)" needs no leading
+  // space — "Thanks:)" counts — but a lone ":" or ";" before a space or a letter never does,
+  // so "Floor plan: D block", "d) other" and "Note: done" stay clean).
+  {
+    id: "emoji",
+    re: /(?![©®™])\p{Extended_Pictographic}|\p{Regional_Indicator}|[:;]-?[)dp(](?![\p{L}\p{N}])|<3|(?<![\p{L}\p{N}])x[dD](?![\p{L}\p{N}])|\^[-_]\^/iu,
+  },
+  { id: "symbol", re: /[★☆♡]/u },
+  // An en or em dash BETWEEN DIGITS is a range ("08:00–17:00", "5–10"), not a clause dash. The
+  // hyphen and minus sign only count SPACED, so "Wi-Fi", "rating-only" and "e-Durban" stay clean.
+  { id: "dash", re: /[‒―⸺⸻﹘﹣]|(?<!\d)[–—]|[–—](?!\d)|\s-{1,2}\s|--|\s[‐−]{1,2}\s/u },
   phrase("thrilled", "thrilled"),
   phrase("delighted", "delighted"),
   phrase("truly", "truly"),
@@ -52,14 +59,25 @@ export const SLOP_RULES: readonly SlopRule[] = [
   phrase("so_glad", "we(?:['’]re|\\s+are)\\s+so\\s+glad"),
 ];
 
-/** Lower-case Cyrillic and Greek letters that look Latin (the text is lower-cased before this). */
+/**
+ * Lower-case Cyrillic and Greek letters that look Latin (the text is
+ * lower-cased before this), plus the dotless ı and Latin alpha ɑ — letters
+ * with no diacritic to strip, so they need their own mapping.
+ */
 const LOOKALIKES: Record<string, string> = {
   а: "a", е: "e", о: "o", р: "p", с: "c", у: "y", х: "x", і: "i", ј: "j", ѕ: "s",
-  ο: "o", α: "a", ε: "e", ι: "i", ν: "v",
+  ο: "o", α: "a", ε: "e", ι: "i", ν: "v", ı: "i", ɑ: "a",
 };
 const LOOKALIKE_RE = new RegExp(`[${Object.keys(LOOKALIKES).join("")}]`, "gu");
 
-const normalise = (t: string) => normaliseForContacts(t).replace(LOOKALIKE_RE, (c) => LOOKALIKES[c]);
+/**
+ * NFKD then strip combining marks (\p{M}) so an accented letter — real
+ * (Afrikaans "sê") or a bypass ("génuinely") — reads as its plain base
+ * letter. This is the copy used for MATCHING only: the draft text a caller
+ * returns is never touched by it.
+ */
+const normalise = (t: string) =>
+  normaliseForContacts(t).normalize("NFKD").replace(/\p{M}/gu, "").replace(LOOKALIKE_RE, (c) => LOOKALIKES[c]);
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**

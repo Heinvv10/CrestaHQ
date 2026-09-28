@@ -89,7 +89,11 @@ export async function draftReplyWith(model: string, input: DraftInput, call: Bou
   const first = await attempt(model, messages, input.guidelines, names, call);
   if (!("slop" in first)) return first;
   // No room for a second bounded call before the caller's deadline: refused, never posted.
-  if (deadlineMs !== undefined && Date.now() + REVIEWS_AI_CALL_MS > deadlineMs) return fail("slop", `${first.slop} retry=skipped_deadline`);
+  // `slop_deadline`, not `slop` — the retry was never attempted, so the auto-reply
+  // engine's consecutive-failure count (run.ts) must not count it.
+  if (deadlineMs !== undefined && Date.now() + REVIEWS_AI_CALL_MS > deadlineMs) {
+    return fail("slop_deadline", `${first.slop} retry=skipped_deadline`);
+  }
   // Exactly one retry, bounded here — never a loop.
   const second = await attempt(model, [...messages, { role: "user", content: retryNote(first.slop) }], input.guidelines, names, call);
   if (!("slop" in second)) return second;

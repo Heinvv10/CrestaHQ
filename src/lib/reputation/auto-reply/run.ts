@@ -218,7 +218,9 @@ async function draft(
   if (result.text === null) {
     console.warn(`[reputation/auto-reply] no draft sa=${ctx.sa} failure=${result.failure}`);
     const priorFails = prior?.reason === "draft_failed" && prior.basisHash === basisHash ? prior.slopFails ?? 0 : 0;
-    const slopFails = result.failure === "slop" ? priorFails + 1 : 0;
+    // A voice failure increments; any other failure (a skipped-deadline retry included) carries
+    // the count forward unchanged — only a successful draft or a change of content clears it.
+    const slopFails = result.failure === "slop" ? priorFails + 1 : priorFails;
     const stored = await storePending(
       ctx.sa, docId, { text: null, basisHash, reason: "draft_failed", model: ctx.ai.model, slopFails }, new Date(),
     );
