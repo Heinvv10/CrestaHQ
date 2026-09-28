@@ -13,6 +13,8 @@ import { beforeAll, describe, expect, it } from "vitest";
  *     read; NO client writes — the lists route and the report runner own them.
  *   - `prospectReportShares`: no client reads or writes at all, not even the
  *     agency owner — the public report route resolves a share server-side.
+ *   - `workflowEnrolmentKeys` (the report announce's enrolment dedupe): no
+ *     client reads or writes at all.
  *   - A member of another sub-account is refused everywhere.
  *   - `contacts.prospecting` is server-owned: no client create may carry it
  *     and no client update may change it (other edits still go through).
@@ -149,6 +151,8 @@ const LST = "prospectLists/list1";
 const RPT = "prospectReports/r1";
 const SHR = "prospectReportShares/share1";
 const FTC = "subAccounts/sa_1/prospectingFirstTouch/2026-09-27";
+const EKY = "workflowEnrolmentKeys/wf1_c1_report:r1";
+const KEYDOC = { ...TENANT, workflowId: "wf1", contactId: "c1", enrolmentKey: "report:r1", runId: "run1" };
 
 const CASES: [string, Case, Outcome][] = [
   // ---- prospectLists: member-read, server-only write ----
@@ -187,6 +191,12 @@ const CASES: [string, Case, Outcome][] = [
   // ---- prospectingFirstTouch day counters (approach guard): no client at all ----
   ["first-touch counter: sub-account admin cannot read it", { caller: saAdmin, method: "get", path: FTC, before: { count: 3 } }, "deny"],
   ["first-touch counter: agency owner cannot reset it", { caller: owner, method: "update", path: FTC, before: { count: 20 }, after: { count: 0 } }, "deny"],
+
+  // ---- workflowEnrolmentKeys (the report announce's dedupe): no client at all ----
+  ["enrolment key: agency owner cannot read one", { caller: owner, method: "get", path: EKY, before: KEYDOC }, "deny"],
+  ["enrolment key: sub-account admin cannot list them", { caller: saAdmin, method: "list", path: EKY, before: KEYDOC }, "deny"],
+  ["enrolment key: agency owner cannot delete one (a re-send)", { caller: owner, method: "delete", path: EKY, before: KEYDOC }, "deny"],
+  ["enrolment key: sub-account admin cannot create one (a block)", { caller: saAdmin, method: "create", path: EKY, after: KEYDOC }, "deny"],
 
   // ---- contacts.prospecting: server-owned ----
   ["contacts: collaborator edits a prospect's name (map unchanged)", { caller: collaborator, method: "update", path: CON, before: PROSPECT, after: { ...PROSPECT, name: "Aqua Plumbing (Pty)" }, gets: SA_DOC }, "allow"],

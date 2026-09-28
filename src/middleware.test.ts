@@ -575,3 +575,10 @@ describe("isPublicPath — the ApexGEO poll worker (Prospecting PR 3)", () => {
     expect(isPublicPath("/api/sub-accounts/sa1/apexgeo-connection/test")).toBe(false);
   });
 });
+
+describe("isPublicPath — the prospect report announce sweep", () => {
+  it("opens the exact path the QStash schedule calls, and nothing under it", () => {
+    expect(isPublicPath("/api/automations/prospecting/announce-sweep")).toBe(true);
+    expect(isPublicPath("/api/automations/prospecting/announce-sweep/x")).toBe(false);
+  });
+});

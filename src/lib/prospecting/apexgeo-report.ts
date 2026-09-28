@@ -87,7 +87,8 @@ export async function schedulePoll(reportId: string, attempt: number): Promise<b
 }
 
 /**
- * Replace the report's ApexGEO sections and recompute its headline, only if
+ * Replace the report's ApexGEO sections, recompute its headline and mark it
+ * due its announce (`announceDueAt`), only if
  * the report is still `ready` with its scan `pending` (and, with `attempt`,
  * at that poll). Returns whether it wrote — false means someone settled it first.
  */
@@ -111,6 +112,8 @@ export async function settleApexgeo(
       headline: headline(sections),
       "apexgeo.status": opts.status,
       "apexgeo.settledAt": FieldValue.serverTimestamp(),
+      // The report is final: it is now due its announce (report-ready.ts).
+      announceDueAt: FieldValue.serverTimestamp(),
       ...(typeof opts.credits === "number" ? { "cost.apexgeoCredits": opts.credits } : {}),
     });
     return true;

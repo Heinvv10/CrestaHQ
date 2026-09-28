@@ -211,3 +211,54 @@ describe("a run created without the re-entry check, racing one with it", () => {
     });
   });
 });
+
+describe("keyed enrolment (enrolmentKey)", () => {
+  const fireKeyed = (enrolmentKey: string) =>
+    fireWorkflowTrigger({
+      subAccountId: "sa1", agencyId: "ag1", type: "message.received",
+      contactId: "c1", context: { channel: "whatsapp" }, enrolmentKey,
+    });
+  const completeAll = async () => {
+    for (const r of mem.list("workflowRuns")) {
+      await mem.db.doc(`workflowRuns/${r.id}`).update({ status: "completed" });
+    }
+  };
+
+  it.each(["every_time", "unless_active", "once_ever"])(
+    "%s: a repeat of the key is refused after the first run completed",
+    async (policy) => {
+      seed(policy);
+      expect((await fireKeyed("report:r1")).enrolled).toHaveLength(1);
+      await completeAll();
+      const again = await fireKeyed("report:r1");
+      expect(again.skipped).toEqual([{ workflowId: "wf1", reason: "reentry_blocked" }]);
+      const [run] = mem.list("workflowRuns");
+      expect(mem.list("workflowRuns")).toHaveLength(1);
+      expect(mem.read("workflowEnrolmentKeys/wf1_c1_report:r1")).toMatchObject({
+        workflowId: "wf1", contactId: "c1", subAccountId: "sa1", agencyId: "ag1",
+        enrolmentKey: "report:r1", runId: run.id,
+      });
+    },
+  );
+
+  it("every_time: another key still enrols, and so does an unkeyed trigger", async () => {
+    seed("every_time");
+    await fireKeyed("report:r1");
+    expect((await fireKeyed("report:r2")).enrolled).toHaveLength(1);
+    expect((await fire()).enrolled).toHaveLength(1);
+    expect(mem.list("workflowRuns")).toHaveLength(3);
+  });
+
+  it("every_time: simultaneous fires of one key enrol once", async () => {
+    seed("every_time");
+    await Promise.all([fireKeyed("report:r1"), fireKeyed("report:r1"), fireKeyed("report:r1")]);
+    expect(mem.list("workflowRuns")).toHaveLength(1);
+  });
+
+  it("a failed keyed transaction enrols nobody", async () => {
+    seed("every_time");
+    txDown = true;
+    expect((await fireKeyed("report:r1")).skipped).toEqual([{ workflowId: "wf1", reason: "reentry_check_failed" }]);
+    expect(mem.list("workflowRuns")).toHaveLength(0);
+  });
+});

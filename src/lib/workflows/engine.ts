@@ -1293,6 +1293,16 @@ export interface FireInput {
    * still match enrols; any other is skipped `steps_changed`.
    */
   expectedStepsFingerprints?: Record<string, string>;
+  /**
+   * Once-only key for this enrolment (e.g. `report:<reportId>`): a run
+   * carrying it is refused `reentry_blocked` while
+   * `workflowEnrolmentKeys/{workflowId}_{contactId}_{key}` exists — under
+   * every re-entry policy, and after that run has finished. Makes an
+   * at-least-once caller's re-fire harmless. Checked at run creation only:
+   * the agent-hold path (`reentryWouldBlock`, held enrolments) does not
+   * check keys, and the report trigger (the only keyed caller) never holds.
+   */
+  enrolmentKey?: string;
 }
 
 /** Why a matching-type workflow did not take the contact. */
@@ -1496,7 +1506,7 @@ export async function fireWorkflowTrigger(input: FireInput): Promise<TriggerOutc
         (outcome.held ??= []).push(held);
         continue;
       }
-      const run = await enroll(wf, contact.id, input.context ?? {}, true);
+      const run = await enroll(wf, contact.id, input.context ?? {}, true, input.enrolmentKey);
       if (typeof run === "string") {
         skip(run);
         continue;
@@ -1571,7 +1581,8 @@ function enrolmentLock(wf: WorkflowDoc, contactId: string, runId: string) {
  * Create the run doc only if the workflow's re-enrollment policy allows it —
  * the check and the create in ONE transaction, so simultaneous triggers (three
  * inbound messages, three webhooks) cannot all pass a check none has yet
- * written past.
+ * written past. `every_time` comes here only with an `enrolmentKey`, which is
+ * checked and written the same way.
  *
  * Invariant: every run creation — this path, every_time and test enrolments
  * alike — writes the per-(workflow, contact) lock doc atomically with the
@@ -1597,30 +1608,50 @@ function enrolmentLock(wf: WorkflowDoc, contactId: string, runId: string) {
 async function createRunUnlessBlocked(
   wf: WorkflowDoc,
   contactId: string,
-  policy: "unless_active" | "once_ever",
+  policy: "every_time" | "unless_active" | "once_ever",
   runRef: FirebaseFirestore.DocumentReference,
-  runData: Record<string, unknown>
+  runData: Record<string, unknown>,
+  enrolmentKey?: string
 ): Promise<"created" | "reentry_blocked" | "reentry_check_failed"> {
   const db = getAdminDb();
   const lock = enrolmentLock(wf, contactId, runRef.id);
+  // Keyed enrolment: the key doc is written with the run, so a repeat of the
+  // key is refused whatever the policy and however the first run ended.
+  const keyRef = enrolmentKey
+    ? db.doc(`workflowEnrolmentKeys/${wf.id}_${contactId}_${enrolmentKey}`)
+    : null;
   try {
-    const runs = await db
-      .collection("workflowRuns")
-      .where("workflowId", "==", wf.id)
-      .where("contactId", "==", contactId)
-      .get();
-    if (!runs.empty && (policy === "once_ever" || runs.docs.some(isLive))) {
-      return "reentry_blocked";
+    if (policy !== "every_time") {
+      const runs = await db
+        .collection("workflowRuns")
+        .where("workflowId", "==", wf.id)
+        .where("contactId", "==", contactId)
+        .get();
+      if (!runs.empty && (policy === "once_ever" || runs.docs.some(isLive))) {
+        return "reentry_blocked";
+      }
     }
     return await db.runTransaction(async (tx) => {
+      if (keyRef && (await tx.get(keyRef)).exists) return "reentry_blocked" as const;
       const lockSnap = await tx.get(lock.ref);
-      if (lockSnap.exists) {
+      if (policy !== "every_time" && lockSnap.exists) {
         if (policy === "once_ever") return "reentry_blocked" as const;
         const lastRunId = (lockSnap.data() as { lastRunId?: string }).lastRunId;
         if (lastRunId) {
           const last = await tx.get(db.doc(`workflowRuns/${lastRunId}`));
           if (last.exists && isLive(last)) return "reentry_blocked" as const;
         }
+      }
+      if (keyRef) {
+        tx.set(keyRef, {
+          workflowId: wf.id,
+          contactId,
+          subAccountId: wf.subAccountId,
+          agencyId: wf.agencyId,
+          enrolmentKey,
+          runId: runRef.id,
+          createdAt: FieldValue.serverTimestamp(),
+        });
       }
       tx.set(lock.ref, lock.data);
       tx.set(runRef, runData);
@@ -1633,12 +1664,14 @@ async function createRunUnlessBlocked(
 }
 
 /** `applyReentry` = enforce the workflow's re-enrollment policy (test
- *  enrolments bypass it). Returns the skip reason when not enrolled. */
+ *  enrolments bypass it). `enrolmentKey`: see FireInput. Returns the skip
+ *  reason when not enrolled. */
 async function enroll(
   wf: WorkflowDoc,
   contactId: string,
   context: Record<string, unknown>,
-  applyReentry = false
+  applyReentry = false,
+  enrolmentKey?: string
 ): Promise<
   { runId: string; status: "running" | "failed" } | "reentry_blocked" | "reentry_check_failed"
 > {
@@ -1659,11 +1692,11 @@ async function enroll(
     updatedAt: FieldValue.serverTimestamp(),
   };
   const policy = applyReentry ? (wf.reentry ?? "every_time") : "every_time";
-  if (policy === "every_time") {
+  if (policy === "every_time" && !enrolmentKey) {
     const lock = enrolmentLock(wf, contactId, runRef.id);
     await db.batch().set(lock.ref, lock.data).set(runRef, runData).commit();
   } else {
-    const created = await createRunUnlessBlocked(wf, contactId, policy, runRef, runData);
+    const created = await createRunUnlessBlocked(wf, contactId, policy, runRef, runData, enrolmentKey);
     if (created !== "created") return created;
   }
   await db

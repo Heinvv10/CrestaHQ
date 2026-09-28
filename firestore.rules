@@ -1354,6 +1354,12 @@ service cloud.firestore {
     match /workflowRuns/{runId} {
       allow read, write: if false;
     }
+    // Keyed enrolment dedupe ({workflowId}_{contactId}_{enrolmentKey}),
+    // written by the engine with the run it admits. Server-only: a client
+    // that could delete one could re-send an outreach message.
+    match /workflowEnrolmentKeys/{keyId} {
+      allow read, write: if false;
+    }
 
     // Import jobs (bulk migration ingest). Members can read to watch progress
     // + see the run summary; all writes go through the admin-SDK import routes.

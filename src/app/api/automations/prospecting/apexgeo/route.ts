@@ -16,6 +16,7 @@ import {
   settleApexgeo,
 } from "@/lib/prospecting/apexgeo-report";
 import { APEXGEO_REASON, apexgeoFromScan, apexgeoPlaceholders } from "@/lib/prospecting/apexgeo-sections";
+import { announceReport } from "@/lib/prospecting/report-ready";
 
 /**
  * ApexGEO poll worker (Prospecting PR 3, decision D1) — one QStash message
@@ -40,6 +41,11 @@ import { APEXGEO_REASON, apexgeoFromScan, apexgeoPlaceholders } from "@/lib/pros
  * per attempt: a crash in between is retried by QStash and republishes the
  * same message, never a second chain. A publish that fails answers 503 so
  * QStash retries this poll.
+ *
+ * Every settle makes the report final and due its announce; the poll then
+ * announces it (lib/prospecting/report-ready.ts). A poll that finds the
+ * report no longer pending announces it too, if it is due and unannounced —
+ * the recovery for a delivery that crashed between the two.
  */
 
 export const dynamic = "force-dynamic";
@@ -77,12 +83,18 @@ export async function POST(request: Request) {
   try {
     const db = getAdminDb();
     const report = (await db.doc(`prospectReports/${reportId}`).get()).data();
-    if (!isPendingAt(report, attempt)) return NextResponse.json({ ok: true, skipped: true });
+    if (!isPendingAt(report, attempt)) {
+      if (report) await announceReport(reportId);
+      return NextResponse.json({ ok: true, skipped: true });
+    }
     const subAccountId = report!.subAccountId as string;
 
     // A settle that lost its race to another delivery answers "skipped".
-    const settled = (written: boolean, status: string) =>
-      NextResponse.json(written ? { ok: true, status } : { ok: true, skipped: true });
+    // Either way the report may now be due its announce.
+    const settled = async (written: boolean, status: string) => {
+      await announceReport(reportId);
+      return NextResponse.json(written ? { ok: true, status } : { ok: true, skipped: true });
+    };
     const stop = async (code: "gate_off" | "not_connected", reason: string) =>
       settled(
         await settleApexgeo(reportId, { attempt, sections: apexgeoPlaceholders(code, reason), status: "stopped" }),
@@ -134,7 +146,8 @@ export async function POST(request: Request) {
     if (!(await schedulePoll(reportId, next))) {
       return NextResponse.json({ error: "poll_not_queued" }, { status: 503 });
     }
-    return settled(await advancePoll(reportId, attempt), "polling");
+    const advanced = await advancePoll(reportId, attempt);
+    return NextResponse.json(advanced ? { ok: true, status: "polling" } : { ok: true, skipped: true });
   } catch (err) {
     console.error("[prospecting/apexgeo] poll failed", reportId, err);
     return NextResponse.json({ error: "poll_failed" }, { status: 500 });
