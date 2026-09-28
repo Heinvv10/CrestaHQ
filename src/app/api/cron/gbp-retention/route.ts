@@ -9,10 +9,9 @@ import { runGbpRetentionSweep } from "@/lib/gbp/sync/sweep";
  *
  * Google's content policy caps storage at 30 calendar days, and that must not
  * depend on whether the review SYNC is scheduled (`GBP_SYNC_SCHEDULE_ENABLED`
- * controls only the Google sync). So this schedule
- * (`leadstack-gbp-retention`, 04:30 UTC) is registered unconditionally, like
- * api-cleanup, and runs a retention-only pass for EVERY sub-account holding a
- * cache — sync-eligible or not. Firestore only: it never reaches the provider.
+ * controls only the Google sync). So this job runs daily and unconditionally
+ * as part of `/api/cron/daily-housekeeping` (03:00 UTC): a retention-only
+ * pass for EVERY sub-account holding a cache — sync-eligible or not. Firestore only: it never reaches the provider.
  *
  * Public path — the QStash signature, bound to THIS route's URL, is the
  * authentication. 500 only when the sweep cannot start, so QStash retries.

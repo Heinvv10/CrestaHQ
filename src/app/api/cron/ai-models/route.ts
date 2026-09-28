@@ -5,8 +5,9 @@ import { verifyQStashSignature } from "@/lib/automations/qstash";
 import { refreshModelCatalog } from "@/lib/comms/ai/model-catalog";
 
 /**
- * Daily refresh of the cached OpenRouter model list (`leadstack-ai-models`,
- * register-schedules.ts), so the reply path never has to fetch it.
+ * Daily refresh of the cached OpenRouter model list, so the reply path never
+ * has to fetch it. Scheduled as a job of `/api/cron/daily-housekeeping`; this
+ * route runs it by hand.
  *
  * Public path — the QStash signature, bound to THIS route's URL, is the
  * authentication. A failed fetch keeps the last good cache and still answers

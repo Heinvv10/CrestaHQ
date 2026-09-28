@@ -605,7 +605,7 @@ When you're ready to go live:
 
 **For production QStash + automations:**
 - No additional setup beyond env vars — automations + the website builder will use your Vercel URL automatically (via `NEXT_PUBLIC_APP_URL`)
-- Optional: schedule the daily gitpage status refresh. In the Upstash QStash dashboard, create a schedule that POSTs to `https://your-app.vercel.app/api/cron/gitpage-heartbeat` with cron `0 3 * * *` (or whatever time you prefer). The route is signature-verified, so don't expose the schedule's secret URL
+- The daily gitpage status refresh needs no schedule of your own: it runs inside `leadstack-daily-housekeeping`, which the app registers on its first production cold start. Don't add one in the QStash dashboard — the plan allows only 10 schedules
 
 **For production gitpage:**
 - No additional setup — your `GITPAGE_API_KEY` works the same in production. Builds are agency-scoped on gitpage's side

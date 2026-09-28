@@ -6,7 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
  * OpenRouter's public model list, cached in Firestore so model pickers and
  * the allow-list can cope with models appearing and retiring constantly.
  *
- * Refreshed by the daily `leadstack-ai-models` QStash schedule, and by a
+ * Refreshed by the daily `leadstack-daily-housekeeping` QStash schedule, and by a
  * single-flight refresh when a stale cache is read. The REPLY path never
  * waits on a fetch: it reads the cache and at most kicks a background
  * refresh. A failed or implausible fetch keeps the last good cache.
