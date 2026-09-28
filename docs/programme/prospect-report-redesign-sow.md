@@ -18,9 +18,10 @@ The public report (`/report/[shareId]`) is the hook of every outreach message: t
 - **Charts are server-rendered inline SVG**, no chart library (there is none in the repo). The page is a server component, and a client-only import already crashed it once (#293). Score rings, one bar row, no animation required.
 - **WhatsApp button:** an optional WhatsApp number on the **sub-account**, beside the booking page the CTA already uses (`public-report.ts:124-134`). The CTA belongs to whoever runs the prospecting. For a client sub-account (the resale story) that is the client, so both buttons go to the same business. The button is hidden when the number is unset.
 - **Preview image uses `next/og` (`ImageResponse`)**, which ships with Next 15. No new dependency.
+- **`resolvePublicReport` is wrapped in React `cache()`**, so the page and `generateMetadata` share one set of Firestore reads per request. `og:title` uses the resolver's `businessName`, never `contact.name`; when that is null it uses a generic title.
 - **PDF reuses the existing `@react-pdf/renderer` pattern** from Quotes (`lib/quotes/pdf-render.tsx`, public `/api/quotes/[token]/pdf`), not headless Chromium, which is a memory risk on velo-server. The logo is loaded with `loadLogoDataUri` through `publicFetch`, and so is the logo in the preview image. Fetching an agency-supplied URL any other way is an SSRF surface. There is no new dependency.
 - **Finding copy is stored at scoring time, never rendered from a copy map.** Each finding carries `text` (the fact) and `impact` (what it costs the business), both written by the scorer. The page, the preview image, the PDF and `{{prospecting.headline}}` all read the stored strings, so they can never disagree.
-- **A score comes only from findings.** Each finding code has a fixed deduction and a section's score is 100 minus its findings' deductions. A section that cannot deduct reliably (Directory listings, where `listing_missing` is never emitted per PR 2) has no score and no ring; it shows its facts only. The gaps where points are deducted today with no finding each get a finding code, ranked in `SEVERITY_ORDER` below every existing code, so they can only become the headline when nothing worse exists:
+- **A score comes only from findings.** Each finding code has a fixed deduction and a section's score is 100 minus its findings' deductions, floored at 0. The values are R0's **deduction table**, a named deliverable reviewed before merge rather than guessed per section. Thresholds on the same measure do not stack: the stricter code replaces the milder one. For example, `low_rating` (<4.0) replaces the new under-4.8 code, and `few_reviews` (<10) replaces the new under-50 code. A section that cannot deduct reliably (Directory listings, where `listing_missing` is never emitted per PR 2) has no score and no ring; it shows its facts only. The gaps where points are deducted today with no finding each get a finding code, ranked in `SEVERITY_ORDER` below every existing code, so they can only become the headline when nothing worse exists:
   - reputation under 4.8 stars or under 50 reviews;
   - LCP between 2.5 and 4 s;
   - no mobile viewport;
@@ -32,13 +33,25 @@ These are bugs or leaks in the live page, and each ships whatever design is pick
 
 | # | Problem (seen on the live report) | Change |
 |---|---|---|
-| C1 | The outreach headline and the page headline can differ. The contact is stamped, and `prospecting.report.ready` fires, when the report is ready. Sections 5/7/8 finish later and the poll recomputes the headline (`apexgeo-report.ts:111`). | The share is still minted at ready, so the link is stable and never revokes one a member already sent. `lastReportHeadline` and the trigger move to **final**. A new `announcedAt` on the report is written in the same transaction as the final settle, and the announce is idempotent on it, so a crash-and-retry announces exactly once. Every settle path announces: the poll's `done`, `failed`, `timeout` and `stopped`; the worker's own settle when `schedulePoll` fails; no scan started. A 15-minute QStash sweep settles and announces any report still pending 30 minutes after its scan started. A dead poll chain therefore never leaves a prospect unannounced. |
+| C1 | The outreach headline and the page headline can differ. The contact is stamped, and `prospecting.report.ready` fires, when the report is ready. Sections 5/7/8 finish later and the poll recomputes the headline (`apexgeo-report.ts:111`). | The share is still minted and `lastReportUrl` stamped at ready, so the link is stable. `lastReportHeadline` and the trigger move to **final**. The **Announce protocol** below settles exactly how. |
 | C2 | Directory listings shows "0/100" and "No issues found" together. | Listings has no score (see "A score comes only from findings"). It shows only what was found. |
 | C3 | Reviews shows 80/100 with "No issues found". | Scores come only from findings, with the new finding codes above. A test fails for any section whose score is below 100 without a finding. |
 | C4 | Model ids ("gemini-2.5-flash, gpt-4o-mini") reach the prospect in three places: the `models` row; the `not_in_ai_answers` finding text (`ai-presence.ts:76`), which becomes the headline; and, from that headline, `lastReportHeadline` and any `{{prospecting.headline}}` message. | The finding text says "AI assistants like ChatGPT and Gemini". `models` leaves `PUBLIC_RAW_KEYS` and stays member-only. A one-off script rewrites the text in reports and contacts already stored. There are few (only #1000 has reports), and the script lists what it changed. |
 | C5 | "Coverage" is listed as a competitor. | Competitor names are filtered: a single common word, a generic noun or the prospect's own name is dropped. |
 | C6 | "Check manually", "Could not check" and "Not measured" rows are shown to the prospect. | Removed in `resolvePublicReport`, so the page, the JSON route and the PDF all lose them; hiding them in the component would still leak them through the JSON. `serializeReport` gets a member whitelist so the member view keeps them. The Advertising section is only manual-check links (D5), so it leaves the public page entirely. **This supersedes D2 for the public page only:** unmeasured facts are left out, not labelled. Nothing is faked, and members still see "not measured". D6 is unchanged: pending, timed-out, failed and missing-input sections still show publicly, with their status badge. |
 | C7 | The questions put to AI are lost: the scorer reads `ai_visibility.prompts[].text` but persists only counts, models and competitors (`ai-presence.ts:86-91`). | The scorer stores all three questions and the competitors named per question in `raw`, and they are added to `PUBLIC_DERIVED` (question text only, never answer text or URLs). Reports made before R0 have none, and the page shows no question block for them. |
+
+### Announce protocol (C1)
+
+1. **Settle.** Every final-settle path writes `announceDueAt` in the same transaction that makes the report final. The paths are:
+   - the poll's `done`, `failed`, `timeout` and `stopped`;
+   - the worker's own settle when `schedulePoll` fails;
+   - ready with no scan started;
+   - the sweep.
+2. **Announce.** Stamp `lastReportHeadline` from the final report, fire the trigger, then write `announcedAt`. Announcing is only ever done for a report with `announceDueAt` set and `announcedAt` null.
+3. **Recovery.** Two things pick up a report that is due but unannounced: the poll's "no longer pending" skip path (`apexgeo/route.ts:65`), and a 15-minute QStash sweep. The sweep also settles, as a timeout, any report still pending 30 minutes after its scan started. A crash anywhere between settle and `announcedAt` is therefore finished by the next poll delivery or the next sweep.
+4. **At-least-once, deduped at enrolment.** A crash after the fire and before `announcedAt` fires again. The trigger carries `enrolmentKey = report:<reportId>`. R0 must verify that the engine's enrolment lock (#253) refuses a second run of the same workflow for the same contact and key, or add that. A double fire then enrols nobody twice.
+5. **The link a member re-mints.** Minting a share from the UI revokes the worker's share (`share.ts:34-36`). The member share route therefore re-stamps `lastReportUrl` whenever the report is the contact's `lastReportId`. The announce reads the URL at announce time, so outreach always carries the live link.
 
 ## The redesigned page
 
@@ -66,7 +79,7 @@ Built on the mockup Hein picks. Every direction must include:
 ## Data changes
 
 - `agencies/{id}.brandColor`: `#RRGGBB`, set in Company Settings. It is rejected at save unless white text on it reaches WCAG AA 4.5:1, and re-validated at read time before it reaches a style attribute, the preview image or the PDF (an invalid value falls back to the default). Agency members can already read the agency doc (`firestore.rules:198`) and the client cannot write it, so no rules change.
-- `subAccounts/{id}.whatsappNumber`: E.164, optional, set in the sub-account's settings through the existing server route.
+- `subAccounts/{id}.whatsappNumber`: E.164, optional, set in the sub-account's settings through the existing server route. When unset, the button uses the connected sender's `displayPhoneNumber` (Cloud or bridge) if there is one, so a connected sub-account needs no second copy that can drift. The field is only an override.
 - `prospectReports`: `announcedAt` (C1); findings gain `impact` and the CTA line; `ai_presence.raw` gains the questions (C7).
 - `public-sections.ts`: add the questions; drop `models`. `serializeReport` gets the member whitelist (C6).
 - No new collection.
@@ -75,16 +88,21 @@ Built on the mockup Hein picks. Every direction must include:
 
 | PR | Scope | Gate to merge |
 |---|---|---|
-| R0 | C1–C7, the finding-driven scores and the stored `impact`/CTA copy, plus the C4 backfill script. Also updates `prospecting-module.md` (PR 4's "once through the queued→running claim", "PDF export is v2", D2's public exception). | Seam tests through the real worker and poll, one per settle path (done, failed, timeout, stopped, schedule failure, no scan, sweep): each announces exactly once with the final headline. A crash between settle and announce, then a retry, announces once. The member link minted during the pending window survives. No model id appears in any stored or public text. A score below 100 with no finding fails. The JSON route carries no hidden row. Mutation-tested. |
+| R0 | C1–C7 with the announce protocol; the finding-driven scores with the **deduction table** (a named deliverable, reviewed before merge); the stored `impact`/CTA copy; the backfill script. Also updates `prospecting-module.md` (PR 4's "once through the queued→running claim", "PDF export is v2", D2's public exception). | Seam tests through the real worker and poll, one per settle path (done, failed, timeout, stopped, schedule failure, no scan, sweep): each announces exactly once with the final headline. **Crash tests after the settle transaction commits:** a crash before the fire, and a crash after the fire but before `announcedAt`, each end with exactly one enrolment after recovery. A member re-mint during the pending window: the workflow's message carries the **new** link, and it resolves. No model id appears in any stored or public text. A score below 100 with no finding fails. The JSON route carries no hidden row. Mutation-tested. |
 | R1 | Mockups (not merged code): 2–3 original directions plus one in the style of analyzemy/Snapshot (original, not copied), published as a private clickable page on the Plumbing Johannesburg data | **Human gate:** Hein picks a direction. |
 | R2 | Agency `brandColor` + sub-account `whatsappNumber` (schema, PATCH, settings UI, contrast check, read-time validation) | Contrast-rejection and read-time fallback tests, mutation-tested; tenancy check. |
 | R3 | Redesigned public page and member toggle, on the picked direction. Needs R0 (copy, questions) and R2 (colour, number). | Playwright spec through the real server at 390 px and desktop, with screenshots in the PR. A visual check against the mockup. The existing share and ApexGEO specs stay green. |
-| R4 | Preview image, `generateMetadata`, `metadataBase`, middleware paths. Reuses R3's ring component. | Spec: the image renders for a live token and 404s for a revoked one. The **built** page's `og:image` is the absolute `https://crm.crestahq.com/…` URL. Proven by sending a real link to Hein's own WhatsApp. |
+| R4 | Preview image, `generateMetadata`, `metadataBase`, middleware paths. Reuses R3's ring component. | Spec: the image renders for a live token and 404s for a revoked one. The **built** page's `og:image` is absolute and its origin equals `NEXT_PUBLIC_APP_URL`, whatever the deployment. Proven by sending a real link to Hein's own WhatsApp. |
 | R5 | PDF, with its rate limit. A second renderer (react-pdf cannot reuse the HTML/SVG components) over the same data layer. | Spec: the PDF renders, and its data (from `resolvePublicReport`) equals the page's. It 404s after a revoke and refuses past the rate limit. Memory measured on velo while rendering. |
 
-R0 and R1 can start now. R3 waits for R1's pick and for R2. R4 follows R3, R5 follows R0.
+R0 and R1 can start now. R3 waits for R1's pick and for R2. R4 follows R3. R5 follows R0, R1's pick and R2 (the PDF carries the layout and the brand colour).
 
-**Existing reports:** R0 fixes new reports; the C4 script fixes stored text. To show the redesign on the reference business, regenerate Plumbing Johannesburg once after R3 is deployed: 1 of #1000's 50 reports and about 7 ApexGEO credits. No one has been sent its current link, so the re-mint revokes nothing that matters.
+**Existing reports:** about 50 reports are stored on #1000. The R0 backfill script:
+- recomputes the scores of the sections that are pure over stored `raw` (listings, reputation, lead_capture);
+- rewrites the model-id text (C4);
+- never calls an external service.
+
+It runs as a **dry run first**, listing every document it would change. It writes to production only after Hein approves that list, because a production database write sits outside the Level-3 boundary. As a second guard, `resolvePublicReport` drops any score below 100 that has no finding, so an unmigrated report never shows a score without a reason. For reports without the new copy, the Top 3 shows the finding text alone, and the CTA uses a generic line. To show the redesign on the reference business, regenerate Plumbing Johannesburg once after R3 is deployed: 1 of #1000's 50 reports and about 7 ApexGEO credits. No one has been sent its current link, so the re-mint revokes nothing that matters.
 
 ## What proves it worked
 
@@ -105,8 +123,8 @@ R0 and R1 can start now. R3 waits for R1's pick and for R2. R4 follows R3, R5 fo
 ## Risks
 
 - **Brand colour contrast:** a pale brand colour makes white text unreadable. It is rejected at save, never adjusted silently.
-- **The preview image is fetched by WhatsApp's crawler**, and a slow render means no preview. Keep it within about 2 s and cache it per token until revoke.
-- **PDF memory on velo-server:** measure it in R5 before deploy. The fallback is to rate-limit PDF renders per sub-account.
+- **The preview image is fetched by WhatsApp's crawler**, and a slow render means no preview. Keep it within about 2 s, with the headers above and no server cache.
+- **PDF memory on velo-server:** measure it in R5 before deploy. The per-share and per-IP rate limit ships with R5 and caps concurrent renders.
 - **Competitor-name filtering (C5) can drop real businesses.** Start conservative (drop only obvious non-names) and log what was dropped.
 - **New finding codes change headlines** for reports that have no worse finding. They are ranked below every existing code, so a report's headline only changes when it had none before.
 - **Mockups carry a real business's report data.** Publish them privately, and keep the analyzemy/Snapshot-style direction original: no copied branding or layout assets.
