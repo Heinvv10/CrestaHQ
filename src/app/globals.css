@@ -75,7 +75,7 @@ body {
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-serif: var(--font-instrument-serif);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -193,10 +193,11 @@ body {
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
-  }
-  html {
-    @apply font-sans;
+    /* The Geist variable classes from layout.tsx are on <body>, not <html> —
+       applying font-sans on html left --font-geist-sans unresolved there
+       (custom properties only inherit downward), so font-family fell back
+       to the browser default serif. */
+    @apply bg-background text-foreground font-sans;
   }
 }
 

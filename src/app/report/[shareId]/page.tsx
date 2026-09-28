@@ -40,11 +40,9 @@ export default async function SharedReportPage({
   const agencyName = report.agency.name;
 
   return (
-    // Geist named directly: the global `--font-sans` token is self-referential
-    // (globals.css), so `font-sans` falls back to the browser's serif.
     // `light` + color-scheme: always the light scheme, whatever the device's.
     <main
-      className="light min-h-screen bg-background text-foreground font-[family-name:var(--font-geist-sans)]"
+      className="light min-h-screen bg-background text-foreground font-sans"
       style={{ "--report-brand": report.agency.brandColor, colorScheme: "light" } as CSSProperties}
     >
       <header className="border-b bg-card">
@@ -88,7 +86,7 @@ export default async function SharedReportPage({
         <TopFixes findings={ranked.slice(1, 4)} />
         <section>
           <h2 className="mb-4 font-serif text-3xl">The rest of your check-up</h2>
-          <ReportSections sections={report.sections} />
+          <ReportSections sections={report.sections} hideEmpty />
         </section>
         <ReportCta
           line={top?.cta ?? null}

@@ -178,24 +178,34 @@ function AiPresenceBody({ s }: { s: PublicReportSection }) {
  *
  * `connectHref` (member view only): where a section left out for want of an
  * ApexGEO key links to connect one. `showAll` (member view only): list the
- * raw metrics and the rows the public page hides. The public page passes
- * neither.
+ * raw metrics and the rows the public page hides. `hideEmpty` (public page
+ * only): drop a section that came back `ok` with no score, no findings and
+ * no rows to show (e.g. listings when nothing was found) rather than
+ * rendering a bare heading. A failed/timed-out/unavailable section still
+ * renders its reason. The member view always shows both.
  */
 export function ReportSections({
   sections,
   connectHref,
   showAll = false,
+  hideEmpty = false,
 }: {
   sections: PublicReportSection[];
   connectHref?: string;
   showAll?: boolean;
+  hideEmpty?: boolean;
 }) {
+  const rows = checkUpOrder(sections)
+    .map((s) => ({
+      s,
+      label: LABELS[s.key] ?? s.key,
+      facts: factsOf(s, showAll),
+      scored: s.status === "ok" && s.score !== null,
+    }))
+    .filter((r) => !hideEmpty || r.s.status !== "ok" || r.scored || r.s.findings.length > 0 || r.facts.length > 0);
   return (
     <ul className="divide-y border-y">
-      {checkUpOrder(sections).map((s) => {
-        const label = LABELS[s.key] ?? s.key;
-        const facts = factsOf(s, showAll);
-        const scored = s.status === "ok" && s.score !== null;
+      {rows.map(({ s, label, facts, scored }) => {
         return (
           <li key={s.key} data-testid={`report-section-${s.key}`} className="flex gap-3 py-4">
             {scored ? (
