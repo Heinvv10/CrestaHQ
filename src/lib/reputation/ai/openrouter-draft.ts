@@ -3,7 +3,7 @@ import "server-only";
 import type { callAi } from "@/lib/comms/ai/openrouter";
 import { unsuppliedContact } from "./contact-guard";
 import { slopHit } from "./slop";
-import type { DraftFailure, DraftInput, DraftResult } from "./types";
+import { REVIEWS_AI_CALL_MS, type DraftFailure, type DraftInput, type DraftResult } from "./types";
 
 /**
  * An owner-reply DRAFT on OpenRouter (SP5 c). From "Draft with AI" it only
@@ -16,7 +16,9 @@ import type { DraftFailure, DraftInput, DraftResult } from "./types";
  * carries any contact the guidelines did not supply (contact-guard.ts). A
  * draft that reads as machine-written (slop.ts) gets exactly ONE retry — the
  * same call plus a note naming the rule — and is refused (`slop`) when the
- * rewrite hits too. Both calls sit under ONE draft budget unit: the caller
+ * rewrite hits too, or when the caller's `deadlineMs` leaves no room for a
+ * second bounded call (review auto-reply passes its run deadline; "Draft with
+ * AI" passes none). Both calls sit under ONE draft budget unit: the caller
  * counts the draft (beginDraftCall) once, before this runs. A failure is one
  * kind, for the log only. Never logs review or draft text.
  */
@@ -48,9 +50,8 @@ const SYSTEM = [
   '- "Thanks for taking the time to rate us."',
 ].join("\n");
 
-/** The one retry's note: the rule id only — never the review or the rejected draft. */
-const retryNote = (rule: string) =>
-  `That reply broke the voice rule "${rule}". Write it again, plainer and shorter, following every rule above.`;
+/** The one retry's note: the rule id only — the model never saw its rejected draft, and never sees it here. */
+const retryNote = (rule: string) => `Write the reply again. Your previous draft was rejected for: ${rule}. Keep it plain.`;
 
 function clean(raw: string): string {
   let t = raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```$/, "").trim();
@@ -71,7 +72,7 @@ export type BoundedCall = (args: Parameters<typeof callAi>[0]) => ReturnType<typ
  * `callAi` aborted via its caller signal at REVIEWS_AI_CALL_MS), passed in so
  * this file never imports openrouter.ts back and the bound lives in ONE helper.
  */
-export async function draftReplyWith(model: string, input: DraftInput, call: BoundedCall): Promise<DraftResult> {
+export async function draftReplyWith(model: string, input: DraftInput, call: BoundedCall, deadlineMs?: number): Promise<DraftResult> {
   const messages: Message[] = [
     { role: "system", content: SYSTEM },
     {
@@ -83,10 +84,14 @@ export async function draftReplyWith(model: string, input: DraftInput, call: Bou
       }),
     },
   ];
-  const first = await attempt(model, messages, input.guidelines, call);
+  // Never a voice tell, whatever the guidelines say: they only ever add bans.
+  const names = [input.reviewerFirstName, input.businessName];
+  const first = await attempt(model, messages, input.guidelines, names, call);
   if (!("slop" in first)) return first;
+  // No room for a second bounded call before the caller's deadline: refused, never posted.
+  if (deadlineMs !== undefined && Date.now() + REVIEWS_AI_CALL_MS > deadlineMs) return fail("slop", `${first.slop} retry=skipped_deadline`);
   // Exactly one retry, bounded here — never a loop.
-  const second = await attempt(model, [...messages, { role: "user", content: retryNote(first.slop) }], input.guidelines, call);
+  const second = await attempt(model, [...messages, { role: "user", content: retryNote(first.slop) }], input.guidelines, names, call);
   if (!("slop" in second)) return second;
   return fail("slop", second.slop);
 }
@@ -94,7 +99,9 @@ export async function draftReplyWith(model: string, input: DraftInput, call: Bou
 type Message = Parameters<BoundedCall>[0]["messages"][number];
 
 /** One model call and the output checks; a voice hit is returned (not failed) so the caller may retry once. */
-async function attempt(model: string, messages: Message[], guidelines: string | null, call: BoundedCall): Promise<DraftResult | { slop: string }> {
+async function attempt(
+  model: string, messages: Message[], guidelines: string | null, names: Array<string | null>, call: BoundedCall,
+): Promise<DraftResult | { slop: string }> {
   let raw: string;
   try {
     raw = (await call({ model, temperature: 0.4, maxTokens: 400, messages })).text;
@@ -105,7 +112,7 @@ async function attempt(model: string, messages: Message[], guidelines: string | 
   if (!text) return fail("empty");
   const contact = unsuppliedContact(text, guidelines);
   if (contact) return fail("unsupplied_contact", contact);
-  const rule = slopHit(text, guidelines);
+  const rule = slopHit(text, names);
   if (rule) return { slop: rule };
   return { text };
 }

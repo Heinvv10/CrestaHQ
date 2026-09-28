@@ -8,6 +8,13 @@ export const SENTIMENT_LABELS = ["positive", "neutral", "negative"] as const;
  * The classifier and the caller both batch by this.
  */
 export const REVIEWS_AI_BATCH = 1;
+
+/**
+ * Every Reviews AI call — headers AND body — gets this long (openrouter.ts
+ * aborts it then). Here, not there, so the draft seam can read it without
+ * importing openrouter.ts back.
+ */
+export const REVIEWS_AI_CALL_MS = 60_000;
 export type SentimentLabel = (typeof SENTIMENT_LABELS)[number];
 
 /** One review to classify. `text` is untrusted customer content. */
@@ -53,6 +60,7 @@ export interface ReviewsAi {
    * A reply DRAFT. It posts nothing itself: "Draft with AI" hands it to the
    * admin to edit; review auto-reply (lib/reputation/auto-reply), when a
    * sub-account switched it on, may post it to Google without a click.
+   * `deadlineMs` (auto-reply's run deadline): no voice retry without room for it.
    */
-  draftReply(input: DraftInput): Promise<DraftResult>;
+  draftReply(input: DraftInput, deadlineMs?: number): Promise<DraftResult>;
 }

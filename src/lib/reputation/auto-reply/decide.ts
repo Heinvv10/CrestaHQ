@@ -29,11 +29,20 @@ export const PENDING_REASONS: readonly PendingReason[] = [
 /** A failed draft, or a post Google refused for this review, is retried once a day. */
 export const DRAFT_RETRY_MS = 24 * 3600_000;
 
+/**
+ * After this many CONSECUTIVE drafts of the same content fail the voice check
+ * (`slop`), the review stays `draft_failed` for a person and is not re-drafted
+ * again until its content changes — each re-draft is up to two paid calls.
+ */
+export const SLOP_REDRAFT_CAP = 2;
+
 export interface DecidePending {
   reason: PendingReason;
   basisHash: string | null;
   atMs: number | null;
   hasText: boolean;
+  /** Consecutive `slop` draft failures at this basis (draft_failed only); absent = 0. */
+  slopFails?: number;
 }
 
 export interface DecideReview {
@@ -131,6 +140,7 @@ export function decide(
     if (p.reason === "auto_queued" && p.hasText) {
       return counts.postsToday >= AUTO_REPLY_DAILY_POST_CAP ? skip("cap_wait") : { verdict: "auto", stored: true };
     }
+    if (p.reason === "draft_failed" && (p.slopFails ?? 0) >= SLOP_REDRAFT_CAP) return skip("held");
     if (p.reason === "draft_failed" && (p.atMs === null || ctx.now - p.atMs < DRAFT_RETRY_MS)) {
       return skip("draft_retry_wait");
     }

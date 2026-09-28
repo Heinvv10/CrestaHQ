@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/comms/ai/openrouter", () => ({ callAi: vi.fn(), aiIsConfigured: () => true, defaultAiModel: () => "m-default" }));
 
 import { draftReplyWith, type BoundedCall } from "./openrouter-draft";
-import type { DraftInput } from "./types";
+import { REVIEWS_AI_CALL_MS, type DraftInput } from "./types";
 
 /**
  * The draft's voice (openrouter-draft.ts SYSTEM + slop.ts), through the real
@@ -18,6 +18,10 @@ const INPUT: DraftInput = {
   businessName: "Velo Test Fibre",
   guidelines: null,
 };
+
+const PROD_GUIDELINES =
+  "No exclamation marks, no emojis, no dashes between clauses. Never use: thrilled, delighted, truly, genuinely, appreciate your support, don't hesitate, reach out, look forward to serving or welcoming you, earn that fifth star, valued customer.";
+const SLOPPY = "We're thrilled. Don't hesitate to reach out, we truly appreciate your support as a valued customer.";
 
 function fakeCall(...answers: string[]) {
   const call = vi.fn<BoundedCall>(async () => {
@@ -108,10 +112,52 @@ describe("the slop check", () => {
     expect(call).toHaveBeenCalledTimes(2);
   });
 
-  it("a tell the guidelines themselves use is allowed", async () => {
-    const call = fakeCall("Thanks Sam. Glad it was quick. Cheers! The Fixture Team");
-    const out = await draftReplyWith("m", { ...INPUT, guidelines: "Sign off: Cheers! The Fixture Team" }, call);
-    expect(out.text).toContain("Cheers!");
+  it("the production guidelines name the tells they ban — a draft using them is still refused (guidelines only add bans)", async () => {
+    const call = fakeCall(SLOPPY, SLOPPY, "unused");
+    expect(await draftReplyWith("m", { ...INPUT, guidelines: PROD_GUIDELINES }, call)).toEqual({ text: null, failure: "slop" });
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("the retry note says the model's previous draft was rejected, naming the rule only", async () => {
+    const call = fakeCall("Thanks Sam! Great.", "Thanks Sam. Glad the team was quick.");
+    await draftReplyWith("m", INPUT, call);
+    const note = messagesOf(call, 1).at(-1)!;
+    expect(note.content).toBe("Write the reply again. Your previous draft was rejected for: exclamation. Keep it plain.");
+  });
+
+  it("the reviewer's first name and the business name are not tells", async () => {
+    const call = fakeCall("Thanks Truly. Delighted Cleaning is glad the team was quick.");
+    const out = await draftReplyWith("m", { ...INPUT, reviewerFirstName: "Truly", businessName: "Delighted Cleaning" }, call);
+    expect(out).toEqual({ text: "Thanks Truly. Delighted Cleaning is glad the team was quick." });
     expect(call).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the retry and the caller's deadline", () => {
+  it("no room left for a second bounded call before the deadline → no retry, `slop`", async () => {
+    const call = fakeCall("Thanks Sam!", "Thanks Sam. Glad the team was quick.");
+    const out = await draftReplyWith("m", INPUT, call, Date.now() + REVIEWS_AI_CALL_MS - 1_000);
+    expect(out).toEqual({ text: null, failure: "slop" });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("room for one more bounded call → the retry runs", async () => {
+    const call = fakeCall("Thanks Sam!", "Thanks Sam. Glad the team was quick.");
+    const out = await draftReplyWith("m", INPUT, call, Date.now() + REVIEWS_AI_CALL_MS + 5_000);
+    expect(out).toEqual({ text: "Thanks Sam. Glad the team was quick." });
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("the clock is read AFTER the first call: a slow first call uses up the room", async () => {
+    const t0 = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(t0);
+    const call = vi.fn<BoundedCall>(async () => {
+      now.mockReturnValue(t0 + 30_000);
+      return { text: "Thanks Sam!", model: "m", promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+    });
+    expect(await draftReplyWith("m", INPUT, call, t0 + REVIEWS_AI_CALL_MS + 10_000)).toEqual({ text: null, failure: "slop" });
+    expect(call).toHaveBeenCalledTimes(1);
+    now.mockRestore();
+    now.mockRestore();
   });
 });
