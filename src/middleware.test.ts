@@ -234,6 +234,17 @@ describe("isPublicPath — the GBP public reviews feed", () => {
   });
 });
 
+describe("isPublicPath — the prospect report PDF (R5)", () => {
+  it("opens /report/{token}/pdf and nothing else under the token", () => {
+    expect(isPublicPath("/report/AbC-12_x/pdf")).toBe(true);
+    expect(isPublicPath("/report/AbC-12_x/pdfx")).toBe(false);
+    expect(isPublicPath("/report/AbC-12_x/pdf/extra")).toBe(false);
+    expect(isPublicPath("/report/AbC-12_x/other")).toBe(false);
+    expect(isPublicPath("/report/pdf")).toBe(true); // a one-segment token path, as before
+    expect(isPublicPath("/report//pdf")).toBe(false);
+  });
+});
+
 describe("isPublicPath — the WhatsApp settings routes (SP15)", () => {
   it("lets QStash reach the signed quality poll (the signature is its auth)", () => {
     expect(isPublicPath("/api/cron/whatsapp-quality")).toBe(true);

@@ -2,9 +2,9 @@ import { cache, type CSSProperties } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ReportSections } from "@/components/prospecting/report-view";
-import { ReportCta, ReportHero, RingGrid, TopFixes } from "@/components/prospecting/report-story";
+import { DownloadPdf, ReportCta, ReportHero, RingGrid, TopFixes } from "@/components/prospecting/report-story";
 import { resolvePublicReport } from "@/lib/prospecting/public-report";
-import { aiHook, areaCount, rankedFindings, whatsappHref } from "@/lib/prospecting/report-story";
+import { reportStory } from "@/lib/prospecting/report-story";
 
 export const dynamic = "force-dynamic";
 
@@ -54,26 +54,24 @@ export default async function SharedReportPage({
   const report = await getReport(shareId);
   if (!report) notFound();
 
-  const generated = report.generatedAt
-    ? new Date(report.generatedAt).toLocaleDateString("en-ZA", { dateStyle: "long" })
-    : null;
-  const ranked = rankedFindings(report.sections);
-  const top = ranked[0] ?? null;
-  const agencyName = report.agency.name;
+  // The same view model the PDF renders from (R5).
+  const story = reportStory(report);
+  const { generated } = story;
+  const agencyName = story.agency.name;
 
   return (
     // `light` + color-scheme: always the light scheme, whatever the device's.
     <main
       className="light min-h-screen bg-background text-foreground font-sans"
-      style={{ "--report-brand": report.agency.brandColor, colorScheme: "light" } as CSSProperties}
+      style={{ "--report-brand": story.agency.brandColor, colorScheme: "light" } as CSSProperties}
     >
       <header className="border-b bg-card">
         <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-4">
           <div className="flex items-center gap-3">
-            {report.agency.logoUrl ? (
+            {story.agency.logoUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={report.agency.logoUrl}
+                src={story.agency.logoUrl}
                 alt={agencyName ?? ""}
                 className="h-8 w-auto max-w-[160px] object-contain"
               />
@@ -88,34 +86,35 @@ export default async function SharedReportPage({
             {agencyName ? <span className="font-medium">{agencyName}</span> : null}
           </div>
           <p className="text-sm text-muted-foreground">
-            {report.businessName ? `Report for ${report.businessName}` : "Online presence report"}
+            {story.businessName ? `Report for ${story.businessName}` : "Online presence report"}
             {generated ? ` · ${generated}` : ""}
           </p>
         </div>
       </header>
 
       <ReportHero
-        businessName={report.businessName}
-        headline={report.headline}
-        finding={top}
-        hook={aiHook(report.sections, top)}
-        area={areaCount(report.sections)}
+        businessName={story.businessName}
+        headline={story.headline}
+        finding={story.top}
+        hook={story.hook}
+        area={story.area}
       />
 
       <div className="mx-auto w-full max-w-3xl space-y-12 px-4 py-10">
         <RingGrid sections={report.sections} />
         {/* The hero already leads with ranked[0]. */}
-        <TopFixes findings={ranked.slice(1, 4)} />
+        <TopFixes findings={story.fixes} />
         <section>
           <h2 className="mb-4 font-serif text-3xl">The rest of your check-up</h2>
           <ReportSections sections={report.sections} hideEmpty />
         </section>
         <ReportCta
-          line={top?.cta ?? null}
+          line={story.ctaLine}
           agencyName={agencyName}
-          bookHref={report.cta}
-          whatsappHref={whatsappHref(report.whatsappNumber)}
+          bookHref={story.bookHref}
+          whatsappHref={story.whatsappHref}
         />
+        <DownloadPdf href={`/report/${encodeURIComponent(shareId)}/pdf`} />
       </div>
     </main>
   );

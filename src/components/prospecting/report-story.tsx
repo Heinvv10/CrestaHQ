@@ -1,4 +1,4 @@
-import { MessageCircle } from "lucide-react";
+import { Download, MessageCircle } from "lucide-react";
 import { ScoreRing } from "@/components/prospecting/score-ring";
 import { LABELS } from "@/components/prospecting/report-view";
 import type { PublicReportSection } from "@/lib/prospecting/public-sections";
@@ -203,5 +203,25 @@ export function ReportCta({
         ) : null}
       </div>
     </section>
+  );
+}
+
+/**
+ * "Download PDF" (R5): a plain link, so it works without JavaScript; the
+ * route answers with an attachment. Public page only: the member view may
+ * have no share link, and the PDF is keyed by one.
+ */
+export function DownloadPdf({ href }: { href: string }) {
+  return (
+    <p className="text-center">
+      <a
+        href={href}
+        data-testid="download-pdf"
+        className="inline-flex h-11 items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium text-muted-foreground underline underline-offset-4 outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+      >
+        <Download className="size-4" aria-hidden="true" />
+        Download this report as a PDF
+      </a>
+    </p>
   );
 }
