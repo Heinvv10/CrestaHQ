@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { cache, type CSSProperties } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ReportSections } from "@/components/prospecting/report-view";
@@ -8,12 +8,34 @@ import { aiHook, areaCount, rankedFindings, whatsappHref } from "@/lib/prospecti
 
 export const dynamic = "force-dynamic";
 
-// The token is in this page's URL: never index it, never send it onward.
-export const metadata: Metadata = {
-  title: "Online presence report",
-  robots: { index: false, follow: false },
-  referrer: "no-referrer",
-};
+const TITLE = "Online presence report";
+
+/** One set of Firestore reads per request, shared by the page and its metadata. */
+const getReport = cache(resolvePublicReport);
+
+/**
+ * The link preview (SOW R4). `og:title` is the resolver's `businessName`,
+ * never a contact's own name, else the generic title. `metadataBase` comes
+ * from NEXT_PUBLIC_APP_URL: without it Next resolves `og:image` against
+ * localhost behind the proxy (the class of bug in #38). A refused token gets
+ * the bare metadata — nothing about the report — and the page 404s.
+ */
+export async function generateMetadata({ params }: { params: Promise<{ shareId: string }> }): Promise<Metadata> {
+  // The token is in this page's URL: never index it, never send it onward.
+  const base: Metadata = { title: TITLE, robots: { index: false, follow: false }, referrer: "no-referrer" };
+  const { shareId } = await params;
+  const report = await getReport(shareId);
+  if (!report) return base;
+  const openGraph = { title: report.businessName ?? TITLE };
+  // No valid app URL, no image: better none than one pointing at localhost.
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  if (!appUrl || !URL.canParse(appUrl)) return { ...base, openGraph };
+  return {
+    ...base,
+    metadataBase: new URL(appUrl),
+    openGraph: { ...openGraph, images: [{ url: `/report/${shareId}/opengraph-image`, width: 1200, height: 630 }] },
+  };
+}
 
 /**
  * Public prospect report, opened from a share link. Server-rendered from the
@@ -29,7 +51,7 @@ export default async function SharedReportPage({
   params: Promise<{ shareId: string }>;
 }) {
   const { shareId } = await params;
-  const report = await resolvePublicReport(shareId);
+  const report = await getReport(shareId);
   if (!report) notFound();
 
   const generated = report.generatedAt

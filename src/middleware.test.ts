@@ -553,6 +553,22 @@ describe("isPublicPath — prospect report share links + worker", () => {
     expect(isPublicPath("/api/automations/prospecting/report")).toBe(true);
   });
 
+  it("opens the preview image (R4) and the PDF (R5) under a token, exactly", () => {
+    expect(isPublicPath("/report/AbC-12_x/opengraph-image")).toBe(true);
+    expect(isPublicPath("/report/AbC-12_x/pdf")).toBe(true);
+    for (const p of [
+      "/report/tok/other",
+      "/report/tok/pdf/x",
+      "/report/tok/opengraph-image/x",
+      "/report/tok/opengraph-imagex",
+      "/report/tok/pdfx",
+      "/report/tok/x/pdf",
+      "/report//pdf",
+    ]) {
+      expect(isPublicPath(p), p).toBe(false);
+    }
+  });
+
   it("opens exactly one segment — nothing under or beside them", () => {
     expect(isPublicPath("/report")).toBe(false);
     expect(isPublicPath("/report/tok/extra")).toBe(false);
