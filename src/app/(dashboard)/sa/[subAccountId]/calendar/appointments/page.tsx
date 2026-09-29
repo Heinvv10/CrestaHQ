@@ -9,7 +9,10 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import { useSubAccountContacts } from "@/context/contacts-context";
-import { subscribeToEvents } from "@/lib/firestore/events";
+import {
+  APPOINTMENTS_PAST_PAGE,
+  subscribeToAppointments,
+} from "@/lib/firestore/events";
 import { subscribeToBookingPages } from "@/lib/firestore/booking-pages";
 import { toDate } from "@/lib/format";
 import {
@@ -35,6 +38,8 @@ import {
   type AppointmentFilters,
   type AppointmentTab,
 } from "@/lib/calendar/appointment-filters";
+import { showOlderNotice, tabIsPartial } from "@/lib/calendar/appointments-window";
+import { AppointmentsWindowNotice } from "@/components/calendar/appointments-window-notice";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
 import { EventDialog } from "@/components/calendar/event-dialog";
 import { Input } from "@/components/ui/input";
@@ -120,6 +125,12 @@ export default function AppointmentsListPage() {
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [bookingPages, setBookingPages] = useState<BookingPage[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
+  const [pastLimit, setPastLimit] = useState(APPOINTMENTS_PAST_PAGE);
+  const [loadWindow, setLoadWindow] = useState({ upcomingTruncated: false, pastTruncated: false });
+  // Which scope the rows on screen belong to: "Load older" re-subscribes
+  // with the same scope, so it keeps them visible instead of "Loading…".
+  const loadedScope = useRef<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const loading = eventsLoading || contactsLoading;
 
   const [tab, setTab] = useState<AppointmentTab>("upcoming");
@@ -157,18 +168,28 @@ export default function AppointmentsListPage() {
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
     if (!filterReady) return;
-    setEventsLoading(true);
+    const scopeKey = `${subAccountId}|${JSON.stringify(territoryFilter)}`;
+    if (loadedScope.current !== scopeKey) setEventsLoading(true);
     const scope = { agencyId, subAccountId };
-    const unsubE = subscribeToEvents(scope, { territoryFilter }, (l) => {
-      setEvents(l);
+    const unsubE = subscribeToAppointments(scope, { territoryFilter, pastLimit }, (s) => {
+      setEvents(s.events);
+      setLoadWindow({ upcomingTruncated: s.upcomingTruncated, pastTruncated: s.pastTruncated });
+      loadedScope.current = scopeKey;
       setEventsLoading(false);
+      setLoadingOlder(false);
+    }, (err) => {
+      // A missing composite index fails the query outright; say so rather
+      // than spinning on "Loading…" forever.
+      toast.error(`Couldn't load appointments: ${err.message}`);
+      setEventsLoading(false);
+      setLoadingOlder(false);
     });
     const unsubP = subscribeToBookingPages(subAccountId, setBookingPages);
     return () => {
       unsubE();
       unsubP();
     };
-  }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);
+  }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter, pastLimit]);
 
   const contactsById = useMemo(() => {
     const m = new Map<string, Contact>();
@@ -250,9 +271,15 @@ export default function AppointmentsListPage() {
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as AppointmentTab)}>
         <TabsList>
-          <TabsTrigger value="upcoming">Upcoming ({counts.upcoming})</TabsTrigger>
-          <TabsTrigger value="cancelled">Cancelled ({counts.cancelled})</TabsTrigger>
-          <TabsTrigger value="all">All ({counts.all})</TabsTrigger>
+          <TabsTrigger value="upcoming">
+            Upcoming ({counts.upcoming}{tabIsPartial("upcoming", loadWindow) ? "+" : ""})
+          </TabsTrigger>
+          <TabsTrigger value="cancelled">
+            Cancelled ({counts.cancelled}{tabIsPartial("cancelled", loadWindow) ? "+" : ""})
+          </TabsTrigger>
+          <TabsTrigger value="all">
+            All ({counts.all}{tabIsPartial("all", loadWindow) ? "+" : ""})
+          </TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -330,6 +357,20 @@ export default function AppointmentsListPage() {
             </div>
           )}
         </div>
+      )}
+
+      {!loading && (
+        <AppointmentsWindowNotice
+          upcomingCapped={loadWindow.upcomingTruncated}
+          olderHidden={showOlderNotice(tab, loadWindow)}
+          oldestLoaded={events.length > 0 ? toDate(events[0].startAt) : null}
+          tz={tz}
+          loadingOlder={loadingOlder}
+          onLoadOlder={() => {
+            setLoadingOlder(true);
+            setPastLimit((n) => n + APPOINTMENTS_PAST_PAGE);
+          }}
+        />
       )}
 
       <EventDialog

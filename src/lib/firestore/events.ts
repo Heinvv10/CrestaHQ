@@ -3,13 +3,16 @@ import {
   collection,
   deleteDoc,
   doc,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   Timestamp,
   updateDoc,
   where,
   type QueryConstraint,
+  type QuerySnapshot,
   type Unsubscribe,
 } from "firebase/firestore";
 import { getFirebaseDb } from "@/lib/firebase/client";
@@ -82,6 +85,100 @@ export function subscribeToEvents(
     },
     (err) => onError?.(err),
   );
+}
+
+/** Upcoming half of the appointments list: soonest first, capped. */
+export const APPOINTMENTS_UPCOMING_LIMIT = 500;
+/** Past half: newest first, one page at a time ("Load older" adds one). */
+export const APPOINTMENTS_PAST_PAGE = 200;
+
+export interface AppointmentsSnapshot {
+  events: CalendarEvent[];
+  /** The half hit its limit, so more events exist than were loaded. */
+  upcomingTruncated: boolean;
+  pastTruncated: boolean;
+}
+
+/**
+ * The appointments list's listener. `subscribeToEvents` reads a
+ * sub-account's whole history (1,894 docs on the E2E tenant), which is
+ * what made row updates arrive late. This splits the list at the moment of
+ * subscribing: every event from then on (capped at
+ * APPOINTMENTS_UPCOMING_LIMIT) plus the newest `pastLimit` before it. The
+ * two halves partition on the same boundary, so an event is in exactly one;
+ * the `*Truncated` flags let the page say when older events are not loaded.
+ * An event with no `startAt` matches neither half.
+ */
+export function subscribeToAppointments(
+  scope: TenantScope,
+  opts: EventQueryOptions & { pastLimit: number },
+  callback: (snapshot: AppointmentsSnapshot) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe {
+  const plan = territoryQueryPlan(opts.territoryFilter);
+  if (plan.mode === "empty") {
+    callback({ events: [], upcomingTruncated: false, pastTruncated: false });
+    return NOOP_UNSUB;
+  }
+  const base: QueryConstraint[] = [
+    where("subAccountId", "==", scope.subAccountId),
+  ];
+  if (plan.mode === "in") base.push(plan.constraint);
+  const boundary = Timestamp.fromMillis(Date.now());
+  const col = collection(getFirebaseDb(), EVENTS);
+  const upcomingQ = query(
+    col,
+    ...base,
+    where("startAt", ">=", boundary),
+    orderBy("startAt", "asc"),
+    limit(APPOINTMENTS_UPCOMING_LIMIT),
+  );
+  const pastQ = query(
+    col,
+    ...base,
+    where("startAt", "<", boundary),
+    orderBy("startAt", "desc"),
+    limit(opts.pastLimit),
+  );
+
+  let upcoming: QuerySnapshot | null = null;
+  let past: QuerySnapshot | null = null;
+  // Held until both halves have answered, so the list never renders one
+  // half as if it were everything.
+  const emit = () => {
+    if (!upcoming || !past) return;
+    const byId = new Map<string, CalendarEvent>();
+    for (const d of [...past.docs, ...upcoming.docs]) {
+      byId.set(d.id, { id: d.id, ...(d.data() as Omit<CalendarEvent, "id">) });
+    }
+    const events = [...byId.values()];
+    events.sort((a, b) => toMillis(a.startAt) - toMillis(b.startAt));
+    callback({
+      events,
+      upcomingTruncated: upcoming.size >= APPOINTMENTS_UPCOMING_LIMIT,
+      pastTruncated: past.size >= opts.pastLimit,
+    });
+  };
+  const unsubUpcoming = onSnapshot(
+    upcomingQ,
+    (snap) => {
+      upcoming = snap;
+      emit();
+    },
+    (err) => onError?.(err),
+  );
+  const unsubPast = onSnapshot(
+    pastQ,
+    (snap) => {
+      past = snap;
+      emit();
+    },
+    (err) => onError?.(err),
+  );
+  return () => {
+    unsubUpcoming();
+    unsubPast();
+  };
 }
 
 export async function createEvent(
