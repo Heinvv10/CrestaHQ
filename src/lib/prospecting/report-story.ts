@@ -1,4 +1,6 @@
 import { SEVERITY_ORDER } from "@/lib/prospecting/severity";
+import { sectionRows, type SectionRow } from "@/lib/prospecting/report-rows";
+import type { PublicReport } from "@/lib/prospecting/public-report";
 import type { PublicReportSection } from "@/lib/prospecting/public-sections";
 import type { ProspectSectionKey } from "@/types";
 
@@ -49,6 +51,11 @@ export function rankedFindings(sections: PublicReportSection[]): RankedFinding[]
     .map(({ f }) => f);
 }
 
+/** The ring grid: public sections that have a score, in stored (report) order. */
+export function ringSections(sections: PublicReportSection[]): PublicReportSection[] {
+  return sections.filter((s) => s.status === "ok" && s.score !== null);
+}
+
 /** Public sections that have a score, and how many of them have a finding. */
 export function areaCount(sections: PublicReportSection[]): { needWork: number; scored: number } {
   const scored = sections.filter((s) => s.status === "ok" && s.score !== null);
@@ -91,4 +98,52 @@ export function aiHook(sections: PublicReportSection[], headline: RankedFinding 
 export function whatsappHref(number: string | null): string | null {
   const digits = number?.replace(/\D/g, "") ?? "";
   return digits ? `https://wa.me/${digits}` : null;
+}
+
+export interface ReportStory {
+  businessName: string | null;
+  /** "20 September 2026", or null when the report carries no date. */
+  generated: string | null;
+  agency: { name: string | null; logoUrl: string | null; brandColor: string };
+  headline: string | null;
+  /** The headline finding the hero leads with. */
+  top: RankedFinding | null;
+  hook: AiHook | null;
+  area: { needWork: number; scored: number };
+  /** "Fix these next": up to three findings after the headline one. */
+  fixes: RankedFinding[];
+  /** The CTA line tied to the headline finding (null: the generic line). */
+  ctaLine: string | null;
+  bookHref: string | null;
+  whatsappHref: string | null;
+  /** The ring grid, as the public page shows it. */
+  rings: PublicReportSection[];
+  /** The section cards, as the public page lists them. */
+  rows: SectionRow[];
+}
+
+/**
+ * Everything the public page and the PDF derive from a `PublicReport`, in
+ * one place, so the two renderers cannot compute different things.
+ */
+export function reportStory(report: PublicReport): ReportStory {
+  const ranked = rankedFindings(report.sections);
+  const top = ranked[0] ?? null;
+  return {
+    businessName: report.businessName,
+    generated: report.generatedAt
+      ? new Date(report.generatedAt).toLocaleDateString("en-ZA", { dateStyle: "long" })
+      : null,
+    agency: { name: report.agency.name, logoUrl: report.agency.logoUrl, brandColor: report.agency.brandColor },
+    headline: report.headline,
+    top,
+    hook: aiHook(report.sections, top),
+    area: areaCount(report.sections),
+    fixes: ranked.slice(1, 4),
+    ctaLine: top?.cta ?? null,
+    bookHref: report.cta,
+    whatsappHref: whatsappHref(report.whatsappNumber),
+    rings: ringSections(report.sections),
+    rows: sectionRows(report.sections, { hideEmpty: true }),
+  };
 }
