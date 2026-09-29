@@ -101,12 +101,12 @@ export default async function SharedReportPage({
       />
 
       <div className="mx-auto w-full max-w-3xl space-y-12 px-4 py-10">
-        <RingGrid sections={report.sections} />
+        <RingGrid rings={story.rings} />
         {/* The hero already leads with ranked[0]. */}
         <TopFixes findings={story.fixes} />
         <section>
           <h2 className="mb-4 font-serif text-3xl">The rest of your check-up</h2>
-          <ReportSections sections={report.sections} hideEmpty />
+          <ReportSections rows={story.rows} />
         </section>
         <ReportCta
           line={story.ctaLine}

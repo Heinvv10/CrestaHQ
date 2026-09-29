@@ -178,7 +178,6 @@ function SectionCard({ row }: { row: SectionRow }) {
 
 export function ReportPdfDocument({ story, logo, bookUrl }: { story: ReportStory; logo: string | null; bookUrl: string | null }) {
   const { agency } = story;
-  const scored = story.rows.filter((r) => r.scored);
   const initials = (agency.name ?? "")
     .split(/\s+/)
     .filter(Boolean)
@@ -208,13 +207,13 @@ export function ReportPdfDocument({ story, logo, bookUrl }: { story: ReportStory
         <Hero story={story} />
 
         <View style={s.body}>
-          {scored.length > 0 ? (
+          {story.rings.length > 0 ? (
             <View style={s.grid}>
-              {scored.map((r) => (
-                <View key={r.s.key} style={s.gridCell}>
+              {story.rings.map((r) => (
+                <View key={r.key} style={s.gridCell}>
                   <View style={s.gridCard}>
-                    <Ring score={r.s.score!} size={36} />
-                    <Text style={s.gridLabel}>{LABELS[r.s.key]}</Text>
+                    <Ring score={r.score!} size={36} />
+                    <Text style={s.gridLabel}>{LABELS[r.key]}</Text>
                   </View>
                 </View>
               ))}

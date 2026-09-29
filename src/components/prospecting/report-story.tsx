@@ -1,6 +1,6 @@
 import { Download, MessageCircle } from "lucide-react";
 import { ScoreRing } from "@/components/prospecting/score-ring";
-import { LABELS } from "@/components/prospecting/report-view";
+import { LABELS } from "@/lib/prospecting/report-rows";
 import type { PublicReportSection } from "@/lib/prospecting/public-sections";
 import type { AiHook, RankedFinding } from "@/lib/prospecting/report-story";
 
@@ -115,13 +115,12 @@ export function ReportHero({
   );
 }
 
-/** Desktop only: one ring per scored public section (direction B's grid). */
-export function RingGrid({ sections }: { sections: PublicReportSection[] }) {
-  const scored = sections.filter((s) => s.status === "ok" && s.score !== null);
-  if (scored.length === 0) return null;
+/** Desktop only: one ring per scored public section (direction B's grid), from `ReportStory.rings`. */
+export function RingGrid({ rings }: { rings: PublicReportSection[] }) {
+  if (rings.length === 0) return null;
   return (
     <ul data-testid="ring-grid" className="hidden grid-cols-4 gap-3 md:grid">
-      {scored.map((s) => (
+      {rings.map((s) => (
         <li key={s.key} className="flex flex-col items-center gap-2 rounded-xl border bg-card p-4 text-center">
           <ScoreRing score={s.score!} label={LABELS[s.key]} size={56} />
           <span className="text-sm font-medium">{LABELS[s.key]}</span>

@@ -44,6 +44,7 @@ const { mem } = await import("@/test/gbp-sync-store");
 const { mintReportShare, revokeReportShare } = await import("@/lib/prospecting/share");
 const { resolvePublicReport } = await import("@/lib/prospecting/public-report");
 const { reportStory } = await import("@/lib/prospecting/report-story");
+const { LABELS } = await import("@/lib/prospecting/report-rows");
 const { PDF_IP_LIMIT, PDF_SHARE_LIMIT } = await import("@/lib/prospecting/pdf-rate-limit");
 const { GET } = await import("./route");
 const { default: SharedReportPage } = await import("../page");
@@ -99,15 +100,19 @@ const SECTIONS = [
   { key: "listings", status: "ok", score: null, findings: [], raw: { checks: [{ directory: "Cylex", status: "not_found" }] } },
 ];
 
+function seedReport(sections: unknown[]) {
+  mem.seed("prospectReports/r1", {
+    agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1", status: "ready", shareId: null,
+    headline: "Not named by AI.", generatedAt: new Date("2026-09-20T00:00:00Z"), usageMonth: "2026-09", sections,
+  });
+}
+
 beforeEach(() => {
   mem.clear();
   fed.props.length = 0;
   fetched.urls.length = 0;
   process.env.NEXT_PUBLIC_APP_URL = "https://crm.example.test";
-  mem.seed("prospectReports/r1", {
-    agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1", status: "ready", shareId: null,
-    headline: "Not named by AI.", generatedAt: new Date("2026-09-20T00:00:00Z"), usageMonth: "2026-09", sections: SECTIONS,
-  });
+  seedReport(SECTIONS);
   mem.seed("agencies/ag1", { name: "Example Agency", logoUrl: "https://cdn.test/logo.png", brandColor: "#0F766E" });
   mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true, whatsappNumber: "+27000000000" });
   mem.seed("contacts/c1", { subAccountId: "sa1", company: "Example Plumbing Co" });
@@ -155,6 +160,24 @@ describe("GET /report/[token]/pdf", () => {
     for (const r of expected.rows) expect(html).toContain(`data-testid="report-section-${r.s.key}"`);
     expect(html.match(/data-testid="report-section-/g)).toHaveLength(expected.rows.length);
     expect(html).toContain(expected.ctaLine!);
+  });
+
+  it("shows the ring grid in the page's order — stored order, not worst first — in both renderers", async () => {
+    // Stored order differs from worst-first, so a renderer that re-sorts shows.
+    const [ai, perf, gbp] = SECTIONS;
+    seedReport([gbp, ai, perf]);
+    const t = await token();
+    const res = await call(t);
+    const html = renderToStaticMarkup(await SharedReportPage({ params: Promise.resolve({ shareId: t }) }));
+    const grid = html.slice(html.indexOf('data-testid="ring-grid"'), html.indexOf("</ul>", html.indexOf('data-testid="ring-grid"')));
+    const pageRings = [...grid.matchAll(/aria-label="([^":]+): \d+ out of 100"/g)].map((m) => m[1]);
+    expect(pageRings).toEqual(["Google Business Profile", "AI search presence", "Website speed"]);
+    expect(fed.props[0]!.story.rings.map((r) => LABELS[r.key])).toEqual(pageRings);
+    // And the PDF draws them in that order: its grid comes before the cards.
+    const text = pdfText(Buffer.from(await res.arrayBuffer()));
+    const at = (l: string) => text.indexOf(squash(l));
+    expect(at("65Google Business Profile")).toBeLessThan(at("0AI search presence"));
+    expect(at("0AI search presence")).toBeLessThan(at("30Website speed"));
   });
 
   it("never lets a hidden row reach the PDF: model ids, raw metrics, manual-only and not-connected sections", async () => {

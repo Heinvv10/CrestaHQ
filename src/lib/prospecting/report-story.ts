@@ -51,6 +51,11 @@ export function rankedFindings(sections: PublicReportSection[]): RankedFinding[]
     .map(({ f }) => f);
 }
 
+/** The ring grid: public sections that have a score, in stored (report) order. */
+export function ringSections(sections: PublicReportSection[]): PublicReportSection[] {
+  return sections.filter((s) => s.status === "ok" && s.score !== null);
+}
+
 /** Public sections that have a score, and how many of them have a finding. */
 export function areaCount(sections: PublicReportSection[]): { needWork: number; scored: number } {
   const scored = sections.filter((s) => s.status === "ok" && s.score !== null);
@@ -111,6 +116,8 @@ export interface ReportStory {
   ctaLine: string | null;
   bookHref: string | null;
   whatsappHref: string | null;
+  /** The ring grid, as the public page shows it. */
+  rings: PublicReportSection[];
   /** The section cards, as the public page lists them. */
   rows: SectionRow[];
 }
@@ -136,6 +143,7 @@ export function reportStory(report: PublicReport): ReportStory {
     ctaLine: top?.cta ?? null,
     bookHref: report.cta,
     whatsappHref: whatsappHref(report.whatsappNumber),
+    rings: ringSections(report.sections),
     rows: sectionRows(report.sections, { hideEmpty: true }),
   };
 }

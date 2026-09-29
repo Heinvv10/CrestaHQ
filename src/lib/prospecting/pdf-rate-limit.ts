@@ -21,9 +21,9 @@ import "server-only";
  */
 
 export const PDF_IP_LIMIT = 10;
-export const PDF_IP_WINDOW_MS = 10 * 60 * 1000;
+const PDF_IP_WINDOW_MS = 10 * 60 * 1000;
 export const PDF_SHARE_LIMIT = 30;
-export const PDF_SHARE_WINDOW_MS = 60 * 60 * 1000;
+const PDF_SHARE_WINDOW_MS = 60 * 60 * 1000;
 const MAX_TRACKED = 5_000;
 
 interface Bucket {
@@ -31,7 +31,7 @@ interface Bucket {
   windowStartedAt: number;
 }
 
-export interface PdfRateLimitResult {
+interface PdfRateLimitResult {
   ok: boolean;
   retryAfterSec: number;
 }

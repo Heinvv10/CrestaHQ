@@ -3,11 +3,11 @@ import { ScoreRing, StatusPill } from "@/components/prospecting/score-ring";
 import { aiQuestions } from "@/lib/prospecting/report-story";
 import {
   DETAIL_LABELS,
-  LABELS,
   LINK_KEYS,
   STATUS_NOTE,
   detailText,
   sectionRows,
+  type SectionRow,
 } from "@/lib/prospecting/report-rows";
 import type { PublicReportSection, Scalar } from "@/lib/prospecting/public-sections";
 import type { ProspectSectionKey } from "@/types";
@@ -17,8 +17,6 @@ import type { ProspectSectionKey } from "@/types";
  * (`/report/[token]`) and the member view. Renders only the whitelisted
  * `PublicReportSection` shape. No hooks — safe in a server component.
  */
-
-export { LABELS };
 
 function DetailValue({ name, section, value }: { name: string; section: ProspectSectionKey; value: Scalar }) {
   const text = detailText(name, section, value);
@@ -77,19 +75,21 @@ function AiPresenceBody({ s }: { s: PublicReportSection }) {
  * no rows to show (e.g. listings when nothing was found) rather than
  * rendering a bare heading. A failed/timed-out/unavailable section still
  * renders its reason. The member view always shows both.
+ *
+ * `rows` (public page): the cards already computed by `reportStory`, so the
+ * page lists exactly what the PDF lists.
  */
-export function ReportSections({
-  sections,
-  connectHref,
-  showAll = false,
-  hideEmpty = false,
-}: {
-  sections: PublicReportSection[];
-  connectHref?: string;
-  showAll?: boolean;
-  hideEmpty?: boolean;
-}) {
-  const rows = sectionRows(sections, { showAll, hideEmpty });
+export function ReportSections(
+  props: { connectHref?: string } & (
+    | { rows: SectionRow[] }
+    | { sections: PublicReportSection[]; showAll?: boolean; hideEmpty?: boolean }
+  ),
+) {
+  const { connectHref } = props;
+  const rows =
+    "rows" in props
+      ? props.rows
+      : sectionRows(props.sections, { showAll: props.showAll, hideEmpty: props.hideEmpty });
   return (
     <ul className="divide-y border-y">
       {rows.map(({ s, label, facts, scored }) => {

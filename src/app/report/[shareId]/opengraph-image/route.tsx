@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 import { ringGeometry } from "@/components/prospecting/score-ring";
-import { LABELS } from "@/components/prospecting/report-view";
+import { LABELS } from "@/lib/prospecting/report-rows";
 import { loadLogoDataUri } from "@/lib/branding/logo-data-uri";
 import { resolvePublicReport, type PublicReport } from "@/lib/prospecting/public-report";
 
