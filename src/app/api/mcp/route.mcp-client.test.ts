@@ -111,7 +111,7 @@ describe("tools/list", () => {
     const { tools } = await (await connect()).listTools();
     const rest = (await (await restListTools(
       new Request("http://localhost/api/v1/tools", { headers: { authorization: `Bearer ${key}` } }),
-      { params: Promise.resolve({}) }
+      { params: undefined }
     )).json()) as { tools: Array<{ name: string; description: string; parameters: unknown; readOnly: boolean; approval?: string; approvalWhen?: string }> };
     expect(tools.map((t) => ({
       name: t.name, description: t.description, parameters: t.inputSchema,

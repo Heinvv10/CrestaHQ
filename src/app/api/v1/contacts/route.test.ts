@@ -117,7 +117,7 @@ function post(body: Record<string, unknown>): Promise<Response> {
       method: "POST",
       body: JSON.stringify(body),
     }),
-    { params: Promise.resolve({}) }
+    { params: undefined }
   ) as unknown as Promise<Response>;
 }
 

@@ -27,7 +27,7 @@ const post = (k: string, body = "{}", bearer = key) =>
       headers: { authorization: `Bearer ${bearer}`, "idempotency-key": k, "content-type": "application/json" },
       body,
     }),
-    { params: Promise.resolve({}) }
+    { params: undefined }
   );
 const IDEM = "subAccounts/sa1/apiIdempotency";
 const codeOf = async (res: Response) => ((await res.json()) as { error?: { code?: string } }).error?.code;

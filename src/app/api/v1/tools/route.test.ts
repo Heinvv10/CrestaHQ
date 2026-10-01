@@ -27,7 +27,7 @@ function mintKey(scopes: string[], mode: "live" | "test" = "live") {
   return m.rawKey;
 }
 const headers = (extra: Record<string, string> = {}) => ({ authorization: `Bearer ${key}`, ...extra });
-const listTools = () => GET(new Request("http://localhost/api/v1/tools", { headers: headers() }), { params: Promise.resolve({}) });
+const listTools = () => GET(new Request("http://localhost/api/v1/tools", { headers: headers() }), { params: undefined });
 const call = (name: string, body: unknown, extra: Record<string, string> = {}) =>
   POST(
     new Request(`http://localhost/api/v1/tools/${name}`, {

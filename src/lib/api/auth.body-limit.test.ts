@@ -41,7 +41,7 @@ const send = (r: typeof route, init: RequestInit) =>
       ...init,
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json", ...(init.headers as Record<string, string>) },
     }),
-    { params: Promise.resolve({}) },
+    { params: undefined },
   );
 
 beforeEach(() => {

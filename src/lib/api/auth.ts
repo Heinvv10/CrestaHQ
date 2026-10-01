@@ -320,7 +320,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
   opts: WithApiAuthOptions = {},
 ): (
   request: Request,
-  routeCtx: { params: Promise<P> },
+  routeCtx: { params?: Promise<P> },
 ) => Promise<NextResponse> {
   const requireScope: ApiKeyScope = opts.requireScope ?? "admin";
 
@@ -340,7 +340,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     // point (scope-fail, rate-limit-fail, idempotency-replay, handler) needs
     // it in scope for the log capture. GET / HEAD short-circuit inside
     // readBody so this is essentially free for read paths.
-    const params = await routeCtx.params;
+    // Next passes `params: undefined` to a route with no dynamic segment.
+    const params = (await routeCtx.params) ?? ({} as P);
     const maxBytes = opts.maxBodyBytes ?? MAX_BODY_BYTES;
     const { rawBody, body, tooLarge } = await readJsonBody(request, maxBytes);
     const redact = opts.redactLog?.(params) ?? { requestBody: false, responseBody: false };

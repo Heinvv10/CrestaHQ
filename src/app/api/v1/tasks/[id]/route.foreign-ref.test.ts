@@ -104,7 +104,7 @@ it.each([
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: "New", ...body }),
     }),
-    { params: Promise.resolve({}) } as never,
+    { params: undefined },
   );
   expect(res.status).toBe(400);
   expect(((await res.json()) as { error: { code: string } }).error.code).toMatch(/_not_found$/);
@@ -118,7 +118,7 @@ const postTask = (body: Record<string, unknown>) =>
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ title: "New", ...body }),
     }),
-    { params: Promise.resolve({}) } as never,
+    { params: undefined },
   );
 
 it("task POST with no links still creates", async () => {

@@ -9,7 +9,10 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import { useSubAccountContacts } from "@/context/contacts-context";
-import { subscribeToEvents } from "@/lib/firestore/events";
+import {
+  APPOINTMENTS_PAST_PAGE,
+  subscribeToAppointments,
+} from "@/lib/firestore/events";
 import { subscribeToBookingPages } from "@/lib/firestore/booking-pages";
 import { toDate } from "@/lib/format";
 import {
@@ -35,6 +38,16 @@ import {
   type AppointmentFilters,
   type AppointmentTab,
 } from "@/lib/calendar/appointment-filters";
+import {
+  applyStatusOverrides,
+  expireStatusOverridesAndRearm,
+  nextStatusOverrideExpiryMs,
+  reconcileStatusOverrides,
+  setStatusOverride,
+  type StatusOverrides,
+} from "@/lib/calendar/status-overrides";
+import { showOlderNotice, tabIsPartial } from "@/lib/calendar/appointments-window";
+import { AppointmentsWindowNotice } from "@/components/calendar/appointments-window-notice";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
 import { EventDialog } from "@/components/calendar/event-dialog";
 import { Input } from "@/components/ui/input";
@@ -116,10 +129,20 @@ export default function AppointmentsListPage() {
   const { members } = useSubAccountMembers(subAccountId);
   const tz = resolveAppointmentsTimezone(subAccount);
 
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [snapshotEvents, setSnapshotEvents] = useState<CalendarEvent[]>([]);
+  // The newest snapshot, readable from async callbacks without a stale closure.
+  const latestSnapshot = useRef<CalendarEvent[]>([]);
+  const [statusOverrides, setStatusOverrides] = useState<StatusOverrides>({});
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [bookingPages, setBookingPages] = useState<BookingPage[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
+  const [pastLimit, setPastLimit] = useState(APPOINTMENTS_PAST_PAGE);
+  const [loadWindow, setLoadWindow] = useState({ upcomingTruncated: false, pastTruncated: false });
+  const [failedHalves, setFailedHalves] = useState<("upcoming" | "past")[]>([]);
+  // Which scope the rows on screen belong to: "Fetch older appointments" re-subscribes
+  // with the same scope, so it keeps them visible instead of "Loading…".
+  const loadedScope = useRef<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const loading = eventsLoading || contactsLoading;
 
   const [tab, setTab] = useState<AppointmentTab>("upcoming");
@@ -157,18 +180,30 @@ export default function AppointmentsListPage() {
   useEffect(() => {
     if (authLoading || !user || !agencyId) return;
     if (!filterReady) return;
-    setEventsLoading(true);
+    const scopeKey = `${subAccountId}|${JSON.stringify(territoryFilter)}`;
+    if (loadedScope.current !== scopeKey) setEventsLoading(true);
     const scope = { agencyId, subAccountId };
-    const unsubE = subscribeToEvents(scope, { territoryFilter }, (l) => {
-      setEvents(l);
+    const unsubE = subscribeToAppointments(scope, { territoryFilter, pastLimit }, (s) => {
+      latestSnapshot.current = s.events;
+      setSnapshotEvents(s.events);
+      setStatusOverrides((prev) => reconcileStatusOverrides(prev, s.events));
+      setLoadWindow({ upcomingTruncated: s.upcomingTruncated, pastTruncated: s.pastTruncated });
+      setFailedHalves(s.failedHalves);
+      loadedScope.current = scopeKey;
       setEventsLoading(false);
+      setLoadingOlder(false);
+    }, (err) => {
+      // A missing composite index fails the query outright. Reported once
+      // per subscribe; the snapshot callback above clears the spinner and
+      // sets failedHalves, so the page says what is missing.
+      toast.error(`Couldn't load appointments: ${err.message}`);
     });
     const unsubP = subscribeToBookingPages(subAccountId, setBookingPages);
     return () => {
       unsubE();
       unsubP();
     };
-  }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter]);
+  }, [user, agencyId, subAccountId, authLoading, filterReady, territoryFilter, pastLimit]);
 
   const contactsById = useMemo(() => {
     const m = new Map<string, Contact>();
@@ -187,6 +222,23 @@ export default function AppointmentsListPage() {
     for (const member of members) m.set(member.uid, member.displayName);
     return m;
   }, [members]);
+
+  const events = useMemo(
+    () => applyStatusOverrides(snapshotEvents, statusOverrides),
+    [snapshotEvents, statusOverrides],
+  );
+
+  // Overrides never outlive STATUS_OVERRIDE_TTL_MS, so one can mask a real
+  // change for at most that long.
+  useEffect(() => {
+    const wait = nextStatusOverrideExpiryMs(statusOverrides, Date.now());
+    if (wait === null) return;
+    const t = setTimeout(
+      () => setStatusOverrides((prev) => expireStatusOverridesAndRearm(prev, Date.now())),
+      wait,
+    );
+    return () => clearTimeout(t);
+  }, [statusOverrides]);
 
   const now = Date.now();
   const tabbedEvents = useMemo(
@@ -217,6 +269,14 @@ export default function AppointmentsListPage() {
     setVisibleCount(PAGE_SIZE);
   }, [tab, filters, search]);
 
+  // Reads the newest snapshot (a ref), not this render's: the delta may have
+  // landed while the request was in flight.
+  function noteConfirmedStatus(id: string, status: EventStatus) {
+    setStatusOverrides((prev) =>
+      setStatusOverride(prev, id, status, latestSnapshot.current, Date.now()),
+    );
+  }
+
   async function changeStatus(event: CalendarEvent, next: EventStatus) {
     setBusyEventIds((prev) => new Set(prev).add(event.id));
     const outcome = await statusGuard.run(event.id, () => applyStatusChange(event.id, next));
@@ -226,7 +286,11 @@ export default function AppointmentsListPage() {
       return n;
     });
     if (outcome.skipped) return; // already in flight for this row
-    toast[outcome.result.toast.kind](outcome.result.toast.message);
+    const { result } = outcome;
+    if (result.ok && result.status) {
+      noteConfirmedStatus(event.id, result.status);
+    }
+    toast[result.toast.kind](result.toast.message);
   }
 
   async function confirmCancel() {
@@ -250,9 +314,15 @@ export default function AppointmentsListPage() {
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as AppointmentTab)}>
         <TabsList>
-          <TabsTrigger value="upcoming">Upcoming ({counts.upcoming})</TabsTrigger>
-          <TabsTrigger value="cancelled">Cancelled ({counts.cancelled})</TabsTrigger>
-          <TabsTrigger value="all">All ({counts.all})</TabsTrigger>
+          <TabsTrigger value="upcoming">
+            Upcoming ({counts.upcoming}{tabIsPartial("upcoming", loadWindow) ? "+" : ""})
+          </TabsTrigger>
+          <TabsTrigger value="cancelled">
+            Cancelled ({counts.cancelled}{tabIsPartial("cancelled", loadWindow) ? "+" : ""})
+          </TabsTrigger>
+          <TabsTrigger value="all">
+            All ({counts.all}{tabIsPartial("all", loadWindow) ? "+" : ""})
+          </TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -274,9 +344,19 @@ export default function AppointmentsListPage() {
         hasActive={hasActiveFilters(filters)}
       />
 
+      {!loading && failedHalves.length > 0 && visibleEvents.length > 0 && (
+        <p role="alert" className="text-sm text-destructive">
+          Could not load {failedHalves.includes("upcoming") ? "upcoming" : "older"} appointments, so this list is incomplete.
+        </p>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-dashed py-10 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+        </div>
+      ) : visibleEvents.length === 0 && failedHalves.length > 0 ? (
+        <div role="alert" className="rounded-2xl border border-dashed border-destructive/40 bg-card p-10 text-center text-sm text-destructive">
+          Could not load appointments.
         </div>
       ) : visibleEvents.length === 0 ? (
         <div className="rounded-2xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">
@@ -332,6 +412,20 @@ export default function AppointmentsListPage() {
         </div>
       )}
 
+      {!loading && (
+        <AppointmentsWindowNotice
+          upcomingCapped={loadWindow.upcomingTruncated}
+          olderHidden={showOlderNotice(tab, loadWindow)}
+          oldestLoaded={events.length > 0 ? toDate(events[0].startAt) : null}
+          tz={tz}
+          loadingOlder={loadingOlder}
+          onLoadOlder={() => {
+            setLoadingOlder(true);
+            setPastLimit((n) => n + APPOINTMENTS_PAST_PAGE);
+          }}
+        />
+      )}
+
       <EventDialog
         open={!!selectedEvent}
         onOpenChange={(o) => {
@@ -339,6 +433,7 @@ export default function AppointmentsListPage() {
         }}
         contacts={contacts}
         event={selectedEvent}
+        onStatusChange={noteConfirmedStatus}
       />
 
       <AlertDialog

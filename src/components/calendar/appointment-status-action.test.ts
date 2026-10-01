@@ -10,6 +10,25 @@ function fakeFetch(status: number, body: Record<string, unknown>) {
   }) as unknown as typeof fetch;
 }
 
+describe("applyStatusChange — confirmed status", () => {
+  it("returns the status the server confirmed, on every success path", async () => {
+    for (const body of [
+      { ok: true, status: "cancelled", notifyEmailSent: true },
+      { ok: true, status: "cancelled", notifyEmailSent: false },
+    ]) {
+      const o = await applyStatusChange("e", "cancelled", fakeFetch(200, body));
+      expect(o.status).toBe("cancelled");
+    }
+    const done = await applyStatusChange("e", "completed", fakeFetch(200, { ok: true, status: "completed" }));
+    expect(done.status).toBe("completed");
+  });
+  it("carries no status on failure, so nothing is applied to the row", async () => {
+    const o = await applyStatusChange("e", "cancelled", fakeFetch(409, { ok: false, error: "no" }));
+    expect(o.ok).toBe(false);
+    expect(o.status).toBeUndefined();
+  });
+});
+
 describe("applyStatusChange — toast mapping", () => {
   it("cancel with notifyEmailSent: true -> success toast", async () => {
     const outcome = await applyStatusChange(
