@@ -1,6 +1,6 @@
 # Prospect report redesign — statement of work
 
-*Part of the [LeadStack CRM](../../CLAUDE.md) docs and the [Prospecting module](prospecting-module.md). Status: R0–R5 built and live (see "Delivery status"); SOW grilled with Hein 2026-09-28. The rulings under "Settled" are closed and are not to be re-opened by an implementer.*
+*Part of the [LeadStack CRM](../../CLAUDE.md) docs and the [Prospecting module](prospecting-module.md). Status: R0 and R2–R5 shipped and deployed (R1 was the mockup pick); the R4 WhatsApp preview card and the R5 429 are not yet walked on prod (see "Delivery status"). SOW grilled with Hein 2026-09-28. The rulings under "Settled" are closed and are not to be re-opened by an implementer.*
 
 ## Why
 
@@ -109,11 +109,11 @@ Built on the mockup Hein picks. Every direction must include:
 | PR | Merged | Live proof |
 |---|---|---|
 | R1 mockups | not merged code | Hein picked direction C "Story" on 2026-09-28. |
-| R0a #319, R0b #320, R2 #321, R3 #322 | 2026-09-28 | Walked on prod (27899e2c). |
+| R0a #319, R0b #320, R2 #321, R3 #322 | 2026-09-28 | Deployed together on 2026-09-28 as 27899e2c (the #322 merge, which contains the other three) and walked on prod that day. |
 | R4 #325 | 2026-09-29 | Live at b5dcd832. On the reference report the built page's `og:image` is absolute on the app URL; the image returns 200 `image/png` with `Cache-Control: public, max-age=300`; an unknown token returns 404, and any other sub-path under a report link is not public (it goes to the login redirect). **Not walked:** the WhatsApp preview card on Hein's own phone. |
 | R5 #326 | 2026-09-29 | Live at b5dcd832. The PDF downloads from the live page (`no-store`, attachment); an unknown token returns 404. Memory on velo-server: about 5–8 MB heap per warm render (`docs/parity/evidence/r5-pdf/memory.md`). **Not walked:** the 429 on prod (tests only). |
 
-Build order as planned (now complete): R0 and R1 first; R3 after R1's pick and R2; R4 after R3; R5 after R0, R1's pick and R2 (the PDF carries the layout and the brand colour).
+Build order as planned (now complete): R0 (as R0a and R0b) and R1 first; R3 after R1's pick and R2; R4 after R3; R5 after R0, R1's pick and R2 (the PDF carries the layout and the brand colour).
 
 **Existing reports:** about 50 reports are stored on #1000. The R0 backfill script:
 - recomputes the scores of the sections that are pure over stored `raw` (listings, reputation, lead_capture);
@@ -123,7 +123,11 @@ Build order as planned (now complete): R0 and R1 first; R3 after R1's pick and R
 
 It runs as a **dry run first**, listing every document it would change. It writes to production only after Hein approves that list, because a production database write sits outside the Level-3 boundary. As a second guard, `resolvePublicReport` drops any score below 100 that has no finding, so an unmigrated report never shows a score without a reason. For reports without the new copy, the Top 3 shows the finding text alone, and the CTA uses a generic line. To show the redesign on the reference business, regenerate Plumbing Johannesburg once after R3 is deployed: 1 of #1000's 50 reports and about 7 ApexGEO credits. No one has been sent its current link, so the re-mint revokes nothing that matters.
 
+**Done 2026-09-28, each on Hein's go:** the backfill ran with `--write` after its dry run and changed 2 production reports (a re-run plans 0 changes), and Plumbing Johannesburg was regenerated once after the R3 deploy.
+
 ## What proves it worked
+
+The "Delivery status" table above records which of these have been walked. Still open: the WhatsApp preview card.
 
 - Hein picks a mockup and the live Plumbing Johannesburg report matches it, on a phone and on desktop.
 - A report link sent to Hein's own WhatsApp shows the branded preview card.
