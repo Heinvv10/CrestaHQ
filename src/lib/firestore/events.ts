@@ -97,6 +97,8 @@ export interface AppointmentsSnapshot {
   /** The half hit its limit, so more events exist than were loaded. */
   upcomingTruncated: boolean;
   pastTruncated: boolean;
+  /** Halves whose query errored; their events are missing from `events`. */
+  failedHalves: ("upcoming" | "past")[];
 }
 
 /**
@@ -106,7 +108,7 @@ export interface AppointmentsSnapshot {
  * subscribing: every event from then on (capped at
  * APPOINTMENTS_UPCOMING_LIMIT) plus the newest `pastLimit` before it. The
  * two halves partition on the same boundary, so an event is in exactly one;
- * the `*Truncated` flags let the page say when older events are not loaded.
+ * the `*Truncated` flags let the page say when older events are not fetched.
  * An event with no `startAt` matches neither half.
  */
 export function subscribeToAppointments(
@@ -117,7 +119,7 @@ export function subscribeToAppointments(
 ): Unsubscribe {
   const plan = territoryQueryPlan(opts.territoryFilter);
   if (plan.mode === "empty") {
-    callback({ events: [], upcomingTruncated: false, pastTruncated: false });
+    callback({ events: [], upcomingTruncated: false, pastTruncated: false, failedHalves: [] });
     return NOOP_UNSUB;
   }
   const base: QueryConstraint[] = [
@@ -126,38 +128,58 @@ export function subscribeToAppointments(
   if (plan.mode === "in") base.push(plan.constraint);
   const boundary = Timestamp.fromMillis(Date.now());
   const col = collection(getFirebaseDb(), EVENTS);
+  // One more than the limit: a full half only counts as truncated when the
+  // extra document really exists. The extra is never shown.
   const upcomingQ = query(
     col,
     ...base,
     where("startAt", ">=", boundary),
     orderBy("startAt", "asc"),
-    limit(APPOINTMENTS_UPCOMING_LIMIT),
+    limit(APPOINTMENTS_UPCOMING_LIMIT + 1),
   );
   const pastQ = query(
     col,
     ...base,
     where("startAt", "<", boundary),
     orderBy("startAt", "desc"),
-    limit(opts.pastLimit),
+    limit(opts.pastLimit + 1),
   );
 
-  let upcoming: QuerySnapshot | null = null;
-  let past: QuerySnapshot | null = null;
+  // A half is a snapshot, "failed", or still null (not answered yet).
+  type Half = QuerySnapshot | "failed" | null;
+  let upcoming: Half = null;
+  let past: Half = null;
+  let errored = false;
   // Held until both halves have answered, so the list never renders one
-  // half as if it were everything.
+  // half as if it were everything. A failed half counts as answered: the
+  // other half still renders and `failedHalves` says what is missing.
   const emit = () => {
     if (!upcoming || !past) return;
+    const upcomingDocs = upcoming === "failed" ? [] : upcoming.docs;
+    const pastDocs = past === "failed" ? [] : past.docs;
     const byId = new Map<string, CalendarEvent>();
-    for (const d of [...past.docs, ...upcoming.docs]) {
+    for (const d of [
+      ...pastDocs.slice(0, opts.pastLimit),
+      ...upcomingDocs.slice(0, APPOINTMENTS_UPCOMING_LIMIT),
+    ]) {
       byId.set(d.id, { id: d.id, ...(d.data() as Omit<CalendarEvent, "id">) });
     }
     const events = [...byId.values()];
     events.sort((a, b) => toMillis(a.startAt) - toMillis(b.startAt));
     callback({
       events,
-      upcomingTruncated: upcoming.size >= APPOINTMENTS_UPCOMING_LIMIT,
-      pastTruncated: past.size >= opts.pastLimit,
+      upcomingTruncated: upcomingDocs.length > APPOINTMENTS_UPCOMING_LIMIT,
+      pastTruncated: pastDocs.length > opts.pastLimit,
+      failedHalves: [
+        ...(upcoming === "failed" ? (["upcoming"] as const) : []),
+        ...(past === "failed" ? (["past"] as const) : []),
+      ],
     });
+  };
+  // Both halves usually fail together (a missing index); report once.
+  const fail = (err: Error) => {
+    if (!errored) onError?.(err);
+    errored = true;
   };
   const unsubUpcoming = onSnapshot(
     upcomingQ,
@@ -165,7 +187,11 @@ export function subscribeToAppointments(
       upcoming = snap;
       emit();
     },
-    (err) => onError?.(err),
+    (err) => {
+      upcoming = "failed";
+      fail(err);
+      emit();
+    },
   );
   const unsubPast = onSnapshot(
     pastQ,
@@ -173,7 +199,11 @@ export function subscribeToAppointments(
       past = snap;
       emit();
     },
-    (err) => onError?.(err),
+    (err) => {
+      past = "failed";
+      fail(err);
+      emit();
+    },
   );
   return () => {
     unsubUpcoming();

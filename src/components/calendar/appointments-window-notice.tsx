@@ -31,15 +31,16 @@ export function AppointmentsWindowNotice({
         )}
         {olderHidden && (
           <p>
-            Older appointments are not loaded
-            {oldestLoaded ? ` — showing back to ${formatAppointmentTime(oldestLoaded, tz)}` : ""}.
+            Older appointments have not been fetched
+            {oldestLoaded ? ` — fetched back to ${formatAppointmentTime(oldestLoaded, tz)}` : ""}.
+            “Load more” above only reveals rows already fetched.
           </p>
         )}
       </div>
       {olderHidden && (
         <Button type="button" variant="outline" size="sm" onClick={onLoadOlder} disabled={loadingOlder}>
           {loadingOlder && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Load older
+          Fetch older appointments
         </Button>
       )}
     </div>

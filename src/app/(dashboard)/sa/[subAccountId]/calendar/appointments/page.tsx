@@ -40,6 +40,8 @@ import {
 } from "@/lib/calendar/appointment-filters";
 import {
   applyStatusOverrides,
+  expireStatusOverrides,
+  nextStatusOverrideExpiryMs,
   reconcileStatusOverrides,
   setStatusOverride,
   type StatusOverrides,
@@ -127,14 +129,17 @@ export default function AppointmentsListPage() {
   const { members } = useSubAccountMembers(subAccountId);
   const tz = resolveAppointmentsTimezone(subAccount);
 
-  const [snapshotEvents, setEvents] = useState<CalendarEvent[]>([]);
+  const [snapshotEvents, setSnapshotEvents] = useState<CalendarEvent[]>([]);
+  // The newest snapshot, readable from async callbacks without a stale closure.
+  const latestSnapshot = useRef<CalendarEvent[]>([]);
   const [statusOverrides, setStatusOverrides] = useState<StatusOverrides>({});
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [bookingPages, setBookingPages] = useState<BookingPage[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
   const [pastLimit, setPastLimit] = useState(APPOINTMENTS_PAST_PAGE);
   const [loadWindow, setLoadWindow] = useState({ upcomingTruncated: false, pastTruncated: false });
-  // Which scope the rows on screen belong to: "Load older" re-subscribes
+  const [failedHalves, setFailedHalves] = useState<("upcoming" | "past")[]>([]);
+  // Which scope the rows on screen belong to: "Fetch older appointments" re-subscribes
   // with the same scope, so it keeps them visible instead of "Loading…".
   const loadedScope = useRef<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -179,18 +184,19 @@ export default function AppointmentsListPage() {
     if (loadedScope.current !== scopeKey) setEventsLoading(true);
     const scope = { agencyId, subAccountId };
     const unsubE = subscribeToAppointments(scope, { territoryFilter, pastLimit }, (s) => {
-      setEvents(s.events);
+      latestSnapshot.current = s.events;
+      setSnapshotEvents(s.events);
       setStatusOverrides((prev) => reconcileStatusOverrides(prev, s.events));
       setLoadWindow({ upcomingTruncated: s.upcomingTruncated, pastTruncated: s.pastTruncated });
+      setFailedHalves(s.failedHalves);
       loadedScope.current = scopeKey;
       setEventsLoading(false);
       setLoadingOlder(false);
     }, (err) => {
-      // A missing composite index fails the query outright; say so rather
-      // than spinning on "Loading…" forever.
+      // A missing composite index fails the query outright. Reported once
+      // per subscribe; the snapshot callback above clears the spinner and
+      // sets failedHalves, so the page says what is missing.
       toast.error(`Couldn't load appointments: ${err.message}`);
-      setEventsLoading(false);
-      setLoadingOlder(false);
     });
     const unsubP = subscribeToBookingPages(subAccountId, setBookingPages);
     return () => {
@@ -222,6 +228,18 @@ export default function AppointmentsListPage() {
     [snapshotEvents, statusOverrides],
   );
 
+  // Overrides never outlive STATUS_OVERRIDE_TTL_MS, so one can mask a real
+  // change for at most that long.
+  useEffect(() => {
+    const wait = nextStatusOverrideExpiryMs(statusOverrides, Date.now());
+    if (wait === null) return;
+    const t = setTimeout(
+      () => setStatusOverrides((prev) => expireStatusOverrides(prev, Date.now())),
+      wait,
+    );
+    return () => clearTimeout(t);
+  }, [statusOverrides]);
+
   const now = Date.now();
   const tabbedEvents = useMemo(
     () => events.filter((e) => matchesTab(e, tab, now)),
@@ -251,6 +269,14 @@ export default function AppointmentsListPage() {
     setVisibleCount(PAGE_SIZE);
   }, [tab, filters, search]);
 
+  // Reads the newest snapshot (a ref), not this render's: the delta may have
+  // landed while the request was in flight.
+  function noteConfirmedStatus(id: string, status: EventStatus) {
+    setStatusOverrides((prev) =>
+      setStatusOverride(prev, id, status, latestSnapshot.current, Date.now()),
+    );
+  }
+
   async function changeStatus(event: CalendarEvent, next: EventStatus) {
     setBusyEventIds((prev) => new Set(prev).add(event.id));
     const outcome = await statusGuard.run(event.id, () => applyStatusChange(event.id, next));
@@ -262,10 +288,7 @@ export default function AppointmentsListPage() {
     if (outcome.skipped) return; // already in flight for this row
     const { result } = outcome;
     if (result.ok && result.status) {
-      const confirmed = result.status;
-      // `from` is the status the SNAPSHOT holds, not the row as displayed.
-      const from = eventStatus(snapshotEvents.find((e) => e.id === event.id) ?? event);
-      setStatusOverrides((prev) => setStatusOverride(prev, event.id, confirmed, from));
+      noteConfirmedStatus(event.id, result.status);
     }
     toast[result.toast.kind](result.toast.message);
   }
@@ -321,9 +344,19 @@ export default function AppointmentsListPage() {
         hasActive={hasActiveFilters(filters)}
       />
 
+      {!loading && failedHalves.length > 0 && visibleEvents.length > 0 && (
+        <p role="alert" className="text-sm text-destructive">
+          Could not load {failedHalves.includes("upcoming") ? "upcoming" : "older"} appointments, so this list is incomplete.
+        </p>
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center gap-2 rounded-2xl border border-dashed py-10 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+        </div>
+      ) : visibleEvents.length === 0 && failedHalves.length > 0 ? (
+        <div role="alert" className="rounded-2xl border border-dashed border-destructive/40 bg-card p-10 text-center text-sm text-destructive">
+          Could not load appointments.
         </div>
       ) : visibleEvents.length === 0 ? (
         <div className="rounded-2xl border border-dashed bg-card p-10 text-center text-sm text-muted-foreground">
@@ -400,6 +433,7 @@ export default function AppointmentsListPage() {
         }}
         contacts={contacts}
         event={selectedEvent}
+        onStatusChange={noteConfirmedStatus}
       />
 
       <AlertDialog

@@ -16,7 +16,7 @@ export function tabIsPartial(tab: AppointmentTab, w: AppointmentsWindow): boolea
   return w.upcomingTruncated || w.pastTruncated;
 }
 
-/** Show the "older appointments are not loaded / Load older" notice. */
+/** Show the "older appointments are not loaded / Fetch older appointments" notice. */
 export function showOlderNotice(tab: AppointmentTab, w: AppointmentsWindow): boolean {
   return tab !== "upcoming" && w.pastTruncated;
 }
