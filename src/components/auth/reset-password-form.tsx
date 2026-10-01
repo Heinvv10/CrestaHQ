@@ -55,6 +55,15 @@ export function ResetPasswordForm({ code }: { code: string }) {
       await completePasswordReset(code, password);
       setState({ step: "done", email: state.email });
     } catch (err) {
+      // The code can expire or be spent between the check above and submit.
+      const errCode = (err as { code?: string }).code;
+      if (
+        errCode === "auth/expired-action-code" ||
+        errCode === "auth/invalid-action-code"
+      ) {
+        setState({ step: "invalid" });
+        return;
+      }
       setError(
         err instanceof Error ? err.message : "Could not set the new password.",
       );
