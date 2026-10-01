@@ -99,3 +99,9 @@ it("auto-hides after 2026-11-01", () => {
     false,
   );
 });
+
+it("does not mount the banner once the cutover window has closed", async () => {
+  vi.setSystemTime(new Date("2026-11-02T10:00:00Z"));
+  const m = await mount();
+  expect(m.banner()).toBeNull();
+});
