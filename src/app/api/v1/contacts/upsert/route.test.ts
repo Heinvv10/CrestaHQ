@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import { mintApiKey } from "@/lib/api/keys";
+import { ENROLMENT_CAP_PER_HOUR, enrolmentHourKey } from "@/lib/api/enrolment-cap";
 
 /**
  * POST /api/v1/contacts/upsert — the phone is the identity.
@@ -264,4 +265,23 @@ it("a test-mode key writes a test contact and enrols nobody", async () => {
   expect(res.status).toBe(201);
   expect(contacts()[0].mode).toBe("test");
   expect(runs()).toHaveLength(0);
+});
+
+it("a cap refusal is not replayed: the same Idempotency-Key goes through once the hour rolls over", async () => {
+  // Production 2026-10-01: three installs refused at the cap were answered
+  // with the stored 429 on every hourly retry, with no bucket being charged.
+  const full = `subAccounts/sa1/apiEnrolments/key_live_${enrolmentHourKey()}`;
+  mem.seed(full, { keyId: "key_live", count: ENROLMENT_CAP_PER_HOUR });
+
+  const refused = await upsert(CANDIDATE, { idem: "dr1734562" });
+  expect(refused.status).toBe(429);
+  expect(refused.json.error.code).toBe("workflow_enrolment_cap");
+  expect(contacts()).toHaveLength(0);
+
+  // The next hour's bucket starts empty.
+  mem.seed(full, { keyId: "key_live", count: 0 });
+  const retried = await upsert(CANDIDATE, { idem: "dr1734562" });
+  expect(retried.status).toBe(201);
+  expect(contacts()).toHaveLength(1);
+  expect(runs()).toHaveLength(1);
 });

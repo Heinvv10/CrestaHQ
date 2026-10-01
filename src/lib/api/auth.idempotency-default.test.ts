@@ -5,7 +5,8 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 /**
  * withApiAuth's DEFAULT idempotency storage rule, which every existing v1
  * route relies on (only the agent tools route overrides it): a 4xx outcome
- * is stored and replayed, a 5xx is never stored so a retry runs again.
+ * is stored and replayed, a 5xx is never stored so a retry runs again. A 429
+ * is the one 4xx that is not an outcome: it says "not done, try later".
  */
 
 const mem = createMemoryFirestore();
@@ -53,4 +54,13 @@ it("a 5xx outcome is never stored: the retry runs the handler again", async () =
   expect((await post("five")).status).toBe(502);
   expect(handler).toHaveBeenCalledTimes(2);
   expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
+});
+
+it("a 429 is never stored: the retry the response asks for runs the handler again", async () => {
+  handler.mockResolvedValueOnce(NextResponse.json({ error: { code: "workflow_enrolment_cap" } }, { status: 429 }));
+  handler.mockResolvedValueOnce(NextResponse.json({ ok: true }, { status: 201 }));
+  expect((await post("later")).status).toBe(429);
+  expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
+  expect((await post("later")).status).toBe(201);
+  expect(handler).toHaveBeenCalledTimes(2);
 });
