@@ -31,7 +31,7 @@ const post = (k: string, r = route) =>
       headers: { authorization: `Bearer ${key}`, "idempotency-key": k, "content-type": "application/json" },
       body: "{}",
     }),
-    { params: Promise.resolve({}) }
+    { params: undefined }
   );
 const IDEM = "subAccounts/sa1/apiIdempotency";
 

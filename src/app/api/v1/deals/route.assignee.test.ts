@@ -27,7 +27,7 @@ async function post(body: Record<string, unknown>) {
       headers: { authorization: `Bearer ${key}` },
       body: JSON.stringify(body),
     }),
-    { params: Promise.resolve({}) },
+    { params: undefined },
   );
   return { status: res.status, json: (await res.json()) as Record<string, unknown> };
 }

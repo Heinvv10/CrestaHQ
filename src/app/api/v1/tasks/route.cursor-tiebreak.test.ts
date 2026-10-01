@@ -23,7 +23,7 @@ async function list(qs = ""): Promise<{ status: number; json: { data: Array<{ id
     new Request(`https://app.test/api/v1/tasks${qs}`, {
       headers: { authorization: `Bearer ${key}` },
     }),
-    { params: Promise.resolve({}) },
+    { params: undefined },
   );
   return { status: res.status, json: (await res.json()) as never };
 }
