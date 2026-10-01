@@ -110,6 +110,19 @@ it("waits for both halves, merges them oldest first, and flags a full half as tr
   expect(out.pastTruncated).toBe(true);
 });
 
+it("flags the upcoming half as truncated when it returns a full page", () => {
+  const cb = vi.fn();
+  subscribeToAppointments(SCOPE, { pastLimit: 200 }, cb);
+  const full = Array.from({ length: APPOINTMENTS_UPCOMING_LIMIT }, (_, i) => ({
+    id: `u${i}`,
+    startMs: NOW + 1000 + i,
+  }));
+  m.nexts[0](snap(full));
+  m.nexts[1](snap([]));
+  expect(cb.mock.calls[0][0].upcomingTruncated).toBe(true);
+  expect(cb.mock.calls[0][0].pastTruncated).toBe(false);
+});
+
 it("an event seen in both halves mid-reschedule is listed once", () => {
   const cb = vi.fn();
   subscribeToAppointments(SCOPE, { pastLimit: 200 }, cb);
