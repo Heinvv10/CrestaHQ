@@ -265,13 +265,14 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
   });
   // Genuinely in the past (not "tomorrow") — HIGH: completed/no_show are
   // only offered once startAt has passed, so the status-flip step below
-  // needs a real past booking, not the future "titleUpcoming" one.
+  // needs a real past booking (just past, so a burst of runs can't push it
+  // out of the newest-200 past window the list loads), not the future "titleUpcoming" one.
   const pastEventId = await createEvent({
     createdByUid: uid,
     contactId: contactPast,
     title: titlePast,
     status: "scheduled",
-    startAt: new Date(Date.now() - 2 * 60 * 60_000),
+    startAt: new Date(Date.now() - 5 * 60_000),
     bookingPageSlug: pageXSlug,
     source: "booking_page",
   });
@@ -413,4 +414,142 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
       { timeout: 15_000 },
     )
     .toBe("completed");
+});
+
+// Firestore's Listen stream can sit silent for ~30 s after a write. Rows must
+// show the server-confirmed status from the mark-status response, not wait for
+// the snapshot delta. Holds (never aborts) the Listen channel.
+async function stallFirestoreListen(page: import("@playwright/test").Page) {
+  // The initial snapshot is in. Hold every NEW Listen request (stall, never
+  // abort), then cut the open stream with a brief offline blip so the SDK has
+  // to reconnect into the held requests: nothing more arrives from Firestore.
+  // Routing alone is not enough - the open stream is one long response that a
+  // route installed afterwards never sees.
+  await page.route(
+    /firestore\.googleapis\.com\/google\.firestore\.v1\.Firestore\/Listen\/channel/,
+    () => new Promise(() => {}),
+  );
+  await page.context().setOffline(true);
+  await page.context().setOffline(false);
+}
+
+async function seedStallBooking(label: string, startAt: Date) {
+  const { pageXSlug } = await ensureBookingStatusSeed();
+  const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
+  const uid = ownerSnap.data()?.ownerUid as string;
+  const stamp = Date.now();
+  const contactId = await ensureContact(uid, `${RUN_TITLE_PREFIX}${label} ${stamp}`);
+  const title = `${RUN_TITLE_PREFIX}${label} Booking ${stamp}`;
+  const eventId = await createEvent({
+    createdByUid: uid,
+    contactId,
+    title,
+    status: "scheduled",
+    startAt,
+    bookingPageSlug: pageXSlug,
+    source: "booking_page",
+  });
+  return { stamp, title, eventId };
+}
+
+async function openAllTabRow(page: import("@playwright/test").Page, stamp: number, title: string) {
+  await page.goto(`/sa/${subAccountId}/calendar/appointments`);
+  await page.getByRole("tab", { name: /^All/ }).click();
+  await page.getByPlaceholder("Search by title or contact…").fill(String(stamp));
+  const row = page.locator("tr").filter({ hasText: title });
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  return row;
+}
+
+async function expectDocStatus(eventId: string, status: string) {
+  await expect
+    .poll(async () => (await adminDb().doc(`events/${eventId}`).get()).data()?.status, {
+      timeout: 15_000,
+    })
+    .toBe(status);
+}
+
+test("a cancelled row reads Cancelled without waiting for the Firestore delta", async ({
+  page,
+}) => {
+  const { stamp, title, eventId } = await seedStallBooking("Stall", at("11:00"));
+  const row = await openAllTabRow(page, stamp, title);
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Cancel booking" }).click();
+
+  await expect(row.getByText("Cancelled", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expectDocStatus(eventId, "cancelled");
+});
+
+// The Edit dialog opened from the row menu has its own actions panel; its
+// confirmed status change must reach the list the same way.
+test("a status changed from the Edit dialog reads on the row without the Firestore delta", async ({
+  page,
+}) => {
+  const { stamp, title, eventId } = await seedStallBooking(
+    "StallDialog",
+    new Date(Date.now() - 5 * 60_000),
+  );
+  const row = await openAllTabRow(page, stamp, title);
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: /^(Edit|Reschedule)$/ }).click();
+  await page.getByRole("button", { name: "Mark attended" }).click();
+  await page.keyboard.press("Escape");
+
+  await expect(row.getByText("Showed", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expectDocStatus(eventId, "completed");
+});
+
+// An override must not outlive its minute: with the Listen stream dead the row
+// falls back to the snapshot's (stale) status once it expires.
+test("a status override expires after a minute instead of masking the row", async ({
+  page,
+}) => {
+  const { stamp, title, eventId } = await seedStallBooking("StallTtl", at("11:30"));
+  await page.clock.install();
+  const row = await openAllTabRow(page, stamp, title);
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Cancel booking" }).click();
+  await expect(row.getByText("Cancelled", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expectDocStatus(eventId, "cancelled");
+
+  await page.clock.fastForward(61_000);
+  await expect(row.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 5_000 });
+});
+
+// The Firestore delta can land BEFORE the mark-status response. An override
+// created after that snapshot must not then treat a later correction back to
+// the old status as a stale snapshot.
+test("a delta that beats the response does not leave an override masking a later change", async ({
+  page,
+}) => {
+  const { stamp, title, eventId } = await seedStallBooking("DeltaFirst", at("12:00"));
+  const row = await openAllTabRow(page, stamp, title);
+
+  await page.route(/\/api\/events\/by-id\/[^/]+\/mark-status/, async (route) => {
+    const response = await route.fetch(); // the write is done server-side
+    // Hold the response until the snapshot has already shown the change.
+    await expect(row.getByText("Cancelled", { exact: true })).toBeVisible({ timeout: 20_000 });
+    await route.fulfill({ response });
+  });
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Cancel booking" }).click();
+  // The toast ("Cancelled. Visitor notified..." / "Cancelled, but ...") only
+  // shows once the response has been handled; the row badge is exactly
+  // "Cancelled" and does not match.
+  await expect(page.getByText(/^Cancelled[.,]/)).toBeVisible({ timeout: 20_000 });
+  await expectDocStatus(eventId, "cancelled");
+
+  // Someone else puts it back: the row must follow, not stay "Cancelled".
+  await adminDb().doc(`events/${eventId}`).update({ status: "scheduled" });
+  await expect(row.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 20_000 });
 });

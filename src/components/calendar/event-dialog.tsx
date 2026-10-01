@@ -60,6 +60,8 @@ interface EventDialogProps {
   contacts: Contact[];
   event?: CalendarEvent | null;
   defaultDate?: Date | null;
+  /** A status change the actions panel just had confirmed by the server. */
+  onStatusChange?: (eventId: string, status: EventStatus) => void;
 }
 
 function toDateInput(d: Date): string {
@@ -92,6 +94,7 @@ export function EventDialog({
   contacts,
   event,
   defaultDate,
+  onStatusChange,
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
@@ -332,7 +335,13 @@ export function EventDialog({
 
         {isBookingPageEvent && event && (
           <div className="px-4 pt-4">
-            <BookingActionsPanel event={event} onStatusChange={setPanelStatus} />
+            <BookingActionsPanel
+              event={event}
+              onStatusChange={(status) => {
+                setPanelStatus(status);
+                onStatusChange?.(event.id, status);
+              }}
+            />
           </div>
         )}
 

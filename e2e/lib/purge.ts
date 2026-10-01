@@ -1,6 +1,7 @@
 import { adminDb } from "./admin";
 import { readEnv } from "./env";
 import { deleteScoped } from "./guard";
+import { reapStaleE2eEvents } from "./reap-events";
 
 /**
  * Remove what runs left in the fixture sub-accounts. Everything goes through
@@ -38,5 +39,8 @@ export async function purgeFixtureData(): Promise<void> {
     await purge("conversations", subAccountId);
     await purge("companies", subAccountId);
     await purge("snippets", subAccountId);
+    // Stale ones only: events are not fully purged like the rows above, since
+    // specs seed them per run and a concurrent run's may still be live.
+    await reapStaleE2eEvents(subAccountId);
   }
 }

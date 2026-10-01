@@ -11,6 +11,8 @@ import type { EventNotifySkipReason, EventStatus } from "@/types/events";
  */
 export interface StatusActionOutcome {
   ok: boolean;
+  /** The status the server confirmed; set only when `ok`. */
+  status?: EventStatus;
   toast: { kind: "success" | "warning" | "error"; message: string };
 }
 
@@ -28,6 +30,7 @@ export async function applyStatusChange(
     const data = (await res.json().catch(() => ({}))) as {
       ok?: boolean;
       error?: string;
+      status?: EventStatus;
       notifyEmailSent?: boolean;
       notifyEmailSkipReason?: EventNotifySkipReason;
     };
@@ -37,15 +40,18 @@ export async function applyStatusChange(
         toast: { kind: "error", message: data.error ?? "Couldn't update." },
       };
     }
+    const status = data.status ?? next;
     if (next === "cancelled") {
       if (data.notifyEmailSent) {
         return {
           ok: true,
+          status,
           toast: { kind: "success", message: "Cancelled. Visitor notified by email." },
         };
       }
       return {
         ok: true,
+        status,
         toast: {
           kind: "warning",
           message: `Cancelled, but ${notifySkipDetail(data.notifyEmailSkipReason)}. Reach out manually.`,
@@ -54,6 +60,7 @@ export async function applyStatusChange(
     }
     return {
       ok: true,
+      status,
       toast: { kind: "success", message: `Marked ${eventStatusLabel(next).toLowerCase()}.` },
     };
   } catch (err) {
