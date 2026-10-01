@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 /**
  * PR #219 (2026-09-24) minted a per-user token into the "All bookings"
@@ -27,7 +27,14 @@ import {
 } from "./sub-account-calendar-sync-section";
 
 let cleanup: (() => Promise<void>) | null = null;
+// The banner auto-hides on 2026-11-01, so the mount tests need their own
+// clock inside the window or they fail the moment real time passes it. Only
+// Date is faked: timers must stay real for act() and the mocked fetch.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-01T10:00:00Z") });
+});
 afterEach(async () => {
+  vi.useRealTimers();
   await cleanup?.();
   cleanup = null;
   localStorage.clear();
@@ -91,4 +98,10 @@ it("auto-hides after 2026-11-01", () => {
   expect(feedUrlChangeBannerStillActive(new Date("2027-01-01T00:00:00Z"))).toBe(
     false,
   );
+});
+
+it("does not mount the banner once the cutover window has closed", async () => {
+  vi.setSystemTime(new Date("2026-11-02T10:00:00Z"));
+  const m = await mount();
+  expect(m.banner()).toBeNull();
 });
