@@ -27,3 +27,15 @@ So the bound is a first-load improvement. It is NOT the cause of the
 unchanged by the bound.
 
 Mutation evidence: [mutations.md](mutations.md).
+
+## Rendered (2026-10-01, read-only browser walk)
+
+Standalone build of this branch on 127.0.0.1:3141, logged in as the E2E
+fixture user, appointments page of the primary fixture sub-account. Clicked
+tabs and "Load older" only.
+
+- `1-upcoming.png`: Upcoming (0), Cancelled (85+), All (205+).
+- `2-all.png`: All tab, 25 rows, "Load more (180 more)".
+- `3-all-after-load-older.png`: after one "Load older": Cancelled (159+), All
+  (405+), "Load more (380 more)", notice now "showing back to Sat, Sep 26".
+  The notice and "Load older" button sit under the rows.
