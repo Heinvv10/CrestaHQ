@@ -36,3 +36,32 @@ requests to a never-settling handler and cutting the open stream with an
 offline blip. Routing alone does not work: the open stream is one long
 response a later route never sees (measured: the test passed with the
 override disabled).
+
+## Review round 1 (2026-10-01)
+
+Unit rows run with `pnpm exec vitest run <file>`; E2E rows rebuild the app with
+the mutation and run the named spec test against the fixture (CI idle first).
+Every file restored (SHA-1 compared).
+
+| Guard | Mutation | Failing test |
+|---|---|---|
+| 1a no override when latest snapshot already shows it | condition forced false | status-overrides.test.ts › sets nothing when ...; › and clears an older override |
+| 1a `from` taken from the latest snapshot | hard-coded `no_show` | › records the latest snapshot's status as `from` |
+| 1a page reads the snapshot via a ref | `noteConfirmedStatus` uses the click-time `snapshotEvents` | E2E › a delta that beats the response does not leave an override masking a later change |
+| 1b TTL | `nowMs - at < TTL` → `true` | status-overrides.test.ts › drops an override once it is older than the TTL |
+| 1b expiry timer delay | delay ignores TTL | › reports when the next override expires |
+| 1b page expiry timer | handler does nothing | E2E › a status override expires after a minute instead of masking the row |
+| 2 dialog status change reaches the page | remove `onStatusChange?.(...)` in event-dialog.tsx | E2E › a status changed from the Edit dialog reads on the row without the Firestore delta |
+| 3 error reported once | drop the `errored` guard | events.appointments.test.ts › both halves failing: one error report |
+| 3 failed past half blocks the other | `past = null` on error | › one half failing: the other still renders ... |
+| 3 failed upcoming half blocks the other | `upcoming = null` on error | › both halves failing ... |
+| 3 `failedHalves` not reported | drop the past entry | › one half failing ... |
+| 4 past probe | `limit(pastLimit + 1)` → `limit(pastLimit)` | › past half: ... limited to pastLimit (+1) |
+| 4 upcoming probe | same for upcoming | › upcoming half: ... capped (limit + 1 ...) |
+| 4 probe doc shown (past / upcoming) | drop the `slice` | › waits for both halves ...; › flags the upcoming half ... |
+| 4 truncated at exactly the limit (past) | `>` → `>=` | › a half that returns exactly its limit is NOT truncated |
+| 4 truncated at exactly the limit (upcoming) | `>` → `>=` | survived at first; test added: › the upcoming half returning exactly its limit is NOT truncated |
+
+Note: an early E2E "stall" using only `page.route` stayed green with the
+override disabled (the open stream is never re-routed); the final tests cut the
+stream with an offline blip first.

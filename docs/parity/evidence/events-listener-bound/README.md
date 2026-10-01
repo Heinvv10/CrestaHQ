@@ -5,7 +5,7 @@ history (`subscribeToEvents`). It now uses `subscribeToAppointments`: two
 bounded listeners split at subscribe time.
 
 - Upcoming: `startAt >= now`, ascending, limit 500.
-- Past: `startAt < now`, descending, 200 per page. "Load older" adds a page.
+- Past: `startAt < now`, descending, 200 per page. "Fetch older appointments" adds a page.
 - Tab counts get a "+" and a notice says when older or later events are not
   loaded, so nothing disappears silently.
 - `subscribeToEvents` is untouched; the calendar and command palette keep it.
@@ -32,10 +32,37 @@ Mutation evidence: [mutations.md](mutations.md).
 
 Standalone build of this branch on 127.0.0.1:3141, logged in as the E2E
 fixture user, appointments page of the primary fixture sub-account. Clicked
-tabs and "Load older" only.
+tabs and "Fetch older appointments" only.
 
-- `1-upcoming.png`: Upcoming (0), Cancelled (85+), All (205+).
-- `2-all.png`: All tab, 25 rows, "Load more (180 more)".
-- `3-all-after-load-older.png`: after one "Load older": Cancelled (159+), All
-  (405+), "Load more (380 more)", notice now "showing back to Sat, Sep 26".
-  The notice and "Load older" button sit under the rows.
+The reaper has since cleared the fixture to ~23 events, far under the real
+200-event page, so no notice would appear. For these shots ONLY the build was
+made with `APPOINTMENTS_PAST_PAGE = 10` (reverted; not in the commit):
+
+- `1-upcoming.png`: Upcoming (1), Cancelled (8+), All (16+).
+- `2-all.png`: All tab, "+" on the counts, notice "Older appointments have
+  not been fetched ... 'Load more' above only reveals rows already fetched."
+  and the "Fetch older appointments" button.
+- `3-all-after-load-older.png`: after one fetch, everything is loaded:
+  Cancelled (8), All (23), no "+", notice gone.
+
+Not shown: the "Load more (N more)" button coexisting with the notice, since
+with a 10-row past page all rows fit on one 25-row page. That combination was
+seen in the earlier shots at the real 200 limit (fixture then had ~1,900
+events); those were replaced by these.
+
+## Known gaps
+
+The list's confirmed-status override covers the row menu and the Edit /
+Reschedule dialog's mark-status action. These dialog writes are still
+snapshot-only (the row updates when the Listen delta arrives, which can lag
+~30 s):
+
+- mark-paid (`event-dialog.tsx`, BookingActionsPanel `markPaid`)
+- operator reschedule (`event-dialog.tsx` submit path)
+- server-side DELETE for Google-mirrored events (`event-dialog.tsx`)
+
+Events with no `startAt` match neither bounded query and are not listed.
+Production has none (all create paths set `startAt`), so this was left as is.
+
+Overrides expire after 60 s, so a masked change heals within a minute at
+worst. Mutation evidence: [mutations.md](mutations.md).
