@@ -1,6 +1,19 @@
 import { TRAFFIC_LIGHT, trafficLight } from "@/lib/prospecting/report-story";
 
 /**
+ * The ring's traffic-light colour and geometry, shared with the preview image
+ * (R4), which draws the same ring in Satori and cannot use the Tailwind classes.
+ */
+export function ringGeometry(score: number, size: number) {
+  const { color } = TRAFFIC_LIGHT[trafficLight(score)];
+  const stroke = size / 10;
+  const r = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * r;
+  const clamped = Math.max(0, Math.min(100, score));
+  return { color, stroke, r, circumference, clamped };
+}
+
+/**
  * A section's score as an inline SVG ring in its traffic-light colour.
  * Server-rendered, no chart library and no hooks: the public report page is
  * a server component (a client import crashed it once, #293). The preview
@@ -18,11 +31,7 @@ export function ScoreRing({
   label: string;
   size?: number;
 }) {
-  const { color } = TRAFFIC_LIGHT[trafficLight(score)];
-  const stroke = size / 10;
-  const r = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * r;
-  const clamped = Math.max(0, Math.min(100, score));
+  const { color, stroke, r, circumference, clamped } = ringGeometry(score, size);
   return (
     <div
       role="img"

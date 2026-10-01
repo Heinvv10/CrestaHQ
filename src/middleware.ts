@@ -324,8 +324,11 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Prospect report share link (Prospecting PR 2): the /report/{token} page
   // and its JSON /api/public/prospecting/report/{token}. The prospect has no
   // session; the 256-bit token, hashed and matched server-side, is the
-  // credential. Exactly one segment. (`/r` is the review page — unrelated.)
-  /^\/report\/[^/]+$/,
+  // credential. Exactly one segment, plus exactly two sub-paths under it: the
+  // link preview image (R4, fetched by WhatsApp's crawler with no session)
+  // and the PDF (R5). The same resolver guards both. (`/r` is the review
+  // page — unrelated.)
+  /^\/report\/[^/]+(\/(opengraph-image|pdf))?$/,
   /^\/api\/public\/prospecting\/report\/[^/]+$/,
   // Prospect report worker — QStash callback, signature-verified inside the
   // route and bound to its URL.
