@@ -40,7 +40,7 @@ import {
 } from "@/lib/calendar/appointment-filters";
 import {
   applyStatusOverrides,
-  expireStatusOverrides,
+  expireStatusOverridesAndRearm,
   nextStatusOverrideExpiryMs,
   reconcileStatusOverrides,
   setStatusOverride,
@@ -234,7 +234,7 @@ export default function AppointmentsListPage() {
     const wait = nextStatusOverrideExpiryMs(statusOverrides, Date.now());
     if (wait === null) return;
     const t = setTimeout(
-      () => setStatusOverrides((prev) => expireStatusOverrides(prev, Date.now())),
+      () => setStatusOverrides((prev) => expireStatusOverridesAndRearm(prev, Date.now())),
       wait,
     );
     return () => clearTimeout(t);

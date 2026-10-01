@@ -543,7 +543,10 @@ test("a delta that beats the response does not leave an override masking a later
   await row.getByRole("button").last().click();
   await page.getByRole("menuitem", { name: "Cancel" }).click();
   await page.getByRole("button", { name: "Cancel booking" }).click();
-  await expect(page.getByText(/^Cancelled/).first()).toBeVisible({ timeout: 20_000 });
+  // The toast ("Cancelled. Visitor notified..." / "Cancelled, but ...") only
+  // shows once the response has been handled; the row badge is exactly
+  // "Cancelled" and does not match.
+  await expect(page.getByText(/^Cancelled[.,]/)).toBeVisible({ timeout: 20_000 });
   await expectDocStatus(eventId, "cancelled");
 
   // Someone else puts it back: the row must follow, not stay "Cancelled".

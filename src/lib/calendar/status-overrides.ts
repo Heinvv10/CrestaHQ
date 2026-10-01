@@ -78,6 +78,25 @@ export function expireStatusOverrides(
     : Object.fromEntries(live);
 }
 
+/**
+ * Extra wait so the timer never fires a hair before the TTL has elapsed
+ * (timers can run early by a ms; `expireStatusOverrides` would then drop
+ * nothing).
+ */
+export const STATUS_OVERRIDE_TIMER_PAD_MS = 50;
+
+/**
+ * What the expiry timer applies. Always returns a NEW object, so React
+ * re-renders and the timer effect re-arms even when nothing had expired yet.
+ */
+export function expireStatusOverridesAndRearm(
+  overrides: StatusOverrides,
+  nowMs: number,
+): StatusOverrides {
+  const next = expireStatusOverrides(overrides, nowMs);
+  return next === overrides ? { ...overrides } : next;
+}
+
 /** ms until the earliest override expires, or null when there are none. */
 export function nextStatusOverrideExpiryMs(
   overrides: StatusOverrides,
@@ -85,7 +104,7 @@ export function nextStatusOverrideExpiryMs(
 ): number | null {
   const ats = Object.values(overrides).map((o) => o.at);
   if (ats.length === 0) return null;
-  return Math.max(0, Math.min(...ats) + STATUS_OVERRIDE_TTL_MS - nowMs);
+  return Math.max(0, Math.min(...ats) + STATUS_OVERRIDE_TTL_MS - nowMs) + STATUS_OVERRIDE_TIMER_PAD_MS;
 }
 
 export function applyStatusOverrides(

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { CalendarEvent, EventStatus } from "@/types/events";
 import {
+  STATUS_OVERRIDE_TIMER_PAD_MS,
   STATUS_OVERRIDE_TTL_MS,
+  expireStatusOverridesAndRearm,
   applyStatusOverrides,
   expireStatusOverrides,
   nextStatusOverrideExpiryMs,
@@ -62,8 +64,23 @@ describe("expiry", () => {
   });
   it("reports when the next override expires", () => {
     expect(nextStatusOverrideExpiryMs({}, T0)).toBeNull();
-    expect(nextStatusOverrideExpiryMs(O, T0 + 10_000)).toBe(STATUS_OVERRIDE_TTL_MS - 10_000);
-    expect(nextStatusOverrideExpiryMs(O, T0 + 10 * STATUS_OVERRIDE_TTL_MS)).toBe(0);
+    const pad = STATUS_OVERRIDE_TIMER_PAD_MS;
+    expect(nextStatusOverrideExpiryMs(O, T0 + 10_000)).toBe(STATUS_OVERRIDE_TTL_MS - 10_000 + pad);
+    expect(nextStatusOverrideExpiryMs(O, T0 + 10 * STATUS_OVERRIDE_TTL_MS)).toBe(pad);
+  });
+  it("a timer that fires 1 ms early drops nothing but is re-armed with a fresh object", () => {
+    const early = T0 + STATUS_OVERRIDE_TTL_MS - 1;
+    const out = expireStatusOverridesAndRearm(O, early);
+    expect(out).toEqual(O); // nothing expired yet
+    expect(out).not.toBe(O); // new identity: the effect re-runs
+    expect(nextStatusOverrideExpiryMs(out, early)).toBe(1 + STATUS_OVERRIDE_TIMER_PAD_MS);
+  });
+  it("and on time it drops the override", () => {
+    expect(expireStatusOverridesAndRearm(O, T0 + STATUS_OVERRIDE_TTL_MS)).toEqual({});
+  });
+  it("the timer delay already covers the 1 ms early case", () => {
+    const wait = nextStatusOverrideExpiryMs(O, T0)!;
+    expect(T0 + wait - 1).toBeGreaterThanOrEqual(T0 + STATUS_OVERRIDE_TTL_MS);
   });
 });
 

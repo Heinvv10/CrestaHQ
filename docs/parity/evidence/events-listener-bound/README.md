@@ -53,11 +53,11 @@ events); those were replaced by these.
 ## Known gaps
 
 The list's confirmed-status override covers the row menu and the Edit /
-Reschedule dialog's mark-status action. These dialog writes are still
-snapshot-only (the row updates when the Listen delta arrives, which can lag
-~30 s):
+Reschedule dialog's actions panel: mark-status, and mark-paid (which calls the
+same `onStatusChange`, so it feeds the override too; that path is untested, no
+unit or E2E exercises it). These dialog writes are still snapshot-only (the
+row updates when the Listen delta arrives, which can lag ~30 s):
 
-- mark-paid (`event-dialog.tsx`, BookingActionsPanel `markPaid`)
 - operator reschedule (`event-dialog.tsx` submit path)
 - server-side DELETE for Google-mirrored events (`event-dialog.tsx`)
 
