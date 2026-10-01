@@ -3,6 +3,8 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   sendPasswordResetEmail,
+  verifyPasswordResetCode,
+  confirmPasswordReset,
   EmailAuthProvider,
   reauthenticateWithCredential,
   updatePassword,
@@ -77,6 +79,23 @@ export async function signOutUser() {
  */
 export async function sendPasswordReset(email: string): Promise<void> {
   await sendPasswordResetEmail(getFirebaseAuth(), email);
+}
+
+/**
+ * Check a reset code from the emailed link (`/login?mode=resetPassword&
+ * oobCode=…`). Resolves to the account's email; throws when the code is
+ * expired, already used or malformed.
+ */
+export async function verifyPasswordReset(code: string): Promise<string> {
+  return verifyPasswordResetCode(getFirebaseAuth(), code);
+}
+
+/** Spend a reset code to set a new password. Does not sign the user in. */
+export async function completePasswordReset(
+  code: string,
+  newPassword: string,
+): Promise<void> {
+  await confirmPasswordReset(getFirebaseAuth(), code, newPassword);
 }
 
 /**
