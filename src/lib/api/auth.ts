@@ -569,16 +569,17 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         .json()
         .catch(() => null);
 
-      // Cache successful responses only — never cache server errors so the
-      // caller's retry-with-same-key actually hits the handler again.
+      // Cache outcomes only — never a server error, and never a 429: both
+      // tell the caller to retry, and a retry with the same key must reach
+      // the handler again rather than replay "try later" for 24h.
       const storeOutcome = opts.cacheIdempotently
         ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
-        : response.status < 500;
+        : response.status < 500 && response.status !== 429;
       if (reservation && storeOutcome) {
         // Never throws: retries, then marks the key done_unknown (see store).
         await reservation.store({ status: response.status, bodyJson: responseBodyJson });
       } else if (reservation) {
-        // Not a stored outcome (a 5xx, or the route vetoed it): free the key so
+        // Not a stored outcome (a 5xx, a 429, or the route vetoed it): free the key so
         // the caller's retry actually runs the handler again.
         await releaseReservation();
       }
