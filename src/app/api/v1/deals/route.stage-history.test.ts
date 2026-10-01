@@ -46,7 +46,7 @@ beforeEach(() => {
 it("POST writes the entry row and PATCH stage appends a move row; a same-stage PATCH does not", async () => {
   const created = await POST(
     req("POST", "/api/v1/deals", { title: "D", value: 1, currency: "USD", contact_id: "c1", stage: "new" }),
-    { params: Promise.resolve({}) },
+    { params: undefined },
   );
   expect(created.status).toBe(201);
   const id = ((await created.json()) as { deal: { id: string } }).deal.id;

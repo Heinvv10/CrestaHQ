@@ -36,7 +36,7 @@ const call = (name: string, body: unknown, extra: Record<string, string> = {}, r
     { params: Promise.resolve({ name }) },
   );
 const list = (auth = `Bearer ${key}`) =>
-  GET(new Request("http://localhost/api/v1/tools", { headers: { authorization: auth } }), { params: Promise.resolve({}) });
+  GET(new Request("http://localhost/api/v1/tools", { headers: { authorization: auth } }), { params: undefined });
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 beforeEach(() => {
