@@ -108,11 +108,12 @@ Built on the mockup Hein picks. Every direction must include:
 
 | PR | Merged | Live proof |
 |---|---|---|
+| R1 mockups | not merged code | Hein picked direction C "Story" on 2026-09-28. |
 | R0a #319, R0b #320, R2 #321, R3 #322 | 2026-09-28 | Walked on prod (27899e2c). |
-| R4 #325 | 2026-09-29 | Live at b5dcd832. On the reference report the built page's `og:image` is absolute on the app URL; the image returns 200 `image/png` with `Cache-Control: public, max-age=300`; an unknown token and any other sub-path are refused. **Not walked:** the WhatsApp preview card on Hein's own phone. |
+| R4 #325 | 2026-09-29 | Live at b5dcd832. On the reference report the built page's `og:image` is absolute on the app URL; the image returns 200 `image/png` with `Cache-Control: public, max-age=300`; an unknown token returns 404, and any other sub-path under a report link is not public (it goes to the login redirect). **Not walked:** the WhatsApp preview card on Hein's own phone. |
 | R5 #326 | 2026-09-29 | Live at b5dcd832. The PDF downloads from the live page (`no-store`, attachment); an unknown token returns 404. Memory on velo-server: about 5–8 MB heap per warm render (`docs/parity/evidence/r5-pdf/memory.md`). **Not walked:** the 429 on prod (tests only). |
 
-R0 and R1 can start now. R3 waits for R1's pick and for R2. R4 follows R3. R5 follows R0, R1's pick and R2 (the PDF carries the layout and the brand colour).
+Build order as planned (now complete): R0 and R1 first; R3 after R1's pick and R2; R4 after R3; R5 after R0, R1's pick and R2 (the PDF carries the layout and the brand colour).
 
 **Existing reports:** about 50 reports are stored on #1000. The R0 backfill script:
 - recomputes the scores of the sections that are pure over stored `raw` (listings, reputation, lead_capture);
@@ -142,7 +143,7 @@ It runs as a **dry run first**, listing every document it would change. It write
 
 - **Brand colour contrast:** a pale brand colour makes white text unreadable. It is rejected at save, never adjusted silently.
 - **The preview image is fetched by WhatsApp's crawler**, and a slow render means no preview. Keep it within about 2 s, with the headers above and no server cache.
-- **PDF memory on velo-server:** measure it in R5 before deploy. The per-share and per-IP rate limit ships with R5 and caps concurrent renders.
+- **PDF memory on velo-server:** measured in R5 at about 5–8 MB heap per warm render (`docs/parity/evidence/r5-pdf/memory.md`). The per-share and per-IP rate limit shipped with R5 and bounds the request rate.
 - **Competitor-name filtering (C5) can drop real businesses.** Start conservative (drop only obvious non-names) and log what was dropped.
 - **New finding codes change headlines** for reports that have no worse finding. They are ranked below every existing code, so a report's headline only changes when it had none before.
 - **Mockups carry a real business's report data.** Publish them privately, and keep the analyzemy/Snapshot-style direction original: no copied branding or layout assets.
