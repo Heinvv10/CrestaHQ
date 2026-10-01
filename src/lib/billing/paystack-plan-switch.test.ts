@@ -36,7 +36,8 @@ describe("switchSubscriptionPlan", () => {
     subscription_code: "SUB_1",
     email_token: "tok_1",
     status: "active",
-    next_payment_date: "2026-10-01T00:00:00.000Z",
+    // Far future on purpose: a renewal date that has passed is clamped to "now".
+    next_payment_date: "2099-01-01T00:00:00.000Z",
     authorization: { authorization_code: "AUTH_1" },
     customer: { customer_code: "CUS_1" },
   };
@@ -101,7 +102,7 @@ describe("switchSubscriptionPlan", () => {
       authorization: "AUTH_1",
       // Without this the new plan bills today — the client pays twice for the
       // period they have already paid for.
-      start_date: "2026-10-01T00:00:00.000Z",
+      start_date: "2099-01-01T00:00:00.000Z",
     });
     expect(call(2).body).toMatchObject({ code: "SUB_1", token: "tok_1" });
   });
