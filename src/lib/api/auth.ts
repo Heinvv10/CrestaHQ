@@ -572,6 +572,9 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       // Cache outcomes only — never a server error, and never a 429: both
       // tell the caller to retry, and a retry with the same key must reach
       // the handler again rather than replay "try later" for 24h.
+      // INVARIANT: a handler returns 429 only BEFORE any write or send (the
+      // enrolment gate does). One returned after a side effect would be
+      // repeated by the retry.
       const storeOutcome = opts.cacheIdempotently
         ? opts.cacheIdempotently(params, { status: response.status, body: responseBodyJson })
         : response.status < 500 && response.status !== 429;
@@ -579,8 +582,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         // Never throws: retries, then marks the key done_unknown (see store).
         await reservation.store({ status: response.status, bodyJson: responseBodyJson });
       } else if (reservation) {
-        // Not a stored outcome (a 5xx, a 429, or the route vetoed it): free the key so
-        // the caller's retry actually runs the handler again.
+        // Not a stored outcome (a 5xx, a 429, or the route vetoed it): free the
+        // key so the caller's retry actually runs the handler again.
         await releaseReservation();
       }
 
