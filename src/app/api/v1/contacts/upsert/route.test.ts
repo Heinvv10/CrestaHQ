@@ -70,7 +70,10 @@ async function upsert(
     new Request("https://app.test/api/v1/contacts/upsert", {
       method: "POST", headers, body: JSON.stringify(body),
     }),
-    { params: Promise.resolve({}) },
+    // What Next hands a route with no dynamic segment (app-route/module.js:
+    // `params: context.params ? … : undefined`). A `Promise.resolve({})` here
+    // hid a 500 on every static v1 route for three days.
+    { params: undefined },
   );
   await Promise.all(triggers);
   return { status: res.status, json: (await res.json()) as UpsertJson };

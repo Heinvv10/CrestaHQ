@@ -51,7 +51,7 @@ async function upsert(
     new Request("https://app.test/api/v1/contacts/upsert", {
       method: "POST", headers, body: JSON.stringify(body),
     }),
-    { params: Promise.resolve({}) },
+    { params: undefined },
   );
   return { status: res.status, json: (await res.json()) as Json };
 }
