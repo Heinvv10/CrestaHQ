@@ -137,7 +137,9 @@ e.g. lsk_live_AB12CD34_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`}</Pre>
           DELETE. We cache the response for 24 hours; a retry with the same
           key returns the original response without re-executing the
           handler. A retry with the same key but a DIFFERENT body returns{" "}
-          <Code>409 idempotency_collision</Code>.
+          <Code>409 idempotency_collision</Code>. A <Code>429</Code> or{" "}
+          <Code>5xx</Code> response is not cached, so a retry with the same
+          key runs the request again.
         </p>
         <p className="mt-3">
           Keys are 1–255 characters of <Code>[A-Za-z0-9_-:.]</Code>. UUIDs
