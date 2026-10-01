@@ -20,3 +20,19 @@ origin/main (b5dcd832); all rows below were red and restored.
 | Reaper match: title prefix (`reap-events.ts`) | delete the `"E2E "` prefix check | reap-events.test.ts › deletes only stale E2E-titled events in the fixture | yes |
 | Reaper match: staleness (`reap-events.ts`) | age check → `return true` | reap-events.test.ts › deletes only stale E2E-titled events in the fixture; › keeps an E2E event exactly at the stale boundary | yes |
 | Reaper match: unknown age (`reap-events.ts`) | missing `createdAt` → reapable | reap-events.test.ts › keeps an event with no createdAt (age unknown) | yes |
+
+## Response-driven status override (2026-10-01)
+
+| Guard | Mutation | Failing test | Restored |
+|---|---|---|---|
+| Override applied to rows (`status-overrides.ts`) | `applyStatusOverrides` maps rows to themselves | appointments-list.spec.ts › a cancelled row reads Cancelled without waiting for the Firestore delta (E2E, fixture row stayed "Confirmed"); status-overrides.test.ts › shows the overridden status on that row only | yes (SHA-1 compared); E2E green 3/3 repeats after rebuild with the fix |
+
+An earlier attempt at this mutation (removing only the empty-overrides early
+return) left the E2E green because the mapping below it still applied; it was
+not a valid mutation and is not counted.
+
+The E2E holds Firestore Listen traffic by routing new `Listen/channel`
+requests to a never-settling handler and cutting the open stream with an
+offline blip. Routing alone does not work: the open stream is one long
+response a later route never sees (measured: the test passed with the
+override disabled).

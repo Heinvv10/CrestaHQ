@@ -38,6 +38,12 @@ import {
   type AppointmentFilters,
   type AppointmentTab,
 } from "@/lib/calendar/appointment-filters";
+import {
+  applyStatusOverrides,
+  reconcileStatusOverrides,
+  setStatusOverride,
+  type StatusOverrides,
+} from "@/lib/calendar/status-overrides";
 import { showOlderNotice, tabIsPartial } from "@/lib/calendar/appointments-window";
 import { AppointmentsWindowNotice } from "@/components/calendar/appointments-window-notice";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
@@ -121,7 +127,8 @@ export default function AppointmentsListPage() {
   const { members } = useSubAccountMembers(subAccountId);
   const tz = resolveAppointmentsTimezone(subAccount);
 
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [snapshotEvents, setEvents] = useState<CalendarEvent[]>([]);
+  const [statusOverrides, setStatusOverrides] = useState<StatusOverrides>({});
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [bookingPages, setBookingPages] = useState<BookingPage[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -173,6 +180,7 @@ export default function AppointmentsListPage() {
     const scope = { agencyId, subAccountId };
     const unsubE = subscribeToAppointments(scope, { territoryFilter, pastLimit }, (s) => {
       setEvents(s.events);
+      setStatusOverrides((prev) => reconcileStatusOverrides(prev, s.events));
       setLoadWindow({ upcomingTruncated: s.upcomingTruncated, pastTruncated: s.pastTruncated });
       loadedScope.current = scopeKey;
       setEventsLoading(false);
@@ -208,6 +216,11 @@ export default function AppointmentsListPage() {
     for (const member of members) m.set(member.uid, member.displayName);
     return m;
   }, [members]);
+
+  const events = useMemo(
+    () => applyStatusOverrides(snapshotEvents, statusOverrides),
+    [snapshotEvents, statusOverrides],
+  );
 
   const now = Date.now();
   const tabbedEvents = useMemo(
@@ -247,7 +260,14 @@ export default function AppointmentsListPage() {
       return n;
     });
     if (outcome.skipped) return; // already in flight for this row
-    toast[outcome.result.toast.kind](outcome.result.toast.message);
+    const { result } = outcome;
+    if (result.ok && result.status) {
+      const confirmed = result.status;
+      // `from` is the status the SNAPSHOT holds, not the row as displayed.
+      const from = eventStatus(snapshotEvents.find((e) => e.id === event.id) ?? event);
+      setStatusOverrides((prev) => setStatusOverride(prev, event.id, confirmed, from));
+    }
+    toast[result.toast.kind](result.toast.message);
   }
 
   async function confirmCancel() {

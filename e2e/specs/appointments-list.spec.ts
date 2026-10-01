@@ -414,3 +414,55 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
     )
     .toBe("completed");
 });
+
+// Firestore's Listen stream can sit silent for ~30 s after a write. The row
+// must show the server-confirmed status from the mark-status response, not
+// wait for the snapshot delta. Stalls (never aborts) the Listen channel.
+test("a cancelled row reads Cancelled without waiting for the Firestore delta", async ({
+  page,
+}) => {
+  const { pageXSlug } = await ensureBookingStatusSeed();
+  const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
+  const uid = ownerSnap.data()?.ownerUid as string;
+  const stamp = Date.now();
+  const contactId = await ensureContact(uid, `${RUN_TITLE_PREFIX}Stall ${stamp}`);
+  const title = `${RUN_TITLE_PREFIX}Stall Booking ${stamp}`;
+  const eventId = await createEvent({
+    createdByUid: uid,
+    contactId,
+    title,
+    status: "scheduled",
+    startAt: at("11:00"),
+    bookingPageSlug: pageXSlug,
+    source: "booking_page",
+  });
+
+  await page.goto(`/sa/${subAccountId}/calendar/appointments`);
+  await page.getByRole("tab", { name: /^All/ }).click();
+  await page.getByPlaceholder("Search by title or contact…").fill(String(stamp));
+  const row = page.locator("tr").filter({ hasText: title });
+  await expect(row).toBeVisible({ timeout: 30_000 });
+
+  // The initial snapshot is in. Hold every NEW Listen request (stall, never
+  // abort), then cut the open stream with a brief offline blip so the SDK has
+  // to reconnect into the held requests: nothing more arrives from Firestore.
+  // Routing alone is not enough - the open stream is one long response that a
+  // route installed afterwards never sees.
+  await page.route(
+    /firestore\.googleapis\.com\/google\.firestore\.v1\.Firestore\/Listen\/channel/,
+    () => new Promise(() => {}),
+  );
+  await page.context().setOffline(true);
+  await page.context().setOffline(false);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: "Cancel booking" }).click();
+
+  await expect(row.getByText("Cancelled", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expect
+    .poll(async () => (await adminDb().doc(`events/${eventId}`).get()).data()?.status, {
+      timeout: 15_000,
+    })
+    .toBe("cancelled");
+});
