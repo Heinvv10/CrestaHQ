@@ -1,6 +1,6 @@
 # Prospect report redesign — statement of work
 
-*Part of the [LeadStack CRM](../../CLAUDE.md) docs and the [Prospecting module](prospecting-module.md). Status: SOW, grilled with Hein 2026-09-28; nothing built. The rulings under "Settled" are closed and are not to be re-opened by an implementer.*
+*Part of the [LeadStack CRM](../../CLAUDE.md) docs and the [Prospecting module](prospecting-module.md). Status: R0–R5 built and live (see "Delivery status"); SOW grilled with Hein 2026-09-28. The rulings under "Settled" are closed and are not to be re-opened by an implementer.*
 
 ## Why
 
@@ -103,6 +103,14 @@ Built on the mockup Hein picks. Every direction must include:
 | R3 | Redesigned public page and member toggle, on the picked direction. Needs R0 (copy, questions) and R2 (colour, number). | Playwright spec through the real server at 390 px and desktop, with screenshots in the PR. A visual check against the mockup. The existing share and ApexGEO specs stay green. |
 | R4 | Preview image, `generateMetadata`, `metadataBase`, middleware paths. Reuses R3's ring component. | Spec: the image renders for a live token and 404s for a revoked one. The **built** page's `og:image` is absolute and its origin equals `NEXT_PUBLIC_APP_URL`, whatever the deployment. Proven by sending a real link to Hein's own WhatsApp. |
 | R5 | PDF, with its rate limit. A second renderer (react-pdf cannot reuse the HTML/SVG components) over the same data layer. | Spec: the PDF renders, and its data (from `resolvePublicReport`) equals the page's. It 404s after a revoke and refuses past the rate limit. Memory measured on velo while rendering. |
+
+### Delivery status (2026-09-29)
+
+| PR | Merged | Live proof |
+|---|---|---|
+| R0a #319, R0b #320, R2 #321, R3 #322 | 2026-09-28 | Walked on prod (27899e2c). |
+| R4 #325 | 2026-09-29 | Live at b5dcd832. On the reference report the built page's `og:image` is absolute on the app URL; the image returns 200 `image/png` with `Cache-Control: public, max-age=300`; an unknown token and any other sub-path are refused. **Not walked:** the WhatsApp preview card on Hein's own phone. |
+| R5 #326 | 2026-09-29 | Live at b5dcd832. The PDF downloads from the live page (`no-store`, attachment); an unknown token returns 404. Memory on velo-server: about 5–8 MB heap per warm render (`docs/parity/evidence/r5-pdf/memory.md`). **Not walked:** the 429 on prod (tests only). |
 
 R0 and R1 can start now. R3 waits for R1's pick and for R2. R4 follows R3. R5 follows R0, R1's pick and R2 (the PDF carries the layout and the brand colour).
 
