@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { ResetPasswordForm } from "./reset-password-form";
 
 type Mode = "signin" | "reset";
 
@@ -78,6 +79,17 @@ export function LoginForm() {
     setMode("signin");
     setError("");
     setResetSent(false);
+  }
+
+  // The emailed reset link lands here: Firebase appends these params to the
+  // project's action URL, which points at /login so the link stays on our
+  // own domain (a firebaseapp.com link gets the mail filed as spam).
+  const resetCode =
+    searchParams?.get("mode") === "resetPassword"
+      ? searchParams.get("oobCode")
+      : null;
+  if (resetCode) {
+    return <ResetPasswordForm code={resetCode} />;
   }
 
   if (mode === "reset") {
