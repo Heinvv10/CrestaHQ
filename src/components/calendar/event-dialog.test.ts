@@ -51,9 +51,9 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-const show = (event: CalendarEvent) =>
+const show = (event: CalendarEvent, open = true) =>
   act(async () =>
-    root.render(createElement(EventDialog, { open: true, onOpenChange: vi.fn(), contacts: [], event })),
+    root.render(createElement(EventDialog, { open, onOpenChange: vi.fn(), contacts: [], event })),
   );
 const titleInput = () => document.getElementById("ev-title") as HTMLInputElement;
 async function type(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
@@ -111,13 +111,29 @@ describe("Save diffs against the form as it was opened", () => {
   const rescheduleCalls = () =>
     fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/reschedule"));
 
-  it("a third party's move while open is not reverted by a notes-only save", async () => {
-    await show(booking(9));
-    await show(booking(12)); // moved to 12:00 by someone else while open
+  // The review's reproduction of the bug (r338 baseline.test.ts), kept as the
+  // regression test: same fixture (UTC hours, same id re-rendered 09:00 ->
+  // 12:00) and the same plain submit event. It failed on the live-event
+  // baseline: Save POSTed /reschedule back to 09:00.
+  it("third-party reschedule while open: saving notes only must not POST a reschedule", async () => {
+    const H = 3_600_000;
+    const reviewed = (startH: number) =>
+      ({
+        id: "a", title: "Booking", source: "booking_page", bookingPageSlug: "p", status: "scheduled",
+        contactId: "c1", territoryId: "t1",
+        startAt: Timestamp.fromMillis(Date.UTC(2030, 0, 1) + startH * H),
+        endAt: Timestamp.fromMillis(Date.UTC(2030, 0, 1) + (startH + 1) * H),
+      }) as unknown as CalendarEvent;
+    await show(reviewed(9));
+    await show(reviewed(12)); // visitor / another operator moved it; the page's live event updates
     await type(notes(), "Bring ID");
-    await save();
-    expect(rescheduleCalls()).toEqual([]);
-    expect(m.updateEvent.mock.calls).toEqual([["bk", { notes: "Bring ID" }]]);
+    const form = document.querySelector("form")!;
+    await act(async () => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.filter((u) => u.includes("/reschedule"))).toEqual([]);
+    expect(m.updateEvent.mock.calls).toEqual([["a", { notes: "Bring ID" }]]);
   });
 
   it("a third party's title change is not written back", async () => {
@@ -150,5 +166,41 @@ describe("Save diffs against the form as it was opened", () => {
       endAt: new Date(2030, 0, 1, 10, 30).toISOString(),
     });
     expect(m.updateEvent).not.toHaveBeenCalled(); // nothing else changed
+  });
+
+  it("re-opening the same event after a server change re-captures what Save diffs against", async () => {
+    await show(booking(9));
+    await show(booking(9), false); // closed
+    await show(booking(12, "Renamed on the server"), true); // reopened, same id
+    await type(notes(), "Bring ID");
+    await save();
+    expect(rescheduleCalls()).toEqual([]);
+    expect(m.updateEvent.mock.calls).toEqual([["bk", { notes: "Bring ID" }]]);
+  });
+
+  it("a retry after a failed field write saves the fields without POSTing the same reschedule again", async () => {
+    fetchMock.mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          notifyEmailSent: true,
+          newStartAt: new Date(2030, 0, 1, 10, 0).toISOString(),
+          newEndAt: new Date(2030, 0, 1, 10, 30).toISOString(),
+        }),
+        { status: 200 },
+      ),
+    );
+    m.updateEvent.mockRejectedValueOnce(new Error("offline"));
+    await show(booking(9));
+    await type(document.getElementById("ev-start") as HTMLInputElement, "10:00");
+    await type(document.getElementById("ev-end") as HTMLInputElement, "10:30");
+    await type(notes(), "Bring ID");
+    await save(); // reschedule 200, field write fails
+    await save(); // the operator's retry
+    expect(rescheduleCalls()).toHaveLength(1);
+    expect(m.updateEvent.mock.calls).toEqual([
+      ["bk", { notes: "Bring ID" }],
+      ["bk", { notes: "Bring ID" }],
+    ]);
   });
 });

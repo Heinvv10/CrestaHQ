@@ -220,9 +220,9 @@ deletion is now kept until its TTL).
 
 | Finding | Guard | Mutation | Failing test (first named) |
 |---|---|---|---|
-| R1 (HIGH) | Save diffs against the copy frozen at form init | build the baseline from the live `event` at Save | event-dialog.test.ts › a third party's move while open is not reverted by a notes-only save; › … title change is not written back; › a manual event's save … |
+| R1 (HIGH) | Save diffs against the copy frozen at form init | build the baseline from the live `event` at Save | event-dialog.test.ts › third-party reschedule while open: saving notes only must not POST a reschedule; › … title change is not written back; › a manual event's save … |
 | R1 | Baseline captured when the form initialises | never set the ref | same three, and › a time the operator changed is rescheduled to the operator's time |
-| R1 | `changedFields` leaves unchanged fields out | include every field | booking-edit-save.test.ts › is empty when nothing changed …; event-dialog.test.ts › a third party's move … |
+| R1 | `changedFields` leaves unchanged fields out | include every field | booking-edit-save.test.ts › is empty when nothing changed …; event-dialog.test.ts › third-party reschedule while open … |
 | R1 | `changedFields` leaves an unchanged time out | time always "changed" | › is empty when nothing changed (times compared by value) |
 | R1 | Start and end sent together | compare the start only | › sends start and end together when either moved |
 | R1 | Booking save writes no fields when none changed | always call `updateFields` | › moves the booking and writes no fields; event-dialog.test.ts › a time the operator changed … |
@@ -240,3 +240,15 @@ guard (method as above): with `changedFields` writing every field, the
 unchanged `contactId` is written again, Save reads the contact, and
 › Save completes and the Rescheduled badge shows … went red (dialog still
 open after 5 s). Restored, SHA-1 compared.
+
+Follow-up: regression test (a) is now the review's own reproduction
+(`r338/baseline.test.ts`: same fixture, same id re-rendered 09:00 -> 12:00,
+same plain submit event), extended to assert the field write. Run against
+the dialog and save helper as of 661f3d81 it fails, as do (b), (c), the
+manual-event test, (d) and (e). Two more guards, same method, both red and
+restored:
+
+| Finding | Guard | Mutation | Failing test |
+|---|---|---|---|
+| R1 (d) | The baseline is re-captured every time the form initialises | `formBaseline.current ??= …` (first capture only) | event-dialog.test.ts › re-opening the same event after a server change re-captures what Save diffs against |
+| R1 (e) | A retry compares with the time the server now holds | `baseline: { … }` without `timeBaseline ??` | › a retry after a failed field write saves the fields without POSTing the same reschedule again |
