@@ -53,7 +53,8 @@ events); those were replaced by these.
 ## Known gaps
 
 The confirmed-change override (`useEventOverrides`, rules in
-`src/lib/calendar/event-overrides.ts`) now covers every server write the
+`src/lib/calendar/event-overrides.ts`, what pages show in
+`event-overrides-view.ts`) now covers every server write the
 appointments list, the calendar grid and the per-booking-page bookings list
 make:
 
@@ -65,32 +66,48 @@ make:
   Google-mirrored events;
 - the grid's "New Event": the created event is shown from the create route's
   201, which now carries the stored fields (`stored`). The list cannot create
-  events, so this applies to the grid only.
+  events, so this applies to the grid only. The grid's only filter is the
+  territory filter, and a created event always passes it: a contactless
+  event is Global (always in the filter), and the create route refuses a
+  contact outside the creator's territories. So inserted events are not
+  filtered again on the client.
 
 The dialog is given the page's current copy of its event (overrides applied),
 so its host picker, status panel and sync notice use confirmed values, and
 re-picking the original host sends a request. The form initialises only when
 the dialog opens or another event is opened, so an update arriving while it
-is open never wipes unsaved edits. Start and end are judged as one unit, and
-an override remembers every value we confirmed for its field, so our own
-earlier value arriving late (A to B to C) no longer flashes back. Save after a
-reschedule no longer reads the contact when the contact is unchanged, so it
-completes while the stream is silent. Evidence: [mutations.md](mutations.md).
+is open never wipes unsaved edits. Save writes only the fields the operator
+changed since the form opened (compared with a copy frozen when the form
+initialised, never with the live event), so a third party's move or rename
+made while the dialog is open is not sent back: a notes-only save neither
+reschedules nor rewrites the title. Start and end are judged as one unit, and
+an override remembers the last 8 values we confirmed for its field, so our
+own earlier value arriving late (A to B to C) no longer flashes back. An
+unchanged contact is not written, so Save does not read the contact and
+completes while the stream is silent. A deletion override is kept until its
+60 s expiry even when the event leaves a snapshot, since that may only be a
+window or filter change. Evidence: [mutations.md](mutations.md).
 
 Still true:
 
-- Changing the contact in the dialog (or saving an event that has no
-  `territoryId` yet) still reads the new contact to derive the territory.
+- Changing the contact in the dialog still reads the new contact to derive
+  the territory.
   That read waits on the Listen stream, so during a silence Save stays on
   "Saving…": about 10 s under the E2E stall, until the SDK gave up on the
   backend and answered from its cache (not measured on a real silent
   stream). Using the contact list the page already
   holds would avoid it, but that list can be territory-filtered or stale, so
   the read was kept for correctness.
-- Saving with the contact unchanged now keeps the event's territory instead of
-  re-deriving it from the contact's current territory. An event whose
-  contact moved territory since the last save keeps its old territory until
-  the contact is changed.
+- Saving with the contact unchanged no longer rewrites `contactId` and so no
+  longer re-derives `territoryId` from the contact's current territory (it
+  used to, on every dialog save). An event whose contact moved territory, or
+  that has no `territoryId` yet, keeps what it has until the contact is
+  changed.
+- Pre-existing drift that dialog save used to heal: the contact link route's
+  `repoint()` (`src/app/api/contacts/[id]/link/route.ts`) moves events to the
+  surviving contact without updating their `territoryId`. Now that Save no
+  longer rewrites an unchanged contact, nothing heals it; the fix belongs in
+  `repoint`.
 - An event created in the last minute and edited (plain field write) while the
   stream is silent shows its created values until the delta or the 60 s
   expiry. The client's own write is not reflected because its cache never

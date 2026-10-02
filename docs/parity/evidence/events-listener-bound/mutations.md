@@ -209,3 +209,34 @@ The item 5 row survived its first run: the test then allowed 15 s for the
 dialog to close, and with the contact read Save took about 10 s (the SDK gave
 up on the backend and answered from its cache). The test now allows 5 s; it
 went red as above, and the clean build passes it.
+
+## Review round 1 of PR #338 (2026-10-02)
+
+Same script and method as the unit rows above; all 9 rows were red and
+restored. The three item 5 rows above for `withoutUnchangedContact` are
+superseded: that helper is gone, replaced by `changedFields`. The earlier row
+"Delete reconcile: gone from the snapshot drops" is superseded by R2 (a
+deletion is now kept until its TTL).
+
+| Finding | Guard | Mutation | Failing test (first named) |
+|---|---|---|---|
+| R1 (HIGH) | Save diffs against the copy frozen at form init | build the baseline from the live `event` at Save | event-dialog.test.ts › a third party's move while open is not reverted by a notes-only save; › … title change is not written back; › a manual event's save … |
+| R1 | Baseline captured when the form initialises | never set the ref | same three, and › a time the operator changed is rescheduled to the operator's time |
+| R1 | `changedFields` leaves unchanged fields out | include every field | booking-edit-save.test.ts › is empty when nothing changed …; event-dialog.test.ts › a third party's move … |
+| R1 | `changedFields` leaves an unchanged time out | time always "changed" | › is empty when nothing changed (times compared by value) |
+| R1 | Start and end sent together | compare the start only | › sends start and end together when either moved |
+| R1 | Booking save writes no fields when none changed | always call `updateFields` | › moves the booking and writes no fields; event-dialog.test.ts › a time the operator changed … |
+| R1 | Manual save writes nothing when nothing changed | always call `updateEvent` | event-dialog.test.ts › a manual event's save writes only what the operator changed, and nothing when nothing changed |
+| R2 | Deletion kept when the event leaves a snapshot | drop a deletion whose event is absent | event-overrides.test.ts › is kept when the event is absent from a snapshot, … |
+| R3 | `ours` capped at the last 8 | no cap | event-overrides.fields.test.ts › remembers at most the last EVENT_OVERRIDE_OURS_MAX values |
+
+The R1 "live event" mutant is the round's reported behaviour: with it, the
+notes-only save after a third-party move POSTs `/reschedule` back to the old
+time, and the field write carries the stale title.
+
+E2E after this round: a clean build passed all 17 tests of
+`appointments-list.spec.ts`. The item 5 E2E row was re-run against the new
+guard (method as above): with `changedFields` writing every field, the
+unchanged `contactId` is written again, Save reads the contact, and
+› Save completes and the Rescheduled badge shows … went red (dialog still
+open after 5 s). Restored, SHA-1 compared.
