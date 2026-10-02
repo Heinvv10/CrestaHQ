@@ -13,6 +13,17 @@ vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/agent-pr
 vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
+const failTask = vi.hoisted(() => ({ forUid: null as string | null }));
+vi.mock("@/lib/server/tasks-service", async (orig) => {
+  const real = (await orig()) as typeof import("@/lib/server/tasks-service");
+  return {
+    ...real,
+    createTaskServerSide: async (input: Parameters<typeof real.createTaskServerSide>[0]) => {
+      if (failTask.forUid && input.assignedToUid === failTask.forUid) throw new Error("boom");
+      return real.createTaskServerSide(input);
+    },
+  };
+});
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 
 setupAgentProposalTests();
@@ -28,6 +39,7 @@ const member = (uid: string, displayName: string, email: string, status = "activ
   mem.seed(`subAccounts/sa1/subAccountMembers/${uid}`, { status, displayName, email, role: "collaborator" });
 
 beforeEach(() => {
+  failTask.forUid = null;
   mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", name: "Ann", territoryId: "global" });
   mem.seed("contacts/c2", { subAccountId: "sa2", agencyId: "ag1", name: "Bob" });
   member("mike", "Mike Dlamini", "mike@x.io");
@@ -105,6 +117,44 @@ describe("add_conversation_note", () => {
     const before = JSON.stringify(mem.all());
     expect(await dispatchAgentTool(auth, "add_conversation_note", { contactId: "c1", ...extra })).toMatchObject({ ok: false, httpStatus: 400 });
     expect(JSON.stringify(mem.all())).toBe(before);
+  });
+
+  it("an appended @Name with an unsafe character → refused, nothing written", async () => {
+    member("evil", "Eve\u202El", "eve@x.io");
+    const before = JSON.stringify(mem.all());
+    expect(await dispatchAgentTool(auth, "add_conversation_note", { contactId: "c1", body: "hi", mentions: ["eve@x.io"] })).toMatchObject({ ok: false, httpStatus: 400 });
+    expect(JSON.stringify(mem.all())).toBe(before);
+  });
+
+  it("a body that only overflows the cap once @Names are appended → refused, nothing written", async () => {
+    const body = "x".repeat(3995);
+    // Control: the same body alone is within the cap.
+    expect(await dispatchAgentTool(auth, "add_conversation_note", { contactId: "c1", body })).toMatchObject({ ok: true });
+    const before = JSON.stringify(mem.all());
+    expect(await dispatchAgentTool(auth, "add_conversation_note", { contactId: "c1", body, mentions: ["mike@x.io"] })).toMatchObject({ ok: false, httpStatus: 400 });
+    expect(JSON.stringify(mem.all())).toBe(before);
+  });
+
+  it("a member with no display name is appended as their email as stored", async () => {
+    member("nn", "", "Nn@X.io");
+    await dispatchAgentTool(auth, "add_conversation_note", { contactId: "c1", body: "hi", mentions: ["nn@x.io"] });
+    expect(notes()[0].content).toBe("hi @Nn@X.io");
+  });
+
+  it("the result names the contact as the audit target", async () => {
+    expect(await dispatchAgentTool(auth, "add_conversation_note", { contactId: "c1", body: "hi" })).toMatchObject({ ref: { kind: "contact", id: "c1" } });
+  });
+
+  it("a task failure part-way is logged and the result says who was and wasn't tasked", async () => {
+    member("zed", "Zed Zulu", "zed@x.io");
+    failTask.forUid = "zed";
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const r = (await dispatchAgentTool(auth, "add_conversation_note", { contactId: "c1", body: "hi", mentions: ["mike@x.io", "zed@x.io"] })) as { resultText: string };
+    expect(r.resultText).toContain("Mention tasks created for: Mike Dlamini.");
+    expect(r.resultText).toContain("NOT tasked: Zed Zulu.");
+    expect(tasks()).toHaveLength(1);
+    expect(notes()).toHaveLength(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("zed"), expect.any(Error));
   });
 
   // validate() alone: execute re-checks the body after appending @Names, so

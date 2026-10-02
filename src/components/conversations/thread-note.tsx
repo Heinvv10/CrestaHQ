@@ -29,7 +29,7 @@ export function ThreadNote({
         <StickyNote className="h-3 w-3" />
         <span>
           Internal note · not sent
-          {note.createdBy.startsWith("apikey:") && " · via API agent"}
+          {typeof note.createdBy === "string" && note.createdBy.startsWith("apikey:") && " · via API agent"}
         </span>
         {ts && (
           <span className="text-muted-foreground font-normal">

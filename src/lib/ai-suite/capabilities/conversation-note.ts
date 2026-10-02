@@ -91,8 +91,9 @@ export const CONVERSATION_NOTE_CAPABILITIES: AiSuiteCapability[] = [
         for (const email of emails) {
           const d = snap.docs.find((x) => String(x.data().email ?? "").trim().toLowerCase() === email);
           if (!d) throw new CapabilityUserError(`${email} isn't an active member of this workspace, so can't be mentioned.`);
-          // The roster's label (GET /members): display name, else email.
-          const displayName = String(d.data().displayName ?? "").trim() || email;
+          // The roster's label (GET /members): display name, else the email as stored.
+          const stored = String(d.data().email ?? "").trim();
+          const displayName = String(d.data().displayName ?? "").trim() || stored;
           picked.push({ uid: d.id, displayName });
         }
       }
@@ -110,7 +111,7 @@ export const CONVERSATION_NOTE_CAPABILITIES: AiSuiteCapability[] = [
       // Same fields as the composer's addNote(), plus the agent stamp. A note
       // with mentions is claimed (mentionTasksAt) as it is written, so the
       // human mention-tasks route can never create a second set.
-      const ref = await getAdminDb().collection(`contacts/${contactId}/notes`).add({
+      await getAdminDb().collection(`contacts/${contactId}/notes`).add({
         content: body,
         createdBy: ctx.uid,
         createdAt: FieldValue.serverTimestamp(),
@@ -119,28 +120,41 @@ export const CONVERSATION_NOTE_CAPABILITIES: AiSuiteCapability[] = [
         ...agentEditStamp(agentActor(ctx, "add_conversation_note")),
       });
 
+      // One call per member, so a failure part-way reports exactly who was and
+      // wasn't tasked. The note is already claimed (mentionTasksAt) and the human
+      // route refuses agent-authored notes, so there is no retry: the agent must
+      // tell a person about anyone not tasked.
       let tasks = "";
-      if (mentionedUids.length) {
-        try {
-          const ids = await createMentionTasks({
-            subAccountId,
-            contactId,
-            contact,
-            content: body,
-            rawMentionedUids: mentionedUids,
-            authorUid: ctx.uid,
-            authorName: `API agent ${ctx.apiKey?.keyPrefix ?? ""}`.trim(),
-            fallbackAgencyId: ctx.agencyId,
-          });
-          tasks = ` ${ids.length} mention ${ids.length === 1 ? "task" : "tasks"} created.`;
-        } catch (err) {
-          // The note is saved; a retry would duplicate it, so report instead of throwing.
-          tasks = ` The note is saved, but the mention tasks failed (${err instanceof Error ? err.message : "unknown error"}); do not retry.`;
+      if (picked.length) {
+        const tasked: string[] = [];
+        const notTasked: string[] = [];
+        for (const p of picked) {
+          try {
+            const ids = await createMentionTasks({
+              subAccountId,
+              contactId,
+              contact,
+              content: body,
+              rawMentionedUids: [p.uid],
+              authorUid: ctx.uid,
+              authorName: `API agent ${ctx.apiKey?.keyPrefix ?? ""}`.trim(),
+              fallbackAgencyId: ctx.agencyId,
+            });
+            (ids.length ? tasked : notTasked).push(p.displayName);
+          } catch (err) {
+            console.error(`[add_conversation_note] sa=${subAccountId} contact=${contactId} mention task for ${p.uid} failed`, err);
+            notTasked.push(p.displayName);
+          }
+        }
+        tasks = tasked.length ? ` Mention tasks created for: ${tasked.join(", ")}.` : "";
+        if (notTasked.length) {
+          tasks += ` NOT tasked: ${notTasked.join(", ")}. The note is saved and can't be retried (do not call this tool again); tell a person to notify them.`;
         }
       }
       return {
         resultText: `Internal note added (nothing was sent).${tasks}`,
-        ref: { kind: "note", id: ref.id },
+        // The audit trail names the contact (AUDIT_TARGET_TYPES has no "note").
+        ref: { kind: "contact", id: contactId },
       };
     },
   },
