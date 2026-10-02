@@ -33,7 +33,7 @@ describe("renderSystemEmail", () => {
   });
 
   it("refuses a button URL with a scheme other than http(s)", () => {
-    for (const url of ["javascript:alert(1)", " JavaScript:alert(1)", "data:text/html,x"]) {
+    for (const url of ["javascript:alert(1)", " JavaScript:alert(1)", "java\tscript:alert(1)", "java\nscript:x", "data:text/html,x"]) {
       expect(() =>
         renderSystemEmail({ brand, preview: "p", heading: "h", paragraphs: [], button: { label: "Go", url } }),
       ).toThrow("http(s)");

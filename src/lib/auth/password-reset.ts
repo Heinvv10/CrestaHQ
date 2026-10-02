@@ -35,7 +35,9 @@ const PER_CALLER_EMAIL_LIMIT = 3;
 /**
  * One address, whoever asks. Over it the request still answers {ok:true} and
  * simply sends nothing — a 429 here would let anyone lock a user out of
- * resetting, and the user already has the links that were sent.
+ * resetting. Each new Firebase code cancels the earlier ones (checked against
+ * the live project 2026-10-02), and none is issued past the cap, so the
+ * newest mail already in the inbox stays the working one.
  */
 const PER_EMAIL_LIMIT = 5;
 const MAX_TRACKED = 20_000;
@@ -60,7 +62,8 @@ function ipKey(ip: string): string {
  * In-memory, resets on restart — a mail-bomb dampener, not a security
  * boundary. When full, only expired budgets are dropped; if it is still full
  * a NEW key is refused. Dropping live budgets instead would let a flood of
- * junk keys hand a victim's address a fresh budget.
+ * junk keys hand a victim's address a fresh budget. The price: ~1,000 IPs
+ * (or /64s) filling it within an hour refuses new callers until it drains.
  */
 function overLimit(map: Map<string, number[]>, key: string, limit: number): boolean {
   const now = Date.now();

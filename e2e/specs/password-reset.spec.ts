@@ -87,11 +87,13 @@ test("a bogus reset code shows the expired state, not the form", async ({
  * and skips the send; without one (CI) it answers {fallback:true} and the
  * client asks Firebase, which also sends nothing for an unknown address.
  */
-const NO_ACCOUNT = `e2e-no-account-${runId()}@crestahq.com`;
+// One address per test: the server allows each caller 3 requests per
+// address an hour, and every run comes from the same runner IP.
+const noAccount = (tag: string) => `e2e-no-account-${tag}-${runId()}@crestahq.com`;
 
 test("the reset endpoint is reachable without a session", async ({ request }) => {
   const res = await request.post("/api/auth/password-reset", {
-    data: { email: NO_ACCOUNT },
+    data: { email: noAccount("api") },
     maxRedirects: 0,
   });
   expect(res.status()).toBe(200);
@@ -104,7 +106,7 @@ test("Forgot password? confirms without revealing whether the account exists", a
 }) => {
   await page.goto("/login");
   await page.getByRole("button", { name: "Forgot password?" }).click();
-  await page.locator("#reset-email").fill(NO_ACCOUNT);
+  await page.locator("#reset-email").fill(noAccount("form"));
   const reply = page.waitForResponse("**/api/auth/password-reset");
   await page.getByRole("button", { name: "Send reset link" }).click();
   expect((await reply).status()).toBe(200);

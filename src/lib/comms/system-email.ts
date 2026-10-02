@@ -79,7 +79,10 @@ export function renderSystemEmail(email: SystemEmail): {
   const { brand, button, note } = email;
   // A scheme other than http(s) (javascript:, data:) is refused. A relative
   // path is let through: invites build one when NEXT_PUBLIC_APP_URL is unset.
-  const scheme = /^\s*([a-z][a-z0-9+.-]*):/i.exec(button?.url ?? "")?.[1];
+  // Browsers drop tabs, newlines and spaces inside a scheme ("java\tscript:").
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(
+    (button?.url ?? "").replace(/[\x00-\x20]/g, ""),
+  )?.[1];
   if (scheme && !/^https?$/i.test(scheme)) {
     throw new Error("System email button URL must be http(s).");
   }
