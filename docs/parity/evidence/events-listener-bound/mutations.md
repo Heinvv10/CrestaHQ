@@ -65,3 +65,52 @@ Every file restored (SHA-1 compared).
 Note: an early E2E "stall" using only `page.route` stayed green with the
 override disabled (the open stream is never re-routed); the final tests cut the
 stream with an offline blip first.
+
+## Dialog server writes: reschedule and Google-mirrored delete (2026-10-02)
+
+The status override became a per-event confirmed-change override
+(`event-overrides.ts`, page wiring in `use-event-overrides.ts`). Unit rows ran
+`pnpm exec vitest run` on the listed test files; each file was restored and
+SHA-1 compared, and each mutation was checked to have changed the file. All
+rows were red.
+
+| Guard | Mutation | Failing test (first named) |
+|---|---|---|
+| Patch: nothing set when the latest snapshot already shows the value | `if (row && from === to)` → `if (false)` | event-overrides.test.ts › sets nothing when the latest snapshot already shows the confirmed status; › … the new times; › never masks the later correction back to no-show |
+| Patch: `from` taken from the latest snapshot | `from = to` | › records the latest snapshot's status as `from`; › records each time against the latest snapshot's |
+| Patch reconcile: stale snapshot keeps | drop the `=== o.from` check | › keeps the override while the snapshot is stale; use-event-overrides.test.ts › shows a confirmed status, reschedule and delete over a snapshot that has not caught up |
+| Patch reconcile: third value drops | drop only when `=== o.to` | › drops it when a third party moves the booking again, so their time shows; › … a different status (someone else changed it) |
+| Patch reconcile: times compared by value | compare `Date` objects | › keeps the override while the snapshot is stale (reschedule) |
+| Delete: nothing set when the snapshot already dropped the event | remove the early return | › sets nothing when the latest snapshot already dropped the event |
+| Delete reconcile: gone from the snapshot drops | never drop a deletion | › is dropped once the snapshot no longer holds the event |
+| Delete reconcile: still present keeps | drop a deletion on any snapshot | › hides the row while the snapshot still holds it; hook › shows a confirmed … delete |
+| TTL, all kinds | expiry check → `true` | › a reschedule and a deletion expire the same way; hook › expires overrides after the TTL |
+| Expiry timer delay | delay = pad only | › reports when the next override expires; › fields of one event expire on their own clocks |
+| Apply: deleted row hidden | remove `if (o.deleted) return []` | › leaves out a deleted row only; › a deleted event leaves every tab's count |
+| Apply: confirmed start shown | drop the `startAt` spread | › shows the confirmed times on a rescheduled row only; › a booking rescheduled from the past into the future joins Upcoming |
+| Apply: confirmed end shown | drop the `endAt` spread | › shows the confirmed times on a rescheduled row only |
+| Apply: confirmed status shown | drop the `status` spread | › shows the overridden status on that row only |
+| Hook reconciles on every snapshot | remove the reconcile call | use-event-overrides.test.ts › drops each override when a snapshot settles it |
+| Hook reads the newest snapshot via the ref | never update the ref | › judges a confirmation against the newest snapshot, not the first render's |
+| Hook expiry timer | handler does nothing | › expires overrides after the TTL, falling back to the snapshot |
+| Save: only a 200 confirms a time (refused / `no_change` apply nothing) | confirm on any response | booking-edit-save.test.ts › confirms no time when the reschedule is refused or was not needed |
+| Save: confirms the server's times, not the ones asked for | use the requested `startAt` | › hands over the times the server's 200 confirmed, not the ones asked for, before the field write |
+| Save: nothing confirmed without times in the body | drop the NaN check | › confirms no time when the response carries none |
+| Save: confirmation handed over before the field write | call it after `updateFields` | › hands over the times … before the field write |
+| Route returns the stored start / end | drop `newStartAt` / `newEndAt` | reschedule/route.test.ts › returns the times it stored |
+
+The "before the field write" row exists because the first E2E run failed. After
+the reschedule's 200, `updateEvent` reads the contact (`territoryIdForContact`,
+a client `getDoc`), and with the Listen stream silent that read does not
+return. If the time is confirmed only after the field write, the row never
+updates and Save stays on "Saving…".
+
+E2E rows: `event-dialog.tsx` was mutated, the app rebuilt (E2E_PORT=3143) with
+the mutation, the file restored (SHA-1 compared), and the one named test of
+`appointments-list.spec.ts` was run against that build with CI idle. The
+unmutated build passed all 8 tests of the spec first.
+
+| Guard | Mutation | Failing test |
+|---|---|---|
+| Dialog hands the confirmed reschedule to the page | remove the `onRescheduled` callback passed to `saveBookingPageEdit` | › an operator reschedule from the Edit dialog shows the new time without the Firestore delta (row kept the old time) |
+| Dialog hands the server delete to the page | remove `onDeleted?.(event.id)` | › deleting a Google-mirrored event removes the row without the Firestore delta (row still present) |
