@@ -106,3 +106,25 @@ it("shows a confirmed host reassign until the snapshot catches up", async () => 
   await m.snapshot([{ ...owned }]); // someone moved it back
   expect(host()).toBe("Ann");
 });
+
+it("shows a created event, a stored reschedule count and a cleared sync error until the snapshot catches up", async () => {
+  const failing = {
+    ...ev("a", "scheduled"),
+    googleSyncError: { message: "Not in Ann's calendar", at: Timestamp.fromMillis(H) },
+  } as unknown as CalendarEvent;
+  const m = mount([failing]);
+  await m.render();
+  const created = { ...ev("n", "scheduled", 14), title: "New" } as CalendarEvent;
+  await m.note((h) => h.noteConfirmedCreate(created));
+  await m.note((h) => h.noteConfirmedReschedule("a", new Date(12 * H), new Date(12.5 * H), 1));
+  await m.note((h) => h.noteConfirmedSyncCleared("a"));
+  const a = () => m.rowsRaw()[0] as CalendarEvent & { googleSyncError?: unknown };
+  expect(m.rows()).toEqual(["a:scheduled@12", "n:scheduled@14"]);
+  expect(a().rescheduleCount).toBe(1);
+  expect(a().googleSyncError).toBeNull();
+  await m.snapshot([{ ...failing }]); // stale
+  expect(m.rows()).toEqual(["a:scheduled@12", "n:scheduled@14"]);
+  // Caught up: the snapshot's own copies show, once each.
+  await m.snapshot([{ ...ev("a", "scheduled", 12), rescheduleCount: 1 }, { ...created, title: "New (delta)" }]);
+  expect(m.rowsRaw().map((e) => e.title ?? e.id)).toEqual(["a", "New (delta)"]);
+});

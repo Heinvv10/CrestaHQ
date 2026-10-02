@@ -108,6 +108,9 @@ export async function rescheduleWithoutAvailabilityCheck(
     }
     const { token: newRawToken, hash: newHash } = issueEventToken(eventRef.id);
     const icsSequence = nextIcsSequence(event);
+    // A literal, not increment(1): the transaction read the current count, and
+    // the operator route reports the stored value back.
+    const rescheduleCount = (event.rescheduleCount ?? 0) + 1;
     txn.update(eventRef, {
       startAt: newStart,
       endAt: newEnd,
@@ -115,11 +118,11 @@ export async function rescheduleWithoutAvailabilityCheck(
       icsSequence,
       isLong: isLongEvent(newStart, newEnd),
       rescheduledAt: FieldValue.serverTimestamp(),
-      rescheduleCount: FieldValue.increment(1),
+      rescheduleCount,
       updatedAt: FieldValue.serverTimestamp(),
     });
     return {
-      event: { ...event, publicTokenHash: newHash, icsSequence },
+      event: { ...event, publicTokenHash: newHash, icsSequence, rescheduleCount },
       newToken: newRawToken,
       page: pageSnap.data() as BookingPage,
     };

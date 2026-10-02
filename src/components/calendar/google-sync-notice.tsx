@@ -10,8 +10,15 @@ import type { CalendarEvent } from "@/types/events";
  * A booking that didn't reach (or leave) a host's Google Calendar. The push
  * records why on the event (`googleSyncError`); nothing retries it on its
  * own, so the operator gets the reason and a Retry sync button.
+ * `onSynced` runs only when the retry's 200 says the event is now synced.
  */
-export function GoogleSyncNotice({ event }: { event: CalendarEvent }) {
+export function GoogleSyncNotice({
+  event,
+  onSynced,
+}: {
+  event: CalendarEvent;
+  onSynced?: () => void;
+}) {
   const error = (event as { googleSyncError?: { message?: string } | null }).googleSyncError?.message;
   const [busy, setBusy] = useState(false);
   if (!error) return null;
@@ -20,8 +27,13 @@ export function GoogleSyncNotice({ event }: { event: CalendarEvent }) {
     setBusy(true);
     try {
       const res = await fetch(`/api/events/by-id/${event.id}/google-sync`, { method: "POST" });
-      const data = (await res.json().catch(() => ({}))) as { googleSyncError?: string | null; error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        synced?: boolean;
+        googleSyncError?: string | null;
+        error?: string;
+      };
       if (!res.ok) throw new Error(data.error ?? "Retry failed.");
+      if (data.synced === true) onSynced?.();
       if (data.googleSyncError) toast.error(data.googleSyncError);
       else toast.success("Synced to Google Calendar.");
     } catch (err) {

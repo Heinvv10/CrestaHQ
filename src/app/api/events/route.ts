@@ -68,7 +68,7 @@ export async function POST(request: Request) {
   const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   const agencyId = (subSnap.data()?.agencyId as string) ?? access.agencyId ?? "";
 
-  const { id, event } = await createEventServerSide({
+  const { id, event, stored } = await createEventServerSide({
     subAccountId,
     agencyId,
     createdByUid: access.uid,
@@ -82,5 +82,6 @@ export async function POST(request: Request) {
     meetingUrl: typeof body.meetingUrl === "string" ? body.meetingUrl : null,
   });
 
-  return NextResponse.json({ id, event }, { status: 201 });
+  // `stored` lets the calendar show the event before its Listen delta arrives.
+  return NextResponse.json({ id, event, stored }, { status: 201 });
 }

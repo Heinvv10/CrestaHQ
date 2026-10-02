@@ -4,6 +4,7 @@ import type { EventFormData } from "@/types/events";
 
 import {
   saveBookingPageEdit,
+  withoutUnchangedContact,
   type ConfirmedTime,
   type RescheduleResponse,
   type TimeBaseline,
@@ -17,7 +18,7 @@ const MOVED = {
   startAt: new Date("2030-01-01T12:00:00Z"),
   endAt: new Date("2030-01-01T12:30:00Z"),
 };
-type Fields = Omit<EventFormData, "startAt" | "endAt">;
+type Fields = Partial<Omit<EventFormData, "startAt" | "endAt">>;
 const fields: Fields = { title: "Renamed", contactId: null, location: "", notes: "", meetingUrl: null };
 
 const reschedule = vi.fn<(id: string, s: Date, e: Date) => Promise<RescheduleResponse>>();
@@ -108,6 +109,20 @@ describe("saveBookingPageEdit", () => {
     expect(onRescheduled.mock.invocationCallOrder[0]).toBeLessThan(updateFields.mock.invocationCallOrder[0]);
   });
 
+  it("hands over the reschedule count the 200 stored, with the times", async () => {
+    reschedule.mockResolvedValue({
+      ok: true,
+      body: {
+        notifyEmailSent: true,
+        newStartAt: MOVED.startAt.toISOString(),
+        newEndAt: MOVED.endAt.toISOString(),
+        rescheduleCount: 3,
+      },
+    });
+    await save(ORIG);
+    expect(onRescheduled.mock.calls).toEqual([[{ ...MOVED, rescheduleCount: 3 }]]);
+  });
+
   it("confirms no time when the response carries none", async () => {
     expect((await save(ORIG)).kind).toBe("saved"); // 200, but no newStartAt / newEndAt in the body
     expect(onRescheduled).not.toHaveBeenCalled();
@@ -133,5 +148,31 @@ describe("saveBookingPageEdit", () => {
     const out = await save(ORIG);
     expect(out).toEqual({ kind: "saved", baseline: MOVED, warning: null });
     expect(updateFields).toHaveBeenCalledWith("evt1", fields);
+  });
+});
+
+describe("withoutUnchangedContact", () => {
+  const form = { title: "T", contactId: "c1", location: "", notes: "", meetingUrl: null };
+
+  it("drops an unchanged contact, so the save reads no contact (the event keeps its territory)", () => {
+    expect(withoutUnchangedContact(form, { contactId: "c1", territoryId: "t1" })).toEqual({
+      title: "T",
+      location: "",
+      notes: "",
+      meetingUrl: null,
+    });
+    expect(
+      withoutUnchangedContact({ ...form, contactId: null }, { contactId: null, territoryId: "global" }),
+    ).not.toHaveProperty("contactId");
+  });
+  it("keeps a changed contact, so its territory is re-derived", () => {
+    expect(withoutUnchangedContact(form, { contactId: "c2", territoryId: "t1" })).toBe(form);
+    expect(withoutUnchangedContact({ ...form, contactId: null }, { contactId: "c1", territoryId: "t1" })).toHaveProperty(
+      "contactId",
+      null,
+    );
+  });
+  it("keeps the contact of an event that has no territory yet", () => {
+    expect(withoutUnchangedContact(form, { contactId: "c1", territoryId: null })).toBe(form);
   });
 });

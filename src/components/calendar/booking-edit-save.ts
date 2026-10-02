@@ -1,4 +1,4 @@
-import type { EventFormData, EventNotifySkipReason } from "@/types/events";
+import type { CalendarEvent, EventFormData, EventNotifySkipReason } from "@/types/events";
 
 /** The time the server holds for the booking, as far as the dialog knows. */
 export interface TimeBaseline {
@@ -13,6 +13,7 @@ export interface RescheduleResponse {
     code?: string;
     newStartAt?: string;
     newEndAt?: string;
+    rescheduleCount?: number;
     notifyEmailSent?: boolean;
     notifyEmailSkipReason?: EventNotifySkipReason;
   };
@@ -22,6 +23,8 @@ export interface RescheduleResponse {
 export interface ConfirmedTime {
   startAt: Date;
   endAt: Date;
+  /** The count the server stored, when the response carries it. */
+  rescheduleCount?: number;
 }
 
 export type BookingEditResult =
@@ -76,11 +79,11 @@ export async function saveBookingPageEdit(args: {
   startAt: Date;
   endAt: Date;
   timeLocked: boolean;
-  fields: Omit<EventFormData, "startAt" | "endAt">;
+  fields: Partial<Omit<EventFormData, "startAt" | "endAt">>;
   reschedule: (eventId: string, startAt: Date, endAt: Date) => Promise<RescheduleResponse>;
   updateFields: (
     eventId: string,
-    fields: Omit<EventFormData, "startAt" | "endAt">,
+    fields: Partial<Omit<EventFormData, "startAt" | "endAt">>,
   ) => Promise<void>;
   onRescheduled?: (time: ConfirmedTime) => void;
 }): Promise<BookingEditResult> {
@@ -109,7 +112,12 @@ export async function saveBookingPageEdit(args: {
       const confirmedStart = new Date(res.body.newStartAt ?? NaN);
       const confirmedEnd = new Date(res.body.newEndAt ?? NaN);
       if (!Number.isNaN(confirmedStart.getTime()) && !Number.isNaN(confirmedEnd.getTime())) {
-        args.onRescheduled?.({ startAt: confirmedStart, endAt: confirmedEnd });
+        const { rescheduleCount } = res.body;
+        args.onRescheduled?.({
+          startAt: confirmedStart,
+          endAt: confirmedEnd,
+          ...(typeof rescheduleCount === "number" && { rescheduleCount }),
+        });
       }
       // The reschedule rotated the visitor's manage link — if they weren't
       // emailed the new one, the operator has to know.
@@ -127,4 +135,22 @@ export async function saveBookingPageEdit(args: {
     return { kind: "fields_failed", baseline: nextBaseline, rescheduled, warning, error };
   }
   return { kind: "saved", baseline: nextBaseline, warning };
+}
+
+/**
+ * The dialog's fields minus `contactId` when the contact is unchanged and the
+ * event already carries a territory. A `contactId` makes `updateEvent`
+ * re-derive the territory with a contact read (a `getDoc`), and that read
+ * waits on the same Listen stream that can sit silent for ~30 s, leaving
+ * Save on "Saving…". With the contact unchanged the event keeps the
+ * territory it has. A changed contact, or an event with no territory yet,
+ * still gets the read.
+ */
+export function withoutUnchangedContact<T extends { contactId?: string | null }>(
+  fields: T,
+  event: Pick<CalendarEvent, "contactId" | "territoryId">,
+): T | Omit<T, "contactId"> {
+  if ((fields.contactId ?? null) !== (event.contactId ?? null) || !event.territoryId) return fields;
+  const { contactId: _unchanged, ...rest } = fields;
+  return rest;
 }

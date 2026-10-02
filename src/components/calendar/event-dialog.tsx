@@ -39,8 +39,10 @@ import { GoogleSyncNotice } from "@/components/calendar/google-sync-notice";
 import {
   notifySkipDetail,
   saveBookingPageEdit,
+  withoutUnchangedContact,
   type TimeBaseline,
 } from "@/components/calendar/booking-edit-save";
+import { createdEventFromResponse } from "@/lib/calendar/event-overrides";
 import { toDate } from "@/lib/format";
 import {
   eventOccupiesSlot,
@@ -58,16 +60,25 @@ interface EventDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   contacts: Contact[];
+  /**
+   * The event as the page shows it, confirmed-change overrides applied. The
+   * form initialises from it only when the dialog opens or another event is
+   * opened, so an update while it is open never wipes unsaved edits.
+   */
   event?: CalendarEvent | null;
   defaultDate?: Date | null;
   /** A status change the actions panel just had confirmed by the server. */
   onStatusChange?: (eventId: string, status: EventStatus) => void;
-  /** The times an operator reschedule's 200 response just confirmed. */
-  onRescheduled?: (eventId: string, startAt: Date, endAt: Date) => void;
+  /** The times (and stored reschedule count) an operator reschedule's 200 just confirmed. */
+  onRescheduled?: (eventId: string, startAt: Date, endAt: Date, rescheduleCount?: number) => void;
   /** The assignee a host reassign's 200 response just confirmed. */
   onReassigned?: (eventId: string, assignedToUid: string | null, assignedToName: string | null) => void;
-  /** The server-side delete (Google-mirrored event) just returned 200. */
+  /** A Retry sync whose 200 said the event is now synced. */
+  onSyncCleared?: (eventId: string) => void;
+  /** A delete the server confirmed (the server route's 200, or the client delete's commit). */
   onDeleted?: (eventId: string) => void;
+  /** The event the create route's 201 says it stored. */
+  onCreated?: (event: CalendarEvent) => void;
 }
 
 function toDateInput(d: Date): string {
@@ -103,13 +114,15 @@ export function EventDialog({
   onStatusChange,
   onRescheduled,
   onReassigned,
+  onSyncCleared,
   onDeleted,
+  onCreated,
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
-  // Status as last changed from the actions panel. The surfaces that open
-  // this dialog pass a snapshot `event` that doesn't update, so without this
-  // the time lock below would miss a status flipped while the dialog is open.
+  // Status as last changed from the actions panel, so the time lock below
+  // engages even where the page's `event` has not picked the change up (a
+  // surface that passes no `onStatusChange`).
   const [panelStatus, setPanelStatus] = useState<EventStatus | null>(null);
   // Time the server holds after a reschedule made from this dialog, so a
   // retry after a failed field write doesn't re-POST the same move.
@@ -169,7 +182,8 @@ export function EventDialog({
     setErrors({});
     setPanelStatus(null);
     setTimeBaseline(null);
-  }, [open, event, defaultDate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the id: a confirmed change or a snapshot arriving for the open event must not reset the form
+  }, [open, event?.id, defaultDate]);
 
   // When the lock engages on a booking whose time the operator had edited,
   // put the booking's real time back rather than leave an edited value on
@@ -214,7 +228,7 @@ export function EventDialog({
     try {
       if (isEdit && event) {
         if (eventSource(event) === "booking_page") {
-          const { startAt, endAt, ...fields } = payload;
+          const { startAt, endAt, ...fields } = withoutUnchangedContact(payload, event);
           const result = await saveBookingPageEdit({
             eventId: event.id,
             baseline: timeBaseline ?? {
@@ -237,7 +251,8 @@ export function EventDialog({
               return { ok: res.ok, body: await res.json().catch(() => ({})) };
             },
             updateFields: updateEvent,
-            onRescheduled: (time) => onRescheduled?.(event.id, time.startAt, time.endAt),
+            onRescheduled: (time) =>
+              onRescheduled?.(event.id, time.startAt, time.endAt, time.rescheduleCount),
           });
           if (result.kind === "reschedule_refused") {
             toast.error(result.error);
@@ -262,7 +277,7 @@ export function EventDialog({
           }
         } else {
           // Plain edit has no webhook event — stays a client-side write.
-          await updateEvent(event.id, payload);
+          await updateEvent(event.id, withoutUnchangedContact(payload, event));
         }
         toast.success("Event updated");
       } else {
@@ -281,11 +296,13 @@ export function EventDialog({
             meetingUrl: payload.meetingUrl,
           }),
         });
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
         if (!res.ok) {
-          const b = (await res.json().catch(() => ({}))) as { error?: string };
           toast.error(b.error ?? "Couldn't save event. Try again.");
           return;
         }
+        const created = createdEventFromResponse(b);
+        if (created) onCreated?.(created);
         toast.success("Event created");
       }
       onOpenChange(false);
@@ -319,6 +336,9 @@ export function EventDialog({
         onDeleted?.(event.id);
       } else {
         await deleteEvent(event.id);
+        // Resolves on the server's commit. Clears an event shown only from
+        // its create response, which the snapshot never held.
+        onDeleted?.(event.id);
       }
       toast.success("Event deleted");
       onOpenChange(false);
@@ -353,6 +373,7 @@ export function EventDialog({
                 onStatusChange?.(event.id, status);
               }}
               onReassigned={(uid, name) => onReassigned?.(event.id, uid, name)}
+              onSyncCleared={() => onSyncCleared?.(event.id)}
             />
           </div>
         )}
@@ -594,14 +615,16 @@ export function EventDialog({
  * the calendar's onSnapshot subscription picks up the canonical state
  * once Firestore syncs.
  */
-function BookingActionsPanel({
+export function BookingActionsPanel({
   event,
   onStatusChange,
   onReassigned,
+  onSyncCleared,
 }: {
   event: CalendarEvent;
   onStatusChange: (status: EventStatus) => void;
   onReassigned: (assignedToUid: string | null, assignedToName: string | null) => void;
+  onSyncCleared: () => void;
 }) {
   const status = eventStatus(event);
   const startAt = toDate(event.startAt);
@@ -821,7 +844,7 @@ function BookingActionsPanel({
       {!terminal && !correctable && (
         <BookingReassign event={event} onReassigned={onReassigned} />
       )}
-      <GoogleSyncNotice event={event} />
+      <GoogleSyncNotice event={event} onSynced={onSyncCleared} />
     </div>
   );
 }

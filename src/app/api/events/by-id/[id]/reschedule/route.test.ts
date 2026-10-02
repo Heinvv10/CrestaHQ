@@ -143,6 +143,16 @@ it("returns the times it stored, for the caller to show before its snapshot catc
   );
 });
 
+it("returns the reschedule count it stored, for the Rescheduled badge", async () => {
+  m.rescheduleWithoutAvailabilityCheck.mockResolvedValue({
+    event: { id: "evt1", agencyId: "ag1", subAccountId: "sa1", contactId: "c1", bookingPageSlug: "page-a", rescheduleCount: 2 },
+    newToken: "tok1",
+    page: { name: "Intro call" },
+  });
+  const res = await post({ startAt: "2030-01-01T10:00:00Z", endAt: "2030-01-01T10:30:00Z" });
+  expect(((await res.json()) as Record<string, unknown>).rescheduleCount).toBe(2);
+});
+
 it("reports why the visitor was NOT emailed", async () => {
   m.rescheduleWithoutAvailabilityCheck.mockResolvedValue({
     event: { id: "evt1", agencyId: "ag1", subAccountId: "sa1", contactId: "c1", bookingPageSlug: "page-a" },
