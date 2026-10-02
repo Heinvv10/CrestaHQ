@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
+import { useEventOverrides } from "@/hooks/use-event-overrides";
 import { useSubAccountContacts } from "@/context/contacts-context";
 import {
   subscribeToBookingPage,
@@ -22,6 +23,7 @@ import {
 } from "@/lib/firestore/booking-pages";
 import { Input } from "@/components/ui/input";
 import { EventDialog } from "@/components/calendar/event-dialog";
+import { shownEvent } from "@/lib/calendar/event-overrides-view";
 import { toDate } from "@/lib/format";
 import {
   eventStatus,
@@ -65,7 +67,17 @@ export default function BookingsListPage() {
   const { subAccountId, saPath } = useSubAccount();
   const { filter: territoryFilter } = useEffectiveTerritoryFilter();
   const [page, setPage] = useState<BookingPage | null>(null);
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [snapshotEvents, setSnapshotEvents] = useState<CalendarEvent[]>([]);
+  // The dialog's server-confirmed changes show here the same way as on the
+  // appointments list and the calendar grid.
+  const {
+    events,
+    noteConfirmedStatus,
+    noteConfirmedReschedule,
+    noteConfirmedAssignee,
+    noteConfirmedSyncCleared,
+    noteConfirmedDelete,
+  } = useEventOverrides(snapshotEvents);
   const { contacts } = useSubAccountContacts();
   const [loaded, setLoaded] = useState(false);
   const [filter, setFilter] = useState<FilterKey>("upcoming");
@@ -79,7 +91,7 @@ export default function BookingsListPage() {
       subAccountId,
       slug,
       (list) => {
-        setEvents(list);
+        setSnapshotEvents(list);
         setLoaded(true);
       },
     );
@@ -263,7 +275,12 @@ export default function BookingsListPage() {
           if (!o) setSelectedEvent(null);
         }}
         contacts={contacts}
-        event={selectedEvent}
+        event={shownEvent(events, selectedEvent)}
+        onStatusChange={noteConfirmedStatus}
+        onRescheduled={noteConfirmedReschedule}
+        onReassigned={noteConfirmedAssignee}
+        onSyncCleared={noteConfirmedSyncCleared}
+        onDeleted={noteConfirmedDelete}
       />
     </div>
   );

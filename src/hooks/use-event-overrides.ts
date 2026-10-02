@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { applyEventOverrides } from "@/lib/calendar/event-overrides-view";
 import {
-  applyEventOverrides,
   expireEventOverridesAndRearm,
   nextEventOverrideExpiryMs,
   reconcileEventOverrides,
   setEventDeleted,
+  setEventInserted,
   setEventPatch,
   type EventOverrides,
 } from "@/lib/calendar/event-overrides";
@@ -15,8 +16,8 @@ import type { CalendarEvent, EventStatus } from "@/types/events";
 /**
  * A page's snapshot events with the server-confirmed changes it has not
  * caught up to yet laid over them (rules: lib/calendar/event-overrides.ts).
- * Call a `noteConfirmed*` only from a route's 200 response, with what that
- * response confirmed.
+ * Call a `noteConfirmed*` only from a route's 200 (create: 201) response,
+ * with what that response confirmed.
  */
 export function useEventOverrides(snapshotEvents: CalendarEvent[]) {
   // The newest snapshot, readable from async callbacks without a stale closure.
@@ -52,12 +53,12 @@ export function useEventOverrides(snapshotEvents: CalendarEvent[]) {
       setEventPatch(prev, id, { status }, latestSnapshot.current, Date.now()),
     );
   }
-  function noteConfirmedReschedule(id: string, startAt: Date, endAt: Date) {
+  function noteConfirmedReschedule(id: string, startAt: Date, endAt: Date, rescheduleCount?: number) {
     setOverrides((prev) =>
       setEventPatch(
         prev,
         id,
-        { startAt: startAt.getTime(), endAt: endAt.getTime() },
+        { time: { startAt: startAt.getTime(), endAt: endAt.getTime() }, rescheduleCount },
         latestSnapshot.current,
         Date.now(),
       ),
@@ -68,8 +69,16 @@ export function useEventOverrides(snapshotEvents: CalendarEvent[]) {
       setEventPatch(prev, id, { assignedToUid, assignedToName }, latestSnapshot.current, Date.now()),
     );
   }
+  function noteConfirmedSyncCleared(id: string) {
+    setOverrides((prev) =>
+      setEventPatch(prev, id, { googleSyncError: null }, latestSnapshot.current, Date.now()),
+    );
+  }
   function noteConfirmedDelete(id: string) {
     setOverrides((prev) => setEventDeleted(prev, id, latestSnapshot.current, Date.now()));
+  }
+  function noteConfirmedCreate(event: CalendarEvent) {
+    setOverrides((prev) => setEventInserted(prev, event, latestSnapshot.current, Date.now()));
   }
 
   return {
@@ -77,6 +86,8 @@ export function useEventOverrides(snapshotEvents: CalendarEvent[]) {
     noteConfirmedStatus,
     noteConfirmedReschedule,
     noteConfirmedAssignee,
+    noteConfirmedSyncCleared,
     noteConfirmedDelete,
+    noteConfirmedCreate,
   };
 }

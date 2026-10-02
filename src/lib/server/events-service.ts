@@ -58,6 +58,8 @@ export interface CreateEventInput {
 export interface EventWriteResult {
   id: string;
   event: EventApiObject;
+  /** The fields written to `events/{id}`, with the write time as createdAt / updatedAt. */
+  stored: Record<string, unknown>;
 }
 
 /** Create a manual calendar event + activity row + emit `event.created`. */
@@ -109,11 +111,8 @@ export async function createEventServerSide(
   }
 
   const now = new Date();
-  const event = serializeEventForApi(
-    ref.id,
-    { ...doc, createdAt: now, updatedAt: now },
-    input.mode,
-  );
+  const stored = { ...doc, createdAt: now, updatedAt: now };
+  const event = serializeEventForApi(ref.id, stored, input.mode);
 
   void emitWebhookEvent({
     subAccountId: input.subAccountId,
@@ -123,5 +122,5 @@ export async function createEventServerSide(
     payload: { event },
   });
 
-  return { id: ref.id, event };
+  return { id: ref.id, event, stored };
 }

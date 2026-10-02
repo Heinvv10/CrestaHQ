@@ -748,3 +748,353 @@ test("a host reassigned from the Edit dialog shows on the row without the Firest
     })
     .toBe(HOST.uid);
 });
+
+// ---------------------------------------------------------------------------
+// The remaining confirmed-change overrides (event-overrides.ts): every test
+// below stalls the Listen stream, so what the page shows can only have come
+// from the route's 2xx response.
+
+const LISTEN = /firestore\.googleapis\.com\/google\.firestore\.v1\.Firestore\/Listen\/channel/;
+
+/** Undo stallFirestoreListen: new Listen requests pass, and the SDK reconnects. */
+async function resumeFirestoreListen(page: import("@playwright/test").Page) {
+  await page.unroute(LISTEN);
+  await page.context().setOffline(true);
+  await page.context().setOffline(false);
+}
+
+/** The appointments row's time label for an instant, as the browser renders it. */
+async function rowTimeLabel(page: import("@playwright/test").Page, ms: number) {
+  const tz = (await adminDb().doc(`subAccounts/${subAccountId}`).get()).data()?.timezone as string | undefined;
+  return page.evaluate(
+    ([t, zone]) =>
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: (zone as string | null) ?? undefined,
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(t as number)),
+    [ms, tz || null] as const,
+  );
+}
+
+/** What the dialog's local date / time inputs take for an instant. */
+async function localInputs(page: import("@playwright/test").Page, ms: number) {
+  return page.evaluate((t) => {
+    const d = new Date(t);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return {
+      date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
+      time: `${p(d.getHours())}:${p(d.getMinutes())}`,
+    };
+  }, ms);
+}
+
+test("Save completes and the Rescheduled badge shows after a reschedule, without the Firestore delta", async ({
+  page,
+}) => {
+  const oldStart = at("09:30");
+  const newStart = at("10:30");
+  const { stamp, title, eventId } = await seedStallBooking("StallBadge", oldStart);
+  const row = await openAllTabRow(page, stamp, title);
+  await expect(row.getByText("Rescheduled", { exact: true })).toHaveCount(0);
+  const start = await localInputs(page, newStart.getTime());
+  const end = await localInputs(page, newStart.getTime() + 30 * 60_000);
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Reschedule" }).click();
+  await page.locator("#ev-date").fill(start.date);
+  await page.locator("#ev-start").fill(start.time);
+  await page.locator("#ev-end").fill(end.time);
+  const moved = page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/reschedule`), {
+    timeout: 60_000,
+  });
+  await page.getByRole("button", { name: "Save Changes" }).click();
+  expect((await moved).status()).toBe(200);
+
+  // The field write after the reschedule no longer reads the (unchanged)
+  // contact, so Save finishes and the dialog closes. With the read, Save sat
+  // ~10 s on "Saving…" here (until the SDK gave up on the backend and
+  // answered from its cache).
+  await expect(page.locator("#ev-title")).toHaveCount(0, { timeout: 5_000 });
+  await expect(row.getByText("Rescheduled", { exact: true })).toBeVisible({ timeout: 5_000 });
+  expect((await adminDb().doc(`events/${eventId}`).get()).data()?.rescheduleCount).toBe(1);
+});
+
+test("Retry sync clears the Google error notice from its 200, without the Firestore delta", async ({ page }) => {
+  const { stamp, title, eventId } = await seedStallBooking("StallSync", at("12:30"));
+  // HOST has no Google connection: the push has nothing to write and clears the error.
+  await adminDb()
+    .doc(`events/${eventId}`)
+    .update({ googleSyncError: { message: "E2E: not in E2E Appt Host's Google Calendar", at: new Date() } });
+  const row = await openAllTabRow(page, stamp, title);
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Reschedule" }).click();
+  const notice = page.getByTestId("google-sync-error");
+  await expect(notice).toBeVisible({ timeout: 15_000 });
+  await stallFirestoreListen(page);
+
+  const retried = page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/google-sync`), {
+    timeout: 60_000,
+  });
+  await page.getByTestId("google-sync-retry").click();
+  const res = await retried;
+  expect(res.status()).toBe(200);
+  expect((await res.json()).synced).toBe(true);
+
+  await expect(notice).toHaveCount(0, { timeout: 5_000 });
+  expect((await adminDb().doc(`events/${eventId}`).get()).data()?.googleSyncError).toBeNull();
+});
+
+test("the open dialog follows a confirmed reassign: its picker shows the new host, and re-picking the old one undoes it", async ({
+  page,
+}) => {
+  const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
+  const uid = ownerSnap.data()?.ownerUid as string;
+  const owner = { uid, name: "E2E Appt Owner" };
+  await reassignPage().set({
+    id: REASSIGN_SLUG,
+    slug: REASSIGN_SLUG,
+    name: "E2E Appt Reassign Page",
+    status: "draft",
+    hosts: [owner, HOST],
+    agencyId,
+    subAccountId,
+    createdByUid: uid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const stamp = Date.now();
+  const contactId = await ensureContact(uid, `${RUN_TITLE_PREFIX}Undo ${stamp}`);
+  const title = `${RUN_TITLE_PREFIX}Undo Booking ${stamp}`;
+  // 13:30 UTC tomorrow: clear of every other fixture event (no conflict prompt).
+  const eventId = await createEvent({
+    createdByUid: uid,
+    contactId,
+    title,
+    status: "scheduled",
+    startAt: at("13:30"),
+    bookingPageSlug: REASSIGN_SLUG,
+    source: "booking_page",
+    host: owner,
+  });
+  const row = await openAllTabRow(page, stamp, title);
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: /^(Edit|Reschedule)$/ }).click();
+  const picker = page.getByLabel("Reassign host");
+  await expect(picker.locator(`option[value="${HOST.uid}"]`)).toHaveCount(1, { timeout: 15_000 });
+  await stallFirestoreListen(page);
+  // A soft-conflict prompt, should either host have one, is accepted.
+  page.on("dialog", (d) => void d.accept());
+
+  const assign = () =>
+    page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/assign`), { timeout: 60_000 });
+  let assigned = assign();
+  await picker.selectOption(HOST.uid);
+  expect((await assigned).status()).toBe(200);
+  await expect(picker).toHaveValue(HOST.uid, { timeout: 5_000 });
+
+  // Undo in the same open dialog: a real request, not a no-op.
+  assigned = assign();
+  await picker.selectOption(owner.uid);
+  expect((await assigned).status()).toBe(200);
+  await expect(picker).toHaveValue(owner.uid);
+  await page.keyboard.press("Escape");
+
+  await expect(row.getByRole("cell", { name: HOST.name, exact: true })).toHaveCount(0);
+  await expect
+    .poll(async () => (await adminDb().doc(`events/${eventId}`).get()).data()?.assignedToUid, { timeout: 15_000 })
+    .toBe(owner.uid);
+});
+
+test("a status changed from the per-booking-page bookings list shows without the Firestore delta", async ({
+  page,
+}) => {
+  const { pageXSlug } = await ensureBookingStatusSeed();
+  const { stamp, eventId } = await seedStallBooking("StallPage", at("09:15"));
+  await page.goto(`/sa/${subAccountId}/booking/${pageXSlug}/bookings`);
+  await page.getByRole("button", { name: /^All/ }).click();
+  await page.getByPlaceholder("Search by name, email, phone…").fill(String(stamp));
+  const row = page.locator("li").filter({ hasText: `${RUN_TITLE_PREFIX}StallPage ${stamp}` });
+  await expect(row.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").click();
+  page.once("dialog", (d) => void d.accept());
+  const cancelled = page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/mark-status`), {
+    timeout: 60_000,
+  });
+  await page.getByRole("button", { name: "Cancel booking" }).click();
+  expect((await cancelled).status()).toBe(200);
+  await page.keyboard.press("Escape");
+
+  await expect(row.getByText("Cancelled", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expectDocStatus(eventId, "cancelled");
+});
+
+// Our own writes in a row: scheduled -> completed -> no-show, both confirmed
+// before any delta. The no-show's 200 is answered here (the route is not
+// run), so the completed delta can land AFTER it, as on a lagging stream; the
+// no-show is then written for real, like the commit the 200 reported.
+test("a delta of our own earlier status (A -> B -> C) does not flash back over the later one", async ({ page }) => {
+  const { stamp, title, eventId } = await seedStallBooking("Ours", new Date(Date.now() - 5 * 60_000));
+  const contactName = `${RUN_TITLE_PREFIX}Ours ${stamp}`;
+  await openAllTabRow(page, stamp, title);
+  const row = page.locator("tr").filter({ hasText: contactName });
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Mark completed" }).click();
+  await expect(row.getByText("Showed", { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expectDocStatus(eventId, "completed");
+
+  await page.route(/\/api\/events\/by-id\/[^/]+\/mark-status/, (route) =>
+    route.fulfill({ json: { ok: true, status: "no_show", notifyEmailSent: false } }),
+  );
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Mark no-show" }).click();
+  await expect(row.getByText("No-show", { exact: true })).toBeVisible({ timeout: 5_000 });
+
+  // The stream comes back with the server's state: completed (ours, superseded),
+  // plus a title change that tells us this snapshot has landed.
+  const signal = `${RUN_TITLE_PREFIX}Ours Delta ${stamp}`;
+  await adminDb().doc(`events/${eventId}`).update({ title: signal });
+  await resumeFirestoreListen(page);
+  await expect(row.getByText(signal, { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(row.getByText("No-show", { exact: true })).toBeVisible();
+  await expect(row.getByText("Showed", { exact: true })).toHaveCount(0);
+
+  await adminDb().doc(`events/${eventId}`).update({ status: "no_show" });
+  await expect(row.getByText("No-show", { exact: true })).toBeVisible();
+});
+
+// Start and end are one unit: someone else moving the booking back to our old
+// start with a new end must show their time, not our start.
+test("a third party changing the end, with the start back at its old value, shows their time", async ({ page }) => {
+  const oldStart = at("10:45");
+  const newStart = at("11:45");
+  const { stamp, title, eventId } = await seedStallBooking("StallUnit", oldStart);
+  const row = await openAllTabRow(page, stamp, title);
+  const before = await rowTimeLabel(page, oldStart.getTime());
+  const after = await rowTimeLabel(page, newStart.getTime());
+  const start = await localInputs(page, newStart.getTime());
+  const end = await localInputs(page, newStart.getTime() + 30 * 60_000);
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Reschedule" }).click();
+  await page.locator("#ev-date").fill(start.date);
+  await page.locator("#ev-start").fill(start.time);
+  await page.locator("#ev-end").fill(end.time);
+  await page.getByRole("button", { name: "Save Changes" }).click();
+  await expect(row.getByText(after, { exact: true })).toBeVisible({ timeout: 15_000 });
+
+  await adminDb()
+    .doc(`events/${eventId}`)
+    .update({ startAt: oldStart, endAt: new Date(oldStart.getTime() + 45 * 60_000) });
+  await resumeFirestoreListen(page);
+  await expect(row.getByText(before, { exact: true })).toBeVisible({ timeout: 30_000 });
+});
+
+// ---- the calendar grid ------------------------------------------------------
+
+/** The grid's label for an instant ("7am", "7:30am"), as calendar-view renders it. */
+function gridTimeLabel(page: import("@playwright/test").Page, ms: number) {
+  return page.evaluate((t) => {
+    const d = new Date(t);
+    return d
+      .toLocaleTimeString("en-US", { hour: "numeric", minute: d.getMinutes() === 0 ? undefined : "2-digit" })
+      .toLowerCase()
+      .replace(" ", "");
+  }, ms);
+}
+
+/** Open the grid on the month holding `ms` (the grid opens on this month). */
+async function openGridAt(page: import("@playwright/test").Page, ms: number) {
+  await page.goto(`/sa/${subAccountId}/calendar`);
+  await expect(page.getByRole("button", { name: "New Event" })).toBeVisible({ timeout: 30_000 });
+  const months = await page.evaluate((t) => {
+    const d = new Date(t);
+    const now = new Date();
+    return (d.getFullYear() - now.getFullYear()) * 12 + d.getMonth() - now.getMonth();
+  }, ms);
+  for (let i = 0; i < months; i++) await page.getByRole("button", { name: "Next month" }).click();
+}
+
+// ~6 weeks out: clear of every spec's near-term booking windows.
+const gridDay = (hourUtc: number, days: number) => {
+  const d = new Date();
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + days, hourUtc));
+};
+
+test("the calendar grid shows a booking rescheduled from its dialog without the Firestore delta", async ({
+  page,
+}) => {
+  const oldStart = gridDay(5, 44);
+  const newStart = new Date(oldStart.getTime() + 2 * 3600_000);
+  const { title, eventId } = await seedStallBooking("GridMove", oldStart);
+  await openGridAt(page, oldStart.getTime());
+  const chip = page.locator("button", { hasText: title });
+  const was = await gridTimeLabel(page, oldStart.getTime());
+  const now = await gridTimeLabel(page, newStart.getTime());
+  await expect(chip).toContainText(was, { timeout: 30_000 });
+  const start = await localInputs(page, newStart.getTime());
+  const end = await localInputs(page, newStart.getTime() + 30 * 60_000);
+  await stallFirestoreListen(page);
+
+  await chip.click();
+  await page.locator("#ev-start").fill(start.time);
+  await page.locator("#ev-end").fill(end.time);
+  const moved = page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/reschedule`), {
+    timeout: 60_000,
+  });
+  await page.getByRole("button", { name: "Save Changes" }).click();
+  expect((await moved).status()).toBe(200);
+
+  await expect(chip).toContainText(now, { timeout: 5_000 });
+  await expect(chip).not.toContainText(was);
+});
+
+test("the calendar grid shows a New Event from the create route's 201, and drops it once deleted, without the Firestore delta", async ({
+  page,
+}) => {
+  const startAt = gridDay(4, 45);
+  const stamp = Date.now();
+  const title = `${RUN_TITLE_PREFIX}Grid New ${stamp}`;
+  await openGridAt(page, startAt.getTime());
+  const start = await localInputs(page, startAt.getTime());
+  const end = await localInputs(page, startAt.getTime() + 30 * 60_000);
+  await stallFirestoreListen(page);
+
+  await page.getByRole("button", { name: "New Event" }).click();
+  await page.locator("#ev-title").fill(title);
+  await page.locator("#ev-date").fill(start.date);
+  await page.locator("#ev-start").fill(start.time);
+  await page.locator("#ev-end").fill(end.time);
+  const created = page.waitForResponse(
+    (r) => r.request().method() === "POST" && r.url().endsWith("/api/events"),
+    { timeout: 60_000 },
+  );
+  await page.getByRole("button", { name: "Create Event" }).click();
+  const res = await created;
+  expect(res.status()).toBe(201);
+  const { id } = (await res.json()) as { id: string };
+  try {
+    const chip = page.locator("button", { hasText: title });
+    await expect(chip).toBeVisible({ timeout: 5_000 });
+
+    // A client delete of it: the snapshot never held it, so the confirmed
+    // delete is what takes it off the grid.
+    await chip.click();
+    page.once("dialog", (d) => void d.accept());
+    await page.getByRole("button", { name: "Delete" }).click();
+    await expect(chip).toHaveCount(0, { timeout: 15_000 });
+    expect((await adminDb().doc(`events/${id}`).get()).exists).toBe(false);
+  } finally {
+    // Hostless, so "shared busy": never leave it behind.
+    await deleteScoped(adminDb().doc(`events/${id}`));
+  }
+});

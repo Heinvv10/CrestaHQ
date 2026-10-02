@@ -25,7 +25,9 @@ export default function CalendarPage() {
     noteConfirmedStatus,
     noteConfirmedReschedule,
     noteConfirmedAssignee,
+    noteConfirmedSyncCleared,
     noteConfirmedDelete,
+    noteConfirmedCreate,
   } = useEventOverrides(snapshotEvents);
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -67,7 +69,9 @@ export default function CalendarPage() {
           onStatusChange={noteConfirmedStatus}
           onRescheduled={noteConfirmedReschedule}
           onReassigned={noteConfirmedAssignee}
+          onSyncCleared={noteConfirmedSyncCleared}
           onDeleted={noteConfirmedDelete}
+          onCreated={noteConfirmedCreate}
         />
       )}
     </div>

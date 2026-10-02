@@ -13,6 +13,7 @@ export interface RescheduleResponse {
     code?: string;
     newStartAt?: string;
     newEndAt?: string;
+    rescheduleCount?: number;
     notifyEmailSent?: boolean;
     notifyEmailSkipReason?: EventNotifySkipReason;
   };
@@ -22,6 +23,8 @@ export interface RescheduleResponse {
 export interface ConfirmedTime {
   startAt: Date;
   endAt: Date;
+  /** The count the server stored, when the response carries it. */
+  rescheduleCount?: number;
 }
 
 export type BookingEditResult =
@@ -76,11 +79,11 @@ export async function saveBookingPageEdit(args: {
   startAt: Date;
   endAt: Date;
   timeLocked: boolean;
-  fields: Omit<EventFormData, "startAt" | "endAt">;
+  fields: Partial<Omit<EventFormData, "startAt" | "endAt">>;
   reschedule: (eventId: string, startAt: Date, endAt: Date) => Promise<RescheduleResponse>;
   updateFields: (
     eventId: string,
-    fields: Omit<EventFormData, "startAt" | "endAt">,
+    fields: Partial<Omit<EventFormData, "startAt" | "endAt">>,
   ) => Promise<void>;
   onRescheduled?: (time: ConfirmedTime) => void;
 }): Promise<BookingEditResult> {
@@ -109,7 +112,12 @@ export async function saveBookingPageEdit(args: {
       const confirmedStart = new Date(res.body.newStartAt ?? NaN);
       const confirmedEnd = new Date(res.body.newEndAt ?? NaN);
       if (!Number.isNaN(confirmedStart.getTime()) && !Number.isNaN(confirmedEnd.getTime())) {
-        args.onRescheduled?.({ startAt: confirmedStart, endAt: confirmedEnd });
+        const { rescheduleCount } = res.body;
+        args.onRescheduled?.({
+          startAt: confirmedStart,
+          endAt: confirmedEnd,
+          ...(typeof rescheduleCount === "number" && { rescheduleCount }),
+        });
       }
       // The reschedule rotated the visitor's manage link — if they weren't
       // emailed the new one, the operator has to know.
@@ -122,9 +130,35 @@ export async function saveBookingPageEdit(args: {
   }
 
   try {
-    await args.updateFields(eventId, args.fields);
+    if (Object.keys(args.fields).length > 0) await args.updateFields(eventId, args.fields);
   } catch (error) {
     return { kind: "fields_failed", baseline: nextBaseline, rescheduled, warning, error };
   }
   return { kind: "saved", baseline: nextBaseline, warning };
+}
+
+/**
+ * The form's values that differ from `baseline`, the values the form was
+ * initialised with. The dialog's event updates while it is open (overrides,
+ * snapshots), so Save must write only what the operator changed: comparing
+ * against the live event would send a third party's change back as ours
+ * (a reschedule back to the old time, a stale title). Start and end travel
+ * together, as `updateEvent` expects.
+ *
+ * Leaving an unchanged `contactId` out also skips `updateEvent`'s contact
+ * read (a `getDoc` that waits on a silent Listen stream).
+ */
+export function changedFields(form: EventFormData, baseline: EventFormData): Partial<EventFormData> {
+  const out: Partial<EventFormData> = {};
+  if (
+    form.startAt.getTime() !== baseline.startAt.getTime() ||
+    form.endAt.getTime() !== baseline.endAt.getTime()
+  ) {
+    out.startAt = form.startAt;
+    out.endAt = form.endAt;
+  }
+  for (const key of ["title", "contactId", "location", "notes", "meetingUrl"] as const) {
+    if (form[key] !== baseline[key]) Object.assign(out, { [key]: form[key] });
+  }
+  return out;
 }

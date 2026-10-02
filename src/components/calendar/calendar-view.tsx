@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { EventDialog } from "@/components/calendar/event-dialog";
+import { shownEvent } from "@/lib/calendar/event-overrides-view";
 import type { CalendarEvent, EventStatus } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 
@@ -16,9 +17,11 @@ interface CalendarViewProps {
   contacts: Contact[];
   /** Server-confirmed changes from the dialog (see useEventOverrides). */
   onStatusChange?: (eventId: string, status: EventStatus) => void;
-  onRescheduled?: (eventId: string, startAt: Date, endAt: Date) => void;
+  onRescheduled?: (eventId: string, startAt: Date, endAt: Date, rescheduleCount?: number) => void;
   onReassigned?: (eventId: string, assignedToUid: string | null, assignedToName: string | null) => void;
+  onSyncCleared?: (eventId: string) => void;
   onDeleted?: (eventId: string) => void;
+  onCreated?: (event: CalendarEvent) => void;
 }
 
 function dayKey(d: Date): string {
@@ -49,7 +52,9 @@ export function CalendarView({
   onStatusChange,
   onRescheduled,
   onReassigned,
+  onSyncCleared,
   onDeleted,
+  onCreated,
 }: CalendarViewProps) {
   const today = useMemo(() => {
     const d = new Date();
@@ -280,12 +285,14 @@ export function CalendarView({
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         contacts={contacts}
-        event={editEvent}
+        event={shownEvent(events, editEvent)}
         defaultDate={defaultDate}
         onStatusChange={onStatusChange}
         onRescheduled={onRescheduled}
         onReassigned={onReassigned}
+        onSyncCleared={onSyncCleared}
         onDeleted={onDeleted}
+        onCreated={onCreated}
       />
     </>
   );

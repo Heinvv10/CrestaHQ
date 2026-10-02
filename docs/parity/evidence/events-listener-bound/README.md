@@ -52,54 +52,78 @@ events); those were replaced by these.
 
 ## Known gaps
 
-The list's confirmed-change override (`useEventOverrides`, rules in
-`src/lib/calendar/event-overrides.ts`) covers these server writes:
+The confirmed-change override (`useEventOverrides`, rules in
+`src/lib/calendar/event-overrides.ts`, what pages show in
+`event-overrides-view.ts`) now covers every server write the
+appointments list, the calendar grid and the per-booking-page bookings list
+make:
 
-- the row menu's mark-status;
-- from the Edit / Reschedule dialog: the actions panel's mark-status and
-  mark-paid, the operator reschedule, the host reassign, and the server-side
-  DELETE for Google-mirrored events.
+- the row menu's mark-status (list);
+- from the Edit / Reschedule dialog, on all three pages: mark-status,
+  mark-paid, the operator reschedule (times plus the stored `rescheduleCount`,
+  so the "Rescheduled" badge shows), the host reassign, Retry sync (the error
+  notice clears when the 200 says `synced`), and the server-side DELETE for
+  Google-mirrored events;
+- the grid's "New Event": the created event is shown from the create route's
+  201, which now carries the stored fields (`stored`). The list cannot create
+  events, so this applies to the grid only. The grid's only filter is the
+  territory filter, and a created event always passes it: a contactless
+  event is Global (always in the filter), and the create route refuses a
+  contact outside the creator's territories. So inserted events are not
+  filtered again on the client.
 
-The reschedule and delete paths were snapshot-only until 2026-10-01, and the
-reassign path until 2026-10-02. Evidence is in [mutations.md](mutations.md).
-The calendar grid uses the same hook for the same dialog.
+The dialog is given the page's current copy of its event (overrides applied),
+so its host picker, status panel and sync notice use confirmed values, and
+re-picking the original host sends a request. The form initialises only when
+the dialog opens or another event is opened, so an update arriving while it
+is open never wipes unsaved edits. Save writes only the fields the operator
+changed since the form opened (compared with a copy frozen when the form
+initialised, never with the live event), so a third party's move or rename
+made while the dialog is open is not sent back: a notes-only save neither
+reschedules nor rewrites the title. Start and end are judged as one unit, and
+an override remembers the last 8 values we confirmed for its field, so our
+own earlier value arriving late (A to B to C) no longer flashes back. An
+unchanged contact is not written, so Save does not read the contact and
+completes while the stream is silent. A deletion override is kept until its
+60 s expiry even when the event leaves a snapshot, since that may only be a
+window or filter change. Evidence: [mutations.md](mutations.md).
 
-Still snapshot-only (the change shows when the Listen delta arrives, which can
-lag ~30 s):
+Still true:
 
-- The calendar grid's "New Event" (`POST /api/events`): the new event does not
-  appear until the delta.
-- "Retry sync" in the dialog (`google-sync-notice.tsx`): the error notice stays
-  up until the delta.
-- The per-booking-page bookings list (`booking/[slug]/bookings`) opens the
-  same dialog without the hook.
-- A reschedule confirms `startAt` / `endAt` only. The "Rescheduled" badge
-  (`rescheduleCount`) is not in the route's response.
-
-Other known limits:
-
-- Two of our own writes in a row to the same field (A to B to C, before any
-  delta) briefly show B when the first delta lands. The override for C was set
-  with `from` = A, so the snapshot reading B counts as a third value and drops
-  it until the C delta arrives. Status overrides behaved the same before this
-  change (#330), so this is not a regression.
-- While the Listen stream is silent, the dialog's Save stays on "Saving…"
-  after a reschedule. The field write that follows reads the contact first
-  (`territoryIdForContact`, a `getDoc`), and that read waits on the same
-  stream. The row behind it already shows the new time. Not changed here.
-- The dialog's own host picker reads the page's hosts with a one-off read and
-  keeps showing the old assignee after a reassign (its `event` prop does not
-  update). The list row is right. A consequence: picking the original host again
-  in the same open dialog, to undo, is a silent no-op (the stale prop still equals
-  it, so no request is sent). Closing and reopening the dialog works around it.
-  Same as before this change.
-- Overrides are judged per field. A third party changing only one of
-  start / end while the other still reads its old value leaves our other
-  field showing until the delta or the 60 s expiry.
-- mark-paid feeds the override through the same `onStatusChange`, but no unit
-  or E2E test exercises that path.
-- The calendar grid's use of the hook is typechecked and shares the hook's
-  unit tests. No E2E drives it.
+- Changing the contact in the dialog still reads the new contact to derive
+  the territory.
+  That read waits on the Listen stream, so during a silence Save stays on
+  "Saving…": about 10 s under the E2E stall, until the SDK gave up on the
+  backend and answered from its cache (not measured on a real silent
+  stream). Using the contact list the page already
+  holds would avoid it, but that list can be territory-filtered or stale, so
+  the read was kept for correctness.
+- Saving with the contact unchanged no longer rewrites `contactId` and so no
+  longer re-derives `territoryId` from the contact's current territory (it
+  used to, on every dialog save). An event whose contact moved territory, or
+  that has no `territoryId` yet, keeps what it has until the contact is
+  changed.
+- Pre-existing drift that dialog save used to heal: the contact link route's
+  `repoint()` (`src/app/api/contacts/[id]/link/route.ts`) moves events to the
+  surviving contact without updating their `territoryId`. Now that Save no
+  longer rewrites an unchanged contact, nothing heals it; the fix belongs in
+  `repoint`.
+- An event created in the last minute and edited (plain field write) while the
+  stream is silent shows its created values until the delta or the 60 s
+  expiry. The client's own write is not reflected because its cache never
+  held the document; deleting it is reflected.
+- The host picker's host list is a one-off read (`getDoc`). Opened while the
+  stream is already silent, the picker does not appear until the stream
+  answers. Same as before this change.
+- Blind spots, each bounded by the 60 s expiry: a third party setting a field
+  back to its value before our change, or to one of our own superseded
+  values, reads as a stale snapshot and is masked. After an undo (A to B to
+  A) the override holds A for the full minute, since a snapshot showing A
+  cannot be told apart from a stale one.
+- The A to B to C end-to-end test answers the second write's 200 itself
+  (the route is not run), then writes that value for real: a lagging stream
+  that delivers B after C was confirmed cannot be produced on demand. The
+  unit tests cover the same ordering directly.
 
 Events with no `startAt` match neither bounded query and are not listed.
 Production has none (all create paths set `startAt`), so this was left as is.

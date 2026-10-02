@@ -40,6 +40,7 @@ import {
 } from "@/lib/calendar/appointment-filters";
 import { useEventOverrides } from "@/hooks/use-event-overrides";
 import { showOlderNotice, tabIsPartial } from "@/lib/calendar/appointments-window";
+import { shownEvent } from "@/lib/calendar/event-overrides-view";
 import { AppointmentsWindowNotice } from "@/components/calendar/appointments-window-notice";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
 import { EventDialog } from "@/components/calendar/event-dialog";
@@ -128,6 +129,7 @@ export default function AppointmentsListPage() {
     noteConfirmedStatus,
     noteConfirmedReschedule,
     noteConfirmedAssignee,
+    noteConfirmedSyncCleared,
     noteConfirmedDelete,
   } = useEventOverrides(snapshotEvents);
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
@@ -402,10 +404,11 @@ export default function AppointmentsListPage() {
           if (!o) setSelectedEvent(null);
         }}
         contacts={contacts}
-        event={selectedEvent}
+        event={shownEvent(events, selectedEvent)}
         onStatusChange={noteConfirmedStatus}
         onRescheduled={noteConfirmedReschedule}
         onReassigned={noteConfirmedAssignee}
+        onSyncCleared={noteConfirmedSyncCleared}
         onDeleted={noteConfirmedDelete}
       />
 

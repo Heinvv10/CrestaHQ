@@ -172,6 +172,16 @@ describe("rescheduleWithoutAvailabilityCheck", () => {
     expect(txnUpdates).toHaveLength(0);
   });
 
+  it("stores one more reschedule than the transaction read, and returns that count", async () => {
+    let result = await rescheduleWithoutAvailabilityCheck("evt1", newStart, newEnd);
+    expect(txnUpdates[0].patch.rescheduleCount).toBe(1);
+    expect(result.event.rescheduleCount).toBe(1);
+    eventDoc!.rescheduleCount = 2;
+    result = await rescheduleWithoutAvailabilityCheck("evt1", newStart, newEnd);
+    expect(txnUpdates[1].patch.rescheduleCount).toBe(3);
+    expect(result.event.rescheduleCount).toBe(3);
+  });
+
   it("still moves the booking when only the end changes", async () => {
     eventDoc!.startAt = { toDate: () => new Date(newStart) };
     eventDoc!.endAt = { toDate: () => new Date("2030-01-01T11:00:00Z") };

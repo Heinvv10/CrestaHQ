@@ -6,13 +6,13 @@ import {
   EVENT_OVERRIDE_TIMER_PAD_MS,
   EVENT_OVERRIDE_TTL_MS,
   expireEventOverridesAndRearm,
-  applyEventOverrides,
   expireEventOverrides,
   nextEventOverrideExpiryMs,
   reconcileEventOverrides,
   setEventDeleted,
   setEventPatch,
 } from "./event-overrides";
+import { applyEventOverrides } from "./event-overrides-view";
 
 const ev = (id: string, status?: EventStatus) => ({ id, status }) as CalendarEvent;
 const T0 = 1_000_000;
@@ -25,12 +25,13 @@ const timed = (id: string, startMs: number, endMs: number) =>
   ({ id, startAt: Timestamp.fromMillis(startMs), endAt: Timestamp.fromMillis(endMs) }) as CalendarEvent;
 const startMs = (e: CalendarEvent) => (e.startAt as Timestamp).toMillis();
 const endMs = (e: CalendarEvent) => (e.endAt as Timestamp).toMillis();
-const MOVED = setEventPatch({}, "a", { startAt: NEW_S, endAt: NEW_E }, [timed("a", OLD_S, OLD_E)], T0);
+const time = (startAt: number, endAt: number) => ({ time: { startAt, endAt } });
+const MOVED = setEventPatch({}, "a", time(NEW_S, NEW_E), [timed("a", OLD_S, OLD_E)], T0);
 const GONE = setEventDeleted({}, "a", [ev("a")], T0);
 
 describe("setEventPatch (status)", () => {
   it("records the latest snapshot's status as `from`", () => {
-    expect(O.a).toEqual({ status: { to: "cancelled", from: "scheduled", at: T0 } });
+    expect(O.a).toEqual({ status: { to: "cancelled", from: "scheduled", ours: ["cancelled"], at: T0 } });
   });
   it("sets nothing when the latest snapshot already shows the confirmed status", () => {
     expect(setEventPatch({}, "a", { status: "cancelled" }, [ev("a", "cancelled")], T0)).toEqual({});
@@ -55,7 +56,7 @@ describe("delta lands before the response (no-show -> completed -> no-show)", ()
   it("the pre-fix shape (override made against a stale from) WOULD mask it", () => {
     // Documents why 1a matters: an override whose `from` is no_show keeps
     // itself on a snapshot that reads no_show.
-    const stale = { a: { status: { to: "completed", from: "no_show", at: T0 } } } as const;
+    const stale = { a: { status: { to: "completed", from: "no_show", ours: ["completed"], at: T0 } } };
     expect(reconcileEventOverrides(stale, [ev("a", "no_show")])).toBe(stale);
   });
 });
@@ -104,9 +105,9 @@ describe("expiry", () => {
   });
   it("fields of one event expire on their own clocks", () => {
     // Status confirmed at T0, the reschedule 30 s later.
-    const both = setEventPatch(O, "a", { startAt: NEW_S, endAt: NEW_E }, [timed("a", OLD_S, OLD_E)], T0 + 30_000);
+    const both = setEventPatch(O, "a", time(NEW_S, NEW_E), [timed("a", OLD_S, OLD_E)], T0 + 30_000);
     const out = expireEventOverrides(both, T0 + EVENT_OVERRIDE_TTL_MS);
-    expect(Object.keys(out.a)).toEqual(["startAt", "endAt"]);
+    expect(Object.keys(out.a)).toEqual(["time"]);
     expect(nextEventOverrideExpiryMs(both, T0)).toBe(EVENT_OVERRIDE_TTL_MS + EVENT_OVERRIDE_TIMER_PAD_MS);
   });
 });
@@ -151,19 +152,21 @@ describe("reconcileEventOverrides (status)", () => {
 });
 
 describe("reschedule", () => {
-  it("records each time against the latest snapshot's", () => {
+  it("records start and end, as one unit, against the latest snapshot's", () => {
     expect(MOVED.a).toEqual({
-      startAt: { to: NEW_S, from: OLD_S, at: T0 },
-      endAt: { to: NEW_E, from: OLD_E, at: T0 },
+      time: { to: `${NEW_S}/${NEW_E}`, from: `${OLD_S}/${OLD_E}`, ours: [`${NEW_S}/${NEW_E}`], at: T0 },
     });
   });
   it("sets nothing when the latest snapshot already shows the new times", () => {
-    expect(setEventPatch({}, "a", { startAt: NEW_S, endAt: NEW_E }, [timed("a", NEW_S, NEW_E)], T0)).toEqual({});
+    expect(setEventPatch({}, "a", time(NEW_S, NEW_E), [timed("a", NEW_S, NEW_E)], T0)).toEqual({});
   });
-  it("overrides only the time that moved", () => {
+  it("a move that keeps the start still overrides start and end together", () => {
     // Same start, longer meeting.
-    const o = setEventPatch({}, "a", { startAt: OLD_S, endAt: NEW_E }, [timed("a", OLD_S, OLD_E)], T0);
-    expect(Object.keys(o.a)).toEqual(["endAt"]);
+    const o = setEventPatch({}, "a", time(OLD_S, NEW_E), [timed("a", OLD_S, OLD_E)], T0);
+    expect(Object.keys(o.a)).toEqual(["time"]);
+    expect(applyEventOverrides([timed("a", OLD_S, OLD_E)], o).map((e) => [startMs(e), endMs(e)])).toEqual([
+      [OLD_S, NEW_E],
+    ]);
   });
   it("keeps the override while the snapshot is stale", () => {
     expect(reconcileEventOverrides(MOVED, [timed("a", OLD_S, OLD_E)])).toBe(MOVED);
@@ -177,12 +180,18 @@ describe("reschedule", () => {
     expect(o).toEqual({});
     expect(startMs(applyEventOverrides(theirs, o)[0])).toBe(15 * H);
   });
-  it("is judged per field: a third party changing only the end keeps our start", () => {
-    const o = reconcileEventOverrides(MOVED, [timed("a", OLD_S, 11 * H)]);
-    expect(Object.keys(o.a)).toEqual(["startAt"]);
+  it("start and end are kept or dropped together: a third party changing only the end drops both", () => {
+    const theirs = [timed("a", OLD_S, 11 * H)];
+    const o = reconcileEventOverrides(MOVED, theirs);
+    expect(o).toEqual({});
+    expect(applyEventOverrides(theirs, o).map((e) => [startMs(e), endMs(e)])).toEqual([[OLD_S, 11 * H]]);
+  });
+  it("a snapshot matching ours on only one of them is someone else's change: both dropped", () => {
+    // Our write sets both at once, so no delta of ours reads like this.
+    expect(reconcileEventOverrides(MOVED, [timed("a", NEW_S, OLD_E)])).toEqual({});
   });
   it("leaves a status override on the same event alone", () => {
-    const both = setEventPatch(O, "a", { startAt: NEW_S, endAt: NEW_E }, [timed("a", OLD_S, OLD_E)], T0);
+    const both = setEventPatch(O, "a", time(NEW_S, NEW_E), [timed("a", OLD_S, OLD_E)], T0);
     // The reschedule delta lands; the (legacy, no-status) row still reads scheduled.
     const out = reconcileEventOverrides(both, [timed("a", NEW_S, NEW_E)]);
     expect(out.a).toEqual({ status: O.a.status });
@@ -194,8 +203,11 @@ describe("deletion", () => {
     expect(GONE.a).toEqual({ deleted: { at: T0 } });
     expect(reconcileEventOverrides(GONE, [ev("a")])).toBe(GONE);
   });
-  it("is dropped once the snapshot no longer holds the event", () => {
-    expect(reconcileEventOverrides(GONE, [ev("b")])).toEqual({});
+  it("is kept when the event is absent from a snapshot, which may be only a window or filter change", () => {
+    // Left the window, then back in the next snapshot: still hidden.
+    const o = reconcileEventOverrides(setEventDeleted({}, "a", [ev("a")], 0), []);
+    expect(applyEventOverrides([ev("a")], o)).toEqual([]);
+    expect(reconcileEventOverrides(GONE, [ev("b")])).toBe(GONE);
   });
   it("sets nothing when the latest snapshot already dropped the event", () => {
     expect(setEventDeleted({}, "a", [ev("b")], T0)).toEqual({});
@@ -211,7 +223,7 @@ describe("tab membership follows the overridden values", () => {
     const row = [timed("a", OLD_S, OLD_E)]; // 10:00, already past at 11:00
     expect(matchesTab(row[0], "upcoming", NOW)).toBe(false);
     expect(matchesTab(applyEventOverrides(row, MOVED)[0], "upcoming", NOW)).toBe(true);
-    const back = setEventPatch({}, "a", { startAt: OLD_S, endAt: OLD_E }, [timed("a", NEW_S, NEW_E)], T0);
+    const back = setEventPatch({}, "a", time(OLD_S, OLD_E), [timed("a", NEW_S, NEW_E)], T0);
     expect(matchesTab(applyEventOverrides([timed("a", NEW_S, NEW_E)], back)[0], "upcoming", NOW)).toBe(false);
   });
   it("a deleted event leaves every tab's count", () => {
@@ -229,8 +241,8 @@ describe("host reassign", () => {
 
   it("records the assignee against the latest snapshot's and shows it", () => {
     expect(BOB.a).toEqual({
-      assignedToUid: { to: "bob", from: "ann", at: T0 },
-      assignedToName: { to: "Bob", from: "Ann", at: T0 },
+      assignedToUid: { to: "bob", from: "ann", ours: ["bob"], at: T0 },
+      assignedToName: { to: "Bob", from: "Ann", ours: ["Bob"], at: T0 },
     });
     const row = applyEventOverrides([owned("a", "ann", "Ann")], BOB)[0];
     expect(appointmentOwnerLabel(row, names)).toBe("Bob");
@@ -249,7 +261,7 @@ describe("host reassign", () => {
   });
   it("a missing assignee reads as null, so clearing the host is a confirmable value", () => {
     const cleared = setEventPatch({}, "a", { assignedToUid: null, assignedToName: null }, [owned("a", "ann", "Ann")], T0);
-    expect(cleared.a.assignedToUid).toEqual({ to: null, from: "ann", at: T0 });
+    expect(cleared.a.assignedToUid).toEqual({ to: null, from: "ann", ours: [null], at: T0 });
     expect(reconcileEventOverrides(cleared, [{ id: "a" } as CalendarEvent])).toEqual({});
   });
   it("clearing the host of a doc that never had one is already shown: nothing set", () => {

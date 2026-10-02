@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventFormData } from "@/types/events";
 
 import {
+  changedFields,
   saveBookingPageEdit,
   type ConfirmedTime,
   type RescheduleResponse,
@@ -17,7 +18,7 @@ const MOVED = {
   startAt: new Date("2030-01-01T12:00:00Z"),
   endAt: new Date("2030-01-01T12:30:00Z"),
 };
-type Fields = Omit<EventFormData, "startAt" | "endAt">;
+type Fields = Partial<Omit<EventFormData, "startAt" | "endAt">>;
 const fields: Fields = { title: "Renamed", contactId: null, location: "", notes: "", meetingUrl: null };
 
 const reschedule = vi.fn<(id: string, s: Date, e: Date) => Promise<RescheduleResponse>>();
@@ -108,6 +109,20 @@ describe("saveBookingPageEdit", () => {
     expect(onRescheduled.mock.invocationCallOrder[0]).toBeLessThan(updateFields.mock.invocationCallOrder[0]);
   });
 
+  it("hands over the reschedule count the 200 stored, with the times", async () => {
+    reschedule.mockResolvedValue({
+      ok: true,
+      body: {
+        notifyEmailSent: true,
+        newStartAt: MOVED.startAt.toISOString(),
+        newEndAt: MOVED.endAt.toISOString(),
+        rescheduleCount: 3,
+      },
+    });
+    await save(ORIG);
+    expect(onRescheduled.mock.calls).toEqual([[{ ...MOVED, rescheduleCount: 3 }]]);
+  });
+
   it("confirms no time when the response carries none", async () => {
     expect((await save(ORIG)).kind).toBe("saved"); // 200, but no newStartAt / newEndAt in the body
     expect(onRescheduled).not.toHaveBeenCalled();
@@ -133,5 +148,50 @@ describe("saveBookingPageEdit", () => {
     const out = await save(ORIG);
     expect(out).toEqual({ kind: "saved", baseline: MOVED, warning: null });
     expect(updateFields).toHaveBeenCalledWith("evt1", fields);
+  });
+});
+
+describe("an edit with nothing but the time changed", () => {
+  it("moves the booking and writes no fields", async () => {
+    const out = await saveBookingPageEdit({
+      eventId: "evt1",
+      baseline: ORIG,
+      ...MOVED,
+      timeLocked: false,
+      fields: {},
+      reschedule,
+      updateFields,
+    });
+    expect(out.kind).toBe("saved");
+    expect(reschedule).toHaveBeenCalledTimes(1);
+    expect(updateFields).not.toHaveBeenCalled();
+  });
+});
+
+describe("changedFields", () => {
+  const base: EventFormData = {
+    title: "Intro",
+    startAt: new Date("2030-01-01T09:00:00Z"),
+    endAt: new Date("2030-01-01T09:30:00Z"),
+    contactId: "c1",
+    location: "",
+    notes: "",
+    meetingUrl: null,
+  };
+
+  it("is empty when nothing changed (times compared by value)", () => {
+    expect(changedFields({ ...base, startAt: new Date(base.startAt), endAt: new Date(base.endAt) }, base)).toEqual({});
+  });
+  it("holds only the fields that changed: an unchanged contact is left out, so no contact read", () => {
+    expect(changedFields({ ...base, notes: "Bring ID" }, base)).toEqual({ notes: "Bring ID" });
+    expect(changedFields({ ...base, contactId: null, meetingUrl: "https://x.test" }, base)).toEqual({
+      contactId: null,
+      meetingUrl: "https://x.test",
+    });
+    expect(changedFields({ ...base, title: "New", location: "Gate 2" }, base)).toEqual({ title: "New", location: "Gate 2" });
+  });
+  it("sends start and end together when either moved", () => {
+    const endAt = new Date("2030-01-01T10:00:00Z");
+    expect(changedFields({ ...base, endAt }, base)).toEqual({ startAt: base.startAt, endAt });
   });
 });

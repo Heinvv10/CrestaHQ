@@ -110,6 +110,7 @@ export async function POST(
     ok: true,
     newStartAt: newStart.toISOString(),
     newEndAt: newEnd.toISOString(),
+    rescheduleCount: event.rescheduleCount,
     notifyEmailSent: notify.emailSent,
     notifyEmailSkipReason: notify.emailSkipReason,
   });
