@@ -87,7 +87,7 @@ function setSub(senders: Record<string, unknown>[]) {
   });
 }
 
-async function poll() {
+async function poll(contentSid = EXTERNAL_ID) {
   const res = await POST(
     new Request(
       `http://app.local/api/sub-accounts/${SUB}/whatsapp-templates/poll`,
@@ -97,7 +97,7 @@ async function poll() {
         body: JSON.stringify({
           subAccountId: SUB,
           templateId: TPL,
-          contentSid: EXTERNAL_ID,
+          contentSid,
         }),
       },
     ),
@@ -181,5 +181,23 @@ describe("a tick whose next poll cannot be queued", () => {
     const { body } = await poll();
     expect(body).toEqual({ ok: true, deferred: "pending" });
     expect(docs.get(`subAccounts/${SUB}/whatsappTemplates/${TPL}`)?.status).toBe("pending");
+  });
+});
+
+describe("a resubmitted template's poll chain", () => {
+  it("tick N gets a different dedup id from the earlier submission's tick N", async () => {
+    setSub([RESOLVABLE_SENDER]);
+    fetchCloudTemplateStatus.mockResolvedValue({ status: "pending", reason: null });
+    const path = `subAccounts/${SUB}/whatsappTemplates/${TPL}`;
+    await poll();
+    // Resubmitted: a new Meta id, and the attempt count back at 0.
+    docs.set(path, {
+      ...docs.get(path),
+      pollAttempts: 0,
+      registrations: { cloud: { externalId: "meta_2", status: "pending", rejectionReason: null } },
+    });
+    await poll("meta_2");
+    const ids = publishCallback.mock.calls.map(([o]) => (o as { deduplicationId: string }).deduplicationId);
+    expect(ids).toEqual([`watpl_${SUB}_${TPL}_meta_1_1`, `watpl_${SUB}_${TPL}_meta_2_1`]);
   });
 });
