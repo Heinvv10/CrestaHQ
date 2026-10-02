@@ -143,8 +143,14 @@ test.beforeAll(async () => {
   });
 });
 
+// A draft team page whose hosts the reassign test picks from.
+const REASSIGN_SLUG = `${PREFIX}reassign`;
+const reassignPage = () =>
+  adminDb().doc(`subAccounts/${subAccountId}/bookingPages/${REASSIGN_SLUG}`);
+
 test.afterAll(async () => {
   await purge();
+  await deleteScoped(reassignPage());
   await deleteScoped(members().doc(HOST.uid));
 });
 
@@ -179,6 +185,8 @@ async function createEvent(opts: {
   startAt: Date;
   bookingPageSlug?: string;
   source: "booking_page" | "manual";
+  googleEventIds?: Record<string, string>;
+  host?: { uid: string; name: string };
 }): Promise<string> {
   const endAt = new Date(opts.startAt.getTime() + 30 * 60_000);
   const ref = await adminDb().collection("events").add({
@@ -196,9 +204,11 @@ async function createEvent(opts: {
     bookingPageSlug: opts.bookingPageSlug ?? null,
     // Every fixture event belongs to HOST - never "shared busy". See the
     // file-level comment.
-    assignedToUid: HOST.uid,
-    assignedToName: HOST.name,
-    hostUids: [HOST.uid],
+    assignedToUid: (opts.host ?? HOST).uid,
+    assignedToName: (opts.host ?? HOST).name,
+    // A one-host booking (no hostUids) is the only kind the assign route moves.
+    ...(opts.host ? {} : { hostUids: [HOST.uid] }),
+    ...(opts.googleEventIds ? { googleEventIds: opts.googleEventIds } : {}),
     territoryId: "global",
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
@@ -552,4 +562,189 @@ test("a delta that beats the response does not leave an override masking a later
   // Someone else puts it back: the row must follow, not stay "Cancelled".
   await adminDb().doc(`events/${eventId}`).update({ status: "scheduled" });
   await expect(row.getByText("Confirmed", { exact: true })).toBeVisible({ timeout: 20_000 });
+});
+
+// An operator reschedule is a server write too: the row must show the time the
+// route's 200 confirmed, not wait for the snapshot delta.
+test("an operator reschedule from the Edit dialog shows the new time without the Firestore delta", async ({
+  page,
+}) => {
+  const oldStart = at("09:00");
+  const newStart = at("10:00");
+  const { stamp, title, eventId } = await seedStallBooking("StallMove", oldStart);
+  const row = await openAllTabRow(page, stamp, title);
+
+  // What the browser shows and types for an instant: the row's label (in the
+  // sub-account's timezone, else the browser's) and the dialog's local inputs.
+  const tz = (await adminDb().doc(`subAccounts/${subAccountId}`).get()).data()?.timezone as string | undefined;
+  const inBrowser = (ms: number) =>
+    page.evaluate(
+      ([t, zone]) => {
+        const d = new Date(t as number);
+        const p = (n: number) => String(n).padStart(2, "0");
+        return {
+          label: new Intl.DateTimeFormat("en-US", {
+            timeZone: (zone as string | null) ?? undefined,
+            weekday: "short",
+            month: "short",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+          }).format(d),
+          date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`,
+          time: `${p(d.getHours())}:${p(d.getMinutes())}`,
+        };
+      },
+      [ms, tz || null] as const,
+    );
+  const before = await inBrowser(oldStart.getTime());
+  const after = await inBrowser(newStart.getTime());
+  const afterEnd = await inBrowser(newStart.getTime() + 30 * 60_000);
+  expect(after.label).not.toBe(before.label);
+  await expect(row.getByText(before.label, { exact: true })).toBeVisible();
+
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Reschedule" }).click();
+  await page.locator("#ev-date").fill(after.date);
+  await page.locator("#ev-start").fill(after.time);
+  await page.locator("#ev-end").fill(afterEnd.time);
+  const moved = page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/reschedule`), {
+    timeout: 60_000,
+  });
+  await page.getByRole("button", { name: "Save Changes" }).click();
+  expect((await moved).status()).toBe(200);
+
+  await expect(row.getByText(after.label, { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expect
+    .poll(async () => (await adminDb().doc(`events/${eventId}`).get()).data()?.startAt?.toMillis(), {
+      timeout: 15_000,
+    })
+    .toBe(newStart.getTime());
+});
+
+// A Google-mirrored event is deleted by the server route (the rules refuse the
+// client delete). HOST has no Google connection, so the route has no copy it
+// can reach, drops the id and deletes: no Google credentials involved.
+async function seedMirroredEvent(label: string, startAt: Date) {
+  const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
+  const uid = ownerSnap.data()?.ownerUid as string;
+  const stamp = Date.now();
+  const contactId = await ensureContact(uid, `${RUN_TITLE_PREFIX}${label} ${stamp}`);
+  const title = `${RUN_TITLE_PREFIX}${label} Meeting ${stamp}`;
+  const eventId = await createEvent({
+    createdByUid: uid,
+    contactId,
+    title,
+    status: "scheduled",
+    startAt,
+    source: "manual",
+    googleEventIds: { [HOST.uid]: "e2e-appt-no-such-google-event" },
+  });
+  return { stamp, title, eventId };
+}
+
+test("deleting a Google-mirrored event removes the row without the Firestore delta", async ({
+  page,
+}) => {
+  const { stamp, title, eventId } = await seedMirroredEvent("StallDelete", at("10:30"));
+  const row = await openAllTabRow(page, stamp, title);
+  await stallFirestoreListen(page);
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  page.once("dialog", (d) => void d.accept());
+  const deleted = page.waitForResponse(
+    (r) => r.request().method() === "DELETE" && r.url().endsWith(`/api/events/by-id/${eventId}`),
+    { timeout: 60_000 },
+  );
+  await page.getByRole("button", { name: "Delete" }).click();
+  expect((await deleted).status()).toBe(200);
+
+  await expect(row).toHaveCount(0, { timeout: 5_000 });
+  expect((await adminDb().doc(`events/${eventId}`).get()).exists).toBe(false);
+});
+
+// Nothing is applied on a refused delete: the route answers 409 while a copy
+// is still in a host's Google Calendar, and the event is still there.
+test("a refused delete of a Google-mirrored event leaves the row in place", async ({ page }) => {
+  const { stamp, title, eventId } = await seedMirroredEvent("KeepOnRefusal", at("11:00"));
+  const row = await openAllTabRow(page, stamp, title);
+  const message = "Couldn't remove it from E2E Appt Host's Google Calendar — try again.";
+  await page.route(new RegExp(`/api/events/by-id/${eventId}$`), (route) =>
+    route.fulfill({ status: 409, json: { error: "google_removal_failed", message } }),
+  );
+
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: "Edit" }).click();
+  page.once("dialog", (d) => void d.accept());
+  await page.getByRole("button", { name: "Delete" }).click();
+
+  await expect(page.getByText(message)).toBeVisible({ timeout: 15_000 });
+  await page.keyboard.press("Escape");
+  await expect(row).toBeVisible();
+  expect((await adminDb().doc(`events/${eventId}`).get()).exists).toBe(true);
+});
+
+// Host reassign is a server write: the Owner column must show the assignee the
+// assign route's 200 reported, not wait for the snapshot delta.
+test("a host reassigned from the Edit dialog shows on the row without the Firestore delta", async ({
+  page,
+}) => {
+  const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
+  const uid = ownerSnap.data()?.ownerUid as string;
+  const owner = { uid, name: "E2E Appt Owner" };
+  await reassignPage().set({
+    id: REASSIGN_SLUG,
+    slug: REASSIGN_SLUG,
+    name: "E2E Appt Reassign Page",
+    status: "draft",
+    hosts: [owner, HOST],
+    agencyId,
+    subAccountId,
+    createdByUid: uid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const stamp = Date.now();
+  const contactId = await ensureContact(uid, `${RUN_TITLE_PREFIX}Reassign ${stamp}`);
+  const title = `${RUN_TITLE_PREFIX}Reassign Booking ${stamp}`;
+  // 13:00 UTC tomorrow: clear of every other fixture event, so the assign
+  // route's conflict check has nothing to warn about.
+  const eventId = await createEvent({
+    createdByUid: uid,
+    contactId,
+    title,
+    status: "scheduled",
+    startAt: at("13:00"),
+    bookingPageSlug: REASSIGN_SLUG,
+    source: "booking_page",
+    host: owner,
+  });
+  const row = await openAllTabRow(page, stamp, title);
+  const ownerCell = row.getByRole("cell", { name: HOST.name, exact: true });
+  await expect(ownerCell).toHaveCount(0);
+
+  // Open the dialog while Firestore still answers: the host picker reads the
+  // page's hosts with a one-off read that a stalled stream would never return.
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: /^(Edit|Reschedule)$/ }).click();
+  const picker = page.getByLabel("Reassign host");
+  await expect(picker.locator(`option[value="${HOST.uid}"]`)).toHaveCount(1, { timeout: 15_000 });
+  await stallFirestoreListen(page);
+
+  const assigned = page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/assign`), {
+    timeout: 60_000,
+  });
+  await picker.selectOption(HOST.uid);
+  expect((await assigned).status()).toBe(200);
+  await page.keyboard.press("Escape");
+
+  await expect(ownerCell).toBeVisible({ timeout: 5_000 });
+  await expect
+    .poll(async () => (await adminDb().doc(`events/${eventId}`).get()).data()?.assignedToUid, {
+      timeout: 15_000,
+    })
+    .toBe(HOST.uid);
 });

@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { EventFormData } from "@/types/events";
 
-import { saveBookingPageEdit, type RescheduleResponse, type TimeBaseline } from "./booking-edit-save";
+import {
+  saveBookingPageEdit,
+  type ConfirmedTime,
+  type RescheduleResponse,
+  type TimeBaseline,
+} from "./booking-edit-save";
 
 const ORIG: TimeBaseline = {
   startAt: new Date("2030-01-01T10:00:00Z"),
@@ -17,6 +22,7 @@ const fields: Fields = { title: "Renamed", contactId: null, location: "", notes:
 
 const reschedule = vi.fn<(id: string, s: Date, e: Date) => Promise<RescheduleResponse>>();
 const updateFields = vi.fn<(id: string, f: Fields) => Promise<void>>();
+const onRescheduled = vi.fn<(time: ConfirmedTime) => void>();
 
 function save(baseline: TimeBaseline, times = MOVED, timeLocked = false) {
   return saveBookingPageEdit({
@@ -27,6 +33,7 @@ function save(baseline: TimeBaseline, times = MOVED, timeLocked = false) {
     fields,
     reschedule,
     updateFields,
+    onRescheduled,
   });
 }
 
@@ -84,6 +91,38 @@ describe("saveBookingPageEdit", () => {
     expect(retry.kind).toBe("saved");
     expect(reschedule).toHaveBeenCalledTimes(1);
     expect(updateFields).toHaveBeenCalledTimes(2);
+  });
+
+  it("hands over the times the server's 200 confirmed, not the ones asked for, before the field write", async () => {
+    reschedule.mockResolvedValue({
+      ok: true,
+      body: { notifyEmailSent: true, newStartAt: "2030-01-01T13:00:00.000Z", newEndAt: "2030-01-01T13:30:00.000Z" },
+    });
+    // The field write never settles (it waits on a silent Listen stream).
+    updateFields.mockReturnValue(new Promise(() => {}));
+    void save(ORIG);
+    await vi.waitFor(() => expect(updateFields).toHaveBeenCalled());
+    expect(onRescheduled.mock.calls).toEqual([
+      [{ startAt: new Date("2030-01-01T13:00:00Z"), endAt: new Date("2030-01-01T13:30:00Z") }],
+    ]);
+    expect(onRescheduled.mock.invocationCallOrder[0]).toBeLessThan(updateFields.mock.invocationCallOrder[0]);
+  });
+
+  it("confirms no time when the response carries none", async () => {
+    expect((await save(ORIG)).kind).toBe("saved"); // 200, but no newStartAt / newEndAt in the body
+    expect(onRescheduled).not.toHaveBeenCalled();
+  });
+
+  it("confirms no time when the reschedule is refused or was not needed", async () => {
+    const body = { newStartAt: MOVED.startAt.toISOString(), newEndAt: MOVED.endAt.toISOString() };
+    reschedule.mockResolvedValue({ ok: false, body: { ...body, error: "Page gone" } });
+    expect((await save(ORIG)).kind).toBe("reschedule_refused");
+    reschedule.mockResolvedValue({ ok: false, body: { ...body, code: "no_change" } });
+    expect((await save(ORIG)).kind).toBe("saved");
+    reschedule.mockResolvedValue({ ok: true, body });
+    await save(ORIG, { startAt: ORIG.startAt!, endAt: ORIG.endAt! });
+    await save(ORIG, MOVED, true);
+    expect(onRescheduled).not.toHaveBeenCalled();
   });
 
   it("treats a server no_change as 'time already applied' and still saves the fields", async () => {

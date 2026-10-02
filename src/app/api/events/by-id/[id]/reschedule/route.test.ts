@@ -126,6 +126,23 @@ it("reports that the visitor was emailed", async () => {
   expect(body.notifyEmailSkipReason).toBeUndefined();
 });
 
+it("returns the times it stored, for the caller to show before its snapshot catches up", async () => {
+  m.rescheduleWithoutAvailabilityCheck.mockResolvedValue({
+    event: { id: "evt1", agencyId: "ag1", subAccountId: "sa1", contactId: "c1", bookingPageSlug: "page-a" },
+    newToken: "tok1",
+    page: { name: "Intro call" },
+  });
+  const res = await post({ startAt: "2030-01-01T10:00:00+02:00", endAt: "2030-01-01T10:30:00+02:00" });
+  const body = (await res.json()) as Record<string, unknown>;
+  expect(body.newStartAt).toBe("2030-01-01T08:00:00.000Z");
+  expect(body.newEndAt).toBe("2030-01-01T08:30:00.000Z");
+  expect(m.rescheduleWithoutAvailabilityCheck).toHaveBeenCalledWith(
+    "evt1",
+    new Date(body.newStartAt as string),
+    new Date(body.newEndAt as string),
+  );
+});
+
 it("reports why the visitor was NOT emailed", async () => {
   m.rescheduleWithoutAvailabilityCheck.mockResolvedValue({
     event: { id: "evt1", agencyId: "ag1", subAccountId: "sa1", contactId: "c1", bookingPageSlug: "page-a" },

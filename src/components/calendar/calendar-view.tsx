@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { EventDialog } from "@/components/calendar/event-dialog";
-import type { CalendarEvent } from "@/types/events";
+import type { CalendarEvent, EventStatus } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -14,6 +14,11 @@ const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 interface CalendarViewProps {
   events: CalendarEvent[];
   contacts: Contact[];
+  /** Server-confirmed changes from the dialog (see useEventOverrides). */
+  onStatusChange?: (eventId: string, status: EventStatus) => void;
+  onRescheduled?: (eventId: string, startAt: Date, endAt: Date) => void;
+  onReassigned?: (eventId: string, assignedToUid: string | null, assignedToName: string | null) => void;
+  onDeleted?: (eventId: string) => void;
 }
 
 function dayKey(d: Date): string {
@@ -38,7 +43,14 @@ function formatTime(d: Date): string {
     .replace(" ", "");
 }
 
-export function CalendarView({ events, contacts }: CalendarViewProps) {
+export function CalendarView({
+  events,
+  contacts,
+  onStatusChange,
+  onRescheduled,
+  onReassigned,
+  onDeleted,
+}: CalendarViewProps) {
   const today = useMemo(() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -270,6 +282,10 @@ export function CalendarView({ events, contacts }: CalendarViewProps) {
         contacts={contacts}
         event={editEvent}
         defaultDate={defaultDate}
+        onStatusChange={onStatusChange}
+        onRescheduled={onRescheduled}
+        onReassigned={onReassigned}
+        onDeleted={onDeleted}
       />
     </>
   );

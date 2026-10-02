@@ -11,9 +11,17 @@ export interface RescheduleResponse {
   body: {
     error?: string;
     code?: string;
+    newStartAt?: string;
+    newEndAt?: string;
     notifyEmailSent?: boolean;
     notifyEmailSkipReason?: EventNotifySkipReason;
   };
+}
+
+/** The time a successful reschedule's response says the server now holds. */
+export interface ConfirmedTime {
+  startAt: Date;
+  endAt: Date;
 }
 
 export type BookingEditResult =
@@ -55,6 +63,12 @@ export function notifySkipDetail(reason: EventNotifySkipReason | undefined): str
  * reschedule the server already applied. `no_change` from the server
  * means the same thing (the time is already there) and falls through to
  * the field write rather than blocking it.
+ *
+ * `onRescheduled` is called only when THIS save's reschedule returned 200
+ * with the new times in its body — what a list may show before its snapshot
+ * catches up, never the time the dialog asked for. It is called BEFORE the
+ * field write: that write reads the contact first, which waits on the same
+ * silent Listen stream the caller is bridging.
  */
 export async function saveBookingPageEdit(args: {
   eventId: string;
@@ -68,6 +82,7 @@ export async function saveBookingPageEdit(args: {
     eventId: string,
     fields: Omit<EventFormData, "startAt" | "endAt">,
   ) => Promise<void>;
+  onRescheduled?: (time: ConfirmedTime) => void;
 }): Promise<BookingEditResult> {
   const { eventId, baseline, startAt, endAt } = args;
   const timeChanged =
@@ -91,6 +106,11 @@ export async function saveBookingPageEdit(args: {
     nextBaseline = { startAt, endAt };
     if (res.ok) {
       rescheduled = true;
+      const confirmedStart = new Date(res.body.newStartAt ?? NaN);
+      const confirmedEnd = new Date(res.body.newEndAt ?? NaN);
+      if (!Number.isNaN(confirmedStart.getTime()) && !Number.isNaN(confirmedEnd.getTime())) {
+        args.onRescheduled?.({ startAt: confirmedStart, endAt: confirmedEnd });
+      }
       // The reschedule rotated the visitor's manage link — if they weren't
       // emailed the new one, the operator has to know.
       if (!res.body.notifyEmailSent) {

@@ -62,6 +62,12 @@ interface EventDialogProps {
   defaultDate?: Date | null;
   /** A status change the actions panel just had confirmed by the server. */
   onStatusChange?: (eventId: string, status: EventStatus) => void;
+  /** The times an operator reschedule's 200 response just confirmed. */
+  onRescheduled?: (eventId: string, startAt: Date, endAt: Date) => void;
+  /** The assignee a host reassign's 200 response just confirmed. */
+  onReassigned?: (eventId: string, assignedToUid: string | null, assignedToName: string | null) => void;
+  /** The server-side delete (Google-mirrored event) just returned 200. */
+  onDeleted?: (eventId: string) => void;
 }
 
 function toDateInput(d: Date): string {
@@ -95,6 +101,9 @@ export function EventDialog({
   event,
   defaultDate,
   onStatusChange,
+  onRescheduled,
+  onReassigned,
+  onDeleted,
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
@@ -228,6 +237,7 @@ export function EventDialog({
               return { ok: res.ok, body: await res.json().catch(() => ({})) };
             },
             updateFields: updateEvent,
+            onRescheduled: (time) => onRescheduled?.(event.id, time.startAt, time.endAt),
           });
           if (result.kind === "reschedule_refused") {
             toast.error(result.error);
@@ -306,6 +316,7 @@ export function EventDialog({
           }
           throw new Error(`delete failed (${res.status})`);
         }
+        onDeleted?.(event.id);
       } else {
         await deleteEvent(event.id);
       }
@@ -341,6 +352,7 @@ export function EventDialog({
                 setPanelStatus(status);
                 onStatusChange?.(event.id, status);
               }}
+              onReassigned={(uid, name) => onReassigned?.(event.id, uid, name)}
             />
           </div>
         )}
@@ -585,9 +597,11 @@ export function EventDialog({
 function BookingActionsPanel({
   event,
   onStatusChange,
+  onReassigned,
 }: {
   event: CalendarEvent;
   onStatusChange: (status: EventStatus) => void;
+  onReassigned: (assignedToUid: string | null, assignedToName: string | null) => void;
 }) {
   const status = eventStatus(event);
   const startAt = toDate(event.startAt);
@@ -804,7 +818,9 @@ function BookingActionsPanel({
 
       {/* Reassign host — only renders while the booking is still live
           (not cancelled, not a completed/no_show correction target). */}
-      {!terminal && !correctable && <BookingReassign event={event} />}
+      {!terminal && !correctable && (
+        <BookingReassign event={event} onReassigned={onReassigned} />
+      )}
       <GoogleSyncNotice event={event} />
     </div>
   );

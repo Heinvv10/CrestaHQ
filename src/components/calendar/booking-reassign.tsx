@@ -16,9 +16,15 @@ import type { BookingHost, BookingPage } from "@/types/booking";
  * sub-account admin or the booking's current host. Posts to
  * /api/events/by-id/[id]/assign (which re-validates permission + the host).
  * Returns null when reassignment doesn't apply, so the caller can drop it in
- * unconditionally.
+ * unconditionally. `onReassigned` gets the assignee the route's 200 reports.
  */
-export function BookingReassign({ event }: { event: CalendarEvent }) {
+export function BookingReassign({
+  event,
+  onReassigned,
+}: {
+  event: CalendarEvent;
+  onReassigned?: (assignedToUid: string | null, assignedToName: string | null) => void;
+}) {
   const { user } = useAuth();
   const { isAdmin } = useSubAccount();
   const [hosts, setHosts] = useState<BookingHost[]>([]);
@@ -72,6 +78,8 @@ export function BookingReassign({ event }: { event: CalendarEvent }) {
         error?: string;
         needsConfirm?: boolean;
         warning?: string;
+        assignedToUid?: string | null;
+        assignedToName?: string | null;
       };
       // Soft conflict — confirm, then retry with force.
       if (res.ok && data.needsConfirm && !force) {
@@ -86,6 +94,9 @@ export function BookingReassign({ event }: { event: CalendarEvent }) {
       }
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? "Couldn't reassign.");
+      }
+      if (data.assignedToUid !== undefined && data.assignedToName !== undefined) {
+        onReassigned?.(data.assignedToUid, data.assignedToName);
       }
       toast.success("Booking reassigned.");
     } catch (err) {
