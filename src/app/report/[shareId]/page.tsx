@@ -9,13 +9,15 @@ import { reportStory } from "@/lib/prospecting/report-story";
 export const dynamic = "force-dynamic";
 
 const TITLE = "Online presence report";
+const DESCRIPTION = "What we found when we checked how this business shows up online.";
 
 /** One set of Firestore reads per request, shared by the page and its metadata. */
 const getReport = cache(resolvePublicReport);
 
 /**
  * The link preview (SOW R4). `og:title` is the resolver's `businessName`,
- * never a contact's own name, else the generic title. `metadataBase` comes
+ * never a contact's own name, else the generic title; the description is the
+ * stored headline, else a generic line. `metadataBase` comes
  * from NEXT_PUBLIC_APP_URL: without it Next resolves `og:image` against
  * localhost behind the proxy (the class of bug in #38). A refused token gets
  * the bare metadata — nothing about the report — and the page 404s.
@@ -26,12 +28,16 @@ export async function generateMetadata({ params }: { params: Promise<{ shareId: 
   const { shareId } = await params;
   const report = await getReport(shareId);
   if (!report) return base;
-  const openGraph = { title: report.businessName ?? TITLE };
+  // The card's text line is the report's own headline, never the site-wide
+  // landing copy the root layout would otherwise lend it.
+  const description = report.headline ?? DESCRIPTION;
+  const openGraph = { title: report.businessName ?? TITLE, description };
   // No valid app URL, no image: better none than one pointing at localhost.
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  if (!appUrl || !URL.canParse(appUrl)) return { ...base, openGraph };
+  if (!appUrl || !URL.canParse(appUrl)) return { ...base, description, openGraph };
   return {
     ...base,
+    description,
     metadataBase: new URL(appUrl),
     openGraph: { ...openGraph, images: [{ url: `/report/${shareId}/opengraph-image`, width: 1200, height: 630 }] },
   };

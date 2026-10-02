@@ -47,6 +47,8 @@ describe("generateMetadata", () => {
     const t = await token();
     const m = await meta(t);
     expect(m.openGraph?.title).toBe("Example Plumbing Co");
+    expect(m.description).toBe("No opening hours listed.");
+    expect(m.openGraph?.description).toBe("No opening hours listed.");
     expect(m.metadataBase?.origin).toBe(new URL(APP_URL).origin);
     expect(ogImages(m)).toEqual([{ url: `/report/${t}/opengraph-image`, width: 1200, height: 630 }]);
     expect(m.robots).toEqual({ index: false, follow: false });
@@ -58,6 +60,16 @@ describe("generateMetadata", () => {
     const m = await meta(await token());
     expect(m.openGraph?.title).toBe("Online presence report");
     expect(JSON.stringify(m)).not.toContain("Jane");
+  });
+
+  it("never falls back to the site-wide landing copy when the report has no headline", async () => {
+    mem.seed("prospectReports/r1", {
+      agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1", status: "ready", shareId: null,
+      headline: null, generatedAt: new Date("2026-09-20T00:00:00Z"), sections: [],
+    });
+    const m = await meta(await token());
+    expect(m.description).toBe("What we found when we checked how this business shows up online.");
+    expect(m.openGraph?.description).toBe(m.description);
   });
 
   it("gives a revoked or unknown token nothing about the report, without throwing", async () => {

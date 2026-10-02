@@ -82,6 +82,9 @@ test("the report's og:image is absolute on the app URL, renders, and 404s after 
     const og = (prop: string) =>
       html.match(new RegExp(`<meta property="${prop}" content="([^"]*)"`))?.[1]?.replace(/&amp;/g, "&");
     expect(og("og:title")).toBe(businessName);
+    // The card's text line is the report's headline, not the landing copy.
+    expect(og("og:description")).toBe("No opening hours listed.");
+    expect(html).toContain('<meta name="twitter:description" content="No opening hours listed."');
     const image = og("og:image");
     expect(image, "og:image present").toBeTruthy();
     const imageUrl = new URL(image!); // throws on a relative URL

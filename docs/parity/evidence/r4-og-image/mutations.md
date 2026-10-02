@@ -19,3 +19,12 @@ Each guard's production line was replaced (exact string, asserted to match exact
 | logo via loadLogoDataUri/publicFetch | `src/app/report/[shareId]/opengraph-image/route.tsx` | `await loadLogoDataUri(report.agency.logoUrl, LOGO_TIMEOUT_MS)` → `await fetch(report.agency.logoUrl).then(() => null, () => null)` | RED: renders a PNG for a live token, cacheable for 5 minutes and no longer | yes (sha256 match) |
 
 Not mutation-tested locally: the Playwright spec `e2e/specs/prospect-report-og-image.spec.ts` (built-page `og:image` origin, the image through the built server, 404 after a revoke). It needs the E2E Firebase tenant and runs in CI only. A mutation that dropped `metadataBase` would make Next fall back to `http://localhost:3100` in CI, whose origin differs from `NEXT_PUBLIC_APP_URL=http://127.0.0.1:3100`, so that spec's origin assertion can go red there — not demonstrated.
+
+## Follow-up: og:description is the report headline (2026-10-02)
+
+| Guard | Mutation | Test that failed | Restored |
+|---|---|---|---|
+| description reads the stored headline | `const description = DESCRIPTION` | metadata.test.ts "titles the preview…" (1 failed) | yes, sha256 checked |
+| og:description set | drop `description` from `openGraph` | metadata.test.ts (2 failed) | yes |
+| top-level description set (else the root layout's landing copy leaks into og/twitter) | `description: undefined` | metadata.test.ts (2 failed) | yes |
+| generic fallback when headline is null | `report.headline ?? undefined` | metadata.test.ts "never falls back to the site-wide landing copy…" (1 failed) | yes |
