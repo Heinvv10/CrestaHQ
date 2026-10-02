@@ -124,6 +124,8 @@ describe("saving buttons", () => {
     ["text over two lines", [{ type: "quick_reply", text: "Yes,\nall good" }]],
     ["three link buttons", [1, 2, 3].map((n) => ({ type: "url", text: `Link ${n}`, url: `https://x.co/${n}` }))],
     ["a link with a {{variable}}", [{ type: "url", text: "Review", url: "https://g.page/r/{{1}}" }]],
+    ["a link with the report tag inside it", [{ type: "url", text: "Report", url: "https://x.co/{{prospecting.reportUrl}}" }]],
+    ["a link that is some other merge tag", [{ type: "url", text: "Report", url: "{{contact.email}}" }]],
     ["an unknown button type", [{ type: "phone", text: "Call us" }]],
   ])("refuses %s, and writes nothing", async (_label, buttons) => {
     const { status } = await saveTemplate(buttons);
@@ -262,6 +264,26 @@ describe("submitting to Twilio", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toMatch(message);
     expect(twilioContent).toHaveLength(0);
+    expect(stored()[0].status).toBe("draft");
+  });
+});
+
+describe("a link filled in per contact", () => {
+  const REPORT = { type: "url", text: "View your report", url: "{{prospecting.reportUrl}}" };
+
+  it("saves a link that is exactly {{prospecting.reportUrl}}", async () => {
+    const { status } = await saveTemplate([REPORT]);
+    expect(status).toBeLessThan(300);
+    expect(stored()[0].buttons).toEqual([REPORT]);
+  });
+
+  it("refuses to submit it for approval: Meta needs a fixed URL", async () => {
+    const { json } = await saveTemplate([REPORT]);
+    const res = await submitTemplate(json.template!.id);
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/filled in for each contact/);
+    expect(graphBodies).toHaveLength(0);
     expect(stored()[0].status).toBe("draft");
   });
 });

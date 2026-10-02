@@ -80,6 +80,24 @@ export function sanitiseVariables(
   return { variables: positions.map((p) => byPos.get(p)!) };
 }
 
+/**
+ * A link button may instead be exactly one of these merge tags. It is filled
+ * in per contact when the step sends, so the button only works as a free
+ * in-window message on the Cloud rail: such a template can't be submitted for
+ * approval (Meta needs a fixed URL) and isn't sent on Twilio (its in-session
+ * Content resource is cached per template, not per contact).
+ */
+export const LINK_MERGE_TAGS: ReadonlyArray<string> = ["{{prospecting.reportUrl}}"];
+
+export function isLinkMergeTag(url: string): boolean {
+  return LINK_MERGE_TAGS.includes(url.trim());
+}
+
+/** True when any link button is filled in per contact. */
+export function hasLinkMergeTag(buttons: WhatsappTemplateButton[]): boolean {
+  return buttons.some((b) => b.type === "url" && isLinkMergeTag(b.url));
+}
+
 /** Meta's limits: 25 characters of button text, 2000 of URL. We cap the
  *  count at 3 so one definition renders on every rail (an in-window
  *  interactive message allows 3 reply buttons). */
@@ -130,6 +148,10 @@ export function sanitiseButtons(
       out.push({ type: "quick_reply", text });
     } else if (r.type === "url") {
       const url = typeof r.url === "string" ? r.url.trim() : "";
+      if (isLinkMergeTag(url)) {
+        out.push({ type: "url", text, url });
+        continue;
+      }
       if (!/^https:\/\/\S+$/i.test(url) || url.length > MAX_BUTTON_URL) {
         return { error: `The "${text}" button needs a full https:// link.` };
       }
