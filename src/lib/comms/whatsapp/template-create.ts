@@ -36,6 +36,8 @@ export interface TemplateRefusal {
   ok: false;
   status: number;
   error: string;
+  /** The template doc was still written (a submission the provider refused). */
+  wrote?: true;
 }
 
 export async function createWhatsappTemplateDraft(opts: {

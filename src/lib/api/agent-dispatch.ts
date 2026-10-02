@@ -8,6 +8,7 @@ import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
 import {
   availableOn,
   CapabilityUserError,
+  CapabilityWriteRefused,
   getCapability,
   roleSatisfies,
   type AiSuiteCapability,
@@ -212,7 +213,14 @@ async function dispatch(
     return { ok: true, args: validated.args, proposal: { id, status, summary, preview } };
   }
 
-  const result = await cap.execute(ctx, validated.args);
+  let result: Awaited<ReturnType<AiSuiteCapability["execute"]>>;
+  try {
+    result = await cap.execute(ctx, validated.args);
+  } catch (err) {
+    // Refused, but something was written: audit it like any agent write.
+    if (err instanceof CapabilityWriteRefused) await recordAgentWrite(auth, cap.name, validated.args, err.ref);
+    throw err;
+  }
   if (!cap.readonly) await recordAgentWrite(auth, cap.name, validated.args, result.ref);
   return {
     ok: true,

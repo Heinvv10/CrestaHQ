@@ -20,6 +20,17 @@ export class CapabilityUserError extends Error {}
  */
 export class CapabilityOutcomeUnknown extends CapabilityUserError {}
 
+/**
+ * A refusal that still left a write behind (a template submission the
+ * provider refused, recorded as `failed`). The agent dispatcher audits it as
+ * an agent write before refusing.
+ */
+export class CapabilityWriteRefused extends CapabilityUserError {
+  constructor(message: string, readonly ref: { kind: string; id: string }) {
+    super(message);
+  }
+}
+
 /** Role a capability requires. Enforced server-side in the confirm route. */
 export type RequiredRole =
   | "agencyOwner"

@@ -4,7 +4,7 @@ import { isDocId } from "@/lib/server/doc-id";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { createWhatsappTemplateDraft, type TemplateDraftInput } from "@/lib/comms/whatsapp/template-create";
 import { submitWhatsappTemplate } from "@/lib/comms/whatsapp/template-submit";
-import { CapabilityUserError, type AiSuiteCapability, type ValidateResult } from "./types";
+import { CapabilityUserError, CapabilityWriteRefused, type AiSuiteCapability, type ValidateResult } from "./types";
 import { agentActor, str } from "./helpers";
 import { agentText, hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 
@@ -55,7 +55,7 @@ function variableArgs(raw: unknown): Array<Record<string, unknown>> {
     if (!Number.isInteger(v.position) || (v.position as number) < 1) throw new ArgError(`${where}.position must be a whole number from 1`);
     const source = v.source ?? "manual";
     if (source !== "manual" && source !== "merge_tag") throw new ArgError(`${where}.source must be manual or merge_tag`);
-    if (source === "manual" && v.mergeTag !== undefined) throw new ArgError(`${where} has a mergeTag, which needs source merge_tag`);
+    if (source === "manual" && v.mergeTag !== undefined && v.mergeTag !== null) throw new ArgError(`${where} has a mergeTag, which needs source merge_tag`);
     return {
       position: v.position,
       ...(v.label !== undefined ? { label: visible(v.label, `${where}.label`, 80) } : {}),
@@ -121,7 +121,7 @@ const VARIABLE_SCHEMA = {
     label: { type: "string", description: "What the value is, e.g. First name." },
     sampleValue: { type: "string", description: "An example value; Meta reviews the template with it." },
     source: { type: "string", enum: ["manual", "merge_tag"], description: "manual: given at send time. merge_tag: filled from the contact." },
-    mergeTag: { type: "string", description: "With source merge_tag, e.g. contact.firstName." },
+    mergeTag: { type: ["string", "null"], description: "With source merge_tag, e.g. contact.firstName." },
   },
   required: ["position", "sampleValue"],
   additionalProperties: false,
@@ -204,9 +204,9 @@ export const WHATSAPP_TEMPLATE_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Submit the WhatsApp template ${args.templateId} to Meta for review.`,
     execute: async (ctx, args) => {
-      const r = await submitWhatsappTemplate(ctx.subAccountId!, args.templateId as string);
-      if (!r.ok) throw new CapabilityUserError(r.error);
       const ref = { kind: "whatsappTemplate", id: args.templateId as string };
+      const r = await submitWhatsappTemplate(ctx.subAccountId!, args.templateId as string);
+      if (!r.ok) throw r.wrote ? new CapabilityWriteRefused(r.error, ref) : new CapabilityUserError(r.error);
       const submitted = `Submitted “${r.name}” to Meta for review on the ${r.provider} rail`;
       if (r.pollQueued === false) {
         return { resultText: `${submitted}, but its approval check could not be scheduled, so it is marked failed. Submit it again to retry.`, ref };

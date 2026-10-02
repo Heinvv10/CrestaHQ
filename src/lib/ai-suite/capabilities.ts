@@ -65,7 +65,7 @@ import { REPUTATION_CAPABILITIES } from "./capabilities/reputation";
 import { BROADCAST_CAPABILITIES } from "./capabilities/broadcasts";
 import { VOICE_CAPABILITIES } from "./capabilities/voice";
 
-export { CapabilityOutcomeUnknown, CapabilityUserError } from "./capabilities/types";
+export { CapabilityOutcomeUnknown, CapabilityUserError, CapabilityWriteRefused } from "./capabilities/types";
 export type {
   AiSuiteActionContext,
   AiSuiteCapability,

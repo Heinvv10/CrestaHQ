@@ -59,6 +59,16 @@ describe("create_whatsapp_template", () => {
     expect(human).not.toHaveProperty("lastAgentEditKey");
   });
 
+  it("accepts mergeTag: null on a manual variable (the stored shape)", async () => {
+    const r = await call({ ...DRAFT, variables: [DRAFT.variables[0], { ...DRAFT.variables[1], mergeTag: null }] });
+    expect(r).toMatchObject({ ok: true });
+    const id = (r as { ref: { id: string } }).ref.id;
+    expect(mem.read(`subAccounts/sa1/whatsappTemplates/${id}`)!.variables).toEqual([
+      expect.objectContaining({ position: 1, mergeTag: "contact.firstName" }),
+      expect.objectContaining({ position: 2, source: "manual", mergeTag: null }),
+    ]);
+  });
+
   it("defaults the language to en", async () => {
     const { language: _l, ...noLanguage } = DRAFT;
     const r = (await call(noLanguage)) as { ref: { id: string } };

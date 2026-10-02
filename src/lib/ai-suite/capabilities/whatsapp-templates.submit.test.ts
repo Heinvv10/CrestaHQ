@@ -66,8 +66,22 @@ describe("submit_whatsapp_template", () => {
     expect(publishCallback).toHaveBeenCalledWith(expect.objectContaining({
       pathname: "/api/sub-accounts/sa1/whatsapp-templates/poll",
       body: { subAccountId: "sa1", templateId: "t1", contentSid: "meta_1" },
-      deduplicationId: "watpl_sa1_t1_0",
+      deduplicationId: "watpl_sa1_t1_meta_1_0",
     }));
+    expect(mem.list("auditEvents")).toEqual([
+      expect.objectContaining({ action: "agent.write", target: { type: "whatsappTemplate", id: "t1" } }),
+    ]);
+  });
+
+  it("a resubmit's first poll has its own dedup id, not the earlier submission's", async () => {
+    await call({ templateId: "t1" });
+    mem.seed(PATH, { ...mem.read(PATH)!, status: "rejected" });
+    createCloudTemplate.mockResolvedValue({ id: "meta_2" });
+    await call({ templateId: "t1" });
+    expect(publishCallback.mock.calls.map(([o]) => (o as { deduplicationId: string }).deduplicationId)).toEqual([
+      "watpl_sa1_t1_meta_1_0",
+      "watpl_sa1_t1_meta_2_0",
+    ]);
   });
 
   it("twilio: creates the Content resource and requests approval through it", async () => {
@@ -111,6 +125,7 @@ describe("submit_whatsapp_template", () => {
     expect(createContentTemplate).not.toHaveBeenCalled();
     expect(publishCallback).not.toHaveBeenCalled();
     expect(mem.read(PATH)).toEqual(before);
+    expect(mem.list("auditEvents")).toEqual([]);
   });
 
   it.each([
@@ -128,6 +143,10 @@ describe("submit_whatsapp_template", () => {
     expect(r).toMatchObject({ ok: false, code: "invalid_request", message: "Submission failed: Invalid parameter (400)" });
     expect(mem.read(PATH)).toMatchObject({ status: "failed", rejectionReason: "Invalid parameter (400)" });
     expect(publishCallback).not.toHaveBeenCalled();
+    // The doc was written (failed) though the call was refused: audited, naming the template.
+    expect(mem.list("auditEvents")).toEqual([
+      expect.objectContaining({ action: "agent.write", target: { type: "whatsappTemplate", id: "t1" } }),
+    ]);
   });
 
   it("the first poll not queued → parked as failed, and the agent is told", async () => {

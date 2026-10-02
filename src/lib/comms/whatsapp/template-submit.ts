@@ -187,7 +187,7 @@ export async function submitWhatsappTemplate(
       rejectionReason: detail,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return { ok: false, status: 502, error: `Submission failed: ${detail}` };
+    return { ok: false, status: 502, error: `Submission failed: ${detail}`, wrote: true };
   }
 
   await ref.update({
@@ -214,7 +214,9 @@ export async function submitWhatsappTemplate(
     pathname: `/api/sub-accounts/${subAccountId}/whatsapp-templates/poll`,
     body: { subAccountId, templateId, contentSid: externalId },
     delaySeconds: 20,
-    deduplicationId: `watpl_${subAccountId}_${templateId}_0`,
+    // Per submission: a resubmit's first poll must not dedupe against the
+    // previous submission's chain.
+    deduplicationId: `watpl_${subAccountId}_${templateId}_${externalId}_0`,
   });
   // publishCallback never throws: null means the poll was not queued (e.g.
   // the daily cap). `pending` can't be escaped in the UI, so park it as
