@@ -452,7 +452,9 @@ describe("a link button filled in per contact ({{prospecting.reportUrl}})", () =
       subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", workflowId: "wf1", runId: "run1", triggerContext: {},
     });
 
-    expect(out.log).not.toBe("error:WA_BUTTON_LINK_EMPTY");
+    expect(out.log).toBe("ok");
+    expect(graph).toHaveLength(1);
+    expect(JSON.stringify(graph[0])).toContain("http://old.example");
   });
 
   it("outside the window it sends nothing: the template can never be approved", async () => {
