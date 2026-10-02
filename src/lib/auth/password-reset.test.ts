@@ -69,7 +69,9 @@ describe("requestPasswordReset", () => {
     const sent = m.sends[0]!;
     expect(sent.to).toBe("a@x.test");
     expect(sent.subject).toBe("Reset your Acme password");
-    expect(sent.replyTo).toBe("help@acme.test");
+    // No Reply-To (SpamAssassin FROM_NOT_REPLYTO); the footer names support.
+    expect(sent.replyTo).toBeUndefined();
+    expect(sent.text).toContain("help@acme.test");
     // Never imported into Conversations — it carries a live reset code.
     expect(sent.archive).toBe(false);
     const link = "https://crm.acme.test/login?mode=resetPassword&oobCode=CODE%2B1";
@@ -178,7 +180,7 @@ describe("requestPasswordReset", () => {
     const sent = m.sends[0]!;
     expect(sent.subject).toBe("Reset your Acme Bcc: x@evil.test password");
     expect(sent.subject).not.toMatch(/[\r\n]/);
-    expect(sent.replyTo).toBeUndefined();
+    expect(sent.text).not.toContain("help,billing@acme.test");
   });
 
   it("throws when Firebase fails for a reason other than a missing account", async () => {

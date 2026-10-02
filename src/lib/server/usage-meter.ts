@@ -410,7 +410,6 @@ async function notifyOwner(
         : `${wsName} has used 80% of its monthly ${label} quota`;
     const { text, html } = renderSystemEmail({
       brand: await resolveCustomBrand(),
-      preview: subject,
       heading: threshold === 100 ? "Monthly limit reached" : "80% of monthly quota used",
       paragraphs: [
         [

@@ -128,7 +128,6 @@ export async function deliverPasswordReset(
 
   const { html, text } = renderSystemEmail({
     brand,
-    preview: "Use the link inside to choose a new password. It expires in 1 hour.",
     heading: "Reset your password",
     paragraphs: [
       ["We got a request to reset the password for ", { bold: email }, "."],
@@ -142,7 +141,8 @@ export async function deliverPasswordReset(
     subject: `Reset your ${brand.name} password`,
     text,
     html,
-    replyTo: brand.supportEmail ?? undefined,
+    // No Reply-To: From != Reply-To costs 0.5 in SpamAssassin
+    // (FROM_NOT_REPLYTO), and the footer already names the support address.
     // The live link must never be imported into Conversations if this
     // mailbox is also a synced sub-account mailbox.
     archive: false,
