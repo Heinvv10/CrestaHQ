@@ -150,7 +150,6 @@ async function maybeEmailChargeLink(opts: {
     const subject = `Payment request: ${opts.description}`;
     const { text, html } = renderSystemEmail({
       brand: await resolveCustomBrand(),
-      preview: `${opts.description} — ${opts.priceLabel}`,
       heading: "Payment request",
       paragraphs: [
         ["A one-time payment is requested for ", { bold: workspaceName }, ":"],

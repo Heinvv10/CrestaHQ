@@ -549,7 +549,6 @@ function inviteEmail({
 }: InviteContext): { text: string; html: string } {
   return renderSystemEmail({
     brand,
-    preview: `${inviterName} invited you to ${subAccountName}.`,
     heading: "You're invited",
     paragraphs: [
       [`${inviterName} invited you to `, { bold: subAccountName }, ` on ${brand.name}.`],
@@ -578,7 +577,6 @@ function addedEmail({
 }: AddedContext): { text: string; html: string } {
   return renderSystemEmail({
     brand,
-    preview: `You now have access to ${subAccountName}.`,
     heading: "You've been added",
     paragraphs: [
       [
