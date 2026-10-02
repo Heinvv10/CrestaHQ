@@ -58,6 +58,15 @@ export function templateRegistration(
   // seen it — the send fails at Meta, out of window, with the customer
   // unreachable. Absent means absent.
   if (provider === "twilio") {
+    // The flat fields stop being Twilio's once another rail has written them:
+    // a cloud submission mirrors its status into `status`, and freezes a real
+    // Twilio registration into the map first only when there was a Content
+    // SID to freeze. So no Content SID beside another rail's registration
+    // means Twilio never registered this template.
+    const otherRail = Object.entries(tpl.registrations ?? {}).some(
+      ([p, r]) => p !== "twilio" && !!r,
+    );
+    if (otherRail && tpl.contentSid == null) return null;
     return {
       externalId: tpl.contentSid ?? null,
       status: tpl.status ?? "draft",

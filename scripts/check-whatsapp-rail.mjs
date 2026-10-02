@@ -90,7 +90,7 @@ const ALLOWED_HELPER = new Map([
     "Calls it inside the Twilio branch of the rail-aware readiness check — which is what every other caller should use instead.",
   ],
   [
-    "app/api/sub-accounts/[id]/whatsapp-templates/[templateId]/submit/route.ts",
+    "lib/comms/whatsapp/template-submit.ts",
     "Guarded by `provider === \"twilio\"`: submitting a template to Twilio's Content API needs Twilio credentials specifically.",
   ],
   [

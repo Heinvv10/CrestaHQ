@@ -16,7 +16,10 @@ import { seedPr13 } from "@/test/pr13-fixtures";
  * webhook subscription is seeded, and QStash publishes to the tenant-webhook
  * delivery step (/api/webhooks-out/step) are allowed, because a tenant's own
  * machine webhooks are its integration and outside ruling Q (plan, REVISED
- * 2026-09-25). Staff push is checked separately: fixed copy only. The real fireWorkflowTrigger is wrapped so
+ * 2026-09-25). And ONE listed tool: submit_whatsapp_template (owner ruling
+ * 2026-10-02) may reach the provider's TEMPLATE endpoints (Twilio Content
+ * API) and queue its own approval poll — a submission goes to Meta's review,
+ * never to a person; every send seam still stays at 0 for it. Staff push is checked separately: fixed copy only. The real fireWorkflowTrigger is wrapped so
  * every trigger a row fires — awaited or leaked fire-and-forget — is awaited
  * (plus a macrotask flush) before that row asserts, so a leak is caught by
  * its own row even when it runs alone.
@@ -52,6 +55,11 @@ vi.mock("@/lib/comms/meta", (orig) => partial(["sendMetaMessage", "publishToFace
 vi.mock("@/lib/comms/whatsapp/cloud-client", (orig) => partial(["sendWhatsappCloud"])(orig));
 /** The one allowed QStash destination: the tenant-webhook delivery step. */
 const TENANT_WEBHOOK_STEP = "/api/webhooks-out/step";
+/** The template-review exemption: this tool, its provider's template
+ *  endpoints, and its approval poll — nothing else. */
+const TEMPLATE_REVIEW_TOOL = "submit_whatsapp_template";
+const TEMPLATE_ENDPOINT = "https://content.twilio.com/v1/Content";
+const TEMPLATE_POLL = "/api/sub-accounts/sa1/whatsapp-templates/poll";
 const publishCallback = vi.hoisted(() => vi.fn(async (_opts: { pathname: string }) => ({ messageId: "q" })));
 const sendPushForEvent = vi.hoisted(() => vi.fn(async (_input: { title: string; body: string }) => undefined));
 vi.mock("@/lib/automations/qstash", async (orig) => ({
@@ -114,6 +122,9 @@ beforeEach(() => {
     subAccountId: "sa1", agencyId: "ag1", name: "install_day", displayName: "Install day", language: "en", status: "approved", contentSid: "HX1",
     body: "Your install is on {{1}}.", variables: [{ position: 1, label: "Day", sampleValue: "Monday", source: "manual", mergeTag: null }],
   });
+  mem.seed("subAccounts/sa1/whatsappTemplates/wt_draft", {
+    ...mem.read("subAccounts/sa1/whatsappTemplates/wt1")!, name: "", displayName: "Install reminder", status: "draft", contentSid: null,
+  });
   mem.seed("tasks/t1", { subAccountId: "sa1", agencyId: "ag1", title: "Follow up", completed: false, contactId: "c1" });
   mem.seed("deals/d_won", {
     subAccountId: "sa1", agencyId: "ag1", mode: "live", title: "Won deal", stageId: "won", contactId: "c1", value: 1, currency: "ZAR", territoryId: "global",
@@ -157,10 +168,10 @@ async function drain() {
   }
 }
 
-async function expectNothingSent() {
+async function expectNothingSent(allowedPublishes: string[] = []) {
   await drain();
   const published = publishCallback.mock.calls.map(([o]) => o.pathname);
-  expect(published.filter((p) => p !== TENANT_WEBHOOK_STEP), "non-webhook QStash publishes").toEqual([]);
+  expect(published.filter((p) => p !== TENANT_WEBHOOK_STEP && !allowedPublishes.includes(p)), "non-webhook QStash publishes").toEqual([]);
   for (const [name, s] of Object.entries(spies)) expect(s, name).not.toHaveBeenCalled();
   expect(mem.list("workflowRuns")).toEqual([]);
 }
@@ -186,7 +197,9 @@ describe("an agent can never send on its own", () => {
   it.each(CASES)("%s %j: dispatches fine and reaches no outbound seam", async (name, args) => {
     const cap = agentCaps().find((c) => c.name === name);
     expect(cap, `${name} is no longer agent-surfaced; drop its fixture`).toBeDefined();
+    const review = name === TEMPLATE_REVIEW_TOOL;
     const fetchSpy = vi.spyOn(globalThis, "fetch");
+    if (review) fetchSpy.mockImplementation(async () => new Response(JSON.stringify({ sid: "HX9" }), { status: 201 }));
     const r = await dispatchAgentTool(auth, name, args);
     const validated = cap!.validate(cap!.agentArgs ? cap!.agentArgs(args) : args);
     const { buildAgentContext } = await import("@/lib/api/agent-context");
@@ -197,6 +210,14 @@ describe("an agent can never send on its own", () => {
     } else {
       expect(r).toMatchObject({ ok: true });
       expect(r).not.toHaveProperty("proposal");
+    }
+    if (review) {
+      const urls = fetchSpy.mock.calls.map(([u]) => String(u));
+      fetchSpy.mockRestore();
+      expect(urls.length, "the submission reached the provider").toBeGreaterThan(0);
+      expect(urls.filter((u) => !u.startsWith(TEMPLATE_ENDPOINT)), "non-template provider calls").toEqual([]);
+      await expectNothingSent([TEMPLATE_POLL]);
+      return;
     }
     expect(fetchSpy).not.toHaveBeenCalled();
     await expectNothingSent();

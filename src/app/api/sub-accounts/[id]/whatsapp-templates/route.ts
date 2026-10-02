@@ -1,54 +1,21 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import {
-  sanitiseButtons,
-  sanitiseVariables,
-} from "@/lib/comms/whatsapp/template-validation";
-import { loadContactCustomFieldKeys } from "@/lib/custom-fields/load-defs";
-import type { SubAccountDoc } from "@/types";
-import type { WhatsappTemplateCategory } from "@/types/whatsapp-templates";
+  createWhatsappTemplateDraft,
+  type TemplateDraftInput,
+} from "@/lib/comms/whatsapp/template-create";
 
 export const dynamic = "force-dynamic";
 
 /**
  * WhatsApp templates CRUD (list + create draft). Drafts are created here;
  * submission for Meta approval is a separate route ([templateId]/submit).
- * Admin-only. Creating a draft doesn't require a configured sender (you can
- * draft before connecting), but the agency WhatsApp gate must be on.
+ * Admin-only. Validation and the stored shape live in template-create.ts,
+ * shared with the agent's create_whatsapp_template.
  */
-
-const VALID_CATEGORIES: WhatsappTemplateCategory[] = [
-  "UTILITY",
-  "MARKETING",
-  "AUTHENTICATION",
-];
-
-interface CreateBody {
-  displayName?: string;
-  category?: string;
-  language?: string;
-  body?: string;
-  variables?: unknown;
-  buttons?: unknown;
-}
-
-async function requireWhatsappGate(
-  subAccountId: string,
-): Promise<NextResponse | { sub: SubAccountDoc }> {
-  const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
-  const sub = snap.exists ? (snap.data() as SubAccountDoc) : null;
-  if (sub?.whatsappEnabledByAgency !== true) {
-    return NextResponse.json(
-      { error: "WhatsApp is disabled for this sub-account by your agency." },
-      { status: 403 },
-    );
-  }
-  return { sub };
-}
 
 export async function GET(
   request: Request,
@@ -74,70 +41,24 @@ export async function POST(
   const auth = await requireSubAccountAdmin(request, subAccountId);
   if (auth instanceof NextResponse) return auth;
 
-  const gate = await requireWhatsappGate(subAccountId);
-  if (gate instanceof NextResponse) return gate;
-
-  let body: CreateBody;
+  let body: TemplateDraftInput;
   try {
-    body = (await request.json()) as CreateBody;
+    body = (await request.json()) as TemplateDraftInput;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const displayName = body.displayName?.trim() ?? "";
-  const templateBody = body.body?.trim() ?? "";
-  const category = (body.category ?? "").toUpperCase() as WhatsappTemplateCategory;
-  const language = (body.language?.trim() || "en").slice(0, 12);
-
-  if (!displayName) {
-    return NextResponse.json({ error: "displayName is required" }, { status: 400 });
-  }
-  if (!templateBody) {
-    return NextResponse.json({ error: "body is required" }, { status: 400 });
-  }
-  if (!VALID_CATEGORIES.includes(category)) {
-    return NextResponse.json(
-      { error: "category must be UTILITY, MARKETING, or AUTHENTICATION" },
-      { status: 400 },
-    );
-  }
-  const sanitised = sanitiseVariables(
-    body.variables ?? [],
-    templateBody,
-    await loadContactCustomFieldKeys(subAccountId),
-  );
-  if ("error" in sanitised) {
-    return NextResponse.json({ error: sanitised.error }, { status: 400 });
-  }
-  const buttons = sanitiseButtons(body.buttons, category);
-  if ("error" in buttons) {
-    return NextResponse.json({ error: buttons.error }, { status: 400 });
-  }
-
-  const ref = getAdminDb()
-    .collection(`subAccounts/${subAccountId}/whatsappTemplates`)
-    .doc();
-  await ref.set({
+  const created = await createWhatsappTemplateDraft({
     subAccountId,
-    agencyId: gate.sub.agencyId,
-    name: "",
-    displayName: displayName.slice(0, 120),
-    category,
-    language,
-    body: templateBody.slice(0, 1024),
-    variables: sanitised.variables,
-    buttons: buttons.buttons,
-    contentSid: null,
-    status: "draft",
-    rejectionReason: null,
-    pollAttempts: 0,
-    lastSyncedAt: null,
+    input: body,
     createdByUid: auth.uid,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-    approvedAt: null,
   });
+  if (!created.ok) {
+    return NextResponse.json({ error: created.error }, { status: created.status });
+  }
 
-  const created = await ref.get();
-  return NextResponse.json({ ok: true, template: { id: ref.id, ...created.data() } });
+  const snap = await getAdminDb()
+    .doc(`subAccounts/${subAccountId}/whatsappTemplates/${created.id}`)
+    .get();
+  return NextResponse.json({ ok: true, template: { id: created.id, ...snap.data() } });
 }

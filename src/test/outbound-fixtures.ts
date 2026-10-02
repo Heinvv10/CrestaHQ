@@ -34,6 +34,11 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   update_snippet: { snippetId: "sn1", name: "Thanks", type: "text", body: "Thank you!" },
   delete_snippet: { snippetId: "sn1" },
   list_whatsapp_templates: {},
+  create_whatsapp_template: {
+    displayName: "Install day", category: "UTILITY", body: "Your install is on {{1}}.",
+    variables: [{ position: 1, label: "Day", sampleValue: "Monday" }],
+  },
+  submit_whatsapp_template: { templateId: "wt_draft" },
   list_quotes: {},
   get_quote: { quoteId: "q1" },
   create_quote: { contactId: "c1", lineItems: [{ description: "Install", quantity: 1, unitPrice: 500 }] },
