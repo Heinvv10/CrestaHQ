@@ -11,7 +11,7 @@ import {
   submitForWhatsappApproval,
   WhatsappContentError,
 } from "@/lib/comms/whatsapp/templates-api";
-import { toMetaTemplateName } from "@/lib/comms/whatsapp/template-validation";
+import { hasLinkMergeTag, toMetaTemplateName } from "@/lib/comms/whatsapp/template-validation";
 import { twilioButtonProblem } from "@/lib/comms/whatsapp/twilio-buttons";
 import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { buildRegistrationUpdate } from "@/lib/comms/whatsapp/template-registrations";
@@ -95,6 +95,17 @@ export async function POST(
       {
         error:
           "Configure a WhatsApp sender under Settings → SMS before submitting templates.",
+      },
+      { status: 400 },
+    );
+  }
+  // A link filled in per contact has no fixed URL for Meta to approve. Such a
+  // template is only ever sent free inside the 24-hour window.
+  if (hasLinkMergeTag(tpl.buttons ?? [])) {
+    return NextResponse.json(
+      {
+        error:
+          "This template's link is filled in for each contact, so it can't be submitted for approval. It sends free inside the 24-hour window as it is.",
       },
       { status: 400 },
     );

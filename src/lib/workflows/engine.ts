@@ -45,6 +45,7 @@ import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/li
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import { APPROACH_CAP_LOG, guardProspectSend } from "@/lib/prospecting/approach-guard";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
+import { hasLinkMergeTag, isLinkMergeTag } from "@/lib/comms/whatsapp/template-validation";
 import { evalConditionGroup } from "./conditions";
 import {
   agentHold,
@@ -680,6 +681,8 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
   let templateValues: string[] = [];
   let templateBody = "";
   let tplDoc: WhatsappTemplateDoc | null = null;
+  /** The buttons as this contact receives them (per-contact links filled in). */
+  let sentButtons: WhatsappTemplateButton[] = [];
   if (cfg.templateId) {
     const tplSnap = await getAdminDb()
       .doc(`subAccounts/${ctx.subAccountId}/whatsappTemplates/${cfg.templateId}`)
@@ -715,13 +718,36 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // by the dispatcher once the window is known: outside it an approved
     // template goes as itself, whatever its buttons.
     if (tplDoc.buttons?.length) {
+      // A link that is a merge tag ({{prospecting.reportUrl}}) is filled in for
+      // this contact. It goes only on the Cloud rail — Twilio's in-session
+      // Content resource is cached per template, so every contact would get
+      // the same link — and never blank: no link, no button message.
+      const perContactLink = hasLinkMergeTag(tplDoc.buttons);
+      sentButtons = tplDoc.buttons.map((b) =>
+        b.type === "url" && isLinkMergeTag(b.url)
+          ? { ...b, url: resolveMergeTags(b.url, subject).trim() }
+          : b,
+      );
+      const linkMissing = tplDoc.buttons.some((b, i) => {
+        const sent = sentButtons[i];
+        return (
+          b.type === "url" &&
+          isLinkMergeTag(b.url) &&
+          sent.type === "url" &&
+          !/^https:\/\/\S+$/i.test(sent.url)
+        );
+      });
       // An in-window button message with a blank variable is refused: Cloud
       // would send "Thank you !", and Twilio may substitute the template's
       // SAMPLE value — a stranger's name — to a real customer. (Out-of-window
       // template sends are unchanged; that rule is gap 5b.)
       inWindowButtons = values.some((v) => !v.trim())
         ? { ok: false, error: "WA_TEMPLATE_VARIABLE_EMPTY" }
-        : interactiveFromButtons(templateBody, tplDoc.buttons);
+        : perContactLink && readiness.provider !== "cloud"
+          ? { ok: false, error: "WA_BUTTON_LINK_CLOUD_ONLY" }
+          : linkMissing
+            ? { ok: false, error: "WA_BUTTON_LINK_EMPTY" }
+            : interactiveFromButtons(templateBody, sentButtons);
     }
     // Approval is per rail, as in execWhatsappTemplate: a template cleared on
     // Twilio has never been seen by our own WABA. The rail is the one
@@ -839,7 +865,7 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
     // send that fell back to plain text (outside the window) shows no
     // buttons the customer never received.
     const recordedButtons: WhatsappTemplateButton[] | null =
-      res.sentAs === "interactive" && tplDoc?.buttons?.length ? tplDoc.buttons : null;
+      res.sentAs === "interactive" && sentButtons.length ? sentButtons : null;
     ctx.sent = sentTemplate
       ? { channel: "whatsapp", parts: [], template: tplDoc, templateValues, messageSid: res.messageId ?? null }
       : { channel: "whatsapp", parts: [body], messageSid: res.messageId ?? null };

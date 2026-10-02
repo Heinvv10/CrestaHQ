@@ -391,3 +391,93 @@ it("outside the window, an APPROVED button template goes as the template itself"
   expect(out.log).toBe("ok");
   expect(graph[0]).toMatchObject({ type: "template", template: { name: "check" } });
 });
+
+describe("a link button filled in per contact ({{prospecting.reportUrl}})", () => {
+  const REPORT = { type: "url", text: "View your report", url: "{{prospecting.reportUrl}}" };
+  const URL_A = "https://crm.crestahq.com/report/tokA";
+
+  const runFor = (reportUrl: string | null, subAccount: SubAccountDoc = CLOUD) =>
+    execSendWhatsapp({
+      node: { id: "n1", type: "send_whatsapp", config: { body: "", templateId: "report_link" } } as unknown as WorkflowNode,
+      contact: {
+        id: "c1", name: "Thandi Mokoena", phone: "+27821234567", whatsappOptedOut: false,
+        prospecting: reportUrl === null ? null : { lastReportUrl: reportUrl },
+      } as unknown as Contact,
+      subAccount,
+      owner: { displayName: "Hein", email: "h@example.com" },
+      subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", workflowId: "wf1", runId: "run1", triggerContext: {},
+    });
+
+  beforeEach(() => {
+    seedTemplate("report_link", { body: "Here is your free visibility report.", variables: [], buttons: [REPORT] });
+    lastInbound(1);
+  });
+
+  it("sends this contact's own report link behind the button", async () => {
+    const out = await runFor(URL_A);
+
+    expect(out.log).toBe("ok");
+    expect(graph).toEqual([
+      {
+        messaging_product: "whatsapp", to: "27821234567", type: "interactive",
+        interactive: {
+          type: "cta_url",
+          body: { text: "Here is your free visibility report." },
+          action: { name: "cta_url", parameters: { display_text: "View your report", url: URL_A } },
+        },
+      },
+    ]);
+    // The thread shows the link this contact actually got, not the tag.
+    expect(mem.read("contacts/c1/whatsappMessages/wamid.1")?.buttons).toEqual([{ ...REPORT, url: URL_A }]);
+  });
+
+  it.each([
+    ["no report", null],
+    ["a blank link", ""],
+  ])("sends nothing when the contact has %s", async (_case, reportUrl) => {
+    const out = await runFor(reportUrl);
+
+    expect(out.log).toBe("error:WA_BUTTON_LINK_EMPTY");
+    expect(graph).toHaveLength(0);
+  });
+
+  it("leaves a template's fixed links alone: only the filled-in link is checked", async () => {
+    seedTemplate("legacy_link", { body: "Our site.", variables: [], buttons: [{ type: "url", text: "Site", url: "http://old.example" }] });
+
+    const out = await execSendWhatsapp({
+      node: { id: "n1", type: "send_whatsapp", config: { body: "", templateId: "legacy_link" } } as unknown as WorkflowNode,
+      contact: { id: "c1", name: "Thandi Mokoena", phone: "+27821234567", whatsappOptedOut: false } as unknown as Contact,
+      subAccount: CLOUD,
+      owner: { displayName: "Hein", email: "h@example.com" },
+      subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", workflowId: "wf1", runId: "run1", triggerContext: {},
+    });
+
+    expect(out.log).toBe("ok");
+    expect(graph).toHaveLength(1);
+    expect(JSON.stringify(graph[0])).toContain("http://old.example");
+  });
+
+  it("outside the window it sends nothing: the template can never be approved", async () => {
+    mem.clear();
+    mem.seed("subAccounts/sa1", CLOUD as unknown as Record<string, unknown>);
+    mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", name: "Thandi Mokoena", phone: "+27821234567" });
+    seedTemplate("report_link", { body: "Here is your free visibility report.", variables: [], buttons: [REPORT] });
+    lastInbound(30);
+
+    const out = await runFor(URL_A);
+
+    expect(out.log).toBe("error:WA_OUTSIDE_WINDOW_NEEDS_TEMPLATE");
+    expect(graph).toHaveLength(0);
+  });
+
+  it("never goes on Twilio, whose in-session resource is cached per template", async () => {
+    mem.seed("subAccounts/sa1", TWILIO as unknown as Record<string, unknown>);
+
+    const out = await runFor(URL_A, TWILIO);
+
+    expect(out.log).toBe("error:WA_BUTTON_LINK_CLOUD_ONLY");
+    expect(twilioContent).toHaveLength(0);
+    expect(sendWhatsappTemplateForSubAccount).not.toHaveBeenCalled();
+    expect(sendWhatsappForSubAccount).not.toHaveBeenCalled();
+  });
+});
