@@ -45,8 +45,7 @@ vi.mock("@/lib/server/usage-meter", async (orig) => ({
 }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 vi.mock("@/lib/landing/resolve-brand", () => ({
-  resolveBrandName: async () => "LeadStack",
-  resolveCustomBrand: async () => ({}),
+  resolveCustomBrand: async () => ({ name: "LeadStack" }),
 }));
 vi.mock("@/lib/booking/lifecycle", () => ({
   fireBookingTrigger: async () => undefined,

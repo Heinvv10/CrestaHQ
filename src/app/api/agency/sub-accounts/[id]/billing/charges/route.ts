@@ -8,7 +8,8 @@ import {
   resolvePlatformSender,
   sendPlatformEmail,
 } from "@/lib/comms/platform-email";
-import { escapeHtml } from "@/lib/comms/escape-html";
+import { renderSystemEmail } from "@/lib/comms/system-email";
+import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { formatBillingPrice } from "@/lib/billing/status";
 import {
   BillingError,
@@ -147,23 +148,17 @@ async function maybeEmailChargeLink(opts: {
     const snap = await getAdminDb().doc(`subAccounts/${opts.subAccountId}`).get();
     const workspaceName = String(snap.data()?.name ?? "your workspace");
     const subject = `Payment request: ${opts.description}`;
-    const text = [
-      `A payment is requested for "${workspaceName}".`,
-      "",
-      `${opts.description} — ${opts.priceLabel} (one-time)`,
-      "",
-      `Pay securely here: ${opts.url}`,
-    ].join("\n");
-    const html = `
-      <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
-        <h2 style="margin:0 0 12px;">Payment request</h2>
-        <p>A one-time payment is requested for <strong>${escapeHtml(workspaceName)}</strong>:</p>
-        <p style="font-size:16px;"><strong>${escapeHtml(opts.description)}</strong> — ${escapeHtml(opts.priceLabel)}</p>
-        <p style="margin:24px 0;">
-          <a href="${escapeHtml(opts.url)}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Pay now</a>
-        </p>
-        <p style="color:#6b7280;font-size:13px;">Payment is handled securely by Stripe. This is a one-time charge — no subscription is created.</p>
-      </div>`;
+    const { text, html } = renderSystemEmail({
+      brand: await resolveCustomBrand(),
+      preview: `${opts.description} — ${opts.priceLabel}`,
+      heading: "Payment request",
+      paragraphs: [
+        ["A one-time payment is requested for ", { bold: workspaceName }, ":"],
+        [{ bold: opts.description }, ` — ${opts.priceLabel}`],
+      ],
+      button: { label: "Pay now", url: opts.url },
+      note: "Payment is handled securely by Stripe. This is a one-time charge — no subscription is created.",
+    });
     await sendPlatformEmail(sender, { to: opts.to, subject, text, html });
     return true;
   } catch (err) {

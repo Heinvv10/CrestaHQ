@@ -17,7 +17,7 @@ vi.mock("@/lib/firebase/admin", async () => (await s()).seamMocks.admin());
 vi.mock("./smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
-vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({}) }));
+vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({ name: "LeadStack" }) }));
 
 const { SA, SMTP_SUB, mem, resetSeam, suppress, wireRecipients } = await s();
 const { sendEmail } = await import("./resend");

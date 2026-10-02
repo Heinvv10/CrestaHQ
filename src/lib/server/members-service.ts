@@ -12,7 +12,8 @@ import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import type { AuditActor } from "@/lib/audit/types";
-import { resolveBrandName } from "@/lib/landing/resolve-brand";
+import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
+import { renderSystemEmail, type SystemEmailBrand } from "@/lib/comms/system-email";
 import { generateInviteToken } from "@/lib/server/invite-token";
 
 /**
@@ -218,28 +219,15 @@ export async function createInviteServerSide(
       (inviterData.email as string) ||
       "A teammate";
     const roleLabel = role === "admin" ? "Admin" : "Collaborator";
-    const brandName = await resolveBrandName();
+    const brand = await resolveCustomBrand();
 
     await sendPlatformEmail(sender, {
       suppressionSubAccountId: subAccountId,
       to: email,
       // "Who is this?" replies go to the person who sent the invite.
       replyTo: (inviterData.email as string) || undefined,
-      subject: `${inviterName} invited you to ${subAccountName} on ${brandName}`,
-      text: renderInviteText({
-        inviterName,
-        subAccountName,
-        roleLabel,
-        inviteUrl,
-        brandName,
-      }),
-      html: renderInviteHtml({
-        inviterName,
-        subAccountName,
-        roleLabel,
-        inviteUrl,
-        brandName,
-      }),
+      subject: `${inviterName} invited you to ${subAccountName} on ${brand.name}`,
+      ...inviteEmail({ inviterName, subAccountName, roleLabel, inviteUrl, brand }),
     });
     mailed = true;
   } catch (err) {
@@ -466,27 +454,14 @@ async function addExistingUserAsMember(params: {
           | undefined) || undefined;
       const roleLabel = role === "admin" ? "Admin" : "Collaborator";
       const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
-      const brandName = await resolveBrandName();
+      const brand = await resolveCustomBrand();
       await sendPlatformEmail(sender, {
         suppressionSubAccountId: subAccountId,
         to: recipient,
         // "Who added me?" replies go to the admin who did.
         replyTo: inviterEmail,
-        subject: `You've been added to ${subAccountName} on ${brandName}`,
-        text: renderAddedText({
-          inviterName,
-          subAccountName,
-          roleLabel,
-          appUrl,
-          brandName,
-        }),
-        html: renderAddedHtml({
-          inviterName,
-          subAccountName,
-          roleLabel,
-          appUrl,
-          brandName,
-        }),
+        subject: `You've been added to ${subAccountName} on ${brand.name}`,
+        ...addedEmail({ inviterName, subAccountName, roleLabel, appUrl, brand }),
       });
       mailed = true;
     } catch (err) {
@@ -562,104 +537,27 @@ interface InviteContext {
   subAccountName: string;
   roleLabel: string;
   inviteUrl: string;
-  brandName: string;
+  brand: SystemEmailBrand;
 }
 
-function renderInviteText({
+function inviteEmail({
   inviterName,
   subAccountName,
   roleLabel,
   inviteUrl,
-  brandName,
-}: InviteContext): string {
-  return [
-    `${inviterName} invited you to join ${subAccountName} on ${brandName} as ${roleLabel}.`,
-    "",
-    `Accept the invite by creating your account here:`,
-    inviteUrl,
-    "",
-    `If you weren't expecting this invite, you can safely ignore this email.`,
-  ].join("\n");
-}
-
-function renderInviteHtml({
-  inviterName,
-  subAccountName,
-  roleLabel,
-  inviteUrl,
-  brandName,
-}: InviteContext): string {
-  const inviter = escapeHtml(inviterName);
-  const sub = escapeHtml(subAccountName);
-  const role = escapeHtml(roleLabel);
-  const url = escapeHtml(inviteUrl);
-  const brand = escapeHtml(brandName);
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>You're invited to ${sub} on ${brand}</title>
-</head>
-<body style="margin:0; padding:0; background:#f6f6f9; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color:#0a0a0f;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f6f9; padding:32px 16px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="max-width:520px; background:#ffffff; border-radius:16px; padding:32px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-          <tr>
-            <td style="padding-bottom:20px;">
-              <table role="presentation" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="vertical-align:middle; padding-right:8px;">
-                    <svg width="22" height="22" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-                      <defs>
-                        <linearGradient id="ls-mail-1" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient>
-                        <linearGradient id="ls-mail-2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#a855f7"/></linearGradient>
-                        <linearGradient id="ls-mail-3" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#c026d3"/><stop offset="100%" stop-color="#ec4899"/></linearGradient>
-                      </defs>
-                      <path d="M 56 8 L 18 8 L 8 16 L 18 24 L 56 24 Z" fill="url(#ls-mail-1)"/>
-                      <path d="M 8 28 L 46 28 L 56 36 L 46 44 L 8 44 Z" fill="url(#ls-mail-2)"/>
-                      <path d="M 56 48 L 18 48 L 8 56 L 18 60 L 56 60 Z" fill="url(#ls-mail-3)"/>
-                    </svg>
-                  </td>
-                  <td style="vertical-align:middle;">
-                    <span style="font-size:18px; font-weight:700; color:#0a0a0f; letter-spacing:-0.01em;">${brand}</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <h1 style="margin:0 0 12px 0; font-size:22px; font-weight:600; color:#0a0a0f; letter-spacing:-0.01em;">You're invited</h1>
-              <p style="margin:0 0 8px 0; font-size:15px; line-height:1.5; color:#4a4a55;">${inviter} invited you to <strong style="color:#0a0a0f;">${sub}</strong> on ${brand}.</p>
-              <p style="margin:0 0 24px 0; font-size:15px; line-height:1.5; color:#4a4a55;">You'll join as <strong>${role}</strong>.</p>
-              <table role="presentation" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td>
-                    <a href="${url}" style="display:inline-block; background:#7c3aed; color:#ffffff; text-decoration:none; padding:12px 24px; border-radius:8px; font-size:14px; font-weight:600;">Accept invite</a>
-                  </td>
-                </tr>
-              </table>
-              <p style="margin:24px 0 0 0; font-size:13px; line-height:1.5; color:#8a8a95;">Or paste this link into your browser:<br/><a href="${url}" style="color:#7c3aed; word-break:break-all;">${url}</a></p>
-              <p style="margin:24px 0 0 0; font-size:12px; line-height:1.5; color:#8a8a95;">If you weren't expecting this invite, you can safely ignore this email.</p>
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+  brand,
+}: InviteContext): { text: string; html: string } {
+  return renderSystemEmail({
+    brand,
+    preview: `${inviterName} invited you to ${subAccountName}.`,
+    heading: "You're invited",
+    paragraphs: [
+      [`${inviterName} invited you to `, { bold: subAccountName }, ` on ${brand.name}.`],
+      ["You'll join as ", { bold: roleLabel }, "."],
+    ],
+    button: { label: "Accept invite", url: inviteUrl },
+    note: "If you weren't expecting this invite, you can safely ignore this email.",
+  });
 }
 
 interface AddedContext {
@@ -668,92 +566,30 @@ interface AddedContext {
   roleLabel: string;
   /** Deployment URL for the "Open" button. May be "". */
   appUrl: string;
-  brandName: string;
+  brand: SystemEmailBrand;
 }
 
-function renderAddedText({
+function addedEmail({
   inviterName,
   subAccountName,
   roleLabel,
   appUrl,
-  brandName,
-}: AddedContext): string {
-  return [
-    `${inviterName} added you to ${subAccountName} on ${brandName} as ${roleLabel}.`,
-    "",
-    `You already have an account, so there's nothing to accept — just sign in and ${subAccountName} will be in your workspace switcher.`,
-    ...(appUrl ? ["", `Open ${brandName}:`, appUrl] : []),
-  ].join("\n");
-}
-
-function renderAddedHtml({
-  inviterName,
-  subAccountName,
-  roleLabel,
-  appUrl,
-  brandName,
-}: AddedContext): string {
-  const inviter = escapeHtml(inviterName);
-  const sub = escapeHtml(subAccountName);
-  const role = escapeHtml(roleLabel);
-  const url = escapeHtml(appUrl);
-  const brand = escapeHtml(brandName);
-  const cta = appUrl
-    ? `<table role="presentation" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td>
-                    <a href="${url}" style="display:inline-block; background:#7c3aed; color:#ffffff; text-decoration:none; padding:12px 24px; border-radius:8px; font-size:14px; font-weight:600;">Open ${brand}</a>
-                  </td>
-                </tr>
-              </table>`
-    : "";
-  return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>You've been added to ${sub} on ${brand}</title>
-</head>
-<body style="margin:0; padding:0; background:#f6f6f9; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color:#0a0a0f;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f6f9; padding:32px 16px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="max-width:520px; background:#ffffff; border-radius:16px; padding:32px; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-          <tr>
-            <td style="padding-bottom:20px;">
-              <table role="presentation" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="vertical-align:middle; padding-right:8px;">
-                    <svg width="22" height="22" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
-                      <defs>
-                        <linearGradient id="ls-mail-1" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#6366f1"/><stop offset="100%" stop-color="#7c3aed"/></linearGradient>
-                        <linearGradient id="ls-mail-2" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#8b5cf6"/><stop offset="100%" stop-color="#a855f7"/></linearGradient>
-                        <linearGradient id="ls-mail-3" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#c026d3"/><stop offset="100%" stop-color="#ec4899"/></linearGradient>
-                      </defs>
-                      <path d="M 56 8 L 18 8 L 8 16 L 18 24 L 56 24 Z" fill="url(#ls-mail-1)"/>
-                      <path d="M 8 28 L 46 28 L 56 36 L 46 44 L 8 44 Z" fill="url(#ls-mail-2)"/>
-                      <path d="M 56 48 L 18 48 L 8 56 L 18 60 L 56 60 Z" fill="url(#ls-mail-3)"/>
-                    </svg>
-                  </td>
-                  <td style="vertical-align:middle;">
-                    <span style="font-size:18px; font-weight:700; color:#0a0a0f; letter-spacing:-0.01em;">${brand}</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <h1 style="margin:0 0 12px 0; font-size:22px; font-weight:600; color:#0a0a0f; letter-spacing:-0.01em;">You've been added</h1>
-              <p style="margin:0 0 8px 0; font-size:15px; line-height:1.5; color:#4a4a55;">${inviter} added you to <strong style="color:#0a0a0f;">${sub}</strong> on ${brand} as <strong>${role}</strong>.</p>
-              <p style="margin:0 0 24px 0; font-size:15px; line-height:1.5; color:#4a4a55;">You already have an account, so there's nothing to accept — just sign in and ${sub} will be in your workspace switcher.</p>
-              ${cta}
-            </td>
-          </tr>
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>`;
+  brand,
+}: AddedContext): { text: string; html: string } {
+  return renderSystemEmail({
+    brand,
+    preview: `You now have access to ${subAccountName}.`,
+    heading: "You've been added",
+    paragraphs: [
+      [
+        `${inviterName} added you to `,
+        { bold: subAccountName },
+        ` on ${brand.name} as `,
+        { bold: roleLabel },
+        ".",
+      ],
+      `You already have an account, so there's nothing to accept — just sign in and ${subAccountName} will be in your workspace switcher.`,
+    ],
+    ...(appUrl ? { button: { label: `Open ${brand.name}`, url: appUrl } } : {}),
+  });
 }

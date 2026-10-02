@@ -25,7 +25,7 @@ vi.mock("@/lib/comms/smtp", async (orig) => ({
 }));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
-vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({}) }));
+vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({ name: "LeadStack" }) }));
 vi.mock("@/lib/auth/require-tenancy", () => ({
   requireSubAccountMember: async () => ({ uid: "owner1", agencyId: "ag1", subAccountRole: "agencyOwner" }),
 }));

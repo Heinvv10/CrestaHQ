@@ -13,7 +13,7 @@ vi.mock("resend", () => ({ Resend: class { emails = { send: m.resendSend }; } })
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: vi.fn() }));
 vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: vi.fn(), checkQuota: async () => ({ allowed: true }) }));
 vi.mock("@/lib/agency/policy", () => ({ agencyAllowsSharedSms: async () => false }));
-vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({}) }));
+vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({ name: "LeadStack" }) }));
 vi.mock("@/lib/server/email-conversations", () => ({ recordEmailMessage: vi.fn() }));
 vi.mock("@/lib/server/sub-account-secrets", () => ({ readSubAccountSecret: async () => "tok" }));
 

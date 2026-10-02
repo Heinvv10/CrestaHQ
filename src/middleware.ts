@@ -27,6 +27,9 @@ const PUBLIC_PATHS = [
   "/f",
   "/api/forms",
   "/api/auth/signup",
+  // Forgot-password form. Answers the same for unknown accounts; rate-
+  // limited inside (lib/auth/password-reset.ts).
+  "/api/auth/password-reset",
   // Workflow Builder step worker — QStash callback, signature-verified inside
   // the route.
   "/api/workflows/step",

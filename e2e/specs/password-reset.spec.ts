@@ -80,3 +80,35 @@ test("a bogus reset code shows the expired state, not the form", async ({
   await expect(page.getByText("This link has expired")).toBeVisible();
   await expect(page.locator("#new-password")).toHaveCount(0);
 });
+
+/**
+ * The request half. Uses an address with no account, so no mail is ever
+ * sent — with a platform mailbox (production) the server answers {ok:true}
+ * and skips the send; without one (CI) it answers {fallback:true} and the
+ * client asks Firebase, which also sends nothing for an unknown address.
+ */
+// One address per test: the server allows each caller 3 requests per
+// address an hour, and every run comes from the same runner IP.
+const noAccount = (tag: string) => `e2e-no-account-${tag}-${runId()}@crestahq.com`;
+
+test("the reset endpoint is reachable without a session", async ({ request }) => {
+  const res = await request.post("/api/auth/password-reset", {
+    data: { email: noAccount("api") },
+    maxRedirects: 0,
+  });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { ok?: boolean; fallback?: boolean };
+  expect(body.ok === true || body.fallback === true).toBe(true);
+});
+
+test("Forgot password? confirms without revealing whether the account exists", async ({
+  page,
+}) => {
+  await page.goto("/login");
+  await page.getByRole("button", { name: "Forgot password?" }).click();
+  await page.locator("#reset-email").fill(noAccount("form"));
+  const reply = page.waitForResponse("**/api/auth/password-reset");
+  await page.getByRole("button", { name: "Send reset link" }).click();
+  expect((await reply).status()).toBe(200);
+  await expect(page.getByText("Check your inbox.")).toBeVisible();
+});

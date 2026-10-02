@@ -24,7 +24,7 @@ vi.mock("@/lib/server/usage-meter", () => ({
 }));
 vi.mock("@/lib/comms/usage", () => ({ recordSend: async () => {} }));
 vi.mock("@/lib/landing/resolve-brand", () => ({
-  resolveCustomBrand: async () => ({}),
+  resolveCustomBrand: async () => ({ name: "LeadStack" }),
 }));
 vi.mock("@/lib/server/email-conversations", () => ({
   recordEmailMessage: async (input: Record<string, unknown>) => {
