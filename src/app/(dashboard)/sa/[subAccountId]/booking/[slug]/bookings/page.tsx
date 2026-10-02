@@ -23,7 +23,7 @@ import {
 } from "@/lib/firestore/booking-pages";
 import { Input } from "@/components/ui/input";
 import { EventDialog } from "@/components/calendar/event-dialog";
-import { shownEvent } from "@/lib/calendar/event-overrides";
+import { shownEvent } from "@/lib/calendar/event-overrides-view";
 import { toDate } from "@/lib/format";
 import {
   eventStatus,

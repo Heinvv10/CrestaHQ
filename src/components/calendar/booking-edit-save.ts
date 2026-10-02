@@ -1,4 +1,4 @@
-import type { CalendarEvent, EventFormData, EventNotifySkipReason } from "@/types/events";
+import type { EventFormData, EventNotifySkipReason } from "@/types/events";
 
 /** The time the server holds for the booking, as far as the dialog knows. */
 export interface TimeBaseline {
@@ -130,7 +130,7 @@ export async function saveBookingPageEdit(args: {
   }
 
   try {
-    await args.updateFields(eventId, args.fields);
+    if (Object.keys(args.fields).length > 0) await args.updateFields(eventId, args.fields);
   } catch (error) {
     return { kind: "fields_failed", baseline: nextBaseline, rescheduled, warning, error };
   }
@@ -138,19 +138,27 @@ export async function saveBookingPageEdit(args: {
 }
 
 /**
- * The dialog's fields minus `contactId` when the contact is unchanged and the
- * event already carries a territory. A `contactId` makes `updateEvent`
- * re-derive the territory with a contact read (a `getDoc`), and that read
- * waits on the same Listen stream that can sit silent for ~30 s, leaving
- * Save on "Saving…". With the contact unchanged the event keeps the
- * territory it has. A changed contact, or an event with no territory yet,
- * still gets the read.
+ * The form's values that differ from `baseline`, the values the form was
+ * initialised with. The dialog's event updates while it is open (overrides,
+ * snapshots), so Save must write only what the operator changed: comparing
+ * against the live event would send a third party's change back as ours
+ * (a reschedule back to the old time, a stale title). Start and end travel
+ * together, as `updateEvent` expects.
+ *
+ * Leaving an unchanged `contactId` out also skips `updateEvent`'s contact
+ * read (a `getDoc` that waits on a silent Listen stream).
  */
-export function withoutUnchangedContact<T extends { contactId?: string | null }>(
-  fields: T,
-  event: Pick<CalendarEvent, "contactId" | "territoryId">,
-): T | Omit<T, "contactId"> {
-  if ((fields.contactId ?? null) !== (event.contactId ?? null) || !event.territoryId) return fields;
-  const { contactId: _unchanged, ...rest } = fields;
-  return rest;
+export function changedFields(form: EventFormData, baseline: EventFormData): Partial<EventFormData> {
+  const out: Partial<EventFormData> = {};
+  if (
+    form.startAt.getTime() !== baseline.startAt.getTime() ||
+    form.endAt.getTime() !== baseline.endAt.getTime()
+  ) {
+    out.startAt = form.startAt;
+    out.endAt = form.endAt;
+  }
+  for (const key of ["title", "contactId", "location", "notes", "meetingUrl"] as const) {
+    if (form[key] !== baseline[key]) Object.assign(out, { [key]: form[key] });
+  }
+  return out;
 }

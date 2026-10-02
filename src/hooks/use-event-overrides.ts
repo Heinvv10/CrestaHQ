@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { applyEventOverrides } from "@/lib/calendar/event-overrides-view";
 import {
-  applyEventOverrides,
   expireEventOverridesAndRearm,
   nextEventOverrideExpiryMs,
   reconcileEventOverrides,

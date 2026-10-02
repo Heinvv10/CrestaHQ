@@ -40,7 +40,7 @@ import {
 } from "@/lib/calendar/appointment-filters";
 import { useEventOverrides } from "@/hooks/use-event-overrides";
 import { showOlderNotice, tabIsPartial } from "@/lib/calendar/appointments-window";
-import { shownEvent } from "@/lib/calendar/event-overrides";
+import { shownEvent } from "@/lib/calendar/event-overrides-view";
 import { AppointmentsWindowNotice } from "@/components/calendar/appointments-window-notice";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
 import { EventDialog } from "@/components/calendar/event-dialog";

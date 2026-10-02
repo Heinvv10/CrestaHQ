@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventFormData } from "@/types/events";
 
 import {
+  changedFields,
   saveBookingPageEdit,
-  withoutUnchangedContact,
   type ConfirmedTime,
   type RescheduleResponse,
   type TimeBaseline,
@@ -151,28 +151,47 @@ describe("saveBookingPageEdit", () => {
   });
 });
 
-describe("withoutUnchangedContact", () => {
-  const form = { title: "T", contactId: "c1", location: "", notes: "", meetingUrl: null };
-
-  it("drops an unchanged contact, so the save reads no contact (the event keeps its territory)", () => {
-    expect(withoutUnchangedContact(form, { contactId: "c1", territoryId: "t1" })).toEqual({
-      title: "T",
-      location: "",
-      notes: "",
-      meetingUrl: null,
+describe("an edit with nothing but the time changed", () => {
+  it("moves the booking and writes no fields", async () => {
+    const out = await saveBookingPageEdit({
+      eventId: "evt1",
+      baseline: ORIG,
+      ...MOVED,
+      timeLocked: false,
+      fields: {},
+      reschedule,
+      updateFields,
     });
-    expect(
-      withoutUnchangedContact({ ...form, contactId: null }, { contactId: null, territoryId: "global" }),
-    ).not.toHaveProperty("contactId");
+    expect(out.kind).toBe("saved");
+    expect(reschedule).toHaveBeenCalledTimes(1);
+    expect(updateFields).not.toHaveBeenCalled();
   });
-  it("keeps a changed contact, so its territory is re-derived", () => {
-    expect(withoutUnchangedContact(form, { contactId: "c2", territoryId: "t1" })).toBe(form);
-    expect(withoutUnchangedContact({ ...form, contactId: null }, { contactId: "c1", territoryId: "t1" })).toHaveProperty(
-      "contactId",
-      null,
-    );
+});
+
+describe("changedFields", () => {
+  const base: EventFormData = {
+    title: "Intro",
+    startAt: new Date("2030-01-01T09:00:00Z"),
+    endAt: new Date("2030-01-01T09:30:00Z"),
+    contactId: "c1",
+    location: "",
+    notes: "",
+    meetingUrl: null,
+  };
+
+  it("is empty when nothing changed (times compared by value)", () => {
+    expect(changedFields({ ...base, startAt: new Date(base.startAt), endAt: new Date(base.endAt) }, base)).toEqual({});
   });
-  it("keeps the contact of an event that has no territory yet", () => {
-    expect(withoutUnchangedContact(form, { contactId: "c1", territoryId: null })).toBe(form);
+  it("holds only the fields that changed: an unchanged contact is left out, so no contact read", () => {
+    expect(changedFields({ ...base, notes: "Bring ID" }, base)).toEqual({ notes: "Bring ID" });
+    expect(changedFields({ ...base, contactId: null, meetingUrl: "https://x.test" }, base)).toEqual({
+      contactId: null,
+      meetingUrl: "https://x.test",
+    });
+    expect(changedFields({ ...base, title: "New", location: "Gate 2" }, base)).toEqual({ title: "New", location: "Gate 2" });
+  });
+  it("sends start and end together when either moved", () => {
+    const endAt = new Date("2030-01-01T10:00:00Z");
+    expect(changedFields({ ...base, endAt }, base)).toEqual({ startAt: base.startAt, endAt });
   });
 });

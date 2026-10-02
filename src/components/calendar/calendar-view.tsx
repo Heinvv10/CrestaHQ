@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { EventDialog } from "@/components/calendar/event-dialog";
-import { shownEvent } from "@/lib/calendar/event-overrides";
+import { shownEvent } from "@/lib/calendar/event-overrides-view";
 import type { CalendarEvent, EventStatus } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 

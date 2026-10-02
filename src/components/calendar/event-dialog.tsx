@@ -2,6 +2,7 @@
 
 import {
   useEffect,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -37,12 +38,12 @@ import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
 import { GoogleSyncNotice } from "@/components/calendar/google-sync-notice";
 import {
+  changedFields,
   notifySkipDetail,
   saveBookingPageEdit,
-  withoutUnchangedContact,
   type TimeBaseline,
 } from "@/components/calendar/booking-edit-save";
-import { createdEventFromResponse } from "@/lib/calendar/event-overrides";
+import { createdEventFromResponse } from "@/lib/calendar/event-overrides-view";
 import { toDate } from "@/lib/format";
 import {
   eventOccupiesSlot,
@@ -98,6 +99,29 @@ function fromInputs(date: string, time: string): Date {
   return new Date(`${date}T${time}:00`);
 }
 
+/** What Save writes for the form's values. */
+function formData(v: {
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  contactId: string | null;
+  location: string;
+  notes: string;
+  meetingUrl: string;
+}): EventFormData {
+  const trimmedMeetingUrl = v.meetingUrl.trim();
+  return {
+    title: v.title.trim(),
+    startAt: fromInputs(v.date, v.startTime),
+    endAt: fromInputs(v.date, v.endTime),
+    contactId: v.contactId || null,
+    location: v.location.trim(),
+    notes: v.notes.trim(),
+    meetingUrl: trimmedMeetingUrl.length > 0 ? trimmedMeetingUrl : null,
+  };
+}
+
 function roundedNowHour(): Date {
   const d = new Date();
   d.setMinutes(0, 0, 0);
@@ -146,21 +170,38 @@ export function EventDialog({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // What the form held when it was initialised for the open event. Save
+  // writes only what differs from it: the `event` prop follows the page
+  // (overrides, snapshots) while the dialog is open, so diffing against it
+  // would send a third party's change back as the operator's.
+  const formBaseline = useRef<EventFormData | null>(null);
 
   useEffect(() => {
     if (!open) return;
     if (event) {
       const start = toDate(event.startAt) ?? new Date();
       const end = toDate(event.endAt) ?? new Date(start.getTime() + 30 * 60000);
-      setTitle(event.title);
-      setDate(toDateInput(start));
-      setStartTime(toTimeInput(start));
-      setEndTime(toTimeInput(end));
-      setContactId(event.contactId);
-      setLocation(event.location ?? "");
-      setMeetingUrl(event.meetingUrl ?? "");
-      setNotes(event.notes ?? "");
+      const initial = {
+        title: event.title,
+        date: toDateInput(start),
+        startTime: toTimeInput(start),
+        endTime: toTimeInput(end),
+        contactId: event.contactId,
+        location: event.location ?? "",
+        meetingUrl: event.meetingUrl ?? "",
+        notes: event.notes ?? "",
+      };
+      setTitle(initial.title);
+      setDate(initial.date);
+      setStartTime(initial.startTime);
+      setEndTime(initial.endTime);
+      setContactId(initial.contactId);
+      setLocation(initial.location);
+      setMeetingUrl(initial.meetingUrl);
+      setNotes(initial.notes);
+      formBaseline.current = formData(initial);
     } else {
+      formBaseline.current = null;
       const start = defaultDate
         ? (() => {
             const d = new Date(defaultDate);
@@ -213,30 +254,23 @@ export function EventDialog({
     setErrors(next);
     if (Object.keys(next).length > 0 || !startDt || !endDt) return;
 
-    const trimmedMeetingUrl = meetingUrl.trim();
-    const payload: EventFormData = {
-      title: title.trim(),
-      startAt: startDt,
-      endAt: endDt,
-      contactId: contactId || null,
-      location: location.trim(),
-      notes: notes.trim(),
-      meetingUrl: trimmedMeetingUrl.length > 0 ? trimmedMeetingUrl : null,
-    };
+    const payload = formData({ title, date, startTime, endTime, contactId, location, notes, meetingUrl });
 
     setSaving(true);
     try {
       if (isEdit && event) {
+        const base = formBaseline.current;
+        const changed = base ? changedFields(payload, base) : payload;
         if (eventSource(event) === "booking_page") {
-          const { startAt, endAt, ...fields } = withoutUnchangedContact(payload, event);
+          const { startAt: _startAt, endAt: _endAt, ...fields } = changed;
           const result = await saveBookingPageEdit({
             eventId: event.id,
             baseline: timeBaseline ?? {
-              startAt: toDate(event.startAt),
-              endAt: toDate(event.endAt),
+              startAt: base?.startAt ?? toDate(event.startAt),
+              endAt: base?.endAt ?? toDate(event.endAt),
             },
-            startAt,
-            endAt,
+            startAt: payload.startAt,
+            endAt: payload.endAt,
             timeLocked,
             fields,
             reschedule: async (id, start, end) => {
@@ -277,7 +311,7 @@ export function EventDialog({
           }
         } else {
           // Plain edit has no webhook event — stays a client-side write.
-          await updateEvent(event.id, withoutUnchangedContact(payload, event));
+          if (Object.keys(changed).length > 0) await updateEvent(event.id, changed);
         }
         toast.success("Event updated");
       } else {

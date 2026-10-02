@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { Timestamp } from "firebase/firestore";
 import { createMemoryFirestore } from "@/test/memory-firestore";
-import { createdEventFromResponse } from "@/lib/calendar/event-overrides";
+import { createdEventFromResponse } from "@/lib/calendar/event-overrides-view";
 
 /**
  * The calendar shows a new event from POST /api/events' 201, before its
