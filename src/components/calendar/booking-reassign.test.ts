@@ -69,7 +69,12 @@ it("reports the assignee from the route's 200", async () => {
 });
 
 it("reports nothing on a refusal", async () => {
-  reply(400, { error: "That member isn't active on this sub-account." });
+  // The body names an assignee on purpose: only the !res.ok guard keeps this from reporting.
+  reply(400, {
+    error: "That member isn't active on this sub-account.",
+    assignedToUid: "bob",
+    assignedToName: "Bob",
+  });
   const onReassigned = vi.fn();
   await pick("bob", onReassigned);
   expect(onReassigned).not.toHaveBeenCalled();

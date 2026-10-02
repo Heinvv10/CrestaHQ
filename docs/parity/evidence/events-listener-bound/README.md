@@ -89,7 +89,10 @@ Other known limits:
   stream. The row behind it already shows the new time. Not changed here.
 - The dialog's own host picker reads the page's hosts with a one-off read and
   keeps showing the old assignee after a reassign (its `event` prop does not
-  update). The list row is right.
+  update). The list row is right. A consequence: picking the original host again
+  in the same open dialog, to undo, is a silent no-op (the stale prop still equals
+  it, so no request is sent). Closing and reopening the dialog works around it.
+  Same as before this change.
 - Overrides are judged per field. A third party changing only one of
   start / end while the other still reads its old value leaves our other
   field showing until the delta or the 60 s expiry.
