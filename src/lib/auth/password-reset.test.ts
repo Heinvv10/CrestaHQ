@@ -151,15 +151,24 @@ describe("requestPasswordReset", () => {
     expect(gatePasswordReset("v6-y@x.test", "2001:db8:1:3::1")).toBe("deliver");
   });
 
-  it("does not reset a victim's budget when flooded with junk keys", async () => {
-    // A fresh module instance: the flood fills the limiter for good, and the
-    // other tests share the top-level one.
+  it("evicts the oldest keys past the cap, not a victim's recent budget", async () => {
+    // Fresh module instances: floods change limiter state for good.
     vi.resetModules();
     const { gatePasswordReset: gate } = await import("./password-reset");
-    for (let i = 0; i < 5; i++) gate("flood-victim@x.test", freshIp());
-    for (let i = 0; i < 20_500; i++) gate(`junk${i}@x.test`, freshIp());
-    // Full of live budgets: new callers are refused, the victim gets no mail.
-    expect(gate("flood-victim@x.test", freshIp())).not.toBe("deliver");
+    gate("flood-victim@x.test", freshIp());
+    for (let i = 0; i < 90_000; i++) gate(`old${i}@x.test`, freshIp());
+    // Touching a key makes it recent again, though it was inserted first.
+    for (let i = 0; i < 4; i++) gate("flood-victim@x.test", freshIp());
+    // Past the cap: the oldest keys go, not the victim's recent budget.
+    for (let i = 0; i < 20_000; i++) gate(`junk${i}@x.test`, freshIp());
+    expect(gate("flood-victim@x.test", freshIp())).toBe("quiet");
+  });
+
+  it("never refuses a new caller because the limiter is full", async () => {
+    vi.resetModules();
+    const { gatePasswordReset: gate } = await import("./password-reset");
+    for (let i = 0; i < 100_500; i++) gate(`junk${i}@x.test`, freshIp());
+    expect(gate("innocent@real.test", freshIp())).toBe("deliver");
   });
 
   it("cleans brand values a mail header can't carry instead of failing", async () => {

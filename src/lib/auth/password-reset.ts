@@ -40,7 +40,7 @@ const PER_CALLER_EMAIL_LIMIT = 3;
  * newest mail already in the inbox stays the working one.
  */
 const PER_EMAIL_LIMIT = 5;
-const MAX_TRACKED = 20_000;
+const MAX_TRACKED = 100_000;
 
 const ipHits = new Map<string, number[]>();
 const callerEmailHits = new Map<string, number[]>();
@@ -60,23 +60,23 @@ function ipKey(ip: string): string {
 
 /**
  * In-memory, resets on restart — a mail-bomb dampener, not a security
- * boundary. When full, only expired budgets are dropped; if it is still full
- * a NEW key is refused. Dropping live budgets instead would let a flood of
- * junk keys hand a victim's address a fresh budget. The price: ~1,000 IPs
- * (or /64s) filling it within an hour refuses new callers until it drains.
+ * boundary. When full, the least recently used key is dropped. Never refuse
+ * a key because the map is full: that hands ~1,000 IPs a global outage.
+ * Never clear it wholesale: that hands a victim's address a fresh budget for
+ * a few hundred IPs. Dropping one stale key at a time means flushing a live
+ * budget costs ~100,000 requests.
  */
 function overLimit(map: Map<string, number[]>, key: string, limit: number): boolean {
   const now = Date.now();
-  if (!map.has(key) && map.size >= MAX_TRACKED) {
-    for (const [k, hits] of map) {
-      if (hits.every((t) => now - t >= WINDOW_MS)) map.delete(k);
-    }
-    if (map.size >= MAX_TRACKED) return true;
-  }
   const recent = (map.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
   const over = recent.length >= limit;
   if (!over) recent.push(now);
+  map.delete(key); // re-insert so iteration order means "last touched"
   map.set(key, recent);
+  for (const oldest of map.keys()) {
+    if (map.size <= MAX_TRACKED) break;
+    map.delete(oldest);
+  }
   return over;
 }
 
