@@ -9,7 +9,8 @@ import {
   sendPlatformEmail,
   type PlatformSender,
 } from "@/lib/comms/platform-email";
-import { escapeHtml } from "@/lib/comms/escape-html";
+import { renderSystemEmail } from "@/lib/comms/system-email";
+import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { formatBillingPriceWithInterval } from "@/lib/billing/status";
 import type { BillingInterval } from "@/types/billing";
 import {
@@ -59,28 +60,18 @@ async function emailCheckoutLink(opts: {
   const subject = opts.planName
     ? `Activate your ${opts.planName} subscription`
     : "Activate your workspace subscription";
-  const text = [
-    `Your workspace "${opts.subAccountName}" is ready to activate.`,
-    "",
-    opts.planName ? `Plan: ${opts.planName} — ${opts.priceLabel}` : "",
-    "",
-    `Complete your subscription here: ${opts.url}`,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  const html = `
-    <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
-      <h2 style="margin:0 0 12px;">Activate your subscription</h2>
-      <p>Your workspace <strong>${escapeHtml(opts.subAccountName)}</strong> is ready to activate${
-        opts.planName
-          ? ` on the <strong>${escapeHtml(opts.planName)}</strong> plan (${escapeHtml(opts.priceLabel)})`
-          : ""
-      }.</p>
-      <p style="margin:24px 0;">
-        <a href="${escapeHtml(opts.url)}" style="background:#4f46e5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;">Complete checkout</a>
-      </p>
-      <p style="color:#6b7280;font-size:13px;">Payment is handled securely by Stripe. Your card is charged ${opts.cadenceWord} and you can update it anytime from your workspace settings.</p>
-    </div>`;
+  const { text, html } = renderSystemEmail({
+    brand: await resolveCustomBrand(),
+    preview: `${opts.subAccountName} is ready to activate.`,
+    heading: "Activate your subscription",
+    paragraphs: [
+      opts.planName
+        ? `Your workspace **${opts.subAccountName}** is ready to activate on the **${opts.planName}** plan (${opts.priceLabel}).`
+        : `Your workspace **${opts.subAccountName}** is ready to activate.`,
+    ],
+    button: { label: "Complete checkout", url: opts.url },
+    note: `Payment is handled securely by Stripe. Your card is charged ${opts.cadenceWord} and you can update it anytime from your workspace settings.`,
+  });
   await sendPlatformEmail(opts.sender, { to: opts.to, subject, text, html });
 }
 

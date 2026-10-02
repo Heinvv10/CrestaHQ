@@ -28,8 +28,7 @@ vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.co
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 vi.mock("@/lib/landing/resolve-brand", () => ({
-  resolveBrandName: async () => "LeadStack",
-  resolveCustomBrand: async () => ({}),
+  resolveCustomBrand: async () => ({ name: "LeadStack" }),
 }));
 
 const { SA, mem, resetSeam, suppress } = await s();

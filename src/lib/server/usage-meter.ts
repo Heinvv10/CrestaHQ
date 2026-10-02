@@ -2,6 +2,8 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { renderSystemEmail } from "@/lib/comms/system-email";
+import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import type {
   UsageMonthDoc,
   UsageQuotas,
@@ -406,14 +408,18 @@ async function notifyOwner(
       threshold === 100
         ? `${wsName} hit its monthly ${label} limit`
         : `${wsName} has used 80% of its monthly ${label} quota`;
-    const text = [
-      `${wsName} — ${label} usage this month: ${formatUnits(unit, used)} of ${formatUnits(unit, limit)}.`,
-      "",
-      threshold === 100
-        ? `That channel's sends are now paused for this workspace until the month resets, or until you raise the limit (Sub-accounts → Manage → Usage).`
-        : `At 100% that channel's sends pause for this workspace. Raise the limit under Sub-accounts → Manage → Usage if needed.`,
-    ].join("\n");
-    await sendPlatformEmail(sender, { to, subject, text });
+    const { text, html } = renderSystemEmail({
+      brand: await resolveCustomBrand(),
+      preview: subject,
+      heading: threshold === 100 ? "Monthly limit reached" : "80% of monthly quota used",
+      paragraphs: [
+        `**${wsName}** — ${label} usage this month: ${formatUnits(unit, used)} of ${formatUnits(unit, limit)}.`,
+        threshold === 100
+          ? `That channel's sends are now paused for this workspace until the month resets, or until you raise the limit (Sub-accounts → Manage → Usage).`
+          : `At 100% that channel's sends pause for this workspace. Raise the limit under Sub-accounts → Manage → Usage if needed.`,
+      ],
+    });
+    await sendPlatformEmail(sender, { to, subject, text, html });
   } catch (err) {
     console.warn("[usage-meter] owner alert failed", { subAccountId, unit, err });
   }

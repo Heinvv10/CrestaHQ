@@ -57,17 +57,3 @@ export async function resolveCustomBrand(): Promise<ResolvedBrand> {
     return fallback;
   }
 }
-
-/**
- * The deployment's brand name for use in transactional copy (emails, etc.).
- * Prefers the agency Branding name, falls back to `CUSTOM_BRAND.name`, and
- * only lands on "LeadStack" if both are somehow empty. Never throws.
- */
-export async function resolveBrandName(): Promise<string> {
-  try {
-    const { name } = await resolveCustomBrand();
-    return name || "LeadStack";
-  } catch {
-    return "LeadStack";
-  }
-}

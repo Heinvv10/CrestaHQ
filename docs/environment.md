@@ -101,6 +101,20 @@ the period ends.
 
 Without these two vars, `/api/comms/email/send` returns **503** and the Email button in the contact profile still renders but the send fails cleanly.
 
+## Optional — system mail mailbox (password resets)
+| Var | Source |
+|---|---|
+| `PLATFORM_SMTP_HOST` | Your mail host, e.g. `mail.yourdomain.com` |
+| `PLATFORM_SMTP_PORT` | `465` (TLS, default) or `587` / `2525` (STARTTLS) |
+| `PLATFORM_SMTP_USER` | Mailbox login, e.g. `noreply@yourdomain.com` |
+| `PLATFORM_SMTP_PASS` | Mailbox password |
+| `PLATFORM_SMTP_FROM` | Sender address, normally the same mailbox |
+
+With all of these set (plus `NEXT_PUBLIC_APP_URL`), "Forgot password?" sends a branded reset
+mail from this mailbox whose link opens `/login` on your own domain. Without them it falls back
+to Firebase's built-in mail, which links to `<project>.firebaseapp.com` — spam filters score
+that link as phishing, so expect those mails in spam.
+
 ## Required for SMS (disables cleanly if missing)
 | Var | Source |
 |---|---|

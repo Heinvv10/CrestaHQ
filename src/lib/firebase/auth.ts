@@ -71,14 +71,24 @@ export async function signOutUser() {
 }
 
 /**
- * Send a Firebase password-reset email. The link in the email lands on
- * Firebase's hosted action handler which lets the user pick a new
- * password. Always resolves to void on the client side — Firebase doesn't
- * tell us whether the address exists (by design, to avoid email
- * enumeration). UI should show the same success message regardless.
+ * Ask the server to send a password-reset email (see
+ * lib/auth/password-reset.ts). Its link opens /login, which completes the
+ * reset. The reply is the same whether or not the address has an account,
+ * so the UI shows one success message regardless.
  */
 export async function sendPasswordReset(email: string): Promise<void> {
-  await sendPasswordResetEmail(getFirebaseAuth(), email);
+  const res = await fetch("/api/auth/password-reset", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    fallback?: boolean;
+  };
+  if (!res.ok) throw new Error(body.error ?? "Could not send reset.");
+  // No platform mailbox on this deployment: Firebase sends its own mail.
+  if (body.fallback) await sendPasswordResetEmail(getFirebaseAuth(), email);
 }
 
 /**
