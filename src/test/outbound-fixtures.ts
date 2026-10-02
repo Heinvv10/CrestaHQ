@@ -94,6 +94,7 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   list_scheduled_messages: { contactId: "c1" },
   set_bot_mode: { conversationId: "c1", mode: "off" },
   cancel_scheduled_message: { contactId: "c1", scheduledMessageId: "s1" },
+  add_conversation_note: { contactId: "c1", body: "Internal note" },
   send_message: { conversationId: "c1", channel: "sms", body: "Hi Ann" },
   schedule_message: { conversationId: "c1", channel: "sms", body: "Later", sendAt: new Date(Date.now() + 3_600_000).toISOString() },
   send_whatsapp_template: { conversationId: "c1", templateId: "wt1", variables: { "1": "Tuesday" } },
