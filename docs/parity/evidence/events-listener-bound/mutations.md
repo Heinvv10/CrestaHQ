@@ -114,3 +114,29 @@ unmutated build passed all 8 tests of the spec first.
 |---|---|---|
 | Dialog hands the confirmed reschedule to the page | remove the `onRescheduled` callback passed to `saveBookingPageEdit` | › an operator reschedule from the Edit dialog shows the new time without the Firestore delta (row kept the old time) |
 | Dialog hands the server delete to the page | remove `onDeleted?.(event.id)` | › deleting a Google-mirrored event removes the row without the Firestore delta (row still present) |
+
+## Host reassign (2026-10-02, review round 1)
+
+The assign route's 200 already returns `assignedToUid` / `assignedToName`, so
+the route is unchanged. Both are now patch fields with the same per-field
+rules. Unit rows were run and restored as above, and all were red.
+
+| Guard | Mutation | Failing test |
+|---|---|---|
+| Reassign control reports the 200's assignee | remove `onReassigned?.(…)` in `booking-reassign.tsx` | booking-reassign.test.ts › reports the assignee from the route's 200 |
+| Nothing reported without the assignee in the body | drop the `!== undefined` check | › reports nothing when the 200 does not name the assignee |
+| Assignee fields are overridable | drop them from `FIELDS` | event-overrides.test.ts › records the assignee against the latest snapshot's and shows it; use-event-overrides.test.ts › shows a confirmed host reassign until the snapshot catches up |
+| Assignee shown | drop the `assignedToUid` spread | › records the assignee … and shows it |
+| Assignee name shown | drop the `assignedToName` spread | use-event-overrides.test.ts › shows a confirmed host reassign … |
+| A missing assignee reads as null | `e[field] ?? null` → `e[field]` | › clearing the host of a doc that never had one is already shown: nothing set (survived at first; this test was added) |
+| Hook patches the assignee | `noteConfirmedAssignee` leaves state as is | use-event-overrides.test.ts › shows a confirmed host reassign … |
+
+E2E row, using the same method as above. The unmutated build passed all 9 tests
+of the spec.
+
+| Guard | Mutation | Failing test |
+|---|---|---|
+| Dialog hands the confirmed assignee to the page | `onReassigned={() => {}}` on the panel | › a host reassigned from the Edit dialog shows on the row without the Firestore delta (Owner cell never showed the new host) |
+
+The first attempt at this row removed the prop outright. That is a type error,
+so the build failed and the round was not counted.

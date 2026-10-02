@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Timestamp } from "firebase/firestore";
 import type { CalendarEvent, EventStatus } from "@/types/events";
-import { matchesTab } from "./appointment-filters";
+import { appointmentOwnerLabel, matchesTab } from "./appointment-filters";
 import {
   EVENT_OVERRIDE_TIMER_PAD_MS,
   EVENT_OVERRIDE_TTL_MS,
@@ -218,5 +218,48 @@ describe("tab membership follows the overridden values", () => {
     const rows = applyEventOverrides([timed("a", NEW_S, NEW_E), timed("b", NEW_S, NEW_E)], GONE);
     expect(rows.filter((e) => matchesTab(e, "upcoming", NOW)).length).toBe(1);
     expect(rows.filter((e) => matchesTab(e, "all", NOW)).length).toBe(1);
+  });
+});
+
+describe("host reassign", () => {
+  const owned = (id: string, uid: string | null, name: string | null) =>
+    ({ id, assignedToUid: uid, assignedToName: name }) as CalendarEvent;
+  const BOB = setEventPatch({}, "a", { assignedToUid: "bob", assignedToName: "Bob" }, [owned("a", "ann", "Ann")], T0);
+  const names = new Map([["ann", "Ann"], ["bob", "Bob"], ["cy", "Cy"]]);
+
+  it("records the assignee against the latest snapshot's and shows it", () => {
+    expect(BOB.a).toEqual({
+      assignedToUid: { to: "bob", from: "ann", at: T0 },
+      assignedToName: { to: "Bob", from: "Ann", at: T0 },
+    });
+    const row = applyEventOverrides([owned("a", "ann", "Ann")], BOB)[0];
+    expect(appointmentOwnerLabel(row, names)).toBe("Bob");
+  });
+  it("keeps the override while the snapshot is stale", () => {
+    expect(reconcileEventOverrides(BOB, [owned("a", "ann", "Ann")])).toBe(BOB);
+  });
+  it("drops it once the snapshot catches up", () => {
+    expect(reconcileEventOverrides(BOB, [owned("a", "bob", "Bob")])).toEqual({});
+  });
+  it("drops it when someone else reassigns it again, so their host shows", () => {
+    const theirs = [owned("a", "cy", "Cy")];
+    const o = reconcileEventOverrides(BOB, theirs);
+    expect(o).toEqual({});
+    expect(appointmentOwnerLabel(applyEventOverrides(theirs, o)[0], names)).toBe("Cy");
+  });
+  it("a missing assignee reads as null, so clearing the host is a confirmable value", () => {
+    const cleared = setEventPatch({}, "a", { assignedToUid: null, assignedToName: null }, [owned("a", "ann", "Ann")], T0);
+    expect(cleared.a.assignedToUid).toEqual({ to: null, from: "ann", at: T0 });
+    expect(reconcileEventOverrides(cleared, [{ id: "a" } as CalendarEvent])).toEqual({});
+  });
+  it("clearing the host of a doc that never had one is already shown: nothing set", () => {
+    const legacy = [{ id: "a" } as CalendarEvent];
+    expect(setEventPatch({}, "a", { assignedToUid: null, assignedToName: null }, legacy, T0)).toEqual({});
+  });
+  it("sets nothing when the latest snapshot already shows the new host", () => {
+    expect(setEventPatch({}, "a", { assignedToUid: "bob", assignedToName: "Bob" }, [owned("a", "bob", "Bob")], T0)).toEqual({});
+  });
+  it("expires like every other override", () => {
+    expect(expireEventOverrides(BOB, T0 + EVENT_OVERRIDE_TTL_MS)).toEqual({});
   });
 });

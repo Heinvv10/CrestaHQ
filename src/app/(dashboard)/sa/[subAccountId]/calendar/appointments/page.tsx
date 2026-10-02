@@ -123,8 +123,13 @@ export default function AppointmentsListPage() {
   const tz = resolveAppointmentsTimezone(subAccount);
 
   const [snapshotEvents, setSnapshotEvents] = useState<CalendarEvent[]>([]);
-  const { events, noteConfirmedStatus, noteConfirmedReschedule, noteConfirmedDelete } =
-    useEventOverrides(snapshotEvents);
+  const {
+    events,
+    noteConfirmedStatus,
+    noteConfirmedReschedule,
+    noteConfirmedAssignee,
+    noteConfirmedDelete,
+  } = useEventOverrides(snapshotEvents);
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [bookingPages, setBookingPages] = useState<BookingPage[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -400,6 +405,7 @@ export default function AppointmentsListPage() {
         event={selectedEvent}
         onStatusChange={noteConfirmedStatus}
         onRescheduled={noteConfirmedReschedule}
+        onReassigned={noteConfirmedAssignee}
         onDeleted={noteConfirmedDelete}
       />
 

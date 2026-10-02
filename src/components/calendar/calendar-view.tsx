@@ -17,6 +17,7 @@ interface CalendarViewProps {
   /** Server-confirmed changes from the dialog (see useEventOverrides). */
   onStatusChange?: (eventId: string, status: EventStatus) => void;
   onRescheduled?: (eventId: string, startAt: Date, endAt: Date) => void;
+  onReassigned?: (eventId: string, assignedToUid: string | null, assignedToName: string | null) => void;
   onDeleted?: (eventId: string) => void;
 }
 
@@ -47,6 +48,7 @@ export function CalendarView({
   contacts,
   onStatusChange,
   onRescheduled,
+  onReassigned,
   onDeleted,
 }: CalendarViewProps) {
   const today = useMemo(() => {
@@ -282,6 +284,7 @@ export function CalendarView({
         defaultDate={defaultDate}
         onStatusChange={onStatusChange}
         onRescheduled={onRescheduled}
+        onReassigned={onReassigned}
         onDeleted={onDeleted}
       />
     </>

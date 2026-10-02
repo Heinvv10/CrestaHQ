@@ -143,8 +143,14 @@ test.beforeAll(async () => {
   });
 });
 
+// A draft team page whose hosts the reassign test picks from.
+const REASSIGN_SLUG = `${PREFIX}reassign`;
+const reassignPage = () =>
+  adminDb().doc(`subAccounts/${subAccountId}/bookingPages/${REASSIGN_SLUG}`);
+
 test.afterAll(async () => {
   await purge();
+  await deleteScoped(reassignPage());
   await deleteScoped(members().doc(HOST.uid));
 });
 
@@ -180,6 +186,7 @@ async function createEvent(opts: {
   bookingPageSlug?: string;
   source: "booking_page" | "manual";
   googleEventIds?: Record<string, string>;
+  host?: { uid: string; name: string };
 }): Promise<string> {
   const endAt = new Date(opts.startAt.getTime() + 30 * 60_000);
   const ref = await adminDb().collection("events").add({
@@ -197,9 +204,10 @@ async function createEvent(opts: {
     bookingPageSlug: opts.bookingPageSlug ?? null,
     // Every fixture event belongs to HOST - never "shared busy". See the
     // file-level comment.
-    assignedToUid: HOST.uid,
-    assignedToName: HOST.name,
-    hostUids: [HOST.uid],
+    assignedToUid: (opts.host ?? HOST).uid,
+    assignedToName: (opts.host ?? HOST).name,
+    // A one-host booking (no hostUids) is the only kind the assign route moves.
+    ...(opts.host ? {} : { hostUids: [HOST.uid] }),
     ...(opts.googleEventIds ? { googleEventIds: opts.googleEventIds } : {}),
     territoryId: "global",
     createdAt: FieldValue.serverTimestamp(),
@@ -677,4 +685,66 @@ test("a refused delete of a Google-mirrored event leaves the row in place", asyn
   await page.keyboard.press("Escape");
   await expect(row).toBeVisible();
   expect((await adminDb().doc(`events/${eventId}`).get()).exists).toBe(true);
+});
+
+// Host reassign is a server write: the Owner column must show the assignee the
+// assign route's 200 reported, not wait for the snapshot delta.
+test("a host reassigned from the Edit dialog shows on the row without the Firestore delta", async ({
+  page,
+}) => {
+  const ownerSnap = await adminDb().doc(`agencies/${agencyId}`).get();
+  const uid = ownerSnap.data()?.ownerUid as string;
+  const owner = { uid, name: "E2E Appt Owner" };
+  await reassignPage().set({
+    id: REASSIGN_SLUG,
+    slug: REASSIGN_SLUG,
+    name: "E2E Appt Reassign Page",
+    status: "draft",
+    hosts: [owner, HOST],
+    agencyId,
+    subAccountId,
+    createdByUid: uid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const stamp = Date.now();
+  const contactId = await ensureContact(uid, `${RUN_TITLE_PREFIX}Reassign ${stamp}`);
+  const title = `${RUN_TITLE_PREFIX}Reassign Booking ${stamp}`;
+  // 13:00 UTC tomorrow: clear of every other fixture event, so the assign
+  // route's conflict check has nothing to warn about.
+  const eventId = await createEvent({
+    createdByUid: uid,
+    contactId,
+    title,
+    status: "scheduled",
+    startAt: at("13:00"),
+    bookingPageSlug: REASSIGN_SLUG,
+    source: "booking_page",
+    host: owner,
+  });
+  const row = await openAllTabRow(page, stamp, title);
+  const ownerCell = row.getByRole("cell", { name: HOST.name, exact: true });
+  await expect(ownerCell).toHaveCount(0);
+
+  // Open the dialog while Firestore still answers: the host picker reads the
+  // page's hosts with a one-off read that a stalled stream would never return.
+  await row.getByRole("button").last().click();
+  await page.getByRole("menuitem", { name: /^(Edit|Reschedule)$/ }).click();
+  const picker = page.getByLabel("Reassign host");
+  await expect(picker.locator(`option[value="${HOST.uid}"]`)).toHaveCount(1, { timeout: 15_000 });
+  await stallFirestoreListen(page);
+
+  const assigned = page.waitForResponse((r) => r.url().endsWith(`/api/events/by-id/${eventId}/assign`), {
+    timeout: 60_000,
+  });
+  await picker.selectOption(HOST.uid);
+  expect((await assigned).status()).toBe(200);
+  await page.keyboard.press("Escape");
+
+  await expect(ownerCell).toBeVisible({ timeout: 5_000 });
+  await expect
+    .poll(async () => (await adminDb().doc(`events/${eventId}`).get()).data()?.assignedToUid, {
+      timeout: 15_000,
+    })
+    .toBe(HOST.uid);
 });

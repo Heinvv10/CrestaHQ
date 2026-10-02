@@ -30,6 +30,7 @@ function mount(initial: CalendarEvent[]) {
   return {
     render,
     rows: () => latest!.events.map(shown),
+    rowsRaw: () => latest!.events,
     note: (fn: (h: ReturnType<typeof useEventOverrides>) => void) => act(async () => fn(latest!)),
     snapshot: async (events: CalendarEvent[]) => {
       snapshot = events;
@@ -90,4 +91,18 @@ it("expires overrides after the TTL, falling back to the snapshot", async () => 
   expect(m.rows()).toEqual(["a:cancelled@10"]);
   await act(async () => vi.advanceTimersByTime(2_000));
   expect(m.rows()).toEqual(["a:scheduled@10", "c:scheduled@10"]);
+});
+
+it("shows a confirmed host reassign until the snapshot catches up", async () => {
+  const owned = { ...ev("a", "scheduled"), assignedToUid: "ann", assignedToName: "Ann" } as CalendarEvent;
+  const m = mount([owned]);
+  await m.render();
+  await m.note((h) => h.noteConfirmedAssignee("a", "bob", "Bob"));
+  const host = () => m.rowsRaw()[0].assignedToName;
+  expect(host()).toBe("Bob");
+  await m.snapshot([{ ...owned }]); // stale
+  expect(host()).toBe("Bob");
+  await m.snapshot([{ ...owned, assignedToUid: "bob", assignedToName: "Bob" }]); // caught up
+  await m.snapshot([{ ...owned }]); // someone moved it back
+  expect(host()).toBe("Ann");
 });

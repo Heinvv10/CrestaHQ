@@ -63,9 +63,20 @@ export function useEventOverrides(snapshotEvents: CalendarEvent[]) {
       ),
     );
   }
+  function noteConfirmedAssignee(id: string, assignedToUid: string | null, assignedToName: string | null) {
+    setOverrides((prev) =>
+      setEventPatch(prev, id, { assignedToUid, assignedToName }, latestSnapshot.current, Date.now()),
+    );
+  }
   function noteConfirmedDelete(id: string) {
     setOverrides((prev) => setEventDeleted(prev, id, latestSnapshot.current, Date.now()));
   }
 
-  return { events, noteConfirmedStatus, noteConfirmedReschedule, noteConfirmedDelete };
+  return {
+    events,
+    noteConfirmedStatus,
+    noteConfirmedReschedule,
+    noteConfirmedAssignee,
+    noteConfirmedDelete,
+  };
 }

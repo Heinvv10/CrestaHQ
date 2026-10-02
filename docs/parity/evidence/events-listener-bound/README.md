@@ -53,31 +53,50 @@ events); those were replaced by these.
 ## Known gaps
 
 The list's confirmed-change override (`useEventOverrides`, rules in
-`src/lib/calendar/event-overrides.ts`) covers every SERVER write reachable from
-the list: the row menu's mark-status, and from the Edit / Reschedule dialog the
-actions panel's mark-status and mark-paid, the operator reschedule, and the
-server-side DELETE for Google-mirrored events. The last two were snapshot-only
-until 2026-10-01 (closed; evidence in [mutations.md](mutations.md)). The
-calendar grid uses the same hook for the same dialog.
+`src/lib/calendar/event-overrides.ts`) covers these server writes:
 
-Still open:
+- the row menu's mark-status;
+- from the Edit / Reschedule dialog: the actions panel's mark-status and
+  mark-paid, the operator reschedule, the host reassign, and the server-side
+  DELETE for Google-mirrored events.
 
-- mark-paid feeds the override through the same `onStatusChange`, but no unit
-  or E2E exercises that path.
+The reschedule and delete paths were snapshot-only until 2026-10-01, and the
+reassign path until 2026-10-02. Evidence is in [mutations.md](mutations.md).
+The calendar grid uses the same hook for the same dialog.
+
+Still snapshot-only (the change shows when the Listen delta arrives, which can
+lag ~30 s):
+
+- The calendar grid's "New Event" (`POST /api/events`): the new event does not
+  appear until the delta.
+- "Retry sync" in the dialog (`google-sync-notice.tsx`): the error notice stays
+  up until the delta.
+- The per-booking-page bookings list (`booking/[slug]/bookings`) opens the
+  same dialog without the hook.
 - A reschedule confirms `startAt` / `endAt` only. The "Rescheduled" badge
-  (`rescheduleCount`) is not in the route's response, so it still arrives with
-  the delta.
+  (`rescheduleCount`) is not in the route's response.
+
+Other known limits:
+
+- Two of our own writes in a row to the same field (A to B to C, before any
+  delta) briefly show B when the first delta lands. The override for C was set
+  with `from` = A, so the snapshot reading B counts as a third value and drops
+  it until the C delta arrives. Status overrides behaved the same before this
+  change (#330), so this is not a regression.
 - While the Listen stream is silent, the dialog's Save stays on "Saving…"
-  after a reschedule: the field write that follows reads the contact first
+  after a reschedule. The field write that follows reads the contact first
   (`territoryIdForContact`, a `getDoc`), and that read waits on the same
   stream. The row behind it already shows the new time. Not changed here.
-- The per-booking-page bookings list (`booking/[slug]/bookings`) opens the same
-  dialog and is still snapshot-only.
-- The calendar grid's use of the hook is typechecked and shares the hook's
-  unit tests; no E2E drives it.
+- The dialog's own host picker reads the page's hosts with a one-off read and
+  keeps showing the old assignee after a reassign (its `event` prop does not
+  update). The list row is right.
 - Overrides are judged per field. A third party changing only one of
   start / end while the other still reads its old value leaves our other
   field showing until the delta or the 60 s expiry.
+- mark-paid feeds the override through the same `onStatusChange`, but no unit
+  or E2E test exercises that path.
+- The calendar grid's use of the hook is typechecked and shares the hook's
+  unit tests. No E2E drives it.
 
 Events with no `startAt` match neither bounded query and are not listed.
 Production has none (all create paths set `startAt`), so this was left as is.

@@ -20,8 +20,13 @@ export default function CalendarPage() {
   const [snapshotEvents, setSnapshotEvents] = useState<CalendarEvent[]>([]);
   // The grid waits on the same Listen stream as the appointments list, so it
   // shows the dialog's server-confirmed changes the same way.
-  const { events, noteConfirmedStatus, noteConfirmedReschedule, noteConfirmedDelete } =
-    useEventOverrides(snapshotEvents);
+  const {
+    events,
+    noteConfirmedStatus,
+    noteConfirmedReschedule,
+    noteConfirmedAssignee,
+    noteConfirmedDelete,
+  } = useEventOverrides(snapshotEvents);
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [eventsLoading, setEventsLoading] = useState(true);
   const loading = eventsLoading || contactsLoading;
@@ -61,6 +66,7 @@ export default function CalendarPage() {
           contacts={contacts}
           onStatusChange={noteConfirmedStatus}
           onRescheduled={noteConfirmedReschedule}
+          onReassigned={noteConfirmedAssignee}
           onDeleted={noteConfirmedDelete}
         />
       )}

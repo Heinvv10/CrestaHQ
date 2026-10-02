@@ -4,7 +4,7 @@ import { eventStatus } from "@/types/events";
 
 /**
  * Local overrides for changes the SERVER has just confirmed (mark-status,
- * operator reschedule, the server-side delete). Firestore's Listen stream can
+ * operator reschedule, host reassign, the server-side delete). Firestore's Listen stream can
  * sit silent for ~30 s after a write, so the confirmed change is shown from
  * the route's 200 response instead of waiting for the snapshot delta.
  *
@@ -34,6 +34,8 @@ export interface EventPatch {
   status?: EventStatus;
   startAt?: number;
   endAt?: number;
+  assignedToUid?: string | null;
+  assignedToName?: string | null;
 }
 
 interface Confirmed<V> {
@@ -46,16 +48,19 @@ export interface EventOverride {
   status?: Confirmed<EventStatus>;
   startAt?: Confirmed<number>;
   endAt?: Confirmed<number>;
+  assignedToUid?: Confirmed<string | null>;
+  assignedToName?: Confirmed<string | null>;
   deleted?: { at: number };
 }
 
 export type EventOverrides = Readonly<Record<string, EventOverride>>;
 
-const FIELDS = ["status", "startAt", "endAt"] as const;
+const FIELDS = ["status", "startAt", "endAt", "assignedToUid", "assignedToName"] as const;
 
 /** The snapshot's value for a patched field, comparable with `===`. */
-function read(e: CalendarEvent, field: (typeof FIELDS)[number]): EventStatus | number | null {
+function read(e: CalendarEvent, field: (typeof FIELDS)[number]): string | number | null {
   if (field === "status") return eventStatus(e);
+  if (field === "assignedToUid" || field === "assignedToName") return e[field] ?? null;
   const d = (e[field] as { toDate?: () => Date } | null)?.toDate?.();
   return d instanceof Date ? d.getTime() : null;
 }
@@ -186,6 +191,8 @@ export function applyEventOverrides(
         ...(o.status && { status: o.status.to }),
         ...(o.startAt && { startAt: Timestamp.fromMillis(o.startAt.to) }),
         ...(o.endAt && { endAt: Timestamp.fromMillis(o.endAt.to) }),
+        ...(o.assignedToUid && { assignedToUid: o.assignedToUid.to }),
+        ...(o.assignedToName && { assignedToName: o.assignedToName.to }),
       },
     ];
   });
