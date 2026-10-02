@@ -62,6 +62,10 @@ interface EventDialogProps {
   defaultDate?: Date | null;
   /** A status change the actions panel just had confirmed by the server. */
   onStatusChange?: (eventId: string, status: EventStatus) => void;
+  /** The times an operator reschedule's 200 response just confirmed. */
+  onRescheduled?: (eventId: string, startAt: Date, endAt: Date) => void;
+  /** The server-side delete (Google-mirrored event) just returned 200. */
+  onDeleted?: (eventId: string) => void;
 }
 
 function toDateInput(d: Date): string {
@@ -95,6 +99,8 @@ export function EventDialog({
   event,
   defaultDate,
   onStatusChange,
+  onRescheduled,
+  onDeleted,
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
@@ -228,6 +234,7 @@ export function EventDialog({
               return { ok: res.ok, body: await res.json().catch(() => ({})) };
             },
             updateFields: updateEvent,
+            onRescheduled: (time) => onRescheduled?.(event.id, time.startAt, time.endAt),
           });
           if (result.kind === "reschedule_refused") {
             toast.error(result.error);
@@ -306,6 +313,7 @@ export function EventDialog({
           }
           throw new Error(`delete failed (${res.status})`);
         }
+        onDeleted?.(event.id);
       } else {
         await deleteEvent(event.id);
       }

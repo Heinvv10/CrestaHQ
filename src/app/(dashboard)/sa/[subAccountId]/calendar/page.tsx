@@ -7,6 +7,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToEvents } from "@/lib/firestore/events";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
+import { useEventOverrides } from "@/hooks/use-event-overrides";
 import type { CalendarEvent } from "@/types/events";
 import { CalendarView } from "@/components/calendar/calendar-view";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
@@ -16,7 +17,11 @@ export default function CalendarPage() {
   const { subAccountId, agencyId } = useSubAccount();
   const { ready: filterReady, filter: territoryFilter } =
     useEffectiveTerritoryFilter();
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [snapshotEvents, setSnapshotEvents] = useState<CalendarEvent[]>([]);
+  // The grid waits on the same Listen stream as the appointments list, so it
+  // shows the dialog's server-confirmed changes the same way.
+  const { events, noteConfirmedStatus, noteConfirmedReschedule, noteConfirmedDelete } =
+    useEventOverrides(snapshotEvents);
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [eventsLoading, setEventsLoading] = useState(true);
   const loading = eventsLoading || contactsLoading;
@@ -27,7 +32,7 @@ export default function CalendarPage() {
     setEventsLoading(true);
     const scope = { agencyId, subAccountId };
     const unsubE = subscribeToEvents(scope, { territoryFilter }, (l) => {
-      setEvents(l);
+      setSnapshotEvents(l);
       setEventsLoading(false);
     });
     return () => {
@@ -51,7 +56,13 @@ export default function CalendarPage() {
       {loading ? (
         <CalendarSkeleton />
       ) : (
-        <CalendarView events={events} contacts={contacts} />
+        <CalendarView
+          events={events}
+          contacts={contacts}
+          onStatusChange={noteConfirmedStatus}
+          onRescheduled={noteConfirmedReschedule}
+          onDeleted={noteConfirmedDelete}
+        />
       )}
     </div>
   );

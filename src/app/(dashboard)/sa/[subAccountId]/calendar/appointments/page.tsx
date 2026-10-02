@@ -38,14 +38,7 @@ import {
   type AppointmentFilters,
   type AppointmentTab,
 } from "@/lib/calendar/appointment-filters";
-import {
-  applyStatusOverrides,
-  expireStatusOverridesAndRearm,
-  nextStatusOverrideExpiryMs,
-  reconcileStatusOverrides,
-  setStatusOverride,
-  type StatusOverrides,
-} from "@/lib/calendar/status-overrides";
+import { useEventOverrides } from "@/hooks/use-event-overrides";
 import { showOlderNotice, tabIsPartial } from "@/lib/calendar/appointments-window";
 import { AppointmentsWindowNotice } from "@/components/calendar/appointments-window-notice";
 import { CalendarViewSwitch } from "@/components/calendar/calendar-view-switch";
@@ -130,9 +123,8 @@ export default function AppointmentsListPage() {
   const tz = resolveAppointmentsTimezone(subAccount);
 
   const [snapshotEvents, setSnapshotEvents] = useState<CalendarEvent[]>([]);
-  // The newest snapshot, readable from async callbacks without a stale closure.
-  const latestSnapshot = useRef<CalendarEvent[]>([]);
-  const [statusOverrides, setStatusOverrides] = useState<StatusOverrides>({});
+  const { events, noteConfirmedStatus, noteConfirmedReschedule, noteConfirmedDelete } =
+    useEventOverrides(snapshotEvents);
   const { contacts, loading: contactsLoading } = useSubAccountContacts();
   const [bookingPages, setBookingPages] = useState<BookingPage[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -184,9 +176,7 @@ export default function AppointmentsListPage() {
     if (loadedScope.current !== scopeKey) setEventsLoading(true);
     const scope = { agencyId, subAccountId };
     const unsubE = subscribeToAppointments(scope, { territoryFilter, pastLimit }, (s) => {
-      latestSnapshot.current = s.events;
       setSnapshotEvents(s.events);
-      setStatusOverrides((prev) => reconcileStatusOverrides(prev, s.events));
       setLoadWindow({ upcomingTruncated: s.upcomingTruncated, pastTruncated: s.pastTruncated });
       setFailedHalves(s.failedHalves);
       loadedScope.current = scopeKey;
@@ -223,23 +213,6 @@ export default function AppointmentsListPage() {
     return m;
   }, [members]);
 
-  const events = useMemo(
-    () => applyStatusOverrides(snapshotEvents, statusOverrides),
-    [snapshotEvents, statusOverrides],
-  );
-
-  // Overrides never outlive STATUS_OVERRIDE_TTL_MS, so one can mask a real
-  // change for at most that long.
-  useEffect(() => {
-    const wait = nextStatusOverrideExpiryMs(statusOverrides, Date.now());
-    if (wait === null) return;
-    const t = setTimeout(
-      () => setStatusOverrides((prev) => expireStatusOverridesAndRearm(prev, Date.now())),
-      wait,
-    );
-    return () => clearTimeout(t);
-  }, [statusOverrides]);
-
   const now = Date.now();
   const tabbedEvents = useMemo(
     () => events.filter((e) => matchesTab(e, tab, now)),
@@ -268,14 +241,6 @@ export default function AppointmentsListPage() {
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
   }, [tab, filters, search]);
-
-  // Reads the newest snapshot (a ref), not this render's: the delta may have
-  // landed while the request was in flight.
-  function noteConfirmedStatus(id: string, status: EventStatus) {
-    setStatusOverrides((prev) =>
-      setStatusOverride(prev, id, status, latestSnapshot.current, Date.now()),
-    );
-  }
 
   async function changeStatus(event: CalendarEvent, next: EventStatus) {
     setBusyEventIds((prev) => new Set(prev).add(event.id));
@@ -434,6 +399,8 @@ export default function AppointmentsListPage() {
         contacts={contacts}
         event={selectedEvent}
         onStatusChange={noteConfirmedStatus}
+        onRescheduled={noteConfirmedReschedule}
+        onDeleted={noteConfirmedDelete}
       />
 
       <AlertDialog
