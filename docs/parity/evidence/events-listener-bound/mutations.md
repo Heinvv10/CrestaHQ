@@ -140,3 +140,72 @@ of the spec.
 
 The first attempt at this row removed the prop outright. That is a type error,
 so the build failed and the round was not counted.
+
+## Closing the known gaps (2026-10-02)
+
+Unit rows: each mutation was applied by a script that first checked the
+original text occurred exactly once and that the file changed, ran
+`pnpm exec vitest run` on the listed test files, then restored the file and
+compared SHA-1 before and after. All 34 rows were red and restored.
+
+| Item | Guard | Mutation | Failing test (first named) |
+|---|---|---|---|
+| 1 New Event | Insert dropped once the snapshot holds it | remove `delete entry.inserted` | event-overrides.test.ts › is dropped once the snapshot holds it, and the snapshot's copy shows |
+| 1 | Insert never shown twice | drop the `!held.has(id)` check | › is never shown twice |
+| 1 | Insert shown | inserted list = `[]` | › shows the created event while the snapshot does not hold it; use-event-overrides.test.ts › shows a created event, … |
+| 1 | Nothing inserted when the latest snapshot already holds it | remove the early return | › sets nothing when the latest snapshot already holds it |
+| 1 | Created event needs valid times | drop the start/end check | route.created-event.test.ts › a body without the stored event yields nothing to show |
+| 1 | Created event needs an id | drop the id check | same |
+| 1 | Create route returns the stored doc | drop `stored` from the 201 | › returns the stored event, which the client rebuilds field for field |
+| 1 | Hook inserts | `noteConfirmedCreate` leaves state as is | use-event-overrides.test.ts › shows a created event, … |
+| 2 Retry sync | Sync error cleared on apply | drop the `googleSyncError` spread | event-overrides.test.ts › hides the error the snapshot still shows |
+| 2 | A new failure (same message, later) is not masked | read the error by message only | › a NEW failure (same message, later) is not masked |
+| 2 | Route: `synced` only when no error after the push | `synced: true` | google-sync/route.test.ts › says not synced, with the reason, when the push failed again |
+| 2 | Route: not synced when the event is gone | `synced: !after?.googleSyncError` | › says not synced when the event is gone after the push |
+| 2 | Notice reports only `synced: true` | call `onSynced` on any 200 | google-sync-notice.test.ts › reports nothing when the retry ran but the push failed again; › … does not say whether it synced |
+| 2 | Notice reports nothing on a refusal | remove the `!res.ok` throw | › reports nothing on a refusal |
+| 2 | Hook clears | `noteConfirmedSyncCleared` leaves state as is | use-event-overrides.test.ts › shows a created event, … |
+| 4 Badge | Reschedule stores the read count + 1 | `rescheduleCount = 1` | reschedule.test.ts › stores one more reschedule than the transaction read, and returns that count |
+| 4 | Route returns the stored count | drop `rescheduleCount` from the 200 | reschedule/route.test.ts › returns the reschedule count it stored, for the Rescheduled badge |
+| 4 | Save hands the count on | drop it from `onRescheduled` | booking-edit-save.test.ts › hands over the reschedule count the 200 stored, with the times |
+| 4 | Count shown | drop the `rescheduleCount` spread | event-overrides.test.ts › shows the stored count the reschedule's 200 reported, … |
+| 4 | Hook patches the count | drop it from the reschedule patch | use-event-overrides.test.ts › shows a created event, … |
+| 5 Save | Unchanged contact dropped | return the fields unchanged | booking-edit-save.test.ts › drops an unchanged contact, … |
+| 5 | Changed contact kept | drop the contact comparison | › keeps a changed contact, so its territory is re-derived |
+| 5 | Event without a territory keeps the read | drop the `territoryId` check | › keeps the contact of an event that has no territory yet |
+| 6 A to B to C | Superseded value of ours reads as stale | keep only on `=== from` | event-overrides.test.ts › the B delta arriving first is one of ours, …; › the same holds for status …; › an undo … |
+| 6 | `ours` accumulates | `ours = [to]` | › remembers every value we confirmed, the latest last |
+| 6 | Undo keeps an override while another value of ours is pending | drop the `ours.every` condition | › an undo (A -> B -> A) before B's delta keeps A over B's late delta, until the TTL |
+| 6 | Re-confirming a shown value with nothing else pending sets nothing | `ours.length === 0` | › sets nothing when the latest snapshot already shows the confirmed status (and 3 more) |
+| 7 Dialog | Dialog gets the page's current copy | `shownEvent` returns the picked event | › is the page's current copy, overrides applied |
+| 7 | Form keyed on the event id (no reset mid-edit) | deps `[open, event, defaultDate]` | event-dialog.test.ts › keeps unsaved edits when the open event's data changes |
+| 7 | Form re-initialises for another event | deps `[open, defaultDate]` | › initialises from the event when another event is opened |
+| 8 Unit | Start/end key includes the end | key ignores the end | event-overrides.test.ts › start and end are kept or dropped together: … (and 3 more) |
+| 8 | Reconcile judges start and end together | judge the start alone (the old per-field rule) | › start and end are kept or dropped together: a third party changing only the end drops both |
+| 9 mark-paid | Mark-paid feeds the override | remove `onStatusChange("scheduled")` | booking-actions-panel.test.ts › feeds the confirmed status to the page on the route's 200 |
+| 9 | Nothing fed on a refusal | remove the `!res.ok` throw | › feeds nothing when the route refuses |
+
+E2E rows: a script applied each mutation (original text found exactly once,
+file changed), rebuilt the app (E2E_PORT=3144), restored the file (SHA-1
+compared), waited until no CrestaHQ CI run was in progress or queued, then ran
+the one named test of `appointments-list.spec.ts` against the mutated build.
+A clean rebuild then passed all 17 tests of the spec. All 10 rows were red and
+restored.
+
+| Item | Guard | Mutation | Failing test (what was seen) |
+|---|---|---|---|
+| 1 | Dialog hands the created event to the page | remove `onCreated?.(created)` | › the calendar grid shows a New Event from the create route's 201, … (no chip on the grid) |
+| 1 | A client delete is reported as confirmed | remove `onDeleted?.(event.id)` after `deleteEvent` | same test (the created event stayed on the grid after Delete) |
+| 2 | Retry sync's confirmed clear reaches the page | `<GoogleSyncNotice event={event} />` (no `onSynced`) | › Retry sync clears the Google error notice … (notice stayed) |
+| 3 | Bookings list passes the dialog's status callback | remove `onStatusChange` on its `EventDialog` | › a status changed from the per-booking-page bookings list … (no "Cancelled") |
+| 4 | Reschedule override carries the stored count | drop `rescheduleCount` from the hook's patch | › Save completes and the Rescheduled badge shows … (no badge) |
+| 5 | Save skips the contact read for an unchanged contact | `const { startAt, endAt, ...fields } = payload` | same test (dialog still open after 5 s) |
+| 6 | A superseded value of ours reads as stale | keep only on `=== from` | › a delta of our own earlier status (A -> B -> C) … (row showed "Showed") |
+| 7 | The dialog gets the page's current copy | `shownEvent` returns the picked event | › the open dialog follows a confirmed reassign … (picker kept the old host) |
+| 8 | Start and end judged as one unit | judge the start alone in reconcile | › a third party changing the end, with the start back at its old value, … (row kept our time) |
+| 9 | The grid passes the dialog's reschedule callback | remove `onRescheduled` on `CalendarView` | › the calendar grid shows a booking rescheduled from its dialog … (chip kept "7am") |
+
+The item 5 row survived its first run: the test then allowed 15 s for the
+dialog to close, and with the contact read Save took about 10 s (the SDK gave
+up on the backend and answered from its cache). The test now allows 5 s; it
+went red as above, and the clean build passes it.
