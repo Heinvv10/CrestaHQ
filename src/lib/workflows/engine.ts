@@ -728,12 +728,15 @@ export const execSendWhatsapp: NodeExecutor = async (ctx) => {
           ? { ...b, url: resolveMergeTags(b.url, subject).trim() }
           : b,
       );
-      const linkMissing = tplDoc.buttons.some(
-        (b, i) =>
+      const linkMissing = tplDoc.buttons.some((b, i) => {
+        const sent = sentButtons[i];
+        return (
           b.type === "url" &&
           isLinkMergeTag(b.url) &&
-          !/^https:\/\/\S+$/i.test(sentButtons[i].url),
-      );
+          sent.type === "url" &&
+          !/^https:\/\/\S+$/i.test(sent.url)
+        );
+      });
       // An in-window button message with a blank variable is refused: Cloud
       // would send "Thank you !", and Twilio may substitute the template's
       // SAMPLE value — a stranger's name — to a real customer. (Out-of-window
