@@ -44,6 +44,7 @@ import { CONTACT_QUEUED_CAPABILITIES } from "./capabilities/contact-queued";
 import { COMPANY_CAPABILITIES } from "./capabilities/companies";
 import { CONVERSATION_READ_CAPABILITIES } from "./capabilities/conversations-read";
 import { CONVERSATION_CONTROL_CAPABILITIES } from "./capabilities/conversation-controls";
+import { CONVERSATION_NOTE_CAPABILITIES } from "./capabilities/conversation-note";
 import { CONVERSATION_SEND_CAPABILITIES } from "./capabilities/conversation-send";
 import { CONVERSATION_SCHEDULE_CAPABILITIES } from "./capabilities/conversation-schedule";
 import { CONVERSATION_WA_TEMPLATE_CAPABILITIES } from "./capabilities/conversation-wa-template";
@@ -132,6 +133,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...COMPANY_CAPABILITIES,
   ...CONVERSATION_READ_CAPABILITIES,
   ...CONVERSATION_CONTROL_CAPABILITIES,
+  ...CONVERSATION_NOTE_CAPABILITIES,
   ...CONVERSATION_SEND_CAPABILITIES,
   ...CONVERSATION_SCHEDULE_CAPABILITIES,
   ...CONVERSATION_WA_TEMPLATE_CAPABILITIES,

@@ -27,7 +27,10 @@ export function ThreadNote({
     >
       <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
         <StickyNote className="h-3 w-3" />
-        <span>Internal note · not sent</span>
+        <span>
+          Internal note · not sent
+          {note.createdBy.startsWith("apikey:") && " · via API agent"}
+        </span>
         {ts && (
           <span className="text-muted-foreground font-normal">
             ·{" "}

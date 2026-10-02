@@ -77,6 +77,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `list_scheduled_messages` | read | member | List the messages scheduled for a contact (soonest first), with their status. |  |
 | `set_bot_mode` | write; `outbound` when mode≠off | member | Set a conversation's AI mode: off, suggest (drafts for a person to send) or auto (the AI replies on its own). | the conversation, the AI mode, its effect and any held replies |
 | `cancel_scheduled_message` | write | member | Cancel a pending scheduled message (or dismiss a failed one). |  |
+| `add_conversation_note` | write | member | Add an internal note to a contact's conversation thread: staff see it, the customer never does and nothing is sent. |  |
 | `send_message` | `outbound` | member | Send a message to a conversation's contact on sms, whatsapp, email (needs a subject), messenger or instagram. | to, from, channel, consent, the exact text (subject and reply-to for email), when |
 | `schedule_message` | `outbound` | member | Schedule a message to a conversation's contact for a later time (at least a minute and at most 7 days ahead), on sms, whatsapp, email (needs a subject), messenger or instagram. | to, from, channel, consent, the exact text, when it sends and what then happens |
 | `send_whatsapp_template` | `outbound` | member | Send one of the sub-account's approved WhatsApp templates to a conversation's contact; the only WhatsApp message allowed after the contact's 24-hour reply window has closed. | to, from (the sending number), template, language, the filled text and buttons, when |
