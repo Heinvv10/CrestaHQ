@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
   users: new Map<string, { disabled: boolean }>(),
-  sends: [] as Array<{ to: string; subject: string; text: string; html?: string; replyTo?: string }>,
+  sends: [] as Array<{ to: string; subject: string; text: string; html?: string; replyTo?: string; archive?: boolean }>,
   connections: [] as unknown[],
+  brand: { name: "Acme", logoUrl: null as string | null, supportEmail: "help@acme.test" },
   generateLink: vi.fn(async (_email: string) => "https://proj.firebaseapp.com/__/auth/action?mode=resetPassword&oobCode=CODE%2B1&apiKey=k"),
 }));
 
@@ -19,9 +20,10 @@ vi.mock("@/lib/firebase/admin", () => ({
   }),
 }));
 vi.mock("@/lib/landing/resolve-brand", () => ({
-  resolveCustomBrand: async () => ({ name: "Acme", logoUrl: null, supportEmail: "help@acme.test" }),
+  resolveCustomBrand: async () => ({ ...m.brand }),
 }));
-vi.mock("@/lib/comms/smtp", () => ({
+vi.mock("@/lib/comms/smtp", async (orig) => ({
+  validEmail: (await orig<typeof import("@/lib/comms/smtp")>()).validEmail,
   sendSmtpEmail: async (connection: unknown, message: (typeof m.sends)[number]) => {
     m.connections.push(connection);
     m.sends.push(message);
@@ -29,18 +31,28 @@ vi.mock("@/lib/comms/smtp", () => ({
   },
 }));
 
-import { requestPasswordReset } from "./password-reset";
+import { deliverPasswordReset, gatePasswordReset } from "./password-reset";
+
+/** What the route does: answer from the gate, then deliver if told to. */
+async function requestPasswordReset(email: string, ip: string) {
+  const gate = gatePasswordReset(email, ip);
+  return gate === "deliver" ? deliverPasswordReset(email) : gate;
+}
 
 // The limiter is module state shared across tests: give every test its own
 // IPs and addresses so one test's budget never leaks into another.
 let seq = 0;
-const freshIp = () => `198.51.100.${++seq}`;
+const freshIp = () => {
+  const n = ++seq;
+  return `10.${(n >> 16) & 255}.${(n >> 8) & 255}.${n & 255}`;
+};
 
 beforeEach(() => {
   m.users.clear();
   m.sends.length = 0;
   m.connections.length = 0;
   m.generateLink.mockClear();
+  m.brand = { name: "Acme", logoUrl: null, supportEmail: "help@acme.test" };
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.acme.test/");
   vi.stubEnv("PLATFORM_SMTP_HOST", "smtp.acme.test");
   vi.stubEnv("PLATFORM_SMTP_PORT", "465");
@@ -58,6 +70,8 @@ describe("requestPasswordReset", () => {
     expect(sent.to).toBe("a@x.test");
     expect(sent.subject).toBe("Reset your Acme password");
     expect(sent.replyTo).toBe("help@acme.test");
+    // Never imported into Conversations — it carries a live reset code.
+    expect(sent.archive).toBe(false);
     const link = "https://crm.acme.test/login?mode=resetPassword&oobCode=CODE%2B1";
     expect(sent.text).toContain(link);
     expect(sent.html).toContain(`href="${link.replace("&", "&amp;")}"`);
@@ -71,7 +85,13 @@ describe("requestPasswordReset", () => {
     });
   });
 
-  it("sends nothing for an unknown address but reports it like a send", async () => {
+  it("answers from the gate without looking the account up", async () => {
+    expect(gatePasswordReset("ghost@x.test", freshIp())).toBe("deliver");
+    expect(gatePasswordReset("ghost2@x.test", freshIp())).toBe("deliver");
+    expect(m.generateLink).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing for an unknown address", async () => {
     expect(await requestPasswordReset("ghost@x.test", freshIp())).toBe("skipped");
     expect(m.sends).toHaveLength(0);
     expect(m.generateLink).not.toHaveBeenCalled();
@@ -94,13 +114,24 @@ describe("requestPasswordReset", () => {
     },
   );
 
-  it("limits one address to 5 requests an hour, whoever asks", async () => {
+  it("caps mail to one address at 5 an hour, but quietly — never a 429", async () => {
     m.users.set("victim@x.test", { disabled: false });
     for (let i = 0; i < 5; i++) {
       expect(await requestPasswordReset("victim@x.test", freshIp())).toBe("sent");
     }
-    expect(await requestPasswordReset("victim@x.test", freshIp())).toBe("limited");
+    // Five strangers spent the address's budget. The owner's own request
+    // is not refused (that would lock them out); it just sends nothing.
+    expect(await requestPasswordReset("victim@x.test", freshIp())).toBe("quiet");
     expect(m.sends).toHaveLength(5);
+  });
+
+  it("refuses one caller re-asking for one address past 3 an hour", async () => {
+    const ip = freshIp();
+    for (let i = 0; i < 3; i++) {
+      expect(gatePasswordReset("again@x.test", ip)).toBe("deliver");
+    }
+    expect(gatePasswordReset("again@x.test", ip)).toBe("limited");
+    expect(gatePasswordReset("again@x.test", freshIp())).toBe("deliver");
   });
 
   it("limits one IP to 20 requests an hour across addresses", async () => {
@@ -110,6 +141,35 @@ describe("requestPasswordReset", () => {
     }
     expect(await requestPasswordReset("n20@x.test", ip)).toBe("limited");
     expect(await requestPasswordReset("n20@x.test", freshIp())).toBe("skipped");
+  });
+
+  it("counts a whole IPv6 /64 as one caller", () => {
+    for (let i = 0; i < 20; i++) {
+      expect(gatePasswordReset(`v6-${i}@x.test`, `2001:db8:1:2::${(i + 1).toString(16)}`)).toBe("deliver");
+    }
+    expect(gatePasswordReset("v6-x@x.test", "2001:db8:1:2:ffff::9")).toBe("limited");
+    expect(gatePasswordReset("v6-y@x.test", "2001:db8:1:3::1")).toBe("deliver");
+  });
+
+  it("does not reset a victim's budget when flooded with junk keys", async () => {
+    // A fresh module instance: the flood fills the limiter for good, and the
+    // other tests share the top-level one.
+    vi.resetModules();
+    const { gatePasswordReset: gate } = await import("./password-reset");
+    for (let i = 0; i < 5; i++) gate("flood-victim@x.test", freshIp());
+    for (let i = 0; i < 20_500; i++) gate(`junk${i}@x.test`, freshIp());
+    // Full of live budgets: new callers are refused, the victim gets no mail.
+    expect(gate("flood-victim@x.test", freshIp())).not.toBe("deliver");
+  });
+
+  it("cleans brand values a mail header can't carry instead of failing", async () => {
+    m.brand = { name: "Acme\r\nBcc: x@evil.test", logoUrl: null, supportEmail: "help,billing@acme.test" };
+    m.users.set("hdr@x.test", { disabled: false });
+    expect(await requestPasswordReset("hdr@x.test", freshIp())).toBe("sent");
+    const sent = m.sends[0]!;
+    expect(sent.subject).toBe("Reset your Acme Bcc: x@evil.test password");
+    expect(sent.subject).not.toMatch(/[\r\n]/);
+    expect(sent.replyTo).toBeUndefined();
   });
 
   it("throws when Firebase fails for a reason other than a missing account", async () => {

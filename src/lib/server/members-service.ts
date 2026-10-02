@@ -552,8 +552,8 @@ function inviteEmail({
     preview: `${inviterName} invited you to ${subAccountName}.`,
     heading: "You're invited",
     paragraphs: [
-      `${inviterName} invited you to **${subAccountName}** on ${brand.name}.`,
-      `You'll join as **${roleLabel}**.`,
+      [`${inviterName} invited you to `, { bold: subAccountName }, ` on ${brand.name}.`],
+      ["You'll join as ", { bold: roleLabel }, "."],
     ],
     button: { label: "Accept invite", url: inviteUrl },
     note: "If you weren't expecting this invite, you can safely ignore this email.",
@@ -581,7 +581,13 @@ function addedEmail({
     preview: `You now have access to ${subAccountName}.`,
     heading: "You've been added",
     paragraphs: [
-      `${inviterName} added you to **${subAccountName}** on ${brand.name} as **${roleLabel}**.`,
+      [
+        `${inviterName} added you to `,
+        { bold: subAccountName },
+        ` on ${brand.name} as `,
+        { bold: roleLabel },
+        ".",
+      ],
       `You already have an account, so there's nothing to accept — just sign in and ${subAccountName} will be in your workspace switcher.`,
     ],
     ...(appUrl ? { button: { label: `Open ${brand.name}`, url: appUrl } } : {}),

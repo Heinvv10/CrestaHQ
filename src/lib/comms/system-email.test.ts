@@ -18,16 +18,31 @@ describe("renderSystemEmail", () => {
     expect(html).toContain('href="https://x.test/?a=1&amp;b=&quot;2&quot;"');
   });
 
-  it("renders **bold** spans in HTML and strips the markers in text", () => {
+  it("bolds segments and never treats caller text as formatting", () => {
     const { html, text } = renderSystemEmail({
       brand,
       preview: "p",
       heading: "h",
-      paragraphs: ["Join **Team One** now"],
+      paragraphs: [["Join ", { bold: "Team <One>" }, " now"], "a**b**c"],
     });
-    expect(html).toMatch(/<strong[^>]*>Team One<\/strong>/);
-    expect(text).toContain("Join Team One now");
-    expect(text).not.toContain("**");
+    expect(html).toMatch(/<strong[^>]*>Team &lt;One&gt;<\/strong>/);
+    expect(html).toContain("a**b**c");
+    expect(html.match(/<strong/g)).toHaveLength(1);
+    expect(text).toContain("Join Team <One> now");
+    expect(text).toContain("a**b**c");
+  });
+
+  it("refuses a button URL with a scheme other than http(s)", () => {
+    for (const url of ["javascript:alert(1)", " JavaScript:alert(1)", "data:text/html,x"]) {
+      expect(() =>
+        renderSystemEmail({ brand, preview: "p", heading: "h", paragraphs: [], button: { label: "Go", url } }),
+      ).toThrow("http(s)");
+    }
+    for (const url of ["https://x.test/a", "HTTP://x.test", "/signup?invite=1"]) {
+      expect(() =>
+        renderSystemEmail({ brand, preview: "p", heading: "h", paragraphs: [], button: { label: "Go", url } }),
+      ).not.toThrow();
+    }
   });
 
   it("puts the button URL in the plain-text twin", () => {

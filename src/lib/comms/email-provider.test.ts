@@ -20,7 +20,7 @@ vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: mocks.usage }));
 // Suppression has its own suite (email-suppression.test.ts); this one is about the provider call.
 vi.mock("./email-suppression", () => ({ assertNotSuppressed: async () => undefined }));
 vi.mock("@/lib/landing/resolve-brand", () => ({
-  resolveCustomBrand: async () => ({}),
+  resolveCustomBrand: async () => ({ name: "LeadStack" }),
 }));
 import { emailIsConfigured, sendEmail } from "./resend";
 const sub = {

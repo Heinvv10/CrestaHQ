@@ -153,8 +153,8 @@ async function maybeEmailChargeLink(opts: {
       preview: `${opts.description} — ${opts.priceLabel}`,
       heading: "Payment request",
       paragraphs: [
-        `A one-time payment is requested for **${workspaceName}**:`,
-        `**${opts.description}** — ${opts.priceLabel}`,
+        ["A one-time payment is requested for ", { bold: workspaceName }, ":"],
+        [{ bold: opts.description }, ` — ${opts.priceLabel}`],
       ],
       button: { label: "Pay now", url: opts.url },
       note: "Payment is handled securely by Stripe. This is a one-time charge — no subscription is created.",

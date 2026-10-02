@@ -66,8 +66,14 @@ async function emailCheckoutLink(opts: {
     heading: "Activate your subscription",
     paragraphs: [
       opts.planName
-        ? `Your workspace **${opts.subAccountName}** is ready to activate on the **${opts.planName}** plan (${opts.priceLabel}).`
-        : `Your workspace **${opts.subAccountName}** is ready to activate.`,
+        ? [
+            "Your workspace ",
+            { bold: opts.subAccountName },
+            " is ready to activate on the ",
+            { bold: opts.planName },
+            ` plan (${opts.priceLabel}).`,
+          ]
+        : ["Your workspace ", { bold: opts.subAccountName }, " is ready to activate."],
     ],
     button: { label: "Complete checkout", url: opts.url },
     note: `Payment is handled securely by Stripe. Your card is charged ${opts.cadenceWord} and you can update it anytime from your workspace settings.`,

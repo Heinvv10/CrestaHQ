@@ -413,7 +413,10 @@ async function notifyOwner(
       preview: subject,
       heading: threshold === 100 ? "Monthly limit reached" : "80% of monthly quota used",
       paragraphs: [
-        `**${wsName}** — ${label} usage this month: ${formatUnits(unit, used)} of ${formatUnits(unit, limit)}.`,
+        [
+          { bold: wsName },
+          ` — ${label} usage this month: ${formatUnits(unit, used)} of ${formatUnits(unit, limit)}.`,
+        ],
         threshold === 100
           ? `That channel's sends are now paused for this workspace until the month resets, or until you raise the limit (Sub-accounts → Manage → Usage).`
           : `At 100% that channel's sends pause for this workspace. Raise the limit under Sub-accounts → Manage → Usage if needed.`,

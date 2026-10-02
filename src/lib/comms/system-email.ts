@@ -21,12 +21,20 @@ export interface SystemEmail {
   /** Inbox preview line, hidden in the body. */
   preview: string;
   heading: string;
-  /** Plain text; HTML is escaped. `**bold**` spans render bold. */
-  paragraphs: string[];
+  /** Plain text, HTML-escaped. Pass segments to bold part of a line. */
+  paragraphs: Text[];
+  /** http(s) or a relative path; any other scheme throws. */
   button?: { label: string; url: string };
   /** Small grey line under the button, e.g. expiry or "ignore if not you". */
   note?: string;
 }
+
+/**
+ * A line of copy: a string, or segments where `{ bold }` renders bold.
+ * Structured rather than markdown-ish so a caller's value (a workspace
+ * named `a**b`) can never toggle formatting.
+ */
+export type Text = string | ReadonlyArray<string | { bold: string }>;
 
 const ACCENT = "#7c3aed";
 const INK = "#0a0a0f";
@@ -35,11 +43,20 @@ const MUTED = "#8a8a95";
 const FONT =
   "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 
-function inline(text: string): string {
-  return escapeHtml(text).replace(
-    /\*\*(.+?)\*\*/g,
-    `<strong style="color:${INK};">$1</strong>`,
-  );
+function inline(text: Text): string {
+  if (typeof text === "string") return escapeHtml(text);
+  return text
+    .map((seg) =>
+      typeof seg === "string"
+        ? escapeHtml(seg)
+        : `<strong style="color:${INK};">${escapeHtml(seg.bold)}</strong>`,
+    )
+    .join("");
+}
+
+function plain(text: Text): string {
+  if (typeof text === "string") return text;
+  return text.map((seg) => (typeof seg === "string" ? seg : seg.bold)).join("");
 }
 
 function brandMark(brand: SystemEmailBrand): string {
@@ -60,6 +77,12 @@ export function renderSystemEmail(email: SystemEmail): {
   text: string;
 } {
   const { brand, button, note } = email;
+  // A scheme other than http(s) (javascript:, data:) is refused. A relative
+  // path is let through: invites build one when NEXT_PUBLIC_APP_URL is unset.
+  const scheme = /^\s*([a-z][a-z0-9+.-]*):/i.exec(button?.url ?? "")?.[1];
+  if (scheme && !/^https?$/i.test(scheme)) {
+    throw new Error("System email button URL must be http(s).");
+  }
   const paragraphs = email.paragraphs
     .map(
       (p) =>
@@ -108,7 +131,6 @@ ${noteHtml}
 </body>
 </html>`;
 
-  const plain = (s: string) => s.replace(/\*\*(.+?)\*\*/g, "$1");
   const text = [
     email.heading,
     "",
