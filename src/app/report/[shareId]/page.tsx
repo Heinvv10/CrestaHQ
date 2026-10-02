@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { ReportSections } from "@/components/prospecting/report-view";
 import { DownloadPdf, ReportCta, ReportHero, RingGrid, TopFixes } from "@/components/prospecting/report-story";
 import { resolvePublicReport } from "@/lib/prospecting/public-report";
-import { reportStory } from "@/lib/prospecting/report-story";
+import { heroText, reportStory } from "@/lib/prospecting/report-story";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +15,8 @@ const getReport = cache(resolvePublicReport);
 
 /**
  * The link preview (SOW R4). `og:title` is the resolver's `businessName`,
- * never a contact's own name, else the generic title. `metadataBase` comes
+ * never a contact's own name, else the generic title; the description is the
+ * hero's line (`heroText`). `metadataBase` comes
  * from NEXT_PUBLIC_APP_URL: without it Next resolves `og:image` against
  * localhost behind the proxy (the class of bug in #38). A refused token gets
  * the bare metadata — nothing about the report — and the page 404s.
@@ -26,12 +27,17 @@ export async function generateMetadata({ params }: { params: Promise<{ shareId: 
   const { shareId } = await params;
   const report = await getReport(shareId);
   if (!report) return base;
-  const openGraph = { title: report.businessName ?? TITLE };
+  // The card's text line is the hero's own line, never the site-wide landing
+  // copy the root layout would otherwise lend it.
+  const story = reportStory(report);
+  const description = heroText(story.headline, story.top);
+  const openGraph = { title: report.businessName ?? TITLE, description };
   // No valid app URL, no image: better none than one pointing at localhost.
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  if (!appUrl || !URL.canParse(appUrl)) return { ...base, openGraph };
+  if (!appUrl || !URL.canParse(appUrl)) return { ...base, description, openGraph };
   return {
     ...base,
+    description,
     metadataBase: new URL(appUrl),
     openGraph: { ...openGraph, images: [{ url: `/report/${shareId}/opengraph-image`, width: 1200, height: 630 }] },
   };

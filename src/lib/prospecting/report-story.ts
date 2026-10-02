@@ -100,6 +100,16 @@ export function whatsappHref(number: string | null): string | null {
   return digits ? `https://wa.me/${digits}` : null;
 }
 
+/**
+ * The hero's one line, which the link card and preview image repeat: the
+ * stored headline (what the outreach message said), else the top finding's
+ * text; with no public finding, "No major issues found" even when a stored
+ * headline exists (it may name a section the public page hides).
+ */
+export function heroText(headline: string | null, top: RankedFinding | null): string {
+  return top ? (headline ?? top.text) : "No major issues found";
+}
+
 export interface ReportStory {
   businessName: string | null;
   /** "20 September 2026", or null when the report carries no date. */

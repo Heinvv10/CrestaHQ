@@ -3,10 +3,11 @@ import { ringGeometry } from "@/components/prospecting/score-ring";
 import { LABELS } from "@/lib/prospecting/report-rows";
 import { loadLogoDataUri } from "@/lib/branding/logo-data-uri";
 import { resolvePublicReport, type PublicReport } from "@/lib/prospecting/public-report";
+import { heroText, rankedFindings } from "@/lib/prospecting/report-story";
 
 /**
- * The share link's preview image (SOW R4), 1200×630: business name, stored
- * headline, up to four score rings, agency logo and brand colour. A route
+ * The share link's preview image (SOW R4), 1200×630: business name, the
+ * hero's line (`heroText`), up to four score rings, agency logo and brand colour. A route
  * handler rather than the `opengraph-image.tsx` convention so the 404 and
  * the headers are ours: it 404s exactly when the page does (same resolver,
  * same `null`), and it is never cached for longer than 5 minutes — Next's
@@ -62,9 +63,9 @@ function Preview({ report, logo }: { report: PublicReport; logo: string | null }
           <div style={{ marginTop: 10, fontSize: 60, lineHeight: 1.1 }}>
             {report.businessName ? clip(report.businessName, 36) : "Your business"}
           </div>
-          {report.headline ? (
-            <div style={{ marginTop: 16, fontSize: 30, lineHeight: 1.3, color: "#E5E7EB" }}>{clip(report.headline, 120)}</div>
-          ) : null}
+          <div style={{ marginTop: 16, fontSize: 30, lineHeight: 1.3, color: "#E5E7EB" }}>
+            {clip(heroText(report.headline, rankedFindings(report.sections)[0] ?? null), 120)}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 32 }}>
           {worstFour(report).map((s) => (

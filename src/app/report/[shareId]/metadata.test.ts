@@ -14,6 +14,7 @@ const { generateMetadata } = await import("./page");
 
 const meta = (shareId: string) => generateMetadata({ params: Promise.resolve({ shareId }) });
 const APP_URL = "https://crm.example.test";
+const SECTIONS = [{ key: "gbp", status: "ok", score: 65, findings: [{ code: "gbp_no_hours", text: "No opening hours listed." }], raw: {} }];
 const prior = process.env.NEXT_PUBLIC_APP_URL;
 
 beforeEach(() => {
@@ -21,7 +22,7 @@ beforeEach(() => {
   mem.clear();
   mem.seed("prospectReports/r1", {
     agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1", status: "ready", shareId: null,
-    headline: "No opening hours listed.", generatedAt: new Date("2026-09-20T00:00:00Z"), sections: [],
+    headline: "No opening hours listed.", generatedAt: new Date("2026-09-20T00:00:00Z"), sections: SECTIONS,
   });
   mem.seed("agencies/ag1", { name: "Example Agency" });
   mem.seed("subAccounts/sa1", { agencyId: "ag1", prospectingEnabledByAgency: true });
@@ -47,6 +48,8 @@ describe("generateMetadata", () => {
     const t = await token();
     const m = await meta(t);
     expect(m.openGraph?.title).toBe("Example Plumbing Co");
+    expect(m.description).toBe("No opening hours listed.");
+    expect(m.openGraph?.description).toBe("No opening hours listed.");
     expect(m.metadataBase?.origin).toBe(new URL(APP_URL).origin);
     expect(ogImages(m)).toEqual([{ url: `/report/${t}/opengraph-image`, width: 1200, height: 630 }]);
     expect(m.robots).toEqual({ index: false, follow: false });
@@ -58,6 +61,26 @@ describe("generateMetadata", () => {
     const m = await meta(await token());
     expect(m.openGraph?.title).toBe("Online presence report");
     expect(JSON.stringify(m)).not.toContain("Jane");
+  });
+
+  const reseed = (headline: string | null, sections: unknown[]) =>
+    mem.seed("prospectReports/r1", {
+      agencyId: "ag1", subAccountId: "sa1", createdByUid: "u1", contactId: "c1", status: "ready", shareId: null,
+      headline, generatedAt: new Date("2026-09-20T00:00:00Z"), sections,
+    });
+
+  it("says what the hero says: the top finding when no headline is stored", async () => {
+    reseed(null, SECTIONS);
+    const m = await meta(await token());
+    expect(m.description).toBe("No opening hours listed.");
+    expect(m.openGraph?.description).toBe(m.description);
+  });
+
+  it("says 'No major issues found' when no public finding exists, even with a stored headline", async () => {
+    reseed("No Google Ads running.", [{ key: "gbp", status: "ok", score: 100, findings: [], raw: {} }]);
+    const m = await meta(await token());
+    expect(m.description).toBe("No major issues found");
+    expect(JSON.stringify(m)).not.toContain("Google Ads");
   });
 
   it("gives a revoked or unknown token nothing about the report, without throwing", async () => {
@@ -78,6 +101,8 @@ describe("generateMetadata", () => {
       else process.env.NEXT_PUBLIC_APP_URL = v;
       const m = await meta(t);
       expect(m.openGraph?.title).toBe("Example Plumbing Co");
+      expect(m.description).toBe("No opening hours listed.");
+      expect(m.openGraph?.description).toBe("No opening hours listed.");
       expect(m.openGraph?.images).toBeUndefined();
       expect(m.metadataBase).toBeUndefined();
     }
