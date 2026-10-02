@@ -287,7 +287,9 @@ async function reschedule(
     pathname: `/api/sub-accounts/${subAccountId}/whatsapp-templates/poll`,
     body: { subAccountId, templateId, contentSid },
     delaySeconds: delayForAttempt(attempts),
-    deduplicationId: `watpl_${subAccountId}_${templateId}_${attempts}`,
+    // Per submission, as the first poll's (template-submit.ts): a resubmit
+    // restarts the attempt count, so attempts alone would collide.
+    deduplicationId: `watpl_${subAccountId}_${templateId}_${contentSid}_${attempts}`,
   });
   if (queued) return NextResponse.json({ ok: true, deferred });
   console.error(`[whatsapp-templates/poll] next poll not queued sa=${subAccountId} template=${templateId}`);

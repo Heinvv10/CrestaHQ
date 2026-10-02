@@ -41,6 +41,8 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `update_snippet` | write | member | Replace a snippet's name, type, body, subject and folder (send them all, as list_snippets shows them). |  |
 | `delete_snippet` | `hard_delete` | member | Delete a snippet. | the snippet's subject and body |
 | `list_whatsapp_templates` | read | member | List the sub-account's WhatsApp templates for send_whatsapp_template: id, name, language, approval per rail, body and variables. |  |
+| `create_whatsapp_template` | write | admin | Create a DRAFT WhatsApp template. |  |
+| `submit_whatsapp_template` | write | admin | Submit a draft, rejected or failed WhatsApp template to Meta for review, on the WhatsApp rail this workspace sends on. |  |
 | `list_quotes` | read | member | List quotes and invoices, newest first: id, number, kind, status, contact and total. |  |
 | `get_quote` | read | member | Read one quote or invoice: status, contact, lines, totals, terms, dates and linked deal. |  |
 | `create_quote` | write | member | Draft a quote (or invoice, kind:"invoice") for a contact, with at least one line. |  |

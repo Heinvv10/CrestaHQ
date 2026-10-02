@@ -69,7 +69,7 @@ claude mcp add --transport http leadstack https://<your-app>/api/mcp \
 
 ## Tools
 
-95 tools today; the full table, with each tool's kind, role and what its approval
+97 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
 from the registry and a test fails when it drifts. After adding or changing an
 agent capability, rerun:

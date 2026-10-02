@@ -32,6 +32,7 @@ import { CUSTOM_FIELD_CAPABILITIES } from "./capabilities/custom-fields";
 import { CUSTOM_FIELD_FOLDER_CAPABILITIES } from "./capabilities/custom-field-folders";
 import { PRODUCT_CAPABILITIES } from "./capabilities/products";
 import { SNIPPET_CAPABILITIES } from "./capabilities/snippets";
+import { WHATSAPP_TEMPLATE_CAPABILITIES } from "./capabilities/whatsapp-templates";
 import { QUOTE_CAPABILITIES } from "./capabilities/quotes";
 import { QUOTE_SEND_CAPABILITIES } from "./capabilities/quote-send";
 import { QUOTE_PAID_CAPABILITIES } from "./capabilities/quote-paid";
@@ -65,7 +66,7 @@ import { REPUTATION_CAPABILITIES } from "./capabilities/reputation";
 import { BROADCAST_CAPABILITIES } from "./capabilities/broadcasts";
 import { VOICE_CAPABILITIES } from "./capabilities/voice";
 
-export { CapabilityOutcomeUnknown, CapabilityUserError } from "./capabilities/types";
+export { CapabilityOutcomeUnknown, CapabilityUserError, CapabilityWriteRefused } from "./capabilities/types";
 export type {
   AiSuiteActionContext,
   AiSuiteCapability,
@@ -114,6 +115,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...CUSTOM_FIELD_FOLDER_CAPABILITIES,
   ...PRODUCT_CAPABILITIES,
   ...SNIPPET_CAPABILITIES,
+  ...WHATSAPP_TEMPLATE_CAPABILITIES,
   ...QUOTE_CAPABILITIES,
   ...QUOTE_SEND_CAPABILITIES,
   ...QUOTE_PAID_CAPABILITIES,

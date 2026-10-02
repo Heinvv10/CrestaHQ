@@ -47,6 +47,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["delete_product", { productId: "pr1/sub/y" }],
   ["update_snippet", { snippetId: "sn1/sub/y", name: "X", type: "text", body: "Hi" }],
   ["delete_snippet", { snippetId: "sn1/sub/y" }],
+  ["submit_whatsapp_template", { templateId: "wt1/sub/y" }],
   ["list_quotes", { contactId: "c1/sub/y" }],
   ["get_quote", { quoteId: "q1/sub/y" }],
   ["create_quote", { contactId: "c1/sub/y", lineItems: [{ description: "X", quantity: 1, unitPrice: 1 }] }],

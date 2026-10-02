@@ -48,6 +48,7 @@ export const AUDIT_TARGET_TYPES = [
   "deal",
   "task",
   "event",
+  "whatsappTemplate",
   // A cached Google review (`gbpReviews/{docId}`) — review.auto_replied.
   "review",
 ] as const;

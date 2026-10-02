@@ -16,7 +16,10 @@ import { seedPr13 } from "@/test/pr13-fixtures";
  * webhook subscription is seeded, and QStash publishes to the tenant-webhook
  * delivery step (/api/webhooks-out/step) are allowed, because a tenant's own
  * machine webhooks are its integration and outside ruling Q (plan, REVISED
- * 2026-09-25). Staff push is checked separately: fixed copy only. The real fireWorkflowTrigger is wrapped so
+ * 2026-09-25). submit_whatsapp_template is the one tool not dispatched
+ * here: it must reach the provider's template endpoints, so its narrow
+ * exemption is proven rail by rail, approval poll included, in
+ * outbound-template-review.test.ts. Staff push is checked separately: fixed copy only. The real fireWorkflowTrigger is wrapped so
  * every trigger a row fires — awaited or leaked fire-and-forget — is awaited
  * (plus a macrotask flush) before that row asserts, so a leak is caught by
  * its own row even when it runs alone.
@@ -172,7 +175,7 @@ describe("an agent can never send on its own", () => {
 
   // Every fixture, plus the per-call approval cases (approvalFor).
   const CASES: Array<[string, Record<string, unknown>]> = [
-    ...Object.entries(FIXTURE_ARGS),
+    ...Object.entries(FIXTURE_ARGS).filter(([n]) => n !== "submit_whatsapp_template"),
     ["set_bot_mode", { conversationId: "c1", mode: "suggest" }],
     ["set_bot_mode", { conversationId: "c1", mode: "auto" }],
     ["update_workflow", { workflowId: "wf_contact.created", name: "Renamed" }],

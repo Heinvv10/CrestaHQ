@@ -73,6 +73,34 @@ describe("templateRegistration", () => {
       status: "draft",
     });
   });
+
+  it("reports no twilio registration for a cloud-only template whose flat fields mirror cloud", () => {
+    // The prod shape: only ever submitted on Cloud, which mirrored its status
+    // into the flat `status`; the flat contentSid stayed null.
+    const cloudOnly = {
+      contentSid: null,
+      status: "approved" as const,
+      rejectionReason: null,
+      registrations: {
+        cloud: { externalId: "1092", status: "approved" as const, rejectionReason: null },
+      },
+    };
+    expect(templateRegistration(cloudOnly, "twilio")).toBeNull();
+    expect(templateRegistration(cloudOnly, "cloud")).toMatchObject({ status: "approved" });
+  });
+
+  it("still reads a twilio-only legacy doc (no map) from the flat fields, whatever its status", () => {
+    for (const status of ["draft", "pending", "approved", "rejected", "failed"] as const) {
+      expect(templateRegistration({ contentSid: null, status }, "twilio")).toMatchObject({
+        externalId: null,
+        status,
+      });
+    }
+    expect(templateRegistration({ contentSid: "HX1", status: "approved", registrations: {} }, "twilio")).toMatchObject({
+      externalId: "HX1",
+      status: "approved",
+    });
+  });
 });
 
 describe("isTemplateApprovedFor", () => {

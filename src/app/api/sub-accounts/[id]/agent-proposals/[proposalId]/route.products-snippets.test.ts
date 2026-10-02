@@ -283,3 +283,14 @@ it("list_whatsapp_templates shows each template's approval per rail and its vari
     resultText: expect.stringContaining("Install day — id: t1, name: install_day, en, twilio: approved, cloud: none"),
   });
 });
+
+it("list_whatsapp_templates reports no twilio registration for a template only ever submitted on Cloud", async () => {
+  // The prod shape: Cloud mirrored its status into the flat field; contentSid stayed null.
+  mem.seed("subAccounts/sa1/whatsappTemplates/t2", {
+    name: "audit_offer", displayName: "Audit offer", language: "en", status: "approved", contentSid: null, body: "Hi",
+    registrations: { cloud: { externalId: "1092", status: "approved", rejectionReason: null } },
+  });
+  expect(await call("list_whatsapp_templates", {})).toMatchObject({
+    resultText: expect.stringContaining("Audit offer — id: t2, name: audit_offer, en, twilio: none, cloud: approved"),
+  });
+});
