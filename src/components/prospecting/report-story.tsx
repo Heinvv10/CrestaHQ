@@ -2,7 +2,7 @@ import { Download, MessageCircle } from "lucide-react";
 import { ScoreRing } from "@/components/prospecting/score-ring";
 import { LABELS } from "@/lib/prospecting/report-rows";
 import type { PublicReportSection } from "@/lib/prospecting/public-sections";
-import type { AiHook, RankedFinding } from "@/lib/prospecting/report-story";
+import { heroText, type AiHook, type RankedFinding } from "@/lib/prospecting/report-story";
 
 /**
  * The blocks of the public report page (direction C "Story", picked by Hein
@@ -98,7 +98,7 @@ export function ReportHero({
               Online presence report{businessName ? ` for ${businessName}` : ""}
             </p>
             <h1 className="mt-4 font-serif text-4xl leading-tight md:text-5xl">
-              {noFindings ? "No major issues found" : (headline ?? finding.text)}
+              {heroText(headline, finding)}
             </h1>
             {noFindings ? (
               area.scored > 0 ? (

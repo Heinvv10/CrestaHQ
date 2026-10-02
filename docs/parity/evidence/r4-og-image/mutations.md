@@ -28,3 +28,13 @@ Not mutation-tested locally: the Playwright spec `e2e/specs/prospect-report-og-i
 | og:description set | drop `description` from `openGraph` | metadata.test.ts (2 failed) | yes |
 | top-level description set (else the root layout's landing copy leaks into og/twitter) | `description: undefined` | metadata.test.ts (2 failed) | yes |
 | generic fallback when headline is null | `report.headline ?? undefined` | metadata.test.ts "never falls back to the site-wide landing copy…" (1 failed) | yes |
+
+### Review round 1 fix: the card text, the image and the hero share `heroText`
+
+| Guard | Mutation | Test that failed | Restored |
+|---|---|---|---|
+| description uses the hero's line | `const description = story.headline ?? ""` | metadata.test.ts (2 failed) | yes |
+| no public finding → "No major issues found", even with a stored headline | `heroText` returns `headline ?? top?.text ?? …` | metadata.test.ts "says 'No major issues found'…" (1 failed) | yes |
+| app-URL-unset branch keeps the description | drop `description` from that return | metadata.test.ts "drops the image…" (1 failed) | yes |
+
+Not mutation-covered: the preview image's text line (the PNG is not text-searchable in the tests). It calls the same `heroText` as the page.
