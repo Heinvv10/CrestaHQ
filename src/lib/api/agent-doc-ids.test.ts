@@ -86,6 +86,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["send_whatsapp_template", { conversationId: "cv1/sub/y", templateId: "wt1" }],
   ["list_scheduled_messages", { contactId: "c1/sub/y" }],
   ["cancel_scheduled_message", { contactId: "c1/sub/y", scheduledMessageId: "s1" }],
+  ["add_conversation_note", { contactId: "c1/sub/y", body: "Internal note" }],
 ];
 
 beforeEach(() => {

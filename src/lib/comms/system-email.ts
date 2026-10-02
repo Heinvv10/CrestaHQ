@@ -8,7 +8,8 @@ import { escapeHtml } from "./escape-html";
  *
  * Email-client safe: tables, inline styles, no SVG (Gmail strips it) and no
  * web fonts. The brand mark is the agency logo when it has an https URL,
- * else a coloured initial.
+ * else a coloured initial. No hidden inbox-preview text: SpamAssassin scores
+ * it (X_LOCAL_HIDDEN_TEXT_BAYES), and these mails sit close to the line.
  */
 export interface SystemEmailBrand {
   name: string;
@@ -18,8 +19,6 @@ export interface SystemEmailBrand {
 
 export interface SystemEmail {
   brand: SystemEmailBrand;
-  /** Inbox preview line, hidden in the body. */
-  preview: string;
   heading: string;
   /** Plain text, HTML-escaped. Pass segments to bold part of a line. */
   paragraphs: Text[];
@@ -116,7 +115,6 @@ export function renderSystemEmail(email: SystemEmail): {
 <title>${escapeHtml(email.heading)}</title>
 </head>
 <body style="margin:0; padding:0; background:#f4f3f8; font-family:${FONT}; color:${INK};">
-<div style="display:none; max-height:0; overflow:hidden; opacity:0;">${escapeHtml(email.preview)}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f3f8; padding:36px 16px;">
 <tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:540px;">

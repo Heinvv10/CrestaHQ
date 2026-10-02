@@ -62,7 +62,6 @@ async function emailCheckoutLink(opts: {
     : "Activate your workspace subscription";
   const { text, html } = renderSystemEmail({
     brand: await resolveCustomBrand(),
-    preview: `${opts.subAccountName} is ready to activate.`,
     heading: "Activate your subscription",
     paragraphs: [
       opts.planName

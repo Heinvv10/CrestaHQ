@@ -97,6 +97,7 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["list_scheduled_messages",                   "sub-account", "subAccountMember", true, ["agent"]],
   ["set_bot_mode",                              "sub-account", "subAccountMember", false, ["agent"]],
   ["cancel_scheduled_message",                  "sub-account", "subAccountMember", false, ["agent"]],
+  ["add_conversation_note",                     "sub-account", "subAccountMember", false, ["agent"]],
   ["send_message",                              "sub-account", "subAccountMember", false, ["agent"]],
   ["schedule_message",                          "sub-account", "subAccountMember", false, ["agent"]],
   ["send_whatsapp_template",                    "sub-account", "subAccountMember", false, ["agent"]],

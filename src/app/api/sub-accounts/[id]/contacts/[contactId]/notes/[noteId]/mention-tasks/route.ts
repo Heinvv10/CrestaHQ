@@ -4,14 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
-import { createTaskServerSide } from "@/lib/server/tasks-service";
-import { isAssignableMember } from "@/lib/server/assignee";
-import { contactDisplayName } from "@/lib/contacts/display-name";
-
-/** Longest note excerpt copied into a mention task's notes. */
-const NOTE_EXCERPT = 500;
-/** Upper bound on mentions read off one note — the field is client-written. */
-const MAX_MENTIONS = 50;
+import { createMentionTasks } from "@/lib/server/note-mention-tasks";
 
 /**
  * POST — turn a conversation internal note's @mentions into tasks, one per
@@ -59,50 +52,16 @@ export async function POST(
     return NextResponse.json({ error: claimed.error }, { status: claimed.status });
   }
 
-  const raw = Array.isArray(claimed.note.mentionedUids) ? claimed.note.mentionedUids : [];
-  const candidates = [
-    ...new Set(raw.filter((u): u is string => typeof u === "string" && !!u)),
-  ]
-    .filter((uid) => uid !== access.uid)
-    .slice(0, MAX_MENTIONS);
-  const uids: string[] = [];
-  for (const uid of candidates) {
-    if (await isAssignableMember(subAccountId, uid)) uids.push(uid);
-  }
-  if (uids.length === 0) return NextResponse.json({ taskIds: [] });
-
-  const [subSnap, memberSnap, userSnap] = await Promise.all([
-    db.doc(`subAccounts/${subAccountId}`).get(),
-    db.doc(`subAccounts/${subAccountId}/subAccountMembers/${access.uid}`).get(),
-    db.doc(`users/${access.uid}`).get(),
-  ]);
-  const agencyId = (subSnap.data()?.agencyId as string) ?? access.agencyId ?? "";
-  const author =
-    (memberSnap.data()?.displayName as string | undefined)?.trim() ||
-    (userSnap.data()?.displayName as string | undefined)?.trim() ||
-    access.email ||
-    "A teammate";
-  const content = String(claimed.note.content ?? "");
-  const notes =
-    content.length > NOTE_EXCERPT ? `${content.slice(0, NOTE_EXCERPT)}…` : content;
-  const title = `Mentioned by ${author} in ${contactDisplayName(contact)}'s conversation`;
-
-  const taskIds: string[] = [];
-  for (const uid of uids) {
-    const { id } = await createTaskServerSide({
-      subAccountId,
-      agencyId,
-      createdByUid: access.uid,
-      mode: "live",
-      title,
-      notes,
-      dueAt: new Date(),
-      contactId,
-      dealId: null,
-      eventId: null,
-      assignedToUid: uid,
-    });
-    taskIds.push(id);
-  }
+  const taskIds = await createMentionTasks({
+    subAccountId,
+    contactId,
+    contact,
+    content: String(claimed.note.content ?? ""),
+    rawMentionedUids: claimed.note.mentionedUids,
+    authorUid: access.uid,
+    fallbackAgencyId: access.agencyId ?? undefined,
+    fallbackEmail: access.email,
+  });
+  if (taskIds.length === 0) return NextResponse.json({ taskIds });
   return NextResponse.json({ taskIds }, { status: 201 });
 }

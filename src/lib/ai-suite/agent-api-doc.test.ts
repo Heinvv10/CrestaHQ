@@ -25,6 +25,11 @@ describe("docs/features/agent-api-tools.md", () => {
     expect(readFileSync(DOC, "utf8"), "stale: regenerate it (see this file's header)").toBe(rendered);
   });
 
+  it("agent-api.md states the real tool count", () => {
+    const doc = readFileSync(join(process.cwd(), "docs/features/agent-api.md"), "utf8");
+    expect(doc).toContain(`${agentTools.length} tools today`);
+  });
+
   it("every tool that can need a person says what its preview shows; no note is left over", () => {
     const approving = agentTools.filter((c) => c.approval || c.approvalFor).map((c) => c.name);
     expect(approving.filter((n) => !PREVIEW_NOTES[n])).toEqual([]);
