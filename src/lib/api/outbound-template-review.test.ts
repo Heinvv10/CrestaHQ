@@ -3,10 +3,9 @@ import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harne
 import { whatsappCloudSecretPath } from "@/types/whatsapp-cloud";
 
 /**
- * The one exemption from outbound-never-sends.test.ts. Design decision
- * 2026-10-02: submission is a direct agent action (Meta reviews the template;
- * every send of it is approval-gated via send_whatsapp_template). Pending
- * owner confirmation.
+ * The one exemption from outbound-never-sends.test.ts. Owner ruling (Hein)
+ * 2026-10-02: direct — Meta reviews the template; every send of it stays
+ * approval-gated.
  *
  * So submit_whatsapp_template may reach exactly two things: its rail's
  * TEMPLATE endpoints (Twilio Content API / Graph `message_templates`) and
