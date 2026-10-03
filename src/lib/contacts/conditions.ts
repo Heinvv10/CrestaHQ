@@ -32,9 +32,10 @@ export interface ConditionContext {
  * Trigger filters pass no context, so a `reply.text` condition there reads
  * null — a trigger fires before any reply exists. The builder does not offer
  * the field on a trigger, but nothing rejects it in stored JSON, so be aware
- * of the shape it degrades to: `is_set`/`contains`/`equals` are always false
- * and `not_set`/`not_equals` always TRUE. The second is the trap — such a
- * filter would match every contact rather than none.
+ * of the shape it degrades to: `is_set`/`contains`/`starts_with_word`/`equals` are
+ * always false and `not_set`/`not_equals`/`not_contains` always TRUE. The
+ * second is the trap — such a filter would match every contact rather than
+ * none.
  */
 function getField(
   contact: Contact,
@@ -47,6 +48,53 @@ function getField(
     return contact.customFields?.[key] ?? null;
   }
   return (contact as unknown as Record<string, unknown>)[path] ?? null;
+}
+
+/**
+ * `starts_with_word` — a whole leading WORD (or words), not a plain prefix:
+ * `phone starts_with_word "082"` is false for "0821234567", by design.
+ *
+ * The field loses its leading whitespace and zero-width characters (U+200B,
+ * U+200C, U+200D, U+2060, U+FEFF — phone keyboards and copy-paste leave them
+ * at the edges); the value loses them at both ends, plus a trailing emoji
+ * variation selector. Both are then lower-cased and NFC-normalised, so an
+ * accent typed precomposed or as a combining mark compares equal. True when
+ * the field begins with the value AND the value is followed by end-of-text or
+ * a character that is not a letter, digit or combining mark (Unicode `\p{L}`
+ * / `\p{N}` / `\p{M}`) — except the variation selectors U+FE00–U+FE0F, which
+ * are marks but only pick an emoji's presentation, so "❤" and "❤️" match
+ * each other. The field's TRAILING edge needs no stripping: whatever follows
+ * the value there is whitespace or a format character, already a boundary.
+ *
+ * So "yes" matches "Yes", " Yes! ", "Yes, all good", "YES👍" but not
+ * "Yesterday", "Yess", "Yesé" or "No, yes"; "cafe" does not match "café
+ * latte". The rule holds even when the value itself ends in punctuation: the
+ * NEXT character must still not be a letter or digit, so "yes," does not match
+ * "yes,good". A blank value is false — a rule left empty must never match
+ * every contact.
+ *
+ * Edges are stripped with index loops, not a regex: a trailing `[…]+$` regex
+ * backtracks quadratically on a long run of spaces followed by another
+ * character, and contact fields arriving through the API or a CSV import have
+ * no length cap and are evaluated on the shared event loop.
+ */
+const ZERO_WIDTH = new Set(["\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF"]);
+const isEdge = (ch: string) => ZERO_WIDTH.has(ch) || /\s/.test(ch);
+const isVariationSelector = (ch: string) => ch >= "\uFE00" && ch <= "\uFE0F";
+const WORD_CHAR = /^(?![\uFE00-\uFE0F])[\p{L}\p{N}\p{M}]/u;
+const fold = (s: string) => s.toLowerCase().normalize("NFC");
+
+function startsWithWord(field: string, value: string): boolean {
+  let start = 0;
+  let end = value.length;
+  while (start < end && isEdge(value[start])) start++;
+  while (end > start && (isEdge(value[end - 1]) || isVariationSelector(value[end - 1]))) end--;
+  const v = fold(value.slice(start, end));
+  if (!v) return false;
+  let from = 0;
+  while (from < field.length && isEdge(field[from])) from++;
+  const f = fold(field.slice(from));
+  return f.startsWith(v) && !WORD_CHAR.test(f.slice(v.length));
 }
 
 function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolean {
@@ -75,6 +123,14 @@ function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolea
       return String(raw ?? "") !== val;
     case "contains":
       return String(raw ?? "").toLowerCase().includes(val.toLowerCase());
+    // The exact negation of `contains`, value for value — including a blank
+    // value, which `contains` treats as matching everything (every string
+    // includes ""), so `not_contains ""` matches nothing. A missing field
+    // contains nothing, so it does NOT contain any non-blank value: true.
+    case "not_contains":
+      return !String(raw ?? "").toLowerCase().includes(val.toLowerCase());
+    case "starts_with_word":
+      return startsWithWord(String(raw ?? ""), val);
     default:
       return false;
   }

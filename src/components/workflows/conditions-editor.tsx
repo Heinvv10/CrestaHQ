@@ -119,7 +119,7 @@ export function ConditionsEditor({
         <p className="text-muted-foreground text-xs">
           <code>reply.text</code> is what the contact replied with at the
           preceding &ldquo;Wait for reply&rdquo; step — use it with{" "}
-          <em>contains</em> to branch on their answer.
+          <em>contains</em> or <em>starts with the word</em> to branch on their answer.
         </p>
       )}
       <Button
