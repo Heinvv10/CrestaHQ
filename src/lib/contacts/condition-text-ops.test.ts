@@ -97,12 +97,34 @@ describe("starts_with_word", () => {
       expect(onReply("starts_with_word", "हाँ", "हाँ, सब ठीक है")).toBe(true);
     });
 
+    it("an emoji matches with or without its variation selector", () => {
+      const heart = "\u2764"; // ❤ text presentation
+      const heartVs = "\u2764\uFE0F"; // ❤️ emoji presentation
+      expect(onReply("starts_with_word", heart, `${heartVs} thanks`)).toBe(true);
+      expect(onReply("starts_with_word", heart, `${heart} thanks`)).toBe(true);
+      expect(onReply("starts_with_word", heartVs, `${heart} thanks`)).toBe(true);
+      expect(onReply("starts_with_word", heartVs, `${heartVs} thanks`)).toBe(true);
+      expect(onReply("starts_with_word", "\u2714", "\u2714\uFE0F done")).toBe(true);
+      expect(onReply("starts_with_word", "👍", "👍🏽 thanks")).toBe(true);
+    });
+
     it("strips zero-width characters at the edges of both sides", () => {
       expect(onReply("starts_with_word", "yes", "\u200BYes")).toBe(true);
       expect(onReply("starts_with_word", "yes", "\uFEFF\u2060 Yes, done\u200D")).toBe(true);
       expect(onReply("starts_with_word", "yes\u200C", "Yes")).toBe(true);
+      expect(onReply("starts_with_word", "\u2060yes", "Yes")).toBe(true);
       expect(onReply("starts_with_word", "\u200B", "Yes")).toBe(false);
     });
+  });
+
+  it("stays linear on a huge run of spaces / zero-width characters", () => {
+    // A trailing `[…]+$` regex took ~20 s on this: the run must sit after a
+    // non-edge character, or the leading `^[…]+` alternative swallows it.
+    const run = " \u200B".repeat(100_000); // 200,000 chars
+    const t0 = performance.now();
+    expect(onReply("starts_with_word", "yes", `Yes${run}x`)).toBe(true);
+    expect(onReply("starts_with_word", `yes${run}x`, "yes")).toBe(false);
+    expect(performance.now() - t0).toBeLessThan(100);
   });
 
   it.each([[""], ["   "], [undefined]])("a blank value %j never matches, not even blank text", (value) => {
