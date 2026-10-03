@@ -4,7 +4,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
  * An if_else that tells a clean "yes" from a "yes, but…": match ALL of
- * [reply.text starts_with "yes", reply.text not_contains "but"]. Driven
+ * [reply.text starts_with_word "yes", reply.text not_contains "but"]. Driven
  * through the real engine step (runStep) against the run's recorded reply,
  * asserting which branch the engine scheduled next. Only Firestore (in
  * memory) and QStash (captured) are stubbed.
@@ -42,7 +42,7 @@ function seed(replyText: string) {
           conditions: {
             match: "all",
             all: [
-              { field: "reply.text", op: "starts_with", value: "yes" },
+              { field: "reply.text", op: "starts_with_word", value: "yes" },
               { field: "reply.text", op: "not_contains", value: "but" },
             ],
           },
@@ -71,7 +71,7 @@ beforeEach(() => {
   published.length = 0;
 });
 
-describe("if_else on starts_with + not_contains", () => {
+describe("if_else on starts_with_word + not_contains", () => {
   it("a clean yes takes the true branch", async () => {
     expect(await branchFor("Yes i think everything is done")).toBe("n_done");
   });

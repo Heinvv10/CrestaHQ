@@ -7,10 +7,10 @@ import type { ConditionGroup } from "@/types/workflows";
 
 /** Text ops need a value; only is_set / not_set hide the box. */
 describe("ConditionsEditor value input", () => {
-  it("shows a value box for starts_with and not_contains, not for is_set", () => {
+  it("shows a value box for starts_with_word and not_contains, not for is_set", () => {
     const value: ConditionGroup = {
       all: [
-        { field: "reply.text", op: "starts_with", value: "yes" },
+        { field: "reply.text", op: "starts_with_word", value: "yes" },
         { field: "reply.text", op: "not_contains", value: "but" },
         { field: "email", op: "is_set" },
       ],
@@ -22,7 +22,7 @@ describe("ConditionsEditor value input", () => {
     expect(html.match(/placeholder="value"/g)).toHaveLength(2);
     expect(html).toContain('value="yes"');
     expect(html).toContain('value="but"');
-    expect(html).toContain(">starts with</option>");
+    expect(html).toContain(">starts with the word</option>");
     expect(html).toContain(">does not contain</option>");
   });
 });

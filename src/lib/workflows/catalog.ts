@@ -101,7 +101,7 @@ export const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
   { value: "not_equals", label: "does not equal" },
   { value: "contains", label: "contains" },
   { value: "not_contains", label: "does not contain" },
-  { value: "starts_with", label: "starts with" },
+  { value: "starts_with_word", label: "starts with the word" },
   { value: "is_set", label: "is set" },
   { value: "not_set", label: "is empty" },
   { value: "has_tag", label: "has tag" },

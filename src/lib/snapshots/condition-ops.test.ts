@@ -10,7 +10,7 @@ import type { WorkflowNode } from "@/types/workflows";
 const conditions = {
   match: "all",
   all: [
-    { field: "reply.text", op: "starts_with", value: "yes" },
+    { field: "reply.text", op: "starts_with_word", value: "yes" },
     { field: "reply.text", op: "not_contains", value: "but" },
   ],
 };
@@ -20,7 +20,7 @@ const ifElse = {
 } as unknown as Record<string, WorkflowNode>;
 
 describe("snapshot condition ops", () => {
-  it("apply keeps starts_with / not_contains on an if_else", () => {
+  it("apply keeps starts_with_word / not_contains on an if_else", () => {
     expect(sanitizeNodes(ifElse).n1.config).toEqual({ conditions });
   });
 

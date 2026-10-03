@@ -66,7 +66,7 @@ export type ConditionOp =
   | "not_contains"
   // Whole leading word(s), case-insensitive: "yes" matches "Yes, all good" but
   // not "Yesterday". Exact rule on `startsWithWord` in lib/contacts/conditions.
-  | "starts_with"
+  | "starts_with_word"
   | "is_set"
   | "not_set"
   | "has_tag"

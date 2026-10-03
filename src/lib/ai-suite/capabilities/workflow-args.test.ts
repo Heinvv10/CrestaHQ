@@ -77,11 +77,11 @@ describe("if_else conditions", () => {
 });
 
 describe("text condition ops", () => {
-  it("accepts starts_with and not_contains on an if_else and a trigger filter", () => {
+  it("accepts starts_with_word and not_contains on an if_else and a trigger filter", () => {
     const conditions = {
       match: "all",
       all: [
-        { field: "reply.text", op: "starts_with", value: "yes" },
+        { field: "reply.text", op: "starts_with_word", value: "yes" },
         { field: "reply.text", op: "not_contains", value: "but" },
       ],
     };

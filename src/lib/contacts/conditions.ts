@@ -32,7 +32,7 @@ export interface ConditionContext {
  * Trigger filters pass no context, so a `reply.text` condition there reads
  * null — a trigger fires before any reply exists. The builder does not offer
  * the field on a trigger, but nothing rejects it in stored JSON, so be aware
- * of the shape it degrades to: `is_set`/`contains`/`starts_with`/`equals` are
+ * of the shape it degrades to: `is_set`/`contains`/`starts_with_word`/`equals` are
  * always false and `not_set`/`not_equals`/`not_contains` always TRUE. The
  * second is the trap — such a filter would match every contact rather than
  * none.
@@ -51,18 +51,31 @@ function getField(
 }
 
 /**
- * `starts_with`: case-insensitive, after trimming both sides, the field
- * begins with the value AND the value ends at end-of-text or at a character
- * that is not a letter or digit (Unicode `\p{L}` / `\p{N}`). So "yes" matches
- * "Yes", " Yes! ", "Yes, all good", "YES👍" but not "Yesterday", "Yess",
- * "Yesé" or "No, yes". A blank value is false — a rule left empty must never
- * match every contact.
+ * `starts_with_word` — a whole leading WORD (or words), not a plain prefix:
+ * `phone starts_with_word "082"` is false for "0821234567", by design.
+ *
+ * Both sides are trimmed (whitespace plus the zero-width U+200B, U+200C,
+ * U+200D, U+2060, U+FEFF that phone keyboards and copy-paste leave at the
+ * edges), lower-cased and NFC-normalised, so an accent typed precomposed or as
+ * a combining mark compares equal. True when the field begins with the value
+ * AND the value is followed by end-of-text or a character that is not a
+ * letter, digit or combining mark (Unicode `\p{L}` / `\p{N}` / `\p{M}`).
+ *
+ * So "yes" matches "Yes", " Yes! ", "Yes, all good", "YES👍" but not
+ * "Yesterday", "Yess", "Yesé" or "No, yes"; "cafe" does not match "café
+ * latte". The rule holds even when the value itself ends in punctuation: the
+ * NEXT character must still not be a letter or digit, so "yes," does not match
+ * "yes,good". A blank value is false — a rule left empty must never match
+ * every contact.
  */
+const EDGE_SPACE = /^[\s\u200B\u200C\u200D\u2060\uFEFF]+|[\s\u200B\u200C\u200D\u2060\uFEFF]+$/g;
+const foldWord = (s: string) => s.replace(EDGE_SPACE, "").toLowerCase().normalize("NFC");
+
 function startsWithWord(field: string, value: string): boolean {
-  if (!value) return false;
-  const f = field.trim().toLowerCase();
-  const v = value.toLowerCase();
-  return f.startsWith(v) && !/^[\p{L}\p{N}]/u.test(f.slice(v.length));
+  const v = foldWord(value);
+  if (!v) return false;
+  const f = foldWord(field);
+  return f.startsWith(v) && !/^[\p{L}\p{N}\p{M}]/u.test(f.slice(v.length));
 }
 
 function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolean {
@@ -97,7 +110,7 @@ function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolea
     // contains nothing, so it does NOT contain any non-blank value: true.
     case "not_contains":
       return !String(raw ?? "").toLowerCase().includes(val.toLowerCase());
-    case "starts_with":
+    case "starts_with_word":
       return startsWithWord(String(raw ?? ""), val);
     default:
       return false;

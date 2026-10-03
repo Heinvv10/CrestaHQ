@@ -82,13 +82,13 @@ describe("saving conditions", () => {
   const conditions = {
     match: "all",
     all: [
-      { field: "reply.text", op: "starts_with", value: "yes" },
+      { field: "reply.text", op: "starts_with_word", value: "yes" },
       { field: "reply.text", op: "not_contains", value: "but" },
     ],
   };
 
-  it("keeps starts_with / not_contains on an if_else and on the trigger filters", async () => {
-    const filters = { all: [{ field: "company", op: "starts_with", value: "Acme" }] };
+  it("keeps starts_with_word / not_contains on an if_else and on the trigger filters", async () => {
+    const filters = { all: [{ field: "company", op: "starts_with_word", value: "Acme" }] };
     const res = await save({
       trigger: { type: "contact.created", filters },
       nodes: {
