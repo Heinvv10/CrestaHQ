@@ -76,6 +76,33 @@ describe("saving a workflow's steps", () => {
   });
 });
 
+describe("saving conditions", () => {
+  // sanitizeNodes and the trigger patch pass condition JSON through as-is;
+  // this pins that a Save keeps the text ops rather than stripping them.
+  const conditions = {
+    match: "all",
+    all: [
+      { field: "reply.text", op: "starts_with", value: "yes" },
+      { field: "reply.text", op: "not_contains", value: "but" },
+    ],
+  };
+
+  it("keeps starts_with / not_contains on an if_else and on the trigger filters", async () => {
+    const filters = { all: [{ field: "company", op: "starts_with", value: "Acme" }] };
+    const res = await save({
+      trigger: { type: "contact.created", filters },
+      nodes: {
+        n1: { id: "n1", type: "if_else", config: { conditions }, branches: { whenTrue: null, whenFalse: null } },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const wf = mem.read("workflows/wf1");
+    expect(wf?.nodes).toMatchObject({ n1: { config: { conditions } } });
+    expect(wf?.trigger).toMatchObject({ filters });
+  });
+});
+
 describe("moving a workflow between folders", () => {
   beforeEach(() => {
     mem.seed("subAccounts/sa1/workflowFolders/mine", { name: "Mine", subAccountId: "sa1" });

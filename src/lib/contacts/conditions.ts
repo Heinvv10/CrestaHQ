@@ -32,9 +32,10 @@ export interface ConditionContext {
  * Trigger filters pass no context, so a `reply.text` condition there reads
  * null — a trigger fires before any reply exists. The builder does not offer
  * the field on a trigger, but nothing rejects it in stored JSON, so be aware
- * of the shape it degrades to: `is_set`/`contains`/`equals` are always false
- * and `not_set`/`not_equals` always TRUE. The second is the trap — such a
- * filter would match every contact rather than none.
+ * of the shape it degrades to: `is_set`/`contains`/`starts_with`/`equals` are
+ * always false and `not_set`/`not_equals`/`not_contains` always TRUE. The
+ * second is the trap — such a filter would match every contact rather than
+ * none.
  */
 function getField(
   contact: Contact,
@@ -47,6 +48,21 @@ function getField(
     return contact.customFields?.[key] ?? null;
   }
   return (contact as unknown as Record<string, unknown>)[path] ?? null;
+}
+
+/**
+ * `starts_with`: case-insensitive, after trimming both sides, the field
+ * begins with the value AND the value ends at end-of-text or at a character
+ * that is not a letter or digit (Unicode `\p{L}` / `\p{N}`). So "yes" matches
+ * "Yes", " Yes! ", "Yes, all good", "YES👍" but not "Yesterday", "Yess",
+ * "Yesé" or "No, yes". A blank value is false — a rule left empty must never
+ * match every contact.
+ */
+function startsWithWord(field: string, value: string): boolean {
+  if (!value) return false;
+  const f = field.trim().toLowerCase();
+  const v = value.toLowerCase();
+  return f.startsWith(v) && !/^[\p{L}\p{N}]/u.test(f.slice(v.length));
 }
 
 function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolean {
@@ -75,6 +91,14 @@ function evalOne(contact: Contact, c: Condition, ctx?: ConditionContext): boolea
       return String(raw ?? "") !== val;
     case "contains":
       return String(raw ?? "").toLowerCase().includes(val.toLowerCase());
+    // The exact negation of `contains`, value for value — including a blank
+    // value, which `contains` treats as matching everything (every string
+    // includes ""), so `not_contains ""` matches nothing. A missing field
+    // contains nothing, so it does NOT contain any non-blank value: true.
+    case "not_contains":
+      return !String(raw ?? "").toLowerCase().includes(val.toLowerCase());
+    case "starts_with":
+      return startsWithWord(String(raw ?? ""), val);
     default:
       return false;
   }

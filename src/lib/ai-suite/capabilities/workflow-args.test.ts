@@ -75,3 +75,24 @@ describe("if_else conditions", () => {
     expect(patchOf({ nodes: { n1: { type: "if_else", config: { conditions } } } })).toEqual({ ok: false, error: expect.stringMatching(error) });
   });
 });
+
+describe("text condition ops", () => {
+  it("accepts starts_with and not_contains on an if_else and a trigger filter", () => {
+    const conditions = {
+      match: "all",
+      all: [
+        { field: "reply.text", op: "starts_with", value: "yes" },
+        { field: "reply.text", op: "not_contains", value: "but" },
+      ],
+    };
+    expect(
+      patchOf({
+        trigger: { type: "contact.created", filters: conditions },
+        nodes: { n1: { type: "if_else", config: { conditions } } },
+      }),
+    ).toMatchObject({
+      ok: true,
+      patch: { trigger: { filters: conditions }, nodes: { n1: { config: { conditions } } } },
+    });
+  });
+});
