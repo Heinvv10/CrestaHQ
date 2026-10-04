@@ -180,8 +180,10 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   transactional counter doc `agencies/{id}/apiKeys/{keyId}/creations/{YYYY-MM-DD}`
   and a lock doc `…/creations/name_{sha(name)}` with a 10-min `expiresAt`, no
   query and no new index; auth re-checks that `key.createdByUid` still holds
-  `agencyRole: "owner"` by one read of `agencies/{id}/agencyMembers/{uid}` (r3
-  P2-8: never the Auth Admin API per request), else 401 `minter_removed`.
+  `role == "owner"` **and** `status == "active"` by one read of
+  `agencies/{id}/agencyMembers/{uid}` (`AgencyMemberDoc`, `types/tenancy.ts:1072-1076`;
+  r3 P2-8 + post-SHIP, A2: never the Auth Admin API per request), else 401
+  `minter_removed`.
 - `apply_snapshot` is direct only on key-created targets; elsewhere it is a
   `public_change` **agency-level** row (REVISED r2, P2-6: a sub-account row would
   hit `requiredRole: agencyOwner` on the client's route), so only the owner approves it.
@@ -213,11 +215,13 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   or written under `subAccounts/null`. The agency route
   (`/api/agency/agent-proposals/[proposalId]`) adds only `requireAgencyOwnerAny`,
   agency match else 404, `roleSatisfies(…, {agencyRoleIsOwner: true})` and the kill
-  switch, then `executeAndSettle`. **REVISED r3 (P2-3):** `assign_billing_plan`'s
-  execute passes the pinned price as `specialPriceCents` and the pinned interval
-  into `assignPlanToSubAccount`, so the price cannot move between the compare and
-  the service's own plan read (`billing-service.ts:505-541`); the gate map is
-  compared inside the same call, and a mismatch refuses `pinned_mismatch`.
+  switch, then `executeAndSettle`. **REVISED r3 (P2-3), corrected post-SHIP (A4b):**
+  `assignPlanToSubAccount` gains an `expectedPriceCents` + `expectedGates` argument
+  and refuses `pinned_mismatch` inside its own plan read (`billing-service.ts:505-541`),
+  so nothing can move between the compare and the write. `specialPriceCents` is
+  sent **only when the proposal itself set one**: passing the pinned base price as
+  a special price would stamp `billing.specialPriceCents` and fork a per-sub-account
+  Stripe price (`:536-541`), after which plan price changes never reach the client.
   No batch endpoint: claim, `rev`, pins, deadline and `unsettled` are untouched.
 - One `agentKeyRef(row)` (by `keyLevel`) serves `createProposal`, both decide
   routes, the enrolment replay and `agentActor` (REVISED, P1-1).
@@ -364,7 +368,10 @@ firestore.rules / firestore.indexes.json
   isAgencyOwner(p.agencyId))`; the new agency subcollections stay under the default
   deny.
 - `firestore.indexes.json`: `agentProposals (agencyId ASC, keyLevel ASC, status ASC,
-  createdAt DESC)`. The revoke sweep reuses `(keyId, status)`.
+  createdAt DESC)`; **post-SHIP (A3b):** a COLLECTION_GROUP-scope ascending
+  `expiresAt` index on `agentCalls`, which joins `EXPIRES_AT_COLLECTION_GROUPS`
+  (`cron/api-cleanup/route.ts:38-46`; the index-coverage test enforces the pair),
+  deployed before the A3b app deploy. The revoke sweep reuses `(keyId, status)`.
 - Deploy order: the index **before** the A5 app deploy (a missing index is a runtime
   `FAILED_PRECONDITION` on the agency page, not a CI failure); rules after A5. Both
   from `main`, after checking no other open PR carries rules changes. Rollback for
@@ -474,4 +481,6 @@ the list route), P2-5 (`hasChannelConnection` predicate, fields named), P2-6
 doc read), P2-9 (status line). Carry-forward into the owning PR: the exact field
 list behind `hasChannelConnection` is fixed in A4a-1 when the predicate is written
 (the teardown in A6 imports it), and the `agentCalls` sweep joins the api-cleanup
-route in A3b.
+route in A3b. **Post-SHIP carry-forwards (verified 2026-10-04):** A4b uses an
+expected-price argument, not `specialPriceCents`; A3b adds the `agentCalls`
+collection-group `expiresAt` index; A2's minter check reads `role` and `status`.
