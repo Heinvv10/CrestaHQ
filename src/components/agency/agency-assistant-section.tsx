@@ -5,6 +5,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { Sparkles } from "lucide-react";
 import { useAgency } from "@/hooks/use-agency";
+import { AgencyAgentApiCard } from "@/components/agency/agency-agent-api-card";
 
 /**
  * Agency Settings card: master switch for the Agency Assistant (the
@@ -167,6 +168,8 @@ export function AgencyAssistantSection() {
           </select>
         </div>
       )}
+
+      <AgencyAgentApiCard />
     </section>
   );
 }

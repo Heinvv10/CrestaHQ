@@ -71,3 +71,22 @@ describe("brandColor", () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe("agentApiEnabled (Agency Agent API kill switch)", () => {
+  it("the owner switches it on and off", async () => {
+    expect((await patch("owner1", { agentApiEnabled: true })).status).toBe(200);
+    expect(db().read("agencies/ag1")).toMatchObject({ agentApiEnabled: true });
+    expect((await patch("owner1", { agentApiEnabled: false })).status).toBe(200);
+    expect(db().read("agencies/ag1")).toMatchObject({ agentApiEnabled: false });
+  });
+
+  it("rejects a non-boolean", async () => {
+    expect((await patch("owner1", { agentApiEnabled: "yes" })).status).toBe(400);
+    expect(db().read("agencies/ag1")).not.toHaveProperty("agentApiEnabled");
+  });
+
+  it("refuses staff", async () => {
+    expect((await patch("staff1", { agentApiEnabled: true })).status).toBe(403);
+    expect(db().read("agencies/ag1")).not.toHaveProperty("agentApiEnabled");
+  });
+});

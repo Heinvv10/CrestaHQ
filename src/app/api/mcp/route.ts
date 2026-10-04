@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { NextResponse } from "next/server";
-import { authenticateApiRequest, requireApiScope, type ApiAuthContext } from "@/lib/api/auth";
+import { authenticateApiRequest, refuseAgencyKey, requireApiScope, type ApiAuthContext } from "@/lib/api/auth";
 import { apiError } from "@/lib/api/responses";
 import { captureRequestLog } from "@/lib/api/logs";
 import { checkAndCount } from "@/lib/api/rate-limit";
@@ -22,11 +22,14 @@ import { MAX_AGENT_BODY_BYTES, readBodyCapped } from "@/lib/api/body-limit";
  * request that runs nothing still 1 — nothing is free. A batch that repeats a
  * JSON-RPC id is refused whole before any message runs.
  * GET (no server-initiated stream) and DELETE (no sessions) → 405.
+ * An agency key is refused (403 agency_key_not_allowed, logged under the
+ * agency) until the agency transport lands.
  */
 export async function POST(request: Request): Promise<Response> {
   const start = Date.now();
   const auth = await authenticateApiRequest(request);
   if (auth instanceof Response) return auth;
+  if (auth.level === "agency") return refuseAgencyKey(auth, request, start);
 
   const refuse = (response: Response, code: string) => {
     void captureRequestLog({

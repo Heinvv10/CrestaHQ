@@ -37,13 +37,27 @@ export type ApiKeyMode = "live" | "test";
 export type ApiKeyScope = "admin" | "forms-ingest" | "agent";
 
 /**
- * Firestore doc at `subAccounts/{subAccountId}/apiKeys/{keyId}`. Server-only
- * read/write (Firestore rules deny clients); the operator UI talks to the
- * Admin-SDK-backed `/api/sub-accounts/{id}/api-keys` routes instead.
+ * Who a key belongs to, read from its doc PATH (never its data):
+ * `subAccounts/{id}/apiKeys/{keyId}` is a sub-account key (v1);
+ * `agencies/{id}/apiKeys/{keyId}` is an agency key (Agency Agent API), which
+ * is `agent`-scoped and live-only.
  */
-export interface ApiKeyDoc {
+export type ApiKeyLevel = "sub-account" | "agency";
+
+/**
+ * Firestore doc at `subAccounts/{subAccountId}/apiKeys/{keyId}` or
+ * `agencies/{agencyId}/apiKeys/{keyId}`. Server-only read/write (Firestore
+ * rules deny clients); the operator UI talks to the Admin-SDK-backed
+ * `/api/sub-accounts/{id}/api-keys` and `/api/agency/api-keys` routes instead.
+ */
+export type ApiKeyDoc = ApiKeyDocFields &
+  (
+    | { level: "sub-account"; subAccountId: string }
+    | { level: "agency"; subAccountId: null }
+  );
+
+interface ApiKeyDocFields {
   id: string;
-  subAccountId: string;
   agencyId: string;
   /** Operator-supplied label, e.g. "Zapier production", "Webflow form". */
   name: string;
@@ -134,4 +148,11 @@ export interface ApiRequestLogResponse {
   requestBody: string;
   /** Truncated response body excerpt (≤2KB). */
   responseBody: string;
+}
+
+/** One sub-account an agency key reaches: both `apiAccessEnabledByAgency` and
+ *  `agentApiEnabledByAgency` on. Shown before mint and returned by it. */
+export interface AgencyKeyReachEntry {
+  id: string;
+  name: string;
 }

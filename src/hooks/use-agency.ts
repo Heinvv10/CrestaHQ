@@ -35,6 +35,8 @@ interface AgencySummary {
    * "opus" — matches pre-picker behavior for upgrading deployments.
    */
   agencyAssistantModel: "opus" | "sonnet";
+  /** Agency Agent API kill switch; only an explicit `true` reads on. */
+  agentApiEnabled: boolean;
   /**
    * Starts as `!!agencyId` at mount and flips false when the snapshot (or
    * its error) arrives. On a hard load auth has not resolved at mount, so
@@ -62,6 +64,7 @@ interface AgencyData {
   appTheme: AppTheme | null;
   agencyAssistantEnabled: boolean;
   agencyAssistantModel: "opus" | "sonnet";
+  agentApiEnabled: boolean;
 }
 
 /**
@@ -87,6 +90,7 @@ export function useAgency(): AgencySummary {
     appTheme: seed?.appTheme ?? null,
     agencyAssistantEnabled: false,
     agencyAssistantModel: "opus",
+    agentApiEnabled: false,
   });
   const [loading, setLoading] = useState<boolean>(!!agencyId);
 
@@ -111,6 +115,7 @@ export function useAgency(): AgencySummary {
             agencyAssistantEnabled: d.agencyAssistantEnabled === true,
             agencyAssistantModel:
               d.agencyAssistantModel === "sonnet" ? "sonnet" : "opus",
+            agentApiEnabled: d.agentApiEnabled === true,
           });
         }
         setLoading(false);

@@ -112,6 +112,12 @@ export interface AgencyDoc {
    * enable switch.
    */
   agencyAssistantModel?: AiSuiteModelChoice;
+  /**
+   * Agency Agent API kill switch. OFF by default — read `=== true`. While
+   * off, every agency API key is refused at auth and none can be minted.
+   * Written by PATCH /api/agency; shown in the Agency Assistant card.
+   */
+  agentApiEnabled?: boolean;
 }
 
 /**

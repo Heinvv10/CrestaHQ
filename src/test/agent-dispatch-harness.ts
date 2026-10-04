@@ -15,6 +15,7 @@ export const mem = createMemoryFirestore();
 export const adminMock = () => ({ getAdminDb: () => mem.db });
 
 export const auth: ApiAuthContext = {
+  level: "sub-account",
   agencyId: "ag1",
   subAccountId: "sa1",
   keyId: "key1",

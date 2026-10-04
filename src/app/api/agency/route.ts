@@ -32,6 +32,7 @@ interface PatchBody {
   appTheme?: string | null;
   agencyAssistantEnabled?: boolean;
   agencyAssistantModel?: "opus" | "sonnet";
+  agentApiEnabled?: boolean;
 }
 
 const APP_THEMES = new Set(["leadstack", "green", "neutral"]);
@@ -203,6 +204,17 @@ export async function PATCH(request: Request) {
       );
     }
     update.agencyAssistantEnabled = body.agencyAssistantEnabled;
+  }
+
+  // Agency Agent API kill switch (off by default; auth reads `=== true`).
+  if (body.agentApiEnabled !== undefined) {
+    if (typeof body.agentApiEnabled !== "boolean") {
+      return NextResponse.json(
+        { error: "agentApiEnabled must be a boolean." },
+        { status: 400 },
+      );
+    }
+    update.agentApiEnabled = body.agentApiEnabled;
   }
 
   // Agency Assistant model tier ("opus" | "sonnet"; unset docs read as
