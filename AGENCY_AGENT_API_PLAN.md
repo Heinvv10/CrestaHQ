@@ -226,7 +226,6 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
 | Kill switch | `agencies/{id}.agentApiEnabled`: auth, dispatch (fresh), both decide routes for `keyLevel: "agency"` rows |
 | Billing plan at creation | none: `comped`, fully usable; `assign_billing_plan` is a `spend` proposal approved last |
 | Human-only | no tool for any connection route, credentials, `billing/{checkout,portal}`, `PATCH /api/agency` (the switch itself) |
-| Out of scope, recorded | key expiry / rotation; a run id across one onboarding; a viewer for agency logs; an agent that reads client B and writes to A is bounded only by reach + audit (POPIA: both clients are the agency's own tenants) |
 
 ## Coverage manifest (the CI gate) — REVISED 2026-10-04 (P1-2)
 
@@ -397,8 +396,8 @@ firestore.rules / firestore.indexes.json
 - `FROZEN` can only shrink by convention; the diff and the PR-template line are the gate.
 - Plan apply after a run can switch gates on or off, including `api-access`; the
   preview shows it, nothing else re-applies gates.
-- Rate limit is per process and per key; agency keys share `LIMITS_BY_SCOPE.agent`.
-- No viewer for agency-level request logs; no key expiry; no run id.
+- Per-process per-key rate limit shared with v1 agent keys; no agency-log viewer,
+  key expiry or run id; cross-client data movement is bounded only by reach + audit.
 
 ## Review round 1 reconciliation (2026-10-04)
 
