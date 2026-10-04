@@ -177,6 +177,10 @@ migration are in [RUNBOOK.md](RUNBOOK.md#zero-downtime-deploys-velo-server-only)
   fails when an AI Suite capability's `execute` lacks a visible tenant anchor.
   **Adding a capability means making this pass** — see
   [docs/architecture/key-architecture.md](docs/architecture/key-architecture.md).
+- `pnpm check:agent-coverage` — [scripts/check-agent-coverage.mjs](scripts/check-agent-coverage.mjs)
+  (part of `pnpm lint`): every `path:METHOD` under `src/app` maps to agent tool(s)
+  or a written exclusion in `scripts/agent-coverage.json`. **Adding a route means
+  making this pass**; `FROZEN` (grandfathered routes) only ever shrinks.
 - `pnpm doctor` — env-var shape check (`--live` also probes Firebase)
 - `pnpm format` — Prettier
 - `firebase deploy --only firestore:rules,firestore:indexes` — **run after any
