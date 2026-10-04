@@ -20,9 +20,10 @@
 > `agent-api` and `api-access` are never enabled by the key. **Owner ruling (POPIA,
 > 2026-10-04):** every reachable sub-account belongs to the agency, and an agent moving
 > data between two of them is a bounded risk Hein accepts; each targeted call gets an
-> agency-level audit row so it is reconstructable. **PENDING Hein:** whether reach stays
-> the single `agentApiEnabledByAgency` gate or gets its own gate / key target list
-> (review P1-5). Order: coverage gate → keys + onboarding + approvals page → burn-down.
+> agency-level audit row so it is reconstructable. **RULED 2026-10-04: yes — single
+> gate; the mint dialog lists the reach** (review P1-5: reach stays the two
+> `apiAccessEnabledByAgency` + `agentApiEnabledByAgency` gates, existing clients included,
+> no second switch). Order: coverage gate → keys + onboarding + approvals page → burn-down.
 
 ## Goal
 
@@ -383,8 +384,8 @@ firestore.rules / firestore.indexes.json
    list every sub-account with both gates on (Blitz and Velocity carry v1 agent keys
    and are likely reachable, with real contacts). Switching `agent-api` off on them
    would break the live `leadstack-blitz` / `leadstack-velocity` triage tooling and
-   block their pending proposals, so Hein rules between accepting that the key can
-   read them and the pending single-gate question; nothing below touches them.
+   block their pending proposals; Hein ruled (2026-10-04) that the key reaches them,
+   and the mint dialog lists them by name. Nothing below touches them.
 1. Owner switches on `agentApiEnabled` (Agency → Agency Assistant card); mints an
    agency key. `claude mcp add --transport http leadstack-agency
    https://crm.crestahq.com/api/mcp --header "Authorization: Bearer lsk_live_…"`.
@@ -421,8 +422,8 @@ firestore.rules / firestore.indexes.json
   prompt-injected agent can enumerate and edit every gated client workspace, where
   v1 keys bounded blast radius to one client. The per-sub-account gate, proposals,
   the class-limited Approve all and the kill switch shrink that, they do not remove it.
-- **Existing gated clients are reachable from the A3b deploy** (P1-5, **PENDING
-  Hein's ruling** on a single reach gate vs a separate gate / key target list): v1's
+- **Existing gated clients are reachable from the A3b deploy** (P1-5, **RULED
+  2026-10-04: yes — single gate; the mint dialog lists the reach**): v1's
   per-client opt-in is reinterpreted as agency-wide consent.
 - `subAccountId: string | null` ripples through every consumer; the compiler lists
   them and A2 asserts no `subAccounts/null` write, but a consumer that stringifies
