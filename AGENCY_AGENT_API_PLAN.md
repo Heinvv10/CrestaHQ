@@ -92,9 +92,7 @@ and the human can approve the whole run from one page.
   applies `.limit(50)` before any filter (`agency.ts:36`). The daily api-cleanup
   sweeps idempotency by collection group (`cron/api-cleanup/route.ts:99`), so a new
   `agencies/*/apiIdempotency` path is covered.
-- Lint runs three zero-dependency scanners byte-identically in CI and
-  `deploy-velo.sh`; `capability-names.test.ts` and `agent-api-doc.test.ts` lock the
-  registry at test time.
+- Lint runs three zero-dependency scanners byte-identically in CI and `deploy-velo.sh`.
 
 ## Design decisions
 
@@ -273,35 +271,24 @@ Sub-account tree: `agents/watchdog`, `ai-agent/*`, `apexgeo-connection`, `billin
 `templates*`, `updates-modal-config`. The other trees (`api/community`, `events`,
 `comms`, `contacts`, `deals`, `tasks`, `quotes`, `broadcasts`, `workflows`, `forms`,
 `automations`, `scheduled-messages`, `social`, `pay`, `report`, `l`, `rr`, …) are
-grandfathered whole at A1 and classified in the burn-down. Written as exclusions at
-A1: `api-keys*` (key-management), `agent-proposals*` (queue-itself — there is no
-tool for the queue), `PATCH /api/agency` (human-only), every `webhooks/*` inbound
-provider route (public-unauth). Covered by tools at A1: the groups in the findings
-plus, from A4, `agency/snapshots` GET, `apply-snapshot`, `sub-accounts` POST,
-`feature-gates`, `billing/charges`.
+grandfathered whole at A1 and classified in the burn-down. Exclusions at A1:
+`api-keys*` (key-management), `agent-proposals*` (queue-itself: no tool exists for
+the queue), `PATCH /api/agency` (human-only), inbound `webhooks/*` (public-unauth).
 
 ## Module shape
 
 ```
-src/types/api.ts                              ApiKeyDoc.level + subAccountId | null; ApiKeyRef
-src/lib/api/auth.ts                           ApiAuthContext.level; agency branch; withApiAuth allowAgencyKey; precheck(ctx, body)
-src/lib/firestore/api-keys.ts                 agency key CRUD; agentKeyRef(row); level from path; bump/revoke by ref
-src/lib/api/agent-context.ts                  buildAgencyAgentContext; apiKey.level
+src/types/api.ts, src/lib/api/auth.ts         level + subAccountId | null; agency auth branch; withApiAuth allowAgencyKey; precheck(ctx, body)
+src/lib/firestore/api-keys.ts                 agency key CRUD; agentKeyRef(row); level from path; bump / revoke by ref
 src/lib/api/agent-dispatch.ts                 AGENCY_AGENT_CALLABLE; resolveReach; agency branch; wrong_sub_account
-src/lib/api/agent-tools-listing.ts            agentToolsFor(auth) (NEW)
-src/lib/api/{agent-precheck,logs,idempotency}.ts   by level / after reach
-src/lib/server/agent-proposals*.ts            keyLevel, agency ids, sweep by key ref; gate_change class
-src/lib/server/agent-enrolment-replay.ts      cap via agentKeyRef
-src/lib/ai-suite/capabilities/{helpers,agency}.ts  agentActor level; assistantMayEnable; create_sub_account agent path
-src/lib/ai-suite/capabilities/agency-gates.ts set_sub_account_gate + DIRECT_GATES (NEW)
-src/lib/ai-suite/capabilities/snapshots.ts    list_snapshots, apply_snapshot (NEW)
-src/lib/ai-suite/capabilities/{billing-*,members}.ts   spend / outbound + previews
+src/lib/api/agent-tools-listing.ts (NEW)      agentToolsFor(auth); agent-context / precheck / logs / idempotency by level
+src/lib/server/agent-proposals*.ts, agent-enrolment-replay.ts   keyLevel, agency ids, gate_change, sweep + cap via agentKeyRef
+src/lib/ai-suite/capabilities/…               helpers (agentActor level, assistantMayEnable), agency, agency-gates (NEW),
+                                              snapshots (NEW), billing-*, members
 src/lib/server/sub-accounts-service.ts        createdByKeyId, owner membership on the agent path, creation cap
-src/app/api/agency/{api-keys,agent-proposals}/**       (NEW)
-src/app/api/agency/route.ts + agency-assistant-section.tsx   agentApiEnabled + keys card
-src/app/(dashboard)/agency/approvals/page.tsx + sidebar     (NEW)
-scripts/check-agent-coverage.mjs + agent-coverage.json; src/lib/api/agent-coverage.test.ts
-scripts/teardown-smoke-sub-account.mjs        live-validation teardown (NEW)
+src/app/api/agency/{api-keys,agent-proposals}/** (NEW); agency/route.ts + agency-assistant-section.tsx (switch + keys card)
+src/app/(dashboard)/agency/approvals/page.tsx + sidebar (NEW)
+scripts/check-agent-coverage.mjs + agent-coverage.json; src/lib/api/agent-coverage.test.ts; scripts/teardown-smoke-sub-account.mjs
 firestore.rules / firestore.indexes.json
 ```
 
