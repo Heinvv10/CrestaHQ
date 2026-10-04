@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import {
   bumpApiKeyLastUsed,
   findApiKeyByPrefix,
+  type ApiKeyOwner,
 } from "@/lib/firestore/api-keys";
 import {
   hashApiKey,
@@ -35,7 +36,7 @@ import { resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { captureRequestLog } from "@/lib/api/logs";
 import { MAX_BODY_BYTES } from "@/lib/api/body-limit";
 import { bodyTooLarge, invalidParam, readJsonBody } from "@/lib/api/request-guards";
-import type { ApiKeyMode, ApiKeyScope } from "@/types/api";
+import type { ApiKeyDoc, ApiKeyMode, ApiKeyScope } from "@/types/api";
 
 /**
  * Public-API request lifecycle: auth → version resolve → (optional)
@@ -60,12 +61,16 @@ import type { ApiKeyMode, ApiKeyScope } from "@/types/api";
  * code-enforced. The cost of forgetting is a cross-tenant leak, so
  * subsequent slices ship `requireApiTenancy(ctx, doc)` guards that
  * compare `doc.subAccountId` to `ctx.subAccountId` before returning.
+ *
+ * An agency key (`agencies/{id}/apiKeys`) authenticates as an
+ * `AgencyApiAuthContext`, which has no sub-account. `withApiAuth` and
+ * `/api/mcp` refuse it, so every handler still receives an `ApiAuthContext`
+ * with a real `subAccountId`.
  */
 
-export interface ApiAuthContext extends ResponseMeta {
+interface ApiAuthFields extends ResponseMeta {
   /** Identifies the key holder for this request. Tenancy keys for writes. */
   agencyId: string;
-  subAccountId: string;
   keyId: string;
   /** First 8 chars of the key — surfaced in logs / errors, never secret. */
   keyPrefix: string;
@@ -81,6 +86,18 @@ export interface ApiAuthContext extends ResponseMeta {
    * straight to `openEnrolmentGate`.
    */
   enrolmentCapPerHour: number;
+}
+
+/** A sub-account key: every v1 route and the agent transports run on this. */
+export interface ApiAuthContext extends ApiAuthFields {
+  level: "sub-account";
+  subAccountId: string;
+}
+
+/** An agency key: reaches no sub-account of its own. */
+export interface AgencyApiAuthContext extends ApiAuthFields {
+  level: "agency";
+  subAccountId: null;
 }
 
 export interface WithApiAuthOptions {
@@ -161,7 +178,7 @@ function readBearerToken(request: Request): string | null {
  */
 export async function authenticateApiRequest(
   request: Request,
-): Promise<ApiAuthContext | NextResponse> {
+): Promise<ApiAuthContext | AgencyApiAuthContext | NextResponse> {
   const requestId = newRequestId();
   // Always set a temporary meta with the latest version — if the header
   // says something invalid we want the rejection response to still echo a
@@ -226,31 +243,11 @@ export async function authenticateApiRequest(
     );
   }
 
-  // Agency-level gate check. The agency owner can flip
-  // `apiAccessEnabledByAgency` off to immediately block every /api/v1/*
-  // request from a sub-account without revoking individual keys. One
-  // extra Firestore read per request — well worth it for the kill-switch
-  // capability. Default-deny on missing field (legacy docs / first run).
-  const subSnap = await getAdminDb()
-    .doc(`subAccounts/${candidate.subAccountId}`)
-    .get();
-  if (!subSnap.exists) {
-    return apiError(
-      tentativeMeta,
-      "authentication_error",
-      "invalid_api_key",
-      "Invalid API key provided.",
-    );
-  }
-  const subData = subSnap.data()!;
-  if (subData.apiAccessEnabledByAgency !== true) {
-    return apiError(
-      tentativeMeta,
-      "permission_error",
-      "api_access_disabled",
-      "API access has been disabled for this sub-account by your agency administrator. Contact them to re-enable.",
-    );
-  }
+  const ownerRefusal =
+    candidate.level === "agency"
+      ? await agencyKeyRefusal(tentativeMeta, candidate)
+      : await subAccountKeyRefusal(tentativeMeta, candidate.subAccountId);
+  if (ownerRefusal) return ownerRefusal;
 
   // Resolve version. Caller pin (header) > key default > latest.
   const headerVersion = request.headers.get("leadstack-version");
@@ -268,13 +265,16 @@ export async function authenticateApiRequest(
   }
 
   // Best-effort lastUsedAt bump — never block on it.
-  void bumpApiKeyLastUsed(candidate.subAccountId, candidate.id).catch((err) => {
+  const owner: ApiKeyOwner =
+    candidate.level === "agency"
+      ? { level: "agency", agencyId: candidate.agencyId }
+      : { level: "sub-account", subAccountId: candidate.subAccountId };
+  void bumpApiKeyLastUsed(owner, candidate.id).catch((err) => {
     console.warn("[api/auth] bumpApiKeyLastUsed failed", err);
   });
 
-  return {
+  const fields: ApiAuthFields = {
     agencyId: candidate.agencyId,
-    subAccountId: candidate.subAccountId,
     keyId: candidate.id,
     keyPrefix: candidate.prefix,
     keyName: candidate.name,
@@ -284,6 +284,115 @@ export async function authenticateApiRequest(
     requestId,
     apiVersion: resolved.version,
   };
+  return candidate.level === "agency"
+    ? { ...fields, level: "agency", subAccountId: null }
+    : { ...fields, level: "sub-account", subAccountId: candidate.subAccountId };
+}
+
+/**
+ * Sub-account key: the agency owner can flip `apiAccessEnabledByAgency` off
+ * to immediately block every /api/v1/* request from a sub-account without
+ * revoking individual keys. One extra Firestore read per request — well
+ * worth it for the kill-switch capability. Default-deny on missing field
+ * (legacy docs / first run).
+ */
+async function subAccountKeyRefusal(
+  meta: ResponseMeta,
+  subAccountId: string,
+): Promise<NextResponse | null> {
+  const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
+  if (!subSnap.exists) {
+    return apiError(
+      meta,
+      "authentication_error",
+      "invalid_api_key",
+      "Invalid API key provided.",
+    );
+  }
+  if (subSnap.data()!.apiAccessEnabledByAgency !== true) {
+    return apiError(
+      meta,
+      "permission_error",
+      "api_access_disabled",
+      "API access has been disabled for this sub-account by your agency administrator. Contact them to re-enable.",
+    );
+  }
+  return null;
+}
+
+/**
+ * Agency key, read fresh on every request: the agency's Agent API kill
+ * switch (`agencies/{id}.agentApiEnabled`, default off) and the owner who
+ * minted the key still being an active owner — one read of their
+ * `agencyMembers` row, never the Auth Admin API.
+ */
+async function agencyKeyRefusal(
+  meta: ResponseMeta,
+  key: Extract<ApiKeyDoc, { level: "agency" }>,
+): Promise<NextResponse | null> {
+  const db = getAdminDb();
+  const [agency, minter] = await Promise.all([
+    db.doc(`agencies/${key.agencyId}`).get(),
+    db.doc(`agencies/${key.agencyId}/agencyMembers/${key.createdByUid}`).get(),
+  ]);
+  if (!agency.exists) {
+    return apiError(meta, "authentication_error", "invalid_api_key", "Invalid API key provided.");
+  }
+  if (agency.data()?.agentApiEnabled !== true) {
+    return apiError(
+      meta,
+      "permission_error",
+      "agent_api_disabled",
+      "The Agent API is switched off for this agency. The agency owner can switch it on in Agency settings.",
+    );
+  }
+  const member = minter.data();
+  if (member?.role !== "owner" || member?.status !== "active") {
+    return apiError(
+      meta,
+      "authentication_error",
+      "minter_removed",
+      "The agency owner who minted this key is no longer an active owner. Mint a new key.",
+    );
+  }
+  return null;
+}
+
+/**
+ * The refusal for an agency key on a transport that takes sub-account keys
+ * only (every one, until the agency transports land). Logged under
+ * `agencies/{id}/apiRequestLogs` — never under a sub-account — with no
+ * request body.
+ */
+export function refuseAgencyKey(
+  ctx: AgencyApiAuthContext,
+  request: Request,
+  start: number,
+): NextResponse {
+  const response = apiError(
+    ctx,
+    "permission_error",
+    "agency_key_not_allowed",
+    "This endpoint takes a sub-account API key. Agency keys are not accepted here.",
+  );
+  void captureRequestLog({
+    subAccountId: null,
+    agencyId: ctx.agencyId,
+    keyId: ctx.keyId,
+    keyPrefix: ctx.keyPrefix,
+    mode: ctx.mode,
+    requestId: ctx.requestId,
+    method: request.method,
+    path: new URL(request.url).pathname,
+    query: "",
+    requestHeaders: request.headers,
+    requestBody: "",
+    responseStatus: response.status,
+    responseBodyJson: null,
+    errorCode: "agency_key_not_allowed",
+    latencyMs: Date.now() - start,
+  });
+  return response;
 }
 
 /**
@@ -334,6 +443,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       // to write under). The 401 response itself is the audit record.
       return ctxOrErr;
     }
+    if (ctxOrErr.level === "agency") return refuseAgencyKey(ctxOrErr, request, start);
     const ctx = ctxOrErr;
 
     // Read the body BEFORE any other branching — every subsequent exit
@@ -613,7 +723,9 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
   };
 }
 
-function isAuthContext(v: ApiAuthContext | NextResponse): v is ApiAuthContext {
+function isAuthContext(
+  v: ApiAuthContext | AgencyApiAuthContext | NextResponse,
+): v is ApiAuthContext | AgencyApiAuthContext {
   // NextResponse has `status` numbers; ApiAuthContext has a `keyId` string.
   // Cheapest discriminator.
   return typeof (v as ApiAuthContext).keyId === "string";

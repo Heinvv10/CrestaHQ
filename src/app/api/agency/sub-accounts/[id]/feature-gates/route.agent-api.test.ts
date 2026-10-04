@@ -52,6 +52,28 @@ beforeEach(() => {
   db().clear();
   db().seed(`subAccounts/${SA}`, { agencyId: "ag_1", name: "Fixture" });
   db().seed(`subAccounts/${SA}/subAccountMembers/uid_admin`, { status: "active", role: "admin" });
+  db().seed("agencies/ag_1/agencyMembers/uid_owner", { role: "owner", status: "active" });
+});
+
+// PR #346 fix-review REPRO 2: the owner claim outlives a removal, so switching
+// a reach gate ON re-reads the caller's agencyMembers row.
+describe.each([
+  ["agentApiEnabled", "agentApiEnabledByAgency"],
+  ["apiAccessEnabled", "apiAccessEnabledByAgency"],
+])("%s with the owner's agencyMembers row removed", (field, stored) => {
+  beforeEach(() => {
+    db().seed("agencies/ag_1/agencyMembers/uid_owner", { role: "owner", status: "removed" });
+  });
+
+  it("refuses switching it on and writes nothing", async () => {
+    expect((await patch({ [field]: true })).status).toBe(403);
+    expect(db().read(`subAccounts/${SA}`)?.[stored]).toBeUndefined();
+  });
+
+  it("still allows switching it off", async () => {
+    expect((await patch({ [field]: false })).status).toBe(200);
+    expect(db().read(`subAccounts/${SA}`)?.[stored]).toBe(false);
+  });
 });
 
 describe("agentApiEnabled", () => {

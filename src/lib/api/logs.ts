@@ -47,7 +47,8 @@ const REDACT_HEADERS = new Set([
 ]);
 
 export interface ApiRequestLogInput {
-  subAccountId: string;
+  /** null: an agency-key request no sub-account owns → the agency's log. */
+  subAccountId: string | null;
   agencyId: string;
   keyId: string;
   keyPrefix: string;
@@ -97,9 +98,11 @@ function stringifyResponse(bodyJson: unknown): string {
  */
 export async function captureRequestLog(input: ApiRequestLogInput): Promise<void> {
   try {
-    await getAdminDb()
-      .collection("subAccounts")
-      .doc(input.subAccountId)
+    const owner =
+      input.subAccountId === null
+        ? getAdminDb().collection("agencies").doc(input.agencyId)
+        : getAdminDb().collection("subAccounts").doc(input.subAccountId);
+    await owner
       .collection("apiRequestLogs")
       .add({
         agencyId: input.agencyId,

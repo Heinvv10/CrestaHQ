@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { invalidateAgencyPolicyCache } from "@/lib/agency/policy";
+import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
 import { MIN_CONTRAST, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 import type { MemberStatus, Role } from "@/types";
 
@@ -32,6 +33,7 @@ interface PatchBody {
   appTheme?: string | null;
   agencyAssistantEnabled?: boolean;
   agencyAssistantModel?: "opus" | "sonnet";
+  agentApiEnabled?: boolean;
 }
 
 const APP_THEMES = new Set(["leadstack", "green", "neutral"]);
@@ -203,6 +205,19 @@ export async function PATCH(request: Request) {
       );
     }
     update.agencyAssistantEnabled = body.agencyAssistantEnabled;
+  }
+
+  // Agency Agent API kill switch (off by default; auth reads `=== true`).
+  if (body.agentApiEnabled !== undefined) {
+    if (typeof body.agentApiEnabled !== "boolean") {
+      return NextResponse.json(
+        { error: "agentApiEnabled must be a boolean." },
+        { status: 400 },
+      );
+    }
+    const refusal = await activeOwnerRefusal(access.uid, access.agencyId);
+    if (refusal) return refusal;
+    update.agentApiEnabled = body.agentApiEnabled;
   }
 
   // Agency Assistant model tier ("opus" | "sonnet"; unset docs read as

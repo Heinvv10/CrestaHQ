@@ -10,11 +10,13 @@ import type {
 } from "@/types/api";
 
 /**
- * Server-only Admin-SDK CRUD for `subAccounts/{subAccountId}/apiKeys/{keyId}`.
+ * Server-only Admin-SDK CRUD for `subAccounts/{subAccountId}/apiKeys/{keyId}`
+ * and `agencies/{agencyId}/apiKeys/{keyId}` (agency keys).
  *
- * Firestore rules deny all client reads + writes on this collection
- * (see firestore.rules). The operator UI hits the
- * `/api/sub-accounts/{id}/api-keys` routes which run through this helper.
+ * Firestore rules deny all client reads + writes on both collections
+ * (see firestore.rules; the agency one falls to the default deny). The
+ * operator UI hits the `/api/sub-accounts/{id}/api-keys` and
+ * `/api/agency/api-keys` routes which run through this helper.
  *
  * `hashedSecret` never leaves the server. `docToResponse()` strips it
  * before any value is returned to a client.
@@ -29,14 +31,42 @@ function tsToDate(ts: Timestamp | Date | null | undefined): Date | null {
   return null;
 }
 
+/** The collection a key lives in; its level is never read from the doc. */
+export type ApiKeyOwner =
+  | { level: "sub-account"; subAccountId: string }
+  | { level: "agency"; agencyId: string };
+
+function keysCollection(owner: ApiKeyOwner) {
+  return owner.level === "agency"
+    ? getAdminDb().collection("agencies").doc(owner.agencyId).collection("apiKeys")
+    : getAdminDb().collection("subAccounts").doc(owner.subAccountId).collection("apiKeys");
+}
+
+/** `subAccounts/{id}/apiKeys/{keyId}` or `agencies/{id}/apiKeys/{keyId}`;
+ *  anything else (an `apiKeys` collection elsewhere) is no key at all. */
+function ownerFromPath(path: string): ApiKeyOwner | null {
+  const [parent, id, coll, keyId, ...rest] = path.split("/");
+  if (!id || coll !== "apiKeys" || !keyId || rest.length > 0) return null;
+  if (parent === "subAccounts") return { level: "sub-account", subAccountId: id };
+  if (parent === "agencies") return { level: "agency", agencyId: id };
+  return null;
+}
+
+/** An agency key's agency is its path; a sub-account key's is stamped data. */
+function ownerFields(owner: ApiKeyOwner, agencyId: string) {
+  return owner.level === "agency"
+    ? { level: "agency" as const, subAccountId: null, agencyId: owner.agencyId }
+    : { level: "sub-account" as const, subAccountId: owner.subAccountId, agencyId };
+}
+
 function snapToDoc(
+  owner: ApiKeyOwner,
   id: string,
   data: FirebaseFirestore.DocumentData,
 ): ApiKeyDoc {
   return {
     id,
-    subAccountId: data.subAccountId,
-    agencyId: data.agencyId,
+    ...ownerFields(owner, data.agencyId),
     name: data.name,
     mode: data.mode,
     prefix: data.prefix,
@@ -76,7 +106,7 @@ export function docToResponse(doc: ApiKeyDoc): ApiKeyResponse {
 }
 
 export interface CreateApiKeyInput {
-  subAccountId: string;
+  owner: ApiKeyOwner;
   agencyId: string;
   name: string;
   mode: ApiKeyMode;
@@ -95,16 +125,13 @@ export interface CreateApiKeyInput {
 export async function createApiKey(
   input: CreateApiKeyInput,
 ): Promise<ApiKeyDoc> {
-  const ref = getAdminDb()
-    .collection("subAccounts")
-    .doc(input.subAccountId)
-    .collection("apiKeys")
-    .doc();
+  const ref = keysCollection(input.owner).doc();
+  const stamp = ownerFields(input.owner, input.agencyId);
 
   const now = new Date();
   await ref.set({
-    subAccountId: input.subAccountId,
-    agencyId: input.agencyId,
+    subAccountId: stamp.subAccountId,
+    agencyId: stamp.agencyId,
     name: input.name,
     mode: input.mode,
     prefix: input.prefix,
@@ -120,8 +147,7 @@ export async function createApiKey(
 
   return {
     id: ref.id,
-    subAccountId: input.subAccountId,
-    agencyId: input.agencyId,
+    ...stamp,
     name: input.name,
     mode: input.mode,
     prefix: input.prefix,
@@ -141,33 +167,25 @@ export async function createApiKey(
 }
 
 export async function listApiKeys(
-  subAccountId: string,
+  owner: ApiKeyOwner,
   opts: { mode?: ApiKeyMode; includeRevoked?: boolean } = {},
 ): Promise<ApiKeyDoc[]> {
-  let q: FirebaseFirestore.Query = getAdminDb()
-    .collection("subAccounts")
-    .doc(subAccountId)
-    .collection("apiKeys");
+  let q: FirebaseFirestore.Query = keysCollection(owner);
   if (opts.mode) q = q.where("mode", "==", opts.mode);
   const snap = await q.orderBy("createdAt", "desc").get();
-  const docs = snap.docs.map((d) => snapToDoc(d.id, d.data()));
+  const docs = snap.docs.map((d) => snapToDoc(owner, d.id, d.data()));
   return opts.includeRevoked
     ? docs
     : docs.filter((d) => d.revokedAt === null);
 }
 
 export async function getApiKey(
-  subAccountId: string,
+  owner: ApiKeyOwner,
   keyId: string,
 ): Promise<ApiKeyDoc | null> {
-  const snap = await getAdminDb()
-    .collection("subAccounts")
-    .doc(subAccountId)
-    .collection("apiKeys")
-    .doc(keyId)
-    .get();
+  const snap = await keysCollection(owner).doc(keyId).get();
   if (!snap.exists) return null;
-  return snapToDoc(snap.id, snap.data()!);
+  return snapToDoc(owner, snap.id, snap.data()!);
 }
 
 /**
@@ -178,29 +196,23 @@ export async function getApiKey(
  * write, ignoring hooks that throw so a proposal-sweep failure never blocks
  * the revoke itself.
  */
-const keyRevokeHooks: Array<
-  (input: { subAccountId: string; keyId: string; revokedByUid: string }) => Promise<void>
-> = [];
+type KeyRevokeHook = (input: {
+  owner: ApiKeyOwner;
+  keyId: string;
+  revokedByUid: string;
+}) => Promise<void>;
+const keyRevokeHooks: KeyRevokeHook[] = [];
 
-export function onApiKeyRevoked(
-  hook: (input: {
-    subAccountId: string;
-    keyId: string;
-    revokedByUid: string;
-  }) => Promise<void>,
-): void {
+export function onApiKeyRevoked(hook: KeyRevokeHook): void {
   keyRevokeHooks.push(hook);
 }
 
 export async function revokeApiKey(
-  subAccountId: string,
+  owner: ApiKeyOwner,
   keyId: string,
   revokedByUid: string,
 ): Promise<void> {
-  await getAdminDb()
-    .collection("subAccounts")
-    .doc(subAccountId)
-    .collection("apiKeys")
+  await keysCollection(owner)
     .doc(keyId)
     .set(
       {
@@ -212,10 +224,10 @@ export async function revokeApiKey(
 
   for (const hook of keyRevokeHooks) {
     try {
-      await hook({ subAccountId, keyId, revokedByUid });
+      await hook({ owner, keyId, revokedByUid });
     } catch (err) {
       console.error(
-        `[api-keys] revoke hook failed subAccount=${subAccountId} key=${keyId} kind=${err instanceof Error ? err.name : typeof err}`,
+        `[api-keys] revoke hook failed level=${owner.level} key=${keyId} kind=${err instanceof Error ? err.name : typeof err}`,
       );
     }
   }
@@ -223,8 +235,9 @@ export async function revokeApiKey(
 
 /**
  * Used by slice 2 (auth middleware). Looks up a candidate key by prefix
- * across every sub-account's apiKeys subcollection via a collection-group
- * query. The caller MUST then constant-time-compare the SHA-256 hash
+ * across every sub-account's and agency's apiKeys subcollection via a
+ * collection-group query; the key's level and owner come from the doc path.
+ * The caller MUST then constant-time-compare the SHA-256 hash
  * before granting access — prefix alone is not a credential.
  *
  * Requires the `apiKeys.prefix` COLLECTION_GROUP field override declared
@@ -241,7 +254,8 @@ export async function findApiKeyByPrefix(
     .get();
   if (snap.empty) return null;
   const doc = snap.docs[0]!;
-  return snapToDoc(doc.id, doc.data());
+  const owner = ownerFromPath(doc.ref.path);
+  return owner ? snapToDoc(owner, doc.id, doc.data()) : null;
 }
 
 /**
@@ -250,13 +264,10 @@ export async function findApiKeyByPrefix(
  * the auth middleware via `void` (no await).
  */
 export async function bumpApiKeyLastUsed(
-  subAccountId: string,
+  owner: ApiKeyOwner,
   keyId: string,
 ): Promise<void> {
-  await getAdminDb()
-    .collection("subAccounts")
-    .doc(subAccountId)
-    .collection("apiKeys")
+  await keysCollection(owner)
     .doc(keyId)
     .set({ lastUsedAt: FieldValue.serverTimestamp() }, { merge: true });
 }

@@ -6,9 +6,11 @@ import {
   createOneTimeCharge,
   listChargesForSubAccount,
 } from "@/lib/server/billing-service";
+import { getAdminDb } from "@/lib/firebase/admin";
 import { type BillingInterval } from "@/types/billing";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney } from "./helpers";
+import { planAssignRefusal } from "./billing-plans";
 
 export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -119,6 +121,32 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       }”${special}.`;
     },
     execute: async (ctx, args) => {
+      // Assigning applies the plan's gates, so refuse a plan that would switch
+      // on an assistant-locked gate. Here, not in validate: validate cannot
+      // read the plan or the target. A sub-account outside this agency is left
+      // to assignPlanToSubAccount's not-found, so its gates are never read.
+      const db = getAdminDb();
+      const [plan, sub] = await Promise.all([
+        db.doc(`agencies/${ctx.agencyId}/plans/${args.planId as string}`).get(),
+        db.doc(`subAccounts/${args.subAccountId as string}`).get(),
+      ]);
+      const subData = sub.data() ?? {};
+      if (subData.agencyId === ctx.agencyId) {
+        // Without a live subscription the plan's gates apply when the client
+        // pays, by which time a gate on now may have been switched off; so
+        // that path is judged as if every gate were off.
+        const billing = subData.billing as
+          | { stripeSubscriptionId?: unknown; status?: unknown }
+          | undefined;
+        const live =
+          !!billing?.stripeSubscriptionId &&
+          (billing.status === "active" || billing.status === "past_due");
+        const refusal = planAssignRefusal(
+          (plan.data()?.gates ?? {}) as Record<string, unknown>,
+          live ? subData : {}
+        );
+        if (refusal) throw new CapabilityUserError(refusal);
+      }
       let result;
       try {
         result = await assignPlanToSubAccount({

@@ -171,9 +171,12 @@ export const FEATURE_GATES: Record<
   string,
   { field: string; label: string; metaRequired?: boolean; assistantMayEnable?: false }
 > = {
+  // The two Agent API reach gates: an agency key reaches a sub-account with
+  // both on, so the assistant may not switch one on.
   "api-access": {
     field: "apiAccessEnabledByAgency",
     label: "Public API access",
+    assistantMayEnable: false,
   },
   broadcasts: {
     field: "broadcastsEnabledByAgency",
@@ -245,6 +248,7 @@ export const FEATURE_GATES: Record<
   "agent-api": {
     field: "agentApiEnabledByAgency",
     label: "Agent API (external LLM agent access)",
+    assistantMayEnable: false,
   },
   prospecting: {
     field: "prospectingEnabledByAgency",

@@ -25,7 +25,8 @@ export async function DELETE(
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
-  const doc = await getApiKey(subAccountId, keyId);
+  const owner = { level: "sub-account", subAccountId } as const;
+  const doc = await getApiKey(owner, keyId);
   if (!doc) {
     return NextResponse.json({ error: "Key not found" }, { status: 404 });
   }
@@ -41,6 +42,6 @@ export async function DELETE(
     return NextResponse.json({ ok: true, alreadyRevoked: true });
   }
 
-  await revokeApiKey(subAccountId, keyId, access.uid);
+  await revokeApiKey(owner, keyId, access.uid);
   return NextResponse.json({ ok: true });
 }

@@ -13,7 +13,8 @@ import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
  * Authoritative inputs:
  *   - users/{uid}.status                     -> status claim
  *   - users/{uid}.primaryAgencyId            -> agencyId claim
- *   - agencies/{agencyId}/agencyMembers/{uid}.role -> agencyRole claim ("owner" | "staff")
+ *   - agencies/{agencyId}/agencyMembers/{uid}.role -> agencyRole claim ("owner" | "staff"),
+ *     only while that row's status is "active"
  *
  * Per-sub-account memberships do NOT live on the JWT (Firestore claim size
  * cap). They are read by Firestore rules via get() instead.
@@ -40,7 +41,8 @@ export async function POST(request: Request) {
     const memberSnap = await db
       .doc(`agencies/${agencyId}/agencyMembers/${uid}`)
       .get();
-    if (memberSnap.exists) {
+    // A removed agency member keeps no agency role.
+    if (memberSnap.exists && memberSnap.data()?.status === "active") {
       const role = memberSnap.data()?.role;
       if (role === "owner" || role === "staff") {
         agencyRole = role;

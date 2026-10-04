@@ -56,7 +56,10 @@ export async function GET(
       ? (modeParam as ApiKeyMode)
       : undefined;
 
-  const docs = await listApiKeys(subAccountId, { mode, includeRevoked });
+  const docs = await listApiKeys(
+    { level: "sub-account", subAccountId },
+    { mode, includeRevoked },
+  );
   return NextResponse.json({ keys: docs.map(docToResponse) });
 }
 
@@ -196,7 +199,7 @@ export async function POST(
 
   const minted = mintApiKey(body.mode);
   const doc = await createApiKey({
-    subAccountId,
+    owner: { level: "sub-account", subAccountId },
     agencyId,
     name,
     mode: body.mode,

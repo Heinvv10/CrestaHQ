@@ -224,6 +224,24 @@
     }
   },
   "routes": {
+    "api/agency/api-keys/[keyId]:DELETE": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/agency/api-keys:GET": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/agency/api-keys:POST": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
+      }
+    },
     "api/agency:PATCH": {
       "exclude": {
         "category": "human-only",
