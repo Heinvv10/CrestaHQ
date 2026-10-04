@@ -205,4 +205,5 @@ only for callable write tools.
   targets re-sync when a contact is re-tagged.
 - **No notification** for new proposals in v1; the sidebar badge counts pending and
   unsettled rows.
-- **Keys are per sub-account.** Agency-wide keys are a later PR.
+- **Keys are per sub-account.** Agency-wide keys, agent-run onboarding and the route
+  coverage gate are planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
