@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
+import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import {
   sanitizeUsageQuotas,
@@ -116,6 +117,13 @@ export async function PATCH(
     body = (await request.json()) as PatchBody;
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  // Switching a reach gate on widens what an agency key reaches, so the
+  // owner claim alone is not enough: it outlives a removal.
+  if (body.apiAccessEnabled === true || body.agentApiEnabled === true) {
+    const refusal = await activeOwnerRefusal(access.uid, access.agencyId!);
+    if (refusal) return refusal;
   }
 
   const wantsEmail = typeof body.emailDomainEnabled === "boolean";

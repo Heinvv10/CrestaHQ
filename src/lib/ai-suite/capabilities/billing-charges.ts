@@ -132,9 +132,18 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       ]);
       const subData = sub.data() ?? {};
       if (subData.agencyId === ctx.agencyId) {
+        // Without a live subscription the plan's gates apply when the client
+        // pays, by which time a gate on now may have been switched off; so
+        // that path is judged as if every gate were off.
+        const billing = subData.billing as
+          | { stripeSubscriptionId?: unknown; status?: unknown }
+          | undefined;
+        const live =
+          !!billing?.stripeSubscriptionId &&
+          (billing.status === "active" || billing.status === "past_due");
         const refusal = planAssignRefusal(
           (plan.data()?.gates ?? {}) as Record<string, unknown>,
-          subData
+          live ? subData : {}
         );
         if (refusal) throw new CapabilityUserError(refusal);
       }

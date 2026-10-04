@@ -104,6 +104,22 @@ describe("assign_billing_plan refuses a plan that would switch a locked gate on"
     await expect(assign.execute(ctx, args)).rejects.toThrow("Sub-account not found");
   });
 
+  it("refuses on the pending (checkout) path even when the gate is on now", async () => {
+    // Fix-review REPRO 1: assign while on, switch it off, the client pays,
+    // activation switches it back on. Without a live subscription the plan is
+    // judged as if every gate were off.
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Velocity", apiAccessEnabledByAgency: true, agentApiEnabledByAgency: true });
+    mem.seed("agencies/ag1/plans/plan_api", ownerPlan);
+    await expect(assign.execute(ctx, args)).rejects.toThrow(/would switch on Public API access/);
+    expect(mem.read("subAccounts/sa1")?.billing).toBeUndefined();
+  });
+
+  it("refuses after a cancelled subscription too (re-assignment is a checkout)", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Velocity", apiAccessEnabledByAgency: true, billing: { status: "canceled", stripeSubscriptionId: "sub_1" } });
+    mem.seed("agencies/ag1/plans/plan_api", ownerPlan);
+    await expect(assign.execute(ctx, args)).rejects.toThrow(/would switch on Public API access/);
+  });
+
   it("allows it when the gate is already on (nothing is switched on)", async () => {
     seedSub(true);
     mem.seed("agencies/ag1/plans/plan_api", ownerPlan);
