@@ -11,6 +11,13 @@
 <!-- Actual evidence: test counts, output, a mutation you ran. Not "should work".
      CI proves lint/typecheck/tests/build — put here what CI cannot prove. -->
 
+## Agent exposure
+
+<!-- Every route added or changed: the agent tool name(s) that reach it, or its
+     exclusion in scripts/agent-coverage.json (category + reason) and why.
+     FROZEN (scripts/agent-coverage-frozen.json) never grows: a new route is
+     never FROZEN, and PR CI fails a PR that adds a key. -->
+
 ## Review
 
 - [ ] Blind `/review` run and findings addressed (never self-review)
