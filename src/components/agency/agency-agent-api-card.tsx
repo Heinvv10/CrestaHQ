@@ -54,8 +54,10 @@ export function AgencyAgentApiCard() {
     }
   }, []);
 
+  // Loaded with the switch off too: an owner reacting to a leak switches it
+  // off first, and must still be able to see and revoke every key.
   useEffect(() => {
-    if (enabled && !agency.loading) void refetch();
+    if (!agency.loading) void refetch();
   }, [enabled, agency.loading, refetch]);
 
   async function handleToggle(next: boolean) {
@@ -145,8 +147,9 @@ export function AgencyAgentApiCard() {
           <p className="text-[11px] text-muted-foreground">
             Off by default. One agency key lets an external agent work across
             your sub-accounts. While off, every agency key is refused and none
-            can be minted. Agency keys are not accepted by the Agent API yet;
-            this release only mints and revokes them.
+            can be minted; existing keys can still be revoked. Agency keys are
+            not accepted by the Agent API yet; this release only mints and
+            revokes them.
           </p>
         </div>
         <button
@@ -229,40 +232,39 @@ export function AgencyAgentApiCard() {
         </div>
       )}
 
-      {enabled &&
-        (loading ? (
-          <p className="flex items-center text-[11px] text-muted-foreground">
-            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> Loading keys…
-          </p>
-        ) : keys.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground">No agency keys yet.</p>
-        ) : (
-          <ul className="space-y-2">
-            {keys.map((k) => (
-              <li key={k.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{k.name}</p>
-                  <p className="font-mono text-[11px] text-muted-foreground">lsk_live_{k.prefix}_••••••••</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    Created {new Date(k.createdAt).toLocaleDateString()} ·{" "}
-                    {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleString()}` : "never used"}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-label={`Revoke ${k.name}`}
-                  onClick={() => handleRevoke(k)}
-                  disabled={revokingId === k.id}
-                  className="shrink-0 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400"
-                >
-                  {revokingId === k.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        ))}
+      {loading ? (
+        <p className="flex items-center text-[11px] text-muted-foreground">
+          <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> Loading keys…
+        </p>
+      ) : keys.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">No agency keys yet.</p>
+      ) : (
+        <ul className="space-y-2">
+          {keys.map((k) => (
+            <li key={k.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{k.name}</p>
+                <p className="font-mono text-[11px] text-muted-foreground">lsk_live_{k.prefix}_••••••••</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Created {new Date(k.createdAt).toLocaleDateString()} ·{" "}
+                  {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleString()}` : "never used"}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={`Revoke ${k.name}`}
+                onClick={() => handleRevoke(k)}
+                disabled={revokingId === k.id}
+                className="shrink-0 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400"
+              >
+                {revokingId === k.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

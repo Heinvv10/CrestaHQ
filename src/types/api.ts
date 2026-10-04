@@ -37,18 +37,12 @@ export type ApiKeyMode = "live" | "test";
 export type ApiKeyScope = "admin" | "forms-ingest" | "agent";
 
 /**
- * Who a key belongs to, read from its doc PATH (never its data):
- * `subAccounts/{id}/apiKeys/{keyId}` is a sub-account key (v1);
- * `agencies/{id}/apiKeys/{keyId}` is an agency key (Agency Agent API), which
- * is `agent`-scoped and live-only.
- */
-export type ApiKeyLevel = "sub-account" | "agency";
-
-/**
- * Firestore doc at `subAccounts/{subAccountId}/apiKeys/{keyId}` or
- * `agencies/{agencyId}/apiKeys/{keyId}`. Server-only read/write (Firestore
- * rules deny clients); the operator UI talks to the Admin-SDK-backed
- * `/api/sub-accounts/{id}/api-keys` and `/api/agency/api-keys` routes instead.
+ * Firestore doc at `subAccounts/{subAccountId}/apiKeys/{keyId}` (a v1
+ * sub-account key) or `agencies/{agencyId}/apiKeys/{keyId}` (an agency key,
+ * `agent`-scoped and live-only). `level` is read from the doc PATH, never its
+ * data. Server-only read/write (Firestore rules deny clients); the operator
+ * UI talks to the Admin-SDK-backed `/api/sub-accounts/{id}/api-keys` and
+ * `/api/agency/api-keys` routes instead.
  */
 export type ApiKeyDoc = ApiKeyDocFields &
   (

@@ -79,6 +79,8 @@ describe("POST mint", () => {
     const res = await callMcp(key.secret!);
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("agency_key_not_allowed");
+    // The fire-and-forget lastUsedAt bump must land here, not in the next test.
+    await vi.waitFor(() => expect(mem.read(`agencies/ag1/apiKeys/${key.id}`)?.lastUsedAt).toBeTruthy());
   });
 
   it.each([
@@ -141,7 +143,27 @@ describe("DELETE revoke", () => {
   it("another agency's key id is 404 and stays unrevoked", async () => {
     const { key } = (await (await mint({ name: "k" })).json()) as MintBody;
     caller.value = { uid: "owner2", agencyId: "ag2" };
+    mem.seed("agencies/ag2/agencyMembers/owner2", { role: "owner", status: "active" });
     expect((await revoke(key.id)).status).toBe(404);
+    expect(mem.read(`agencies/ag1/apiKeys/${key.id}`)?.revokedAt).toBeNull();
+  });
+});
+
+describe("an owner whose agencyMembers row is removed (claims not yet re-minted)", () => {
+  // PR #346 review, breaker REPRO 2: the owner claim outlives the removal, so
+  // every key route re-reads the row.
+  it.each([
+    ["removed", { role: "owner", status: "removed" }],
+    ["demoted to staff", { role: "staff", status: "active" }],
+    ["missing", null],
+  ])("row %s: list, mint and revoke are all 403 and nothing changes", async (_label, row) => {
+    const { key } = (await (await mint({ name: "k" })).json()) as MintBody;
+    if (row) mem.seed("agencies/ag1/agencyMembers/owner1", row);
+    else await mem.db.doc("agencies/ag1/agencyMembers/owner1").delete();
+    expect((await GET(new Request("http://x/api/agency/api-keys"))).status).toBe(403);
+    expect((await mint({ name: "k2" })).status).toBe(403);
+    expect((await revoke(key.id)).status).toBe(403);
+    expect(keyDocs()).toHaveLength(1);
     expect(mem.read(`agencies/ag1/apiKeys/${key.id}`)?.revokedAt).toBeNull();
   });
 });

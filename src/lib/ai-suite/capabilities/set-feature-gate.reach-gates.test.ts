@@ -3,9 +3,10 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
  * The two Agent API reach gates (AGENCY_AGENT_API_PLAN.md A2, D3): with both
- * on, an agency key reaches the sub-account, so `set_feature_gate` — the
- * Workspace Assistant's and every Agent API key's path — may switch either
- * off but never on. Enabling stays a Manage-dialog click.
+ * on, an agency key reaches the sub-account, so the Workspace Assistant's
+ * `set_feature_gate` may switch either off but never on. (No Agent API key
+ * reaches it: it is agency-level, and `agentCallable` refuses it.) Enabling
+ * stays a Manage-dialog click.
  */
 
 const mem = createMemoryFirestore();

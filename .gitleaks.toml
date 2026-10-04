@@ -76,4 +76,9 @@ regexes = [
   # Replaced at the tip by a low-entropy fixture; this anchor exists only so
   # that commit's diff stops tripping the history scan.
   '''^apx_live_abcdef123456$''',
+  # Agency-key auth test fixture (src/lib/api/auth.agency-key.test.ts line 21,
+  # introduced in commit 92f1464b): a Firestore document PATH held in a
+  # constant named KEY_PATH, which trips generic-api-key by name. Never a
+  # credential; the anchor matches only this exact path.
+  '''^agencies/ag1/apiKeys/ak1$''',
 ]

@@ -2,7 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { requireAgencyOwnerAny } from "@/lib/auth/require-tenancy";
+import { requireActiveAgencyOwner } from "@/lib/auth/require-active-agency-owner";
 import { hashApiKey, mintApiKey } from "@/lib/api/keys";
 import { LATEST_API_VERSION } from "@/lib/api/versions";
 import {
@@ -25,7 +25,8 @@ import type { AgencyKeyReachEntry } from "@/types/api";
  *
  * Reach (owner ruling, 2026-10-04): every sub-account of the agency with
  * both `apiAccessEnabledByAgency` and `agentApiEnabledByAgency` on — existing
- * clients included. There is no second reach switch. Auth: agency owner.
+ * clients included. There is no second reach switch. Auth: agency owner, with
+ * an active `agencyMembers` row (not just the claim).
  */
 
 const MAX_NAME = 60;
@@ -52,7 +53,7 @@ async function listReach(agencyId: string): Promise<AgencyKeyReachEntry[]> {
 }
 
 export async function GET(request: Request) {
-  const caller = await requireAgencyOwnerAny(request);
+  const caller = await requireActiveAgencyOwner(request);
   if (caller instanceof NextResponse) return caller;
   const agencyId = caller.agencyId!;
 
@@ -64,7 +65,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const caller = await requireAgencyOwnerAny(request);
+  const caller = await requireActiveAgencyOwner(request);
   if (caller instanceof NextResponse) return caller;
   const agencyId = caller.agencyId!;
 

@@ -138,6 +138,13 @@ describe("the agency auth branch", () => {
     expect(await code(res)).toBe("minter_removed");
   });
 
+  it("agency doc gone → 401 invalid_api_key, not a switch-off answer", async () => {
+    await mem.db.doc("agencies/ag1").delete();
+    const res = await mcpList(agencyKey);
+    expect(res.status).toBe(401);
+    expect(await code(res)).toBe("invalid_api_key");
+  });
+
   it("minter's membership row gone → 401 minter_removed", async () => {
     mem.clear();
     mem.seed("agencies/ag1", { name: "Agency", agentApiEnabled: true });
@@ -154,6 +161,15 @@ describe("level and owner come from the doc path", () => {
     await settle();
     expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(0);
     expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1);
+  });
+
+  it("the switch and minter are read from the PATH's agency, not the data's", async () => {
+    // Data names ag2, fully armed; the path's agency ag1 is switched off.
+    mem.seed("agencies/ag2", { name: "Other", agentApiEnabled: true });
+    mem.seed("agencies/ag2/agencyMembers/owner1", { uid: "owner1", agencyId: "ag2", role: "owner", status: "active" });
+    mem.seed("agencies/ag1", { name: "Agency", agentApiEnabled: false });
+    agencyKey = seedKey(KEY_PATH, { agencyId: "ag2", subAccountId: null, createdByUid: "owner1" });
+    expect(await code(await mcpList(agencyKey))).toBe("agent_api_disabled");
   });
 
   it("an apiKeys doc under any other parent is no key, even one named like a live sub-account", async () => {

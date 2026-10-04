@@ -1,7 +1,7 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { requireAgencyOwnerAny } from "@/lib/auth/require-tenancy";
+import { requireActiveAgencyOwner } from "@/lib/auth/require-active-agency-owner";
 import { getApiKey, revokeApiKey } from "@/lib/firestore/api-keys";
 import { isDocId } from "@/lib/server/doc-id";
 // Registers the revoke hook, so an agency key's proposals are swept once it
@@ -10,14 +10,15 @@ import "@/lib/server/agent-proposals-revoke-hook";
 
 /**
  * Revoke an agency API key. Idempotent, like the sub-account route: an
- * already-revoked key answers 200. Auth: agency owner, own agency only (the
+ * already-revoked key answers 200. Auth: agency owner with an active
+ * `agencyMembers` row, own agency only (the
  * key is looked up under the caller's agency, so another agency's id is 404).
  */
 export async function DELETE(
   request: Request,
   ctx: { params: Promise<{ keyId: string }> },
 ) {
-  const caller = await requireAgencyOwnerAny(request);
+  const caller = await requireActiveAgencyOwner(request);
   if (caller instanceof NextResponse) return caller;
   const { keyId } = await ctx.params;
   if (!isDocId(keyId)) {

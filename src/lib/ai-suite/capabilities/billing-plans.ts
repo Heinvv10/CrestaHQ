@@ -18,9 +18,40 @@ import { str, fmtMoney, FEATURE_GATES } from "./helpers";
  * plan gate. Standalone gates (Google, Payments, review auto-reply, …) are
  * neither offered nor accepted.
  */
-export const PLAN_FEATURES: string[] = Object.keys(FEATURE_GATES).filter((f) =>
+const PLAN_GATED_FEATURES: string[] = Object.keys(FEATURE_GATES).filter((f) =>
   (PLAN_GATE_KEYS as readonly string[]).includes(FEATURE_GATES[f].field)
 );
+
+/**
+ * Plan gates the assistant may not switch on (`assistantMayEnable: false`).
+ * A plan switches its gates on when assigned, so the assistant neither bundles
+ * one into a plan nor assigns a plan that would switch one on. The owner can
+ * still sell them on a plan through the billing UI.
+ */
+const ASSISTANT_LOCKED_PLAN_FEATURES = PLAN_GATED_FEATURES.filter(
+  (f) => FEATURE_GATES[f].assistantMayEnable === false
+);
+
+/** The plan features the assistant offers and accepts. */
+export const PLAN_FEATURES: string[] = PLAN_GATED_FEATURES.filter(
+  (f) => !ASSISTANT_LOCKED_PLAN_FEATURES.includes(f)
+);
+
+/**
+ * The refusal text when assigning a plan would switch ON, on this sub-account,
+ * a gate the assistant may not enable; null otherwise.
+ */
+export function planAssignRefusal(
+  planGates: Record<string, unknown>,
+  sub: Record<string, unknown>
+): string | null {
+  const labels = ASSISTANT_LOCKED_PLAN_FEATURES.map((f) => FEATURE_GATES[f])
+    .filter((g) => planGates[g.field] === true && sub[g.field] !== true)
+    .map((g) => g.label);
+  return labels.length > 0
+    ? `This plan would switch on ${labels.join(", ")}, which only the agency owner can do — assign it in the sub-account's Manage dialog instead.`
+    : null;
+}
 
 export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -88,7 +119,7 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
         includeAllFeatures: {
           type: "boolean",
           description:
-            "true = bundle EVERY feature into the plan (all-inclusive). When true, `features` is ignored.",
+            "true = bundle every feature into the plan (all-inclusive), except Public API access, which only the agency owner can add. When true, `features` is ignored.",
         },
         features: {
           type: "array",
@@ -152,6 +183,15 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
       }
       const includeAllFeatures = r.includeAllFeatures === true;
       const requested = Array.isArray(r.features) ? (r.features as unknown[]) : [];
+      const locked = requested.filter(
+        (f) => typeof f === "string" && ASSISTANT_LOCKED_PLAN_FEATURES.includes(f)
+      );
+      if (locked.length > 0) {
+        return {
+          ok: false,
+          error: `${locked.join(", ")} can only be added to a plan by the agency owner, on the billing page`,
+        };
+      }
       const notPlan = requested.filter(
         (f) => typeof f === "string" && f in FEATURE_GATES && !PLAN_FEATURES.includes(f)
       );
@@ -191,17 +231,19 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx, args) => {
       // Build the gate bundle: all PLAN_GATE_KEYS on for includeAllFeatures,
       // otherwise only the named features (mapped through FEATURE_GATES → field).
+      // Either way the assistant-locked gates stay off (validate may be skipped).
       const includeAll = args.includeAllFeatures === true;
+      const lockedFields = ASSISTANT_LOCKED_PLAN_FEATURES.map(
+        (f) => FEATURE_GATES[f].field
+      );
       const gates = {} as PlanGates;
-      for (const key of PLAN_GATE_KEYS) gates[key] = includeAll;
+      for (const key of PLAN_GATE_KEYS) {
+        gates[key] = includeAll && !lockedFields.includes(key);
+      }
       if (!includeAll) {
         for (const f of args.features as string[]) {
-          const def = FEATURE_GATES[f];
-          if (
-            def &&
-            (PLAN_GATE_KEYS as readonly string[]).includes(def.field)
-          ) {
-            gates[def.field as PlanGateKey] = true;
+          if (PLAN_FEATURES.includes(f)) {
+            gates[FEATURE_GATES[f].field as PlanGateKey] = true;
           }
         }
       }

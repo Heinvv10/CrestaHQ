@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { invalidateAgencyPolicyCache } from "@/lib/agency/policy";
+import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
 import { MIN_CONTRAST, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 import type { MemberStatus, Role } from "@/types";
 
@@ -214,6 +215,8 @@ export async function PATCH(request: Request) {
         { status: 400 },
       );
     }
+    const refusal = await activeOwnerRefusal(access.uid, access.agencyId);
+    if (refusal) return refusal;
     update.agentApiEnabled = body.agentApiEnabled;
   }
 

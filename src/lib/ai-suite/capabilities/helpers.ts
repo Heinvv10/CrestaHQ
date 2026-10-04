@@ -172,7 +172,7 @@ export const FEATURE_GATES: Record<
   { field: string; label: string; metaRequired?: boolean; assistantMayEnable?: false }
 > = {
   // The two Agent API reach gates: an agency key reaches a sub-account with
-  // both on, so neither the assistant nor a key may switch one on.
+  // both on, so the assistant may not switch one on.
   "api-access": {
     field: "apiAccessEnabledByAgency",
     label: "Public API access",

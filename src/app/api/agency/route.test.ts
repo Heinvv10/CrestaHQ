@@ -73,6 +73,10 @@ describe("brandColor", () => {
 });
 
 describe("agentApiEnabled (Agency Agent API kill switch)", () => {
+  beforeEach(() => {
+    db().seed("agencies/ag1/agencyMembers/owner1", { role: "owner", status: "active" });
+  });
+
   it("the owner switches it on and off", async () => {
     expect((await patch("owner1", { agentApiEnabled: true })).status).toBe(200);
     expect(db().read("agencies/ag1")).toMatchObject({ agentApiEnabled: true });
@@ -87,6 +91,13 @@ describe("agentApiEnabled (Agency Agent API kill switch)", () => {
 
   it("refuses staff", async () => {
     expect((await patch("staff1", { agentApiEnabled: true })).status).toBe(403);
+    expect(db().read("agencies/ag1")).not.toHaveProperty("agentApiEnabled");
+  });
+
+  // PR #346 review, breaker REPRO 2: the owner claim outlives a removal.
+  it("refuses an owner whose agencyMembers row is removed, though the claim still says owner", async () => {
+    db().seed("agencies/ag1/agencyMembers/owner1", { role: "owner", status: "removed" });
+    expect((await patch("owner1", { agentApiEnabled: true })).status).toBe(403);
     expect(db().read("agencies/ag1")).not.toHaveProperty("agentApiEnabled");
   });
 });
