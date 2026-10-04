@@ -17,8 +17,12 @@
 > direct gate changes only on sub-accounts this key created and only for gates with
 > no outbound or destructive effect; on an existing sub-account any enable that can
 > start messages, spend or AI replies, and any destructive disable, is a proposal;
-> `agent-api` and `api-access` are never enabled by the key, only proposed to the
-> agency owner. Order: coverage gate → keys + onboarding + approvals page → burn-down.
+> `agent-api` and `api-access` are never enabled by the key. **Owner ruling (POPIA,
+> 2026-10-04):** every reachable sub-account belongs to the agency, and an agent moving
+> data between two of them is a bounded risk Hein accepts; each targeted call gets an
+> agency-level audit row so it is reconstructable. **PENDING Hein:** whether reach stays
+> the single `agentApiEnabledByAgency` gate or gets its own gate / key target list
+> (review P1-5). Order: coverage gate → keys + onboarding + approvals page → burn-down.
 
 ## Goal
 
@@ -30,68 +34,54 @@ and the human can approve the whole run from one page.
 
 ## Findings that shape the plan (verified in code, 2026-10-04)
 
-- **Key lookup already spans collections.** `findApiKeyByPrefix`
-  (`lib/firestore/api-keys.ts:234-245`) is a `collectionGroup("apiKeys")` query
-  backed by the `apiKeys.prefix` COLLECTION_GROUP field override
-  (`firestore.indexes.json:1076`). A doc at `agencies/{agencyId}/apiKeys/{keyId}` is
-  found with no new index; `snapToDoc` keeps data fields only, not the path.
-- **Every key re-read assumes a sub-account path.** `createProposal`
-  (`agent-proposals.ts:109`), the decide route (`[proposalId]/route.ts`), the
-  enrolment replay (`agent-enrolment-replay.ts:97`, silently defaulting the cap to
-  50 when the doc is missing), `bumpApiKeyLastUsed(candidate.subAccountId, …)`
-  (`auth.ts:271`), the revoke hook signature `{subAccountId, keyId}`
-  (`api-keys.ts:182-218`), `agentActor` (`helpers.ts:290-297`, no level, so a held
-  enrolment from an agency key would be refused as `key_revoked` by `createProposal`
-  and land as `hold_refused`), and the `apiKey` `Pick` in `capabilities/types.ts:67-70`.
-- **Reach needs two gates.** `authenticateApiRequest` requires
-  `apiAccessEnabledByAgency === true`; precheck and dispatch require
-  `agentApiEnabledByAgency === true`. `createSubAccountForAgency`
-  (`sub-accounts-service.ts:198-232`) writes `agentApiEnabledByAgency: false` and
-  never writes `apiAccessEnabledByAgency`. `agentPrecheck` reads
-  `subAccounts/${ctx.subAccountId}` (`agent-precheck.ts:19`), so an agency key fails
-  closed today only by reading `subAccounts/null`.
-- **Surfaces default open.** `availableOn` treats a capability with no `surfaces`
-  as available on every surface (`capabilities.ts:365-370`); all 8 agency-level caps
-  have none, and `inSubAccount` copies `base.surfaces` (`capabilities.ts:188`) while
-  dropping `approval` / `approvalFor` / `agentArgs` / `preview` (`:189-190`). Only
+- **Key lookup already spans collections.** `findApiKeyByPrefix` (`api-keys.ts:234-245`)
+  is a `collectionGroup("apiKeys")` query on the `apiKeys.prefix` COLLECTION_GROUP
+  override (`firestore.indexes.json:1076`): a doc at `agencies/{id}/apiKeys/{keyId}`
+  is found with no new index. `snapToDoc` keeps data fields only, not the path.
+- **Every key re-read assumes a sub-account path:** `createProposal`
+  (`agent-proposals.ts:109`), the decide route, the enrolment replay
+  (`agent-enrolment-replay.ts:97`, defaulting the cap to 50 when missing),
+  `bumpApiKeyLastUsed(candidate.subAccountId, …)` (`auth.ts:271`), the revoke hook
+  (`api-keys.ts:182-218`), `agentActor` (`helpers.ts:290-297`, no level: a held
+  enrolment from an agency key would land `hold_refused`), the `apiKey` `Pick`
+  (`capabilities/types.ts:67-70`), and `agentPrecheck` (`agent-precheck.ts:19`).
+- **Reach needs two gates.** Auth requires `apiAccessEnabledByAgency`; precheck and
+  dispatch require `agentApiEnabledByAgency`. `createSubAccountForAgency`
+  (`sub-accounts-service.ts:198-232`) writes the agent gate `false` and never writes
+  the API gate; it writes the caller as admin member (`:248-268`, from `uid: ctx.uid`
+  at `agency.ts:286`), which on the agent surface is `apikey:<prefix>`.
+- **Surfaces default open.** `availableOn` treats no `surfaces` as every surface
+  (`capabilities.ts:365-370`); all 8 agency caps have none; `inSubAccount` copies
+  `base.surfaces` (`:188`) and drops the approval fields (`:189-190`). Only
   `level === "sub-account"` in `agentCallable` keeps them off the agent surface.
-  `FEATURE_GATES["agent-api"]` has no `assistantMayEnable: false` (`helpers.ts:245`).
-- **`create_sub_account` writes the caller as admin member**: `agency.ts:286` passes
-  `uid: ctx.uid`, and the service writes `subAccountMembers/{uid}` +
-  `userMemberships/{uid}` (`sub-accounts-service.ts:248-268`). On the agent surface
-  that uid is `apikey:<prefix>`: a phantom member and no switcher entry for the owner.
+  `FEATURE_GATES["agent-api"]` has no `assistantMayEnable: false` (`helpers.ts:245`);
+  there is no `email-domain` gate key and `get-leads` is conditional.
 - **Plans change reach.** `apiAccessEnabledByAgency` and `emailDomainEnabledByAgency`
-  are `PLAN_GATE_KEYS` (`types/billing.ts:25-26`); `assignPlanToSubAccount` applies
-  `plan.gates` in both directions (`billing-service.ts:621`), and on a live
-  subscription switches it immediately with proration (`:542-548`); only a
-  sub-account with no subscription gets the activation screen. No `billing` doc is
-  `comped` and never paywalled (`billing/status.ts:48`).
+  are `PLAN_GATE_KEYS` (`billing.ts:25-26`); `assignPlanToSubAccount` applies
+  `plan.gates` both ways (`billing-service.ts:621`) and reads the plan live
+  (`:505-541`); a live subscription switches immediately, prorated (`:542-548`);
+  no `billing` doc is `comped`, never paywalled (`billing/status.ts:48`).
 - **Onboarding seams.** `applySnapshot` is deterministic-id and retry-safe, writes
-  workflows `draft` (`apply.ts:399`), creates forms with `submissionCount: 0`
-  (`:316-328`) and writes the customer-facing AI persona when none is set
-  (`:149-174`). `set_workflow_status active` is `workflow_activate`; a publishing
-  `update_booking_page` is `public_change`; `invite_member` is chat-only and also
-  re-roles an existing member or adds a verified user with nothing to accept
-  (`members.ts:79`); `assign_billing_plan` / `create_one_time_charge` have no
-  approval class (`billing-charges.ts:15,151`).
+  workflows `draft` (`apply.ts:399`), forms (`:316-328`), the AI persona when none
+  is set (`:149-174`) and remaps `notify` nodes to `accountContact` (`:121`).
+  `set_workflow_status active` is `workflow_activate`; a publishing booking-page
+  edit is `public_change`; `invite_member` is chat-only and re-roles or adds verified
+  users directly (`members.ts:79`); the billing caps have no approval class.
+  `agency/sub-accounts/[id]` PATCH takes `name`, `timezone`, `sendWindow`,
+  `bookingLink`, `defaultPhoneCountry`, `automationsPaused`, `accountContact`.
 - **Teardown is not free.** `deleteSubAccountForAgency` refuses while `forms`,
   `products`, `contacts`, … exist (`sub-accounts-service.ts:55-68`) and
-  `recursiveDelete` covers only the sub-account doc's subtree (`:150-152`):
-  top-level `workflows` / `bookingPages` would be orphaned.
-- **Validators drop unknown keys** (`str()` in `helpers.ts:18-21`; no JSON-Schema
-  validation in `agent-mcp.ts` or dispatch), so a v1 key sending `subAccountId` is
-  ignored, not refused.
-- **Route inventory.** 221 `route.ts` under `sub-accounts/**` + `agency/**`
-  (172 / 49), but tenant routes also live under `api/{community,events,comms,
-  contacts,deals,tasks,quotes,broadcasts,workflows,forms,automations,
-  scheduled-messages,social,…}` and outside `api/` (`src/app/{l,pay,rr,report}/**`,
-  including a `route.tsx`). `members/route.ts` exports `GET` only; `sub-accounts/[id]`
-  is `PATCH` + `DELETE`. The Agency Assistant switch is written by `PATCH /api/agency`
-  (`agency/route.ts:198-205`) from `agency-assistant-section.tsx`.
-- `workflows/[workflowId]/test` sends for real (v1 PR9 note). `list_sub_accounts`
-  applies `.limit(50)` before any filter (`agency.ts:36`). The daily api-cleanup
-  sweeps idempotency by collection group (`cron/api-cleanup/route.ts:99`), so a new
-  `agencies/*/apiIdempotency` path is covered.
+  `recursiveDelete` covers only the sub-account subtree (`:150-152`).
+- **Validators drop unknown keys** (`str()`, `helpers.ts:18-21`; no JSON-Schema check
+  in `agent-mcp.ts`), so a v1 key sending `subAccountId` is ignored, not refused.
+- **Routes.** 221 `route.ts` under `sub-accounts/**` + `agency/**` (172 / 49); tenant
+  routes also live under `api/{community,events,comms,contacts,deals,tasks,quotes,
+  broadcasts,workflows,forms,automations,scheduled-messages,social,…}` and outside
+  `api/` (`src/app/{l,pay,rr,report}/**`, one `route.tsx`). `members/route.ts` is
+  `GET` only; `sub-accounts/[id]` is `PATCH` + `DELETE`. The Agency Assistant switch
+  is `PATCH /api/agency` (`agency/route.ts:198-205`). `workflows/[workflowId]/test`
+  sends for real. `list_sub_accounts` applies `.limit(50)` before any filter
+  (`agency.ts:36`). The daily api-cleanup sweeps idempotency by collection group.
 - Lint runs three zero-dependency scanners byte-identically in CI and `deploy-velo.sh`.
 
 ## Design decisions
@@ -123,8 +113,10 @@ A3a ships it as `{list_sub_accounts, sub_account_stats}`; every later capability
 joins in the PR that gives it its approval class. `agent-callable-set.test.ts`
 asserts the agency-callable set computed from the registry equals the named set
 exactly; mutation: adding `set_feature_gate` to the set turns it red.
-**REVISED 2026-10-04 (P0-2):** `inSubAccount` sets `surfaces: ["chat"]` and
-`agentCallable` refuses any `*_in_sub_account` name on both levels; `resolveReach`
+**REVISED 2026-10-04 (P0-2; r2 P2-1):** `inSubAccount` sets `surfaces` to
+`base.surfaces ∩ ["chat"]` (an agent-only base keeps no surface, preserving the
+guard at `capabilities.ts:186-188`) and `agentCallable` refuses any
+`*_in_sub_account` name on both levels; `resolveReach`
 runs on any `subAccountId` argument of any agency-level call, not a hand-kept list;
 A3a iterates the registry to prove it. **REVISED (P2):** a sub-account key sending a
 `subAccountId` that differs from its own → 400 `wrong_sub_account` (validators would
@@ -159,26 +151,35 @@ the default deny at `firestore.rules:1608` already covers it — REVISED, P2).
 `["api-access"]` gain `assistantMayEnable: false` (closes the chat path too). New
 agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from A4a):
 
-- **Direct** only when the target's `createdByKeyId === auth.keyId` **and** the gate
-  is in `DIRECT_GATES` = gates with no outbound, spend or destructive effect
-  (`labs`, `community`, `website`, `social-planner`, `prospecting`, `get-leads`,
-  `google-calendar`, `webinar1`, `payments` enable; `missed-call-text-back`,
-  `broadcasts`, `outbound-voice`, `sms-agent`, `web-chat`, `inbound-voice`,
-  `whatsapp`, `meta-inbox`, `meta-agent`, `reviews-ai`, `reviews-auto-reply`,
-  `email-domain`, `google` are **never** direct: they start replies, spend or tear
-  down).
-- Everything else is a `gate_change` proposal (new class; agency-level row, the
-  preview names the gate, direction and the documented side effect from
-  `feature-gates.md`); `agent-api` and `api-access` enables are always proposals,
-  approved only by the agency owner on `/agency/approvals`.
+- **"Key-created"** (REVISED r2, P2-4) = `createdByKeyId === auth.keyId` **and**
+  created < 72 h ago **and** `contacts` count 0 **and** no channel connection; after
+  that the sub-account is a live client.
+- **Direct** only on a key-created target **and** for a gate in `DIRECT_GATES`,
+  keyed by `FEATURE_GATES` **field** (REVISED r2, P2-2: `email-domain` is not a key,
+  `get-leads` is conditional): `labs`, `community`, `website`, `socialPlanner`,
+  `prospecting`, `getLeads`, `googleCalendar`, `webinar1`, `payments`. Never direct:
+  `missedCallTextBack`, `broadcasts`, `outboundVoice`, `smsAgent`, `webChat`,
+  `inboundVoice`, `whatsapp`, `metaInbox`, `metaAgent`, `reviewsAi`,
+  `reviewsAutoReply`, `aiSuite`, `google` (they start replies, spend or tear down).
+  A test asserts the two sets partition `Object.keys(FEATURE_GATES)` exactly, so a
+  new gate defaults to proposal.
+- Everything else is a `gate_change` proposal (new class; agency-level row; the
+  preview names the gate, direction and the side effect from `feature-gates.md`).
+  **REVISED r2 (P2-3):** `agent-api` / `api-access` enables are an outright
+  refusal — `resolveReach` already 404s any target with either off, so the proposal
+  path could never be reached; enabling stays a Manage-dialog click.
 - `create_sub_account` on the agent surface writes both reach gates `true`,
   records the two gate audit rows, stamps `createdByKeyId`, and (REVISED, P1-3)
   writes the membership docs for the **owner who minted the key**
-  (`key.createdByUid`), never `apikey:<prefix>`; per key: 10 creations per UTC day
-  and a dedupe on `(keyId, name)` within 10 minutes (MCP has no idempotency).
-- `apply_snapshot` is direct only on key-created targets; on any other sub-account
-  it is a `public_change` proposal (REVISED, P1-10: it writes the AI persona when
-  absent and creates forms).
+  (`key.createdByUid`), never `apikey:<prefix>`. **REVISED r2 (P2-5, P2-7):** the
+  per-key cap (10 per UTC day) and the dedupe (`(keyId, name)` within 10 min) are a
+  transactional counter doc `agencies/{id}/apiKeys/{keyId}/creations/{YYYY-MM-DD}`
+  and a lock doc `…/creations/name_{sha(name)}` with a 10-min `expiresAt`, no
+  query and no new index; auth re-checks that `key.createdByUid` still holds
+  `agencyRole: "owner"` for this agency (else 401 `minter_removed`).
+- `apply_snapshot` is direct only on key-created targets; elsewhere it is a
+  `public_change` **agency-level** row (REVISED r2, P2-6: a sub-account row would
+  hit `requiredRole: agencyOwner` on the client's route), so only the owner approves it.
 
 ### D4 — approvals: two row kinds, one new page
 
@@ -186,21 +187,26 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   with `subAccountId = target` plus `keyLevel: "agency"`; they land on
   `/sa/[id]/approvals` as today **and** on the agency page.
 - **Agency-level rows** (`assign_billing_plan`, `create_one_time_charge`,
-  `gate_change`) have `subAccountId: null`, `agencyId`, `keyLevel: "agency"`,
+  `gate_change`, `apply_snapshot` off a key-created target) have `subAccountId: null`, `agencyId`, `keyLevel: "agency"`,
   `targetScoped: false`, `targetSubAccountId` for display; id
   `p_<sha256("agency:"+agencyId|capability|args)>`.
 - `/agency/approvals` (max-w-5xl) lists `agencyId == mine ∧ keyLevel == "agency"`
   (index `(agencyId, keyLevel, status, createdAt DESC)` — REVISED, P2), grouped by
-  target sub-account. **REVISED (P1-8):** "Approve all" covers only
-  `workflow_activate`, `public_change`, `workflow_enrolment`, `channel_change` and
-  `gate_change`; `outbound`, `spend` and `hard_delete` rows are approved one by one,
-  and the button shows counts per class first. Batch = a sequential client loop over
-  the per-row decide routes (sub-account rows → the existing
-  `/api/sub-accounts/[id]/agent-proposals/[proposalId]`, agency rows → new
-  `/api/agency/agent-proposals/[proposalId]`: `requireAgencyOwnerAny`, agency match
-  else 404, `roleSatisfies(…, {agencyRoleIsOwner: true})`, kill switch re-check,
-  then the same claim → `executeAndSettle`). No batch endpoint: claim, `rev`, pins,
-  deadline and `unsettled` are untouched.
+  target sub-account. **REVISED r2 (P1-A):** "Approve all" covers only
+  `workflow_activate` and `public_change` rows **on key-created targets**; every
+  other class (`gate_change`, `workflow_enrolment`, `channel_change`, `outbound`,
+  `spend`, `hard_delete`) is approved one row at a time, and the button shows what
+  it will skip. Batch = a sequential client loop over the per-row decide routes.
+  **REVISED r2 (P1-B):** the pre-claim sequence of the sub-account route
+  (`[proposalId]/route.ts:153-252`: validate → key re-read → expiry → preview
+  rebuild with `preview_changed` → `priorAttemptSent` → `rev`-guarded claim) is
+  factored into `lib/server/agent-proposals-decide.ts` and shared; the agency route
+  (`/api/agency/agent-proposals/[proposalId]`) adds only `requireAgencyOwnerAny`,
+  agency match else 404, `roleSatisfies(…, {agencyRoleIsOwner: true})` and the kill
+  switch, then `executeAndSettle`. The `spend` executes refuse when the plan's
+  current price, interval or gate map differs from the pinned values
+  (`assignPlanToSubAccount` reads the plan live, `billing-service.ts:505-541`).
+  No batch endpoint: claim, `rev`, pins, deadline and `unsettled` are untouched.
 - One `agentKeyRef(row)` (by `keyLevel`) serves `createProposal`, both decide
   routes, the enrolment replay and `agentActor` (REVISED, P1-1).
 - Previews: `assign_billing_plan` pins `planId`, price, interval and shows **every
@@ -221,7 +227,7 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
 | Enrolment cap | per key **per sub-account** (bucket under the target); replay reads the cap via `agentKeyRef` |
 | Idempotency (REST) | per key, `agencies/{id}/apiIdempotency/{mode_keyId_hash}`; body in the fingerprint, so another `subAccountId` = `idempotency_collision`; **REVISED (P2):** `precheck` receives the parsed body and runs `resolveReach` on `body.subAccountId` before the idempotency lookup, so a cached reply never outlives a gate switch |
 | Request logs | **REVISED (P1-7):** logged under `subAccounts/{target}` only after `resolveReach` succeeds; every refusal and agency-level call → `agencies/{id}/apiRequestLogs` (no viewer this phase); test: a refused call writes nothing under any sub-account |
-| Audit actor | `{type: "api_key", id: keyId}` + `keyLevel`; `agent.write` under the target; creation / snapshot / gate flips under the sub-account they touch |
+| Audit actor | `{type: "api_key", id: keyId}` + `keyLevel`; `agent.write` under the target; creation / snapshot / gate flips under the sub-account they touch; **REVISED r2 (P2-12):** plus one `agent.call` row under `agencies/{id}` per targeted call (tool, target, read/write, no args), so cross-client reads are reconstructable |
 | Revoke sweep | `sweepRevokedKeyProposals({keyRef, agencyId})` on the `(keyId, status)` index, no sub-account filter |
 | Kill switch | `agencies/{id}.agentApiEnabled`: auth, dispatch (fresh), both decide routes for `keyLevel: "agency"` rows |
 | Billing plan at creation | none: `comped`, fully usable; `assign_billing_plan` is a `spend` proposal approved last |
@@ -267,27 +273,29 @@ Sub-account tree: `agents/watchdog`, `ai-agent/*`, `apexgeo-connection`, `billin
 `email-purchasers`, `exit-intent-config`, `health`, `messaging-config`,
 `plans/[planId]`, `refresh-gitpage-status`, `setup/*`, `snapshots/{import,import-file,shares}`
 + `[snapshotId]/shares*`, `sub-accounts/[id]` (PATCH, DELETE), `sub-accounts/[id]/usage`,
-`templates*`, `updates-modal-config`. The other trees (`api/community`, `events`,
-`comms`, `contacts`, `deals`, `tasks`, `quotes`, `broadcasts`, `workflows`, `forms`,
-`automations`, `scheduled-messages`, `social`, `pay`, `report`, `l`, `rr`, …) are
-grandfathered whole at A1 and classified in the burn-down. Exclusions at A1:
+`templates*`, `updates-modal-config`. **REVISED r2 (P1-C):** the other trees
+(`api/community`, `events`, `comms`, `contacts`, `deals`, `tasks`, `quotes`,
+`broadcasts`, `workflows`, `forms`, `automations`, `scheduled-messages`, `social`,
+`pay`, `report`, `l`, `rr`, …) are declared in scope by the tree list, and every
+existing `path:METHOD` inside them is its own `FROZEN` entry; a new route inside a
+grandfathered tree fails like any other (A1 fixture). Exclusions at A1:
 `api-keys*` (key-management), `agent-proposals*` (queue-itself: no tool exists for
 the queue), `PATCH /api/agency` (human-only), inbound `webhooks/*` (public-unauth).
 
 ## Module shape
 
 ```
-src/types/api.ts, src/lib/api/auth.ts         level + subAccountId | null; agency auth branch; withApiAuth allowAgencyKey; precheck(ctx, body)
-src/lib/firestore/api-keys.ts                 agency key CRUD; agentKeyRef(row); level from path; bump / revoke by ref
-src/lib/api/agent-dispatch.ts                 AGENCY_AGENT_CALLABLE; resolveReach; agency branch; wrong_sub_account
-src/lib/api/agent-tools-listing.ts (NEW)      agentToolsFor(auth); agent-context / precheck / logs / idempotency by level
-src/lib/server/agent-proposals*.ts, agent-enrolment-replay.ts   keyLevel, agency ids, gate_change, sweep + cap via agentKeyRef
-src/lib/ai-suite/capabilities/…               helpers (agentActor level, assistantMayEnable), agency, agency-gates (NEW),
-                                              snapshots (NEW), billing-*, members
-src/lib/server/sub-accounts-service.ts        createdByKeyId, owner membership on the agent path, creation cap
-src/app/api/agency/{api-keys,agent-proposals}/** (NEW); agency/route.ts + agency-assistant-section.tsx (switch + keys card)
-src/app/(dashboard)/agency/approvals/page.tsx + sidebar (NEW)
-scripts/check-agent-coverage.mjs + agent-coverage.json; src/lib/api/agent-coverage.test.ts; scripts/teardown-smoke-sub-account.mjs
+src/types/api.ts, lib/api/auth.ts            level + subAccountId | null; agency auth branch; withApiAuth allowAgencyKey; precheck(ctx, body)
+lib/firestore/api-keys.ts                    agency key CRUD; agentKeyRef(row); level from path; bump / revoke by ref
+lib/api/agent-dispatch.ts                    AGENCY_AGENT_CALLABLE; resolveReach; agency branch; wrong_sub_account
+lib/api/agent-tools-listing.ts (NEW)         agentToolsFor(auth); agent-context / precheck / logs / idempotency by level
+lib/server/agent-proposals*.ts, agent-proposals-decide.ts (NEW), agent-enrolment-replay.ts
+                                             keyLevel, agency ids, gate_change, shared pre-claim sequence, sweep + cap via agentKeyRef
+lib/ai-suite/capabilities/…                  helpers (agentActor level, assistantMayEnable), agency, agency-gates (NEW), snapshots (NEW), billing-*, members
+lib/server/sub-accounts-service.ts           createdByKeyId, owner membership on the agent path, counter + lock docs
+app/api/agency/{api-keys,agent-proposals}/** (NEW); agency/route.ts + agency-assistant-section.tsx (switch + keys card)
+app/(dashboard)/agency/approvals/page.tsx + sidebar (NEW)
+scripts/check-agent-coverage.mjs + agent-coverage.json; lib/api/agent-coverage.test.ts; scripts/teardown-smoke-sub-account.ts
 firestore.rules / firestore.indexes.json
 ```
 
@@ -296,20 +304,24 @@ firestore.rules / firestore.indexes.json
 | PR | Depends | Content | `verify:` (failing first) |
 |---|---|---|---|
 | **A1** coverage gate | — | checker (all `src/app/**/route.*`, per method, tree list, exact `FROZEN`) + manifest + names test; PR-template line | checker against `scripts/__fixtures__/agent-coverage/`: an unlisted `path:POST` → exit 1 naming it; a listed route that is gone → 1; `exclude` without category → 1; a `grandfathered` glob or an entry outside `FROZEN` → 1; a new top-level tree → 1; the real tree → 0. **Mutation:** stub the unlisted branch → the first fixture goes green, so the test asserts exit code + the `path:METHOD` in stderr. Names test: a misspelled tool → red |
-| **A2** agency keys + switch | — | `level` from the doc path; agency CRUD; auth branch on `agentApiEnabled`; `withApiAuth`, `/api/mcp` and the tools routes refuse agency keys; bump / revoke by key ref; routes + card | `auth.agency-key.test.ts`: agency key → `/api/v1/contacts` 403 `agency_key_not_allowed`; → `/api/mcp` 403, row under `agencies/{id}/apiRequestLogs`; switch off → 403; revoked → 401; mint `["agent","admin"]` or `mode:"test"` → 400; after every case no doc under `subAccounts/null`. **Mutation:** drop the `withApiAuth` refusal → red |
+| **A2** agency keys + switch | — | `level` from the doc path; agency CRUD; auth branch on `agentApiEnabled` + minter-still-owner check; `withApiAuth`, `/api/mcp` and the tools routes refuse agency keys; bump / revoke by key ref; routes + card; `assistantMayEnable: false` on `agent-api` and `api-access` (REVISED r2, P2-9: closes the chat path now; the PR says owners lose "enable API access" in chat) | `auth.agency-key.test.ts`: agency key → `/api/v1/contacts` 403 `agency_key_not_allowed`; → `/api/mcp` 403, row under `agencies/{id}/apiRequestLogs`; switch off → 403; revoked → 401; mint `["agent","admin"]` or `mode:"test"` → 400; after every case no doc under `subAccounts/null`. **Mutation:** drop the `withApiAuth` refusal → red |
 | **A3a** reach + listing | A2 | `resolveReach` (generic on any `subAccountId`), `AGENCY_AGENT_CALLABLE = {list_sub_accounts, sub_account_stats}`, variants chat-only + refused by name, `agentToolsFor`, logs / idempotency by level, `precheck(ctx, body)`, `wrong_sub_account`; transports still refuse agency keys | `agent-dispatch.agency.test.ts`: sa2 (other agency), sa3 (agent-api off), sa5 (api-access off) → identical 404 minus `request_id`; sa1 → `find_contacts` rows of sa1 only; a refused call writes no log under any sub-account; `agent-callable-set.test.ts` = named set exactly, no `*_in_sub_account` callable (iterates the registry); a sub-account key with another `subAccountId` → 400. **Mutations:** stub the `agencyId` compare → sa2 goes red; add `set_feature_gate` to the set → red |
-| **A3b** keyLevel threading | A3a | `agentKeyRef` in `createProposal`, both decide routes, enrolment replay, `agentActor`, revoke hook + sweep; `keyLevel` on rows; transports accept agency keys | agency-key `create_contact` matching an ACTIVE workflow → one `workflow_enrolment` row with `keyLevel: "agency"`, no hold failure; approve via the existing decide route → execute once, cap reserved from the agency key doc; revoke → pending rows in sa1 **and** sa4 → `rejected`; switch off → dispatch 403 and approve 403; MCP `tools/list` for an agency key requires `subAccountId` on every sub-account tool, a sub-account key sees the v1 set exactly |
-| **A4a** create + gates + snapshot | A3b | `create_sub_account` agent path (both gates, owner membership, `createdByKeyId`, cap, dedupe); `set_sub_account_gate` + `DIRECT_GATES` + `gate_change`; `set_feature_gate` chat-only + `assistantMayEnable`; `list_snapshots` / `apply_snapshot` | via agency key: both gates `true`, member doc = owner uid, no `apikey:` member, 11th creation that day → refused, same name within 10 min → same id; via chat: unchanged. Gates: `labs true` on a key-created target → written; `whatsapp true` anywhere → `gate_change` proposal; `agent-api true` → proposal only; `google false` on an existing target → proposal; `labs true` on a non-key-created target → proposal (mutation: drop the `createdByKeyId` check → red). `apply_snapshot` on key-created → direct, workflows `draft`; elsewhere → `public_change` proposal |
-| **A5** agency approvals page | A3b | list + decide routes; `/agency/approvals`; sidebar + badge; class-limited Approve all; `canSeeProposal` branch; index | decide route: other agency's owner → 404; a sub-account row → 404; two concurrent approves → execute once, 200 + 409; switch off → 403. Rules test: agency row readable by its owner, not by sa members or another owner (mutation: drop the branch → red). `e2e/specs/agency-approvals.spec.ts`: seed a `hard_delete`, an email `send_message` (no SMTP) and a `gate_change` row → Approve all approves only the gate row and shows "2 need individual approval"; approving the others one by one → `executed` / `failed` with the seam's refusal |
-| **A4b** invite + billing | A4a, A5 | `invite_member` → `outbound` with the existing-member preview; `assign_billing_plan`, `create_one_time_charge` → `spend` with full gate diff + live-subscription warning; `create_billing_plan`, `list_billing_plans` join the set; names lock table + tools doc updated on purpose | `assign_billing_plan` → proposal, Stripe spy 0, preview lists gates on/off incl. `api-access`; on a live-subscription fixture the preview says "prorated now"; `invite_member` for an existing admin as collaborator → preview "role admin → collaborator"; approve → `createInviteServerSide` once with pinned values; `outbound-never-sends.test.ts` iterates agency-callable caps |
-| **A6** docs + live validation | A1–A5 | `agent-api.md` agency section, tools doc, `firestore-collections.md`, `feature-gates.md`; teardown script; status flip | live checklist below |
+| **A3b** keyLevel threading | A3a; **deploy precondition: reach census + Hein's ruling** (REVISED r2, P2-8: keys reach existing clients from this deploy, not A6) | `agentKeyRef` in `createProposal`, both decide routes, enrolment replay, `agentActor`, revoke hook + sweep; `keyLevel` on rows; `agent.call` audit; transports accept agency keys | agency-key `create_contact` matching an ACTIVE workflow → one `workflow_enrolment` row with `keyLevel: "agency"`, no hold failure; approve via the existing decide route → execute once, cap reserved from the agency key doc; revoke → pending rows in sa1 **and** sa4 → `rejected`; switch off → dispatch 403 and approve 403; MCP `tools/list` for an agency key requires `subAccountId` on every sub-account tool, a sub-account key sees the v1 set exactly |
+| **A4a-1** create + gates | A3b | `create_sub_account` agent path (both gates, owner membership, `createdByKeyId`, counter + lock docs); `set_sub_account_gate` + `DIRECT_GATES` partition test + `gate_change`; `set_feature_gate` chat-only (REVISED r2, P2-10: snapshots split out) | via agency key: both gates `true`, member doc = owner uid, no `apikey:` member, 11th creation that day → refused, same name within 10 min → same id (two concurrent creates → one doc); via chat: unchanged. Gates: `labs true` on a key-created target → written; the same target 73 h later or with one contact → proposal; `whatsapp true` anywhere → `gate_change` proposal; `agent-api true` → refused; `google false` on an existing target → proposal (mutations: drop the `createdByKeyId` check → red; add a gate to neither set → partition test red) |
+| **A4a-2** snapshots | A4a-1, A5 | `list_snapshots`, `apply_snapshot` | key-created target → direct, workflows `draft`, persona written only when absent; other target → agency-level `public_change` row, approved on the agency route only |
+| **A5** agency approvals page | A3b | shared pre-claim sequence (`agent-proposals-decide.ts`) + agency list / decide routes; `/agency/approvals`; sidebar + badge; class-limited Approve all; `canSeeProposal` branch; index | decide route: other agency's owner → 404; a sub-account row → 404; expired row → 409; a `gate_change` row whose target gate flipped since → `preview_changed`; two concurrent approves → execute once, 200 + 409; switch off → 403. Sub-account route test suite re-run unchanged against the factored sequence. Rules test: agency row readable by its owner only (mutation: drop the branch → red). `e2e/specs/agency-approvals.spec.ts`: seed a `workflow_activate` row on a key-created target, a `gate_change` row and an email `send_message` (no SMTP) → Approve all approves the activation only and leaves the other two pending; one by one → `executed` / `failed` with the seam's refusal (mutation: add `gate_change` to the batch set → red) |
+| **A4b** invite + billing | A4a, A5 | `invite_member` → `outbound` with the existing-member preview; `assign_billing_plan`, `create_one_time_charge` → `spend` with full gate diff + live-subscription warning; `create_billing_plan`, `list_billing_plans` join the set; names lock table + tools doc updated on purpose | `assign_billing_plan` → proposal, Stripe spy 0, preview lists gates on/off incl. `api-access`; on a live-subscription fixture the preview says "prorated now"; edit the plan's price between propose and approve → 409 `preview_changed`, Stripe spy 0, and a plan edited after the claim → execute refuses `pinned_mismatch` (REVISED r2, P1-B); `invite_member` for an existing admin as collaborator → preview "role admin → collaborator"; approve → `createInviteServerSide` once with pinned values; `outbound-never-sends.test.ts` iterates agency-callable caps |
+| **A6** docs + live validation | A1–A5 | `agent-api.md` agency section, tools doc, `firestore-collections.md`, `feature-gates.md`; `scripts/teardown-smoke-sub-account.ts` (REVISED r2, P1-D: TypeScript so `tsc` covers it); status flip | teardown unit test: refuses a target failing any one of name prefix `Agency agent smoke `, `createdByKeyId` set, created < 24 h, `contacts` = 0, no channel connection, or run without `--yes` (prints the doc list and stops); then the live checklist below |
 | **B1…Bn** burn-down | A1 | one group per PR | each PR moves its group out of `grandfathered` and `FROZEN`; the manifest diff is the proof |
 
 ## Burn-down order (outline; REVISED 2026-10-04, P1-11)
 
 1. **Expose, no outbound:** `workflow-folders`, `tracked-links`, `reports`,
-   `quotes/[quoteId]/pdf` (R), `agency/sub-accounts/[id]` PATCH (W; DELETE
-   `hard_delete`), `agency/templates`, `logs/*`, `launchpad`, `order-attention`,
+   `quotes/[quoteId]/pdf` (R), `agency/sub-accounts/[id]` **per field** (REVISED
+   r2, P1-E): `name`, `timezone`, `defaultPhoneCountry` W; `automationsPaused →
+   false` and `sendWindow` `outbound` (resume sends, widen quiet hours);
+   `accountContact` `channel_change` (snapshot `notify` nodes route to it,
+   `apply.ts:121`); `bookingLink` `public_change`; DELETE `hard_delete`), `agency/templates`, `logs/*`, `launchpad`, `order-attention`,
    `billing-attention`, `usage` (all R), the `contacts` / `deals` / `tasks` / `events`
    trees where a tool already covers the method (manifest only).
 2. **Expose with a class:** `members/[uid]` and `territories*` /
@@ -325,15 +337,14 @@ firestore.rules / firestore.indexes.json
    `agency/snapshots` capture (W) and shares (`public_change`); `agency/*-config`
    (brand copy — flag for Hein); `media` folders (W).
 3. **Exclude:** every connection route (`google*`, `meta*`, `whatsapp*`,
-   `whatsapp-bridge*`, `twilio*`, `smtp*`, `resend*`, `stripe-connection`,
-   `paystack-connection`, `paypal-integration`, `apexgeo-connection`,
-   `import/ghl/connect`), `billing/{checkout,portal}`, `payment-mandates/revoke`,
-   `setup/*`, `website/*`, `refresh-gitpage-status`, `workflows/[workflowId]/test`,
-   `calendar.ics` + `calendar-feed-url`, `gbp/*`, `agents/watchdog`, `affiliates/*`,
-   `email-purchasers`, `health`, `ai-models`, `contacts/[contactId]/notes/mention-tasks`,
-   `import/jobs/*`, **`snapshots/import*`** (a share token from an inbound message
-   can plant a persona) and **`webhook-subscriptions*`** (exfiltration channel; v1
-   made the writes chat-only), `pay/`, `l/`, `rr/`, `report/` (public, token-authed).
+   `whatsapp-bridge*`, `twilio*`, `smtp*`, `resend*`, `*-connection`,
+   `paypal-integration`, `import/ghl/connect`), `billing/{checkout,portal}`,
+   `payment-mandates/revoke`, `setup/*`, `website/*`, `refresh-gitpage-status`,
+   `workflows/[workflowId]/test`, `calendar.ics` + `calendar-feed-url`, `gbp/*`,
+   `agents/watchdog`, `affiliates/*`, `email-purchasers`, `health`, `ai-models`,
+   `contacts/[contactId]/notes/mention-tasks`, `import/jobs/*`, `snapshots/import*`
+   (a share token from an inbound message can plant a persona),
+   `webhook-subscriptions*` (exfiltration channel), `pay/`, `l/`, `rr/`, `report/`.
 
 ## Firestore changes
 
@@ -349,10 +360,12 @@ firestore.rules / firestore.indexes.json
 
 ## Live validation (after A6, prod, agency CrestaHQ, no real contacts, no outbound to real people)
 
-0. **Reach census first** (REVISED, P1-5): list every sub-account with both gates on
-   (Blitz and Velocity carry v1 agent keys and are likely reachable, with real
-   contacts). Hein rules whether to switch `agent-api` off on them for the window or
-   accept that the key can read them; nothing below touches them.
+0. **Reach census** (REVISED r2, P2-8: done before the **A3b** deploy, repeated here):
+   list every sub-account with both gates on (Blitz and Velocity carry v1 agent keys
+   and are likely reachable, with real contacts). Switching `agent-api` off on them
+   would break the live `leadstack-blitz` / `leadstack-velocity` triage tooling and
+   block their pending proposals, so Hein rules between accepting that the key can
+   read them and the pending single-gate question; nothing below touches them.
 1. Owner switches on `agentApiEnabled` (Agency → Agency Assistant card); mints an
    agency key. `claude mcp add --transport http leadstack-agency
    https://crm.crestahq.com/api/mcp --header "Authorization: Bearer lsk_live_…"`.
@@ -363,20 +376,22 @@ firestore.rules / firestore.indexes.json
 4. On the smoke sub-account only: `apply_snapshot` → counts, workflows draft;
    `create_pipeline`, `create_custom_field`, `create_product`, `create_snippet`,
    `create_workflow`, `create_booking_page`, `set_sub_account_gate labs true` → direct.
-   `set_sub_account_gate whatsapp true` → `gate_change` proposal; `agent-api true` on
-   #1000 → proposal; `labs true` on #1000 → proposal.
+   `set_sub_account_gate whatsapp true` → `gate_change` proposal; `agent-api true`
+   → refused; `labs true` on #1000 → proposal.
 5. Proposals: `set_workflow_status active`, `update_booking_page status published`,
    `invite_member` (Hein's own address), `assign_billing_plan` (a test plan) → rows.
-   `/agency/approvals`: Approve all takes the activation + publish rows; the invite
-   and plan rows need their own click; the plan preview shows the gate diff. Reject
+   `/agency/approvals`: Approve all takes the activation + publish rows (the smoke
+   sub-account is key-created); the gate, invite and plan rows need their own click; the plan preview shows the gate diff. Reject
    the plan if prod Stripe would send a checkout anywhere but the screen.
 6. REST: `POST /api/v1/tools/find_contacts` with `{subAccountId}` → 200; without →
    400; a v1 sub-account key with another `subAccountId` → 400 `wrong_sub_account`.
 7. Revoke → remaining pending rows `rejected: key_revoked`; switch off
-   `agentApiEnabled`; **`scripts/teardown-smoke-sub-account.mjs`** (REVISED, P1-9):
-   deactivates and deletes workflows, deletes forms, products, booking pages and
-   the sub-account, then asserts no top-level doc still carries its id. Screenshots
-   redacted before commit.
+   `agentApiEnabled`; **`scripts/teardown-smoke-sub-account.ts --yes`** (REVISED,
+   P1-9 / r2 P1-D, P2-11): guards above, then deactivates and deletes workflows,
+   deletes forms, products, booking pages, snippets, pipelines, message templates
+   and the sub-account, then asserts `workflows`, `bookingPages`, `forms`,
+   `products`, `message_templates`, `snippets`, `pipelines`, `customFields` hold no
+   doc with its id. Screenshots redacted before commit.
 
 ## Open risks
 
@@ -387,9 +402,9 @@ firestore.rules / firestore.indexes.json
   prompt-injected agent can enumerate and edit every gated client workspace, where
   v1 keys bounded blast radius to one client. The per-sub-account gate, proposals,
   the class-limited Approve all and the kill switch shrink that, they do not remove it.
-- **Existing gated clients are reachable the moment a key is minted** (P1-5): v1's
-  per-client opt-in is reinterpreted as agency-wide consent. If Hein wants a
-  separate reach gate or a key-level target list, it is a ruling change, not a PR.
+- **Existing gated clients are reachable from the A3b deploy** (P1-5, **PENDING
+  Hein's ruling** on a single reach gate vs a separate gate / key target list): v1's
+  per-client opt-in is reinterpreted as agency-wide consent.
 - `subAccountId: string | null` ripples through every consumer; the compiler lists
   them and A2 asserts no `subAccounts/null` write, but a consumer that stringifies
   the null is not a type error.
@@ -419,6 +434,20 @@ Refuted or narrowed, with evidence:
 - **P1-5 "add a separate reach gate":** contradicts the ruling "the key reaches
   only sub-accounts where `agentApiEnabledByAgency` is true"; kept as a ruling
   question for Hein plus the census step.
-- **P2 "threat model: cross-tenant data movement is a POPIA issue":** recorded, not
-  designed against — both tenants belong to the same agency, and the agent returns
-  what any reachable read returns; reach + audit are the bound.
+- **P2 "threat model: cross-tenant data movement is a POPIA issue":** now an owner
+  ruling (header): a bounded risk Hein accepts, with the `agent.call` audit row.
+
+### Round 2 (2026-10-04, head b735a807 → this commit)
+
+Adopted: P1-A (batch = `workflow_activate` + `public_change` on key-created targets
+only), P1-B (shared pre-claim sequence; `spend` executes enforce pins), P1-C
+(per-route `FROZEN` inside grandfathered trees), P1-D (TypeScript teardown with
+target guards and `--yes`), P1-E (per-field classes for the sub-account PATCH), and
+P2-1, P2-2, P2-3 (refusal replaces the unreachable proposal), P2-4 (72 h / 0
+contacts / no channel), P2-5 (counter + lock docs, no index), P2-6 (agency-level
+row), P2-7 (minter-still-owner check), P2-8 (census before A3b), P2-9, P2-10 (A4a
+split), P2-11, P2-12 (owner ruling + `agent.call` row). Nothing refuted this round;
+the reviewer's two UNVERIFIED items stand as written: production gate state is the
+census step, and `labs` / `prospecting` gate no outbound feature
+(`feature-gates.md`: Labs is a container; Prospecting sends only through the
+workflow approach guard, which the key never reaches directly).
