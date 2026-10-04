@@ -25,19 +25,19 @@
  * has nothing to compare against in the deploy checkout or a buyer's repo.
  * scripts/check-agent-coverage-shrink.mjs does that in PR CI only.
  *
- * Methods are read from the source with comments stripped: `export` (leading
- * whitespace allowed) `async function | function | const | let | var` NAME,
- * `export const|let|var { … } =`, and `export { x as NAME }` (quoted names
- * too). Then every GET/HEAD/OPTIONS/POST/PUT/PATCH/DELETE token left in the
- * file, strings included, must be one of the parsed methods; any other is an
- * export form this parser does not know, and the file fails rather than
- * hiding a route. `export *` is refused outright. Only GET/POST/PUT/PATCH/
- * DELETE are keyed; HEAD and OPTIONS are probe / preflight companions. These
- * per-file checks run in in-scope trees only: in an excluded tree no method
- * is keyed, so there is nothing for a parse miss to hide.
+ * Methods are the file's exported names, read with the TypeScript compiler
+ * (`typescript` is a devDependency, installed before `pnpm lint` everywhere it
+ * runs): exported function / class / variable declarations, destructured
+ * bindings included, and `export { … }` specifiers, quoted names and
+ * re-exports included. Names are cooked, so escapes resolve. A file whose
+ * exports cannot be fully known fails: a syntax error, `export *`,
+ * `export default` / `export =`, or CommonJS `exports`. Only GET/POST/PUT/
+ * PATCH/DELETE are keyed; HEAD and OPTIONS are probe / preflight companions.
+ * These per-file checks run in in-scope trees only: in an excluded tree no
+ * method is keyed, so there is nothing for a parse miss to hide.
  *
  * Runs as part of `pnpm lint` (so CI and scripts/deploy-velo.sh run the same
- * bytes). Zero dependencies.
+ * bytes). Its one dependency is `typescript`.
  *
  * Usage: node scripts/check-agent-coverage.mjs [repo-root]
  *
@@ -49,6 +49,8 @@ import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import ts from "typescript";
+
 export const CATEGORIES = new Set([
   "human-only",
   "chat-only",
@@ -58,70 +60,58 @@ export const CATEGORIES = new Set([
   "queue-itself",
 ]);
 
-const ALL_METHODS = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"];
+const ALL_METHODS = new Set(["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"]);
 const KEYED = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
-const NAMES = ALL_METHODS.join("|");
 const ROUTE_FILE = /^route\.(ts|tsx|js|jsx)$/;
 const has = (obj, key) => Object.hasOwn(obj, key);
+const isExported = (node) =>
+  (ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false;
 
-/** Blank comments (keeping newlines), leave strings and template literals intact. */
-export function stripComments(src) {
-  let out = "";
-  let quote = null;
-  for (let i = 0; i < src.length; i++) {
-    const c = src[i];
-    if (quote) {
-      out += c;
-      if (c === "\\") out += src[++i] ?? "";
-      else if (c === quote) quote = null;
-    } else if (c === "/" && src[i + 1] === "/") {
-      while (i < src.length && src[i] !== "\n") i++;
-      out += "\n";
-    } else if (c === "/" && src[i + 1] === "*") {
-      const end = src.indexOf("*/", i + 2);
-      const stop = end < 0 ? src.length : end + 2;
-      out += src.slice(i, stop).replace(/[^\n]/g, " ");
-      i = stop - 1;
-    } else {
-      if (c === '"' || c === "'" || c === "`") quote = c;
-      out += c;
-    }
-  }
-  return out;
+/** Every name a binding introduces: `POST`, `{ a: POST }`, `[POST]`, nested. */
+function bindingNames(name) {
+  if (ts.isIdentifier(name)) return [name.text];
+  return name.elements.flatMap((el) => (ts.isOmittedExpression(el) ? [] : bindingNames(el.name)));
 }
 
 /**
- * Parse a route file. `methods` are the parsed exports (all seven names);
- * `stray` are method tokens in the file no parsed export accounts for;
- * `exportStar` is true when the file has `export *`.
+ * Parse a route file with the TypeScript compiler. `methods` are the exported
+ * names that are HTTP methods (`.text` is cooked, so `DELETE` is DELETE);
+ * `problems` are reasons the file's exports cannot be fully known, each of
+ * which fails the file: a syntax error, `export *`, `export default` /
+ * `export =`, or CommonJS `exports`.
  */
-export function parseRoute(src) {
-  const clean = stripComments(src);
-  const found = new Set();
-  const declared = new RegExp(
-    `^\\s*export\\s+(?:async\\s+)?(?:function|const|let|var)\\s+(${NAMES})\\b`,
-    "gm",
-  );
-  for (const m of clean.matchAll(declared)) found.add(m[1]);
-  // The name a list entry binds: `x as NAME`, `x as "NAME"`, `key: NAME`, `NAME = default`.
-  const bound = (part) =>
-    part.split(/\s+as\s+|:/).pop().split("=")[0].trim().replace(/^\.\.\.|^["']|["']$/g, "");
-  const braces = [
-    ...clean.matchAll(/^\s*export\s*\{([^}]*)\}/gm),
-    ...clean.matchAll(/^\s*export\s+(?:const|let|var)\s*\{([^}]*)\}\s*=/gm),
-  ];
-  for (const block of braces) {
-    for (const part of block[1].split(",")) {
-      const name = bound(part);
-      if (ALL_METHODS.includes(name)) found.add(name);
+export function parseRoute(src, fileName = "route.ts") {
+  const kind = /\.[jt]sx$/.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, kind);
+  const problems = [];
+  // Internal but long-stable; if a TypeScript upgrade ever drops it, fail
+  // loudly rather than treat every file as clean.
+  if (!Array.isArray(sf.parseDiagnostics)) throw new Error("typescript: SourceFile.parseDiagnostics is gone");
+  if (sf.parseDiagnostics.length > 0) problems.push("does not parse — fix the syntax error");
+
+  const names = [];
+  for (const stmt of sf.statements) {
+    if (ts.isExportDeclaration(stmt)) {
+      if (!stmt.exportClause || !ts.isNamedExports(stmt.exportClause)) problems.push("`export *` in a route file — export methods by name");
+      else for (const spec of stmt.exportClause.elements) names.push(spec.name.text);
+    } else if (ts.isExportAssignment(stmt)) {
+      problems.push("`export default` / `export =` in a route file — export methods by name");
+    } else if (isExported(stmt)) {
+      if ((ts.getModifiers(stmt) ?? []).some((m) => m.kind === ts.SyntaxKind.DefaultKeyword)) {
+        problems.push("`export default` in a route file — export methods by name");
+      } else if (ts.isVariableStatement(stmt)) {
+        for (const decl of stmt.declarationList.declarations) names.push(...bindingNames(decl.name));
+      } else if (stmt.name) {
+        names.push(stmt.name.text);
+      }
     }
   }
-  const tokens = new Set([...clean.matchAll(new RegExp(`\\b(${NAMES})\\b`, "g"))].map((m) => m[1]));
-  return {
-    methods: ALL_METHODS.filter((m) => found.has(m)),
-    stray: ALL_METHODS.filter((m) => tokens.has(m) && !found.has(m)),
-    exportStar: /^\s*export\s*\*/m.test(clean),
+  const visit = (node) => {
+    if (ts.isIdentifier(node) && node.text === "exports") problems.push("CommonJS `exports` in a route file — export methods by name");
+    ts.forEachChild(node, visit);
   };
+  visit(sf);
+  return { methods: [...new Set(names.filter((n) => ALL_METHODS.has(n)))], problems: [...new Set(problems)] };
 }
 
 /** `api/sub-accounts/[id]/x` → `api/sub-accounts`; `pay/link/[token]` → `pay`. */
@@ -184,12 +174,8 @@ export function checkCoverage(files, manifest, frozen) {
       continue;
     }
     if (trees[tree]?.scope !== true) continue;
-    if (parsed.exportStar) {
-      errors.push(`${path}: \`export *\` in a route file — export methods by name`);
-      continue;
-    }
-    if (parsed.stray.length > 0) {
-      errors.push(`${path}: ${parsed.stray.join("/")} appears in the file but no export this checker parses declares it — export methods by name`);
+    if (parsed.problems.length > 0) {
+      for (const problem of parsed.problems) errors.push(`${path}: ${problem}`);
       continue;
     }
     const keyed = parsed.methods.filter((m) => KEYED.has(m));
@@ -259,7 +245,7 @@ if (isEntrypoint) {
   const appDir = join(root, "src", "app");
   const files = walk(appDir).map((full) => ({
     path: dirname(relative(appDir, full)).split("\\").join("/"),
-    parsed: parseRoute(readFileSync(full, "utf8")),
+    parsed: parseRoute(readFileSync(full, "utf8"), full),
   }));
   const read = (name) => JSON.parse(readFileSync(join(root, "scripts", name), "utf8"));
   const errors = checkCoverage(files, read("agent-coverage.json"), read("agent-coverage-frozen.json"));

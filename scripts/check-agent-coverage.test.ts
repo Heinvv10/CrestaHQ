@@ -191,7 +191,7 @@ describe("check-agent-coverage CLI", () => {
 
   it("fails a route file exporting no handler it can parse", () => {
     const root = fixture();
-    writeRoute(root, "api/things/odd", "const handler = () => new Response();\nexport default handler;\n");
+    writeRoute(root, "api/things/odd", "export const dynamic = \"force-dynamic\";\nconst handler = () => new Response();\nvoid handler;\n");
     const r = run(root);
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("api/things/odd: route file exports no GET/POST/PUT/PATCH/DELETE handler");
@@ -281,39 +281,75 @@ describe("check-agent-coverage manifest shape guards", () => {
 });
 
 describe("check-agent-coverage export forms (each must be seen, or fail the file)", () => {
+  // Backslashes below are doubled: each fixture FILE holds a single one.
   it.each([
-    ["a .jsx route file", "export async function POST() {}\n", "route.jsx"],
-    ["a destructured export", "const handlers = { POST: () => null };\nexport const { POST } = handlers;\n", "route.ts"],
-    ["an indented export", "  export async function POST() {}\n", "route.ts"],
-    ["a comment inside the export", "export /* the handler */ async function POST() {}\n", "route.ts"],
-    ["a quoted export name", "const h = () => null;\nexport { h as \"POST\" };\n", "route.ts"],
-  ])("keys POST from %s", (_label, src, file) => {
+    ["a .jsx route file with JSX in it", "export async function POST() {\n  return <div />;\n}\n", "route.jsx", "POST"],
+    ["a destructured export", "const handlers = { POST: () => null };\nexport const { POST } = handlers;\n", "route.ts", "POST"],
+    ["a renamed destructure { a: POST }", "const h = { a: () => null };\nexport const { a: POST } = h;\n", "route.ts", "POST"],
+    ["an array destructure", "const hs = [() => null];\nexport const [POST] = hs;\n", "route.ts", "POST"],
+    ["an indented export", "  export async function POST() {}\n", "route.ts", "POST"],
+    ["a comment inside the export", "export /* the handler */ async function POST() {}\n", "route.ts", "POST"],
+    ["an empty comment inside the export", "export /**/ async function POST() {}\n", "route.ts", "POST"],
+    ["a comment inside the export braces", "const h = () => null;\nexport { /* the handler */ h as POST };\n", "route.ts", "POST"],
+    ["a plain async DELETE", "export async function DELETE() {}\n", "route.ts", "DELETE"],
+    ["a quoted DELETE export name", "const del = () => null;\nexport { del as \"DELETE\" };\n", "route.ts", "DELETE"],
+    ["a quoted export name", "const h = () => null;\nexport { h as \"POST\" };\n", "route.ts", "POST"],
+    ["a re-export", "export { POST } from \"./handlers\";\n", "route.ts", "POST"],
+    ["a regex opening a fake comment, one line", "const re = /\\/*/; export async function POST() {} // */\n", "route.ts", "POST"],
+    ["a regex /\\// that once blanked the line", "const SL = /\\//; export async function POST() {}\n", "route.ts", "POST"],
+    ["a regex opening a fake comment, multi-line", "const re = /\\/*/;\nexport async function POST() {}\nconst z = 1; // */\n", "route.ts", "POST"],
+    ["an escaped identifier \\u0045", "export async function DEL\\u0045TE() {}\n", "route.ts", "DELETE"],
+    ["an escaped identifier \\u{45}", "export async function DEL\\u{45}TE() {}\n", "route.ts", "DELETE"],
+    ["an escaped string export name", "const h = () => null;\nexport { h as \"DEL\\u0045TE\" };\n", "route.ts", "DELETE"],
+  ])("keys the method from %s", (label, src, file, method) => {
+    // An escape that a heredoc or editor cooked into the plain name would
+    // prove nothing: the escaped rows must not spell the method literally.
+    if (label.includes("escaped")) expect(src).not.toContain(method);
     const root = fixture();
     writeRoute(root, "api/things/form", src, file);
     const r = run(root);
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("api/things/form:POST: unlisted");
+    expect(r.stderr).toContain(`api/things/form:${method}: unlisted`);
   });
 
-  it("refuses export * in a route file", () => {
+  it.each([
+    ["export *", 'export * from "./handlers";\n', "`export *` in a route file"],
+    ["export * as ns", 'export * as handlers from "./handlers";\n', "`export *` in a route file"],
+    ["export default of a value", "const h = { POST: () => null };\nexport default h;\n", "`export default` / `export =` in a route file"],
+    ["export default function", "export default function POST() {}\n", "`export default` in a route file"],
+    ["CommonJS exports", "const h = () => null;\nexports.POST = h;\n", "CommonJS `exports` in a route file"],
+    ["a syntax error", "export async function GET() {\n<<<<<<< HEAD\n", "does not parse"],
+  ])("refuses %s", (_label, src, message) => {
     const root = fixture();
-    writeRoute(root, "api/things/star", 'export * from "./handlers";\n');
+    writeRoute(root, "api/things/odd", src);
     const r = run(root);
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("api/things/star: `export *` in a route file — export methods by name");
+    expect(r.stderr).toContain(`api/things/odd: ${message}`);
   });
 
-  it("fails a method token no parsed export accounts for", () => {
+  it.each([
+    ["a method named only in comments", "// PUT is not supported here.\n/* nor DELETE */\n"],
+    ["a string with escaped quotes naming a method", 'const hint = "say \\"POST\\" to create";\n'],
+  ])("passes %s", (_label, extra) => {
     const root = fixture();
-    writeRoute(root, "api/things/odd", "export async function GET() {}\nexport default { POST: () => null };\n");
+    fs.appendFileSync(path.join(root, "src/app/api/things/route.ts"), extra);
     const r = run(root);
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain("api/things/odd: POST appears in the file but no export this checker parses declares it");
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
   });
+});
 
-  it("ignores a method named only in a comment", () => {
+describe("check-agent-coverage method names outside exports", () => {
+  it("passes a GET-only route that calls fetch with method POST", () => {
     const root = fixture();
-    fs.appendFileSync(path.join(root, "src/app/api/things/route.ts"), "// PUT is not supported here.\n/* nor DELETE */\n");
+    writeRoute(
+      root,
+      "api/things/proxy",
+      'export async function GET(req: Request) {\n  return fetch(req.url, { method: "POST" });\n}\n',
+    );
+    editManifest(root, (m) => {
+      m.routes["api/things/proxy:GET"] = { tools: ["find_things"] };
+    });
     const r = run(root);
     expect(r.stderr).toBe("");
     expect(r.code).toBe(0);
@@ -321,7 +357,7 @@ describe("check-agent-coverage export forms (each must be seen, or fail the file
 });
 
 describe("parseRoute", () => {
-  it("reads every export form, HEAD and OPTIONS included, and nothing from comments", () => {
+  it("reads every export form, HEAD and OPTIONS included, and nothing from comments or unexported code", () => {
     const src = [
       "export async function GET() {}",
       "export function PUT() {}",
@@ -331,11 +367,11 @@ describe("parseRoute", () => {
       "export async function HEAD() {}",
       "export async function OPTIONS() {}",
       "// export async function PATCH() {}",
+      "async function PATCH() {}",
     ].join("\n");
     expect(parseRoute(src)).toEqual({
-      methods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE"],
-      stray: [],
-      exportStar: false,
+      methods: ["GET", "PUT", "POST", "DELETE", "HEAD", "OPTIONS"],
+      problems: [],
     });
   });
 });

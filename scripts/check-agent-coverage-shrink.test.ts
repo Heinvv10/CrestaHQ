@@ -21,7 +21,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-function repo(base: string[] | null, head: string[]): string {
+function repo(base: string[] | null, head: string[], mainRef = "refs/remotes/origin/main"): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-coverage-shrink-"));
   dirs.push(dir);
   const git = (...args: string[]) =>
@@ -32,7 +32,7 @@ function repo(base: string[] | null, head: string[]): string {
   else fs.writeFileSync(path.join(dir, "README"), "base without FROZEN");
   git("add", "-A");
   git("commit", "-q", "-m", "base");
-  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("update-ref", mainRef, "HEAD");
   fs.writeFileSync(path.join(dir, FROZEN), JSON.stringify(head));
   return dir;
 }
@@ -67,16 +67,22 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(r.stdout).toContain("no key added against main");
   });
 
-  it("fails closed when the base ref was never fetched", () => {
-    const r = run(repo(["a:GET"], ["a:GET"]), { ...PR, GITHUB_BASE_REF: "release" });
+  it("fails closed when main was never fetched", () => {
+    const r = run(repo(["a:GET"], ["a:GET"], "refs/remotes/origin/release"), { ...PR, GITHUB_BASE_REF: "release" });
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("refs/remotes/origin/release is missing");
+    expect(r.stderr).toContain("refs/remotes/origin/main is missing");
   });
 
-  it("fails closed on a pull_request event without GITHUB_BASE_REF", () => {
-    const r = run(repo(["a:GET"], ["a:GET"]), { GITHUB_EVENT_NAME: "pull_request" });
+  it("compares against main even when the PR targets a pre-gate branch", () => {
+    const dir = repo(["a:GET"], ["a:GET", "c:PATCH"]);
+    // A branch cut before the gate: an empty tree, no FROZEN file at all.
+    const git = (args: string[], input?: string) =>
+      execFileSync("git", ["-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { input, encoding: "utf8" }).trim();
+    const preGate = git(["commit-tree", "-m", "pre-gate", git(["mktree"], "")]);
+    git(["update-ref", "refs/remotes/origin/pre-gate", preGate]);
+    const r = run(dir, { ...PR, GITHUB_BASE_REF: "pre-gate" });
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("GITHUB_BASE_REF is not set");
+    expect(r.stderr).toContain("  c:PATCH");
   });
 
   it("passes the PR that introduces the gate (base has no FROZEN file)", () => {
@@ -93,7 +99,8 @@ describe("check-agent-coverage-shrink CLI", () => {
 
   it("is wired into CI after a fetch of the base branch", () => {
     const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
-    expect(ci).toContain('refs/heads/$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF');
+    expect(ci).toContain('"+refs/heads/main:refs/remotes/origin/main"');
+    expect(ci).toContain("types: [opened, synchronize, reopened, edited]");
     expect(ci).toContain("node scripts/check-agent-coverage-shrink.mjs");
   });
 });

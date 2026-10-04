@@ -5,16 +5,22 @@
  * scripts/agent-coverage-frozen.json lists the routes that had no agent tool
  * when the coverage gate landed. A new route must get tool(s) or a written
  * exclusion, never a FROZEN line, so a pull request may delete keys from it
- * and may never add one. This compares the PR's list with the base branch's.
+ * and may never add one. This compares the PR's list with main's.
  *
- * Where it runs: the CI workflow, on `pull_request`, after fetching the base
- * branch into refs/remotes/origin/<base>. On a pull_request event it FAILS
- * CLOSED: no GITHUB_BASE_REF, or no fetched base ref, is an error, never a
- * pass. Outside a pull_request event (push to main, scripts/deploy-velo.sh,
- * a local run, a buyer's generated repo) there is no base to compare with,
- * so it says so and exits 0; check-agent-coverage.mjs still runs there.
- * When the base branch has no FROZEN file yet, the PR is the one introducing
- * the gate and passes.
+ * Always main, never GITHUB_BASE_REF: a PR based on a branch cut before the
+ * gate (whose list is missing or larger) would otherwise be compared against
+ * that branch and pass with keys main never had.
+ *
+ * Where it runs: the CI workflow, on `pull_request` (including `edited`, so
+ * retargeting a PR re-runs it), after fetching main into
+ * refs/remotes/origin/main. On a pull_request event it FAILS CLOSED when that
+ * ref is missing. Outside a pull_request event (push to main,
+ * scripts/deploy-velo.sh, a local run, a buyer's generated repo) it says so
+ * and exits 0; check-agent-coverage.mjs still runs there.
+ *
+ * Bootstrap: when main has no FROZEN file, the PR is the one introducing the
+ * gate (#345) and passes. Once that PR merges, main has the file, so this
+ * branch can never fire again for any PR.
  *
  * What it does not buy: `pull_request` runs the workflow and this script
  * from the PR's own head, so a PR that edits either can switch the check
@@ -51,8 +57,7 @@ if (isEntrypoint) {
     console.log("FROZEN shrink check: skipped, not a pull_request event (no base branch to compare with)");
     process.exit(0);
   }
-  const baseRef = process.env.GITHUB_BASE_REF;
-  if (!baseRef) fail("GITHUB_BASE_REF is not set on a pull_request event — refusing to pass without a base.");
+  const baseRef = "main";
   const ref = `refs/remotes/origin/${baseRef}`;
   try {
     git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
