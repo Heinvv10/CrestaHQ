@@ -1,15 +1,4 @@
-/**
- * FROZEN: the exact path:METHOD keys that were grandfathered when the agent
- * coverage gate landed (AGENCY_AGENT_API_PLAN.md, PR A1). Each existed then
- * and has no agent tool yet. scripts/check-agent-coverage.mjs fails when
- * scripts/agent-coverage.json's "grandfathered" holds a key missing here, or
- * this list holds one that is no longer grandfathered.
- *
- * THIS LIST ONLY SHRINKS. A burn-down PR deletes keys from here and from
- * "grandfathered" together. A new route is never added: give it tool(s) or
- * a written exclusion instead. Review refuses any added line in this file.
- */
-export const FROZEN = [
+[
   "api/agency/affiliates/[id]/status:POST",
   "api/agency/affiliates/dispute-alerts:PUT",
   "api/agency/affiliates/disputes/sync:POST",
@@ -73,17 +62,9 @@ export const FROZEN = [
   "api/agency/templates/[id]:DELETE",
   "api/agency/templates/[id]/push:POST",
   "api/agency/updates-modal-config:PATCH",
-  "api/automations/prospecting/announce-sweep:POST",
-  "api/automations/prospecting/apexgeo:POST",
-  "api/automations/prospecting/report:POST",
   "api/broadcasts/email/cancel:POST",
-  "api/broadcasts/email/fanout:POST",
-  "api/broadcasts/email/step:POST",
-  "api/comms/quiet-hours/release:POST",
   "api/comms/voice/campaign/cancel:POST",
-  "api/comms/voice/campaign/fanout:POST",
   "api/comms/voice/campaign/send:POST",
-  "api/comms/voice/campaign/step:POST",
   "api/comms/voice/test-call:POST",
   "api/comms/voice/test-call/end:POST",
   "api/comms/web-chat/send:POST",
@@ -119,23 +100,12 @@ export const FROZEN = [
   "api/contacts/[id]/link:POST",
   "api/contacts/bulk:POST",
   "api/contacts/import:POST",
-  "api/events/[token]/cancel:POST",
-  "api/events/[token]/pay:POST",
-  "api/events/[token]/reschedule:POST",
   "api/events/by-id/[id]:DELETE",
   "api/events/by-id/[id]/assign:POST",
   "api/events/by-id/[id]/google-sync:POST",
   "api/events/by-id/[id]/mark-paid:POST",
   "api/events/by-id/[id]/reschedule:POST",
-  "api/events/payment/expire-step:POST",
-  "api/events/reminder/step:POST",
   "api/forms/[id]:DELETE",
-  "api/forms/[id]/submit:POST",
-  "api/quotes/[token]/pay:POST",
-  "api/quotes/[token]/pdf:GET",
-  "api/quotes/[token]/respond:POST",
-  "api/scheduled-messages/fire:POST",
-  "api/social/publish/step:POST",
   "api/sub-accounts/[id]/agents/watchdog:GET",
   "api/sub-accounts/[id]/agents/watchdog:PATCH",
   "api/sub-accounts/[id]/ai-agent/channels/[channel]:GET",
@@ -266,8 +236,8 @@ export const FROZEN = [
   "api/sub-accounts/[id]/reputation/insights:GET",
   "api/sub-accounts/[id]/reputation/requests:GET",
   "api/sub-accounts/[id]/reputation/sentiment/run:POST",
-  "api/sub-accounts/[id]/resend:POST",
   "api/sub-accounts/[id]/resend:GET",
+  "api/sub-accounts/[id]/resend:POST",
   "api/sub-accounts/[id]/resend:DELETE",
   "api/sub-accounts/[id]/resend/verify:POST",
   "api/sub-accounts/[id]/smtp:GET",
@@ -333,14 +303,5 @@ export const FROZEN = [
   "api/sub-accounts/[id]/workflow-folders:POST",
   "api/sub-accounts/[id]/workflow-folders/[folderId]:PATCH",
   "api/sub-accounts/[id]/workflow-folders/[folderId]:DELETE",
-  "api/sub-accounts/[id]/workflows/[workflowId]/test:POST",
-  "api/workflows/step:POST",
-  "l/[token]:GET",
-  "pay/[token]:GET",
-  "pay/charge/[token]:GET",
-  "pay/link/[token]:GET",
-  "pay/link/[token]:POST",
-  "report/[shareId]/opengraph-image:GET",
-  "report/[shareId]/pdf:GET",
-  "rr/[token]:GET",
-];
+  "api/sub-accounts/[id]/workflows/[workflowId]/test:POST"
+]

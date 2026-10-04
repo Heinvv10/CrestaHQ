@@ -71,6 +71,18 @@ jobs:
       - name: Lint + tenancy check
         run: pnpm lint
 
+      # FROZEN (scripts/agent-coverage-frozen.json, routes grandfathered by the
+      # agent coverage gate) only shrinks: a PR may delete keys, never add one.
+      # Needs the base branch, which the depth-1 checkout does not have, so it
+      # is fetched here. The script fails closed on a pull_request event with
+      # no base, and skips on push (there is nothing to compare against).
+      - name: Agent coverage FROZEN only shrinks
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "+refs/heads/$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"
+          fi
+          node scripts/check-agent-coverage-shrink.mjs
+
       - name: Typecheck
         run: pnpm exec tsc --noEmit
 

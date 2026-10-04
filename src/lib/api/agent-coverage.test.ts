@@ -7,8 +7,9 @@ import manifest from "../../../scripts/agent-coverage.json";
  * scripts/check-agent-coverage.mjs proves every route is accounted for; it is
  * zero-dependency, so it cannot load the registry. This proves the other
  * half: every tool name a route maps to is a real capability an agent key
- * can call. Without it, `{ "tools": ["find_contact"] }` (one letter short)
- * would mark a route exposed that no agent can reach.
+ * can call, of the right kind. Without it, `{ "tools": ["find_contact"] }`
+ * (one letter short) would mark a route exposed that no agent can reach, and
+ * `PATCH → [get_contact]` would call a write covered by a read.
  *
  * Sub-account keys are the only agent key level today. Agency-level
  * callability (AGENCY_AGENT_CALLABLE) joins this predicate in A3a.
@@ -33,5 +34,18 @@ describe("agent coverage manifest tool names", () => {
     const cap = getCapability(tool);
     expect(cap, `no capability named ${tool}`).toBeDefined();
     expect(agentCallable(cap!), `${tool} is not callable by an agent key`).toBe(true);
+  });
+
+  const byRoute = Object.entries(manifest.routes as Record<string, { tools?: string[] }>).filter(
+    ([, entry]) => entry.tools !== undefined,
+  );
+
+  it.each(byRoute)("%s maps to tools of the method's kind", (key, entry) => {
+    const readonly = entry.tools!.map((t) => getCapability(t)?.readonly === true);
+    if (key.endsWith(":GET")) {
+      expect(readonly.every(Boolean), `a GET maps to read tools only: ${entry.tools!.join(", ")}`).toBe(true);
+    } else {
+      expect(readonly.some((r) => !r), `a write maps to at least one write tool: ${entry.tools!.join(", ")}`).toBe(true);
+    }
   });
 });

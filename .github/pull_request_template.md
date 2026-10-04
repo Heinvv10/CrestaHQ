@@ -15,8 +15,8 @@
 
 <!-- Every route added or changed: the agent tool name(s) that reach it, or its
      exclusion in scripts/agent-coverage.json (category + reason) and why.
-     FROZEN (scripts/agent-coverage-frozen.mjs) never grows: a new route is
-     never grandfathered. Reviewers refuse any added FROZEN line. -->
+     FROZEN (scripts/agent-coverage-frozen.json) never grows: a new route is
+     never FROZEN, and PR CI fails a PR that adds a key. -->
 
 ## Review
 

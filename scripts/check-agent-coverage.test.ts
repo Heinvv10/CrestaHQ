@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { methodsOf } from "./check-agent-coverage.mjs";
+import { parseRoute } from "./check-agent-coverage.mjs";
 
 /**
  * The checker runs as a CLI against a fixture root laid out like the repo
- * (src/app/, scripts/agent-coverage.json, scripts/agent-coverage-frozen.mjs).
+ * (src/app/, scripts/agent-coverage.json, scripts/agent-coverage-frozen.json).
  * Each case copies the passing base fixture to a temp dir, breaks ONE thing,
  * and asserts the exit code AND the message naming what broke: an exit code
  * alone would stay red if a different check happened to fire, hiding a
@@ -30,16 +30,15 @@ function fixture(): string {
   return dir;
 }
 
-function writeRoute(root: string, routePath: string, src: string) {
+function writeRoute(root: string, routePath: string, src: string, file = "route.ts") {
   const dir = path.join(root, "src", "app", routePath);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "route.ts"), src);
+  fs.writeFileSync(path.join(dir, file), src);
 }
 
 type Manifest = {
   trees: Record<string, unknown>;
   routes: Record<string, unknown>;
-  grandfathered: string[];
 };
 
 function editManifest(root: string, edit: (m: Manifest) => void) {
@@ -47,6 +46,12 @@ function editManifest(root: string, edit: (m: Manifest) => void) {
   const m = JSON.parse(fs.readFileSync(file, "utf8")) as Manifest;
   edit(m);
   fs.writeFileSync(file, JSON.stringify(m, null, 2));
+}
+
+function editFrozen(root: string, edit: (f: unknown[]) => unknown) {
+  const file = path.join(root, "scripts", "agent-coverage-frozen.json");
+  const f = JSON.parse(fs.readFileSync(file, "utf8")) as unknown[];
+  fs.writeFileSync(file, JSON.stringify(edit(f)));
 }
 
 function run(root?: string) {
@@ -61,10 +66,10 @@ describe("check-agent-coverage CLI", () => {
     const r = run(fixture());
     expect(r.stderr).toBe("");
     expect(r.code).toBe(0);
-    expect(r.stdout).toContain("4 path:METHOD keys accounted for");
+    expect(r.stdout).toContain("3 route files accounted for");
   });
 
-  it("fails an unlisted path:POST inside a grandfathered tree, naming it", () => {
+  it("fails an unlisted path:POST inside a tree holding FROZEN routes, naming it", () => {
     const root = fixture();
     writeRoute(root, "api/things/new", POST_ROUTE);
     const r = run(root);
@@ -72,24 +77,30 @@ describe("check-agent-coverage CLI", () => {
     expect(r.stderr).toContain("api/things/new:POST: unlisted");
   });
 
-  it("fails a new route added to grandfathered (it is not in FROZEN)", () => {
-    const root = fixture();
-    writeRoute(root, "api/things/new", POST_ROUTE);
-    editManifest(root, (m) => m.grandfathered.push("api/things/new:POST"));
-    const r = run(root);
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain("api/things/new:POST: grandfathered but not in FROZEN");
-  });
-
-  it("fails a FROZEN entry that is no longer grandfathered", () => {
+  it("fails a key both mapped in routes and FROZEN", () => {
     const root = fixture();
     editManifest(root, (m) => {
-      m.grandfathered = [];
       m.routes["api/things/[id]:PATCH"] = { tools: ["update_thing"] };
     });
     const r = run(root);
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("api/things/[id]:PATCH: in FROZEN but no longer grandfathered");
+    expect(r.stderr).toContain('api/things/[id]:PATCH: in both "routes" and FROZEN');
+  });
+
+  it("fails a FROZEN key listed twice", () => {
+    const root = fixture();
+    editFrozen(root, (f) => [...f, ...f]);
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("FROZEN lists a key twice");
+  });
+
+  it("fails a FROZEN file that is not a list", () => {
+    const root = fixture();
+    editFrozen(root, () => ({ "api/things/[id]:PATCH": true }));
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("agent-coverage-frozen.json must be a JSON array");
   });
 
   it("fails a listed route whose method is gone", () => {
@@ -103,12 +114,12 @@ describe("check-agent-coverage CLI", () => {
     expect(r.stderr).toContain("api/things:POST: listed in \"routes\" but no in-scope route serves it");
   });
 
-  it("fails a grandfathered route that is gone", () => {
+  it("fails a FROZEN route that is gone", () => {
     const root = fixture();
     fs.rmSync(path.join(root, "src/app/api/things/[id]"), { recursive: true });
     const r = run(root);
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("api/things/[id]:PATCH: grandfathered but no in-scope route serves it");
+    expect(r.stderr).toContain("api/things/[id]:PATCH: in FROZEN but no in-scope route serves it");
   });
 
   it("fails an exclusion without a category", () => {
@@ -162,14 +173,12 @@ describe("check-agent-coverage CLI", () => {
     expect(r.stderr).toContain('api/things:GET: "tools" must be a non-empty list');
   });
 
-  it("fails a grandfathered glob", () => {
+  it("fails a FROZEN glob", () => {
     const root = fixture();
-    editManifest(root, (m) => {
-      m.grandfathered = ["api/things/*:PATCH"];
-    });
+    editFrozen(root, () => ["api/things/*:PATCH"]);
     const r = run(root);
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("api/things/*:PATCH: \"grandfathered\" takes exact path:METHOD keys, never a glob");
+    expect(r.stderr).toContain("api/things/*:PATCH: FROZEN takes exact path:METHOD keys, never a glob");
   });
 
   it("fails a new top-level tree, naming it", () => {
@@ -188,6 +197,15 @@ describe("check-agent-coverage CLI", () => {
     expect(r.stderr).toContain("api/things/odd: route file exports no GET/POST/PUT/PATCH/DELETE handler");
   });
 
+  it("still runs when invoked through a symlinked path", () => {
+    const root = fixture();
+    const link = path.join(root, "linked-check.mjs");
+    fs.symlinkSync(SCRIPT, link);
+    const r = spawnSync(process.execPath, [link, root], { encoding: "utf8" });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("3 route files accounted for");
+  });
+
   it("passes the real tree", () => {
     const r = run();
     expect(r.stderr).toBe("");
@@ -202,8 +220,108 @@ describe("check-agent-coverage CLI", () => {
   });
 });
 
-describe("methodsOf", () => {
-  it("reads every export form of the five keyed methods, not HEAD or OPTIONS", () => {
+describe("check-agent-coverage manifest shape guards", () => {
+  it.each([
+    ["both scope and exclude", { scope: true, exclude: { category: "internal", reason: "x" } }],
+    ["neither", {}],
+  ])("fails a tree with %s", (_label, entry) => {
+    const root = fixture();
+    editManifest(root, (m) => {
+      m.trees["api/things"] = entry;
+    });
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('tree api/things: must be exactly one of { "scope": true } or { "exclude": … }');
+  });
+
+  it("fails a tree no route lives under", () => {
+    const root = fixture();
+    editManifest(root, (m) => {
+      m.trees["api/gone"] = { scope: true };
+    });
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("tree api/gone: no route lives under it any more");
+  });
+
+  it.each([
+    ["both tools and exclude", { tools: ["find_things"], exclude: { category: "internal", reason: "x" } }],
+    ["neither tools nor exclude", {}],
+  ])("fails a route with %s", (_label, entry) => {
+    const root = fixture();
+    editManifest(root, (m) => {
+      m.routes["api/things:GET"] = entry;
+    });
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('api/things:GET: must be exactly one of { "tools": […] } or { "exclude": … }');
+  });
+
+  it.each([
+    ["a non-string name", [42]],
+    ["a blank name", ["find_things", "  "]],
+    ["not an array", "find_things"],
+  ])("fails tools holding %s", (_label, tools) => {
+    const root = fixture();
+    editManifest(root, (m) => {
+      m.routes["api/things:GET"] = { tools };
+    });
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('api/things:GET: "tools" must be a non-empty list of tool names');
+  });
+
+  it("fails a tree named like an Object.prototype member", () => {
+    const root = fixture();
+    writeRoute(root, "constructor", POST_ROUTE);
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('new top-level tree "constructor"');
+  });
+});
+
+describe("check-agent-coverage export forms (each must be seen, or fail the file)", () => {
+  it.each([
+    ["a .jsx route file", "export async function POST() {}\n", "route.jsx"],
+    ["a destructured export", "const handlers = { POST: () => null };\nexport const { POST } = handlers;\n", "route.ts"],
+    ["an indented export", "  export async function POST() {}\n", "route.ts"],
+    ["a comment inside the export", "export /* the handler */ async function POST() {}\n", "route.ts"],
+    ["a quoted export name", "const h = () => null;\nexport { h as \"POST\" };\n", "route.ts"],
+  ])("keys POST from %s", (_label, src, file) => {
+    const root = fixture();
+    writeRoute(root, "api/things/form", src, file);
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("api/things/form:POST: unlisted");
+  });
+
+  it("refuses export * in a route file", () => {
+    const root = fixture();
+    writeRoute(root, "api/things/star", 'export * from "./handlers";\n');
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("api/things/star: `export *` in a route file — export methods by name");
+  });
+
+  it("fails a method token no parsed export accounts for", () => {
+    const root = fixture();
+    writeRoute(root, "api/things/odd", "export async function GET() {}\nexport default { POST: () => null };\n");
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("api/things/odd: POST appears in the file but no export this checker parses declares it");
+  });
+
+  it("ignores a method named only in a comment", () => {
+    const root = fixture();
+    fs.appendFileSync(path.join(root, "src/app/api/things/route.ts"), "// PUT is not supported here.\n/* nor DELETE */\n");
+    const r = run(root);
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+  });
+});
+
+describe("parseRoute", () => {
+  it("reads every export form, HEAD and OPTIONS included, and nothing from comments", () => {
     const src = [
       "export async function GET() {}",
       "export function PUT() {}",
@@ -214,6 +332,10 @@ describe("methodsOf", () => {
       "export async function OPTIONS() {}",
       "// export async function PATCH() {}",
     ].join("\n");
-    expect(methodsOf(src)).toEqual(["GET", "PUT", "POST", "DELETE"]);
+    expect(parseRoute(src)).toEqual({
+      methods: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE"],
+      stray: [],
+      exportStar: false,
+    });
   });
 });

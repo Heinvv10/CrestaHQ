@@ -9,7 +9,7 @@
     "api/affiliate": {
       "exclude": {
         "category": "human-only",
-        "reason": "The affiliate portal's own login, logout and payout settings; an affiliate's session, not an agency's."
+        "reason": "The affiliate portal's own login, logout and payout settings, plus the public referral-click tracker (track); an affiliate's session or an anonymous visitor, never an agency."
       }
     },
     "api/agency": {
@@ -230,10 +230,40 @@
         "reason": "Agency settings including the Agency Assistant switch (and, from A2, the agent kill switch); a key never flips its own switch."
       }
     },
+    "api/automations/prospecting/announce-sweep:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/automations/prospecting/apexgeo:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/automations/prospecting/report:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/broadcasts/email/fanout:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
     "api/broadcasts/email/send:POST": {
       "tools": [
         "create_broadcast"
       ]
+    },
+    "api/broadcasts/email/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
     },
     "api/comms/email/send:POST": {
       "tools": [
@@ -244,6 +274,12 @@
       "tools": [
         "send_message"
       ]
+    },
+    "api/comms/quiet-hours/release:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
     },
     "api/comms/review-request/send:POST": {
       "tools": [
@@ -259,6 +295,18 @@
       "tools": [
         "start_voice_call"
       ]
+    },
+    "api/comms/voice/campaign/fanout:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/comms/voice/campaign/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
     },
     "api/comms/whatsapp/send:POST": {
       "tools": [
@@ -280,17 +328,17 @@
         "create_contact"
       ]
     },
+    "api/contacts/[id]:GET": {
+      "tools": [
+        "get_contact"
+      ]
+    },
     "api/contacts/[id]:PATCH": {
       "tools": [
         "update_contact",
         "add_tags",
         "remove_tags",
         "update_contact_channels"
-      ]
-    },
-    "api/contacts/[id]:GET": {
-      "tools": [
-        "get_contact"
       ]
     },
     "api/contacts/[id]:DELETE": {
@@ -320,10 +368,76 @@
         "create_event"
       ]
     },
+    "api/events/[token]/cancel:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/events/[token]/pay:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/events/[token]/reschedule:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
     "api/events/by-id/[id]/mark-status:POST": {
       "tools": [
         "set_event_status"
       ]
+    },
+    "api/events/payment/expire-step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/events/reminder/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/forms/[id]/submit:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Public form submission from a visitor's browser, guarded by the spam guard; no session or key."
+      }
+    },
+    "api/quotes/[token]/pay:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/quotes/[token]/pdf:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/quotes/[token]/respond:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/scheduled-messages/fire:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/social/publish/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
     },
     "api/sub-accounts/[id]/agent-proposals:GET": {
       "exclude": {
@@ -614,341 +728,60 @@
       "tools": [
         "complete_task"
       ]
+    },
+    "api/workflows/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "l/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/charge/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/link/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/link/[token]:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "report/[shareId]/opengraph-image:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "report/[shareId]/pdf:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "rr/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
     }
-  },
-  "grandfathered": [
-    "api/agency/affiliates/[id]/status:POST",
-    "api/agency/affiliates/dispute-alerts:PUT",
-    "api/agency/affiliates/disputes/sync:POST",
-    "api/agency/affiliates/manual-purchase:POST",
-    "api/agency/affiliates/payouts/mark-paid:POST",
-    "api/agency/affiliates/recheck-repo-access:POST",
-    "api/agency/ai-config:GET",
-    "api/agency/ai-kb:GET",
-    "api/agency/ai-kb:POST",
-    "api/agency/ai-kb/apply:POST",
-    "api/agency/ai-models:GET",
-    "api/agency/ai-models:PUT",
-    "api/agency/app-icon:POST",
-    "api/agency/app-icon:DELETE",
-    "api/agency/billing-attention:GET",
-    "api/agency/billing-attention:POST",
-    "api/agency/buyer-map-config:PATCH",
-    "api/agency/deal-config:PATCH",
-    "api/agency/deployment-config:GET",
-    "api/agency/email-blocklist:POST",
-    "api/agency/email-blocklist:DELETE",
-    "api/agency/email-purchasers:POST",
-    "api/agency/exit-intent-config:PATCH",
-    "api/agency/health:GET",
-    "api/agency/messaging-config:GET",
-    "api/agency/plans:GET",
-    "api/agency/plans:POST",
-    "api/agency/plans/[planId]:PATCH",
-    "api/agency/plans/[planId]:DELETE",
-    "api/agency/refresh-gitpage-status:POST",
-    "api/agency/setup/config:GET",
-    "api/agency/setup/config:PATCH",
-    "api/agency/setup/env:POST",
-    "api/agency/setup/export:GET",
-    "api/agency/setup/guide:GET",
-    "api/agency/setup/redeploy:POST",
-    "api/agency/setup/status:GET",
-    "api/agency/setup/summary:GET",
-    "api/agency/snapshots:GET",
-    "api/agency/snapshots:POST",
-    "api/agency/snapshots/[snapshotId]/shares:POST",
-    "api/agency/snapshots/[snapshotId]/shares/[shareId]:DELETE",
-    "api/agency/snapshots/import:POST",
-    "api/agency/snapshots/import-file:POST",
-    "api/agency/snapshots/shares:GET",
-    "api/agency/sub-accounts:GET",
-    "api/agency/sub-accounts:POST",
-    "api/agency/sub-accounts/[id]:PATCH",
-    "api/agency/sub-accounts/[id]:DELETE",
-    "api/agency/sub-accounts/[id]/apply-snapshot:POST",
-    "api/agency/sub-accounts/[id]/billing:PATCH",
-    "api/agency/sub-accounts/[id]/billing/charges:GET",
-    "api/agency/sub-accounts/[id]/billing/charges:POST",
-    "api/agency/sub-accounts/[id]/billing/charges/[chargeId]:PATCH",
-    "api/agency/sub-accounts/[id]/billing/charges/[chargeId]:DELETE",
-    "api/agency/sub-accounts/[id]/feature-gates:PATCH",
-    "api/agency/sub-accounts/[id]/usage:GET",
-    "api/agency/templates:GET",
-    "api/agency/templates:POST",
-    "api/agency/templates/[id]:PATCH",
-    "api/agency/templates/[id]:DELETE",
-    "api/agency/templates/[id]/push:POST",
-    "api/agency/updates-modal-config:PATCH",
-    "api/automations/prospecting/announce-sweep:POST",
-    "api/automations/prospecting/apexgeo:POST",
-    "api/automations/prospecting/report:POST",
-    "api/broadcasts/email/cancel:POST",
-    "api/broadcasts/email/fanout:POST",
-    "api/broadcasts/email/step:POST",
-    "api/comms/quiet-hours/release:POST",
-    "api/comms/voice/campaign/cancel:POST",
-    "api/comms/voice/campaign/fanout:POST",
-    "api/comms/voice/campaign/send:POST",
-    "api/comms/voice/campaign/step:POST",
-    "api/comms/voice/test-call:POST",
-    "api/comms/voice/test-call/end:POST",
-    "api/comms/web-chat/send:POST",
-    "api/comms/whatsapp/media/[contactId]/[messageId]:GET",
-    "api/comms/whatsapp/upload-url:GET",
-    "api/comms/whatsapp/upload-url:POST",
-    "api/community/[saId]/[groupId]/courses/[courseId]/lessons/[lessonId]/complete:POST",
-    "api/community/[saId]/[groupId]/join:POST",
-    "api/community/[saId]/[groupId]/members/[memberId]:PATCH",
-    "api/community/[saId]/[groupId]/posts:POST",
-    "api/community/[saId]/[groupId]/posts/[postId]:PATCH",
-    "api/community/[saId]/[groupId]/posts/[postId]:DELETE",
-    "api/community/[saId]/[groupId]/posts/[postId]/comments:POST",
-    "api/community/[saId]/[groupId]/posts/[postId]/comments/[commentId]:DELETE",
-    "api/community/[saId]/[groupId]/posts/[postId]/comments/[commentId]/like:POST",
-    "api/community/[saId]/[groupId]/posts/[postId]/like:POST",
-    "api/community/[saId]/[groupId]/purchase:POST",
-    "api/community/[saId]/[groupId]/purchase/[purchaseId]/pay:POST",
-    "api/community/[saId]/avatar:POST",
-    "api/community/[saId]/dm/block:POST",
-    "api/community/[saId]/dm/inbox:GET",
-    "api/community/[saId]/dm/members:GET",
-    "api/community/[saId]/dm/send:POST",
-    "api/community/[saId]/dm/threads/[threadId]/messages:GET",
-    "api/community/[saId]/dm/threads/[threadId]/read:POST",
-    "api/community/[saId]/dm/unread:GET",
-    "api/community/[saId]/login:POST",
-    "api/community/[saId]/login/verify:GET",
-    "api/community/[saId]/login/verify:POST",
-    "api/community/[saId]/logout:POST",
-    "api/community/[saId]/member-card/[memberId]:GET",
-    "api/community/[saId]/profile:PATCH",
-    "api/contacts/[id]/link:POST",
-    "api/contacts/bulk:POST",
-    "api/contacts/import:POST",
-    "api/events/[token]/cancel:POST",
-    "api/events/[token]/pay:POST",
-    "api/events/[token]/reschedule:POST",
-    "api/events/by-id/[id]:DELETE",
-    "api/events/by-id/[id]/assign:POST",
-    "api/events/by-id/[id]/google-sync:POST",
-    "api/events/by-id/[id]/mark-paid:POST",
-    "api/events/by-id/[id]/reschedule:POST",
-    "api/events/payment/expire-step:POST",
-    "api/events/reminder/step:POST",
-    "api/forms/[id]:DELETE",
-    "api/forms/[id]/submit:POST",
-    "api/quotes/[token]/pay:POST",
-    "api/quotes/[token]/pdf:GET",
-    "api/quotes/[token]/respond:POST",
-    "api/scheduled-messages/fire:POST",
-    "api/social/publish/step:POST",
-    "api/sub-accounts/[id]/agents/watchdog:GET",
-    "api/sub-accounts/[id]/agents/watchdog:PATCH",
-    "api/sub-accounts/[id]/ai-agent/channels/[channel]:GET",
-    "api/sub-accounts/[id]/ai-agent/channels/[channel]:PATCH",
-    "api/sub-accounts/[id]/ai-agent/models:GET",
-    "api/sub-accounts/[id]/ai-agent/profile:GET",
-    "api/sub-accounts/[id]/ai-agent/profile:PATCH",
-    "api/sub-accounts/[id]/ai-agent/profile/refresh-kb:POST",
-    "api/sub-accounts/[id]/ai-agent/test:POST",
-    "api/sub-accounts/[id]/apexgeo-connection:PUT",
-    "api/sub-accounts/[id]/apexgeo-connection:DELETE",
-    "api/sub-accounts/[id]/apexgeo-connection/test:POST",
-    "api/sub-accounts/[id]/billing/checkout:POST",
-    "api/sub-accounts/[id]/billing/portal:POST",
-    "api/sub-accounts/[id]/booking-pages/[slug]/duplicate:POST",
-    "api/sub-accounts/[id]/branding:PATCH",
-    "api/sub-accounts/[id]/calendar-feed-url:GET",
-    "api/sub-accounts/[id]/calendar.ics:GET",
-    "api/sub-accounts/[id]/checkout-pages:POST",
-    "api/sub-accounts/[id]/checkout-pages/[pageId]:PATCH",
-    "api/sub-accounts/[id]/checkout-pages/[pageId]:DELETE",
-    "api/sub-accounts/[id]/community:POST",
-    "api/sub-accounts/[id]/community/[groupId]:PATCH",
-    "api/sub-accounts/[id]/community/[groupId]:DELETE",
-    "api/sub-accounts/[id]/community/[groupId]/courses:POST",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]:PATCH",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]:DELETE",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]/lessons:POST",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]/lessons/[lessonId]:PATCH",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]/lessons/[lessonId]:DELETE",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]/sections:POST",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]/sections/[sectionId]:PATCH",
-    "api/sub-accounts/[id]/community/[groupId]/courses/[courseId]/sections/[sectionId]:DELETE",
-    "api/sub-accounts/[id]/community/[groupId]/memberships/[memberId]:PATCH",
-    "api/sub-accounts/[id]/community/[groupId]/purchases/[purchaseId]/mark-paid:POST",
-    "api/sub-accounts/[id]/contacts/[contactId]/notes/[noteId]/mention-tasks:POST",
-    "api/sub-accounts/[id]/contacts/[contactId]/territory:PATCH",
-    "api/sub-accounts/[id]/email-suppressions:GET",
-    "api/sub-accounts/[id]/email-suppressions:POST",
-    "api/sub-accounts/[id]/email-suppressions:DELETE",
-    "api/sub-accounts/[id]/funnels:POST",
-    "api/sub-accounts/[id]/funnels/[funnelId]:PATCH",
-    "api/sub-accounts/[id]/funnels/[funnelId]:DELETE",
-    "api/sub-accounts/[id]/funnels/draft:POST",
-    "api/sub-accounts/[id]/funnels/edit-draft:POST",
-    "api/sub-accounts/[id]/funnels/stock-images:GET",
-    "api/sub-accounts/[id]/funnels/subdomain-check:GET",
-    "api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/auto-reply/dismiss:POST",
-    "api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/draft:POST",
-    "api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply:POST",
-    "api/sub-accounts/[id]/gbp/reviews/[reviewDocId]/reply:DELETE",
-    "api/sub-accounts/[id]/gbp/sync:POST",
-    "api/sub-accounts/[id]/gbp/widget:GET",
-    "api/sub-accounts/[id]/gbp/widget:PUT",
-    "api/sub-accounts/[id]/gbp/widget:DELETE",
-    "api/sub-accounts/[id]/gbp/widget/rotate:POST",
-    "api/sub-accounts/[id]/get-leads/import:POST",
-    "api/sub-accounts/[id]/get-leads/search:POST",
-    "api/sub-accounts/[id]/get-leads/types:PUT",
-    "api/sub-accounts/[id]/google:DELETE",
-    "api/sub-accounts/[id]/google-calendar:GET",
-    "api/sub-accounts/[id]/google-calendar:DELETE",
-    "api/sub-accounts/[id]/google-calendar/connect:GET",
-    "api/sub-accounts/[id]/google-review:POST",
-    "api/sub-accounts/[id]/google-review:PATCH",
-    "api/sub-accounts/[id]/google-review:DELETE",
-    "api/sub-accounts/[id]/google-review/adopt-listing-url:POST",
-    "api/sub-accounts/[id]/google/connect:GET",
-    "api/sub-accounts/[id]/google/extra-listings:PUT",
-    "api/sub-accounts/[id]/google/listing:PUT",
-    "api/sub-accounts/[id]/google/listing:DELETE",
-    "api/sub-accounts/[id]/google/locations:GET",
-    "api/sub-accounts/[id]/google/status:GET",
-    "api/sub-accounts/[id]/import/ghl/connect:POST",
-    "api/sub-accounts/[id]/import/ghl/connect:DELETE",
-    "api/sub-accounts/[id]/import/ghl/preview:GET",
-    "api/sub-accounts/[id]/import/ghl/start:POST",
-    "api/sub-accounts/[id]/import/jobs:GET",
-    "api/sub-accounts/[id]/import/jobs:POST",
-    "api/sub-accounts/[id]/import/jobs/[jobId]/chunk:POST",
-    "api/sub-accounts/[id]/import/jobs/[jobId]/finish:POST",
-    "api/sub-accounts/[id]/invite:POST",
-    "api/sub-accounts/[id]/invite/[inviteId]:DELETE",
-    "api/sub-accounts/[id]/launchpad:GET",
-    "api/sub-accounts/[id]/logs/api-requests:GET",
-    "api/sub-accounts/[id]/logs/webhook-deliveries:GET",
-    "api/sub-accounts/[id]/mailbox:GET",
-    "api/sub-accounts/[id]/mailbox:POST",
-    "api/sub-accounts/[id]/mailbox:DELETE",
-    "api/sub-accounts/[id]/mailbox/sync:POST",
-    "api/sub-accounts/[id]/media:POST",
-    "api/sub-accounts/[id]/media/[mediaId]:PATCH",
-    "api/sub-accounts/[id]/media/[mediaId]:DELETE",
-    "api/sub-accounts/[id]/media/folders:POST",
-    "api/sub-accounts/[id]/media/folders/[folderId]:PATCH",
-    "api/sub-accounts/[id]/media/folders/[folderId]:DELETE",
-    "api/sub-accounts/[id]/members/[uid]:PATCH",
-    "api/sub-accounts/[id]/members/[uid]:DELETE",
-    "api/sub-accounts/[id]/meta:DELETE",
-    "api/sub-accounts/[id]/meta/connect:GET",
-    "api/sub-accounts/[id]/missed-call:POST",
-    "api/sub-accounts/[id]/missed-call:DELETE",
-    "api/sub-accounts/[id]/order-attention:GET",
-    "api/sub-accounts/[id]/order-attention:POST",
-    "api/sub-accounts/[id]/payment-links:POST",
-    "api/sub-accounts/[id]/payment-links/[linkId]:PATCH",
-    "api/sub-accounts/[id]/payment-mandates/[mandateId]/revoke:POST",
-    "api/sub-accounts/[id]/paypal-integration:POST",
-    "api/sub-accounts/[id]/paypal-integration:DELETE",
-    "api/sub-accounts/[id]/paystack-connection:POST",
-    "api/sub-accounts/[id]/paystack-connection:DELETE",
-    "api/sub-accounts/[id]/prospecting/lists:GET",
-    "api/sub-accounts/[id]/prospecting/lists:POST",
-    "api/sub-accounts/[id]/prospecting/reports:GET",
-    "api/sub-accounts/[id]/prospecting/reports:POST",
-    "api/sub-accounts/[id]/prospecting/reports/[reportId]:GET",
-    "api/sub-accounts/[id]/prospecting/reports/[reportId]/share:POST",
-    "api/sub-accounts/[id]/prospecting/reports/[reportId]/share:DELETE",
-    "api/sub-accounts/[id]/quotes/[quoteId]/convert-to-invoice:POST",
-    "api/sub-accounts/[id]/quotes/[quoteId]/pdf:GET",
-    "api/sub-accounts/[id]/quotes/[quoteId]/recheck-card-charge:POST",
-    "api/sub-accounts/[id]/recurring-invoices/[recurringId]:GET",
-    "api/sub-accounts/[id]/reports/stage-history:GET",
-    "api/sub-accounts/[id]/reputation/ai-settings:GET",
-    "api/sub-accounts/[id]/reputation/ai-settings:PUT",
-    "api/sub-accounts/[id]/reputation/auto-reply:GET",
-    "api/sub-accounts/[id]/reputation/auto-reply:PUT",
-    "api/sub-accounts/[id]/reputation/insights:GET",
-    "api/sub-accounts/[id]/reputation/requests:GET",
-    "api/sub-accounts/[id]/reputation/sentiment/run:POST",
-    "api/sub-accounts/[id]/resend:POST",
-    "api/sub-accounts/[id]/resend:GET",
-    "api/sub-accounts/[id]/resend:DELETE",
-    "api/sub-accounts/[id]/resend/verify:POST",
-    "api/sub-accounts/[id]/smtp:GET",
-    "api/sub-accounts/[id]/smtp:POST",
-    "api/sub-accounts/[id]/smtp:DELETE",
-    "api/sub-accounts/[id]/smtp/test:POST",
-    "api/sub-accounts/[id]/stripe-connection:POST",
-    "api/sub-accounts/[id]/stripe-connection:DELETE",
-    "api/sub-accounts/[id]/territories:POST",
-    "api/sub-accounts/[id]/territories/[territoryId]:PATCH",
-    "api/sub-accounts/[id]/territories/[territoryId]:DELETE",
-    "api/sub-accounts/[id]/territory-scoping:PATCH",
-    "api/sub-accounts/[id]/tracked-links:GET",
-    "api/sub-accounts/[id]/tracked-links:POST",
-    "api/sub-accounts/[id]/tracked-links/[linkId]:PATCH",
-    "api/sub-accounts/[id]/tracked-links/[linkId]:DELETE",
-    "api/sub-accounts/[id]/twilio:POST",
-    "api/sub-accounts/[id]/twilio:DELETE",
-    "api/sub-accounts/[id]/twilio/whatsapp:POST",
-    "api/sub-accounts/[id]/twilio/whatsapp:DELETE",
-    "api/sub-accounts/[id]/webhook-events/[eventId]/redeliver:POST",
-    "api/sub-accounts/[id]/webhook-subscriptions:POST",
-    "api/sub-accounts/[id]/webhook-subscriptions/[subId]:GET",
-    "api/sub-accounts/[id]/webhook-subscriptions/[subId]:PATCH",
-    "api/sub-accounts/[id]/webhook-subscriptions/[subId]:DELETE",
-    "api/sub-accounts/[id]/webhook-subscriptions/[subId]/test:POST",
-    "api/sub-accounts/[id]/webinar1-connection:POST",
-    "api/sub-accounts/[id]/webinar1-connection:DELETE",
-    "api/sub-accounts/[id]/webinar1/register:POST",
-    "api/sub-accounts/[id]/webinar1/videos:GET",
-    "api/sub-accounts/[id]/webinar1/webinars:GET",
-    "api/sub-accounts/[id]/webinar1/webinars:POST",
-    "api/sub-accounts/[id]/website:POST",
-    "api/sub-accounts/[id]/website/[siteId]:DELETE",
-    "api/sub-accounts/[id]/website/[siteId]/build:POST",
-    "api/sub-accounts/[id]/website/[siteId]/poll:POST",
-    "api/sub-accounts/[id]/website/[siteId]/poll-now:POST",
-    "api/sub-accounts/[id]/whatsapp-bridge:DELETE",
-    "api/sub-accounts/[id]/whatsapp-bridge-connection:POST",
-    "api/sub-accounts/[id]/whatsapp-bridge-connection:DELETE",
-    "api/sub-accounts/[id]/whatsapp-bridge/pairing:GET",
-    "api/sub-accounts/[id]/whatsapp-bridge/provision:POST",
-    "api/sub-accounts/[id]/whatsapp-bridge/qr:GET",
-    "api/sub-accounts/[id]/whatsapp-bridge/restart:POST",
-    "api/sub-accounts/[id]/whatsapp-bridge/risk-ack:POST",
-    "api/sub-accounts/[id]/whatsapp-cloud-connection:POST",
-    "api/sub-accounts/[id]/whatsapp-cloud-connection:DELETE",
-    "api/sub-accounts/[id]/whatsapp-senders:GET",
-    "api/sub-accounts/[id]/whatsapp-senders:POST",
-    "api/sub-accounts/[id]/whatsapp-senders:PATCH",
-    "api/sub-accounts/[id]/whatsapp-senders:DELETE",
-    "api/sub-accounts/[id]/whatsapp-templates/[templateId]:PATCH",
-    "api/sub-accounts/[id]/whatsapp-templates/[templateId]:DELETE",
-    "api/sub-accounts/[id]/whatsapp-templates/poll:POST",
-    "api/sub-accounts/[id]/whatsapp/message-links:GET",
-    "api/sub-accounts/[id]/whatsapp/message-links:POST",
-    "api/sub-accounts/[id]/whatsapp/message-links/[code]:DELETE",
-    "api/sub-accounts/[id]/whatsapp/profile:GET",
-    "api/sub-accounts/[id]/whatsapp/profile:PUT",
-    "api/sub-accounts/[id]/whatsapp/profile/photo:POST",
-    "api/sub-accounts/[id]/whatsapp/status:GET",
-    "api/sub-accounts/[id]/workflow-folders:GET",
-    "api/sub-accounts/[id]/workflow-folders:POST",
-    "api/sub-accounts/[id]/workflow-folders/[folderId]:PATCH",
-    "api/sub-accounts/[id]/workflow-folders/[folderId]:DELETE",
-    "api/sub-accounts/[id]/workflows/[workflowId]/test:POST",
-    "api/workflows/step:POST",
-    "l/[token]:GET",
-    "pay/[token]:GET",
-    "pay/charge/[token]:GET",
-    "pay/link/[token]:GET",
-    "pay/link/[token]:POST",
-    "report/[shareId]/opengraph-image:GET",
-    "report/[shareId]/pdf:GET",
-    "rr/[token]:GET"
-  ]
+  }
 }

@@ -1,0 +1,106 @@
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { addedKeys } from "./check-agent-coverage-shrink.mjs";
+
+/**
+ * Runs the shrink check against a throwaway git repo: a base commit is
+ * published as refs/remotes/origin/main (what CI's fetch step produces), then
+ * the working tree's FROZEN list is edited. The GITHUB_* variables are set
+ * per case, never inherited, so the suite behaves the same inside CI.
+ */
+
+const SCRIPT = path.join(__dirname, "check-agent-coverage-shrink.mjs");
+const FROZEN = "scripts/agent-coverage-frozen.json";
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+});
+
+function repo(base: string[] | null, head: string[]): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-coverage-shrink-"));
+  dirs.push(dir);
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", dir, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { stdio: "pipe" });
+  git("init", "-q");
+  fs.mkdirSync(path.join(dir, "scripts"));
+  if (base) fs.writeFileSync(path.join(dir, FROZEN), JSON.stringify(base));
+  else fs.writeFileSync(path.join(dir, "README"), "base without FROZEN");
+  git("add", "-A");
+  git("commit", "-q", "-m", "base");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  fs.writeFileSync(path.join(dir, FROZEN), JSON.stringify(head));
+  return dir;
+}
+
+function run(dir: string, env: Record<string, string>) {
+  const full = { ...process.env };
+  for (const k of Object.keys(full)) if (k.startsWith("GITHUB_")) delete full[k];
+  const r = spawnSync(process.execPath, [SCRIPT, dir], { encoding: "utf8", env: { ...full, ...env } });
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+const PR = { GITHUB_EVENT_NAME: "pull_request", GITHUB_BASE_REF: "main" };
+
+describe("check-agent-coverage-shrink CLI", () => {
+  it("fails a pull request that adds a FROZEN key, naming it", () => {
+    const r = run(repo(["a:GET", "b:POST"], ["a:GET", "b:POST", "c:PATCH"]), PR);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("ADDED");
+    expect(r.stderr).toContain("  c:PATCH");
+  });
+
+  it("fails a key swapped in for a removed one", () => {
+    const r = run(repo(["a:GET", "b:POST"], ["a:GET", "c:PATCH"]), PR);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("  c:PATCH");
+  });
+
+  it("passes a pull request that only removes keys", () => {
+    const r = run(repo(["a:GET", "b:POST"], ["a:GET"]), PR);
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("no key added against main");
+  });
+
+  it("fails closed when the base ref was never fetched", () => {
+    const r = run(repo(["a:GET"], ["a:GET"]), { ...PR, GITHUB_BASE_REF: "release" });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("refs/remotes/origin/release is missing");
+  });
+
+  it("fails closed on a pull_request event without GITHUB_BASE_REF", () => {
+    const r = run(repo(["a:GET"], ["a:GET"]), { GITHUB_EVENT_NAME: "pull_request" });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("GITHUB_BASE_REF is not set");
+  });
+
+  it("passes the PR that introduces the gate (base has no FROZEN file)", () => {
+    const r = run(repo(null, ["a:GET"]), PR);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("this PR introduces the gate");
+  });
+
+  it("skips outside a pull_request event, even with keys added", () => {
+    const r = run(repo(["a:GET"], ["a:GET", "c:PATCH"]), { GITHUB_EVENT_NAME: "push" });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("skipped, not a pull_request event");
+  });
+
+  it("is wired into CI after a fetch of the base branch", () => {
+    const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+    expect(ci).toContain('refs/heads/$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF');
+    expect(ci).toContain("node scripts/check-agent-coverage-shrink.mjs");
+  });
+});
+
+describe("addedKeys", () => {
+  it("returns head keys the base lacks, once each", () => {
+    expect(addedKeys(["a", "b"], ["b", "c", "c", "d"])).toEqual(["c", "d"]);
+    expect(addedKeys(["a", "b"], ["a"])).toEqual([]);
+  });
+});
