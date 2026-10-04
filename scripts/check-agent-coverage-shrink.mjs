@@ -11,8 +11,9 @@
  * gate (whose list is missing or larger) would otherwise be compared against
  * that branch and pass with keys main never had.
  *
- * Where it runs: the CI workflow, on `pull_request` (including `edited`, so
- * retargeting a PR re-runs it), after fetching main into
+ * Where it runs: .github/workflows/agent-coverage-shrink.yml, on
+ * `pull_request` (including `edited`, so retargeting a PR re-runs it; its own
+ * workflow so a body edit cannot cancel ci.yml's E2E), after fetching main into
  * refs/remotes/origin/main. On a pull_request event it FAILS CLOSED when that
  * ref is missing. Outside a pull_request event (push to main,
  * scripts/deploy-velo.sh, a local run, a buyer's generated repo) it says so
@@ -62,7 +63,7 @@ if (isEntrypoint) {
   try {
     git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
   } catch {
-    fail(`${ref} is missing — fetch the base branch before this step (see .github/workflows/ci.yml).`);
+    fail(`${ref} is missing — fetch the base branch before this step (see .github/workflows/agent-coverage-shrink.yml).`);
   }
 
   if (git("ls-tree", "--name-only", ref, "--", FROZEN_PATH).trim() === "") {

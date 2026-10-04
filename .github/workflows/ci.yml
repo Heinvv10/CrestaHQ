@@ -4,9 +4,6 @@ name: CI
 # reaches main another way.
 on:
   pull_request:
-    # `edited` re-runs CI when a PR is retargeted, which the FROZEN shrink
-    # check below depends on. The other three are the defaults.
-    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -73,18 +70,6 @@ jobs:
       # The way to not need that is to never write the number twice.
       - name: Lint + tenancy check
         run: pnpm lint
-
-      # FROZEN (scripts/agent-coverage-frozen.json, routes grandfathered by the
-      # agent coverage gate) only shrinks: a PR may delete keys, never add one.
-      # Compared against main whatever the PR's base, so main is fetched here
-      # (the depth-1 checkout does not have it). The script fails closed on a
-      # pull_request event without it, and skips on push.
-      - name: Agent coverage FROZEN only shrinks
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"
-          fi
-          node scripts/check-agent-coverage-shrink.mjs
 
       - name: Typecheck
         run: pnpm exec tsc --noEmit

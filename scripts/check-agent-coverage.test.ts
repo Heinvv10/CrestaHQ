@@ -197,6 +197,22 @@ describe("check-agent-coverage CLI", () => {
     expect(r.stderr).toContain("api/things/odd: route file exports no GET/POST/PUT/PATCH/DELETE handler");
   });
 
+  it.each([
+    ["src/pages", "src/pages/api/things.ts"],
+    ["pages", "pages/api/things.ts"],
+    ["app", "app/api/things/route.ts"],
+  ])(
+    "fails when %s exists beside src/app",
+    (dir, file) => {
+      const root = fixture();
+      fs.mkdirSync(path.join(root, path.dirname(file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), POST_ROUTE);
+      const r = run(root);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain(`${dir}: Pages Router / second app dir is not covered`);
+    },
+  );
+
   it("still runs when invoked through a symlinked path", () => {
     const root = fixture();
     const link = path.join(root, "linked-check.mjs");
@@ -284,6 +300,9 @@ describe("check-agent-coverage export forms (each must be seen, or fail the file
   // Backslashes below are doubled: each fixture FILE holds a single one.
   it.each([
     ["a .jsx route file with JSX in it", "export async function POST() {\n  return <div />;\n}\n", "route.jsx", "POST"],
+    // As TypeScript, `<any>` is a type assertion on a template literal that
+    // swallows the export; Next compiles .js as JavaScript with JSX and serves it.
+    ["a .js route hiding POST behind <any>`", "const _x = <any>`</any>;\nexport async function POST() {}\n// `;\n", "route.js", "POST"],
     ["a destructured export", "const handlers = { POST: () => null };\nexport const { POST } = handlers;\n", "route.ts", "POST"],
     ["a renamed destructure { a: POST }", "const h = { a: () => null };\nexport const { a: POST } = h;\n", "route.ts", "POST"],
     ["an array destructure", "const hs = [() => null];\nexport const [POST] = hs;\n", "route.ts", "POST"],
@@ -368,6 +387,8 @@ describe("parseRoute", () => {
       "export async function OPTIONS() {}",
       "// export async function PATCH() {}",
       "async function PATCH() {}",
+      'export const dynamic = "force-dynamic";',
+      "export function helper() {}",
     ].join("\n");
     expect(parseRoute(src)).toEqual({
       methods: ["GET", "PUT", "POST", "DELETE", "HEAD", "OPTIONS"],

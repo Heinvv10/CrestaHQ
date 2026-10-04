@@ -7,6 +7,8 @@
  * down: every `path:METHOD` of every route file Next serves under src/app
  * (`route.ts`, `.tsx`, `.js`, `.jsx`: the default `pageExtensions`, which
  * next.config.ts does not override) must be accounted for, or the lint fails.
+ * src/app is the only router scanned, so a src/pages, pages or root-level
+ * app directory fails the check outright.
  *
  *   scripts/agent-coverage.json
  *     `trees`   every top-level tree (`api/<segment>`, or `<segment>` outside
@@ -45,7 +47,7 @@
  * way (src/app/, scripts/agent-coverage.json, scripts/agent-coverage-frozen.json).
  */
 
-import { readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,7 +83,9 @@ function bindingNames(name) {
  * `export =`, or CommonJS `exports`.
  */
 export function parseRoute(src, fileName = "route.ts") {
-  const kind = /\.[jt]sx$/.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  // As Next compiles them: `.js` and `.jsx` are JavaScript with JSX, so
+  // `<any>` opens an element there and is a type assertion only in `.ts`.
+  const kind = /\.jsx?$/.test(fileName) ? ts.ScriptKind.JSX : /\.tsx$/.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sf = ts.createSourceFile(fileName, src, ts.ScriptTarget.Latest, true, kind);
   const problems = [];
   // Internal but long-stable; if a TypeScript upgrade ever drops it, fail
@@ -242,6 +246,14 @@ const isEntrypoint =
   process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (isEntrypoint) {
   const root = process.argv[2] ?? join(dirname(fileURLToPath(import.meta.url)), "..");
+  // Only src/app is scanned. Next 15 also serves src/pages/api (and a
+  // root-level pages/ or app/), so any of them would be routes this gate
+  // never sees.
+  const unscanned = ["src/pages", "pages", "app"].filter((d) => existsSync(join(root, d)));
+  if (unscanned.length > 0) {
+    console.error(`\nAgent route coverage: ${unscanned.join(", ")}: Pages Router / second app dir is not covered by the agent coverage gate.\n`);
+    process.exit(1);
+  }
   const appDir = join(root, "src", "app");
   const files = walk(appDir).map((full) => ({
     path: dirname(relative(appDir, full)).split("\\").join("/"),

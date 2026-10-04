@@ -97,11 +97,20 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(r.stdout).toContain("skipped, not a pull_request event");
   });
 
-  it("is wired into CI after a fetch of the base branch", () => {
+  it("is wired into its own workflow, on edited, after a fetch of main", () => {
+    const workflows = path.join(__dirname, "..", ".github", "workflows");
+    const wf = fs.readFileSync(path.join(workflows, "agent-coverage-shrink.yml"), "utf8");
+    expect(wf).toContain('"+refs/heads/main:refs/remotes/origin/main"');
+    expect(wf).toContain("types: [opened, synchronize, reopened, edited]");
+    expect(wf).toContain("node scripts/check-agent-coverage-shrink.mjs");
+    // A cancelled or skipped run would be the check's latest result.
+    expect(wf).not.toMatch(/^\s*(concurrency:|cancel-in-progress)/m);
+    expect(wf).not.toContain("github.event.action");
+  });
+
+  it("keeps edited out of ci.yml, whose concurrency group would cancel E2E on a body edit", () => {
     const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
-    expect(ci).toContain('"+refs/heads/main:refs/remotes/origin/main"');
-    expect(ci).toContain("types: [opened, synchronize, reopened, edited]");
-    expect(ci).toContain("node scripts/check-agent-coverage-shrink.mjs");
+    expect(ci).not.toMatch(/types:.*edited/);
   });
 });
 
