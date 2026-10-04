@@ -97,15 +97,34 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(r.stdout).toContain("skipped, not a pull_request event");
   });
 
-  it("is wired into its own workflow, on edited, after a fetch of main", () => {
-    const workflows = path.join(__dirname, "..", ".github", "workflows");
-    const wf = fs.readFileSync(path.join(workflows, "agent-coverage-shrink.yml"), "utf8");
-    expect(wf).toContain('"+refs/heads/main:refs/remotes/origin/main"');
-    expect(wf).toContain("types: [opened, synchronize, reopened, edited]");
-    expect(wf).toContain("node scripts/check-agent-coverage-shrink.mjs");
-    // A cancelled or skipped run would be the check's latest result.
-    expect(wf).not.toMatch(/^\s*(concurrency:|cancel-in-progress)/m);
-    expect(wf).not.toContain("github.event.action");
+  it("is wired into its own workflow exactly, with no off-switch", () => {
+    // Every non-comment line is pinned, so a `paths:` / `branches:` filter, a
+    // changed or added `if:`, a concurrency group, an event skip or an
+    // `|| true` on the fetch or the script all fail here. A cancelled or
+    // skipped run would be the check's latest result and hide a failure.
+    const wf = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "agent-coverage-shrink.yml"), "utf8");
+    const lines = wf.split("\n").filter((l) => l.trim() !== "" && !l.trim().startsWith("#"));
+    expect(lines).toEqual([
+      "name: Agent coverage FROZEN shrink",
+      "on:",
+      "  pull_request:",
+      "    types: [opened, synchronize, reopened, edited]",
+      "jobs:",
+      "  shrink:",
+      "    name: Agent coverage FROZEN only shrinks",
+      "    runs-on: [self-hosted, linux, velo, crestahq]",
+      "    timeout-minutes: 5",
+      "    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}",
+      "    steps:",
+      "      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4",
+      "      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4",
+      "        with:",
+      "          node-version-file: .nvmrc",
+      "      - name: FROZEN only shrinks",
+      "        run: |",
+      '          git fetch --no-tags --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"',
+      "          node scripts/check-agent-coverage-shrink.mjs",
+    ]);
   });
 
   it("keeps edited out of ci.yml, whose concurrency group would cancel E2E on a body edit", () => {

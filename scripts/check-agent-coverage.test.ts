@@ -213,6 +213,23 @@ describe("check-agent-coverage CLI", () => {
     },
   );
 
+  it.each([
+    ["route file", "api/things/zzsym/route.ts", "handler.js"],
+    ["directory", "api/things/zzdir", "elsewhere"],
+  ])("fails a symlinked %s under src/app, naming it", (_label, link, target) => {
+    const root = fixture();
+    fs.mkdirSync(path.join(root, "elsewhere"));
+    fs.writeFileSync(path.join(root, "elsewhere", "route.ts"), POST_ROUTE);
+    fs.writeFileSync(path.join(root, "handler.js"), POST_ROUTE);
+    const at = path.join(root, "src", "app", link);
+    fs.mkdirSync(path.dirname(at), { recursive: true });
+    fs.symlinkSync(path.join(root, target), at);
+    const r = run(root);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("symlinks under app/ are not allowed by the agent coverage gate");
+    expect(r.stderr).toContain(`src/app/${link}`);
+  });
+
   it("still runs when invoked through a symlinked path", () => {
     const root = fixture();
     const link = path.join(root, "linked-check.mjs");
@@ -303,6 +320,9 @@ describe("check-agent-coverage export forms (each must be seen, or fail the file
     // As TypeScript, `<any>` is a type assertion on a template literal that
     // swallows the export; Next compiles .js as JavaScript with JSX and serves it.
     ["a .js route hiding POST behind <any>`", "const _x = <any>`</any>;\nexport async function POST() {}\n// `;\n", "route.js", "POST"],
+    // As TSX, `a < b > /`/` reads as a call with type arguments and the
+    // backtick opens a template; as JavaScript it is two comparisons and a regex.
+    ["a .js route hiding POST behind a < b > /`/", "const a = 1, b = 2;\nconst _z = a < b > /`/;\nexport async function POST() { return new Response(\"x\") }\n// `;\n", "route.js", "POST"],
     ["a destructured export", "const handlers = { POST: () => null };\nexport const { POST } = handlers;\n", "route.ts", "POST"],
     ["a renamed destructure { a: POST }", "const h = { a: () => null };\nexport const { a: POST } = h;\n", "route.ts", "POST"],
     ["an array destructure", "const hs = [() => null];\nexport const [POST] = hs;\n", "route.ts", "POST"],

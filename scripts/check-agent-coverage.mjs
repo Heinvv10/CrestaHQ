@@ -8,7 +8,7 @@
  * (`route.ts`, `.tsx`, `.js`, `.jsx`: the default `pageExtensions`, which
  * next.config.ts does not override) must be accounted for, or the lint fails.
  * src/app is the only router scanned, so a src/pages, pages or root-level
- * app directory fails the check outright.
+ * app directory fails the check outright, as does any symlink under src/app.
  *
  *   scripts/agent-coverage.json
  *     `trees`   every top-level tree (`api/<segment>`, or `<segment>` outside
@@ -41,13 +41,19 @@
  * Runs as part of `pnpm lint` (so CI and scripts/deploy-velo.sh run the same
  * bytes). Its one dependency is `typescript`.
  *
+ * Residual limits, not covered by this gate:
+ * - src/middleware.ts and server actions are request surfaces it does not scan;
+ * - a PR that edits the workflow or this checker can disable it;
+ * - fork PRs and `[skip ci]` skip CI, and with it the check;
+ * - there is no branch protection on this plan, so a red check does not block a merge.
+ *
  * Usage: node scripts/check-agent-coverage.mjs [repo-root]
  *
  * The root defaults to this repo. Tests pass a fixture root laid out the same
  * way (src/app/, scripts/agent-coverage.json, scripts/agent-coverage-frozen.json).
  */
 
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -124,11 +130,14 @@ export function treeOf(routePath) {
   return parts[0] === "api" ? parts.slice(0, 2).join("/") : parts[0];
 }
 
-function walk(dir) {
+/** Route files under `dir`. Symlinks are collected into `links`, never followed. */
+function walk(dir, links) {
   const out = [];
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
-    if (statSync(full).isDirectory()) out.push(...walk(full));
+    const st = lstatSync(full);
+    if (st.isSymbolicLink()) links.push(full);
+    else if (st.isDirectory()) out.push(...walk(full, links));
     else if (ROUTE_FILE.test(entry)) out.push(full);
   }
   return out;
@@ -255,7 +264,17 @@ if (isEntrypoint) {
     process.exit(1);
   }
   const appDir = join(root, "src", "app");
-  const files = walk(appDir).map((full) => ({
+  // A link's name picks the parser (route.ts → TS) while Next compiles its
+  // target as whatever that really is, so a parse could miss a served method.
+  const links = [];
+  const found = walk(appDir, links);
+  if (links.length > 0) {
+    console.error("\nAgent route coverage: symlinks under app/ are not allowed by the agent coverage gate:");
+    for (const l of links) console.error("  " + relative(root, l));
+    console.error("");
+    process.exit(1);
+  }
+  const files = found.map((full) => ({
     path: dirname(relative(appDir, full)).split("\\").join("/"),
     parsed: parseRoute(readFileSync(full, "utf8"), full),
   }));
