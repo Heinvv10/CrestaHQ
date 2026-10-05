@@ -693,7 +693,10 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     let response: NextResponse | undefined;
     try {
       try {
-        const logUnder = (subAccountId: string) => void (logSubAccountId = subAccountId);
+        // Only an agency key's log can move: a sub-account key's stays its own.
+        const logUnder = (subAccountId: string) => {
+          if (ctx.keyLevel === "agency") logSubAccountId = subAccountId;
+        };
         // An agency ctx gets here only with allowAgencyKey, whose overload
         // types the handler for it.
         response = await handler({ request, params, body, rawBody, ctx: ctx as ApiAuthContext, logUnder });

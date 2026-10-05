@@ -16,6 +16,7 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 const { withApiAuth } = await import("./auth");
 const { CALL_AGENT_TOOL_OPTIONS, callAgentTool } = await import("./agent-tools-call");
 const { mintApiKey } = await import("./keys");
+const { apiOk } = await import("./responses");
 const { AI_SUITE_CAPABILITIES, CapabilityUserError } = await import("@/lib/ai-suite/capabilities");
 
 const POST = withApiAuth<{ name: string }>(callAgentTool, { ...CALL_AGENT_TOOL_OPTIONS, allowAgencyKey: true });
@@ -99,6 +100,29 @@ describe("request logs by key level", () => {
     await settle();
     expect(logsUnder("subAccounts/")).toEqual([]);
     expect(logsUnder("agencies/ag1/apiRequestLogs/")).toHaveLength(1);
+  });
+});
+
+describe("logUnder is structural", () => {
+  it("a sub-account key's handler naming another sub-account still logs under its own", async () => {
+    const m = mintApiKey("live");
+    mem.seed("subAccounts/sa1/apiKeys/k1", {
+      agencyId: "ag1", subAccountId: "sa1", name: "Sub key", mode: "live",
+      prefix: m.prefix, hashedSecret: m.hashedSecret, scopes: ["agent"], revokedAt: null, createdAt: new Date(),
+    });
+    key = m.rawKey;
+    const route = withApiAuth(
+      async ({ ctx, logUnder }) => {
+        logUnder("sa2");
+        return apiOk(ctx, {});
+      },
+      { requireScope: "agent" },
+    );
+    const res = await route(new Request("http://localhost/x", { headers: { authorization: `Bearer ${key}` } }), {});
+    expect(res.status).toBe(200);
+    await settle();
+    expect(logs()).toHaveLength(1);
+    expect(logsUnder("subAccounts/sa1/apiRequestLogs/")).toHaveLength(1);
   });
 });
 

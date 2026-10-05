@@ -140,12 +140,34 @@ describe("an agency-level member without a proposal path", () => {
   it.each([
     ["a write", { readonly: false }],
     ["a read with an approval class", { readonly: true, approval: "outbound" as const }],
+    ["a read with approvalFor", { readonly: true, approvalFor: () => "outbound" as const }],
   ])("%s is not available, never executed", async (_label, shape) => {
     const cap = await inject({ name: "__fixture_agency", level: "agency", requiredRole: "agencyOwner", ...shape });
     const set = AGENCY_AGENT_CALLABLE as Set<string>;
     set.add(cap.name);
     try {
       expect(await dispatchAgentTool(agencyKey, cap.name, {})).toMatchObject({ ok: false, code: "not_available" });
+    } finally {
+      set.delete(cap.name);
+    }
+    expect(cap.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe("an agency-level member whose validate rewrites the id", () => {
+  it.each([
+    ["lowercases it", "SAX", (id: string) => id.toLowerCase()],
+    ["resolves it to another sub-account", "sa1", () => "sa3"],
+  ])("%s → the identical 404, never executed", async (_label, sent, rewrite) => {
+    mem.seed("subAccounts/SAX", { agencyId: "ag1", name: "Upper", ...ON });
+    const cap = await inject({
+      name: "__fixture_agency_ids", level: "agency", requiredRole: "agencyOwner", readonly: true,
+      validate: (raw) => ({ ok: true, args: { subAccountId: rewrite(String((raw as { subAccountId: unknown }).subAccountId)) } }),
+    });
+    const set = AGENCY_AGENT_CALLABLE as Set<string>;
+    set.add(cap.name);
+    try {
+      expect(await dispatchAgentTool(agencyKey, cap.name, { subAccountId: sent })).toEqual(NOT_FOUND);
     } finally {
       set.delete(cap.name);
     }
