@@ -35,7 +35,10 @@ const DECOY_KEY = "subAccounts/sa1/apiKeys/ak1";
 
 beforeEach(() => {
   mem.seed("agencies/ag1", { agentApiEnabled: true });
-  mem.seed(AGENCY_KEY, { agencyId: "ag1", subAccountId: null, prefix: "abcd1234", revokedAt: null, enrolmentCapPerHour: 7 });
+  mem.seed("agencies/ag1/agencyMembers/owner1", { role: "owner", status: "active" });
+  mem.seed(AGENCY_KEY, {
+    agencyId: "ag1", subAccountId: null, prefix: "abcd1234", createdByUid: "owner1", revokedAt: null, enrolmentCapPerHour: 7,
+  });
 });
 
 const createContact = () =>
@@ -115,6 +118,31 @@ describe("the agency's Agent API switch", () => {
     expect(runs()).toEqual([]);
     // Rejecting is always safe, switch or not.
     expect((await decide(p.id, "reject")).status).toBe(200);
+  });
+
+  it.each([
+    ["demoted", { role: "staff", status: "active" }],
+    ["disabled", { role: "owner", status: "disabled" }],
+  ])("the key's minter %s since → approve 403, row still pending, nobody enrolled", async (_label, member) => {
+    const p = await heldRow();
+    mem.seed("agencies/ag1/agencyMembers/owner1", member);
+    const res = await decide(p.id, "approve");
+    expect([res.status, await res.json()]).toEqual([403, { error: expect.stringContaining("no longer an active owner") }]);
+    expect(row(p.id)).toMatchObject({ status: "pending" });
+    expect(replayHeldEnrolment).not.toHaveBeenCalled();
+    expect(runs()).toEqual([]);
+  });
+
+  it("a row whose agencyId is not the sub-account's agency → 404, never executed", async () => {
+    const p = await heldRow();
+    // Fully armed under ag2, so only the cross-check can stop it.
+    mem.seed("agencies/ag2", { agentApiEnabled: true });
+    mem.seed("agencies/ag2/agencyMembers/owner1", { role: "owner", status: "active" });
+    mem.seed("agencies/ag2/apiKeys/ak1", { ...mem.read(AGENCY_KEY) });
+    mem.seed(`agentProposals/${p.id}`, { ...row(p.id), agencyId: "ag2" });
+    expect((await decide(p.id, "approve")).status).toBe(404);
+    expect(row(p.id)).toMatchObject({ status: "pending" });
+    expect(runs()).toEqual([]);
   });
 
   it("does not gate a sub-account key's row", async () => {

@@ -34,6 +34,7 @@ import {
   snapshotRemaining,
 } from "@/lib/api/rate-limit";
 import { resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
+import { agencyKeyStanding } from "@/lib/api/agency-key-standing";
 import { captureRequestLog } from "@/lib/api/logs";
 import { MAX_BODY_BYTES } from "@/lib/api/body-limit";
 import { bodyTooLarge, invalidParam, readJsonBody } from "@/lib/api/request-guards";
@@ -343,24 +344,19 @@ async function subAccountKeyRefusal(
 }
 
 /**
- * Agency key, read fresh on every request: the agency's Agent API kill
- * switch (`agencies/{id}.agentApiEnabled`, default off) and the owner who
- * minted the key still being an active owner — one read of their
- * `agencyMembers` row, never the Auth Admin API.
+ * Agency key, read fresh on every request (`agencyKeyStanding`): the agency
+ * exists, its Agent API kill switch is on, and the owner who minted the key
+ * is still an active owner.
  */
 async function agencyKeyRefusal(
   meta: ResponseMeta,
   key: Extract<ApiKeyDoc, { level: "agency" }>,
 ): Promise<NextResponse | null> {
-  const db = getAdminDb();
-  const [agency, minter] = await Promise.all([
-    db.doc(`agencies/${key.agencyId}`).get(),
-    db.doc(`agencies/${key.agencyId}/agencyMembers/${key.createdByUid}`).get(),
-  ]);
-  if (!agency.exists) {
+  const standing = await agencyKeyStanding(key.agencyId, key.createdByUid);
+  if (standing === "no_agency") {
     return apiError(meta, "authentication_error", "invalid_api_key", "Invalid API key provided.");
   }
-  if (agency.data()?.agentApiEnabled !== true) {
+  if (standing === "agent_api_disabled") {
     return apiError(
       meta,
       "permission_error",
@@ -368,8 +364,7 @@ async function agencyKeyRefusal(
       "The Agent API is switched off for this agency. The agency owner can switch it on in Agency settings.",
     );
   }
-  const member = minter.data();
-  if (member?.role !== "owner" || member?.status !== "active") {
+  if (standing === "minter_removed") {
     return apiError(
       meta,
       "authentication_error",

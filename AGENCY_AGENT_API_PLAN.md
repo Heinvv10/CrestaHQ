@@ -261,8 +261,11 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
 - The enrolment replay refuses a missing proposing-key doc at **either** level
   (never the default cap); the decide route already treats a missing key as
   revoked, so only a race reaches it.
-- The decide route's agency switch check gates **approve** only; reject stays
-  allowed (refusing is always safe).
+- Approving an agency key's row re-checks everything auth checks of the key, through
+  the same helper (`agencyKeyStanding`): the agency switch **and** the minter still
+  an active owner (403 otherwise), after the revoke check; and the row's `agencyId`
+  must equal the sub-account's (else 404), since the key re-read is keyed by it.
+  These gate **approve** only; reject stays allowed (refusing is always safe).
 - An agency key sending no `subAccountId` to a sub-account tool gets the identical
   404 `not_found` (A3a's `resolveReach` on `undefined`), not a 400: live-validation
   step 6 below reads "→ 404".

@@ -84,7 +84,8 @@ other route: every other `/api/v1` route refuses it with 403
 - **Cut-off.** The switch off (403 `agent_api_disabled`, re-read on every call), the
   key revoked (401) or its minter no longer an active owner (401 `minter_removed`)
   stop every transport. Revoking rejects the key's pending proposals in every
-  sub-account; with the switch off its rows can't be approved (403).
+  sub-account; while the switch is off or its minter is no longer an active
+  owner, its rows can't be approved (403).
 - **Proposals** an agency key causes are ordinary rows of the target sub-account
   (`keyLevel: "agency"`), approved on that sub-account's Approvals page; held
   enrolments are charged to the agency key's enrolment cap, counted per
