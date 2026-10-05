@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { cert } from "firebase-admin/app";
 import { beforeAll, describe, expect, it } from "vitest";
+import { rulesAccessToken } from "../../test/rules-token";
 
 /**
  * The repo's OWN firestore.rules for the linked-record ids on client-written
@@ -54,7 +54,7 @@ const MOCKS = [
 ];
 
 async function evaluate(cases: Case[]): Promise<{ allowed: boolean; errors: string[] }[]> {
-  const { access_token } = await cert(creds as Required<typeof creds>).getAccessToken();
+  const access_token = await rulesAccessToken(creds);
   const testCases = cases.map(({ method, path, before, after }) => ({
     expectation: "ALLOW",
     request: {
