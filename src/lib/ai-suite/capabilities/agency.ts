@@ -8,6 +8,7 @@ import {
   recordGateChanges,
   type AgencyGateField,
 } from "@/lib/server/feature-gates-service";
+import { isReachable } from "@/lib/api/agent-reach";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { SLUG_RE, str, FEATURE_GATES, enabledGateLabels, assistantEnableRefusal } from "./helpers";
 
@@ -29,15 +30,14 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     validate: () => ({ ok: true, args: {} }),
     summarize: () => "List the sub-accounts in this agency.",
     execute: async (ctx) => {
-      const snap = await getAdminDb()
-        .collection("subAccounts")
-        .where("agencyId", "==", ctx.agencyId)
-        .limit(50)
-        .get();
-      if (snap.empty) {
-        return { resultText: "This agency has no sub-accounts yet." };
-      }
-      const lines = snap.docs.map((d) => {
+      const mine = getAdminDb().collection("subAccounts").where("agencyId", "==", ctx.agencyId);
+      // An agent key lists only what it can reach, filtered BEFORE the 50-row cap.
+      const docs = ctx.apiKey
+        ? (await mine.get()).docs.filter((d) => isReachable(d.data(), ctx.agencyId)).slice(0, 50)
+        : (await mine.limit(50).get()).docs;
+      const none = ctx.apiKey ? "No sub-account in this agency is available to this key." : "This agency has no sub-accounts yet.";
+      if (docs.length === 0) return { resultText: none };
+      const lines = docs.map((d) => {
         const data = d.data();
         const gates = enabledGateLabels(data);
         return `- ${data.name ?? "(unnamed)"} — id: ${d.id}${
@@ -45,7 +45,7 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
         }. Enabled gates: ${gates.length ? gates.join(", ") : "none"}.`;
       });
       return {
-        resultText: `Sub-accounts in this agency (${snap.size}):\n${lines.join("\n")}`,
+        resultText: `Sub-accounts in this agency (${docs.length}):\n${lines.join("\n")}`,
       };
     },
   },

@@ -138,7 +138,7 @@ describe("agency variants keep their base's surfaces", () => {
     const variant = inSubAccount(base);
     AI_SUITE_CAPABILITIES.push(variant);
     injected.push(variant);
-    expect(variant.surfaces).toEqual(["agent"]);
+    expect(variant.surfaces).toEqual([]);
     const owner = { agencyRoleIsOwner: true };
     const tools = toolsForLevel("agency", owner).map((t) => t.function.name);
     const { actions, lookups } = capabilityNamesForLevel("agency", owner);

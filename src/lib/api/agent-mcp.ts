@@ -10,17 +10,17 @@ import {
   type JSONRPCMessage,
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { ApiAuthContext } from "@/lib/api/auth";
+import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 import { checkAndCount } from "@/lib/api/rate-limit";
 import { captureRequestLog } from "@/lib/api/logs";
-import { agentCallable, dispatchAgentTool, isAgentWriteTool } from "@/lib/api/agent-dispatch";
-import { AI_SUITE_CAPABILITIES } from "@/lib/ai-suite/capabilities";
+import { dispatchAgentTool, isAgentWriteTool } from "@/lib/api/agent-dispatch";
+import { agentToolsFor } from "@/lib/api/agent-tools-listing";
 
 /**
  * The MCP face of the Agent API (AGENT_API_V1_PLAN.md, PR5): a low-level
  * `Server` built per HTTP request over a STATELESS web-standard Streamable
  * HTTP transport. `tools/list` is the same set as GET /api/v1/tools
- * (`agentCallable`). The route charges each request one token up front,
+ * (`agentToolsFor`). The route charges each request one token up front,
  * which pays for its first `tools/call`; every further call takes its own —
  * so one call costs one token, as on REST, and a JSON-RPC batch can't turn
  * one HTTP request into N free writes. Each call runs dispatchAgentTool and
@@ -28,15 +28,17 @@ import { AI_SUITE_CAPABILITIES } from "@/lib/ai-suite/capabilities";
  * only for a callable write (its validated args, never the raw ones), and
  * per-call rate-limit refusals collapse into ONE log row per HTTP request.
  * Nothing thrown — dispatch, logging, SDK validation — reaches the client
- * as raw error text. No idempotency on MCP in v1.
+ * as raw error text. No idempotency on MCP in v1. An agency key's call logs
+ * under the sub-account it was scoped to only once reach let it through;
+ * every other agency-key row lands under the agency.
  */
 
-/** The tools an agent key may call, as MCP tool descriptors. */
-export function agentMcpTools(): Tool[] {
-  return AI_SUITE_CAPABILITIES.filter(agentCallable).map((c) => ({
+/** The tools this key may call, as MCP tool descriptors. */
+export function agentMcpTools(auth: ApiAuthContext | AgencyApiAuthContext): Tool[] {
+  return agentToolsFor(auth).map(({ cap: c, parameters }) => ({
     name: c.name,
     description: c.description,
-    inputSchema: c.parameters as Tool["inputSchema"],
+    inputSchema: parameters as Tool["inputSchema"],
     ...(c.readonly ? { annotations: { readOnlyHint: true } } : {}),
     ...(c.approval
       ? { _meta: { approval: c.approval } }
@@ -76,7 +78,7 @@ const INTERNAL = refusal("internal_error", "The tool call failed.");
 
 /** One tools/call: rate limit, dispatch, map to an MCP result, log. Never throws. */
 async function callTool(
-  auth: ApiAuthContext,
+  auth: ApiAuthContext | AgencyApiAuthContext,
   request: Request,
   state: CallState,
   name: string,
@@ -145,6 +147,7 @@ async function callTool(
   try {
     const bodies = isAgentWriteTool(name);
     log(auth, request, start, {
+      subAccountId: auth.subAccountId ?? r.scopedTo ?? null,
       path: `/api/mcp#${logSafe(name)}`,
       requestBody: bodies && r.ok ? stringifyOr(r.args) : "",
       status,
@@ -167,13 +170,21 @@ function stringifyOr(value: unknown): string {
 }
 
 function log(
-  auth: ApiAuthContext,
+  auth: ApiAuthContext | AgencyApiAuthContext,
   request: Request,
   start: number,
-  row: { path: string; requestBody: string; status: number; body: unknown; errorCode: string | null },
+  row: {
+    /** null: the agency's log (see captureRequestLog). */
+    subAccountId: string | null;
+    path: string;
+    requestBody: string;
+    status: number;
+    body: unknown;
+    errorCode: string | null;
+  },
 ): void {
   void captureRequestLog({
-    subAccountId: auth.subAccountId,
+    subAccountId: row.subAccountId,
     agencyId: auth.agencyId,
     keyId: auth.keyId,
     keyPrefix: auth.keyPrefix,
@@ -203,7 +214,7 @@ function sanitizeOutgoing(message: JSONRPCMessage, toolCallIds: Set<string>): JS
 
 /** Serve one MCP HTTP request for an authenticated, prechecked agent key. */
 export async function handleMcpRequest(
-  auth: ApiAuthContext,
+  auth: ApiAuthContext | AgencyApiAuthContext,
   request: Request,
   parsedBody: unknown,
 ): Promise<Response> {
@@ -222,7 +233,7 @@ export async function handleMcpRequest(
     { name: "leadstack", version: "1.0.0" },
     { capabilities: { tools: {} } },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: agentMcpTools() }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: agentMcpTools(auth) }));
   server.setRequestHandler(CallToolRequestSchema, (req) =>
     callTool(auth, request, state, req.params.name, req.params.arguments),
   );
@@ -239,6 +250,7 @@ export async function handleMcpRequest(
     await server.close();
     if (state.rateLimited > 0) {
       log(auth, request, start, {
+        subAccountId: auth.subAccountId,
         path: "/api/mcp",
         requestBody: "",
         status: 429,

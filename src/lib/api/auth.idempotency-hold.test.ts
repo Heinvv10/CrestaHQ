@@ -9,6 +9,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  */
 
 const mem = createMemoryFirestore();
+const SA1 = { level: "sub-account", subAccountId: "sa1" } as const;
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
 const { withApiAuth } = await import("./auth");
@@ -106,7 +107,7 @@ it("N2 + S1 cacheIdempotently throwing after the handler SUCCEEDED: a logged v1 
 it("store and release each stop the heartbeat, and are idempotent", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   const { reserveIdempotencyKey } = await import("./idempotency");
-  const a = await reserveIdempotencyKey("sa1", "live", "k1", "t-store", "fp");
+  const a = await reserveIdempotencyKey(SA1, "live", "k1", "t-store", "fp");
   if (a.kind !== "reserved") throw new Error(a.kind);
   expect(vi.getTimerCount()).toBe(1);
   await a.store({ status: 201, bodyJson: { id: 1 } });
@@ -114,7 +115,7 @@ it("store and release each stop the heartbeat, and are idempotent", async () => 
   await a.release(); // a second settle is a no-op: the stored outcome stays
   expect(mem.list(IDEM)).toMatchObject([{ state: "done", status: 201 }]);
 
-  const b = await reserveIdempotencyKey("sa1", "live", "k1", "t-release", "fp");
+  const b = await reserveIdempotencyKey(SA1, "live", "k1", "t-release", "fp");
   if (b.kind !== "reserved") throw new Error(b.kind);
   expect(vi.getTimerCount()).toBe(1);
   await b.release();
@@ -125,7 +126,7 @@ it("store and release each stop the heartbeat, and are idempotent", async () => 
 
 it("a second store after one that ended in done_unknown is a no-op", async () => {
   const { reserveIdempotencyKey } = await import("./idempotency");
-  const r = await reserveIdempotencyKey("sa1", "live", "k1", "twice", "fp");
+  const r = await reserveIdempotencyKey(SA1, "live", "k1", "twice", "fp");
   if (r.kind !== "reserved") throw new Error(r.kind);
   const orig = mem.db.runTransaction.bind(mem.db);
   let n = 0;
@@ -140,11 +141,11 @@ it("a second store after one that ended in done_unknown is a no-op", async () =>
 
 it("M6 taken-over reservation: markUnknown from the old owner does not touch the new owner's doc", async () => {
   const { reserveIdempotencyKey } = await import("./idempotency");
-  const a = await reserveIdempotencyKey("sa1", "live", "k1", "m6", "fp");
+  const a = await reserveIdempotencyKey(SA1, "live", "k1", "m6", "fp");
   if (a.kind !== "reserved") throw new Error(a.kind);
   const [{ id, ...d }] = mem.list(IDEM);
   mem.seed(`${IDEM}/${id}`, { ...d, expiresAt: new Date(Date.now() - 1) });
-  const b = await reserveIdempotencyKey("sa1", "live", "k1", "m6", "fp");
+  const b = await reserveIdempotencyKey(SA1, "live", "k1", "m6", "fp");
   if (b.kind !== "reserved") throw new Error(b.kind);
   const bToken = mem.list(IDEM)[0].reservationId;
   vi.spyOn(console, "error").mockImplementation(() => {});

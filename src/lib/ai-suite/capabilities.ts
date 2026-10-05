@@ -183,11 +183,12 @@ export function inSubAccount(base: AiSuiteCapability): AiSuiteCapability {
     level: "agency",
     requiredRole: "agencyOwner",
     readonly: base.readonly,
-    // A chat-only base stays chat-only; an agent-only base must never
-    // surface on chat through its agency variant.
-    surfaces: base.surfaces,
-    // approval / agentArgs / preview are deliberately not copied: dispatch
-    // refuses every agency-level capability, so the variant is chat-only.
+    // Chat-only: the base's surfaces ∩ ["chat"], so an agent-only base's
+    // variant has no surface at all and never reaches chat. Dispatch also
+    // refuses every `*_in_sub_account` name: an agency key targets with
+    // `subAccountId` on the base tool instead. approval / agentArgs /
+    // preview are deliberately not copied.
+    surfaces: (base.surfaces ?? ["chat"]).filter((s) => s === "chat"),
     menuLabel: `${base.menuLabel} — in a sub-account you name`,
     description: `${base.description} AGENCY VARIANT: performs this inside one of your sub-accounts. Resolve the sub-account's id with list_sub_accounts first — never guess ids. Exception: if the user identifies the sub-account by its account number (e.g. '#1011') or you already know its exact name, you may pass that as subAccountId — it's resolved server-side within this agency. If what the user said could match more than one sub-account (e.g. 'rode' when both 'Rode Plumbing' and 'Rode Sound' exist), ask which one BEFORE proposing.`,
     parameters: {

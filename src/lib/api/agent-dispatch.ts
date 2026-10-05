@@ -1,18 +1,26 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import type { ApiAuthContext } from "@/lib/api/auth";
-import { buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
+import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
+import { buildAgencyAgentContext, buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
+import { NO_SUCH_SUB_ACCOUNT, resolveReach } from "@/lib/api/agent-reach";
 import { recordAgentWrite } from "@/lib/api/agent-audit";
 import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
+
+export {
+  AGENCY_AGENT_CALLABLE,
+  agencyAgentCallable,
+  agentCallable,
+  isAgentReadTool,
+  isAgentWriteTool,
+} from "@/lib/api/agent-tools-listing";
 import {
-  availableOn,
   CapabilityUserError,
   CapabilityWriteRefused,
   getCapability,
-  roleSatisfies,
   type AiSuiteCapability,
 } from "@/lib/ai-suite/capabilities";
+import { agencyAgentCallable, agentCallable } from "@/lib/api/agent-tools-listing";
 import {
   createProposal,
   OUTCOME_UNKNOWN_MESSAGE,
@@ -24,7 +32,7 @@ import {
   proposalTooLarge,
 } from "@/lib/server/agent-proposals-encoding";
 
-export type AgentDispatchResult =
+export type AgentDispatchResult = (
   | {
       ok: true;
       resultText: string;
@@ -50,7 +58,14 @@ export type AgentDispatchResult =
         preview: Array<{ label: string; value: string }>;
       };
     }
-  | { ok: false; code: string; httpStatus: number; message: string };
+  | { ok: false; code: string; httpStatus: number; message: string }
+) & {
+  /** Agency key only: the sub-account the call was scoped to, set once
+   *  `resolveReach` let it through — every outcome after that, a refusal
+   *  included, logs there. Absent for agency-level calls and refusals at
+   *  or before reach, which log under the agency. */
+  scopedTo?: string;
+};
 
 const refuse = (
   code: string,
@@ -63,71 +78,50 @@ const refuse = (
 const notAvailable = (): AgentDispatchResult =>
   refuse("not_available", 404, "No such tool is available to this key.");
 
-/**
- * Whether an agent key may call `cap` at all — the ONE predicate behind
- * dispatch, the tools listing and the REST hooks, so none can disagree or
- * leak which chat-only names exist: sub-account level, surfaced to agents,
- * runnable as a sub-account admin, and never the engine-only
- * workflow_enrolment class (only the engine writes those rows; a capability
- * claiming it would let an agent forge one).
- */
-export function agentCallable(cap: AiSuiteCapability): boolean {
-  return (
-    cap.level === "sub-account" &&
-    availableOn(cap, "agent") &&
-    cap.approval !== "workflow_enrolment" &&
-    roleSatisfies(cap.requiredRole, { agencyRoleIsOwner: false, subAccountRole: "admin" })
-  );
-}
+/** One response for every sub-account an agency key may not act in. */
+const noSuchSubAccount = (): AgentDispatchResult => refuse("not_found", 404, NO_SUCH_SUB_ACCOUNT);
 
-/** A write tool the key may call: the only kind whose bodies a request log
- *  keeps. A read's args and result are PII; an unknown or non-callable
- *  name's args may be too (a misspelled read), so neither is logged. */
-export function isAgentWriteTool(name: string): boolean {
-  const cap = getCapability(name);
-  return !!cap && agentCallable(cap) && cap.readonly !== true;
-}
-
-/** A read tool the key may call. Anything else — including a chat-only or
- *  unknown name — is treated alike, so the REST and MCP hooks can't reveal
- *  which exist. */
-export function isAgentReadTool(name: string): boolean {
-  const cap = getCapability(name);
-  return !!cap && agentCallable(cap) && cap.readonly === true;
-}
 
 /**
  * The ONE choke point for agent tool calls (MCP and REST). Every refusal
  * runs before any capability code: scope, test mode, the agency's Agent API
  * gate (read fresh on every call, so switching it off makes keys inert
- * immediately), then surface / level / role. A capability with an
- * `approval` class is never executed here: it becomes an `agentProposals`
- * row a person approves. Nothing thrown anywhere in the
+ * immediately), then surface / level / role. An agency key calls an
+ * AGENCY_AGENT_CALLABLE capability as itself, or a sub-account capability in
+ * the `subAccountId` it names — once `resolveReach` lets it through, the
+ * call runs the sub-account pipeline below unchanged, scoped to that target.
+ * A capability with an `approval` class is never executed here: it becomes
+ * an `agentProposals` row a person approves. Nothing thrown anywhere in the
  * pipeline escapes: a CapabilityUserError is a 400 with its message, anything
  * else a generic 500.
  */
 export async function dispatchAgentTool(
-  auth: ApiAuthContext,
+  auth: ApiAuthContext | AgencyApiAuthContext,
   name: string,
   rawArgs: unknown
 ): Promise<AgentDispatchResult> {
   try {
     return await dispatch(auth, name, rawArgs);
   } catch (err) {
-    if (err instanceof CapabilityUserError) {
-      return refuse("invalid_request", 400, err.message);
-    }
-    // `name` is caller-supplied: quote and cap it so it cannot forge log lines.
-    console.error(
-      `[agent-dispatch] ${JSON.stringify(String(name).slice(0, 80))} failed:`,
-      err
-    );
-    return refuse("internal_error", 500, "The tool failed to run.");
+    return failure(name, err);
   }
 }
 
+/** A throw from the pipeline, as the refusal described above. */
+function failure(name: string, err: unknown): AgentDispatchResult {
+  if (err instanceof CapabilityUserError) {
+    return refuse("invalid_request", 400, err.message);
+  }
+  // `name` is caller-supplied: quote and cap it so it cannot forge log lines.
+  console.error(
+    `[agent-dispatch] ${JSON.stringify(String(name).slice(0, 80))} failed:`,
+    err
+  );
+  return refuse("internal_error", 500, "The tool failed to run.");
+}
+
 async function dispatch(
-  auth: ApiAuthContext,
+  auth: ApiAuthContext | AgencyApiAuthContext,
   name: string,
   rawArgs: unknown
 ): Promise<AgentDispatchResult> {
@@ -145,6 +139,7 @@ async function dispatch(
       "Agent tools run on live keys only."
     );
   }
+  if (auth.level === "agency") return dispatchForAgencyKey(auth, name, rawArgs);
   const subSnap = await getAdminDb()
     .doc(`subAccounts/${auth.subAccountId}`)
     .get();
@@ -156,9 +151,75 @@ async function dispatch(
     );
   }
 
+  // Validators would drop it silently and run the call in the key's own
+  // sub-account, not the one the agent named.
+  if (
+    rawArgs &&
+    typeof rawArgs === "object" &&
+    "subAccountId" in rawArgs &&
+    (rawArgs as { subAccountId: unknown }).subAccountId !== auth.subAccountId
+  ) {
+    const message = "This key belongs to one sub-account and cannot act in another. Omit subAccountId.";
+    return refuse("wrong_sub_account", 400, message);
+  }
+
   const cap = getCapability(name);
   if (!cap || !agentCallable(cap)) return notAvailable();
+  return runInSubAccount(auth, cap, rawArgs);
+}
 
+async function dispatchForAgencyKey(
+  auth: AgencyApiAuthContext,
+  name: string,
+  rawArgs: unknown
+): Promise<AgentDispatchResult> {
+  // The agency's kill switch, read fresh on every call (auth reads it once
+  // per HTTP request; an MCP batch makes several calls).
+  const agency = await getAdminDb().doc(`agencies/${auth.agencyId}`).get();
+  if (agency.data()?.agentApiEnabled !== true) {
+    const message = "The Agent API is switched off for this agency. The agency owner can switch it on in Agency settings.";
+    return refuse("agent_api_disabled", 403, message);
+  }
+  const cap = getCapability(name);
+  const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) ? (rawArgs as Record<string, unknown>) : {};
+
+  if (cap && agencyAgentCallable(cap)) {
+    // No proposal path at the agency level yet: only plain reads run here.
+    if (!cap.readonly || cap.approval || cap.approvalFor) return notAvailable();
+    // Reach runs on ANY subAccountId an agency-level call carries.
+    if ("subAccountId" in args && !(await resolveReach(auth.agencyId, args.subAccountId))) {
+      return noSuchSubAccount();
+    }
+    const validated = cap.validate(rawArgs);
+    if (!validated.ok) return refuse("invalid_args", 400, validated.error);
+    // A validator that rewrote the id (case, "#1011") would run on one reach never checked.
+    if ("subAccountId" in validated.args && validated.args.subAccountId !== args.subAccountId) return noSuchSubAccount();
+    const result = await cap.execute(buildAgencyAgentContext(auth), validated.args);
+    return {
+      ok: true,
+      resultText: result.resultText,
+      args: validated.args,
+      ...(result.truncated ? { truncated: true as const } : {}),
+    };
+  }
+
+  if (!cap || !agentCallable(cap)) return notAvailable();
+  // Popped before validation: the target is the scope, never a capability arg.
+  const { subAccountId, ...rest } = args;
+  const target = await resolveReach(auth.agencyId, subAccountId);
+  if (!target) return noSuchSubAccount();
+  const scoped: ApiAuthContext = { ...auth, level: "sub-account", subAccountId: target, keyLevel: "agency" };
+  // Past reach every outcome — a throw included — belongs to the target.
+  const result = await runInSubAccount(scoped, cap, rest).catch((err: unknown) => failure(cap.name, err));
+  return { ...result, scopedTo: target };
+}
+
+/** The sub-account pipeline: validate, then queue for approval or execute. */
+async function runInSubAccount(
+  auth: ApiAuthContext,
+  cap: AiSuiteCapability,
+  rawArgs: unknown
+): Promise<AgentDispatchResult> {
   // Narrow before validate, so a stored proposal re-validates idempotently.
   const raw =
     cap.agentArgs && rawArgs && typeof rawArgs === "object"

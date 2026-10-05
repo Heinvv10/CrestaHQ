@@ -37,6 +37,7 @@ export async function replayMock(importOriginal: () => Promise<unknown>) {
 
 export const auth: ApiAuthContext = {
   level: "sub-account",
+  keyLevel: "sub-account",
   agencyId: "ag1",
   subAccountId: "sa1",
   keyId: "key1",

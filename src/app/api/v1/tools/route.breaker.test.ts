@@ -133,8 +133,14 @@ describe("body tricks", () => {
     const c = mem.all().find((d) => d.path.startsWith("contacts/") && (d.data as { name?: string }).name === "P");
     expect(Object.keys(c?.data ?? {})).not.toContain("__proto__");
   });
+  it("a smuggled subAccountId is refused, never silently dropped", async () => {
+    const r = await call("create_contact", { name: "Smug2", subAccountId: "sa2" });
+    expect(r.status).toBe(400);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe("wrong_sub_account");
+    expect(mem.all().some((d) => d.path.startsWith("contacts/") && (d.data as { name?: string }).name === "Smug2")).toBe(false);
+  });
   it("smuggled tenancy/approval fields not persisted", async () => {
-    const r = await call("create_contact", { name: "Smug", subAccountId: "sa2", agencyId: "agX", approval: "outbound", surfaces: ["chat"], createdByUid: "victim" });
+    const r = await call("create_contact", { name: "Smug", agencyId: "agX", approval: "outbound", surfaces: ["chat"], createdByUid: "victim" });
     expect(r.status).toBe(200);
     const c = mem.all().find((d) => d.path.startsWith("contacts/") && (d.data as { name?: string }).name === "Smug")!;
     expect(c.data).toMatchObject({ subAccountId: "sa1", agencyId: "ag1" });
