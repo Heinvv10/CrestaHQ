@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import type { ApiAuthContext } from "@/lib/api/auth";
+import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { AUDIT_TARGET_TYPES, type AuditTargetType } from "@/lib/audit/types";
 
@@ -30,5 +30,34 @@ export async function recordAgentWrite(
       { field: "keyPrefix", before: null, after: auth.keyPrefix },
       ...Object.keys(args).map((field) => ({ field: `args.${field}`, before: null, after: "set" })),
     ],
+  });
+}
+
+/** How long an `agent.call` row is kept (swept by api-cleanup on `expiresAt`). */
+export const AGENT_CALL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * One `agent.call` row per call an agency key makes in a sub-account it
+ * reached, under `agencies/{id}/agentCalls` (client access: the rules'
+ * default deny): the key, the tool, the target and whether it reads or
+ * writes — never its args — so which clients an agency key read or changed
+ * is reconstructable. Written before the call runs; a throw fails the call.
+ */
+export async function recordAgentCall(
+  auth: Pick<AgencyApiAuthContext, "agencyId" | "keyId" | "keyPrefix">,
+  tool: string,
+  subAccountId: string,
+  readonly: boolean
+): Promise<void> {
+  const now = Date.now();
+  await getAdminDb().collection(`agencies/${auth.agencyId}/agentCalls`).add({
+    action: "agent.call",
+    keyId: auth.keyId,
+    keyPrefix: auth.keyPrefix,
+    tool,
+    subAccountId,
+    access: readonly ? "read" : "write",
+    at: new Date(now),
+    expiresAt: new Date(now + AGENT_CALL_TTL_MS),
   });
 }

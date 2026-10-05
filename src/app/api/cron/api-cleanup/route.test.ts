@@ -25,6 +25,10 @@ function loadFieldOverrides(): FieldOverride[] {
 }
 
 describe("firestore.indexes.json covers the api-cleanup expiresAt sweeps", () => {
+  it("sweeps the agency agent.call rows (agencies/{id}/agentCalls, A3b)", () => {
+    expect(EXPIRES_AT_COLLECTION_GROUPS).toContain("agentCalls");
+  });
+
   it.each(EXPIRES_AT_COLLECTION_GROUPS)(
     "has a COLLECTION_GROUP ascending expiresAt override for %s",
     (collectionGroup) => {

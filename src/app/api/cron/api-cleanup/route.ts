@@ -49,12 +49,14 @@ export const EXPIRES_AT_COLLECTION_GROUPS = [
   "webhookEvents",
   // Consumed community magic links (one row per sign-in; dead after 15 min).
   "communityMagicLinkUses",
+  // Agency agent keys' agent.call audit rows (agencies/{id}/agentCalls, 30 days).
+  "agentCalls",
 ] as const;
 
 // Named so the sweeps below read from this constant instead of repeating the
 // string literal — a new sweep added without a matching entry here (and thus
 // without an index) fails the coverage test instead of shipping silently.
-const [API_REQUEST_LOGS, API_IDEMPOTENCY, WEBHOOK_EVENTS, COMMUNITY_MAGIC_LINK_USES] =
+const [API_REQUEST_LOGS, API_IDEMPOTENCY, WEBHOOK_EVENTS, COMMUNITY_MAGIC_LINK_USES, AGENT_CALLS] =
   EXPIRES_AT_COLLECTION_GROUPS;
 
 interface SweepResult {
@@ -226,6 +228,7 @@ export async function runApiCleanup() {
     [API_IDEMPOTENCY, () => sweepIdempotency(now)],
     [WEBHOOK_EVENTS, () => sweepWebhookEvents(now)],
     [COMMUNITY_MAGIC_LINK_USES, () => sweepFlatCollection(COMMUNITY_MAGIC_LINK_USES, now)],
+    [AGENT_CALLS, () => sweepFlatCollection(AGENT_CALLS, now)],
     ["reviewFeedback/pii", () => scrubReviewFeedbackPii(now)],
     // Watchdog run logs older than 30 days (Labs custom agent).
     [
