@@ -128,12 +128,12 @@ describe("the key's standing is read INSIDE the creating transaction", () => {
     // Firestore retries a transaction whose reads changed before it committed:
     // the in-memory fake does the same, so the revoke lands mid-attempt here.
     const real = mem.db.runTransaction.bind(mem.db);
-    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(((fn: (tx: unknown) => Promise<unknown>) =>
-      real(async (tx: never) => {
+    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementationOnce((fn) =>
+      real(async (tx) => {
         const out = await fn(tx);
         mem.seed("agencies/ag1/apiKeys/ak1", { agencyId: "ag1", createdByUid: "owner1", revokedAt: new Date() });
         return out;
-      })) as typeof mem.db.runTransaction);
+      }));
     try {
       expect(await create("Smoke Raced")).toMatchObject({ ok: false, code: "invalid_request", httpStatus: 400 });
     } finally {
