@@ -11,6 +11,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  */
 
 const mem = createMemoryFirestore();
+const SA1 = { level: "sub-account", subAccountId: "sa1" } as const;
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
 const { withApiAuth } = await import("./auth");
@@ -123,7 +124,7 @@ it("a process whose reservation was taken over cannot overwrite or delete the ne
   const { reserveIdempotencyKey } = await import("./idempotency");
   handler.mockResolvedValue(NextResponse.json({ id: "new" }, { status: 201 }));
   const fp = fingerprintRequest("POST", "/api/v1/things", "{}");
-  const old = await reserveIdempotencyKey("sa1", "live", "k1", "paused", fp);
+  const old = await reserveIdempotencyKey(SA1, "live", "k1", "paused", fp);
   if (old.kind !== "reserved") throw new Error(`expected a reservation, got ${old.kind}`);
   const [doc] = mem.list(IDEM);
   const { id, ...data } = doc;

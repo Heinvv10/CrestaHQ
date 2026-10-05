@@ -93,7 +93,7 @@ describe("list_companies at its cap", () => {
 describe("allowlist and doc shape", () => {
   it("create_company writes the dashboard's doc shape; tenancy keys come from the key, never the args", async () => {
     const r = await dispatchAgentTool(auth, "create_company", {
-      name: " New Co ", email: "hi@new.co", agencyId: "evil", subAccountId: "sa2", createdByUid: "x", createdAt: "then", rogue: "x",
+      name: " New Co ", email: "hi@new.co", agencyId: "evil", createdByUid: "x", createdAt: "then", rogue: "x",
     });
     expect(r).toMatchObject({ ok: true, ref: { kind: "company" } });
     const doc = mem.read(`companies/${(r as { ref: { id: string } }).ref.id}`)!;
@@ -108,7 +108,7 @@ describe("allowlist and doc shape", () => {
 
   it("update_company writes only the form fields", async () => {
     await dispatchAgentTool(auth, "update_company", {
-      companyId: "co1", website: "acme.io", subAccountId: "sa2", agencyId: "evil", createdByUid: "x",
+      companyId: "co1", website: "acme.io", agencyId: "evil", createdByUid: "x",
     });
     expect(mem.read("companies/co1")).toMatchObject({ ...ACME, website: "acme.io" });
   });

@@ -24,6 +24,7 @@ import {
 } from "@/lib/api/versions";
 import {
   fingerprintRequest,
+  idempotencyOwner,
   isValidIdempotencyKey,
   reserveIdempotencyKey,
   type IdempotencyReservation,
@@ -88,16 +89,23 @@ interface ApiAuthFields extends ResponseMeta {
   enrolmentCapPerHour: number;
 }
 
-/** A sub-account key: every v1 route and the agent transports run on this. */
+/**
+ * A context with a sub-account: every v1 route and the agent transports run
+ * on this. `level` says the context has a sub-account; `keyLevel` says where
+ * the key lives — an agency key that dispatch scoped to a target it may
+ * reach (`resolveReach`) has a `subAccountId` but `keyLevel: "agency"`.
+ */
 export interface ApiAuthContext extends ApiAuthFields {
   level: "sub-account";
   subAccountId: string;
+  keyLevel: "sub-account" | "agency";
 }
 
-/** An agency key: reaches no sub-account of its own. */
+/** An agency key, not scoped to any sub-account. */
 export interface AgencyApiAuthContext extends ApiAuthFields {
   level: "agency";
   subAccountId: null;
+  keyLevel: "agency";
 }
 
 export interface WithApiAuthOptions {
@@ -121,10 +129,11 @@ export interface WithApiAuthOptions {
   /**
    * Runs after auth, scope and rate limit, BEFORE the idempotency lookup: a
    * non-null response ends the request (and is never cached). The agent
-   * tools routes check test mode and the Agent API gate here, so an
-   * idempotent replay can't outlive a gate switched off.
+   * tools routes check test mode and the Agent API gate here — and, for an
+   * agency key, its reach to the body's `subAccountId` — so an idempotent
+   * replay can't outlive a gate switched off.
    */
-  precheck?: (ctx: ApiAuthContext) => Promise<NextResponse | null>;
+  precheck?: (ctx: ApiAuthContext, body: unknown) => Promise<NextResponse | null>;
   /**
    * Per-request veto of the idempotency cache (default: cache as usual).
    * The agent tools route returns false for read tools (a read is naturally
@@ -285,8 +294,8 @@ export async function authenticateApiRequest(
     apiVersion: resolved.version,
   };
   return candidate.level === "agency"
-    ? { ...fields, level: "agency", subAccountId: null }
-    : { ...fields, level: "sub-account", subAccountId: candidate.subAccountId };
+    ? { ...fields, level: "agency", subAccountId: null, keyLevel: "agency" }
+    : { ...fields, level: "sub-account", subAccountId: candidate.subAccountId, keyLevel: "sub-account" };
 }
 
 /**
@@ -529,7 +538,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     if (opts.precheck) {
       let refused: NextResponse | null;
       try {
-        refused = await opts.precheck(ctx);
+        refused = await opts.precheck(ctx, body);
       } catch (err) {
         // Same as a throwing handler: a logged, generic v1 internal_error —
         // never the raw error, never cached (the lookup hasn't run yet).
@@ -592,7 +601,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       let found: IdempotencyReservation;
       try {
         found = await reserveIdempotencyKey(
-          ctx.subAccountId,
+          idempotencyOwner(ctx),
           ctx.mode,
           ctx.keyId,
           idempotencyKey!,

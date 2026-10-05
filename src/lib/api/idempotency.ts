@@ -4,6 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { ApiKeyMode } from "@/types/api";
+import type { ApiKeyOwner } from "@/lib/firestore/api-keys";
+import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 
 /**
  * Idempotency cache for the public API.
@@ -26,7 +28,9 @@ import type { ApiKeyMode } from "@/types/api";
  * Mode-namespaced so a test-mode replay can't ever return a cached live
  * response.
  *
- * Storage: `subAccounts/{id}/apiIdempotency/{docId}` where docId is
+ * Storage: `subAccounts/{id}/apiIdempotency/{docId}` — for an agency key,
+ * whichever sub-account it targets, `agencies/{id}/apiIdempotency/{docId}` —
+ * where docId is
  * `<mode>_<keyId>_<sha-of-idempotencyKey>` — keeps the operator-supplied
  * idempotency key out of Firestore doc ids (which would show up in any
  * admin export). Server-only; Firestore rules deny client read/write.
@@ -92,10 +96,20 @@ function tsToDate(ts: Timestamp | Date | null | undefined): Date | null {
   return null;
 }
 
-function refFor(subAccountId: string, mode: ApiKeyMode, keyId: string, idempotencyKey: string) {
-  return getAdminDb()
-    .collection("subAccounts")
-    .doc(subAccountId)
+/** Where a key's Idempotency-Keys live: by the level of the key, never by
+ *  the sub-account an agency key targets. */
+export function idempotencyOwner(ctx: ApiAuthContext | AgencyApiAuthContext): ApiKeyOwner {
+  return ctx.keyLevel === "agency"
+    ? { level: "agency", agencyId: ctx.agencyId }
+    : { level: "sub-account", subAccountId: ctx.subAccountId };
+}
+
+function refFor(owner: ApiKeyOwner, mode: ApiKeyMode, keyId: string, idempotencyKey: string) {
+  const parent =
+    owner.level === "agency"
+      ? getAdminDb().collection("agencies").doc(owner.agencyId)
+      : getAdminDb().collection("subAccounts").doc(owner.subAccountId);
+  return parent
     .collection("apiIdempotency")
     .doc(docIdFor(mode, keyId, idempotencyKey));
 }
@@ -136,14 +150,14 @@ export type IdempotencyReservation =
  * gets outcome_unknown and never re-runs an action that may have happened.
  */
 export async function reserveIdempotencyKey(
-  subAccountId: string,
+  owner: ApiKeyOwner,
   mode: ApiKeyMode,
   keyId: string,
   idempotencyKey: string,
   requestFingerprint: string,
 ): Promise<IdempotencyReservation> {
   const db = getAdminDb();
-  const ref = refFor(subAccountId, mode, keyId, idempotencyKey);
+  const ref = refFor(owner, mode, keyId, idempotencyKey);
   const reservationId = randomBytes(12).toString("hex");
   const found = await db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);

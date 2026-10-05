@@ -219,7 +219,7 @@ describe("no oracle, one predicate", () => {
   it("parity: GET /tools lists exactly the names dispatch accepts, over the whole registry", async () => {
     const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
     const auth = {
-      level: "sub-account" as const, agencyId: "ag1", subAccountId: "sa1", keyId: `k${keySeq}`, keyPrefix: "x", keyName: "k", mode: "live" as const,
+      level: "sub-account" as const, keyLevel: "sub-account" as const, agencyId: "ag1", subAccountId: "sa1", keyId: `k${keySeq}`, keyPrefix: "x", keyName: "k", mode: "live" as const,
       scopes: ["agent" as const], enrolmentCapPerHour: 50, requestId: "r", apiVersion: "2026-01-01",
     };
     const accepted: string[] = [];
