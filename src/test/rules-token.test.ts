@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * The rules tests' shared OAuth token: one mint per process however many
- * evaluate() calls ask, network errors retried with backoff, anything else
- * thrown at once. firebase-admin's `cert` is mocked; nothing leaves the box.
+ * The rules tests' OAuth token: network errors and hung attempts retried
+ * with backoff, anything else thrown at once, and calls within one module
+ * instance (one test file) deduped. firebase-admin's `cert` is mocked;
+ * nothing leaves the box.
  */
 
 const getAccessToken = vi.fn<() => Promise<{ access_token: string }>>();
@@ -36,7 +37,7 @@ async function settle<T>(p: Promise<T>): Promise<T> {
 }
 
 describe("rulesAccessToken", () => {
-  it("mints once for many concurrent and later callers", async () => {
+  it("within one module instance (one test file), mints once for concurrent and later callers", async () => {
     getAccessToken.mockResolvedValue({ access_token: "t1" });
     const all = await settle(Promise.all(Array.from({ length: 20 }, () => rulesAccessToken(CREDS))));
     expect(new Set(all)).toEqual(new Set(["t1"]));
@@ -59,6 +60,19 @@ describe("rulesAccessToken", () => {
     expect(getAccessToken).toHaveBeenCalledTimes(4);
     getAccessToken.mockReset().mockResolvedValue({ access_token: "t3" });
     expect(await settle(rulesAccessToken(CREDS))).toBe("t3");
+  });
+
+  it("an attempt that never answers is given up on after 10 s and retried", async () => {
+    getAccessToken.mockReturnValueOnce(new Promise(() => {})).mockResolvedValueOnce({ access_token: "t4" });
+    expect(await settle(rulesAccessToken(CREDS))).toBe("t4");
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+  });
+
+  it("the worst-case budget fits the rules config's hookTimeout", async () => {
+    const { MAX_TOKEN_MS } = await import("./rules-token");
+    const config = (await import("../../vitest.rules.config.mts")).default as { test?: { hookTimeout?: number } };
+    expect(MAX_TOKEN_MS).toBe(47_000);
+    expect(config.test?.hookTimeout).toBeGreaterThan(MAX_TOKEN_MS);
   });
 
   it("throws anything that is not a network error at once (a bad key is not retried)", async () => {
