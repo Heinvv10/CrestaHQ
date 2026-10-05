@@ -163,9 +163,10 @@ export const WORKFLOW_TEMPLATES: Record<WorkflowTemplate, string> = {
  * the sub-account's live Resend sending domain; that destructive path stays
  * in the Manage dialog where its warning UI lives.
  *
- * `assistantMayEnable: false` — the assistant (and Agent API keys, which run
- * the same capability) may switch the gate OFF but never ON; enabling stays
- * with the agency owner in the Manage dialog.
+ * `assistantMayEnable: false` — the assistant may switch the gate OFF but
+ * never ON; enabling stays with the agency owner in the Manage dialog. Agent
+ * API keys never run `set_feature_gate`: it is agency-level and not in
+ * AGENCY_AGENT_CALLABLE, so it is chat-only.
  */
 export const FEATURE_GATES: Record<
   string,
