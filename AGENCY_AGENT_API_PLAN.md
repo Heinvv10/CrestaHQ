@@ -233,6 +233,11 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   (`outbound`) pins email + role and shows "existing member: role X → Y" or "added
   immediately, nothing to accept" (REVISED, P1-8). `create_billing_plan` bills
   nobody: direct, joins the set in A4b.
+- **REVISED 2026-10-05 (A3b review, carry-forward to A5):** `proposalId` is
+  action-scoped, not key-scoped, so an agency-key row frozen by its key's standing
+  (switch off or minter removed → approve 403) is what a sub-account key re-proposing
+  the same action gets back, until someone rejects it or it expires. A5 decides
+  whether the decide routes or `createProposal` should roll such a row over.
 
 ### D5 — the per-key questions
 

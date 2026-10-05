@@ -5,7 +5,7 @@ import type { AiSuiteCapability } from "@/lib/ai-suite/capabilities";
 /**
  * POST /api/v1/tools/{name} for an agency key, through the REAL withApiAuth
  * (key hash, kill switch, precheck, idempotency, request log) and the real
- * handler, opted in with allowAgencyKey as the route will be in A3b. Logs:
+ * handler, opted in with allowAgencyKey as the route is (A3b). Logs:
  * under the target only once reach let the call through — every outcome
  * after that, a refusal or a throw included — else under the agency, as MCP.
  */
