@@ -133,7 +133,7 @@ export interface WithApiAuthOptions {
    * agency key, its reach to the body's `subAccountId` — so an idempotent
    * replay can't outlive a gate switched off.
    */
-  precheck?: (ctx: ApiAuthContext, body: unknown) => Promise<NextResponse | null>;
+  precheck?: (ctx: ApiAuthContext | AgencyApiAuthContext, body: unknown) => Promise<NextResponse | null>;
   /**
    * Per-request veto of the idempotency cache (default: cache as usual).
    * The agent tools route returns false for read tools (a read is naturally
@@ -153,17 +153,29 @@ export interface WithApiAuthOptions {
    *  (default true). The agent tools route sets false: a tool name is a
    *  registry key, never a path, and a bad one is the unknown-tool 404. */
   docIdParams?: boolean;
+  /** Take agency keys too (default: refuse them, 403 agency_key_not_allowed).
+   *  The handler then gets an agency ctx, whose request log lands under the
+   *  agency unless the handler names its target with `logUnder`. */
+  allowAgencyKey?: boolean;
 }
 
-export interface ApiHandlerInput<P extends Record<string, string> = Record<string, string>> {
+export interface ApiHandlerInput<
+  P extends Record<string, string> = Record<string, string>,
+  C extends ApiAuthContext | AgencyApiAuthContext = ApiAuthContext,
+> {
   request: Request;
   params: P;
   /** Parsed JSON body, or null when body is empty / not JSON. */
   body: unknown;
   /** Raw body string. Used by idempotency fingerprinting. */
   rawBody: string;
-  ctx: ApiAuthContext;
+  ctx: C;
+  /** Agency key: the sub-account its call was scoped to once `resolveReach`
+   *  let it through — the request log lands there, not under the agency. */
+  logUnder: (subAccountId: string) => void;
 }
+
+type ApiRoute<P> = (request: Request, routeCtx: { params?: Promise<P> }) => Promise<NextResponse>;
 
 const METHODS_WITH_IDEMPOTENCY = new Set(["POST", "PATCH", "DELETE", "PUT"]);
 
@@ -410,7 +422,7 @@ export function refuseAgencyKey(
  * `withApiAuth` HOF call this directly after `authenticateApiRequest`.
  */
 export function requireApiScope(
-  ctx: ApiAuthContext,
+  ctx: ApiAuthContext | AgencyApiAuthContext,
   scope: ApiKeyScope,
 ): NextResponse | null {
   if (ctx.scopes.includes(scope)) return null;
@@ -435,11 +447,16 @@ export function requireApiScope(
  */
 export function withApiAuth<P extends Record<string, string> = Record<string, string>>(
   handler: (input: ApiHandlerInput<P>) => Promise<NextResponse>,
+  opts?: WithApiAuthOptions & { allowAgencyKey?: false },
+): ApiRoute<P>;
+export function withApiAuth<P extends Record<string, string> = Record<string, string>>(
+  handler: (input: ApiHandlerInput<P, ApiAuthContext | AgencyApiAuthContext>) => Promise<NextResponse>,
+  opts: WithApiAuthOptions & { allowAgencyKey: true },
+): ApiRoute<P>;
+export function withApiAuth<P extends Record<string, string> = Record<string, string>>(
+  handler: (input: ApiHandlerInput<P, ApiAuthContext>) => Promise<NextResponse>,
   opts: WithApiAuthOptions = {},
-): (
-  request: Request,
-  routeCtx: { params?: Promise<P> },
-) => Promise<NextResponse> {
+): ApiRoute<P> {
   const requireScope: ApiKeyScope = opts.requireScope ?? "admin";
 
   return async (request, routeCtx) => {
@@ -452,8 +469,11 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       // to write under). The 401 response itself is the audit record.
       return ctxOrErr;
     }
-    if (ctxOrErr.level === "agency") return refuseAgencyKey(ctxOrErr, request, start);
+    if (ctxOrErr.level === "agency" && !opts.allowAgencyKey) return refuseAgencyKey(ctxOrErr, request, start);
     const ctx = ctxOrErr;
+    // null (an agency ctx): the agency's log, until the handler names a
+    // target it reached (`logUnder`).
+    let logSubAccountId: string | null = ctx.subAccountId;
 
     // Read the body BEFORE any other branching — every subsequent exit
     // point (scope-fail, rate-limit-fail, idempotency-replay, handler) needs
@@ -481,7 +501,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
               .json()
               .catch(() => null);
       void captureRequestLog({
-        subAccountId: ctx.subAccountId,
+        subAccountId: logSubAccountId,
         agencyId: ctx.agencyId,
         keyId: ctx.keyId,
         keyPrefix: ctx.keyPrefix,
@@ -673,7 +693,10 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
     let response: NextResponse | undefined;
     try {
       try {
-        response = await handler({ request, params, body, rawBody, ctx });
+        const logUnder = (subAccountId: string) => void (logSubAccountId = subAccountId);
+        // An agency ctx gets here only with allowAgencyKey, whose overload
+        // types the handler for it.
+        response = await handler({ request, params, body, rawBody, ctx: ctx as ApiAuthContext, logUnder });
       } catch (err) {
         console.error("[api/v1] handler threw", err);
         await releaseReservation();

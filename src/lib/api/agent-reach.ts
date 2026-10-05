@@ -24,10 +24,12 @@ export function isReachable(
 /**
  * The tenancy boundary for an agency key: the target `subAccountId` it sent,
  * read fresh, or null when it may not act there. Runs on every
- * `subAccountId` an agency key sends, before any capability code.
+ * `subAccountId` an agency key sends, before any capability code. An id
+ * with surrounding whitespace is refused: capabilities read ids trimmed, so
+ * the id checked here must already be the id they use.
  */
 export async function resolveReach(agencyId: string, subAccountId: unknown): Promise<string | null> {
-  if (!isDocId(subAccountId)) return null;
+  if (!isDocId(subAccountId) || subAccountId !== subAccountId.trim()) return null;
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   return isReachable(snap.data(), agencyId) ? subAccountId : null;
 }

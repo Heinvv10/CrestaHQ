@@ -13,7 +13,9 @@ import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
 
 const { AI_SUITE_CAPABILITIES, getCapability } = await import("@/lib/ai-suite/capabilities");
-const { AGENCY_AGENT_CALLABLE, agencyAgentCallable, agentCallable } = await import("./agent-dispatch");
+const { AGENCY_AGENT_CALLABLE, agencyAgentCallable, agentCallable, isAgentReadTool, isAgentWriteTool } = await import(
+  "./agent-dispatch"
+);
 const { agentToolsFor } = await import("./agent-tools-listing");
 
 const EXPECTED_AGENCY_CALLABLE = ["list_sub_accounts", "sub_account_stats"];
@@ -31,6 +33,23 @@ describe("the agency-callable set", () => {
   it("computed from the registry equals the named set exactly", () => {
     expect(AI_SUITE_CAPABILITIES.filter(agencyAgentCallable).map((c) => c.name).sort()).toEqual(EXPECTED_AGENCY_CALLABLE);
     expect([...AGENCY_AGENT_CALLABLE].sort()).toEqual(EXPECTED_AGENCY_CALLABLE);
+  });
+});
+
+describe("read/write classification covers the agency level", () => {
+  it("every agency-callable member is a plain read: readonly, no approval class", () => {
+    for (const name of AGENCY_AGENT_CALLABLE) {
+      const cap = getCapability(name)!;
+      expect(cap.readonly, name).toBe(true);
+      expect(cap.approval ?? cap.approvalFor, name).toBeUndefined();
+    }
+  });
+
+  it("so isAgentReadTool counts them as reads (never cached), isAgentWriteTool as no write", () => {
+    for (const name of AGENCY_AGENT_CALLABLE) {
+      expect(isAgentReadTool(name), name).toBe(true);
+      expect(isAgentWriteTool(name), name).toBe(false);
+    }
   });
 });
 

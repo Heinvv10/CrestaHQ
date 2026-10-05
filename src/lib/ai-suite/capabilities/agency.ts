@@ -30,21 +30,13 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     validate: () => ({ ok: true, args: {} }),
     summarize: () => "List the sub-accounts in this agency.",
     execute: async (ctx) => {
-      const mine = getAdminDb()
-        .collection("subAccounts")
-        .where("agencyId", "==", ctx.agencyId);
-      // An agent key lists only what it can reach, filtered BEFORE the row
-      // cap so unreachable sub-accounts can't crowd reachable ones out.
+      const mine = getAdminDb().collection("subAccounts").where("agencyId", "==", ctx.agencyId);
+      // An agent key lists only what it can reach, filtered BEFORE the 50-row cap.
       const docs = ctx.apiKey
         ? (await mine.get()).docs.filter((d) => isReachable(d.data(), ctx.agencyId)).slice(0, 50)
         : (await mine.limit(50).get()).docs;
-      if (docs.length === 0) {
-        return {
-          resultText: ctx.apiKey
-            ? "No sub-account in this agency is available to this key."
-            : "This agency has no sub-accounts yet.",
-        };
-      }
+      const none = ctx.apiKey ? "No sub-account in this agency is available to this key." : "This agency has no sub-accounts yet.";
+      if (docs.length === 0) return { resultText: none };
       const lines = docs.map((d) => {
         const data = d.data();
         const gates = enabledGateLabels(data);

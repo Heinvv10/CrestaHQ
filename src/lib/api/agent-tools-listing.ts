@@ -52,15 +52,16 @@ export function agencyAgentCallable(cap: AiSuiteCapability): boolean {
  *  name's args may be too (a misspelled read), so neither is logged. */
 export function isAgentWriteTool(name: string): boolean {
   const cap = getCapability(name);
-  return !!cap && agentCallable(cap) && cap.readonly !== true;
+  return !!cap && (agentCallable(cap) || agencyAgentCallable(cap)) && cap.readonly !== true;
 }
 
-/** A read tool the key may call. Anything else — including a chat-only or
+/** A read tool a key may call, at either level — so an agency-level read is
+ *  never cached as an idempotent reply either. Anything else — including a chat-only or
  *  unknown name — is treated alike, so the REST and MCP hooks can't reveal
  *  which exist. */
 export function isAgentReadTool(name: string): boolean {
   const cap = getCapability(name);
-  return !!cap && agentCallable(cap) && cap.readonly === true;
+  return !!cap && (agentCallable(cap) || agencyAgentCallable(cap)) && cap.readonly === true;
 }
 
 /** The `subAccountId` an agency key names on every sub-account tool. */

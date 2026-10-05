@@ -61,8 +61,9 @@ export type AgentDispatchResult = (
   | { ok: false; code: string; httpStatus: number; message: string }
 ) & {
   /** Agency key only: the sub-account the call was scoped to, set once
-   *  `resolveReach` let it through — the only place its request log may
-   *  land. Absent for agency-level calls and refusals before reach. */
+   *  `resolveReach` let it through — every outcome after that, a refusal
+   *  included, logs there. Absent for agency-level calls and refusals at
+   *  or before reach, which log under the agency. */
   scopedTo?: string;
 };
 
@@ -102,16 +103,21 @@ export async function dispatchAgentTool(
   try {
     return await dispatch(auth, name, rawArgs);
   } catch (err) {
-    if (err instanceof CapabilityUserError) {
-      return refuse("invalid_request", 400, err.message);
-    }
-    // `name` is caller-supplied: quote and cap it so it cannot forge log lines.
-    console.error(
-      `[agent-dispatch] ${JSON.stringify(String(name).slice(0, 80))} failed:`,
-      err
-    );
-    return refuse("internal_error", 500, "The tool failed to run.");
+    return failure(name, err);
   }
+}
+
+/** A throw from the pipeline, as the refusal described above. */
+function failure(name: string, err: unknown): AgentDispatchResult {
+  if (err instanceof CapabilityUserError) {
+    return refuse("invalid_request", 400, err.message);
+  }
+  // `name` is caller-supplied: quote and cap it so it cannot forge log lines.
+  console.error(
+    `[agent-dispatch] ${JSON.stringify(String(name).slice(0, 80))} failed:`,
+    err
+  );
+  return refuse("internal_error", 500, "The tool failed to run.");
 }
 
 async function dispatch(
@@ -153,11 +159,8 @@ async function dispatch(
     "subAccountId" in rawArgs &&
     (rawArgs as { subAccountId: unknown }).subAccountId !== auth.subAccountId
   ) {
-    return refuse(
-      "wrong_sub_account",
-      400,
-      "This key belongs to one sub-account and cannot act in another. Omit subAccountId."
-    );
+    const message = "This key belongs to one sub-account and cannot act in another. Omit subAccountId.";
+    return refuse("wrong_sub_account", 400, message);
   }
 
   const cap = getCapability(name);
@@ -174,19 +177,15 @@ async function dispatchForAgencyKey(
   // per HTTP request; an MCP batch makes several calls).
   const agency = await getAdminDb().doc(`agencies/${auth.agencyId}`).get();
   if (agency.data()?.agentApiEnabled !== true) {
-    return refuse(
-      "agent_api_disabled",
-      403,
-      "The Agent API is switched off for this agency. The agency owner can switch it on in Agency settings."
-    );
+    const message = "The Agent API is switched off for this agency. The agency owner can switch it on in Agency settings.";
+    return refuse("agent_api_disabled", 403, message);
   }
   const cap = getCapability(name);
-  const args =
-    rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
-      ? (rawArgs as Record<string, unknown>)
-      : {};
+  const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) ? (rawArgs as Record<string, unknown>) : {};
 
   if (cap && agencyAgentCallable(cap)) {
+    // No proposal path at the agency level yet: only plain reads run here.
+    if (!cap.readonly || cap.approval || cap.approvalFor) return notAvailable();
     // Reach runs on ANY subAccountId an agency-level call carries.
     if ("subAccountId" in args && !(await resolveReach(auth.agencyId, args.subAccountId))) {
       return noSuchSubAccount();
@@ -208,7 +207,9 @@ async function dispatchForAgencyKey(
   const target = await resolveReach(auth.agencyId, subAccountId);
   if (!target) return noSuchSubAccount();
   const scoped: ApiAuthContext = { ...auth, level: "sub-account", subAccountId: target, keyLevel: "agency" };
-  return { ...(await runInSubAccount(scoped, cap, rest)), scopedTo: target };
+  // Past reach every outcome — a throw included — belongs to the target.
+  const result = await runInSubAccount(scoped, cap, rest).catch((err: unknown) => failure(cap.name, err));
+  return { ...result, scopedTo: target };
 }
 
 /** The sub-account pipeline: validate, then queue for approval or execute. */

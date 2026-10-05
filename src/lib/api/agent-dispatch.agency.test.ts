@@ -13,19 +13,21 @@ import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-dispatch-harness")).adminMock());
 
-const { dispatchAgentTool, agencyAgentCallable, agentCallable } = await import("./agent-dispatch");
+const { dispatchAgentTool, agencyAgentCallable, agentCallable, AGENCY_AGENT_CALLABLE } = await import("./agent-dispatch");
 const { agentPrecheck } = await import("./agent-precheck");
 const { handleMcpRequest } = await import("./agent-mcp");
 const { idempotencyOwner, reserveIdempotencyKey } = await import("./idempotency");
-const { AI_SUITE_CAPABILITIES, getCapability } = await import("@/lib/ai-suite/capabilities");
+const { AI_SUITE_CAPABILITIES, CapabilityUserError, getCapability } = await import("@/lib/ai-suite/capabilities");
 
 setupDispatchTests();
 
 const agencyKey: AgencyApiAuthContext = { ...subKey, level: "agency", subAccountId: null, keyLevel: "agency", keyId: "ak1" };
 const ON = { apiAccessEnabledByAgency: true, agentApiEnabledByAgency: true };
 const NOT_FOUND = { ok: false, code: "not_found", httpStatus: 404, message: "No such sub-account is available to this key." };
-// sa2: another agency's · sa3: Agent API off · sa5: API access off · then no doc, and a path.
-const UNREACHABLE = ["sa2", "sa3", "sa5", "sa_missing", "sa1/contacts/c1"];
+// sa2: another agency's · sa3: Agent API off · sa5: API access off · no doc ·
+// a path to a doc that looks reachable · untrimmed ids, one of them a
+// reachable doc whose trimmed id (sa3) is not.
+const UNREACHABLE = ["sa2", "sa3", "sa5", "sa_missing", "sa1/contacts/c1", " sa1", "sa3 "];
 
 beforeEach(() => {
   mem.seed("agencies/ag1", { agentApiEnabled: true });
@@ -33,6 +35,8 @@ beforeEach(() => {
   mem.seed("subAccounts/sa2", { agencyId: "ag2", name: "Two", ...ON });
   mem.seed("subAccounts/sa3", { agencyId: "ag1", name: "Three", ...ON, agentApiEnabledByAgency: false });
   mem.seed("subAccounts/sa5", { agencyId: "ag1", name: "Five", ...ON, apiAccessEnabledByAgency: false });
+  mem.seed("subAccounts/sa1/contacts/c1", { agencyId: "ag1", ...ON });
+  mem.seed("subAccounts/sa3 ", { agencyId: "ag1", name: "Three, untrimmed", ...ON });
   for (const [id, sa] of [["c1", "sa1"], ["c2", "sa2"], ["c3", "sa3"]]) {
     mem.seed(`contacts/${id}`, { agencyId: sa === "sa2" ? "ag2" : "ag1", subAccountId: sa, name: `Ann ${sa}`, createdAt: new Date() });
   }
@@ -108,6 +112,8 @@ describe("a reached call runs scoped to its target", () => {
   });
 
   it("list_sub_accounts lists reachable sub-accounts only, filtered before the 50-row cap", async () => {
+    // The untrimmed-id fixture is for reach only (auto-ids carry no whitespace).
+    await mem.db.doc("subAccounts/sa3 ").delete();
     for (let i = 0; i < 50; i++) mem.seed(`subAccounts/a${String(i).padStart(2, "0")}`, { agencyId: "ag1", name: `Off ${i}` });
     mem.seed("subAccounts/zz_last", { agencyId: "ag1", name: "Last", ...ON });
     const r = (await dispatchAgentTool(agencyKey, "list_sub_accounts", {})) as { resultText: string };
@@ -119,6 +125,32 @@ describe("a reached call runs scoped to its target", () => {
     const chat = await getCapability("list_sub_accounts")!.execute({ uid: "u", email: "", displayName: "", agencyId: "ag1" }, {});
     expect(chat.resultText).toContain("(50):");
     expect(chat.resultText).toContain("id: sa3.");
+  });
+});
+
+describe("an agency-level member without a proposal path", () => {
+  it.each([
+    ["a write", { readonly: false }],
+    ["a read with an approval class", { readonly: true, approval: "outbound" as const }],
+  ])("%s is not available, never executed", async (_label, shape) => {
+    const cap = await inject({ name: "__fixture_agency", level: "agency", requiredRole: "agencyOwner", ...shape });
+    const set = AGENCY_AGENT_CALLABLE as Set<string>;
+    set.add(cap.name);
+    try {
+      expect(await dispatchAgentTool(agencyKey, cap.name, {})).toMatchObject({ ok: false, code: "not_available" });
+    } finally {
+      set.delete(cap.name);
+    }
+    expect(cap.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe("past reach, every outcome keeps its target", () => {
+  it("a thrown CapabilityUserError → 400 with scopedTo", async () => {
+    await inject({ name: "__fixture_throw", execute: vi.fn(async () => { throw new CapabilityUserError("Not here."); }) });
+    expect(await dispatchAgentTool(agencyKey, "__fixture_throw", { subAccountId: "sa1" })).toEqual({
+      ok: false, code: "invalid_request", httpStatus: 400, message: "Not here.", scopedTo: "sa1",
+    });
   });
 });
 
@@ -135,14 +167,14 @@ describe("a sub-account key naming another sub-account", () => {
 });
 
 describe("logs and idempotency by level", () => {
-  const mcpCall = (subAccountId: string) =>
+  const mcpCall = (subAccountId: string, name = "find_contacts") =>
     handleMcpRequest(
       agencyKey,
       new Request("http://localhost/api/mcp", {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
       }),
-      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "find_contacts", arguments: { subAccountId, query: "ann" } } },
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: { subAccountId, query: "ann" } } },
     );
   const logPaths = () => mem.all().map((d) => d.path).filter((p) => p.includes("/apiRequestLogs/"));
   const settle = () => new Promise((r) => setTimeout(r, 10));
@@ -156,6 +188,14 @@ describe("logs and idempotency by level", () => {
     await settle();
     expect(logPaths().filter((p) => p.startsWith("subAccounts/sa1/apiRequestLogs/"))).toHaveLength(1);
     expect(logPaths().filter((p) => p.startsWith("subAccounts/") && !p.startsWith("subAccounts/sa1/"))).toEqual([]);
+  });
+
+  it("a call that throws past reach logs under its target, as on REST", async () => {
+    await inject({ name: "__fixture_throw", execute: vi.fn(async () => { throw new CapabilityUserError("Not here."); }) });
+    await mcpCall("sa1", "__fixture_throw");
+    await settle();
+    expect(logPaths()).toHaveLength(1);
+    expect(logPaths()[0]).toMatch(/^subAccounts\/sa1\/apiRequestLogs\//);
   });
 
   it("an agency key's Idempotency-Keys live under the agency, scoped or not", async () => {
