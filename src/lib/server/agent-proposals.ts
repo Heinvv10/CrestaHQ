@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agentKeyRef } from "@/lib/firestore/api-keys";
+import { agencyKeyStanding, type AgencyKeyStanding, type DocReader } from "@/lib/api/agency-key-standing";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
 import {
   canonical,
@@ -200,30 +201,71 @@ export async function transitionIf(
   });
 }
 
-/** The approve claim: `pending` → `executing`, for generation `rev` only. */
+/** Why a row may not be approved right now (beyond its own status). */
+export type ApprovalRefusal =
+  | "gate_off"
+  | "wrong_agency"
+  | "key_revoked"
+  | Exclude<AgencyKeyStanding, "ok">;
+
+/**
+ * Everything approving a row needs of the world beyond the row: both of its
+ * sub-account's Agent API gates on, an agency key's row in that sub-account's
+ * own agency, the proposing key (`agentKeyRef`) still unrevoked, and an
+ * agency key's standing (`agencyKeyStanding`). The ONE list behind the
+ * decide route's early refusal (plain reads) and the claim (`tx.get`), so a
+ * change committed between the two can never execute.
+ */
+export async function approvalRefusal(
+  row: FirebaseFirestore.DocumentData,
+  read: DocReader = (ref) => ref.get()
+): Promise<ApprovalRefusal | null> {
+  const sub = (await read(getAdminDb().doc(`subAccounts/${row.subAccountId}`))).data();
+  if (sub?.agentApiEnabledByAgency !== true || sub?.apiAccessEnabledByAgency !== true) return "gate_off";
+  // The key and standing reads below are keyed by an agency row's agencyId.
+  if (row.keyLevel === "agency" && row.agencyId !== sub.agencyId) return "wrong_agency";
+  const key = (await read(agentKeyRef(row))).data();
+  if (!key || key.revokedAt) return "key_revoked";
+  if (row.keyLevel !== "agency") return null;
+  const standing = await agencyKeyStanding(row.agencyId as string, key.createdByUid, read);
+  return standing === "ok" ? null : standing;
+}
+
+/**
+ * The approve claim: `pending` → `executing`, for generation `rev` only, and
+ * only while `approvalRefusal` still passes, re-read inside the same
+ * transaction. A revoked key rejects the row (`key_revoked`) in that
+ * transaction; any other refusal leaves it `pending`.
+ */
 export async function claimProposal(
   id: string,
   by: { uid: string; email: string },
   rev: string
-): Promise<{ claimId: string } | "conflict" | "stale"> {
+): Promise<{ claimId: string } | "conflict" | "stale" | ApprovalRefusal> {
   const claimedAt = new Date();
   // A random token, not the timestamp: two claims in one millisecond (a
   // re-proposal claimed right after) must never look like the same claim.
   const claimId = newRev();
-  const moved = await transitionIf(
-    id,
-    "pending",
-    {
+  const ref = proposalRef(id);
+  return getAdminDb().runTransaction(async (tx) => {
+    const cur = (await tx.get(ref)).data();
+    if (!cur || cur.status !== "pending") return "conflict";
+    if (cur.rev !== rev) return "stale";
+    const refusal = await approvalRefusal(cur, (r) => tx.get(r));
+    if (refusal === "key_revoked") {
+      tx.update(ref, { status: "rejected", reason: "key_revoked", decidedAt: claimedAt });
+    }
+    if (refusal) return refusal;
+    tx.update(ref, {
       status: "executing",
       claimedAt,
       claimId,
       decidedAt: claimedAt,
       decidedByUid: by.uid,
       decidedByEmail: by.email,
-    },
-    { rev }
-  );
-  return moved === "ok" ? { claimId } : moved;
+    });
+    return { claimId };
+  });
 }
 
 /** Store a freshly computed preview under a new `rev` (pending generation

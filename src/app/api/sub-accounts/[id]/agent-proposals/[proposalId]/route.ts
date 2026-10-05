@@ -3,8 +3,6 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { agentKeyRef } from "@/lib/firestore/api-keys";
-import { agencyKeyStanding, type AgencyKeyStanding } from "@/lib/api/agency-key-standing";
 import {
   CapabilityUserError,
   getCapability,
@@ -21,10 +19,12 @@ import {
   proposalTooLarge,
 } from "@/lib/server/agent-proposals-encoding";
 import {
+  approvalRefusal,
   claimProposal,
   MARK_MIN_AGE_MS,
   refreshPreview,
   transitionIf,
+  type ApprovalRefusal,
   type TransitionResult,
 } from "@/lib/server/agent-proposals";
 import { executeAndSettle } from "@/lib/server/agent-proposals-settle";
@@ -32,11 +32,16 @@ import { replayHeldEnrolment } from "@/lib/server/agent-enrolment-replay";
 import { currentHeldEnrolmentPreview } from "@/lib/server/agent-held-enrolment";
 
 const DECISIONS = ["approve", "reject", "mark_sent", "mark_not_sent"] as const;
-const STANDING_REFUSAL: Record<Exclude<AgencyKeyStanding, "ok">, string> = {
-  no_agency: "The agency of the API key that proposed this no longer exists.",
-  agent_api_disabled: "The Agent API is switched off for this agency.",
-  minter_removed: "The agency owner who minted the API key that proposed this is no longer an active owner.",
+/** Every approvalRefusal but key_revoked, which rejects the row instead. */
+const APPROVAL_REFUSAL: Record<Exclude<ApprovalRefusal, "key_revoked">, [number, string]> = {
+  gate_off: [403, "Agent API access is disabled for this sub-account."],
+  wrong_agency: [404, "Proposal not found"],
+  no_agency: [403, "The agency of the API key that proposed this no longer exists."],
+  agent_api_disabled: [403, "The Agent API is switched off for this agency."],
+  minter_removed: [403, "The agency owner who minted the API key that proposed this is no longer an active owner."],
 };
+const refusedApproval = (refusal: Exclude<ApprovalRefusal, "key_revoked">) =>
+  NextResponse.json({ error: APPROVAL_REFUSAL[refusal][1] }, { status: APPROVAL_REFUSAL[refusal][0] });
 type Decision = (typeof DECISIONS)[number];
 
 /**
@@ -45,10 +50,11 @@ type Decision = (typeof DECISIONS)[number];
  * access to the proposal's contact. `approve` also re-checks both agency
  * gates and the proposing key (for an agency key's row, also what auth
  * checks of it: its agency's Agent API switch and its minter still an
- * owner), re-computes the preview (a changed one is
+ * owner) — `approvalRefusal` — re-computes the preview (a changed one is
  * stored and refused, so the approver sees what will really happen), then
- * CLAIMS the row (`pending` → `executing` in a transaction) before running
- * anything, so two approvers can never both execute it. `reject` is legal
+ * CLAIMS the row (`pending` → `executing` in a transaction that re-reads
+ * `approvalRefusal`) before running anything, so two approvers can never
+ * both execute it, and nothing revoked or switched off meanwhile runs. `reject` is legal
  * only on `pending`; `mark_sent` / `mark_not_sent` only on `unsettled`. Every
  * decision but `reject` (refusing is always safe) names the row generation
  * (`rev`) the approver saw: a row re-proposed or refreshed since is 409
@@ -157,18 +163,21 @@ export async function POST(
   }
 
   // ── approve
-  const sub = (await db.doc(`subAccounts/${subAccountId}`).get()).data();
-  if (sub?.agentApiEnabledByAgency !== true || sub?.apiAccessEnabledByAgency !== true) {
-    return NextResponse.json(
-      { error: "Agent API access is disabled for this sub-account." },
-      { status: 403 },
+  // The key may have been revoked after this row was written (or its revoke
+  // sweep failed): the row dies with the key. The claim re-reads all of it.
+  const refusal = await approvalRefusal(proposal);
+  if (refusal === "key_revoked") {
+    const moved = await transitionIf(
+      proposalId,
+      "pending",
+      { status: "rejected", reason: "key_revoked", decidedAt: new Date() },
+      { rev },
     );
+    return moved === "ok"
+      ? NextResponse.json({ error: "key_revoked" }, { status: 409 })
+      : refused(moved);
   }
-  // An agency key's row belongs to the sub-account's own agency: the key
-  // re-read and the standing check below are keyed by the row's agencyId.
-  if (proposal.keyLevel === "agency" && proposal.agencyId !== sub.agencyId) {
-    return NextResponse.json({ error: "Proposal not found" }, { status: 404 });
-  }
+  if (refusal) return refusedApproval(refusal);
   const enrolment = proposal.approval === "workflow_enrolment";
   const args = proposal.args as Record<string, unknown>;
   // Enrolment rows store the held trigger input, not capability args.
@@ -180,27 +189,6 @@ export async function POST(
         { status: 400 },
       );
     }
-  }
-
-  // The key may have been revoked after this row was written (or its revoke
-  // sweep failed): the row dies with the key.
-  const key = (await agentKeyRef(proposal).get()).data();
-  if (!key || key.revokedAt) {
-    const moved = await transitionIf(
-      proposalId,
-      "pending",
-      { status: "rejected", reason: "key_revoked", decidedAt: new Date() },
-      { rev },
-    );
-    return moved === "ok"
-      ? NextResponse.json({ error: "key_revoked" }, { status: 409 })
-      : refused(moved);
-  }
-  // An agency key's row needs what auth needs of the key itself, read fresh:
-  // its agency's Agent API switch on and its minter still an active owner.
-  if (proposal.keyLevel === "agency") {
-    const standing = await agencyKeyStanding(proposal.agencyId as string, key.createdByUid);
-    if (standing !== "ok") return NextResponse.json({ error: STANDING_REFUSAL[standing] }, { status: 403 });
   }
 
   if ((millis(proposal.expiresAt) ?? Infinity) < Date.now()) {
@@ -275,7 +263,10 @@ export async function POST(
   }
 
   const claim = await claimProposal(proposalId, access, rev);
-  if (typeof claim === "string") return refused(claim);
+  if (claim === "conflict" || claim === "stale") return refused(claim);
+  // Revoked, switched off or gated between the checks above and the claim.
+  if (claim === "key_revoked") return NextResponse.json({ error: "key_revoked" }, { status: 409 });
+  if (typeof claim === "string") return refusedApproval(claim);
   const { claimId } = claim;
 
   const outcome = await executeAndSettle({
