@@ -51,6 +51,20 @@ describe("agency-callable validators keep subAccountId exactly where they got it
     // Never moved under another key, rewritten or not.
     expect(elsewhere(validated.args), name).not.toContain(SENTINEL.toLowerCase());
   });
+
+  // A trimming validator (str()) would hand execute an id reach never saw.
+  it.each(members.map((c) => [c.name, c] as const))("%s: a padded id is kept exactly or refused, never trimmed", (name, cap) => {
+    const padded = ` ${SENTINEL} `;
+    const validated = cap.validate({ ...OTHER_ARGS[name], subAccountId: padded });
+    if (!validated.ok) return;
+    if ("subAccountId" in validated.args) expect(validated.args.subAccountId, name).toBe(padded);
+    expect(elsewhere(validated.args), name).not.toContain(SENTINEL.toLowerCase());
+  });
+
+  it("sub_account_stats refuses a padded id (an exact one validates, above)", () => {
+    const v = AI_SUITE_CAPABILITIES.find((c) => c.name === "sub_account_stats")!.validate({ subAccountId: " sa1", subAccountName: "Acme" });
+    expect(v).toMatchObject({ ok: false, error: expect.stringContaining("no surrounding spaces") });
+  });
 });
 
 describe("a sub-account tool's validator never sees an agency key's subAccountId", () => {

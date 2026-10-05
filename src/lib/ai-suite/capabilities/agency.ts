@@ -81,6 +81,11 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     },
     validate: (raw) => {
       const subAccountId = str(raw, "subAccountId");
+      // Exact or refused, never trimmed: an agent call's reach was checked on
+      // the id as sent (resolveReach refuses padded ids too).
+      if (subAccountId && subAccountId !== (raw as Record<string, unknown>).subAccountId) {
+        return { ok: false, error: "the sub-account id must be exactly as list_sub_accounts returned it, with no surrounding spaces" };
+      }
       if (!subAccountId) {
         return {
           ok: false,
