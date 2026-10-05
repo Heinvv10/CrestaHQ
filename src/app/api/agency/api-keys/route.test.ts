@@ -74,11 +74,12 @@ describe("POST mint", () => {
     expect(docs[0]!.data).toMatchObject({ agencyId: "ag1", subAccountId: null, scopes: ["agent"], mode: "live", createdByUid: "owner1" });
   });
 
-  it("the minted key authenticates as an agency key (refused by the transport, not as invalid)", async () => {
+  it("the minted key authenticates as an agency key (MCP lists the agency tools, A3b)", async () => {
     const { key } = (await (await mint({ name: "k" })).json()) as MintBody;
     const res = await callMcp(key.secret!);
-    expect(res.status).toBe(403);
-    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("agency_key_not_allowed");
+    expect(res.status).toBe(200);
+    const { tools } = ((await res.json()) as { result: { tools: Array<{ name: string }> } }).result;
+    expect(tools.map((t) => t.name)).toContain("list_sub_accounts");
     // The fire-and-forget lastUsedAt bump must land here, not in the next test.
     await vi.waitFor(() => expect(mem.read(`agencies/ag1/apiKeys/${key.id}`)?.lastUsedAt).toBeTruthy());
   });

@@ -1,7 +1,12 @@
 import "server-only";
 
 import type { NextResponse } from "next/server";
-import { authenticateApiRequest, refuseAgencyKey, requireApiScope, type ApiAuthContext } from "@/lib/api/auth";
+import {
+  authenticateApiRequest,
+  requireApiScope,
+  type AgencyApiAuthContext,
+  type ApiAuthContext,
+} from "@/lib/api/auth";
 import { apiError } from "@/lib/api/responses";
 import { captureRequestLog } from "@/lib/api/logs";
 import { checkAndCount } from "@/lib/api/rate-limit";
@@ -22,14 +27,13 @@ import { MAX_AGENT_BODY_BYTES, readBodyCapped } from "@/lib/api/body-limit";
  * request that runs nothing still 1 — nothing is free. A batch that repeats a
  * JSON-RPC id is refused whole before any message runs.
  * GET (no server-initiated stream) and DELETE (no sessions) → 405.
- * An agency key is refused (403 agency_key_not_allowed, logged under the
- * agency) until the agency transport lands.
+ * An agency key is accepted: each call names its `subAccountId`, and the
+ * route-level refusals above log under the agency (no target yet).
  */
 export async function POST(request: Request): Promise<Response> {
   const start = Date.now();
   const auth = await authenticateApiRequest(request);
   if (auth instanceof Response) return auth;
-  if (auth.level === "agency") return refuseAgencyKey(auth, request, start);
 
   const refuse = (response: Response, code: string) => {
     void captureRequestLog({
@@ -107,7 +111,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-const internalError = (auth: ApiAuthContext) =>
+const internalError = (auth: ApiAuthContext | AgencyApiAuthContext) =>
   apiError(auth, "internal_error", "internal_error", "Something went wrong on our end. Quote this request_id in support.");
 
 /** Two requests (messages with a method and an id) sharing one id. */

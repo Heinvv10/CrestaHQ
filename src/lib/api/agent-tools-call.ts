@@ -30,8 +30,9 @@ const TYPE_FOR_STATUS: Record<number, ErrorType> = {
  * Agent API gate are checked before any cached reply (`agentPrecheck`).
  * An agency key's call logs under the sub-account dispatch scoped it to,
  * once reach let it through (`logUnder`), else under the agency — as MCP.
- * Lives here, not in the route file, so its agency-key path can be run
- * through the real withApiAuth before the route opts in.
+ * An idempotent replay never reaches dispatch, so an agency key's replay
+ * logs under the agency (no target was resolved for it) and writes no
+ * agent.call row — the original call wrote both.
  */
 export async function callAgentTool({
   ctx,
@@ -60,6 +61,8 @@ export async function callAgentTool({
 
 export const CALL_AGENT_TOOL_OPTIONS = {
   requireScope: "agent",
+  // Agency keys too: dispatch scopes each call to the subAccountId it names.
+  allowAgencyKey: true,
   maxBodyBytes: MAX_AGENT_BODY_BYTES,
   docIdParams: false,
   precheck: agentPrecheck,

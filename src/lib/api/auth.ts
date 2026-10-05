@@ -64,9 +64,10 @@ import type { ApiKeyDoc, ApiKeyMode, ApiKeyScope } from "@/types/api";
  * compare `doc.subAccountId` to `ctx.subAccountId` before returning.
  *
  * An agency key (`agencies/{id}/apiKeys`) authenticates as an
- * `AgencyApiAuthContext`, which has no sub-account. `withApiAuth` and
- * `/api/mcp` refuse it, so every handler still receives an `ApiAuthContext`
- * with a real `subAccountId`.
+ * `AgencyApiAuthContext`, which has no sub-account. `withApiAuth` refuses it
+ * unless the route opts in (`allowAgencyKey`: only the agent transports,
+ * whose dispatch scopes each call to a target it may reach), so every other
+ * handler still receives an `ApiAuthContext` with a real `subAccountId`.
  */
 
 interface ApiAuthFields extends ResponseMeta {
@@ -380,8 +381,8 @@ async function agencyKeyRefusal(
 }
 
 /**
- * The refusal for an agency key on a transport that takes sub-account keys
- * only (every one, until the agency transports land). Logged under
+ * The refusal for an agency key on a route that takes sub-account keys
+ * only (every `withApiAuth` route without `allowAgencyKey`). Logged under
  * `agencies/{id}/apiRequestLogs` — never under a sub-account — with no
  * request body.
  */
@@ -670,6 +671,10 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         );
       }
       if (found.kind === "replay") {
+        // The handler does not run on a replay, so nothing names a target: an
+        // agency key's replayed tool call logs under the agency and writes no
+        // agent.call row (the original call logged under its target). Known,
+        // left as is (AGENCY_AGENT_API_PLAN.md A3b; docs/features/agent-api.md).
         return finalize(
           apiOk(ctx, found.cached.bodyJson, { status: found.cached.status }),
           found.cached.bodyJson,
