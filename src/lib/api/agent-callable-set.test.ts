@@ -18,7 +18,8 @@ const { AGENCY_AGENT_CALLABLE, agencyAgentCallable, agentCallable, isAgentReadTo
 );
 const { agentToolsFor } = await import("./agent-tools-listing");
 
-const EXPECTED_AGENCY_CALLABLE = ["list_sub_accounts", "sub_account_stats"];
+const EXPECTED_AGENCY_CALLABLE = ["create_sub_account", "list_sub_accounts", "sub_account_stats"];
+const AGENCY_READS = ["list_sub_accounts", "sub_account_stats"];
 
 const fields = {
   agencyId: "ag1", keyId: "k1", keyPrefix: "abcd1234", keyName: "k", mode: "live" as const,
@@ -37,18 +38,19 @@ describe("the agency-callable set", () => {
 });
 
 describe("read/write classification covers the agency level", () => {
-  it("every agency-callable member is a plain read: readonly, no approval class", () => {
-    for (const name of AGENCY_AGENT_CALLABLE) {
+  it("the reads are plain reads: readonly, no approval class", () => {
+    for (const name of AGENCY_READS) {
       const cap = getCapability(name)!;
       expect(cap.readonly, name).toBe(true);
       expect(cap.approval ?? cap.approvalFor, name).toBeUndefined();
     }
   });
 
-  it("so isAgentReadTool counts them as reads (never cached), isAgentWriteTool as no write", () => {
+  it("isAgentReadTool counts the reads as reads (never cached), isAgentWriteTool every other member as a write", () => {
     for (const name of AGENCY_AGENT_CALLABLE) {
-      expect(isAgentReadTool(name), name).toBe(true);
-      expect(isAgentWriteTool(name), name).toBe(false);
+      const read = AGENCY_READS.includes(name);
+      expect(isAgentReadTool(name), name).toBe(read);
+      expect(isAgentWriteTool(name), name).toBe(!read);
     }
   });
 });

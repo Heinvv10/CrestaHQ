@@ -159,20 +159,47 @@ describe("a reached call runs scoped to its target", () => {
   });
 });
 
-describe("an agency-level member without a proposal path", () => {
-  it.each([
-    ["a write", { readonly: false }],
-    ["a read with an approval class", { readonly: true, approval: "outbound" as const }],
-    ["a read with approvalFor", { readonly: true, approvalFor: () => "outbound" as const }],
-  ])("%s is not available, never executed", async (_label, shape) => {
-    const cap = await inject({ name: "__fixture_agency", level: "agency", requiredRole: "agencyOwner", ...shape });
+describe("an agency-level member's write and approval paths (A4a-1)", () => {
+  const asMember = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
     const set = AGENCY_AGENT_CALLABLE as Set<string>;
-    set.add(cap.name);
+    set.add(name);
     try {
-      expect(await dispatchAgentTool(agencyKey, cap.name, {})).toMatchObject({ ok: false, code: "not_available" });
+      return await run();
     } finally {
-      set.delete(cap.name);
+      set.delete(name);
     }
+  };
+
+  it("a direct write on a reached target runs once and is audited under it", async () => {
+    const cap = await inject({ name: "__fixture_agency", level: "agency", requiredRole: "agencyOwner", readonly: false });
+    expect(await asMember(cap.name, () => dispatchAgentTool(agencyKey, cap.name, { subAccountId: "sa1" }))).toMatchObject({ ok: true });
+    expect(cap.execute).toHaveBeenCalledTimes(1);
+    const writes = mem.list("auditEvents").filter((e) => e.action === "agent.write");
+    expect(writes).toEqual([expect.objectContaining({ subAccountId: "sa1", actor: { type: "api_key", id: "ak1" } })]);
+  });
+
+  it.each([
+    ["an approval class", { approval: "outbound" as const }],
+    ["approvalFor", { approvalFor: () => "outbound" as const }],
+  ])("%s queues an agency-level row about the target, never executed", async (_label, shape) => {
+    mem.seed("agencies/ag1/apiKeys/ak1", { agencyId: "ag1", createdByUid: "owner1", revokedAt: null });
+    const cap = await inject({
+      name: "__fixture_agency", level: "agency", requiredRole: "agencyOwner", ...shape,
+      approvalTarget: async () => ({ contactId: null, territoryId: null, scoped: false }),
+      preview: async () => ({ rows: [{ label: "Do", value: "it" }], pinned: { to: "sa1" } }),
+    });
+    const r = await asMember(cap.name, () => dispatchAgentTool(agencyKey, cap.name, { subAccountId: "sa1" }));
+    expect(r).toMatchObject({ ok: true, proposal: { status: "pending" } });
+    expect(r.scopedTo).toBeUndefined();
+    const rows = mem.list("agentProposals");
+    expect(rows).toEqual([expect.objectContaining({ subAccountId: null, targetSubAccountId: "sa1", agencyId: "ag1", keyLevel: "agency" })]);
+    expect(cap.execute).not.toHaveBeenCalled();
+  });
+
+  it("an approval class with no subAccountId is a registry bug: 500, nothing queued or run", async () => {
+    const cap = await inject({ name: "__fixture_agency", level: "agency", requiredRole: "agencyOwner", approval: "outbound" });
+    expect(await asMember(cap.name, () => dispatchAgentTool(agencyKey, cap.name, {}))).toMatchObject({ ok: false, code: "internal_error" });
+    expect(mem.list("agentProposals")).toEqual([]);
     expect(cap.execute).not.toHaveBeenCalled();
   });
 });

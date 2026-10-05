@@ -6,6 +6,7 @@ import { removeSendingDomain } from "@/lib/comms/resend-domains";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { clearAllGbpCaches } from "@/lib/gbp/sync/clear";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
+import type { AuditActor } from "@/lib/audit/types";
 import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import type { ResendConfig } from "@/types";
 import type { PlanGateKey } from "@/types/billing";
@@ -172,7 +173,8 @@ export async function applyFeatureGates(
  */
 export async function recordGateChanges(
   subAccountId: string,
-  actorUid: string,
+  /** A person's uid, or a non-user actor (an agent key: `api_key`). */
+  actor: string | AuditActor,
   stored: Record<string, unknown>,
   gates: Partial<Record<AgencyGateField, boolean>>
 ): Promise<void> {
@@ -188,7 +190,7 @@ export async function recordGateChanges(
   if (changes.length === 0) return;
   await recordSubAccountAuditEvent(getAdminDb(), subAccountId, {
     action: "feature_gates.updated",
-    actor: { type: "user", id: actorUid },
+    actor: typeof actor === "string" ? { type: "user", id: actor } : actor,
     target: { type: "subAccount", id: subAccountId },
     changes,
   });

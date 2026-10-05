@@ -17,6 +17,7 @@ import {
 export const AGENCY_AGENT_CALLABLE: ReadonlySet<string> = new Set([
   "list_sub_accounts",
   "sub_account_stats",
+  "create_sub_account",
 ]);
 
 /** The Agency Assistant's "in a named sub-account" variants: chat-only,

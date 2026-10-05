@@ -2,7 +2,8 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
-import { buildAgencyAgentContext, buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
+import { buildAgencyAgentContext, buildAgentContext } from "@/lib/api/agent-context";
+import { queueProposal } from "@/lib/api/agent-propose";
 import { NO_SUCH_SUB_ACCOUNT, resolveReach } from "@/lib/api/agent-reach";
 import { recordAgentCall, recordAgentWrite } from "@/lib/api/agent-audit";
 import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
@@ -21,16 +22,7 @@ import {
   type AiSuiteCapability,
 } from "@/lib/ai-suite/capabilities";
 import { agencyAgentCallable, agentCallable } from "@/lib/api/agent-tools-listing";
-import {
-  createProposal,
-  OUTCOME_UNKNOWN_MESSAGE,
-  type ProposalStatus,
-} from "@/lib/server/agent-proposals";
-import {
-  assertPinnedWhenOutbound,
-  normalizePreview,
-  proposalTooLarge,
-} from "@/lib/server/agent-proposals-encoding";
+import type { ProposalStatus } from "@/lib/server/agent-proposals";
 
 export type AgentDispatchResult = (
   | {
@@ -184,22 +176,32 @@ async function dispatchForAgencyKey(
   const args = rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) ? (rawArgs as Record<string, unknown>) : {};
 
   if (cap && agencyAgentCallable(cap)) {
-    // No proposal path at the agency level yet: only plain reads run here.
-    if (!cap.readonly || cap.approval || cap.approvalFor) return notAvailable();
     // Reach runs on ANY subAccountId an agency-level call carries.
-    if ("subAccountId" in args && !(await resolveReach(auth.agencyId, args.subAccountId))) {
-      return noSuchSubAccount();
-    }
+    const target = "subAccountId" in args ? await resolveReach(auth.agencyId, args.subAccountId) : null;
+    if ("subAccountId" in args && !target) return noSuchSubAccount();
     const validated = cap.validate(rawArgs);
     if (!validated.ok) return refuse("invalid_args", 400, validated.error);
     // A validator that rewrote the id (case, "#1011") would run on one reach never checked.
     if ("subAccountId" in validated.args && validated.args.subAccountId !== args.subAccountId) return noSuchSubAccount();
-    if ("subAccountId" in args) await recordAgentCall(auth, cap.name, String(args.subAccountId), cap.readonly === true);
-    const result = await cap.execute(buildAgencyAgentContext(auth), validated.args);
+    if (target) await recordAgentCall(auth, cap.name, target, cap.readonly === true);
+    const ctx = buildAgencyAgentContext(auth);
+    const approval = cap.approvalFor ? await cap.approvalFor(validated.args, ctx) : cap.approval;
+    if (approval) {
+      // An agency-level row is about the sub-account it changes (D4).
+      if (!target) throw new Error(`${cap.name} has approval but no subAccountId`);
+      return queueProposal({ key: auth, cap, approval, args: validated.args, target, agencyLevel: true });
+    }
+    const result = await cap.execute(ctx, validated.args);
+    // agent.write under the sub-account the write touched: the target, or the one it created.
+    const touched = target ?? (result.ref?.kind === "subAccount" ? result.ref.id : null);
+    if (!cap.readonly && touched) {
+      await recordAgentWrite({ ...auth, level: "sub-account", subAccountId: touched }, cap.name, validated.args, result.ref);
+    }
     return {
       ok: true,
       resultText: result.resultText,
       args: validated.args,
+      ...(result.ref ? { ref: result.ref } : {}),
       ...(result.truncated ? { truncated: true as const } : {}),
     };
   }
@@ -238,44 +240,7 @@ async function runInSubAccount(
   // Only the engine writes workflow_enrolment rows (see agentCallable).
   if (approval === "workflow_enrolment") return notAvailable();
   if (approval) {
-    // The approver sees `preview` verbatim; a queued action without one
-    // could not be judged, so it is a registry bug, not a proposal.
-    if (!cap.preview) throw new Error(`${cap.name} has approval but no preview`);
-    if (!cap.approvalTarget) throw new Error(`${cap.name} has approval but no approvalTarget`);
-    const previewCtx = buildPreviewContext(auth.agencyId, auth.subAccountId);
-    const target = await cap.approvalTarget(previewCtx, validated.args);
-    const reviewed = normalizePreview(
-      await cap.preview(previewCtx, validated.args)
-    );
-    assertPinnedWhenOutbound(cap.name, approval, reviewed);
-    if (proposalTooLarge(validated.args, reviewed)) {
-      return refuse(
-        "proposal_too_large",
-        400,
-        cap.proposalTooLargeMessage ?? "This action is too large to queue for approval. Split it into smaller changes."
-      );
-    }
-    const created = await createProposal({
-      agencyId: auth.agencyId,
-      subAccountId: auth.subAccountId,
-      keyId: auth.keyId,
-      keyPrefix: auth.keyPrefix,
-      keyLevel: auth.keyLevel,
-      capability: cap.name,
-      approval,
-      args: validated.args,
-      summary: cap.summarize(validated.args),
-      preview: reviewed.rows,
-      pinned: reviewed.pinned,
-      target,
-    });
-    if (!created.ok) {
-      return created.code === "key_revoked"
-        ? refuse("key_revoked", 401, "This API key has been revoked.")
-        : refuse("outcome_unknown", 409, OUTCOME_UNKNOWN_MESSAGE);
-    }
-    const { id, status, summary, preview } = created;
-    return { ok: true, args: validated.args, proposal: { id, status, summary, preview } };
+    return queueProposal({ key: auth, cap, approval, args: validated.args, target: auth.subAccountId, agencyLevel: false });
   }
 
   let result: Awaited<ReturnType<AiSuiteCapability["execute"]>>;

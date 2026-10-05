@@ -24,6 +24,7 @@ const SENTINEL = "Sa_Contract_9Zq";
  *  validate with these fails below until its entry is added here. */
 const OTHER_ARGS: Record<string, Record<string, unknown>> = {
   sub_account_stats: { subAccountName: "Acme" },
+  create_sub_account: { name: "Acme" },
 };
 const declares = (cap: { parameters: unknown }) =>
   "subAccountId" in ((cap.parameters as { properties?: object }).properties ?? {});

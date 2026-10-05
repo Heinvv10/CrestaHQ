@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { createSubAccountForAgency } from "@/lib/server/sub-accounts-service";
+import { createSubAccountForAgencyKey } from "@/lib/server/sub-account-key-create";
 import {
   applyFeatureGates,
   recordGateChanges,
@@ -281,6 +282,8 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
         args.slug ? ` (slug: ${args.slug})` : ""
       }.`,
     execute: async (ctx, args) => {
+      // An agency key: both reach gates on, the minter as member, a per-key cap and name lock.
+      if (ctx.apiKey?.keyLevel === "agency") return createSubAccountForAgencyKey(ctx.agencyId, ctx.apiKey.keyId, args);
       const res = await createSubAccountForAgency({
         agencyId: ctx.agencyId,
         uid: ctx.uid,
