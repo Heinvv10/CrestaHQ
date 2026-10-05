@@ -57,9 +57,10 @@ const send = (handler: Handler, method: string) =>
     new Request("http://localhost/api/x", {
       method,
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      ...(method === "GET" || method === "DELETE" ? {} : { body: JSON.stringify({ subAccountId: "sa1" }) }),
+      ...(method === "GET" || method === "DELETE" ? {} : { body: JSON.stringify({ subAccountId: "sa1", subAccountName: "One" }) }),
     }),
-    { params: Promise.resolve({ id: "x1", name: "list_sub_accounts", formId: "f1" }) },
+    // A tool that takes a subAccountId: one that takes none refuses it (A4a-1).
+    { params: Promise.resolve({ id: "x1", name: "sub_account_stats", formId: "f1" }) },
   );
 const code = async (res: Response) => ((await res.clone().json()) as { error?: { code?: string } }).error?.code;
 const settle = () => new Promise((r) => setTimeout(r, 10));
