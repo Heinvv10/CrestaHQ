@@ -67,6 +67,39 @@ claude mcp add --transport http leadstack https://<your-app>/api/mcp \
   returns 202 `{proposal: {id, status, summary, preview}}`. Details, error bodies
   and logging: [public-api.md](public-api.md#agent-tools-agent-scope).
 
+### Agency keys
+
+An agency owner can mint an **agency key** (`agencies/{id}/apiKeys`, Agency →
+Agency Assistant card) once the agency's **Agent API** switch
+(`agencies/{id}.agentApiEnabled`) is on. It works on the same three transports —
+`POST /api/mcp`, `GET /api/v1/tools`, `POST /api/v1/tools/{name}` — and on no
+other route: every other `/api/v1` route refuses it with 403
+`agency_key_not_allowed`. Plan: [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
+
+- **Reach.** Every sub-account tool takes a required `subAccountId` (the listing
+  adds it to each schema). The key reaches a sub-account of its own agency with
+  both `apiAccessEnabledByAgency` and `agentApiEnabledByAgency` on; anything else —
+  another agency's, a gate off, no `subAccountId`, a made-up id — gets one identical
+  404 `not_found`. `list_sub_accounts` lists the reachable ones.
+- **Cut-off.** The switch off (403 `agent_api_disabled`, re-read on every call), the
+  key revoked (401) or its minter no longer an active owner (401 `minter_removed`)
+  stop every transport. Revoking rejects the key's pending proposals in every
+  sub-account; while the switch is off or its minter is no longer an active
+  owner, its rows can't be approved (403).
+- **Proposals** an agency key causes are ordinary rows of the target sub-account
+  (`keyLevel: "agency"`), approved on that sub-account's Approvals page; held
+  enrolments are charged to the agency key's enrolment cap, counted per
+  sub-account.
+- **Audit.** Each call in a sub-account writes one `agent.call` row under
+  `agencies/{id}/agentCalls` (key, tool, target, read or write — never the args),
+  kept 30 days. Request logs land under the target once reach lets the call
+  through; refusals and agency-level calls log under the agency (no viewer yet).
+- **Rate limit:** the same per-key numbers as a sub-account key.
+- **Idempotent replays log under the agency.** A REST call answered from the
+  `Idempotency-Key` cache never reaches dispatch, so its request log lands under
+  the agency and it writes no `agent.call` row; the original call logged under its
+  target and wrote its row. Deliberate, not fixed.
+
 ## Tools
 
 97 tools today; the full table, with each tool's kind, role and what its approval
@@ -205,5 +238,6 @@ only for callable write tools.
   targets re-sync when a contact is re-tagged.
 - **No notification** for new proposals in v1; the sidebar badge counts pending and
   unsettled rows.
-- **Keys are per sub-account.** Agency-wide keys, agent-run onboarding and the route
-  coverage gate are planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
+- **Agency keys reach sub-account tools and two agency reads** (`list_sub_accounts`,
+  `sub_account_stats`) so far; agent-run onboarding and the agency approvals page
+  are planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).

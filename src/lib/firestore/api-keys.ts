@@ -42,6 +42,30 @@ function keysCollection(owner: ApiKeyOwner) {
     : getAdminDb().collection("subAccounts").doc(owner.subAccountId).collection("apiKeys");
 }
 
+/**
+ * The doc of the key that made an `agentProposals` row (or is about to), by
+ * the row's `keyLevel`: an agency key's lives under its agency, any other
+ * (absent on rows from before agency keys) under the row's sub-account.
+ * Every re-read of a proposing key goes through here.
+ */
+export function agentKeyRef(row: {
+  keyLevel?: unknown;
+  keyId?: unknown;
+  agencyId?: unknown;
+  subAccountId?: unknown;
+}): FirebaseFirestore.DocumentReference {
+  const owner: ApiKeyOwner =
+    row.keyLevel === "agency"
+      ? { level: "agency", agencyId: String(row.agencyId) }
+      : { level: "sub-account", subAccountId: String(row.subAccountId) };
+  return apiKeyRef(owner, String(row.keyId));
+}
+
+/** A key's doc, from where it lives. */
+export function apiKeyRef(owner: ApiKeyOwner, keyId: string): FirebaseFirestore.DocumentReference {
+  return keysCollection(owner).doc(keyId);
+}
+
 /** `subAccounts/{id}/apiKeys/{keyId}` or `agencies/{id}/apiKeys/{keyId}`;
  *  anything else (an `apiKeys` collection elsewhere) is no key at all. */
 function ownerFromPath(path: string): ApiKeyOwner | null {

@@ -66,7 +66,7 @@ export interface AiSuiteActionContext {
   /** Set only on the agent surface: the API key the call arrived on. */
   apiKey?: Pick<
     ApiAuthContext,
-    "keyId" | "keyPrefix" | "mode" | "enrolmentCapPerHour"
+    "keyId" | "keyPrefix" | "keyLevel" | "mode" | "enrolmentCapPerHour"
   >;
 }
 

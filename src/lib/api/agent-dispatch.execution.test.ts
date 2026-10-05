@@ -120,7 +120,7 @@ describe("execution", () => {
         agencyId: "ag1",
         subAccountId: "sa1",
         subAccountRole: "admin",
-        apiKey: { keyId: "key1", keyPrefix: "abcd1234", mode: "live", enrolmentCapPerHour: 50 },
+        apiKey: { keyId: "key1", keyPrefix: "abcd1234", keyLevel: "sub-account", mode: "live", enrolmentCapPerHour: 50 },
       },
       {}
     );

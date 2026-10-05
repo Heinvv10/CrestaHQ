@@ -4,7 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 import { buildAgencyAgentContext, buildAgentContext, buildPreviewContext } from "@/lib/api/agent-context";
 import { NO_SUCH_SUB_ACCOUNT, resolveReach } from "@/lib/api/agent-reach";
-import { recordAgentWrite } from "@/lib/api/agent-audit";
+import { recordAgentCall, recordAgentWrite } from "@/lib/api/agent-audit";
 import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
 
 export {
@@ -194,6 +194,7 @@ async function dispatchForAgencyKey(
     if (!validated.ok) return refuse("invalid_args", 400, validated.error);
     // A validator that rewrote the id (case, "#1011") would run on one reach never checked.
     if ("subAccountId" in validated.args && validated.args.subAccountId !== args.subAccountId) return noSuchSubAccount();
+    if ("subAccountId" in args) await recordAgentCall(auth, cap.name, String(args.subAccountId), cap.readonly === true);
     const result = await cap.execute(buildAgencyAgentContext(auth), validated.args);
     return {
       ok: true,
@@ -214,12 +215,14 @@ async function dispatchForAgencyKey(
   return { ...result, scopedTo: target };
 }
 
-/** The sub-account pipeline: validate, then queue for approval or execute. */
+/** The sub-account pipeline: an agency key's agent.call row first (a call it
+ *  can't record never runs), then validate, then queue for approval or execute. */
 async function runInSubAccount(
   auth: ApiAuthContext,
   cap: AiSuiteCapability,
   rawArgs: unknown
 ): Promise<AgentDispatchResult> {
+  if (auth.keyLevel === "agency") await recordAgentCall(auth, cap.name, auth.subAccountId, cap.readonly === true);
   // Narrow before validate, so a stored proposal re-validates idempotently.
   const raw =
     cap.agentArgs && rawArgs && typeof rawArgs === "object"
@@ -257,6 +260,7 @@ async function runInSubAccount(
       subAccountId: auth.subAccountId,
       keyId: auth.keyId,
       keyPrefix: auth.keyPrefix,
+      keyLevel: auth.keyLevel,
       capability: cap.name,
       approval,
       args: validated.args,

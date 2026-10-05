@@ -3,6 +3,7 @@ import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentKeyRef } from "@/lib/firestore/api-keys";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
 import {
   canonical,
@@ -46,6 +47,8 @@ export interface ProposalInput {
   subAccountId: string;
   keyId: string;
   keyPrefix: string;
+  /** Where the proposing key lives (`agentKeyRef`). */
+  keyLevel: "sub-account" | "agency";
   capability: string;
   approval: CapabilityApproval;
   args: Record<string, unknown>;
@@ -106,7 +109,7 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
   const id = proposalId(input);
   const ref = proposalRef(id);
   const db = getAdminDb();
-  const keyRef = db.doc(`subAccounts/${input.subAccountId}/apiKeys/${input.keyId}`);
+  const keyRef = agentKeyRef(input);
   return db.runTransaction(async (tx) => {
     // A contact target's territory is read HERE, inside the transaction: a
     // re-tag committing meanwhile makes this transaction retry and store the
@@ -141,6 +144,7 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       createdByUid: `apikey:${input.keyPrefix}`,
       keyId: input.keyId,
       keyPrefix: input.keyPrefix,
+      keyLevel: input.keyLevel,
       capability: input.capability,
       approval: input.approval,
       args: input.args,

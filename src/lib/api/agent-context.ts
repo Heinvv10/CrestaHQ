@@ -21,6 +21,7 @@ export function buildAgentContext(auth: ApiAuthContext): AiSuiteActionContext {
     apiKey: {
       keyId: auth.keyId,
       keyPrefix: auth.keyPrefix,
+      keyLevel: auth.keyLevel,
       mode: auth.mode,
       enrolmentCapPerHour: auth.enrolmentCapPerHour,
     },
@@ -40,6 +41,7 @@ export function buildAgencyAgentContext(auth: AgencyApiAuthContext): AiSuiteActi
     apiKey: {
       keyId: auth.keyId,
       keyPrefix: auth.keyPrefix,
+      keyLevel: auth.keyLevel,
       mode: auth.mode,
       enrolmentCapPerHour: auth.enrolmentCapPerHour,
     },

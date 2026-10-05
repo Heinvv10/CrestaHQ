@@ -85,7 +85,11 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
           action: "workflow.status_changed",
           actor: ctx.apiKey ? { type: "api_key", id: ctx.apiKey.keyId } : { type: "user", id: ctx.uid },
           target: { type: "workflow", id: args.workflowId as string },
-          changes: [{ field: "status", before: done.previousStatus, after: status }],
+          changes: [
+            { field: "status", before: done.previousStatus, after: status },
+            // An agency key is not in this sub-account's key list: say where it lives.
+            ...(ctx.apiKey ? [{ field: "keyLevel", before: null, after: ctx.apiKey.keyLevel }] : []),
+          ],
         });
       }
       return { resultText: `The workflow is now ${status}.`, ref: { kind: "workflow", id: args.workflowId as string } };

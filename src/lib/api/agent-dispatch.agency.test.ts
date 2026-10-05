@@ -7,8 +7,9 @@ import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
  * `resolveReach` is the tenancy boundary — another agency's sub-account, a
  * gate off in either direction, and no such id all get ONE identical 404,
  * before any capability code — and a reached call runs the v1 pipeline
- * scoped to its target. The transports still refuse agency keys, so the
- * seams are called directly. Real registry over an in-memory Firestore.
+ * scoped to its target. The seams are called directly here; the transports
+ * themselves are exercised in agent-transports.agency.test.ts. Real registry
+ * over an in-memory Firestore.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-dispatch-harness")).adminMock());

@@ -17,7 +17,7 @@ vi.mock("@/lib/workflows/engine", () => ({ fireWorkflowTrigger }));
 const { createContactServerSide } = await import("./contacts-service");
 const { createDealServerSide, updateDealServerSide } = await import("./deals-service");
 
-const actor = { keyId: "key1", keyPrefix: "abcd1234", capability: "fixture" };
+const actor = { keyId: "key1", keyPrefix: "abcd1234", keyLevel: "sub-account" as const, capability: "fixture" };
 const contactInput = {
   subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1", mode: "live" as const,
   name: "Ann", email: "", phone: "", company: "", address: "", source: "test", tags: [],

@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
- * Agency API keys (AGENCY_AGENT_API_PLAN.md A2) on the real auth path, over
- * an in-memory Firestore: an agency key authenticates (level from the doc
- * PATH, the agency's kill switch, the minter still an active owner) and is
- * then refused by every transport — a v1 route, /api/mcp and both tools
- * routes — with the refusal logged under the agency, never a sub-account.
+ * Agency API keys (AGENCY_AGENT_API_PLAN.md A2, A3b) on the real auth path,
+ * over an in-memory Firestore: an agency key authenticates (level from the
+ * doc PATH, the agency's kill switch, the minter still an active owner). The
+ * agent transports — /api/mcp and both tools routes — take it (A3b); a v1
+ * resource route refuses it, logged under the agency, never a sub-account.
+ * Every transport refuses it once the switch is off, the key is revoked or
+ * the minter is no longer an active owner.
  */
 
 const mem = createMemoryFirestore();
@@ -75,14 +77,15 @@ afterEach(async () => {
   expect(pathsUnder("subAccounts/null")).toEqual([]);
 });
 
-describe("every transport refuses an agency key", () => {
-  it.each([
-    ["GET /api/v1/contacts", () => v1Contacts(agencyKey)],
-    ["POST /api/mcp", () => mcpList(agencyKey)],
-    ["GET /api/v1/tools", () => restTools(agencyKey)],
-    ["POST /api/v1/tools/find_contacts", () => restCall(agencyKey)],
-  ])("%s → 403 agency_key_not_allowed, logged under the agency only", async (_label, send) => {
-    const res = await send();
+const TRANSPORTS: Array<[string, (key: string) => Promise<Response>]> = [
+  ["POST /api/mcp", mcpList],
+  ["GET /api/v1/tools", restTools],
+  ["POST /api/v1/tools/find_contacts", restCall],
+];
+
+describe("an agency key on each transport", () => {
+  it("GET /api/v1/contacts → 403 agency_key_not_allowed, logged under the agency only", async () => {
+    const res = await v1Contacts(agencyKey);
     expect(res.status).toBe(403);
     expect(await code(res)).toBe("agency_key_not_allowed");
     await settle();
@@ -90,6 +93,19 @@ describe("every transport refuses an agency key", () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]).toMatchObject({ subAccountId: null, errorCode: "agency_key_not_allowed", requestBody: "" });
     expect(pathsUnder("subAccounts/").filter((p) => p.includes("/apiRequestLogs/"))).toEqual([]);
+  });
+
+  it.each(TRANSPORTS)("%s takes it → 200", async (_label, send) => {
+    const res = await send(agencyKey);
+    expect(res.status).toBe(200);
+  });
+
+  it("a targeted tools call logs under its target, the listing under the agency", async () => {
+    expect((await restCall(agencyKey)).status).toBe(200);
+    expect((await restTools(agencyKey)).status).toBe(200);
+    await settle();
+    expect(mem.list("subAccounts/sa1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools/find_contacts" })]);
+    expect(mem.list("agencies/ag1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools" })]);
   });
 
   it("the agency key's lastUsedAt bump lands on its own doc", async () => {
@@ -108,12 +124,27 @@ describe("every transport refuses an agency key", () => {
 });
 
 describe("the agency auth branch", () => {
-  it("kill switch off → 403 agent_api_disabled on every transport", async () => {
+  const ALL: Array<[string, (key: string) => Promise<Response>]> = [["GET /api/v1/contacts", v1Contacts], ...TRANSPORTS];
+
+  it.each(ALL)("kill switch off → %s 403 agent_api_disabled", async (_label, send) => {
     mem.seed("agencies/ag1", { name: "Agency", agentApiEnabled: false });
-    for (const res of [await v1Contacts(agencyKey), await mcpList(agencyKey)]) {
-      expect(res.status).toBe(403);
-      expect(await code(res)).toBe("agent_api_disabled");
-    }
+    const res = await send(agencyKey);
+    expect(res.status).toBe(403);
+    expect(await code(res)).toBe("agent_api_disabled");
+  });
+
+  it.each(ALL)("revoked → %s 401 revoked_api_key", async (_label, send) => {
+    mem.seed(KEY_PATH, { ...mem.read(KEY_PATH)!, revokedAt: new Date() });
+    const res = await send(agencyKey);
+    expect(res.status).toBe(401);
+    expect(await code(res)).toBe("revoked_api_key");
+  });
+
+  it.each(ALL)("minter no longer an active owner → %s 401 minter_removed", async (_label, send) => {
+    mem.seed("agencies/ag1/agencyMembers/owner1", { uid: "owner1", agencyId: "ag1", role: "staff", status: "active" });
+    const res = await send(agencyKey);
+    expect(res.status).toBe(401);
+    expect(await code(res)).toBe("minter_removed");
   });
 
   it("kill switch unset (legacy agency doc) → 403 agent_api_disabled", async () => {

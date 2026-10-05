@@ -189,7 +189,7 @@ describe("set_workflow_status", () => {
     expect(await call("set_workflow_status", { workflowId: "wf1", status: "paused" })).toMatchObject({ ok: true });
     expect(wf().status).toBe("paused");
     expect(audit()).toEqual([
-      expect.objectContaining({ action: "workflow.status_changed", actor: { type: "api_key", id: "key1" }, changes: [{ field: "status", before: "active", after: "paused" }] }),
+      expect.objectContaining({ action: "workflow.status_changed", actor: { type: "api_key", id: "key1" }, changes: [{ field: "status", before: "active", after: "paused" }, { field: "keyLevel", before: null, after: "sub-account" }] }),
     ]);
   });
 

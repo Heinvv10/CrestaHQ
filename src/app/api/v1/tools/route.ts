@@ -9,7 +9,8 @@ import { agentPrecheck } from "@/lib/api/agent-precheck";
  * GET /api/v1/tools — the capabilities an agent key may call, with the JSON
  * Schema of their args (AGENT_API_V1_PLAN.md, PR4): exactly the set
  * dispatchAgentTool accepts (`agentToolsFor`, shared with MCP tools/list). Test-mode keys and a
- * sub-account whose Agent API gate is off (read fresh) are refused first.
+ * sub-account whose Agent API gate is off (read fresh) are refused first. An
+ * agency key gets every sub-account tool with a required `subAccountId`.
  */
 export const GET = withApiAuth(
   async ({ ctx }) => {
@@ -26,5 +27,5 @@ export const GET = withApiAuth(
     }));
     return apiOk(ctx, { tools });
   },
-  { requireScope: "agent", precheck: agentPrecheck },
+  { requireScope: "agent", precheck: agentPrecheck, allowAgencyKey: true },
 );

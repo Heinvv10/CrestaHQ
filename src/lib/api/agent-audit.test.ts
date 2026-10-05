@@ -35,6 +35,7 @@ describe("agent.write audit rows", () => {
       expect.arrayContaining([
         { field: "capability", before: null, after: "create_contact" },
         { field: "keyPrefix", before: null, after: "abcd1234" },
+        { field: "keyLevel", before: null, after: "sub-account" },
         { field: "args.name", before: null, after: "[redacted]" },
         { field: "args.email", before: null, after: "[redacted]" },
       ])

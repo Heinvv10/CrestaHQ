@@ -158,7 +158,7 @@ describe("reviewer re-check", () => {
   it("the plain (non-computePatch) update path stamps an agent write", async () => {
     const { updateContactServerSide } = await import("@/lib/server/contacts-service");
     await updateContactServerSide({
-      contactId: "c1", patch: { name: "Plain" }, actor: { keyId: "k", keyPrefix: "abcd1234", capability: "x" },
+      contactId: "c1", patch: { name: "Plain" }, actor: { keyId: "k", keyPrefix: "abcd1234", keyLevel: "sub-account", capability: "x" },
     });
     expect(mem.read("contacts/c1")).toMatchObject({ name: "Plain", lastAgentEditKey: "abcd1234" });
   });

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentKeyRef } from "@/lib/firestore/api-keys";
 import { STALE_CLAIM_MS, transitionIf } from "@/lib/server/agent-proposals";
 
 /**
@@ -11,19 +12,22 @@ import { STALE_CLAIM_MS, transitionIf } from "@/lib/server/agent-proposals";
 
 const SWEEP_LIMIT = 500;
 
-/** Revoking a key rejects its still-pending rows (never an executing one). */
+/**
+ * Revoking a key rejects its still-pending rows (never an executing one), in
+ * every sub-account: an agency key's rows sit under each one it reached. A
+ * row is the key's when `agentKeyRef(row)` is the revoked key's own doc.
+ */
 export async function sweepRevokedKeyProposals(input: {
-  subAccountId: string;
-  keyId: string;
+  keyRef: FirebaseFirestore.DocumentReference;
 }): Promise<number> {
   const snap = await getAdminDb()
     .collection("agentProposals")
-    .where("keyId", "==", input.keyId)
+    .where("keyId", "==", input.keyRef.id)
     .where("status", "==", "pending")
     .get();
   let rejected = 0;
   for (const doc of snap.docs) {
-    if (doc.data().subAccountId !== input.subAccountId) continue;
+    if (agentKeyRef(doc.data()).path !== input.keyRef.path) continue;
     const moved = await transitionIf(doc.id, "pending", {
       status: "rejected",
       reason: "key_revoked",

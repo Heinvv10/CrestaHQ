@@ -3,6 +3,8 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentKeyRef } from "@/lib/firestore/api-keys";
+import { agencyKeyStanding, type AgencyKeyStanding } from "@/lib/api/agency-key-standing";
 import {
   CapabilityUserError,
   getCapability,
@@ -30,13 +32,20 @@ import { replayHeldEnrolment } from "@/lib/server/agent-enrolment-replay";
 import { currentHeldEnrolmentPreview } from "@/lib/server/agent-held-enrolment";
 
 const DECISIONS = ["approve", "reject", "mark_sent", "mark_not_sent"] as const;
+const STANDING_REFUSAL: Record<Exclude<AgencyKeyStanding, "ok">, string> = {
+  no_agency: "The agency of the API key that proposed this no longer exists.",
+  agent_api_disabled: "The Agent API is switched off for this agency.",
+  minter_removed: "The agency owner who minted the API key that proposed this is no longer an active owner.",
+};
 type Decision = (typeof DECISIONS)[number];
 
 /**
  * Decide an agent proposal. Every decision needs the capability's own role
  * (as the AI Suite confirm route), admin for `hard_delete`, and territory
  * access to the proposal's contact. `approve` also re-checks both agency
- * gates and the proposing key, re-computes the preview (a changed one is
+ * gates and the proposing key (for an agency key's row, also what auth
+ * checks of it: its agency's Agent API switch and its minter still an
+ * owner), re-computes the preview (a changed one is
  * stored and refused, so the approver sees what will really happen), then
  * CLAIMS the row (`pending` → `executing` in a transaction) before running
  * anything, so two approvers can never both execute it. `reject` is legal
@@ -155,6 +164,11 @@ export async function POST(
       { status: 403 },
     );
   }
+  // An agency key's row belongs to the sub-account's own agency: the key
+  // re-read and the standing check below are keyed by the row's agencyId.
+  if (proposal.keyLevel === "agency" && proposal.agencyId !== sub.agencyId) {
+    return NextResponse.json({ error: "Proposal not found" }, { status: 404 });
+  }
   const enrolment = proposal.approval === "workflow_enrolment";
   const args = proposal.args as Record<string, unknown>;
   // Enrolment rows store the held trigger input, not capability args.
@@ -170,9 +184,7 @@ export async function POST(
 
   // The key may have been revoked after this row was written (or its revoke
   // sweep failed): the row dies with the key.
-  const key = (
-    await db.doc(`subAccounts/${subAccountId}/apiKeys/${proposal.keyId}`).get()
-  ).data();
+  const key = (await agentKeyRef(proposal).get()).data();
   if (!key || key.revokedAt) {
     const moved = await transitionIf(
       proposalId,
@@ -183,6 +195,12 @@ export async function POST(
     return moved === "ok"
       ? NextResponse.json({ error: "key_revoked" }, { status: 409 })
       : refused(moved);
+  }
+  // An agency key's row needs what auth needs of the key itself, read fresh:
+  // its agency's Agent API switch on and its minter still an active owner.
+  if (proposal.keyLevel === "agency") {
+    const standing = await agencyKeyStanding(proposal.agencyId as string, key.createdByUid);
+    if (standing !== "ok") return NextResponse.json({ error: STANDING_REFUSAL[standing] }, { status: 403 });
   }
 
   if ((millis(proposal.expiresAt) ?? Infinity) < Date.now()) {
