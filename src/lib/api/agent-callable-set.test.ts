@@ -18,7 +18,7 @@ const { AGENCY_AGENT_CALLABLE, agencyAgentCallable, agentCallable, isAgentReadTo
 );
 const { agentToolsFor } = await import("./agent-tools-listing");
 
-const EXPECTED_AGENCY_CALLABLE = ["create_sub_account", "list_sub_accounts", "sub_account_stats"];
+const EXPECTED_AGENCY_CALLABLE = ["create_sub_account", "list_sub_accounts", "set_sub_account_gate", "sub_account_stats"];
 const AGENCY_READS = ["list_sub_accounts", "sub_account_stats"];
 
 const fields = {

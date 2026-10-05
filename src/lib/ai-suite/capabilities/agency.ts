@@ -126,6 +126,8 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     name: "set_feature_gate",
     level: "agency",
     requiredRole: "agencyOwner",
+    // An agency key uses set_sub_account_gate (agency-gates.ts) instead.
+    surfaces: ["chat"],
     menuLabel:
       "Enable or disable a feature (broadcasts, API access, WhatsApp, Community, …) for one of your sub-accounts",
     description:

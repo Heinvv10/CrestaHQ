@@ -18,6 +18,7 @@ export const AGENCY_AGENT_CALLABLE: ReadonlySet<string> = new Set([
   "list_sub_accounts",
   "sub_account_stats",
   "create_sub_account",
+  "set_sub_account_gate",
 ]);
 
 /** The Agency Assistant's "in a named sub-account" variants: chat-only,
@@ -43,9 +44,15 @@ export function agentCallable(cap: AiSuiteCapability): boolean {
   );
 }
 
-/** Whether an agency key may call `cap` at the agency level. */
+/** Whether an agency key may call `cap` at the agency level (a chat-only
+ *  capability never, even named in the set). */
 export function agencyAgentCallable(cap: AiSuiteCapability): boolean {
-  return cap.level === "agency" && AGENCY_AGENT_CALLABLE.has(cap.name) && !isInSubAccountVariant(cap);
+  return (
+    cap.level === "agency" &&
+    AGENCY_AGENT_CALLABLE.has(cap.name) &&
+    !isInSubAccountVariant(cap) &&
+    availableOn(cap, "agent")
+  );
 }
 
 /** A write tool the key may call: the only kind whose bodies a request log

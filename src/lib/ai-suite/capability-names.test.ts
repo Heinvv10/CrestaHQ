@@ -16,8 +16,9 @@ const { AI_SUITE_CAPABILITIES } = await import("./capabilities");
 const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["list_sub_accounts",                         "agency",      "agencyOwner",      true, null],
   ["sub_account_stats",                         "agency",      "agencyOwner",      true, null],
-  ["set_feature_gate",                          "agency",      "agencyOwner",      false, null],
+  ["set_feature_gate",                          "agency",      "agencyOwner",      false, ["chat"]],
   ["create_sub_account",                        "agency",      "agencyOwner",      false, null],
+  ["set_sub_account_gate",                      "agency",      "agencyOwner",      false, ["agent"]],
   ["list_billing_plans",                        "agency",      "agencyOwner",      true, null],
   ["create_billing_plan",                       "agency",      "agencyOwner",      false, null],
   ["assign_billing_plan",                       "agency",      "agencyOwner",      false, null],

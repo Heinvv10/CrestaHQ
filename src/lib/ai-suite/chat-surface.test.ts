@@ -211,6 +211,7 @@ describe("registry invariants", () => {
     send_review_request: { contactId: "c_voice" },
     create_broadcast: { templateId: "tpl_email", audienceFilter: { kind: "all" } },
     start_voice_call: { contactId: "c_voice" },
+    set_sub_account_gate: { subAccountId: "sa1", gate: "whatsapp", enabled: true },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
