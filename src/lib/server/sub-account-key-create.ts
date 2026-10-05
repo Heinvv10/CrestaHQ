@@ -22,6 +22,18 @@ export const KEY_CREATIONS_PER_DAY = 10;
 export const NAME_LOCK_MS = 10 * 60 * 1000;
 const REACH_GATES = { apiAccessEnabledByAgency: true, agentApiEnabledByAgency: true } as const;
 
+/** The name the lock is keyed by — NFKC, zero-width characters dropped,
+ *  whitespace collapsed, lower case — so "Acme" and "acme  " are one name.
+ *  The sub-account keeps the name as given. */
+function lockName(name: string): string {
+  return name
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 export async function createSubAccountForAgencyKey(
   agencyId: string,
   keyId: string,
@@ -29,24 +41,25 @@ export async function createSubAccountForAgencyKey(
 ): Promise<ExecuteResult> {
   const db = getAdminDb();
   const keyRef = apiKeyRef({ level: "agency", agencyId }, keyId);
-  const key = (await keyRef.get()).data();
-  const minterUid = String(key?.createdByUid);
-  const minter = (await db.doc(`agencies/${agencyId}/agencyMembers/${minterUid}`).get()).data();
-  // Auth checked both moments ago; a key revoked or an owner removed since creates nothing.
-  if (!key || key.revokedAt || minter?.role !== "owner" || minter?.status !== "active") {
-    throw new CapabilityUserError("This key can no longer create sub-accounts.");
-  }
-
   const name = args.name as string;
   const now = Date.now();
   const creations = keyRef.collection("creations");
   const dayRef = creations.doc(new Date(now).toISOString().slice(0, 10));
-  const lockRef = creations.doc(`name_${createHash("sha256").update(name).digest("hex")}`);
+  const lockRef = creations.doc(`name_${createHash("sha256").update(lockName(name)).digest("hex")}`);
   const subRef = db.collection("subAccounts").doc();
   const made = await db.runTransaction(async (tx) => {
+    // Auth checked both moments ago; a key revoked or an owner removed since
+    // (committing before this transaction does) creates nothing.
+    const key = (await tx.get(keyRef)).data();
+    const minterUid = String(key?.createdByUid);
+    const minter = (await tx.get(db.doc(`agencies/${agencyId}/agencyMembers/${minterUid}`))).data();
+    if (!key || key.revokedAt || minter?.role !== "owner" || minter?.status !== "active") {
+      throw new CapabilityUserError("This key can no longer create sub-accounts.");
+    }
     const [day, lock] = await Promise.all([tx.get(dayRef), tx.get(lockRef)]);
     const held = lock.data();
-    if (held && (millis(held.expiresAt) ?? 0) > now) {
+    // A lock on a sub-account deleted since is no duplicate: create anew and move the lock.
+    if (held && (millis(held.expiresAt) ?? 0) > now && (await tx.get(db.doc(`subAccounts/${String(held.subAccountId)}`))).exists) {
       return { created: false, subAccountId: held.subAccountId as string, accountNumber: held.accountNumber as number };
     }
     const count = (day.data()?.count as number | undefined) ?? 0;

@@ -92,6 +92,76 @@ describe("via an agency key", () => {
   });
 });
 
+describe("the audit trail of a key's create", () => {
+  const agentWrites = () => mem.list("auditEvents").filter((e) => e.action === "agent.write");
+
+  it("a normal create files exactly one agent.write, under the sub-account it created", async () => {
+    const id = idOf(await create("Smoke Audit"));
+    expect(agentWrites()).toEqual([expect.objectContaining({ subAccountId: id, actor: { type: "api_key", id: "ak1" } })]);
+  });
+
+  it("a stray subAccountId (the tool takes none) → 400, no agent.call or agent.write anywhere, nothing created", async () => {
+    mem.seed("subAccounts/other", { agencyId: "ag1", name: "Other", apiAccessEnabledByAgency: true, agentApiEnabledByAgency: true });
+    const r = await dispatchAgentTool(agencyKey, "create_sub_account", { name: "Smoke Stray", subAccountId: "other" });
+    expect(r).toMatchObject({ ok: false, code: "invalid_args", httpStatus: 400 });
+    expect(mem.all().filter((d) => d.path.includes("/agentCalls/"))).toEqual([]);
+    expect(agentWrites()).toEqual([]);
+    expect(newSubs().map((s) => s.id)).toEqual(["other"]);
+  });
+});
+
+describe("the key's standing, read in the creating transaction", () => {
+  it.each([
+    ["the key is revoked", () => mem.seed("agencies/ag1/apiKeys/ak1", { agencyId: "ag1", createdByUid: "owner1", revokedAt: new Date() })],
+    ["the minter is demoted", () => mem.seed("agencies/ag1/agencyMembers/owner1", { uid: "owner1", role: "admin", status: "active" })],
+    ["the minter is suspended", () => mem.seed("agencies/ag1/agencyMembers/owner1", { uid: "owner1", role: "owner", status: "suspended" })],
+  ])("%s → refused, nothing created", async (_label, arrange) => {
+    arrange();
+    expect(await create("Smoke Standing")).toMatchObject({ ok: false, code: "invalid_request", httpStatus: 400 });
+    expect(newSubs()).toEqual([]);
+    expect(mem.all().filter((d) => d.path.includes("/creations/"))).toEqual([]);
+  });
+});
+
+describe("the name lock", () => {
+  it("is checked before the cap: on a capped day a repeat within 10 minutes returns the existing id", async () => {
+    const ids: Array<string | undefined> = [];
+    for (let i = 1; i <= 10; i++) ids.push(idOf(await create(`Smoke ${i}`)));
+    expect(await create("Smoke 11")).toMatchObject({ ok: false });
+    expect(await create("Smoke 3")).toMatchObject({ ok: true, ref: { id: ids[2] } });
+    expect(newSubs()).toHaveLength(10);
+  });
+
+  it("pointing at a sub-account deleted since → a new one is created and the lock moves to it", async () => {
+    const first = idOf(await create("Smoke Gone"))!;
+    await mem.db.doc(`subAccounts/${first}`).delete();
+    const second = idOf(await create("Smoke Gone"));
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    expect(mem.read(`subAccounts/${second}`)).toMatchObject({ name: "Smoke Gone" });
+    expect(idOf(await create("Smoke Gone"))).toBe(second);
+    expect(mem.read(`agencies/ag1/apiKeys/ak1/creations/${today()}`)).toMatchObject({ count: 2 });
+  });
+
+  it.each([
+    ["case", "Acme", "acme"],
+    ["inner whitespace", "Acme Ltd", "Acme  Ltd"],
+    ["a zero-width space", "Acme", "Acme\u200B"],
+    ["a zero-width joiner inside", "Acme Ltd", "Acme\u200D Ltd"],
+    ["a byte-order mark", "Acme", "\uFEFFAcme"],
+    ["a compatibility form (NFKC)", "Acme", "\uFF21cme"],
+  ])("normalises %s: the same sub-account, stored under the name first given", async (_label, a, b) => {
+    const first = idOf(await create(a));
+    expect(idOf(await create(b))).toBe(first);
+    expect(newSubs()).toHaveLength(1);
+    expect(mem.read(`subAccounts/${first}`)?.name).toBe(a);
+  });
+
+  it("different names still create different sub-accounts", async () => {
+    expect(idOf(await create("Acme"))).not.toBe(idOf(await create("Acme Ltd")));
+  });
+});
+
 describe("via chat (the Agency Assistant)", () => {
   it("is unchanged: the person is the member, no reach gate on, no key stamp, no counter, no gate audit", async () => {
     const ctx = { uid: "owner1", email: "owner@example.com", displayName: "Owner One", agencyId: "ag1" };
