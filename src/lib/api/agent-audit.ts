@@ -7,7 +7,7 @@ import { AUDIT_TARGET_TYPES, type AuditTargetType } from "@/lib/audit/types";
 
 /**
  * One `agent.write` audit row per direct (non-approval) agent write: the key
- * as actor, the capability and key prefix, the record it touched, and the
+ * as actor, the capability, key prefix and key level, the record it touched, and the
  * NAMES of the args it set — every value is redacted by lib/audit/record.
  * Never throws (the write already committed).
  */
@@ -28,6 +28,8 @@ export async function recordAgentWrite(
     changes: [
       { field: "capability", before: null, after: capability },
       { field: "keyPrefix", before: null, after: auth.keyPrefix },
+      // An agency key is not in this sub-account's key list: say where it lives.
+      { field: "keyLevel", before: null, after: auth.keyLevel },
       ...Object.keys(args).map((field) => ({ field: `args.${field}`, before: null, after: "set" })),
     ],
   });

@@ -86,7 +86,7 @@ export const AUDIT_ALLOWED_VALUES: Record<
   "workflow.status_changed": { status: ["draft", "active", "paused"] },
   "member.role_changed": { role: ["admin", "collaborator"] },
   // Names only: arg VALUES (names, phones, message bodies) are redacted.
-  "agent.write": { capability: "identifier", keyPrefix: "identifier" },
+  "agent.write": { capability: "identifier", keyPrefix: "identifier", keyLevel: ["sub-account", "agency"] },
   // No changes: the row records THAT a reply was posted, never its text.
   "review.auto_replied": {},
 };

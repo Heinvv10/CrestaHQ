@@ -85,7 +85,7 @@ field:
 | `feature_gates.updated` | each `*EnabledByAgency` gate | `true`, `false` |
 | `workflow.status_changed` | `status` | `draft`, `active`, `paused` |
 | `member.role_changed` | `role` | `admin`, `collaborator` |
-| `agent.write` | `capability`, `keyPrefix` | `"identifier"`: a code identifier (`[A-Za-z0-9_]{1,64}`), anything else redacted. Every `args.*` field is redacted: the row records which args were set, never their values |
+| `agent.write` | `capability`, `keyPrefix`, `keyLevel` | `capability`, `keyPrefix`: `"identifier"`, a code identifier (`[A-Za-z0-9_]{1,64}`), anything else redacted. `keyLevel`: `sub-account` or `agency` (an agency key is not in the sub-account's own key list). Every `args.*` field is redacted: the row records which args were set, never their values |
 | `review.auto_replied` | none | No changes are recorded (an empty list): the row says THAT an automatic reply was posted to the target review, never its text |
 
 An action can also declare a field as `"staffUid"`, for a field that holds a staff
