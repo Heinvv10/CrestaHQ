@@ -110,6 +110,19 @@ describe("rulesFetch", () => {
     expect(fetchMock.mock.calls[2]![1]).toMatchObject(INIT);
   });
 
+  it("a body cut off mid-read (UND_ERR_SOCKET) is retried: the second response's body is handed back", async () => {
+    const cutOff = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('{"testResults":[{"st'));
+        c.error(netErr("UND_ERR_SOCKET"));
+      },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(cutOff, { status: 200 })).mockResolvedValueOnce(json(200, { testResults: [] }));
+    const res = await settle(rulesFetch(URL_, INIT));
+    expect([res.status, await res.json()]).toEqual([200, { testResults: [] }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it.each([400, 403, 500, 503])("never retries an HTTP %i: handed back as is, one call", async (status) => {
     fetchMock.mockResolvedValue(json(status, { error: { message: "nope" } }));
     const res = await settle(rulesFetch(URL_, INIT));

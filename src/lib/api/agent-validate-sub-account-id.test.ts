@@ -53,8 +53,9 @@ describe("agency-callable validators keep subAccountId exactly where they got it
   });
 
   // A trimming validator (str()) would hand execute an id reach never saw.
-  it.each(members.map((c) => [c.name, c] as const))("%s: a padded id is kept exactly or refused, never trimmed", (name, cap) => {
-    const padded = ` ${SENTINEL} `;
+  // Each side on its own as well: a check of one side only lets the other through.
+  const PADS = [["both sides", ` ${SENTINEL} `], ["leading only", ` ${SENTINEL}`], ["trailing only", `${SENTINEL} `]] as const;
+  it.each(members.flatMap((c) => PADS.map(([side, padded]) => [c.name, side, c, padded] as const)))("%s, padded on %s: kept exactly or refused, never trimmed", (name, _side, cap, padded) => {
     const validated = cap.validate({ ...OTHER_ARGS[name], subAccountId: padded });
     if (!validated.ok) return;
     if ("subAccountId" in validated.args) expect(validated.args.subAccountId, name).toBe(padded);
