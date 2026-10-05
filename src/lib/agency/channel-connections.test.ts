@@ -33,6 +33,8 @@ const CONNECTED: Record<string, unknown> = {
   paypalConfig: { clientId: "pp1" },
   webinar1ConnectionMeta: { baseUrl: "https://webinar.example.com" },
   apexgeoConnected: true,
+  mailboxConfig: { host: "imap.example.com", port: 993, username: "a@example.com" },
+  ghlImportConfig: { locationId: "loc1", connectedByUid: "owner1" },
 };
 
 describe("hasChannelConnection", () => {

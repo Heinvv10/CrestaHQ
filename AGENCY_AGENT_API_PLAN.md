@@ -193,10 +193,12 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
 - `hasChannelConnection(sub)` lives in `src/lib/agency/channel-connections.ts`
   (no server imports, so the A6 teardown script imports it). It is true when any
   of these `SubAccountDoc` fields is set: `twilioConfig`, `resendConfig`,
-  `smtpConfig`, `metaConfig`, `whatsappCloudMeta`, `whatsappBridgeMeta`,
-  `whatsappSenders` (non-empty), `googleConnectionMeta`, `stripeConnectionMeta`,
-  `paystackConnectionMeta`, `paypalConfig`, `webinar1ConnectionMeta`,
-  `apexgeoConnected` (`true`). The last three go beyond the list above: they are
+  `smtpConfig`, `mailboxConfig` (IMAP inbox), `metaConfig`, `whatsappCloudMeta`,
+  `whatsappBridgeMeta`, `whatsappSenders` (non-empty), `googleConnectionMeta`,
+  `stripeConnectionMeta`, `paystackConnectionMeta`, `paypalConfig`,
+  `webinar1ConnectionMeta`, `apexgeoConnected` (`true`), `ghlImportConfig` (GHL
+  import connection). `mailboxConfig`, `webinar1ConnectionMeta`,
+  `apexgeoConnected` and `ghlImportConfig` go beyond the list above: they are
   connections to outside accounts too, and each only makes a direct write rarer.
   Connections kept off the doc (per-member Google Calendar tokens, AI channel
   configs under subcollections) are not seen; the same key, < 72 h and 0

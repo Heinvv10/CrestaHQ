@@ -10,6 +10,7 @@ export const CHANNEL_CONNECTION_FIELDS = [
   "twilioConfig",
   "resendConfig",
   "smtpConfig",
+  "mailboxConfig",
   "metaConfig",
   "whatsappCloudMeta",
   "whatsappBridgeMeta",
@@ -20,6 +21,7 @@ export const CHANNEL_CONNECTION_FIELDS = [
   "paypalConfig",
   "webinar1ConnectionMeta",
   "apexgeoConnected",
+  "ghlImportConfig",
 ] as const;
 
 /** Whether the sub-account has any channel or payment connection: a field
