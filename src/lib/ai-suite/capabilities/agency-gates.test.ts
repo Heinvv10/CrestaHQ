@@ -51,6 +51,22 @@ describe("the partition over the runtime FEATURE_GATES keys", () => {
     expect([...ENABLE_REFUSED].sort()).toEqual([...new Set(["agent-api", "api-access", ...noEnable])].sort());
     expect(noEnable).toContain("reviews-auto-reply");
   });
+
+  it("names agent-api and api-access itself: they stay refused with every assistantMayEnable flag stripped", async () => {
+    vi.resetModules();
+    vi.doMock("./helpers", async (orig) => {
+      const real = await orig<typeof import("./helpers")>();
+      const stripped = Object.entries(real.FEATURE_GATES).map(([k, { field, label }]) => [k, { field, label }]);
+      return { ...real, FEATURE_GATES: Object.fromEntries(stripped) };
+    });
+    try {
+      const fresh = await import("./agency-gates");
+      expect([...fresh.ENABLE_REFUSED].sort()).toEqual(["agent-api", "api-access"]);
+    } finally {
+      vi.doUnmock("./helpers");
+      vi.resetModules();
+    }
+  });
 });
 
 describe("gateRoute", () => {
