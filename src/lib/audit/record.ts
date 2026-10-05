@@ -83,7 +83,7 @@ export const AUDIT_ALLOWED_VALUES: Record<
   "feature_gates.updated": Object.fromEntries(
     Object.keys(GATE_FIELDS).map((field) => [field, GATE_VALUES])
   ),
-  "workflow.status_changed": { status: ["draft", "active", "paused"] },
+  "workflow.status_changed": { status: ["draft", "active", "paused"], keyLevel: ["sub-account", "agency"] },
   "member.role_changed": { role: ["admin", "collaborator"] },
   // Names only: arg VALUES (names, phones, message bodies) are redacted.
   "agent.write": { capability: "identifier", keyPrefix: "identifier", keyLevel: ["sub-account", "agency"] },
