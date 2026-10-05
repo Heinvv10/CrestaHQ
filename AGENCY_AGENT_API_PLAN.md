@@ -234,6 +234,11 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   write logs `agent.write` under the sub-account it touched (the target, or the
   one it created). `agencyAgentCallable` also requires `availableOn(cap, "agent")`,
   so the chat-only `set_feature_gate` is refused even if named in the set.
+- Carry-forward: every created sub-account, a key's included, starts with
+  `sms-agent`, `web-chat` and `inbound-voice` on (the opt-out defaults in
+  `writeNewSubAccount`), though they are `PROPOSAL_GATES`; unreachable today (no
+  `ai-agent/*` agent tool), so the burn-down PR that exposes `ai-agent/channels`
+  must class channel enable as `spend` there (as this plan already lists it).
 
 ### D4 — approvals: two row kinds, one new page
 
