@@ -183,6 +183,10 @@ async function dispatchForAgencyKey(
     if (!validated.ok) return refuse("invalid_args", 400, validated.error);
     // A validator that rewrote the id (case, "#1011") would run on one reach never checked.
     if ("subAccountId" in validated.args && validated.args.subAccountId !== args.subAccountId) return noSuchSubAccount();
+    // One it dropped is not this tool's target: no client's trail may name it.
+    if ("subAccountId" in args && !("subAccountId" in validated.args)) {
+      return refuse("invalid_args", 400, `${cap.name} takes no subAccountId.`);
+    }
     if (target) await recordAgentCall(auth, cap.name, target, cap.readonly === true);
     const ctx = buildAgencyAgentContext(auth);
     const approval = cap.approvalFor ? await cap.approvalFor(validated.args, ctx) : cap.approval;
@@ -192,8 +196,8 @@ async function dispatchForAgencyKey(
       return queueProposal({ key: auth, cap, approval, args: validated.args, target, agencyLevel: true });
     }
     const result = await cap.execute(ctx, validated.args);
-    // agent.write under the sub-account the write touched: the target, or the one it created.
-    const touched = target ?? (result.ref?.kind === "subAccount" ? result.ref.id : null);
+    // agent.write under the sub-account the write touched: the one it created or changed, else the target.
+    const touched = result.ref?.kind === "subAccount" ? result.ref.id : target;
     if (!cap.readonly && touched) {
       await recordAgentWrite({ ...auth, level: "sub-account", subAccountId: touched }, cap.name, validated.args, result.ref);
     }
