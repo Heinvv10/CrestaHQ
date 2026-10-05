@@ -50,7 +50,7 @@ export async function createSubAccountForAgencyKey(
   const db = getAdminDb();
   const keyRef = apiKeyRef({ level: "agency", agencyId }, keyId);
   const name = args.name as string;
-  if (!hasVisibleName(name)) throw new CapabilityUserError("the sub-account name has no visible characters");
+  if (!hasVisibleName(name)) throw new CapabilityUserError("the sub-account name needs at least one letter or digit");
   const now = Date.now();
   const creations = keyRef.collection("creations");
   const dayRef = creations.doc(new Date(now).toISOString().slice(0, 10));
