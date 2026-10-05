@@ -121,9 +121,18 @@ describe("reject and the pending-only precondition", () => {
   it("the expiry sweep leaves a just-claimed executing row untouched", async () => {
     const id = await proposeId();
     mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
-    beforeNextTransaction(() => claim(id, "u_other"));
+    // A real claim of a row already past expiresAt expires it (next test),
+    // so the row is moved directly: only the sweep's precondition is under test.
+    beforeNextTransaction(async () => mem.seed(`agentProposals/${id}`, { ...row(id), status: "executing" }));
     await sweep(new Date());
     expect(row(id).status).toBe("executing");
+  });
+
+  it("a claim of a row already past expiresAt expires it instead", async () => {
+    const id = await proposeId();
+    mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
+    expect(await claim(id, "u_other")).toBe("expired");
+    expect(row(id)).toMatchObject({ status: "expired", claimId: null });
   });
 
   it("the expiry sweep expires a pending row past expiresAt", async () => {
@@ -145,12 +154,22 @@ describe("key revoke (through DELETE /api-keys/[keyId])", () => {
     expect(row(otherKey).status).toBe("pending");
   });
 
-  it("a claim landing between the sweep's query and its write wins", async () => {
+  it("a row claimed between the sweep's query and its write stays claimed", async () => {
     const id = await proposeId();
-    // The revoke write itself is not a transaction, so the first one is the sweep's.
-    beforeNextTransaction(() => claim(id, "u_other"));
+    // The revoke write itself is not a transaction, so the first one is the
+    // sweep's. A real claim this late re-reads the revoked key and is refused
+    // (next test), so the row is moved directly: only the sweep's own
+    // precondition is under test here.
+    beforeNextTransaction(async () => mem.seed(`agentProposals/${id}`, { ...row(id), status: "executing" }));
     await revoke();
     expect(row(id).status).toBe("executing");
+  });
+
+  it("a claim landing after the revoke's key write is refused: the row dies with the key", async () => {
+    const id = await proposeId();
+    beforeNextTransaction(async () => expect(await claim(id, "u_other")).toBe("key_revoked"));
+    await revoke();
+    expect(row(id)).toMatchObject({ status: "rejected", reason: "key_revoked", claimId: null });
   });
 });
 

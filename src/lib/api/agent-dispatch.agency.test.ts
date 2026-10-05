@@ -135,6 +135,28 @@ describe("a reached call runs scoped to its target", () => {
     expect(chat.resultText).toContain("(50):");
     expect(chat.resultText).toContain("id: sa3.");
   });
+
+  it("list_sub_accounts says when the 50-row cap cut a key's list (51 reachable)", async () => {
+    await mem.db.doc("subAccounts/sa3 ").delete();
+    for (let i = 0; i < 50; i++) mem.seed(`subAccounts/r${String(i).padStart(2, "0")}`, { agencyId: "ag1", name: `On ${i}`, ...ON });
+    const r = await dispatchAgentTool(agencyKey, "list_sub_accounts", {});
+    expect(r).toMatchObject({ ok: true, truncated: true });
+    const text = (r as { resultText: string }).resultText;
+    expect(text).toContain("(showing 50 of 51):");
+    expect(text.match(/ — id: /g)).toHaveLength(50);
+    // Chat keeps its plain count, never flagged.
+    const chat = await getCapability("list_sub_accounts")!.execute({ uid: "u", email: "", displayName: "", agencyId: "ag1" }, {});
+    expect(chat).not.toHaveProperty("truncated");
+    expect(chat.resultText).toContain("(50):");
+  });
+
+  it("list_sub_accounts at exactly 50 reachable is not flagged", async () => {
+    await mem.db.doc("subAccounts/sa3 ").delete();
+    for (let i = 0; i < 49; i++) mem.seed(`subAccounts/r${String(i).padStart(2, "0")}`, { agencyId: "ag1", name: `On ${i}`, ...ON });
+    const r = await dispatchAgentTool(agencyKey, "list_sub_accounts", {});
+    expect(r).not.toHaveProperty("truncated");
+    expect((r as { resultText: string }).resultText).toContain("(50):");
+  });
 });
 
 describe("an agency-level member without a proposal path", () => {

@@ -238,6 +238,17 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   (switch off or minter removed → approve 403) is what a sub-account key re-proposing
   the same action gets back, until someone rejects it or it expires. A5 decides
   whether the decide routes or `createProposal` should roll such a row over.
+- **REVISED 2026-10-05 (A3b follow-ups):** the A5 race carry-forward is resolved.
+  The approve claim now re-reads, inside its own transaction, everything the
+  decide route checked before it (both sub-account gates, the row's agency, the
+  proposing key, an agency key's standing, the row's territory against the
+  approver's scope, its expiry) through the same helpers,
+  `lib/server/agent-approval-checks.ts`. A revoke, switch-off, minter demotion,
+  gate-off, contact re-tag or expiry committing between the checks and the
+  claim no longer executes: a revoked key rejects the row `key_revoked`, an
+  expired one expires it (409), anything else leaves it pending with the early
+  check's 403 / 404. A5's shared pre-claim
+  sequence calls `claimProposal` and inherits it.
 
 ### D5 — the per-key questions
 
@@ -293,7 +304,11 @@ route is gone, an exclusion without category + reason, an empty `tools`, and a
 `grandfathered` entry not in the script's `FROZEN` list. **The shrink rule is
 review-enforced, not machine-enforced:** `FROZEN` lives in the same script and a PR
 can extend it; the diff shows it, and the PR-template line asks the reviewer to
-refuse any addition. `src/lib/api/agent-coverage.test.ts` (**`pnpm test`**) checks
+refuse any addition. **REVISED 2026-10-05:** since PR #345 the shrink rule is CI-enforced:
+`FROZEN` moved to `scripts/agent-coverage-frozen.json`, and
+`.github/workflows/agent-coverage-shrink.yml` runs
+`scripts/check-agent-coverage-shrink.mjs` on every PR, comparing it with `main` and
+failing on any added key. `src/lib/api/agent-coverage.test.ts` (**`pnpm test`**) checks
 that every tool name exists and is callable for some key level. A route is never
 "pending". `.github/pull_request_template.md` gains an **Agent exposure** line
 ("every route added or changed: tool name(s), or the manifest exclusion and why;
@@ -478,6 +493,9 @@ Refuted or narrowed, with evidence:
 - **P1-2 "enforce the shrink against `origin/main`":** not adopted; the deploy
   checkout runs the same `pnpm lint` and a buyer's generated repo has no such ref,
   so the check would pass vacuously where it matters. Stated as review-enforced.
+  **REVISED 2026-10-05:** PR #345 enforces it in CI after all, in its own workflow
+  (`agent-coverage-shrink.yml`) that fetches `main` and fails closed without it;
+  `pnpm lint` and the deploy script still do not run it.
 - **P1-5 "add a separate reach gate":** contradicts the ruling "the key reaches
   only sub-accounts where `agentApiEnabledByAgency` is true"; kept as a ruling
   question for Hein plus the census step.

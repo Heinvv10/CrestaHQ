@@ -4,6 +4,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agentKeyRef } from "@/lib/firestore/api-keys";
+import type { EffectiveTerritoryScope } from "@/lib/auth/territory-filter";
+import {
+  approvalRefusal,
+  pastExpiry,
+  proposalVisible,
+  type ClaimRefusal,
+} from "@/lib/server/agent-approval-checks";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
 import {
   canonical,
@@ -200,30 +207,50 @@ export async function transitionIf(
   });
 }
 
-/** The approve claim: `pending` → `executing`, for generation `rev` only. */
+/**
+ * The approve claim: `pending` → `executing`, for generation `rev` only, and
+ * only while every check of agent-approval-checks.ts still passes on what
+ * this transaction reads: the row visible in the approver's territory
+ * `scope`, `approvalRefusal` (re-read with `tx.get`), the row not expired. A
+ * revoked key rejects the row (`key_revoked`) and an expired one expires it,
+ * in that transaction; any other refusal leaves it `pending`.
+ */
 export async function claimProposal(
   id: string,
   by: { uid: string; email: string },
-  rev: string
-): Promise<{ claimId: string } | "conflict" | "stale"> {
+  rev: string,
+  scope: EffectiveTerritoryScope | null
+): Promise<{ claimId: string } | "conflict" | "stale" | ClaimRefusal> {
   const claimedAt = new Date();
   // A random token, not the timestamp: two claims in one millisecond (a
   // re-proposal claimed right after) must never look like the same claim.
   const claimId = newRev();
-  const moved = await transitionIf(
-    id,
-    "pending",
-    {
+  const ref = proposalRef(id);
+  return getAdminDb().runTransaction(async (tx) => {
+    const cur = (await tx.get(ref)).data();
+    if (!cur || cur.status !== "pending") return "conflict";
+    if (cur.rev !== rev) return "stale";
+    // A contact re-tagged since moves the row's territoryId without a new rev.
+    if (!proposalVisible(cur, scope)) return "not_visible";
+    const refusal = await approvalRefusal(cur, (r) => tx.get(r));
+    if (refusal === "key_revoked") {
+      tx.update(ref, { status: "rejected", reason: "key_revoked", decidedAt: claimedAt });
+    }
+    if (refusal) return refusal;
+    if (pastExpiry(cur)) {
+      tx.update(ref, { status: "expired", decidedAt: claimedAt });
+      return "expired";
+    }
+    tx.update(ref, {
       status: "executing",
       claimedAt,
       claimId,
       decidedAt: claimedAt,
       decidedByUid: by.uid,
       decidedByEmail: by.email,
-    },
-    { rev }
-  );
-  return moved === "ok" ? { claimId } : moved;
+    });
+    return { claimId };
+  });
 }
 
 /** Store a freshly computed preview under a new `rev` (pending generation

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { cert } from "firebase-admin/app";
 import { beforeAll, describe, expect, it } from "vitest";
+import { rulesAccessToken, rulesFetch } from "../../test/rules-api";
 
 import { SUB_ACCOUNT_SECRETS, subAccountSecretPath } from "../../types/sub-account-secrets";
 
@@ -45,7 +45,7 @@ const SUB = { agencyId: "agency_a", name: "Acme" };
 async function evaluate(
   cases: { caller: Caller; method: Method; path: string }[],
 ): Promise<{ allowed: boolean; errors: string[] }[]> {
-  const { access_token } = await cert(creds as Required<typeof creds>).getAccessToken();
+  const access_token = await rulesAccessToken(creds);
   const testCases = cases.map(({ caller, method, path }) => ({
     expectation: "ALLOW",
     request: {
@@ -71,7 +71,7 @@ async function evaluate(
       },
     ],
   }));
-  const res = await fetch(`https://firebaserules.googleapis.com/v1/projects/${creds.projectId}:test`, {
+  const res = await rulesFetch(`https://firebaserules.googleapis.com/v1/projects/${creds.projectId}:test`, {
     method: "POST",
     headers: { authorization: `Bearer ${access_token}`, "content-type": "application/json" },
     body: JSON.stringify({
