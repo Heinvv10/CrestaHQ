@@ -89,6 +89,14 @@ describe("resolveReach: one 404 for every sub-account the key may not act in", (
   });
 });
 
+describe("the id reach checks is the id that runs", () => {
+  it("sub_account_stats on a reachable 'sa3 ' decoy never counts the unreachable sa3", async () => {
+    const r = await dispatchAgentTool(agencyKey, "sub_account_stats", { subAccountId: "sa3 ", subAccountName: "x" });
+    expect(r).toEqual(NOT_FOUND);
+    expect(JSON.stringify(r)).not.toContain("Three");
+  });
+});
+
 describe("the agency kill switch", () => {
   it("is read fresh on every call: off → 403 agent_api_disabled, nothing runs", async () => {
     const cap = await inject({ name: "__fixture_read", readonly: true });
