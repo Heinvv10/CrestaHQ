@@ -31,10 +31,13 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     summarize: () => "List the sub-accounts in this agency.",
     execute: async (ctx) => {
       const mine = getAdminDb().collection("subAccounts").where("agencyId", "==", ctx.agencyId);
-      // An agent key lists only what it can reach, filtered BEFORE the 50-row cap.
-      const docs = ctx.apiKey
-        ? (await mine.get()).docs.filter((d) => isReachable(d.data(), ctx.agencyId)).slice(0, 50)
-        : (await mine.limit(50).get()).docs;
+      // An agent key lists only what it can reach, filtered BEFORE the 50-row
+      // cap, and is told when the cap cut the list.
+      const reachable = ctx.apiKey
+        ? (await mine.get()).docs.filter((d) => isReachable(d.data(), ctx.agencyId))
+        : null;
+      const docs = reachable ? reachable.slice(0, 50) : (await mine.limit(50).get()).docs;
+      const capped = reachable !== null && reachable.length > docs.length;
       const none = ctx.apiKey ? "No sub-account in this agency is available to this key." : "This agency has no sub-accounts yet.";
       if (docs.length === 0) return { resultText: none };
       const lines = docs.map((d) => {
@@ -44,8 +47,10 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
           data.accountNumber ? `, account #${data.accountNumber}` : ""
         }. Enabled gates: ${gates.length ? gates.join(", ") : "none"}.`;
       });
+      const count = capped ? `showing ${docs.length} of ${reachable.length}` : String(docs.length);
       return {
-        resultText: `Sub-accounts in this agency (${docs.length}):\n${lines.join("\n")}`,
+        resultText: `Sub-accounts in this agency (${count}):\n${lines.join("\n")}`,
+        ...(capped ? { truncated: true as const } : {}),
       };
     },
   },
