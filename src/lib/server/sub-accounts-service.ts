@@ -155,128 +155,144 @@ export async function deleteSubAccountForAgency(input: {
 export async function createSubAccountForAgency(
   input: CreateSubAccountInput
 ): Promise<CreateSubAccountResult> {
-  const {
-    agencyId,
-    uid,
-    email,
-    displayName,
-    name,
-    slug,
-    timezone,
-    accountContact,
-  } = input;
-
+  const { agencyId, name } = input;
   const db = getAdminDb();
   const subRef = db.collection("subAccounts").doc();
   const subAccountId = subRef.id;
-  const counterRef = db.doc(`agencies/${agencyId}/counters/subAccount`);
 
-  // Transactional counter increment so two simultaneous creates can't
-  // collide on the same account number. Fallback to 1000 lets older
-  // agencies (no counter doc yet) pick up smoothly.
   const accountNumber = await db.runTransaction<number>(async (tx) => {
-    const counterSnap = await tx.get(counterRef);
-    const current = counterSnap.exists
-      ? ((counterSnap.data()?.next as number | undefined) ??
-        STARTING_ACCOUNT_NUMBER)
-      : STARTING_ACCOUNT_NUMBER;
-    tx.set(counterRef, { next: current + 1 });
-
-    tx.set(subRef, {
-      id: subAccountId,
-      agencyId,
-      accountNumber: current,
-      name,
-      slug: slug || subAccountId.slice(0, 8),
-      status: "active",
-      timezone,
-      createdByUid: uid,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-      twilioConfig: null,
-      resendConfig: null,
-      emailDomainEnabledByAgency: false,
-      outboundVoiceEnabledByAgency: false,
-      whatsappEnabledByAgency: false,
-      // Default ON (opt-out): these AI channels pre-existed agency gating, so
-      // new sub-accounts match the historical always-on behavior. The agency
-      // flips them off to clamp cost. See gates.ts / SubAccountDoc docs.
-      smsAgentEnabledByAgency: true,
-      webChatEnabledByAgency: true,
-      inboundVoiceEnabledByAgency: true,
-      metaInboxEnabledByAgency: false,
-      metaAgentEnabledByAgency: false,
-      websiteEnabledByAgency: false,
-      communityEnabledByAgency: false,
-      getLeadsEnabledByAgency: false,
-      prospectingEnabledByAgency: false,
-      missedCallTextBackEnabledByAgency: false,
-      // Labs (pre-release features) ships OFF — explicit opt-in per client.
-      labsEnabledByAgency: false,
-      // Payments (sub-account's own Stripe) ships OFF — a money rail is
-      // always an explicit per-client decision.
-      paymentsEnabledByAgency: false,
-      stripeConnectionMeta: null,
-      // Webinar1 (external webinar platform connection) ships OFF — an
-      // integration with an outside deployment is an explicit per-client
-      // decision, same reasoning as Payments.
-      webinar1EnabledByAgency: false,
-      googleEnabledByAgency: false,
-      googleCalendarEnabledByAgency: false,
-      // Reviews AI (SP5) spends the agency's OpenRouter credits — opt-in.
-      reviewsAiEnabledByAgency: false,
-      // Review auto-reply posts to Google without a click — opt-in.
-      reviewsAutoReplyEnabledByAgency: false,
-      // Agent API ships OFF — an external LLM agent acting as sub-account
-      // admin is always an explicit per-client decision.
-      agentApiEnabledByAgency: false,
-      webinar1ConnectionMeta: null,
-      // Workspace Assistant ships OFF like every other gate (opt-in) — the
-      // agency owner enables it per sub-account from the Manage dialog.
-      aiSuiteEnabledByAgency: false,
-      metaConfig: null,
-      bookingConfig: null,
-      sendWindow: null,
-      bookingLink: null,
-      replyToEmail: null,
-      automationsPaused: false,
-      accountContact,
-    });
-
-    // Agency owner is implicitly admin in every sub-account; we still write
-    // the membership doc so the userMemberships index lights up the switcher.
-    tx.set(subRef.collection("subAccountMembers").doc(uid), {
-      uid,
-      subAccountId,
-      agencyId,
-      role: "admin",
-      status: "active",
-      email,
-      displayName,
-      addedAt: FieldValue.serverTimestamp(),
-      addedByUid: uid,
-      assignedTerritoryIds: [GLOBAL_TERRITORY_ID],
-    });
-
-    tx.set(db.doc(`userMemberships/${uid}/subAccounts/${subAccountId}`), {
-      subAccountId,
-      agencyId,
-      accountNumber: current,
-      role: "admin",
-      name,
-      addedAt: FieldValue.serverTimestamp(),
-    });
-
-    // Seed Welcome email + Welcome SMS templates so every new sub-account
-    // starts with usable defaults.
-    seedDefaultTemplates(db, (ref, data) => tx.set(ref, data), {
-      agencyId,
-      subAccountId,
-      createdByUid: uid,
-    });
-
+    const current = await reserveAccountNumber(tx, agencyId);
+    writeNewSubAccount(tx, subRef, current, input);
     return current;
   });
 
   return { subAccountId, accountNumber, name, agencyId };
+}
+
+/** Transactional counter increment so two simultaneous creates can't collide
+ *  on the same account number; 1000 when the agency has no counter yet. It
+ *  reads, then writes: call it after the transaction's other reads. */
+export async function reserveAccountNumber(
+  tx: FirebaseFirestore.Transaction,
+  agencyId: string
+): Promise<number> {
+  const counterRef = getAdminDb().doc(`agencies/${agencyId}/counters/subAccount`);
+  const counterSnap = await tx.get(counterRef);
+  const current = counterSnap.exists
+    ? ((counterSnap.data()?.next as number | undefined) ??
+      STARTING_ACCOUNT_NUMBER)
+    : STARTING_ACCOUNT_NUMBER;
+  tx.set(counterRef, { next: current + 1 });
+  return current;
+}
+
+/**
+ * Every write of one new sub-account, in the caller's transaction: the doc
+ * (with `extra` fields last, so they override a default), the creator's
+ * membership and switcher index, and the seeded templates.
+ */
+export function writeNewSubAccount(
+  tx: FirebaseFirestore.Transaction,
+  subRef: FirebaseFirestore.DocumentReference,
+  current: number,
+  input: CreateSubAccountInput,
+  extra: Record<string, unknown> = {}
+): void {
+  const { agencyId, uid, email, displayName, name, slug, timezone, accountContact } = input;
+  const db = getAdminDb();
+  const subAccountId = subRef.id;
+
+  tx.set(subRef, {
+    id: subAccountId,
+    agencyId,
+    accountNumber: current,
+    name,
+    slug: slug || subAccountId.slice(0, 8),
+    status: "active",
+    timezone,
+    createdByUid: uid,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    twilioConfig: null,
+    resendConfig: null,
+    emailDomainEnabledByAgency: false,
+    outboundVoiceEnabledByAgency: false,
+    whatsappEnabledByAgency: false,
+    // Default ON (opt-out): these AI channels pre-existed agency gating, so
+    // new sub-accounts match the historical always-on behavior. The agency
+    // flips them off to clamp cost. See gates.ts / SubAccountDoc docs.
+    smsAgentEnabledByAgency: true,
+    webChatEnabledByAgency: true,
+    inboundVoiceEnabledByAgency: true,
+    metaInboxEnabledByAgency: false,
+    metaAgentEnabledByAgency: false,
+    websiteEnabledByAgency: false,
+    communityEnabledByAgency: false,
+    getLeadsEnabledByAgency: false,
+    prospectingEnabledByAgency: false,
+    missedCallTextBackEnabledByAgency: false,
+    // Labs (pre-release features) ships OFF — explicit opt-in per client.
+    labsEnabledByAgency: false,
+    // Payments (sub-account's own Stripe) ships OFF — a money rail is
+    // always an explicit per-client decision.
+    paymentsEnabledByAgency: false,
+    stripeConnectionMeta: null,
+    // Webinar1 (external webinar platform connection) ships OFF — an
+    // integration with an outside deployment is an explicit per-client
+    // decision, same reasoning as Payments.
+    webinar1EnabledByAgency: false,
+    googleEnabledByAgency: false,
+    googleCalendarEnabledByAgency: false,
+    // Reviews AI (SP5) spends the agency's OpenRouter credits — opt-in.
+    reviewsAiEnabledByAgency: false,
+    // Review auto-reply posts to Google without a click — opt-in.
+    reviewsAutoReplyEnabledByAgency: false,
+    // Agent API ships OFF — an external LLM agent acting as sub-account
+    // admin is always an explicit per-client decision.
+    agentApiEnabledByAgency: false,
+    webinar1ConnectionMeta: null,
+    // Workspace Assistant ships OFF like every other gate (opt-in) — the
+    // agency owner enables it per sub-account from the Manage dialog.
+    aiSuiteEnabledByAgency: false,
+    metaConfig: null,
+    bookingConfig: null,
+    sendWindow: null,
+    bookingLink: null,
+    replyToEmail: null,
+    automationsPaused: false,
+    accountContact,
+    ...extra,
+  });
+
+  // Agency owner is implicitly admin in every sub-account; we still write
+  // the membership doc so the userMemberships index lights up the switcher.
+  tx.set(subRef.collection("subAccountMembers").doc(uid), {
+    uid,
+    subAccountId,
+    agencyId,
+    role: "admin",
+    status: "active",
+    email,
+    displayName,
+    addedAt: FieldValue.serverTimestamp(),
+    addedByUid: uid,
+    assignedTerritoryIds: [GLOBAL_TERRITORY_ID],
+  });
+
+  tx.set(db.doc(`userMemberships/${uid}/subAccounts/${subAccountId}`), {
+    subAccountId,
+    agencyId,
+    accountNumber: current,
+    role: "admin",
+    name,
+    addedAt: FieldValue.serverTimestamp(),
+  });
+
+  // Seed Welcome email + Welcome SMS templates so every new sub-account
+  // starts with usable defaults.
+  seedDefaultTemplates(db, (ref, data) => tx.set(ref, data), {
+    agencyId,
+    subAccountId,
+    createdByUid: uid,
+  });
 }

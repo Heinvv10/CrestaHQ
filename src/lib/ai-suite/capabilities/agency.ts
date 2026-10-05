@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { createSubAccountForAgency } from "@/lib/server/sub-accounts-service";
+import { createSubAccountForAgencyKey } from "@/lib/server/sub-account-key-create";
 import {
   applyFeatureGates,
   recordGateChanges,
@@ -125,6 +126,8 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
     name: "set_feature_gate",
     level: "agency",
     requiredRole: "agencyOwner",
+    // An agency key uses set_sub_account_gate (agency-gates.ts) instead.
+    surfaces: ["chat"],
     menuLabel:
       "Enable or disable a feature (broadcasts, API access, WhatsApp, Community, …) for one of your sub-accounts",
     description:
@@ -165,7 +168,7 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
         };
       }
       const gate = str(raw, "gate");
-      const gateDef = FEATURE_GATES[gate];
+      const gateDef = Object.hasOwn(FEATURE_GATES, gate) ? FEATURE_GATES[gate] : undefined;
       if (!gateDef) {
         return {
           ok: false,
@@ -205,8 +208,12 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
       }”.`;
     },
     execute: async (ctx, args) => {
+      // validate may be skipped
+      if (!Object.hasOwn(FEATURE_GATES, args.gate as string)) {
+        throw new CapabilityUserError(`pick a gate: ${Object.keys(FEATURE_GATES).join(", ")}`);
+      }
       const g = FEATURE_GATES[args.gate as string];
-      const refusal = assistantEnableRefusal(g, args.enabled); // validate may be skipped
+      const refusal = assistantEnableRefusal(g, args.enabled);
       if (refusal) throw new CapabilityUserError(refusal);
       const ref = getAdminDb().doc(
         `subAccounts/${args.subAccountId as string}`
@@ -281,6 +288,8 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
         args.slug ? ` (slug: ${args.slug})` : ""
       }.`,
     execute: async (ctx, args) => {
+      // An agency key: both reach gates on, the minter as member, a per-key cap and name lock.
+      if (ctx.apiKey?.keyLevel === "agency") return createSubAccountForAgencyKey(ctx.agencyId, ctx.apiKey.keyId, args);
       const res = await createSubAccountForAgency({
         agencyId: ctx.agencyId,
         uid: ctx.uid,

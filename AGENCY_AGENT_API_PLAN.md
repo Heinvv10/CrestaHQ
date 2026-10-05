@@ -189,6 +189,65 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   `public_change` **agency-level** row (REVISED r2, P2-6: a sub-account row would
   hit `requiredRole: agencyOwner` on the client's route), so only the owner approves it.
 
+**REVISED 2026-10-05 (A4a-1), following the code:**
+- `hasChannelConnection(sub)` lives in `src/lib/agency/channel-connections.ts`
+  (no server imports, so the A6 teardown script imports it). It is true when any
+  of these `SubAccountDoc` fields is set: `twilioConfig`, `resendConfig`,
+  `smtpConfig`, `mailboxConfig` (IMAP inbox), `metaConfig`, `whatsappCloudMeta`,
+  `whatsappBridgeMeta`, `whatsappSenders` (non-empty), `googleConnectionMeta`,
+  `stripeConnectionMeta`, `paystackConnectionMeta`, `paypalConfig`,
+  `webinar1ConnectionMeta`, `apexgeoConnected` (`true`), `ghlImportConfig` (GHL
+  import connection). `mailboxConfig`, `webinar1ConnectionMeta`,
+  `apexgeoConnected` and `ghlImportConfig` go beyond the list above: they are
+  connections to outside accounts too, and each only makes a direct write rarer.
+  Connections kept off the doc (per-member Google Calendar tokens, AI channel
+  configs under subcollections) are not seen; the same key, < 72 h and 0
+  contacts still bound what "key-created" lets through.
+- `reviews-auto-reply` is **not** in `PROPOSAL_GATES`: it is
+  `assistantMayEnable: false`, so it is in `ENABLE_REFUSED`, and the partition
+  test allows one home per key. Behaviour is the same either way (enable refused,
+  disable a proposal). `ENABLE_REFUSED` still names `agent-api` and `api-access`
+  itself, pinned by a test with every `assistantMayEnable` flag stripped.
+- The partition test requires every runtime `FEATURE_GATES` key to be in a set,
+  so a new gate fails CI until it is classified; at runtime an unclassified gate
+  routes to a proposal (`gateRoute`).
+- The "two gate audit rows" of an agent create are one `feature_gates.updated`
+  event with two `changes` (both gates `false → true`), actor
+  `{type: "api_key", id: keyId}`; `recordGateChanges` takes a uid or an actor. A
+  direct `set_sub_account_gate` write is audited the same way, as the key; an
+  approved one as the approving owner.
+- Creation via a key: the sub-account's and the templates' `createdByUid` is the
+  minter, whose standing (key unrevoked, minter an active owner) is re-read in
+  the creating transaction. The lock is keyed by the name normalised (NFKC,
+  Unicode format characters `\p{Cf}` dropped, whitespace collapsed, lower case;
+  variation selectors and homoglyphs still differ, bounded by the daily cap); the
+  sub-account keeps the name as given, and a name with no letter or digit once
+  normalised (the blank-rendering Hangul fillers aside) is refused. A lock hit replies with the stored name and is flagged `deduped`, so it
+  files no `agent.write`. The name lock is checked before the day
+  cap, so a repeat within 10 min returns the existing id even on a capped day; a
+  lock whose sub-account was deleted since creates anew and moves the lock. The counter and lock docs are not
+  swept (that would need a collection-group index): one per key per UTC day, one
+  per key per distinct name.
+- Executing a `gate_change` row is the capability's own `execute` with
+  `ctx.approved` set: it re-anchors `args.subAccountId` to the approver's
+  `agencyId`, re-checks `ENABLE_REFUSED`, and writes through `applyFeatureGates` +
+  `recordGateChanges` (side effects included). Without `ctx.approved` it writes
+  only after re-checking DIRECT + key-created at write time. The preview reads the
+  target under `buildPreviewContext(agencyId, targetSubAccountId)`, so A5 rebuilds
+  it with the row's `targetSubAccountId` (as D4 r3 P2-2 says). Until A5 ships, these
+  rows cannot be approved (owner ruling, 2026-10-05).
+- Dispatch's agency-level branch now queues proposals (`queueProposal`, shared
+  with the sub-account pipeline) and runs direct writes; a direct agency-level
+  write logs `agent.write` under the sub-account it created or changed (else the
+  target). A `subAccountId` the tool's validate drops (`create_sub_account` takes
+  none) is refused 400 `invalid_args`, so no client's trail names it. `agencyAgentCallable` also requires `availableOn(cap, "agent")`,
+  so the chat-only `set_feature_gate` is refused even if named in the set.
+- Carry-forward: every created sub-account, a key's included, starts with
+  `sms-agent`, `web-chat` and `inbound-voice` on (the opt-out defaults in
+  `writeNewSubAccount`), though they are `PROPOSAL_GATES`; unreachable today (no
+  `ai-agent/*` agent tool), so the burn-down PR that exposes `ai-agent/channels`
+  must class channel enable as `spend` there (as this plan already lists it).
+
 ### D4 — approvals: two row kinds, one new page
 
 - **Sub-account-scoped rows** from an agency key are ordinary `agentProposals` rows

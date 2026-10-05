@@ -10,6 +10,7 @@ import {
 } from "./capabilities/types";
 import { str } from "./capabilities/helpers";
 import { AGENCY_CAPABILITIES } from "./capabilities/agency";
+import { AGENCY_GATE_CAPABILITIES } from "./capabilities/agency-gates";
 import { BILLING_PLAN_CAPABILITIES } from "./capabilities/billing-plans";
 import { BILLING_CHARGE_CAPABILITIES } from "./capabilities/billing-charges";
 import { ACCESS_CAPABILITIES } from "./capabilities/access";
@@ -100,6 +101,7 @@ export type {
 export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   // ═══ Agency level ════════════════════════════════════════════════════════
   ...AGENCY_CAPABILITIES,
+  ...AGENCY_GATE_CAPABILITIES,
   ...BILLING_PLAN_CAPABILITIES,
   ...BILLING_CHARGE_CAPABILITIES,
 

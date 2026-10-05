@@ -51,7 +51,10 @@ export const OUTCOME_UNKNOWN_MESSAGE =
 
 export interface ProposalInput {
   agencyId: string;
-  subAccountId: string;
+  /** null = an agency-level row (D4): the agency owner decides it. */
+  subAccountId: string | null;
+  /** Agency-level rows only: the sub-account the action changes. */
+  targetSubAccountId?: string;
   keyId: string;
   keyPrefix: string;
   /** Where the proposing key lives (`agentKeyRef`). */
@@ -90,12 +93,10 @@ const newRev = () => randomBytes(12).toString("hex");
  *  keys is one row, so unsettled / executing / priorAttemptSent hold across
  *  keys. The row's keyId is the key that created its current generation. */
 export function proposalId(input: ProposalInput): string {
-  const key = [
-    input.subAccountId,
-    input.capability,
-    canonical(input.args),
-    input.workflowId ?? "",
-  ].join("|");
+  const key =
+    input.subAccountId === null
+      ? [`agency:${input.agencyId}`, input.capability, canonical(input.args)].join("|")
+      : [input.subAccountId, input.capability, canonical(input.args), input.workflowId ?? ""].join("|");
   return `p_${createHash("sha256").update(key).digest("hex").slice(0, 40)}`;
 }
 
@@ -148,6 +149,7 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
     tx.set(ref, {
       agencyId: input.agencyId,
       subAccountId: input.subAccountId,
+      ...(input.subAccountId === null ? { targetSubAccountId: input.targetSubAccountId } : {}),
       createdByUid: `apikey:${input.keyPrefix}`,
       keyId: input.keyId,
       keyPrefix: input.keyPrefix,

@@ -86,7 +86,9 @@ export type CapabilityApproval =
   | "channel_change"
   /** A change to what the public sees or books on a live page (a booking
    *  page's times, questions, price, confirmation text...). */
-  | "public_change";
+  | "public_change"
+  /** An agency key switching a sub-account's feature gate (agency-level row). */
+  | "gate_change";
 
 export interface ExecuteResult {
   /** Human-readable confirmation appended to the chat (or, for readonly
@@ -107,6 +109,9 @@ export interface ExecuteResult {
   holdFailures?: HoldFailure[];
   /** A read that hit its row cap: the result may be incomplete. */
   truncated?: true;
+  /** Agent surface: an earlier call's result, returned again; nothing was
+   *  written, so no `agent.write` is filed. */
+  deduped?: true;
 }
 
 export type ValidateResult =
