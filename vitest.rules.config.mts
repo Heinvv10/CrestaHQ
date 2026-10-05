@@ -7,9 +7,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.firestore-rules.test.ts"],
-    // Each file mints its OAuth token in beforeAll, retrying a stalled mint
-    // (src/test/rules-token.ts) for up to MAX_TOKEN_MS (47 s) — more than the
-    // default 10 s hook budget. Room for that plus the Rules API call itself.
-    hookTimeout: 90_000,
+    // Each file's beforeAll mints its OAuth token and calls the Rules API,
+    // both retried on network errors (src/test/rules-api.ts) for up to
+    // MAX_EVALUATE_MS (134 s) in the worst case: well past the default 10 s.
+    hookTimeout: 180_000,
   },
 });

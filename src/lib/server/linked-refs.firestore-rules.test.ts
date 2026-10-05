@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
-import { rulesAccessToken } from "../../test/rules-token";
+import { rulesAccessToken, rulesFetch } from "../../test/rules-api";
 
 /**
  * The repo's OWN firestore.rules for the linked-record ids on client-written
@@ -66,7 +66,7 @@ async function evaluate(cases: Case[]): Promise<{ allowed: boolean; errors: stri
     resource: before ? { data: before } : null,
     functionMocks: MOCKS,
   }));
-  const res = await fetch(`https://firebaserules.googleapis.com/v1/projects/${creds.projectId}:test`, {
+  const res = await rulesFetch(`https://firebaserules.googleapis.com/v1/projects/${creds.projectId}:test`, {
     method: "POST",
     headers: { authorization: `Bearer ${access_token}`, "content-type": "application/json" },
     body: JSON.stringify({
