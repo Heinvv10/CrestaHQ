@@ -217,8 +217,12 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   direct `set_sub_account_gate` write is audited the same way, as the key; an
   approved one as the approving owner.
 - Creation via a key: the sub-account's and the templates' `createdByUid` is the
-  minter. The name lock is checked before the day cap, so a repeat within 10 min
-  returns the existing id even on a capped day. The counter and lock docs are not
+  minter, whose standing (key unrevoked, minter an active owner) is re-read in
+  the creating transaction. The lock is keyed by the name normalised (NFKC,
+  zero-width characters dropped, whitespace collapsed, lower case); the
+  sub-account keeps the name as given. The name lock is checked before the day
+  cap, so a repeat within 10 min returns the existing id even on a capped day; a
+  lock whose sub-account was deleted since creates anew and moves the lock. The counter and lock docs are not
   swept (that would need a collection-group index): one per key per UTC day, one
   per key per distinct name.
 - Executing a `gate_change` row is the capability's own `execute` with
@@ -231,8 +235,9 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   rows cannot be approved (owner ruling, 2026-10-05).
 - Dispatch's agency-level branch now queues proposals (`queueProposal`, shared
   with the sub-account pipeline) and runs direct writes; a direct agency-level
-  write logs `agent.write` under the sub-account it touched (the target, or the
-  one it created). `agencyAgentCallable` also requires `availableOn(cap, "agent")`,
+  write logs `agent.write` under the sub-account it created or changed (else the
+  target). A `subAccountId` the tool's validate drops (`create_sub_account` takes
+  none) is refused 400 `invalid_args`, so no client's trail names it. `agencyAgentCallable` also requires `availableOn(cap, "agent")`,
   so the chat-only `set_feature_gate` is refused even if named in the set.
 - Carry-forward: every created sub-account, a key's included, starts with
   `sms-agent`, `web-chat` and `inbound-voice` on (the opt-out defaults in
