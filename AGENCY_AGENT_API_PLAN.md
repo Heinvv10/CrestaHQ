@@ -250,6 +250,25 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
 | Billing plan at creation | none: `comped`, fully usable; `assign_billing_plan` is a `spend` proposal approved last |
 | Human-only | no tool for any connection route, credentials, `billing/{checkout,portal}`, `PATCH /api/agency` (the switch itself) |
 
+**REVISED 2026-10-05 (A3b), following the code:**
+- `sweepRevokedKeyProposals` takes `{keyRef}` only: a row is the key's when
+  `agentKeyRef(row).path === keyRef.path`, and an agency key's path already names its
+  agency, so a separate `agencyId` would be redundant.
+- The `agent.call` row also carries `keyId` and `keyPrefix` (which key, never args),
+  is written **before** the call runs (a call whose row cannot be written does not
+  run), and is written for an agency-level call that names a reached
+  `subAccountId` (`sub_account_stats`) as well as for every sub-account call.
+- The enrolment replay refuses a missing proposing-key doc at **either** level
+  (never the default cap); the decide route already treats a missing key as
+  revoked, so only a race reaches it.
+- The decide route's agency switch check gates **approve** only; reject stays
+  allowed (refusing is always safe).
+- An agency key sending no `subAccountId` to a sub-account tool gets the identical
+  404 `not_found` (A3a's `resolveReach` on `undefined`), not a 400: live-validation
+  step 6 below reads "→ 404".
+- `precheck`'s type already took `ApiAuthContext | AgencyApiAuthContext` after A3a;
+  nothing to widen.
+
 ## Coverage manifest (the CI gate) — REVISED 2026-10-04 (P1-2)
 
 `scripts/agent-coverage.json` keys every **`path:METHOD`** (methods parsed from
@@ -404,7 +423,7 @@ firestore.rules / firestore.indexes.json
    sub-account is key-created); the gate, invite and plan rows need their own click; the plan preview shows the gate diff. Reject
    the plan if prod Stripe would send a checkout anywhere but the screen.
 6. REST: `POST /api/v1/tools/find_contacts` with `{subAccountId}` → 200; without →
-   400; a v1 sub-account key with another `subAccountId` → 400 `wrong_sub_account`.
+   404 (REVISED A3b); a v1 sub-account key with another `subAccountId` → 400 `wrong_sub_account`.
 7. Revoke → remaining pending rows `rejected: key_revoked`; switch off
    `agentApiEnabled`; **`scripts/teardown-smoke-sub-account.ts --yes`** (REVISED,
    P1-9 / r2 P1-D, P2-11): guards above, then deactivates and deletes workflows,
