@@ -121,9 +121,18 @@ describe("reject and the pending-only precondition", () => {
   it("the expiry sweep leaves a just-claimed executing row untouched", async () => {
     const id = await proposeId();
     mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
-    beforeNextTransaction(() => claim(id, "u_other"));
+    // A real claim of a row already past expiresAt expires it (next test),
+    // so the row is moved directly: only the sweep's precondition is under test.
+    beforeNextTransaction(async () => mem.seed(`agentProposals/${id}`, { ...row(id), status: "executing" }));
     await sweep(new Date());
     expect(row(id).status).toBe("executing");
+  });
+
+  it("a claim of a row already past expiresAt expires it instead", async () => {
+    const id = await proposeId();
+    mem.seed(`agentProposals/${id}`, { ...row(id), expiresAt: new Date(Date.now() - 1000) });
+    expect(await claim(id, "u_other")).toBe("expired");
+    expect(row(id)).toMatchObject({ status: "expired", claimId: null });
   });
 
   it("the expiry sweep expires a pending row past expiresAt", async () => {

@@ -4,7 +4,13 @@ import { createHash, randomBytes } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agentKeyRef } from "@/lib/firestore/api-keys";
-import { agencyKeyStanding, type AgencyKeyStanding, type DocReader } from "@/lib/api/agency-key-standing";
+import type { EffectiveTerritoryScope } from "@/lib/auth/territory-filter";
+import {
+  approvalRefusal,
+  pastExpiry,
+  proposalVisible,
+  type ClaimRefusal,
+} from "@/lib/server/agent-approval-checks";
 import type { CapabilityApproval } from "@/lib/ai-suite/capabilities";
 import {
   canonical,
@@ -201,47 +207,20 @@ export async function transitionIf(
   });
 }
 
-/** Why a row may not be approved right now (beyond its own status). */
-export type ApprovalRefusal =
-  | "gate_off"
-  | "wrong_agency"
-  | "key_revoked"
-  | Exclude<AgencyKeyStanding, "ok">;
-
-/**
- * Everything approving a row needs of the world beyond the row: both of its
- * sub-account's Agent API gates on, an agency key's row in that sub-account's
- * own agency, the proposing key (`agentKeyRef`) still unrevoked, and an
- * agency key's standing (`agencyKeyStanding`). The ONE list behind the
- * decide route's early refusal (plain reads) and the claim (`tx.get`), so a
- * change committed between the two can never execute.
- */
-export async function approvalRefusal(
-  row: FirebaseFirestore.DocumentData,
-  read: DocReader = (ref) => ref.get()
-): Promise<ApprovalRefusal | null> {
-  const sub = (await read(getAdminDb().doc(`subAccounts/${row.subAccountId}`))).data();
-  if (sub?.agentApiEnabledByAgency !== true || sub?.apiAccessEnabledByAgency !== true) return "gate_off";
-  // The key and standing reads below are keyed by an agency row's agencyId.
-  if (row.keyLevel === "agency" && row.agencyId !== sub.agencyId) return "wrong_agency";
-  const key = (await read(agentKeyRef(row))).data();
-  if (!key || key.revokedAt) return "key_revoked";
-  if (row.keyLevel !== "agency") return null;
-  const standing = await agencyKeyStanding(row.agencyId as string, key.createdByUid, read);
-  return standing === "ok" ? null : standing;
-}
-
 /**
  * The approve claim: `pending` → `executing`, for generation `rev` only, and
- * only while `approvalRefusal` still passes, re-read inside the same
- * transaction. A revoked key rejects the row (`key_revoked`) in that
- * transaction; any other refusal leaves it `pending`.
+ * only while every check of agent-approval-checks.ts still passes on what
+ * this transaction reads: the row visible in the approver's territory
+ * `scope`, `approvalRefusal` (re-read with `tx.get`), the row not expired. A
+ * revoked key rejects the row (`key_revoked`) and an expired one expires it,
+ * in that transaction; any other refusal leaves it `pending`.
  */
 export async function claimProposal(
   id: string,
   by: { uid: string; email: string },
-  rev: string
-): Promise<{ claimId: string } | "conflict" | "stale" | ApprovalRefusal> {
+  rev: string,
+  scope: EffectiveTerritoryScope | null
+): Promise<{ claimId: string } | "conflict" | "stale" | ClaimRefusal> {
   const claimedAt = new Date();
   // A random token, not the timestamp: two claims in one millisecond (a
   // re-proposal claimed right after) must never look like the same claim.
@@ -251,11 +230,17 @@ export async function claimProposal(
     const cur = (await tx.get(ref)).data();
     if (!cur || cur.status !== "pending") return "conflict";
     if (cur.rev !== rev) return "stale";
+    // A contact re-tagged since moves the row's territoryId without a new rev.
+    if (!proposalVisible(cur, scope)) return "not_visible";
     const refusal = await approvalRefusal(cur, (r) => tx.get(r));
     if (refusal === "key_revoked") {
       tx.update(ref, { status: "rejected", reason: "key_revoked", decidedAt: claimedAt });
     }
     if (refusal) return refusal;
+    if (pastExpiry(cur)) {
+      tx.update(ref, { status: "expired", decidedAt: claimedAt });
+      return "expired";
+    }
     tx.update(ref, {
       status: "executing",
       claimedAt,

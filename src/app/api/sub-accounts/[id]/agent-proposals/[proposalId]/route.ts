@@ -9,7 +9,7 @@ import {
   roleSatisfies,
   type AiSuiteActionContext,
 } from "@/lib/ai-suite/capabilities";
-import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
+import { territoryScopeFor } from "@/lib/ai-suite/territory-scope";
 import { buildPreviewContext } from "@/lib/api/agent-context";
 import {
   assertPinnedWhenOutbound,
@@ -19,28 +19,35 @@ import {
   proposalTooLarge,
 } from "@/lib/server/agent-proposals-encoding";
 import {
-  approvalRefusal,
   claimProposal,
   MARK_MIN_AGE_MS,
   refreshPreview,
   transitionIf,
-  type ApprovalRefusal,
   type TransitionResult,
 } from "@/lib/server/agent-proposals";
+import {
+  approvalRefusal,
+  pastExpiry,
+  proposalVisible,
+  type ClaimRefusal,
+} from "@/lib/server/agent-approval-checks";
 import { executeAndSettle } from "@/lib/server/agent-proposals-settle";
 import { replayHeldEnrolment } from "@/lib/server/agent-enrolment-replay";
 import { currentHeldEnrolmentPreview } from "@/lib/server/agent-held-enrolment";
 
 const DECISIONS = ["approve", "reject", "mark_sent", "mark_not_sent"] as const;
-/** Every approvalRefusal but key_revoked, which rejects the row instead. */
-const APPROVAL_REFUSAL: Record<Exclude<ApprovalRefusal, "key_revoked">, [number, string]> = {
+/** The answer to each refusal, early or from the claim (agent-approval-checks.ts). */
+const APPROVAL_REFUSAL: Record<ClaimRefusal, [number, string]> = {
+  not_visible: [403, "That record isn't in one of your assigned territories."],
   gate_off: [403, "Agent API access is disabled for this sub-account."],
   wrong_agency: [404, "Proposal not found"],
   no_agency: [403, "The agency of the API key that proposed this no longer exists."],
   agent_api_disabled: [403, "The Agent API is switched off for this agency."],
   minter_removed: [403, "The agency owner who minted the API key that proposed this is no longer an active owner."],
+  key_revoked: [409, "key_revoked"],
+  expired: [409, "expired"],
 };
-const refusedApproval = (refusal: Exclude<ApprovalRefusal, "key_revoked">) =>
+const refusedApproval = (refusal: ClaimRefusal) =>
   NextResponse.json({ error: APPROVAL_REFUSAL[refusal][1] }, { status: APPROVAL_REFUSAL[refusal][0] });
 type Decision = (typeof DECISIONS)[number];
 
@@ -52,9 +59,10 @@ type Decision = (typeof DECISIONS)[number];
  * checks of it: its agency's Agent API switch and its minter still an
  * owner) — `approvalRefusal` — re-computes the preview (a changed one is
  * stored and refused, so the approver sees what will really happen), then
- * CLAIMS the row (`pending` → `executing` in a transaction that re-reads
- * `approvalRefusal`) before running anything, so two approvers can never
- * both execute it, and nothing revoked or switched off meanwhile runs. `reject` is legal
+ * CLAIMS the row (`pending` → `executing` in a transaction that re-runs the
+ * territory, `approvalRefusal` and expiry checks on what it reads) before
+ * running anything, so two approvers can never both execute it, and nothing
+ * revoked, switched off, re-tagged or expired meanwhile runs. `reject` is legal
  * only on `pending`; `mark_sent` / `mark_not_sent` only on `unsettled`. Every
  * decision but `reject` (refusing is always safe) names the row generation
  * (`rev`) the approver saw: a row re-proposed or refreshed since is 409
@@ -114,17 +122,9 @@ export async function POST(
     subAccountId,
     subAccountRole: access.subAccountRole,
   };
-  // The same gate as firestore.rules' canSeeProposal: a scoped target (the
-  // default when absent) needs the row's territoryId in the caller's scope.
-  if (proposal.targetScoped !== false) {
-    const scope = await territoryScopeFor(actionCtx);
-    if (!canSeeTerritory(scope, proposal.territoryId)) {
-      return NextResponse.json(
-        { error: "That record isn't in one of your assigned territories." },
-        { status: 403 },
-      );
-    }
-  }
+  // firestore.rules' canSeeProposal; the claim re-checks it on the row it reads.
+  const scope = proposal.targetScoped !== false ? await territoryScopeFor(actionCtx) : null;
+  if (!proposalVisible(proposal, scope)) return refusedApproval("not_visible");
 
   const decided = {
     decidedAt: new Date(),
@@ -173,9 +173,7 @@ export async function POST(
       { status: "rejected", reason: "key_revoked", decidedAt: new Date() },
       { rev },
     );
-    return moved === "ok"
-      ? NextResponse.json({ error: "key_revoked" }, { status: 409 })
-      : refused(moved);
+    return moved === "ok" ? refusedApproval("key_revoked") : refused(moved);
   }
   if (refusal) return refusedApproval(refusal);
   const enrolment = proposal.approval === "workflow_enrolment";
@@ -191,16 +189,14 @@ export async function POST(
     }
   }
 
-  if ((millis(proposal.expiresAt) ?? Infinity) < Date.now()) {
+  if (pastExpiry(proposal)) {
     const moved = await transitionIf(
       proposalId,
       "pending",
       { status: "expired", decidedAt: new Date() },
       { rev },
     );
-    return moved === "ok"
-      ? NextResponse.json({ error: "expired" }, { status: 409 })
-      : refused(moved);
+    return moved === "ok" ? refusedApproval("expired") : refused(moved);
   }
 
   // execute reads live data; the preview was computed when proposed. If
@@ -262,10 +258,9 @@ export async function POST(
     );
   }
 
-  const claim = await claimProposal(proposalId, access, rev);
+  const claim = await claimProposal(proposalId, access, rev, scope);
   if (claim === "conflict" || claim === "stale") return refused(claim);
-  // Revoked, switched off or gated between the checks above and the claim.
-  if (claim === "key_revoked") return NextResponse.json({ error: "key_revoked" }, { status: 409 });
+  // Any check above that stopped passing between it and the claim.
   if (typeof claim === "string") return refusedApproval(claim);
   const { claimId } = claim;
 

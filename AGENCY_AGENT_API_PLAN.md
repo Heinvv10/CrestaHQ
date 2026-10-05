@@ -241,11 +241,13 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
 - **REVISED 2026-10-05 (A3b follow-ups):** the A5 race carry-forward is resolved.
   The approve claim now re-reads, inside its own transaction, everything the
   decide route checked before it (both sub-account gates, the row's agency, the
-  proposing key, an agency key's standing) through one helper,
-  `approvalRefusal` in `lib/server/agent-proposals.ts`. A revoke, switch-off,
-  minter demotion or gate-off committing between the checks and the claim no
-  longer executes: a revoked key rejects the row `key_revoked`, anything else
-  leaves it pending with the early check's 403 / 404. A5's shared pre-claim
+  proposing key, an agency key's standing, the row's territory against the
+  approver's scope, its expiry) through the same helpers,
+  `lib/server/agent-approval-checks.ts`. A revoke, switch-off, minter demotion,
+  gate-off, contact re-tag or expiry committing between the checks and the
+  claim no longer executes: a revoked key rejects the row `key_revoked`, an
+  expired one expires it (409), anything else leaves it pending with the early
+  check's 403 / 404. A5's shared pre-claim
   sequence calls `claimProposal` and inherits it.
 
 ### D5 — the per-key questions

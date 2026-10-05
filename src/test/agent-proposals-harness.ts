@@ -125,8 +125,9 @@ export async function revoke(keyId = "key1") {
     params: Promise.resolve({ id: "sa1", keyId }),
   });
 }
+/** Claim as another approver who sees every territory (an admin). */
 export async function claim(id: string, uid = "u_other") {
-  return (await lib()).claimProposal(id, { uid, email: "" }, row(id).rev as string);
+  return (await lib()).claimProposal(id, { uid, email: "" }, row(id).rev as string, { enforce: false, ids: null });
 }
 export async function sweep(now: Date) {
   return (await import("@/lib/server/agent-proposals-sweeps")).sweepAgentProposals(now);
