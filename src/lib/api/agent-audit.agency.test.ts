@@ -3,11 +3,13 @@ import { auth as subKey, mem, setupDispatchTests } from "@/test/agent-dispatch-h
 import type { AgencyApiAuthContext } from "@/lib/api/auth";
 
 /**
- * An agency key's direct write in a client sub-account is attributable as an
- * AGENCY key's in the client's audit trail (AGENCY_AGENT_API_PLAN.md D5
- * "Audit actor: {type: api_key, id: keyId} + keyLevel; agent.write under the
- * target"): every audit row written with an `api_key` actor carries the
- * key's level. Folded in from the A3b breaker's repro.
+ * Every audit row written with an `api_key` actor names the key's level
+ * (AGENCY_AGENT_API_PLAN.md D5 "Audit actor: {type: api_key, id: keyId} +
+ * keyLevel"): an agency key's id is not in the client's own key list. The
+ * agent.write rows are pinned in agent-audit.test.ts (sub-account key) and
+ * agent-proposals.agency.test.ts (agency key, through REST); this file
+ * pins the other api_key writer, set_workflow_status. Started from the A3b
+ * breaker's repro.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-dispatch-harness")).adminMock());
@@ -26,25 +28,6 @@ beforeEach(() => {
 
 const auditRows = (action: string) =>
   mem.all().filter((d) => (d.data as { action?: string }).action === action).map((d) => d.data as Record<string, unknown>);
-const agentWrites = () =>
-  mem.all().filter((d) => (d.data as { action?: string }).action === "agent.write").map((d) => d.data as Record<string, unknown>);
-
-describe("agent.write audit rows name the key's level (D5)", () => {
-  it("an agency key's create_contact in sa1 → the sa1 agent.write row says keyLevel agency", async () => {
-    expect(await dispatchAgentTool(agencyKey, "create_contact", { subAccountId: "sa1", name: "Ben" })).toMatchObject({ ok: true });
-    const rows = agentWrites();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ subAccountId: "sa1", actor: { type: "api_key", id: "ak1" } });
-    expect(rows[0]!.changes).toEqual(expect.arrayContaining([expect.objectContaining({ field: "keyLevel", after: "agency" })]));
-  });
-
-  it("control: a sub-account key's row says keyLevel sub-account", async () => {
-    expect(await dispatchAgentTool(subKey, "create_contact", { name: "Cat" })).toMatchObject({ ok: true });
-    expect(agentWrites()[0]!.changes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ field: "keyLevel", after: "sub-account" })]),
-    );
-  });
-});
 
 describe("workflow.status_changed by an agent names the key's level (D5)", () => {
   beforeEach(() => {
