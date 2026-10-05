@@ -168,7 +168,7 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
         };
       }
       const gate = str(raw, "gate");
-      const gateDef = FEATURE_GATES[gate];
+      const gateDef = Object.hasOwn(FEATURE_GATES, gate) ? FEATURE_GATES[gate] : undefined;
       if (!gateDef) {
         return {
           ok: false,
@@ -208,8 +208,12 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
       }”.`;
     },
     execute: async (ctx, args) => {
+      // validate may be skipped
+      if (!Object.hasOwn(FEATURE_GATES, args.gate as string)) {
+        throw new CapabilityUserError(`pick a gate: ${Object.keys(FEATURE_GATES).join(", ")}`);
+      }
       const g = FEATURE_GATES[args.gate as string];
-      const refusal = assistantEnableRefusal(g, args.enabled); // validate may be skipped
+      const refusal = assistantEnableRefusal(g, args.enabled);
       if (refusal) throw new CapabilityUserError(refusal);
       const ref = getAdminDb().doc(
         `subAccounts/${args.subAccountId as string}`

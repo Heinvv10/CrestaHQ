@@ -37,3 +37,13 @@ describe.each([
     expect(cap().validate(args(gate, false)).ok).toBe(true);
   });
 });
+
+describe("set_feature_gate: gate names are FEATURE_GATES' own keys, never Object.prototype's", () => {
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty"])("%s: validate refuses it, and so does execute, writing nothing", async (gate) => {
+    expect(cap().validate(args(gate, true))).toMatchObject({ ok: false, error: expect.stringMatching(/pick a gate/) });
+    mem.clear();
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Velocity" });
+    await expect(cap().execute(ctx, args(gate, true))).rejects.toThrow(/pick a gate/);
+    expect(mem.read("subAccounts/sa1")).toEqual({ agencyId: "ag1", name: "Velocity" });
+  });
+});

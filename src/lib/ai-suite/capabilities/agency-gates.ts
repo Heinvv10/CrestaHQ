@@ -44,6 +44,10 @@ export function gateRoute(gate: string, enabled: boolean): "refused" | "direct" 
   return DIRECT_GATES.has(gate) ? "direct" : "proposal";
 }
 
+/** Refusal for a name that is not one of FEATURE_GATES' own keys ("constructor", "__proto__", …). */
+const unknownGate = (gate: string): string | null =>
+  Object.hasOwn(FEATURE_GATES, gate) ? null : `pick a gate: ${Object.keys(FEATURE_GATES).join(", ")}`;
+
 const enableRefusal = (gate: string, enabled: unknown): string | null =>
   enabled === true && gateRoute(gate, true) === "refused"
     ? `${FEATURE_GATES[gate]?.label ?? gate} can only be switched on by the agency owner in the sub-account's Manage dialog.`
@@ -125,8 +129,9 @@ export const AGENCY_GATE_CAPABILITIES: AiSuiteCapability[] = [
       const subAccountId = str(raw, "subAccountId");
       if (!subAccountId) return { ok: false, error: "the sub-account id is required — look it up with list_sub_accounts" };
       const gate = str(raw, "gate");
-      const gateDef = FEATURE_GATES[gate];
-      if (!gateDef) return { ok: false, error: `pick a gate: ${Object.keys(FEATURE_GATES).join(", ")}` };
+      const unknown = unknownGate(gate);
+      if (unknown) return { ok: false, error: unknown };
+      const gateDef = FEATURE_GATES[gate]!;
       const enabled = (raw as Record<string, unknown>)?.enabled;
       if (typeof enabled !== "boolean") return { ok: false, error: "whether to switch the feature on or off is required" };
       const refusal = enableRefusal(gate, enabled);
@@ -160,7 +165,8 @@ export const AGENCY_GATE_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const gate = args.gate as string;
-      const refusal = enableRefusal(gate, args.enabled); // validate may be skipped
+      // validate may be skipped
+      const refusal = unknownGate(gate) ?? enableRefusal(gate, args.enabled);
       if (refusal) throw new CapabilityUserError(refusal);
       const snap = await getAdminDb().doc(`subAccounts/${args.subAccountId as string}`).get();
       // Re-anchored to the caller's agency, approved or not.

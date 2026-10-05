@@ -113,6 +113,15 @@ describe("ENABLE_REFUSED: refused outright, never a proposal", () => {
   });
 });
 
+describe("gate names are FEATURE_GATES' own keys, never Object.prototype's", () => {
+  it.each(["constructor", "__proto__", "toString", "hasOwnProperty"])("%s → invalid_args, nothing queued or written", async (gate) => {
+    const before = mem.read("subAccounts/kc");
+    expect(await setGate("kc", gate, true)).toMatchObject({ ok: false, code: "invalid_args", httpStatus: 400 });
+    expect(proposals()).toEqual([]);
+    expect(mem.read("subAccounts/kc")).toEqual(before);
+  });
+});
+
 describe("reach runs on the target first", () => {
   it("every unreachable target gets the identical 404, whatever the gate", async () => {
     mem.seed("subAccounts/sa2", { agencyId: "ag2", name: "Two", ...ON });
@@ -149,6 +158,23 @@ describe("executing a gate_change row (the A5 approve route's execute)", () => {
     await expect(cap().execute(keyCtx, { subAccountId: "kc", gate: "labs", enabled: true })).rejects.toThrow(/approval/);
     await expect(cap().execute(owner, { subAccountId: "kc", gate: "labs", enabled: true })).rejects.toThrow(/approval/);
     expect(mem.read("subAccounts/kc")?.labsEnabledByAgency).toBe(false);
+  });
+
+  it.each(["agent-api", "api-access"])("approved, %s true is still refused at execute, nothing written", async (gate) => {
+    const before = mem.read("subAccounts/kc");
+    await expect(
+      cap().execute({ ...owner, approved: { pinned: null } }, { subAccountId: "kc", gate, enabled: true }),
+    ).rejects.toThrow(/only be switched on by the agency owner/);
+    expect(mem.read("subAccounts/kc")).toEqual(before);
+    expect(gateAudits()).toEqual([]);
+  });
+
+  it("approved, a prototype gate name (constructor) is refused at execute, nothing written", async () => {
+    const before = mem.read("subAccounts/kc");
+    await expect(
+      cap().execute({ ...owner, approved: { pinned: null } }, { subAccountId: "kc", gate: "constructor", enabled: true }),
+    ).rejects.toThrow(/pick a gate/);
+    expect(mem.read("subAccounts/kc")).toEqual(before);
   });
 
   it("another agency's sub-account is refused even approved", async () => {
