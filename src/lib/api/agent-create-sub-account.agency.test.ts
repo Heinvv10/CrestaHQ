@@ -124,14 +124,17 @@ describe("the key's standing, read in the creating transaction", () => {
 });
 
 describe("the key's standing is read INSIDE the creating transaction", () => {
-  it("a revoke committing between an attempt's reads and its commit → the retry refuses, nothing created", async () => {
+  it.each([
+    ["a key revoke", "agencies/ag1/apiKeys/ak1", { agencyId: "ag1", createdByUid: "owner1", revokedAt: new Date() }],
+    ["a minter demotion", "agencies/ag1/agencyMembers/owner1", { uid: "owner1", agencyId: "ag1", role: "admin", status: "active" }],
+  ])("%s committing between an attempt's reads and its commit → the retry refuses, nothing created", async (_label, path, doc) => {
     // Firestore retries a transaction whose reads changed before it committed:
-    // the in-memory fake does the same, so the revoke lands mid-attempt here.
+    // the in-memory fake does the same, so the change lands mid-attempt here.
     const real = mem.db.runTransaction.bind(mem.db);
     const spy = vi.spyOn(mem.db, "runTransaction").mockImplementationOnce((fn) =>
       real(async (tx) => {
         const out = await fn(tx);
-        mem.seed("agencies/ag1/apiKeys/ak1", { agencyId: "ag1", createdByUid: "owner1", revokedAt: new Date() });
+        mem.seed(path, doc);
         return out;
       }));
     try {
@@ -197,10 +200,22 @@ describe("the name lock", () => {
   it.each([
     ["only zero-width characters", "\u200B\u200C\u2060"],
     ["only format characters and spaces", "\u200E \u00AD"],
+    ["a Hangul filler alone", "\u3164"],
+    ["a halfwidth Hangul filler alone", "\uFFA0"],
+    ["a Hangul choseong filler alone", "\u115F"],
+    ["a Hangul jungseong filler alone", "\u1160"],
+    ["the Braille blank alone", "\u2800"],
+    ["a variation selector alone", "\uFE0F"],
+    ["a combining grapheme joiner alone", "\u034F"],
   ])("a name that is %s → refused, nothing created", async (_label, name) => {
     expect(await create(name)).toMatchObject({ ok: false, code: "invalid_request", httpStatus: 400 });
     expect(newSubs()).toEqual([]);
     expect(mem.all().filter((d) => d.path.includes("/creations/"))).toEqual([]);
+  });
+
+  it.each(["7 Eleven", "Caf\u00E9", "42"])("an ordinary name (%s) still creates", async (name) => {
+    expect(await create(name)).toMatchObject({ ok: true, ref: { kind: "subAccount" } });
+    expect(newSubs().map((s) => s.name)).toEqual([name]);
   });
 
   it("different names still create different sub-accounts", async () => {

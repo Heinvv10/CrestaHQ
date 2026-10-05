@@ -221,8 +221,8 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   the creating transaction. The lock is keyed by the name normalised (NFKC,
   Unicode format characters `\p{Cf}` dropped, whitespace collapsed, lower case;
   variation selectors and homoglyphs still differ, bounded by the daily cap); the
-  sub-account keeps the name as given, and a name empty once normalised is
-  refused. A lock hit replies with the stored name and is flagged `deduped`, so it
+  sub-account keeps the name as given, and a name with no letter or digit once
+  normalised (the blank-rendering Hangul fillers aside) is refused. A lock hit replies with the stored name and is flagged `deduped`, so it
   files no `agent.write`. The name lock is checked before the day
   cap, so a repeat within 10 min returns the existing id even on a capped day; a
   lock whose sub-account was deleted since creates anew and moves the lock. The counter and lock docs are not

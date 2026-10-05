@@ -35,6 +35,13 @@ function lockName(name: string): string {
     .toLowerCase();
 }
 
+/** A letter or digit once normalised, the Hangul fillers (letters that
+ *  render blank) aside: a name of only blanks (Braille blank, variation
+ *  selectors…) is no name. */
+function hasVisibleName(name: string): boolean {
+  return /[\p{L}\p{N}]/u.test(lockName(name).replace(/[\u115F\u1160\u3164\uFFA0]/g, ""));
+}
+
 export async function createSubAccountForAgencyKey(
   agencyId: string,
   keyId: string,
@@ -43,7 +50,7 @@ export async function createSubAccountForAgencyKey(
   const db = getAdminDb();
   const keyRef = apiKeyRef({ level: "agency", agencyId }, keyId);
   const name = args.name as string;
-  if (!lockName(name)) throw new CapabilityUserError("the sub-account name has no visible characters");
+  if (!hasVisibleName(name)) throw new CapabilityUserError("the sub-account name has no visible characters");
   const now = Date.now();
   const creations = keyRef.collection("creations");
   const dayRef = creations.doc(new Date(now).toISOString().slice(0, 10));
