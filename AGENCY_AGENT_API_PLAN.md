@@ -219,8 +219,11 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
 - Creation via a key: the sub-account's and the templates' `createdByUid` is the
   minter, whose standing (key unrevoked, minter an active owner) is re-read in
   the creating transaction. The lock is keyed by the name normalised (NFKC,
-  zero-width characters dropped, whitespace collapsed, lower case); the
-  sub-account keeps the name as given. The name lock is checked before the day
+  Unicode format characters `\p{Cf}` dropped, whitespace collapsed, lower case;
+  variation selectors and homoglyphs still differ, bounded by the daily cap); the
+  sub-account keeps the name as given, and a name empty once normalised is
+  refused. A lock hit replies with the stored name and is flagged `deduped`, so it
+  files no `agent.write`. The name lock is checked before the day
   cap, so a repeat within 10 min returns the existing id even on a capped day; a
   lock whose sub-account was deleted since creates anew and moves the lock. The counter and lock docs are not
   swept (that would need a collection-group index): one per key per UTC day, one

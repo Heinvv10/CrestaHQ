@@ -22,13 +22,14 @@ export const KEY_CREATIONS_PER_DAY = 10;
 export const NAME_LOCK_MS = 10 * 60 * 1000;
 const REACH_GATES = { apiAccessEnabledByAgency: true, agentApiEnabledByAgency: true } as const;
 
-/** The name the lock is keyed by — NFKC, zero-width characters dropped,
- *  whitespace collapsed, lower case — so "Acme" and "acme  " are one name.
- *  The sub-account keeps the name as given. */
+/** The name the lock is keyed by — NFKC, format characters (Unicode Cf:
+ *  zero-width, direction marks, soft hyphen…) dropped, whitespace collapsed,
+ *  lower case — so "Acme" and "acme  " are one name. The sub-account keeps
+ *  the name as given. */
 function lockName(name: string): string {
   return name
     .normalize("NFKC")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\p{Cf}/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
@@ -42,6 +43,7 @@ export async function createSubAccountForAgencyKey(
   const db = getAdminDb();
   const keyRef = apiKeyRef({ level: "agency", agencyId }, keyId);
   const name = args.name as string;
+  if (!lockName(name)) throw new CapabilityUserError("the sub-account name has no visible characters");
   const now = Date.now();
   const creations = keyRef.collection("creations");
   const dayRef = creations.doc(new Date(now).toISOString().slice(0, 10));
@@ -59,8 +61,11 @@ export async function createSubAccountForAgencyKey(
     const [day, lock] = await Promise.all([tx.get(dayRef), tx.get(lockRef)]);
     const held = lock.data();
     // A lock on a sub-account deleted since is no duplicate: create anew and move the lock.
-    if (held && (millis(held.expiresAt) ?? 0) > now && (await tx.get(db.doc(`subAccounts/${String(held.subAccountId)}`))).exists) {
-      return { created: false, subAccountId: held.subAccountId as string, accountNumber: held.accountNumber as number };
+    const locked = held && (millis(held.expiresAt) ?? 0) > now
+      ? (await tx.get(db.doc(`subAccounts/${String(held.subAccountId)}`))).data()
+      : undefined;
+    if (held && locked) {
+      return { created: false, subAccountId: held.subAccountId as string, accountNumber: held.accountNumber as number, name: String(locked.name) };
     }
     const count = (day.data()?.count as number | undefined) ?? 0;
     if (count >= KEY_CREATIONS_PER_DAY) {
@@ -79,14 +84,15 @@ export async function createSubAccountForAgencyKey(
     );
     tx.set(dayRef, { count: count + 1 });
     tx.set(lockRef, { subAccountId: subRef.id, accountNumber, expiresAt: new Date(now + NAME_LOCK_MS) });
-    return { created: true, subAccountId: subRef.id, accountNumber };
+    return { created: true, subAccountId: subRef.id, accountNumber, name };
   });
 
   const ref = { kind: "subAccount", id: made.subAccountId };
   if (!made.created) {
     return {
-      resultText: `This key created “${name}” (#${made.accountNumber}) under ten minutes ago; returning it instead of a duplicate.`,
+      resultText: `This key created “${made.name}” (#${made.accountNumber}) under ten minutes ago; returning it instead of a duplicate.`,
       ref,
+      deduped: true,
     };
   }
   // The doc did not exist before: both gates were off.

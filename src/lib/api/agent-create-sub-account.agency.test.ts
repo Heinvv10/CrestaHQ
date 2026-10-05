@@ -123,6 +123,27 @@ describe("the key's standing, read in the creating transaction", () => {
   });
 });
 
+describe("the key's standing is read INSIDE the creating transaction", () => {
+  it("a revoke committing between an attempt's reads and its commit → the retry refuses, nothing created", async () => {
+    // Firestore retries a transaction whose reads changed before it committed:
+    // the in-memory fake does the same, so the revoke lands mid-attempt here.
+    const real = mem.db.runTransaction.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(((fn: (tx: unknown) => Promise<unknown>) =>
+      real(async (tx: never) => {
+        const out = await fn(tx);
+        mem.seed("agencies/ag1/apiKeys/ak1", { agencyId: "ag1", createdByUid: "owner1", revokedAt: new Date() });
+        return out;
+      })) as typeof mem.db.runTransaction);
+    try {
+      expect(await create("Smoke Raced")).toMatchObject({ ok: false, code: "invalid_request", httpStatus: 400 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(newSubs()).toEqual([]);
+    expect(mem.all().filter((d) => d.path.includes("/creations/"))).toEqual([]);
+  });
+});
+
 describe("the name lock", () => {
   it("is checked before the cap: on a capped day a repeat within 10 minutes returns the existing id", async () => {
     const ids: Array<string | undefined> = [];
@@ -150,11 +171,36 @@ describe("the name lock", () => {
     ["a zero-width joiner inside", "Acme Ltd", "Acme\u200D Ltd"],
     ["a byte-order mark", "Acme", "\uFEFFAcme"],
     ["a compatibility form (NFKC)", "Acme", "\uFF21cme"],
+    ["a left-to-right mark", "Acme", "Acme\u200E"],
+    ["a word joiner inside", "Acme Ltd", "Acme\u2060 Ltd"],
+    ["a soft hyphen inside", "Acme", "Ac\u00ADme"],
   ])("normalises %s: the same sub-account, stored under the name first given", async (_label, a, b) => {
     const first = idOf(await create(a));
     expect(idOf(await create(b))).toBe(first);
     expect(newSubs()).toHaveLength(1);
     expect(mem.read(`subAccounts/${first}`)?.name).toBe(a);
+  });
+
+  it("a lock hit replies with the stored name, not the one just sent", async () => {
+    await create("Acme");
+    const again = (await create("acme")) as { resultText: string };
+    expect(again.resultText).toContain("“Acme”");
+    expect(again.resultText).not.toContain("“acme”");
+  });
+
+  it("a lock hit writes nothing, so it files no second agent.write", async () => {
+    await create("Smoke Once");
+    await create("Smoke Once");
+    expect(mem.list("auditEvents").filter((e) => e.action === "agent.write")).toHaveLength(1);
+  });
+
+  it.each([
+    ["only zero-width characters", "\u200B\u200C\u2060"],
+    ["only format characters and spaces", "\u200E \u00AD"],
+  ])("a name that is %s → refused, nothing created", async (_label, name) => {
+    expect(await create(name)).toMatchObject({ ok: false, code: "invalid_request", httpStatus: 400 });
+    expect(newSubs()).toEqual([]);
+    expect(mem.all().filter((d) => d.path.includes("/creations/"))).toEqual([]);
   });
 
   it("different names still create different sub-accounts", async () => {

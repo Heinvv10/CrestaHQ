@@ -109,6 +109,9 @@ export interface ExecuteResult {
   holdFailures?: HoldFailure[];
   /** A read that hit its row cap: the result may be incomplete. */
   truncated?: true;
+  /** Agent surface: an earlier call's result, returned again; nothing was
+   *  written, so no `agent.write` is filed. */
+  deduped?: true;
 }
 
 export type ValidateResult =

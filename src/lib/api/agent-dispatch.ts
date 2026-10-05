@@ -198,7 +198,7 @@ async function dispatchForAgencyKey(
     const result = await cap.execute(ctx, validated.args);
     // agent.write under the sub-account the write touched: the one it created or changed, else the target.
     const touched = result.ref?.kind === "subAccount" ? result.ref.id : target;
-    if (!cap.readonly && touched) {
+    if (!cap.readonly && !result.deduped && touched) {
       await recordAgentWrite({ ...auth, level: "sub-account", subAccountId: touched }, cap.name, validated.args, result.ref);
     }
     return {
