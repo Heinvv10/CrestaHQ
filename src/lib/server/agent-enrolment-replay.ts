@@ -105,7 +105,7 @@ export async function replayHeldEnrolment(
   const budget = await reserveEnrolment({
     subAccountId,
     keyId,
-    limit: resolveEnrolmentCapPerHour(key?.enrolmentCapPerHour),
+    limit: resolveEnrolmentCapPerHour(key.enrolmentCapPerHour),
   });
   if (!budget.allowed) {
     throw new CapabilityUserError(

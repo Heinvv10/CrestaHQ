@@ -194,7 +194,7 @@ async function dispatchForAgencyKey(
     if (!validated.ok) return refuse("invalid_args", 400, validated.error);
     // A validator that rewrote the id (case, "#1011") would run on one reach never checked.
     if ("subAccountId" in validated.args && validated.args.subAccountId !== args.subAccountId) return noSuchSubAccount();
-    if ("subAccountId" in args) await recordAgentCall(auth, cap.name, String(args.subAccountId), true);
+    if ("subAccountId" in args) await recordAgentCall(auth, cap.name, String(args.subAccountId), cap.readonly === true);
     const result = await cap.execute(buildAgencyAgentContext(auth), validated.args);
     return {
       ok: true,

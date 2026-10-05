@@ -133,6 +133,15 @@ describe("the agency's Agent API switch", () => {
     expect(runs()).toEqual([]);
   });
 
+  it("the check reads the key's own minter: owner2 minted it and is demoted, owner1 still an owner → 403", async () => {
+    mem.seed("agencies/ag1/agencyMembers/owner2", { role: "owner", status: "active" });
+    mem.seed(AGENCY_KEY, { ...mem.read(AGENCY_KEY), createdByUid: "owner2" });
+    const p = await heldRow();
+    mem.seed("agencies/ag1/agencyMembers/owner2", { role: "staff", status: "active" });
+    expect((await decide(p.id, "approve")).status).toBe(403);
+    expect(runs()).toEqual([]);
+  });
+
   it("a row whose agencyId is not the sub-account's agency → 404, never executed", async () => {
     const p = await heldRow();
     // Fully armed under ag2, so only the cross-check can stop it.
