@@ -57,7 +57,7 @@ describe("workflow.status_changed by an agent names the key's level (D5)", () =>
   it.each([
     ["an agency key", agencyKey, { subAccountId: "sa1" }, "agency", "ak1"],
     ["a sub-account key", subKey, {}, "sub-account", "key1"],
-  ] as const)("%s pausing a workflow → keyLevel %s on the row", async (_label, key, target, level, keyId) => {
+  ] as const)("%s pausing a workflow → its keyLevel on the row", async (_label, key, target, level, keyId) => {
     expect(await dispatchAgentTool(key, "set_workflow_status", { ...target, workflowId: "wf1", status: "paused" })).toMatchObject({ ok: true });
     const [row] = auditRows("workflow.status_changed");
     expect(row).toMatchObject({ subAccountId: "sa1", actor: { type: "api_key", id: keyId } });
