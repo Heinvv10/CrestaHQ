@@ -147,9 +147,11 @@ export function AgencyAgentApiCard() {
           <p className="text-[11px] text-muted-foreground">
             Off by default. One agency key lets an external agent work across
             your sub-accounts. While off, every agency key is refused and none
-            can be minted; existing keys can still be revoked. Agency keys are
-            not accepted by the Agent API yet; this release only mints and
-            revokes them.
+            can be minted; existing keys can still be revoked. An agency key
+            calls the Agent API&apos;s tools over REST and MCP, naming the
+            sub-account each call acts in (list_sub_accounts shows which it
+            can reach). It reaches only sub-accounts where both Public API
+            access and Agent API are switched on (Manage, per sub-account).
           </p>
         </div>
         <button
