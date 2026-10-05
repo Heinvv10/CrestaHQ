@@ -296,6 +296,6 @@ export function agentActor(
   capability: string
 ): AgentActor | undefined {
   return ctx.apiKey
-    ? { keyId: ctx.apiKey.keyId, keyPrefix: ctx.apiKey.keyPrefix, capability }
+    ? { keyId: ctx.apiKey.keyId, keyPrefix: ctx.apiKey.keyPrefix, keyLevel: ctx.apiKey.keyLevel, capability }
     : undefined;
 }

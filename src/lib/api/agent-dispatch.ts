@@ -257,6 +257,7 @@ async function runInSubAccount(
       subAccountId: auth.subAccountId,
       keyId: auth.keyId,
       keyPrefix: auth.keyPrefix,
+      keyLevel: auth.keyLevel,
       capability: cap.name,
       approval,
       args: validated.args,

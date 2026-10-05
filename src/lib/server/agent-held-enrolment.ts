@@ -74,6 +74,7 @@ export async function writeHeldEnrolment(
     subAccountId: input.subAccountId,
     keyId: hold.keyId,
     keyPrefix: hold.keyPrefix,
+    keyLevel: hold.keyLevel,
     capability: hold.capability,
     approval: "workflow_enrolment",
     args,

@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentKeyRef } from "@/lib/firestore/api-keys";
 import {
   CapabilityUserError,
   getCapability,
@@ -36,7 +37,8 @@ type Decision = (typeof DECISIONS)[number];
  * Decide an agent proposal. Every decision needs the capability's own role
  * (as the AI Suite confirm route), admin for `hard_delete`, and territory
  * access to the proposal's contact. `approve` also re-checks both agency
- * gates and the proposing key, re-computes the preview (a changed one is
+ * gates (and, for an agency key's row, its agency's Agent API switch) and the
+ * proposing key, re-computes the preview (a changed one is
  * stored and refused, so the approver sees what will really happen), then
  * CLAIMS the row (`pending` → `executing` in a transaction) before running
  * anything, so two approvers can never both execute it. `reject` is legal
@@ -155,6 +157,16 @@ export async function POST(
       { status: 403 },
     );
   }
+  // An agency key's row also needs its agency's Agent API switch, read fresh.
+  if (
+    proposal.keyLevel === "agency" &&
+    (await db.doc(`agencies/${proposal.agencyId}`).get()).data()?.agentApiEnabled !== true
+  ) {
+    return NextResponse.json(
+      { error: "The Agent API is switched off for this agency." },
+      { status: 403 },
+    );
+  }
   const enrolment = proposal.approval === "workflow_enrolment";
   const args = proposal.args as Record<string, unknown>;
   // Enrolment rows store the held trigger input, not capability args.
@@ -170,9 +182,7 @@ export async function POST(
 
   // The key may have been revoked after this row was written (or its revoke
   // sweep failed): the row dies with the key.
-  const key = (
-    await db.doc(`subAccounts/${subAccountId}/apiKeys/${proposal.keyId}`).get()
-  ).data();
+  const key = (await agentKeyRef(proposal).get()).data();
   if (!key || key.revokedAt) {
     const moved = await transitionIf(
       proposalId,

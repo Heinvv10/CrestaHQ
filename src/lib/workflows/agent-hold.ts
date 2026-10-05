@@ -9,6 +9,8 @@
 export interface AgentActor {
   keyId: string;
   keyPrefix: string;
+  /** Where the key lives, so its held enrolment re-reads the right key doc. */
+  keyLevel: "sub-account" | "agency";
   /** The agent capability whose write fired the trigger. */
   capability: string;
 }

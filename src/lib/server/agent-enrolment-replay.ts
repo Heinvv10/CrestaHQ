@@ -6,6 +6,7 @@ import {
   type ExecuteResult,
 } from "@/lib/ai-suite/capabilities";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentKeyRef } from "@/lib/firestore/api-keys";
 import { reserveEnrolment, resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import { readPipelineStages } from "@/lib/pipelines/server";
@@ -94,7 +95,13 @@ export async function replayHeldEnrolment(
   if (Object.hasOwn(BOOKING_STATUS, args.type) && !(await eventStillMatches(subAccountId, args.type, args.context ?? {}, args.contactId))) {
     throw new CapabilityUserError(WHY.event_changed);
   }
-  const key = (await getAdminDb().doc(`subAccounts/${subAccountId}/apiKeys/${keyId}`).get()).data();
+  // The cap is the proposing key's own, read where that key lives (an
+  // agency key's under its agency). A key doc gone since the decide route's
+  // check is refused, never charged the default cap.
+  const key = (await agentKeyRef(proposal).get()).data();
+  if (!key) {
+    throw new CapabilityUserError("The API key that proposed this no longer exists, so nobody was enrolled.");
+  }
   const budget = await reserveEnrolment({
     subAccountId,
     keyId,
