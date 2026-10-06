@@ -294,10 +294,25 @@ no `apply_snapshot` row is ever in "Approve all"):
     applies racing on one key (or a payload naming it twice) leave one
     definition; ALREADY_EXISTS counts as skipped.
   - `execute` reads the minter first; the direct re-check (target re-read,
-    contacts counted) is the last read before the write. The window from that
-    re-check to the commit remains, as for `set_sub_account_gate`.
+    contacts counted) is the last read before the write. A window remains
+    from that re-check to the commit: a contact (or channel connection) that
+    lands while `applySnapshot` does its own pre-reads still gets a direct
+    apply. Closing it would need the re-check and the writes in one
+    transaction; `set_sub_account_gate` has the same window.
   - A malformed stored payload (a part of the wrong shape) applies nothing
     instead of failing: every list is coerced to an array of objects.
+- Fix round 2 (adversarial review):
+  - **`applySnapshot`, every caller:** a target with no `aiAgent/profile` but
+    an unmigrated legacy `aiConfig/main` whose prompt is set keeps it: the
+    persona is not written (writing a profile stops `maybeMigrateLegacy`,
+    which migrates only while no profile exists, and the legacy persona was
+    lost). The preview says "Kept".
+  - A written persona brings the snapshot's hours and timezone too (what
+    travels is prompt, hours, timezone, keywords), including onto an existing
+    blank-prompt profile; the AI persona row now says so, with the values.
+  - `list_snapshots` rows start with the id, label every field, and quote
+    name and description with their quote characters and `|` neutralised, so
+    an imported snapshot's text cannot forge a field.
 
 ### D4 — approvals: two row kinds, one new page
 
