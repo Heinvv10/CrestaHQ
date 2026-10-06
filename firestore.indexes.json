@@ -933,6 +933,28 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "agencyId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "keyLevel",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "agentProposals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "keyId",
           "order": "ASCENDING"
         },

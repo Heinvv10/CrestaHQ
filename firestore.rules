@@ -1519,11 +1519,15 @@ service cloud.firestore {
     // visible to every member. Absent flag = scoped (fail closed). Every
     // write is the server's — the dispatch that queues a row, and the decide
     // route / sweeps that move it.
+    // An agency-level row (subAccountId null, AGENCY_AGENT_API_PLAN.md D4)
+    // is the agency owner's alone; every other row follows its sub-account.
     function canSeeProposal(p) {
-      return (p.get("targetScoped", true) == false
-          && canAccessSub(p.subAccountId, p.agencyId))
-        || (p.get("targetScoped", true) != false
-          && canSeeScopedDoc(p.subAccountId, p.agencyId, p.get("territoryId", null)));
+      return (p.get("subAccountId", null) == null && isAgencyOwner(p.agencyId))
+        || (p.get("subAccountId", null) != null
+          && ((p.get("targetScoped", true) == false
+              && canAccessSub(p.subAccountId, p.agencyId))
+            || (p.get("targetScoped", true) != false
+              && canSeeScopedDoc(p.subAccountId, p.agencyId, p.get("territoryId", null)))));
     }
     match /agentProposals/{proposalId} {
       allow read: if canSeeProposal(resource.data);

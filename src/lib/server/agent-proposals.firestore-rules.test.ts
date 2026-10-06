@@ -11,8 +11,9 @@ import { rulesAccessToken, rulesFetch } from "../../test/rules-api";
  * What must hold: members of the proposal's sub-account (and the agency
  * owner) read a row and its history; another sub-account's member is refused;
  * a row targeting a contact is territory-scoped like that contact (a scoped
- * collaborator cannot read another territory's row or its history); no client
- * writes anything — the dispatch, decide route and sweeps own it.
+ * collaborator cannot read another territory's row or its history); an
+ * agency-level row (`subAccountId: null`, A5) is its agency owner's alone; no
+ * client writes anything — the dispatch, decide routes and sweeps own it.
  */
 
 const creds = {
@@ -145,6 +146,19 @@ const PRO = "agentProposals/p_1";
 const HIS = "agentProposals/p_1/history/h1";
 const PARENT = { [PRO]: ROW };
 
+// An agency-level row (A5): no sub-account of its own, acting on a target.
+const AGENCY_ROW = {
+  agencyId: "agency_a",
+  subAccountId: null,
+  targetSubAccountId: "sa_1",
+  keyLevel: "agency",
+  capability: "set_sub_account_gate",
+  approval: "gate_change",
+  status: "pending",
+  targetScoped: false,
+};
+const otherOwner: Caller = { uid: "owner_b", agencyId: "agency_b", agencyRole: "owner" };
+
 type Outcome = "allow" | "deny" | "deny: not a member";
 
 const CASES: [string, Case, Outcome][] = [
@@ -170,6 +184,14 @@ const CASES: [string, Case, Outcome][] = [
   ["scoped collaborator reads a tenant-wide proposal", { caller: northRep, method: "get", path: PRO, before: ROW, gets: SCOPING_ON }, "allow"],
   ["collaborator reads another territory's proposal when scoping is off", { caller: northRep, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_OFF }, "allow"],
   ["sub-account admin reads another territory's proposal", { caller: saAdmin, method: "get", path: PRO, before: SOUTH_ROW, gets: SCOPING_ON }, "allow"],
+  // ---- agency-level rows: the agency owner only ----
+  ["agency owner reads an agency-level row", { caller: owner, method: "get", path: PRO, before: AGENCY_ROW }, "allow"],
+  ["agency owner lists agency-level rows", { caller: owner, method: "list", path: PRO, before: AGENCY_ROW }, "allow"],
+  ["the target's sub-account admin cannot read an agency-level row", { caller: saAdmin, method: "get", path: PRO, before: AGENCY_ROW }, "deny"],
+  ["another agency's owner cannot read an agency-level row", { caller: otherOwner, method: "get", path: PRO, before: AGENCY_ROW }, "deny"],
+  ["agency owner reads an agency-level row's history", { caller: owner, method: "get", path: HIS, before: AGENCY_ROW, gets: { [PRO]: AGENCY_ROW } }, "allow"],
+  ["the target's sub-account admin cannot read an agency-level row's history", { caller: saAdmin, method: "get", path: HIS, before: AGENCY_ROW, gets: { [PRO]: AGENCY_ROW } }, "deny"],
+  ["agency owner cannot write an agency-level row", { caller: owner, method: "update", path: PRO, before: AGENCY_ROW, after: { ...AGENCY_ROW, status: "executing" } }, "deny"],
   ["scoped collaborator cannot write their territory's proposal", { caller: northRep, method: "update", path: PRO, before: NORTH_ROW, after: { ...NORTH_ROW, status: "executing" }, gets: SCOPING_ON }, "deny"],
 ];
 
