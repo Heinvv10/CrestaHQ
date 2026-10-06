@@ -15,6 +15,7 @@ import { planAssignRefusal } from "./billing-plans";
 import { assignPreview, chargePreview, NEEDS_APPROVAL, withoutLabels } from "./billing-proposals";
 import { currencyRefusal } from "./billing-currency";
 import { paddedSubAccountId } from "./agency-support";
+import { hasUnsafeText, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 
 /** Both are always an agency-level `spend` row on the agent surface (A4b). */
 const tenantWide = async () => ({ contactId: null, territoryId: null, scoped: false });
@@ -256,6 +257,8 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
         };
       }
       const description = str(raw, "description");
+      // Shown to the client at checkout exactly as stored, and to the approver through oneLine.
+      if (hasUnsafeText(description)) return { ok: false, error: `the description ${UNSAFE_TEXT_MESSAGE}` };
       if (!description || description.length > 120) {
         return {
           ok: false,

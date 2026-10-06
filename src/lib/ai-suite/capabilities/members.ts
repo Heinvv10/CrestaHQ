@@ -8,6 +8,7 @@ import {
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str } from "./helpers";
 import { inviteState, invitePreview } from "./invite-preview";
+import { UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 
 export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
@@ -101,6 +102,9 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
     },
     validate: (raw) => {
       const email = str(raw, "email").toLowerCase();
+      // The approver reads it through oneLine, which drops invisible
+      // characters; the invite would go to the raw address.
+      if (UNSAFE_TEXT_RE.test(email)) return { ok: false, error: `the email ${UNSAFE_TEXT_MESSAGE}` };
       if (!email || !EMAIL_RE.test(email)) {
         return { ok: false, error: "a valid email address is required" };
       }
