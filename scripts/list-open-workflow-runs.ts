@@ -60,9 +60,11 @@ export interface OpenRun {
   enrolledAt: string | null;
   /**
    * True unless every messaging step was skipped or deferred: a step that sent
-   * ("ok", "sent:…"), an ambiguous send the run continued past ("error:…"),
-   * and any step claim (sending, or failed mid-send) all count. Errs towards
-   * true, because a false here lets a rollback message the contact twice.
+   * ("ok", "sent:…"), any "error:…" step, and any step claim (sending, or failed
+   * mid-send) all count. Some "error:" results are definite non-sends (channel
+   * not configured, carrier opt-out), but history doesn't say which, so they
+   * count too. Errs towards true: a false here lets a rollback message the
+   * contact twice; a wrong true only means re-enrolling by hand.
    */
   messaged: boolean;
 }
