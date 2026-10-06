@@ -80,8 +80,10 @@ export async function planSnapshotApply(
     const current: Record<string, unknown> | undefined = migrated ? { ...migrated.profile } : profile?.data();
     persona = personaIsSet(current) ? "kept" : "written";
     if (persona === "written") {
-      const on = agent.docs.filter((d) => d.id !== "profile" && !(migrated && d.id === "sms") && d.data().enabled === true).map((d) => d.id);
-      replyingChannels = [...on, ...(migrated?.sms.enabled === true ? ["sms"] : [])].sort();
+      const on = agent.docs.filter((d) => d.id !== "profile" && d.data().enabled === true).map((d) => d.id);
+      // With no sms doc, the migration writes the legacy doc's; one there is kept.
+      const legacySms = migrated?.sms.enabled === true && !agent.docs.some((d) => d.id === "sms");
+      replyingChannels = [...on, ...(legacySms ? ["sms"] : [])].sort();
       aiHours = landedHours(payload.aiProfile as unknown as Record<string, unknown>, current);
     }
   }

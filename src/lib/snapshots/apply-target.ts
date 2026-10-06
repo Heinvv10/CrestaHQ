@@ -81,6 +81,8 @@ export async function writePersonaIfAbsent(
     // Every read before any write.
     const snap = await tx.get(ref);
     const legacy = await tx.get(legacyRef);
+    const smsRef = db.doc(`subAccounts/${targetSubAccountId}/aiAgent/sms`);
+    const smsExists = (await tx.get(smsRef)).exists;
     // No profile yet: an unmigrated legacy doc IS the target's profile
     // (currentProfile). Writing a profile beside it would stop the lazy
     // migration and drop it, so it is migrated first, exactly as
@@ -96,7 +98,9 @@ export async function writePersonaIfAbsent(
       PERSONA_FIELDS.filter((k) => profile[k] !== undefined).map((k) => [k, profile[k]]),
     );
     if (migrated) {
-      tx.set(db.doc(`subAccounts/${targetSubAccountId}/aiAgent/sms`), migrated.sms);
+      // As the lazy migration does: an sms doc already there (a half-done
+      // migration, an operator's save) is kept.
+      if (!smsExists) tx.set(smsRef, migrated.sms);
       tx.set(ref, { ...migrated.profile, ...persona });
       return true;
     }

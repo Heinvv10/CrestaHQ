@@ -116,15 +116,23 @@ describe("the AI's hours a written persona lands with", () => {
 });
 
 describe("a legacy doc and an sms channel doc", () => {
-  it("the migration's sms replaces the channel doc: sms is named once, from the legacy doc", async () => {
-    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "", enabled: true });
-    mem.seed("subAccounts/sa_dst/aiAgent/sms", { enabled: false });
+  it.each([
+    ["legacy on, the sms doc off: the sms doc decides, and is kept", true, false, []],
+    ["legacy off, the sms doc on: the sms doc decides, sms named once", false, true, ["sms"]],
+    ["both on: sms named once", true, true, ["sms"]],
+  ])("%s", async (_label, legacyOn, smsOn, channels) => {
+    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "", enabled: legacyOn, contextMessageCount: 3 });
+    mem.seed("subAccounts/sa_dst/aiAgent/sms", { enabled: smsOn, contextMessageCount: 12 });
+    expect((await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1")).replyingChannels).toEqual(channels);
+    expect((await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"))).aiProfileApplied).toBe(true);
+    expect(mem.read("subAccounts/sa_dst/aiAgent/sms")).toMatchObject({ enabled: smsOn, contextMessageCount: 12 });
+  });
+
+  it("no sms doc: the legacy doc's enabled decides, and the migration writes it", async () => {
+    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "", enabled: true, contextMessageCount: 3 });
     expect((await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1")).replyingChannels).toEqual(["sms"]);
-    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "", enabled: false });
-    mem.seed("subAccounts/sa_dst/aiAgent/sms", { enabled: true });
-    expect((await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1")).replyingChannels).toEqual([]);
     await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"));
-    expect(mem.read("subAccounts/sa_dst/aiAgent/sms")?.enabled).toBe(false);
+    expect(mem.read("subAccounts/sa_dst/aiAgent/sms")).toMatchObject({ enabled: true, contextMessageCount: 3 });
   });
 });
 
