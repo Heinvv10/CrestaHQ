@@ -65,6 +65,12 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   (`sanitizeForm`) — it points at the source client's site.
 - **Routes**: `GET/POST /api/agency/snapshots` (list summaries + counts / capture),
   `POST /api/agency/sub-accounts/[id]/apply-snapshot`. Owner-only.
+- **Agent tools** (agency keys, [agent-api.md](agent-api.md#agency-keys)):
+  `list_snapshots` and `apply_snapshot`. An apply is direct only for a snapshot
+  captured in this agency onto a sub-account the key created; an imported
+  snapshot, or any other sub-account, is a proposal the owner approves on
+  `/agency/approvals`, one click each (never in "Approve all"). Applying a
+  snapshot onto the sub-account it was captured from is refused.
 - **UI**: [snapshots-section.tsx](src/components/agency/snapshots-section.tsx) on
   `/agency/sub-accounts`, plus the picker on the new-sub-account page.
 - **No new env vars** — snapshots are server-only (default-deny). The share

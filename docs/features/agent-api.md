@@ -238,6 +238,7 @@ only for callable write tools.
   targets re-sync when a contact is re-tagged.
 - **No notification** for new proposals in v1; the sidebar badge counts pending and
   unsettled rows.
-- **Agency keys reach sub-account tools and two agency reads** (`list_sub_accounts`,
-  `sub_account_stats`) so far; agent-run onboarding and the agency approvals page
-  are planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
+- **Agency keys reach sub-account tools and the agency tools** `list_sub_accounts`,
+  `sub_account_stats`, `create_sub_account`, `set_sub_account_gate`,
+  `list_snapshots` and `apply_snapshot` so far; the rest of agent-run onboarding
+  is planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
