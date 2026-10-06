@@ -6,8 +6,10 @@ import { proposeScoped, seedAgency } from "@/test/agency-approvals-harness";
  * The sweeps against a rollover (A5): each sweep queries its rows, then moves
  * them one transaction at a time. A different key re-proposing in between
  * rolls the row over to a fresh pending generation (superseded or expired
- * into history); the sweep must leave that generation alone, so its move is
- * guarded by the `rev` it queried.
+ * into history); the sweep must leave that generation alone. The revoke
+ * sweep's move is guarded by the `gen` it queried (a preview refresh keeps
+ * the generation, so it must not stop the reject), or the `rev` for a row
+ * from before `gen`; the expiry sweep's by the `rev`.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-proposals-harness")).adminMock());
@@ -32,6 +34,33 @@ describe("the revoke sweep", () => {
     const { sweepRevokedKeyProposals } = await import("@/lib/server/agent-proposals-sweeps");
     expect(await sweepRevokedKeyProposals({ keyRef: ak1Ref() })).toBe(0);
     expect(history(id)).toEqual([expect.objectContaining({ status: "superseded", keyId: "ak1" })]);
+    expect(row(id)).toMatchObject({ keyId: "key1", status: "pending" });
+  });
+
+  it("a preview refresh between its query and its transition still rejects the revoked key's row", async () => {
+    const id = await proposeScoped("sa1", "hi");
+    mem.seed(ak1, { ...mem.read(ak1)!, revokedAt: new Date() });
+    // An approve that passed its key check just before the revoke refreshes the preview: same generation, new rev.
+    const { refreshPreview } = await import("@/lib/server/agent-proposals");
+    const seen = row(id);
+    beforeNextTransaction(() =>
+      refreshPreview(id, seen.rev as string, { rows: [{ label: "Body", value: "hi!" }], pinned: { body: "hi!" } })
+    );
+    const { sweepRevokedKeyProposals } = await import("@/lib/server/agent-proposals-sweeps");
+    expect(await sweepRevokedKeyProposals({ keyRef: ak1Ref() })).toBe(1);
+    expect(row(id).gen).toBe(seen.gen);
+    expect(row(id).rev).not.toBe(seen.rev);
+    expect(row(id)).toMatchObject({ keyId: "ak1", status: "rejected", reason: "key_revoked" });
+  });
+
+  it("a row from before `gen` is still guarded by its rev", async () => {
+    const id = await proposeScoped("sa1", "hi");
+    const { gen: _g, ...legacy } = row(id);
+    mem.seed(`agentProposals/${id}`, legacy);
+    mem.seed(ak1, { ...mem.read(ak1)!, revokedAt: new Date() });
+    beforeNextTransaction(() => proposeId({ body: "hi" }, auth));
+    const { sweepRevokedKeyProposals } = await import("@/lib/server/agent-proposals-sweeps");
+    expect(await sweepRevokedKeyProposals({ keyRef: ak1Ref() })).toBe(0);
     expect(row(id)).toMatchObject({ keyId: "key1", status: "pending" });
   });
 

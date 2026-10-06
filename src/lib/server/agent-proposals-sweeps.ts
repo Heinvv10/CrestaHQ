@@ -8,9 +8,9 @@ import { STALE_CLAIM_MS, transitionIf } from "@/lib/server/agent-proposals";
  * Sweeps over the agent approval queue: the key-revoke hook's and the daily
  * api-cleanup's. Every move is the same status-precondition transition the
  * decide route uses, so a sweep never clobbers a row another path moved. A
- * pending row's move also names the `rev` the sweep queried: a re-proposal
- * meanwhile can roll the row over to a fresh generation (createProposal),
- * which the sweep must leave alone.
+ * pending row's move also names the generation the sweep queried: a
+ * re-proposal meanwhile can roll the row over to a fresh generation
+ * (createProposal), which the sweep must leave alone.
  */
 
 const SWEEP_LIMIT = 500;
@@ -31,11 +31,14 @@ export async function sweepRevokedKeyProposals(input: {
   let rejected = 0;
   for (const doc of snap.docs) {
     if (agentKeyRef(doc.data()).path !== input.keyRef.path) continue;
+    // `gen`, not `rev`: an approve that passed its key check before the revoke
+    // may refresh the preview (new rev, same generation and key) meanwhile.
+    // A row from before `gen` keeps the `rev` guard.
     const moved = await transitionIf(
       doc.id,
       "pending",
       { status: "rejected", reason: "key_revoked", decidedAt: new Date() },
-      { rev: doc.data().rev as string }
+      doc.data().gen ? { gen: doc.data().gen as string } : { rev: doc.data().rev as string }
     );
     if (moved === "ok") rejected++;
   }
