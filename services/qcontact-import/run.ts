@@ -17,7 +17,7 @@
  */
 import { readFile, writeFile, rename, unlink, open, stat } from "node:fs/promises";
 import { QContactClient, type CaseRow, type LocationDetail } from "./qcontact.ts";
-import { gpsFromLocationFields, locationPinId, mapCase, type UpsertBody } from "./map.ts";
+import { gpsFromLocationFields, IMPORT_TAG, locationPinId, mapCase, type UpsertBody } from "./map.ts";
 import { leadstackDealEnsurer, type DealEnsurer } from "./deals.ts";
 import { leadstackStageSyncer, statusToStageId, type StageSyncer } from "./stage-sync.ts";
 import { dedupedIdempotencyKey } from "./idempotency-key.ts";
@@ -38,6 +38,11 @@ export type Env = {
   QCONTACT_DEAL_OWNER_UID: string | undefined;
   /** "1" (or any value other than unset/"0") turns on deal-stage syncing (see stage-sync.ts). Default OFF. */
   QCONTACT_SYNC_STAGES: string;
+  /**
+   * Tag added to every imported contact. The install-request workflow enrols on the
+   * default (IMPORT_TAG); any other value imports and syncs the board without enrolling.
+   */
+  QCONTACT_IMPORT_TAG: string;
 };
 
 export type State = {
@@ -88,7 +93,16 @@ export function readEnv(env: NodeJS.ProcessEnv): Env {
     QCONTACT_DEAL_STAGE: env.QCONTACT_DEAL_STAGE ?? "new_request",
     QCONTACT_DEAL_OWNER_UID: env.QCONTACT_DEAL_OWNER_UID || undefined,
     QCONTACT_SYNC_STAGES: env.QCONTACT_SYNC_STAGES ?? "0",
+    QCONTACT_IMPORT_TAG: importTag(env.QCONTACT_IMPORT_TAG),
   };
+}
+
+/** Unset or empty keeps the enrolling default; anything else must be a plain tag. */
+function importTag(raw: string | undefined): string {
+  const v = raw?.trim();
+  if (!v) return IMPORT_TAG;
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(v)) throw new Error(`Invalid env QCONTACT_IMPORT_TAG: ${JSON.stringify(v)}`);
+  return v;
 }
 
 export async function loadState(path: string): Promise<State | null> {
@@ -239,10 +253,12 @@ export async function runImport(opts: {
   syncStage?: StageSyncer;
   /** Unset = a case's location pin is never resolved, so no coordinates are ever written. */
   getLocation?: (id: number) => Promise<LocationDetail>;
+  /** Unset = IMPORT_TAG, the tag the install-request workflow enrols on. */
+  tag?: string;
   dryRun: boolean;
   log: Log;
 }): Promise<Summary> {
-  const { qc, view, statePath, upsert, ensureDeal, syncStage, getLocation, dryRun, log } = opts;
+  const { qc, view, statePath, upsert, ensureDeal, syncStage, getLocation, tag, dryRun, log } = opts;
   const rows: CaseRow[] = await qc.listView(view);
   const state = await loadState(statePath);
 
@@ -302,7 +318,7 @@ export async function runImport(opts: {
       }
     }
 
-    const mapped = mapCase(detail, contact, gps);
+    const mapped = mapCase(detail, contact, gps, tag);
     if (!mapped.ok) {
       summary.skipped[mapped.reason] = (summary.skipped[mapped.reason] ?? 0) + 1;
       log(`skip ${row.id} (${row.label}): ${mapped.reason}`);
@@ -482,6 +498,7 @@ async function runMain(env: Env, dryRun: boolean): Promise<void> {
     qc, view: env.QCONTACT_IMPORT_VIEW, statePath: env.QCONTACT_IMPORT_STATE,
     upsert: leadstackUpserter(env), ensureDeal, syncStage,
     getLocation: (id) => qc.getLocation(id),
+    tag: env.QCONTACT_IMPORT_TAG,
     dryRun,
     log: (l) => process.stdout.write(`${l}\n`),
   });

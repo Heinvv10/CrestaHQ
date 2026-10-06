@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLock, describeLockRefusal, LOCK_STALE_AGE_MS, leadstackUpserter, loadState, runImport, saveState, type Env } from "./run.ts";
+import { acquireLock, describeLockRefusal, LOCK_STALE_AGE_MS, leadstackUpserter, loadState, readEnv, runImport, saveState, type Env } from "./run.ts";
 
 // Real fs/promises by default (each call falls through) — only the one
 // "create-then-write race" test below overrides a single readFile call.
@@ -120,6 +120,39 @@ describe("runImport", () => {
     expect(s).toMatchObject({ mode: "dry-run", fresh: 1, sent: 1 });
     expect(upsert).not.toHaveBeenCalled();
     expect(await readFile(statePath, "utf8")).toBe(before);
+  });
+});
+
+describe("import tag", () => {
+  const env = (extra: Record<string, string> = {}) =>
+    ({
+      QCONTACT_IMPORT_EMAIL: "e", QCONTACT_IMPORT_PASSWORD: "p",
+      LEADSTACK_API_URL: "https://ls.test", LEADSTACK_API_KEY: "k",
+      ...extra,
+    }) as unknown as NodeJS.ProcessEnv;
+
+  it("defaults to the enrolling tag when QCONTACT_IMPORT_TAG is unset or blank", () => {
+    expect(readEnv(env()).QCONTACT_IMPORT_TAG).toBe("qcontact-install");
+    expect(readEnv(env({ QCONTACT_IMPORT_TAG: "  " })).QCONTACT_IMPORT_TAG).toBe("qcontact-install");
+  });
+
+  it("takes a plain tag and refuses anything else", () => {
+    expect(readEnv(env({ QCONTACT_IMPORT_TAG: "qcontact-install-fibreflow" })).QCONTACT_IMPORT_TAG).toBe("qcontact-install-fibreflow");
+    for (const bad of ["Qcontact", "a,b", "a b", "-lead", "x".repeat(64)]) {
+      expect(() => readEnv(env({ QCONTACT_IMPORT_TAG: bad }))).toThrow(/QCONTACT_IMPORT_TAG/);
+    }
+  });
+
+  it("runImport adds the configured tag instead of the enrolling one", async () => {
+    const upsert = vi.fn(async () => ({ ok: true as const, contactId: "contact-x" }));
+    await runImport({ qc: fakeQc([row(1, "2026-09-01")]), view: "v", statePath, upsert, dryRun: false, log });
+    await runImport({
+      qc: fakeQc([row(1, "2026-09-01"), row(2, "2026-09-02")]),
+      view: "v", statePath, upsert, tag: "qcontact-install-fibreflow", dryRun: false, log,
+    });
+    const bodies = upsert.mock.calls.map((c) => (c as unknown as [UpsertBody])[0]);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].tags_add).toEqual(["qcontact-install-fibreflow"]);
   });
 });
 

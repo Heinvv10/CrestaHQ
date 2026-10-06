@@ -200,7 +200,11 @@ Env: `QCONTACT_IMPORT_EMAIL`, `QCONTACT_IMPORT_PASSWORD` (the dedicated
 `QCONTACT_IMPORT_STATE`, `QCONTACT_DEAL_PIPELINE_ID`, `QCONTACT_DEAL_STAGE`
 (default `new_request`), `QCONTACT_DEAL_OWNER_UID` (currently a no-op — see
 Deals below), `QCONTACT_SYNC_STAGES` (default off — see Deal stage sync
-above). QContact tokens expire after ~12 h; the client re-signs-in on a
+above), `QCONTACT_IMPORT_TAG` (default `qcontact-install`, the tag the
+install-request workflow enrols on; any other plain tag, such as
+`qcontact-install-fibreflow`, still creates contacts and deals and syncs
+stages but enrols nobody — used while Velocity's install requests move to
+FibreFlow). QContact tokens expire after ~12 h; the client re-signs-in on a
 401.
 
 ## Run lock

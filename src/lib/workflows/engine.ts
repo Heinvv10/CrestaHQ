@@ -1874,7 +1874,7 @@ async function completeRun(
  * — the delivery throws, and its final retry fails the run with the reason
  * (failRunAfterFinalRetry) rather than risk messaging the contact twice.
  */
-const AT_MOST_ONCE_NODES = new Set<WorkflowNodeType>([
+export const AT_MOST_ONCE_NODES = new Set<WorkflowNodeType>([
   "send_email",
   "send_sms",
   "whatsapp_template",
