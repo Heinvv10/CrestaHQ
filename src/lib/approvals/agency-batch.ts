@@ -7,11 +7,17 @@ import type { ApprovalRow } from "@/lib/approvals/messages";
  * `isKeyCreated`) — nothing real is there yet for it to reach. Every other
  * class (`gate_change`, `workflow_enrolment`, `channel_change`, `outbound`,
  * `spend`, `hard_delete`) is approved one row at a time, and so is a row
- * whose earlier attempt already went out. There is no batch endpoint: the
+ * whose earlier attempt already went out, and so is every `apply_snapshot`
+ * row though it is `public_change` (owner ruling 2026-10-06, A4a-2: each
+ * snapshot apply gets its own click; booking-page publish rows still
+ * batch). There is no batch endpoint: the
  * loop calls the per-row decide route, so every check and claim holds.
  */
 
 export const BATCH_CLASSES: ReadonlySet<string> = new Set(["workflow_activate", "public_change"]);
+
+/** Capabilities never in a batch, whatever their class. */
+export const NEVER_BATCHED: ReadonlySet<string> = new Set(["apply_snapshot"]);
 
 /** A row of the agency list route. */
 export interface AgencyApprovalRow extends ApprovalRow {
@@ -23,7 +29,13 @@ export interface AgencyApprovalRow extends ApprovalRow {
 }
 
 export function batchEligible(row: AgencyApprovalRow): boolean {
-  return row.status === "pending" && BATCH_CLASSES.has(row.approval) && row.keyCreated === true && !row.priorAttemptSent;
+  return (
+    row.status === "pending" &&
+    BATCH_CLASSES.has(row.approval) &&
+    !NEVER_BATCHED.has(row.capability) &&
+    row.keyCreated === true &&
+    !row.priorAttemptSent
+  );
 }
 
 /**

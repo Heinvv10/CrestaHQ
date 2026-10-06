@@ -25,6 +25,11 @@ describe("batchEligible", () => {
     (approval) => expect(batchEligible(row({ approval }))).toBe(false)
   );
 
+  it("an apply_snapshot row → never, though public_change on a key-created target (owner ruling 2026-10-06)", () => {
+    expect(batchEligible(row({ approval: "public_change", capability: "apply_snapshot" }))).toBe(false);
+    expect(batchEligible(row({ approval: "public_change", capability: "update_booking_page" }))).toBe(true);
+  });
+
   it("not key-created, not pending, or a prior attempt went out → no", () => {
     expect(batchEligible(row({ keyCreated: false }))).toBe(false);
     expect(batchEligible(row({ status: "unsettled" }))).toBe(false);
