@@ -47,6 +47,13 @@ export function personaIsSet(profile: Record<string, unknown> | undefined): bool
   return typeof prompt === "string" && prompt.trim() !== "";
 }
 
+/**
+ * The pre-profile persona doc. `maybeMigrateLegacy` (src/lib/comms/ai/agent.ts)
+ * copies it into `aiAgent/profile` on first read, but only while no profile
+ * exists, so while it is unmigrated it IS the target's persona.
+ */
+export const legacyPersonaPath = (subAccountId: string) => `subAccounts/${subAccountId}/aiConfig/main`;
+
 /** The persona fields a snapshot carries (`SnapshotAiProfile`, what capture
  *  copies): everything else on a profile belongs to its own sub-account. */
 const PERSONA_FIELDS = ["systemPrompt", "hoursStart", "hoursEnd", "timezone", "escalationKeywords"] as const;
@@ -71,9 +78,15 @@ export async function writePersonaIfAbsent(
   tenancyStamps: Record<string, unknown>,
 ): Promise<boolean> {
   const ref = db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`);
+  const legacyRef = db.doc(legacyPersonaPath(targetSubAccountId));
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (personaIsSet(snap.data())) {
+      return false;
+    }
+    // No profile yet but a legacy persona: writing one would stop the lazy
+    // migration (agent.ts maybeMigrateLegacy) and lose it. Kept.
+    if (!snap.exists && personaIsSet((await tx.get(legacyRef)).data())) {
       return false;
     }
     if (snap.exists) {

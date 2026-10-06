@@ -66,6 +66,22 @@ describe("a profile with a blank prompt", () => {
   });
 });
 
+describe("an unmigrated legacy persona (aiConfig/main, no profile)", () => {
+  it("a legacy prompt counts as set: kept, nothing written, the plan says kept", async () => {
+    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "Legacy persona.", enabled: true });
+    const plan = await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1");
+    const r = await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"));
+    expect([plan.persona, plan.replyingChannels, r.aiProfileApplied]).toEqual(["kept", [], false]);
+    expect(mem.read("subAccounts/sa_dst/aiAgent/profile")).toBeUndefined();
+  });
+
+  it("a legacy doc with a blank prompt does not: written", async () => {
+    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: " ", enabled: true });
+    expect((await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1")).persona).toBe("written");
+    expect((await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"))).aiProfileApplied).toBe(true);
+  });
+});
+
 describe("one custom-field key, one definition", () => {
   it("two applies at once sharing a key → exactly one definition, one created and one skipped", async () => {
     const [a, b] = await Promise.all([
