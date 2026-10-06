@@ -495,6 +495,14 @@ export async function assignPlanToSubAccount(input: {
   specialPriceCents: number | null;
   /** Billing cadence the agency picked. Defaults to monthly. */
   interval?: BillingInterval;
+  /**
+   * An approved agent proposal's pins: the plan's price for `interval` and
+   * its gates (every PLAN_GATE_KEYS key) as the owner reviewed them. A plan
+   * that differs is refused at this function's own plan read, before any
+   * provider call or write. The owner UI passes neither.
+   */
+  expectedPriceCents?: number;
+  expectedGates?: Record<string, boolean>;
 }): Promise<AssignPlanResult> {
   if (!billingStripeIsConfigured()) {
     throw new BillingError(
@@ -504,6 +512,19 @@ export async function assignPlanToSubAccount(input: {
   }
   const interval: BillingInterval = input.interval === "year" ? "year" : "month";
   const plan = await getPlanOrThrow(input.agencyId, input.planId);
+  if (input.expectedPriceCents !== undefined || input.expectedGates !== undefined) {
+    const price = interval === "year" ? plan.priceAnnualCents : plan.priceMonthlyCents;
+    const gates = (plan.gates ?? {}) as Record<string, unknown>;
+    if (
+      price !== input.expectedPriceCents ||
+      PLAN_GATE_KEYS.some((k) => (gates[k] === true) !== (input.expectedGates?.[k] === true))
+    ) {
+      throw new BillingError(
+        "pinned_mismatch: the plan's price or features changed after this was approved. Nothing was charged; propose it again.",
+        409,
+      );
+    }
+  }
   if (plan.status !== "active") {
     throw new BillingError("This plan is archived — unarchive it or pick another.");
   }
