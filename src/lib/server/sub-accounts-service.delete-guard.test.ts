@@ -162,10 +162,49 @@ describe("deleteSubAccountForAgency and agent approval rows", () => {
       },
     };
 
-    await deleteDecidedProposals(racing as unknown as FirebaseFirestore.Firestore, SA);
+    const reopened = await deleteDecidedProposals(racing as unknown as FirebaseFirestore.Firestore, SA);
 
+    expect(reopened).toBe(1);
     expect(mem.read("agentProposals/p_flip")?.status).toBe("pending");
     expect(mem.read("agentProposals/p_flip/history/g1")).toBeDefined();
+  });
+
+  it("a row that turns open again refuses the delete before anything else is removed", async () => {
+    await row("p_flip", { subAccountId: SA, status: "rejected" });
+    await mem.db.doc(`userMemberships/uid_owner/subAccounts/${SA}`).set({ role: "admin" });
+    await mem.db.doc("message_templates/t_1").set({ agencyId: AG, subAccountId: SA });
+    const collection = storeDb.collection.bind(storeDb);
+    const spy = vi.spyOn(storeDb, "collection").mockImplementation(((name: string) => {
+      const c = collection(name);
+      if (name !== "agentProposals") return c;
+      return {
+        where: (f: string, op: "==", v: unknown) => {
+          const q = c.where(f, op, v);
+          return {
+            ...q,
+            where: q.where.bind(q),
+            limit: q.limit.bind(q),
+            get: async () => {
+              const r = await q.get();
+              // Only the clean-up's unfiltered query flips the row, after the guard has passed.
+              if (f === "subAccountId" && r.docs.some((d) => d.id === "p_flip")) {
+                await mem.db.doc("agentProposals/p_flip").set({ agencyId: AG, subAccountId: SA, status: "pending" });
+              }
+              return r;
+            },
+          };
+        },
+      };
+    }) as typeof storeDb.collection);
+
+    const err = await deleteSubAccountForAgency({ agencyId: AG, subAccountId: SA }).catch((e) => e);
+
+    spy.mockRestore();
+    expect((err as SubAccountNotEmptyError).blockers).toEqual(["agent approvals waiting or in progress"]);
+    expect(mem.read(`subAccounts/${SA}`)).toBeDefined();
+    expect(mem.read(`userMemberships/uid_owner/subAccounts/${SA}`)).toBeDefined();
+    expect(mem.read("message_templates/t_1")).toBeDefined();
+    expect(mem.read("agentProposals/p_flip")?.status).toBe("pending");
   });
 
   it("never reads or writes subAccounts/null", async () => {

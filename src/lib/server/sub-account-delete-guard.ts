@@ -74,20 +74,26 @@ export async function findDeleteBlockers(db: Db, subAccountId: string): Promise<
  * generations. Each row is re-read in its own transaction and skipped unless
  * it is still decided: a row id is reused when an agent re-proposes the same
  * action, so a row found decided by the query may be pending again by now.
+ * Returns how many such rows turned open again; the caller then refuses.
  */
-export async function deleteDecidedProposals(db: Db, subAccountId: string): Promise<void> {
+export async function deleteDecidedProposals(db: Db, subAccountId: string): Promise<number> {
   const snaps = await Promise.all(
     PROPOSAL_KEYS.map((key) => db.collection("agentProposals").where(key, "==", subAccountId).get())
   );
   const decided = snaps.flatMap((s) => s.docs).filter((d) => DECIDED_PROPOSAL_STATUSES.has(d.data().status as string));
   const refs = [...new Map(decided.map((d) => [d.ref.path, d.ref])).values()];
+  let reopened = 0;
   for (const ref of refs) {
-    await db.runTransaction(async (tx) => {
+    const deleted = await db.runTransaction(async (tx) => {
       const row = await tx.get(ref);
       const history = await tx.get(ref.collection("history"));
-      if (!row.exists || !DECIDED_PROPOSAL_STATUSES.has(row.data()?.status as string)) return;
+      if (!row.exists) return true;
+      if (!DECIDED_PROPOSAL_STATUSES.has(row.data()?.status as string)) return false;
       for (const h of history.docs) tx.delete(h.ref);
       tx.delete(ref);
+      return true;
     });
+    if (!deleted) reopened++;
   }
+  return reopened;
 }

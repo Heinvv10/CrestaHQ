@@ -98,6 +98,13 @@ export async function deleteSubAccountForAgency(input: {
   const blockers = await findDeleteBlockers(db, subAccountId);
   if (blockers.length > 0) throw new SubAccountNotEmptyError(blockers);
 
+  // Decided agent approval rows are history and go with the sub-account. Done
+  // before anything else is deleted: a row that turned open again since the
+  // guard refuses the delete with nothing else removed.
+  if ((await deleteDecidedProposals(db, subAccountId)) > 0) {
+    throw new SubAccountNotEmptyError(["agent approvals waiting or in progress"]);
+  }
+
   // Read members first (their subcollection is about to be recursively
   // deleted) so we can prune the denormalized userMemberships index.
   const membersSnap = await subRef.collection("subAccountMembers").get();
@@ -115,9 +122,6 @@ export async function deleteSubAccountForAgency(input: {
   }
   for (const doc of templatesSnap.docs) batch.delete(doc.ref);
   await batch.commit();
-
-  // Decided agent approval rows are history and go with the sub-account.
-  await deleteDecidedProposals(db, subAccountId);
 
   // Finally remove the sub-account doc and every descendant subcollection
   // (members, counters, aiSuiteUsage, aiAgent, apiKeys, website, …).
