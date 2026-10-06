@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { deleteDecidedProposals, findDeleteBlockers } from "./sub-account-delete-guard";
 import { seedDefaultTemplates } from "@/lib/automations/seed-templates";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 
@@ -45,30 +46,6 @@ export interface CreateSubAccountResult {
 }
 
 /**
- * Top-level collections keyed by `subAccountId` whose presence means the
- * sub-account has been genuinely used. Seeded/auto-created data (the owner
- * membership, welcome `message_templates`, counters, the `userMemberships`
- * index) is deliberately excluded — a freshly-created test sub-account still
- * counts as "clean". Each entry maps a collection to the human label shown to
- * the agency owner when a delete is blocked.
- */
-const USAGE_COLLECTIONS: ReadonlyArray<{ collection: string; label: string }> =
-  [
-    { collection: "contacts", label: "contacts" },
-    { collection: "deals", label: "deals" },
-    { collection: "tasks", label: "tasks" },
-    { collection: "events", label: "calendar events" },
-    { collection: "forms", label: "forms" },
-    { collection: "quotes", label: "quotes / invoices" },
-    { collection: "products", label: "products" },
-    { collection: "automations", label: "automations" },
-    { collection: "workflows", label: "workflows" },
-    { collection: "broadcasts", label: "broadcasts" },
-    { collection: "socialPosts", label: "social posts" },
-    { collection: "voiceCampaigns", label: "voice campaigns" },
-  ];
-
-/**
  * Thrown by {@link deleteSubAccountForAgency} when the sub-account still holds
  * real data. `blockers` is the list of human labels (e.g. `["contacts",
  * "deals"]`) the route surfaces so the owner knows why it was refused.
@@ -93,10 +70,11 @@ export class SubAccountNotFoundError extends Error {
 /**
  * Delete a **clean** (unused) sub-account. Agency-owner-gated at the route;
  * this trusts its inputs. Refuses (throws {@link SubAccountNotEmptyError}) if
- * any {@link USAGE_COLLECTIONS} query finds a doc, so a sub-account with real
- * CRM data can never be removed here. On a clean delete it removes the seeded
- * welcome templates, every member's `userMemberships` index entry, and then
- * recursively deletes the `subAccounts/{id}` doc + all its subcollections.
+ * {@link findDeleteBlockers} finds real CRM data or an agent approval still
+ * waiting, so such a sub-account can never be removed here. On a clean delete
+ * it removes the seeded welcome templates, every member's `userMemberships`
+ * index entry, the decided agent approval rows, and then recursively deletes
+ * the `subAccounts/{id}` doc + all its subcollections.
  *
  * The per-agency account-number counter is intentionally left untouched so
  * numbers are never reused.
@@ -116,19 +94,16 @@ export async function deleteSubAccountForAgency(input: {
     throw new SubAccountNotFoundError();
   }
 
-  // Emptiness guard — one .limit(1) probe per usage collection, in parallel.
-  const probes = await Promise.all(
-    USAGE_COLLECTIONS.map(async ({ collection, label }) => {
-      const snap = await db
-        .collection(collection)
-        .where("subAccountId", "==", subAccountId)
-        .limit(1)
-        .get();
-      return snap.empty ? null : label;
-    })
-  );
-  const blockers = probes.filter((l): l is string => l !== null);
+  // Emptiness guard: usage collections and open agent approvals.
+  const blockers = await findDeleteBlockers(db, subAccountId);
   if (blockers.length > 0) throw new SubAccountNotEmptyError(blockers);
+
+  // Decided agent approval rows are history and go with the sub-account. Done
+  // before anything else is deleted: a row that turned open again since the
+  // guard refuses the delete with nothing else removed.
+  if ((await deleteDecidedProposals(db, subAccountId)) > 0) {
+    throw new SubAccountNotEmptyError(["agent approvals waiting or in progress"]);
+  }
 
   // Read members first (their subcollection is about to be recursively
   // deleted) so we can prune the denormalized userMemberships index.
