@@ -43,7 +43,9 @@ describe("list_snapshots", () => {
     expect(lines[1]).toContain("“Onboarding kit”");
     expect(lines[1]).toContain("imported: false");
     expect(lines[1]).toContain("sourceSubAccountId: src");
-    expect(lines[1]).toContain("description: Our standard setup");
+    expect(lines[1]).toContain("description: “Our standard setup”");
+    // Every row has the field, empty or not.
+    expect(lines[0]).toMatch(/ \| description: “”$/);
     expect(lines[1]).toContain(`created: ${new Date(mem.read("agencies/ag1/snapshots/snap_own")!.createdAt as Date).toISOString()}`);
     expect(lines[1]).toContain("1 form, 1 message template, 1 product, 1 workflow, 1 custom field, persona: yes");
     expect(r.truncated).toBeUndefined();

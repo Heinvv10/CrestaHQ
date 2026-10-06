@@ -145,14 +145,13 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
         const created = millis(s.createdAt);
         const imported = isImported(s);
         const counts = Object.fromEntries(NOUNS.map(([k]) => [k, lengthOf(p[k])])) as Counts;
-        const description = oneLine(s.description);
         return [
           `- “${oneLine(s.name)}” — id: ${d.id}`,
           `created: ${created === null ? "unknown" : new Date(created).toISOString()}`,
           `imported: ${imported}`,
           `sourceSubAccountId: ${imported ? "null" : s.sourceSubAccountId}`,
           `${countsText(counts)}, persona: ${p.aiProfile ? "yes" : "no"}`,
-          ...(description ? [`description: ${description}`] : []),
+          `description: “${oneLine(s.description)}”`,
         ].join(" | ");
       });
       const header = truncated
