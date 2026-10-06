@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
 import { ownerUid } from "../lib/seed";
+import { batchEligible, type AgencyApprovalRow } from "@/lib/approvals/agency-batch";
 
 /**
  * `invite_member` and `assign_billing_plan` on an agency key
@@ -16,10 +17,13 @@ import { ownerUid } from "../lib/seed";
  *     on /agency/approvals AND /sa/[target]/approvals;
  *   - `assign_billing_plan` with a plan seeded here → agency-level `spend`,
  *     its preview naming the gate going on and the one going off.
- * "Approve all" takes the activation only. Both other rows are REJECTED on
- * the page: a billing row is never approved here (CI has no payment
- * provider, and nothing may be charged), and the invite is not approved
- * because nothing proves CI has no outbound mail path.
+ * "Approve all" would take the activation and neither other row — checked on
+ * THIS run's rows through the list route the button re-reads, never as a
+ * count and never by clicking it (the agency is shared: another run's
+ * leftover row may be on the page, and a click would approve it). Every
+ * row is then REJECTED on the page: a billing row is never approved here
+ * (CI has no payment provider, and nothing may be charged), and the invite
+ * is not approved because nothing proves CI has no outbound mail path.
  *
  * Nothing touches a fixture or client sub-account: the target, workflow,
  * plan and key carry this run's id or marker, and the guarded teardown
@@ -103,19 +107,22 @@ test("agency invite + billing: outbound and spend rows, never in Approve all, re
     await expect(card(ids.assign)).toContainText(`“E2E A4b plan ${run}”`);
     await expect(card(ids.assign)).toContainText("Email broadcasts");
     await expect(card(ids.assign)).toContainText("Public API access (changes reach: API and agent keys lose this sub-account)");
-    await expect(page.getByTestId("approve-all")).toHaveText(/Approve all \(1\)/);
-    await expect(page.getByTestId("approve-all-bar")).toContainText("skips 2 that need their own click");
+    await expect(page.getByTestId("approve-all-bar")).toContainText("that need their own click");
     await page.screenshot({ path: testInfo.outputPath("agency-invite-billing-before.png"), fullPage: true });
 
-    // Approve all: the activation only.
-    await page.getByTestId("approve-all").click();
-    await expect(card(ids.activate)).toContainText("Done", { timeout: 30_000 });
-    expect(await status(ids.invite)).toBe("pending");
-    expect(await status(ids.assign)).toBe("pending");
+    // What Approve all would take, judged on this run's rows as the button
+    // judges them (it re-reads this route): the activation is the control.
+    const listed = await page.request.get("/api/agency/agent-proposals?status=open");
+    expect(listed.ok()).toBe(true);
+    const { proposals } = (await listed.json()) as { proposals: AgencyApprovalRow[] };
+    const ours = (id: string) => proposals.find((p) => p.id === id);
+    expect([ids.activate, ids.invite, ids.assign].map((id) => ours(id) && batchEligible(ours(id)!))).toEqual([true, false, false]);
 
-    // Reject the billing row here; the invite on the sub-account's own page.
-    await card(ids.assign).getByRole("button", { name: "Reject" }).click();
-    await expect.poll(() => status(ids.assign), { timeout: 15_000 }).toBe("rejected");
+    // Reject the activation and the billing row here; the invite on the sub-account's own page.
+    for (const id of [ids.activate, ids.assign]) {
+      await card(id).getByRole("button", { name: "Reject" }).click();
+      await expect.poll(() => status(id), { timeout: 15_000 }).toBe("rejected");
+    }
     await page.goto(`/sa/${target}/approvals`);
     await expect(card(ids.invite)).toBeVisible({ timeout: 30_000 });
     await expect(card(ids.invite)).toContainText(email);
@@ -123,7 +130,8 @@ test("agency invite + billing: outbound and spend rows, never in Approve all, re
     await expect.poll(() => status(ids.invite), { timeout: 15_000 }).toBe("rejected");
     await page.screenshot({ path: testInfo.outputPath("agency-invite-billing-after.png"), fullPage: true });
 
-    // Nothing was invited or billed.
+    // Nothing was invited, billed or activated.
+    expect((await workflowRef.get()).data()?.status).toBe("draft");
     expect((await db.collection("invites").where("email", "==", email).get()).size).toBe(0);
     expect((await db.doc(`subAccounts/${target}`).get()).data()).toMatchObject({ broadcastsEnabledByAgency: false, apiAccessEnabledByAgency: true });
     expect((await db.doc(`subAccounts/${target}`).get()).data()?.billing).toBeUndefined();
