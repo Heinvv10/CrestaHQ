@@ -328,6 +328,13 @@ no `apply_snapshot` row is ever in "Approve all"):
   - `legacyAiConfigPath` / `migratedLegacyDocs` live in
     `src/lib/comms/ai/legacy-config.ts`, shared by agent.ts, model-policy.ts
     and the snapshot apply.
+- Fix round 4 (review LOWs):
+  - The lazy migration (`maybeMigrateLegacy`) now `create()`s the profile:
+    one that read "no profile" before an apply committed no longer overwrites
+    the merged persona; it skips its writes and the caller reads the profile
+    that exists. Its two writes are sequential (profile, then sms).
+  - An hours field that neither the snapshot nor the existing profile has is
+    written as the default by the merge, and the row says "the defaults".
 
 ### D4 — approvals: two row kinds, one new page
 
