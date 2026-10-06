@@ -155,6 +155,18 @@ describe("refusals", () => {
   });
 });
 
+describe("settling an unsettled agency-level row", () => {
+  it("mark_not_sent after the wait → rejected; too soon → 409 claim_too_recent", async () => {
+    const id = await proposeGate();
+    mem.seed(`agentProposals/${id}`, { ...row(id), status: "unsettled", claimId: "c1", claimedAt: new Date() });
+    expect(await (await decideAgency(id, "mark_not_sent")).json()).toEqual({ error: "claim_too_recent" });
+    mem.seed(`agentProposals/${id}`, { ...row(id), claimedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) });
+    const res = await decideAgency(id, "mark_not_sent");
+    expect([res.status, await res.json()]).toEqual([200, { status: "rejected" }]);
+    expect(row(id)).toMatchObject({ status: "rejected", reason: "not_sent_confirmed", decidedByUid: "owner1" });
+  });
+});
+
 describe("a sub-account-scoped agency-key row decided here", () => {
   it("executes exactly as on /sa/[id]/approvals: the approver's ctx in the target, pinned values, audit under the target", async () => {
     const id = await proposeScoped("sa2", "hello");
