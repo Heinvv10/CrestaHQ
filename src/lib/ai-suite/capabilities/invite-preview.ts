@@ -77,8 +77,29 @@ export async function inviteState(subAccountId: string, email: string): Promise<
   return { kind: "pending", role: String(invite.subAccountRole ?? "collaborator"), territoryIds: ids(invite.assignedTerritoryIds) };
 }
 
-/** The territories an existing membership or pending invite keeps. */
-export const keptTerritories = (state: InviteState): string[] => ("territoryIds" in state ? state.territoryIds : []);
+/** The territory ids an existing membership or pending invite has now. */
+const existingTerritories = (state: InviteState): string[] => ("territoryIds" in state ? state.territoryIds : []);
+
+/**
+ * The territories createInviteServerSide will leave on the invite or
+ * membership, decided as it decides them (validateTerritoryIds): a
+ * collaborator keeps the distinct ids, at most 30, that are active
+ * territories now; an admin keeps none. Pinned, so an archive after the
+ * claim refuses instead of dropping one silently.
+ */
+export async function keptTerritories(
+  subAccountId: string,
+  state: InviteState,
+  role: string
+): Promise<{ ids: string[]; names: string[]; dropped: number }> {
+  const had = [...new Set(existingTerritories(state))];
+  const wanted = had.slice(0, 30);
+  if (role !== "collaborator" || wanted.length === 0) return { ids: [], names: [], dropped: had.length };
+  const db = getAdminDb();
+  const snaps = await db.getAll(...wanted.map((t) => db.doc(`subAccounts/${subAccountId}/territories/${t}`)));
+  const active = snaps.filter((s) => s.exists && s.data()?.status === "active");
+  return { ids: active.map((s) => s.id), names: active.map((s) => oneLine(s.data()?.name ?? s.id)), dropped: had.length - active.length };
+}
 
 /** The "What happens" line for a state. */
 function happens(state: InviteState, role: string): string {
@@ -100,20 +121,17 @@ function happens(state: InviteState, role: string): string {
   }
 }
 
-/** What happens to the territories an existing membership or invite has. */
-async function territoriesRow(subAccountId: string, state: InviteState, role: string): Promise<PreviewRow[]> {
-  const kept = keptTerritories(state);
-  if (kept.length === 0) return [];
-  if (role === "admin") return [{ label: "Territories", value: "Cleared: an admin sees every territory." }];
-  const db = getAdminDb();
-  const snaps = await db.getAll(...kept.map((t) => db.doc(`subAccounts/${subAccountId}/territories/${t}`)));
-  // createInviteServerSide keeps only the active ones.
-  const active = snaps.filter((s) => s.exists && s.data()?.status === "active").map((s) => oneLine(s.data()?.name ?? s.id));
-  const dropped = kept.length - active.length;
-  return [{
-    label: "Territories",
-    value: `${active.length ? `Kept: ${active.join(", ")}` : "None kept"}${dropped ? `; ${dropped} archived or deleted, dropped` : ""}.`,
-  }];
+/** What the invite or membership's territories will be. */
+function territoriesRow(state: InviteState, role: string, kept: { names: string[]; dropped: number }): PreviewRow[] {
+  const had = existingTerritories(state).length > 0;
+  if (role === "admin") return had ? [{ label: "Territories", value: "Cleared: an admin sees every territory." }] : [];
+  if (state.kind === "blocked") return [];
+  const value = kept.names.length
+    ? `Kept: ${kept.names.join(", ")}${kept.dropped ? `; ${kept.dropped} not kept (archived, deleted or over the 30 limit)` : ""}.`
+    : `None assigned: with territory scoping on, they see only records in no territory (global).${
+        kept.dropped ? ` ${kept.dropped} assigned now ${kept.dropped === 1 ? "is" : "are"} archived or deleted.` : ""
+      }`;
+  return [{ label: "Territories", value }];
 }
 
 /** The approver's rows and the pins for an invite of `email` as `role`. */
@@ -126,6 +144,7 @@ export async function invitePreview(
   const sub = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   if (!sub.exists || sub.data()?.agencyId !== agencyId) throw new CapabilityUserError("That sub-account wasn't found in this agency.");
   const state = await inviteState(subAccountId, email);
+  const kept = await keptTerritories(subAccountId, state, role);
   const emails = state.kind !== "member" && state.kind !== "blocked";
   const sender = emails ? await resolvePlatformSender(subAccountId) : null;
   const mail = state.kind === "new" || state.kind === "pending" ? "the invite email with the signup link" : "a notification that they were added";
@@ -135,7 +154,7 @@ export async function invitePreview(
       { label: "Email", value: email },
       { label: "Role", value: ROLE[role] },
       { label: "What happens", value: happens(state, role) },
-      ...(await territoriesRow(subAccountId, state, role)),
+      ...territoriesRow(state, role, kept),
       {
         label: "Email sent",
         value: state.kind === "blocked"
@@ -147,6 +166,6 @@ export async function invitePreview(
               : "No: email isn't configured on this deployment. Copy the invite link from Settings → Members and share it yourself.",
       },
     ],
-    pinned: { email, role, state },
+    pinned: { email, role, state, territories: kept.ids },
   };
 }

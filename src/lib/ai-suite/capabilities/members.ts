@@ -7,7 +7,7 @@ import {
 } from "@/lib/server/members-service";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str } from "./helpers";
-import { AGENT_PREVIEW_LABELS, inviteState, invitePreview, keptTerritories, type InviteState } from "./invite-preview";
+import { AGENT_PREVIEW_LABELS, inviteState, invitePreview, keptTerritories } from "./invite-preview";
 import { UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 
@@ -132,12 +132,19 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
         throw new CapabilityUserError("Inviting someone needs a person's approval; propose it again.");
       }
       const pinned = ctx.approved?.pinned;
-      let state: InviteState | null = null;
+      let territories: string[] | null = null;
       if (ctx.approved) {
         // What the approver reviewed, checked again now: the claim came
-        // after the last preview check, and the account may have changed.
-        state = await inviteState(ctx.subAccountId!, String(pinned?.email));
-        if (pinned?.email !== args.email || pinned?.role !== args.role || canonical(state) !== canonical(pinned?.state)) {
+        // after the last preview check, and the account or its territories
+        // may have changed.
+        const state = await inviteState(ctx.subAccountId!, String(pinned?.email));
+        territories = (await keptTerritories(ctx.subAccountId!, state, String(pinned?.role))).ids;
+        if (
+          pinned?.email !== args.email ||
+          pinned?.role !== args.role ||
+          canonical(state) !== canonical(pinned?.state) ||
+          canonical(territories) !== canonical(pinned?.territories)
+        ) {
           throw new CapabilityUserError("This person's membership changed since it was reviewed; propose it again.");
         }
         if (state.kind === "blocked") throw new CapabilityUserError(state.reason);
@@ -153,7 +160,7 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
           email: (pinned?.email ?? args.email) as string,
           role: (pinned?.role ?? args.role) as "admin" | "collaborator",
           // Approved: an existing membership's or pending invite's territories stay as they are.
-          ...(state ? { assignedTerritoryIds: keptTerritories(state) } : {}),
+          ...(territories ? { assignedTerritoryIds: territories } : {}),
         });
       } catch (err) {
         if (err instanceof MemberAddBlockedError) {

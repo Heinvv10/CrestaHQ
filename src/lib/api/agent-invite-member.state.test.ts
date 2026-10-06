@@ -120,4 +120,46 @@ describe("territories are kept, shown and pinned", () => {
     expect(row(id)).toMatchObject({ status: "failed", error: expect.stringMatching(/changed since it was reviewed/) });
     expect(invites).not.toHaveBeenCalled();
   });
+
+  it("a territory archived after the claim → refused (422), no call; the member keeps ['t1']", async () => {
+    authUsers.set(EMAIL, USER);
+    mem.seed(`subAccounts/sa1/subAccountMembers/${USER.uid}`, { uid: USER.uid, role: "collaborator", status: "active", assignedTerritoryIds: ["t1"] });
+    const id = idOf(await propose());
+    expect(row(id).pinned).toMatchObject({ territories: ["t1"] });
+    const original = mem.db.runTransaction.bind(mem.db);
+    vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) => {
+      const out = await original(fn as Parameters<typeof original>[0]);
+      mem.seed("subAccounts/sa1/territories/t1", { name: "North", status: "archived" });
+      return out;
+    });
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(invites).not.toHaveBeenCalled();
+    expect(member()?.assignedTerritoryIds).toEqual(["t1"]);
+  });
+
+  it("the kept territories are capped at 30, as the service caps them", async () => {
+    authUsers.set(EMAIL, USER);
+    const many = Array.from({ length: 31 }, (_, i) => `t${i + 1}`);
+    for (const t of many) mem.seed(`subAccounts/sa1/territories/${t}`, { name: t.toUpperCase(), status: "active" });
+    mem.seed(`subAccounts/sa1/subAccountMembers/${USER.uid}`, { uid: USER.uid, role: "collaborator", status: "active", assignedTerritoryIds: many });
+    const id = idOf(await propose());
+    expect((row(id).pinned as { territories: string[] }).territories).toEqual(many.slice(0, 30));
+    expect(value(id, "Territories")).toMatch(/; 1 not kept \(archived, deleted or over the 30 limit\)\.$/);
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(member()?.assignedTerritoryIds).toEqual(many.slice(0, 30));
+  });
+
+  it.each([
+    ["a new collaborator", () => {}],
+    ["an admin demoted to collaborator", () => {
+      authUsers.set(EMAIL, USER);
+      mem.seed(`subAccounts/sa1/subAccountMembers/${USER.uid}`, { uid: USER.uid, role: "admin", status: "active", assignedTerritoryIds: [] });
+    }],
+  ])("%s with no territories: the preview says so", async (_label, arrange) => {
+    arrange();
+    expect(value(idOf(await propose()), "Territories")).toBe(
+      "None assigned: with territory scoping on, they see only records in no territory (global).",
+    );
+  });
 });
+

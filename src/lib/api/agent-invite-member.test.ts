@@ -71,13 +71,14 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
     expect(row(id)).toMatchObject({
       subAccountId: "sa1", approval: "outbound", status: "pending", capability: "invite_member",
       args: { email: "new.person@example.com", role: "collaborator" },
-      pinned: { email: "new.person@example.com", role: "collaborator", state: { kind: "new" } },
+      pinned: { email: "new.person@example.com", role: "collaborator", state: { kind: "new" }, territories: [] },
     });
     expect(row(id).preview).toEqual([
       { label: "Sub-account", value: "Client One" },
       { label: "Email", value: "new.person@example.com" },
       { label: "Role", value: "Collaborator: works the data, no member management" },
       { label: "What happens", value: "New email: an invite with a signup link is created; pending until they sign up." },
+      { label: "Territories", value: "None assigned: with territory scoping on, they see only records in no territory (global)." },
       { label: "Email sent", value: "No: email isn't configured on this deployment. Copy the invite link from Settings → Members and share it yourself." },
     ]);
     expect(invites).not.toHaveBeenCalled();
@@ -99,7 +100,7 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
     seedAdminMember();
     const id = await propose(subKey, { email: "ann@client.io", role: "collaborator" });
     expect(what(id)).toBe("Already a member: role admin → collaborator, at once.");
-    expect(row(id).pinned).toEqual({ email: "ann@client.io", role: "collaborator", state: { kind: "member", uid: "u_ann", role: "admin", territoryIds: [] } });
+    expect(row(id).pinned).toEqual({ email: "ann@client.io", role: "collaborator", state: { kind: "member", uid: "u_ann", role: "admin", territoryIds: [] }, territories: [] });
   });
 
   it.each([
