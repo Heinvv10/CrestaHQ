@@ -89,7 +89,8 @@ other route: every other `/api/v1` route refuses it with 403
 - **Proposals** an agency key causes are ordinary rows of the target sub-account
   (`keyLevel: "agency"`), approved on that sub-account's Approvals page; held
   enrolments are charged to the agency key's enrolment cap, counted per
-  sub-account.
+  sub-account. Agency-level rows (`set_sub_account_gate`, `apply_snapshot`)
+  belong to the agency and are approved only on `/agency/approvals`.
 - **Audit.** Each call in a sub-account writes one `agent.call` row under
   `agencies/{id}/agentCalls` (key, tool, target, read or write — never the args),
   kept 30 days. Request logs land under the target once reach lets the call
@@ -104,8 +105,9 @@ other route: every other `/api/v1` route refuses it with 403
 
 97 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
-from the registry and a test fails when it drifts. After adding or changing an
-agent capability, rerun:
+from the registry and a test fails when it drifts. It lists sub-account tools; an
+agency key's agency-level proposals are approved on `/agency/approvals`, not on a
+sub-account's page. After adding or changing an agent capability, rerun:
 
 ```bash
 UPDATE_AGENT_API_DOCS=1 pnpm exec vitest run src/lib/ai-suite/agent-api-doc.test.ts
