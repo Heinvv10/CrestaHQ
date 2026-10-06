@@ -3,7 +3,8 @@ import "server-only";
 import type { Firestore } from "firebase-admin/firestore";
 import type { SnapshotPayload } from "@/types/snapshots";
 import { existingPaths } from "./apply";
-import { deterministicId, legacyPersonaPath, personaIsSet } from "./apply-target";
+import { legacyAiConfigPath } from "@/lib/comms/ai/legacy-config";
+import { deterministicId, personaIsSet } from "./apply-target";
 
 type Counts = { forms: number; messageTemplates: number; products: number; workflows: number; customFields: number };
 
@@ -67,7 +68,7 @@ export async function planSnapshotApply(
     const agent = await db.collection(`subAccounts/${targetSubAccountId}/aiAgent`).get();
     const profile = agent.docs.find((d) => d.id === "profile");
     // With no profile, an unmigrated legacy persona is the target's (writePersonaIfAbsent).
-    const legacy = profile ? undefined : (await db.doc(legacyPersonaPath(targetSubAccountId)).get()).data();
+    const legacy = profile ? undefined : (await db.doc(legacyAiConfigPath(targetSubAccountId)).get()).data();
     persona = personaIsSet(profile?.data()) || personaIsSet(legacy) ? "kept" : "written";
     if (persona === "written") {
       replyingChannels = agent.docs.filter((d) => d.id !== "profile" && d.data().enabled === true).map((d) => d.id).sort();

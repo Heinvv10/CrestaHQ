@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { Firestore } from "firebase-admin/firestore";
 import { DEFAULT_AI_AGENT_PROFILE } from "@/types/ai";
 import type { SnapshotPayload } from "@/types/snapshots";
+import { legacyAiConfigPath } from "@/lib/comms/ai/legacy-config";
 
 /**
  * What an apply addresses in the target, shared by applySnapshot (apply.ts)
@@ -47,13 +48,6 @@ export function personaIsSet(profile: Record<string, unknown> | undefined): bool
   return typeof prompt === "string" && prompt.trim() !== "";
 }
 
-/**
- * The pre-profile persona doc. `maybeMigrateLegacy` (src/lib/comms/ai/agent.ts)
- * copies it into `aiAgent/profile` on first read, but only while no profile
- * exists, so while it is unmigrated it IS the target's persona.
- */
-export const legacyPersonaPath = (subAccountId: string) => `subAccounts/${subAccountId}/aiConfig/main`;
-
 /** The persona fields a snapshot carries (`SnapshotAiProfile`, what capture
  *  copies): everything else on a profile belongs to its own sub-account. */
 const PERSONA_FIELDS = ["systemPrompt", "hoursStart", "hoursEnd", "timezone", "escalationKeywords"] as const;
@@ -78,7 +72,7 @@ export async function writePersonaIfAbsent(
   tenancyStamps: Record<string, unknown>,
 ): Promise<boolean> {
   const ref = db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`);
-  const legacyRef = db.doc(legacyPersonaPath(targetSubAccountId));
+  const legacyRef = db.doc(legacyAiConfigPath(targetSubAccountId));
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (personaIsSet(snap.data())) {

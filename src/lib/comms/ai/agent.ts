@@ -14,6 +14,7 @@ import {
   type AiChannelConfig,
   type ResolvedAiAgent,
 } from "@/types/ai";
+import { legacyAiConfigPath, migratedLegacyDocs } from "@/lib/comms/ai/legacy-config";
 
 const PROFILE_DOC = "profile";
 // Literal union — gives us the same narrow string type without an unused
@@ -74,10 +75,6 @@ function channelPath(subAccountId: string, channelId: string): string {
   return `subAccounts/${subAccountId}/aiAgent/${channelId}`;
 }
 
-function legacyPath(subAccountId: string): string {
-  return `subAccounts/${subAccountId}/aiConfig/main`;
-}
-
 /**
  * Lazy migration: if a sub-account still has the pre-refactor
  * `aiConfig/main` doc, split it into the new profile + sms shape on the
@@ -87,55 +84,12 @@ async function maybeMigrateLegacy(subAccountId: string): Promise<void> {
   const db = getAdminDb();
   const [profileSnap, legacySnap] = await Promise.all([
     db.doc(profilePath(subAccountId)).get(),
-    db.doc(legacyPath(subAccountId)).get(),
+    db.doc(legacyAiConfigPath(subAccountId)).get(),
   ]);
   if (profileSnap.exists) return; // already migrated
   if (!legacySnap.exists) return; // no legacy to migrate
 
-  const legacy = legacySnap.data() as {
-    enabled?: boolean;
-    systemPrompt?: string;
-    businessName?: string;
-    hoursStart?: number;
-    hoursEnd?: number;
-    timezone?: string;
-    escalationKeywords?: string[];
-    escalationNotifyEmail?: string | null;
-    contextMessageCount?: number;
-    modelOverride?: string | null;
-    totalTokensUsed?: number;
-  };
-
-  const profile: AiAgentProfile = {
-    systemPrompt: legacy.systemPrompt ?? "",
-    businessName: legacy.businessName ?? "",
-    hoursStart: legacy.hoursStart ?? 9,
-    hoursEnd: legacy.hoursEnd ?? 17,
-    timezone: legacy.timezone ?? "Australia/Sydney",
-    escalationKeywords: legacy.escalationKeywords ?? [
-      ...DEFAULT_AI_AGENT_PROFILE.escalationKeywords,
-    ],
-    escalationNotifyEmail: legacy.escalationNotifyEmail ?? null,
-    websiteUrl: null,
-    websiteKb: null,
-    websiteKbFetchedAt: null,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
-
-  const sms: AiChannelConfig = {
-    enabled: legacy.enabled ?? false,
-    contextMessageCount: legacy.contextMessageCount ?? 10,
-    modelOverride: legacy.modelOverride ?? null,
-    escalationKeywordsOverride: null,
-    escalationNotifyEmailOverride: null,
-    totalTokensUsed: legacy.totalTokensUsed ?? 0,
-    webChat: null,
-    voice: null,
-    whatsapp: null,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  };
+  const { profile, sms } = migratedLegacyDocs(legacySnap.data());
 
   await Promise.all([
     db.doc(profilePath(subAccountId)).set(profile),
