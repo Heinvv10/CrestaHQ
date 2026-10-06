@@ -431,6 +431,12 @@ no `apply_snapshot` row is ever in "Approve all"):
     description is checked as strictly as the email, which must also be
     ASCII. The invite pins the territories the service will keep (active,
     distinct, at most 30) and says when a collaborator ends with none.
+  - **REVISED 2026-10-06 (A4b), Paystack currencies.** On Paystack, Client
+    Billing accepts Paystack's settle list minus XOF, not ZAR only: this is a
+    white-label template, so a buyer's Paystack merchant may settle in NGN,
+    KES or another listed currency, and the approver sees the currency on the
+    row. XOF is refused because it has no subunit and Paystack's handling of
+    its amount is unconfirmed; refusing is the safe side of a possible 100x.
   - **Chat, touched on purpose.** Both billing validators refuse a padded
     `subAccountId` (the A3a contract test); the charge validator also keeps
     `amount` (re-validation of a stored row) and refuses a currency Paystack can't

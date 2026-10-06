@@ -17,6 +17,11 @@ export const defaultBillingCurrency = (): string => (getBillingProvider().id ===
  */
 export function currencyRefusal(currency: string): string | null {
   if (getBillingProvider().id === "paystack") {
+    // XOF has no subunit, and how Paystack reads its amount is unconfirmed:
+    // refused rather than risk billing 100x. The rest of its list is a buyer's choice.
+    if (currency.trim().toLowerCase() === "xof") {
+      return "Client Billing can't charge in XOF on Paystack: its amount handling is unconfirmed. Use another currency your Paystack account settles.";
+    }
     try {
       assertSupportedCurrency(currency);
       return null;

@@ -27,6 +27,8 @@ describe.each([["create_one_time_charge", charge], ["create_billing_plan", plan]
     ["stripe", "kwd", /KWD/],
     ["none", "jpy", /JPY/],
     ["paystack", "eur", /Paystack can't settle EUR/],
+    // No subunit, and Paystack's handling of its amount is unconfirmed: a possible 100x.
+    ["paystack", "xof", /XOF/],
   ] as const)("on %s, %s is refused", (kind, currency, message) => {
     spyBillingProvider(kind as ProviderKind);
     expect(validate(currency)).toEqual({ ok: false, error: expect.stringMatching(message) });
@@ -37,6 +39,9 @@ describe.each([["create_one_time_charge", charge], ["create_billing_plan", plan]
     ["stripe", "usd"],
     ["stripe", "eur"],
     ["paystack", "zar"],
+    // A white-label buyer's Paystack merchant may settle in another of its currencies.
+    ["paystack", "ngn"],
+    ["paystack", "kes"],
   ] as const)("on %s, %s is accepted", (kind, currency) => {
     spyBillingProvider(kind);
     expect(validate(currency)).toMatchObject({ ok: true, args: { currency } });
