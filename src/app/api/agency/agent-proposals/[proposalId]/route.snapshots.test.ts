@@ -94,10 +94,22 @@ describe("approve an apply_snapshot row", () => {
     const body = await res.json();
     expect([res.status, body.error]).toEqual([409, "preview_changed"]);
     expect(body.preview).toEqual(
-      expect.arrayContaining([{ label: "AI persona", value: "Written (none set): whatsapp starts replying to customers with it at once" }])
+      expect.arrayContaining([{
+        label: "AI persona",
+        value: "Written (none set); sets the AI's hours and timezone to the snapshot's (8:00–17:00 UTC); whatsapp starts replying to customers with it at once",
+      }])
     );
     expect(appliedDocs(mem, "sa1")).toEqual([]);
     expect(mem.read("subAccounts/sa1/aiAgent/profile")).toBeUndefined();
+  });
+
+  it("a target whose persona is still the legacy aiConfig/main keeps it: its SMS agent still resolves", async () => {
+    mem.seed("subAccounts/sa1/aiConfig/main", { systemPrompt: "Legacy persona.", enabled: false });
+    const id = await proposeApply("sa1");
+    expect(row(id).preview).toEqual(expect.arrayContaining([{ label: "AI persona", value: "Kept (target already has one)" }]));
+    expect((await decideAgency(id, "approve")).status).toBe(200);
+    const { resolveAgent } = await import("@/lib/comms/ai/agent");
+    expect((await resolveAgent("sa1", "sms"))?.effective.systemPrompt).toBe("Legacy persona.");
   });
 
   it("the snapshot's payload edited since → 409 preview_changed (pinned hash), nothing written", async () => {

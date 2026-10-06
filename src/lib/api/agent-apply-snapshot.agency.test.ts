@@ -116,7 +116,7 @@ describe("anything else → an agency-level public_change row, nothing written",
       Skips: "nothing (none of it is there yet)",
       Workflows: "Arrive as drafts: none runs until someone activates it.",
       Forms: "Copied with their status: 1 accepts public submissions on this sub-account at once.",
-      "AI persona": "Written (none set)",
+      "AI persona": "Written (none set); sets the AI's hours and timezone to the snapshot's (8:00–17:00 UTC)",
     });
     expect(row!.pinned).toEqual({ snapshotId: "snap_own", payloadSha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     untouched("old");
@@ -136,7 +136,9 @@ describe("anything else → an agency-level public_change row, nothing written",
     mem.seed("subAccounts/old/aiAgent/sms", { enabled: false });
     await apply("old", "snap_own");
     const preview = Object.fromEntries((proposals()[0]!.preview as Array<{ label: string; value: string }>).map((p) => [p.label, p.value]));
-    expect(preview["AI persona"]).toBe("Written (none set): web-chat, whatsapp start replying to customers with it at once");
+    expect(preview["AI persona"]).toBe(
+      "Written (none set); sets the AI's hours and timezone to the snapshot's (8:00–17:00 UTC); web-chat, whatsapp start replying to customers with it at once"
+    );
   });
 });
 

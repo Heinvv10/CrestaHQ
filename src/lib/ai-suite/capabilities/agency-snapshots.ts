@@ -109,11 +109,20 @@ async function minterOf(ctx: AiSuiteActionContext): Promise<string> {
 
 const PERSONA_ROW = { written: "Written (none set)", kept: "Kept (target already has one)", none: "None in this snapshot" } as const;
 
-/** The persona row, naming the switched-on AI channels a written persona sets replying. */
-function personaRow(plan: Awaited<ReturnType<typeof planSnapshotApply>>): string {
+/** The persona row. A written persona also sets the AI's hours and timezone
+ *  (an existing blank-prompt profile's included), and starts every
+ *  switched-on AI channel replying. */
+function personaRow(plan: Awaited<ReturnType<typeof planSnapshotApply>>, persona: SnapshotPayload["aiProfile"]): string {
+  if (plan.persona !== "written") return PERSONA_ROW[plan.persona];
+  const { hoursStart, hoursEnd, timezone } = persona ?? {};
+  const hours = typeof hoursStart === "number" && typeof hoursEnd === "number" && typeof timezone === "string"
+    ? ` (${hoursStart}:00–${hoursEnd}:00 ${oneLine(timezone)})`
+    : "";
   const live = plan.replyingChannels;
-  if (live.length === 0) return PERSONA_ROW[plan.persona];
-  return `${PERSONA_ROW.written}: ${live.join(", ")} ${live.length === 1 ? "starts" : "start"} replying to customers with it at once`;
+  return [
+    `${PERSONA_ROW.written}; sets the AI's hours and timezone to the snapshot's${hours}`,
+    ...(live.length ? [`${live.join(", ")} ${live.length === 1 ? "starts" : "start"} replying to customers with it at once`] : []),
+  ].join("; ");
 }
 
 export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
@@ -205,7 +214,8 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
       const snapshot = await snapshotFor(ctx.agencyId, args);
       // Counted by applySnapshot's own rules against the target now, so a
       // persona set or a doc written since is `preview_changed` at approve.
-      const plan = await planSnapshotApply(db, payloadOf(snapshot), target, args.snapshotId as string);
+      const payload = payloadOf(snapshot);
+      const plan = await planSnapshotApply(db, payload, target, args.snapshotId as string);
       const name = `“${oneLine(snapshot.name)}”`;
       const live = plan.enabledForms;
       return {
@@ -226,7 +236,7 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
               ? `Copied with their status: ${live} ${live === 1 ? "accepts" : "accept"} public submissions on this sub-account at once.`
               : "Copied with their status: none accepts public submissions until it is enabled.",
           },
-          { label: "AI persona", value: personaRow(plan) },
+          { label: "AI persona", value: personaRow(plan, payload.aiProfile) },
         ],
         pinned: { snapshotId: args.snapshotId as string, payloadSha256: payloadSha256(snapshot) },
       };
