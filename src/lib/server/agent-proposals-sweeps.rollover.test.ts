@@ -19,25 +19,27 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
 setupAgentProposalTests();
 beforeEach(seedAgency);
 
+const ak1 = "agencies/ag1/apiKeys/ak1";
+/** The revoke hook's argument: the in-memory doc ref, typed as the Admin SDK's. */
+const ak1Ref = () => mem.db.doc(ak1) as unknown as FirebaseFirestore.DocumentReference;
+
 describe("the revoke sweep", () => {
   it("a supersede landing between its query and its transition leaves the new key's generation pending", async () => {
     const id = await proposeScoped("sa1", "hi"); // agency key ak1's row in sa1
-    const ak1 = "agencies/ag1/apiKeys/ak1";
     mem.seed(ak1, { ...mem.read(ak1)!, revokedAt: new Date() }); // revokeApiKey's write, before its hook
     // sa1's own live key re-proposes the identical action while the sweep is mid-loop.
     beforeNextTransaction(() => proposeId({ body: "hi" }, auth));
     const { sweepRevokedKeyProposals } = await import("@/lib/server/agent-proposals-sweeps");
-    expect(await sweepRevokedKeyProposals({ keyRef: mem.db.doc(ak1) })).toBe(0);
+    expect(await sweepRevokedKeyProposals({ keyRef: ak1Ref() })).toBe(0);
     expect(history(id)).toEqual([expect.objectContaining({ status: "superseded", keyId: "ak1" })]);
     expect(row(id)).toMatchObject({ keyId: "key1", status: "pending" });
   });
 
   it("with no rollover it still rejects the revoked key's row", async () => {
     const id = await proposeScoped("sa1", "hi");
-    const ak1 = "agencies/ag1/apiKeys/ak1";
     mem.seed(ak1, { ...mem.read(ak1)!, revokedAt: new Date() });
     const { sweepRevokedKeyProposals } = await import("@/lib/server/agent-proposals-sweeps");
-    expect(await sweepRevokedKeyProposals({ keyRef: mem.db.doc(ak1) })).toBe(1);
+    expect(await sweepRevokedKeyProposals({ keyRef: ak1Ref() })).toBe(1);
     expect(row(id)).toMatchObject({ status: "rejected", reason: "key_revoked" });
   });
 });
