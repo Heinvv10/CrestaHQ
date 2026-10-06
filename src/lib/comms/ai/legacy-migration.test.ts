@@ -5,10 +5,10 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 /**
  * The lazy legacy migration (agent.ts maybeMigrateLegacy): a sub-account
  * that still has only `aiConfig/main` gets its profile + sms channel on the
- * first read. It creates the profile, never overwrites one: a snapshot apply
- * (A4a-2) that migrates and merges in its own transaction can commit between
- * this migration's read and its write, and the migration must then leave
- * that profile alone.
+ * first read, both or neither, in one transaction that re-reads the profile.
+ * A read that went stale (another migration, a snapshot apply that migrates
+ * in its own transaction (A4a-2), an operator's save since) therefore writes
+ * nothing over what is there now.
  */
 
 const mem = createMemoryFirestore();
@@ -37,6 +37,12 @@ describe("the lazy migration on its own", () => {
     expect(mem.read("subAccounts/sa1/aiConfig/main")).toMatchObject(LEGACY);
   });
 
+  it("keeps an sms channel doc already there (no profile yet)", async () => {
+    mem.seed("subAccounts/sa1/aiAgent/sms", { enabled: true, contextMessageCount: 12 });
+    expect(await getAgentProfile("sa1")).toMatchObject({ businessName: "Client One" });
+    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toEqual({ enabled: true, contextMessageCount: 12 });
+  });
+
   it("does nothing once a profile exists", async () => {
     mem.seed("subAccounts/sa1/aiAgent/profile", { systemPrompt: "Mine." });
     expect((await getAgentProfile("sa1"))?.systemPrompt).toBe("Mine.");
@@ -44,105 +50,93 @@ describe("the lazy migration on its own", () => {
   });
 });
 
-describe("two lazy migrations at once", () => {
-  it("one parked after its first write: the other's caller still resolves profile AND sms", async () => {
-    let entered!: () => void;
-    const reached = new Promise<void>((r) => (entered = r));
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    let writes = 0;
-    const orig = mem.db.doc.bind(mem.db);
-    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
-      const ref = orig(p);
-      if (!p.startsWith("subAccounts/sa1/aiAgent/")) return ref;
-      const parkSecond = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A) => {
-        if (++writes === 2) {
-          entered();
-          await gate;
-        }
-        return fn(...a);
-      };
-      return { ...ref, set: parkSecond(ref.set), create: parkSecond(ref.create) };
-    });
-    const first = resolveAgent("sa1", "sms");
-    await reached;
-    spy.mockRestore();
-    const second = await resolveAgent("sa1", "sms");
-    expect(second).not.toBeNull();
-    expect(second?.channel).toMatchObject({ contextMessageCount: 7 });
-    release();
-    expect(await first).not.toBeNull();
-    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toMatchObject({ businessName: "Client One" });
-  });
-
-  it("a crash between the two writes: the next read migrates again and resolves", async () => {
-    const orig = mem.db.doc.bind(mem.db);
-    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
-      const ref = orig(p);
-      if (p !== "subAccounts/sa1/aiAgent/profile") return ref;
-      return { ...ref, create: async () => Promise.reject(Object.assign(new Error("UNAVAILABLE"), { code: 14 })) };
-    });
-    await expect(getAgentProfile("sa1")).rejects.toThrow(/UNAVAILABLE/);
-    spy.mockRestore();
-    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toBeUndefined();
-    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ contextMessageCount: 7 });
-    expect((await resolveAgent("sa1", "sms"))?.profile).toMatchObject({ businessName: "Client One" });
-  });
-});
-
-describe("a late migration never undoes an operator's channel change", () => {
-  it("parked before its sms write while another migrates and the operator switches SMS off: it stays off", async () => {
-    mem.seed("subAccounts/sa1/aiConfig/main", { ...LEGACY, enabled: true, modelOverride: "legacy/model" });
-    let entered!: () => void;
-    const reached = new Promise<void>((r) => (entered = r));
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    const orig = mem.db.doc.bind(mem.db);
-    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
-      const ref = orig(p);
-      if (p !== "subAccounts/sa1/aiAgent/sms") return ref;
-      const park = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A) => {
+/** Park the first read of the legacy doc, after its snapshot was taken: the
+ *  migration that made it then acts on a stale read once released. */
+function parkFirstLegacyRead() {
+  let entered!: () => void;
+  const reached = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const orig = mem.db.doc.bind(mem.db);
+  const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
+    const ref = orig(p);
+    if (p !== "subAccounts/sa1/aiConfig/main") return ref;
+    return {
+      ...ref,
+      get: async () => {
+        const snap = await ref.get();
+        spy.mockRestore();
         entered();
         await gate;
-        return fn(...a);
-      };
-      return { ...ref, set: park(ref.set), create: park(ref.create) };
-    });
+        return snap;
+      },
+    };
+  });
+  return { reached, release };
+}
+
+describe("a migration acting on a stale read", () => {
+  it("two lazy migrations: the parked one writes nothing more; both callers resolve profile and sms", async () => {
+    const { reached, release } = parkFirstLegacyRead();
+    const first = resolveAgent("sa1", "sms");
+    await reached;
+    const second = await resolveAgent("sa1", "sms");
+    expect(second?.channel).toMatchObject({ contextMessageCount: 7 });
+    const written = mem.read("subAccounts/sa1/aiAgent/profile");
+    release();
+    expect((await first)?.channel).toMatchObject({ contextMessageCount: 7 });
+    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toEqual(written);
+  });
+
+  it("another migrates and the operator switches SMS off: the parked one does not switch it back on", async () => {
+    mem.seed("subAccounts/sa1/aiConfig/main", { ...LEGACY, enabled: true, modelOverride: "legacy/model", totalTokensUsed: 5 });
+    const { reached, release } = parkFirstLegacyRead();
     const late = resolveAgent("sa1", "sms");
     await reached;
-    spy.mockRestore();
     await getAgentProfile("sa1"); // another read migrates fully
-    await upsertChannelConfig("sa1", "sms", { enabled: false, modelOverride: null });
+    await upsertChannelConfig("sa1", "sms", { enabled: false, modelOverride: null, totalTokensUsed: 99 });
     release();
     expect((await late)?.effective.enabled).toBe(false);
-    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ enabled: false, modelOverride: null });
+    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ enabled: false, modelOverride: null, totalTokensUsed: 99 });
     expect((await resolveAgent("sa1", "sms"))?.effective.enabled).toBe(false);
   });
-});
 
-describe("a snapshot apply committing between the migration's read and its write", () => {
-  it("the migration loses: the applied persona stays and is what the agent resolves", async () => {
-    // Hold the migration's writes until the apply has committed.
-    let entered!: () => void;
-    const reached = new Promise<void>((r) => (entered = r));
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    const orig = mem.db.doc.bind(mem.db);
-    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
-      const ref = orig(p);
-      if (!p.startsWith("subAccounts/sa1/aiAgent/")) return ref;
-      const held = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A) => (entered(), await gate, fn(...a));
-      return { ...ref, set: held(ref.set), create: held(ref.create) };
-    });
+  it("a snapshot apply commits meanwhile: the applied persona stays and is what the agent resolves", async () => {
+    const { reached, release } = parkFirstLegacyRead();
     const migrating = getAgentProfile("sa1");
     await reached;
-    spy.mockRestore();
     const applied = await applySnapshot(mem.db as unknown as Firestore, payload, "sa1", { agencyId: "ag1", createdByUid: "owner1", snapshotId: "snap1" });
     expect(applied.aiProfileApplied).toBe(true);
     release();
-    // The caller reads the profile that now exists, not the migration's copy.
     expect((await migrating)?.systemPrompt).toBe("Snapshot persona.");
     expect(mem.read("subAccounts/sa1/aiAgent/profile")).toMatchObject({ systemPrompt: "Snapshot persona.", businessName: "Client One" });
     expect((await resolveAgent("sa1", "sms"))?.effective.systemPrompt).toBe("Snapshot persona.");
+  });
+});
+
+describe("a migration that fails part-way", () => {
+  it("leaves neither doc behind, and the next read migrates fully", async () => {
+    const unavailable = () => Object.assign(new Error("14 UNAVAILABLE"), { code: 14 });
+    // Fail the profile's write however the migration makes it: a create()
+    // of its own, or the commit of the transaction it is part of.
+    const orig = mem.db.doc.bind(mem.db);
+    const docSpy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
+      const ref = orig(p);
+      return p === "subAccounts/sa1/aiAgent/profile" ? { ...ref, create: async () => Promise.reject(unavailable()) } : ref;
+    });
+    const run = mem.db.runTransaction.bind(mem.db);
+    const txSpy = vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) =>
+      run(async (tx) => {
+        await fn(tx);
+        throw unavailable();
+      })
+    );
+    await expect(getAgentProfile("sa1")).rejects.toThrow(/UNAVAILABLE/);
+    docSpy.mockRestore();
+    txSpy.mockRestore();
+    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toBeUndefined();
+    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toBeUndefined();
+    expect((await resolveAgent("sa1", "sms"))?.profile).toMatchObject({ businessName: "Client One" });
+    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ contextMessageCount: 7 });
   });
 });

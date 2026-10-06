@@ -17,8 +17,6 @@ import {
 import { legacyAiConfigPath, migratedLegacyDocs } from "@/lib/comms/ai/legacy-config";
 
 const PROFILE_DOC = "profile";
-/** gRPC ALREADY_EXISTS: create() on a doc that is already there. */
-const ALREADY_EXISTS = 6;
 // Literal union — gives us the same narrow string type without an unused
 // `const SUPPORTED_CHANNELS` runtime array. If a runtime list of channels
 // ever needs to exist, export the array AND derive the type from it via
@@ -77,20 +75,6 @@ function channelPath(subAccountId: string, channelId: string): string {
   return `subAccounts/${subAccountId}/aiAgent/${channelId}`;
 }
 
-/** create(); false when the doc already exists (ALREADY_EXISTS). */
-async function createUnlessExists(
-  ref: FirebaseFirestore.DocumentReference,
-  data: FirebaseFirestore.DocumentData,
-): Promise<boolean> {
-  try {
-    await ref.create(data);
-    return true;
-  } catch (err) {
-    if ((err as { code?: unknown })?.code === ALREADY_EXISTS) return false;
-    throw err;
-  }
-}
-
 /**
  * Lazy migration: if a sub-account still has the pre-refactor
  * `aiConfig/main` doc, split it into the new profile + sms shape on the
@@ -105,18 +89,24 @@ async function maybeMigrateLegacy(subAccountId: string): Promise<void> {
   if (profileSnap.exists) return; // already migrated
   if (!legacySnap.exists) return; // no legacy to migrate
 
-  const { profile, sms } = migratedLegacyDocs(legacySnap.data());
-
-  // Both create(), never set(): a doc written since the read above (another
-  // migration, a snapshot apply that migrated in its own transaction, or an
-  // operator's channel save since) is kept, so a late migration cannot undo
-  // it. The sms channel first, so a caller that finds a profile also finds
-  // its channel; a crash between the two leaves sms without a profile, which
-  // the next read finishes.
-  // An sms doc already there is kept, and the profile still created: it may
-  // be missing after a crash between another migration's two writes.
-  await createUnlessExists(db.doc(channelPath(subAccountId, "sms")), sms);
-  if (!(await createUnlessExists(db.doc(profilePath(subAccountId)), profile))) return;
+  // Those reads may be stale by now: another migration, a snapshot apply
+  // that migrates in its own transaction, or an operator's channel save may
+  // have landed since. So the migration is one transaction that reads again
+  // and writes both docs or neither: a profile there now means nothing is
+  // written, and an sms doc there now is kept.
+  const migrated = await db.runTransaction(async (tx) => {
+    const profileRef = db.doc(profilePath(subAccountId));
+    const smsRef = db.doc(channelPath(subAccountId, "sms"));
+    const profileNow = await tx.get(profileRef);
+    const legacyNow = await tx.get(db.doc(legacyAiConfigPath(subAccountId)));
+    const smsNow = await tx.get(smsRef);
+    if (profileNow.exists || !legacyNow.exists) return false;
+    const { profile, sms } = migratedLegacyDocs(legacyNow.data());
+    if (!smsNow.exists) tx.set(smsRef, sms);
+    tx.set(profileRef, profile);
+    return true;
+  });
+  if (!migrated) return;
   console.log(
     `[ai/agent] migrated legacy aiConfig for sub-account ${subAccountId}`,
   );
