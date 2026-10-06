@@ -29,7 +29,8 @@ type Decision = "approve" | "reject" | "mark_sent" | "mark_not_sent";
 /**
  * One agent proposal. `preview` rows are rendered VERBATIM — the approver
  * judges exactly what the server says will happen; `pinned` never reaches
- * the browser. Every decision sends the row's `rev`; a changed preview
+ * the browser. Every decision sends the row's `rev` and `gen` (so a stale
+ * card cannot reject a different key's generation); a changed preview
  * replaces the row in place and says so.
  */
 export function ApprovalCard({
@@ -61,7 +62,7 @@ export function ApprovalCard({
       const res = await fetch(`${decideBase}/${row.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, rev: row.rev, ...extra }),
+        body: JSON.stringify({ decision, rev: row.rev, ...(row.gen ? { gen: row.gen } : {}), ...extra }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;

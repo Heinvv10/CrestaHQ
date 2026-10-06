@@ -121,6 +121,26 @@ describe("decisions", () => {
   });
 });
 
+describe("the row's generation (gen)", () => {
+  it("approve and reject name the gen the card shows, so a stale card cannot decide another generation", async () => {
+    respond(200, { status: "executed" });
+    respond(200, { status: "rejected" });
+    await render({ ...ROW, gen: "gen-1" });
+    await click(button(/Approve/));
+    await click(button(/Reject/));
+    expect(sentBody(0)).toEqual({ decision: "approve", rev: "rev-1", gen: "gen-1" });
+    expect(sentBody(1)).toEqual({ decision: "reject", rev: "rev-1", gen: "gen-1" });
+  });
+
+  it("a refreshed preview keeps the gen", async () => {
+    const preview = [{ label: "To", value: "Ann (b***@y.io)" }];
+    respond(409, { error: "preview_changed", rev: "rev-2", preview });
+    await render({ ...ROW, gen: "gen-1" });
+    await click(button(/Approve/));
+    expect(onReplace).toHaveBeenCalledWith({ ...ROW, gen: "gen-1", rev: "rev-2", preview });
+  });
+});
+
 describe("other outcomes", () => {
   it("202 unsettled: warns the outcome is unknown and reloads", async () => {
     const { toast } = await import("sonner");

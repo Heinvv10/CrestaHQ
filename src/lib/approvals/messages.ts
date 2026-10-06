@@ -19,6 +19,8 @@ export interface ApprovalRow {
   approval: string;
   status: ApprovalStatus;
   rev: string;
+  /** The row's generation (createProposal); a preview refresh keeps it. */
+  gen?: string;
   summary: string;
   preview: Array<{ label: string; value: string }>;
   contactId?: string | null;

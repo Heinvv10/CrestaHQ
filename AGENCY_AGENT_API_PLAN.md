@@ -331,6 +331,14 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
     `approvalRefusal`, factored out), read with `tx.get` in the create
     transaction. Symmetric: a revoked v1 key's pending row is superseded by
     an agency key the same way.
+  - With rollover a row's id can change hands between generations, so: the
+    revoke and expiry sweeps move a pending row only at the `rev` they
+    queried; and each generation carries `gen` (set by `createProposal`,
+    kept by a preview refresh). Both approval cards send it; a decision
+    naming another `gen` is 409 `stale_proposal`, reject included, so a
+    stale card cannot reject a different key's generation. Reject still
+    ignores `rev` (a refresh must not block it), and a body without `gen`
+    is checked as before.
   - "Approve all" also skips a row whose earlier attempt already went out
     (`priorAttemptSent`): that needs the in-app re-send confirmation.
   - The E2E proposes through the REST tools route with an agency key the

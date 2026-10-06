@@ -110,7 +110,7 @@ const historyRef = (id: string) => proposalRef(id).collection("history").doc();
  * re-proposing cannot keep bumping `rev` under an approver), an `unsettled`
  * row refuses (its action may already have happened), and a terminal row
  * moves to `history` so the id is re-used as a fresh `pending` generation
- * with a new `rev`, stamped with the proposing key. A pending row whose own
+ * with a new `rev` and `gen`, stamped with the proposing key. A pending row whose own
  * key can no longer approve it (`keyRefusal`) is `superseded` the same way
  * when a different key proposes the action; a live key's row never is. A
  * revoked or missing key queues nothing. The row stores its target (`contactId`, `territoryId`,
@@ -182,6 +182,9 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
       workflowId: input.workflowId ?? null,
       status: "pending",
       rev,
+      // The generation's own id: refreshPreview bumps `rev`, never `gen`, so
+      // a reject can name the generation without racing a preview refresh.
+      gen: rev,
       createdAt: new Date(now),
       // Firestore's own clock, comparable with agent edit stamps (serverTimestamp).
       createdServerAt: FieldValue.serverTimestamp(),
@@ -200,14 +203,14 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
 
 /**
  * Move a row `from` → `patch.status` only when, at read time, its status is
- * still `from`, its generation is still `rev` (person decisions), and its
- * claim is still `claimId` (sweeps of a claim).
+ * still `from`, its generation is still `rev` (person decisions) or `gen` (a
+ * reject), and its claim is still `claimId` (sweeps of a claim).
  */
 export async function transitionIf(
   id: string,
   from: ProposalStatus,
   patch: Record<string, unknown> & { status?: ProposalStatus },
-  guard: { rev?: string; claimId?: string } = {}
+  guard: { rev?: string; gen?: string; claimId?: string } = {}
 ): Promise<TransitionResult> {
   const ref = proposalRef(id);
   return getAdminDb().runTransaction(async (tx) => {
@@ -215,6 +218,7 @@ export async function transitionIf(
     const cur = snap.data();
     if (!cur || cur.status !== from) return "conflict";
     if (guard.rev !== undefined && cur.rev !== guard.rev) return "stale";
+    if (guard.gen !== undefined && cur.gen !== guard.gen) return "stale";
     if (guard.claimId !== undefined && cur.claimId !== guard.claimId) return "conflict";
     tx.update(ref, patch);
     return "ok";

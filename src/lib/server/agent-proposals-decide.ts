@@ -58,12 +58,14 @@ export interface DecideBody {
   decision: Decision;
   /** The row generation the person saw; absent only for `reject`. */
   rev: string;
+  /** The row's `gen` the person saw (createProposal); absent = not checked. */
+  gen?: string;
   acknowledgePriorAttempt?: unknown;
 }
 
 /** The request body, or the 400 for a malformed one. Read before the row. */
 export async function readDecideBody(request: Request): Promise<DecideBody | NextResponse> {
-  let body: { decision?: Decision; rev?: unknown; acknowledgePriorAttempt?: unknown };
+  let body: { decision?: Decision; rev?: unknown; gen?: unknown; acknowledgePriorAttempt?: unknown };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -76,7 +78,15 @@ export async function readDecideBody(request: Request): Promise<DecideBody | Nex
   if (decision !== "reject" && (typeof body.rev !== "string" || !body.rev)) {
     return NextResponse.json({ error: "`rev` is required" }, { status: 400 });
   }
-  return { decision, rev: body.rev as string, acknowledgePriorAttempt: body.acknowledgePriorAttempt };
+  if (body.gen !== undefined && (typeof body.gen !== "string" || !body.gen)) {
+    return NextResponse.json({ error: "`gen` must be a non-empty string" }, { status: 400 });
+  }
+  return {
+    decision,
+    rev: body.rev as string,
+    gen: body.gen as string | undefined,
+    acknowledgePriorAttempt: body.acknowledgePriorAttempt,
+  };
 }
 
 export interface DecideInput {
@@ -101,13 +111,16 @@ export interface DecideInput {
  * `approvalRefusal` and expiry checks) before running anything, so two
  * approvers can never both execute it. Every decision but `reject`
  * (refusing is always safe) names the row generation (`rev`) the approver
- * saw: a row re-proposed or refreshed since is 409 `stale_proposal`.
+ * saw: a row re-proposed or refreshed since is 409 `stale_proposal`. A
+ * decision naming the row's `gen` (the generation, which a refresh keeps) is
+ * 409 `stale_proposal` when the row is another generation by now, reject
+ * included: a stale card never rejects a different key's generation.
  * `mark_*` wait MARK_MIN_AGE_MS after the claim, so a person cannot guess
  * the outcome of an execute that may still be running.
  */
 export async function decideProposal(input: DecideInput): Promise<NextResponse> {
   const { proposalId, proposal, body, targetSubAccountId, actionCtx, scope } = input;
-  const { decision, rev } = body;
+  const { decision, rev, gen } = body;
   const cap = getCapability(proposal.capability as string);
   const decided = {
     decidedAt: new Date(),
@@ -119,12 +132,14 @@ export async function decideProposal(input: DecideInput): Promise<NextResponse> 
       { error: moved === "stale" ? "stale_proposal" : "already_decided" },
       { status: 409 },
     );
+  if (gen !== undefined && proposal.gen !== gen) return refused("stale");
   if (decision === "reject") {
-    const moved = await transitionIf(proposalId, "pending", {
-      status: "rejected",
-      reason: "rejected_by_approver",
-      ...decided,
-    });
+    const moved = await transitionIf(
+      proposalId,
+      "pending",
+      { status: "rejected", reason: "rejected_by_approver", ...decided },
+      { gen },
+    );
     return moved === "ok" ? NextResponse.json({ status: "rejected" }) : refused(moved);
   }
   if (decision === "mark_sent" || decision === "mark_not_sent") {
