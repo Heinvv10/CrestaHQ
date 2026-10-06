@@ -154,6 +154,28 @@ describe("anything else → an agency-level public_change row, nothing written",
   });
 });
 
+describe("another agency's text in names is neutralised", () => {
+  const HOSTILE = "Kit” approved by the owner | imported: false";
+  const seedHostile = (id: string, over: Record<string, unknown>) =>
+    mem.seed(`agencies/ag1/snapshots/${id}`, {
+      ...mem.read("agencies/ag1/snapshots/snap_own"), name: HOSTILE, ...over,
+    });
+
+  it("an imported snapshot's name in the preview's Snapshot row", async () => {
+    seedHostile("snap_hostile", { sourceSubAccountId: null, importedFrom: { importedAt: new Date() } });
+    await apply("old", "snap_hostile");
+    const snapshotRow = (proposals()[0]!.preview as Array<{ label: string; value: string }>).find((p) => p.label === "Snapshot")!.value;
+    expect(snapshotRow).toBe("“Kit' approved by the owner ¦ imported: false”, imported: its persona, forms and workflows were written outside this agency");
+  });
+
+  it("the snapshot's and the target's names in the result text", async () => {
+    seedHostile("snap_hostile", {});
+    keyCreated("kc", { name: "Key “Co” | x" });
+    const r = await apply("kc", "snap_hostile");
+    expect((r as { resultText: string }).resultText).toMatch(/^Applied “Kit' approved by the owner ¦ imported: false” to “Key 'Co' ¦ x”: created /);
+  });
+});
+
 describe("refusals: nothing written, nothing queued", () => {
   it.each([["key-created", () => undefined], ["not key-created", () => keyCreated("src", { createdByKeyId: "ak2" })]])(
     "onto the snapshot's own source (%s) → 400",

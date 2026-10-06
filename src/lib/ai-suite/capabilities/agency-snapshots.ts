@@ -72,8 +72,9 @@ const countsText = (c: Counts, draft = false) =>
 const anyOf = (c: Counts) => Object.values(c).some((n) => n > 0);
 const lengthOf = (v: unknown) => (Array.isArray(v) ? v.length : 0);
 
-/** Stored text inside a list row, on one line and unable to close its quotes
- *  or start a field: an imported snapshot's name is another agency's text. */
+/** Stored text quoted inside a list row, preview or result, on one line and
+ *  unable to close its quotes or start a field: an imported snapshot's name
+ *  is another agency's text. */
 const quoted = (v: unknown) => `“${oneLine(v).replace(/[“”"]/g, "'").replace(/\|/g, "¦")}”`;
 
 const NOT_IN_AGENCY = "That sub-account wasn't found in this agency.";
@@ -230,7 +231,7 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
       // persona set or a doc written since is `preview_changed` at approve.
       const payload = payloadOf(snapshot);
       const plan = await planSnapshotApply(db, payload, target, args.snapshotId as string);
-      const name = `“${oneLine(snapshot.name)}”`;
+      const name = quoted(snapshot.name);
       const live = plan.enabledForms;
       return {
         rows: [
@@ -280,7 +281,7 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
       const skipped = { forms: r.formsSkipped, messageTemplates: r.templatesSkipped, products: r.productsSkipped, workflows: r.workflowsSkipped, customFields: r.customFieldsSkipped };
       const persona = r.aiProfileApplied ? "persona written" : payload.aiProfile ? "persona kept (the sub-account already has one)" : "no persona in the snapshot";
       return {
-        resultText: `Applied “${oneLine(snapshot.name)}” to “${oneLine(sub.data()?.name ?? sub.id)}”: created ${countsText(created, true)}${
+        resultText: `Applied ${quoted(snapshot.name)} to ${quoted(sub.data()?.name ?? sub.id)}: created ${countsText(created, true)}${
           anyOf(skipped) ? `; skipped ${countsText(skipped)} already there` : ""
         }; ${persona}.`,
         ref: { kind: "snapshot", id: snapshotId },
