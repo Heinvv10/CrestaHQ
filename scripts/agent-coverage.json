@@ -254,6 +254,16 @@
         "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
       }
     },
+    "api/agency/snapshots:GET": {
+      "tools": [
+        "list_snapshots"
+      ]
+    },
+    "api/agency/sub-accounts/[id]/apply-snapshot:POST": {
+      "tools": [
+        "apply_snapshot"
+      ]
+    },
     "api/agency:PATCH": {
       "exclude": {
         "category": "human-only",
