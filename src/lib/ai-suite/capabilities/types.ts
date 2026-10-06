@@ -13,6 +13,13 @@ import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
 export class CapabilityUserError extends Error {}
 
 /**
+ * A record named by the caller that is not there for this tenant (another
+ * agency's id and a made-up one alike). The agent surface answers 404
+ * `not_found`; everywhere else it is a CapabilityUserError.
+ */
+export class CapabilityNotFound extends CapabilityUserError {}
+
+/**
  * The action may or may not have happened (a provider that could not say
  * whether a message was delivered). An approved proposal that throws this is
  * left `unsettled` for a person to check — never `failed`, which would

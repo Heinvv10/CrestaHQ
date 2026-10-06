@@ -11,15 +11,16 @@ import manifest from "../../../scripts/agent-coverage.json";
  * (one letter short) would mark a route exposed that no agent can reach, and
  * `PATCH → [get_contact]` would call a write covered by a read.
  *
- * Sub-account keys are the only agent key level today. Agency-level
- * callability (AGENCY_AGENT_CALLABLE) joins this predicate in A3a.
+ * A tool is callable by a sub-account key (`agentCallable`) or, at the
+ * agency level, by an agency key (`agencyAgentCallable`, A4a-2's snapshot
+ * routes).
  */
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
 
 const { getCapability } = await import("@/lib/ai-suite/capabilities");
-const { agentCallable } = await import("@/lib/api/agent-dispatch");
+const { agencyAgentCallable, agentCallable } = await import("@/lib/api/agent-dispatch");
 
 const mapped = Object.entries(manifest.routes as Record<string, { tools?: string[] }>).flatMap(
   ([key, entry]) => (entry.tools ?? []).map((tool) => [key, tool] as const),
@@ -33,7 +34,7 @@ describe("agent coverage manifest tool names", () => {
   it.each(mapped)("%s → %s is a registered, agent-callable tool", (_key, tool) => {
     const cap = getCapability(tool);
     expect(cap, `no capability named ${tool}`).toBeDefined();
-    expect(agentCallable(cap!), `${tool} is not callable by an agent key`).toBe(true);
+    expect(agentCallable(cap!) || agencyAgentCallable(cap!), `${tool} is not callable by an agent key`).toBe(true);
   });
 
   const byRoute = Object.entries(manifest.routes as Record<string, { tools?: string[] }>).filter(

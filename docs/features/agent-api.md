@@ -89,7 +89,8 @@ other route: every other `/api/v1` route refuses it with 403
 - **Proposals** an agency key causes are ordinary rows of the target sub-account
   (`keyLevel: "agency"`), approved on that sub-account's Approvals page; held
   enrolments are charged to the agency key's enrolment cap, counted per
-  sub-account.
+  sub-account. Agency-level rows (`set_sub_account_gate`, `apply_snapshot`)
+  belong to the agency and are approved only on `/agency/approvals`.
 - **Audit.** Each call in a sub-account writes one `agent.call` row under
   `agencies/{id}/agentCalls` (key, tool, target, read or write — never the args),
   kept 30 days. Request logs land under the target once reach lets the call
@@ -104,8 +105,9 @@ other route: every other `/api/v1` route refuses it with 403
 
 97 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
-from the registry and a test fails when it drifts. After adding or changing an
-agent capability, rerun:
+from the registry and a test fails when it drifts. It lists sub-account tools; an
+agency key's agency-level proposals are approved on `/agency/approvals`, not on a
+sub-account's page. After adding or changing an agent capability, rerun:
 
 ```bash
 UPDATE_AGENT_API_DOCS=1 pnpm exec vitest run src/lib/ai-suite/agent-api-doc.test.ts
@@ -115,9 +117,10 @@ A new tool that can need approval also needs a line in `PREVIEW_NOTES`
 (`src/lib/ai-suite/agent-api-doc.ts`); the same test fails until it has one.
 
 The agent surface is the sub-account-level capabilities that declare the `agent`
-surface. Webhook writes, member invites, the website / community / course
-builders, checkout pages, payment links and mandates, API keys, feature gates and
-anything agency-level are not on it.
+surface, plus the agency-key tools listed under [Agency keys](#agency-keys).
+Webhook writes, member invites, the website / community / course builders,
+checkout pages, payment links and mandates, API keys, feature gates (apart from an
+agency key's `set_sub_account_gate`) and anything else agency-level are not on it.
 
 **Approval classes:** `outbound` (a message to a person), `workflow_activate`,
 `hard_delete`, `spend` (bills or charges), `channel_change` (a contact's phone or
@@ -238,6 +241,7 @@ only for callable write tools.
   targets re-sync when a contact is re-tagged.
 - **No notification** for new proposals in v1; the sidebar badge counts pending and
   unsettled rows.
-- **Agency keys reach sub-account tools and two agency reads** (`list_sub_accounts`,
-  `sub_account_stats`) so far; agent-run onboarding and the agency approvals page
-  are planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
+- **Agency keys reach sub-account tools and the agency tools** `list_sub_accounts`,
+  `sub_account_stats`, `create_sub_account`, `set_sub_account_gate`,
+  `list_snapshots` and `apply_snapshot` so far; the rest of agent-run onboarding
+  is planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).

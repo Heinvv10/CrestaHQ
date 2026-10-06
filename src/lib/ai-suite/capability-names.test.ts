@@ -19,6 +19,8 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["set_feature_gate",                          "agency",      "agencyOwner",      false, ["chat"]],
   ["create_sub_account",                        "agency",      "agencyOwner",      false, null],
   ["set_sub_account_gate",                      "agency",      "agencyOwner",      false, ["agent"]],
+  ["list_snapshots",                            "agency",      "agencyOwner",      true, ["agent"]],
+  ["apply_snapshot",                            "agency",      "agencyOwner",      false, ["agent"]],
   ["list_billing_plans",                        "agency",      "agencyOwner",      true, null],
   ["create_billing_plan",                       "agency",      "agencyOwner",      false, null],
   ["assign_billing_plan",                       "agency",      "agencyOwner",      false, null],

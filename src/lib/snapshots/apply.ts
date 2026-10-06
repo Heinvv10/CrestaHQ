@@ -1,14 +1,13 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
 import {
   FieldValue,
   type Firestore,
   type DocumentReference,
 } from "firebase-admin/firestore";
 import type { WorkflowNode } from "@/types/workflows";
-import { DEFAULT_AI_AGENT_PROFILE } from "@/types/ai";
 import type { SnapshotApplyResult, SnapshotPayload } from "@/types/snapshots";
+import { customFieldKeyId, deterministicId, writePersonaIfAbsent } from "./apply-target";
 
 interface ApplyScope {
   agencyId: string;
@@ -27,24 +26,8 @@ interface ApplyScope {
 
 type PendingWrite = [DocumentReference, Record<string, unknown>];
 
-/**
- * Stable id for an applied doc, derived from the target, the snapshot/
- * template being applied, and the entity's own `sourceId` — so re-applying
- * the same payload into the same sub-account always resolves to the same
- * doc id and `set()` overwrites rather than duplicates. Not a secret; just
- * needs to be deterministic and collision-free across entity kinds.
- */
-function deterministicId(
-  targetSubAccountId: string,
-  snapshotId: string,
-  entityKind: string,
-  sourceId: string,
-): string {
-  return createHash("sha256")
-    .update([targetSubAccountId, snapshotId, entityKind, sourceId].join("\u0000"))
-    .digest("hex")
-    .slice(0, 24);
-}
+/** gRPC ALREADY_EXISTS: create() on a doc that is already there. */
+const ALREADY_EXISTS = 6;
 
 /** Drop the snapshot-only `sourceId` before persisting the new doc. */
 function dropSourceId<T extends { sourceId: string }>(
@@ -76,7 +59,7 @@ async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
  * is how a retry tells "I already wrote this" from "this is new" — see
  * {@link writeSnapshot}, which never overwrites a doc this returns.
  */
-async function existingPaths(
+export async function existingPaths(
   db: Firestore,
   refs: DocumentReference[],
 ): Promise<Set<string>> {
@@ -133,44 +116,6 @@ export function sanitizeNodes(
     }
   }
   return out;
-}
-
-/**
- * Write the snapshot's persona to the target, but ONLY if the target still has
- * none at commit time. Returns whether the write landed.
- *
- * The five re-blanked fields belong to the SOURCE client and must never reach
- * another tenant: `businessName` is their trading name, `escalationNotifyEmail`
- * is their team's inbox, and the website KB is a scrape of their homepage that
- * the agent would otherwise state as fact about the wrong business. Capture
- * already excludes all five, so blanking again here is belt-and-braces — it
- * means a hand-built or legacy payload cannot smuggle them in either.
- */
-async function writePersonaIfAbsent(
-  db: Firestore,
-  targetSubAccountId: string,
-  profile: NonNullable<SnapshotPayload["aiProfile"]>,
-  tenancyStamps: Record<string, unknown>,
-): Promise<boolean> {
-  const ref = db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`);
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const existingPrompt = snap.data()?.systemPrompt;
-    if (typeof existingPrompt === "string" && existingPrompt.trim()) {
-      return false;
-    }
-    tx.set(ref, {
-      ...DEFAULT_AI_AGENT_PROFILE,
-      ...profile,
-      businessName: "",
-      escalationNotifyEmail: null,
-      websiteUrl: null,
-      websiteKb: null,
-      websiteKbFetchedAt: null,
-      ...tenancyStamps,
-    });
-    return true;
-  });
 }
 
 /**
@@ -405,8 +350,13 @@ async function writeSnapshot(
     workflowsCreated += 1;
   });
 
+  await commitInChunks(db, writes);
+
   // 4) Custom-field definitions — skip any key the target already defines
-  // (by this snapshot on a prior apply, or by any other source).
+  // (by this snapshot on a prior apply, or by any other source). The doc id
+  // is the KEY's, target-wide (customFieldKeyId), written with create(): of
+  // two applies racing past the read above, or one payload naming a key
+  // twice, exactly one defines it and the other counts it as skipped.
   let customFieldsCreated = 0;
   let customFieldsSkipped = 0;
   for (const field of payload.customFields ?? []) {
@@ -416,12 +366,15 @@ async function writeSnapshot(
     }
     const ref = db
       .collection(`subAccounts/${targetSubAccountId}/customFields`)
-      .doc(detId("custom_field", field.sourceId));
-    writes.push([ref, { ...dropSourceId(field), id: ref.id, ...tenancy() }]);
-    customFieldsCreated += 1;
+      .doc(customFieldKeyId(targetSubAccountId, field.entity, field.key));
+    try {
+      await ref.create({ ...dropSourceId(field), id: ref.id, ...tenancy() });
+      customFieldsCreated += 1;
+    } catch (err) {
+      if ((err as { code?: unknown })?.code !== ALREADY_EXISTS) throw err;
+      customFieldsSkipped += 1;
+    }
   }
-
-  await commitInChunks(db, writes);
 
   // 5) AI persona — transactional, because it is the one write that targets a
   // FIXED path rather than a fresh id. Reading existence up front and writing

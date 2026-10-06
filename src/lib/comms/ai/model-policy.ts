@@ -2,6 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { defaultAiModel } from "@/lib/comms/ai/openrouter";
+import { legacyAiConfigPath } from "@/lib/comms/ai/legacy-config";
 import {
   equivalentBaseId,
   findCatalogModel,
@@ -136,7 +137,7 @@ export async function listModelsInUse(agencyId: string): Promise<string[]> {
   // hasn't been read since the split may still carry.
   const refs = subs.docs.flatMap((d) => [
     ...MODEL_CHANNEL_DOCS.map((c) => db.doc(`subAccounts/${d.id}/aiAgent/${c}`)),
-    db.doc(`subAccounts/${d.id}/aiConfig/main`),
+    db.doc(legacyAiConfigPath(d.id)),
   ]);
   if (refs.length === 0) return [];
   const snaps = await db.getAll(...refs);

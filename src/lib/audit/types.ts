@@ -51,6 +51,8 @@ export const AUDIT_TARGET_TYPES = [
   "whatsappTemplate",
   // A cached Google review (`gbpReviews/{docId}`) — review.auto_replied.
   "review",
+  // An agency snapshot (`agencies/{id}/snapshots/{snapshotId}`) an agent applied (agent.write).
+  "snapshot",
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 

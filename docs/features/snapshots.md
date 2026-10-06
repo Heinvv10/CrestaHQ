@@ -42,10 +42,17 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   by `key` (unique per subAccount+entity), so a key the target already defines
   (from this snapshot before, or from anywhere else) is skipped rather than
   redefined — two definitions would fight over the same `contact.customFields`
-  slot. Their `folderId` is stripped on capture: custom-field folders do not
+  slot. A definition's doc id is the key's (target-wide per entity + key) and
+  it is written with `create()`, so two applies racing on one key still leave
+  one definition. Their `folderId` is stripped on capture: custom-field folders do not
   travel in a snapshot yet, so every applied field lands in General (workflow
   `folderId` is stripped the same way — applied workflows land Unfiled); and the **AI persona** lives at the fixed path `aiAgent/profile`, written
   only when the target has none, so apply can never replace a tuned live agent.
+  A target profile that exists with a blank prompt is merged into (the five
+  persona fields below), so its own business name, inbox and website KB stay.
+  A target with no profile but an unmigrated legacy `aiConfig/main` treats it
+  as the profile: a set prompt is kept; a blank one is migrated first (as the
+  lazy migration would), then merged into.
 - **What deliberately does NOT travel in the persona** ({@link SnapshotAiProfile}):
   `businessName` (source client's trading name — blanked so the prompt falls back
   to the target's own name), `escalationNotifyEmail` (an inbox belonging to the
@@ -65,6 +72,12 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   (`sanitizeForm`) — it points at the source client's site.
 - **Routes**: `GET/POST /api/agency/snapshots` (list summaries + counts / capture),
   `POST /api/agency/sub-accounts/[id]/apply-snapshot`. Owner-only.
+- **Agent tools** (agency keys, [agent-api.md](agent-api.md#agency-keys)):
+  `list_snapshots` and `apply_snapshot`. An apply is direct only for a snapshot
+  captured in this agency onto a sub-account the key created; an imported
+  snapshot, or any other sub-account, is a proposal the owner approves on
+  `/agency/approvals`, one click each (never in "Approve all"). Applying a
+  snapshot onto the sub-account it was captured from is refused.
 - **UI**: [snapshots-section.tsx](src/components/agency/snapshots-section.tsx) on
   `/agency/sub-accounts`, plus the picker on the new-sub-account page.
 - **No new env vars** — snapshots are server-only (default-deny). The share

@@ -11,6 +11,7 @@ import {
 import { str } from "./capabilities/helpers";
 import { AGENCY_CAPABILITIES } from "./capabilities/agency";
 import { AGENCY_GATE_CAPABILITIES } from "./capabilities/agency-gates";
+import { AGENCY_SNAPSHOT_CAPABILITIES } from "./capabilities/agency-snapshots";
 import { BILLING_PLAN_CAPABILITIES } from "./capabilities/billing-plans";
 import { BILLING_CHARGE_CAPABILITIES } from "./capabilities/billing-charges";
 import { ACCESS_CAPABILITIES } from "./capabilities/access";
@@ -67,7 +68,7 @@ import { REPUTATION_CAPABILITIES } from "./capabilities/reputation";
 import { BROADCAST_CAPABILITIES } from "./capabilities/broadcasts";
 import { VOICE_CAPABILITIES } from "./capabilities/voice";
 
-export { CapabilityOutcomeUnknown, CapabilityUserError, CapabilityWriteRefused } from "./capabilities/types";
+export { CapabilityNotFound, CapabilityOutcomeUnknown, CapabilityUserError, CapabilityWriteRefused } from "./capabilities/types";
 export type {
   AiSuiteActionContext,
   AiSuiteCapability,
@@ -102,6 +103,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   // ═══ Agency level ════════════════════════════════════════════════════════
   ...AGENCY_CAPABILITIES,
   ...AGENCY_GATE_CAPABILITIES,
+  ...AGENCY_SNAPSHOT_CAPABILITIES,
   ...BILLING_PLAN_CAPABILITIES,
   ...BILLING_CHARGE_CAPABILITIES,
 

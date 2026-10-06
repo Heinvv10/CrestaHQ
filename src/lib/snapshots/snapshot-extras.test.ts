@@ -26,7 +26,9 @@ function fakeDb(seed: {
     }),
     doc: () => {
       const id = `new_${++auto}`;
-      return { id, path: `${path}/${id}` };
+      // Custom-field definitions are written one by one with create().
+      const create = async (data: Record<string, unknown>) => void written.push({ path: `${path}/${id}`, data });
+      return { id, path: `${path}/${id}`, create };
     },
   });
 

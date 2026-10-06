@@ -248,6 +248,104 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   `ai-agent/*` agent tool), so the burn-down PR that exposes `ai-agent/channels`
   must class channel enable as `spend` there (as this plan already lists it).
 
+**REVISED 2026-10-06 (A4a-2), following the code** (owner decisions of the
+same day: an imported snapshot is always a proposal; self-apply is refused;
+no `apply_snapshot` row is ever in "Approve all"):
+- `apply_snapshot` is direct only for a snapshot captured in this agency onto
+  a target `isKeyCreated` for the calling key, re-checked in `execute` before
+  the write. "Imported" fails closed: `importedFrom` set **or** no
+  `sourceSubAccountId`. A direct apply's `createdByUid` is the key's minter
+  (read from the key doc), an approved one's the approving owner.
+- Unknown snapshot ids (another agency's included: the read is
+  `agencies/{ctx.agencyId}/snapshots/{id}`) throw the new `CapabilityNotFound`,
+  which dispatch answers 404 `not_found`, one body for both. Self-apply
+  (`sourceSubAccountId == subAccountId`) is 400. Both are refused in
+  `approvalFor`, so no row is ever queued for them, and again in `preview`
+  and `execute`.
+- The preview's counts come from `planSnapshotApply`
+  (`src/lib/snapshots/apply-plan.ts`), which reuses `applySnapshot`'s own
+  deterministic ids, existence check and persona predicate (exported, the
+  owner route's behaviour unchanged). It pins `snapshotId` and a sha256 of the
+  stored payload; `execute` on the approved path refuses a payload whose hash
+  is not the pinned one.
+- Audit: the direct path's `agent.write` names the snapshot as its target
+  (new audit target type `snapshot`); the approved path's `aiSuiteActions`
+  row carries `args.snapshotId` and `resultRef`. No `snapshot.applied`
+  action was needed.
+- "Approve all": `NEVER_BATCHED` (`agency-batch.ts`) excludes the
+  capability, not the `public_change` class, so booking-page publish rows on
+  key-created targets still batch.
+- `list_snapshots` reads `orderBy("createdAt", "desc").limit(51)` and shows
+  50 (a doc without `createdAt` is not listed, as in the owner UI's list).
+- The coverage names test now accepts an agency-callable tool, so the two
+  snapshot routes map to `list_snapshots` / `apply_snapshot`.
+- Fix round 1 (adversarial review):
+  - The preview's AI persona row names the target's AI channels switched on
+    (`aiAgent/{channel}.enabled`) when the persona will be written: they skip
+    replies only while the prompt is blank, so the write starts them
+    answering. A channel switched on after proposing is `preview_changed`.
+  - **`applySnapshot` changed for every caller (owner route, template push,
+    agent):** a target profile that exists with a blank prompt is merged into
+    with the five persona fields capture copies (`systemPrompt`, `hoursStart`,
+    `hoursEnd`, `timezone`, `escalationKeywords`); its other fields (business
+    name, escalation inbox, website + KB, anything an operator set) stay.
+    Before, the whole doc was replaced. And a custom-field definition's id is
+    now target-wide per `(entity, key)`, written with `create()`, so two
+    applies racing on one key (or a payload naming it twice) leave one
+    definition; ALREADY_EXISTS counts as skipped.
+  - `execute` reads the minter first; the direct re-check (target re-read,
+    contacts counted) is the last read before the write. A window remains
+    from that re-check to the commit: a contact (or channel connection) that
+    lands while `applySnapshot` does its own pre-reads still gets a direct
+    apply. Closing it would need the re-check and the writes in one
+    transaction; `set_sub_account_gate` has the same window.
+  - A malformed stored payload (a part of the wrong shape) applies nothing
+    instead of failing: every list is coerced to an array of objects.
+- Fix round 2 (adversarial review):
+  - **`applySnapshot`, every caller:** a target with no `aiAgent/profile` but
+    an unmigrated legacy `aiConfig/main` whose prompt is set keeps it: the
+    persona is not written (writing a profile stops `maybeMigrateLegacy`,
+    which migrates only while no profile exists, and the legacy persona was
+    lost). The preview says "Kept".
+  - A written persona brings the snapshot's hours and timezone too (what
+    travels is prompt, hours, timezone, keywords), including onto an existing
+    blank-prompt profile; the AI persona row now says so, with the values.
+  - `list_snapshots` rows start with the id, label every field, and quote
+    name and description with their quote characters and `|` neutralised, so
+    an imported snapshot's text cannot forge a field.
+- Fix round 3 (review LOWs):
+  - **`applySnapshot`, every caller:** with no profile, a legacy
+    `aiConfig/main` with a blank prompt is migrated first, with the same
+    `migratedLegacyDocs` the lazy migration uses (profile + sms channel), then
+    the persona merged in, so its inbox, business name and SMS config stay.
+    The plan treats the legacy doc as the profile and its `enabled` as the
+    sms channel, so the lazy migration running between propose and approve
+    changes nothing. An existing profile always wins over a legacy doc.
+  - The AI persona row says which hours land: the snapshot's, the target's
+    own (kept), or the defaults.
+  - Snapshot and target names in the preview's Snapshot row and the result
+    text go through the same neutralised quoting as `list_snapshots`.
+  - `legacyAiConfigPath` / `migratedLegacyDocs` live in
+    `src/lib/comms/ai/legacy-config.ts`, shared by agent.ts, model-policy.ts
+    and the snapshot apply.
+- Fix rounds 4–5 (review):
+  - The lazy migration (`maybeMigrateLegacy`, agent.ts) keeps its plain
+    pre-read (no transaction on the hot path once a profile exists), and when
+    it must migrate does so in ONE transaction that re-reads the profile, the
+    legacy doc and the sms channel: a profile there now means it writes
+    nothing; otherwise it writes the sms doc (only if none exists) and the
+    profile together. So a migration acting on a stale read cannot overwrite
+    a snapshot apply's merged persona or an operator's later SMS change (it
+    could switch a bot back on before), and a failure leaves neither doc.
+    Chosen over `create()`-or-keep of each doc because it is atomic (no sms
+    without a profile after a failure) and testable here: the in-memory
+    store re-runs a transaction whose read set changed before commit, and
+    tests park a transaction both before its reads and before its commit.
+  - The apply's own migration writes sms only when no sms doc exists, and the
+    plan reads an existing sms doc's `enabled` (else the legacy doc's).
+  - An hours field that neither the snapshot nor the existing profile has is
+    written as the default by the merge, and the row says "the defaults".
+
 ### D4 — approvals: two row kinds, one new page
 
 - **Sub-account-scoped rows** from an agency key are ordinary `agentProposals` rows
@@ -469,7 +567,7 @@ firestore.rules / firestore.indexes.json
 | **A3a** reach + listing | A2 | `resolveReach` (generic on any `subAccountId`), `AGENCY_AGENT_CALLABLE = {list_sub_accounts, sub_account_stats}`, variants chat-only + refused by name, `agentToolsFor`, logs / idempotency by level, `precheck(ctx, body)`, `wrong_sub_account`; transports still refuse agency keys. **Carry-forward (A2 review):** A3a adds a distinct `keyLevel` on the scoped context — today's `level` conflates where the key lives with whether the context has a sub-account | `agent-dispatch.agency.test.ts`: sa2 (other agency), sa3 (agent-api off), sa5 (api-access off) → identical 404 minus `request_id`; sa1 → `find_contacts` rows of sa1 only; a refused call writes no log under any sub-account; `agent-callable-set.test.ts` = named set exactly, no `*_in_sub_account` callable (iterates the registry); a sub-account key with another `subAccountId` → 400. **Mutations:** stub the `agencyId` compare → sa2 goes red; add `set_feature_gate` to the set → red |
 | **A3b** keyLevel threading | A3a; **deploy precondition: reach census + Hein's ruling** (REVISED r2, P2-8: keys reach existing clients from this deploy, not A6) | `agentKeyRef` in `createProposal`, both decide routes, enrolment replay, `agentActor`, revoke hook + sweep; `keyLevel` on rows; `agent.call` audit; transports accept agency keys. **Carry-forward (A2 review):** replace the agency-key early return in `agent-proposals-revoke-hook.ts` with a sweep across every reached sub-account; `agent-proposals-revoke-hook.test.ts` pins today's no-op and must be rewritten | agency-key `create_contact` matching an ACTIVE workflow → one `workflow_enrolment` row with `keyLevel: "agency"`, no hold failure; approve via the existing decide route → execute once, cap reserved from the agency key doc; revoke → pending rows in sa1 **and** sa4 → `rejected`; switch off → dispatch 403 and approve 403; MCP `tools/list` for an agency key requires `subAccountId` on every sub-account tool, a sub-account key sees the v1 set exactly |
 | **A4a-1** create + gates | A3b | `create_sub_account` agent path (both gates, owner membership, `createdByKeyId`, counter + lock docs); `set_sub_account_gate` + `DIRECT_GATES` partition test + `gate_change`; `set_feature_gate` chat-only (REVISED r2, P2-10: snapshots split out) | via agency key: both gates `true`, member doc = owner uid, no `apikey:` member, 11th creation that day → refused, same name within 10 min → same id (two concurrent creates → one doc); via chat: unchanged. Gates: `labs true` on a key-created target → written; the same target 73 h later or with one contact → proposal; `whatsapp true` anywhere → `gate_change` proposal; `agent-api true` → refused; `google false` on an existing target → proposal (mutations: drop the `createdByKeyId` check → red; add a gate to no set → partition test red) |
-| **A4a-2** snapshots | A4a-1, A5 | `list_snapshots`, `apply_snapshot` | key-created target → direct, workflows `draft`, persona written only when absent; other target → agency-level `public_change` row, approved on the agency route only |
+| **A4a-2** snapshots | A4a-1, A5 | `list_snapshots`, `apply_snapshot` | key-created target → direct, workflows `draft`, persona written only when absent; other target → agency-level `public_change` row, approved on the agency route only. **BUILT 2026-10-06** (`feat/agency-agent-a4a2`; see REVISED (A4a-2) under D3) |
 | **A5** agency approvals page | A3b | shared pre-claim sequence (`agent-proposals-decide.ts`) + agency list / decide routes; `/agency/approvals`; sidebar + badge; class-limited Approve all; `canSeeProposal` branch; index | decide route: other agency's owner → 404; a sub-account row → 404; expired row → 409; a `gate_change` row whose target gate flipped since → `preview_changed`; two concurrent approves → execute once, 200 + 409; switch off → 403; an agency row whose target's `agent-api` went off → 403 and no write under `subAccounts/null` (r3 P2-2). Sub-account route test suite re-run unchanged against the factored sequence. Rules test: agency row readable by its owner only (mutation: drop the branch → red). `e2e/specs/agency-approvals.spec.ts`: seed a `workflow_activate` row on a key-created target, a `gate_change` row and an email `send_message` (no SMTP) → Approve all approves the activation only and leaves the other two pending; one by one → `executed` / `failed` with the seam's refusal (mutation: add `gate_change` to the batch set → red) |
 | **A4b** invite + billing | A4a, A5 | `invite_member` → `outbound` with the existing-member preview; `assign_billing_plan`, `create_one_time_charge` → `spend` with full gate diff + live-subscription warning; `create_billing_plan`, `list_billing_plans` join the set; names lock table + tools doc updated on purpose | `assign_billing_plan` → proposal, Stripe spy 0, preview lists gates on/off incl. `api-access`; on a live-subscription fixture the preview says "prorated now"; edit the plan's price between propose and approve → 409 `preview_changed`, Stripe spy 0, and a plan edited after the claim → execute refuses `pinned_mismatch` (REVISED r2, P1-B); `invite_member` for an existing admin as collaborator → preview "role admin → collaborator"; approve → `createInviteServerSide` once with pinned values; `outbound-never-sends.test.ts` iterates agency-callable caps |
 | **A6** docs + live validation | A1–A5 | `agent-api.md` agency section, tools doc, `firestore-collections.md`, `feature-gates.md`; `scripts/teardown-smoke-sub-account.ts` (REVISED r2, P1-D: TypeScript so `tsc` covers it); status flip | teardown unit test: refuses a target failing any one of name prefix `Agency agent smoke `, `createdByKeyId` set, created < 72 h (aligned with key-created, r3 P2-6), `contacts` = 0, `!hasChannelConnection`, or run without `--yes` (prints the doc list and stops); then the live checklist below |

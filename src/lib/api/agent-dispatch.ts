@@ -16,6 +16,7 @@ export {
   isAgentWriteTool,
 } from "@/lib/api/agent-tools-listing";
 import {
+  CapabilityNotFound,
   CapabilityUserError,
   CapabilityWriteRefused,
   getCapability,
@@ -84,7 +85,8 @@ const noSuchSubAccount = (): AgentDispatchResult => refuse("not_found", 404, NO_
  * call runs the sub-account pipeline below unchanged, scoped to that target.
  * A capability with an `approval` class is never executed here: it becomes
  * an `agentProposals` row a person approves. Nothing thrown anywhere in the
- * pipeline escapes: a CapabilityUserError is a 400 with its message, anything
+ * pipeline escapes: a CapabilityNotFound is a 404 and any other
+ * CapabilityUserError a 400, each with its message; anything
  * else a generic 500.
  */
 export async function dispatchAgentTool(
@@ -101,6 +103,7 @@ export async function dispatchAgentTool(
 
 /** A throw from the pipeline, as the refusal described above. */
 function failure(name: string, err: unknown): AgentDispatchResult {
+  if (err instanceof CapabilityNotFound) return refuse("not_found", 404, err.message);
   if (err instanceof CapabilityUserError) {
     return refuse("invalid_request", 400, err.message);
   }
