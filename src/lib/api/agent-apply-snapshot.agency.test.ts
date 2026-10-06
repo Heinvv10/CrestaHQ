@@ -195,6 +195,35 @@ describe("execute re-checks at write time", () => {
     untouched("kc");
   });
 
+  it("the re-check is the last read before the write: a contact landing while the minter is read is refused", async () => {
+    // The minter's key doc is reached through collection("agencies") (apiKeyRef).
+    const orig = mem.db.collection.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "collection").mockImplementation((name: string) => {
+      if (name === "agencies") mem.seed("contacts/c_late", { subAccountId: "kc", agencyId: "ag1", name: "Late" });
+      return orig(name);
+    });
+    try {
+      await expect(cap().execute(keyCtx, { subAccountId: "kc", snapshotId: "snap_own" })).rejects.toThrow(/approval/);
+    } finally {
+      spy.mockRestore();
+    }
+    untouched("kc");
+  });
+
+  it("a malformed payload applies nothing instead of failing", async () => {
+    mem.seed("agencies/ag1/snapshots/snap_bad", {
+      agencyId: "ag1", name: "Corrupt", description: "", sourceSubAccountId: "src", createdAt: new Date(),
+      payload: { forms: "x", messageTemplates: [null, 3], products: null, workflows: { w: 1 }, customFields: 5, aiProfile: "prompt" },
+    });
+    const direct = await apply("kc", "snap_bad");
+    expect(direct).toMatchObject({ ok: true, resultText: expect.stringContaining("created 0 forms, 0 message templates, 0 products, 0 workflows, 0 custom fields; no persona") });
+    expect(appliedDocs(mem, "kc")).toEqual([]);
+    expect(mem.list("subAccounts/kc/customFields")).toEqual([]);
+    expect(mem.read("subAccounts/kc/aiAgent/profile")).toBeUndefined();
+    expect(await apply("old", "snap_bad")).toMatchObject({ ok: true, proposal: { status: "pending" } });
+    expect(mem.list("agencies/ag1/snapshots").length).toBeGreaterThan(0);
+  });
+
   it("an imported snapshot, no ctx.approved, and another agency's target are refused", async () => {
     await expect(cap().execute(keyCtx, { subAccountId: "kc", snapshotId: "snap_imp" })).rejects.toThrow(/approval/);
     const owner = { uid: "owner1", email: "", displayName: "", agencyId: "ag1" };

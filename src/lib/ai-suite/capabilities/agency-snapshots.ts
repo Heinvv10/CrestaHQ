@@ -36,17 +36,23 @@ type SnapshotData = FirebaseFirestore.DocumentData;
 export const isImported = (s: SnapshotData): boolean =>
   s.importedFrom != null || typeof s.sourceSubAccountId !== "string" || !s.sourceSubAccountId;
 
-/** The payload exactly as the owner UI route hands it to applySnapshot. */
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+/** A stored list, or none: a corrupt doc applies nothing rather than throwing. */
+const listOf = <T>(v: unknown): T[] => (Array.isArray(v) ? (v.filter(isRecord) as T[]) : []);
+
+/** The payload as the owner UI route hands it to applySnapshot, every part coerced to its shape. */
 function payloadOf(s: SnapshotData): SnapshotPayload {
-  const payload = (s.payload ?? {}) as Partial<SnapshotPayload>;
+  const payload = isRecord(s.payload) ? s.payload : {};
   return {
-    // Spread FIRST, as the owner route does: every optional part (custom
-    // fields, the persona, anything added later) reaches applySnapshot.
+    // Spread FIRST, as the owner route does: every optional part (anything
+    // added later) reaches applySnapshot.
     ...payload,
-    forms: payload.forms ?? [],
-    messageTemplates: payload.messageTemplates ?? [],
-    products: payload.products ?? [],
-    workflows: payload.workflows ?? [],
+    forms: listOf(payload.forms),
+    messageTemplates: listOf(payload.messageTemplates),
+    products: listOf(payload.products),
+    workflows: listOf(payload.workflows),
+    customFields: listOf(payload.customFields),
+    aiProfile: isRecord(payload.aiProfile) ? (payload.aiProfile as SnapshotPayload["aiProfile"]) : null,
   };
 }
 
@@ -233,18 +239,19 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
       const sub = isDocId(target) ? await db.doc(`subAccounts/${target}`).get() : null;
       if (!sub?.exists || sub.data()?.agencyId !== ctx.agencyId) throw new CapabilityUserError(NOT_IN_AGENCY);
       const snapshot = await snapshotFor(ctx.agencyId, args);
-      // Unapproved, only where approvalFor said direct — checked again now: the target may have changed.
-      if (!ctx.approved && !(await directAllowed(ctx, snapshot, target, sub.data()))) {
-        throw new CapabilityUserError("This apply needs the agency owner's approval; propose it again.");
-      }
       // Approved: exactly the payload the owner reviewed.
       if (ctx.approved && ctx.approved.pinned?.payloadSha256 !== payloadSha256(snapshot)) {
         throw new CapabilityUserError("The snapshot changed since it was reviewed; propose it again.");
       }
+      const needsApproval = () => new CapabilityUserError("This apply needs the agency owner's approval; propose it again.");
+      if (!ctx.approved && !ctx.apiKey) throw needsApproval();
       const snapshotId = args.snapshotId as string;
       const payload = payloadOf(snapshot);
       // The key's minter on the direct path, the approving owner on the approved one.
       const createdByUid = ctx.approved ? ctx.uid : await minterOf(ctx);
+      // Unapproved, only where approvalFor said direct — checked again now, the
+      // last read before the write (the target is re-read): it may have changed.
+      if (!ctx.approved && !(await directAllowed(ctx, snapshot, target))) throw needsApproval();
       const r = await applySnapshot(db, payload, target, { agencyId: ctx.agencyId, createdByUid, snapshotId });
       const created = { forms: r.formsCreated, messageTemplates: r.templatesCreated, products: r.productsCreated, workflows: r.workflowsCreated, customFields: r.customFieldsCreated };
       const skipped = { forms: r.formsSkipped, messageTemplates: r.templatesSkipped, products: r.productsSkipped, workflows: r.workflowsSkipped, customFields: r.customFieldsSkipped };
