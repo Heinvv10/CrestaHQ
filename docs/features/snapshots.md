@@ -42,10 +42,14 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   by `key` (unique per subAccount+entity), so a key the target already defines
   (from this snapshot before, or from anywhere else) is skipped rather than
   redefined — two definitions would fight over the same `contact.customFields`
-  slot. Their `folderId` is stripped on capture: custom-field folders do not
+  slot. A definition's doc id is the key's (target-wide per entity + key) and
+  it is written with `create()`, so two applies racing on one key still leave
+  one definition. Their `folderId` is stripped on capture: custom-field folders do not
   travel in a snapshot yet, so every applied field lands in General (workflow
   `folderId` is stripped the same way — applied workflows land Unfiled); and the **AI persona** lives at the fixed path `aiAgent/profile`, written
   only when the target has none, so apply can never replace a tuned live agent.
+  A target profile that exists with a blank prompt is merged into (the five
+  persona fields below), so its own business name, inbox and website KB stay.
 - **What deliberately does NOT travel in the persona** ({@link SnapshotAiProfile}):
   `businessName` (source client's trading name — blanked so the prompt falls back
   to the target's own name), `escalationNotifyEmail` (an inbox belonging to the
