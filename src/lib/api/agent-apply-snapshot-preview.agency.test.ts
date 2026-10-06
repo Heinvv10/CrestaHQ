@@ -71,6 +71,7 @@ describe("the preview", () => {
   it.each([
     ["the target's own hours stay when the snapshot carries none", { systemPrompt: "", hoursStart: 6, hoursEnd: 20, timezone: "Europe/London" }, "Written (none set); the AI's hours stay 6:00–20:00 Europe/London"],
     ["a fresh profile gets the defaults", undefined, "Written (none set); the AI's hours become the defaults: 24/7 Australia/Sydney"],
+    ["a profile without hours gets the defaults, never a ?", { systemPrompt: "" }, "Written (none set); the AI's hours become the defaults: 24/7 Australia/Sydney"],
   ])("the persona row says what hours land: %s", async (_label, existing, row) => {
     const payload = { ...mem.read("agencies/ag1/snapshots/snap_own")!.payload as object, aiProfile: { systemPrompt: "P.", escalationKeywords: [] } };
     mem.seed("agencies/ag1/snapshots/snap_nohours", { agencyId: "ag1", name: "No hours", description: "", sourceSubAccountId: "src", createdAt: new Date(), payload });

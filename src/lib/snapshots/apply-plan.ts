@@ -89,11 +89,15 @@ export async function planSnapshotApply(
 }
 
 /** Per field, what writePersonaIfAbsent leaves: the snapshot's value when it
- *  carries one, else the current profile's (merge), else the default (fresh). */
+ *  carries one, else the current profile's (kept by the merge), else the
+ *  default (a fresh profile, or a field the current profile lacks). */
 function landedHours(snapshot: Record<string, unknown>, current: Record<string, unknown> | undefined): NonNullable<SnapshotApplyPlan["aiHours"]> {
-  const fallback = current ? "target" : "default";
   const picks = HOURS_FIELDS.map((k) =>
-    snapshot[k] !== undefined ? ([snapshot[k], "snapshot"] as const) : ([current ? current[k] : DEFAULT_AI_AGENT_PROFILE[k], fallback] as const),
+    snapshot[k] !== undefined
+      ? ([snapshot[k], "snapshot"] as const)
+      : current?.[k] !== undefined
+        ? ([current[k], "target"] as const)
+        : ([DEFAULT_AI_AGENT_PROFILE[k], "default"] as const),
   );
   const sources = new Set(picks.map(([, from]) => from));
   return {

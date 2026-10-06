@@ -101,7 +101,13 @@ export async function writePersonaIfAbsent(
       return true;
     }
     if (snap.exists) {
-      tx.set(ref, { ...persona, updatedAt: tenancyStamps.updatedAt }, { merge: true });
+      // An hours field neither the snapshot nor the profile has gets the
+      // default, as a fresh profile would (absent hours mean no window).
+      const current = snap.data() ?? {};
+      const missing = Object.fromEntries(
+        HOURS_FIELDS.filter((k) => persona[k] === undefined && current[k] === undefined).map((k) => [k, DEFAULT_AI_AGENT_PROFILE[k]]),
+      );
+      tx.set(ref, { ...missing, ...persona, updatedAt: tenancyStamps.updatedAt }, { merge: true });
       return true;
     }
     tx.set(ref, {

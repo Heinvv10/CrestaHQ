@@ -104,12 +104,27 @@ describe("the AI's hours a written persona lands with", () => {
     ["the snapshot's, when it carries them", PERSONA, undefined, { hoursStart: 7, hoursEnd: 19, timezone: "Africa/Johannesburg", from: "snapshot" }],
     ["the target's own, kept, when it carries none", NO_HOURS, { systemPrompt: "", hoursStart: 6, hoursEnd: 20, timezone: "Europe/London" }, { hoursStart: 6, hoursEnd: 20, timezone: "Europe/London", from: "target" }],
     ["the defaults on a fresh profile when it carries none", NO_HOURS, undefined, { hoursStart: 0, hoursEnd: 0, timezone: "Australia/Sydney", from: "default" }],
+    ["the defaults where neither the snapshot nor the profile has them", NO_HOURS, { systemPrompt: "" }, { hoursStart: 0, hoursEnd: 0, timezone: "Australia/Sydney", from: "default" }],
+    ["per field: the snapshot's, else the profile's, else the default", { systemPrompt: "P.", hoursStart: 7 } as unknown as SnapshotPayload["aiProfile"], { systemPrompt: "", timezone: "Europe/London" }, { hoursStart: 7, hoursEnd: 0, timezone: "Europe/London", from: "mixed" }],
   ])("%s", async (_label, persona, existing, hours) => {
     if (existing) mem.seed("subAccounts/sa_dst/aiAgent/profile", existing);
     expect((await planSnapshotApply(db, payload([], persona), "sa_dst", "snap1")).aiHours).toEqual(hours);
     await applySnapshot(db, payload([], persona), "sa_dst", scope("snap1"));
     const { from: _from, ...landed } = hours;
     expect(mem.read("subAccounts/sa_dst/aiAgent/profile")).toMatchObject(landed);
+  });
+});
+
+describe("a legacy doc and an sms channel doc", () => {
+  it("the migration's sms replaces the channel doc: sms is named once, from the legacy doc", async () => {
+    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "", enabled: true });
+    mem.seed("subAccounts/sa_dst/aiAgent/sms", { enabled: false });
+    expect((await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1")).replyingChannels).toEqual(["sms"]);
+    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "", enabled: false });
+    mem.seed("subAccounts/sa_dst/aiAgent/sms", { enabled: true });
+    expect((await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1")).replyingChannels).toEqual([]);
+    await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"));
+    expect(mem.read("subAccounts/sa_dst/aiAgent/sms")?.enabled).toBe(false);
   });
 });
 
