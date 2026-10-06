@@ -32,8 +32,12 @@ export function AgencyApprovalGroups({
   async function runAll() {
     setRunning(true);
     try {
-      const { approved, refused } = await approveAll(eligible);
-      if (refused > 0) toast.warning(`Approved ${approved}. ${refused} changed or were refused; review them one by one.`);
+      const { approved, unsettled, refused } = await approveAll(eligible);
+      const notes = [
+        unsettled > 0 && `${unsettled} still running, so the outcome isn't known yet; check back soon.`,
+        refused > 0 && `${refused} changed or were refused; review them one by one.`,
+      ].filter(Boolean);
+      if (notes.length > 0) toast.warning([`Approved ${approved}.`, ...notes].join(" "));
       else toast.success(`Approved ${approved}.`);
     } catch {
       toast.error("Couldn't reach the server. Try again.");

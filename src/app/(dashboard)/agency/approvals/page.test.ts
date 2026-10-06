@@ -32,10 +32,11 @@ const GATE = row("gate", "gate_change", "kc", true);
 const SEND = row("send", "outbound", "old", false);
 let byUrl: Record<string, unknown[] | "error"> = {};
 const posts: Array<[string, unknown]> = [];
+let decideStatus = 200;
 const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
   if (init?.method === "POST") {
     posts.push([url, JSON.parse(String(init.body))]);
-    return new Response(JSON.stringify({ status: "executed" }));
+    return new Response(JSON.stringify({ status: decideStatus === 202 ? "unsettled" : "executed" }), { status: decideStatus });
   }
   const rows = byUrl[url];
   return rows === "error"
@@ -59,6 +60,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockClear();
   posts.length = 0;
+  decideStatus = 200;
   auth.value = { agencyRole: "owner", loading: false };
   agency.value = { agentApiEnabled: true };
   byUrl = {
@@ -106,6 +108,32 @@ describe("the queue", () => {
       await new Promise((r) => setTimeout(r, 0));
     });
     expect(posts).toEqual([["/api/agency/agent-proposals/act", { decision: "approve", rev: "r_act" }]]);
+  });
+
+  it("Approve all reports a 202 as not known yet, never as approved", async () => {
+    const { toast } = await import("sonner");
+    decideStatus = 202;
+    await render();
+    vi.mocked(toast.warning).mockClear();
+    vi.mocked(toast.success).mockClear();
+    await act(async () => {
+      (container.querySelector('[data-testid="approve-all"]') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.warning).toHaveBeenCalledWith("Approved 0. 1 still running, so the outcome isn't known yet; check back soon.");
+  });
+
+  it("Approve all skips a row that stopped being eligible after the page loaded", async () => {
+    await render();
+    expect(container.querySelector('[data-testid="approve-all"]')!.textContent).toContain("Approve all (1)");
+    // A person edited the target meanwhile: it is no longer key-created.
+    byUrl["/api/agency/agent-proposals?status=open"] = [{ ...ACTIVATE, keyCreated: false }, GATE, SEND];
+    await act(async () => {
+      (container.querySelector('[data-testid="approve-all"]') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(posts).toEqual([]);
   });
 
   it("a row's own Approve posts to the agency route", async () => {

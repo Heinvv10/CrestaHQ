@@ -32,28 +32,65 @@ describe("batchEligible", () => {
   });
 });
 
+/** The server side of approveAll: `?status=open` answers `open`; each POST answers `decide(id)`. */
+function server(open: AgencyApprovalRow[], decide: (id: string) => number = () => 200) {
+  const posts: Array<[string, unknown]> = [];
+  let inFlight = 0;
+  const http = vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method !== "POST") {
+      expect(url).toBe("/api/agency/agent-proposals?status=open");
+      return new Response(JSON.stringify({ proposals: open }));
+    }
+    inFlight++;
+    expect(inFlight).toBe(1);
+    posts.push([url, JSON.parse(String(init.body))]);
+    await new Promise((r) => setTimeout(r, 1));
+    inFlight--;
+    const status = decide(url.split("/").pop()!);
+    const body = status === 200 ? { status: "executed" } : status === 202 ? { status: "unsettled" } : { error: "stale_proposal" };
+    return new Response(JSON.stringify(body), { status });
+  });
+  return { http, posts };
+}
+
 describe("approveAll", () => {
-  it("posts each eligible row in turn, with its rev, and counts what the server refused", async () => {
-    const calls: Array<[string, unknown]> = [];
-    let inFlight = 0;
-    const post = vi.fn(async (url: string, body: unknown) => {
-      inFlight++;
-      expect(inFlight).toBe(1);
-      calls.push([url, body]);
-      await new Promise((r) => setTimeout(r, 1));
-      inFlight--;
-      return new Response("{}", { status: url.endsWith("/a2") ? 409 : 200 });
-    });
+  it("posts each eligible row in turn, with the rev and gen the page shows, and counts what the server refused", async () => {
     const rows = [
-      row({ id: "a1", rev: "ra1" }),
+      row({ id: "a1", rev: "ra1", gen: "ga1" }),
       row({ id: "g1", approval: "gate_change" }),
       row({ id: "a2", rev: "ra2", approval: "public_change" }),
       row({ id: "n1", keyCreated: false }),
     ];
-    expect(await approveAll(rows, post)).toEqual({ approved: 1, refused: 1 });
-    expect(calls).toEqual([
-      ["/api/agency/agent-proposals/a1", { decision: "approve", rev: "ra1" }],
+    const { http, posts } = server(rows, (id) => (id === "a2" ? 409 : 200));
+    expect(await approveAll(rows, http)).toEqual({ approved: 1, unsettled: 0, refused: 1 });
+    expect(posts).toEqual([
+      ["/api/agency/agent-proposals/a1", { decision: "approve", rev: "ra1", gen: "ga1" }],
       ["/api/agency/agent-proposals/a2", { decision: "approve", rev: "ra2" }],
     ]);
+  });
+
+  it("a 202 (outcome not known yet) is counted as unsettled, never as approved", async () => {
+    const rows = [row({ id: "a1" }), row({ id: "a2" })];
+    const { http } = server(rows, (id) => (id === "a1" ? 202 : 200));
+    expect(await approveAll(rows, http)).toEqual({ approved: 1, unsettled: 1, refused: 0 });
+  });
+
+  it("re-reads the queue first: a row no longer eligible is skipped, a row the page never showed is not approved", async () => {
+    const seen = [row({ id: "a1" }), row({ id: "a2" }), row({ id: "a3" })];
+    const now = [
+      row({ id: "a1" }),
+      row({ id: "a2", keyCreated: false }), // its target has a person's edit by now
+      // a3 was decided meanwhile: gone from the open set
+      row({ id: "new" }), // eligible, but the person never saw it
+    ];
+    const { http, posts } = server(now);
+    expect(await approveAll(seen, http)).toEqual({ approved: 1, unsettled: 0, refused: 2 });
+    expect(posts.map(([url]) => url)).toEqual(["/api/agency/agent-proposals/a1"]);
+  });
+
+  it("the queue cannot be re-read → throws before approving anything", async () => {
+    const http = vi.fn(async () => new Response("{}", { status: 500 }));
+    await expect(approveAll([row()], http)).rejects.toThrow();
+    expect(http).toHaveBeenCalledTimes(1);
   });
 });

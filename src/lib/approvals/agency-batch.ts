@@ -27,19 +27,35 @@ export function batchEligible(row: AgencyApprovalRow): boolean {
 }
 
 /**
- * Approve `rows` one after another through the per-row decide route, each
- * with the `rev` the page shows. A row the server refuses (changed preview,
- * decided meanwhile, switch off …) is left for its own click.
+ * Approve the eligible `rows` the page shows, one after another through the
+ * per-row decide route, each with the `rev` and `gen` the page shows. The
+ * open queue is re-read first and eligibility recomputed on it: a row that
+ * stopped being eligible (or left the queue) since the page loaded is
+ * skipped, and a row the page never showed is never approved. Only a 200
+ * counts as approved; a 202 is `unsettled` (outcome not known yet); a row the
+ * server refuses (changed preview, decided meanwhile, switch off …) is left
+ * for its own click.
  */
 export async function approveAll(
   rows: AgencyApprovalRow[],
-  post: (url: string, body: unknown) => Promise<Response> = (url, body) =>
-    fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-): Promise<{ approved: number; refused: number }> {
+  http: (url: string, init?: RequestInit) => Promise<Response> = (url, init) => fetch(url, init)
+): Promise<{ approved: number; unsettled: number; refused: number }> {
+  const seen = rows.filter(batchEligible);
+  const res = await http("/api/agency/agent-proposals?status=open");
+  if (!res.ok) throw new Error("Couldn't reload approvals.");
+  const { proposals = [] } = (await res.json()) as { proposals?: AgencyApprovalRow[] };
+  const stillEligible = new Set(proposals.filter(batchEligible).map((r) => r.id));
   let approved = 0;
-  for (const row of rows.filter(batchEligible)) {
-    const res = await post(`/api/agency/agent-proposals/${row.id}`, { decision: "approve", rev: row.rev });
-    if (res.ok) approved++;
+  let unsettled = 0;
+  for (const row of seen.filter((r) => stillEligible.has(r.id))) {
+    const body = { decision: "approve", rev: row.rev, ...(row.gen ? { gen: row.gen } : {}) };
+    const decided = await http(`/api/agency/agent-proposals/${row.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (decided.status === 200) approved++;
+    else if (decided.status === 202) unsettled++;
   }
-  return { approved, refused: rows.filter(batchEligible).length - approved };
+  return { approved, unsettled, refused: seen.length - approved - unsettled };
 }
