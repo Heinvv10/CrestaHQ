@@ -111,10 +111,17 @@ test("agency invite + billing: outbound and spend rows, never in Approve all, re
     await page.screenshot({ path: testInfo.outputPath("agency-invite-billing-before.png"), fullPage: true });
 
     // What Approve all would take, judged on this run's rows as the button
-    // judges them (it re-reads this route): the activation is the control.
-    const listed = await page.request.get("/api/agency/agent-proposals?status=open");
-    expect(listed.ok()).toBe(true);
-    const { proposals } = (await listed.json()) as { proposals: AgencyApprovalRow[] };
+    // judges them (approveAll re-reads this route): the activation is the
+    // control. Fetched INSIDE the page, exactly as the page's own load() and
+    // approveAll() call it (a plain same-origin fetch on the browser's
+    // session): page.request is a separate HTTP client, and on 5acc6d49 it
+    // got a 2xx HTML page back, not this route's JSON.
+    const listed = await page.evaluate(async () => {
+      const res = await fetch("/api/agency/agent-proposals?status=open");
+      return { status: res.status, type: res.headers.get("content-type") ?? "", body: await res.text() };
+    });
+    expect([listed.status, listed.type], listed.body.slice(0, 200)).toEqual([200, expect.stringContaining("application/json")]);
+    const { proposals } = JSON.parse(listed.body) as { proposals: AgencyApprovalRow[] };
     const ours = (id: string) => proposals.find((p) => p.id === id);
     expect([ids.activate, ids.invite, ids.assign].map((id) => ours(id) && batchEligible(ours(id)!))).toEqual([true, false, false]);
 
