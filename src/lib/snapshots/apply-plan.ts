@@ -13,6 +13,10 @@ export interface SnapshotApplyPlan {
   enabledForms: number;
   /** "written": none set on the target; "kept": the target has one; "none": the snapshot carries none. */
   persona: "written" | "kept" | "none";
+  /** With `persona: "written"`: the target's AI channels switched on
+   *  (`aiAgent/{channel}.enabled`). They skip replies while the prompt is
+   *  blank (respond.ts `no_prompt`), so the write starts them answering. */
+  replyingChannels: string[];
 }
 
 /**
@@ -57,9 +61,14 @@ export async function planSnapshotApply(
   }
 
   let persona: SnapshotApplyPlan["persona"] = "none";
+  let replyingChannels: string[] = [];
   if (payload.aiProfile) {
-    const profile = await db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`).get();
-    persona = personaIsSet(profile.data()) ? "kept" : "written";
+    const agent = await db.collection(`subAccounts/${targetSubAccountId}/aiAgent`).get();
+    const profile = agent.docs.find((d) => d.id === "profile");
+    persona = personaIsSet(profile?.data()) ? "kept" : "written";
+    if (persona === "written") {
+      replyingChannels = agent.docs.filter((d) => d.id !== "profile" && d.data().enabled === true).map((d) => d.id).sort();
+    }
   }
-  return { create, skip, enabledForms, persona };
+  return { create, skip, enabledForms, persona, replyingChannels };
 }

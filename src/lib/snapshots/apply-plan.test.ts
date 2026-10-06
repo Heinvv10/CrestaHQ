@@ -101,6 +101,17 @@ describe("planSnapshotApply agrees with applySnapshot", () => {
     expect((await planSnapshotApply(db, payload({ aiProfile: null }), "sa_dst", "snap1")).persona).toBe("none");
   });
 
+  it("a persona to be written names the AI channels switched on here: they start replying with it", async () => {
+    mem.seed("subAccounts/sa_dst/aiAgent/whatsapp", { enabled: true });
+    mem.seed("subAccounts/sa_dst/aiAgent/sms", { enabled: false });
+    mem.seed("subAccounts/sa_dst/aiAgent/web-chat", { enabled: true });
+    mem.seed("subAccounts/sa_dst/aiAgent/profile", { systemPrompt: "", enabled: true });
+    expect((await planSnapshotApply(db, payload(), "sa_dst", "snap1")).replyingChannels).toEqual(["web-chat", "whatsapp"]);
+    mem.seed("subAccounts/sa_dst/aiAgent/profile", { systemPrompt: "Mine." });
+    expect((await planSnapshotApply(db, payload(), "sa_dst", "snap1")).replyingChannels).toEqual([]);
+    expect((await planSnapshotApply(db, payload({ aiProfile: null }), "sa_dst", "snap1")).replyingChannels).toEqual([]);
+  });
+
   it("another snapshot id is another set of deterministic docs: nothing skipped", async () => {
     await applySnapshot(db, payload(), "sa_dst", scope);
     const plan = await planSnapshotApply(db, payload(), "sa_dst", "snap2");

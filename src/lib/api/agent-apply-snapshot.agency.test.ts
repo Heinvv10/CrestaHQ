@@ -129,6 +129,15 @@ describe("anything else → an agency-level public_change row, nothing written",
     expect(preview.Snapshot).toBe("“Bought kit”, imported: its persona, forms and workflows were written outside this agency");
     expect(preview["AI persona"]).toBe("Kept (target already has one)");
   });
+
+  it("a persona to be written names the AI channels switched on here, which start replying with it", async () => {
+    mem.seed("subAccounts/old/aiAgent/whatsapp", { enabled: true });
+    mem.seed("subAccounts/old/aiAgent/web-chat", { enabled: true });
+    mem.seed("subAccounts/old/aiAgent/sms", { enabled: false });
+    await apply("old", "snap_own");
+    const preview = Object.fromEntries((proposals()[0]!.preview as Array<{ label: string; value: string }>).map((p) => [p.label, p.value]));
+    expect(preview["AI persona"]).toBe("Written (none set): web-chat, whatsapp start replying to customers with it at once");
+  });
 });
 
 describe("refusals: nothing written, nothing queued", () => {

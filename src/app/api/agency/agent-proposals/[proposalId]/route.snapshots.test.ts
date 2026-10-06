@@ -87,6 +87,19 @@ describe("approve an apply_snapshot row", () => {
     expect(row(id).status).toBe("pending");
   });
 
+  it("an AI channel switched on since it was proposed → 409 preview_changed naming it, nothing written", async () => {
+    const id = await proposeApply("sa1");
+    mem.seed("subAccounts/sa1/aiAgent/whatsapp", { enabled: true });
+    const res = await decideAgency(id, "approve");
+    const body = await res.json();
+    expect([res.status, body.error]).toEqual([409, "preview_changed"]);
+    expect(body.preview).toEqual(
+      expect.arrayContaining([{ label: "AI persona", value: "Written (none set): whatsapp starts replying to customers with it at once" }])
+    );
+    expect(appliedDocs(mem, "sa1")).toEqual([]);
+    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toBeUndefined();
+  });
+
   it("the snapshot's payload edited since → 409 preview_changed (pinned hash), nothing written", async () => {
     const id = await proposeApply("sa1");
     const doc = mem.read("agencies/ag1/snapshots/snap_own")!;

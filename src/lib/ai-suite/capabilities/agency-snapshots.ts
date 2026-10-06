@@ -103,6 +103,13 @@ async function minterOf(ctx: AiSuiteActionContext): Promise<string> {
 
 const PERSONA_ROW = { written: "Written (none set)", kept: "Kept (target already has one)", none: "None in this snapshot" } as const;
 
+/** The persona row, naming the switched-on AI channels a written persona sets replying. */
+function personaRow(plan: Awaited<ReturnType<typeof planSnapshotApply>>): string {
+  const live = plan.replyingChannels;
+  if (live.length === 0) return PERSONA_ROW[plan.persona];
+  return `${PERSONA_ROW.written}: ${live.join(", ")} ${live.length === 1 ? "starts" : "start"} replying to customers with it at once`;
+}
+
 export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
   {
     name: "list_snapshots",
@@ -214,7 +221,7 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
               ? `Copied with their status: ${live} ${live === 1 ? "accepts" : "accept"} public submissions on this sub-account at once.`
               : "Copied with their status: none accepts public submissions until it is enabled.",
           },
-          { label: "AI persona", value: PERSONA_ROW[plan.persona] },
+          { label: "AI persona", value: personaRow(plan) },
         ],
         pinned: { snapshotId: args.snapshotId as string, payloadSha256: payloadSha256(snapshot) },
       };
