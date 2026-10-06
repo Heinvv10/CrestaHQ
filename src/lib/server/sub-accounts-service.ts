@@ -62,6 +62,7 @@ const USAGE_COLLECTIONS: ReadonlyArray<{ collection: string; label: string }> =
     { collection: "quotes", label: "quotes / invoices" },
     { collection: "products", label: "products" },
     { collection: "automations", label: "automations" },
+    { collection: "workflows", label: "workflows" },
     { collection: "broadcasts", label: "broadcasts" },
     { collection: "socialPosts", label: "social posts" },
     { collection: "voiceCampaigns", label: "voice campaigns" },
