@@ -27,6 +27,9 @@ const OTHER_ARGS: Record<string, Record<string, unknown>> = {
   create_sub_account: { name: "Acme" },
   set_sub_account_gate: { gate: "labs", enabled: true },
   apply_snapshot: { snapshotId: "snap1" },
+  create_billing_plan: { name: "Pro", priceMonthly: 99 },
+  assign_billing_plan: { planId: "plan_1" },
+  create_one_time_charge: { description: "Web design", amount: 500 },
 };
 const declares = (cap: { parameters: unknown }) =>
   "subAccountId" in ((cap.parameters as { properties?: object }).properties ?? {});

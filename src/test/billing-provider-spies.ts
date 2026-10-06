@@ -32,7 +32,7 @@ export type ProviderSpies = Record<(typeof METHODS)[number], ReturnType<typeof v
   calls: () => number;
 };
 
-export function useBillingProvider(kind: ProviderKind): ProviderSpies {
+export function spyBillingProvider(kind: ProviderKind): ProviderSpies {
   for (const k of ENV) delete process.env[k];
   if (kind === "stripe") process.env.STRIPE_SECRET_KEY = "sk_test_spy";
   if (kind === "paystack") {

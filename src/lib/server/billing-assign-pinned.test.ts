@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import { PLAN_GATE_KEYS } from "@/types/billing";
-import { restoreBillingProviderAfterEach, useBillingProvider } from "@/test/billing-provider-spies";
+import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/billing-provider-spies";
 
 /**
  * `assignPlanToSubAccount`'s expected-price pin (AGENCY_AGENT_API_PLAN.md D4,
@@ -40,14 +40,14 @@ beforeEach(() => {
 
 describe.each(["stripe", "paystack"] as const)("on %s", (kind) => {
   it("the reviewed price and gates → switches once", async () => {
-    const spies = useBillingProvider(kind);
+    const spies = spyBillingProvider(kind);
     await assign({ expectedPriceCents: 9900, expectedGates: pinnedGates() });
     expect(spies.switchSubscriptionPlan).toHaveBeenCalledTimes(1);
     expect(mem.read("subAccounts/sa1")?.billing).toMatchObject({ planId: "plan_1", priceCents: 9900, specialPriceCents: null });
   });
 
   it("yearly: the reviewed annual price → switches once", async () => {
-    const spies = useBillingProvider(kind);
+    const spies = spyBillingProvider(kind);
     await assign({ interval: "year", expectedPriceCents: 99000, expectedGates: pinnedGates() });
     expect(spies.switchSubscriptionPlan).toHaveBeenCalledTimes(1);
     expect(mem.read("subAccounts/sa1")?.billing).toMatchObject({ priceCents: 99000, billingInterval: "year" });
@@ -60,7 +60,7 @@ describe.each(["stripe", "paystack"] as const)("on %s", (kind) => {
     ["a gate added", { gates: { ...GATES, apiAccessEnabledByAgency: true } }, {}],
     ["the annual price, assigned yearly", { priceAnnualCents: 89000 }, { interval: "year", expectedPriceCents: 99000 }],
   ])("%s edited since it was reviewed → pinned_mismatch, no provider call, nothing written", async (_label, edit, extra) => {
-    const spies = useBillingProvider(kind);
+    const spies = spyBillingProvider(kind);
     mem.seed("agencies/ag1/plans/plan_1", { ...PLAN, ...edit });
     await expect(assign({ expectedPriceCents: 9900, expectedGates: pinnedGates(), ...extra })).rejects.toMatchObject({
       status: 409,
@@ -71,7 +71,7 @@ describe.each(["stripe", "paystack"] as const)("on %s", (kind) => {
   });
 
   it("the owner UI passes no pin: an edited plan still assigns (unchanged)", async () => {
-    const spies = useBillingProvider(kind);
+    const spies = spyBillingProvider(kind);
     mem.seed("agencies/ag1/plans/plan_1", { ...PLAN, priceMonthlyCents: 12900 });
     await assign();
     expect(spies.switchSubscriptionPlan).toHaveBeenCalledTimes(1);
@@ -79,7 +79,7 @@ describe.each(["stripe", "paystack"] as const)("on %s", (kind) => {
 });
 
 it("the pending (checkout) path refuses an edited plan too, before writing the billing doc", async () => {
-  useBillingProvider("stripe");
+  spyBillingProvider("stripe");
   mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Client One" });
   mem.seed("agencies/ag1/plans/plan_1", { ...PLAN, priceMonthlyCents: 12900 });
   await expect(assign({ expectedPriceCents: 9900, expectedGates: pinnedGates() })).rejects.toMatchObject({ status: 409 });

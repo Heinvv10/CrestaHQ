@@ -4,6 +4,7 @@ import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
 import { seedPr13 } from "@/test/pr13-fixtures";
 import { seedSnapshots } from "@/test/snapshot-fixtures";
+import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/billing-provider-spies";
 import type { AiSuiteCapability } from "./capabilities";
 
 /**
@@ -82,6 +83,8 @@ beforeEach(() => {
   mem.seed("subAccounts/sa1", { agencyId: "ag1", aiSuiteEnabledByAgency: true, name: "W" });
   runAiSuiteTurn.mockReset();
 });
+
+restoreBillingProviderAfterEach();
 
 afterEach(() => {
   for (const cap of injected.splice(0)) {
@@ -219,6 +222,8 @@ describe("registry invariants", () => {
     set_sub_account_gate: { subAccountId: "sa1", gate: "whatsapp", enabled: true },
     apply_snapshot: { subAccountId: "sa1", snapshotId: "snap_own" },
     invite_member: { email: "new@example.com", role: "admin" },
+    assign_billing_plan: { subAccountId: "sa1", subAccountName: "", planId: "plan_sample", planName: "", interval: "month", specialPriceCents: null },
+    create_one_time_charge: { subAccountId: "sa1", subAccountName: "", description: "Setup", amount: 50, amountCents: 5000, currency: "zar" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
@@ -270,6 +275,11 @@ describe("registry invariants", () => {
     mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", status: "published" });
     seedPr13(mem);
     seedSnapshots(mem);
+    mem.seed("agencies/ag1/plans/plan_sample", {
+      name: "Sample plan", status: "active", currency: "zar", priceMonthlyCents: 9900, priceAnnualCents: null, gates: { broadcastsEnabledByAgency: true },
+    });
+    // A charge can only be previewed with a payment provider configured (spied: nothing reaches it).
+    spyBillingProvider("stripe");
     mem.seed("contacts/c_voice", { subAccountId: "sa1", agencyId: "ag1", name: "Vee", phone: "+27821234567", email: "vee@x.io", territoryId: "global" });
   };
 

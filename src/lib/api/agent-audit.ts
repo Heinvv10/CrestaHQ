@@ -2,7 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
-import { recordSubAccountAuditEvent } from "@/lib/audit/record";
+import { recordAuditEvent, recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { AUDIT_TARGET_TYPES, type AuditTargetType } from "@/lib/audit/types";
 
 /**
@@ -25,13 +25,36 @@ export async function recordAgentWrite(
     action: "agent.write",
     actor: { type: "api_key", id: auth.keyId },
     target,
-    changes: [
-      { field: "capability", before: null, after: capability },
-      { field: "keyPrefix", before: null, after: auth.keyPrefix },
-      // An agency key is not in this sub-account's key list: say where it lives.
-      { field: "keyLevel", before: null, after: auth.keyLevel },
-      ...Object.keys(args).map((field) => ({ field: `args.${field}`, before: null, after: "set" })),
-    ],
+    changes: writeChanges(auth, capability, args),
+  });
+}
+
+const writeChanges = (auth: Pick<ApiAuthContext, "keyPrefix" | "keyLevel">, capability: string, args: Record<string, unknown>) => [
+  { field: "capability", before: null, after: capability },
+  { field: "keyPrefix", before: null, after: auth.keyPrefix },
+  // An agency key is not in this sub-account's key list: say where it lives.
+  { field: "keyLevel", before: null, after: auth.keyLevel },
+  ...Object.keys(args).map((field) => ({ field: `args.${field}`, before: null, after: "set" })),
+];
+
+/**
+ * The same `agent.write` row for an agency key's write that touched no
+ * sub-account (a billing plan): an agency-level event (`subAccountId: null`,
+ * the owner reads it), its target the record the capability returned.
+ */
+export async function recordAgencyAgentWrite(
+  auth: AgencyApiAuthContext,
+  capability: string,
+  args: Record<string, unknown>,
+  ref: { kind: string; id: string }
+): Promise<void> {
+  await recordAuditEvent(getAdminDb(), {
+    action: "agent.write",
+    actor: { type: "api_key", id: auth.keyId },
+    target: { type: ref.kind as AuditTargetType, id: ref.id },
+    agencyId: auth.agencyId,
+    subAccountId: null,
+    changes: writeChanges(auth, capability, args),
   });
 }
 

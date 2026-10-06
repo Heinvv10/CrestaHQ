@@ -7,16 +7,27 @@ import {
   listChargesForSubAccount,
 } from "@/lib/server/billing-service";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { getBillingProvider } from "@/lib/billing/provider";
 import { type BillingInterval } from "@/types/billing";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney } from "./helpers";
 import { planAssignRefusal } from "./billing-plans";
+import { assignPreview, chargePreview, currencyRefusal, NEEDS_APPROVAL, withoutLabels } from "./billing-proposals";
+import { paddedSubAccountId } from "./agency-support";
+
+/** Both are always an agency-level `spend` row on the agent surface (A4b). */
+const tenantWide = async () => ({ contactId: null, territoryId: null, scoped: false });
 
 export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
   {
     name: "assign_billing_plan",
     level: "agency",
     requiredRole: "agencyOwner",
+    surfaces: ["chat", "agent"],
+    approval: "spend",
+    agentArgs: withoutLabels,
+    approvalTarget: tenantWide,
+    preview: assignPreview,
     menuLabel: "Assign a billing plan to a sub-account (start charging)",
     description:
       "Assign a Client-Billing plan to one sub-account and start the checkout/subscription. Resolve the sub-account's id with list_sub_accounts and the plan's id with list_billing_plans first — never guess ids. A fresh assignment returns a checkout link the client pays; switching a live subscription re-prices it immediately.",
@@ -58,6 +69,8 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       additionalProperties: false,
     },
     validate: (raw) => {
+      const padded = paddedSubAccountId(raw);
+      if (padded) return padded;
       const r = (raw ?? {}) as Record<string, unknown>;
       const subAccountId = str(raw, "subAccountId");
       if (!subAccountId) {
@@ -116,11 +129,14 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
         args.specialPriceCents != null
           ? ` at a special price of ${((args.specialPriceCents as number) / 100).toLocaleString("en-US")}`
           : "";
-      return `Assign plan “${args.planName}” (${cadence}) to “${
+      return `Assign plan “${args.planName || args.planId}” (${cadence}) to “${
         args.subAccountName || args.subAccountId
       }”${special}.`;
     },
     execute: async (ctx, args) => {
+      if (ctx.apiKey && !ctx.approved) throw new CapabilityUserError(NEEDS_APPROVAL);
+      // Approved: the price and gates the owner reviewed (assignPreview).
+      const pinned = ctx.approved?.pinned;
       // Assigning applies the plan's gates, so refuse a plan that would switch
       // on an assistant-locked gate. Here, not in validate: validate cannot
       // read the plan or the target. A sub-account outside this agency is left
@@ -155,6 +171,9 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
           planId: args.planId as string,
           specialPriceCents: (args.specialPriceCents as number | null) ?? null,
           interval: args.interval as BillingInterval,
+          ...(pinned
+            ? { expectedPriceCents: pinned.priceCents as number, expectedGates: pinned.gates as Record<string, boolean> }
+            : {}),
         });
       } catch (err) {
         if (err instanceof BillingError)
@@ -163,14 +182,18 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       }
       const who =
         (args.subAccountName as string) || (args.subAccountId as string);
+      const planName = (args.planName as string) || String(pinned?.planName ?? args.planId);
       if (result.status === "pending" && result.checkoutUrl) {
         return {
-          resultText: `Assigned “${args.planName}” to “${who}”. The workspace is now behind an activation screen until payment. Checkout link to send the client:\n${result.checkoutUrl}`,
+          resultText: `Assigned “${planName}” to “${who}”. The workspace is now behind an activation screen until payment. Checkout link to send the client:\n${result.checkoutUrl}`,
           ref: { kind: "subAccount", id: args.subAccountId as string },
         };
       }
       return {
-        resultText: `Switched “${who}” to the “${args.planName}” plan — the live subscription was re-priced (prorated) and the plan's features applied immediately.`,
+        resultText:
+          getBillingProvider().planSwitchTiming === "period_end"
+            ? `Switched “${who}” to the “${planName}” plan — the plan's features applied immediately; the new price starts at the next renewal.`
+            : `Switched “${who}” to the “${planName}” plan — the live subscription was re-priced (prorated) and the plan's features applied immediately.`,
         ref: { kind: "subAccount", id: args.subAccountId as string },
       };
     },
@@ -179,6 +202,11 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
     name: "create_one_time_charge",
     level: "agency",
     requiredRole: "agencyOwner",
+    surfaces: ["chat", "agent"],
+    approval: "spend",
+    agentArgs: withoutLabels,
+    approvalTarget: tenantWide,
+    preview: chargePreview,
     menuLabel:
       "Charge a sub-account client once (e.g. “Web design — $500”) via a payment link",
     description:
@@ -214,6 +242,8 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       additionalProperties: false,
     },
     validate: (raw) => {
+      const padded = paddedSubAccountId(raw);
+      if (padded) return padded;
       const r = (raw ?? {}) as Record<string, unknown>;
       const subAccountId = str(raw, "subAccountId");
       if (!subAccountId) {
@@ -250,12 +280,16 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
           error: "currency must be a 3-letter code like usd or aud",
         };
       }
+      const unsettled = currencyRefusal(currency);
+      if (unsettled) return { ok: false, error: unsettled };
       return {
         ok: true,
         args: {
           subAccountId,
           subAccountName: str(raw, "subAccountName"),
           description,
+          // Kept so a stored proposal re-validates (the decide route does).
+          amount,
           amountCents,
           currency,
         },
@@ -266,6 +300,9 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
         args.description
       } — ${fmtMoney((args.amountCents as number) / 100, (args.currency as string).toUpperCase())} (single payment, not a subscription).`,
     execute: async (ctx, args) => {
+      if (ctx.apiKey && !ctx.approved) throw new CapabilityUserError(NEEDS_APPROVAL);
+      // Approved: exactly the charge the owner reviewed (chargePreview).
+      if (ctx.approved) args = { ...args, ...ctx.approved.pinned };
       // Duplicate guard: an identical PENDING charge (same description +
       // amount) almost certainly means "re-send the link", not "bill twice".
       const existing = await listChargesForSubAccount(

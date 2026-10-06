@@ -58,6 +58,7 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
     name: "list_billing_plans",
     level: "agency",
     requiredRole: "agencyOwner",
+    surfaces: ["chat", "agent"],
     readonly: true,
     menuLabel: "List your Client-Billing plans (price + features)",
     description:
@@ -92,6 +93,7 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
     name: "create_billing_plan",
     level: "agency",
     requiredRole: "agencyOwner",
+    surfaces: ["chat", "agent"],
     menuLabel: "Create a Client-Billing plan (price + bundled features)",
     description:
       "Create a Client-Billing plan (a monthly price + an optional annual price + a bundle of features) that the agency can charge sub-accounts for. Charges run on the deployment's own Stripe account. Set includeAllFeatures:true for an all-inclusive plan, or pass a `features` list. TWO RULES BEFORE PROPOSING: (1) the plan NAME must come from the user — if they didn't state one explicitly, ask them what to call it; never invent or silently derive a name. (2) call list_billing_plans first and check whether a matching plan already exists (same name, or same price with the same features) — if it does, don't create a duplicate; suggest assign_billing_plan with the existing plan instead. To then charge a client, follow up with assign_billing_plan.",

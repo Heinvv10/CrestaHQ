@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
-import { FIXTURE_ARGS } from "@/test/outbound-fixtures";
+import { AGENCY_FIXTURE_ARGS, FIXTURE_ARGS } from "@/test/outbound-fixtures";
+import { agencyKey } from "@/test/agency-approvals-harness";
+import { seedSnapshots } from "@/test/snapshot-fixtures";
+import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/billing-provider-spies";
 import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
 import { seedPr13 } from "@/test/pr13-fixtures";
 
@@ -77,7 +80,7 @@ vi.mock("@/lib/workflows/engine", async (orig) => {
   };
 });
 
-const { dispatchAgentTool } = await import("./agent-dispatch");
+const { AGENCY_AGENT_CALLABLE, dispatchAgentTool } = await import("./agent-dispatch");
 const { TRIGGER_LABELS } = await import("@/lib/workflows/catalog");
 const { AI_SUITE_CAPABILITIES, availableOn } = await import("@/lib/ai-suite/capabilities");
 
@@ -201,6 +204,43 @@ describe("an agent can never send on its own", () => {
       expect(r).toMatchObject({ ok: true });
       expect(r).not.toHaveProperty("proposal");
     }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await expectNothingSent();
+  });
+});
+
+describe("an agency key can never send on its own either", () => {
+  restoreBillingProviderAfterEach();
+  beforeEach(() => {
+    mem.seed("agencies/ag1", { agentApiEnabled: true });
+    mem.seed("agencies/ag1/agencyMembers/owner1", { role: "owner", status: "active" });
+    mem.seed("agencies/ag1/apiKeys/ak1", { agencyId: "ag1", subAccountId: null, prefix: "agcy1234", createdByUid: "owner1", revokedAt: null });
+    mem.seed("agencies/ag1/plans/plan_1", {
+      name: "Growth", status: "active", currency: "zar", priceMonthlyCents: 9900, priceAnnualCents: null,
+      stripeProductId: "prod_1", stripePriceId: "price_m", gates: { broadcastsEnabledByAgency: true },
+    });
+    seedSnapshots(mem);
+  });
+
+  it("every agency-callable tool has a fixture", () => {
+    expect([...AGENCY_AGENT_CALLABLE].filter((n) => !(n in AGENCY_FIXTURE_ARGS))).toEqual([]);
+  });
+
+  // Every agency-level tool, plus a sub-account tool that emails someone, scoped by subAccountId.
+  const CASES = [...Object.entries(AGENCY_FIXTURE_ARGS), ["invite_member", { subAccountId: "sa1", email: "new@example.com", role: "admin" }]] as const;
+  it.each(CASES)("%s %j: dispatches fine, reaches no outbound seam and bills nobody", async (name, args) => {
+    const billing = spyBillingProvider("stripe");
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const r = await dispatchAgentTool(agencyKey, name, args);
+    const cap = AI_SUITE_CAPABILITIES.find((c) => c.name === name)!;
+    if (cap.approval || cap.approvalFor) {
+      expect(r).toMatchObject({ ok: true, proposal: { status: "pending" } });
+    } else {
+      expect(r).toMatchObject({ ok: true });
+      expect(r).not.toHaveProperty("proposal");
+    }
+    // The one provider call allowed is create_billing_plan's catalog entry.
+    expect(billing.calls()).toBe(billing.createPlan.mock.calls.length);
     expect(fetchSpy).not.toHaveBeenCalled();
     await expectNothingSent();
   });
