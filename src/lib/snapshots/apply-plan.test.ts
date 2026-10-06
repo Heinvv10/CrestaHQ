@@ -35,7 +35,7 @@ function payload(over: Partial<SnapshotPayload> = {}): SnapshotPayload {
       { sourceId: "cf1", entity: "contact", key: "install_date", label: "Install date" },
       { sourceId: "cf2", entity: "contact", key: "plan", label: "Plan" },
     ] as unknown as SnapshotPayload["customFields"],
-    aiProfile: { systemPrompt: "You are helpful.", hoursStart: "08:00", hoursEnd: "17:00", timezone: "UTC", escalationKeywords: [] },
+    aiProfile: { systemPrompt: "You are helpful.", hoursStart: 8, hoursEnd: 17, timezone: "UTC", escalationKeywords: [] },
     ...over,
   };
 }

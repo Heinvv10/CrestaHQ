@@ -3,6 +3,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
 import { seedPr13 } from "@/test/pr13-fixtures";
+import { seedSnapshots } from "@/test/snapshot-fixtures";
 import type { AiSuiteCapability } from "./capabilities";
 
 /**
@@ -212,6 +213,7 @@ describe("registry invariants", () => {
     create_broadcast: { templateId: "tpl_email", audienceFilter: { kind: "all" } },
     start_voice_call: { contactId: "c_voice" },
     set_sub_account_gate: { subAccountId: "sa1", gate: "whatsapp", enabled: true },
+    apply_snapshot: { subAccountId: "sa1", snapshotId: "snap_own" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {
@@ -262,6 +264,7 @@ describe("registry invariants", () => {
     mem.seed("events/ev_sample", pastEvent({ contactId: "c_sample" }));
     mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", status: "published" });
     seedPr13(mem);
+    seedSnapshots(mem);
     mem.seed("contacts/c_voice", { subAccountId: "sa1", agencyId: "ag1", name: "Vee", phone: "+27821234567", email: "vee@x.io", territoryId: "global" });
   };
 
