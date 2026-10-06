@@ -105,6 +105,8 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
       // The approver reads it through oneLine, which drops invisible
       // characters; the invite would go to the raw address.
       if (UNSAFE_TEXT_RE.test(email)) return { ok: false, error: `the email ${UNSAFE_TEXT_MESSAGE}` };
+      // A look-alike letter (Cyrillic, accented) reads as another address.
+      if (!/^[!-~]+$/.test(email)) return { ok: false, error: "the email must be plain ASCII letters, digits and symbols" };
       if (!email || !EMAIL_RE.test(email)) {
         return { ok: false, error: "a valid email address is required" };
       }

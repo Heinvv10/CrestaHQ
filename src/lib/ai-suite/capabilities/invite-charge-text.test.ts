@@ -26,6 +26,10 @@ describe("invite_member email", () => {
   it.each(HIDDEN)("with %s inside is refused", (_label, ch) => {
     expect(invite(`boss@cli${ch}ent.io`)).toEqual({ ok: false, error: expect.stringMatching(/can't be shown safely/) });
   });
+  // A homoglyph (Cyrillic i in "client") reads as another address to the approver.
+  it.each([["a Cyrillic letter", "ann@cl\u0456ent.io"], ["an accented letter", "jos\u00e9@client.io"]])("with %s is refused (ASCII only)", (_label, email) => {
+    expect(invite(email)).toEqual({ ok: false, error: expect.stringMatching(/plain ASCII/) });
+  });
   it("a plain address validates, lowercased", () => {
     expect(invite("Boss@Client.io")).toEqual({ ok: true, args: { email: "boss@client.io", role: "admin" } });
   });
