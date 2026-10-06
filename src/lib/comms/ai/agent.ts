@@ -17,6 +17,8 @@ import {
 import { legacyAiConfigPath, migratedLegacyDocs } from "@/lib/comms/ai/legacy-config";
 
 const PROFILE_DOC = "profile";
+/** gRPC ALREADY_EXISTS: create() on a doc that is already there. */
+const ALREADY_EXISTS = 6;
 // Literal union — gives us the same narrow string type without an unused
 // `const SUPPORTED_CHANNELS` runtime array. If a runtime list of channels
 // ever needs to exist, export the array AND derive the type from it via
@@ -91,10 +93,17 @@ async function maybeMigrateLegacy(subAccountId: string): Promise<void> {
 
   const { profile, sms } = migratedLegacyDocs(legacySnap.data());
 
-  await Promise.all([
-    db.doc(profilePath(subAccountId)).set(profile),
-    db.doc(channelPath(subAccountId, "sms")).set(sms),
-  ]);
+  // create(), never set(): a profile written since the read above (another
+  // migration, or a snapshot apply that migrated and merged in its own
+  // transaction) wins, and its sms channel with it. The caller then reads
+  // whatever profile exists.
+  try {
+    await db.doc(profilePath(subAccountId)).create(profile);
+  } catch (err) {
+    if ((err as { code?: unknown })?.code === ALREADY_EXISTS) return;
+    throw err;
+  }
+  await db.doc(channelPath(subAccountId, "sms")).set(sms);
   console.log(
     `[ai/agent] migrated legacy aiConfig for sub-account ${subAccountId}`,
   );
