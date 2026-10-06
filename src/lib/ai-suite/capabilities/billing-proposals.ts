@@ -7,6 +7,7 @@ import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import { isDocId } from "@/lib/server/doc-id";
 import { PLAN_GATE_KEYS, PLAN_GATE_LABELS, type PlanGateKey } from "@/types/billing";
 import { planAssignRefusal } from "./billing-plan-features";
+import { currencyRefusal } from "./billing-currency";
 import { fmtMoney } from "./helpers";
 import { oneLine } from "./text-safety";
 import { CapabilityNotFound, CapabilityUserError, type AiSuiteActionContext, type PreviewRow } from "./types";
@@ -76,6 +77,14 @@ export async function assignPreview(
   const year = args.interval === "year";
   const price = year ? plan.priceAnnualCents : plan.priceMonthlyCents;
   if (typeof price !== "number") throw new CapabilityUserError("This plan doesn't offer annual billing: assign it monthly.");
+  // Its prices were minted in this currency: one the provider can't settle in cents bills wrong.
+  const unsettled = currencyRefusal(String(plan.currency ?? "usd"));
+  if (unsettled) throw new CapabilityUserError(`This plan can't be assigned here. ${unsettled}`);
+  // applyFeatureGates writes every gate a plan names; the preview lists only plan gates.
+  const stray = Object.keys(namedGates(plan.gates)).filter((k) => !(PLAN_GATE_KEYS as readonly string[]).includes(k));
+  if (stray.length > 0) {
+    throw new CapabilityUserError(`This plan switches gates no plan may carry (${stray.join(", ")}); fix the plan in the billing page first.`);
+  }
 
   const data = sub.data() ?? {};
   const billing = data.billing as { stripeSubscriptionId?: unknown; status?: unknown } | null | undefined;

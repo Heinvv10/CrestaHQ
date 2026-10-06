@@ -119,6 +119,26 @@ describe("propose: an agency-level spend row, nothing charged", () => {
     expect(spies.calls()).toBe(0);
   });
 
+  it.each([
+    // A plan the owner made in a currency Stripe would bill 100x (zero-decimal) or can't price.
+    ["stripe", { currency: "jpy" }, /can't charge in JPY/],
+    ["stripe", { currency: "kwd" }, /can't charge in KWD/],
+    ["paystack", { currency: "eur" }, /Paystack can't settle EUR/],
+    // A gate outside the plan gates would be applied but never listed.
+    ["stripe", { gates: { broadcastsEnabledByAgency: true, googleEnabledByAgency: true } }, /googleEnabledByAgency/],
+  ] as const)("%s, a plan with %j is refused at propose, and on the approve rebuild", async (kind, edit, message) => {
+    const spies = spyBillingProvider(kind);
+    mem.seed("agencies/ag1/plans/plan_1", { ...PLAN, ...edit });
+    expect(await dispatchAgentTool(agencyKey, "assign_billing_plan", ARGS)).toMatchObject({ ok: false, httpStatus: 400, message: expect.stringMatching(message) });
+    expect(mem.list("agentProposals")).toEqual([]);
+    mem.seed("agencies/ag1/plans/plan_1", PLAN);
+    const id = await propose();
+    mem.seed("agencies/ag1/plans/plan_1", { ...PLAN, ...edit });
+    const res = await decideAgency(id, "approve");
+    expect([res.status, (await res.json()).error]).toEqual([409, "preview_unavailable"]);
+    expect(spies.calls()).toBe(0);
+  });
+
   it("a special price is shown beside the plan's and pinned", async () => {
     spyBillingProvider("stripe");
     const id = await propose({ ...ARGS, specialPrice: 50 });
