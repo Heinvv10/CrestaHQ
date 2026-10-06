@@ -203,4 +203,17 @@ describe("execute re-checks at write time", () => {
     untouched("src");
     untouched("kc");
   });
+
+  it("approved, a payload other than the one pinned (or none pinned) is refused; the reviewed one applies", async () => {
+    const owner = { uid: "owner1", email: "", displayName: "", agencyId: "ag1" };
+    const args = { subAccountId: "old", snapshotId: "snap_own" };
+    for (const pinned of [null, { snapshotId: "snap_own", payloadSha256: "0".repeat(64) }]) {
+      await expect(cap().execute({ ...owner, approved: { pinned } }, args)).rejects.toThrow(/changed since it was reviewed/);
+    }
+    untouched("old");
+    const reviewed = await cap().preview!({ ...owner, subAccountId: "old" }, args);
+    const pinned = Array.isArray(reviewed) ? null : reviewed.pinned!;
+    await expect(cap().execute({ ...owner, approved: { pinned } }, args)).resolves.toMatchObject({ ref: { kind: "snapshot", id: "snap_own" } });
+    expect(appliedDocs(mem, "old")).toHaveLength(4);
+  });
 });
