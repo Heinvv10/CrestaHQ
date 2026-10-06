@@ -104,10 +104,13 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
     expect(what(await propose())).toBe("Already invited as admin: the pending invite becomes collaborator and is re-sent with a new link (the old link stops working).");
   });
 
-  it("a disabled account is refused at propose: no row", async () => {
-    authUsers.set("gone@client.io", { uid: "u_gone", email: "gone@client.io", emailVerified: true, disabled: true });
+  it.each([
+    ["a disabled account", { disabled: true }, /removed or disabled/],
+    ["another agency's account", { customClaims: { agencyId: "ag2" } }, /belongs to a different agency/],
+  ])("%s is refused at propose, as the service would: no row", async (_label, over, message) => {
+    authUsers.set("gone@client.io", { uid: "u_gone", email: "gone@client.io", emailVerified: true, ...over });
     expect(await dispatchAgentTool(subKey, "invite_member", { email: "gone@client.io", role: "collaborator" })).toMatchObject({
-      ok: false, httpStatus: 400, message: expect.stringMatching(/removed or disabled/),
+      ok: false, httpStatus: 400, message: expect.stringMatching(message),
     });
     expect(mem.list("agentProposals")).toEqual([]);
   });

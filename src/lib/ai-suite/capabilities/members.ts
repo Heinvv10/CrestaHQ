@@ -128,7 +128,7 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
       if (ctx.approved) {
         // What the approver reviewed, checked again now: the claim came
         // after the last preview check, and the account may have changed.
-        const now = await inviteState(ctx.subAccountId!, ctx.agencyId, String(pinned?.email));
+        const now = await inviteState(ctx.subAccountId!, String(pinned?.email));
         if (pinned?.email !== args.email || pinned?.role !== args.role || canonical(now) !== canonical(pinned?.state)) {
           throw new CapabilityUserError("This person's membership changed since it was reviewed; propose it again.");
         }

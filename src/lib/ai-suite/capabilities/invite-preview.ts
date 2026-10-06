@@ -26,9 +26,11 @@ const ROLE = {
   collaborator: "Collaborator: works the data, no member management",
 } as const;
 
-/** Sub-account `subAccountId`'s state for `email` (already lowercased). */
-export async function inviteState(subAccountId: string, agencyId: string, email: string): Promise<InviteState> {
+/** Sub-account `subAccountId`'s state for `email` (already lowercased). The
+ *  agency is the sub-account's own, as createInviteServerSide reads it. */
+export async function inviteState(subAccountId: string, email: string): Promise<InviteState> {
   const db = getAdminDb();
+  const agencyId = (await db.doc(`subAccounts/${subAccountId}`).get()).data()?.agencyId;
   let user: Awaited<ReturnType<ReturnType<typeof getAdminAuth>["getUserByEmail"]>> | null = null;
   try {
     user = await getAdminAuth().getUserByEmail(email);
@@ -87,7 +89,7 @@ export async function invitePreview(
 ): Promise<{ rows: PreviewRow[]; pinned: Record<string, unknown> }> {
   const sub = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   if (!sub.exists || sub.data()?.agencyId !== agencyId) throw new CapabilityUserError("That sub-account wasn't found in this agency.");
-  const state = await inviteState(subAccountId, agencyId, email);
+  const state = await inviteState(subAccountId, email);
   const emails = state.kind !== "member";
   const sender = emails ? await resolvePlatformSender(subAccountId) : null;
   const mail = state.kind === "new" || state.kind === "pending" ? "the invite email with the signup link" : "a notification that they were added";
