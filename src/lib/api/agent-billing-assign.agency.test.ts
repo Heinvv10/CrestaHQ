@@ -219,7 +219,7 @@ describe.each(["stripe", "paystack"] as const)("approve on %s", (kind) => {
   ])("the plan edited after the claim (%s) → execute refuses pinned_mismatch, no provider call, nothing written", async (_label, gates) => {
     const spies = spyBillingProvider(kind);
     const id = await propose();
-    expect(row(id).pinned.gates).toEqual(PLAN.gates);
+    expect((row(id).pinned as { gates: unknown }).gates).toEqual(PLAN.gates);
     const original = mem.db.runTransaction.bind(mem.db);
     vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) => {
       const out = await original(fn as Parameters<typeof original>[0]);
