@@ -242,6 +242,27 @@ describe("execute re-checks at write time", () => {
     untouched("kc");
   });
 
+  it("the preview re-anchors the target to the caller's agency", async () => {
+    mem.seed("subAccounts/sb1", { agencyId: "ag2", name: "Two", ...ON });
+    const owner = { uid: "owner1", email: "", displayName: "", agencyId: "ag1", subAccountId: "sb1" };
+    await expect(cap().preview!(owner, { subAccountId: "sb1", snapshotId: "snap_own" })).rejects.toThrow(/wasn't found in this agency/);
+  });
+
+  it("the pinned payload hash ignores key order, nested included", async () => {
+    const forward = { products: [{ name: "Install", active: true }], aiProfile: { timezone: "UTC", systemPrompt: "Hi" } };
+    const reversed = { aiProfile: { systemPrompt: "Hi", timezone: "UTC" }, products: [{ active: true, name: "Install" }] };
+    const base = { agencyId: "ag1", name: "Order", description: "", sourceSubAccountId: "src", createdAt: new Date() };
+    mem.seed("agencies/ag1/snapshots/snap_fwd", { ...base, payload: forward });
+    mem.seed("agencies/ag1/snapshots/snap_rev", { ...base, payload: reversed });
+    const owner = { uid: "owner1", email: "", displayName: "", agencyId: "ag1", subAccountId: "old" };
+    const hash = async (snapshotId: string) => {
+      const p = await cap().preview!(owner, { subAccountId: "old", snapshotId });
+      return (Array.isArray(p) ? null : p.pinned?.payloadSha256) as string;
+    };
+    expect(await hash("snap_fwd")).toMatch(/^[0-9a-f]{64}$/);
+    expect(await hash("snap_fwd")).toBe(await hash("snap_rev"));
+  });
+
   it("approved, a payload other than the one pinned (or none pinned) is refused; the reviewed one applies", async () => {
     const owner = { uid: "owner1", email: "", displayName: "", agencyId: "ag1" };
     const args = { subAccountId: "old", snapshotId: "snap_own" };
