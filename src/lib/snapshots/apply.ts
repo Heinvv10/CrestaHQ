@@ -34,7 +34,7 @@ type PendingWrite = [DocumentReference, Record<string, unknown>];
  * doc id and `set()` overwrites rather than duplicates. Not a secret; just
  * needs to be deterministic and collision-free across entity kinds.
  */
-function deterministicId(
+export function deterministicId(
   targetSubAccountId: string,
   snapshotId: string,
   entityKind: string,
@@ -76,7 +76,7 @@ async function commitInChunks(db: Firestore, writes: PendingWrite[]) {
  * is how a retry tells "I already wrote this" from "this is new" — see
  * {@link writeSnapshot}, which never overwrites a doc this returns.
  */
-async function existingPaths(
+export async function existingPaths(
   db: Firestore,
   refs: DocumentReference[],
 ): Promise<Set<string>> {
@@ -135,6 +135,13 @@ export function sanitizeNodes(
   return out;
 }
 
+/** Whether a target's `aiAgent/profile` doc holds a persona: a non-blank
+ *  `systemPrompt`. Apply never overwrites one. */
+export function personaIsSet(profile: Record<string, unknown> | undefined): boolean {
+  const prompt = profile?.systemPrompt;
+  return typeof prompt === "string" && prompt.trim() !== "";
+}
+
 /**
  * Write the snapshot's persona to the target, but ONLY if the target still has
  * none at commit time. Returns whether the write landed.
@@ -155,8 +162,7 @@ async function writePersonaIfAbsent(
   const ref = db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`);
   return db.runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    const existingPrompt = snap.data()?.systemPrompt;
-    if (typeof existingPrompt === "string" && existingPrompt.trim()) {
+    if (personaIsSet(snap.data())) {
       return false;
     }
     tx.set(ref, {
