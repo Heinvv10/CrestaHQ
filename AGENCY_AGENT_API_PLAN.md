@@ -337,6 +337,10 @@ no `apply_snapshot` row is ever in "Approve all"):
     profile together. So a migration acting on a stale read cannot overwrite
     a snapshot apply's merged persona or an operator's later SMS change (it
     could switch a bot back on before), and a failure leaves neither doc.
+    Chosen over `create()`-or-keep of each doc because it is atomic (no sms
+    without a profile after a failure) and testable here: the in-memory
+    store re-runs a transaction whose read set changed before commit, and
+    tests park a transaction both before its reads and before its commit.
   - The apply's own migration writes sms only when no sms doc exists, and the
     plan reads an existing sms doc's `enabled` (else the legacy doc's).
   - An hours field that neither the snapshot nor the existing profile has is
