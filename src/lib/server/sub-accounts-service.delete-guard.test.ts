@@ -63,6 +63,7 @@ describe("deleteSubAccountForAgency emptiness guard", () => {
     ["paymentLinks", "payment links"],
     ["prospectLists", "prospect lists"],
     ["prospectReports", "prospect reports"],
+    ["recurringInvoices", "recurring invoices"],
   ])("a %s doc blocks the delete as %s, and nothing is deleted", async (collection, label) => {
     await mem.db.doc(`${collection}/x_1`).set({ agencyId: AG, subAccountId: SA });
 
@@ -87,7 +88,7 @@ describe("deleteSubAccountForAgency and agent approval rows", () => {
       const err = await deleteSubAccountForAgency({ agencyId: AG, subAccountId: SA }).catch((e) => e);
 
       expect(err).toBeInstanceOf(SubAccountNotEmptyError);
-      expect((err as SubAccountNotEmptyError).blockers).toEqual(["agent approvals waiting"]);
+      expect((err as SubAccountNotEmptyError).blockers).toEqual(["agent approvals waiting or in progress"]);
       expect(mem.read(`subAccounts/${SA}`)).toBeDefined();
       expect(mem.read("agentProposals/p_1")).toBeDefined();
     }
@@ -98,7 +99,7 @@ describe("deleteSubAccountForAgency and agent approval rows", () => {
 
     const err = await deleteSubAccountForAgency({ agencyId: AG, subAccountId: SA }).catch((e) => e);
 
-    expect((err as SubAccountNotEmptyError).blockers).toEqual(["agent approvals waiting"]);
+    expect((err as SubAccountNotEmptyError).blockers).toEqual(["agent approvals waiting or in progress"]);
     expect(mem.read(`subAccounts/${SA}`)).toBeDefined();
   });
 
@@ -130,15 +131,54 @@ describe("deleteSubAccountForAgency and agent approval rows", () => {
     expect(mem.read("agentProposals/p_late_ag")).toBeDefined();
   });
 
+  it("decided rows' history generations go with them", async () => {
+    await row("p_done", { subAccountId: SA, status: "executed" });
+    await mem.db.doc("agentProposals/p_done/history/h1").set({ agencyId: AG, subAccountId: SA, status: "superseded" });
+
+    await deleteSubAccountForAgency({ agencyId: AG, subAccountId: SA });
+
+    expect(mem.read("agentProposals/p_done")).toBeUndefined();
+    expect(mem.read("agentProposals/p_done/history/h1")).toBeUndefined();
+  });
+
+  it("a row an agent re-proposes after the query found it decided is kept, with its history", async () => {
+    await row("p_flip", { subAccountId: SA, status: "rejected" });
+    // The row id is reused for a re-proposal: between the clean-up's query and
+    // its delete, the row turns pending again (its old generation into history).
+    const racing = {
+      ...storeDb,
+      collection: (name: string) => {
+        const c = storeDb.collection(name);
+        return {
+          where: (f: string, op: "==", v: unknown) => ({
+            get: async () => {
+              const r = await c.where(f, op, v).get();
+              await mem.db.doc("agentProposals/p_flip/history/g1").set({ agencyId: AG, subAccountId: SA, status: "rejected" });
+              await mem.db.doc("agentProposals/p_flip").set({ agencyId: AG, subAccountId: SA, status: "pending" });
+              return r;
+            },
+          }),
+        };
+      },
+    };
+
+    await deleteDecidedProposals(racing as unknown as FirebaseFirestore.Firestore, SA);
+
+    expect(mem.read("agentProposals/p_flip")?.status).toBe("pending");
+    expect(mem.read("agentProposals/p_flip/history/g1")).toBeDefined();
+  });
+
   it("never reads or writes subAccounts/null", async () => {
     await row("p_ag_done", { subAccountId: null, targetSubAccountId: SA, keyLevel: "agency", status: "executed" });
     const paths: string[] = [];
-    const doc = mem.db.doc.bind(mem.db);
-    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => (paths.push(p), doc(p)));
+    // getAdminDb() returns storeDb; spy on THAT (mem.db's doc is a copy taken at load).
+    const doc = storeDb.doc.bind(storeDb);
+    const spy = vi.spyOn(storeDb, "doc").mockImplementation((p: string) => (paths.push(p), doc(p)));
 
     await deleteSubAccountForAgency({ agencyId: AG, subAccountId: SA });
 
     spy.mockRestore();
+    expect(paths.length).toBeGreaterThan(0);
     expect(paths.filter((p) => p.startsWith("subAccounts/null"))).toEqual([]);
   });
 });

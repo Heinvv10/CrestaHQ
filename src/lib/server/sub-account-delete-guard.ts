@@ -35,6 +35,7 @@ const USAGE_COLLECTIONS: ReadonlyArray<{ collection: string; label: string }> =
     { collection: "paymentLinks", label: "payment links" },
     { collection: "prospectLists", label: "prospect lists" },
     { collection: "prospectReports", label: "prospect reports" },
+    { collection: "recurringInvoices", label: "recurring invoices" },
   ];
 
 /** Rows a person still has to act on: undecided, mid-action, or outcome unknown. */
@@ -64,20 +65,29 @@ export async function findDeleteBlockers(db: Db, subAccountId: string): Promise<
   );
   const [labels, anyOpen] = await Promise.all([Promise.all(usage), Promise.all(open)]);
   const blockers = labels.filter((l): l is string => l !== null);
-  if (anyOpen.some(Boolean)) blockers.push("agent approvals waiting");
+  if (anyOpen.some(Boolean)) blockers.push("agent approvals waiting or in progress");
   return blockers;
 }
 
-/** Deletes the sub-account's decided agent rows (history); an open row is never touched. */
+/**
+ * Deletes the sub-account's decided agent rows (history) with their `history/`
+ * generations. Each row is re-read in its own transaction and skipped unless
+ * it is still decided: a row id is reused when an agent re-proposes the same
+ * action, so a row found decided by the query may be pending again by now.
+ */
 export async function deleteDecidedProposals(db: Db, subAccountId: string): Promise<void> {
   const snaps = await Promise.all(
     PROPOSAL_KEYS.map((key) => db.collection("agentProposals").where(key, "==", subAccountId).get())
   );
   const decided = snaps.flatMap((s) => s.docs).filter((d) => DECIDED_PROPOSAL_STATUSES.has(d.data().status as string));
   const refs = [...new Map(decided.map((d) => [d.ref.path, d.ref])).values()];
-  for (let i = 0; i < refs.length; i += 400) {
-    const batch = db.batch();
-    for (const ref of refs.slice(i, i + 400)) batch.delete(ref);
-    await batch.commit();
+  for (const ref of refs) {
+    await db.runTransaction(async (tx) => {
+      const row = await tx.get(ref);
+      const history = await tx.get(ref.collection("history"));
+      if (!row.exists || !DECIDED_PROPOSAL_STATUSES.has(row.data()?.status as string)) return;
+      for (const h of history.docs) tx.delete(h.ref);
+      tx.delete(ref);
+    });
   }
 }
