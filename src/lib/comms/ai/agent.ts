@@ -93,17 +93,20 @@ async function maybeMigrateLegacy(subAccountId: string): Promise<void> {
 
   const { profile, sms } = migratedLegacyDocs(legacySnap.data());
 
-  // create(), never set(): a profile written since the read above (another
-  // migration, or a snapshot apply that migrated and merged in its own
-  // transaction) wins, and its sms channel with it. The caller then reads
-  // whatever profile exists.
+  // The sms channel first: it is the same doc every migration (and a
+  // snapshot apply's) writes, so whoever creates the profile, a caller that
+  // finds one also finds its channel. Then create(), never set(): a profile
+  // written since the read above (another migration, or a snapshot apply
+  // that migrated and merged in its own transaction) wins, and the caller
+  // reads it. A crash between the two leaves sms without a profile, which
+  // the next read migrates again.
+  await db.doc(channelPath(subAccountId, "sms")).set(sms);
   try {
     await db.doc(profilePath(subAccountId)).create(profile);
   } catch (err) {
     if ((err as { code?: unknown })?.code === ALREADY_EXISTS) return;
     throw err;
   }
-  await db.doc(channelPath(subAccountId, "sms")).set(sms);
   console.log(
     `[ai/agent] migrated legacy aiConfig for sub-account ${subAccountId}`,
   );

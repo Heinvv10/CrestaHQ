@@ -44,6 +44,49 @@ describe("the lazy migration on its own", () => {
   });
 });
 
+describe("two lazy migrations at once", () => {
+  it("one parked after its first write: the other's caller still resolves profile AND sms", async () => {
+    let entered!: () => void;
+    const reached = new Promise<void>((r) => (entered = r));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let writes = 0;
+    const orig = mem.db.doc.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
+      const ref = orig(p);
+      if (!p.startsWith("subAccounts/sa1/aiAgent/")) return ref;
+      const parkSecond = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A) => {
+        if (++writes === 2) (entered(), await gate);
+        return fn(...a);
+      };
+      return { ...ref, set: parkSecond(ref.set), create: parkSecond(ref.create) };
+    });
+    const first = resolveAgent("sa1", "sms");
+    await reached;
+    spy.mockRestore();
+    const second = await resolveAgent("sa1", "sms");
+    expect(second).not.toBeNull();
+    expect(second?.channel).toMatchObject({ contextMessageCount: 7 });
+    release();
+    expect(await first).not.toBeNull();
+    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toMatchObject({ businessName: "Client One" });
+  });
+
+  it("a crash between the two writes: the next read migrates again and resolves", async () => {
+    const orig = mem.db.doc.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
+      const ref = orig(p);
+      if (p !== "subAccounts/sa1/aiAgent/profile") return ref;
+      return { ...ref, create: async () => Promise.reject(Object.assign(new Error("UNAVAILABLE"), { code: 14 })) };
+    });
+    await expect(getAgentProfile("sa1")).rejects.toThrow(/UNAVAILABLE/);
+    spy.mockRestore();
+    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toBeUndefined();
+    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ contextMessageCount: 7 });
+    expect((await resolveAgent("sa1", "sms"))?.profile).toMatchObject({ businessName: "Client One" });
+  });
+});
+
 describe("a snapshot apply committing between the migration's read and its write", () => {
   it("the migration loses: the applied persona stays and is what the agent resolves", async () => {
     // Hold the migration's writes until the apply has committed.
