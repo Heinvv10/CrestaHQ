@@ -21,11 +21,17 @@
  *
  * Runs as part of `pnpm lint` (see package.json). Zero dependencies.
  *
- * Usage: node scripts/check-capability-tenancy.mjs [file-or-directory ...]
+ * Usage: node scripts/check-capability-tenancy.mjs [--names <file>] [file-or-directory ...]
  *
  * Each argument is a .ts file or a directory (every non-test .ts directly
  * inside it). The default is the registry index `capabilities.ts` plus the
  * per-resource files in `capabilities/`.
+ *
+ * Every registered capability must be one it checked: the registered names
+ * are read from the names lock table (`--names`, default
+ * src/lib/ai-suite/capability-names.test.ts, which a test keeps equal to the
+ * runtime registry), and a name it did not find fails the check. A layout
+ * change can therefore never shrink what it checks without failing.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -38,8 +44,11 @@ const DEFAULT_PATHS = [
   join(AI_SUITE_DIR, "capabilities.ts"),
   join(AI_SUITE_DIR, "capabilities"),
 ];
-const inputPaths =
-  process.argv.length > 2 ? process.argv.slice(2) : DEFAULT_PATHS;
+const args = process.argv.slice(2);
+const namesAt = args.indexOf("--names");
+const NAMES_FILE =
+  namesAt === -1 ? join(AI_SUITE_DIR, "capability-names.test.ts") : args.splice(namesAt, 2)[1];
+const inputPaths = args.length > 0 ? args : DEFAULT_PATHS;
 const filePaths = inputPaths.flatMap((p) =>
   statSync(p).isDirectory()
     ? readdirSync(p)
@@ -72,36 +81,32 @@ const MIN_EXPECTED_CAPABILITIES = 25;
 const sources = filePaths.map((p) => readFileSync(p, "utf8"));
 
 // ── Split the registry into capability blocks ────────────────────────────
-// Literal entries all declare `    name: "<snake_case>",` at 4-space indent.
+// A capability declares `name: "<snake_case>",` with `level: "…",` on the
+// next line at the same indent — an array entry or a standalone const alike.
 // (Parameter properties like `name: { type: "string" }` don't match — they
 // have no quoted string value. The generated `_in_sub_account` wrapper uses
 // a template literal, so it's excluded; its re-anchor is asserted separately.)
 // Each file is split on its own, so a block never runs into the next file.
-const nameRe = /^ {4}name: "([a-z0-9_]+)",$/gm;
+const capRe = /^( +)name: "([a-z0-9_]+)",\n\1level: "(agency|sub-account)",$/gm;
+// The registered names, from the lock table's rows (`["name", "level", …]`),
+// less the generated `_in_sub_account` variants. Compared with what was
+// checked below (A4b review round 2: a file split moved assign_billing_plan
+// out of reach of an indent-specific pattern and the check shrank silently).
+const registered = [...readFileSync(NAMES_FILE, "utf8").matchAll(/^\s*\["([a-z0-9_]+)",/gm)]
+  .map((m) => m[1])
+  .filter((n) => !n.endsWith("_in_sub_account"));
 
 const failures = [];
 const checked = [];
 
 for (const src of sources) {
-  const matches = [...src.matchAll(nameRe)];
+  const matches = [...src.matchAll(capRe)];
   for (let i = 0; i < matches.length; i++) {
-    const name = matches[i][1];
+    const name = matches[i][2];
+    const level = matches[i][3];
     const start = matches[i].index;
     const end = i + 1 < matches.length ? matches[i + 1].index : src.length;
     const block = src.slice(start, end);
-
-    const levelMatch = block.match(/^ {4}level: "(agency|sub-account)",$/m);
-    if (!levelMatch) {
-      // A `name:` line that isn't a capability entry (defensive) — but if it
-      // also declares requiredRole it IS one and the level is malformed.
-      if (/^ {4}requiredRole:/m.test(block)) {
-        failures.push(
-          `${name}: has requiredRole but no parseable \`level\` — capability shape changed; update this checker.`,
-        );
-      }
-      continue;
-    }
-    const level = levelMatch[1];
     checked.push({ name, level });
 
     if (EXTERNAL_ONLY.has(name)) {
@@ -136,6 +141,16 @@ for (const src of sources) {
 }
 
 // ── Sanity: the parser must still be seeing the registry ─────────────────
+const checkedNames = new Set(checked.map((c) => c.name));
+const unchecked = registered.filter((n) => !checkedNames.has(n));
+const unregistered = [...checkedNames].filter((n) => !registered.includes(n));
+if (unchecked.length > 0 || unregistered.length > 0) {
+  failures.push(
+    `${registered.length} capabilities are registered (${NAMES_FILE}) but ${checked.length} were checked.` +
+      (unchecked.length ? ` Not checked: ${unchecked.join(", ")} — declared in a shape this checker can't parse (it needs \`name: "…",\` then \`level: "…",\` at the same indent); fix the declaration or this checker, never let it pass unchecked.` : "") +
+      (unregistered.length ? ` Checked but not in the names table: ${unregistered.join(", ")}.` : ""),
+  );
+}
 if (checked.length < MIN_EXPECTED_CAPABILITIES) {
   failures.push(
     `Only ${checked.length} capabilities parsed (expected ≥ ${MIN_EXPECTED_CAPABILITIES}). The registry's source shape probably changed — update the parsing in this checker rather than letting it pass vacuously.`,

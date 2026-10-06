@@ -16,11 +16,15 @@ import { afterEach, describe, expect, it } from "vitest";
  */
 
 const dirs: string[] = [];
-function tmpFile(contents: string): string {
+let namesFile = "";
+/** The fixture source, plus a names lock table listing `registered` beside it. */
+function tmpFile(contents: string, registered: string[] = Array.from({ length: 25 }, (_, i) => `cap_${i}`)): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cap-tenancy-"));
   dirs.push(dir);
   const file = path.join(dir, "capabilities.ts");
   fs.writeFileSync(file, contents);
+  namesFile = path.join(dir, "names.ts");
+  fs.writeFileSync(namesFile, registered.map((n) => `  ["${n}", "agency", "agencyOwner", false, null],`).join("\n"));
   return file;
 }
 afterEach(() => {
@@ -72,7 +76,7 @@ function buildSource(opts: { badIndex?: number } = {}): string {
 }
 
 function run(filePath: string) {
-  return spawnSync(process.execPath, [path.join(__dirname, "check-capability-tenancy.mjs"), filePath], {
+  return spawnSync(process.execPath, [path.join(__dirname, "check-capability-tenancy.mjs"), "--names", namesFile, filePath], {
     encoding: "utf8",
   });
 }
@@ -97,4 +101,23 @@ describe("check-capability-tenancy.mjs", () => {
     expect(res.stderr).toContain("cap_0");
     expect(res.stderr).toContain("no visible");
   });
+
+  // A4b review round 2: assign_billing_plan moved into a standalone const at a
+  // 2-space indent and silently dropped out of the check.
+  it("checks a capability declared as a standalone const (any indent), and fails it unanchored", () => {
+    const standalone = `export const LONE = {\n  name: "lone_cap",\n  level: "agency",\n  requiredRole: "member",\n  execute: async () => 'unanchored',\n};\n`;
+    const res = run(tmpFile(buildSource() + standalone, [...Array.from({ length: 25 }, (_, i) => `cap_${i}`), "lone_cap"]));
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("lone_cap (agency)");
+    expect(res.stderr).not.toContain("Not checked");
+  });
+
+  it("fails loudly when a capability is declared in a shape it can't parse (count mismatch)", () => {
+    const odd = `export const ODD = {\n  name: ODD_NAME,\n  level: "agency",\n  requiredRole: "member",\n  execute: async (ctx) => ctx.agencyId,\n};\n`;
+    const res = run(tmpFile(buildSource() + odd, [...Array.from({ length: 25 }, (_, i) => `cap_${i}`), "odd_cap"]));
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain("26 capabilities are registered");
+    expect(res.stderr).toContain("but 25 were checked. Not checked: odd_cap");
+  });
 });
+
