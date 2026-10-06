@@ -390,6 +390,60 @@ no `apply_snapshot` row is ever in "Approve all"):
   (`outbound`) pins email + role and shows "existing member: role X → Y" or "added
   immediately, nothing to accept" (REVISED, P1-8). `create_billing_plan` bills
   nobody: direct, joins the set in A4b.
+- **REVISED 2026-10-06 (A4b), following the code.** Built as above, with these
+  smaller deviations:
+  - **No provider.** `assign_billing_plan` still queues its `spend` row when no
+    payment provider is configured (the preview's billing line says so, and an
+    approve fails cleanly: 422, `failed`, nothing written), so the E2E (no
+    provider in CI) reaches the card. `create_one_time_charge` and
+    `create_billing_plan` refuse at once (400, nothing written): with no provider
+    there is nothing to review.
+  - **Labels.** The agent's `subAccountName` / `planName` never reach a row:
+    `agentArgs` drops them, and the agency-level dispatch path now applies
+    `agentArgs` as the sub-account path does. The summary names ids; the preview
+    names the stored records.
+  - **Audit.** Approved rows already settle one `aiSuiteActions` row naming the
+    target, so no `billing.*` action. `create_billing_plan` (direct, no target)
+    writes an agency-level `agent.write` (`subAccountId: null`, new target type
+    `billingPlan`).
+  - **Invite audit.** An approved invite's `invitedByUid` and audit actor are the
+    approving person (`user`) for a new invite or member doc; a re-sent pending
+    invite or re-added member keeps its original inviter fields. Chat keeps
+    `ai_agent`. Execute re-reads the invite state (territories included) after
+    the claim and refuses on any change.
+  - **Invite, review round 1.** An existing member's or pending invite's
+    territories are kept and pinned. A disabled or another agency's account is
+    queued like any other (approval refuses, no service call) and the agent sees
+    only the sub-account, email and role rows (`agentPreviewLabels`), so it
+    can't probe which addresses have accounts.
+  - **Billing, review round 1.** Both billing writes refuse at validate a
+    currency the provider can't settle in cents (Stripe: zero- and
+    three-decimal). The gate pin names which gates the plan names, not only
+    their values. The assign preview shows quotas and overage rates (drift is
+    `preview_changed`; they are not in the in-read pin).
+  - **Review round 2.** `pnpm check:tenancy` finds a capability in any layout
+    and fails when a name in the names lock table went unchecked (the split had
+    silently dropped `assign_billing_plan`). Assign refuses a plan in a currency
+    the provider can't settle or naming a non-plan gate. An omitted currency is
+    the provider's own (zar on Paystack, usd otherwise); Paystack is not
+    narrowed to ZAR, because the code passes the currency through to Paystack
+    and accepts its whole settle list (`assertSupportedCurrency`). The charge
+    description is checked as strictly as the email, which must also be
+    ASCII. The invite pins the territories the service will keep (active,
+    distinct, at most 30) and says when a collaborator ends with none.
+  - **REVISED 2026-10-06 (A4b), Paystack currencies.** On Paystack, Client
+    Billing accepts Paystack's settle list minus XOF, not ZAR only: this is a
+    white-label template, so a buyer's Paystack merchant may settle in NGN,
+    KES or another listed currency, and the approver sees the currency on the
+    row. XOF is refused because it has no subunit and Paystack's handling of
+    its amount is unconfirmed; refusing is the safe side of a possible 100x.
+  - **Chat, touched on purpose.** Both billing validators refuse a padded
+    `subAccountId` (the A3a contract test); the charge validator also keeps
+    `amount` (re-validation of a stored row) and refuses a currency Paystack can't
+    settle when Paystack is selected; the assign result no longer says "prorated"
+    on Paystack.
+  - **Coverage.** `sub-accounts/[id]/billing:PATCH` stays FROZEN: it also does
+    `comp` and `sendLink`, and the manifest has no partial coverage.
 - **REVISED 2026-10-05 (A3b review, carry-forward to A5):** `proposalId` is
   action-scoped, not key-scoped, so an agency-key row frozen by its key's standing
   (switch off or minter removed → approve 403) is what a sub-account key re-proposing
@@ -569,7 +623,7 @@ firestore.rules / firestore.indexes.json
 | **A4a-1** create + gates | A3b | `create_sub_account` agent path (both gates, owner membership, `createdByKeyId`, counter + lock docs); `set_sub_account_gate` + `DIRECT_GATES` partition test + `gate_change`; `set_feature_gate` chat-only (REVISED r2, P2-10: snapshots split out) | via agency key: both gates `true`, member doc = owner uid, no `apikey:` member, 11th creation that day → refused, same name within 10 min → same id (two concurrent creates → one doc); via chat: unchanged. Gates: `labs true` on a key-created target → written; the same target 73 h later or with one contact → proposal; `whatsapp true` anywhere → `gate_change` proposal; `agent-api true` → refused; `google false` on an existing target → proposal (mutations: drop the `createdByKeyId` check → red; add a gate to no set → partition test red) |
 | **A4a-2** snapshots | A4a-1, A5 | `list_snapshots`, `apply_snapshot` | key-created target → direct, workflows `draft`, persona written only when absent; other target → agency-level `public_change` row, approved on the agency route only. **BUILT 2026-10-06** (`feat/agency-agent-a4a2`; see REVISED (A4a-2) under D3) |
 | **A5** agency approvals page | A3b | shared pre-claim sequence (`agent-proposals-decide.ts`) + agency list / decide routes; `/agency/approvals`; sidebar + badge; class-limited Approve all; `canSeeProposal` branch; index | decide route: other agency's owner → 404; a sub-account row → 404; expired row → 409; a `gate_change` row whose target gate flipped since → `preview_changed`; two concurrent approves → execute once, 200 + 409; switch off → 403; an agency row whose target's `agent-api` went off → 403 and no write under `subAccounts/null` (r3 P2-2). Sub-account route test suite re-run unchanged against the factored sequence. Rules test: agency row readable by its owner only (mutation: drop the branch → red). `e2e/specs/agency-approvals.spec.ts`: seed a `workflow_activate` row on a key-created target, a `gate_change` row and an email `send_message` (no SMTP) → Approve all approves the activation only and leaves the other two pending; one by one → `executed` / `failed` with the seam's refusal (mutation: add `gate_change` to the batch set → red) |
-| **A4b** invite + billing | A4a, A5 | `invite_member` → `outbound` with the existing-member preview; `assign_billing_plan`, `create_one_time_charge` → `spend` with full gate diff + live-subscription warning; `create_billing_plan`, `list_billing_plans` join the set; names lock table + tools doc updated on purpose | `assign_billing_plan` → proposal, Stripe spy 0, preview lists gates on/off incl. `api-access`; on a live-subscription fixture the preview says "prorated now"; edit the plan's price between propose and approve → 409 `preview_changed`, Stripe spy 0, and a plan edited after the claim → execute refuses `pinned_mismatch` (REVISED r2, P1-B); `invite_member` for an existing admin as collaborator → preview "role admin → collaborator"; approve → `createInviteServerSide` once with pinned values; `outbound-never-sends.test.ts` iterates agency-callable caps |
+| **A4b** invite + billing | A4a, A5 | `invite_member` → `outbound` with the existing-member preview; `assign_billing_plan`, `create_one_time_charge` → `spend` with full gate diff + live-subscription warning; `create_billing_plan`, `list_billing_plans` join the set; names lock table + tools doc updated on purpose | `assign_billing_plan` → proposal, Stripe spy 0, preview lists gates on/off incl. `api-access`; on a live-subscription fixture the preview says "prorated now"; edit the plan's price between propose and approve → 409 `preview_changed`, Stripe spy 0, and a plan edited after the claim → execute refuses `pinned_mismatch` (REVISED r2, P1-B); `invite_member` for an existing admin as collaborator → preview "role admin → collaborator"; approve → `createInviteServerSide` once with pinned values; `outbound-never-sends.test.ts` iterates agency-callable caps. **BUILT 2026-10-06** (`feat/agency-agent-a4b`; see REVISED (A4b) under D4) |
 | **A6** docs + live validation | A1–A5 | `agent-api.md` agency section, tools doc, `firestore-collections.md`, `feature-gates.md`; `scripts/teardown-smoke-sub-account.ts` (REVISED r2, P1-D: TypeScript so `tsc` covers it); status flip | teardown unit test: refuses a target failing any one of name prefix `Agency agent smoke `, `createdByKeyId` set, created < 72 h (aligned with key-created, r3 P2-6), `contacts` = 0, `!hasChannelConnection`, or run without `--yes` (prints the doc list and stops); then the live checklist below |
 | **B1…Bn** burn-down | A1 | one group per PR | each PR moves its group out of `grandfathered` and `FROZEN`; the manifest diff is the proof |
 

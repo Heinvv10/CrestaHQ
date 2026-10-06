@@ -53,6 +53,8 @@ export const AUDIT_TARGET_TYPES = [
   "review",
   // An agency snapshot (`agencies/{id}/snapshots/{snapshotId}`) an agent applied (agent.write).
   "snapshot",
+  // An agency billing plan (`agencies/{id}/plans/{planId}`) an agent created (agent.write, agency-level).
+  "billingPlan",
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];
 

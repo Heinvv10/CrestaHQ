@@ -12,52 +12,15 @@ import {
 } from "@/types/billing";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney, FEATURE_GATES } from "./helpers";
-
-/**
- * The feature names a plan can bundle: FEATURE_GATES entries whose field is a
- * plan gate. Standalone gates (Google, Payments, review auto-reply, …) are
- * neither offered nor accepted.
- */
-const PLAN_GATED_FEATURES: string[] = Object.keys(FEATURE_GATES).filter((f) =>
-  (PLAN_GATE_KEYS as readonly string[]).includes(FEATURE_GATES[f].field)
-);
-
-/**
- * Plan gates the assistant may not switch on (`assistantMayEnable: false`).
- * A plan switches its gates on when assigned, so the assistant neither bundles
- * one into a plan nor assigns a plan that would switch one on. The owner can
- * still sell them on a plan through the billing UI.
- */
-const ASSISTANT_LOCKED_PLAN_FEATURES = PLAN_GATED_FEATURES.filter(
-  (f) => FEATURE_GATES[f].assistantMayEnable === false
-);
-
-/** The plan features the assistant offers and accepts. */
-export const PLAN_FEATURES: string[] = PLAN_GATED_FEATURES.filter(
-  (f) => !ASSISTANT_LOCKED_PLAN_FEATURES.includes(f)
-);
-
-/**
- * The refusal text when assigning a plan would switch ON, on this sub-account,
- * a gate the assistant may not enable; null otherwise.
- */
-export function planAssignRefusal(
-  planGates: Record<string, unknown>,
-  sub: Record<string, unknown>
-): string | null {
-  const labels = ASSISTANT_LOCKED_PLAN_FEATURES.map((f) => FEATURE_GATES[f])
-    .filter((g) => planGates[g.field] === true && sub[g.field] !== true)
-    .map((g) => g.label);
-  return labels.length > 0
-    ? `This plan would switch on ${labels.join(", ")}, which only the agency owner can do — assign it in the sub-account's Manage dialog instead.`
-    : null;
-}
+import { currencyRefusal, defaultBillingCurrency } from "./billing-currency";
+import { ASSISTANT_LOCKED_PLAN_FEATURES, PLAN_FEATURES } from "./billing-plan-features";
 
 export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
   {
     name: "list_billing_plans",
     level: "agency",
     requiredRole: "agencyOwner",
+    surfaces: ["chat", "agent"],
     readonly: true,
     menuLabel: "List your Client-Billing plans (price + features)",
     description:
@@ -92,9 +55,10 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
     name: "create_billing_plan",
     level: "agency",
     requiredRole: "agencyOwner",
+    surfaces: ["chat", "agent"],
     menuLabel: "Create a Client-Billing plan (price + bundled features)",
     description:
-      "Create a Client-Billing plan (a monthly price + an optional annual price + a bundle of features) that the agency can charge sub-accounts for. Charges run on the deployment's own Stripe account. Set includeAllFeatures:true for an all-inclusive plan, or pass a `features` list. TWO RULES BEFORE PROPOSING: (1) the plan NAME must come from the user — if they didn't state one explicitly, ask them what to call it; never invent or silently derive a name. (2) call list_billing_plans first and check whether a matching plan already exists (same name, or same price with the same features) — if it does, don't create a duplicate; suggest assign_billing_plan with the existing plan instead. To then charge a client, follow up with assign_billing_plan.",
+      "Create a Client-Billing plan (a monthly price + an optional annual price + a bundle of features) that the agency can charge sub-accounts for. Charges run on the deployment's own payment provider (Stripe or Paystack). Set includeAllFeatures:true for an all-inclusive plan, or pass a `features` list. TWO RULES BEFORE PROPOSING: (1) the plan NAME must come from the user — if they didn't state one explicitly, ask them what to call it; never invent or silently derive a name. (2) call list_billing_plans first and check whether a matching plan already exists (same name, or same price with the same features) — if it does, don't create a duplicate; suggest assign_billing_plan with the existing plan instead. To then charge a client, follow up with assign_billing_plan.",
     parameters: {
       type: "object",
       properties: {
@@ -114,7 +78,8 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
         },
         currency: {
           type: "string",
-          description: "ISO 4217 code, lowercase. Defaults to usd.",
+          description:
+            "ISO 4217 code, lowercase. Omitted, it is the payment provider's own: zar on Paystack, usd on Stripe. It must be one the provider can settle in cents (never jpy or kwd).",
         },
         includeAllFeatures: {
           type: "boolean",
@@ -174,13 +139,15 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
           return { ok: false, error: "the annual price must be at least 1.00" };
         }
       }
-      const currency = (str(raw, "currency") || "usd").toLowerCase();
+      const currency = (str(raw, "currency") || defaultBillingCurrency()).toLowerCase();
       if (!/^[a-z]{3}$/.test(currency)) {
         return {
           ok: false,
           error: "currency must be a 3-letter code like usd or aud",
         };
       }
+      const unsettled = currencyRefusal(currency);
+      if (unsettled) return { ok: false, error: unsettled };
       const includeAllFeatures = r.includeAllFeatures === true;
       const requested = Array.isArray(r.features) ? (r.features as unknown[]) : [];
       const locked = requested.filter(

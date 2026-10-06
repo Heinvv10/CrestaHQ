@@ -30,6 +30,8 @@ export function isReachable(
  */
 export async function resolveReach(agencyId: string, subAccountId: unknown): Promise<string | null> {
   if (!isDocId(subAccountId) || subAccountId !== subAccountId.trim()) return null;
+  // The string form of a missing value is never a target: nothing reads subAccounts/null.
+  if (subAccountId === "null" || subAccountId === "undefined") return null;
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   return isReachable(snap.data(), agencyId) ? subAccountId : null;
 }

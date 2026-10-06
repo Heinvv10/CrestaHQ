@@ -84,6 +84,7 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   update_booking_page: { slug: "bp1", durationMinutes: 45 },
   delete_booking_page: { slug: "bp1" },
   list_members: {},
+  invite_member: { email: "new@example.com", role: "admin" },
   get_contact: { contactId: "c1" },
   update_contact: { contactId: "c1", name: "Ann B", tags: ["vip"] },
   add_tags: { contactId: "c1", tags: ["vip"] },
@@ -106,4 +107,19 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   // The harness's test-only approval capability: the approval path must queue
   // exactly one proposal and send nothing.
   __test_outbound: { body: "hi" },
+};
+
+/** The agency-level tools' args (AGENCY_AGENT_CALLABLE), for the same test
+ *  run on an agency key: a member without an entry fails it. */
+export const AGENCY_FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
+  list_sub_accounts: {},
+  sub_account_stats: { subAccountId: "sa1", subAccountName: "W" },
+  create_sub_account: { name: "Agent Co" },
+  set_sub_account_gate: { subAccountId: "sa1", gate: "labs", enabled: true },
+  list_snapshots: {},
+  apply_snapshot: { subAccountId: "sa1", snapshotId: "snap_own" },
+  list_billing_plans: {},
+  create_billing_plan: { name: "Agent plan", priceMonthly: 99, currency: "zar" },
+  assign_billing_plan: { subAccountId: "sa1", planId: "plan_1" },
+  create_one_time_charge: { subAccountId: "sa1", description: "Setup", amount: 50, currency: "zar" },
 };

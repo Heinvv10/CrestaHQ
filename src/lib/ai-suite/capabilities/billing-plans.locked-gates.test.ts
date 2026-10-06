@@ -26,7 +26,7 @@ vi.mock("@/lib/billing/provider", () => ({
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async () => {}) }));
 
 const { getCapability } = await import("@/lib/ai-suite/capabilities");
-const { PLAN_FEATURES } = await import("./billing-plans");
+const { PLAN_FEATURES } = await import("./billing-plan-features");
 const ctx = { uid: "owner1", email: "", displayName: "", agencyId: "ag1", agencyRole: "owner" as const };
 const create = getCapability("create_billing_plan")!;
 const assign = getCapability("assign_billing_plan")!;

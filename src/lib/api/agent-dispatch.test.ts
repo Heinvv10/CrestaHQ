@@ -73,7 +73,6 @@ describe("refusals before any capability code runs", () => {
   it.each([
     "my_access",
     "open_workspace",
-    "invite_member",
     "create_community",
     "research_website_reference",
     "get_website_prefill",

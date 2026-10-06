@@ -89,8 +89,40 @@ other route: every other `/api/v1` route refuses it with 403
 - **Proposals** an agency key causes are ordinary rows of the target sub-account
   (`keyLevel: "agency"`), approved on that sub-account's Approvals page; held
   enrolments are charged to the agency key's enrolment cap, counted per
-  sub-account. Agency-level rows (`set_sub_account_gate`, `apply_snapshot`)
-  belong to the agency and are approved only on `/agency/approvals`.
+  sub-account. Agency-level rows (`set_sub_account_gate`, `apply_snapshot`,
+  `assign_billing_plan`, `create_one_time_charge`) belong to the agency and are
+  approved only on `/agency/approvals`. "Approve all" there never takes an
+  `outbound` or `spend` row.
+- **Agency tools.** `list_sub_accounts`, `sub_account_stats`, `list_snapshots` and
+  `list_billing_plans` read; `create_sub_account` and `create_billing_plan` write
+  at once (a plan bills nobody); `set_sub_account_gate` and `apply_snapshot` write
+  at once only on a sub-account the key created, else a `gate_change` /
+  `public_change` row; `assign_billing_plan` and `create_one_time_charge` are
+  always a `spend` row. The assign preview shows the plan, the price (a special
+  price only if the agent proposed one), every feature switching on and off (Public
+  API access and the sending domain flagged: they change reach) and what happens to
+  billing: Stripe switches a live subscription now, prorated; Paystack switches the
+  features now and the price at the next renewal; without a live subscription the
+  client gets a checkout link and the workspace waits behind an activation screen.
+  Approving re-checks the plan's price and features at the moment the plan is read
+  for the write (`pinned_mismatch`). **Billing needs a configured payment
+  provider** (`STRIPE_SECRET_KEY`, or `BILLING_PROVIDER=paystack` with
+  `PAYSTACK_SECRET_KEY`): without one, `create_billing_plan` and
+  `create_one_time_charge` refuse with 400 and write nothing, and an
+  `assign_billing_plan` row says so in its preview and fails cleanly if approved.
+- **`invite_member`** is a sub-account tool on both key types, always an
+  `outbound` row approved by a person (an agency key's row on the sub-account's
+  page and on `/agency/approvals`). Its preview names the role (admin: manages
+  members and settings) and what will happen: a new invite, an existing account
+  added at once with nothing to accept, a member's role old → new, or that
+  approving will refuse (a disabled or another agency's account); what happens to
+  the territories an existing member or pending invite has (kept; cleared for an
+  admin); and whether an email goes out. The agent gets back only the
+  sub-account, email and role rows, so it can't learn whether an address has an
+  account. On approve, the approving person is the inviter of a new invite and
+  the adder of a new member (`invitedByUid` / `addedByUid`) and the actor of any
+  role change; a re-sent pending invite and a re-added member keep their
+  original inviter fields.
 - **Audit.** Each call in a sub-account writes one `agent.call` row under
   `agencies/{id}/agentCalls` (key, tool, target, read or write — never the args),
   kept 30 days. Request logs land under the target once reach lets the call
@@ -103,7 +135,7 @@ other route: every other `/api/v1` route refuses it with 403
 
 ## Tools
 
-97 tools today; the full table, with each tool's kind, role and what its approval
+98 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
 from the registry and a test fails when it drifts. It lists sub-account tools; an
 agency key's agency-level proposals are approved on `/agency/approvals`, not on a
@@ -118,9 +150,11 @@ A new tool that can need approval also needs a line in `PREVIEW_NOTES`
 
 The agent surface is the sub-account-level capabilities that declare the `agent`
 surface, plus the agency-key tools listed under [Agency keys](#agency-keys).
-Webhook writes, member invites, the website / community / course builders,
-checkout pages, payment links and mandates, API keys, feature gates (apart from an
-agency key's `set_sub_account_gate`) and anything else agency-level are not on it.
+Webhook writes, the website / community / course builders, checkout pages, a
+sub-account's own payment links and mandates (Payments), API keys, feature gates
+(apart from an agency key's `set_sub_account_gate`) and any other agency-level
+tool are not on it. An agency key's `create_one_time_charge` does create a
+Client Billing payment link, once the owner approves it.
 
 **Approval classes:** `outbound` (a message to a person), `workflow_activate`,
 `hard_delete`, `spend` (bills or charges), `channel_change` (a contact's phone or
@@ -241,7 +275,6 @@ only for callable write tools.
   targets re-sync when a contact is re-tagged.
 - **No notification** for new proposals in v1; the sidebar badge counts pending and
   unsettled rows.
-- **Agency keys reach sub-account tools and the agency tools** `list_sub_accounts`,
-  `sub_account_stats`, `create_sub_account`, `set_sub_account_gate`,
-  `list_snapshots` and `apply_snapshot` so far; the rest of agent-run onboarding
-  is planned in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
+- **Agency keys reach sub-account tools and the ten agency tools** listed under
+  [Agency keys](#agency-keys) so far; the rest of agent-run onboarding is planned
+  in [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).

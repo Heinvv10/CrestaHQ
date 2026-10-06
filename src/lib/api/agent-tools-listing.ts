@@ -21,6 +21,10 @@ export const AGENCY_AGENT_CALLABLE: ReadonlySet<string> = new Set([
   "set_sub_account_gate",
   "list_snapshots",
   "apply_snapshot",
+  "list_billing_plans",
+  "create_billing_plan",
+  "assign_billing_plan",
+  "create_one_time_charge",
 ]);
 
 /** The Agency Assistant's "in a named sub-account" variants: chat-only,

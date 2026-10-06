@@ -254,9 +254,24 @@
         "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
       }
     },
+    "api/agency/plans:GET": {
+      "tools": [
+        "list_billing_plans"
+      ]
+    },
+    "api/agency/plans:POST": {
+      "tools": [
+        "create_billing_plan"
+      ]
+    },
     "api/agency/snapshots:GET": {
       "tools": [
         "list_snapshots"
+      ]
+    },
+    "api/agency/sub-accounts/[id]/billing/charges:POST": {
+      "tools": [
+        "create_one_time_charge"
       ]
     },
     "api/agency/sub-accounts/[id]/apply-snapshot:POST": {
@@ -577,6 +592,11 @@
     "api/sub-accounts/[id]/gbp/reviews:GET": {
       "tools": [
         "list_reviews"
+      ]
+    },
+    "api/sub-accounts/[id]/invite:POST": {
+      "tools": [
+        "invite_member"
       ]
     },
     "api/sub-accounts/[id]/members:GET": {

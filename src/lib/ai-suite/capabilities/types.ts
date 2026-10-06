@@ -174,6 +174,9 @@ export interface AiSuiteCapability {
     args: Record<string, unknown>,
     ctx: AiSuiteActionContext
   ) => CapabilityApproval | undefined | Promise<CapabilityApproval | undefined>;
+  /** With an approval class: the preview rows (by label) the proposing agent
+   *  is shown back; the rest only the approver reads. Default: every row. */
+  agentPreviewLabels?: readonly string[];
   /** With `approvalFor`: what the tools listings (REST and MCP) show — the
    *  class, and in words when it applies (e.g. "mode=auto"). */
   approvalHint?: { approval: CapabilityApproval; when: string };

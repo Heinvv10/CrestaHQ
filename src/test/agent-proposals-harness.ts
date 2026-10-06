@@ -21,7 +21,16 @@ import type { AiSuiteCapability } from "@/lib/ai-suite/capabilities";
 export const mem = createMemoryFirestore();
 export const caller = { uid: "u_admin", email: "admin@x.io", role: "admin" as string };
 
-export const adminMock = () => ({ getAdminDb: () => mem.db });
+/** Firebase Auth accounts by email, for `getAdminAuth().getUserByEmail` (cleared per test). */
+export const authUsers = new Map<string, { uid: string; email: string; emailVerified: boolean; disabled?: boolean; customClaims?: Record<string, unknown> }>();
+const fakeAuth = {
+  getUserByEmail: async (email: string) => {
+    const user = authUsers.get(email);
+    if (!user) throw Object.assign(new Error("no user record"), { code: "auth/user-not-found" });
+    return user;
+  },
+};
+export const adminMock = () => ({ getAdminDb: () => mem.db, getAdminAuth: () => fakeAuth });
 export async function tenancyMock() {
   const { NextResponse } = await import("next/server");
   const member = async (_req: Request, subAccountId: string) =>
@@ -175,6 +184,7 @@ export async function approveHangingThenUnsettle(id: string) {
 export function setupAgentProposalTests() {
   beforeEach(async () => {
     mem.clear();
+    authUsers.clear();
     const gates = { agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true };
     mem.seed("subAccounts/sa1", { agencyId: "ag1", ...gates });
     mem.seed("subAccounts/sa2", { agencyId: "ag1", ...gates });

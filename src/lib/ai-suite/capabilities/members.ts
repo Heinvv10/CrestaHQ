@@ -7,6 +7,9 @@ import {
 } from "@/lib/server/members-service";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str } from "./helpers";
+import { AGENT_PREVIEW_LABELS, inviteState, invitePreview, keptTerritories } from "./invite-preview";
+import { UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
+import { canonical } from "@/lib/server/agent-proposals-encoding";
 
 export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -72,7 +75,10 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
     name: "invite_member",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
-    surfaces: ["chat"],
+    surfaces: ["chat", "agent"],
+    // On the agent surface every invite waits for a person (A4b): it emails
+    // someone, and it can add or re-role a member at once.
+    approval: "outbound",
     menuLabel:
       "Invite someone to this workspace by email (as admin or collaborator)",
     description:
@@ -99,6 +105,11 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
       if (!email || !EMAIL_RE.test(email)) {
         return { ok: false, error: "a valid email address is required" };
       }
+      // The approver reads it through oneLine, which drops invisible
+      // characters; the invite would go to the raw address.
+      if (UNSAFE_TEXT_RE.test(email)) return { ok: false, error: `the email ${UNSAFE_TEXT_MESSAGE}` };
+      // A look-alike letter (Cyrillic, accented) reads as another address.
+      if (!/^[!-~]+$/.test(email)) return { ok: false, error: "the email must be plain ASCII letters, digits and symbols" };
       const role = str(raw, "role");
       if (role !== "admin" && role !== "collaborator") {
         return {
@@ -108,20 +119,50 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
       }
       return { ok: true, args: { email, role } };
     },
+    // Neutral: what happens depends on the account, and the proposing key
+    // must not learn it (the approver reads it in the preview).
     summarize: (args) =>
       `Invite ${args.email} to this workspace as ${
         args.role === "admin" ? "an admin" : "a collaborator"
-      } (they'll get a signup email).`,
+      }.`,
+    agentPreviewLabels: AGENT_PREVIEW_LABELS,
+    approvalTarget: async () => ({ contactId: null, territoryId: null, scoped: false }),
+    preview: (ctx, args) =>
+      invitePreview(ctx.subAccountId!, ctx.agencyId, args.email as string, args.role as "admin" | "collaborator"),
     execute: async (ctx, args) => {
+      if (ctx.apiKey && !ctx.approved) {
+        throw new CapabilityUserError("Inviting someone needs a person's approval; propose it again.");
+      }
+      const pinned = ctx.approved?.pinned;
+      let territories: string[] | null = null;
+      if (ctx.approved) {
+        // What the approver reviewed, checked again now: the claim came
+        // after the last preview check, and the account or its territories
+        // may have changed.
+        const state = await inviteState(ctx.subAccountId!, String(pinned?.email));
+        territories = (await keptTerritories(ctx.subAccountId!, state, String(pinned?.role))).ids;
+        if (
+          pinned?.email !== args.email ||
+          pinned?.role !== args.role ||
+          canonical(state) !== canonical(pinned?.state) ||
+          canonical(territories) !== canonical(pinned?.territories)
+        ) {
+          throw new CapabilityUserError("This person's membership changed since it was reviewed; propose it again.");
+        }
+        if (state.kind === "blocked") throw new CapabilityUserError(state.reason);
+      }
       let res;
       try {
         res = await createInviteServerSide({
           subAccountId: ctx.subAccountId!,
           invitedByUid: ctx.uid,
-          // The assistant made the change; createdByUid records who asked it.
-          auditActor: { type: "ai_agent", id: "workspace-assistant" },
-          email: args.email as string,
-          role: args.role as "admin" | "collaborator",
+          // Approved: the approving person did it. Chat: the assistant made
+          // the change; createdByUid records who asked it.
+          auditActor: ctx.approved ? { type: "user", id: ctx.uid } : { type: "ai_agent", id: "workspace-assistant" },
+          email: (pinned?.email ?? args.email) as string,
+          role: (pinned?.role ?? args.role) as "admin" | "collaborator",
+          // Approved: an existing membership's or pending invite's territories stay as they are.
+          ...(territories ? { assignedTerritoryIds: territories } : {}),
         });
       } catch (err) {
         if (err instanceof MemberAddBlockedError) {

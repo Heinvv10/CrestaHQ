@@ -29,7 +29,10 @@ caller's own `userMemberships/${ctx.uid}` index). Capabilities that legitimately
 no tenant data need a justified `EXTERNAL_ONLY` entry in the script (which then also
 forbids them Firestore access). It also asserts the `inSubAccount()` delegation
 wrapper still re-anchors to the caller's agency, and fails vacuous passes (parse
-drift) via a minimum-capability floor. **When adding an AI Suite capability, this
+drift): every name in the names lock table (`capability-names.test.ts`, kept equal
+to the runtime registry) must be one it checked. A capability is found by
+`name: "…",` followed by `level: "…",` at the same indent, in an array entry or a
+standalone const alike. **When adding an AI Suite capability, this
 check must pass** — it exists to catch a future capability shipped without tenancy
 scoping. It runs as the first half of `pnpm lint`.
 

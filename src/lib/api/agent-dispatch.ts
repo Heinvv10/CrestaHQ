@@ -5,7 +5,7 @@ import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 import { buildAgencyAgentContext, buildAgentContext } from "@/lib/api/agent-context";
 import { queueProposal } from "@/lib/api/agent-propose";
 import { NO_SUCH_SUB_ACCOUNT, resolveReach } from "@/lib/api/agent-reach";
-import { recordAgentCall, recordAgentWrite } from "@/lib/api/agent-audit";
+import { recordAgencyAgentWrite, recordAgentCall, recordAgentWrite } from "@/lib/api/agent-audit";
 import type { HeldEnrolment, HoldFailure } from "@/lib/workflows/agent-hold";
 
 export {
@@ -182,7 +182,8 @@ async function dispatchForAgencyKey(
     // Reach runs on ANY subAccountId an agency-level call carries.
     const target = "subAccountId" in args ? await resolveReach(auth.agencyId, args.subAccountId) : null;
     if ("subAccountId" in args && !target) return noSuchSubAccount();
-    const validated = cap.validate(rawArgs);
+    // Narrowed before validate, as in runInSubAccount.
+    const validated = cap.validate(cap.agentArgs ? cap.agentArgs(args) : rawArgs);
     if (!validated.ok) return refuse("invalid_args", 400, validated.error);
     // A validator that rewrote the id (case, "#1011") would run on one reach never checked.
     if ("subAccountId" in validated.args && validated.args.subAccountId !== args.subAccountId) return noSuchSubAccount();
@@ -203,6 +204,9 @@ async function dispatchForAgencyKey(
     const touched = result.ref?.kind === "subAccount" ? result.ref.id : target;
     if (!cap.readonly && !result.deduped && touched) {
       await recordAgentWrite({ ...auth, level: "sub-account", subAccountId: touched }, cap.name, validated.args, result.ref);
+    } else if (!cap.readonly && !result.deduped && result.ref) {
+      // No sub-account touched (a billing plan): audited under the agency.
+      await recordAgencyAgentWrite(auth, cap.name, validated.args, result.ref);
     }
     return {
       ok: true,

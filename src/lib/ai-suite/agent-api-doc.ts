@@ -46,6 +46,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   send_review_request: "the exact text, recipient, channel and template, or why none would send",
   create_broadcast: "channel, audience and matched count, exact subject and message, merge tags, what is checked at send",
   start_voice_call: "the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time",
+  invite_member: "the email, the role (admin's powers named), what happens: a new invite, added at once with nothing to accept, a member's role old -> new, or that approving will refuse (a disabled or another agency's account); territories kept or cleared; whether an email goes out. The proposing agent is shown only the sub-account, email and role",
 };
 
 const ROLE: Record<string, string> = { subAccountMember: "member", subAccountAdmin: "admin", agencyOwner: "agency owner" };
