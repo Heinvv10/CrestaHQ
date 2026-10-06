@@ -328,17 +328,19 @@ no `apply_snapshot` row is ever in "Approve all"):
   - `legacyAiConfigPath` / `migratedLegacyDocs` live in
     `src/lib/comms/ai/legacy-config.ts`, shared by agent.ts, model-policy.ts
     and the snapshot apply.
-- Fix round 4 (review LOWs):
-  - The lazy migration (`maybeMigrateLegacy`) now `create()`s the profile:
-    one that read "no profile" before an apply committed no longer overwrites
-    the merged persona; it skips its writes and the caller reads the profile
-    that exists. Its two writes are sequential (profile, then sms).
+- Fix rounds 4–5 (review):
+  - The lazy migration (`maybeMigrateLegacy`, agent.ts) keeps its plain
+    pre-read (no transaction on the hot path once a profile exists), and when
+    it must migrate does so in ONE transaction that re-reads the profile, the
+    legacy doc and the sms channel: a profile there now means it writes
+    nothing; otherwise it writes the sms doc (only if none exists) and the
+    profile together. So a migration acting on a stale read cannot overwrite
+    a snapshot apply's merged persona or an operator's later SMS change (it
+    could switch a bot back on before), and a failure leaves neither doc.
+  - The apply's own migration writes sms only when no sms doc exists, and the
+    plan reads an existing sms doc's `enabled` (else the legacy doc's).
   - An hours field that neither the snapshot nor the existing profile has is
     written as the default by the merge, and the row says "the defaults".
-- Fix round 5: the lazy migration `create()`s the sms channel too (sms first,
-  then the profile), and the apply's migration writes sms only when no sms
-  doc exists; the plan reads an existing sms doc's `enabled`. A late
-  migration can no longer switch an operator's SMS bot back on.
 
 ### D4 — approvals: two row kinds, one new page
 
