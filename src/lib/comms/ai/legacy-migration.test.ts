@@ -14,7 +14,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { getAgentProfile, resolveAgent } = await import("./agent");
+const { getAgentProfile, resolveAgent, upsertChannelConfig } = await import("./agent");
 const { applySnapshot } = await import("@/lib/snapshots/apply");
 
 const LEGACY = {
@@ -87,6 +87,36 @@ describe("two lazy migrations at once", () => {
     expect(mem.read("subAccounts/sa1/aiAgent/profile")).toBeUndefined();
     expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ contextMessageCount: 7 });
     expect((await resolveAgent("sa1", "sms"))?.profile).toMatchObject({ businessName: "Client One" });
+  });
+});
+
+describe("a late migration never undoes an operator's channel change", () => {
+  it("parked before its sms write while another migrates and the operator switches SMS off: it stays off", async () => {
+    mem.seed("subAccounts/sa1/aiConfig/main", { ...LEGACY, enabled: true, modelOverride: "legacy/model" });
+    let entered!: () => void;
+    const reached = new Promise<void>((r) => (entered = r));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const orig = mem.db.doc.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((p: string) => {
+      const ref = orig(p);
+      if (p !== "subAccounts/sa1/aiAgent/sms") return ref;
+      const park = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A) => {
+        entered();
+        await gate;
+        return fn(...a);
+      };
+      return { ...ref, set: park(ref.set), create: park(ref.create) };
+    });
+    const late = resolveAgent("sa1", "sms");
+    await reached;
+    spy.mockRestore();
+    await getAgentProfile("sa1"); // another read migrates fully
+    await upsertChannelConfig("sa1", "sms", { enabled: false, modelOverride: null });
+    release();
+    expect((await late)?.effective.enabled).toBe(false);
+    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ enabled: false, modelOverride: null });
+    expect((await resolveAgent("sa1", "sms"))?.effective.enabled).toBe(false);
   });
 });
 
