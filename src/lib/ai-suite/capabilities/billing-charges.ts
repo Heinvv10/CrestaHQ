@@ -67,7 +67,8 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
             "Optional per-client price override in dollars, for the chosen cadence. Omit to use the plan's standard price.",
         },
       },
-      required: ["subAccountId", "subAccountName", "planId", "planName"],
+      // The display names are optional: an agent's are dropped (withoutLabels).
+      required: ["subAccountId", "planId"],
       additionalProperties: false,
     },
     validate: (raw) => {
@@ -241,7 +242,7 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
             "ISO 4217 code, lowercase. Defaults to usd. It must be one the deployment's payment provider can settle in cents (e.g. zar or usd; never jpy or kwd).",
         },
       },
-      required: ["subAccountId", "subAccountName", "description", "amount"],
+      required: ["subAccountId", "description", "amount"],
       additionalProperties: false,
     },
     validate: (raw) => {
