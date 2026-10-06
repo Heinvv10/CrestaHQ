@@ -58,7 +58,12 @@ export interface OpenRun {
   currentNodeId: string | null;
   waitingUntil: string | null;
   enrolledAt: string | null;
-  /** A messaging step completed, or one was claimed and may have sent. */
+  /**
+   * True unless every messaging step was skipped or deferred: a step that sent
+   * ("ok", "sent:…"), an ambiguous send the run continued past ("error:…"),
+   * and any step claim (sending, or failed mid-send) all count. Errs towards
+   * true, because a false here lets a rollback message the contact twice.
+   */
   messaged: boolean;
 }
 
@@ -78,7 +83,10 @@ export function toOpenRun(
   if (d.status !== "running" && d.status !== "waiting") return null;
   const history = Array.isArray(d.history) ? (d.history as { type?: unknown; result?: unknown }[]) : [];
   const sent = history.some(
-    (h) => typeof h.type === "string" && MESSAGING_STEP_TYPES.has(h.type) && h.result === "ok"
+    (h) =>
+      typeof h.type === "string" &&
+      MESSAGING_STEP_TYPES.has(h.type) &&
+      !(typeof h.result === "string" && /^(skipped|deferred):/.test(h.result))
   );
   const claim = d.stepClaim as { state?: unknown } | null | undefined;
   const waiting = d.waiting as { until?: unknown } | null | undefined;

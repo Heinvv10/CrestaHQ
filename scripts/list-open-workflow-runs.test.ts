@@ -29,10 +29,15 @@ describe("toOpenRun", () => {
     expect(toOpenRun("r", run({ subAccountId: "other" }), "sa1")).toBeNull();
   });
 
-  it("marks a run messaged once a messaging step completed", () => {
-    expect(toOpenRun("r", run({ history: [{ type: "wait", result: "ok" }] }), "sa1")?.messaged).toBe(false);
-    expect(toOpenRun("r", run({ history: [{ type: "whatsapp_template", result: "skipped:quiet" }] }), "sa1")?.messaged).toBe(false);
-    expect(toOpenRun("r", run({ history: [{ type: "whatsapp_template", result: "ok" }] }), "sa1")?.messaged).toBe(true);
+  it("marks a run messaged unless every messaging step was skipped or deferred", () => {
+    const messaged = (type: string, result: string) => toOpenRun("r", run({ history: [{ type, result }] }), "sa1")?.messaged;
+    expect(messaged("wait", "ok")).toBe(false);
+    expect(messaged("whatsapp_template", "skipped:opt_out")).toBe(false);
+    expect(messaged("send_whatsapp", "deferred:quiet_hours_until_2026-10-07T06:00:00.000Z")).toBe(false);
+    expect(messaged("whatsapp_template", "ok")).toBe(true);
+    // The engine logs these after the provider accepted, or may have accepted, the send.
+    expect(messaged("send_whatsapp", "sent:message_record_failed")).toBe(true);
+    expect(messaged("send_sms", "error:timeout")).toBe(true);
   });
 
   it("treats a step claim as possibly sent", () => {
