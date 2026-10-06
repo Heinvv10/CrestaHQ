@@ -103,7 +103,7 @@ other route: every other `/api/v1` route refuses it with 403
 
 ## Tools
 
-97 tools today; the full table, with each tool's kind, role and what its approval
+98 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
 from the registry and a test fails when it drifts. It lists sub-account tools; an
 agency key's agency-level proposals are approved on `/agency/approvals`, not on a

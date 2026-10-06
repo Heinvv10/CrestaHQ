@@ -84,6 +84,7 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   update_booking_page: { slug: "bp1", durationMinutes: 45 },
   delete_booking_page: { slug: "bp1" },
   list_members: {},
+  invite_member: { email: "new@example.com", role: "admin" },
   get_contact: { contactId: "c1" },
   update_contact: { contactId: "c1", name: "Ann B", tags: ["vip"] },
   add_tags: { contactId: "c1", tags: ["vip"] },

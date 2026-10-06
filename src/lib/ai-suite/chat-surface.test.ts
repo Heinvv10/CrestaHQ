@@ -16,7 +16,11 @@ import type { AiSuiteCapability } from "./capabilities";
 const mem = createMemoryFirestore();
 // Scheduling and bulk sends need the queue configured to be previewed.
 vi.mock("@/lib/automations/qstash", async (orig) => ({ ...((await orig()) as object), qstashIsConfigured: () => true }));
-vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
+vi.mock("@/lib/firebase/admin", () => ({
+  getAdminDb: () => mem.db,
+  // invite_member's preview asks whether the email has an account: none does here.
+  getAdminAuth: () => ({ getUserByEmail: async () => Promise.reject(Object.assign(new Error("none"), { code: "auth/user-not-found" })) }),
+}));
 vi.mock("@/lib/auth/require-tenancy", () => ({
   requireSubAccountMember: async () => ({
     uid: "u1",
@@ -214,6 +218,7 @@ describe("registry invariants", () => {
     start_voice_call: { contactId: "c_voice" },
     set_sub_account_gate: { subAccountId: "sa1", gate: "whatsapp", enabled: true },
     apply_snapshot: { subAccountId: "sa1", snapshotId: "snap_own" },
+    invite_member: { email: "new@example.com", role: "admin" },
   };
   /** The approval class a capability carries for its sample args. */
   const approvalOf = async (c: (typeof AI_SUITE_CAPABILITIES)[number]) => {

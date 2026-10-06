@@ -118,7 +118,7 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["delete_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
   ["update_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
   ["list_members",                              "sub-account", "subAccountAdmin",  true, null],
-  ["invite_member",                             "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["invite_member",                             "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
   ["research_website_reference",                "sub-account", "subAccountAdmin",  true, ["chat"]],
   ["get_website_prefill",                       "sub-account", "subAccountAdmin",  true, ["chat"]],
   ["create_website",                            "sub-account", "subAccountAdmin",  false, ["chat"]],

@@ -7,6 +7,8 @@ import {
 } from "@/lib/server/members-service";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str } from "./helpers";
+import { inviteState, invitePreview } from "./invite-preview";
+import { canonical } from "@/lib/server/agent-proposals-encoding";
 
 export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -72,7 +74,10 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
     name: "invite_member",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
-    surfaces: ["chat"],
+    surfaces: ["chat", "agent"],
+    // On the agent surface every invite waits for a person (A4b): it emails
+    // someone, and it can add or re-role a member at once.
+    approval: "outbound",
     menuLabel:
       "Invite someone to this workspace by email (as admin or collaborator)",
     description:
@@ -112,16 +117,32 @@ export const MEMBER_CAPABILITIES: AiSuiteCapability[] = [
       `Invite ${args.email} to this workspace as ${
         args.role === "admin" ? "an admin" : "a collaborator"
       } (they'll get a signup email).`,
+    approvalTarget: async () => ({ contactId: null, territoryId: null, scoped: false }),
+    preview: (ctx, args) =>
+      invitePreview(ctx.subAccountId!, ctx.agencyId, args.email as string, args.role as "admin" | "collaborator"),
     execute: async (ctx, args) => {
+      if (ctx.apiKey && !ctx.approved) {
+        throw new CapabilityUserError("Inviting someone needs a person's approval; propose it again.");
+      }
+      const pinned = ctx.approved?.pinned;
+      if (ctx.approved) {
+        // What the approver reviewed, checked again now: the claim came
+        // after the last preview check, and the account may have changed.
+        const now = await inviteState(ctx.subAccountId!, ctx.agencyId, String(pinned?.email));
+        if (pinned?.email !== args.email || pinned?.role !== args.role || canonical(now) !== canonical(pinned?.state)) {
+          throw new CapabilityUserError("This person's membership changed since it was reviewed; propose it again.");
+        }
+      }
       let res;
       try {
         res = await createInviteServerSide({
           subAccountId: ctx.subAccountId!,
           invitedByUid: ctx.uid,
-          // The assistant made the change; createdByUid records who asked it.
-          auditActor: { type: "ai_agent", id: "workspace-assistant" },
-          email: args.email as string,
-          role: args.role as "admin" | "collaborator",
+          // Approved: the approving person did it. Chat: the assistant made
+          // the change; createdByUid records who asked it.
+          auditActor: ctx.approved ? { type: "user", id: ctx.uid } : { type: "ai_agent", id: "workspace-assistant" },
+          email: (pinned?.email ?? args.email) as string,
+          role: (pinned?.role ?? args.role) as "admin" | "collaborator",
         });
       } catch (err) {
         if (err instanceof MemberAddBlockedError) {
