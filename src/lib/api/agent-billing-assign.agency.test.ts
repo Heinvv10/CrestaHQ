@@ -74,6 +74,8 @@ describe("propose: an agency-level spend row, nothing charged", () => {
       { label: "Price", value: "ZAR 99 per month" },
       { label: "Switches on", value: "Email broadcasts" },
       { label: "Switches off", value: "Public API access (changes reach: API and agent keys lose this sub-account), Labs (pre-release features)" },
+      { label: "Included each month", value: "Unlimited" },
+      { label: "Overage rates", value: "None" },
       { label: "Features change", value: "Now" },
       { label: "Billing", value: "Switches the live subscription now, prorated." },
     ]);
@@ -99,6 +101,22 @@ describe("propose: an agency-level spend row, nothing charged", () => {
     const id = await propose();
     expect(rowValue(id, "Switches off")).toBe("SMS AI auto-reply");
     expect(rowValue(id, "Switches on")).toBe("Dedicated email sending domain (changes reach: its own sending domain)");
+  });
+
+  it("the plan's usage quotas and overage rates are shown; editing one before approve is preview_changed", async () => {
+    const spies = spyBillingProvider("stripe");
+    mem.seed("agencies/ag1/plans/plan_1", {
+      ...PLAN, quotas: { emailsPerMonth: 5000, smsSegmentsPerMonth: 0, whatsappPerMonth: null }, rates: { emailCents: 2, voiceMinuteCents: 150 },
+    });
+    const id = await propose();
+    expect([rowValue(id, "Included each month"), rowValue(id, "Overage rates")]).toEqual([
+      "5,000 emails, 0 SMS segments",
+      "ZAR 0.02 per email, ZAR 1.5 per voice minute",
+    ]);
+    mem.seed("agencies/ag1/plans/plan_1", { ...mem.read("agencies/ag1/plans/plan_1"), rates: { emailCents: 3, voiceMinuteCents: 150 } });
+    const res = await decideAgency(id, "approve");
+    expect([res.status, (await res.json()).error]).toEqual([409, "preview_changed"]);
+    expect(spies.calls()).toBe(0);
   });
 
   it("a special price is shown beside the plan's and pinned", async () => {

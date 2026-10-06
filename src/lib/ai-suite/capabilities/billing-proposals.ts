@@ -35,6 +35,21 @@ const REACH: Partial<Record<PlanGateKey, string>> = {
   emailDomainEnabledByAgency: "changes reach: its own sending domain",
 };
 
+/** Usage the plan includes and what it sells beyond it (usage-meter.ts reads
+ *  both live from the assigned plan: a quota can pause a client's sends). */
+const QUOTAS: Record<string, string> = {
+  emailsPerMonth: "emails", smsSegmentsPerMonth: "SMS segments", whatsappPerMonth: "WhatsApp messages",
+  aiTokensPerMonth: "AI tokens", voiceMinutesPerMonth: "voice minutes",
+};
+const RATES: Record<string, string> = {
+  emailCents: "per email", smsSegmentCents: "per SMS segment", whatsappMessageCents: "per WhatsApp message",
+  aiTokensPer1kCents: "per 1,000 AI tokens", voiceMinuteCents: "per voice minute",
+};
+const numbers = (v: unknown, labels: Record<string, string>, show: (n: number, label: string) => string) =>
+  Object.keys(labels)
+    .filter((k) => typeof (v as Record<string, unknown> | null)?.[k] === "number")
+    .map((k) => show((v as Record<string, number>)[k]!, labels[k]!));
+
 const gateList = (keys: PlanGateKey[]) =>
   keys.length ? keys.map((k) => (REACH[k] ? `${PLAN_GATE_LABELS[k]} (${REACH[k]})` : PLAN_GATE_LABELS[k])).join(", ") : "Nothing";
 
@@ -96,6 +111,11 @@ export async function assignPreview(
       },
       { label: "Switches on", value: gateList(on) },
       { label: "Switches off", value: gateList(off) },
+      {
+        label: "Included each month",
+        value: numbers(plan.quotas, QUOTAS, (n, l) => `${n.toLocaleString("en-US")} ${l}`).join(", ") || "Unlimited",
+      },
+      { label: "Overage rates", value: numbers(plan.rates, RATES, (n, l) => `${fmtMoney(n / 100, cur)} ${l}`).join(", ") || "None" },
       { label: "Features change", value: live ? "Now" : "When the client pays" },
       { label: "Billing", value: billingLine },
     ],
