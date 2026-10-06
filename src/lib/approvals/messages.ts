@@ -76,3 +76,15 @@ export const STATUS_LABELS: Record<ApprovalStatus, string> = {
   expired: "Expired",
   unsettled: "Needs checking",
 };
+
+/** What each approval class is, for the agency page's row line. */
+export const CLASS_LABELS: Record<string, string> = {
+  outbound: "Outbound message",
+  workflow_activate: "Workflow activation",
+  workflow_enrolment: "Workflow enrolment",
+  hard_delete: "Permanent delete",
+  spend: "Spend",
+  channel_change: "Channel change",
+  public_change: "Public page change",
+  gate_change: "Feature gate",
+};
