@@ -81,7 +81,7 @@ export function phoneFromQContact(v: unknown): string | undefined {
  * location pin (see gpsFromLocationFields) — resolving it requires an HTTP
  * call, so run.ts does that once per pin and passes the result in here.
  */
-export function mapCase(c: CaseDetail, contact: ContactDetail | null, gps?: string): Mapped {
+export function mapCase(c: CaseDetail, contact: ContactDetail | null, gps?: string, tag: string = IMPORT_TAG): Mapped {
   const cf = contact?.fields ?? {};
   const phone = phoneFromQContact(cf.telephone) ?? phoneFromQContact(c.fields.c__contact_number);
   if (!phone) return { ok: false, reason: "no_phone" };
@@ -109,7 +109,7 @@ export function mapCase(c: CaseDetail, contact: ContactDetail | null, gps?: stri
       name,
       ...(address ? { address } : {}),
       source: IMPORT_SOURCE,
-      tags_add: [IMPORT_TAG],
+      tags_add: [tag],
       custom_fields: custom,
     },
   };
