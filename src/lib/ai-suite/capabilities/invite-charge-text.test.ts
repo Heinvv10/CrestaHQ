@@ -16,9 +16,9 @@ const charge = (description: string) =>
   getCapability("create_one_time_charge")!.validate({ subAccountId: "sa1", description, amount: 5, currency: "usd" });
 
 const HIDDEN = [
-  ["a zero-width space", "​"],
-  ["a right-to-left override", "‮"],
-  ["a zero-width joiner", "‍"],
+  ["a zero-width space", "\u200b"],
+  ["a right-to-left override", "\u202e"],
+  ["a zero-width joiner", "\u200d"],
   ["a control character", "\u0007"],
 ] as const;
 
@@ -32,11 +32,14 @@ describe("invite_member email", () => {
 });
 
 describe("create_one_time_charge description", () => {
-  it.each(HIDDEN.filter(([label]) => label !== "a zero-width joiner"))("with %s inside is refused", (_label, ch) => {
+  it.each(HIDDEN)("with %s inside is refused", (_label, ch) => {
     expect(charge(`Web${ch} design`)).toEqual({ ok: false, error: expect.stringMatching(/can't be shown safely/) });
   });
-  it("plain text, and a joiner inside a word (Persian, emoji sequences), validate", () => {
+  // Strict, as the email: the preview drops a joiner between letters too, so
+  // the approver would read text other than what the client sees (and the
+  // duplicate-charge guard would miss a look-alike).
+  it("a joiner between letters is refused too; plain text validates", () => {
+    expect(charge("Web\u200cdesign")).toEqual({ ok: false, error: expect.stringMatching(/can't be shown safely/) });
     expect(charge("Web design")).toMatchObject({ ok: true, args: { description: "Web design" } });
-    expect(charge("می‌خواهم")).toMatchObject({ ok: true });
   });
 });

@@ -10,7 +10,7 @@ import { str, fmtMoney } from "./helpers";
 import { chargePreview, NEEDS_APPROVAL, tenantWide, withoutLabels } from "./billing-proposals";
 import { currencyRefusal, defaultBillingCurrency } from "./billing-currency";
 import { paddedSubAccountId } from "./agency-support";
-import { hasUnsafeText, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
 import { ASSIGN_BILLING_PLAN } from "./billing-assign";
 
 export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
@@ -72,8 +72,9 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
         };
       }
       const description = str(raw, "description");
-      // Shown to the client at checkout exactly as stored, and to the approver through oneLine.
-      if (hasUnsafeText(description)) return { ok: false, error: `the description ${UNSAFE_TEXT_MESSAGE}` };
+      // Shown to the client at checkout exactly as stored, and to the approver
+      // through oneLine, which drops every format character: strict, as the email.
+      if (UNSAFE_TEXT_RE.test(description)) return { ok: false, error: `the description ${UNSAFE_TEXT_MESSAGE}` };
       if (!description || description.length > 120) {
         return {
           ok: false,
