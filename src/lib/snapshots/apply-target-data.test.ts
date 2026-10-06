@@ -75,10 +75,41 @@ describe("an unmigrated legacy persona (aiConfig/main, no profile)", () => {
     expect(mem.read("subAccounts/sa_dst/aiAgent/profile")).toBeUndefined();
   });
 
-  it("a legacy doc with a blank prompt does not: written", async () => {
-    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: " ", enabled: true });
-    expect((await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1")).persona).toBe("written");
-    expect((await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"))).aiProfileApplied).toBe(true);
+  it("a legacy doc with a blank prompt is migrated first, then merged: its own fields and SMS config stay", async () => {
+    mem.seed("subAccounts/sa_dst/aiConfig/main", {
+      systemPrompt: "", enabled: true, escalationNotifyEmail: "ops@client.io", businessName: "Client One", contextMessageCount: 7,
+    });
+    const plan = await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1");
+    const r = await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"));
+    expect([plan.persona, plan.replyingChannels, r.aiProfileApplied]).toEqual(["written", ["sms"], true]);
+    expect(mem.read("subAccounts/sa_dst/aiAgent/profile")).toMatchObject({
+      ...PERSONA, escalationNotifyEmail: "ops@client.io", businessName: "Client One",
+    });
+    expect(mem.read("subAccounts/sa_dst/aiAgent/sms")).toMatchObject({ enabled: true, contextMessageCount: 7 });
+  });
+
+  it("a profile that exists (blank prompt) wins over a legacy doc, even one with a prompt: written", async () => {
+    mem.seed("subAccounts/sa_dst/aiAgent/profile", { systemPrompt: "", businessName: "Target Co" });
+    mem.seed("subAccounts/sa_dst/aiConfig/main", { systemPrompt: "Legacy persona.", enabled: true });
+    const plan = await planSnapshotApply(db, payload([], PERSONA), "sa_dst", "snap1");
+    const r = await applySnapshot(db, payload([], PERSONA), "sa_dst", scope("snap1"));
+    expect([plan.persona, r.aiProfileApplied]).toEqual(["written", true]);
+    expect(mem.read("subAccounts/sa_dst/aiAgent/profile")).toMatchObject({ systemPrompt: PERSONA.systemPrompt, businessName: "Target Co" });
+  });
+});
+
+describe("the AI's hours a written persona lands with", () => {
+  const NO_HOURS = { systemPrompt: "P.", escalationKeywords: [] } as unknown as SnapshotPayload["aiProfile"];
+  it.each([
+    ["the snapshot's, when it carries them", PERSONA, undefined, { hoursStart: 7, hoursEnd: 19, timezone: "Africa/Johannesburg", from: "snapshot" }],
+    ["the target's own, kept, when it carries none", NO_HOURS, { systemPrompt: "", hoursStart: 6, hoursEnd: 20, timezone: "Europe/London" }, { hoursStart: 6, hoursEnd: 20, timezone: "Europe/London", from: "target" }],
+    ["the defaults on a fresh profile when it carries none", NO_HOURS, undefined, { hoursStart: 0, hoursEnd: 0, timezone: "Australia/Sydney", from: "default" }],
+  ])("%s", async (_label, persona, existing, hours) => {
+    if (existing) mem.seed("subAccounts/sa_dst/aiAgent/profile", existing);
+    expect((await planSnapshotApply(db, payload([], persona), "sa_dst", "snap1")).aiHours).toEqual(hours);
+    await applySnapshot(db, payload([], persona), "sa_dst", scope("snap1"));
+    const { from: _from, ...landed } = hours;
+    expect(mem.read("subAccounts/sa_dst/aiAgent/profile")).toMatchObject(landed);
   });
 });
 

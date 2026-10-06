@@ -3,8 +3,9 @@ import "server-only";
 import type { Firestore } from "firebase-admin/firestore";
 import type { SnapshotPayload } from "@/types/snapshots";
 import { existingPaths } from "./apply";
-import { legacyAiConfigPath } from "@/lib/comms/ai/legacy-config";
-import { deterministicId, personaIsSet } from "./apply-target";
+import { legacyAiConfigPath, migratedLegacyDocs } from "@/lib/comms/ai/legacy-config";
+import { DEFAULT_AI_AGENT_PROFILE } from "@/types/ai";
+import { deterministicId, HOURS_FIELDS, personaIsSet } from "./apply-target";
 
 type Counts = { forms: number; messageTemplates: number; products: number; workflows: number; customFields: number };
 
@@ -19,6 +20,10 @@ export interface SnapshotApplyPlan {
    *  (`aiAgent/{channel}.enabled`). They skip replies while the prompt is
    *  blank (respond.ts `no_prompt`), so the write starts them answering. */
   replyingChannels: string[];
+  /** With `persona: "written"`: the hours and timezone the profile ends up
+   *  with — the snapshot's where it carries them, else the target's own
+   *  (an existing or legacy profile, kept by the merge), else the defaults. */
+  aiHours?: { hoursStart: unknown; hoursEnd: unknown; timezone: unknown; from: "snapshot" | "target" | "default" | "mixed" };
 }
 
 /**
@@ -64,15 +69,37 @@ export async function planSnapshotApply(
 
   let persona: SnapshotApplyPlan["persona"] = "none";
   let replyingChannels: string[] = [];
+  let aiHours: SnapshotApplyPlan["aiHours"];
   if (payload.aiProfile) {
     const agent = await db.collection(`subAccounts/${targetSubAccountId}/aiAgent`).get();
     const profile = agent.docs.find((d) => d.id === "profile");
-    // With no profile, an unmigrated legacy persona is the target's (writePersonaIfAbsent).
-    const legacy = profile ? undefined : (await db.doc(legacyAiConfigPath(targetSubAccountId)).get()).data();
-    persona = personaIsSet(profile?.data()) || personaIsSet(legacy) ? "kept" : "written";
+    // With no profile, an unmigrated legacy doc is the profile, as it would be
+    // once migrated (writePersonaIfAbsent migrates it before merging).
+    const legacy = profile ? null : await db.doc(legacyAiConfigPath(targetSubAccountId)).get();
+    const migrated = legacy?.exists ? migratedLegacyDocs(legacy.data()) : null;
+    const current: Record<string, unknown> | undefined = migrated ? { ...migrated.profile } : profile?.data();
+    persona = personaIsSet(current) ? "kept" : "written";
     if (persona === "written") {
-      replyingChannels = agent.docs.filter((d) => d.id !== "profile" && d.data().enabled === true).map((d) => d.id).sort();
+      const on = agent.docs.filter((d) => d.id !== "profile" && !(migrated && d.id === "sms") && d.data().enabled === true).map((d) => d.id);
+      replyingChannels = [...on, ...(migrated?.sms.enabled === true ? ["sms"] : [])].sort();
+      aiHours = landedHours(payload.aiProfile as unknown as Record<string, unknown>, current);
     }
   }
-  return { create, skip, enabledForms, persona, replyingChannels };
+  return { create, skip, enabledForms, persona, replyingChannels, ...(aiHours ? { aiHours } : {}) };
+}
+
+/** Per field, what writePersonaIfAbsent leaves: the snapshot's value when it
+ *  carries one, else the current profile's (merge), else the default (fresh). */
+function landedHours(snapshot: Record<string, unknown>, current: Record<string, unknown> | undefined): NonNullable<SnapshotApplyPlan["aiHours"]> {
+  const fallback = current ? "target" : "default";
+  const picks = HOURS_FIELDS.map((k) =>
+    snapshot[k] !== undefined ? ([snapshot[k], "snapshot"] as const) : ([current ? current[k] : DEFAULT_AI_AGENT_PROFILE[k], fallback] as const),
+  );
+  const sources = new Set(picks.map(([, from]) => from));
+  return {
+    hoursStart: picks[0]![0],
+    hoursEnd: picks[1]![0],
+    timezone: picks[2]![0],
+    from: sources.size === 1 ? [...sources][0]! : "mixed",
+  };
 }

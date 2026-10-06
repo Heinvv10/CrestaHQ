@@ -116,7 +116,7 @@ describe("anything else → an agency-level public_change row, nothing written",
       Skips: "nothing (none of it is there yet)",
       Workflows: "Arrive as drafts: none runs until someone activates it.",
       Forms: "Copied with their status: 1 accepts public submissions on this sub-account at once.",
-      "AI persona": "Written (none set); sets the AI's hours and timezone to the snapshot's (8:00–17:00 UTC)",
+      "AI persona": "Written (none set); the AI's hours become the snapshot's: 8:00–17:00 UTC",
     });
     expect(row!.pinned).toEqual({ snapshotId: "snap_own", payloadSha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     untouched("old");
@@ -130,6 +130,18 @@ describe("anything else → an agency-level public_change row, nothing written",
     expect(preview["AI persona"]).toBe("Kept (target already has one)");
   });
 
+  it.each([
+    ["the target's own hours stay when the snapshot carries none", { systemPrompt: "", hoursStart: 6, hoursEnd: 20, timezone: "Europe/London" }, "Written (none set); the AI's hours stay 6:00–20:00 Europe/London"],
+    ["a fresh profile gets the defaults", undefined, "Written (none set); the AI's hours become the defaults: 24/7 Australia/Sydney"],
+  ])("the persona row says what hours land: %s", async (_label, existing, row) => {
+    const payload = { ...mem.read("agencies/ag1/snapshots/snap_own")!.payload as object, aiProfile: { systemPrompt: "P.", escalationKeywords: [] } };
+    mem.seed("agencies/ag1/snapshots/snap_nohours", { agencyId: "ag1", name: "No hours", description: "", sourceSubAccountId: "src", createdAt: new Date(), payload });
+    if (existing) mem.seed("subAccounts/old/aiAgent/profile", existing);
+    await apply("old", "snap_nohours");
+    const preview = Object.fromEntries((proposals()[0]!.preview as Array<{ label: string; value: string }>).map((p) => [p.label, p.value]));
+    expect(preview["AI persona"]).toBe(row);
+  });
+
   it("a persona to be written names the AI channels switched on here, which start replying with it", async () => {
     mem.seed("subAccounts/old/aiAgent/whatsapp", { enabled: true });
     mem.seed("subAccounts/old/aiAgent/web-chat", { enabled: true });
@@ -137,7 +149,7 @@ describe("anything else → an agency-level public_change row, nothing written",
     await apply("old", "snap_own");
     const preview = Object.fromEntries((proposals()[0]!.preview as Array<{ label: string; value: string }>).map((p) => [p.label, p.value]));
     expect(preview["AI persona"]).toBe(
-      "Written (none set); sets the AI's hours and timezone to the snapshot's (8:00–17:00 UTC); web-chat, whatsapp start replying to customers with it at once"
+      "Written (none set); the AI's hours become the snapshot's: 8:00–17:00 UTC; web-chat, whatsapp start replying to customers with it at once"
     );
   });
 });

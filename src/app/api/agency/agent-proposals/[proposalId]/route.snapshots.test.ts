@@ -96,7 +96,7 @@ describe("approve an apply_snapshot row", () => {
     expect(body.preview).toEqual(
       expect.arrayContaining([{
         label: "AI persona",
-        value: "Written (none set); sets the AI's hours and timezone to the snapshot's (8:00–17:00 UTC); whatsapp starts replying to customers with it at once",
+        value: "Written (none set); the AI's hours become the snapshot's: 8:00–17:00 UTC; whatsapp starts replying to customers with it at once",
       }])
     );
     expect(appliedDocs(mem, "sa1")).toEqual([]);
@@ -110,6 +110,24 @@ describe("approve an apply_snapshot row", () => {
     expect((await decideAgency(id, "approve")).status).toBe(200);
     const { resolveAgent } = await import("@/lib/comms/ai/agent");
     expect((await resolveAgent("sa1", "sms"))?.effective.systemPrompt).toBe("Legacy persona.");
+  });
+
+  it("a blank legacy persona: migrated and merged on approve; the lazy migration running in between is no preview_changed", async () => {
+    mem.seed("subAccounts/sa1/aiConfig/main", {
+      systemPrompt: "", enabled: true, escalationNotifyEmail: "ops@client.io", businessName: "Client One",
+    });
+    const id = await proposeApply("sa1");
+    expect(row(id).preview).toEqual(expect.arrayContaining([{
+      label: "AI persona",
+      value: "Written (none set); the AI's hours become the snapshot's: 8:00–17:00 UTC; sms starts replying to customers with it at once",
+    }]));
+    const { getAgentProfile } = await import("@/lib/comms/ai/agent");
+    await getAgentProfile("sa1"); // the real lazy migration
+    expect(mem.read("subAccounts/sa1/aiAgent/sms")).toMatchObject({ enabled: true });
+    expect((await decideAgency(id, "approve")).status).toBe(200);
+    expect(mem.read("subAccounts/sa1/aiAgent/profile")).toMatchObject({
+      systemPrompt: expect.stringMatching(/^Persona /), escalationNotifyEmail: "ops@client.io", businessName: "Client One",
+    });
   });
 
   it("the snapshot's payload edited since → 409 preview_changed (pinned hash), nothing written", async () => {

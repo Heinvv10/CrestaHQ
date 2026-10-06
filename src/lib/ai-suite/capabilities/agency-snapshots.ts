@@ -6,7 +6,7 @@ import { apiKeyRef } from "@/lib/firestore/api-keys";
 import { isDocId } from "@/lib/server/doc-id";
 import { millis } from "@/lib/server/agent-proposals-encoding";
 import { applySnapshot } from "@/lib/snapshots/apply";
-import { planSnapshotApply } from "@/lib/snapshots/apply-plan";
+import { planSnapshotApply, type SnapshotApplyPlan } from "@/lib/snapshots/apply-plan";
 import type { SnapshotPayload } from "@/types/snapshots";
 import { isKeyCreated } from "./agency-gates";
 import { paddedSubAccountId } from "./agency-support";
@@ -113,18 +113,27 @@ async function minterOf(ctx: AiSuiteActionContext): Promise<string> {
 
 const PERSONA_ROW = { written: "Written (none set)", kept: "Kept (target already has one)", none: "None in this snapshot" } as const;
 
-/** The persona row. A written persona also sets the AI's hours and timezone
- *  (an existing blank-prompt profile's included), and starts every
- *  switched-on AI channel replying. */
-function personaRow(plan: Awaited<ReturnType<typeof planSnapshotApply>>, persona: SnapshotPayload["aiProfile"]): string {
-  if (plan.persona !== "written") return PERSONA_ROW[plan.persona];
-  const { hoursStart, hoursEnd, timezone } = persona ?? {};
-  const hours = typeof hoursStart === "number" && typeof hoursEnd === "number" && typeof timezone === "string"
-    ? ` (${hoursStart}:00–${hoursEnd}:00 ${oneLine(timezone)})`
-    : "";
+/** Hours as respond.ts reads them: start === end is round the clock. */
+function hoursText({ hoursStart: s, hoursEnd: e, timezone: tz }: NonNullable<SnapshotApplyPlan["aiHours"]>): string {
+  const window = typeof s === "number" && typeof e === "number" ? (s === e ? "24/7" : `${s}:00–${e}:00`) : "?";
+  return `${window} ${typeof tz === "string" ? oneLine(tz) : "?"}`;
+}
+
+const HOURS_FROM = {
+  snapshot: "become the snapshot's: ",
+  target: "stay ",
+  default: "become the defaults: ",
+  mixed: "become ",
+} as const;
+
+/** The persona row. A written persona lands with the hours planSnapshotApply
+ *  works out (the snapshot's, the target's own kept, or the defaults), and
+ *  starts every switched-on AI channel replying. */
+function personaRow(plan: SnapshotApplyPlan): string {
+  if (plan.persona !== "written" || !plan.aiHours) return PERSONA_ROW[plan.persona];
   const live = plan.replyingChannels;
   return [
-    `${PERSONA_ROW.written}; sets the AI's hours and timezone to the snapshot's${hours}`,
+    `${PERSONA_ROW.written}; the AI's hours ${HOURS_FROM[plan.aiHours.from]}${hoursText(plan.aiHours)}`,
     ...(live.length ? [`${live.join(", ")} ${live.length === 1 ? "starts" : "start"} replying to customers with it at once`] : []),
   ].join("; ");
 }
@@ -241,7 +250,7 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
               ? `Copied with their status: ${live} ${live === 1 ? "accepts" : "accept"} public submissions on this sub-account at once.`
               : "Copied with their status: none accepts public submissions until it is enabled.",
           },
-          { label: "AI persona", value: personaRow(plan, payload.aiProfile) },
+          { label: "AI persona", value: personaRow(plan) },
         ],
         pinned: { snapshotId: args.snapshotId as string, payloadSha256: payloadSha256(snapshot) },
       };

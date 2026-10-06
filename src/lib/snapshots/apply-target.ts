@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { Firestore } from "firebase-admin/firestore";
 import { DEFAULT_AI_AGENT_PROFILE } from "@/types/ai";
 import type { SnapshotPayload } from "@/types/snapshots";
-import { legacyAiConfigPath } from "@/lib/comms/ai/legacy-config";
+import { legacyAiConfigPath, migratedLegacyDocs } from "@/lib/comms/ai/legacy-config";
 
 /**
  * What an apply addresses in the target, shared by applySnapshot (apply.ts)
@@ -48,6 +48,9 @@ export function personaIsSet(profile: Record<string, unknown> | undefined): bool
   return typeof prompt === "string" && prompt.trim() !== "";
 }
 
+/** The hours a written persona lands with, and where they come from. */
+export const HOURS_FIELDS = ["hoursStart", "hoursEnd", "timezone"] as const;
+
 /** The persona fields a snapshot carries (`SnapshotAiProfile`, what capture
  *  copies): everything else on a profile belongs to its own sub-account. */
 const PERSONA_FIELDS = ["systemPrompt", "hoursStart", "hoursEnd", "timezone", "escalationKeywords"] as const;
@@ -56,7 +59,8 @@ const PERSONA_FIELDS = ["systemPrompt", "hoursStart", "hoursEnd", "timezone", "e
  * Write the snapshot's persona to the target, but ONLY if the target still has
  * none at commit time. Returns whether the write landed. A target profile that
  * exists with a blank prompt is merged into (persona fields only), never
- * replaced.
+ * replaced; with no profile, an unmigrated legacy `aiConfig/main` counts as
+ * the profile (kept when its prompt is set, else migrated and merged into).
  *
  * The five re-blanked fields belong to the SOURCE client and must never reach
  * another tenant: `businessName` is their trading name, `escalationNotifyEmail`
@@ -74,22 +78,29 @@ export async function writePersonaIfAbsent(
   const ref = db.doc(`subAccounts/${targetSubAccountId}/aiAgent/profile`);
   const legacyRef = db.doc(legacyAiConfigPath(targetSubAccountId));
   return db.runTransaction(async (tx) => {
+    // Every read before any write.
     const snap = await tx.get(ref);
-    if (personaIsSet(snap.data())) {
+    const legacy = await tx.get(legacyRef);
+    // No profile yet: an unmigrated legacy doc IS the target's profile
+    // (currentProfile). Writing a profile beside it would stop the lazy
+    // migration and drop it, so it is migrated first, exactly as
+    // maybeMigrateLegacy would, then treated like any existing profile.
+    const migrated = !snap.exists && legacy.exists ? migratedLegacyDocs(legacy.data()) : null;
+    if (personaIsSet(migrated ? { ...migrated.profile } : snap.data())) {
       return false;
     }
-    // No profile yet but a legacy persona: writing one would stop the lazy
-    // migration (agent.ts maybeMigrateLegacy) and lose it. Kept.
-    if (!snap.exists && personaIsSet((await tx.get(legacyRef)).data())) {
-      return false;
+    // A profile with a blank prompt is the target's own: its business
+    // name, escalation inbox, website + KB and anything else an operator
+    // set stay. Only the persona fields a snapshot carries arrive.
+    const persona = Object.fromEntries(
+      PERSONA_FIELDS.filter((k) => profile[k] !== undefined).map((k) => [k, profile[k]]),
+    );
+    if (migrated) {
+      tx.set(db.doc(`subAccounts/${targetSubAccountId}/aiAgent/sms`), migrated.sms);
+      tx.set(ref, { ...migrated.profile, ...persona });
+      return true;
     }
     if (snap.exists) {
-      // A profile with a blank prompt is the target's own: its business
-      // name, escalation inbox, website + KB and anything else an operator
-      // set stay. Only the persona fields a snapshot carries arrive.
-      const persona = Object.fromEntries(
-        PERSONA_FIELDS.filter((k) => profile[k] !== undefined).map((k) => [k, profile[k]]),
-      );
       tx.set(ref, { ...persona, updatedAt: tenancyStamps.updatedAt }, { merge: true });
       return true;
     }
