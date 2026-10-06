@@ -99,7 +99,11 @@ describe("toPortablePayload — form ids", () => {
     let auto = 0;
     const collection = (path: string) => ({
       get: async () => ({ docs: [] }),
-      doc: () => ({ id: `new_${++auto}`, path: `${path}/new_${auto}` }),
+      doc: () => {
+        const id = `new_${++auto}`;
+        // Custom-field definitions are written one by one with create().
+        return { id, path: `${path}/${id}`, create: async (data: Record<string, unknown>) => void written.push({ path: `${path}/${id}`, data }) };
+      },
     });
     const db = {
       collection,

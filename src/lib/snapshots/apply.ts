@@ -46,6 +46,19 @@ export function deterministicId(
     .slice(0, 24);
 }
 
+/**
+ * A custom-field definition's id in the target: one per (entity, key),
+ * whatever snapshot or apply writes it, so two writers of one key collide on
+ * the same doc instead of minting two definitions for one
+ * `contact.customFields` slot.
+ */
+export function customFieldKeyId(targetSubAccountId: string, entity: string, key: string): string {
+  return deterministicId(targetSubAccountId, "", "custom_field_key", `${entity}:${key}`);
+}
+
+/** gRPC ALREADY_EXISTS: create() on a doc that is already there. */
+const ALREADY_EXISTS = 6;
+
 /** Drop the snapshot-only `sourceId` before persisting the new doc. */
 function dropSourceId<T extends { sourceId: string }>(
   item: T,
@@ -142,9 +155,15 @@ export function personaIsSet(profile: Record<string, unknown> | undefined): bool
   return typeof prompt === "string" && prompt.trim() !== "";
 }
 
+/** The persona fields a snapshot carries (`SnapshotAiProfile`, what capture
+ *  copies): everything else on a profile belongs to its own sub-account. */
+const PERSONA_FIELDS = ["systemPrompt", "hoursStart", "hoursEnd", "timezone", "escalationKeywords"] as const;
+
 /**
  * Write the snapshot's persona to the target, but ONLY if the target still has
- * none at commit time. Returns whether the write landed.
+ * none at commit time. Returns whether the write landed. A target profile that
+ * exists with a blank prompt is merged into (persona fields only), never
+ * replaced.
  *
  * The five re-blanked fields belong to the SOURCE client and must never reach
  * another tenant: `businessName` is their trading name, `escalationNotifyEmail`
@@ -164,6 +183,16 @@ async function writePersonaIfAbsent(
     const snap = await tx.get(ref);
     if (personaIsSet(snap.data())) {
       return false;
+    }
+    if (snap.exists) {
+      // A profile with a blank prompt is the target's own: its business
+      // name, escalation inbox, website + KB and anything else an operator
+      // set stay. Only the persona fields a snapshot carries arrive.
+      const persona = Object.fromEntries(
+        PERSONA_FIELDS.filter((k) => profile[k] !== undefined).map((k) => [k, profile[k]]),
+      );
+      tx.set(ref, { ...persona, updatedAt: tenancyStamps.updatedAt }, { merge: true });
+      return true;
     }
     tx.set(ref, {
       ...DEFAULT_AI_AGENT_PROFILE,
@@ -411,8 +440,13 @@ async function writeSnapshot(
     workflowsCreated += 1;
   });
 
+  await commitInChunks(db, writes);
+
   // 4) Custom-field definitions — skip any key the target already defines
-  // (by this snapshot on a prior apply, or by any other source).
+  // (by this snapshot on a prior apply, or by any other source). The doc id
+  // is the KEY's, target-wide (customFieldKeyId), written with create(): of
+  // two applies racing past the read above, or one payload naming a key
+  // twice, exactly one defines it and the other counts it as skipped.
   let customFieldsCreated = 0;
   let customFieldsSkipped = 0;
   for (const field of payload.customFields ?? []) {
@@ -422,12 +456,15 @@ async function writeSnapshot(
     }
     const ref = db
       .collection(`subAccounts/${targetSubAccountId}/customFields`)
-      .doc(detId("custom_field", field.sourceId));
-    writes.push([ref, { ...dropSourceId(field), id: ref.id, ...tenancy() }]);
-    customFieldsCreated += 1;
+      .doc(customFieldKeyId(targetSubAccountId, field.entity, field.key));
+    try {
+      await ref.create({ ...dropSourceId(field), id: ref.id, ...tenancy() });
+      customFieldsCreated += 1;
+    } catch (err) {
+      if ((err as { code?: unknown })?.code !== ALREADY_EXISTS) throw err;
+      customFieldsSkipped += 1;
+    }
   }
-
-  await commitInChunks(db, writes);
 
   // 5) AI persona — transactional, because it is the one write that targets a
   // FIXED path rather than a fresh id. Reading existence up front and writing

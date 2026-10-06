@@ -48,8 +48,13 @@ export async function planSnapshotApply(
   const enabledForms = payload.forms.filter((f, i) => !written.has(formRefs[i]!.path) && f.enabled).length;
 
   const fields = await db.collection(`subAccounts/${targetSubAccountId}/customFields`).get();
+  // A key defined already, or earlier in this payload (one definition per key), is skipped.
   const taken = new Set(fields.docs.map((d) => `${d.data().entity}:${d.data().key}`));
-  for (const f of payload.customFields ?? []) (taken.has(`${f.entity}:${f.key}`) ? skip : create).customFields += 1;
+  for (const f of payload.customFields ?? []) {
+    const key = `${f.entity}:${f.key}`;
+    (taken.has(key) ? skip : create).customFields += 1;
+    taken.add(key);
+  }
 
   let persona: SnapshotApplyPlan["persona"] = "none";
   if (payload.aiProfile) {
