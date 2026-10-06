@@ -12,19 +12,29 @@ import { CapabilityUserError, type PreviewRow } from "./types";
  * else gets a pending invite, re-using one that is already pending. The
  * approver sees it before anything happens (AGENCY_AGENT_API_PLAN.md A4b),
  * and it is pinned, so a change before or after the approve claim refuses.
+ * An account the service would refuse (disabled, another agency's) is a
+ * row too, whose approval refuses: the proposing key can't tell it apart
+ * from any other address (only the approver reads the rows past
+ * AGENT_PREVIEW_LABELS).
  */
 
 export type InviteState =
   | { kind: "new" }
-  | { kind: "pending"; role: string }
+  | { kind: "pending"; role: string; territoryIds: string[] }
   | { kind: "account"; uid: string }
-  | { kind: "member"; uid: string; role: string }
-  | { kind: "former_member"; uid: string; role: string };
+  | { kind: "member"; uid: string; role: string; territoryIds: string[] }
+  | { kind: "former_member"; uid: string; role: string; territoryIds: string[] }
+  | { kind: "blocked"; reason: string };
+
+/** The rows the proposing agent gets back: nothing about the account. */
+export const AGENT_PREVIEW_LABELS = ["Sub-account", "Email", "Role"] as const;
 
 const ROLE = {
   admin: "Admin: manages members and settings",
   collaborator: "Collaborator: works the data, no member management",
 } as const;
+
+const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x) : []);
 
 /** Sub-account `subAccountId`'s state for `email` (already lowercased). The
  *  agency is the sub-account's own, as createInviteServerSide reads it. */
@@ -42,14 +52,17 @@ export async function inviteState(subAccountId: string, email: string): Promise<
     const claims = (user.customClaims ?? {}) as { agencyId?: string; status?: string };
     // The cases createInviteServerSide refuses (MemberAddBlockedError).
     if (user.disabled || claims.status === "removed") {
-      throw new CapabilityUserError("This person's account was removed or disabled. Reactivate it before adding them to a workspace.");
+      return { kind: "blocked", reason: "This person's account was removed or disabled. Reactivate it before adding them to a workspace." };
     }
     if (claims.agencyId && claims.agencyId !== agencyId) {
-      throw new CapabilityUserError("This email belongs to a different agency and can't be added to this workspace.");
+      return { kind: "blocked", reason: "This email belongs to a different agency and can't be added to this workspace." };
     }
     if (!member) return { kind: "account", uid: user.uid };
     const role = String(member.role ?? "member");
-    return member.status === "active" ? { kind: "member", uid: user.uid, role } : { kind: "former_member", uid: user.uid, role };
+    const territoryIds = ids(member.assignedTerritoryIds);
+    return member.status === "active"
+      ? { kind: "member", uid: user.uid, role, territoryIds }
+      : { kind: "former_member", uid: user.uid, role, territoryIds };
   }
   const pending = await db
     .collection("invites")
@@ -59,8 +72,13 @@ export async function inviteState(subAccountId: string, email: string): Promise<
     .where("revokedAt", "==", null)
     .limit(1)
     .get();
-  return pending.empty ? { kind: "new" } : { kind: "pending", role: String(pending.docs[0]!.data().subAccountRole ?? "collaborator") };
+  if (pending.empty) return { kind: "new" };
+  const invite = pending.docs[0]!.data();
+  return { kind: "pending", role: String(invite.subAccountRole ?? "collaborator"), territoryIds: ids(invite.assignedTerritoryIds) };
 }
+
+/** The territories an existing membership or pending invite keeps. */
+export const keptTerritories = (state: InviteState): string[] => ("territoryIds" in state ? state.territoryIds : []);
 
 /** The "What happens" line for a state. */
 function happens(state: InviteState, role: string): string {
@@ -77,7 +95,25 @@ function happens(state: InviteState, role: string): string {
         : `Already a member: role ${state.role} → ${role}, at once.`;
     case "former_member":
       return `Former member (was ${state.role}): re-added immediately as ${role}, nothing to accept.`;
+    case "blocked":
+      return `Approving will be refused: ${state.reason}`;
   }
+}
+
+/** What happens to the territories an existing membership or invite has. */
+async function territoriesRow(subAccountId: string, state: InviteState, role: string): Promise<PreviewRow[]> {
+  const kept = keptTerritories(state);
+  if (kept.length === 0) return [];
+  if (role === "admin") return [{ label: "Territories", value: "Cleared: an admin sees every territory." }];
+  const db = getAdminDb();
+  const snaps = await db.getAll(...kept.map((t) => db.doc(`subAccounts/${subAccountId}/territories/${t}`)));
+  // createInviteServerSide keeps only the active ones.
+  const active = snaps.filter((s) => s.exists && s.data()?.status === "active").map((s) => oneLine(s.data()?.name ?? s.id));
+  const dropped = kept.length - active.length;
+  return [{
+    label: "Territories",
+    value: `${active.length ? `Kept: ${active.join(", ")}` : "None kept"}${dropped ? `; ${dropped} archived or deleted, dropped` : ""}.`,
+  }];
 }
 
 /** The approver's rows and the pins for an invite of `email` as `role`. */
@@ -90,7 +126,7 @@ export async function invitePreview(
   const sub = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   if (!sub.exists || sub.data()?.agencyId !== agencyId) throw new CapabilityUserError("That sub-account wasn't found in this agency.");
   const state = await inviteState(subAccountId, email);
-  const emails = state.kind !== "member";
+  const emails = state.kind !== "member" && state.kind !== "blocked";
   const sender = emails ? await resolvePlatformSender(subAccountId) : null;
   const mail = state.kind === "new" || state.kind === "pending" ? "the invite email with the signup link" : "a notification that they were added";
   return {
@@ -99,13 +135,16 @@ export async function invitePreview(
       { label: "Email", value: email },
       { label: "Role", value: ROLE[role] },
       { label: "What happens", value: happens(state, role) },
+      ...(await territoriesRow(subAccountId, state, role)),
       {
         label: "Email sent",
-        value: !emails
-          ? "None (already a member)."
-          : sender
-            ? `Yes: ${mail}.`
-            : "No: email isn't configured on this deployment. Copy the invite link from Settings → Members and share it yourself.",
+        value: state.kind === "blocked"
+          ? "None."
+          : !emails
+            ? "None (already a member)."
+            : sender
+              ? `Yes: ${mail}.`
+              : "No: email isn't configured on this deployment. Copy the invite link from Settings → Members and share it yourself.",
       },
     ],
     pinned: { email, role, state },

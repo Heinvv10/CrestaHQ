@@ -69,6 +69,8 @@ export async function queueProposal(input: {
       ? refuse("key_revoked", 401, "This API key has been revoked.")
       : refuse("outcome_unknown", 409, OUTCOME_UNKNOWN_MESSAGE);
   }
-  const { id, status, summary, preview } = created;
+  const { id, status, summary } = created;
+  const shown = cap.agentPreviewLabels;
+  const preview = shown ? created.preview.filter((r) => shown.includes(r.label)) : created.preview;
   return { ok: true, args, proposal: { id, status, summary, preview } };
 }

@@ -54,7 +54,20 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
     ["a v1 sub-account key", subKey, {}],
     ["an agency key", agencyKey, { subAccountId: "sa1" }],
   ])("%s → one outbound row in sa1, createInviteServerSide not called", async (_label, key, scope) => {
-    const id = await propose(key, { ...scope, email: "New.Person@Example.com", role: "collaborator" });
+    const r = await dispatchAgentTool(key, "invite_member", { ...scope, email: "New.Person@Example.com", role: "collaborator" });
+    const id = (r as { proposal: { id: string } }).proposal.id;
+    // The agent is told nothing about the account; the approver reads the rest.
+    expect(r).toMatchObject({
+      proposal: {
+        summary: "Invite new.person@example.com to this workspace as a collaborator.",
+        preview: [
+          { label: "Sub-account", value: "Client One" },
+          { label: "Email", value: "new.person@example.com" },
+          { label: "Role", value: "Collaborator: works the data, no member management" },
+        ],
+      },
+    });
+    expect((r as { proposal: { preview: unknown[] } }).proposal.preview).toHaveLength(3);
     expect(row(id)).toMatchObject({
       subAccountId: "sa1", approval: "outbound", status: "pending", capability: "invite_member",
       args: { email: "new.person@example.com", role: "collaborator" },
@@ -86,7 +99,7 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
     seedAdminMember();
     const id = await propose(subKey, { email: "ann@client.io", role: "collaborator" });
     expect(what(id)).toBe("Already a member: role admin → collaborator, at once.");
-    expect(row(id).pinned).toEqual({ email: "ann@client.io", role: "collaborator", state: { kind: "member", uid: "u_ann", role: "admin" } });
+    expect(row(id).pinned).toEqual({ email: "ann@client.io", role: "collaborator", state: { kind: "member", uid: "u_ann", role: "admin", territoryIds: [] } });
   });
 
   it.each([
@@ -102,17 +115,6 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
   it("a pending invite already there says it is re-sent", async () => {
     mem.seed("invites/i1", { email: "new.person@example.com", subAccountId: "sa1", agencyId: "ag1", subAccountRole: "admin", acceptedByUid: null, revokedAt: null });
     expect(what(await propose())).toBe("Already invited as admin: the pending invite becomes collaborator and is re-sent with a new link (the old link stops working).");
-  });
-
-  it.each([
-    ["a disabled account", { disabled: true }, /removed or disabled/],
-    ["another agency's account", { customClaims: { agencyId: "ag2" } }, /belongs to a different agency/],
-  ])("%s is refused at propose, as the service would: no row", async (_label, over, message) => {
-    authUsers.set("gone@client.io", { uid: "u_gone", email: "gone@client.io", emailVerified: true, ...over });
-    expect(await dispatchAgentTool(subKey, "invite_member", { email: "gone@client.io", role: "collaborator" })).toMatchObject({
-      ok: false, httpStatus: 400, message: expect.stringMatching(message),
-    });
-    expect(mem.list("agentProposals")).toEqual([]);
   });
 
   it("execute on the agent surface without an approval refuses and invites nobody", async () => {
@@ -150,7 +152,7 @@ describe("approve", () => {
     expect(res.status).toBe(200);
     expect(invites).toHaveBeenCalledTimes(1);
     expect(invites.mock.calls[0]![0]).toEqual({
-      subAccountId: "sa1", email: "ann@client.io", role: "collaborator",
+      subAccountId: "sa1", email: "ann@client.io", role: "collaborator", assignedTerritoryIds: [],
       invitedByUid: "u_admin", auditActor: { type: "user", id: "u_admin" },
     });
     expect(mem.read("subAccounts/sa1/subAccountMembers/u_ann")?.role).toBe("collaborator");
