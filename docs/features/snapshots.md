@@ -50,6 +50,8 @@ the Snapshots panel. **This already exists — do not re-propose building it.**
   only when the target has none, so apply can never replace a tuned live agent.
   A target profile that exists with a blank prompt is merged into (the five
   persona fields below), so its own business name, inbox and website KB stay.
+  A target with no profile but an unmigrated legacy `aiConfig/main` persona
+  keeps that one (writing a profile would stop its lazy migration).
 - **What deliberately does NOT travel in the persona** ({@link SnapshotAiProfile}):
   `businessName` (source client's trading name — blanked so the prompt falls back
   to the target's own name), `escalationNotifyEmail` (an inbox belonging to the
