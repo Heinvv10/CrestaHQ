@@ -473,6 +473,15 @@ async function resolveStripePrice(
   return priceId;
 }
 
+/** The gates a plan names, with their values: what applyFeatureGates applies. */
+export function namedGates(gates: unknown): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries((gates ?? {}) as Record<string, unknown>).filter(
+      (e): e is [string, boolean] => typeof e[1] === "boolean",
+    ),
+  );
+}
+
 export interface AssignPlanResult {
   status: SubAccountBillingStatus;
   /** Fresh checkout URL (only when the sub-account still needs to pay). */
@@ -497,7 +506,8 @@ export async function assignPlanToSubAccount(input: {
   interval?: BillingInterval;
   /**
    * An approved agent proposal's pins: the plan's price for `interval` and
-   * its gates (every PLAN_GATE_KEYS key) as the owner reviewed them. A plan
+   * the gates it names, with their values, as the owner reviewed them (a
+   * gate named `false` switches off; an unnamed one is left alone). A plan
    * that differs is refused at this function's own plan read, before any
    * provider call or write. The owner UI passes neither.
    */
@@ -514,11 +524,10 @@ export async function assignPlanToSubAccount(input: {
   const plan = await getPlanOrThrow(input.agencyId, input.planId);
   if (input.expectedPriceCents !== undefined || input.expectedGates !== undefined) {
     const price = interval === "year" ? plan.priceAnnualCents : plan.priceMonthlyCents;
-    const gates = (plan.gates ?? {}) as Record<string, unknown>;
-    if (
-      price !== input.expectedPriceCents ||
-      PLAN_GATE_KEYS.some((k) => (gates[k] === true) !== (input.expectedGates?.[k] === true))
-    ) {
+    const gates = namedGates(plan.gates);
+    const expected = namedGates(input.expectedGates);
+    const keys = new Set([...Object.keys(gates), ...Object.keys(expected)]);
+    if (price !== input.expectedPriceCents || [...keys].some((k) => gates[k] !== expected[k])) {
       throw new BillingError(
         "pinned_mismatch: the plan's price or features changed after this was approved. Nothing was charged; propose it again.",
         409,

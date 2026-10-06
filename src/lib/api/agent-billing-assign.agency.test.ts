@@ -24,6 +24,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async () => {}) }));
 
 const { dispatchAgentTool } = await import("./agent-dispatch");
+const { normalizePlanGates } = await import("@/lib/server/billing-lifecycle");
 
 setupAgentProposalTests();
 restoreBillingProviderAfterEach();
@@ -63,7 +64,8 @@ describe("propose: an agency-level spend row, nothing charged", () => {
       summary: "Assign plan “plan_1” (monthly) to “sa1”.",
       pinned: {
         planId: "plan_1", planName: "Growth", priceCents: 9900, interval: "month", specialPriceCents: null, currency: "zar",
-        gates: expect.objectContaining({ broadcastsEnabledByAgency: true, apiAccessEnabledByAgency: false, labsEnabledByAgency: false }),
+        // Exactly the gates the plan names: an unnamed gate is left alone, a named-false one switched off.
+        gates: { broadcastsEnabledByAgency: true, apiAccessEnabledByAgency: false, labsEnabledByAgency: false },
       },
     });
     expect(row(id).preview).toEqual([
@@ -192,13 +194,18 @@ describe.each(["stripe", "paystack"] as const)("approve on %s", (kind) => {
     expect(row(id).status).toBe("pending");
   });
 
-  it("the plan edited after the claim → execute refuses pinned_mismatch, no provider call, nothing written", async () => {
+  it.each([
+    ["a gate switched on", () => ({ ...PLAN.gates, labsEnabledByAgency: true })],
+    // The plan editor writes every gate: the ones this plan never named become false and would switch off.
+    ["re-saved in the plan editor (every gate named)", () => normalizePlanGates(PLAN.gates)],
+  ])("the plan edited after the claim (%s) → execute refuses pinned_mismatch, no provider call, nothing written", async (_label, gates) => {
     const spies = spyBillingProvider(kind);
     const id = await propose();
+    expect(row(id).pinned.gates).toEqual(PLAN.gates);
     const original = mem.db.runTransaction.bind(mem.db);
     vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) => {
       const out = await original(fn as Parameters<typeof original>[0]);
-      mem.seed("agencies/ag1/plans/plan_1", { ...PLAN, gates: { ...PLAN.gates, labsEnabledByAgency: true } });
+      mem.seed("agencies/ag1/plans/plan_1", { ...PLAN, gates: gates() });
       return out;
     });
     const res = await decideAgency(id, "approve");

@@ -2,7 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getBillingProvider } from "@/lib/billing/provider";
-import { billingStripeIsConfigured } from "@/lib/server/billing-service";
+import { billingStripeIsConfigured, namedGates } from "@/lib/server/billing-service";
 import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import { isDocId } from "@/lib/server/doc-id";
 import { PLAN_GATE_KEYS, PLAN_GATE_LABELS, type PlanGateKey } from "@/types/billing";
@@ -106,7 +106,7 @@ export async function assignPreview(
       interval: year ? "year" : "month",
       specialPriceCents: special,
       currency: String(plan.currency ?? "usd"),
-      gates,
+      gates: namedGates(plan.gates),
     },
   };
 }

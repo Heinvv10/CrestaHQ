@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
-import { PLAN_GATE_KEYS } from "@/types/billing";
 import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/billing-provider-spies";
 
 /**
@@ -27,8 +26,8 @@ const PLAN = {
   stripeProductId: "prod_1", stripePriceId: "price_m", stripeAnnualPriceId: "price_y", gates: GATES,
 };
 const LIVE = { status: "active", planId: "plan_old", stripeSubscriptionId: "sub_1", stripeCustomerId: "cus_1" };
-/** The plan's gates as the preview pins them: every plan gate, true or false. */
-const pinnedGates = () => Object.fromEntries(PLAN_GATE_KEYS.map((k) => [k, (GATES as Record<string, boolean>)[k] === true]));
+/** The plan's gates as the preview pins them: the ones it names, with their values. */
+const pinnedGates = () => ({ ...GATES });
 const assign = (extra: Record<string, unknown> = {}) =>
   assignPlanToSubAccount({ agencyId: "ag1", subAccountId: "sa1", planId: "plan_1", specialPriceCents: null, ...extra });
 
@@ -58,6 +57,9 @@ describe.each(["stripe", "paystack"] as const)("on %s", (kind) => {
     ["a gate switched on", { gates: { ...GATES, labsEnabledByAgency: true } }, {}],
     ["a gate switched off", { gates: { ...GATES, broadcastsEnabledByAgency: false } }, {}],
     ["a gate added", { gates: { ...GATES, apiAccessEnabledByAgency: true } }, {}],
+    // applyFeatureGates switches off a gate named false and leaves an unnamed one alone.
+    ["a gate it didn't name now named false (the plan re-saved)", { gates: { ...GATES, apiAccessEnabledByAgency: false } }, {}],
+    ["a gate it named false no longer named", { gates: { broadcastsEnabledByAgency: true } }, {}],
     ["the annual price, assigned yearly", { priceAnnualCents: 89000 }, { interval: "year", expectedPriceCents: 99000 }],
   ])("%s edited since it was reviewed → pinned_mismatch, no provider call, nothing written", async (_label, edit, extra) => {
     const spies = spyBillingProvider(kind);
