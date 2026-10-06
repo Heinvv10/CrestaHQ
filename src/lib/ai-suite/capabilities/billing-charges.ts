@@ -12,7 +12,8 @@ import { type BillingInterval } from "@/types/billing";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney } from "./helpers";
 import { planAssignRefusal } from "./billing-plans";
-import { assignPreview, chargePreview, currencyRefusal, NEEDS_APPROVAL, withoutLabels } from "./billing-proposals";
+import { assignPreview, chargePreview, NEEDS_APPROVAL, withoutLabels } from "./billing-proposals";
+import { currencyRefusal } from "./billing-currency";
 import { paddedSubAccountId } from "./agency-support";
 
 /** Both are always an agency-level `spend` row on the agent surface (A4b). */
@@ -210,7 +211,7 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
     menuLabel:
       "Charge a sub-account client once (e.g. “Web design — $500”) via a payment link",
     description:
-      "Create a ONE-TIME charge for a sub-account's client (e.g. a web design fee) and get a Stripe payment link to send them. Not a subscription — a single payment, independent of any plan (works for comped clients too). Resolve the sub-account's id with list_sub_accounts first — never guess ids. The description appears on the client's checkout page, so keep it professional.",
+      "Create a ONE-TIME charge for a sub-account's client (e.g. a web design fee) and get a payment link to send them (on the deployment's own payment provider). Not a subscription — a single payment, independent of any plan (works for comped clients too). Resolve the sub-account's id with list_sub_accounts first — never guess ids. The description appears on the client's checkout page, so keep it professional.",
     parameters: {
       type: "object",
       properties: {
@@ -235,7 +236,8 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
         },
         currency: {
           type: "string",
-          description: "ISO 4217 code, lowercase. Defaults to usd.",
+          description:
+            "ISO 4217 code, lowercase. Defaults to usd. It must be one the deployment's payment provider can settle in cents (e.g. zar or usd; never jpy or kwd).",
         },
       },
       required: ["subAccountId", "subAccountName", "description", "amount"],

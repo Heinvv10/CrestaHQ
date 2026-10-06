@@ -12,6 +12,7 @@ import {
 } from "@/types/billing";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney, FEATURE_GATES } from "./helpers";
+import { currencyRefusal } from "./billing-currency";
 
 /**
  * The feature names a plan can bundle: FEATURE_GATES entries whose field is a
@@ -96,7 +97,7 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
     surfaces: ["chat", "agent"],
     menuLabel: "Create a Client-Billing plan (price + bundled features)",
     description:
-      "Create a Client-Billing plan (a monthly price + an optional annual price + a bundle of features) that the agency can charge sub-accounts for. Charges run on the deployment's own Stripe account. Set includeAllFeatures:true for an all-inclusive plan, or pass a `features` list. TWO RULES BEFORE PROPOSING: (1) the plan NAME must come from the user — if they didn't state one explicitly, ask them what to call it; never invent or silently derive a name. (2) call list_billing_plans first and check whether a matching plan already exists (same name, or same price with the same features) — if it does, don't create a duplicate; suggest assign_billing_plan with the existing plan instead. To then charge a client, follow up with assign_billing_plan.",
+      "Create a Client-Billing plan (a monthly price + an optional annual price + a bundle of features) that the agency can charge sub-accounts for. Charges run on the deployment's own payment provider (Stripe or Paystack). Set includeAllFeatures:true for an all-inclusive plan, or pass a `features` list. TWO RULES BEFORE PROPOSING: (1) the plan NAME must come from the user — if they didn't state one explicitly, ask them what to call it; never invent or silently derive a name. (2) call list_billing_plans first and check whether a matching plan already exists (same name, or same price with the same features) — if it does, don't create a duplicate; suggest assign_billing_plan with the existing plan instead. To then charge a client, follow up with assign_billing_plan.",
     parameters: {
       type: "object",
       properties: {
@@ -116,7 +117,8 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
         },
         currency: {
           type: "string",
-          description: "ISO 4217 code, lowercase. Defaults to usd.",
+          description:
+            "ISO 4217 code, lowercase. Defaults to usd. It must be one the deployment's payment provider can settle in cents (e.g. zar or usd; never jpy or kwd).",
         },
         includeAllFeatures: {
           type: "boolean",
@@ -183,6 +185,8 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
           error: "currency must be a 3-letter code like usd or aud",
         };
       }
+      const unsettled = currencyRefusal(currency);
+      if (unsettled) return { ok: false, error: unsettled };
       const includeAllFeatures = r.includeAllFeatures === true;
       const requested = Array.isArray(r.features) ? (r.features as unknown[]) : [];
       const locked = requested.filter(

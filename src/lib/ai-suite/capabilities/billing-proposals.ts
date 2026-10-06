@@ -2,8 +2,6 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getBillingProvider } from "@/lib/billing/provider";
-import { BillingError } from "@/lib/billing/errors";
-import { assertSupportedCurrency } from "@/lib/paystack/billing-api";
 import { billingStripeIsConfigured } from "@/lib/server/billing-service";
 import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import { isDocId } from "@/lib/server/doc-id";
@@ -39,18 +37,6 @@ const REACH: Partial<Record<PlanGateKey, string>> = {
 
 const gateList = (keys: PlanGateKey[]) =>
   keys.length ? keys.map((k) => (REACH[k] ? `${PLAN_GATE_LABELS[k]} (${REACH[k]})` : PLAN_GATE_LABELS[k])).join(", ") : "Nothing";
-
-/** A currency the configured provider cannot settle, refused up front. */
-export function currencyRefusal(currency: string): string | null {
-  if (getBillingProvider().id !== "paystack") return null;
-  try {
-    assertSupportedCurrency(currency);
-    return null;
-  } catch (err) {
-    if (err instanceof BillingError) return err.message;
-    throw err;
-  }
-}
 
 async function targetIn(ctx: AiSuiteActionContext, subAccountId: string) {
   const sub = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
