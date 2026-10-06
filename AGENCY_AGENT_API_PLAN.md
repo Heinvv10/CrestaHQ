@@ -313,6 +313,21 @@ no `apply_snapshot` row is ever in "Approve all"):
   - `list_snapshots` rows start with the id, label every field, and quote
     name and description with their quote characters and `|` neutralised, so
     an imported snapshot's text cannot forge a field.
+- Fix round 3 (review LOWs):
+  - **`applySnapshot`, every caller:** with no profile, a legacy
+    `aiConfig/main` with a blank prompt is migrated first, with the same
+    `migratedLegacyDocs` the lazy migration uses (profile + sms channel), then
+    the persona merged in, so its inbox, business name and SMS config stay.
+    The plan treats the legacy doc as the profile and its `enabled` as the
+    sms channel, so the lazy migration running between propose and approve
+    changes nothing. An existing profile always wins over a legacy doc.
+  - The AI persona row says which hours land: the snapshot's, the target's
+    own (kept), or the defaults.
+  - Snapshot and target names in the preview's Snapshot row and the result
+    text go through the same neutralised quoting as `list_snapshots`.
+  - `legacyAiConfigPath` / `migratedLegacyDocs` live in
+    `src/lib/comms/ai/legacy-config.ts`, shared by agent.ts, model-policy.ts
+    and the snapshot apply.
 
 ### D4 — approvals: two row kinds, one new page
 
