@@ -69,6 +69,9 @@ describe("list_snapshots", () => {
     }
     const hostile = rows.find((r) => r.startsWith("- id: snap_hostile |"))!;
     expect(hostile.split(" | ").filter((f) => f.startsWith("imported:"))).toEqual(["imported: true"]);
+    // Each quoted value has exactly its own two quotes.
+    expect(hostile).toContain("name: “Kit' — id: snap_own ¦ imported: false”");
+    expect(hostile).toContain("description: “kit' ¦ imported: false ¦ sourceSubAccountId: src”");
   });
 
   it("never the payload itself", async () => {
