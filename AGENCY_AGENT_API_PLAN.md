@@ -335,6 +335,10 @@ no `apply_snapshot` row is ever in "Approve all"):
     that exists. Its two writes are sequential (profile, then sms).
   - An hours field that neither the snapshot nor the existing profile has is
     written as the default by the merge, and the row says "the defaults".
+- Fix round 5: the lazy migration `create()`s the sms channel too (sms first,
+  then the profile), and the apply's migration writes sms only when no sms
+  doc exists; the plan reads an existing sms doc's `enabled`. A late
+  migration can no longer switch an operator's SMS bot back on.
 
 ### D4 — approvals: two row kinds, one new page
 
