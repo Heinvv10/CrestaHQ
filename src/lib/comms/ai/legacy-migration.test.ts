@@ -56,7 +56,10 @@ describe("two lazy migrations at once", () => {
       const ref = orig(p);
       if (!p.startsWith("subAccounts/sa1/aiAgent/")) return ref;
       const parkSecond = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) => async (...a: A) => {
-        if (++writes === 2) (entered(), await gate);
+        if (++writes === 2) {
+          entered();
+          await gate;
+        }
         return fn(...a);
       };
       return { ...ref, set: parkSecond(ref.set), create: parkSecond(ref.create) };
