@@ -421,6 +421,16 @@ no `apply_snapshot` row is ever in "Approve all"):
     three-decimal). The gate pin names which gates the plan names, not only
     their values. The assign preview shows quotas and overage rates (drift is
     `preview_changed`; they are not in the in-read pin).
+  - **Review round 2.** `pnpm check:tenancy` finds a capability in any layout
+    and fails when a name in the names lock table went unchecked (the split had
+    silently dropped `assign_billing_plan`). Assign refuses a plan in a currency
+    the provider can't settle or naming a non-plan gate. An omitted currency is
+    the provider's own (zar on Paystack, usd otherwise); Paystack is not
+    narrowed to ZAR, because the code passes the currency through to Paystack
+    and accepts its whole settle list (`assertSupportedCurrency`). The charge
+    description is checked as strictly as the email, which must also be
+    ASCII. The invite pins the territories the service will keep (active,
+    distinct, at most 30) and says when a collaborator ends with none.
   - **Chat, touched on purpose.** Both billing validators refuse a padded
     `subAccountId` (the A3a contract test); the charge validator also keeps
     `amount` (re-validation of a stored row) and refuses a currency Paystack can't
