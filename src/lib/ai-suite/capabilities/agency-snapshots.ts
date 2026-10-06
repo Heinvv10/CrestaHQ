@@ -72,6 +72,10 @@ const countsText = (c: Counts, draft = false) =>
 const anyOf = (c: Counts) => Object.values(c).some((n) => n > 0);
 const lengthOf = (v: unknown) => (Array.isArray(v) ? v.length : 0);
 
+/** Stored text inside a list row, on one line and unable to close its quotes
+ *  or start a field: an imported snapshot's name is another agency's text. */
+const quoted = (v: unknown) => `“${oneLine(v).replace(/[“”"]/g, "'").replace(/\|/g, "¦")}”`;
+
 const NOT_IN_AGENCY = "That sub-account wasn't found in this agency.";
 const SELF_APPLY =
   "That snapshot was captured from this sub-account: applying it onto its own source would duplicate every form, workflow and product. Pick another sub-account.";
@@ -154,14 +158,15 @@ export const AGENCY_SNAPSHOT_CAPABILITIES: AiSuiteCapability[] = [
         const created = millis(s.createdAt);
         const imported = isImported(s);
         const counts = Object.fromEntries(NOUNS.map(([k]) => [k, lengthOf(p[k])])) as Counts;
-        return [
-          `- “${oneLine(s.name)}” — id: ${d.id}`,
+        return `- ${[
+          `id: ${d.id}`,
+          `name: ${quoted(s.name)}`,
           `created: ${created === null ? "unknown" : new Date(created).toISOString()}`,
           `imported: ${imported}`,
           `sourceSubAccountId: ${imported ? "null" : s.sourceSubAccountId}`,
-          `${countsText(counts)}, persona: ${p.aiProfile ? "yes" : "no"}`,
-          `description: “${oneLine(s.description)}”`,
-        ].join(" | ");
+          `contents: ${countsText(counts)}, persona: ${p.aiProfile ? "yes" : "no"}`,
+          `description: ${quoted(s.description)}`,
+        ].join(" | ")}`;
       });
       const header = truncated
         ? `Snapshots in this agency (the newest ${LIST_SNAPSHOTS_CAP}; there are more):`
