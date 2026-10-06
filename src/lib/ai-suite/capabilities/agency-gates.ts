@@ -2,6 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { metaAppConfigured } from "@/lib/comms/meta";
+import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import { hasChannelConnection } from "@/lib/agency/channel-connections";
 import { millis } from "@/lib/server/agent-proposals-encoding";
 import { applyFeatureGates, recordGateChanges, type AgencyGateField } from "@/lib/server/feature-gates-service";
@@ -156,9 +157,14 @@ export const AGENCY_GATE_CAPABILITIES: AiSuiteCapability[] = [
       }
       const gate = args.gate as string;
       const enabled = args.enabled as boolean;
+      // The gate's state now, so approving after it flipped is preview_changed.
+      const field = FEATURE_GATES[gate]?.field ?? "";
+      const stored = snap.data()?.[field];
+      const on = typeof stored === "boolean" ? stored : DEFAULT_ON_GATE_FIELDS.has(field);
       return [
         { label: "Sub-account", value: String(snap.data()?.name ?? snap.id) },
         { label: "Gate", value: FEATURE_GATES[gate]?.label ?? gate },
+        { label: "Now", value: on ? "On" : "Off" },
         { label: "Change", value: enabled ? "Switch on" : "Switch off" },
         { label: "Side effect", value: sideEffect(gate, enabled) },
       ];

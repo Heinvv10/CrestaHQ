@@ -19,6 +19,8 @@ export interface ApprovalRow {
   approval: string;
   status: ApprovalStatus;
   rev: string;
+  /** The row's generation (createProposal); a preview refresh keeps it. */
+  gen?: string;
   summary: string;
   preview: Array<{ label: string; value: string }>;
   contactId?: string | null;
@@ -75,4 +77,16 @@ export const STATUS_LABELS: Record<ApprovalStatus, string> = {
   rejected: "Rejected",
   expired: "Expired",
   unsettled: "Needs checking",
+};
+
+/** What each approval class is, for the agency page's row line. */
+export const CLASS_LABELS: Record<string, string> = {
+  outbound: "Outbound message",
+  workflow_activate: "Workflow activation",
+  workflow_enrolment: "Workflow enrolment",
+  hard_delete: "Permanent delete",
+  spend: "Spend",
+  channel_change: "Channel change",
+  public_change: "Public page change",
+  gate_change: "Feature gate",
 };

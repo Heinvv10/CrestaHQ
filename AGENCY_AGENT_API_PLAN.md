@@ -308,6 +308,49 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
   expired one expires it (409), anything else leaves it pending with the early
   check's 403 / 404. A5's shared pre-claim
   sequence calls `claimProposal` and inherits it.
+- **REVISED 2026-10-06 (A5), following the code:**
+  - `agent-proposals-decide.ts` holds everything after a route authorises the
+    person — reject and mark_* as well as approve — so both decide routes are
+    thin and the agency route also settles an unsettled agency-level row
+    (`mark_sent` / `mark_not_sent`), which had no other surface. The target is
+    `proposalTarget(row)` (`subAccountId ?? targetSubAccountId`);
+    `approvalRefusal` reads it too, and a row naming neither is `gate_off`
+    (the agency route answers it 404), so nothing reads `subAccounts/null`.
+  - The `gate_change` preview gained a "Now" row (the gate's stored state,
+    default-on fields as `recordGateChanges` reads them): without it a gate
+    flipped since proposal rebuilt an identical preview, so approve could not
+    say `preview_changed`. A row queued before A5 answers `preview_changed`
+    once on its first approve.
+  - `GET /api/agency/agent-proposals` requires `?status=` (`open`, `recent`
+    or one status), so the one new index serves every query; the status
+    groups moved to `statusFilter` in `agent-proposals-view.ts`, shared with
+    the sub-account list route. A row whose target is not in the owner's
+    agency is left out of the list.
+  - Rollover: the old generation goes to `history` with `status:
+    "superseded"`. The check is `keyRefusal` (the key half of
+    `approvalRefusal`, factored out), read with `tx.get` in the create
+    transaction. Symmetric: a revoked v1 key's pending row is superseded by
+    an agency key the same way.
+  - With rollover a row's id can change hands between generations, so:
+    each generation carries `gen` (set by `createProposal`, kept by a
+    preview refresh); the revoke sweep moves a pending row only at the
+    `gen` it queried (the `rev` for a row from before `gen`), so a refresh
+    mid-sweep cannot strand a revoked key's row, and the expiry sweep only
+    at the `rev` it queried. Both approval cards send `gen`; a decision
+    naming another `gen` is 409 `stale_proposal`, reject included, so a
+    stale card cannot reject a different key's generation. A reject with
+    a `rev` but no `gen` (a card loaded before `gen`) lands once the row
+    has a `gen` only if that `rev` is the row's current one or its `gen`
+    (the generation's first rev), else 409 `stale_proposal`; checked in
+    the transaction. Otherwise reject ignores `rev` (a refresh must not
+    block it), and a row without `gen`, or a reject with no `rev`, is
+    checked as before.
+  - "Approve all" also skips a row whose earlier attempt already went out
+    (`priorAttemptSent`): that needs the in-app re-send confirmation.
+  - The E2E proposes through the REST tools route with an agency key the
+    spec mints, on two sub-accounts it creates and deletes, rather than
+    seeding rows: approve rebuilds the preview and refuses any difference,
+    so a seeded preview would have to reproduce the server's byte for byte.
 
 ### D5 — the per-key questions
 

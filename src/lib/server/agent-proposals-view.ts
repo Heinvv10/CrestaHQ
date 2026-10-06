@@ -6,6 +6,32 @@ import { readPipelineStages } from "@/lib/pipelines/server";
 import { dealPipelineId } from "@/lib/pipelines/stages";
 import { DEAL_TRIGGERS, dealStillMatches } from "@/lib/server/agent-enrolment-replay";
 
+const STATUSES = new Set([
+  "pending",
+  "executing",
+  "executed",
+  "failed",
+  "rejected",
+  "expired",
+  "unsettled",
+]);
+
+const GROUPS: Record<string, string[]> = {
+  open: ["pending", "unsettled"],
+  // `executing` rides with recent: an approval being run right now (no actions).
+  recent: ["executing", "executed", "failed", "rejected", "expired"],
+};
+
+/**
+ * The statuses a list route's `?status=` names: one status, `open` (pending +
+ * unsettled, the actionable rows the approvals pages and the sidebar badges
+ * show) or `recent` (the terminal ones). null for an unknown value.
+ */
+export function statusFilter(status: string): string[] | null {
+  if (Object.hasOwn(GROUPS, status)) return GROUPS[status]!;
+  return STATUSES.has(status) ? [status] : null;
+}
+
 /** Time fields a proposal row carries, sent to the browser as ISO strings. */
 const TIME_FIELDS = ["createdAt", "expiresAt", "claimedAt", "decidedAt"] as const;
 

@@ -16,13 +16,15 @@ type Snap = { exists: () => boolean; data: () => Record<string, unknown> };
 const m = vi.hoisted(() => ({
   auth: { agencyId: null as string | null, loading: true },
   onSnap: null as ((s: Snap) => void) | null,
+  onErr: null as (() => void) | null,
 }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => m.auth }));
 vi.mock("@/lib/firebase/client", () => ({ getFirebaseDb: () => ({}) }));
 vi.mock("firebase/firestore", () => ({
   doc: (_db: unknown, path: string) => ({ path }),
-  onSnapshot: (_ref: unknown, next: (s: Snap) => void) => {
+  onSnapshot: (_ref: unknown, next: (s: Snap) => void, err: () => void) => {
     m.onSnap = next;
+    m.onErr = err;
     return () => undefined;
   },
 }));
@@ -53,6 +55,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   m.auth = { agencyId: null, loading: true };
   m.onSnap = null;
+  m.onErr = null;
   renders = [];
   root = createRoot(document.createElement("div"));
 });
@@ -125,4 +128,35 @@ it("unseeded with no agency at all: branding is ready once auth settles", async 
 it("works with no provider mounted (non-dashboard routes)", async () => {
   await act(async () => root.render(createElement(Probe)));
   expect(renders[0].name).toBe(CUSTOM_BRAND.name);
+});
+
+/**
+ * `resolved`: the doc's settings (agentApiEnabled & co.) are the agency's
+ * real values, not the defaults. On a hard load auth settles after mount,
+ * so `loading` reads false before the doc arrives; `resolved` does not.
+ */
+it("hard load: not resolved until the snapshot lands, even with a seed and loading false", async () => {
+  await act(async () => root.render(tree(SEED)));
+  expect(renders.at(-1)!.resolved).toBe(false);
+  m.auth = { agencyId: "ag1", loading: false };
+  await act(async () => root.render(tree(SEED)));
+  expect(renders.at(-1)).toMatchObject({ loading: false, resolved: false, agentApiEnabled: false });
+  await act(async () => m.onSnap!({ exists: () => true, data: () => ({ agentApiEnabled: true }) }));
+  expect(renders.at(-1)).toMatchObject({ resolved: true, agentApiEnabled: true });
+});
+
+it("a snapshot error resolves it with the defaults (switch reads off)", async () => {
+  m.auth = { agencyId: "ag1", loading: false };
+  await act(async () => root.render(tree(null)));
+  expect(renders.at(-1)!.resolved).toBe(false);
+  await act(async () => m.onErr!());
+  expect(renders.at(-1)).toMatchObject({ resolved: true, agentApiEnabled: false });
+});
+
+it("no agency: resolved once auth settles", async () => {
+  await act(async () => root.render(tree(null)));
+  expect(renders.at(-1)!.resolved).toBe(false);
+  m.auth = { agencyId: null, loading: false };
+  await act(async () => root.render(tree(null)));
+  expect(renders.at(-1)!.resolved).toBe(true);
 });

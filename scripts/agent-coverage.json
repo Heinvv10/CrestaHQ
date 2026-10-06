@@ -224,6 +224,18 @@
     }
   },
   "routes": {
+    "api/agency/agent-proposals:GET": {
+      "exclude": {
+        "category": "queue-itself",
+        "reason": "The agency approvals queue itself: agency keys create proposals through tools, only the agency owner lists and decides them."
+      }
+    },
+    "api/agency/agent-proposals/[proposalId]:POST": {
+      "exclude": {
+        "category": "queue-itself",
+        "reason": "The agency approvals queue itself: agency keys create proposals through tools, only the agency owner lists and decides them."
+      }
+    },
     "api/agency/api-keys/[keyId]:DELETE": {
       "exclude": {
         "category": "key-management",

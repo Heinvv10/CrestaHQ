@@ -29,7 +29,8 @@ type Decision = "approve" | "reject" | "mark_sent" | "mark_not_sent";
 /**
  * One agent proposal. `preview` rows are rendered VERBATIM — the approver
  * judges exactly what the server says will happen; `pinned` never reaches
- * the browser. Every decision sends the row's `rev`; a changed preview
+ * the browser. Every decision sends the row's `rev` and `gen` (so a stale
+ * card cannot reject a different key's generation); a changed preview
  * replaces the row in place and says so.
  */
 export function ApprovalCard({
@@ -37,9 +38,16 @@ export function ApprovalCard({
   row,
   onReplace,
   onChanged,
+  decideBase = `/api/sub-accounts/${subAccountId}/agent-proposals`,
+  meta,
 }: {
+  /** The sub-account the row acts on (its conversation link). */
   subAccountId: string;
   row: ApprovalRow;
+  /** The decide route's base (the agency page decides through its own). */
+  decideBase?: string;
+  /** Extra line under the summary (the agency page: class, key, age). */
+  meta?: React.ReactNode;
   /** The server returned a fresher version of this row (preview_changed). */
   onReplace: (row: ApprovalRow) => void;
   /** The row moved on; reload the list. */
@@ -51,10 +59,10 @@ export function ApprovalCard({
   async function decide(decision: Decision, extra: Record<string, unknown> = {}) {
     setBusy(decision);
     try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/agent-proposals/${row.id}`, {
+      const res = await fetch(`${decideBase}/${row.id}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, rev: row.rev, ...extra }),
+        body: JSON.stringify({ decision, rev: row.rev, ...(row.gen ? { gen: row.gen } : {}), ...extra }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;
@@ -98,6 +106,7 @@ export function ApprovalCard({
           {STATUS_LABELS[row.status] ?? row.status}
         </Badge>
       </div>
+      {meta}
 
       <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm" data-testid="approval-preview">
         {row.preview.map((r, i) => (

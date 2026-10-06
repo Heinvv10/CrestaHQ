@@ -42,20 +42,45 @@ export const pastExpiry = (row: FirebaseFirestore.DocumentData): boolean =>
   (millis(row.expiresAt) ?? Infinity) < Date.now();
 
 /**
+ * The sub-account a row acts on: its own `subAccountId`, or an agency-level
+ * row's (`subAccountId: null`) `targetSubAccountId`. null when it names
+ * neither, so nothing is ever read or written under `subAccounts/null`.
+ */
+export function proposalTarget(row: FirebaseFirestore.DocumentData): string | null {
+  const id = row.subAccountId ?? row.targetSubAccountId;
+  return typeof id === "string" && id !== "" ? id : null;
+}
+
+/**
  * Everything approving a row needs of the world beyond the row: both of its
- * sub-account's Agent API gates on, an agency key's row in that sub-account's
- * own agency, the proposing key (`agentKeyRef`) still unrevoked, and an
- * agency key's standing (`agencyKeyStanding`). Plain reads for the decide
- * route's early refusal, `tx.get` inside the claim.
+ * target sub-account's (`proposalTarget`) Agent API gates on, an agency
+ * key's row in that sub-account's own agency, the proposing key
+ * (`agentKeyRef`) still unrevoked, and an agency key's standing
+ * (`agencyKeyStanding`). Plain reads for the decide routes' early refusal,
+ * `tx.get` inside the claim.
  */
 export async function approvalRefusal(
   row: FirebaseFirestore.DocumentData,
   read: DocReader = (ref) => ref.get()
 ): Promise<ApprovalRefusal | null> {
-  const sub = (await read(getAdminDb().doc(`subAccounts/${row.subAccountId}`))).data();
+  const target = proposalTarget(row);
+  if (!target) return "gate_off";
+  const sub = (await read(getAdminDb().doc(`subAccounts/${target}`))).data();
   if (sub?.agentApiEnabledByAgency !== true || sub?.apiAccessEnabledByAgency !== true) return "gate_off";
   // The key and standing reads below are keyed by an agency row's agencyId.
   if (row.keyLevel === "agency" && row.agencyId !== sub.agencyId) return "wrong_agency";
+  return keyRefusal(row, read);
+}
+
+/**
+ * The proposing key's part of `approvalRefusal`: the key (`agentKeyRef`)
+ * missing or revoked, or an agency key's standing lapsed. A row it refuses
+ * can never be approved; createProposal lets a different key supersede it.
+ */
+export async function keyRefusal(
+  row: FirebaseFirestore.DocumentData,
+  read: DocReader = (ref) => ref.get()
+): Promise<"key_revoked" | Exclude<AgencyKeyStanding, "ok"> | null> {
   const key = (await read(agentKeyRef(row))).data();
   if (!key || key.revokedAt) return "key_revoked";
   if (row.keyLevel !== "agency") return null;

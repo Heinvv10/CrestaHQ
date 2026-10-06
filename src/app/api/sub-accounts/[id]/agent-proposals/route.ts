@@ -4,23 +4,7 @@ import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { canSeeTerritory, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
-import { toProposalViews } from "@/lib/server/agent-proposals-view";
-
-const STATUSES = new Set([
-  "pending",
-  "executing",
-  "executed",
-  "failed",
-  "rejected",
-  "expired",
-  "unsettled",
-]);
-
-const GROUPS: Record<string, string[]> = {
-  open: ["pending", "unsettled"],
-  // `executing` rides with recent: an approval being run right now (no actions).
-  recent: ["executing", "executed", "failed", "rejected", "expired"],
-};
+import { statusFilter, toProposalViews } from "@/lib/server/agent-proposals-view";
 
 /**
  * List a sub-account's agent proposals, newest first (optionally one
@@ -41,14 +25,15 @@ export async function GET(
   if (access instanceof NextResponse) return access;
 
   const status = new URL(request.url).searchParams.get("status");
-  if (status !== null && !(status in GROUPS) && !STATUSES.has(status)) {
+  const statuses = status === null ? null : statusFilter(status);
+  if (status !== null && !statuses) {
     return NextResponse.json({ error: "Unknown status" }, { status: 400 });
   }
   let q = getAdminDb()
     .collection("agentProposals")
     .where("subAccountId", "==", subAccountId);
-  if (status && status in GROUPS) q = q.where("status", "in", GROUPS[status]!);
-  else if (status) q = q.where("status", "==", status);
+  if (statuses && statuses.length > 1) q = q.where("status", "in", statuses);
+  else if (statuses) q = q.where("status", "==", statuses[0]);
   const snap = await q.orderBy("createdAt", "desc").limit(100).get();
   const scope = await territoryScopeFor({ ...access, subAccountId });
   const visible = snap.docs.filter(

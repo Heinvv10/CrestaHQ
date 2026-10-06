@@ -48,6 +48,7 @@ import { useIsStandalone } from "@/hooks/use-standalone";
 import { useDueTodayCount } from "@/hooks/use-due-today";
 import { useUnreadConversationsCount } from "@/hooks/use-unread-conversations";
 import { useOpenApprovalsCount } from "@/hooks/use-open-approvals";
+import { useAgencyOpenApprovalsCount } from "@/hooks/use-agency-open-approvals";
 import { useActiveSubAccountId } from "@/hooks/use-active-sub-account-id";
 import { useAuth } from "@/hooks/use-auth";
 import { useAgency } from "@/hooks/use-agency";
@@ -215,6 +216,12 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   const openApprovals = useOpenApprovalsCount(
     badgeSubId,
     agentApiGate === true ? "open" : agentApiGate === false ? "unsettled" : null
+  );
+  // Agency approvals (agency keys' rows): the owner's, while the agency's
+  // Agent API switch is on; off, only while unsettled rows need settling.
+  // Not asked until the agency doc resolves (the switch reads off before it).
+  const agencyApprovals = useAgencyOpenApprovalsCount(
+    agencyRole !== "owner" || !agency.resolved ? null : agency.agentApiEnabled ? "open" : "unsettled"
   );
   // Per-feature "hide vs. show as Locked" flag. Only consulted when the
   // matching gate is off. HIDDEN IS THE DEFAULT — a disabled feature is omitted
@@ -391,6 +398,35 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
                 Client billing
               </Link>
             )}
+            {agencyRole === "owner" &&
+              (agency.agentApiEnabled || agencyApprovals > 0) && (
+                <Link
+                  href="/agency/approvals"
+                  className={cn(
+                    "flex items-center justify-between gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    pathname.startsWith("/agency/approvals")
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                >
+                  <span className="flex items-center gap-3">
+                    <ClipboardCheck className="h-4 w-4" />
+                    Approvals
+                  </span>
+                  {agencyApprovals > 0 && (
+                    <span
+                      className={cn(
+                        "rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+                        pathname.startsWith("/agency/approvals")
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                      )}
+                    >
+                      {agencyApprovals}
+                    </span>
+                  )}
+                </Link>
+              )}
             {/* Hidden until the owner enables it under Agency → Settings —
                 the Agency Assistant ships OFF by default. */}
             {agencyRole === "owner" && agency.agencyAssistantEnabled && (
