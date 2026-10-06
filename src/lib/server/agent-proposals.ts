@@ -7,6 +7,7 @@ import { agentKeyRef } from "@/lib/firestore/api-keys";
 import type { EffectiveTerritoryScope } from "@/lib/auth/territory-filter";
 import {
   approvalRefusal,
+  keyRefusal,
   pastExpiry,
   proposalVisible,
   type ClaimRefusal,
@@ -109,8 +110,10 @@ const historyRef = (id: string) => proposalRef(id).collection("history").doc();
  * re-proposing cannot keep bumping `rev` under an approver), an `unsettled`
  * row refuses (its action may already have happened), and a terminal row
  * moves to `history` so the id is re-used as a fresh `pending` generation
- * with a new `rev`, stamped with the proposing key. A revoked or missing key
- * queues nothing. The row stores its target (`contactId`, `territoryId`,
+ * with a new `rev`, stamped with the proposing key. A pending row whose own
+ * key can no longer approve it (`keyRefusal`) is `superseded` the same way
+ * when a different key proposes the action; a live key's row never is. A
+ * revoked or missing key queues nothing. The row stores its target (`contactId`, `territoryId`,
  * `targetScoped`) so firestore.rules and the routes can scope reads.
  */
 export async function createProposal(input: ProposalInput): Promise<CreateProposalResult> {
@@ -138,11 +141,20 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
 
     // A pending row past its expiry is dead: roll it over like a terminal one.
     const expired = status === "pending" && (millis(cur!.expiresAt) ?? Infinity) < Date.now();
-    if (status === "executing" || (status === "pending" && !expired)) {
+    // So is one a DIFFERENT key re-proposes while the row's own key can no
+    // longer approve it (revoked, or an agency key's standing lapsed): it
+    // would block this key's identical action until it expired.
+    const superseded =
+      status === "pending" &&
+      !expired &&
+      agentKeyRef(cur!).path !== keyRef.path &&
+      (await keyRefusal(cur!, (r) => tx.get(r))) !== null;
+    if (status === "executing" || (status === "pending" && !expired && !superseded)) {
       return { ok: true, id, status, rev: cur!.rev, summary: cur!.summary, preview: cur!.preview };
     }
     if (status === "unsettled") return { ok: false, code: "outcome_unknown", id };
-    if (expired) tx.set(historyRef(id), { ...cur!, status: "expired" });
+    if (superseded) tx.set(historyRef(id), { ...cur!, status: "superseded" });
+    else if (expired) tx.set(historyRef(id), { ...cur!, status: "expired" });
     else if (status && TERMINAL.includes(status)) tx.set(historyRef(id), cur!);
     const now = Date.now();
     const rev = newRev();
