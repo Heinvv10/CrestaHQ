@@ -8,7 +8,7 @@ import {
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney } from "./helpers";
 import { chargePreview, NEEDS_APPROVAL, tenantWide, withoutLabels } from "./billing-proposals";
-import { currencyRefusal } from "./billing-currency";
+import { currencyRefusal, defaultBillingCurrency } from "./billing-currency";
 import { paddedSubAccountId } from "./agency-support";
 import { hasUnsafeText, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 import { ASSIGN_BILLING_PLAN } from "./billing-assign";
@@ -53,7 +53,7 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
         currency: {
           type: "string",
           description:
-            "ISO 4217 code, lowercase. Defaults to usd. It must be one the deployment's payment provider can settle in cents (e.g. zar or usd; never jpy or kwd).",
+            "ISO 4217 code, lowercase. Omitted, it is the payment provider's own: zar on Paystack, usd on Stripe. It must be one the provider can settle in cents (never jpy or kwd).",
         },
       },
       required: ["subAccountId", "description", "amount"],
@@ -93,7 +93,7 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       if (amountCents < 100) {
         return { ok: false, error: "the amount must be at least 1.00" };
       }
-      const currency = (str(raw, "currency") || "usd").toLowerCase();
+      const currency = (str(raw, "currency") || defaultBillingCurrency()).toLowerCase();
       if (!/^[a-z]{3}$/.test(currency)) {
         return {
           ok: false,

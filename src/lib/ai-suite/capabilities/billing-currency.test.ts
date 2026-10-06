@@ -42,3 +42,13 @@ describe.each([["create_one_time_charge", charge], ["create_billing_plan", plan]
     expect(validate(currency)).toMatchObject({ ok: true, args: { currency } });
   });
 });
+
+describe.each([
+  ["create_one_time_charge", () => getCapability("create_one_time_charge")!.validate({ subAccountId: "sa1", description: "Web design", amount: 500 })],
+  ["create_billing_plan", () => getCapability("create_billing_plan")!.validate({ name: "Pro", priceMonthly: 99 })],
+] as const)("%s with no currency", (_name, validate) => {
+  it.each([["paystack", "zar"], ["stripe", "usd"], ["none", "usd"]] as const)("on %s defaults to %s", (kind, currency) => {
+    spyBillingProvider(kind);
+    expect(validate()).toMatchObject({ ok: true, args: { currency } });
+  });
+});

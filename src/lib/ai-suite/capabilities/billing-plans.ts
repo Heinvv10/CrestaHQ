@@ -12,7 +12,7 @@ import {
 } from "@/types/billing";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney, FEATURE_GATES } from "./helpers";
-import { currencyRefusal } from "./billing-currency";
+import { currencyRefusal, defaultBillingCurrency } from "./billing-currency";
 import { ASSISTANT_LOCKED_PLAN_FEATURES, PLAN_FEATURES } from "./billing-plan-features";
 
 export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
@@ -79,7 +79,7 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
         currency: {
           type: "string",
           description:
-            "ISO 4217 code, lowercase. Defaults to usd. It must be one the deployment's payment provider can settle in cents (e.g. zar or usd; never jpy or kwd).",
+            "ISO 4217 code, lowercase. Omitted, it is the payment provider's own: zar on Paystack, usd on Stripe. It must be one the provider can settle in cents (never jpy or kwd).",
         },
         includeAllFeatures: {
           type: "boolean",
@@ -139,7 +139,7 @@ export const BILLING_PLAN_CAPABILITIES: AiSuiteCapability[] = [
           return { ok: false, error: "the annual price must be at least 1.00" };
         }
       }
-      const currency = (str(raw, "currency") || "usd").toLowerCase();
+      const currency = (str(raw, "currency") || defaultBillingCurrency()).toLowerCase();
       if (!/^[a-z]{3}$/.test(currency)) {
         return {
           ok: false,

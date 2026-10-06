@@ -5,6 +5,9 @@ import { BillingError } from "@/lib/billing/errors";
 import { assertSupportedCurrency } from "@/lib/paystack/billing-api";
 import { isZeroDecimalCurrency, stripeCanChargeCurrency } from "@/lib/stripe/amount";
 
+/** The currency an omitted one means: the provider's own (Paystack's here is ZAR). */
+export const defaultBillingCurrency = (): string => (getBillingProvider().id === "paystack" ? "zar" : "usd");
+
 /**
  * Why the configured Client Billing provider can't take `currency`, or null.
  * Amounts are kept in hundredths and handed to Stripe as they are, so a
