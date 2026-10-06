@@ -187,7 +187,13 @@ describe("registry invariants", () => {
     for (const c of AI_SUITE_CAPABILITIES) if (keep(await approvalOf(c))) out.push(c);
     return out;
   };
-  const seedSample = () => seedPreviewSamples(mem);
+  const seedSample = () => {
+    seedPreviewSamples(mem);
+    mem.seed("subAccounts/sa1", {
+      ...mem.read("subAccounts/sa1"), whatsappEnabledByAgency: true,
+      twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, whatsappFromNumber: "+27100000000" },
+    });
+  };
 
   it("every approval capability's preview is pure: the same under two callers and the neutral preview ctx", async () => {
     const { buildPreviewContext } = await import("@/lib/api/agent-context");

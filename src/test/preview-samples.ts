@@ -56,17 +56,14 @@ export const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {
   create_one_time_charge: { subAccountId: "sa1", subAccountName: "", description: "Setup", amount: 50, amountCents: 5000, currency: "zar" },
 };
 
-/** Seeds what PREVIEW_SAMPLE_ARGS targets in sub-account sa1 of agency ag1. */
+/** Seeds what PREVIEW_SAMPLE_ARGS targets in sub-account sa1 of agency ag1
+ *  (its WhatsApp sender is seeded by the test itself). */
 export function seedPreviewSamples(mem: Mem) {
   mem.seed("contacts/c_sample", {
     subAccountId: "sa1", agencyId: "ag1", name: "Sample", phone: "+27820000000", email: "old@x.io", territoryId: "global",
   });
   mem.seed("companies/co_sample", { subAccountId: "sa1", agencyId: "ag1", name: "Sample Co" });
   mem.seed("conversations/c_sample", { subAccountId: "sa1", agencyId: "ag1", contactId: "c_sample", contactName: "Sample", botMode: "suggest" });
-  mem.seed("subAccounts/sa1", {
-    ...mem.read("subAccounts/sa1"), whatsappEnabledByAgency: true,
-    twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, whatsappFromNumber: "+27100000000" },
-  });
   mem.seed("subAccounts/sa1/whatsappTemplates/tpl_sample", {
     subAccountId: "sa1", agencyId: "ag1", name: "sample", displayName: "Sample", language: "en", status: "approved", contentSid: "HX1",
     body: "See you {{1}}.", variables: [{ position: 1, label: "Day", sampleValue: "Monday", source: "manual", mergeTag: null }],
