@@ -279,6 +279,25 @@ no `apply_snapshot` row is ever in "Approve all"):
   50 (a doc without `createdAt` is not listed, as in the owner UI's list).
 - The coverage names test now accepts an agency-callable tool, so the two
   snapshot routes map to `list_snapshots` / `apply_snapshot`.
+- Fix round 1 (adversarial review):
+  - The preview's AI persona row names the target's AI channels switched on
+    (`aiAgent/{channel}.enabled`) when the persona will be written: they skip
+    replies only while the prompt is blank, so the write starts them
+    answering. A channel switched on after proposing is `preview_changed`.
+  - **`applySnapshot` changed for every caller (owner route, template push,
+    agent):** a target profile that exists with a blank prompt is merged into
+    with the five persona fields capture copies (`systemPrompt`, `hoursStart`,
+    `hoursEnd`, `timezone`, `escalationKeywords`); its other fields (business
+    name, escalation inbox, website + KB, anything an operator set) stay.
+    Before, the whole doc was replaced. And a custom-field definition's id is
+    now target-wide per `(entity, key)`, written with `create()`, so two
+    applies racing on one key (or a payload naming it twice) leave one
+    definition; ALREADY_EXISTS counts as skipped.
+  - `execute` reads the minter first; the direct re-check (target re-read,
+    contacts counted) is the last read before the write. The window from that
+    re-check to the commit remains, as for `set_sub_account_gate`.
+  - A malformed stored payload (a part of the wrong shape) applies nothing
+    instead of failing: every list is coerced to an array of objects.
 
 ### D4 — approvals: two row kinds, one new page
 
