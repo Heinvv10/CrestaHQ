@@ -6,7 +6,7 @@ import { billingStripeIsConfigured, namedGates } from "@/lib/server/billing-serv
 import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import { isDocId } from "@/lib/server/doc-id";
 import { PLAN_GATE_KEYS, PLAN_GATE_LABELS, type PlanGateKey } from "@/types/billing";
-import { planAssignRefusal } from "./billing-plans";
+import { planAssignRefusal } from "./billing-plan-features";
 import { fmtMoney } from "./helpers";
 import { oneLine } from "./text-safety";
 import { CapabilityNotFound, CapabilityUserError, type AiSuiteActionContext, type PreviewRow } from "./types";
@@ -17,6 +17,9 @@ import { CapabilityNotFound, CapabilityUserError, type AiSuiteActionContext, typ
  * row the agency owner approves. Their previews read the target and the
  * plan live and pin what the owner reviews; execute bills only those pins.
  */
+
+/** Both are always an agency-level `spend` row on the agent surface. */
+export const tenantWide = async () => ({ contactId: null, territoryId: null, scoped: false });
 
 export const NEEDS_APPROVAL = "Billing a client needs the agency owner's approval; propose it again.";
 
