@@ -204,13 +204,16 @@ export async function createProposal(input: ProposalInput): Promise<CreatePropos
 /**
  * Move a row `from` → `patch.status` only when, at read time, its status is
  * still `from`, its generation is still `rev` (person decisions) or `gen` (a
- * reject), and its claim is still `claimId` (sweeps of a claim).
+ * reject), and its claim is still `claimId` (sweeps of a claim). `revOrGen`
+ * is a reject from a card that sends no `gen`: once the row has a `gen`, the
+ * rev the card saw must be the row's current `rev` or its `gen` (the
+ * generation's first rev); a row without one is not checked.
  */
 export async function transitionIf(
   id: string,
   from: ProposalStatus,
   patch: Record<string, unknown> & { status?: ProposalStatus },
-  guard: { rev?: string; gen?: string; claimId?: string } = {}
+  guard: { rev?: string; gen?: string; revOrGen?: string; claimId?: string } = {}
 ): Promise<TransitionResult> {
   const ref = proposalRef(id);
   return getAdminDb().runTransaction(async (tx) => {
@@ -219,6 +222,9 @@ export async function transitionIf(
     if (!cur || cur.status !== from) return "conflict";
     if (guard.rev !== undefined && cur.rev !== guard.rev) return "stale";
     if (guard.gen !== undefined && cur.gen !== guard.gen) return "stale";
+    if (guard.revOrGen !== undefined && cur.gen && cur.rev !== guard.revOrGen && cur.gen !== guard.revOrGen) {
+      return "stale";
+    }
     if (guard.claimId !== undefined && cur.claimId !== guard.claimId) return "conflict";
     tx.update(ref, patch);
     return "ok";

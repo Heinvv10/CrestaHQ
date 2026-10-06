@@ -331,14 +331,20 @@ agent-only `set_sub_account_gate` (agency level, in `AGENCY_AGENT_CALLABLE` from
     `approvalRefusal`, factored out), read with `tx.get` in the create
     transaction. Symmetric: a revoked v1 key's pending row is superseded by
     an agency key the same way.
-  - With rollover a row's id can change hands between generations, so: the
-    revoke and expiry sweeps move a pending row only at the `rev` they
-    queried; and each generation carries `gen` (set by `createProposal`,
-    kept by a preview refresh). Both approval cards send it; a decision
+  - With rollover a row's id can change hands between generations, so:
+    each generation carries `gen` (set by `createProposal`, kept by a
+    preview refresh); the revoke sweep moves a pending row only at the
+    `gen` it queried (the `rev` for a row from before `gen`), so a refresh
+    mid-sweep cannot strand a revoked key's row, and the expiry sweep only
+    at the `rev` it queried. Both approval cards send `gen`; a decision
     naming another `gen` is 409 `stale_proposal`, reject included, so a
-    stale card cannot reject a different key's generation. Reject still
-    ignores `rev` (a refresh must not block it), and a body without `gen`
-    is checked as before.
+    stale card cannot reject a different key's generation. A reject with
+    a `rev` but no `gen` (a card loaded before `gen`) lands once the row
+    has a `gen` only if that `rev` is the row's current one or its `gen`
+    (the generation's first rev), else 409 `stale_proposal`; checked in
+    the transaction. Otherwise reject ignores `rev` (a refresh must not
+    block it), and a row without `gen`, or a reject with no `rev`, is
+    checked as before.
   - "Approve all" also skips a row whose earlier attempt already went out
     (`priorAttemptSent`): that needs the in-app re-send confirmation.
   - The E2E proposes through the REST tools route with an agency key the

@@ -58,7 +58,8 @@ export interface DecideBody {
   decision: Decision;
   /** The row generation the person saw; absent only for `reject`. */
   rev: string;
-  /** The row's `gen` the person saw (createProposal); absent = not checked. */
+  /** The row's `gen` the person saw (createProposal); absent = a reject
+   *  checks `rev` against the row's `rev` or `gen` instead (`revOrGen`). */
   gen?: string;
   acknowledgePriorAttempt?: unknown;
 }
@@ -114,7 +115,10 @@ export interface DecideInput {
  * saw: a row re-proposed or refreshed since is 409 `stale_proposal`. A
  * decision naming the row's `gen` (the generation, which a refresh keeps) is
  * 409 `stale_proposal` when the row is another generation by now, reject
- * included: a stale card never rejects a different key's generation.
+ * included: a stale card never rejects a different key's generation. A
+ * reject naming a `rev` but no `gen` (a card loaded from a row before `gen`)
+ * is held to the same once the row has a `gen`: its `rev` must be the row's
+ * current one or its `gen`.
  * `mark_*` wait MARK_MIN_AGE_MS after the claim, so a person cannot guess
  * the outcome of an execute that may still be running.
  */
@@ -138,7 +142,7 @@ export async function decideProposal(input: DecideInput): Promise<NextResponse> 
       proposalId,
       "pending",
       { status: "rejected", reason: "rejected_by_approver", ...decided },
-      { gen },
+      gen !== undefined ? { gen } : { revOrGen: rev },
     );
     return moved === "ok" ? NextResponse.json({ status: "rejected" }) : refused(moved);
   }

@@ -73,6 +73,66 @@ describe("a stale card cannot reject a different key's generation", () => {
   });
 });
 
+describe("a card that sends no gen (loaded from a row before `gen`)", () => {
+  /** The approve recheck's preview refresh: a new rev, the same generation. */
+  const refresh = async (id: string) => {
+    const { refreshPreview } = await import("@/lib/server/agent-proposals");
+    await refreshPreview(id, row(id).rev as string, { rows: [{ label: "Body", value: "hi!" }], pinned: { body: "hi!" } });
+  };
+  /** A row as queued before `gen` existed. */
+  const legacyRow = async () => {
+    const id = await proposeScoped("sa1", "hi");
+    const { gen: _g, ...legacy } = row(id);
+    mem.seed(`agentProposals/${id}`, legacy);
+    return { id, rev: legacy.rev as string };
+  };
+
+  it("cannot reject a different key's later generation → 409, key1's row stays pending", async () => {
+    const { id, rev } = await legacyRow();
+    revokeAk1();
+    await proposeId({ body: "hi" }, auth);
+    expect(row(id)).toMatchObject({ keyId: "key1", status: "pending" });
+    const res = await decide(id, "reject", "sa1", rev);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "stale_proposal" });
+    expect(row(id)).toMatchObject({ keyId: "key1", status: "pending" });
+  });
+
+  it("nor when the rollover lands between the route's read and the reject's transition", async () => {
+    const { id, rev } = await legacyRow();
+    revokeAk1();
+    beforeNextTransaction(() => proposeId({ body: "hi" }, auth));
+    expect((await decide(id, "reject", "sa1", rev)).status).toBe(409);
+    expect(row(id)).toMatchObject({ keyId: "key1", status: "pending" });
+  });
+
+  it("a row that still has no gen behaves as before: a reject lands even after a refresh", async () => {
+    const { id, rev } = await legacyRow();
+    await refresh(id);
+    expect(row(id).rev).not.toBe(rev);
+    expect(row(id).gen).toBeUndefined();
+    expect((await decide(id, "reject", "sa1", rev)).status).toBe(200);
+    expect(row(id).status).toBe("rejected");
+  });
+
+  it("still rejects the generation it shows, after a refresh: with the current rev", async () => {
+    const id = await proposeId({ body: "hi" }, auth);
+    await refresh(id);
+    expect(row(id).rev).not.toBe(row(id).gen);
+    expect((await decide(id, "reject", "sa1", row(id).rev)).status).toBe(200);
+    expect(row(id).status).toBe("rejected");
+  });
+
+  it("still rejects the generation it shows, after a refresh: with its first rev (= gen)", async () => {
+    const id = await proposeId({ body: "hi" }, auth);
+    const seen = row(id);
+    await refresh(id);
+    expect(row(id).rev).not.toBe(seen.rev);
+    expect((await decide(id, "reject", "sa1", seen.rev)).status).toBe(200);
+    expect(row(id).status).toBe("rejected");
+  });
+});
+
 describe("one generation across a preview refresh", () => {
   it("refresh bumps rev but not gen, and a reject naming that gen and the old rev lands", async () => {
     let suffix = "";
