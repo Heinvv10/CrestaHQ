@@ -30,6 +30,9 @@ describe("invite_member email", () => {
   it.each([["a Cyrillic letter", "ann@cl\u0456ent.io"], ["an accented letter", "jos\u00e9@client.io"]])("with %s is refused (ASCII only)", (_label, email) => {
     expect(invite(email)).toEqual({ ok: false, error: expect.stringMatching(/plain ASCII/) });
   });
+  it.each([["missing", undefined], ["blank", "   "], ["not an address", "not-an-email"]])("%s → the plain 'valid email' refusal", (_label, email) => {
+    expect(getCapability("invite_member")!.validate({ email, role: "admin" })).toEqual({ ok: false, error: "a valid email address is required" });
+  });
   it("a plain address validates, lowercased", () => {
     expect(invite("Boss@Client.io")).toEqual({ ok: true, args: { email: "boss@client.io", role: "admin" } });
   });
