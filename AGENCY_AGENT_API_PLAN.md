@@ -407,8 +407,20 @@ no `apply_snapshot` row is ever in "Approve all"):
     writes an agency-level `agent.write` (`subAccountId: null`, new target type
     `billingPlan`).
   - **Invite audit.** An approved invite's `invitedByUid` and audit actor are the
-    approving person (`user`); chat keeps `ai_agent`. Execute re-reads the
-    invite state after the claim and refuses on any change.
+    approving person (`user`) for a new invite or member doc; a re-sent pending
+    invite or re-added member keeps its original inviter fields. Chat keeps
+    `ai_agent`. Execute re-reads the invite state (territories included) after
+    the claim and refuses on any change.
+  - **Invite, review round 1.** An existing member's or pending invite's
+    territories are kept and pinned. A disabled or another agency's account is
+    queued like any other (approval refuses, no service call) and the agent sees
+    only the sub-account, email and role rows (`agentPreviewLabels`), so it
+    can't probe which addresses have accounts.
+  - **Billing, review round 1.** Both billing writes refuse at validate a
+    currency the provider can't settle in cents (Stripe: zero- and
+    three-decimal). The gate pin names which gates the plan names, not only
+    their values. The assign preview shows quotas and overage rates (drift is
+    `preview_changed`; they are not in the in-read pin).
   - **Chat, touched on purpose.** Both billing validators refuse a padded
     `subAccountId` (the A3a contract test); the charge validator also keeps
     `amount` (re-validation of a stored row) and refuses a currency Paystack can't

@@ -114,8 +114,15 @@ other route: every other `/api/v1` route refuses it with 403
   `outbound` row approved by a person (an agency key's row on the sub-account's
   page and on `/agency/approvals`). Its preview names the role (admin: manages
   members and settings) and what will happen: a new invite, an existing account
-  added at once with nothing to accept, or a member's role old → new; and whether
-  an email goes out. The approving person is the inviter.
+  added at once with nothing to accept, a member's role old → new, or that
+  approving will refuse (a disabled or another agency's account); what happens to
+  the territories an existing member or pending invite has (kept; cleared for an
+  admin); and whether an email goes out. The agent gets back only the
+  sub-account, email and role rows, so it can't learn whether an address has an
+  account. On approve, the approving person is the inviter of a new invite and
+  the adder of a new member (`invitedByUid` / `addedByUid`) and the actor of any
+  role change; a re-sent pending invite and a re-added member keep their
+  original inviter fields.
 - **Audit.** Each call in a sub-account writes one `agent.call` row under
   `agencies/{id}/agentCalls` (key, tool, target, read or write — never the args),
   kept 30 days. Request logs land under the target once reach lets the call
@@ -143,9 +150,11 @@ A new tool that can need approval also needs a line in `PREVIEW_NOTES`
 
 The agent surface is the sub-account-level capabilities that declare the `agent`
 surface, plus the agency-key tools listed under [Agency keys](#agency-keys).
-Webhook writes, the website / community / course builders, checkout pages,
-payment links and mandates, API keys, feature gates (apart from an agency key's
-`set_sub_account_gate`) and anything else agency-level are not on it.
+Webhook writes, the website / community / course builders, checkout pages, a
+sub-account's own payment links and mandates (Payments), API keys, feature gates
+(apart from an agency key's `set_sub_account_gate`) and any other agency-level
+tool are not on it. An agency key's `create_one_time_charge` does create a
+Client Billing payment link, once the owner approves it.
 
 **Approval classes:** `outbound` (a message to a person), `workflow_activate`,
 `hard_delete`, `spend` (bills or charges), `channel_change` (a contact's phone or
