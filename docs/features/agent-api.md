@@ -119,7 +119,8 @@ A new tool that can need approval also needs a line in `PREVIEW_NOTES`
 The agent surface is the sub-account-level capabilities that declare the `agent`
 surface. Webhook writes, member invites, the website / community / course
 builders, checkout pages, payment links and mandates, API keys, feature gates and
-anything agency-level are not on it.
+anything agency-level are not on it, apart from the agency-key tools listed under
+Agency keys.
 
 **Approval classes:** `outbound` (a message to a person), `workflow_activate`,
 `hard_delete`, `spend` (bills or charges), `channel_change` (a contact's phone or
