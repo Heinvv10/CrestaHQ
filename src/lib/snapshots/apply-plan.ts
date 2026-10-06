@@ -2,7 +2,8 @@ import "server-only";
 
 import type { Firestore } from "firebase-admin/firestore";
 import type { SnapshotPayload } from "@/types/snapshots";
-import { deterministicId, existingPaths, personaIsSet } from "./apply";
+import { existingPaths } from "./apply";
+import { deterministicId, personaIsSet } from "./apply-target";
 
 type Counts = { forms: number; messageTemplates: number; products: number; workflows: number; customFields: number };
 
