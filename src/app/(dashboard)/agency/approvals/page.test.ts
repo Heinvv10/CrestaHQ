@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 const auth = vi.hoisted(() => ({ value: { agencyRole: "owner" as string, loading: false } }));
-const agency = vi.hoisted(() => ({ value: { agentApiEnabled: true } }));
+const agency = vi.hoisted(() => ({ value: { agentApiEnabled: true, resolved: true } }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => auth.value }));
 vi.mock("@/hooks/use-agency", () => ({ useAgency: () => agency.value }));
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), warning: vi.fn() }) }));
@@ -31,6 +31,8 @@ const ACTIVATE = row("act", "workflow_activate", "kc", true);
 const GATE = row("gate", "gate_change", "kc", true);
 const SEND = row("send", "outbound", "old", false);
 let byUrl: Record<string, unknown[] | "error"> = {};
+/** A GET whose response is held until the promise resolves. */
+let holds: Record<string, Promise<void>> = {};
 const posts: Array<[string, unknown]> = [];
 let decideStatus = 200;
 const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
@@ -38,6 +40,7 @@ const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     posts.push([url, JSON.parse(String(init.body))]);
     return new Response(JSON.stringify({ status: decideStatus === 202 ? "unsettled" : "executed" }), { status: decideStatus });
   }
+  await holds[url];
   const rows = byUrl[url];
   return rows === "error"
     ? new Response(JSON.stringify({ error: "Boom" }), { status: 500 })
@@ -61,8 +64,9 @@ beforeEach(() => {
   fetchMock.mockClear();
   posts.length = 0;
   decideStatus = 200;
+  holds = {};
   auth.value = { agencyRole: "owner", loading: false };
-  agency.value = { agentApiEnabled: true };
+  agency.value = { agentApiEnabled: true, resolved: true };
   byUrl = {
     "/api/agency/agent-proposals?status=open": [ACTIVATE, GATE, SEND],
     "/api/agency/agent-proposals?status=recent": [],
@@ -148,14 +152,49 @@ describe("the queue", () => {
   });
 });
 
+describe("the agency switch, on a hard load", () => {
+  it("waits for the agency doc: no request and no 'locked' state until it resolves, then open + recent only", async () => {
+    agency.value = { agentApiEnabled: false, resolved: false };
+    await render();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(text()).not.toContain("Approvals are locked");
+    expect(shell()?.className).toContain("max-w-5xl");
+    agency.value = { agentApiEnabled: true, resolved: true };
+    await render();
+    expect(fetchMock.mock.calls.map(([u]) => u).sort()).toEqual([
+      "/api/agency/agent-proposals?status=open",
+      "/api/agency/agent-proposals?status=recent",
+    ]);
+    expect(text()).toContain("Waiting for approval");
+    expect(container.querySelector('[data-testid="approval-act"]')).not.toBeNull();
+  });
+
+  it("a stale load answering last never replaces the current one", async () => {
+    let release!: () => void;
+    holds["/api/agency/agent-proposals?status=unsettled"] = new Promise((r) => (release = r));
+    agency.value = { agentApiEnabled: false, resolved: true };
+    await render(); // asks for unsettled; its answer is held
+    agency.value = { agentApiEnabled: true, resolved: true };
+    await render(); // open + recent answer first
+    expect(container.querySelector('[data-testid="approval-act"]')).not.toBeNull();
+    await act(async () => {
+      release();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(text()).toContain("Waiting for approval");
+    expect(container.querySelector('[data-testid="approval-act"]')).not.toBeNull();
+    expect(text()).not.toContain("Approvals are locked");
+  });
+});
+
 describe("every top-level return sits in the max-w-5xl shell", () => {
   const states: Array<[string, () => void, string]> = [
     ["auth loading", () => (auth.value = { agencyRole: "owner", loading: true }), ""],
     ["not the owner", () => (auth.value = { agencyRole: "admin", loading: false }), "available to the agency owner"],
     ["load error", () => (byUrl["/api/agency/agent-proposals?status=open"] = "error"), "Boom"],
-    ["switch off, nothing unsettled", () => (agency.value = { agentApiEnabled: false }), "Approvals are locked"],
+    ["switch off, nothing unsettled", () => (agency.value = { agentApiEnabled: false, resolved: true }), "Approvals are locked"],
     ["switch off, unsettled", () => {
-      agency.value = { agentApiEnabled: false };
+      agency.value = { agentApiEnabled: false, resolved: true };
       byUrl["/api/agency/agent-proposals?status=unsettled"] = [row("u", "outbound", "old", false, "unsettled")];
     }, "Needs checking"],
     ["empty", () => (byUrl["/api/agency/agent-proposals?status=open"] = []), "Nothing to approve"],

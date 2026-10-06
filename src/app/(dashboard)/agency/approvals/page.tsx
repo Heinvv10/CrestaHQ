@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Loader2, Lock } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -17,19 +17,26 @@ import type { AgencyApprovalRow } from "@/lib/approvals/agency-batch";
  * actionable `?status=open` set the sidebar badge counts, terminal rows
  * from `?status=recent`. With the agency's Agent API switch off only
  * unsettled rows load: nothing new can be approved, but they must be settled.
+ * Nothing loads until the agency doc has resolved (the switch reads off
+ * before it), and only the latest load's answer is shown.
  */
 
 export default function AgencyApprovalsPage() {
   const { agencyRole, loading: authLoading } = useAuth();
   const agency = useAgency();
-  const switchOn = agency.agentApiEnabled;
+  // null until the agency doc arrives: on a hard load the default reads off.
+  const switchOn = agency.resolved ? agency.agentApiEnabled : null;
   const isOwner = agencyRole === "owner";
   const [rows, setRows] = useState<AgencyApprovalRow[]>([]);
   const [recent, setRecent] = useState<AgencyApprovalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const latestLoad = useRef(0);
 
   const reload = useCallback(async () => {
+    // A load the switch (or a later reload) has overtaken never lands.
+    const seq = ++latestLoad.current;
+    const current = () => seq === latestLoad.current;
     setLoadError(null);
     const load = async (status: string) => {
       const res = await fetch(`/api/agency/agent-proposals?status=${status}`);
@@ -40,23 +47,26 @@ export default function AgencyApprovalsPage() {
     try {
       if (switchOn) {
         const [open, done] = await Promise.all([load("open"), load("recent")]);
+        if (!current()) return;
         setRows(open);
         setRecent(done);
       } else {
-        setRows(await load("unsettled"));
+        const unsettled = await load("unsettled");
+        if (!current()) return;
+        setRows(unsettled);
         setRecent([]);
       }
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : "Couldn't load approvals.");
+      if (current()) setLoadError(err instanceof Error ? err.message : "Couldn't load approvals.");
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [switchOn]);
 
   useEffect(() => {
-    if (authLoading || !isOwner) return;
+    if (authLoading || !isOwner || switchOn === null) return;
     void reload();
-  }, [authLoading, isOwner, reload]);
+  }, [authLoading, isOwner, switchOn, reload]);
 
   const replace = (next: AgencyApprovalRow) => setRows((rs) => rs.map((r) => (r.id === next.id ? next : r)));
   const unsettled = rows.filter((r) => r.status === "unsettled");
@@ -65,7 +75,7 @@ export default function AgencyApprovalsPage() {
     <AgencyApprovalGroups rows={list} onReplace={replace} onChanged={reload} />
   );
 
-  if (authLoading || (isOwner && loading)) {
+  if (authLoading || (isOwner && (loading || switchOn === null))) {
     return (
       <Shell>
         <div className="flex items-center justify-center rounded-2xl border py-16">

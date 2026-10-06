@@ -13,6 +13,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   role: "owner" as string,
   switchOn: true,
+  resolved: true,
   counts: { open: 0, unsettled: 0 } as Record<string, number>,
   modes: [] as Array<string | null>,
 }));
@@ -29,7 +30,7 @@ vi.mock("@/hooks/use-auth", () => ({
   useAuth: () => ({ agencyRole: state.role, memberships: [{ subAccountId: "sa1" }, { subAccountId: "sa2" }], loading: false }),
 }));
 vi.mock("@/hooks/use-agency", () => ({
-  useAgency: () => ({ name: "Agency", logoUrl: null, agencyAssistantEnabled: false, agentApiEnabled: state.switchOn }),
+  useAgency: () => ({ name: "Agency", logoUrl: null, agencyAssistantEnabled: false, agentApiEnabled: state.switchOn, resolved: state.resolved }),
 }));
 vi.mock("@/hooks/use-agency-open-approvals", () => ({
   useAgencyOpenApprovalsCount: (mode: string | null) => {
@@ -58,6 +59,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.modes = [];
   state.role = "owner";
+  state.resolved = true;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -99,4 +101,19 @@ it("not the owner: never asked, never shown", async () => {
   await render();
   expect(state.modes.every((m) => m === null)).toBe(true);
   expect(link()).toBeNull();
+});
+
+it("hard load: not asked until the agency doc resolves (the switch reads off before it), then asked for open", async () => {
+  state.switchOn = false;
+  state.resolved = false;
+  state.counts = { open: 4, unsettled: 0 };
+  await render();
+  expect(state.modes.every((m) => m === null)).toBe(true);
+  expect(link()).toBeNull();
+  state.switchOn = true;
+  state.resolved = true;
+  await render();
+  expect(state.modes).toContain("open");
+  expect(state.modes).not.toContain("unsettled");
+  expect(link()!.textContent).toContain("4");
 });

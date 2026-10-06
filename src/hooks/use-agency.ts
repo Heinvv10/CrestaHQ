@@ -46,6 +46,13 @@ interface AgencySummary {
    */
   loading: boolean;
   /**
+   * True once the doc's settings (`agentApiEnabled`, the assistant fields,
+   * …) are the agency's real values, not the defaults: the snapshot (or its
+   * error) arrived, or auth settled with no agency. Unlike `loading` it is
+   * false through a hard load, so gate anything acting on a switch on it.
+   */
+  resolved: boolean;
+  /**
    * True once name/logoUrl/appTheme are the agency's real values: seeded by
    * the server (AgencyBrandingProvider), delivered by the snapshot, or known
    * to be absent (auth settled with no agency). Brand chrome gates on this.
@@ -130,5 +137,5 @@ export function useAgency(): AgencySummary {
   }, [agencyId]);
 
   const brandingReady = !!seed || resolved || (!authLoading && !agencyId);
-  return { ...data, loading, brandingReady };
+  return { ...data, loading, brandingReady, resolved: resolved || (!authLoading && !agencyId) };
 }

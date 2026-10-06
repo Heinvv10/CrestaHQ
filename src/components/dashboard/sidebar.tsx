@@ -219,8 +219,9 @@ function SidebarContent({ trimmed = false }: { trimmed?: boolean }) {
   );
   // Agency approvals (agency keys' rows): the owner's, while the agency's
   // Agent API switch is on; off, only while unsettled rows need settling.
+  // Not asked until the agency doc resolves (the switch reads off before it).
   const agencyApprovals = useAgencyOpenApprovalsCount(
-    agencyRole !== "owner" ? null : agency.agentApiEnabled ? "open" : "unsettled"
+    agencyRole !== "owner" || !agency.resolved ? null : agency.agentApiEnabled ? "open" : "unsettled"
   );
   // Per-feature "hide vs. show as Locked" flag. Only consulted when the
   // matching gate is off. HIDDEN IS THE DEFAULT — a disabled feature is omitted
