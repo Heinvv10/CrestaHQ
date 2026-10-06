@@ -117,10 +117,10 @@ A new tool that can need approval also needs a line in `PREVIEW_NOTES`
 (`src/lib/ai-suite/agent-api-doc.ts`); the same test fails until it has one.
 
 The agent surface is the sub-account-level capabilities that declare the `agent`
-surface. Webhook writes, member invites, the website / community / course
-builders, checkout pages, payment links and mandates, API keys, feature gates and
-anything agency-level are not on it, apart from the agency-key tools listed under
-Agency keys.
+surface, plus the agency-key tools listed under [Agency keys](#agency-keys).
+Webhook writes, member invites, the website / community / course builders,
+checkout pages, payment links and mandates, API keys, feature gates (apart from an
+agency key's `set_sub_account_gate`) and anything else agency-level are not on it.
 
 **Approval classes:** `outbound` (a message to a person), `workflow_activate`,
 `hard_delete`, `spend` (bills or charges), `channel_change` (a contact's phone or
