@@ -20,6 +20,11 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async () => {}) }));
+const mail = vi.hoisted(() => ({ configured: false }));
+vi.mock("@/lib/comms/platform-email", async (orig) => {
+  const real = (await orig()) as typeof import("@/lib/comms/platform-email");
+  return { ...real, resolvePlatformSender: async (id: string) => (mail.configured ? { kind: "shared" as const } : real.resolvePlatformSender(id)) };
+});
 vi.mock("@/lib/server/members-service", async (orig) => {
   const real = (await orig()) as typeof import("@/lib/server/members-service");
   return { ...real, createInviteServerSide: vi.fn(real.createInviteServerSide) };
@@ -34,6 +39,7 @@ setupAgentProposalTests();
 beforeEach(() => {
   seedAgency();
   invites.mockClear();
+  mail.configured = false;
 });
 
 const ADMIN = { uid: "u_ann", email: "ann@client.io", emailVerified: true, customClaims: { agencyId: "ag1" } };
@@ -120,6 +126,15 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
     expect(what(id)).toBe("Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in with their existing password. Pending until then.");
     expect(row(id).preview).toEqual(expect.arrayContaining([
       { label: "Email sent", value: "No: email isn't configured on this deployment. Copy the invite link from Settings → Members and share it yourself." },
+    ]));
+  });
+
+  it("with email configured, an unverified account's email row names the confirm-and-sign-in link, not a signup link", async () => {
+    mail.configured = true;
+    authUsers.set("pat@client.io", { uid: "u_pat", email: "pat@client.io", emailVerified: false, customClaims: { agencyId: "ag1" } });
+    const id = await propose(subKey, { email: "pat@client.io", role: "collaborator" });
+    expect(row(id).preview).toEqual(expect.arrayContaining([
+      { label: "Email sent", value: "Yes: the invite email with the link to confirm and sign in." },
     ]));
   });
 

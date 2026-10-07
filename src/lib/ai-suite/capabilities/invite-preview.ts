@@ -150,7 +150,12 @@ export async function invitePreview(
   const kept = await keptTerritories(subAccountId, state, role);
   const emails = state.kind !== "member" && state.kind !== "blocked";
   const sender = emails ? await resolvePlatformSender(subAccountId) : null;
-  const mail = state.kind === "new" || state.kind === "unverified_account" || state.kind === "pending" ? "the invite email with the signup link" : "a notification that they were added";
+  const mail =
+    state.kind === "unverified_account"
+      ? "the invite email with the link to confirm and sign in"
+      : state.kind === "new" || state.kind === "pending"
+        ? "the invite email with the signup link"
+        : "a notification that they were added";
   return {
     rows: [
       { label: "Sub-account", value: oneLine(sub.data()?.name ?? sub.id) },
