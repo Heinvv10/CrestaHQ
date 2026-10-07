@@ -168,15 +168,20 @@ and on no other route: every other `/api/v1` route refuses it with 403
   target and wrote its row. Deliberate, not fixed.
 - **Teardown of smoke sub-accounts.** A sub-account an agency key made for a test
   run is removed with `scripts/teardown-smoke-sub-account.ts` (Node 22, dry run
-  unless `--yes`). It refuses unless the name starts with `Agency agent smoke `,
-  `createdByKeyId` is set, it was created under 72 h ago, it has no contacts, no
-  channel connection and nothing under `private/`, `--project` matches the
-  credential, and `findDeleteBlockers` finds nothing beyond what it deletes
-  itself (open approvals included). It then deletes the decided approvals,
-  workflows (paused first), forms, products, saved replies, message templates,
-  invites, the members' `userMemberships` entries and the sub-account
-  recursively, and re-reads them all (exit 2 if anything is left). Audit records
-  stay. Usage is in the script's header.
+  unless `--yes`). It refuses (exit 1) unless the name starts with
+  `Agency agent smoke `, `createdByKeyId` is set, it was created under 72 h ago,
+  it has no contacts, no channel connection, nothing under `private/`, no open
+  Client Billing (`billing` absent or `canceled`, every `billingCharges` row paid
+  or canceled) and no provisioned Vapi voice line under `aiAgent/`, `--project`
+  matches the credential (its client email included), and `findDeleteBlockers`
+  finds nothing beyond what it deletes itself (open approvals included). It then
+  deletes the decided approvals, workflows (paused first), forms, products, saved
+  replies, message templates and invites; runs every guard again on a fresh read
+  (anything that appeared meanwhile stops it, exit 3, with the sub-account kept
+  and the log naming what was already deleted); deletes every `userMemberships`
+  entry and the sub-account recursively; and re-reads it all (exit 2 if anything
+  is left). Audit records stay. Usage and the known orphans are in the script's
+  header.
 
 ## Tools
 
