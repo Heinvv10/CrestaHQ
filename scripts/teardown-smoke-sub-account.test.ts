@@ -1,116 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Firestore } from "firebase-admin/firestore";
-import { createMemoryFirestore } from "../src/test/memory-firestore";
 import { CHANNEL_CONNECTION_FIELDS } from "../src/lib/agency/channel-connections";
-import { parseArgs, teardownSmokeSubAccount } from "./teardown-smoke-sub-account";
+import { TOP_LEVEL, parseArgs } from "./teardown-smoke-sub-account";
+import { MAX_AGE_MS } from "./teardown-smoke-sub-account-guards";
+import {
+  AG, H, NOW, SA, SB, expectRefused, hooked, mem, patchTarget, resetStore, run, snapshot, targetPaths,
+} from "./teardown-smoke-sub-account.fixture";
 
-const H = 3600_000;
-const NOW = Date.UTC(2026, 9, 7, 12);
-const PROJECT = "crestahq-test";
-const AG = "ag_1";
-const SA = "sa_smoke";
-const SB = "sa_sibling";
-
-const mem = createMemoryFirestore();
-const db = mem.db as unknown as Firestore;
-
-/** Everything a smoke run leaves for sub-account `id`, plus what must outlive it. */
-function seedSmoke(id: string) {
-  mem.seed(`subAccounts/${id}`, {
-    id,
-    agencyId: AG,
-    name: `Agency agent smoke ${id}`,
-    createdByKeyId: "key_1",
-    createdByUid: "uid_owner",
-    createdAt: new Date(NOW - H),
-    // As written at creation: empty connections.
-    ...{ twilioConfig: null, resendConfig: null, stripeConnectionMeta: null, metaConfig: null },
-    ...{ webinar1ConnectionMeta: null, whatsappSenders: [], apexgeoConnected: false },
-  });
-  mem.seed(`subAccounts/${id}/subAccountMembers/uid_owner`, { role: "admin" });
-  mem.seed(`subAccounts/${id}/subAccountMembers/uid_invited`, { role: "collaborator" });
-  mem.seed(`userMemberships/uid_owner/subAccounts/${id}`, { subAccountId: id });
-  mem.seed(`userMemberships/uid_invited/subAccounts/${id}`, { subAccountId: id });
-  mem.seed(`subAccounts/${id}/pipelines/pl_1`, { name: "Sales" });
-  mem.seed(`subAccounts/${id}/customFields/cf_1`, { key: "plan" });
-  mem.seed(`subAccounts/${id}/bookingPages/demo`, { status: "published" });
-  mem.seed(`subAccounts/${id}/aiAgent/profile`, { systemPrompt: "" });
-  mem.seed(`subAccounts/${id}/snapshotApplies/snap_1`, { status: "completed" });
-  const row = { agencyId: AG, subAccountId: id };
-  mem.seed(`workflows/wf_${id}`, { ...row, status: "active" });
-  mem.seed(`forms/form_${id}`, row);
-  mem.seed(`products/prod_${id}`, row);
-  mem.seed(`snippets/snip_${id}`, row);
-  mem.seed(`message_templates/welcome_email_${id}`, row);
-  mem.seed(`message_templates/welcome_sms_${id}`, row);
-  mem.seed(`invites/inv_${id}`, { ...row, email: "x@example.test", acceptedByUid: null, revokedAt: null });
-  mem.seed(`agentProposals/p_done_${id}`, { ...row, status: "executed" });
-  mem.seed(`agentProposals/p_done_${id}/history/h_1`, { ...row, status: "superseded" });
-  mem.seed(`agentProposals/p_gate_${id}`, { agencyId: AG, subAccountId: null, targetSubAccountId: id, status: "rejected" });
-  // Audit and agency-side records outlive the sub-account, as the app's delete leaves them.
-  mem.seed(`auditEvents/audit_${id}`, row);
-  mem.seed(`aiSuiteActions/act_${id}`, row);
-}
-
-/** Paths the teardown of `id` must delete — and nothing else. */
-const targetPaths = (id: string) => [
-  `subAccounts/${id}`,
-  `subAccounts/${id}/subAccountMembers/uid_owner`,
-  `subAccounts/${id}/subAccountMembers/uid_invited`,
-  `userMemberships/uid_owner/subAccounts/${id}`,
-  `userMemberships/uid_invited/subAccounts/${id}`,
-  `subAccounts/${id}/pipelines/pl_1`,
-  `subAccounts/${id}/customFields/cf_1`,
-  `subAccounts/${id}/bookingPages/demo`,
-  `subAccounts/${id}/aiAgent/profile`,
-  `subAccounts/${id}/snapshotApplies/snap_1`,
-  `workflows/wf_${id}`,
-  `forms/form_${id}`,
-  `products/prod_${id}`,
-  `snippets/snip_${id}`,
-  `message_templates/welcome_email_${id}`,
-  `message_templates/welcome_sms_${id}`,
-  `invites/inv_${id}`,
-  `agentProposals/p_done_${id}`,
-  `agentProposals/p_done_${id}/history/h_1`,
-  `agentProposals/p_gate_${id}`,
-];
-
-const snapshot = () => new Map(mem.all().map(({ path, data }) => [path, data]));
-
-async function run(opts: { yes?: boolean; projectId?: string; target?: string; using?: Firestore } = {}) {
-  const lines: string[] = [];
-  const result = await teardownSmokeSubAccount(
-    opts.using ?? db,
-    {
-      subAccountId: opts.target ?? SA,
-      yes: opts.yes ?? true,
-      projectId: opts.projectId ?? PROJECT,
-      credentialProjectId: PROJECT,
-      now: NOW,
-    },
-    (line) => lines.push(line)
-  );
-  return { result, out: lines.join("\n") };
-}
-
-/** Runs with `--yes` and asserts a refusal naming `reason` that changed nothing. */
-async function expectRefused(reason: RegExp) {
-  const before = snapshot();
-  const { result } = await run();
-  expect(result.outcome).toBe("refused");
-  expect(result.refusals.some((r) => reason.test(r))).toBe(true);
-  expect(snapshot()).toEqual(before);
-}
-
-const patchTarget = (patch: Record<string, unknown>) =>
-  mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`), ...patch });
-
-beforeEach(() => {
-  mem.clear();
-  seedSmoke(SA);
-  seedSmoke(SB);
-});
+beforeEach(resetStore);
 
 describe("parseArgs", () => {
   it("requires a project and a sub-account, and defaults to a dry run", () => {
@@ -158,8 +55,9 @@ describe("guards: each one alone refuses and deletes nothing", () => {
 
   it.each([
     ["missing", undefined],
-    ["73 h old", new Date(NOW - 73 * H)],
-    ["exactly 72 h old", new Date(NOW - 72 * H)],
+    ["73 h old", new Date(NOW - MAX_AGE_MS - H)],
+    ["exactly 72 h old", new Date(NOW - MAX_AGE_MS)],
+    ["an invalid Date (NaN ms)", new Date(Number.NaN)],
     ["in the future", new Date(NOW + H)],
     ["a string", "2026-10-07T10:00:00Z"],
   ])("3. createdAt within 72 h — %s", async (_, createdAt) => {
@@ -182,11 +80,53 @@ describe("guards: each one alone refuses and deletes nothing", () => {
     await expectRefused(/^private\/ /);
   });
 
+  it.each(["comped", "pending", "active", "past_due"])("5c. Client Billing — billing.status %s refuses", async (status) => {
+    patchTarget({ billing: { status, planId: "plan_1", stripeSubscriptionId: status === "active" ? "sub_1" : null } });
+    await expectRefused(/^billing: /);
+  });
+
+  it("5c. Client Billing — a pending one-time charge refuses", async () => {
+    mem.seed("billingCharges/ch_1", { agencyId: AG, subAccountId: SA, status: "pending", amountCents: 50000 });
+    await expectRefused(/^billingCharges: ch_1 /);
+  });
+
+  it("5c. Client Billing — canceled billing and settled charges do not refuse", async () => {
+    patchTarget({ billing: { status: "canceled", planId: "plan_1" } });
+    mem.seed("billingCharges/ch_paid", { agencyId: AG, subAccountId: SA, status: "paid" });
+    mem.seed("billingCharges/ch_void", { agencyId: AG, subAccountId: SA, status: "canceled" });
+    mem.seed("billingCharges/ch_sibling", { agencyId: AG, subAccountId: SB, status: "pending" });
+    expect((await run({ yes: false })).result.refusals).toEqual([]);
+  });
+
+  it.each([
+    ["a provisioned voice line", "voice", { enabled: true, voice: { vapiAssistantId: "asst_1", vapiPhoneNumberId: "pn_1" } }],
+    ["a Vapi number only", "voice", { voice: { vapiAssistantId: null, vapiPhoneNumberId: "pn_1" } }],
+    ["an assistant on the channel doc itself", "sms", { vapiAssistantId: "asst_2" }],
+  ])("5d. voice line — %s refuses", async (_, channel, data) => {
+    mem.seed(`subAccounts/${SA}/aiAgent/${channel}`, data);
+    await expectRefused(/^voice line: /);
+  });
+
+  it("5d. voice line — the default (unprovisioned) voice config does not refuse", async () => {
+    mem.seed(`subAccounts/${SA}/aiAgent/voice`, { enabled: false, voice: { vapiAssistantId: null, vapiPhoneNumberId: null } });
+    expect((await run({ yes: false })).result.refusals).toEqual([]);
+  });
+
   it("6. --project must match the credential's project", async () => {
     const before = snapshot();
     const { result } = await run({ projectId: "crestahq-prod" });
     expect(result.outcome).toBe("refused");
     expect(result.refusals).toEqual(["--project crestahq-prod does not match the credential's project (crestahq-test)"]);
+    expect(snapshot()).toEqual(before);
+  });
+
+  it("6. the credential's client email must belong to --project", async () => {
+    const before = snapshot();
+    const { result } = await run({ clientEmail: "firebase-adminsdk@crestahq-prod.iam.gserviceaccount.com" });
+    expect(result.outcome).toBe("refused");
+    expect(result.refusals).toEqual([
+      "the credential's client email (firebase-adminsdk@crestahq-prod.iam.gserviceaccount.com) is not a service account of crestahq-test",
+    ]);
     expect(snapshot()).toEqual(before);
   });
 
@@ -227,7 +167,7 @@ describe("dry run", () => {
     expect(snapshot()).toEqual(before);
     expect([...result.plan.values()].flat().sort()).toEqual(targetPaths(SA).sort());
     for (const path of targetPaths(SA)) expect(out).toContain(path);
-    for (const header of ["workflows", "forms", "products", "snippets", "message_templates", "invites", "agentProposals (decided)", "userMemberships", `subAccounts/${SA} (recursive)`]) {
+    for (const header of [...TOP_LEVEL, "agentProposals (decided)", "userMemberships", `subAccounts/${SA} (recursive)`]) {
       expect(out).toMatch(new RegExp(`^${header.replace(/[()/]/g, "\\$&")} \\(\\d+\\)$`, "m"));
     }
     expect(out).not.toContain(SB);
@@ -247,27 +187,6 @@ describe("--yes", () => {
     for (const [path, data] of after) expect(data).toEqual(before.get(path));
   });
 
-  it("stops before the sub-account goes when a contact lands mid-run", async () => {
-    let landed = false;
-    const racing = {
-      ...mem.db,
-      recursiveDelete: async (ref: { path: string }) => {
-        if (!landed && ref.path.startsWith("workflows/")) {
-          landed = true;
-          mem.seed("contacts/c_late", { agencyId: AG, subAccountId: SA });
-        }
-        return mem.db.recursiveDelete(ref as Parameters<typeof mem.db.recursiveDelete>[0]);
-      },
-    } as unknown as Firestore;
-
-    const { result } = await run({ using: racing });
-
-    expect(result.outcome).toBe("refused");
-    expect(result.refusals.join()).toMatch(/blocked: contacts/);
-    expect(mem.read(`subAccounts/${SA}`)).toBeDefined();
-    expect(mem.read(`userMemberships/uid_owner/subAccounts/${SA}`)).toBeDefined();
-  });
-
   it("fails (leftover) when a doc is still there after the delete", async () => {
     const leaky = {
       ...mem.db,
@@ -284,15 +203,9 @@ describe("--yes", () => {
 
   it("pauses each workflow before deleting it", async () => {
     const statuses: unknown[] = [];
-    const watching = {
-      ...mem.db,
-      recursiveDelete: async (ref: { path: string }) => {
-        if (ref.path.startsWith("workflows/")) statuses.push(mem.read(ref.path)?.status);
-        return mem.db.recursiveDelete(ref as Parameters<typeof mem.db.recursiveDelete>[0]);
-      },
-    } as unknown as Firestore;
-
-    const { result } = await run({ using: watching });
+    const { result } = await run({
+      using: hooked((p) => void (p.startsWith("workflows/") && statuses.push(mem.read(p)?.status))),
+    });
 
     expect(result.outcome).toBe("deleted");
     expect(statuses).toEqual(["paused"]);

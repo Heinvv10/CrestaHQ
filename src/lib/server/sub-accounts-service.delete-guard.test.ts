@@ -12,7 +12,7 @@ vi.mock("@/lib/firebase/admin", async () =>
   (await import("@/test/gbp-sync-store")).adminMock());
 
 import { mem, storeDb } from "@/test/gbp-sync-store";
-import { deleteDecidedProposals } from "@/lib/agency/sub-account-delete-guard";
+import { deleteDecidedProposals, findDeleteBlockers } from "@/lib/agency/sub-account-delete-guard";
 import {
   deleteSubAccountForAgency,
   SubAccountNotEmptyError,
@@ -73,6 +73,17 @@ describe("deleteSubAccountForAgency emptiness guard", () => {
     expect((err as SubAccountNotEmptyError).blockers).toEqual([label]);
     expect(mem.read(`subAccounts/${SA}`)).toBeDefined();
     expect(mem.read(`${collection}/x_1`)).toBeDefined();
+  });
+});
+
+describe("findDeleteBlockers' except", () => {
+  it("without except, every usage collection blocks as before; except drops only the named ones", async () => {
+    await mem.db.doc("contacts/c_1").set({ agencyId: AG, subAccountId: SA });
+    await mem.db.doc("workflows/wf_1").set({ agencyId: AG, subAccountId: SA });
+    const db = storeDb as unknown as FirebaseFirestore.Firestore;
+
+    expect(await findDeleteBlockers(db, SA)).toEqual(["contacts", "workflows"]);
+    expect(await findDeleteBlockers(db, SA, new Set(["workflows"]))).toEqual(["contacts"]);
   });
 });
 

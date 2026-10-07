@@ -158,6 +158,8 @@ export type MemoryCollectionRef = MemoryQuery & {
   path: string;
   doc: (id?: string) => MemoryDocRef;
   add: (data: Data) => Promise<MemoryDocRef>;
+  /** Every doc of the collection, including one that only has subcollections, as in Firestore. */
+  listDocuments: () => Promise<MemoryDocRef[]>;
 };
 
 export interface MemoryQuery {
@@ -344,6 +346,11 @@ export function createMemoryFirestore() {
       id: path.split("/").pop()!,
       path,
       doc,
+      listDocuments: () =>
+        tick().then(() => {
+          const ids = [...store.keys()].filter((p) => p.startsWith(`${path}/`)).map((p) => p.slice(path.length + 1).split("/")[0]!);
+          return [...new Set(ids)].sort().map((id) => docRef(`${path}/${id}`));
+        }),
       add: async (data: Data) => {
         const ref = doc();
         await ref.set(data);

@@ -11,41 +11,53 @@
  *     scripts/teardown-smoke-sub-account.ts --project <firebase-project-id> \
  *     --sub-account <id> [--yes]
  *
- * Refuses (exit 1, deletes nothing) unless every guard holds:
+ * Refuses (exit 1, deletes nothing) unless every guard holds
+ * (teardown-smoke-sub-account-guards.ts):
  *   1. `name` starts with "Agency agent smoke " (exact, trailing space);
  *   2. `createdByKeyId` is a non-blank string (an agency key created it);
- *   3. `createdAt` is under 72 h ago (and not in the future);
+ *   3. `createdAt` is a valid time under 72 h ago (and not in the future);
  *   4. no `contacts` doc for the sub-account;
- *   5. `!hasChannelConnection(sub)`, and no doc under `subAccounts/{id}/private/`
+ *   5. `!hasChannelConnection(sub)`; no doc under `subAccounts/{id}/private/`
  *      (credentials kept off the doc, e.g. a member's Google Calendar token);
- *   6. `--project` matches the credential's project;
+ *      no Client Billing left open (`billing` absent or `canceled`, every
+ *      `billingCharges` row `paid` or `canceled`); no `aiAgent/{channel}`
+ *      doc holding a Vapi assistant or number (a provisioned voice line);
+ *   6. `--project` matches the credential's project, and its client email is
+ *      a service account of that project;
  *   7. nothing `findDeleteBlockers` refuses (open agent approvals included),
  *      apart from the collections deleted below.
  *
  * Without `--yes` it prints every doc it would delete, by collection, and
  * stops. With `--yes`: decided agent approvals (with their history) first, as
  * the app does; then workflows (paused, then deleted), forms, products,
- * saved replies, message templates and invites; then `findDeleteBlockers`
- * again with nothing excepted (a contact landing mid-run stops it here, the
- * sub-account still in place); then every member's `userMemberships` entry
- * and `subAccounts/{id}` recursively (members, pipelines, custom fields,
- * booking pages, AI persona, …). Finally it re-reads all of it and exits 2 if
- * any doc is left. Audit records (`auditEvents`, `aiSuiteActions`, the
- * agency's `agentCalls`) are kept, as the app's delete keeps them.
+ * saved replies, message templates and invites; then the sub-account is
+ * re-read and every guard above runs again with nothing excepted (anything
+ * that appeared mid-run stops it here, exit 3 "partial": the sub-account is
+ * kept and the log names what was already deleted); then every
+ * `userMemberships/{uid}/subAccounts/{id}` entry and `subAccounts/{id}`
+ * recursively (members, pipelines, custom fields, booking pages, AI persona,
+ * …). Finally it re-reads all of it, `findDeleteBlockers` included, and exits
+ * 2 if anything is left. Membership entries are found by listing
+ * `userMemberships` (a collection-group query on `subAccountId` would need an
+ * index this project does not have).
+ *
+ * Kept, as the app's delete keeps them: `auditEvents`, `aiSuiteActions`,
+ * `billingEvents` and the agency's `agentCalls`. Also left behind, by this and
+ * by the app's delete alike (none is written by a smoke run without a
+ * contact or a person in the app): `dealStageHistory`; `workflowRuns`,
+ * `workflowEnrolmentLocks`, `workflowEnrolmentKeys` and `conversations` left
+ * by a contact created and then deleted; `customAgents`; funnels and `orders`.
  */
 import { pathToFileURL } from "node:url";
 import { cert, initializeApp } from "firebase-admin/app";
 import { getFirestore, type DocumentReference, type Firestore } from "firebase-admin/firestore";
-import { hasChannelConnection } from "../src/lib/agency/channel-connections.ts";
 import {
   DECIDED_PROPOSAL_STATUSES,
   PROPOSAL_KEYS,
   deleteDecidedProposals,
   findDeleteBlockers,
 } from "../src/lib/agency/sub-account-delete-guard.ts";
-
-export const SMOKE_PREFIX = "Agency agent smoke ";
-export const MAX_AGE_MS = 72 * 60 * 60 * 1000;
+import { projectRefusal, stateRefusals } from "./teardown-smoke-sub-account-guards.ts";
 
 /** Top-level collections keyed by `subAccountId` that a smoke run fills and this deletes. */
 export const TOP_LEVEL = ["workflows", "forms", "products", "snippets", "message_templates", "invites"] as const;
@@ -77,24 +89,19 @@ export interface TeardownOptions {
   yes: boolean;
   /** `--project` as given. */
   projectId: string;
-  /** The project of the credential in the environment. */
+  /** The project and client email of the credential in the environment. */
   credentialProjectId: string | undefined;
+  credentialClientEmail: string | undefined;
   now?: number;
 }
 
 export interface TeardownResult {
-  outcome: "refused" | "planned" | "deleted" | "leftover";
+  /** `partial`: stopped mid-run with the sub-account kept, after deleting what the log names. */
+  outcome: "refused" | "partial" | "planned" | "deleted" | "leftover";
   refusals: string[];
   /** Doc paths by collection: what the run deletes (or would). */
   plan: Map<string, string[]>;
   leftovers: string[];
-}
-
-/** Firestore Timestamp / Date → epoch ms (null otherwise). */
-function millis(v: unknown): number | null {
-  if (v instanceof Date) return v.getTime();
-  if (v && typeof (v as { toMillis?: unknown }).toMillis === "function") return (v as { toMillis: () => number }).toMillis();
-  return null;
 }
 
 /** The doc (when it exists) and every doc in its subcollections. */
@@ -119,43 +126,22 @@ async function proposalRefs(db: Firestore, subAccountId: string): Promise<Docume
     .map((d) => d.ref);
 }
 
-/** Every `userMemberships` entry that may point at the sub-account: each member's, and the creator's. */
-async function membershipRefs(db: Firestore, sub: Record<string, unknown>, subAccountId: string): Promise<DocumentReference[]> {
-  const members = await db.doc(`subAccounts/${subAccountId}`).collection("subAccountMembers").get();
-  const uids = new Set(members.docs.map((d) => d.id));
-  if (typeof sub.createdByUid === "string" && sub.createdByUid) uids.add(sub.createdByUid);
-  return [...uids].sort().map((uid) => db.doc(`userMemberships/${uid}/subAccounts/${subAccountId}`));
+/** Every `userMemberships/{uid}/subAccounts/{id}` entry that exists, whoever's (member or not). */
+async function membershipRefs(db: Firestore, subAccountId: string): Promise<DocumentReference[]> {
+  const users = await db.collection("userMemberships").listDocuments();
+  const snaps = await Promise.all(users.map((u) => u.collection("subAccounts").doc(subAccountId).get()));
+  return snaps.filter((s) => s.exists).map((s) => s.ref);
 }
 
-async function existing(refs: DocumentReference[]): Promise<string[]> {
-  const snaps = await Promise.all(refs.map((r) => r.get()));
-  return snaps.filter((s) => s.exists).map((s) => s.ref.path);
-}
-
-async function guardRefusals(db: Firestore, subAccountId: string, sub: Record<string, unknown>, now: number): Promise<string[]> {
-  const refusals: string[] = [];
-  if (typeof sub.name !== "string" || !sub.name.startsWith(SMOKE_PREFIX)) {
-    refusals.push(`name ${JSON.stringify(sub.name ?? null)} does not start with ${JSON.stringify(SMOKE_PREFIX)}`);
-  }
-  if (typeof sub.createdByKeyId !== "string" || sub.createdByKeyId.trim() === "") {
-    refusals.push("createdByKeyId is not set: an agency key did not create this sub-account");
-  }
-  const created = millis(sub.createdAt);
-  const age = created === null ? null : now - created;
-  if (age === null || age < 0 || age >= MAX_AGE_MS) {
-    refusals.push(`createdAt ${created === null ? "is missing" : new Date(created).toISOString()} is not within the last 72 h`);
-  }
-  const contacts = (await db.collection("contacts").where("subAccountId", "==", subAccountId).count().get()).data().count;
-  if (contacts > 0) refusals.push(`contacts: ${contacts} for this sub-account (must be 0)`);
-  if (hasChannelConnection(sub)) refusals.push("channel connection on the sub-account doc (hasChannelConnection)");
-  const secrets = await db.doc(`subAccounts/${subAccountId}`).collection("private").get();
-  if (!secrets.empty) refusals.push(`private/ holds ${secrets.docs.map((d) => d.id).join(", ")} (a connection's credentials)`);
-  const blockers = await findDeleteBlockers(db, subAccountId, new Set(TOP_LEVEL));
+/** Every guard but the project's, over a fresh read; `except` as for findDeleteBlockers. */
+async function guardRefusals(db: Firestore, subAccountId: string, sub: Record<string, unknown>, now: number, except?: ReadonlySet<string>): Promise<string[]> {
+  const refusals = await stateRefusals(db, subAccountId, sub, now);
+  const blockers = await findDeleteBlockers(db, subAccountId, except);
   if (blockers.length > 0) refusals.push(`blocked: ${blockers.join(", ")}`);
   return refusals;
 }
 
-async function buildPlan(db: Firestore, subAccountId: string, sub: Record<string, unknown>): Promise<Map<string, string[]>> {
+async function buildPlan(db: Firestore, subAccountId: string): Promise<Map<string, string[]>> {
   const plan = new Map<string, string[]>();
   for (const collection of TOP_LEVEL) {
     const paths: string[] = [];
@@ -165,13 +151,13 @@ async function buildPlan(db: Firestore, subAccountId: string, sub: Record<string
   const decided: string[] = [];
   for (const ref of await proposalRefs(db, subAccountId)) decided.push(...(await subtree(ref)));
   plan.set(DECIDED, decided);
-  plan.set(MEMBERSHIPS, await existing(await membershipRefs(db, sub, subAccountId)));
+  plan.set(MEMBERSHIPS, (await membershipRefs(db, subAccountId)).map((r) => r.path));
   plan.set(`subAccounts/${subAccountId} (recursive)`, await subtree(db.doc(`subAccounts/${subAccountId}`)));
   return plan;
 }
 
 /** What is still there for the sub-account after the delete. */
-async function findLeftovers(db: Firestore, subAccountId: string, memberships: DocumentReference[]): Promise<string[]> {
+async function findLeftovers(db: Firestore, subAccountId: string): Promise<string[]> {
   const left: string[] = [];
   for (const collection of TOP_LEVEL) left.push(...(await bySubAccount(db, collection, subAccountId)).map((r) => r.path));
   for (const key of PROPOSAL_KEYS) {
@@ -181,7 +167,9 @@ async function findLeftovers(db: Firestore, subAccountId: string, memberships: D
   const subRef = db.doc(`subAccounts/${subAccountId}`);
   if ((await subRef.get()).exists) left.push(subRef.path);
   left.push(...(await subRef.listCollections()).map((c) => `${c.path}/…`));
-  left.push(...(await existing(memberships)));
+  left.push(...(await membershipRefs(db, subAccountId)).map((r) => r.path));
+  const blockers = await findDeleteBlockers(db, subAccountId);
+  if (blockers.length > 0) left.push(`blocked: ${blockers.join(", ")}`);
   return [...new Set(left)];
 }
 
@@ -197,19 +185,25 @@ export async function teardownSmokeSubAccount(
     for (const r of refusals) log(`  - ${r}`);
     return { outcome: "refused", refusals, plan: new Map(), leftovers: [] };
   };
+  const removed: string[] = [];
+  const partial = (reasons: string[], plan: Map<string, string[]>): TeardownResult => {
+    const refusals = reasons.map((r) => `${r} (appeared mid-run; the sub-account is kept)`);
+    log(`PARTIAL: stopped mid-run, the sub-account is kept; already deleted: ${removed.join(", ")}`);
+    for (const r of refusals) log(`  - ${r}`);
+    return { outcome: "partial", refusals, plan, leftovers: [] };
+  };
 
-  if (opts.projectId !== opts.credentialProjectId) {
-    return refused([`--project ${opts.projectId} does not match the credential's project (${opts.credentialProjectId ?? "unset"})`]);
-  }
+  const project = projectRefusal(opts.projectId, opts.credentialProjectId, opts.credentialClientEmail);
+  if (project) return refused([project]);
   const subRef = db.doc(`subAccounts/${subAccountId}`);
   const sub = (await subRef.get()).data();
   if (!sub) return refused([`subAccounts/${subAccountId} does not exist`]);
   log(`Sub-account ${subAccountId} ${JSON.stringify(sub.name ?? null)} (agency ${String(sub.agencyId)}, key ${String(sub.createdByKeyId)})`);
 
-  const refusals = await guardRefusals(db, subAccountId, sub, now);
+  const refusals = await guardRefusals(db, subAccountId, sub, now, new Set(TOP_LEVEL));
   if (refusals.length > 0) return refused(refusals);
 
-  const plan = await buildPlan(db, subAccountId, sub);
+  const plan = await buildPlan(db, subAccountId);
   for (const [collection, paths] of plan) {
     log(`${collection} (${paths.length})`);
     for (const p of paths) log(`  ${p}`);
@@ -220,9 +214,10 @@ export async function teardownSmokeSubAccount(
   }
 
   // As the app's delete: decided rows first, so a row re-opened since the
-  // guard refuses the run before anything else is gone.
+  // guard stops the run before any content is gone.
+  removed.push(DECIDED);
   if ((await deleteDecidedProposals(db, subAccountId)) > 0) {
-    return refused(["blocked: agent approvals waiting or in progress (one re-opened mid-run)"]);
+    return partial(["blocked: agent approvals waiting or in progress"], plan);
   }
   const workflows = await bySubAccount(db, "workflows", subAccountId);
   if (workflows.length > 0) {
@@ -232,17 +227,19 @@ export async function teardownSmokeSubAccount(
   }
   for (const collection of TOP_LEVEL) {
     for (const ref of await bySubAccount(db, collection, subAccountId)) await db.recursiveDelete(ref);
+    removed.push(collection);
   }
-  const blockers = await findDeleteBlockers(db, subAccountId);
-  if (blockers.length > 0) return refused([`blocked: ${blockers.join(", ")} (appeared mid-run; the sub-account is kept)`]);
+  // Everything again, on a fresh read, before the sub-account goes.
+  const fresh = (await subRef.get()).data();
+  const late = fresh ? await guardRefusals(db, subAccountId, fresh, now) : [`subAccounts/${subAccountId} vanished`];
+  if (late.length > 0) return partial(late, plan);
 
-  const memberships = await membershipRefs(db, sub, subAccountId);
   const batch = db.batch();
-  for (const ref of memberships) batch.delete(ref);
+  for (const ref of await membershipRefs(db, subAccountId)) batch.delete(ref);
   await batch.commit();
   await db.recursiveDelete(subRef);
 
-  const leftovers = await findLeftovers(db, subAccountId, memberships);
+  const leftovers = await findLeftovers(db, subAccountId);
   if (leftovers.length > 0) {
     log("LEFTOVER after the delete:");
     for (const p of leftovers) log(`  ${p}`);
@@ -255,15 +252,16 @@ export async function teardownSmokeSubAccount(
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = parseArgs(process.argv.slice(2));
   const credentialProjectId = process.env.FIREBASE_ADMIN_PROJECT_ID;
+  const credentialClientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL;
   // Initialising reads nothing; on a project mismatch the first guard refuses before any read.
   initializeApp({
     projectId: args.projectId,
     credential: cert({
       projectId: credentialProjectId,
-      clientEmail: process.env.FIREBASE_ADMIN_CLIENT_EMAIL,
+      clientEmail: credentialClientEmail,
       privateKey: process.env.FIREBASE_ADMIN_PRIVATE_KEY?.replace(/\\n/g, "\n"),
     }),
   });
-  const result = await teardownSmokeSubAccount(getFirestore(), { ...args, credentialProjectId }, (line) => console.log(line));
-  process.exitCode = { refused: 1, leftover: 2, planned: 0, deleted: 0 }[result.outcome];
+  const result = await teardownSmokeSubAccount(getFirestore(), { ...args, credentialProjectId, credentialClientEmail }, (line) => console.log(line));
+  process.exitCode = { refused: 1, leftover: 2, partial: 3, planned: 0, deleted: 0 }[result.outcome];
 }
