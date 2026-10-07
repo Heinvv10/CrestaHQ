@@ -17,6 +17,17 @@ describe("renderSystemEmail", () => {
     expect(html).toContain('href="https://x.test/?a=1&amp;b=&quot;2&quot;"');
   });
 
+  it("never renders pure-white text (SpamAssassin X_HTML_HIDDEN_COLOR)", () => {
+    const { html } = renderSystemEmail({
+      brand: { ...brand, logoUrl: null },
+      heading: "h",
+      paragraphs: [],
+      button: { label: "Accept invite", url: "https://x.test/a" },
+    });
+    expect(html).not.toMatch(/(?<![-\w])color:\s*(#fff(fff)?|white)\b/i);
+    expect(html).toContain("Accept invite");
+  });
+
   it("bolds segments and never treats caller text as formatting", () => {
     const { html, text } = renderSystemEmail({
       brand,

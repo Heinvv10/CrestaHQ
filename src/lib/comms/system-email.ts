@@ -58,13 +58,14 @@ function plain(text: Text): string {
   return text.map((seg) => (typeof seg === "string" ? seg : seg.bold)).join("");
 }
 
+// Text colours below are #fefefe, not #ffffff: SpamAssassin's X_HTML_HIDDEN_COLOR scores pure white text.
 function brandMark(brand: SystemEmailBrand): string {
   const name = escapeHtml(brand.name);
   const initial = escapeHtml(brand.name.trim().charAt(0).toUpperCase() || "•");
   const mark =
     brand.logoUrl && /^https:\/\//.test(brand.logoUrl)
       ? `<td width="32" height="32" style="width:32px; height:32px;"><img src="${escapeHtml(brand.logoUrl)}" alt="" width="32" height="32" style="display:block; width:32px; height:32px; border:0; border-radius:8px;"></td>`
-      : `<td width="32" height="32" align="center" style="width:32px; height:32px; background:${ACCENT}; background-image:linear-gradient(135deg,#6366f1,#a855f7 55%,#ec4899); border-radius:8px; color:#ffffff; font-size:16px; font-weight:700; font-family:${FONT};">${initial}</td>`;
+      : `<td width="32" height="32" align="center" style="width:32px; height:32px; background:${ACCENT}; background-image:linear-gradient(135deg,#6366f1,#a855f7 55%,#ec4899); border-radius:8px; color:#fefefe; font-size:16px; font-weight:700; font-family:${FONT};">${initial}</td>`;
   return `<table role="presentation" cellpadding="0" cellspacing="0"><tr>
 ${mark}
 <td style="padding-left:10px; font-size:17px; font-weight:700; color:${INK}; letter-spacing:-0.01em; font-family:${FONT};">${name}</td>
@@ -94,7 +95,7 @@ export function renderSystemEmail(email: SystemEmail): {
   const url = button ? escapeHtml(button.url) : "";
   const buttonHtml = button
     ? `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:10px 0 0 0;"><tr>
-<td style="border-radius:10px; background:${ACCENT};"><a href="${url}" style="display:inline-block; padding:13px 26px; font-size:15px; font-weight:600; color:#ffffff; text-decoration:none; border-radius:10px; font-family:${FONT};">${escapeHtml(button.label)}</a></td>
+<td style="border-radius:10px; background:${ACCENT};"><a href="${url}" style="display:inline-block; padding:13px 26px; font-size:15px; font-weight:600; color:#fefefe; text-decoration:none; border-radius:10px; font-family:${FONT};">${escapeHtml(button.label)}</a></td>
 </tr></table>
 <p style="margin:22px 0 0 0; font-size:12px; line-height:1.5; color:${MUTED};">Button not working? Paste this link into your browser:<br><a href="${url}" style="color:${ACCENT}; word-break:break-all;">${url}</a></p>`
     : "";
