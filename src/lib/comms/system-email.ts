@@ -58,7 +58,7 @@ function plain(text: Text): string {
   return text.map((seg) => (typeof seg === "string" ? seg : seg.bold)).join("");
 }
 
-// Text colours below are #fefefe, not #ffffff: SpamAssassin's X_HTML_HIDDEN_COLOR scores pure white text.
+// The two text colours below (brand initial, button label) are #fefefe, not #ffffff (SpamAssassin X_HTML_HIDDEN_COLOR).
 function brandMark(brand: SystemEmailBrand): string {
   const name = escapeHtml(brand.name);
   const initial = escapeHtml(brand.name.trim().charAt(0).toUpperCase() || "•");

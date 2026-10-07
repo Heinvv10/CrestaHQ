@@ -18,14 +18,18 @@ describe("renderSystemEmail", () => {
   });
 
   it("never renders pure-white text (SpamAssassin X_HTML_HIDDEN_COLOR)", () => {
-    const { html } = renderSystemEmail({
-      brand: { ...brand, logoUrl: null },
-      heading: "h",
-      paragraphs: [],
-      button: { label: "Accept invite", url: "https://x.test/a" },
-    });
-    expect(html).not.toMatch(/(?<![-\w])color:\s*(#fff(fff)?|white)\b/i);
-    expect(html).toContain("Accept invite");
+    for (const logoUrl of [null, "https://x.test/logo.png"]) {
+      const { html } = renderSystemEmail({
+        brand: { ...brand, logoUrl },
+        heading: "h",
+        paragraphs: [],
+        button: { label: "Accept invite", url: "https://x.test/a" },
+      });
+      expect(html).not.toMatch(
+        /(?<![-\w])color:\s*(#fff(fff)?\b|white\b|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))/i,
+      );
+      expect(html).toContain("Accept invite");
+    }
   });
 
   it("bolds segments and never treats caller text as formatting", () => {
