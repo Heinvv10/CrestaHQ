@@ -176,11 +176,12 @@ and on no other route: every other `/api/v1` route refuses it with 403
   matches the credential (its client email included), and `findDeleteBlockers`
   finds nothing beyond what it deletes itself (open approvals included). It then
   deletes the decided approvals, workflows (paused first), forms, products, saved
-  replies, message templates and invites; runs every guard again on a fresh read
-  (anything that appeared meanwhile stops it, exit 3, with the sub-account kept
-  and the log naming what was already deleted); deletes every `userMemberships`
-  entry and the sub-account recursively; and re-reads it all (exit 2 if anything
-  is left). Audit records stay. Usage and the known orphans are in the script's
+  replies, message templates and invites; runs every guard again, the
+  sub-account doc's own guards and its delete in one transaction (anything that
+  appeared meanwhile stops it, exit 3, with the sub-account kept and the log
+  naming what was already deleted); deletes every `userMemberships` entry and
+  the rest of the sub-account; and re-reads it all, open one-time charges
+  included (exit 2 if anything is left). Audit records stay. Usage and the known orphans are in the script's
   header.
 
 ## Tools
