@@ -108,3 +108,23 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `list_broadcasts` | read | member | List the sub-account's email broadcasts, newest first: template, audience, status and totals. |  |
 | `create_broadcast` | `outbound` | admin | Send an email template to every contact matching an audience (all; a tag; or a pipeline stage), skipping opted-out contacts. | channel, audience and matched count, exact subject and message, merge tags, what is checked at send |
 | `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time |
+
+## Agency-key tools
+
+Only an agency key calls these, besides every tool above (where it adds a required `subAccountId`). A tool
+that acts in a sub-account names it in its own `subAccountId`, and the key's reach applies to it. Their
+approval rows are agency-level (`subAccountId: null`): only the agency owner approves them, on
+`/agency/approvals`. See [agent-api.md](agent-api.md#agency-keys).
+
+| Tool | Kind | Role | What it does | What the approval preview shows |
+|---|---|---|---|---|
+| `list_sub_accounts` | read | agency owner | List this agency's sub-accounts with their ids and which feature gates are enabled. |  |
+| `sub_account_stats` | read | agency owner | Count the records inside one of your sub-accounts — contacts, deals, tasks, calendar events, and quotes. |  |
+| `create_sub_account` | write | agency owner | Create a new sub-account (an isolated client workspace) in this agency. |  |
+| `set_sub_account_gate` | write; `gate_change` when the gate is not a direct one, or the sub-account is not one this key created in the last 72 h with no contacts and no channel connection | agency owner | Switch one feature gate on or off for a sub-account this key can reach (ids from list_sub_accounts). | the sub-account, the gate, its state now, on or off, and the side effect (e.g. Google off deletes the synced review cache) |
+| `list_snapshots` | read | agency owner | List this agency's snapshots (saved sub-account setups), newest first, at most 50: each one's id, name, when it was made, whether it was imported from outside the agency, the sub-account it was captured from, and how many forms, message templates, products, workflows and custom fields it holds and whether it has an AI persona. |  |
+| `apply_snapshot` | write; `public_change` when the snapshot was imported, or the sub-account is not one this key created in the last 72 h with no contacts and no channel connection | agency owner | Apply one of this agency's snapshots (ids from list_snapshots) to a sub-account this key can reach (ids from list_sub_accounts): copies its forms (with their status), message templates, products, workflows (always as drafts), custom fields and, when the sub-account has none, its AI persona. | the sub-account, the snapshot (captured in this agency, or imported), what it creates and what it skips as already there, workflows arriving as drafts, which forms accept submissions at once, the AI persona written (with its hours) or kept; the snapshot's payload hash is pinned |
+| `list_billing_plans` | read | agency owner | List this agency's Client-Billing plans with their id, price, feature count, and status. |  |
+| `create_billing_plan` | write | agency owner | Create a Client-Billing plan (a monthly price + an optional annual price + a bundle of features) that the agency can charge sub-accounts for. |  |
+| `assign_billing_plan` | `spend` | agency owner | Assign a Client-Billing plan to one sub-account and start the checkout/subscription. | the sub-account, the plan and price (a special price only if proposed), every feature switching on and off, monthly quotas and overage rates, when features change (now, or when the client pays) and what billing does; price and gates are pinned |
+| `create_one_time_charge` | `spend` | agency owner | Create a ONE-TIME charge for a sub-account's client (e.g. a web design fee) and get a payment link to send them (on the deployment's own payment provider). | the sub-account, the charge description and amount as the client sees them, and that it is one payment link, nothing charged until paid (pinned) |

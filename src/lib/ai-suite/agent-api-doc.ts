@@ -46,12 +46,17 @@ export const PREVIEW_NOTES: Record<string, string> = {
   send_review_request: "the exact text, recipient, channel and template, or why none would send",
   create_broadcast: "channel, audience and matched count, exact subject and message, merge tags, what is checked at send",
   start_voice_call: "the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time",
+  set_sub_account_gate: "the sub-account, the gate, its state now, on or off, and the side effect (e.g. Google off deletes the synced review cache)",
+  apply_snapshot: "the sub-account, the snapshot (captured in this agency, or imported), what it creates and what it skips as already there, workflows arriving as drafts, which forms accept submissions at once, the AI persona written (with its hours) or kept; the snapshot's payload hash is pinned",
+  assign_billing_plan: "the sub-account, the plan and price (a special price only if proposed), every feature switching on and off, monthly quotas and overage rates, when features change (now, or when the client pays) and what billing does; price and gates are pinned",
+  create_one_time_charge: "the sub-account, the charge description and amount as the client sees them, and that it is one payment link, nothing charged until paid (pinned)",
   invite_member: "the email, the role (admin's powers named), what happens: a new invite, added at once with nothing to accept, a member's role old -> new, or that approving will refuse (a disabled or another agency's account); territories kept or cleared; whether an email goes out. The proposing agent is shown only the sub-account, email and role",
 };
 
 const ROLE: Record<string, string> = { subAccountMember: "member", subAccountAdmin: "admin", agencyOwner: "agency owner" };
 const cell = (s: string) => s.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
-const firstSentence = (s: string) => cell((s.match(/^.*?[.!?](\s|$)/)?.[0] ?? s).trim());
+/** Up to the first sentence end; "e.g." and "i.e." do not end one. */
+const firstSentence = (s: string) => cell((s.match(/^(?:e\.g\.|i\.e\.|.)*?[.!?](\s|$)/)?.[0] ?? s).trim());
 
 export function kindOf(c: AiSuiteCapability): string {
   if (c.readonly) return "read";
@@ -60,8 +65,12 @@ export function kindOf(c: AiSuiteCapability): string {
   return "write";
 }
 
-export function renderAgentToolsDoc(caps: AiSuiteCapability[]): string {
-  const rows = caps.map((c) => `| \`${c.name}\` | ${kindOf(c)} | ${ROLE[c.requiredRole] ?? c.requiredRole} | ${firstSentence(c.description)} | ${cell(PREVIEW_NOTES[c.name] ?? "")} |`);
+const row = (c: AiSuiteCapability) =>
+  `| \`${c.name}\` | ${kindOf(c)} | ${ROLE[c.requiredRole] ?? c.requiredRole} | ${firstSentence(c.description)} | ${cell(PREVIEW_NOTES[c.name] ?? "")} |`;
+const HEADER = ["| Tool | Kind | Role | What it does | What the approval preview shows |", "|---|---|---|---|---|"];
+
+/** `caps`: the sub-account tools (`agentCallable`); `agencyCaps`: the agency-level ones (`agencyAgentCallable`). */
+export function renderAgentToolsDoc(caps: AiSuiteCapability[], agencyCaps: AiSuiteCapability[]): string {
   return [
     "# Agent API: capability table",
     "",
@@ -73,9 +82,18 @@ export function renderAgentToolsDoc(caps: AiSuiteCapability[]): string {
     "person approves each call on the Approvals page. **Role**: what the key's calls need, and what the",
     "approver must hold. See [agent-api.md](agent-api.md) for the model.",
     "",
-    "| Tool | Kind | Role | What it does | What the approval preview shows |",
-    "|---|---|---|---|---|",
-    ...rows,
+    ...HEADER,
+    ...caps.map(row),
+    "",
+    "## Agency-key tools",
+    "",
+    "Only an agency key calls these, besides every tool above (where it adds a required `subAccountId`). A tool",
+    "that acts in a sub-account names it in its own `subAccountId`, and the key's reach applies to it. Their",
+    "approval rows are agency-level (`subAccountId: null`): only the agency owner approves them, on",
+    "`/agency/approvals`. See [agent-api.md](agent-api.md#agency-keys).",
+    "",
+    ...HEADER,
+    ...agencyCaps.map(row),
     "",
   ].join("\n");
 }

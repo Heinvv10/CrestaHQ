@@ -12,15 +12,16 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
 
 const { AI_SUITE_CAPABILITIES } = await import("./capabilities");
-const { agentCallable } = await import("@/lib/api/agent-dispatch");
+const { agencyAgentCallable, agentCallable } = await import("@/lib/api/agent-dispatch");
 const { PREVIEW_NOTES, renderAgentToolsDoc } = await import("./agent-api-doc");
 
 const DOC = join(process.cwd(), "docs/features/agent-api-tools.md");
 const agentTools = AI_SUITE_CAPABILITIES.filter(agentCallable);
+const agencyTools = AI_SUITE_CAPABILITIES.filter(agencyAgentCallable);
 
 describe("docs/features/agent-api-tools.md", () => {
   it("matches the registry", () => {
-    const rendered = renderAgentToolsDoc(agentTools);
+    const rendered = renderAgentToolsDoc(agentTools, agencyTools);
     if (process.env.UPDATE_AGENT_API_DOCS === "1") writeFileSync(DOC, rendered);
     expect(readFileSync(DOC, "utf8"), "stale: regenerate it (see this file's header)").toBe(rendered);
   });
@@ -31,10 +32,10 @@ describe("docs/features/agent-api-tools.md", () => {
   });
 
   it("every tool that can need a person says what its preview shows; no note is left over", () => {
-    const approving = agentTools.filter((c) => c.approval || c.approvalFor).map((c) => c.name);
+    const approving = [...agentTools, ...agencyTools].filter((c) => c.approval || c.approvalFor).map((c) => c.name);
     expect(approving.filter((n) => !PREVIEW_NOTES[n])).toEqual([]);
     expect(Object.keys(PREVIEW_NOTES).filter((n) => !approving.includes(n))).toEqual([]);
     // A per-call class the table can't name would show as a plain "write".
-    expect(agentTools.filter((c) => c.approvalFor && !c.approvalHint).map((c) => c.name)).toEqual([]);
+    expect([...agentTools, ...agencyTools].filter((c) => c.approvalFor && !c.approvalHint).map((c) => c.name)).toEqual([]);
   });
 });

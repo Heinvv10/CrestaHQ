@@ -140,7 +140,7 @@ A ticket is visible exactly where its contact is.
     delete would leave the contact's tickets orphaned.
   - *Rejected:* cascading open tickets, which silently discards live support work.
 - **Sub-account delete** (`deleteSubAccountForAgency`) is an emptiness guard: it refuses while any
-  `USAGE_COLLECTIONS` query (`src/lib/server/sub-account-delete-guard.ts`) finds a doc. PR1 adds `tickets` to `USAGE_COLLECTIONS` as a **blocker**, so a
+  `USAGE_COLLECTIONS` query (`src/lib/agency/sub-account-delete-guard.ts`) finds a doc. PR1 adds `tickets` to `USAGE_COLLECTIONS` as a **blocker**, so a
   sub-account with tickets cannot be deleted. It does not add tickets to a clean-up.
 
 ## SLA clock

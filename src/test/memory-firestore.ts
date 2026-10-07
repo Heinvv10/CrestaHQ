@@ -148,11 +148,19 @@ export interface MemoryDocRef {
   update: Write<[Data, { lastUpdateTime?: UpdateTime }?]>;
   create: Write<[Data]>;
   delete: Write<[]>;
-  collection: (name: string) => MemoryQuery & {
-    doc: (id?: string) => MemoryDocRef;
-    add: (data: Data) => Promise<MemoryDocRef>;
-  };
+  collection: (name: string) => MemoryCollectionRef;
+  /** Subcollections holding a doc at any depth — the doc itself may be gone, as in Firestore. */
+  listCollections: () => Promise<MemoryCollectionRef[]>;
 }
+
+export type MemoryCollectionRef = MemoryQuery & {
+  id: string;
+  path: string;
+  doc: (id?: string) => MemoryDocRef;
+  add: (data: Data) => Promise<MemoryDocRef>;
+  /** Every doc of the collection, including one that only has subcollections, as in Firestore. */
+  listDocuments: () => Promise<MemoryDocRef[]>;
+};
 
 export interface MemoryQuery {
   /** A non-string field (FieldPath.documentId()) filters on the document id. */
@@ -236,6 +244,11 @@ export function createMemoryFirestore() {
       create: (data) => tick().then(() => writeCreate(path, data)),
       delete: () => tick().then(() => remove(path)),
       collection: (name) => collectionRef(`${path}/${name}`),
+      listCollections: () =>
+        tick().then(() => {
+          const names = [...store.keys()].filter((p) => p.startsWith(`${path}/`)).map((p) => p.slice(path.length + 1).split("/")[0]!);
+          return [...new Set(names)].sort().map((name) => collectionRef(`${path}/${name}`));
+        }),
     };
   }
 
@@ -327,10 +340,17 @@ export function createMemoryFirestore() {
     };
   }
 
-  function collectionRef(path: string) {
+  function collectionRef(path: string): MemoryCollectionRef {
     const doc = (id?: string) => docRef(`${path}/${id ?? `auto${++autoId}`}`);
     return Object.assign(query((parent) => parent === path, [], [], null), {
+      id: path.split("/").pop()!,
+      path,
       doc,
+      listDocuments: () =>
+        tick().then(() => {
+          const ids = [...store.keys()].filter((p) => p.startsWith(`${path}/`)).map((p) => p.slice(path.length + 1).split("/")[0]!);
+          return [...new Set(ids)].sort().map((id) => docRef(`${path}/${id}`));
+        }),
       add: async (data: Data) => {
         const ref = doc();
         await ref.set(data);
