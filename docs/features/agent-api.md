@@ -71,37 +71,71 @@ claude mcp add --transport http leadstack https://<your-app>/api/mcp \
 
 An agency owner can mint an **agency key** (`agencies/{id}/apiKeys`, Agency →
 Agency Assistant card) once the agency's **Agent API** switch
-(`agencies/{id}.agentApiEnabled`) is on. It works on the same three transports —
-`POST /api/mcp`, `GET /api/v1/tools`, `POST /api/v1/tools/{name}` — and on no
-other route: every other `/api/v1` route refuses it with 403
+(`agencies/{id}.agentApiEnabled`) is on; while it is off, minting is refused
+(403). Minting needs an owner with an active `agencyMembers` row; the key is
+`agent`-scoped and live only (any other scope or `mode: "test"` is 400), and
+the mint form lists, by name, every sub-account the key will reach
+(`src/app/api/agency/api-keys/route.ts`). It works on the same three
+transports — `POST /api/mcp`, `GET /api/v1/tools`, `POST /api/v1/tools/{name}` —
+and on no other route: every other `/api/v1` route refuses it with 403
 `agency_key_not_allowed`. Plan: [AGENCY_AGENT_API_PLAN.md](../../AGENCY_AGENT_API_PLAN.md).
 
 - **Reach.** Every sub-account tool takes a required `subAccountId` (the listing
-  adds it to each schema). The key reaches a sub-account of its own agency with
-  both `apiAccessEnabledByAgency` and `agentApiEnabledByAgency` on; anything else —
-  another agency's, a gate off, no `subAccountId`, a made-up id — gets one identical
-  404 `not_found`. `list_sub_accounts` lists the reachable ones.
+  adds it to each schema; on REST it goes in the JSON body). The key reaches a
+  sub-account of its own agency with both `apiAccessEnabledByAgency` and
+  `agentApiEnabledByAgency` on (`resolveReach`, `src/lib/api/agent-reach.ts`);
+  anything else — another agency's, a gate off, no `subAccountId`, a made-up id —
+  gets one identical 404 `not_found` ("No such sub-account is available to this
+  key."). `list_sub_accounts` lists the reachable ones. A sub-account key that
+  sends a `subAccountId` other than its own gets 400 `wrong_sub_account`.
+- **Key-created.** A sub-account is *key-created* for a key when its
+  `createdByKeyId` is that key, it was created under 72 h ago, it has no
+  contacts and no channel or payment connection (`hasChannelConnection`,
+  `src/lib/agency/channel-connections.ts`) — `isKeyCreated` in
+  `src/lib/ai-suite/capabilities/agency-gates.ts`, re-read at dispatch and again
+  at write time. It decides which agency writes run directly and what "Approve
+  all" may take.
 - **Cut-off.** The switch off (403 `agent_api_disabled`, re-read on every call), the
   key revoked (401) or its minter no longer an active owner (401 `minter_removed`)
-  stop every transport. Revoking rejects the key's pending proposals in every
-  sub-account; while the switch is off or its minter is no longer an active
-  owner, its rows can't be approved (403).
-- **Proposals** an agency key causes are ordinary rows of the target sub-account
-  (`keyLevel: "agency"`), approved on that sub-account's Approvals page; held
-  enrolments are charged to the agency key's enrolment cap, counted per
-  sub-account. Agency-level rows (`set_sub_account_gate`, `apply_snapshot`,
-  `assign_billing_plan`, `create_one_time_charge`) belong to the agency and are
-  approved only on `/agency/approvals`. "Approve all" there never takes an
-  `outbound` or `spend` row.
-- **Agency tools.** `list_sub_accounts`, `sub_account_stats`, `list_snapshots` and
-  `list_billing_plans` read; `create_sub_account` and `create_billing_plan` write
-  at once (a plan bills nobody); `set_sub_account_gate` and `apply_snapshot` write
-  at once only on a sub-account the key created, else a `gate_change` /
-  `public_change` row; `assign_billing_plan` and `create_one_time_charge` are
-  always a `spend` row. The assign preview shows the plan, the price (a special
-  price only if the agent proposed one), every feature switching on and off (Public
-  API access and the sending domain flagged: they change reach) and what happens to
-  billing: Stripe switches a live subscription now, prorated; Paystack switches the
+  stop every transport. Revoking (allowed with the switch off too) moves the key's
+  pending proposals in every sub-account to `rejected`, `reason: "key_revoked"`;
+  while the switch is off or its minter is no longer an active owner, its rows
+  can't be approved (403), only rejected.
+- **Proposals.** A sub-account tool's proposal is an ordinary row of the target
+  sub-account (`keyLevel: "agency"`): it shows on that sub-account's Approvals
+  page **and** on `/agency/approvals`, and either may decide it. An agency tool's
+  proposal (`set_sub_account_gate`, `apply_snapshot`, `assign_billing_plan`,
+  `create_one_time_charge`) is an agency-level row (`subAccountId: null`,
+  `targetSubAccountId` naming the client), approved by the agency owner on
+  `/agency/approvals` only. Held enrolments are charged to the agency key's
+  enrolment cap, counted per sub-account. **"Approve all"** on `/agency/approvals`
+  takes only pending `workflow_activate` and `public_change` rows on a target the
+  proposing key created (key-created, above), never an `apply_snapshot` row and
+  never a row whose earlier attempt already went out; every other class
+  (`gate_change`, `outbound`, `spend`, `channel_change`, `hard_delete`,
+  `workflow_enrolment`) is one click per row (`src/lib/approvals/agency-batch.ts`).
+  It loops over the per-row decide route, so every check still runs.
+- **Agency tools** (table: [agent-api-tools.md](agent-api-tools.md#agency-key-tools)).
+  `list_sub_accounts`, `sub_account_stats`, `list_snapshots` and
+  `list_billing_plans` read. `create_sub_account` writes at once: both reach gates
+  on (one `feature_gates.updated` audit event, actor the key), `createdByKeyId`
+  stamped, the minting owner as the member (never the key); at most 10 per key a
+  UTC day, and the same name again within 10 minutes returns the sub-account
+  already made (`src/lib/server/sub-account-key-create.ts`).
+  `set_sub_account_gate` writes at once only for `labs`, `community`, `website`,
+  `social-planner`, `prospecting`, `google-calendar`, `webinars`, `payments` or
+  (while Get Leads is not parked) `get-leads` on a key-created sub-account; any other change is a `gate_change`
+  row, and switching on `api-access`, `agent-api` or review auto-reply is refused
+  outright. `apply_snapshot` writes at once only for a snapshot captured in this
+  agency onto a key-created sub-account, else a `public_change` row; an unknown
+  snapshot is 404 and applying one onto the sub-account it came from is 400, with
+  no row. `create_billing_plan` writes at once (a plan bills nobody).
+  `assign_billing_plan` and `create_one_time_charge` are always a `spend` row; the
+  agent's display names (`subAccountName`, `planName`) are dropped, so rows name
+  ids and previews name the stored records. The assign preview shows the plan,
+  the price (a special price only if the agent proposed one), every feature
+  switching on and off (Public API access and the sending domain flagged: they
+  change reach) and what happens to billing: Stripe switches a live subscription now, prorated; Paystack switches the
   features now and the price at the next renewal; without a live subscription the
   client gets a checkout link and the workspace waits behind an activation screen.
   Approving re-checks the plan's price and features at the moment the plan is read
@@ -132,13 +166,24 @@ other route: every other `/api/v1` route refuses it with 403
   `Idempotency-Key` cache never reaches dispatch, so its request log lands under
   the agency and it writes no `agent.call` row; the original call logged under its
   target and wrote its row. Deliberate, not fixed.
+- **Teardown of smoke sub-accounts.** A sub-account an agency key made for a test
+  run is removed with `scripts/teardown-smoke-sub-account.ts` (Node 22, dry run
+  unless `--yes`). It refuses unless the name starts with `Agency agent smoke `,
+  `createdByKeyId` is set, it was created under 72 h ago, it has no contacts, no
+  channel connection and nothing under `private/`, `--project` matches the
+  credential, and `findDeleteBlockers` finds nothing beyond what it deletes
+  itself (open approvals included). It then deletes the decided approvals,
+  workflows (paused first), forms, products, saved replies, message templates,
+  invites, the members' `userMemberships` entries and the sub-account
+  recursively, and re-reads them all (exit 2 if anything is left). Audit records
+  stay. Usage is in the script's header.
 
 ## Tools
 
 98 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
-from the registry and a test fails when it drifts. It lists sub-account tools; an
-agency key's agency-level proposals are approved on `/agency/approvals`, not on a
+from the registry and a test fails when it drifts. Its second table lists the
+agency-key tools; their proposals are approved on `/agency/approvals`, not on a
 sub-account's page. After adding or changing an agent capability, rerun:
 
 ```bash
