@@ -55,7 +55,8 @@ export const PREVIEW_NOTES: Record<string, string> = {
 
 const ROLE: Record<string, string> = { subAccountMember: "member", subAccountAdmin: "admin", agencyOwner: "agency owner" };
 const cell = (s: string) => s.replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
-const firstSentence = (s: string) => cell((s.match(/^.*?[.!?](\s|$)/)?.[0] ?? s).trim());
+/** Up to the first sentence end; "e.g." and "i.e." do not end one. */
+const firstSentence = (s: string) => cell((s.match(/^(?:e\.g\.|i\.e\.|.)*?[.!?](\s|$)/)?.[0] ?? s).trim());
 
 export function kindOf(c: AiSuiteCapability): string {
   if (c.readonly) return "read";
