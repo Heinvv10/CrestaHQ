@@ -187,18 +187,18 @@ describe("--yes", () => {
     for (const [path, data] of after) expect(data).toEqual(before.get(path));
   });
 
-  it("fails (leftover) when a doc is still there after the delete", async () => {
+  it("stops before the sub-account goes (partial) when a top-level doc its delete missed is still there", async () => {
     const leaky = {
       ...mem.db,
       recursiveDelete: async (ref: { path: string }) =>
         ref.path.startsWith("invites/") ? undefined : mem.db.recursiveDelete(ref as Parameters<typeof mem.db.recursiveDelete>[0]),
     } as unknown as Firestore;
 
-    const { result, out } = await run({ using: leaky });
+    const { result } = await run({ using: leaky });
 
-    expect(result.outcome).toBe("leftover");
-    expect(result.leftovers).toEqual([`invites/inv_${SA}`]);
-    expect(out).toContain(`invites/inv_${SA}`);
+    expect(result.outcome).toBe("partial");
+    expect(result.refusals).toEqual([`invites: inv_${SA} written after its delete (appeared mid-run; the sub-account is kept)`]);
+    expect(mem.read(`subAccounts/${SA}`)).toBeDefined();
   });
 
   it("pauses each workflow before deleting it", async () => {

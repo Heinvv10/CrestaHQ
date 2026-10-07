@@ -30,14 +30,15 @@
  * Without `--yes` it prints every doc it would delete, by collection, and
  * stops. With `--yes`: decided agent approvals (with their history) first, as
  * the app does; then workflows (paused, then deleted), forms, products,
- * saved replies, message templates and invites; then the sub-account is
- * re-read and every guard above runs again with nothing excepted (anything
- * that appeared mid-run stops it here, exit 3 "partial": the sub-account is
- * kept and the log names what was already deleted); then every
- * `userMemberships/{uid}/subAccounts/{id}` entry and `subAccounts/{id}`
- * recursively (members, pipelines, custom fields, booking pages, AI persona,
- * …). Finally it re-reads all of it, `findDeleteBlockers` included, and exits
- * 2 if anything is left. Membership entries are found by listing
+ * saved replies, message templates and invites; then every guard above runs
+ * again with nothing excepted (the emptied collections included), the doc's
+ * own guards and the delete of `subAccounts/{id}` in one transaction
+ * (anything that appeared mid-run stops it here, exit 3 "partial": the
+ * sub-account is kept and the log names what was already deleted); then every
+ * `userMemberships/{uid}/subAccounts/{id}` entry and the rest of the subtree
+ * (members, pipelines, custom fields, booking pages, AI persona, …). Finally
+ * it re-reads all of it, `findDeleteBlockers` and open `billingCharges`
+ * included, and exits 2 if anything is left. Membership entries are found by listing
  * `userMemberships` (a collection-group query on `subAccountId` would need an
  * index this project does not have).
  *
@@ -57,7 +58,7 @@ import {
   deleteDecidedProposals,
   findDeleteBlockers,
 } from "../src/lib/agency/sub-account-delete-guard.ts";
-import { projectRefusal, stateRefusals } from "./teardown-smoke-sub-account-guards.ts";
+import { countContacts, deleteIfStillClean, openCharges, projectRefusal, stateRefusals } from "./teardown-smoke-sub-account-guards.ts";
 
 /** Top-level collections keyed by `subAccountId` that a smoke run fills and this deletes. */
 export const TOP_LEVEL = ["workflows", "forms", "products", "snippets", "message_templates", "invites"] as const;
@@ -170,6 +171,9 @@ async function findLeftovers(db: Firestore, subAccountId: string): Promise<strin
   left.push(...(await membershipRefs(db, subAccountId)).map((r) => r.path));
   const blockers = await findDeleteBlockers(db, subAccountId);
   if (blockers.length > 0) left.push(`blocked: ${blockers.join(", ")}`);
+  // The charge checkout tolerates a missing sub-account: an open charge stays payable.
+  const charges = openCharges(await db.collection("billingCharges").where("subAccountId", "==", subAccountId).get());
+  if (charges.length > 0) left.push(`billingCharges: ${charges.join(", ")} not paid or canceled`);
   return [...new Set(left)];
 }
 
@@ -229,13 +233,21 @@ export async function teardownSmokeSubAccount(
     for (const ref of await bySubAccount(db, collection, subAccountId)) await db.recursiveDelete(ref);
     removed.push(collection);
   }
-  // Everything again, on a fresh read, before the sub-account goes.
-  const fresh = (await subRef.get()).data();
-  const late = fresh ? await guardRefusals(db, subAccountId, fresh, now) : [`subAccounts/${subAccountId} vanished`];
+  // Everything again before the sub-account goes: the queries first, then
+  // the doc's own guards and its delete in one transaction.
+  const memberships = await membershipRefs(db, subAccountId);
+  const earlier: string[] = [];
+  const blockers = await findDeleteBlockers(db, subAccountId);
+  if (blockers.length > 0) earlier.push(`blocked: ${blockers.join(", ")}`);
+  for (const collection of TOP_LEVEL) {
+    const back = await bySubAccount(db, collection, subAccountId);
+    if (back.length > 0) earlier.push(`${collection}: ${back.map((r) => r.id).join(", ")} written after its delete`);
+  }
+  const late = await deleteIfStillClean(db, subAccountId, now, await countContacts(db, subAccountId), earlier);
   if (late.length > 0) return partial(late, plan);
 
   const batch = db.batch();
-  for (const ref of await membershipRefs(db, subAccountId)) batch.delete(ref);
+  for (const ref of memberships) batch.delete(ref);
   await batch.commit();
   await db.recursiveDelete(subRef);
 
@@ -248,6 +260,9 @@ export async function teardownSmokeSubAccount(
   log(`Deleted ${[...plan.values()].flat().length} docs; re-read: none left.`);
   return { outcome: "deleted", refusals: [], plan, leftovers: [] };
 }
+
+export const exitCodeFor = (outcome: TeardownResult["outcome"]): number =>
+  ({ refused: 1, leftover: 2, partial: 3, planned: 0, deleted: 0 })[outcome];
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = parseArgs(process.argv.slice(2));
@@ -263,5 +278,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }),
   });
   const result = await teardownSmokeSubAccount(getFirestore(), { ...args, credentialProjectId, credentialClientEmail }, (line) => console.log(line));
-  process.exitCode = { refused: 1, leftover: 2, partial: 3, planned: 0, deleted: 0 }[result.outcome];
+  process.exitCode = exitCodeFor(result.outcome);
 }

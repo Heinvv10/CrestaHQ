@@ -143,15 +143,7 @@ describe("final re-read: each kind of doc left behind is exit 2", () => {
   const at = (target: string, then: () => void) => hooked(() => {}, (p) => void (p === target && then()));
 
   it("the sub-account doc itself", async () => {
-    const keepDoc = {
-      ...mem.db,
-      recursiveDelete: async (ref: { path: string }) => {
-        const doc = mem.read(ref.path);
-        await mem.db.recursiveDelete(ref as Parameters<typeof mem.db.recursiveDelete>[0]);
-        if (ref.path === `subAccounts/${SA}` && doc) mem.seed(ref.path, doc);
-      },
-    } as unknown as Firestore;
-    const { result } = await run({ using: keepDoc });
+    const { result } = await run({ using: at(`subAccounts/${SA}`, () => mem.seed(`subAccounts/${SA}`, { name: "recreated" })) });
     expect(result).toMatchObject({ outcome: "leftover", leftovers: [`subAccounts/${SA}`] });
   });
 
