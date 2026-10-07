@@ -105,12 +105,33 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
 
   it.each([
     ["an unverified account that is an active member", false, "active", "Already a member: role admin → collaborator, at once."],
-    ["an unverified account that is no member: a pending invite, as the service does", false, null, "New email: an invite with a signup link is created; pending until they sign up."],
+    ["an unverified account that is no member: a pending invite, as the service does", false, null, "Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in with their existing password. Pending until then."],
     ["a verified former member", true, "removed", "Former member (was admin): re-added immediately as collaborator, nothing to accept."],
   ])("%s", async (_label, emailVerified, status, expected) => {
     authUsers.set(ADMIN.email, { ...ADMIN, emailVerified });
     if (status) mem.seed(`subAccounts/sa1/subAccountMembers/${ADMIN.uid}`, { uid: ADMIN.uid, role: "admin", status });
     expect(what(await propose(subKey, { email: ADMIN.email, role: "collaborator" }))).toBe(expected);
+  });
+
+  it("an unverified existing account with no pending invite → its own state, not 'new email'", async () => {
+    authUsers.set("pat@client.io", { uid: "u_pat", email: "pat@client.io", emailVerified: false, customClaims: { agencyId: "ag1" } });
+    const id = await propose(subKey, { email: "pat@client.io", role: "collaborator" });
+    expect(row(id).pinned).toMatchObject({ state: { kind: "unverified_account" } });
+    expect(what(id)).toBe("Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in with their existing password. Pending until then.");
+    expect(row(id).preview).toEqual(expect.arrayContaining([
+      { label: "Email sent", value: "No: email isn't configured on this deployment. Copy the invite link from Settings → Members and share it yourself." },
+    ]));
+  });
+
+  it("approving an unverified existing account creates a token invite and adds no member", async () => {
+    authUsers.set("pat@client.io", { uid: "u_pat", email: "pat@client.io", emailVerified: false, customClaims: { agencyId: "ag1" } });
+    const id = await propose(subKey, { email: "pat@client.io", role: "collaborator" });
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(invites).toHaveBeenCalledTimes(1);
+    expect(mem.list("invites")).toEqual([
+      expect.objectContaining({ email: "pat@client.io", subAccountId: "sa1", tokenHash: expect.any(String), acceptedByUid: null }),
+    ]);
+    expect(mem.read("subAccounts/sa1/subAccountMembers/u_pat")).toBeUndefined();
   });
 
   it("a pending invite already there says it is re-sent", async () => {

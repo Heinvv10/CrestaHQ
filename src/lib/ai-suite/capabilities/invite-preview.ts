@@ -20,6 +20,7 @@ import { CapabilityUserError, type PreviewRow } from "./types";
 
 export type InviteState =
   | { kind: "new" }
+  | { kind: "unverified_account" }
   | { kind: "pending"; role: string; territoryIds: string[] }
   | { kind: "account"; uid: string }
   | { kind: "member"; uid: string; role: string; territoryIds: string[] }
@@ -72,7 +73,7 @@ export async function inviteState(subAccountId: string, email: string): Promise<
     .where("revokedAt", "==", null)
     .limit(1)
     .get();
-  if (pending.empty) return { kind: "new" };
+  if (pending.empty) return user ? { kind: "unverified_account" } : { kind: "new" };
   const invite = pending.docs[0]!.data();
   return { kind: "pending", role: String(invite.subAccountRole ?? "collaborator"), territoryIds: ids(invite.assignedTerritoryIds) };
 }
@@ -106,6 +107,8 @@ function happens(state: InviteState, role: string): string {
   switch (state.kind) {
     case "new":
       return "New email: an invite with a signup link is created; pending until they sign up.";
+    case "unverified_account":
+      return "Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in with their existing password. Pending until then.";
     case "pending":
       return `Already invited as ${state.role}: the pending invite ${state.role === role ? "stays" : "becomes"} ${role} and is re-sent with a new link (the old link stops working).`;
     case "account":
@@ -147,7 +150,7 @@ export async function invitePreview(
   const kept = await keptTerritories(subAccountId, state, role);
   const emails = state.kind !== "member" && state.kind !== "blocked";
   const sender = emails ? await resolvePlatformSender(subAccountId) : null;
-  const mail = state.kind === "new" || state.kind === "pending" ? "the invite email with the signup link" : "a notification that they were added";
+  const mail = state.kind === "new" || state.kind === "unverified_account" || state.kind === "pending" ? "the invite email with the signup link" : "a notification that they were added";
   return {
     rows: [
       { label: "Sub-account", value: oneLine(sub.data()?.name ?? sub.id) },
