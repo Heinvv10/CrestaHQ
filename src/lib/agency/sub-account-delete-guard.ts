@@ -1,8 +1,8 @@
-import "server-only";
-
 /**
  * What stops `deleteSubAccountForAgency` (the delete has no cascade), and the
  * agent approval rows that go with a sub-account once it may be deleted.
+ * Plain module, no server imports (it is handed the Firestore), so
+ * `scripts/teardown-smoke-sub-account.ts` refuses exactly what the app does.
  */
 
 type Db = FirebaseFirestore.Firestore;
@@ -40,14 +40,22 @@ const USAGE_COLLECTIONS: ReadonlyArray<{ collection: string; label: string }> =
 
 /** Rows a person still has to act on: undecided, mid-action, or outcome unknown. */
 const OPEN_PROPOSAL_STATUSES = ["pending", "executing", "unsettled"] as const;
-const DECIDED_PROPOSAL_STATUSES = new Set(["executed", "failed", "rejected", "expired"]);
+export const DECIDED_PROPOSAL_STATUSES: ReadonlySet<string> = new Set(["executed", "failed", "rejected", "expired"]);
 
 /** A sub-account's agent rows: its own, and agency-level rows aimed at it (`subAccountId: null`). */
-const PROPOSAL_KEYS = ["subAccountId", "targetSubAccountId"] as const;
+export const PROPOSAL_KEYS = ["subAccountId", "targetSubAccountId"] as const;
 
-/** Labels of what still blocks deleting this sub-account; empty when it may go. */
-export async function findDeleteBlockers(db: Db, subAccountId: string): Promise<string[]> {
-  const usage = USAGE_COLLECTIONS.map(async ({ collection, label }) => {
+/**
+ * Labels of what still blocks deleting this sub-account; empty when it may go.
+ * `except` names usage collections the caller deletes itself (the teardown
+ * script); the app passes none.
+ */
+export async function findDeleteBlockers(
+  db: Db,
+  subAccountId: string,
+  except: ReadonlySet<string> = new Set()
+): Promise<string[]> {
+  const usage = USAGE_COLLECTIONS.filter(({ collection }) => !except.has(collection)).map(async ({ collection, label }) => {
     const snap = await db.collection(collection).where("subAccountId", "==", subAccountId).limit(1).get();
     return snap.empty ? null : label;
   });

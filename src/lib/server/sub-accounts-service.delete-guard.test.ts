@@ -12,7 +12,7 @@ vi.mock("@/lib/firebase/admin", async () =>
   (await import("@/test/gbp-sync-store")).adminMock());
 
 import { mem, storeDb } from "@/test/gbp-sync-store";
-import { deleteDecidedProposals } from "./sub-account-delete-guard";
+import { deleteDecidedProposals } from "@/lib/agency/sub-account-delete-guard";
 import {
   deleteSubAccountForAgency,
   SubAccountNotEmptyError,

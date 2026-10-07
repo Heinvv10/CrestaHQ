@@ -2,7 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { deleteDecidedProposals, findDeleteBlockers } from "./sub-account-delete-guard";
+import { deleteDecidedProposals, findDeleteBlockers } from "@/lib/agency/sub-account-delete-guard";
 import { seedDefaultTemplates } from "@/lib/automations/seed-templates";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 
