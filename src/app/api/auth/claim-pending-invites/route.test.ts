@@ -6,7 +6,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * email. Real route over the in-memory Firestore; getUser is stubbed.
  */
 
-const account = { uid: "uid_u", email: "Invitee@Example.com", emailVerified: false, displayName: "U" };
+const account: {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+  displayName: string;
+  disabled: boolean;
+  customClaims: Record<string, unknown>;
+} = { uid: "uid_u", email: "Invitee@Example.com", emailVerified: false, displayName: "U", disabled: false, customClaims: {} };
 
 vi.mock("@/lib/firebase/admin", async () => {
   const base = (await import("@/test/gbp-sync-store")).adminMock();
@@ -48,6 +55,8 @@ const member = () => mem.read(`subAccounts/${SA}/subAccountMembers/uid_u`);
 beforeEach(() => {
   mem.clear();
   account.emailVerified = false;
+  account.disabled = false;
+  account.customClaims = {};
   mem.seed(`subAccounts/${SA}`, { agencyId: "ag_1", name: "Fixture" });
 });
 
@@ -73,5 +82,46 @@ describe("claim-pending-invites", () => {
     seedInvite("inv_a", { acceptedByUid: "uid_other" });
     expect((await claim()).body.attached).toEqual([]);
     expect(member()).toBeUndefined();
+  });
+
+  describe("an account the invite service would refuse is not attached", () => {
+    beforeEach(() => {
+      account.emailVerified = true;
+      seedInvite("inv_1");
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+    });
+    const left = () => {
+      expect(member()).toBeUndefined();
+      expect(mem.read("invites/inv_1")?.acceptedByUid).toBeNull();
+    };
+
+    it("skips an invite from a different agency", async () => {
+      account.customClaims = { agencyId: "ag_other" };
+      expect((await claim()).body.attached).toEqual([]);
+      left();
+    });
+
+    it("skips a removed account", async () => {
+      account.customClaims = { agencyId: "ag_1", status: "removed" };
+      expect((await claim()).body.attached).toEqual([]);
+      left();
+    });
+
+    it("skips a disabled account", async () => {
+      account.disabled = true;
+      expect((await claim()).body.attached).toEqual([]);
+      left();
+    });
+
+    it("attaches an invite from the account's own agency", async () => {
+      account.customClaims = { agencyId: "ag_1", status: "active" };
+      expect((await claim()).body.attached).toEqual([{ subAccountId: SA, name: "Fixture" }]);
+      expect(mem.read("invites/inv_1")?.acceptedByUid).toBe("uid_u");
+    });
+
+    it("attaches for a fresh account with no agencyId claim", async () => {
+      expect((await claim()).body.attached).toEqual([{ subAccountId: SA, name: "Fixture" }]);
+      expect(member()).toMatchObject({ role: "admin" });
+    });
   });
 });
