@@ -108,7 +108,7 @@ function happens(state: InviteState, role: string): string {
     case "new":
       return "New email: an invite with a signup link is created; pending until they sign up.";
     case "unverified_account":
-      return "Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in with their existing password. Pending until then.";
+      return "Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in. Pending until then.";
     case "pending":
       return `Already invited as ${state.role}: the pending invite ${state.role === role ? "stays" : "becomes"} ${role} and is re-sent with a new link (the old link stops working).`;
     case "account":

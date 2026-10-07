@@ -111,7 +111,7 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
 
   it.each([
     ["an unverified account that is an active member", false, "active", "Already a member: role admin → collaborator, at once."],
-    ["an unverified account that is no member: a pending invite, as the service does", false, null, "Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in with their existing password. Pending until then."],
+    ["an unverified account that is no member: a pending invite, as the service does", false, null, "Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in. Pending until then."],
     ["a verified former member", true, "removed", "Former member (was admin): re-added immediately as collaborator, nothing to accept."],
   ])("%s", async (_label, emailVerified, status, expected) => {
     authUsers.set(ADMIN.email, { ...ADMIN, emailVerified });
@@ -123,7 +123,7 @@ describe("an agent call is always an outbound proposal, never a direct invite", 
     authUsers.set("pat@client.io", { uid: "u_pat", email: "pat@client.io", emailVerified: false, customClaims: { agencyId: "ag1" } });
     const id = await propose(subKey, { email: "pat@client.io", role: "collaborator" });
     expect(row(id).pinned).toMatchObject({ state: { kind: "unverified_account" } });
-    expect(what(id)).toBe("Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in with their existing password. Pending until then.");
+    expect(what(id)).toBe("Existing account, email not yet confirmed: an invite with a link is created; they confirm by opening it and signing in. Pending until then.");
     expect(row(id).preview).toEqual(expect.arrayContaining([
       { label: "Email sent", value: "No: email isn't configured on this deployment. Copy the invite link from Settings → Members and share it yourself." },
     ]));
