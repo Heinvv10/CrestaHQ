@@ -31,7 +31,7 @@ vi.mock("@/lib/landing/resolve-brand", () => ({
   resolveCustomBrand: async () => ({ name: "LeadStack" }),
 }));
 
-const { SA, mem, resetSeam, suppress } = await s();
+const { SA, AGENCY, mem, resetSeam, smtpSend, suppress } = await s();
 const { createInviteServerSide } = await import("./members-service");
 
 const invite = (email: string) =>
@@ -88,5 +88,35 @@ describe("existing user added directly", () => {
     expect(res).toMatchObject({ added: true, mailed: false, mailSuppressed: true });
     expect(sentTo()).toEqual([]);
     expect(mem.read(`subAccounts/${SA}/subAccountMembers/u2`)).toMatchObject({ status: "active" });
+  });
+});
+
+/**
+ * Shared rail: From is send-only, so Reply-To is the inviter. SMTP rail: From
+ * is the agency mailbox and an inviter Reply-To on another domain scores
+ * FROM_NOT_REPLYTO, so the platform default (agency support) applies.
+ */
+describe.each([
+  ["new-person invite", "new@example.com", false],
+  ["added-member email", "known@example.com", true],
+])("Reply-To on the %s", (_name, to, existing) => {
+  const inviter = "admin@tenant.test";
+
+  beforeEach(() => {
+    if (existing) m.existing = { uid: "u2", email: to, emailVerified: true };
+    mem.seed(`agencies/${AGENCY}`, { supportEmail: "support@agency.test" });
+  });
+
+  it("shared rail: replies go to the inviter", async () => {
+    await invite(to);
+    expect(m.send).toHaveBeenCalledTimes(1);
+    expect((m.send.mock.calls[0][0] as { replyTo?: string }).replyTo).toBe(inviter);
+  });
+
+  it("SMTP rail: the agency support address, not the inviter's", async () => {
+    delete process.env.RESEND_API_KEY;
+    await invite(to);
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+    expect((smtpSend.mock.calls[0][1] as { replyTo?: string }).replyTo).toBe("support@agency.test");
   });
 });

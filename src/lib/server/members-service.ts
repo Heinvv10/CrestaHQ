@@ -224,8 +224,12 @@ export async function createInviteServerSide(
     await sendPlatformEmail(sender, {
       suppressionSubAccountId: subAccountId,
       to: email,
-      // "Who is this?" replies go to the person who sent the invite.
-      replyTo: (inviterData.email as string) || undefined,
+      // Shared rail: From is a send-only platform domain, so replies go to the
+      // inviter. SMTP rail: From is the agency's own mailbox and an inviter
+      // Reply-To on another domain trips FROM_NOT_REPLYTO, so no override
+      // (platform default: agency supportEmail, else owner).
+      replyTo:
+        sender.kind === "shared" ? (inviterData.email as string) || undefined : undefined,
       subject: `${inviterName} invited you to ${subAccountName} on ${brand.name}`,
       ...inviteEmail({ inviterName, subAccountName, roleLabel, inviteUrl, brand }),
     });
@@ -449,16 +453,18 @@ async function addExistingUserAsMember(params: {
       if (!sender) throw noPlatformSender("[invite]", subAccountId);
       const inviterName = await resolveInviterName(db, invitedByUid);
       const inviterEmail =
-        ((await db.doc(`users/${invitedByUid}`).get()).data()?.email as
-          | string
-          | undefined) || undefined;
+        sender.kind === "shared"
+          ? ((await db.doc(`users/${invitedByUid}`).get()).data()?.email as
+              | string
+              | undefined) || undefined
+          : undefined;
       const roleLabel = role === "admin" ? "Admin" : "Collaborator";
       const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
       const brand = await resolveCustomBrand();
       await sendPlatformEmail(sender, {
         suppressionSubAccountId: subAccountId,
         to: recipient,
-        // "Who added me?" replies go to the admin who did.
+        // Inviter Reply-To on the shared rail only (see the invite email above).
         replyTo: inviterEmail,
         subject: `You've been added to ${subAccountName} on ${brand.name}`,
         ...addedEmail({ inviterName, subAccountName, roleLabel, appUrl, brand }),
