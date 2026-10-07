@@ -224,8 +224,12 @@ export async function createInviteServerSide(
     await sendPlatformEmail(sender, {
       suppressionSubAccountId: subAccountId,
       to: email,
-      // No Reply-To override: a Reply-To on the inviter's own domain makes
-      // spam filters score the mismatch against the platform From address.
+      // Shared rail: From is a send-only platform domain, so replies go to the
+      // inviter. SMTP rail: From is the agency's own mailbox and an inviter
+      // Reply-To on another domain trips FROM_NOT_REPLYTO, so no override
+      // (platform default: agency supportEmail, else owner).
+      replyTo:
+        sender.kind === "shared" ? (inviterData.email as string) || undefined : undefined,
       subject: `${inviterName} invited you to ${subAccountName} on ${brand.name}`,
       ...inviteEmail({ inviterName, subAccountName, roleLabel, inviteUrl, brand }),
     });
@@ -448,13 +452,20 @@ async function addExistingUserAsMember(params: {
       const sender = await resolvePlatformSender(subAccountId);
       if (!sender) throw noPlatformSender("[invite]", subAccountId);
       const inviterName = await resolveInviterName(db, invitedByUid);
+      const inviterEmail =
+        sender.kind === "shared"
+          ? ((await db.doc(`users/${invitedByUid}`).get()).data()?.email as
+              | string
+              | undefined) || undefined
+          : undefined;
       const roleLabel = role === "admin" ? "Admin" : "Collaborator";
       const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
       const brand = await resolveCustomBrand();
       await sendPlatformEmail(sender, {
         suppressionSubAccountId: subAccountId,
         to: recipient,
-        // No Reply-To override (see the invite email above).
+        // Inviter Reply-To on the shared rail only (see the invite email above).
+        replyTo: inviterEmail,
         subject: `You've been added to ${subAccountName} on ${brand.name}`,
         ...addedEmail({ inviterName, subAccountName, roleLabel, appUrl, brand }),
       });

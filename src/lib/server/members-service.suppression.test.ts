@@ -92,8 +92,9 @@ describe("existing user added directly", () => {
 });
 
 /**
- * From is the platform mailbox; a Reply-To on the inviter's own domain makes
- * SpamAssassin score FROM_NOT_REPLYTO. The platform default must apply instead.
+ * Shared rail: From is send-only, so Reply-To is the inviter. SMTP rail: From
+ * is the agency mailbox and an inviter Reply-To on another domain scores
+ * FROM_NOT_REPLYTO, so the platform default (agency support) applies.
  */
 describe.each([
   ["new-person invite", "new@example.com", false],
@@ -106,10 +107,10 @@ describe.each([
     mem.seed(`agencies/${AGENCY}`, { supportEmail: "support@agency.test" });
   });
 
-  it("shared rail: never the inviter's address", async () => {
+  it("shared rail: replies go to the inviter", async () => {
     await invite(to);
     expect(m.send).toHaveBeenCalledTimes(1);
-    expect((m.send.mock.calls[0][0] as { replyTo?: string }).replyTo).not.toBe(inviter);
+    expect((m.send.mock.calls[0][0] as { replyTo?: string }).replyTo).toBe(inviter);
   });
 
   it("SMTP rail: the agency support address, not the inviter's", async () => {
