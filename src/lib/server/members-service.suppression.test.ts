@@ -31,7 +31,7 @@ vi.mock("@/lib/landing/resolve-brand", () => ({
   resolveCustomBrand: async () => ({ name: "LeadStack" }),
 }));
 
-const { SA, mem, resetSeam, suppress } = await s();
+const { SA, AGENCY, mem, resetSeam, smtpSend, suppress } = await s();
 const { createInviteServerSide } = await import("./members-service");
 
 const invite = (email: string) =>
@@ -88,5 +88,34 @@ describe("existing user added directly", () => {
     expect(res).toMatchObject({ added: true, mailed: false, mailSuppressed: true });
     expect(sentTo()).toEqual([]);
     expect(mem.read(`subAccounts/${SA}/subAccountMembers/u2`)).toMatchObject({ status: "active" });
+  });
+});
+
+/**
+ * From is the platform mailbox; a Reply-To on the inviter's own domain makes
+ * SpamAssassin score FROM_NOT_REPLYTO. The platform default must apply instead.
+ */
+describe.each([
+  ["new-person invite", "new@example.com", false],
+  ["added-member email", "known@example.com", true],
+])("Reply-To on the %s", (_name, to, existing) => {
+  const inviter = "admin@tenant.test";
+
+  beforeEach(() => {
+    if (existing) m.existing = { uid: "u2", email: to, emailVerified: true };
+    mem.seed(`agencies/${AGENCY}`, { supportEmail: "support@agency.test" });
+  });
+
+  it("shared rail: never the inviter's address", async () => {
+    await invite(to);
+    expect(m.send).toHaveBeenCalledTimes(1);
+    expect((m.send.mock.calls[0][0] as { replyTo?: string }).replyTo).not.toBe(inviter);
+  });
+
+  it("SMTP rail: the agency support address, not the inviter's", async () => {
+    delete process.env.RESEND_API_KEY;
+    await invite(to);
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+    expect((smtpSend.mock.calls[0][1] as { replyTo?: string }).replyTo).toBe("support@agency.test");
   });
 });

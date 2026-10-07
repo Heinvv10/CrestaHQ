@@ -224,8 +224,8 @@ export async function createInviteServerSide(
     await sendPlatformEmail(sender, {
       suppressionSubAccountId: subAccountId,
       to: email,
-      // "Who is this?" replies go to the person who sent the invite.
-      replyTo: (inviterData.email as string) || undefined,
+      // No Reply-To override: a Reply-To on the inviter's own domain makes
+      // spam filters score the mismatch against the platform From address.
       subject: `${inviterName} invited you to ${subAccountName} on ${brand.name}`,
       ...inviteEmail({ inviterName, subAccountName, roleLabel, inviteUrl, brand }),
     });
@@ -448,18 +448,13 @@ async function addExistingUserAsMember(params: {
       const sender = await resolvePlatformSender(subAccountId);
       if (!sender) throw noPlatformSender("[invite]", subAccountId);
       const inviterName = await resolveInviterName(db, invitedByUid);
-      const inviterEmail =
-        ((await db.doc(`users/${invitedByUid}`).get()).data()?.email as
-          | string
-          | undefined) || undefined;
       const roleLabel = role === "admin" ? "Admin" : "Collaborator";
       const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "";
       const brand = await resolveCustomBrand();
       await sendPlatformEmail(sender, {
         suppressionSubAccountId: subAccountId,
         to: recipient,
-        // "Who added me?" replies go to the admin who did.
-        replyTo: inviterEmail,
+        // No Reply-To override (see the invite email above).
         subject: `You've been added to ${subAccountName} on ${brand.name}`,
         ...addedEmail({ inviterName, subAccountName, roleLabel, appUrl, brand }),
       });
