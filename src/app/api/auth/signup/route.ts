@@ -20,6 +20,7 @@ type Decision =
   | {
       kind: "subAccountMember";
       adminUid: string;
+      invitedByUid: string;
       agencyId: string;
       subAccountId: string;
       subAccountRole: "admin" | "collaborator";
@@ -135,6 +136,10 @@ export async function POST(request: Request) {
       return {
         kind: "subAccountMember",
         adminUid,
+        invitedByUid:
+          typeof invite.invitedByUid === "string" && invite.invitedByUid
+            ? invite.invitedByUid
+            : adminUid,
         agencyId,
         subAccountId,
         subAccountRole,
@@ -429,7 +434,7 @@ export async function POST(request: Request) {
       email,
       displayName,
       addedAt: FieldValue.serverTimestamp(),
-      addedByUid: decision.adminUid,
+      addedByUid: decision.invitedByUid,
       // Pre-assigned at invite time (collaborators only); falls back to
       // Global when the admin left it blank or invited an admin.
       assignedTerritoryIds: decision.assignedTerritoryIds,
