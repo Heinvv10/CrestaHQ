@@ -58,6 +58,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const db = getAdminDb();
+  const claims = (userRecord.customClaims ?? {}) as {
+    agencyId?: string;
+    status?: string;
+  };
 
   // Scan for pending invites matching this email. Composite index needed
   // on (email, acceptedByUid, revokedAt). If the deployment hasn't built
@@ -89,6 +93,19 @@ export async function POST(request: Request): Promise<NextResponse> {
     };
     if (!invite.subAccountId || !invite.subAccountRole) {
       // Agency-level invites aren't in scope for this helper. Skip.
+      continue;
+    }
+
+    // The accounts createInviteServerSide refuses (MemberAddBlockedError):
+    // removed/disabled, or from a different agency. Leave the invite pending.
+    if (
+      userRecord.disabled ||
+      claims.status === "removed" ||
+      (claims.agencyId && claims.agencyId !== invite.agencyId)
+    ) {
+      console.error(
+        `[claim-pending-invites] skipped invite ${inviteDoc.id}: account may not join agency ${invite.agencyId}`,
+      );
       continue;
     }
 

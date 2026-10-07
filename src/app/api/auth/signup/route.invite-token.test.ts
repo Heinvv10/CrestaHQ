@@ -119,6 +119,18 @@ describe("signup against a pending invite", () => {
     expect(mem.read("invites/inv_1")?.acceptedByUid).toBe("uid_1");
   });
 
+  it("records the person who sent the invite as addedByUid, not the deployment admin", async () => {
+    seedInvite("inv_1", { invitedByUid: "uid_inviter" });
+    expect(await signup({ inviteToken: TOKEN })).toBe(200);
+    expect(member("uid_1")?.addedByUid).toBe("uid_inviter");
+  });
+
+  it("falls back to the deployment admin for a legacy invite with no invitedByUid", async () => {
+    seedInvite("inv_1", { invitedByUid: undefined });
+    expect(await signup({ inviteToken: TOKEN })).toBe(200);
+    expect(member("uid_1")?.addedByUid).toBe("uid_admin");
+  });
+
   it("claims the invite the token belongs to when the email has several", async () => {
     seedInvite("inv_other", { subAccountId: "sa_other", tokenHash: hashInviteToken("other") });
     seedInvite("inv_1");
