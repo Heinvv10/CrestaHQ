@@ -78,7 +78,7 @@ function renderHtml(code: string, applyLine: string): string {
       <p style="margin:0 0 16px 0;">
         <code style="background:#ffffff;padding:6px 12px;border-radius:6px;border:1px solid #b8eed5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;font-weight:700;color:#0a8a55;letter-spacing:0.04em;">${esc(code)}</code>
       </p>
-      <a href="${REDEEM_URL}" style="display:inline-block;background:#0a8a55;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:8px;font-size:14px;font-weight:600;">Redeem at gitpage.site/agency</a>
+      <a href="${REDEEM_URL}" style="display:inline-block;background:#0a8a55;color:#fefefe;text-decoration:none;padding:11px 20px;border-radius:8px;font-size:14px;font-weight:600;">Redeem at gitpage.site/agency</a>
     </div>
 
     <p style="margin:0 0 6px;color:#475569;font-size:13px;line-height:1.6;">

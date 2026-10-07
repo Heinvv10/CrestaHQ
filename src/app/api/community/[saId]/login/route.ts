@@ -70,7 +70,7 @@ If you didn't request this, you can safely ignore it.
   <h1 style="font-size:20px;font-weight:600;margin:0 0 16px;">Sign in</h1>
   <p style="margin:0 0 24px;color:#3a3a44;">Click the button below to sign in. The link expires in 15 minutes.</p>
   <p style="margin:0 0 24px;">
-    <a href="${link}" style="display:inline-block;background:#202124;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:500;">Sign in</a>
+    <a href="${link}" style="display:inline-block;background:#202124;color:#fefefe;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:500;">Sign in</a>
   </p>
   <p style="margin:24px 0 0;font-size:12px;color:#909090;">If you didn't request this, you can safely ignore it.</p>
 </body></html>`,

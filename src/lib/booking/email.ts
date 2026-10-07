@@ -356,7 +356,7 @@ function wrapHtml(
 
 function primaryCta(href: string, label: string): string {
   return `<p style="margin:24px 0;">
-    <a href="${escapeHtml(href)}" style="display:inline-block;background:#0F766E;color:#ffffff;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:500;">${escapeHtml(label)}</a>
+    <a href="${escapeHtml(href)}" style="display:inline-block;background:#0F766E;color:#fefefe;padding:12px 22px;border-radius:8px;text-decoration:none;font-weight:500;">${escapeHtml(label)}</a>
   </p>`;
 }
 

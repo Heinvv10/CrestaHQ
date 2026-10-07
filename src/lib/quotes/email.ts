@@ -179,7 +179,7 @@ export function renderQuoteEmail(
           </tr>
           <tr>
             <td style="padding:8px 32px 24px 32px;" align="center">
-              <a href="${escapeHtml(publicUrl)}" style="display:inline-block;background:${isInvoice ? "#0a8a55" : "#5b5bd6"};color:#ffffff;text-decoration:none;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;">
+              <a href="${escapeHtml(publicUrl)}" style="display:inline-block;background:${isInvoice ? "#0a8a55" : "#5b5bd6"};color:#fefefe;text-decoration:none;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:600;">
                 ${escapeHtml(ctaText)}
               </a>
               <p style="margin:14px 0 0 0;font-size:12px;color:#6b6b75;">
