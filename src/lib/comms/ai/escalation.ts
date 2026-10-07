@@ -72,7 +72,7 @@ ${link}
     <p style="margin:0;color:#3a3a44;font-style:italic;">&ldquo;${escapeHtml(params.incomingMessage)}&rdquo;</p>
   </div>
   <p style="margin:24px 0;">
-    <a href="${link}" style="display:inline-block;background:#5b5bd6;color:#ffffff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:500;">Open the conversation &rarr;</a>
+    <a href="${link}" style="display:inline-block;background:#5b5bd6;color:#fefefe;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:500;">Open the conversation &rarr;</a>
   </p>
 </body></html>`;
 

@@ -44,7 +44,7 @@ export async function GET(
 <meta name="robots" content="noindex">
 <title>Sign in</title>
 <style>body{font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0;padding:16px;background:#fafafa;color:#111}
-form{text-align:center}button{font:inherit;padding:12px 28px;border:0;border-radius:8px;background:#111;color:#fff;cursor:pointer}</style>
+form{text-align:center}button{font:inherit;padding:12px 28px;border:0;border-radius:8px;background:#111;color:#fefefe;cursor:pointer}</style>
 </head><body>
 <form method="post" action="${escapeHtml(action)}" onsubmit="this.querySelector('button').disabled=true">
 <p>Tap below to finish signing in.</p>

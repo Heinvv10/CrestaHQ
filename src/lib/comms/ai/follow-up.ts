@@ -255,7 +255,7 @@ function renderCaptureEmail(input: {
     : "";
 
   const sessionButton = input.sessionUrl
-    ? `<a href="${esc(input.sessionUrl)}" style="display:inline-block;background:#7c3aed;color:white;text-decoration:none;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;">Open ${esc(input.channelLabel.toLowerCase())} ${esc(input.sessionNoun)}</a>`
+    ? `<a href="${esc(input.sessionUrl)}" style="display:inline-block;background:#7c3aed;color:#fefefe;text-decoration:none;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;">Open ${esc(input.channelLabel.toLowerCase())} ${esc(input.sessionNoun)}</a>`
     : "";
 
   return `<!doctype html>
