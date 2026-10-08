@@ -28,9 +28,9 @@ const mailboxAddress = (sub: SubAccountDoc) => normalizeEmailTarget(sub.mailboxC
 
 /**
  * Whether each channel can send for this sub-account right now. Email needs a
- * verified SMTP sender AND a working IMAP mailbox whose address is known (it
- * is the Reply-To): without the mailbox sync no reply can ever be seen, and
- * every shop would read as a missed lead.
+ * verified SMTP sender AND a working IMAP mailbox whose address is known and
+ * is that sender's (it is the Reply-To, and bounces return to the sender):
+ * a reply or bounce that lands in a mailbox we do not read is never seen.
  */
 export async function channelStates(
   subAccountId: string,
@@ -46,7 +46,9 @@ export async function channelStates(
           ? { available: false, reason: `The mailbox sync is failing: ${mailbox.lastError}` }
           : !mailboxAddress(sub)
             ? { available: false, reason: "The mailbox address isn't known." }
-            : { available: true };
+            : mailboxAddress(sub) !== normalizeEmailTarget(sub.smtpConfig?.fromEmail)
+              ? { available: false, reason: "Mystery-shop email needs the SMTP sender and the synced mailbox to be the same address." }
+              : { available: true };
   const voice = await outboundVoiceReady(subAccountId);
   const call: ChannelState = voice.ok ? { available: true } : { available: false, reason: voice.error };
   return { email, call, whatsapp: NOT_YET, form: NOT_YET };
