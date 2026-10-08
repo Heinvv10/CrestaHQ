@@ -78,7 +78,15 @@ describe("parseCloudInbound", () => {
       location: null,
       locationRejected: false,
       timestampMs: 1756900000000,
+      type: "text",
     });
+  });
+
+  it("carries Meta's message type, so a reaction or system notice can be told from a reply", () => {
+    const type = (m: Record<string, unknown>) => parseCloudInbound(withMessages([{ from: "27821234567", id: "wamid.T", ...m }]))?.type;
+    expect(type({ type: "reaction", reaction: { emoji: "👍" } })).toBe("reaction");
+    expect(type({ type: "system", system: { body: "changed number" } })).toBe("system");
+    expect(type({})).toBe("");
   });
 
   it("reads Meta's timestamp (Unix seconds) as ms; absent or malformed is null", () => {

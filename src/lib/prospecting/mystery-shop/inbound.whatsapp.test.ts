@@ -28,55 +28,93 @@ const at = (ms: number) => SENT + ms;
 
 beforeEach(() => mem.clear());
 
+const reply = (from: string, atMs: number, text: string, over: Record<string, unknown> = {}) =>
+  matchMysteryShopWhatsApp("sa1", { from, atMs, text, type: "text", optOut: null, ...over });
+
 describe("matchMysteryShopWhatsApp", () => {
   it("a reply from the target number settles the shop at Meta's timestamp; a second reply changes nothing", async () => {
     seedShop("w1");
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(14 * 60_000), "Yes we do, where are you?");
+    expect(await reply(PHONE, at(14 * 60_000), "Yes we do, where are you?")).toBe(1);
     expect(shop("w1")).toMatchObject({ status: "responded", responseMs: 14 * 60_000, responseVia: "whatsapp", senderAuth: "pass" });
     expect((shop("w1").respondedAt as Date).getTime()).toBe(at(14 * 60_000));
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(20 * 60_000), "Hello?");
+    expect(await reply(PHONE, at(20 * 60_000), "Hello?")).toBe(0);
     expect(shop("w1").responseMs).toBe(14 * 60_000);
   });
 
   it("a different number never settles it", async () => {
     seedShop("w1");
-    await matchMysteryShopWhatsApp("sa1", "+27821234568", at(60_000), "Yes we do");
+    expect(await reply("+27821234568", at(5 * 60_000), "Yes we do")).toBe(0);
     expect(shop("w1").status).toBe("sent");
   });
 
   it("another sub-account's shop to the same number is never settled", async () => {
     seedShop("w1", { subAccountId: "sa2" });
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(60_000), "Yes we do");
+    await reply(PHONE, at(5 * 60_000), "Yes we do");
     expect(shop("w1").status).toBe("sent");
   });
 
   it("an email or call shop to the same number is not touched", async () => {
     seedShop("k1", { channel: "call" });
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(60_000), "Yes we do");
+    await reply(PHONE, at(5 * 60_000), "Yes we do");
     expect(shop("k1").status).toBe("sent");
   });
 
-  it("an away / greeting message is recorded once as an automatic reply and the shop keeps waiting", async () => {
+  it("a greeting phrase is an automatic reply, recorded once; the shop keeps waiting for a person", async () => {
     seedShop("w1");
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(5_000), "Thank you for contacting Acme! We'll get back to you soon.");
+    expect(await reply(PHONE, at(2 * 60_000), "Thank you for contacting Acme! We'll get back to you soon.")).toBe(1);
     expect(shop("w1")).toMatchObject({ status: "sent" });
-    expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(5_000));
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(9_000), "Our business hours are 8–5.");
-    expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(5_000));
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(3600_000), "Hi, yes we do");
+    expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(2 * 60_000));
+    await reply(PHONE, at(3 * 60_000), "Our business hours are 8–5.");
+    expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(2 * 60_000));
+    await reply(PHONE, at(3600_000), "Hi, yes we do");
     expect(shop("w1")).toMatchObject({ status: "responded", responseMs: 3600_000 });
+  });
+
+  it("anything in the first minute after the send is automatic, however human it reads", async () => {
+    seedShop("w1");
+    await reply(PHONE, at(20_000), "Yes we do, when do you need it?");
+    expect(shop("w1")).toMatchObject({ status: "sent" });
+    expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(20_000));
+  });
+
+  it.each([["reaction", "👍"], ["system", "changed number"], ["unsupported", ""], ["text", "  "]])(
+    "a %s message settles and records nothing",
+    async (type, text) => {
+      seedShop("w1");
+      expect(await reply(PHONE, at(5 * 60_000), text, { type })).toBe(0);
+      expect(shop("w1")).toMatchObject({ status: "sent", autoReplyAt: null });
+    },
+  );
+
+  it("a caption-less photo from the number is a response", async () => {
+    seedShop("w1");
+    await reply(PHONE, at(5 * 60_000), "", { type: "image" });
+    expect(shop("w1").status).toBe("responded");
+  });
+
+  it("a STOP records optOutAt on the waiting (or missed) shop and is never a response; START is ignored", async () => {
+    seedShop("w1");
+    seedShop("m1", { status: "missed", providerRef: "wamid.M" });
+    expect(await reply(PHONE, at(5 * 60_000), "START", { optOut: false })).toBe(0);
+    expect(shop("w1").optOutAt).toBeUndefined();
+    expect(await reply(PHONE, at(6 * 60_000), "STOP", { optOut: true })).toBe(2);
+    expect(shop("w1")).toMatchObject({ status: "sent", autoReplyAt: null });
+    expect((shop("w1").optOutAt as Date).getTime()).toBe(at(6 * 60_000));
+    expect((shop("m1").optOutAt as Date).getTime()).toBe(at(6 * 60_000));
+    await reply(PHONE, at(7 * 60_000), "STOP", { optOut: true });
+    expect((shop("w1").optOutAt as Date).getTime()).toBe(at(6 * 60_000));
   });
 
   it("a message timed outside the window (before the send, or after 24 h) settles nothing", async () => {
     seedShop("w1");
-    await matchMysteryShopWhatsApp("sa1", PHONE, SENT - 60_000, "an older message, redelivered late");
-    await matchMysteryShopWhatsApp("sa1", PHONE, at(24 * 3600_000 + 1), "Sorry, only saw this now");
+    await reply(PHONE, SENT - 60_000, "an older message, redelivered late");
+    await reply(PHONE, at(24 * 3600_000 + 1), "Sorry, only saw this now");
     expect(shop("w1")).toMatchObject({ status: "sent", respondedAt: null, autoReplyAt: null });
   });
 
   it("a number that is not a valid phone matches nothing", async () => {
     seedShop("w1", { target: "+" });
-    await matchMysteryShopWhatsApp("sa1", "+", at(60_000), "Yes");
+    expect(await reply("+", at(5 * 60_000), "Yes")).toBe(0);
     expect(shop("w1").status).toBe("sent");
   });
 });

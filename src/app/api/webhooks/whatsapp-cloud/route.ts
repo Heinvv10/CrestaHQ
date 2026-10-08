@@ -278,8 +278,9 @@ async function recordStatuses(
       if (!status) continue;
       // A prospecting mystery shop sent as this message (PR 5b): undeliverable,
       // or delivered/read for its card. Its own catch, so it never costs the row.
+      // Skipped while Prospecting is off for the sub-account.
       try {
-        await recordMysteryShopWhatsAppStatus(
+        if (route.subAccount.prospectingEnabledByAgency === true) await recordMysteryShopWhatsAppStatus(
           route.subAccountId,
           s.providerMessageId,
           status,
@@ -424,6 +425,26 @@ async function handleInbound(
   if (WHATSAPP_STOP_WORDS.has(word)) nextOptedOut = true;
   else if (WHATSAPP_START_WORDS.has(word)) nextOptedOut = false;
 
+  // A reply to a prospecting mystery shop (PR 5b), timed at Meta's own
+  // timestamp. As soon as the sender is known, so nothing below (a contact
+  // that cannot be created) can drop it; on every delivery (first response
+  // wins, so a redelivery changes nothing); never able to fail the message —
+  // a failure is logged and the handler carries on. Skipped outright while
+  // Prospecting is off for the sub-account.
+  if (route.subAccount.prospectingEnabledByAgency === true) {
+    try {
+      await matchMysteryShopWhatsApp(route.subAccountId, {
+        from,
+        atMs: inbound.timestampMs ?? Date.now(),
+        text: inbound.text,
+        type: inbound.type,
+        optOut: nextOptedOut,
+      });
+    } catch (err) {
+      console.error(`[whatsapp-cloud] mystery-shop match failed (sa=${route.subAccountId})`, err);
+    }
+  }
+
   const matches = await db
     .collection("contacts")
     .where("phone", "==", from)
@@ -538,18 +559,6 @@ async function handleInbound(
     await Promise.all(writes);
   } catch (err) {
     console.warn("[whatsapp-cloud] message-row write failed", err);
-  }
-
-  // A reply to a prospecting mystery shop (PR 5b), timed at Meta's own
-  // timestamp. After the row, on every delivery (first response wins, so a
-  // redelivery changes nothing), never for an opt-out word, and never able to
-  // fail the message: a failure is logged and the handler carries on.
-  if (nextOptedOut === null) {
-    try {
-      await matchMysteryShopWhatsApp(route.subAccountId, from, inbound.timestampMs ?? Date.now(), inbound.text);
-    } catch (err) {
-      console.error(`[whatsapp-cloud] mystery-shop match failed (sa=${route.subAccountId})`, err);
-    }
   }
 
   // What the inbox list and the timeline show for a caption-less file. Built

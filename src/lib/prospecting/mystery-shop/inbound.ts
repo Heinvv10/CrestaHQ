@@ -11,11 +11,12 @@ import {
   markUndeliverable,
   recordAuthFailedReply,
   recordAutoReply,
+  recordOptOut,
   settleResponded,
   stampDelivery,
 } from "./replies";
 import { toMs } from "./model";
-import { isWhatsAppAutoReply } from "./whatsapp-match";
+import { isContentMessage, isWhatsAppAutoReply } from "./whatsapp-match";
 
 /**
  * The inbound hooks: one call from each host path (IMAP mailbox sync, the
@@ -93,26 +94,41 @@ export async function matchInboundCallback(subAccountId: string, callerPhone: st
   for (const d of docs) await settleResponded(d.id, atMs, { responseVia: "callback", senderAuth: "unknown" });
 }
 
+/** One inbound WhatsApp, as the Cloud webhook parsed it. */
+export interface InboundWhatsApp {
+  /** The sender, E.164. */
+  from: string;
+  /** Meta's own timestamp. */
+  atMs: number;
+  text: string;
+  /** Meta's message type. */
+  type: string;
+  /** A STOP (true) or START (false) keyword; null for anything else. */
+  optOut: boolean | null;
+}
+
 /**
- * A WhatsApp message in to `subAccountId`'s Cloud number, at Meta's own
- * timestamp: from a waiting WhatsApp shop's exact number = its response
- * (an away / greeting text is only an automatic reply). Any other number,
- * sub-account or channel never settles it.
+ * A WhatsApp message in to `subAccountId`'s Cloud number: from a waiting
+ * WhatsApp shop's exact number = its response, or only an automatic reply
+ * (whatsapp-match.ts). Only a content message counts; STOP is recorded on the
+ * shop as an opt-out, START is ignored. Any other number, sub-account or
+ * channel never settles it. Returns how many shops it changed.
  */
-export async function matchMysteryShopWhatsApp(
-  subAccountId: string,
-  fromE164: string,
-  occurredAtMs: number,
-  text: string,
-): Promise<void> {
-  const from = normalizePhoneE164(fromE164);
-  if (!from) return;
+export async function matchMysteryShopWhatsApp(subAccountId: string, msg: InboundWhatsApp): Promise<number> {
+  const from = normalizePhoneE164(msg.from);
+  if (!from || !isContentMessage(msg.type, msg.text) || msg.optOut === false) return 0;
   const docs = (await closableShops(subAccountId, "whatsapp")).filter((d) => d.data()?.target === from);
-  const auto = isWhatsAppAutoReply(text);
+  let changed = 0;
   for (const d of docs) {
-    if (auto) await recordAutoReply(d.id, occurredAtMs);
-    else await settleResponded(d.id, occurredAtMs, { responseVia: "whatsapp", senderAuth: "pass" });
+    const elapsed = msg.atMs - (toMs(d.data()?.sentAt) ?? msg.atMs);
+    const done = msg.optOut
+      ? await recordOptOut(d.id, msg.atMs)
+      : isWhatsAppAutoReply(msg.text, elapsed)
+        ? await recordAutoReply(d.id, msg.atMs)
+        : await settleResponded(d.id, msg.atMs, { responseVia: "whatsapp", senderAuth: "pass" });
+    if (done) changed++;
   }
+  return changed;
 }
 
 /**

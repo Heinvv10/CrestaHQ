@@ -83,6 +83,8 @@ export interface CloudInbound {
   locationRejected: boolean;
   /** When the customer sent it — Meta's `timestamp` — in ms; null when absent. */
   timestampMs: number | null;
+  /** Meta's message `type` (text, image, reaction, system, …); "" when absent. */
+  type: string;
 }
 
 export interface CloudMediaRef {
@@ -267,6 +269,7 @@ function parseMessage(
     location,
     locationRejected: kind === "location" && location === null,
     timestampMs: timestampMs(message.timestamp),
+    type: kind,
   };
 }
 

@@ -111,6 +111,24 @@ export async function markUndeliverable(shopId: string, detail: string | null): 
   });
 }
 
+/**
+ * The business answered a WhatsApp shop with STOP: never a response. The first
+ * one, on a waiting or missed shop in its window, is recorded (`optOutAt`) and
+ * such a miss can't be confirmed (store.ts `confirmMissed`).
+ */
+export async function recordOptOut(shopId: string, atMs: number): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    const sent = toMs(shop?.sentAt);
+    const waiting = shop?.status === "sent" || shop?.status === "missed";
+    if (!waiting || shop.optOutAt != null || sent === null || !inWindow(sent, atMs)) return false;
+    tx.update(ref, { optOutAt: new Date(atMs) });
+    return true;
+  });
+}
+
 /** The first delivered / read receipt of a WhatsApp shop, at Meta's time. For the member's card only. */
 export async function stampDelivery(shopId: string, field: "deliveredAt" | "readAt", atMs: number): Promise<boolean> {
   const db = getAdminDb();
