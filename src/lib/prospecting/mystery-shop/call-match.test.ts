@@ -34,8 +34,8 @@ describe("callOutcome", () => {
     ["vonage-rejected", "failed"],
     ["manually-canceled", "failed"],
     ["phone-call-provider-closed-websocket", "failed"],
-  ])("%s is not answered (%s), even with a transcript", (endedReason, reason) => {
-    expect(callOutcome(report({ endedReason }))).toEqual({ answered: false, reason });
+  ])("%s with no dialogue is not answered (%s)", (endedReason, reason) => {
+    expect(callOutcome(report({ endedReason, turns: [] }))).toEqual({ answered: false, reason });
   });
 
   it("no speech, or speech only before our opening, is not answered", () => {
@@ -48,18 +48,49 @@ describe("callOutcome", () => {
   });
 
   it.each([
-    "Hi, you've reached Acme Plumbing. Please leave a message after the tone.",
-    "Leave your message after the beep",
-    "The person you are calling is not available",
-    "Welcome to the voicemail service",
-    "The mailbox is full",
-    "For sales press 1, for accounts press 2",
-    "Your call is important to us",
-    "Our office hours are eight to five",
-    "Please hold while we connect you",
-  ])("voicemail / IVR phrasing %j is not a person", (phrase) => {
+    "Sorry, he's not available right now, can I take a message?",
+    "Yes we do plumbing. Do you want to leave a message for the boss?",
+    "Please hold, let me check the diary.",
+    "Our office hours are eight to five, but yes we can come tomorrow.",
+  ])("a person who says %j after our opening is answered", (phrase) => {
+    expect(callOutcome(report({ turns: [bot(0.5), user(3, phrase)] }))).toMatchObject({ answered: true });
+  });
+
+  it("a phone menu followed by a real exchange is answered", () => {
+    const turns = [user(0.2, "Welcome to Acme. Press 1 for sales, press 2 for accounts."), bot(4), user(9, "Hi, sales here, how can I help?")];
+    expect(callOutcome(report({ turns }))).toMatchObject({ answered: true });
+  });
+
+  it.each([
+    "You've reached ABC Plumbing, please leave a message after the tone.",
+    "Please record your message after the beep",
+    "The mailbox is full and cannot accept messages",
+    "Welcome to the Vodacom voicemail service",
+    "Press 1 for sales, press 2 for accounts",
+  ])("a single machine greeting %j with no exchange is not answered", (phrase) => {
     expect(callOutcome(report({ turns: [bot(0.5), user(3, phrase)] }))).toEqual({ answered: false, reason: "voicemail" });
-    expect(callOutcome(report({ turns: [user(0.2, phrase), bot(4), user(9)] }))).toEqual({ answered: false, reason: "voicemail" });
+    expect(callOutcome(report({ turns: [user(0.2, phrase), bot(4)] }))).toEqual({ answered: false, reason: "voicemail" });
+  });
+
+  it("a callee who only says 'Hello?' before our opening, then hangs up, is not answered", () => {
+    expect(callOutcome(report({ turns: [user(0.2, "Hello?"), bot(1)] }))).toEqual({ answered: false, reason: "no_speech" });
+  });
+});
+
+describe("our own failures never become the business's miss", () => {
+  it.each(["pipeline-error-openai-llm-failed", "phone-call-provider-closed-websocket", "assistant-error", "twilio-failed-to-connect-call", "voicemail", "customer-busy"])(
+    "a dialogue ending %s is still answered",
+    (endedReason) => {
+      expect(callOutcome(report({ endedReason }))).toMatchObject({ answered: true });
+    },
+  );
+  it.each([
+    ["voicemail", "voicemail"],
+    ["customer-did-not-answer", "no_answer"],
+    ["customer-busy", "busy"],
+    ["pipeline-error-openai-llm-failed", "failed"],
+  ])("%s with no dialogue is not answered (%s)", (endedReason, reason) => {
+    expect(callOutcome(report({ endedReason, turns: [bot(0.5)] }))).toEqual({ answered: false, reason });
   });
 });
 

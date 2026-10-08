@@ -145,10 +145,11 @@ describe("call", () => {
   });
 
   it.each(["voicemail", "customer-did-not-answer", "customer-busy", "twilio-failed-to-connect-call"])(
-    "%s leaves the shop waiting for a callback",
+    "%s with no dialogue leaves the shop waiting for a callback",
     async (endedReason) => {
       seedShop("k1", { channel: "call", target: PHONE, providerRef: "call_1" });
-      await settleMysteryShopCall("sa1", "k1", "call_1", callReport({ endedReason }));
+      const turns = [{ role: "assistant" as const, content: "Hi, I'm calling from Cresta HQ.", secondsFromStart: 0.5 }];
+      await settleMysteryShopCall("sa1", "k1", "call_1", callReport({ endedReason, turns }));
       expect(shop("k1").status).toBe("sent");
     },
   );

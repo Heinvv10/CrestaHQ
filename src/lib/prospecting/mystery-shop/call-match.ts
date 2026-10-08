@@ -1,14 +1,18 @@
 /**
  * A Vapi end-of-call report → the mystery-shop outcome. Pure.
  *
- * Answered = a person picked up and spoke: the call did not end as voicemail,
- * no-answer, busy or a failure; someone said something AFTER our opening line
- * (by `secondsFromStart`, else by transcript order); and nothing they said
- * sounds like a voicemail greeting or a phone menu ("leave a message", "press
- * 1", …). A silence timeout, or speech only before our opening, is not
- * answered. A call that is not answered leaves the shop waiting; an inbound
- * call from the target number inside the window then counts as the response
- * (a callback).
+ * Answered = the callee spoke AFTER our opening line (by `secondsFromStart`,
+ * else by transcript order) and it was not a machine. A machine is a callee
+ * whose FIRST turn is a clear voicemail / phone-menu phrase ("leave a message
+ * after the tone", "press 1 for …") with no exchange after it (no callee turn
+ * following an assistant turn that followed that first turn) — a menu that
+ * leads to a person is answered. A dialogue is answered whatever the
+ * endedReason: our own pipeline errors must never become the business's
+ * miss. Only voicemail / no-answer / busy / failed WITHOUT a dialogue, a
+ * silence timeout, or speech only before our opening (a "Hello?" then a
+ * hang-up) is not answered. A call that is not answered leaves the shop
+ * waiting; an inbound call from the target number inside the window then
+ * counts as the response (a callback).
  *
  * The time of answer: Vapi reports no separate "answered" timestamp, so it is
  * the report's `startedAt` when present (the call going in-progress), else
@@ -48,9 +52,16 @@ export function notAnsweredReason(endedReason: string | null): NotAnsweredReason
   return null;
 }
 
-/** A voicemail greeting or a phone menu, not a person (en). */
-const MACHINE =
-  /leave (a|your) message|after the (tone|beep)|not available|voice ?mail|mailbox|press [0-9]|your call is important|office hours|please hold/i;
+/** Clear voicemail / phone-menu phrasing (en). Words a person also says ("not available", "please hold") are left out. */
+const MACHINE = /after the (tone|beep)|at the tone|voice ?mail|mailbox is full|press [0-9] for|record your message/i;
+
+/** The callee's first turn is a machine phrase, and no exchange follows it. */
+function machine(turns: CallTurn[]): boolean {
+  const first = turns.findIndex((t) => t.role === "user" && t.content.trim());
+  if (first === -1 || !MACHINE.test(turns[first].content)) return false;
+  const reply = turns.findIndex((t, i) => i > first && t.role === "assistant");
+  return reply === -1 || !turns.some((t, i) => i > reply && t.role === "user" && t.content.trim());
+}
 
 /** When the call started: see the file comment for the fallbacks. */
 export function callStartedAt(report: CallReport): { atMs: number; basis: "startedAt" | "endedAt" | "receivedAt" } {
@@ -72,11 +83,10 @@ function repliedAfterOpening(turns: CallTurn[]): boolean {
 }
 
 export function callOutcome(report: CallReport): CallOutcome {
-  const reason = notAnsweredReason(report.endedReason);
-  if (reason) return { answered: false, reason };
-  if (report.turns.some((t) => t.role === "user" && MACHINE.test(t.content))) return { answered: false, reason: "voicemail" };
-  if (!repliedAfterOpening(report.turns)) return { answered: false, reason: "no_speech" };
-  return { answered: true, ...callStartedAt(report) };
+  const isMachine = machine(report.turns);
+  if (repliedAfterOpening(report.turns) && !isMachine) return { answered: true, ...callStartedAt(report) };
+  if (isMachine) return { answered: false, reason: "voicemail" };
+  return { answered: false, reason: notAnsweredReason(report.endedReason) ?? "no_speech" };
 }
 
 /** ISO string → ms, or null. */
