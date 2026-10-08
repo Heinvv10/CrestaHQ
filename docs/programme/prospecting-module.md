@@ -127,6 +127,14 @@ Deploys: after 17:00 SAST, Hein's approval per deploy. `firebase deploy --only f
 - SMS callbacks are not matched: Twilio is not configured on any sub-account.
 - The cap is `prospectingMysteryShopCap` (default 10 a month) on the usage ledger beside the report quota; a refused or failed send gives its slot back.
 
+**REVISED 2026-10-09 (PR 5c)** — the website-form channel:
+
+- Lead capture gained `formUrl` (member-only, never in `PUBLIC_RAW_KEYS`), because it stored no URL: the homepage's final URL when it has the form, else the first same-site contact-looking link. No extra page is fetched for the report. Reports from before it have no `formUrl`, so the form channel asks for a new report. The only allowed form target is the latest ready report's `formUrl`, compared after WHATWG normalisation.
+- The engine is headless Chromium from `playwright-core` (pinned to `@playwright/test`'s version, sharing its browser cache), run as a QStash job with one job per box (a Firestore lease). Chromium never opens a connection itself: every request is fetched in Node through `publicFetch` and fulfilled, with a dead proxy as the backstop. Redirects are followed hop by hop through the same guard, because a fulfilled 3xx would be followed by Chromium's own network stack.
+- It refuses on any CAPTCHA or bot challenge before typing, and never bypasses one. It also refuses login forms, required uploads, multi-step forms, required consent boxes and required fields it cannot fill truthfully. It fills the sub-account's name, its synced mailbox address and its WhatsApp number. A submit with no confirmation signal is an uncertain send, never a refund.
+- The reply is matched by email, from the form site's domain or the contact's own address, and by a callback from the contact's own number. WhatsApp matching for form shops waits for PR 5b's matcher.
+- The deploy installs Chromium for the velo user (`scripts/deploy-velo.sh`; see RUNBOOK.md).
+
 ## What proves it worked
 
 - A report for a real Gqeberha plumber renders at `/r/{id}` with agency branding and at least 9 of 12 sections populated, screenshot in the PR.
