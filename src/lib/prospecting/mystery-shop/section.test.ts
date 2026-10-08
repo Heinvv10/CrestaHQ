@@ -118,6 +118,9 @@ describe("uncertain sends and the mailbox sync", () => {
     expect(shopStatusLine(shop({ ...base, awaitingSync: true }), at)).toBe(
       `Email to ${EMAIL} — 24 h passed; waiting for the mailbox sync to catch up before calling it missed`,
     );
+    expect(shopStatusLine(shop({ status: "missed", sendUncertain: true, respondedAt: null, responseMs: null }), at)).toBe(
+      `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed (send uncertain — may not have been delivered)`,
+    );
     expect(shopStatusLine(shop({ ...base, sendUncertain: true }), Date.parse("2026-10-08T08:03:00Z"))).toBe(
       `Email to ${EMAIL} — may have been sent 3 m ago (the send did not confirm), waiting for a reply (24 h)`,
     );

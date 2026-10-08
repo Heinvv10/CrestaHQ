@@ -24,14 +24,16 @@ const ago = (ms: number) => new Date(Date.now() - ms);
 beforeEach(resetRouteHarness);
 
 describe("prospects only", () => {
-  it("403 not_a_prospect for a contact neither imported as a prospect nor carrying the prospecting map; GET too", async () => {
+  it("403 not_a_prospect without the server-owned prospecting map — a member-writable source does not count; GET too", async () => {
     seedContact("plain", { prospecting: undefined, source: "manual" });
-    for (const res of [await post(valid({ contactId: "plain" })), await list("plain")]) {
-      expect(res.status).toBe(403);
-      expect(await res.json()).toMatchObject({ code: "not_a_prospect" });
+    seedContact("relabelled", { prospecting: undefined, source: "prospecting" });
+    seedContact("nulled", { prospecting: null, source: "prospecting" });
+    for (const id of ["plain", "relabelled", "nulled"]) {
+      for (const res of [await post(valid({ contactId: id })), await list(id)]) {
+        expect(res.status).toBe(403);
+        expect(await res.json()).toMatchObject({ code: "not_a_prospect" });
+      }
     }
-    seedContact("imported", { prospecting: undefined, source: "prospecting" });
-    expect((await list("imported")).status).toBe(200);
     expect(send).not.toHaveBeenCalled();
   });
 });

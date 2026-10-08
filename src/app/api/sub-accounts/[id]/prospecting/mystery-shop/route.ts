@@ -4,7 +4,6 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isDocId } from "@/lib/server/doc-id";
 import { prospectingAccess } from "@/lib/prospecting/reports";
-import { isProspect } from "@/lib/prospecting/approach-guard";
 import {
   MYSTERY_SHOP_CHANNELS,
   RESPONSE_WINDOW_MS,
@@ -25,7 +24,7 @@ import {
   shopsUsed,
 } from "@/lib/prospecting/mystery-shop/store";
 import { channelStates, sendMysteryShop, type SendResult } from "@/lib/prospecting/mystery-shop/send";
-import { enquiryOf, loadContact, queueTimer } from "@/lib/prospecting/mystery-shop/context";
+import { enquiryOf, loadContact, queueTimer, type ShopContact } from "@/lib/prospecting/mystery-shop/context";
 
 /**
  * Speed-to-lead mystery shops for one prospect contact (Prospecting PR 5).
@@ -63,6 +62,12 @@ const isChannel = (v: unknown): v is MysteryShopChannel =>
 
 const refuse = (code: string, error: string, status = 403) => NextResponse.json({ error, code }, { status });
 const notProspect = () => refuse("not_a_prospect", "Mystery shops are for prospects only.");
+/**
+ * A prospect carries the server-owned `prospecting` map. Stricter than the
+ * approach guard's isProspect, which also accepts `source`, a field members
+ * can write.
+ */
+const isProspect = (c: ShopContact) => typeof c.prospecting === "object" && c.prospecting !== null;
 
 export async function GET(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id: subAccountId } = await ctx.params;

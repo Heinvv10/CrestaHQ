@@ -197,7 +197,9 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
       return `${head}responded in ${formatDuration(s.responseMs ?? 0)} (${check})`;
     }
     case "missed":
-      return `${head}no reply in 24 h — ${formatMoney(s.jobValueCents, s.currency)} lead missed`;
+      return `${head}no reply in 24 h — ${formatMoney(s.jobValueCents, s.currency)} lead missed${
+        s.sendUncertain ? " (send uncertain — may not have been delivered)" : ""
+      }`;
     case "refused":
       return `${head}refused: ${s.failure?.reason ?? "not allowed"}`;
     default:
