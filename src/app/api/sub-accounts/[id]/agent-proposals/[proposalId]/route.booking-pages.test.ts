@@ -49,8 +49,20 @@ describe("create_booking_page", () => {
   });
 
   it("caller-supplied fields override the defaults", async () => {
-    expect(await call("create_booking_page", { slug: "long", name: "Long call", durationMinutes: 60, timezone: "Africa/Johannesburg", status: "draft" })).toMatchObject({ ok: true });
-    expect(mem.read(`${P}/long`)).toMatchObject({ durationMinutes: 60, timezone: "Africa/Johannesburg", status: "draft" });
+    expect(await call("create_booking_page", { slug: "long", name: "Long call", durationMinutes: 60, bufferMinutes: 15, remindersEnabled: false, timezone: "Africa/Johannesburg", status: "draft" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/long`)).toMatchObject({ durationMinutes: 60, bufferMinutes: 15, remindersEnabled: false, timezone: "Africa/Johannesburg", status: "draft" });
+  });
+
+  it("an omitted timezone takes the sub-account's own", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true, timezone: "Africa/Johannesburg" });
+    expect(await call("create_booking_page", { slug: "tz", name: "Tz call" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/tz`)).toMatchObject({ timezone: "Africa/Johannesburg" });
+  });
+
+  it("a sub-account timezone does not beat the caller's", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true, timezone: "Africa/Johannesburg" });
+    expect(await call("create_booking_page", { slug: "tz2", name: "Tz2 call", timezone: "Europe/London" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/tz2`)).toMatchObject({ timezone: "Europe/London" });
   });
 
   it("only slug, name and published: a public_change proposal; approve creates the merged page", async () => {

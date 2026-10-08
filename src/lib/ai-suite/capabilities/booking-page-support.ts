@@ -28,7 +28,7 @@ export const PAGE_PROPS: Record<string, unknown> = {
   name: { type: "string" },
   description: { type: "string" },
   status: { type: "string", enum: ["draft", "published"], description: "published: bookable by the public." },
-  timezone: { type: "string", description: "IANA zone." },
+  timezone: { type: "string", description: "IANA zone. Omitted on create: the sub-account's own timezone." },
   confirmationMessage: { type: "string" },
 };
 
