@@ -57,6 +57,29 @@ describe("PUT", () => {
     expect(sub().prospectingMysteryShopTemplates).toBeUndefined();
   });
 
+  it("whatsappTemplateId: one of this sub-account's WhatsApp templates, stored beside the wording; null goes back to the default", async () => {
+    mem.seed("subAccounts/sa1/whatsappTemplates/t1", { subAccountId: "sa1", name: "my_enquiry" });
+    await put({ templates: { call: "Hi" } });
+    expect((await put({ whatsappTemplateId: "t1" })).status).toBe(200);
+    expect(sub().prospectingMysteryShopTemplates).toEqual({ call: "Hi", whatsappTemplateId: "t1" });
+    // Saving the wording keeps the template choice, and the reverse.
+    await put({ templates: { call: "Hello" } });
+    expect(sub().prospectingMysteryShopTemplates).toEqual({ call: "Hello", whatsappTemplateId: "t1" });
+    expect((await put({ whatsappTemplateId: null })).status).toBe(200);
+    expect(sub().prospectingMysteryShopTemplates).toEqual({ call: "Hello" });
+  });
+
+  it.each([["a/b"], [""], [123], [{ id: "t1" }], ["missing"], ["t9"]])(
+    "refuses whatsappTemplateId %j (not a doc id, or no such template in THIS sub-account) with 400, writing nothing",
+    async (whatsappTemplateId) => {
+      mem.seed("subAccounts/sa2/whatsappTemplates/t9", { subAccountId: "sa2", name: "theirs" });
+      const res = await put({ whatsappTemplateId, templates: { call: "Hi" } });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Pick one of this sub-account's WhatsApp templates." });
+      expect(sub().prospectingMysteryShopTemplates).toBeUndefined();
+    },
+  );
+
   it("refuses bad JSON, a collaborator, and a sub-account with Prospecting off", async () => {
     expect((await put(null, "admin1", "{nope")).status).toBe(400);
     expect((await put({ jobValues: { plumber: 1 } }, "collab1")).status).toBe(403);

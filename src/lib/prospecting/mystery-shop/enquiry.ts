@@ -9,7 +9,7 @@ import type { ContactProspecting, MysteryShopTemplates } from "@/types";
  * that it was a response-time test.
  */
 
-export const DEFAULT_TEMPLATES: Required<MysteryShopTemplates> = {
+export const DEFAULT_TEMPLATES: Required<Omit<MysteryShopTemplates, "whatsappTemplateId">> = {
   emailSubject: "Enquiry: {service} in {town}",
   emailBody: "Hi,\n\nDo you do {service} in {town}? What's your earliest availability?\n\nThanks,\n{business}",
   call: "Hi, I'm calling from {business}. Do you do {service} in {town}? What's your earliest availability?",

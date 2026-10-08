@@ -26,13 +26,15 @@ import {
 } from "@/lib/prospecting/mystery-shop/store";
 import { channelStates, sendMysteryShop, type SendResult } from "@/lib/prospecting/mystery-shop/send";
 import { enquiryOf, loadContact, queueTimer, type ShopContact } from "@/lib/prospecting/mystery-shop/context";
+import { whatsappEnquiryOf } from "@/lib/prospecting/mystery-shop/whatsapp";
 
 /**
  * Speed-to-lead mystery shops for one prospect contact (Prospecting PR 5).
  *
  *   GET  ?contactId= → the contact's shops (newest first, member view), each
  *        channel's availability and allowed targets, the month's cap and use,
- *        and the enquiry as it would be sent with its hash. A `sent` shop whose
+ *        and the enquiry as it would be sent with its hash (WhatsApp: the
+ *        approved template's body filled in, null without a template). A `sent` shop whose
  *        24 h timer should have fired is settled first (an email one only once
  *        the mailbox sync has read past the window), and a `queued` one stuck
  *        past STUCK_AFTER_MS is treated as an uncertain send.
@@ -112,13 +114,14 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     MYSTERY_SHOP_CHANNELS.map((c) => [c, { ...states[c], targets: allowedTargets(c, contact, country) }]),
   );
   const { text: _text, hash: enquiryHash, ...enquiry } = enquiryOf(contact, access.sub);
+  const wa = await whatsappEnquiryOf(subAccountId, contact, access.sub);
   return NextResponse.json({
     shops,
     channels,
     cap: mysteryShopCap(access.sub),
     used: await shopsUsed(subAccountId),
-    enquiry,
-    enquiryHash,
+    enquiry: { ...enquiry, whatsapp: wa?.text ?? null },
+    enquiryHash: { ...enquiryHash, whatsapp: wa?.hash ?? null },
   });
 }
 
@@ -152,7 +155,9 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
   const enquiry = enquiryOf(contact, access.sub);
   const kind = channel === "email" ? "email" : "call";
-  if (enquiryHash !== enquiry.hash[kind]) {
+  const wa = channel === "whatsapp" ? await whatsappEnquiryOf(subAccountId, contact, access.sub) : null;
+  const shown = channel === "whatsapp" ? wa?.hash : enquiry.hash[kind];
+  if (!shown || enquiryHash !== shown) {
     return refuse("enquiry_changed", "The enquiry changed — reopen the dialog.", 409);
   }
   let reserved: Awaited<ReturnType<typeof reserveShop>>;
@@ -168,7 +173,7 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       targetLabel: to,
       // The server-owned prospecting.website only: a member can edit contact.website.
       targetDomainTrusted: channel === "email" && emailDomainTrusted(to, contact.prospecting?.website),
-      enquiryText: enquiry.text[kind],
+      enquiryText: wa ? wa.text : enquiry.text[kind],
       ...jobValueFor(contact.prospecting, access.sub.prospectingJobValues),
       cap: mysteryShopCap(access.sub),
     });
@@ -183,8 +188,8 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
 
   const { shopId } = reserved;
   const result: SendResult = await sendMysteryShop({
-    shopId, channel, target: to, subAccountId, sub: access.sub, contact, contactId, uid: access.uid, enquiry,
-    consentAck: consentAck === true,
+    shopId, channel, target: to, subAccountId, sub: access.sub, contact, contactId, uid: access.uid,
+    enquiry: { ...enquiry, whatsapp: wa }, consentAck: consentAck === true,
   }).catch((err) => ({ ok: false as const, kind: "uncertain" as const, providerRef: null, reason: String(err) }));
 
   if (!result.ok && result.kind !== "uncertain") {

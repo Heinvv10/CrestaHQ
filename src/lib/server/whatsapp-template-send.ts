@@ -34,9 +34,16 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
 /**
  * A refusal, carrying the HTTP status the composer's route answers with.
- * `attempted`: the provider was contacted, so it may have gone out anyway.
+ * `attempted`: the provider was contacted, so it may have gone out anyway —
+ * unless `providerOutcome` says the provider definitely refused it.
  */
-export type TemplateSendRefusal = { ok: false; status: number; error: string; attempted?: boolean };
+export type TemplateSendRefusal = {
+  ok: false;
+  status: number;
+  error: string;
+  attempted?: boolean;
+  providerOutcome?: "DEFINITELY_REJECTED" | "AMBIGUOUS";
+};
 
 export type PreparedTemplateSend = {
   subAccount: SubAccountDoc;
@@ -198,7 +205,13 @@ export async function sendWhatsappTemplate(input: PreparedTemplateSend & {
     if (!result.ok) {
       // Only a provider's rejection is a failed ask; "not approved on this rail" never left.
       await logAsk(result.attempted && !result.refusedBy ? { ok: false, failureKind: result.error ?? "send_failed" } : null);
-      return { ok: false, status: 409, error: result.error ?? "Only an approved template can be sent.", attempted: result.attempted === true };
+      return {
+        ok: false,
+        status: 409,
+        error: result.error ?? "Only an approved template can be sent.",
+        attempted: result.attempted === true,
+        providerOutcome: result.providerOutcome,
+      };
     }
     sid = result.messageId ?? "";
     fromNumber = templateFrom;

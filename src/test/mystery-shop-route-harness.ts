@@ -43,7 +43,7 @@ export const post = async (body: unknown) => (await route()).POST(req("POST", ""
 export const list = async (contactId = "c1") => (await route()).GET(req("GET", `?contactId=${contactId}`), ctx);
 
 /** The enquiry hashes the dialog would echo, read from the real GET. */
-export let hashes: { email: string; call: string } = { email: "", call: "" };
+export let hashes: { email: string; call: string; whatsapp: string | null } = { email: "", call: "", whatsapp: null };
 export async function readHashes(contactId = "c1") {
   hashes = ((await (await list(contactId)).json()) as { enquiryHash: typeof hashes }).enquiryHash;
 }
@@ -51,7 +51,7 @@ export const valid = (over: Record<string, unknown> = {}) => {
   const channel = (over.channel as string | undefined) ?? "email";
   return {
     contactId: "c1", channel, confirm: true, target: EMAIL,
-    enquiryHash: channel === "email" ? hashes.email : hashes.call,
+    enquiryHash: channel === "email" ? hashes.email : channel === "whatsapp" ? hashes.whatsapp : hashes.call,
     ...(channel === "call" ? { consentAck: true } : {}),
     ...over,
   };
