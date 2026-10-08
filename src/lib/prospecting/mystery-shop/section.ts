@@ -28,6 +28,10 @@ export interface MemberShop {
   /** How the response was seen, and whether its sender is proven (store.ts `ResponseVia`). Null until responded. */
   responseVia: "email" | "answered" | "callback" | null;
   senderAuth: "pass" | "unknown" | null;
+  /** The send may or may not have gone out (store.ts `markUncertain`). Never shown publicly as missed. */
+  sendUncertain: boolean;
+  /** 24 h passed but the mailbox sync has not read that far yet (store.ts `settleMissed`). */
+  awaitingSync: boolean;
 }
 
 export interface MysteryShopItem {
@@ -72,6 +76,8 @@ export function serializeShop(id: string, d: Record<string, unknown>): MemberSho
     createdAt: iso(d.createdAt),
     responseVia: (["email", "answered", "callback"] as const).find((v) => v === d.responseVia) ?? null,
     senderAuth: d.senderAuth === "pass" || d.senderAuth === "unknown" ? d.senderAuth : null,
+    sendUncertain: d.sendUncertain === true,
+    awaitingSync: d.awaitingSync === true,
   };
 }
 
@@ -148,7 +154,8 @@ export function mysteryShopSections(
 ): MysteryShopSection[] {
   const shown = new Set(opts.audience === "public" ? ["responded", "missed"] : ["responded", "missed", "queued", "sent"]);
   const newest = [...shops]
-    .filter((s) => shown.has(s.status))
+    // A missed lead is a public claim: never made for a send that may not have gone out.
+    .filter((s) => shown.has(s.status) && !(opts.audience === "public" && s.status === "missed" && s.sendUncertain))
     .sort((a, b) => (b.sentAt ?? b.createdAt ?? "").localeCompare(a.sentAt ?? a.createdAt ?? ""));
   return SECTIONS.map((sec) => ({
     key: sec.key,
@@ -167,7 +174,10 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
     case "queued":
       return `${head}sending…`;
     case "sent":
-      return `${head}sent ${since(s.sentAt, nowMs)} ago, waiting for a reply (24 h)${
+      if (s.awaitingSync) return `${head}24 h passed; waiting for the mailbox sync to catch up before calling it missed`;
+      return `${head}${s.sendUncertain ? "may have been sent" : "sent"} ${since(s.sentAt, nowMs)} ago${
+        s.sendUncertain ? " (the send did not confirm)" : ""
+      }, waiting for a reply (24 h)${
         s.autoReplyAt ? `; an automatic reply came after ${since(s.sentAt, Date.parse(s.autoReplyAt))}` : ""
       }`;
     case "responded": {

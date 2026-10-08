@@ -7,6 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+const publish = vi.fn();
+vi.mock("@/lib/automations/qstash", async (orig) => ({
+  ...(await orig<typeof import("@/lib/automations/qstash")>()),
+  publishCallback: (...a: unknown[]) => publish(...a),
+}));
 
 const KEY = "sig_test_current_key_for_mystery_shops";
 process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
@@ -27,7 +32,7 @@ function call(b = body(), signature: string | null = signQStashBody(URL_, b)) {
 }
 const seed = (extra: Record<string, unknown> = {}) =>
   mem.seed("mysteryShops/s1", {
-    subAccountId: "sa1", channel: "email", status: "sent", sentAt: new Date(Date.now() - DAY - 31 * 60_000),
+    subAccountId: "sa1", channel: "call", status: "sent", sentAt: new Date(Date.now() - DAY - 31 * 60_000),
     respondedAt: null, ...extra,
   });
 const status = () => mem.read("mysteryShops/s1")?.status;
@@ -35,6 +40,7 @@ const status = () => mem.read("mysteryShops/s1")?.status;
 beforeEach(() => {
   process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
   process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
+  publish.mockReset().mockResolvedValue({ messageId: "m2" });
   mem.clear();
 });
 afterEach(() => {
@@ -89,3 +95,40 @@ describe("the timer", () => {
     expect(await (await call(body("gone"))).json()).toEqual({ ok: true, status: null });
   });
 });
+
+describe("an email shop and the mailbox sync", () => {
+  const synced = (lastSyncAt: string, lastError: string | null = null) =>
+    mem.seed("subAccounts/sa1", { mailboxConfig: { enabled: true, verifiedAt: "x", lastSyncAt, lastError } });
+
+  it("is not called missed until the mailbox has synced past the window: re-queued in an hour, counted", async () => {
+    seed({ channel: "email" });
+    synced(new Date(Date.now() - 2 * DAY).toISOString());
+    expect(await (await call()).json()).toEqual({ ok: true, status: "awaiting_sync", requeue: 1 });
+    expect(mem.read("mysteryShops/s1")).toMatchObject({ status: "sent", awaitingSync: true, timerRequeues: 1 });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      pathname: "/api/automations/prospecting/mystery-shop", body: { shopId: "s1" }, delaySeconds: 3600,
+      deduplicationId: expect.stringMatching(/^mystery_shop_s1_requeue_1_/),
+    }));
+  });
+
+  it("a failing mailbox also waits; a synced, healthy one settles missed", async () => {
+    seed({ channel: "email" });
+    synced(new Date().toISOString(), "Mailbox login failed.");
+    expect((await (await call()).json()).status).toBe("awaiting_sync");
+    synced(new Date().toISOString());
+    expect(await (await call()).json()).toEqual({ ok: true, status: "missed" });
+  });
+
+  it("stops re-queuing after 48 hours of waiting", async () => {
+    seed({ channel: "email", timerRequeues: 48 });
+    expect(await (await call()).json()).toEqual({ ok: true, status: "awaiting_sync", requeue: null });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("a re-queue that cannot be published asks QStash to retry", async () => {
+    seed({ channel: "email" });
+    publish.mockResolvedValueOnce(null);
+    expect((await call()).status).toBe(503);
+  });
+});
+

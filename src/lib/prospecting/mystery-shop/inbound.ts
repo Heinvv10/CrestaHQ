@@ -2,9 +2,11 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { isDocId } from "@/lib/server/doc-id";
 import { callOutcome, callStartedAt, type CallReport } from "./call-match";
 import { decideEmail, type InboundEmail } from "./email-match";
-import { closableShops, recordAutoReply, settleResponded } from "./store";
+import { closableShops, markBounced, recordAutoReply, settleResponded } from "./store";
+import { toMs } from "./model";
 
 /**
  * The inbound hooks: one call from each host path (IMAP mailbox sync, the
@@ -29,6 +31,7 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
         respondedAt: s.respondedAt,
         autoReplyAt: s.autoReplyAt,
         providerRef: s.providerRef,
+        targetDomainTrusted: s.targetDomainTrusted,
       };
     }),
   );
@@ -37,6 +40,7 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
   for (const [shopId, decision] of decisions) {
     if (decision === "responded") await settleResponded(shopId, message.occurredAtMs, via);
     else if (decision === "auto_reply") await recordAutoReply(shopId, message.occurredAtMs);
+    else if (decision === "bounced") await markBounced(shopId);
   }
 }
 
@@ -54,12 +58,15 @@ export async function settleMysteryShopCall(
   callId: string,
   report: CallReport,
 ): Promise<void> {
-  if (!/^[A-Za-z0-9_-]{1,200}$/.test(shopId)) return;
+  if (!isDocId(shopId)) return;
   const shop = (await getAdminDb().doc(`mysteryShops/${shopId}`).get()).data();
   if (!shop || shop.subAccountId !== subAccountId || shop.channel !== "call") return;
   if (!callId || shop.providerRef !== callId) return;
   const outcome = callOutcome(report);
-  if (outcome.answered) await settleResponded(shopId, outcome.atMs, { responseVia: "answered", senderAuth: "pass" });
+  if (!outcome.answered) return;
+  // Vapi's start can precede our sentAt (stamped after the create call returned): never a negative time.
+  const atMs = Math.max(outcome.atMs, toMs(shop.sentAt) ?? outcome.atMs);
+  await settleResponded(shopId, atMs, { responseVia: "answered", senderAuth: "pass" });
 }
 
 /**

@@ -7,6 +7,7 @@ import {
   OPEN_STATUSES,
   canSettleMissed,
   canSettleResponded,
+  RESPONSE_WINDOW_MS,
   inWindow,
   toMs,
   type MysteryShopChannel,
@@ -38,6 +39,8 @@ export interface ReserveInput {
   channel: MysteryShopChannel;
   target: string;
   targetLabel: string;
+  /** Email: the target's domain is the business's own, so colleagues' replies count (targets.ts). */
+  targetDomainTrusted: boolean;
   enquiryText: string;
   jobValueCents: number;
   currency: string;
@@ -76,6 +79,7 @@ export async function reserveShop(input: ReserveInput): Promise<{ shopId: string
       channel: input.channel,
       target: input.target,
       targetLabel: input.targetLabel,
+      targetDomainTrusted: input.targetDomainTrusted,
       status: "queued",
       sentAt: null,
       respondedAt: null,
@@ -105,6 +109,44 @@ export async function markSent(shopId: string, providerRef: string): Promise<Dat
     const sentAt = new Date();
     tx.update(ref, { status: "sent", sentAt, providerRef });
     return sentAt;
+  });
+}
+
+/**
+ * A send whose outcome is unknown — the provider may have taken it (a throw
+ * after the provider call, or the sent write failing) — is treated as sent:
+ * `sent` with `sendUncertain: true`, the cap slot kept, the 24 h clock
+ * running, and the open shop still blocking a second send. With
+ * `olderThanMs` (the stuck sweep): only a shop queued that long, dated from
+ * its creation.
+ */
+export async function markUncertain(
+  shopId: string,
+  providerRef: string | null,
+  opts: { olderThanMs?: number } = {},
+): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    if (shop?.status !== "queued") return false;
+    const created = toMs(shop.createdAt);
+    if (opts.olderThanMs !== undefined && (created === null || Date.now() - created <= opts.olderThanMs)) return false;
+    const sentAt = opts.olderThanMs !== undefined && created !== null ? new Date(created) : new Date();
+    tx.update(ref, { status: "sent", sentAt, providerRef, sendUncertain: true });
+    return true;
+  });
+}
+
+/** A sent (or missed) email that bounced never arrived: `failed`, code `bounced`. It was sent, so the slot is kept. */
+export async function markBounced(shopId: string): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const status = (await tx.get(ref)).data()?.status;
+    if (status !== "sent" && status !== "missed") return false;
+    tx.update(ref, { status: "failed", failure: { code: "bounced", reason: "The enquiry bounced: it was never delivered." } });
+    return true;
   });
 }
 
@@ -167,7 +209,13 @@ export async function recordAutoReply(shopId: string, atMs: number): Promise<boo
   });
 }
 
-/** sent + no response + window over → missed. Anything else is a no-op. Returns the status after. */
+/**
+ * sent + no response + window over → missed. Anything else is a no-op.
+ * Returns the status after. An EMAIL shop is only judged once the inbox has
+ * been read past the window: the mailbox's last successful sync is at or
+ * after sentAt + 24 h and it has no error. Until then it stays `sent`
+ * (`awaitingSync: true`) and this returns "awaiting_sync".
+ */
 export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<string | null> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
@@ -175,16 +223,46 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
     const shop = (await tx.get(ref)).data();
     if (!shop) return null;
     if (!canSettleMissed(shop, nowMs)) return shop.status as string;
-    tx.update(ref, { status: "missed" });
+    if (shop.channel === "email") {
+      const mailbox = (await tx.get(db.doc(`subAccounts/${shop.subAccountId}`))).data()?.mailboxConfig;
+      const syncedAt = Date.parse(mailbox?.lastSyncAt ?? "");
+      if (mailbox?.lastError || !(syncedAt >= toMs(shop.sentAt)! + RESPONSE_WINDOW_MS)) {
+        if (shop.awaitingSync !== true) tx.update(ref, { awaitingSync: true });
+        return "awaiting_sync";
+      }
+    }
+    tx.update(ref, { status: "missed", awaitingSync: false });
     return "missed";
   });
 }
 
-/** sent / missed shops of one channel in a sub-account — what an inbound reply may close. */
-export async function closableShops(subAccountId: string, channel: MysteryShopChannel) {
+export const MAX_TIMER_REQUEUES = 48;
+
+/** One more hour's wait for a shop awaiting the mailbox sync: the re-queue count, or null past the limit. */
+export async function requeueTimer(shopId: string): Promise<number | null> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    const n = typeof shop?.timerRequeues === "number" ? shop.timerRequeues : 0;
+    if (shop?.status !== "sent" || n >= MAX_TIMER_REQUEUES) return null;
+    tx.update(ref, { timerRequeues: n + 1 });
+    return n + 1;
+  });
+}
+
+/** A missed shop older than this cannot be upgraded by a late reply any more (the sync lag is far shorter). */
+const LATE_SYNC_MS = RESPONSE_WINDOW_MS + 48 * 3600_000;
+
+/** sent / recently missed shops of one channel in a sub-account — what an inbound reply may close. Equality-only. */
+export async function closableShops(subAccountId: string, channel: MysteryShopChannel, nowMs = Date.now()) {
   const col = getAdminDb().collection("mysteryShops");
   const snaps = await Promise.all(
-    ["sent", "missed"].map((status) => col.where("subAccountId", "==", subAccountId).where("status", "==", status).get()),
+    ["sent", "missed"].map((status) =>
+      col.where("subAccountId", "==", subAccountId).where("channel", "==", channel).where("status", "==", status).get(),
+    ),
   );
-  return snaps.flatMap((s) => s.docs).filter((d) => d.data()?.channel === channel);
+  return snaps
+    .flatMap((s) => s.docs)
+    .filter((d) => d.data()?.status !== "missed" || nowMs - (toMs(d.data()?.sentAt) ?? 0) <= LATE_SYNC_MS);
 }

@@ -20,16 +20,23 @@ function seedShop(id: string, extra: Record<string, unknown> = {}) {
   mem.seed(`mysteryShops/${id}`, {
     agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "email", target: EMAIL, status: "sent",
     sentAt: new Date(SENT), respondedAt: null, responseMs: null, autoReplyAt: null, providerRef: `<${id}@crestahq.com>`,
+    targetDomainTrusted: true,
     ...extra,
   });
 }
 const shop = (id: string) => mem.read(`mysteryShops/${id}`)!;
 const email = (from: string, over: Record<string, unknown> = {}) => ({
-  from, inReplyTo: null, references: [], autoReply: NO_HEADERS, authResults: [] as string[], subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000, ...over,
+  from, inReplyTo: null, references: [], autoReply: NO_HEADERS, authResults: [] as string[],
+  dsn: { contentType: null as string | null, msExchangeNdr: null, failedRecipients: null, text: "" }, subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000, ...over,
 });
 const callReport = (over: Record<string, unknown> = {}) => ({
   endedReason: "customer-ended-call", durationSec: 30, startedAtMs: SENT + 12_000, endedAtMs: SENT + 42_000,
-  receivedAtMs: SENT + 60_000, userSpoke: true, ...over,
+  receivedAtMs: SENT + 60_000,
+  turns: [
+    { role: "assistant" as const, content: "Hi, I'm calling from Cresta HQ.", secondsFromStart: 0.5 },
+    { role: "user" as const, content: "Yes we do.", secondsFromStart: 5 },
+  ],
+  ...over,
 });
 
 beforeEach(() => mem.clear());
@@ -83,6 +90,31 @@ describe("email", () => {
     expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 10 * 3600_000 });
   });
 
+  it("a bounce naming our Message-ID marks the shop failed/bounced and keeps the cap slot", async () => {
+    mem.seed("subAccounts/sa1/usage/2026-10", { mysteryShops: 3 });
+    seedShop("s1", { usageMonth: "2026-10" });
+    const dsn = { contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: null, failedRecipients: null, text: "Message-ID: <s1@crestahq.com>" };
+    await matchMysteryShopEmail("sa1", email("mailer-daemon@mx.google.com", { dsn, subject: "Delivery Status Notification (Failure)" }));
+    expect(shop("s1")).toMatchObject({ status: "failed", failure: { code: "bounced" } });
+    expect(mem.read("subAccounts/sa1/usage/2026-10")?.mysteryShops).toBe(3);
+  });
+
+  it("a colleague's reply counts only when the target domain was trusted at send", async () => {
+    seedShop("s1", { targetDomainTrusted: false });
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    expect(shop("s1").status).toBe("sent");
+    seedShop("s2");
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    expect(shop("s2").status).toBe("responded");
+  });
+
+  it("a missed shop more than 48 h past its window is no longer upgraded, even by an in-window reply", async () => {
+    const sentAt = Date.now() - 4 * 24 * 3600_000;
+    seedShop("s1", { status: "missed", sentAt: new Date(sentAt) });
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: sentAt + 3600_000 }));
+    expect(shop("s1").status).toBe("missed");
+  });
+
   it("call shops are not touched by email", async () => {
     seedShop("c1", { channel: "call", target: EMAIL });
     await matchMysteryShopEmail("sa1", email(EMAIL));
@@ -95,6 +127,12 @@ describe("call", () => {
     seedShop("k1", { channel: "call", target: PHONE, providerRef: "call_1" });
     await settleMysteryShopCall("sa1", "k1", "call_1", callReport());
     expect(shop("k1")).toMatchObject({ status: "responded", responseMs: 12_000, responseVia: "answered", senderAuth: "pass" });
+  });
+
+  it("an answer timed before the send is clamped to the send (responseMs never negative)", async () => {
+    seedShop("k1", { channel: "call", target: PHONE, providerRef: "call_1" });
+    await settleMysteryShopCall("sa1", "k1", "call_1", callReport({ startedAtMs: SENT - 4_000 }));
+    expect(shop("k1")).toMatchObject({ status: "responded", responseMs: 0, responseVia: "answered" });
   });
 
   it("only the call we placed settles it: another call carrying a copied shop id is ignored", async () => {
