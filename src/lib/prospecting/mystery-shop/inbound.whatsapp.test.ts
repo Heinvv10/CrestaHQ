@@ -121,6 +121,14 @@ describe("recordMysteryShopWhatsAppStatus", () => {
     for (const id of ["w1", "w2", "e1"]) expect(shop(id).deliveredAt).toBeUndefined();
   });
 
+  it("a 'sent' receipt changes nothing", async () => {
+    seedShop("w1");
+    await recordMysteryShopWhatsAppStatus("sa1", WAMID, "sent", at(1_000), null);
+    expect(shop("w1")).toMatchObject({ status: "sent" });
+    expect(shop("w1").deliveredAt).toBeUndefined();
+    expect(shop("w1").readAt).toBeUndefined();
+  });
+
   it("a receipt with no message id matches nothing (a shop whose send never returned an id)", async () => {
     seedShop("w1", { providerRef: null });
     await recordMysteryShopWhatsAppStatus("sa1", "", "failed", at(2_000), null);

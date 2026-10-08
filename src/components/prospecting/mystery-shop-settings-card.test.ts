@@ -92,7 +92,8 @@ describe("the mystery-shop WhatsApp template", () => {
     });
     await act(async () => [...container.querySelectorAll("button")].find((b) => b.textContent === "Save")!.click());
     const put = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT")!;
-    expect(JSON.parse(put[1].body as string)).toMatchObject({ whatsappTemplateId: null });
+    // The stored choice never rides inside the wording (the PUT refuses unknown template keys).
+    expect(JSON.parse(put[1].body as string)).toEqual({ jobValues: {}, templates: { call: "Hi" }, whatsappTemplateId: null });
   });
 
   it("no template by that name: says to create and submit it", async () => {

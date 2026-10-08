@@ -17,7 +17,7 @@ vi.mock("@/lib/server/whatsapp-template-send", async (orig) => ({
   sendWhatsappTemplate: (...a: unknown[]) => waSend(...a),
 }));
 
-const { mem } = await import("@/test/gbp-sync-store");
+const { mem, storeDb } = await import("@/test/gbp-sync-store");
 const { PHONE, USAGE, list, post, publish, readHashes, resetRouteHarness, seedContact, seedSa, shops, used, valid } =
   await import("@/test/mystery-shop-route-harness");
 
@@ -158,6 +158,26 @@ describe("WhatsApp: the send", () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: "enquiry_changed" });
     expect(waSend).not.toHaveBeenCalled();
+  });
+
+  it("409 when the template was switched to another with the same words since the dialog opened", async () => {
+    seedTemplate({}, "subAccounts/sa1/whatsappTemplates/t2");
+    seedSa(true, { whatsappEnabledByAgency: true, whatsappProvider: "cloud", prospectingMysteryShopTemplates: { whatsappTemplateId: "t2" } });
+    const res = await post(wa());
+    expect(res.status).toBe(409);
+    expect(waSend).not.toHaveBeenCalled();
+  });
+
+  it("409, nothing reserved, when the template vanished between the availability check and the enquiry", async () => {
+    const real = storeDb.collection.bind(storeDb);
+    let lookups = 0;
+    vi.spyOn(storeDb, "collection").mockImplementation((path: string) =>
+      path.endsWith("/whatsappTemplates") && ++lookups === 2 ? real("gone/x/whatsappTemplates") : real(path),
+    );
+    const res = await post(wa({ enquiryHash: undefined }));
+    expect(lookups).toBe(2);
+    expect(res.status).toBe(409);
+    expect(shops()).toEqual([]);
   });
 
   it.each([
