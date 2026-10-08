@@ -27,11 +27,13 @@ export interface MemberShop {
   createdAt: string | null;
   /** How the response was seen, and whether its sender is proven (store.ts `ResponseVia`). Null until responded. */
   responseVia: "email" | "answered" | "callback" | null;
-  senderAuth: "pass" | "unknown" | "fail" | null;
+  senderAuth: "pass" | "unknown" | null;
   /** The send may or may not have gone out (store.ts `markUncertain`). Never shown publicly as missed. */
   sendUncertain: boolean;
   /** 24 h passed but the mailbox sync has not read that far yet (store.ts `settleMissed`). */
   awaitingSync: boolean;
+  /** Missed after a reply that failed the sender check (store.ts `settleMissed`). Never shown publicly. */
+  disputed: boolean;
 }
 
 export interface MysteryShopItem {
@@ -75,9 +77,10 @@ export function serializeShop(id: string, d: Record<string, unknown>): MemberSho
     failure: f ? { code: String(f.code), reason: String(f.reason) } : null,
     createdAt: iso(d.createdAt),
     responseVia: (["email", "answered", "callback"] as const).find((v) => v === d.responseVia) ?? null,
-    senderAuth: (["pass", "unknown", "fail"] as const).find((v) => v === d.senderAuth) ?? null,
+    senderAuth: d.senderAuth === "pass" || d.senderAuth === "unknown" ? d.senderAuth : null,
     sendUncertain: d.sendUncertain === true,
     awaitingSync: d.awaitingSync === true,
+    disputed: d.disputed === true,
   };
 }
 
@@ -134,13 +137,9 @@ function item(s: MemberShop, audience: "public" | "member", nowMs: number, timeZ
     disclosure: `This was a response-time test: a plain enquiry sent on ${formatDay(sent, timeZone)}.`,
   };
   if (audience === "public") return view;
-  const verified =
-    s.senderAuth === "fail"
-      ? "Reply failed the sender check"
-      : s.senderAuth
-        ? `Reply sender ${s.senderAuth === "pass" ? "verified" : "unverified"}`
-        : undefined;
-  return { ...view, target: s.target, ...(outcome === "responded" && verified ? { verified } : {}) };
+  const verified = s.senderAuth ? `Reply sender ${s.senderAuth === "pass" ? "verified" : "unverified"}` : undefined;
+  const member = { ...view, target: s.target, ...(outcome === "responded" && verified ? { verified } : {}) };
+  return s.disputed ? { ...member, note: "A reply arrived but failed the sender check." } : member;
 }
 
 const SECTIONS: { key: MysteryShopSection["key"]; title: string; channels: MysteryShopChannel[] }[] = [
@@ -160,11 +159,11 @@ export function mysteryShopSections(
   const shown = new Set(opts.audience === "public" ? ["responded", "missed"] : ["responded", "missed", "queued", "sent"]);
   const newest = [...shops]
     // Public claims need evidence: no missed lead for a send that may not have gone out,
-    // and no outcome at all for a reply whose sender failed the mail host's checks.
+    // and none for a miss disputed by a reply that failed the mail host's sender check.
     .filter(
       (s) =>
         shown.has(s.status) &&
-        !(opts.audience === "public" && ((s.status === "missed" && s.sendUncertain) || s.senderAuth === "fail")),
+        !(opts.audience === "public" && s.status === "missed" && (s.sendUncertain || s.disputed)),
     )
     .sort((a, b) => (b.sentAt ?? b.createdAt ?? "").localeCompare(a.sentAt ?? a.createdAt ?? ""));
   return SECTIONS.map((sec) => ({
@@ -193,10 +192,10 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
     case "responded": {
       const ok = s.senderAuth === "pass" ? "verified" : "unverified";
       if (s.responseVia === "callback") return `${head}called back after ${formatDuration(s.responseMs ?? 0)} (caller ID ${ok})`;
-      const check = s.senderAuth === "fail" ? "reply failed the sender check" : `sender ${ok}`;
-      return `${head}responded in ${formatDuration(s.responseMs ?? 0)} (${check})`;
+      return `${head}responded in ${formatDuration(s.responseMs ?? 0)} (sender ${ok})`;
     }
     case "missed":
+      if (s.disputed) return `${head}missed — a reply arrived but failed the sender check`;
       return `${head}no reply in 24 h — ${formatMoney(s.jobValueCents, s.currency)} lead missed${
         s.sendUncertain ? " (send uncertain — may not have been delivered)" : ""
       }`;

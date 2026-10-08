@@ -76,11 +76,23 @@ describe("email", () => {
     expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "unknown" });
   });
 
-  it("a From that fails DMARC settles responded, stamped senderAuth fail (kept off the public page)", async () => {
+  it("a reply that fails DMARC only records authFailedReplyAt (first one, in the window); the shop keeps waiting", async () => {
     seedShop("s1");
     const spoof = { authResults: ["mx.crestahq.com; spf=fail smtp.mailfrom=acme.co.za; dmarc=fail header.from=acme.co.za"] };
+    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, occurredAtMs: SENT + 60_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, occurredAtMs: SENT + 120_000 }));
+    expect(shop("s1")).toMatchObject({ status: "sent", respondedAt: null });
+    expect((shop("s1").authFailedReplyAt as Date).getTime()).toBe(SENT + 60_000);
+    // A genuine (non-failing) reply afterwards still settles it.
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: SENT + 3600_000 }));
+    expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 3600_000, senderAuth: "unknown" });
+  });
+
+  it("a failing reply outside the window records nothing", async () => {
+    seedShop("s1");
+    const spoof = { authResults: ["mx.crestahq.com; dmarc=fail header.from=acme.co.za"], occurredAtMs: SENT - 1 };
     await matchMysteryShopEmail("sa1", email(EMAIL, spoof));
-    expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "fail" });
+    expect(shop("s1").authFailedReplyAt).toBeUndefined();
   });
 
   it("a late-synced in-window reply upgrades a missed shop", async () => {

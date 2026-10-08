@@ -183,11 +183,11 @@ export async function releaseShop(
  * How a response was seen. `senderAuth` "pass" = the sender is proven: only
  * the call we placed being answered. "unknown" = taken on trust: every email
  * reply (a From that failed Authentication-Results is refused, but a pass is
- * not provable) and a callback's caller ID. "fail" = an email whose sender
- * failed the mail host's checks. Members see unknown as unverified; the
- * public page leaves a "fail" shop out.
+ * not provable) and a callback's caller ID. Members see unknown as unverified.
+ * A reply whose sender FAILED the mail host's checks never settles a shop
+ * (recordAuthFailedReply).
  */
-export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" | "fail" };
+export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" };
 
 /** The first response inside the window wins; a missed shop is upgraded only by an in-window one. */
 export async function settleResponded(shopId: string, atMs: number, via: ResponseVia): Promise<boolean> {
@@ -197,6 +197,23 @@ export async function settleResponded(shopId: string, atMs: number, via: Respons
     const shop = (await tx.get(ref)).data();
     if (!shop || !canSettleResponded(shop, atMs)) return false;
     tx.update(ref, { status: "responded", respondedAt: new Date(atMs), responseMs: atMs - toMs(shop.sentAt)!, ...via });
+    return true;
+  });
+}
+
+/**
+ * The first reply, in the window, whose sender failed the mail host's checks
+ * (Authentication-Results). It is not a response: the shop keeps waiting, and
+ * a later genuine reply settles it. If none comes, the miss is `disputed`.
+ */
+export async function recordAuthFailedReply(shopId: string, atMs: number): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    const sent = toMs(shop?.sentAt);
+    if (shop?.status !== "sent" || shop.authFailedReplyAt != null || sent === null || !inWindow(sent, atMs)) return false;
+    tx.update(ref, { authFailedReplyAt: new Date(atMs) });
     return true;
   });
 }
@@ -220,7 +237,8 @@ export async function recordAutoReply(shopId: string, atMs: number): Promise<boo
  * been read past the window: `mailboxConfig.inboxCaughtUpAt` (the start of a
  * sync pass that read the INBOX to its end) is at or after sentAt + 24 h and
  * the mailbox has no error. Until then it stays `sent` (`awaitingSync: true`)
- * and this returns "awaiting_sync".
+ * and this returns "awaiting_sync". A miss after a reply that failed the
+ * sender check is `disputed`: the public page makes no claim about it.
  */
 export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<string | null> {
   const db = getAdminDb();
@@ -237,7 +255,7 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
         return "awaiting_sync";
       }
     }
-    tx.update(ref, { status: "missed", awaitingSync: false });
+    tx.update(ref, { status: "missed", awaitingSync: false, ...(shop.authFailedReplyAt != null ? { disputed: true } : {}) });
     return "missed";
   });
 }

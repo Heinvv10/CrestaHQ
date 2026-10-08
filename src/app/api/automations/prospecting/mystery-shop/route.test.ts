@@ -119,6 +119,16 @@ describe("an email shop and the mailbox sync", () => {
     expect(await (await call()).json()).toEqual({ ok: true, status: "missed" });
   });
 
+  it("a shop that only had a failed-sender reply settles missed but disputed", async () => {
+    seed({ channel: "email", authFailedReplyAt: new Date(Date.now() - DAY) });
+    synced(new Date().toISOString());
+    expect(await (await call()).json()).toEqual({ ok: true, status: "missed" });
+    expect(mem.read("mysteryShops/s1")).toMatchObject({ status: "missed", disputed: true });
+    seed({ channel: "email" });
+    await call();
+    expect(mem.read("mysteryShops/s1")?.disputed).not.toBe(true);
+  });
+
   it("stops re-queuing after 48 hours of waiting", async () => {
     seed({ channel: "email", timerRequeues: 48 });
     expect(await (await call()).json()).toEqual({ ok: true, status: "awaiting_sync", requeue: null });

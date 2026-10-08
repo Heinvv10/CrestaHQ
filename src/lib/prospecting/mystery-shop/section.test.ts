@@ -17,7 +17,7 @@ const shop = (over: Partial<MemberShop> = {}): MemberShop => ({
   id: "s1", channel: "email", status: "responded", target: EMAIL, sentAt: SENT,
   respondedAt: "2026-10-08T10:14:00.000Z", responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
   jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
-  failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown", sendUncertain: false, awaitingSync: false,
+  failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown", sendUncertain: false, awaitingSync: false, disputed: false,
   ...over,
 });
 
@@ -127,12 +127,14 @@ describe("uncertain sends and the mailbox sync", () => {
   });
 });
 
-describe("a reply that failed the sender check", () => {
-  it("is left off the public page (no claim either way) and marked on the member card", () => {
-    const failed = shop({ senderAuth: "fail" });
-    expect(mysteryShopSections([failed], { audience: "public", nowMs: NOW })).toEqual([]);
-    expect(mysteryShopSections([failed], { audience: "member", nowMs: NOW })[0].items[0].verified).toBe("Reply failed the sender check");
-    expect(shopStatusLine(failed, NOW)).toBe(`Email to ${EMAIL} — responded in 2 h 14 m (reply failed the sender check)`);
+describe("a disputed miss (a reply arrived but failed the sender check)", () => {
+  it("is left off the public page (no claim either way) and explained on the member card", () => {
+    const disputed = shop({ status: "missed", disputed: true, respondedAt: null, responseMs: null });
+    expect(mysteryShopSections([disputed], { audience: "public", nowMs: NOW })).toEqual([]);
+    expect(mysteryShopSections([disputed], { audience: "member", nowMs: NOW })[0].items[0].note).toBe(
+      "A reply arrived but failed the sender check.",
+    );
+    expect(shopStatusLine(disputed, NOW)).toBe(`Email to ${EMAIL} — missed — a reply arrived but failed the sender check`);
   });
 });
 
@@ -177,7 +179,7 @@ describe("serializeShop", () => {
       responseMs: null, autoReplyAt: { toMillis: () => Date.parse(SENT) + 1000 }, jobValueCents: 150_000,
       currency: "ZAR", enquiryText: "x", failure: null, createdAt: new Date(SENT), providerRef: "<m@x>",
     });
-    expect(s).toMatchObject({ responseVia: null, senderAuth: null, sendUncertain: false, awaitingSync: false });
+    expect(s).toMatchObject({ responseVia: null, senderAuth: null, sendUncertain: false, awaitingSync: false, disputed: false });
     expect(s.sentAt).toBe(SENT);
     expect(s.autoReplyAt).toBe("2026-10-08T08:00:01.000Z");
     expect(s).not.toHaveProperty("providerRef");

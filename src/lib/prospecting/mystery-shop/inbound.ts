@@ -5,7 +5,7 @@ import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { isDocId } from "@/lib/server/doc-id";
 import { callOutcome, callStartedAt, type CallReport } from "./call-match";
 import { decideEmail, senderAuthenticated, type InboundEmail } from "./email-match";
-import { closableShops, markBounced, recordAutoReply, settleResponded } from "./store";
+import { closableShops, markBounced, recordAuthFailedReply, recordAutoReply, settleResponded } from "./store";
 import { toMs } from "./model";
 
 /**
@@ -35,11 +35,12 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
       };
     }),
   );
-  // An email sender is never provable: unknown, or fail when the mail host's checks failed it.
-  const auth = senderAuthenticated(message.authResults, message.from.slice(message.from.lastIndexOf("@") + 1));
-  const via = { responseVia: "email", senderAuth: auth } as const;
+  // An email sender is never provable (unknown). One the mail host's checks FAILED does not settle
+  // the shop — a spoof must not block the genuine reply — it is only noted (authFailedReplyAt).
+  const failed = senderAuthenticated(message.authResults, message.from.slice(message.from.lastIndexOf("@") + 1)) === "fail";
   for (const [shopId, decision] of decisions) {
-    if (decision === "responded") await settleResponded(shopId, message.occurredAtMs, via);
+    if (decision === "responded" && failed) await recordAuthFailedReply(shopId, message.occurredAtMs);
+    else if (decision === "responded") await settleResponded(shopId, message.occurredAtMs, { responseVia: "email", senderAuth: "unknown" });
     else if (decision === "auto_reply") await recordAutoReply(shopId, message.occurredAtMs);
     else if (decision === "bounced") await markBounced(shopId);
   }
