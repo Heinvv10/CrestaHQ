@@ -88,6 +88,14 @@ describe("machines", () => {
     expect(callOutcome(report({ turns }))).toEqual({ answered: false, reason: "voicemail" });
   });
 
+  it("an exchange after an EARLIER machine turn does not count when a later machine turn ends the call", () => {
+    const turns = [
+      user(0.2, "Press 1 for sales, press 2 for accounts."), bot(3), user(6, "Sales, one moment."), bot(8),
+      user(12, "Nobody is available, please leave a message after the tone."),
+    ];
+    expect(callOutcome(report({ turns }))).toEqual({ answered: false, reason: "voicemail" });
+  });
+
   it("a 'voicemail of 082…' turn then a second greeting segment is not answered", () => {
     const turns = [user(0.2, "Voicemail of 082 123 4567."), bot(2), user(6, "Bob's Plumbing, nobody's here right now.")];
     expect(callOutcome(report({ endedReason: "voicemail", turns }))).toEqual({ answered: false, reason: "voicemail" });
