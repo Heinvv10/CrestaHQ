@@ -9,8 +9,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+vi.mock("@/lib/comms/ai/agent", () => ({
+  getChannelConfig: async () => ({ voice: { outboundEnabled: true, vapiAssistantId: "asst_1", vapiPhoneNumberId: "pn_1" } }),
+  getAgentProfile: async () => ({ timezone: "Africa/Johannesburg" }),
+}));
 const { mem } = await import("@/test/gbp-sync-store");
-const { placeContactCall } = await import("./voice-call");
+const { outboundVoiceReady, placeContactCall } = await import("./voice-call");
 
 const fetchMock = vi.fn();
 const VOICE = { vapiAssistantId: "asst_1", vapiPhoneNumberId: "pn_1", outboundFirstMessage: "SALES OPENER" } as never;
@@ -68,4 +72,16 @@ it("a Vapi rejection placed nothing; a network error or a 5xx may have placed th
   expect(await place()).toMatchObject({ ok: false, uncertain: true });
   fetchMock.mockResolvedValueOnce(new Response("", { status: 422 }));
   expect(await place()).toMatchObject({ ok: false, uncertain: false });
+});
+
+it("outboundVoiceReady refuses up front when the app's public URL (which Vapi calls back) is not set", async () => {
+  mem.seed("subAccounts/sa1", { agencyId: "ag1", outboundVoiceEnabledByAgency: true });
+  vi.stubEnv("VAPI_WEBHOOK_SECRET", "s");
+  vi.stubEnv("VAPI_PUBLIC_BASE_URL", "");
+  vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
+  expect(await outboundVoiceReady("sa1")).toEqual({
+    ok: false, status: 503, error: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL).",
+  });
+  vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.example.com");
+  expect(await outboundVoiceReady("sa1")).toMatchObject({ ok: true });
 });

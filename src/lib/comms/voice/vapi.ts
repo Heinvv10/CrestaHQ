@@ -65,6 +65,11 @@ function getWebhookSecret(): string {
  * back to `NEXT_PUBLIC_APP_URL` when unset (unchanged behavior for
  * deployments that only ever provision from production).
  */
+/** Whether the public base URL Vapi calls back is set (see getAppUrl). */
+export function vapiAppUrlConfigured(): boolean {
+  return Boolean(process.env.VAPI_PUBLIC_BASE_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim());
+}
+
 function getAppUrl(): string {
   const url = (
     process.env.VAPI_PUBLIC_BASE_URL?.trim() ||
