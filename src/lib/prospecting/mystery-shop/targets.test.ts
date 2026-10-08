@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allowedTargets, emailDomainTrusted, matchTarget } from "./targets";
+import { allowedTargets, emailDomainTrusted, matchTarget, normalizeEmailTarget } from "./targets";
 
 const contact = { email: " Info@Acme.co.za ", phone: "082 123 4567" };
 
@@ -47,5 +47,28 @@ describe("emailDomainTrusted", () => {
     expect(emailDomainTrusted("info@acme.co.za.evil.com", "https://acme.co.za")).toBe(false);
     expect(emailDomainTrusted("info@acme.co.za", null)).toBe(false);
     expect(emailDomainTrusted("info@acme.co.za", "not a url %%")).toBe(false);
+  });
+});
+
+describe("strict email targets (no parser differential with the SMTP send)", () => {
+  it.each(["info@evil.com(x).biz.co.za", "info(c)@biz.co.za", '"x"@biz.co.za', "a b@biz.co.za", "a:b@biz.co.za", "info@localhost", "info@biz..co.za", "<info@biz.co.za>", "a@b.co, c@d.co"])(
+    "%j is refused",
+    (raw) => expect(normalizeEmailTarget(raw)).toBeNull(),
+  );
+  it.each([["Info@Acme.co.za", "info@acme.co.za"], ["first.last+tag@sub.acme-co.co.za", "first.last+tag@sub.acme-co.co.za"]])(
+    "%j is accepted",
+    (raw, want) => expect(normalizeEmailTarget(raw)).toBe(want),
+  );
+});
+
+describe("mailbox providers are never a trusted business domain", () => {
+  it.each([
+    ["biz@mweb.co.za", "http://biz.mweb.co.za"],
+    ["biz@telkomsa.net", "users.telkomsa.net/biz"],
+    ["info@gmail.com", "gmail.com"],
+    ["info@hotmail.co.uk", "https://hotmail.co.uk"],
+    ["me@biz.afrihost.co.za", "https://biz.afrihost.co.za"],
+  ])("%s with website %s is untrusted", (email, website) => {
+    expect(emailDomainTrusted(email, website)).toBe(false);
   });
 });

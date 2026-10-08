@@ -160,7 +160,8 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       channel,
       target: to,
       targetLabel: to,
-      targetDomainTrusted: channel === "email" && emailDomainTrusted(to, contact.prospecting?.website || contact.website),
+      // The server-owned prospecting.website only: a member can edit contact.website.
+      targetDomainTrusted: channel === "email" && emailDomainTrusted(to, contact.prospecting?.website),
       enquiryText: enquiry.text[kind],
       ...jobValueFor(contact.prospecting, access.sub.prospectingJobValues),
       cap: mysteryShopCap(access.sub),

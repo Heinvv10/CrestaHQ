@@ -12,7 +12,7 @@ import { enquiryVars, renderEnquiries } from "./enquiry";
  * timer, kept out of the route so it stays readable.
  */
 
-export type ShopContact = Contact & { prospecting?: ContactProspecting; website?: string };
+export type ShopContact = Contact & { prospecting?: ContactProspecting };
 
 /** The contact, when it exists in this sub-account; else null (the route's 404). */
 export async function loadContact(subAccountId: string, contactId: string): Promise<ShopContact | null> {

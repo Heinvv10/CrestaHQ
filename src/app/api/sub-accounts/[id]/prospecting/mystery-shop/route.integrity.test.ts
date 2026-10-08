@@ -59,6 +59,13 @@ describe("the enquiry sent is the one shown", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it("trust reads only the server-owned prospecting.website, never the member-editable contact.website", async () => {
+    seedContact("edited", { website: "https://www.acme.co.za", prospecting: { category: "plumber" } });
+    await readHashes("edited");
+    expect((await post(valid({ contactId: "edited" }))).status).toBe(202);
+    expect(shops()[0].targetDomainTrusted).toBe(false);
+  });
+
   it("colleague replies are trusted only when the target is at the website's domain", async () => {
     seedContact("gm", { email: "acme@gmail.com" });
     await readHashes("gm");
