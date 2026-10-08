@@ -7,7 +7,10 @@ import {
   OPEN_STATUSES,
   canSettleMissed,
   canSettleResponded,
+  MAX_TIMER_REQUEUES,
   RESPONSE_WINDOW_MS,
+  TIMER_GRACE_MS,
+  TIMER_REQUEUE_MS,
   inWindow,
   toMs,
   type MysteryShopChannel,
@@ -213,10 +216,11 @@ export async function recordAutoReply(shopId: string, atMs: number): Promise<boo
 
 /**
  * sent + no response + window over → missed. Anything else is a no-op.
- * Returns the status after. An EMAIL shop is only judged once the inbox has
- * been read past the window: the mailbox's last successful sync is at or
- * after sentAt + 24 h and it has no error. Until then it stays `sent`
- * (`awaitingSync: true`) and this returns "awaiting_sync".
+ * Returns the status after. An EMAIL shop is only judged once the INBOX has
+ * been read past the window: `mailboxConfig.inboxCaughtUpAt` (the start of a
+ * sync pass that read the INBOX to its end) is at or after sentAt + 24 h and
+ * the mailbox has no error. Until then it stays `sent` (`awaitingSync: true`)
+ * and this returns "awaiting_sync".
  */
 export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<string | null> {
   const db = getAdminDb();
@@ -227,7 +231,7 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
     if (!canSettleMissed(shop, nowMs)) return shop.status as string;
     if (shop.channel === "email") {
       const mailbox = (await tx.get(db.doc(`subAccounts/${shop.subAccountId}`))).data()?.mailboxConfig;
-      const syncedAt = Date.parse(mailbox?.lastSyncAt ?? "");
+      const syncedAt = Date.parse(mailbox?.inboxCaughtUpAt ?? "");
       if (mailbox?.lastError || !(syncedAt >= toMs(shop.sentAt)! + RESPONSE_WINDOW_MS)) {
         if (shop.awaitingSync !== true) tx.update(ref, { awaitingSync: true });
         return "awaiting_sync";
@@ -237,8 +241,6 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
     return "missed";
   });
 }
-
-export const MAX_TIMER_REQUEUES = 48;
 
 /** One more hour's wait for a shop awaiting the mailbox sync: the re-queue count, or null past the limit. */
 export async function requeueTimer(shopId: string): Promise<number | null> {
@@ -253,8 +255,12 @@ export async function requeueTimer(shopId: string): Promise<number | null> {
   });
 }
 
-/** A missed shop older than this cannot be upgraded by a late reply any more (the sync lag is far shorter). */
-const LATE_SYNC_MS = RESPONSE_WINDOW_MS + 48 * 3600_000;
+/**
+ * A missed shop older than this cannot be upgraded by a late reply any more:
+ * the longest the missed verdict can wait for the mailbox (the timer's grace
+ * plus every re-queue) past the window.
+ */
+const LATE_SYNC_MS = RESPONSE_WINDOW_MS + TIMER_GRACE_MS + MAX_TIMER_REQUEUES * TIMER_REQUEUE_MS;
 
 /** sent / recently missed shops of one channel in a sub-account — what an inbound reply may close. Equality-only. */
 export async function closableShops(subAccountId: string, channel: MysteryShopChannel, nowMs = Date.now()) {

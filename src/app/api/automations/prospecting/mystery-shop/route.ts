@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { publishCallback, verifyQStashSignature } from "@/lib/automations/qstash";
 import { isDocId } from "@/lib/server/doc-id";
 import { requeueTimer, settleMissed } from "@/lib/prospecting/mystery-shop/store";
+import { TIMER_REQUEUE_MS } from "@/lib/prospecting/mystery-shop/model";
 import { TIMER_PATH } from "@/lib/prospecting/mystery-shop/context";
 
 /**
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
     const queued = await publishCallback({
       pathname: PATH,
       body: { shopId },
-      delaySeconds: 3600,
+      delaySeconds: TIMER_REQUEUE_MS / 1000,
       deduplicationId: `mystery_shop_${shopId}_requeue_${requeue}_${Date.now()}`,
     });
     // Ask QStash to deliver this again rather than lose the wait.

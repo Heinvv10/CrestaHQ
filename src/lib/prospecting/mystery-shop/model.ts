@@ -19,6 +19,9 @@ export type MysteryShopStatus = "queued" | "sent" | "responded" | "missed" | "fa
 export const RESPONSE_WINDOW_MS = 24 * 3600_000;
 /** IMAP sync runs every 15 min: the timer fires this long after the window, so a reply in its last minutes is in first. */
 export const TIMER_GRACE_MS = 30 * 60_000;
+/** An email shop waiting for the mailbox sync re-checks this often, at most MAX_TIMER_REQUEUES times. */
+export const TIMER_REQUEUE_MS = 3600_000;
+export const MAX_TIMER_REQUEUES = 48;
 export const MYSTERY_SHOP_CAP_DEFAULT = 10;
 /** R1,500 — an estimated job for a niche the sub-account has not valued. */
 export const JOB_VALUE_DEFAULT_CENTS = 150_000;

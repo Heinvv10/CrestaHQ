@@ -110,7 +110,14 @@ describe("email", () => {
     expect(shop("s2").status).toBe("responded");
   });
 
-  it("a missed shop more than 48 h past its window is no longer upgraded, even by an in-window reply", async () => {
+  it("a missed shop inside the re-queue horizon (window + grace + 48 h) is still upgraded by a late in-window reply", async () => {
+    const sentAt = Date.now() - (72 * 3600_000 + 15 * 60_000); // past the old 72 h cut-off, inside 72.5 h
+    seedShop("s1", { status: "missed", sentAt: new Date(sentAt) });
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: sentAt + 3600_000 }));
+    expect(shop("s1").status).toBe("responded");
+  });
+
+  it("a missed shop past the re-queue horizon is no longer upgraded, even by an in-window reply", async () => {
     const sentAt = Date.now() - 4 * 24 * 3600_000;
     seedShop("s1", { status: "missed", sentAt: new Date(sentAt) });
     await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: sentAt + 3600_000 }));

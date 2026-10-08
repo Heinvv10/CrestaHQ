@@ -97,8 +97,8 @@ describe("the timer", () => {
 });
 
 describe("an email shop and the mailbox sync", () => {
-  const synced = (lastSyncAt: string, lastError: string | null = null) =>
-    mem.seed("subAccounts/sa1", { mailboxConfig: { enabled: true, verifiedAt: "x", lastSyncAt, lastError } });
+  const synced = (inboxCaughtUpAt: string, lastError: string | null = null) =>
+    mem.seed("subAccounts/sa1", { mailboxConfig: { enabled: true, verifiedAt: "x", inboxCaughtUpAt, lastSyncAt: new Date().toISOString(), lastError } });
 
   it("is not called missed until the mailbox has synced past the window: re-queued in an hour, counted", async () => {
     seed({ channel: "email" });

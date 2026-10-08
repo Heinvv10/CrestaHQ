@@ -40,6 +40,8 @@ export async function syncMailbox(subAccountId: string) {
     return c;
   });
   const summary = { imported: 0, skipped: 0, hasMore: false };
+  // Set when this pass reads the INBOX to its end: the mystery-shop missed verdict waits for it.
+  let inboxCaughtUp = false;
   const checkpoint = async (
     cursors: Record<string, MailboxCursor>,
     finish = false,
@@ -73,6 +75,7 @@ export async function syncMailbox(subAccountId: string) {
           ...(!error
             ? { "mailboxConfig.lastSyncAt": new Date().toISOString() }
             : {}),
+          ...(!error && inboxCaughtUp ? { "mailboxConfig.inboxCaughtUpAt": new Date(started).toISOString() } : {}),
         });
     });
   let client: Awaited<ReturnType<typeof connectMailbox>> | undefined;
@@ -109,6 +112,7 @@ export async function syncMailbox(subAccountId: string) {
         connection.cursors[folder] = cursor;
         if (window.end < window.start) {
           cursor.initialComplete = true;
+          inboxCaughtUp ||= folder === "INBOX";
           await checkpoint(connection.cursors);
           continue;
         }
@@ -266,8 +270,10 @@ export async function syncMailbox(subAccountId: string) {
         }
         if (completed) {
           cursor.uid = window.end;
-          if (window.end >= next - 1) cursor.initialComplete = true;
-          else summary.hasMore = true;
+          if (window.end >= next - 1) {
+            cursor.initialComplete = true;
+            inboxCaughtUp ||= folder === "INBOX";
+          } else summary.hasMore = true;
           await checkpoint(connection.cursors);
         }
       } finally {

@@ -128,11 +128,16 @@ describe("GET sweep", () => {
     expect(status()).toEqual({ call: "missed", mail: "sent", graceLeft: "sent" });
     expect(body.shops.find((s) => s.id === "mail")?.awaitingSync).toBe(true);
 
-    seedSa(true, { mailboxConfig: { enabled: true, verifiedAt: "x", lastSyncAt: new Date().toISOString(), lastError: "IMAP down" } });
+    seedSa(true, { mailboxConfig: { enabled: true, verifiedAt: "x", inboxCaughtUpAt: new Date().toISOString(), lastError: "IMAP down" } });
     body = (await (await list()).json()) as typeof body;
     expect(status().mail).toBe("sent");
 
+    // A recent sync that did not read the INBOX to its end is not enough.
     seedSa(true, { mailboxConfig: { enabled: true, verifiedAt: "x", lastSyncAt: new Date().toISOString(), lastError: null } });
+    body = (await (await list()).json()) as typeof body;
+    expect(status().mail).toBe("sent");
+
+    seedSa(true, { mailboxConfig: { enabled: true, verifiedAt: "x", inboxCaughtUpAt: new Date().toISOString(), lastError: null } });
     body = (await (await list()).json()) as typeof body;
     expect(status().mail).toBe("missed");
   });

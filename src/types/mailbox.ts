@@ -7,6 +7,8 @@ export interface MailboxMeta {
   lastSyncAt: string | null;
   lastError: string | null;
   enabled: boolean;
+  /** Start of the last sync pass that read the INBOX to its end (lib/server/mailbox-sync.ts). */
+  inboxCaughtUpAt?: string | null;
 }
 export interface MailboxCursor {
   uidValidity: string;
