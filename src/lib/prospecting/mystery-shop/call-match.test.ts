@@ -111,6 +111,11 @@ describe("voicemail: every callee turn is scanned, and an exchange must follow t
     expect(vm([bot(0.5), user(3, "Bob's Plumbing, hello?"), bot(5), user(8, "Yes we can come tomorrow.")])).toMatchObject({ answered: true });
   });
 
+  it("the LAST machine turn decides: a menu, our reply, then a voicemail prompt is not answered", () => {
+    const turns = [user(0.2, "Press 1 for sales, press 2 for accounts."), bot(3), user(6, "Please leave a message after the tone.")];
+    expect(callOutcome(report({ turns }))).toEqual({ answered: false, reason: "voicemail" });
+  });
+
   it("a machine phrase in a LATER callee turn is still caught", () => {
     expect(callOutcome(report({ turns: [user(0.2, "Hi, you've reached Bob's Plumbing."), bot(2), user(5, "Please leave a message after the tone.")] }))).toEqual({
       answered: false, reason: "voicemail",
