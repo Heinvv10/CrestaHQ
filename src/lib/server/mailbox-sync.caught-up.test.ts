@@ -16,7 +16,8 @@ const { connectMailbox } = await import("@/lib/comms/imap");
 const { syncMailbox } = await import("./mailbox-sync");
 
 let subUpdates: Record<string, unknown>[];
-function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fail?: boolean; failIn?: string } = {}) {
+function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fail?: boolean; failIn?: string; onLock?: (f: string) => void; onFetch?: () => void } = {},
+) {
   const c: Record<string, unknown> = {
     enabled: true, verifiedAt: new Date().toISOString(), version: "v1", leaseToken: null, leaseUntil: 0, cursors: {},
     sentFolder: opts.sentFolder ?? null, ownAddresses: ["me@example.com"], initialSince: "2026-08-08T00:00:00Z",
@@ -30,9 +31,10 @@ function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fai
   let folder = "";
   vi.mocked(connectMailbox).mockResolvedValue({
     mailbox: { uidValidity: BigInt(1), uidNext },
-    getMailboxLock: vi.fn(async (name: string) => ((folder = name), { release: vi.fn() })),
+    getMailboxLock: vi.fn(async (name: string) => (opts.onLock?.(name), (folder = name), { release: vi.fn() })),
     search: vi.fn(async () => uids),
     fetchOne: vi.fn(async (uid: number, q: { size?: boolean }) => {
+      opts.onFetch?.();
       if ((opts.fail || opts.failIn === folder) && !q.size) throw new Error("socket closed");
       return q.size
         ? { size: 100, internalDate: new Date() }
@@ -80,4 +82,22 @@ it("is NOT stamped when the INBOX was read to the end but the pass then failed (
   setup([1], 2, { sentFolder: "Sent", failIn: "Sent" });
   await expect(syncMailbox("a")).rejects.toThrow();
   expect(caughtUp()).toEqual([]);
+});
+
+it("is when the INBOX read began, not when a slower pass finished", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const t0 = Date.parse("2026-10-09T07:59:50Z");
+    vi.setSystemTime(t0);
+    let lockAt = 0;
+    // Each fetch takes 5 s: the pass ends ~20 s after it began (inside the lease and the 35 s budget).
+    setup([1, 2], 3, { onLock: (f) => void (f === "INBOX" && (lockAt ||= Date.now())), onFetch: () => vi.setSystemTime(Date.now() + 5_000) });
+    await syncMailbox("a");
+    const stamped = Date.parse(caughtUp()[0] as string);
+    expect(stamped).toBe(t0);
+    expect(stamped).toBeLessThanOrEqual(lockAt);
+    expect(Date.now()).toBeGreaterThanOrEqual(t0 + 20_000);
+  } finally {
+    vi.useRealTimers();
+  }
 });
