@@ -60,9 +60,6 @@ export async function syncMailbox(subAccountId: string) {
         );
       tx.update(ref, {
         cursors,
-        // The reply matcher's failure count / skipped message (mailbox-match.ts).
-        ...(connection.matchFailure !== undefined ? { matchFailure: connection.matchFailure } : {}),
-        ...(connection.matchSkipped !== undefined ? { matchSkipped: connection.matchSkipped } : {}),
         ...(finish
           ? {
               leaseToken: null,
