@@ -410,6 +410,21 @@ export interface SubAccountDoc {
    */
   prospectingDailyFirstTouchCap?: number;
   /**
+   * Mystery shops a month, set by the agency owner (integer 0–1000).
+   * Undefined reads as `MYSTERY_SHOP_CAP_DEFAULT` (10) — see
+   * lib/prospecting/mystery-shop/model.ts. Enforced by the mystery-shop route.
+   */
+  prospectingMysteryShopCap?: number;
+  /**
+   * Estimated value of one job per niche (normalised prospect category →
+   * cents), for a missed mystery-shop lead. Unlisted niches read as
+   * `JOB_VALUE_DEFAULT_CENTS`. Written by sub-account admins through
+   * PUT /api/sub-accounts/[id]/prospecting/mystery-shop/settings.
+   */
+  prospectingJobValues?: Record<string, number>;
+  /** Overrides of the neutral mystery-shop enquiry; same PUT route. */
+  prospectingMysteryShopTemplates?: import("./prospecting").MysteryShopTemplates;
+  /**
    * Get Leads: operator-defined custom service types shown in the business-
    * type picker alongside the curated list. Plain display labels (each
    * doubles as the Google Maps query, ≤60 chars, ≤30 entries). Written only
