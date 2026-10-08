@@ -366,6 +366,21 @@ connections while Next restarts:
   script it started with. So when `git reset` brings in a changed deploy
   script, the run re-executes the new copy once.
 
+### The form engine's Chromium (mystery-shop website form)
+
+The mystery shop's website-form channel fills forms in a headless Chromium
+from `playwright-core`. Every deploy runs
+`pnpm exec playwright-core install chromium` after `pnpm install` and before
+the gates. It is idempotent (a no-op when that revision is present) and
+installs into velo's `~/.cache/ms-playwright/` (`chromium-<rev>` and
+`chromium_headless_shell-<rev>`), the same layout CI's E2E uses. There is no
+`--with-deps`: the system libraries are already on the box.
+
+If the browser is missing, the form channel shows "The form engine isn't
+installed on this server." (the health check is cached for 5 minutes). To
+fix it, run the same command as velo in `~/crestahq`. A cache revision no
+release uses any more can be deleted.
+
 ### One-time migration (owner, after 17:00 SAST or at the weekend)
 
 Run as velo (`sudo -u velo -i`) once this change is on `origin/main`. The

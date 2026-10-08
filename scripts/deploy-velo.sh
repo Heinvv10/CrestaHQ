@@ -199,6 +199,13 @@ node scripts/gbp-deploy-check.mjs pre "$DEPLOY_DIR" \
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
 
+# The mystery shop's website-form engine drives playwright-core's Chromium,
+# and its tests run in the test gate below. Installed into this user's
+# ~/.cache/ms-playwright; a no-op when that revision is already there. No
+# --with-deps: the OS libraries are already on the box (CI's E2E runs here).
+say "Installing the form engine's Chromium"
+pnpm exec playwright-core install chromium || die "playwright chromium"
+
 # ── Gates: everything that can fail runs BEFORE the service is touched ───────
 say "Lint + tenancy check"
 pnpm lint || die "lint"
