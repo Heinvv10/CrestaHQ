@@ -90,7 +90,8 @@ interface ApiKeyDocFields {
   /**
    * Per-key override for the per-minute request budget (see
    * `lib/api/rate-limit.ts`). Optional integer, clamped to 600; absent or
-   * invalid falls back to the scope default. Operator-set via the Admin SDK;
+   * invalid falls back to the scope default. Replaces the per-minute budget
+   * for every scope on the key. Operator-set via the Admin SDK;
    * not exposed on `ApiKeyResponse`.
    */
   rateLimitPerMinute?: number;

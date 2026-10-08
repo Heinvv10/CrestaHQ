@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -36,6 +36,10 @@ function burst(n: number, opts: Parameters<typeof checkAndCount>[0]) {
 }
 
 describe("checkAndCount per-key override", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
     // A fresh instant per test: buckets are module-level, keys are unique too.

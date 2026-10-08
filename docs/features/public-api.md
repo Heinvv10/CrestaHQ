@@ -41,7 +41,7 @@ All under `src/lib/api/`:
 - `responses.ts` — uniform `{ data, error }` envelope + pagination cursors.
 - `versions.ts` — version-pinning header (`x-api-version`) so future v2 doesn't break v1 callers.
 - `idempotency.ts` — replay protection. POSTs accept `Idempotency-Key`; the helper stores `(key, requestHash, responseSnapshot)` on `idempotency/{subAccountId}/{key}` for 24h and replays the saved response on duplicate keys.
-- `rate-limit.ts` — per-key token bucket (in-memory LRU, defaults to 60 req/min). Returns `429` with `Retry-After`. Per-key override: set an integer `rateLimitPerMinute` on the `apiKeys` doc via the Admin SDK (same as `enrolmentCapPerHour`); clamped to 600, absent/invalid = scope default, and the hour budget becomes `max(scope hour, override x 10)`.
+- `rate-limit.ts` — per-key token bucket (in-memory LRU, defaults to 60 req/min). Returns `429` with `Retry-After`. Per-key override: set an integer `rateLimitPerMinute` on the `apiKeys` doc via the Admin SDK (same as `enrolmentCapPerHour`); it replaces the per-minute budget for every scope on the key (a key with admin + forms-ingest and override 120 drops forms-ingest from 300 to 120); clamped to 600, absent/invalid = scope default, and the hour budget becomes `max(scope hour, override x 10)`.
 - `redact.ts` — installs a console wrapper that masks `lsk_*` secrets in logs so a stray `console.log(req.headers)` doesn't leak a tenant key.
 - `logs.ts` — append-only request log per key for debug visibility in the dashboard.
 - `serializers/{contacts, deals, tasks, events}.ts` — strict wire-format mappers so internal field renames don't accidentally break API consumers.
