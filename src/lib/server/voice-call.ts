@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getAgentProfile, getChannelConfig } from "@/lib/comms/ai/agent";
-import { vapiIsConfigured, createOutboundCall } from "@/lib/comms/voice/vapi";
+import { vapiIsConfigured, createOutboundCall, VapiError } from "@/lib/comms/voice/vapi";
 import type { SubAccountDoc } from "@/types";
 import type { VoiceChannelConfig } from "@/types/ai";
 
@@ -46,7 +46,7 @@ export async function placeContactCall(opts: {
   customerNumber: string;
   /** A mystery-shop call: its enquiry as the first message, its id in the call metadata, a length cap. */
   mysteryShop?: { id: string; firstMessage: string; maxDurationSeconds: number };
-}): Promise<{ ok: true; callId: string } | { ok: false; error: string }> {
+}): Promise<{ ok: true; callId: string } | { ok: false; error: string; uncertain: boolean }> {
   const { contact, contactId, voice, customerNumber, mysteryShop } = opts;
   const db = getAdminDb();
   let callId: string;
@@ -61,7 +61,9 @@ export async function placeContactCall(opts: {
     });
     callId = result.callId;
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to place the call" };
+    // A Vapi 4xx (or our missing key) placed nothing; a network error or a 5xx may have.
+    const placedNothing = err instanceof VapiError && (err.status < 500 || !err.body);
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to place the call", uncertain: !placedNothing };
   }
 
   // Placeholder so the per-number / daily caps count this call immediately

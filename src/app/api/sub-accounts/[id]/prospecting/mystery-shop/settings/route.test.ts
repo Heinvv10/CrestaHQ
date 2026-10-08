@@ -49,6 +49,7 @@ describe("PUT", () => {
     [{ jobValues: { ["x".repeat(61)]: 1 } }],
     [{ templates: { emailBody: "x".repeat(2001) } }],
     [{ templates: { other: "x" } }],
+    [{ templates: { emailSubject: "Hi\r\nBcc: x@y.z" } }],
     [{}],
   ])("refuses %j with 400 and writes nothing", async (body) => {
     expect((await put(body)).status).toBe(400);

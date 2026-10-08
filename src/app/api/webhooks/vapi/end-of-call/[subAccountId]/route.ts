@@ -43,6 +43,8 @@ interface VapiServerMessage {
     type?: string;
     call?: {
       id?: string;
+      /** "inboundPhoneCall" | "outboundPhoneCall" | "webCall". */
+      type?: string;
       customer?: { number?: string };
       phoneNumber?: { number?: string };
       /** Metadata we stamped via assistantOverrides on outbound calls
@@ -188,14 +190,14 @@ export async function POST(
     startedAtMs: isoMs(message.startedAt) ?? isoMs(message.call?.startedAt),
     endedAtMs: isoMs(message.endedAt) ?? isoMs(message.call?.endedAt),
     receivedAtMs: Date.now(),
-    userSpoke: transcript.some((t) => t.role === "user"),
+    turns: transcript,
   };
   const mysteryShopId = asString(message.call?.metadata?.mysteryShopId);
   await (mysteryShopId
     ? settleMysteryShopCall(subAccountId, mysteryShopId, callId, callReport)
-    : message.call?.metadata?.direction === "outbound"
-      ? Promise.resolve()
-      : matchInboundCallback(subAccountId, asString(message.call?.customer?.number), callReport)
+    : message.call?.type === "inboundPhoneCall"
+      ? matchInboundCallback(subAccountId, asString(message.call?.customer?.number), callReport)
+      : Promise.resolve()
   ).catch((err) => console.error(`[vapi/end-of-call] mystery-shop match failed sa=${subAccountId}`, err));
 
   try {

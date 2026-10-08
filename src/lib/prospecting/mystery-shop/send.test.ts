@@ -34,7 +34,7 @@ const SMTP_SUB = {
 } as unknown as SubAccountDoc;
 const contact = { agencyId: "ag1", subAccountId: "sa1", email: "info@acme.co.za", phone: "0821234567" } as Contact;
 const enquiry = { email: { subject: "Enquiry", body: "Hi" }, call: "Hi, I'm calling from Cresta HQ." };
-const base = { shopId: "s1", subAccountId: "sa1", sub: SMTP_SUB, contact, contactId: "c1", uid: "u1", enquiry };
+const base = { shopId: "s1", subAccountId: "sa1", sub: SMTP_SUB, contact, contactId: "c1", uid: "u1", enquiry, consentAck: true };
 
 beforeEach(() => {
   sendEmail.mockReset().mockResolvedValue({ id: "<m1@crestahq.com>", saved: true });
@@ -59,6 +59,8 @@ describe("channelStates", () => {
     expect((await channelStates("sa1", unverified)).email.available).toBe(false);
     const noMailbox = { ...SMTP_SUB, mailboxConfig: null } as unknown as SubAccountDoc;
     expect((await channelStates("sa1", noMailbox)).email).toMatchObject({ available: false, reason: expect.stringMatching(/IMAP/) });
+    const failing = { ...SMTP_SUB, mailboxConfig: { enabled: true, verifiedAt: "2026-10-01T00:00:00Z", lastError: "Mailbox login failed." } } as unknown as SubAccountDoc;
+    expect((await channelStates("sa1", failing)).email).toEqual({ available: false, reason: "The mailbox sync is failing: Mailbox login failed." });
   });
 });
 
@@ -68,8 +70,8 @@ describe("email", () => {
       ok: true, providerRef: "<m1@crestahq.com>",
     });
     expect(sendEmail).toHaveBeenCalledWith({
-      to: "info@acme.co.za", subject: "Enquiry", text: "Hi", subAccount: SMTP_SUB, smtpSubAccountId: "sa1",
-      suppressionSubAccountId: "sa1", archive: true, contactId: "c1", sentByUid: "u1",
+      to: "info@acme.co.za", subject: "Enquiry", text: "Hi", subAccount: SMTP_SUB, meter: { subAccountId: "sa1" },
+      archive: true, contactId: "c1", sentByUid: "u1",
     });
   });
 
@@ -80,14 +82,31 @@ describe("email", () => {
     expect(await sendMysteryShop({ ...base, channel: "email", target: "info@acme.co.za" })).toMatchObject({
       ok: false, kind: "refused", code: "email_suppressed",
     });
-    sendEmail.mockRejectedValueOnce(new Error("554 rejected"));
+    sendEmail.mockRejectedValueOnce(new Error("SMTP is not connected."));
     expect(await sendMysteryShop({ ...base, channel: "email", target: "info@acme.co.za" })).toEqual({
-      ok: false, kind: "failed", reason: "554 rejected",
+      ok: false, kind: "failed", reason: "SMTP is not connected.",
+    });
+  });
+
+  it("an error after the SMTP server was asked is uncertain, not failed", async () => {
+    const { markProviderAttempted } = await import("@/lib/comms/provider-attempt");
+    sendEmail.mockRejectedValueOnce(markProviderAttempted(new Error("socket hang up")));
+    expect(await sendMysteryShop({ ...base, channel: "email", target: "info@acme.co.za" })).toEqual({
+      ok: false, kind: "uncertain", providerRef: null, reason: "socket hang up",
     });
   });
 });
 
 describe("call", () => {
+  it("passes the operator's own consent through — never a hard-coded true", async () => {
+    compliance.mockResolvedValueOnce({ allowed: false, code: "no_consent", reason: "Confirm you have consent to call this contact." });
+    expect(await sendMysteryShop({ ...base, consentAck: false, channel: "call", target: "+27821234567" })).toMatchObject({
+      ok: false, kind: "refused", code: "no_consent",
+    });
+    expect(compliance).toHaveBeenCalledWith(expect.objectContaining({ consentAck: false }));
+    expect(place).not.toHaveBeenCalled();
+  });
+
   it("passes the compliance gate with the operator's consent for the confirmed number, then places a capped call", async () => {
     expect(await sendMysteryShop({ ...base, channel: "call", target: "+27821234567" })).toEqual({ ok: true, providerRef: "call_1" });
     expect(compliance).toHaveBeenCalledWith(expect.objectContaining({
@@ -107,10 +126,24 @@ describe("call", () => {
     expect(place).not.toHaveBeenCalled();
   });
 
-  it("a Vapi failure fails", async () => {
-    place.mockResolvedValueOnce({ ok: false, error: "Vapi 500" });
+  it("a call Vapi rejected fails; one whose fate is unknown is uncertain", async () => {
+    place.mockResolvedValueOnce({ ok: false, error: "Vapi POST /call -> 400", uncertain: false });
     expect(await sendMysteryShop({ ...base, channel: "call", target: "+27821234567" })).toEqual({
-      ok: false, kind: "failed", reason: "Vapi 500",
+      ok: false, kind: "failed", reason: "Vapi POST /call -> 400",
     });
+    place.mockResolvedValueOnce({ ok: false, error: "fetch failed", uncertain: true });
+    expect(await sendMysteryShop({ ...base, channel: "call", target: "+27821234567" })).toEqual({
+      ok: false, kind: "uncertain", providerRef: null, reason: "fetch failed",
+    });
+  });
+});
+
+describe("whatsapp and form", () => {
+  it.each(["whatsapp", "form"] as const)("%s is refused as not available yet, and nothing is sent", async (channel) => {
+    expect(await sendMysteryShop({ ...base, channel, target: "+27821234567" })).toEqual({
+      ok: false, kind: "refused", code: "channel_unavailable", reason: "Not available yet.",
+    });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(place).not.toHaveBeenCalled();
   });
 });

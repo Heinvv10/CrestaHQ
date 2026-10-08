@@ -2,11 +2,11 @@ import "server-only";
 
 import { emailIsConfigured, sendEmail } from "@/lib/comms/resend";
 import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { checkOutboundCompliance } from "@/lib/comms/voice/outbound-compliance";
 import { outboundVoiceReady, placeContactCall } from "@/lib/server/voice-call";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
-import type { MailboxMeta } from "@/types/mailbox";
 import type { MysteryShopChannel } from "./model";
 
 /**
@@ -24,29 +24,38 @@ const NOT_YET: ChannelState = { available: false, reason: "Not available yet." }
 
 /**
  * Whether each channel can send for this sub-account right now. Email needs a
- * verified SMTP sender AND the IMAP mailbox: without the mailbox no reply can
- * ever be seen, and every shop would read as a missed lead.
+ * verified SMTP sender AND a working IMAP mailbox: without the mailbox sync no
+ * reply can ever be seen, and every shop would read as a missed lead.
  */
 export async function channelStates(
   subAccountId: string,
   sub: SubAccountDoc,
 ): Promise<Record<MysteryShopChannel, ChannelState>> {
-  const mailbox = (sub as { mailboxConfig?: MailboxMeta | null }).mailboxConfig;
+  const mailbox = sub.mailboxConfig;
   const email: ChannelState =
     sub.emailProvider !== "smtp" || !emailIsConfigured(sub)
       ? { available: false, reason: "Connect and verify your own SMTP email in Messaging settings first." }
       : !mailbox?.enabled || !mailbox.verifiedAt
         ? { available: false, reason: "Connect your IMAP mailbox in Messaging settings first, so replies can be timed." }
-        : { available: true };
+        : mailbox.lastError
+          ? { available: false, reason: `The mailbox sync is failing: ${mailbox.lastError}` }
+          : { available: true };
   const voice = await outboundVoiceReady(subAccountId);
   const call: ChannelState = voice.ok ? { available: true } : { available: false, reason: voice.error };
   return { email, call, whatsapp: NOT_YET, form: NOT_YET };
 }
 
+/**
+ * `failed` = the provider definitely did not take it (refused before the
+ * call, or rejected it); `uncertain` = it may have gone out (an error after
+ * the provider was asked — the repo's provider-attempt convention for email,
+ * a network error or a Vapi 5xx for a call).
+ */
 export type SendResult =
   | { ok: true; providerRef: string }
   | { ok: false; kind: "refused"; code: string; reason: string }
-  | { ok: false; kind: "failed"; reason: string };
+  | { ok: false; kind: "failed"; reason: string }
+  | { ok: false; kind: "uncertain"; providerRef: string | null; reason: string };
 
 export async function sendMysteryShop(input: {
   shopId: string;
@@ -58,6 +67,8 @@ export async function sendMysteryShop(input: {
   contactId: string;
   uid: string;
   enquiry: { email: { subject: string; body: string }; call: string };
+  /** The operator's per-call consent, as the confirm dialog sent it. */
+  consentAck: boolean;
 }): Promise<SendResult> {
   const { channel, target, subAccountId, contact } = input;
   if (channel === "email") {
@@ -70,8 +81,8 @@ export async function sendMysteryShop(input: {
         subject: input.enquiry.email.subject,
         text: input.enquiry.email.body,
         subAccount: input.sub,
-        smtpSubAccountId: subAccountId,
-        suppressionSubAccountId: subAccountId,
+        // Metered like other tenant sends; it also scopes the SMTP mailbox and the suppression list.
+        meter: { subAccountId },
         archive: true,
         contactId: input.contactId,
         sentByUid: input.uid,
@@ -79,7 +90,8 @@ export async function sendMysteryShop(input: {
       return { ok: true, providerRef: sent.id };
     } catch (err) {
       if (isEmailSuppressedError(err)) return { ok: false, kind: "refused", code: err.code, reason: err.message };
-      return { ok: false, kind: "failed", reason: err instanceof Error ? err.message : "The email could not be sent." };
+      const reason = err instanceof Error ? err.message : "The email could not be sent.";
+      return providerAttempted(err) ? { ok: false, kind: "uncertain", providerRef: null, reason } : { ok: false, kind: "failed", reason };
     }
   }
   if (channel === "call") {
@@ -91,7 +103,7 @@ export async function sendMysteryShop(input: {
       contact: { ...contact, phone: target },
       voice: ready.voice,
       agentTimezone: ready.agentTimezone,
-      consentAck: true,
+      consentAck: input.consentAck,
     });
     if (!compliance.allowed) {
       return {
@@ -109,7 +121,10 @@ export async function sendMysteryShop(input: {
       customerNumber: compliance.e164 ?? target,
       mysteryShop: { id: input.shopId, firstMessage: input.enquiry.call, maxDurationSeconds: 120 },
     });
-    return placed.ok ? { ok: true, providerRef: placed.callId } : { ok: false, kind: "failed", reason: placed.error };
+    if (placed.ok) return { ok: true, providerRef: placed.callId };
+    return placed.uncertain
+      ? { ok: false, kind: "uncertain", providerRef: null, reason: placed.error }
+      : { ok: false, kind: "failed", reason: placed.error };
   }
   return { ok: false, kind: "refused", code: "channel_unavailable", reason: "Not available yet." };
 }

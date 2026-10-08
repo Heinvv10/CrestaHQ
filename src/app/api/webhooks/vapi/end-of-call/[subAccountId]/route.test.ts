@@ -52,16 +52,26 @@ describe("mystery-shop hook", () => {
       durationSec: 30,
       startedAtMs: Date.parse(REPORT.startedAt),
       endedAtMs: Date.parse(REPORT.endedAt),
-      userSpoke: true,
+      turns: [
+        { role: "assistant", content: "Hi", secondsFromStart: null },
+        { role: "user", content: "Yes we do", secondsFromStart: null },
+      ],
     }));
     expect(callback).not.toHaveBeenCalled();
     expect(handle).toHaveBeenCalled();
   });
 
-  it("an inbound call is checked as a callback from the caller's number", async () => {
-    await post({ ...REPORT, artifact: { messages: [] }, call: { id: "call2", customer: { number: "+27821234567" } } });
-    expect(callback).toHaveBeenCalledWith("sa1", "+27821234567", expect.objectContaining({ userSpoke: false }));
+  it("an inbound phone call is checked as a callback from the caller's number", async () => {
+    await post({ ...REPORT, artifact: { messages: [] }, call: { id: "call2", type: "inboundPhoneCall", customer: { number: "+27821234567" } } });
+    expect(callback).toHaveBeenCalledWith("sa1", "+27821234567", expect.objectContaining({ turns: [] }));
     expect(settle).not.toHaveBeenCalled();
+  });
+
+  it("only Vapi's inboundPhoneCall type is a callback — not a call merely lacking our outbound metadata", async () => {
+    for (const type of [undefined, "outboundPhoneCall", "webCall"]) {
+      await post({ ...REPORT, call: { id: "call6", type, customer: { number: "+27821234567" } } });
+    }
+    expect(callback).not.toHaveBeenCalled();
   });
 
   it("an unauthenticated webhook is refused before either hook runs", async () => {

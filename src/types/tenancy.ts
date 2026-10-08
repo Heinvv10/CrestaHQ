@@ -208,6 +208,8 @@ export interface SubAccountDoc {
   /** Unset preserves shared Resend. SMTP credentials are server-only. */
   emailProvider?: "resend" | "smtp";
   smtpConfig?: import("./email").SmtpMeta | null;
+  /** Public IMAP mailbox metadata (credentials are server-only). See lib/server/mailbox-sync.ts. */
+  mailboxConfig?: import("./mailbox").MailboxMeta | null;
   /**
    * Agency-controlled gate for the dedicated email sending domain feature.
    * Only the agency owner can flip this (PATCH /api/agency/sub-accounts/[id]/
