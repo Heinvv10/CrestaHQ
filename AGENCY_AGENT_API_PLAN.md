@@ -710,7 +710,7 @@ firestore.rules / firestore.indexes.json
    `products`, `message_templates`, `snippets`, `pipelines`, `customFields` hold no
    doc with its id. Screenshots redacted before commit.
 
-**Result (2026-10-08, prod, agency CrestaHQ, key `A6 live (throwaway)`):** steps 0–7 passed.
+**Result (2026-10-08, prod, agency CrestaHQ, key `A6 live (throwaway)`):** steps 0–7 completed; the deviations are listed below.
 Census = Blitz + Velocity (untouched). Gate-off and made-up ids returned identical 404 bodies.
 Smoke #1012 was created with both gates, the owner as its only member, and gate + `agent.write` audit rows.
 Direct writes returned 200, `whatsapp` → proposal, `agent-api` → refused. Approve all took exactly the
@@ -724,7 +724,7 @@ an independent Firestore check found nothing for the id; #1000's gates were unch
 - Step 4 `labs true` on #1000 → 404, not a proposal: #1000's Agent API gate is off, so the key cannot reach it (correct). No row was written on #1000.
 - Step 5 `invite_member` → the approval failed cleanly ("account was removed or disabled"; the preview said so): the invitee's account had been removed the day before. This proves the blocked path; the invite email path was proven 2026-10-07 on #1000.
 - Step 4 `apply_snapshot`: the agency holds no snapshot; skipped.
-- Found: `create_booking_page` via an agent key requires the full editor payload, though its schema marks only `subAccountId`/`slug`/`name` required (the app's create route fills `defaultBookingPageFormData`; the capability does not). Follow-up fix.
+- Found: `create_booking_page` via an agent key requires the full editor payload (`validateBookingPageFormData`), though its schema requires only `slug`/`name` (plus `subAccountId` in the agency-key listing). Only the editor UI fills `defaultBookingPageFormData`, client-side (`booking-page-editor.tsx`); neither the create route nor the capability does (both go through `prepareBookingPage`). Follow-up fix.
 
 ## Open risks
 
