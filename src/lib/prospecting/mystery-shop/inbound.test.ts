@@ -10,6 +10,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 const { mem } = await import("@/test/gbp-sync-store");
 const { matchInboundCallback, matchMysteryShopEmail, settleMysteryShopCall } = await import("./inbound");
 const { releaseShop, requeueTimer } = await import("./store");
+const { recordAuthFailedReply } = await import("./replies");
 
 const SENT = Date.now() - 3 * 3600_000;
 const EMAIL = "info@acme.co.za";
@@ -86,6 +87,15 @@ describe("email", () => {
     // A genuine (non-failing) reply afterwards still settles it.
     await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: SENT + 3600_000 }));
     expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 3600_000, senderAuth: "unknown" });
+  });
+
+  it("recordAuthFailedReply itself refuses a time outside the window, and a shop that is not waiting", async () => {
+    seedShop("s1");
+    expect(await recordAuthFailedReply("s1", SENT - 1)).toBe(false);
+    expect(await recordAuthFailedReply("s1", SENT + 24 * 3600_000 + 1)).toBe(false);
+    seedShop("s2", { status: "missed" });
+    expect(await recordAuthFailedReply("s2", SENT + 60_000)).toBe(false);
+    expect(await recordAuthFailedReply("s1", SENT + 60_000)).toBe(true);
   });
 
   it("a failing reply outside the window records nothing", async () => {
