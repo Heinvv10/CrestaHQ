@@ -45,9 +45,9 @@ describe("the template", () => {
     expect((await whatsappEnquiryOf("sa1", CONTACT, SUB))?.text).toBe("Hello, any plumber in Gqeberha?");
   });
 
-  it("a chosen id that is not a doc id is no template", async () => {
-    template("t1");
-    const sub = { ...SUB, prospectingMysteryShopTemplates: { whatsappTemplateId: "a/b" } } as SubAccountDoc;
+  it("a chosen id that is not a doc id is no template, even when the path it spells holds one", async () => {
+    template("t1/x/y");
+    const sub = { ...SUB, prospectingMysteryShopTemplates: { whatsappTemplateId: "t1/x/y" } } as SubAccountDoc;
     expect(await whatsappEnquiryOf("sa1", CONTACT, sub)).toBeNull();
     expect((await whatsappState("sa1", sub)).available).toBe(false);
   });

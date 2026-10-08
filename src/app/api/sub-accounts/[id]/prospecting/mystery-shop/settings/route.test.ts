@@ -69,10 +69,12 @@ describe("PUT", () => {
     expect(sub().prospectingMysteryShopTemplates).toEqual({ call: "Hello" });
   });
 
-  it.each([["a/b"], [""], [123], [{ id: "t1" }], ["missing"], ["t9"]])(
+  it.each([["a/b"], ["t1/x/y"], [""], [123], [{ id: "t1" }], ["missing"], ["t9"]])(
     "refuses whatsappTemplateId %j (not a doc id, or no such template in THIS sub-account) with 400, writing nothing",
     async (whatsappTemplateId) => {
       mem.seed("subAccounts/sa2/whatsappTemplates/t9", { subAccountId: "sa2", name: "theirs" });
+      // A path, not an id: it would reach a doc nested under a template.
+      mem.seed("subAccounts/sa1/whatsappTemplates/t1/x/y", { subAccountId: "sa1", name: "nested" });
       const res = await put({ whatsappTemplateId, templates: { call: "Hi" } });
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: "Pick one of this sub-account's WhatsApp templates." });

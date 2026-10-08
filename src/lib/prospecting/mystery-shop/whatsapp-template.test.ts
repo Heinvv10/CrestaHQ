@@ -29,6 +29,9 @@ describe("hasTwoVariables", () => {
     ["two declared, one used", { body: "Do you offer {{1}}?" }],
     ["two declared, a third used", { body: "{{1}} {{2}} {{3}}" }],
     ["the same position twice", { variables: [variable(1), variable(1)], body: "{{1}} {{1}}" }],
+    ["used {{1}} and {{2}}, only {{1}} declared", { variables: [variable(1)] }],
+    ["used {{1}} and {{2}}, a third declared", { variables: [variable(1), variable(2), variable(3)] }],
+    ["used {{1}} and {{2}}, declared 1 and 3", { variables: [variable(1), variable(3)] }],
   ])("refuses %s", (_name, over) => {
     expect(hasTwoVariables(tpl(over))).toBe(false);
   });
