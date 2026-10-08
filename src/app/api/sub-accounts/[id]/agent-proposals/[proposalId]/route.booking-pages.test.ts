@@ -42,6 +42,38 @@ describe("create_booking_page", () => {
     expect(mem.read(`${P}/intro`)).toMatchObject({ slug: "intro", name: "Intro call", status: "draft", subAccountId: "sa1", territoryId: "global", lastAgentEditKey: "abcd1234" });
   });
 
+  it("only slug and name: a draft with the editor's defaults", async () => {
+    expect(await call("create_booking_page", { slug: "bare", name: "Bare call" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/bare`)).toMatchObject({ slug: "bare", name: "Bare call", status: "draft", durationMinutes: 30, bufferMinutes: 0, timezone: "UTC" });
+    expect(mem.read(`${P}/bare`)!.workingHours).toHaveLength(5);
+  });
+
+  it("caller-supplied fields override the defaults", async () => {
+    expect(await call("create_booking_page", { slug: "long", name: "Long call", durationMinutes: 60, bufferMinutes: 15, remindersEnabled: false, timezone: "Africa/Johannesburg", status: "draft" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/long`)).toMatchObject({ durationMinutes: 60, bufferMinutes: 15, remindersEnabled: false, timezone: "Africa/Johannesburg", status: "draft" });
+  });
+
+  it("an omitted timezone takes the sub-account's own", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true, timezone: "Africa/Johannesburg" });
+    expect(await call("create_booking_page", { slug: "tz", name: "Tz call" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/tz`)).toMatchObject({ timezone: "Africa/Johannesburg" });
+  });
+
+  it("a sub-account timezone does not beat the caller's", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true, timezone: "Africa/Johannesburg" });
+    expect(await call("create_booking_page", { slug: "tz2", name: "Tz2 call", timezone: "Europe/London" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/tz2`)).toMatchObject({ timezone: "Europe/London" });
+  });
+
+  it("only slug, name and published: a public_change proposal; approve creates the merged page", async () => {
+    const id = await proposeId("create_booking_page", { slug: "bare", name: "Bare call", status: "published" });
+    expect(row(id).approval).toBe("public_change");
+    expect(rowOf(id, "status")).toBe("published");
+    expect(mem.read(`${P}/bare`)).toBeUndefined();
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(mem.read(`${P}/bare`)).toMatchObject({ status: "published", durationMinutes: 30, timezone: "UTC" });
+  });
+
   it("published: a public_change proposal showing the page, nothing written; approve creates it", async () => {
     const id = await proposeId("create_booking_page", pageForm("intro", { name: "Intro call", status: "published" }));
     expect(row(id).approval).toBe("public_change");

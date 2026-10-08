@@ -5,6 +5,8 @@ import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
+import { defaultBookingPageFormData } from "@/lib/booking/defaults";
+import { validateTimezone } from "@/lib/booking/validation";
 import { prepareBookingPage, upcomingBookingCount } from "@/lib/server/booking-page-write";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
@@ -25,7 +27,12 @@ import { assertPageName, assertPageTerritory, formOf, PAGE_PROPS, pageFields, pa
  */
 
 async function planCreate(ctx: AiSuiteActionContext, args: Record<string, unknown>) {
-  const prepared = await prepareBookingPage(ctx.subAccountId!, args);
+  // Omitted fields take the editor's new-page defaults (the editor fills them client-side); the caller's win.
+  // The default timezone is the sub-account's own, "UTC" when it has none or an invalid one.
+  const subTz = (await getAdminDb().doc(`subAccounts/${ctx.subAccountId}`).get()).data()?.timezone;
+  const timezone = validateTimezone(subTz).ok ? (subTz as string) : "UTC";
+  const merged = { ...defaultBookingPageFormData(String(args.slug ?? ""), timezone), ...args };
+  const prepared = await prepareBookingPage(ctx.subAccountId!, merged);
   if (!prepared.ok) throw new CapabilityUserError(prepared.error);
   await assertPageName(ctx.subAccountId!, prepared.data.name, null);
   await assertPageTerritory(ctx.subAccountId!, prepared.data.defaultTerritoryId);
