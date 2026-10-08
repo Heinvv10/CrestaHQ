@@ -25,7 +25,7 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * delivery-status report whose delivery-status part says `Action: failed`
  * for the target (or an Exchange NDR / X-Failed-Recipients naming it),
  * naming our Message-ID, inside the window. Mail from the target carrying
- * List-Id / List-Unsubscribe is automatic.
+ * List-Id / List-Unsubscribe is automatic, unless it answers our own thread.
  */
 
 export interface AutoReplyHeaders {
@@ -105,14 +105,20 @@ const AUTO_SUBJECT = /\b(out[ -]of[ -](the[ -])?office|automatic[ -]reply|auto[ 
 
 /** RFC 3834 / common auto-responder signals. X-Auto-Response-Suppress is NOT one: people's Outlook sets it. */
 export function isAutoReply(m: Pick<InboundEmail, "autoReply" | "subject">): boolean {
+  return autoResponder(m) || isListMail(m);
+}
+
+function autoResponder(m: Pick<InboundEmail, "autoReply" | "subject">): boolean {
   const h = m.autoReply;
   const auto = h.autoSubmitted?.trim().toLowerCase();
   if (auto && auto !== "no") return true;
   if (h.xAutoreply != null || h.xAutorespond != null) return true;
   if (/^(auto_reply|bulk|junk)$/i.test(h.precedence?.trim() ?? "")) return true;
-  if (h.listId != null || h.listUnsubscribe != null) return true;
   return AUTO_SUBJECT.test(m.subject);
 }
+
+/** Mailing-list headers. Automatic — unless the mail answers our own thread (helpdesks add them to real replies). */
+const isListMail = (m: Pick<InboundEmail, "autoReply">) => m.autoReply.listId != null || m.autoReply.listUnsubscribe != null;
 
 export type SenderAuth = "fail" | "unknown";
 
@@ -215,14 +221,16 @@ export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<s
     }
     return out;
   }
-  const auto = isAutoReply(m);
+  const responder = autoResponder(m);
+  const list = isListMail(m);
+  const auto = (s: EmailShopCandidate) => responder || (list && !thread.has(msgId(s.providerRef)));
   const eligible = shops.filter((s) => {
     if (!senderMatches(m.from, s.target, s.targetDomainTrusted === true)) return false;
-    if (!auto) return canSettleResponded(s, m.occurredAtMs);
+    if (!auto(s)) return canSettleResponded(s, m.occurredAtMs);
     const sent = toMs(s.sentAt);
     return s.status === "sent" && s.autoReplyAt == null && sent !== null && inWindow(sent, m.occurredAtMs);
   });
   const inThread = eligible.filter((s) => thread.has(msgId(s.providerRef)));
-  for (const s of inThread.length ? inThread : eligible) out.set(s.id, auto ? "auto_reply" : "responded");
+  for (const s of inThread.length ? inThread : eligible) out.set(s.id, auto(s) ? "auto_reply" : "responded");
   return out;
 }
