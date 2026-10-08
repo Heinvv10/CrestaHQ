@@ -16,7 +16,7 @@ const { connectMailbox } = await import("@/lib/comms/imap");
 const { syncMailbox } = await import("./mailbox-sync");
 
 let subUpdates: Record<string, unknown>[];
-function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fail?: boolean } = {}) {
+function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fail?: boolean; failIn?: string } = {}) {
   const c: Record<string, unknown> = {
     enabled: true, verifiedAt: new Date().toISOString(), version: "v1", leaseToken: null, leaseUntil: 0, cursors: {},
     sentFolder: opts.sentFolder ?? null, ownAddresses: ["me@example.com"], initialSince: "2026-08-08T00:00:00Z",
@@ -27,12 +27,13 @@ function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fai
     update: vi.fn((ref: string, v: Record<string, unknown>) => (ref === "subAccounts/a" ? subUpdates.push(v) : Object.assign(c, v))),
   };
   vi.mocked(getAdminDb).mockReturnValue({ doc: (p: string) => p, runTransaction: async (fn: (t: unknown) => unknown) => fn(tx) } as never);
+  let folder = "";
   vi.mocked(connectMailbox).mockResolvedValue({
     mailbox: { uidValidity: BigInt(1), uidNext },
-    getMailboxLock: vi.fn(async () => ({ release: vi.fn() })),
+    getMailboxLock: vi.fn(async (name: string) => ((folder = name), { release: vi.fn() })),
     search: vi.fn(async () => uids),
     fetchOne: vi.fn(async (uid: number, q: { size?: boolean }) => {
-      if (opts.fail && !q.size) throw new Error("socket closed");
+      if ((opts.fail || opts.failIn === folder) && !q.size) throw new Error("socket closed");
       return q.size
         ? { size: 100, internalDate: new Date() }
         : { source: Buffer.from(`From: o@example.com\r\nTo: me@example.com\r\nMessage-ID: <${uid}@x>\r\n\r\nHi`) };
@@ -70,6 +71,13 @@ it("is NOT stamped while more INBOX mail is left (a partial pass)", async () => 
 it("is NOT stamped when the pass fails", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   setup([1], 2, { fail: true });
+  await expect(syncMailbox("a")).rejects.toThrow();
+  expect(caughtUp()).toEqual([]);
+});
+
+it("is NOT stamped when the INBOX was read to the end but the pass then failed (Sent folder)", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  setup([1], 2, { sentFolder: "Sent", failIn: "Sent" });
   await expect(syncMailbox("a")).rejects.toThrow();
   expect(caughtUp()).toEqual([]);
 });
