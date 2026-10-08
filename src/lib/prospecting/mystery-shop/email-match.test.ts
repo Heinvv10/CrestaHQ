@@ -3,7 +3,7 @@ import { RESPONSE_WINDOW_MS } from "./model";
 import {
   decideEmail,
   isAutoReply,
-  isPublicMailDomain,
+  isDeliveryReport,
   senderAuthenticated,
   type EmailShopCandidate,
   type InboundEmail,
@@ -11,13 +11,15 @@ import {
 
 const SENT = Date.parse("2026-10-08T08:00:00Z");
 const NO_HEADERS = { autoSubmitted: null, xAutoreply: null, xAutorespond: null, precedence: null };
+const NO_DSN = { contentType: "text/plain", msExchangeNdr: null, failedRecipients: null, text: "" };
 
 const shop = (id: string, target: string, extra: Partial<EmailShopCandidate> = {}): EmailShopCandidate => ({
   id, target, status: "sent", sentAt: new Date(SENT), respondedAt: null, autoReplyAt: null, providerRef: `<${id}@crestahq.com>`,
+  targetDomainTrusted: true,
   ...extra,
 });
 const mail = (from: string, extra: Partial<InboundEmail> = {}): InboundEmail => ({
-  from, inReplyTo: null, references: [], autoReply: NO_HEADERS, authResults: [], subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000,
+  from, inReplyTo: null, references: [], autoReply: NO_HEADERS, authResults: [], dsn: NO_DSN, subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000,
   ...extra,
 });
 const decide = (m: InboundEmail, shops: EmailShopCandidate[]) => Object.fromEntries(decideEmail(m, shops));
@@ -27,16 +29,13 @@ describe("sender match", () => {
     expect(decide(mail("Info@Acme.co.za"), [shop("s1", "info@acme.co.za")])).toEqual({ s1: "responded" });
   });
 
-  it("another address at the business's own domain responds", () => {
+  it("another address at the target's domain responds only when that domain is the business's own (website)", () => {
     expect(decide(mail("john@acme.co.za"), [shop("s1", "info@acme.co.za")])).toEqual({ s1: "responded" });
-  });
-
-  it("a shared public-mailbox domain does NOT domain-match", () => {
-    for (const domain of ["gmail.com", "outlook.com", "hotmail.co.uk", "yahoo.co.za", "mweb.co.za", "gmx.de", "icloud.com"]) {
-      expect(isPublicMailDomain(domain)).toBe(true);
-      expect(decide(mail(`someone@${domain}`), [shop("s1", `acme@${domain}`)])).toEqual({ s1: "none" });
-    }
-    expect(decide(mail("acme@gmail.com"), [shop("s1", "acme@gmail.com")])).toEqual({ s1: "responded" });
+    // Untrusted (e.g. a gmail address, or a domain unlike the website): the exact address only.
+    const untrusted = [shop("s1", "acme@gmail.com", { targetDomainTrusted: false })];
+    expect(decide(mail("someone@gmail.com"), untrusted)).toEqual({ s1: "none" });
+    expect(decide(mail("acme@gmail.com"), untrusted)).toEqual({ s1: "responded" });
+    expect(decide(mail("john@acme.co.za"), [shop("s1", "info@acme.co.za", { targetDomainTrusted: undefined })])).toEqual({ s1: "none" });
   });
 
   it("a forged In-Reply-To from another sender is ignored", () => {
@@ -65,6 +64,14 @@ describe("window", () => {
     const missed = [shop("s1", "info@acme.co.za", { status: "missed" })];
     expect(decide(mail("info@acme.co.za"), missed)).toEqual({ s1: "responded" });
     expect(decide(mail("info@acme.co.za", { occurredAtMs: SENT + RESPONSE_WINDOW_MS + 60_000 }), missed)).toEqual({ s1: "none" });
+  });
+
+  it("an auto-reply outside the window records nothing", () => {
+    const auto = { autoReply: { ...NO_HEADERS, autoSubmitted: "auto-replied" } };
+    const s = [shop("s1", "info@acme.co.za")];
+    expect(decide(mail("info@acme.co.za", { ...auto, occurredAtMs: SENT - 1 }), s)).toEqual({ s1: "none" });
+    expect(decide(mail("info@acme.co.za", { ...auto, occurredAtMs: SENT + RESPONSE_WINDOW_MS + 1 }), s)).toEqual({ s1: "none" });
+    expect(decide(mail("info@acme.co.za", { ...auto, occurredAtMs: SENT + RESPONSE_WINDOW_MS }), s)).toEqual({ s1: "auto_reply" });
   });
 
   it("an already-responded shop is not responded again (first wins)", () => {
@@ -154,3 +161,40 @@ describe("decideEmail with Authentication-Results", () => {
     expect(decide(mail("info@acme.co.za", { authResults: [] }), [shop("s1", "info@acme.co.za")])).toEqual({ s1: "responded" });
   });
 });
+
+describe("bounces (delivery-status notifications)", () => {
+  const ref = "<s1@crestahq.com>";
+  it.each([
+    ["multipart/report", { dsn: { ...NO_DSN, contentType: "multipart/report; report-type=delivery-status" } }],
+    ["X-MS-Exchange-Message-Is-Ndr", { dsn: { ...NO_DSN, msExchangeNdr: "" } }],
+    ["X-Failed-Recipients", { dsn: { ...NO_DSN, failedRecipients: "info@acme.co.za" } }],
+    ["a mailer-daemon sender", { from: "MAILER-DAEMON@mx.example" }],
+    ["a postmaster sender", { from: "postmaster@acme.co.za" }],
+    ["Undeliverable:", { subject: "Undeliverable: Enquiry" }],
+    ["Delivery Status Notification", { subject: "Delivery Status Notification (Failure)" }],
+    ["Mail delivery failed", { subject: "Mail delivery failed: returning message to sender" }],
+    ["Returned mail", { subject: "Returned mail: see transcript for details" }],
+    ["Delivery has failed", { subject: "Delivery has failed to these recipients" }],
+  ])("%s is a delivery report", (_l, over) => {
+    expect(isDeliveryReport(mail("info@acme.co.za", over as Partial<InboundEmail>))).toBe(true);
+  });
+
+  it("a report naming our Message-ID (thread headers or body) marks the shop bounced — whatever domain it comes from", () => {
+    const s = [shop("s1", "info@acme.co.za"), shop("s2", "info@other.co.za")];
+    const viaBody = mail("mailer-daemon@mx.google.com", { dsn: { ...NO_DSN, contentType: "multipart/report", text: `Message-ID: ${ref}` } });
+    expect(decide(viaBody, s)).toEqual({ s1: "bounced", s2: "none" });
+    expect(decide(mail("postmaster@mx.example", { inReplyTo: ref }), s)).toEqual({ s1: "bounced", s2: "none" });
+    expect(decide(mail("mailer-daemon@mx.example", { references: [ref], occurredAtMs: SENT + 3 * RESPONSE_WINDOW_MS }), [shop("s1", "info@acme.co.za", { status: "missed" })])).toEqual({ s1: "bounced" });
+  });
+
+  it("a delivery report never counts as a response or an auto-reply, even from the target with no Message-ID", () => {
+    const s = [shop("s1", "info@acme.co.za")];
+    expect(decide(mail("info@acme.co.za", { subject: "Undeliverable: Enquiry" }), s)).toEqual({ s1: "none" });
+    expect(decide(mail("info@acme.co.za", { dsn: { ...NO_DSN, contentType: "multipart/report" }, autoReply: { ...NO_HEADERS, autoSubmitted: "auto-replied" } }), s)).toEqual({ s1: "none" });
+  });
+
+  it("a responded shop is never marked bounced", () => {
+    expect(decide(mail("mailer-daemon@mx.example", { inReplyTo: ref }), [shop("s1", "info@acme.co.za", { status: "responded" })])).toEqual({ s1: "none" });
+  });
+});
+

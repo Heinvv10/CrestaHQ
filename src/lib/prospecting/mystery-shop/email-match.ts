@@ -4,8 +4,9 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * Does an inbound email close an open email mystery shop? Pure.
  *
  * The SENDER decides, never the thread: the reply must come from the target
- * address, or from the target's own domain — unless that domain is a public
- * mailbox provider, where a shared domain proves nothing. A matching
+ * address, or from another address at the target's domain when that domain
+ * is the business's own (`targetDomainTrusted`, decided at send time against
+ * its website — a gmail address proves nothing about a colleague). A matching
  * In-Reply-To / References header only picks which of several sender-matching
  * shops the reply belongs to; on its own (a forged header from anyone else)
  * it closes nothing. The reply must arrive inside [sentAt, sentAt + 24 h].
@@ -16,6 +17,10 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * read too (`senderAuthenticated`): a sender that FAILS them closes nothing
  * and records nothing. Anything else is "unknown" and counts as before — an
  * email sender is never "verified" (see senderAuthenticated).
+ *
+ * A delivery-status notification (a bounce) is never a response or an
+ * auto-reply, whoever sends it; one that names our Message-ID marks the shop
+ * `bounced` (the enquiry never arrived).
  */
 
 export interface AutoReplyHeaders {
@@ -25,13 +30,26 @@ export interface AutoReplyHeaders {
   precedence: string | null;
 }
 
-export interface InboundEmail {
-  from: string;
-  inReplyTo: string | null;
-  references: string[];
+export interface DsnSignals {
+  contentType: string | null;
+  msExchangeNdr: string | null;
+  failedRecipients: string | null;
+  /** The report and returned-headers parts' text (full parse only). */
+  text: string;
+}
+
+/** What lib/comms/imap.ts reads from a message's headers for this matcher. */
+export interface MailSignals {
   autoReply: AutoReplyHeaders;
   /** Every Authentication-Results header, topmost (the receiving server's) first. */
   authResults: string[];
+  dsn: DsnSignals;
+}
+
+export interface InboundEmail extends MailSignals {
+  from: string;
+  inReplyTo: string | null;
+  references: string[];
   subject: string;
   occurredAtMs: number;
 }
@@ -44,36 +62,33 @@ export interface EmailShopCandidate {
   respondedAt: unknown;
   autoReplyAt: unknown;
   providerRef: unknown;
+  /** The target's domain is the business's own (store.ts, at reserve). */
+  targetDomainTrusted?: unknown;
 }
 
-export type EmailDecision = "responded" | "auto_reply" | "none";
-
-/** Domains where two addresses sharing the domain are unrelated people. */
-const PUBLIC_EXACT: ReadonlySet<string> = new Set([
-  "proton.me", "protonmail.com", "pm.me", "zoho.com", "mail.com", "yandex.com", "me.com", "mac.com",
-  "mweb.co.za", "telkomsa.net", "webmail.co.za", "vodamail.co.za", "iafrica.com", "absamail.co.za",
-  "lantic.net", "afrihost.co.za", "cybersmart.co.za", "polka.co.za", "xsinet.co.za",
-]);
-/** Provider families under any country TLD: gmail.com, hotmail.co.uk, yahoo.co.za, gmx.de … */
-const PUBLIC_FAMILIES: ReadonlySet<string> = new Set([
-  "gmail", "googlemail", "outlook", "hotmail", "live", "msn", "yahoo", "ymail", "rocketmail",
-  "icloud", "aol", "gmx",
-]);
-
-export function isPublicMailDomain(domain: string): boolean {
-  const d = domain.toLowerCase();
-  return PUBLIC_EXACT.has(d) || PUBLIC_FAMILIES.has(d.split(".")[0] ?? "");
-}
+export type EmailDecision = "responded" | "auto_reply" | "bounced" | "none";
 
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1).toLowerCase();
 
-export function senderMatches(from: string, target: string): boolean {
+export function senderMatches(from: string, target: string, domainTrusted: boolean): boolean {
   const f = from.trim().toLowerCase();
   const t = target.trim().toLowerCase();
   if (!f.includes("@") || !t.includes("@")) return false;
   if (f === t) return true;
-  const domain = domainOf(t);
-  return domainOf(f) === domain && !isPublicMailDomain(domain);
+  return domainTrusted && domainOf(f) === domainOf(t);
+}
+
+const DSN_SUBJECT = /\b(undeliverable|delivery status notification|mail delivery failed|returned mail|delivery has failed)\b/i;
+
+/** A bounce / non-delivery report, by its headers, sender or subject. */
+export function isDeliveryReport(m: Pick<InboundEmail, "dsn" | "from" | "subject">): boolean {
+  return (
+    /^multipart\/report\b/i.test(m.dsn.contentType?.trim() ?? "") ||
+    m.dsn.msExchangeNdr != null ||
+    m.dsn.failedRecipients != null ||
+    /^(mailer-daemon|postmaster)@/i.test(m.from.trim()) ||
+    DSN_SUBJECT.test(m.subject)
+  );
 }
 
 const AUTO_SUBJECT = /\b(out[ -]of[ -](the[ -])?office|automatic[ -]reply|auto[ -]?reply|auto[ -]?response|automatic[ -]response)\b/i;
@@ -152,14 +167,22 @@ const msgId = (v: unknown) => (typeof v === "string" ? v.trim().replace(/^<|>$/g
 export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<string, EmailDecision> {
   const out = new Map<string, EmailDecision>(shops.map((s) => [s.id, "none"]));
   if (senderAuthenticated(m.authResults, domainOf(m.from)) === "fail") return out;
+  const thread = new Set([m.inReplyTo, ...m.references].map(msgId).filter(Boolean));
+  if (isDeliveryReport(m)) {
+    for (const s of shops) {
+      const ref = msgId(s.providerRef);
+      const named = !!ref && (thread.has(ref) || m.dsn.text.includes(ref));
+      if (named && (s.status === "sent" || s.status === "missed")) out.set(s.id, "bounced");
+    }
+    return out;
+  }
   const auto = isAutoReply(m);
   const eligible = shops.filter((s) => {
-    if (!senderMatches(m.from, s.target)) return false;
+    if (!senderMatches(m.from, s.target, s.targetDomainTrusted === true)) return false;
     if (!auto) return canSettleResponded(s, m.occurredAtMs);
     const sent = toMs(s.sentAt);
     return s.status === "sent" && s.autoReplyAt == null && sent !== null && inWindow(sent, m.occurredAtMs);
   });
-  const thread = new Set([m.inReplyTo, ...m.references].map(msgId).filter(Boolean));
   const inThread = eligible.filter((s) => thread.has(msgId(s.providerRef)));
   for (const s of inThread.length ? inThread : eligible) out.set(s.id, auto ? "auto_reply" : "responded");
   return out;

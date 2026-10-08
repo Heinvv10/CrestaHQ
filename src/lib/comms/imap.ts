@@ -6,6 +6,7 @@ import { ImapFlow } from "imapflow";
 import { simpleParser, type AddressObject } from "mailparser";
 import type { SmtpConnection } from "@/types/email";
 import type { MailboxConnection, MailboxMeta } from "@/types/mailbox";
+import type { MailSignals } from "@/lib/prospecting/mystery-shop/email-match";
 export const MAX_MESSAGE_BYTES = 5 * 1024 * 1024;
 export class MailboxError extends Error {
   constructor(
@@ -205,15 +206,36 @@ function addresses(
   );
 }
 /**
- * Every Authentication-Results value in a raw header block, in order (the
- * topmost is the receiving server's), unfolded; at most 10, 2,000 chars each.
- * For the mystery-shop sender check (lib/prospecting/mystery-shop/email-match.ts).
+ * The header signals the mystery-shop matcher reads
+ * (lib/prospecting/mystery-shop/email-match.ts), from a raw header block, so
+ * a full parse and the oversized-message placeholder read them alike:
+ * auto-responder headers, every Authentication-Results (topmost — the
+ * receiving server's — first; at most 10) and delivery-report headers.
+ * Values unfolded, each capped at 2,000 chars. `dsn.text` (the report and
+ * returned-headers parts) is filled by a full parse only.
  */
-export function authResultsFromRaw(raw: string): string[] {
-  return [...raw.replace(/\r?\n[ \t]+/g, " ").matchAll(/^authentication-results:[ \t]*(.*)$/gim)]
-    .slice(0, 10)
-    .map((m) => m[1].trim().slice(0, 2000));
+export function mailSignalsFromRaw(raw: string): MailSignals {
+  const unfolded = raw.replace(/\r?\n[ \t]+/g, " ");
+  const all = (name: string) =>
+    [...unfolded.matchAll(new RegExp(`^${name}:[ \\t]*(.*)$`, "gim"))].map((m) => m[1].trim().slice(0, 2000));
+  const one = (name: string) => all(name)[0] ?? null;
+  return {
+    autoReply: {
+      autoSubmitted: one("auto-submitted"),
+      xAutoreply: one("x-autoreply"),
+      xAutorespond: one("x-autorespond"),
+      precedence: one("precedence"),
+    },
+    authResults: all("authentication-results").slice(0, 10),
+    dsn: {
+      contentType: one("content-type"),
+      msExchangeNdr: one("x-ms-exchange-message-is-ndr"),
+      failedRecipients: one("x-failed-recipients"),
+      text: "",
+    },
+  };
 }
+const REPORT_PART = /^(message\/(delivery-status|rfc822|global-headers|global-delivery-status)|text\/rfc822-headers)$/i;
 export async function parseMailboxMessage(source: Buffer) {
   if (source.length > MAX_MESSAGE_BYTES)
     throw new MailboxError("Message exceeds the 5 MB import limit.");
@@ -223,11 +245,14 @@ export async function parseMailboxMessage(source: Buffer) {
     skipImageLinks: true,
     maxHtmlLengthToParse: MAX_MESSAGE_BYTES,
   });
-  const header = (name: string): string | null => {
-    const v = mail.headers.get(name);
-    if (v == null) return null;
-    return typeof v === "string" ? v : String((v as { value?: unknown }).value ?? "");
-  };
+  const signals = mailSignalsFromRaw(mail.headerLines.map((l) => l.line).join("\r\n"));
+  // A bounce names our Message-ID in its report / returned-headers parts.
+  signals.dsn.text = [
+    mail.text ?? "",
+    ...mail.attachments.filter((a) => REPORT_PART.test(a.contentType)).map((a) => a.content.toString("utf8")),
+  ]
+    .join("\n")
+    .slice(0, 65536);
   return {
     from: addresses(mail.from)[0] ?? "",
     to: [
@@ -254,13 +279,6 @@ export async function parseMailboxMessage(source: Buffer) {
     })),
     date: mail.date,
     archive: mail.headers.get("x-crestahq-archive") !== "no",
-    // Auto-responder signals for the mystery-shop matcher (lib/prospecting/mystery-shop/email-match.ts).
-    autoReply: {
-      autoSubmitted: header("auto-submitted"),
-      xAutoreply: header("x-autoreply"),
-      xAutorespond: header("x-autorespond"),
-      precedence: header("precedence"),
-    },
-    authResults: authResultsFromRaw(mail.headerLines.map((l) => l.line).join("\r\n")),
+    signals,
   };
 }

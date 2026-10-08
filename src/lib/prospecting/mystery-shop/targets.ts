@@ -45,3 +45,22 @@ export function matchTarget(
   const t = normalizeTarget(channel, raw, country);
   return t !== null && allowed.includes(t) ? t : null;
 }
+
+/**
+ * May other addresses at the target's domain answer for the business? Only
+ * when that domain is the business's own: its website's host (minus "www."),
+ * or a subdomain of it either way. A gmail target, or a domain unlike the
+ * website, matches the exact address only.
+ */
+export function emailDomainTrusted(email: string, website: unknown): boolean {
+  if (typeof website !== "string" || !website.trim()) return false;
+  let host: string;
+  try {
+    host = new URL(/^https?:\/\//i.test(website.trim()) ? website.trim() : `https://${website.trim()}`).hostname;
+  } catch {
+    return false;
+  }
+  const site = host.toLowerCase().replace(/^www\./, "");
+  const domain = email.slice(email.lastIndexOf("@") + 1).toLowerCase();
+  return !!site && (domain === site || domain.endsWith(`.${site}`) || site.endsWith(`.${domain}`));
+}

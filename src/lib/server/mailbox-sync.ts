@@ -2,8 +2,8 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
-  authResultsFromRaw,
   connectMailbox,
+  mailSignalsFromRaw,
   parseMailboxMessage,
   MAX_MESSAGE_BYTES,
   MailboxError,
@@ -141,7 +141,9 @@ export async function syncMailbox(subAccountId: string) {
               size: true,
               internalDate: true,
               envelope: true,
-              headers: ["X-CrestaHQ-Archive", "Authentication-Results"],
+              // The mystery-shop matcher's signals, so the placeholder path reads them too.
+              headers: ["X-CrestaHQ-Archive", "Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond",
+                "Precedence", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"],
             },
             { uid: true }
           );
@@ -178,8 +180,7 @@ export async function syncMailbox(subAccountId: string) {
               archive: !/^x-crestahq-archive:\s*no\s*$/im.test(
                 metadata.headers?.toString() ?? ""
               ),
-              autoReply: { autoSubmitted: null, xAutoreply: null, xAutorespond: null, precedence: null },
-              authResults: authResultsFromRaw(metadata.headers?.toString() ?? ""),
+              signals: mailSignalsFromRaw(metadata.headers?.toString() ?? ""),
             };
           };
           if (
@@ -234,7 +235,7 @@ export async function syncMailbox(subAccountId: string) {
           )
             summary.skipped++;
           else {
-            const { date, archive: _archive, autoReply, authResults, ...input } = parsed;
+            const { date, archive: _archive, signals, ...input } = parsed;
             const occurredAt =
               metadata.internalDate instanceof Date
                 ? metadata.internalDate
@@ -255,7 +256,7 @@ export async function syncMailbox(subAccountId: string) {
             if (result.inserted) summary.imported++;
             else summary.skipped++;
             if (direction === "inbound")
-              await matchMysteryShopEmail(subAccountId, { ...input, autoReply, authResults, occurredAtMs: occurredAt.getTime() })
+              await matchMysteryShopEmail(subAccountId, { ...input, ...signals, occurredAtMs: occurredAt.getTime() })
                 .catch((err) => console.error("[mailbox-sync] mystery-shop match failed", subAccountId, err));
           }
           processed++;

@@ -179,7 +179,7 @@ it("imports an oversized message placeholder without source download", async () 
   client.fetchOne.mockResolvedValue({
     size: 6 * 1024 * 1024,
     internalDate: new Date(),
-    headers: Buffer.from("Authentication-Results: mx; dmarc=fail\r\n"),
+    headers: Buffer.from("Authentication-Results: mx; dmarc=fail\r\nAuto-Submitted: auto-replied\r\nX-Failed-Recipients: a@b.c\r\n"),
     envelope: {
       from: [{ address: "other@example.com" }],
       to: [{ address: "me@example.com" }],
@@ -197,7 +197,10 @@ it("imports an oversized message placeholder without source download", async () 
     })
   );
   expect((c.cursors as Record<string, { uid: number }>).INBOX.uid).toBe(2);
-  expect(matchMysteryShopEmail).toHaveBeenCalledWith("a", expect.objectContaining({ authResults: ["mx; dmarc=fail"] }));
+  expect(matchMysteryShopEmail).toHaveBeenCalledWith("a", expect.objectContaining({ authResults: ["mx; dmarc=fail"],
+    autoReply: expect.objectContaining({ autoSubmitted: "auto-replied" }), dsn: expect.objectContaining({ failedRecipients: "a@b.c" }) }));
+  const asked = ["Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"];
+  expect(client.fetchOne).toHaveBeenCalledWith(1, expect.objectContaining({ headers: expect.arrayContaining(asked) }), { uid: true });
 });
 it("sweep isolates failures and continues other tenants", async () => {
   setup();

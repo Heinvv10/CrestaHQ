@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allowedTargets, matchTarget } from "./targets";
+import { allowedTargets, emailDomainTrusted, matchTarget } from "./targets";
 
 const contact = { email: " Info@Acme.co.za ", phone: "082 123 4567" };
 
@@ -31,5 +31,21 @@ describe("matchTarget", () => {
     expect(matchTarget("call", "+27821234568", ["+27821234567"], "ZA")).toBeNull();
     expect(matchTarget("email", 42, ["info@acme.co.za"])).toBeNull();
     expect(matchTarget("email", "info@acme.co.za", [])).toBeNull();
+  });
+});
+
+describe("emailDomainTrusted", () => {
+  it("is the business's own domain: the same as its website, minus www., subdomains either way", () => {
+    expect(emailDomainTrusted("info@acme.co.za", "https://www.acme.co.za/contact")).toBe(true);
+    expect(emailDomainTrusted("info@acme.co.za", "acme.co.za")).toBe(true);
+    expect(emailDomainTrusted("info@mail.acme.co.za", "https://acme.co.za")).toBe(true);
+    expect(emailDomainTrusted("info@acme.co.za", "http://shop.acme.co.za")).toBe(true);
+  });
+  it("is not trusted for a free mailbox, another domain, a lookalike or no website", () => {
+    expect(emailDomainTrusted("acme@gmail.com", "https://acme.co.za")).toBe(false);
+    expect(emailDomainTrusted("info@notacme.co.za", "https://acme.co.za")).toBe(false);
+    expect(emailDomainTrusted("info@acme.co.za.evil.com", "https://acme.co.za")).toBe(false);
+    expect(emailDomainTrusted("info@acme.co.za", null)).toBe(false);
+    expect(emailDomainTrusted("info@acme.co.za", "not a url %%")).toBe(false);
   });
 });

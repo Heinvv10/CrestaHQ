@@ -6,7 +6,7 @@ import {
   resolveMailboxHost,
   parseMailboxMessage,
   discoverSentFolder,
-  authResultsFromRaw,
+  mailSignalsFromRaw,
 } from "./imap";
 const input = {
   host: "mail.example.com",
@@ -60,24 +60,40 @@ describe("mailbox safety", () => {
     expect(a.messageId).toBe(b.messageId);
   });
 });
-describe("Authentication-Results", () => {
-  it("returns every occurrence, topmost first, unfolded and capped", async () => {
+describe("mail signals for the mystery-shop matcher", () => {
+  it("returns every Authentication-Results, topmost first, unfolded and capped", async () => {
     const raw = Buffer.from(
       "Authentication-Results: mx.crestahq.com;\r\n\tdmarc=fail header.from=acme.co.za\r\n" +
         "Authentication-Results: forged; dmarc=pass\r\n" +
         `Authentication-Results: x; ${"a".repeat(3000)}\r\n` +
         "From: info@acme.co.za\r\nTo: me@example.com\r\n\r\nHi"
     );
-    const mail = await parseMailboxMessage(raw);
-    expect(mail.authResults[0]).toBe("mx.crestahq.com; dmarc=fail header.from=acme.co.za");
-    expect(mail.authResults[1]).toBe("forged; dmarc=pass");
-    expect(mail.authResults[2]).toHaveLength(2000);
-    expect((await parseMailboxMessage(Buffer.from("From: a@b.c\r\n\r\nx"))).authResults).toEqual([]);
+    const { authResults } = (await parseMailboxMessage(raw)).signals;
+    expect(authResults[0]).toBe("mx.crestahq.com; dmarc=fail header.from=acme.co.za");
+    expect(authResults[1]).toBe("forged; dmarc=pass");
+    expect(authResults[2]).toHaveLength(2000);
+    expect((await parseMailboxMessage(Buffer.from("From: a@b.c\r\n\r\nx"))).signals.authResults).toEqual([]);
   });
-  it("reads the raw header block of an oversized message too, at most 10", () => {
+  it("reads auto-reply and delivery-report headers from a raw header block (the oversized path)", () => {
     const block = Array.from({ length: 12 }, (_, i) => `Authentication-Results: mx${i}; spf=pass`).join("\r\n");
-    const got = authResultsFromRaw(`X-CrestaHQ-Archive: no\r\n${block}\r\n`);
-    expect(got).toHaveLength(10);
-    expect(got[0]).toBe("mx0; spf=pass");
+    const s = mailSignalsFromRaw(
+      `Auto-Submitted: auto-replied\r\nX-Autoreply: yes\r\nPrecedence: bulk\r\nContent-Type: multipart/report;\r\n report-type=delivery-status\r\nX-MS-Exchange-Message-Is-Ndr: \r\nX-Failed-Recipients: info@acme.co.za\r\n${block}\r\n`
+    );
+    expect(s.authResults).toHaveLength(10);
+    expect(s.authResults[0]).toBe("mx0; spf=pass");
+    expect(s.autoReply).toEqual({ autoSubmitted: "auto-replied", xAutoreply: "yes", xAutorespond: null, precedence: "bulk" });
+    expect(s.dsn).toEqual({ contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: "", failedRecipients: "info@acme.co.za", text: "" });
+  });
+  it("exposes a bounce's report and returned-headers text so it can be tied to our Message-ID", async () => {
+    const raw = Buffer.from(
+      'From: MAILER-DAEMON@mx.example\r\nTo: me@example.com\r\nSubject: Undelivered Mail Returned to Sender\r\nMIME-Version: 1.0\r\nContent-Type: multipart/report; report-type=delivery-status; boundary="b"\r\n\r\n' +
+        "--b\r\nContent-Type: text/plain\r\n\r\nYour message could not be delivered.\r\n" +
+        "--b\r\nContent-Type: message/delivery-status\r\n\r\nFinal-Recipient: rfc822; info@acme.co.za\r\nAction: failed\r\n" +
+        "--b\r\nContent-Type: text/rfc822-headers\r\n\r\nMessage-ID: <shop-1@crestahq.com>\r\nSubject: Enquiry\r\n--b--\r\n"
+    );
+    const { dsn } = (await parseMailboxMessage(raw)).signals;
+    expect(dsn.contentType).toMatch(/^multipart\/report/);
+    expect(dsn.text).toContain("<shop-1@crestahq.com>");
+    expect(dsn.text).toContain("Action: failed");
   });
 });
