@@ -130,8 +130,11 @@ describe("a public missed claim needs an operator's confirmation", () => {
     const at = Date.parse("2026-10-09T09:00:00Z");
     const check = "Check the inbox, Junk folder and call log before confirming — only confirmed misses appear on the report.";
     expect(shopStatusLine(missed(), at)).toBe(`Email to ${EMAIL} — no reply detected in 24 h. ${check}`);
+    expect(shopStatusLine(missed({ disputed: true }), at)).toBe(
+      `Email to ${EMAIL} — no reply detected in 24 h (a reply arrived but failed the sender check). ${check}`,
+    );
     expect(shopStatusLine(missed({ sendUncertain: true, disputed: true }), at)).toBe(
-      `Email to ${EMAIL} — no reply detected in 24 h (a reply arrived but failed the sender check; send uncertain — may not have been delivered). ${check}`,
+      `Email to ${EMAIL} — no reply detected in 24 h (a reply arrived but failed the sender check; send uncertain — may not have been delivered). It can't be published as a missed lead.`,
     );
     expect(shopStatusLine(missed({ missedConfirmedAt: "2026-10-09T10:00:00.000Z" }), at)).toBe(
       `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed (confirmed)`,

@@ -231,13 +231,15 @@ export async function confirmMissed(
   shopId: string,
   subAccountId: string,
   uid: string,
-): Promise<Date | "not_found" | "not_missed"> {
+): Promise<Date | "not_found" | "not_missed" | "send_uncertain"> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
     const shop = (await tx.get(ref)).data();
     if (!shop || shop.subAccountId !== subAccountId) return "not_found" as const;
     if (shop.status !== "missed") return "not_missed" as const;
+    // An enquiry that may never have been sent cannot be published as a missed lead.
+    if (shop.sendUncertain === true) return "send_uncertain" as const;
     const at = toMs(shop.missedConfirmedAt);
     if (at !== null) return new Date(at);
     const now = new Date();

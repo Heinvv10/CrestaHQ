@@ -195,7 +195,7 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
           <p className="text-xs" data-testid={`mystery-shop-status-${s.id}`}>
             {shopStatusLine(s, Date.now())}
           </p>
-          {s.status === "missed" && !s.missedConfirmedAt && (
+          {s.status === "missed" && !s.missedConfirmedAt && !s.sendUncertain && (
             <Button
               type="button"
               size="sm"

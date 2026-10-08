@@ -49,6 +49,16 @@ describe("confirm-missed", () => {
     expect(shop("r1").missedConfirmedAt).toBeUndefined();
   });
 
+  it("409 send_uncertain for a miss whose enquiry may never have been sent", async () => {
+    mem.seed("mysteryShops/u1", { agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "email", status: "missed", sendUncertain: true });
+    const res = await confirm("u1");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      code: "send_uncertain", error: "This enquiry may not have been sent, so it can't be published as a missed lead.",
+    });
+    expect(shop("u1").missedConfirmedAt).toBeUndefined();
+  });
+
   it("another sub-account's shop, a missing one and a bad id are the same 404", async () => {
     const theirs = await confirm("theirs");
     expect(theirs.status).toBe(404);

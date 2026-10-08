@@ -29,10 +29,10 @@ export interface MemberShop {
   enquiryText: string;
   failure: MysteryShopFailure | null;
   createdAt: string | null;
-  /** How the response was seen, and whether its sender is proven (store.ts `ResponseVia`). Null until responded. */
+  /** How the response was seen, and whether its sender is proven (replies.ts `ResponseVia`). Null until responded. */
   responseVia: "email" | "answered" | "callback" | null;
   senderAuth: "pass" | "unknown" | null;
-  /** The send may or may not have gone out (store.ts `markUncertain`). Never shown publicly as missed. */
+  /** The send may or may not have gone out (store.ts `markUncertain`). Such a miss cannot be confirmed, so it is never public. */
   sendUncertain: boolean;
   /** 24 h passed but the mailbox sync has not read that far yet (store.ts `settleMissed`). */
   awaitingSync: boolean;
@@ -208,6 +208,7 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
       ].filter(Boolean);
       const tail = flags.length ? ` (${flags.join("; ")})` : "";
       if (s.missedConfirmedAt) return `${head}no reply in 24 h — ${formatMoney(s.jobValueCents, s.currency)} lead missed (confirmed)${tail}`;
+      if (s.sendUncertain) return `${head}no reply detected in 24 h${tail}. It can't be published as a missed lead.`;
       return `${head}no reply detected in 24 h${tail}. Check the inbox, Junk folder and call log before confirming — only confirmed misses appear on the report.`;
     }
     case "refused":

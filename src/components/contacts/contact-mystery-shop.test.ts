@@ -153,8 +153,9 @@ describe("ContactMysteryShop", () => {
       responseMs: null, autoReplyAt: null, jobValueCents: 150_000, currency: "ZAR", enquiryText: "", failure: null,
       createdAt: null, missedConfirmedAt,
     });
-    payload.shops = [missed("m1", null), missed("m2", "2026-10-08T10:00:00.000Z")];
+    payload.shops = [missed("m1", null), missed("m2", "2026-10-08T10:00:00.000Z"), { ...missed("m3", null), sendUncertain: true }];
     await mount();
+    expect(q("mystery-shop-confirm-missed-m3")).toBeNull();
     expect(q("mystery-shop-status-m1")?.textContent).toContain("only confirmed misses appear on the report");
     expect(q("mystery-shop-confirm-missed-m2")).toBeNull();
     await click(q("mystery-shop-confirm-missed-m1"));
