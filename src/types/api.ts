@@ -87,6 +87,13 @@ interface ApiKeyDocFields {
    * holder reads back over the API.
    */
   enrolmentCapPerHour?: number;
+  /**
+   * Per-key override for the per-minute request budget (see
+   * `lib/api/rate-limit.ts`). Optional integer, clamped to 600; absent or
+   * invalid falls back to the scope default. Operator-set via the Admin SDK;
+   * not exposed on `ApiKeyResponse`.
+   */
+  rateLimitPerMinute?: number;
   createdByUid: string;
   createdAt: Date;
   lastUsedAt: Date | null;

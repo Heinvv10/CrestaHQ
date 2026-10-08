@@ -102,6 +102,10 @@ function snapToDoc(
       typeof data.enrolmentCapPerHour === "number"
         ? data.enrolmentCapPerHour
         : undefined,
+    rateLimitPerMinute:
+      typeof data.rateLimitPerMinute === "number"
+        ? data.rateLimitPerMinute
+        : undefined,
     createdByUid: data.createdByUid,
     createdAt: tsToDate(data.createdAt) ?? new Date(0),
     lastUsedAt: tsToDate(data.lastUsedAt),

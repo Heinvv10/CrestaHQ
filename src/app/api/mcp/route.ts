@@ -58,7 +58,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const scopeErr = requireApiScope(auth, "agent");
   if (scopeErr) return refuse(scopeErr, "insufficient_scope");
-  const rl = checkAndCount({ keyId: auth.keyId, mode: auth.mode, scope: "agent" });
+  const rl = checkAndCount({ keyId: auth.keyId, mode: auth.mode, scope: "agent", rateLimitPerMinute: auth.rateLimitPerMinute });
   if (!rl.ok) {
     return refuse(
       apiError(auth, "rate_limit_error", "rate_limited", `Too many requests. Retry after ${rl.retryAfterSec}s.`, {

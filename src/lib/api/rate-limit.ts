@@ -61,6 +61,42 @@ const LIMITS_BY_SCOPE: Record<ApiKeyScope, Limits> = {
   agent: { perMinute: 60, perHour: 1000 },
 };
 
+/** Ceiling on a per-key `rateLimitPerMinute` override. */
+const RATE_LIMIT_MAX_PER_MINUTE = 600;
+
+/**
+ * Resolve an API key's raw `rateLimitPerMinute` field into an override, or
+ * `undefined` for "use the scope default". Absent, null, zero, negative or
+ * non-integer values fall back to the default; a value above the ceiling is
+ * clamped (same stance as `resolveEnrolmentCapPerHour`).
+ */
+export function resolveRateLimitPerMinute(raw: unknown): number | undefined {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+    return undefined;
+  }
+  return Math.min(raw, RATE_LIMIT_MAX_PER_MINUTE);
+}
+
+/**
+ * Effective limits for a key. The override replaces the per-minute budget
+ * (it may raise or lower it). The hour budget is `max(scope hour, override
+ * x 10)`: a raised key can burst its full minute budget several times an hour
+ * without the unchanged 1000/hour cap becoming the real limit (override 300
+ * -> 3000/hour, so a ~400-request day is nowhere near it), while a lowered
+ * override leaves the hour budget at the scope default. Scopes with no hour
+ * cap (forms-ingest) stay uncapped.
+ */
+function limitsFor(scope: ApiKeyScope, rateLimitPerMinute?: number): Limits {
+  const base = LIMITS_BY_SCOPE[scope];
+  const override = resolveRateLimitPerMinute(rateLimitPerMinute);
+  if (override === undefined) return base;
+  return {
+    perMinute: override,
+    perHour:
+      base.perHour === null ? null : Math.max(base.perHour, override * 10),
+  };
+}
+
 export interface RateLimitResult {
   ok: boolean;
   /** Seconds until the most restrictive bucket resets. 0 when ok. */
@@ -107,8 +143,10 @@ export function checkAndCount(opts: {
   keyId: string;
   mode: "live" | "test";
   scope: ApiKeyScope;
+  /** Per-key override from the key doc; see `resolveRateLimitPerMinute`. */
+  rateLimitPerMinute?: number;
 }): RateLimitResult {
-  const limits = LIMITS_BY_SCOPE[opts.scope];
+  const limits = limitsFor(opts.scope, opts.rateLimitPerMinute);
   const now = Date.now();
   const bucketKey = `${opts.keyId}_${opts.mode}`;
 
@@ -172,8 +210,9 @@ export function snapshotRemaining(opts: {
   keyId: string;
   mode: "live" | "test";
   scope: ApiKeyScope;
+  rateLimitPerMinute?: number;
 }): { limit: number; remaining: number; resetSec: number } {
-  const limits = LIMITS_BY_SCOPE[opts.scope];
+  const limits = limitsFor(opts.scope, opts.rateLimitPerMinute);
   const now = Date.now();
   const b = minuteBuckets.get(`${opts.keyId}_${opts.mode}_m`);
   if (!b || now >= b.resetAt) {
