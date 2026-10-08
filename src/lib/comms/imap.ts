@@ -213,6 +213,11 @@ export async function parseMailboxMessage(source: Buffer) {
     skipImageLinks: true,
     maxHtmlLengthToParse: MAX_MESSAGE_BYTES,
   });
+  const header = (name: string): string | null => {
+    const v = mail.headers.get(name);
+    if (v == null) return null;
+    return typeof v === "string" ? v : String((v as { value?: unknown }).value ?? "");
+  };
   return {
     from: addresses(mail.from)[0] ?? "",
     to: [
@@ -239,5 +244,12 @@ export async function parseMailboxMessage(source: Buffer) {
     })),
     date: mail.date,
     archive: mail.headers.get("x-crestahq-archive") !== "no",
+    // Auto-responder signals for the mystery-shop matcher (lib/prospecting/mystery-shop/email-match.ts).
+    autoReply: {
+      autoSubmitted: header("auto-submitted"),
+      xAutoreply: header("x-autoreply"),
+      xAutorespond: header("x-autorespond"),
+      precedence: header("precedence"),
+    },
   };
 }

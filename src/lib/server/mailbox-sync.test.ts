@@ -3,6 +3,9 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: vi.fn() }));
 vi.mock("@/lib/server/email-conversations", () => ({
   recordEmailMessage: vi.fn(),
 }));
+vi.mock("@/lib/prospecting/mystery-shop/inbound", () => ({
+  matchMysteryShopEmail: vi.fn(async () => {}),
+}));
 import { cursorWindow } from "./mailbox-sync";
 it("resets on UIDVALIDITY change and bounds every search", () => {
   expect(
@@ -252,4 +255,59 @@ it("an inbound archive header cannot hide customer email", async () => {
   );
   const result = await syncMailbox("a");
   expect(result.imported).toBe(1);
+});
+
+import { matchMysteryShopEmail } from "@/lib/prospecting/mystery-shop/inbound";
+it("hands each inbound message to the mystery-shop matcher at its arrival time, with its auto-reply headers", async () => {
+  const { client } = setup();
+  client.search.mockResolvedValue([1]);
+  const at = new Date("2026-10-08T10:00:00Z");
+  client.fetchOne.mockImplementation(async (_uid, q) =>
+    q.size
+      ? { size: 100, internalDate: at }
+      : {
+          source: Buffer.from(
+            "From: info@acme.co.za\r\nTo: me@example.com\r\nSubject: Re: Enquiry\r\nIn-Reply-To: <shop@crestahq.com>\r\nAuto-Submitted: auto-replied\r\nPrecedence: bulk\r\nMessage-ID: <r1@acme.co.za>\r\n\r\nThanks"
+          ),
+        }
+  );
+  vi.mocked(matchMysteryShopEmail).mockClear();
+  await syncMailbox("tenant-a");
+  expect(matchMysteryShopEmail).toHaveBeenCalledWith(
+    "tenant-a",
+    expect.objectContaining({
+      from: "info@acme.co.za",
+      subject: "Re: Enquiry",
+      inReplyTo: "<shop@crestahq.com>",
+      occurredAtMs: at.getTime(),
+      autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk" },
+    })
+  );
+});
+it("a failing mystery-shop matcher never breaks the sync; sent mail is never matched", async () => {
+  const { client, c } = setup();
+  c.sentFolder = "Sent";
+  client.search.mockResolvedValue([1]);
+  let folder = "";
+  client.getMailboxLock.mockImplementation(async (name?: unknown) => {
+    folder = String(name);
+    return { release: vi.fn() };
+  });
+  client.fetchOne.mockImplementation(async (_uid, q) =>
+    q.size
+      ? { size: 100, internalDate: new Date() }
+      : {
+          source: Buffer.from(
+            folder === "Sent"
+              ? "From: me@example.com\r\nTo: info@acme.co.za\r\nMessage-ID: <out@example.com>\r\n\r\nHi"
+              : "From: info@acme.co.za\r\nTo: me@example.com\r\nMessage-ID: <in@example.com>\r\n\r\nHi"
+          ),
+        }
+  );
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(matchMysteryShopEmail).mockClear().mockRejectedValue(new Error("firestore down"));
+  const result = await syncMailbox("a");
+  expect(result.imported).toBe(2);
+  expect(matchMysteryShopEmail).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(matchMysteryShopEmail).mock.calls[0][1].from).toBe("info@acme.co.za");
 });

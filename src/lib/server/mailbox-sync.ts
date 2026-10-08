@@ -9,6 +9,7 @@ import {
   mailboxPublicError,
 } from "@/lib/comms/imap";
 import { recordEmailMessage } from "@/lib/server/email-conversations";
+import { matchMysteryShopEmail } from "@/lib/prospecting/mystery-shop/inbound";
 import type { MailboxConnection, MailboxCursor } from "@/types/mailbox";
 export function cursorWindow(
   cursor: MailboxCursor | undefined,
@@ -176,6 +177,7 @@ export async function syncMailbox(subAccountId: string) {
               archive: !/^x-crestahq-archive:\s*no\s*$/im.test(
                 metadata.headers?.toString() ?? ""
               ),
+              autoReply: { autoSubmitted: null, xAutoreply: null, xAutorespond: null, precedence: null },
             };
           };
           if (
@@ -230,7 +232,7 @@ export async function syncMailbox(subAccountId: string) {
           )
             summary.skipped++;
           else {
-            const { date, archive: _archive, ...input } = parsed;
+            const { date, archive: _archive, autoReply, ...input } = parsed;
             const occurredAt =
               metadata.internalDate instanceof Date
                 ? metadata.internalDate
@@ -250,6 +252,9 @@ export async function syncMailbox(subAccountId: string) {
             });
             if (result.inserted) summary.imported++;
             else summary.skipped++;
+            if (direction === "inbound")
+              await matchMysteryShopEmail(subAccountId, { ...input, autoReply, occurredAtMs: occurredAt.getTime() })
+                .catch((err) => console.error("[mailbox-sync] mystery-shop match failed", subAccountId, err));
           }
           processed++;
           folderProcessed++;
