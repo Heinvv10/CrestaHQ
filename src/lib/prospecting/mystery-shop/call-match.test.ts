@@ -78,7 +78,7 @@ describe("callOutcome", () => {
 });
 
 describe("our own failures never become the business's miss", () => {
-  it.each(["pipeline-error-openai-llm-failed", "phone-call-provider-closed-websocket", "assistant-error", "twilio-failed-to-connect-call", "voicemail", "customer-busy"])(
+  it.each(["pipeline-error-openai-llm-failed", "phone-call-provider-closed-websocket", "assistant-error", "twilio-failed-to-connect-call", "customer-busy"])(
     "a dialogue ending %s is still answered",
     (endedReason) => {
       expect(callOutcome(report({ endedReason }))).toMatchObject({ answered: true });
@@ -91,6 +91,30 @@ describe("our own failures never become the business's miss", () => {
     ["pipeline-error-openai-llm-failed", "failed"],
   ])("%s with no dialogue is not answered (%s)", (endedReason, reason) => {
     expect(callOutcome(report({ endedReason, turns: [bot(0.5)] }))).toEqual({ answered: false, reason });
+  });
+});
+
+describe("voicemail: every callee turn is scanned, and an exchange must follow the machine", () => {
+  const vm = (turns: CallTurn[]) => callOutcome(report({ endedReason: "voicemail", turns }));
+  it.each([
+    ["a greeting then the tone prompt after our opening", [user(0.2, "Hi, you've reached Bob's Plumbing."), bot(2), user(5, "Please leave a message after the tone.")]],
+    ["a 'voicemail of 082…' turn then a second greeting segment", [bot(0.5), user(2, "Voicemail of 082 123 4567."), user(6, "Bob's Plumbing, nobody can take your call right now.")]],
+    ["the same, our opening in between", [user(0.2, "Voicemail of 082 123 4567."), bot(2), user(6, "Bob's Plumbing, nobody can take your call right now.")]],
+    ["an Afrikaans greeting", [bot(0.5), user(3, "Jy het Bob se Loodgieters bereik, los asseblief 'n boodskap na die toon.")]],
+    ["an Afrikaans greeting, short form", [user(0.2, "Bob se Loodgieters, los 'n boodskap."), bot(2), user(6, "Dankie.")]],
+    ["one plain reply", [bot(0.5), user(3, "Hello, Bob's Plumbing.")]],
+  ])("ending voicemail, %s is not answered", (_l, turns) => {
+    expect(vm(turns as CallTurn[])).toEqual({ answered: false, reason: "voicemail" });
+  });
+
+  it("ending voicemail, a real back-and-forth is answered", () => {
+    expect(vm([bot(0.5), user(3, "Bob's Plumbing, hello?"), bot(5), user(8, "Yes we can come tomorrow.")])).toMatchObject({ answered: true });
+  });
+
+  it("a machine phrase in a LATER callee turn is still caught", () => {
+    expect(callOutcome(report({ turns: [user(0.2, "Hi, you've reached Bob's Plumbing."), bot(2), user(5, "Please leave a message after the tone.")] }))).toEqual({
+      answered: false, reason: "voicemail",
+    });
   });
 });
 
