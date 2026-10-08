@@ -31,6 +31,7 @@ import {
 } from "@/lib/api/idempotency";
 import {
   checkAndCount as checkRateLimit,
+  resolveRateLimitPerMinute,
   snapshotRemaining,
 } from "@/lib/api/rate-limit";
 import { resolveEnrolmentCapPerHour } from "@/lib/api/enrolment-cap";
@@ -89,6 +90,11 @@ interface ApiAuthFields extends ResponseMeta {
    * straight to `openEnrolmentGate`.
    */
   enrolmentCapPerHour: number;
+  /**
+   * Per-key per-minute request budget override, already resolved/clamped.
+   * Undefined = scope default.
+   */
+  rateLimitPerMinute?: number;
 }
 
 /**
@@ -304,6 +310,7 @@ export async function authenticateApiRequest(
     mode: candidate.mode,
     scopes: candidate.scopes,
     enrolmentCapPerHour: resolveEnrolmentCapPerHour(candidate.enrolmentCapPerHour),
+    rateLimitPerMinute: resolveRateLimitPerMinute(candidate.rateLimitPerMinute),
     requestId,
     apiVersion: resolved.version,
   };
@@ -527,6 +534,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
       keyId: ctx.keyId,
       mode: ctx.mode,
       scope: requireScope,
+      rateLimitPerMinute: ctx.rateLimitPerMinute,
     });
     if (!rl.ok) {
       const rlResp = apiError(
@@ -739,6 +747,7 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         keyId: ctx.keyId,
         mode: ctx.mode,
         scope: requireScope,
+        rateLimitPerMinute: ctx.rateLimitPerMinute,
       });
       response.headers.set("X-RateLimit-Limit", String(snapshot.limit));
       response.headers.set("X-RateLimit-Remaining", String(snapshot.remaining));

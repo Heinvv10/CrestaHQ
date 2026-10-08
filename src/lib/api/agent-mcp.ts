@@ -89,7 +89,7 @@ async function callTool(
   state.firstCallPaid = false;
   const rl = prepaid
     ? { ok: true as const, retryAfterSec: 0 }
-    : checkAndCount({ keyId: auth.keyId, mode: auth.mode, scope: "agent" });
+    : checkAndCount({ keyId: auth.keyId, mode: auth.mode, scope: "agent", rateLimitPerMinute: auth.rateLimitPerMinute });
   if (!rl.ok) {
     // Not logged per call: the request writes one summary row (handleMcpRequest).
     state.rateLimited += 1;
