@@ -89,9 +89,10 @@ function repliedAfterOpening(turns: CallTurn[]): boolean {
 export function callOutcome(report: CallReport): CallOutcome {
   const { turns } = report;
   const lastMachine = turns.findLastIndex((t) => spoke(t, "user") && MACHINE.test(t.content));
-  const replied = repliedAfterOpening(turns);
-  if (replied && exchangeAfter(turns, lastMachine)) return { answered: true, ...callStartedAt(report) };
+  // An exchange ends with the callee speaking after an assistant turn, so after our opening too.
+  if (exchangeAfter(turns, lastMachine)) return { answered: true, ...callStartedAt(report) };
   if (lastMachine !== -1) return { answered: false, reason: "voicemail" };
+  const replied = repliedAfterOpening(turns);
   return { answered: false, reason: notAnsweredReason(report.endedReason) ?? (replied ? "no_exchange" : "no_speech") };
 }
 
