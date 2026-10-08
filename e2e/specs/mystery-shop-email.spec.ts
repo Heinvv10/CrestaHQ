@@ -38,7 +38,7 @@ test("Mystery shop (email): the dialog names the target, confirm sends, the card
       fromEmail: "desk@e2e.invalid", fromName: "E2E Desk", verifiedAt: new Date().toISOString(),
     },
     mailboxConfig: {
-      host: "imap.e2e.invalid", port: 993, username: "e2e", sentFolder: null,
+      host: "imap.e2e.invalid", port: 993, username: "desk@e2e.invalid", sentFolder: null,
       verifiedAt: new Date().toISOString(), lastSyncAt: null, lastError: null, enabled: true,
     },
   });

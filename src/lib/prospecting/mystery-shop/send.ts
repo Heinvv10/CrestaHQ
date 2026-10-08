@@ -8,6 +8,7 @@ import { outboundVoiceReady, placeContactCall } from "@/lib/server/voice-call";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { MysteryShopChannel } from "./model";
+import { normalizeEmailTarget } from "./targets";
 
 /**
  * Sending a mystery shop over the existing comms rails — never a hand-rolled
@@ -22,10 +23,14 @@ export type ChannelState = { available: boolean; reason?: string };
 
 const NOT_YET: ChannelState = { available: false, reason: "Not available yet." };
 
+/** The synced mailbox's own address: the Reply-To, so the business's reply lands where it is read. */
+const mailboxAddress = (sub: SubAccountDoc) => normalizeEmailTarget(sub.mailboxConfig?.username);
+
 /**
  * Whether each channel can send for this sub-account right now. Email needs a
- * verified SMTP sender AND a working IMAP mailbox: without the mailbox sync no
- * reply can ever be seen, and every shop would read as a missed lead.
+ * verified SMTP sender AND a working IMAP mailbox whose address is known (it
+ * is the Reply-To): without the mailbox sync no reply can ever be seen, and
+ * every shop would read as a missed lead.
  */
 export async function channelStates(
   subAccountId: string,
@@ -39,7 +44,9 @@ export async function channelStates(
         ? { available: false, reason: "Connect your IMAP mailbox in Messaging settings first, so replies can be timed." }
         : mailbox.lastError
           ? { available: false, reason: `The mailbox sync is failing: ${mailbox.lastError}` }
-          : { available: true };
+          : !mailboxAddress(sub)
+            ? { available: false, reason: "The mailbox address isn't known." }
+            : { available: true };
   const voice = await outboundVoiceReady(subAccountId);
   const call: ChannelState = voice.ok ? { available: true } : { available: false, reason: voice.error };
   return { email, call, whatsapp: NOT_YET, form: NOT_YET };
@@ -75,6 +82,8 @@ export async function sendMysteryShop(input: {
     if (contact.emailOptedOut === true) {
       return { ok: false, kind: "refused", code: "opted_out", reason: "This contact has opted out of email." };
     }
+    const replyTo = mailboxAddress(input.sub);
+    if (!replyTo) return { ok: false, kind: "refused", code: "channel_unavailable", reason: "The mailbox address isn't known." };
     try {
       const sent = await sendEmail({
         to: target,
@@ -83,6 +92,7 @@ export async function sendMysteryShop(input: {
         subAccount: input.sub,
         // Metered like other tenant sends; it also scopes the SMTP mailbox and the suppression list.
         meter: { subAccountId },
+        replyTo,
         archive: true,
         contactId: input.contactId,
         sentByUid: input.uid,

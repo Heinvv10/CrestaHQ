@@ -30,7 +30,7 @@ const SMTP_SUB = {
   name: "Cresta HQ",
   emailProvider: "smtp",
   smtpConfig: { host: "smtp.x", fromEmail: "info@crestahq.com", verifiedAt: "2026-10-01T00:00:00Z" },
-  mailboxConfig: { enabled: true, verifiedAt: "2026-10-01T00:00:00Z" },
+  mailboxConfig: { enabled: true, verifiedAt: "2026-10-01T00:00:00Z", username: "Desk@CrestaHQ.com" },
 } as unknown as SubAccountDoc;
 const contact = { agencyId: "ag1", subAccountId: "sa1", email: "info@acme.co.za", phone: "0821234567" } as Contact;
 const enquiry = { email: { subject: "Enquiry", body: "Hi" }, call: "Hi, I'm calling from Cresta HQ." };
@@ -59,8 +59,13 @@ describe("channelStates", () => {
     expect((await channelStates("sa1", unverified)).email.available).toBe(false);
     const noMailbox = { ...SMTP_SUB, mailboxConfig: null } as unknown as SubAccountDoc;
     expect((await channelStates("sa1", noMailbox)).email).toMatchObject({ available: false, reason: expect.stringMatching(/IMAP/) });
-    const failing = { ...SMTP_SUB, mailboxConfig: { enabled: true, verifiedAt: "2026-10-01T00:00:00Z", lastError: "Mailbox login failed." } } as unknown as SubAccountDoc;
+    const failing = { ...SMTP_SUB, mailboxConfig: { enabled: true, verifiedAt: "2026-10-01T00:00:00Z", username: "desk@crestahq.com", lastError: "Mailbox login failed." } } as unknown as SubAccountDoc;
     expect((await channelStates("sa1", failing)).email).toEqual({ available: false, reason: "The mailbox sync is failing: Mailbox login failed." });
+    // Replies must come back to the synced mailbox: without its address there is no Reply-To.
+    for (const username of ["desk", "", undefined]) {
+      const unknown = { ...SMTP_SUB, mailboxConfig: { enabled: true, verifiedAt: "x", username } } as unknown as SubAccountDoc;
+      expect((await channelStates("sa1", unknown)).email).toEqual({ available: false, reason: "The mailbox address isn't known." });
+    }
   });
 });
 
@@ -71,6 +76,7 @@ describe("email", () => {
     });
     expect(sendEmail).toHaveBeenCalledWith({
       to: "info@acme.co.za", subject: "Enquiry", text: "Hi", subAccount: SMTP_SUB, meter: { subAccountId: "sa1" },
+      replyTo: "desk@crestahq.com",
       archive: true, contactId: "c1", sentByUid: "u1",
     });
   });
