@@ -74,6 +74,13 @@ describe("publicSection whitelist", () => {
     });
   });
 
+  it("never shows lead capture's formUrl, publicly or to members (the mystery shop reads it server-side)", async () => {
+    const lead = await leadCapture.run(input);
+    expect(lead.raw).toMatchObject({ formUrl: expect.stringMatching(/^https:/) });
+    expect(publicSection(lead, { showName: true }).details).not.toHaveProperty("formUrl");
+    expect(publicSection(lead, { showName: true, keys: MEMBER_RAW_KEYS }).details).not.toHaveProperty("formUrl");
+  });
+
   it("carries the values, flattened to scalars", async () => {
     expect(publicSection(gbpResult, { showName: true }).details).toEqual({
       description: "notMeasured",
