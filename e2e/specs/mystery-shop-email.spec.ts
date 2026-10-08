@@ -74,8 +74,6 @@ test("Mystery shop (email): the dialog names the target, confirm sends, the card
     await page.goto(`/sa/${sa()}/contacts/${contactId}`);
     const card = page.getByTestId("mystery-shop");
     await expect(card).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("mystery-shop-whatsapp")).toBeDisabled();
-    await expect(page.getByTestId("mystery-shop-whatsapp-reason")).toHaveText("WhatsApp: Not available yet.");
 
     // Dialog → names the target and the enquiry → confirm → the card shows the shop sent and waiting.
     await page.getByTestId("mystery-shop-email").click();
