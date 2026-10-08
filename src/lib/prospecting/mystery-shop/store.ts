@@ -134,14 +134,22 @@ export async function releaseShop(
   });
 }
 
+/**
+ * How a response was seen. `senderAuth` "pass" = the sender is proven (the
+ * mail host authenticated the From domain, or the call we placed was
+ * answered); "unknown" = taken on trust (no Authentication-Results, or a
+ * callback's caller ID). The member view shows unknown as unverified.
+ */
+export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" };
+
 /** The first response inside the window wins; a missed shop is upgraded only by an in-window one. */
-export async function settleResponded(shopId: string, atMs: number): Promise<boolean> {
+export async function settleResponded(shopId: string, atMs: number, via: ResponseVia): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
     const shop = (await tx.get(ref)).data();
     if (!shop || !canSettleResponded(shop, atMs)) return false;
-    tx.update(ref, { status: "responded", respondedAt: new Date(atMs), responseMs: atMs - toMs(shop.sentAt)! });
+    tx.update(ref, { status: "responded", respondedAt: new Date(atMs), responseMs: atMs - toMs(shop.sentAt)!, ...via });
     return true;
   });
 }

@@ -25,6 +25,9 @@ export interface MemberShop {
   enquiryText: string;
   failure: MysteryShopFailure | null;
   createdAt: string | null;
+  /** How the response was seen, and whether its sender is proven (store.ts `ResponseVia`). Null until responded. */
+  responseVia: "email" | "answered" | "callback" | null;
+  senderAuth: "pass" | "unknown" | null;
 }
 
 export interface MysteryShopItem {
@@ -35,6 +38,8 @@ export interface MysteryShopItem {
   disclosure: string;
   /** Member view only. */
   target?: string;
+  /** Member view only, for a response: "Reply sender verified" / "unverified". */
+  verified?: string;
 }
 
 export interface MysteryShopSection {
@@ -65,6 +70,8 @@ export function serializeShop(id: string, d: Record<string, unknown>): MemberSho
     enquiryText: String(d.enquiryText ?? ""),
     failure: f ? { code: String(f.code), reason: String(f.reason) } : null,
     createdAt: iso(d.createdAt),
+    responseVia: (["email", "answered", "callback"] as const).find((v) => v === d.responseVia) ?? null,
+    senderAuth: d.senderAuth === "pass" || d.senderAuth === "unknown" ? d.senderAuth : null,
   };
 }
 
@@ -120,7 +127,9 @@ function item(s: MemberShop, audience: "public" | "member", nowMs: number, timeZ
     note,
     disclosure: `This was a response-time test: a plain enquiry sent on ${formatDay(sent, timeZone)}.`,
   };
-  return audience === "member" ? { ...view, target: s.target } : view;
+  if (audience === "public") return view;
+  const verified = s.senderAuth ? `Reply sender ${s.senderAuth === "pass" ? "verified" : "unverified"}` : undefined;
+  return { ...view, target: s.target, ...(outcome === "responded" && verified ? { verified } : {}) };
 }
 
 const SECTIONS: { key: MysteryShopSection["key"]; title: string; channels: MysteryShopChannel[] }[] = [
@@ -161,8 +170,12 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
       return `${head}sent ${since(s.sentAt, nowMs)} ago, waiting for a reply (24 h)${
         s.autoReplyAt ? `; an automatic reply came after ${since(s.sentAt, Date.parse(s.autoReplyAt))}` : ""
       }`;
-    case "responded":
-      return `${head}responded in ${formatDuration(s.responseMs ?? 0)}`;
+    case "responded": {
+      const ok = s.senderAuth === "pass" ? "verified" : "unverified";
+      return s.responseVia === "callback"
+        ? `${head}called back after ${formatDuration(s.responseMs ?? 0)} (caller ID ${ok})`
+        : `${head}responded in ${formatDuration(s.responseMs ?? 0)} (sender ${ok})`;
+    }
     case "missed":
       return `${head}no reply in 24 h — ${formatMoney(s.jobValueCents, s.currency)} lead missed`;
     case "refused":

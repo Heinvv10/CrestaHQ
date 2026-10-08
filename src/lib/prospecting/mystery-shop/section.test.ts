@@ -17,7 +17,7 @@ const shop = (over: Partial<MemberShop> = {}): MemberShop => ({
   id: "s1", channel: "email", status: "responded", target: EMAIL, sentAt: SENT,
   respondedAt: "2026-10-08T10:14:00.000Z", responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
   jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
-  failure: null, createdAt: SENT,
+  failure: null, createdAt: SENT, responseVia: "email", senderAuth: "pass",
   ...over,
 });
 
@@ -103,11 +103,30 @@ describe("member sections", () => {
   });
 });
 
+describe("sender verification (member only)", () => {
+  it("the member view says whether the reply's sender was verified; the public view does not change", () => {
+    const shops = [shop({ senderAuth: "unknown" }), shop({ id: "c1", channel: "call", target: PHONE, responseVia: "answered", senderAuth: "pass" })];
+    const [member] = mysteryShopSections(shops, { audience: "member", nowMs: NOW });
+    expect(member.items.map((i) => i.verified)).toEqual(["Reply sender unverified", "Reply sender verified"]);
+    const [pub] = mysteryShopSections(shops, { audience: "public", nowMs: NOW });
+    expect(pub.items[0]).not.toHaveProperty("verified");
+    expect(JSON.stringify(pub)).not.toMatch(/verified|senderAuth|callback/);
+    expect(pub.items[0].text).toBe("Responded in 2 h 14 m by email.");
+  });
+  it("status lines mark an unverified response, e.g. a callback by caller ID", () => {
+    const at = Date.parse("2026-10-08T08:03:00Z");
+    expect(shopStatusLine(shop({ senderAuth: "unknown" }), at)).toBe(`Email to ${EMAIL} — responded in 2 h 14 m (sender unverified)`);
+    expect(shopStatusLine(shop({ channel: "call", target: PHONE, responseVia: "callback", senderAuth: "unknown" }), at)).toBe(
+      `Call to ${PHONE} — called back after 2 h 14 m (caller ID unverified)`,
+    );
+  });
+});
+
 describe("status lines", () => {
   const at = Date.parse("2026-10-08T08:03:00Z");
   it.each([
     [{ status: "sent" as const }, `Email to ${EMAIL} — sent 3 m ago, waiting for a reply (24 h)`],
-    [{}, `Email to ${EMAIL} — responded in 2 h 14 m`],
+    [{}, `Email to ${EMAIL} — responded in 2 h 14 m (sender verified)`],
     [{ status: "missed" as const }, `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed`],
     [
       { channel: "call" as const, target: PHONE, status: "refused" as const, failure: { code: "outside_window", reason: "outside calling hours" } },
@@ -124,6 +143,7 @@ describe("serializeShop", () => {
       responseMs: null, autoReplyAt: { toMillis: () => Date.parse(SENT) + 1000 }, jobValueCents: 150_000,
       currency: "ZAR", enquiryText: "x", failure: null, createdAt: new Date(SENT), providerRef: "<m@x>",
     });
+    expect(s).toMatchObject({ responseVia: null, senderAuth: null });
     expect(s.sentAt).toBe(SENT);
     expect(s.autoReplyAt).toBe("2026-10-08T08:00:01.000Z");
     expect(s).not.toHaveProperty("providerRef");

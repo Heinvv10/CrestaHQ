@@ -192,7 +192,7 @@ export async function POST(
   };
   const mysteryShopId = asString(message.call?.metadata?.mysteryShopId);
   await (mysteryShopId
-    ? settleMysteryShopCall(subAccountId, mysteryShopId, callReport)
+    ? settleMysteryShopCall(subAccountId, mysteryShopId, callId, callReport)
     : message.call?.metadata?.direction === "outbound"
       ? Promise.resolve()
       : matchInboundCallback(subAccountId, asString(message.call?.customer?.number), callReport)

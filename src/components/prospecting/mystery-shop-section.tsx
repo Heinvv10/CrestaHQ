@@ -18,6 +18,7 @@ export function MysteryShopSections({ sections }: { sections: MysteryShopSection
               <li key={it.channel} data-testid={`mystery-shop-${it.channel}`} className="space-y-1 py-3 text-sm">
                 <p className={it.outcome === "missed" ? "font-medium text-destructive" : "font-medium"}>{it.text}</p>
                 {it.target ? <p className="text-xs text-muted-foreground">Sent to {it.target}</p> : null}
+                {it.verified ? <p className="text-xs text-muted-foreground">{it.verified}</p> : null}
                 {it.note ? <p className="text-muted-foreground">{it.note}</p> : null}
                 <p className="text-xs text-muted-foreground">{it.disclosure}</p>
               </li>

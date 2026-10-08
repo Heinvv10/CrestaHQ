@@ -6,7 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * outbound call is neither — and a failing hook never stops the report.
  */
 
-vi.mock("@/lib/comms/voice/webhook-auth", () => ({ vapiWebhookAuthorized: () => true }));
+let authorized = true;
+vi.mock("@/lib/comms/voice/webhook-auth", () => ({ vapiWebhookAuthorized: () => authorized }));
 const handle = vi.fn();
 vi.mock("@/lib/comms/voice/end-of-call", () => ({ handleVapiEndOfCall: (...a: unknown[]) => handle(...a) }));
 const settle = vi.fn();
@@ -37,6 +38,7 @@ const REPORT = {
 };
 
 beforeEach(() => {
+  authorized = true;
   handle.mockReset().mockResolvedValue({ errors: [] });
   settle.mockReset().mockResolvedValue(undefined);
   callback.mockReset().mockResolvedValue(undefined);
@@ -45,7 +47,7 @@ beforeEach(() => {
 describe("mystery-shop hook", () => {
   it("a mystery-shop call settles its shop from the report", async () => {
     await post({ ...REPORT, call: { id: "call1", customer: { number: "+27821234567" }, metadata: { direction: "outbound", mysteryShopId: "s1" } } });
-    expect(settle).toHaveBeenCalledWith("sa1", "s1", expect.objectContaining({
+    expect(settle).toHaveBeenCalledWith("sa1", "s1", "call1", expect.objectContaining({
       endedReason: "customer-ended-call",
       durationSec: 30,
       startedAtMs: Date.parse(REPORT.startedAt),
@@ -60,6 +62,14 @@ describe("mystery-shop hook", () => {
     await post({ ...REPORT, artifact: { messages: [] }, call: { id: "call2", customer: { number: "+27821234567" } } });
     expect(callback).toHaveBeenCalledWith("sa1", "+27821234567", expect.objectContaining({ userSpoke: false }));
     expect(settle).not.toHaveBeenCalled();
+  });
+
+  it("an unauthenticated webhook is refused before either hook runs", async () => {
+    authorized = false;
+    const res = await post({ ...REPORT, call: { id: "call5", customer: { number: "+27821234567" }, metadata: { mysteryShopId: "s1" } } });
+    expect(res.status).toBe(401);
+    expect(settle).not.toHaveBeenCalled();
+    expect(callback).not.toHaveBeenCalled();
   });
 
   it("an ordinary outbound call is neither", async () => {

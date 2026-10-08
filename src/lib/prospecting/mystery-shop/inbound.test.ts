@@ -38,7 +38,7 @@ describe("email", () => {
   it("a reply from the target settles the shop with the elapsed time; a second reply changes nothing", async () => {
     seedShop("s1");
     await matchMysteryShopEmail("sa1", email(EMAIL));
-    expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 2 * 3600_000 });
+    expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 2 * 3600_000, responseVia: "email", senderAuth: "unknown" });
     await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: SENT + 3 * 3600_000 }));
     expect(shop("s1").responseMs).toBe(2 * 3600_000);
   });
@@ -61,6 +61,12 @@ describe("email", () => {
     seedShop("s1");
     await matchMysteryShopEmail("sa1", email("x@evil.example", { inReplyTo: "<s1@crestahq.com>" }));
     expect(shop("s1").status).toBe("sent");
+  });
+
+  it("a reply the receiving server authenticated is stored senderAuth pass", async () => {
+    seedShop("s1");
+    await matchMysteryShopEmail("sa1", email(EMAIL, { authResults: ["mx.crestahq.com; dmarc=pass header.from=acme.co.za"] }));
+    expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "pass" });
   });
 
   it("a spoofed From that fails DMARC closes nothing and records nothing", async () => {
@@ -86,26 +92,35 @@ describe("email", () => {
 
 describe("call", () => {
   it("an answered mystery-shop call is responded at the answer time", async () => {
-    seedShop("k1", { channel: "call", target: PHONE });
-    await settleMysteryShopCall("sa1", "k1", callReport());
-    expect(shop("k1")).toMatchObject({ status: "responded", responseMs: 12_000 });
+    seedShop("k1", { channel: "call", target: PHONE, providerRef: "call_1" });
+    await settleMysteryShopCall("sa1", "k1", "call_1", callReport());
+    expect(shop("k1")).toMatchObject({ status: "responded", responseMs: 12_000, responseVia: "answered", senderAuth: "pass" });
+  });
+
+  it("only the call we placed settles it: another call carrying a copied shop id is ignored", async () => {
+    seedShop("k1", { channel: "call", target: PHONE, providerRef: "call_1" });
+    await settleMysteryShopCall("sa1", "k1", "call_other", callReport());
+    seedShop("k2", { channel: "call", target: PHONE, providerRef: null });
+    await settleMysteryShopCall("sa1", "k2", "call_2", callReport());
+    expect(shop("k1").status).toBe("sent");
+    expect(shop("k2").status).toBe("sent");
   });
 
   it.each(["voicemail", "customer-did-not-answer", "customer-busy", "twilio-failed-to-connect-call"])(
     "%s leaves the shop waiting for a callback",
     async (endedReason) => {
-      seedShop("k1", { channel: "call", target: PHONE });
-      await settleMysteryShopCall("sa1", "k1", callReport({ endedReason }));
+      seedShop("k1", { channel: "call", target: PHONE, providerRef: "call_1" });
+      await settleMysteryShopCall("sa1", "k1", "call_1", callReport({ endedReason }));
       expect(shop("k1").status).toBe("sent");
     },
   );
 
   it("a report naming another sub-account's shop, or an email shop, is ignored", async () => {
-    seedShop("k1", { channel: "call", target: PHONE, subAccountId: "sa2" });
-    seedShop("e1");
-    await settleMysteryShopCall("sa1", "k1", callReport());
-    await settleMysteryShopCall("sa1", "e1", callReport());
-    await settleMysteryShopCall("sa1", "../x", callReport());
+    seedShop("k1", { channel: "call", target: PHONE, subAccountId: "sa2", providerRef: "call_1" });
+    seedShop("e1", { providerRef: "call_1" });
+    await settleMysteryShopCall("sa1", "k1", "call_1", callReport());
+    await settleMysteryShopCall("sa1", "e1", "call_1", callReport());
+    await settleMysteryShopCall("sa1", "../x", "call_1", callReport());
     expect(shop("k1").status).toBe("sent");
     expect(shop("e1").status).toBe("sent");
   });
@@ -113,7 +128,7 @@ describe("call", () => {
   it("an inbound call from the target number is a callback, at the call's start", async () => {
     seedShop("k1", { channel: "call", target: PHONE });
     await matchInboundCallback("sa1", "+27 82 123 4567", callReport({ startedAtMs: SENT + 3600_000 }));
-    expect(shop("k1")).toMatchObject({ status: "responded", responseMs: 3600_000 });
+    expect(shop("k1")).toMatchObject({ status: "responded", responseMs: 3600_000, responseVia: "callback", senderAuth: "unknown" });
   });
 
   it("a call from a different number never matches", async () => {
