@@ -90,7 +90,6 @@ export async function markBounced(shopId: string): Promise<boolean> {
   });
 }
 
-
 /**
  * sent / recently missed shops of one channel in a sub-account — what an
  * inbound reply may close. A missed shop past LATE_REPLY_HORIZON_MS cannot be

@@ -51,6 +51,11 @@ function getWebhookSecret(): string {
   return s;
 }
 
+/** Whether the public base URL Vapi calls back is set (see getAppUrl). */
+export function vapiAppUrlConfigured(): boolean {
+  return Boolean(process.env.VAPI_PUBLIC_BASE_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim());
+}
+
 /**
  * The public base URL Vapi calls back on (LLM turn webhook + end-of-call).
  * This gets BAKED into the assistant config on every provisioning save, so
@@ -65,11 +70,6 @@ function getWebhookSecret(): string {
  * back to `NEXT_PUBLIC_APP_URL` when unset (unchanged behavior for
  * deployments that only ever provision from production).
  */
-/** Whether the public base URL Vapi calls back is set (see getAppUrl). */
-export function vapiAppUrlConfigured(): boolean {
-  return Boolean(process.env.VAPI_PUBLIC_BASE_URL?.trim() || process.env.NEXT_PUBLIC_APP_URL?.trim());
-}
-
 function getAppUrl(): string {
   const url = (
     process.env.VAPI_PUBLIC_BASE_URL?.trim() ||

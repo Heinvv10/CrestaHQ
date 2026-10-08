@@ -180,13 +180,13 @@ export function senderAuthenticated(authResults: string[], fromDomain: string): 
 
 const lower = (v: string) => v.trim().toLowerCase();
 
-/** The delivery-status part reports a hard failure for `target` (a block without a Final-Recipient counts). */
 /** A delivery-status field value without (comments) and <angle brackets>. */
 const field = (block: string, name: string) => {
   const v = new RegExp(`^${name}:[ \\t]*(.*)$`, "im").exec(block)?.[1];
   return v === undefined ? undefined : lower(v.replace(/\([^)]*\)/g, "").replace(/[<>]/g, ""));
 };
 
+/** The delivery-status part reports a hard failure for `target` (a block without a Final-Recipient counts). */
 function failedFor(deliveryStatus: string, target: string): boolean {
   return deliveryStatus.split(/\r?\n[ \t]*\r?\n/).some((block) => {
     if (field(block, "action") !== "failed") return false;
