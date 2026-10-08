@@ -74,6 +74,14 @@ jobs:
       - name: Typecheck
         run: pnpm exec tsc --noEmit
 
+      # The mystery shop's form-engine tests drive playwright-core's real
+      # Chromium (src/lib/prospecting/mystery-shop/form/*.test.ts). A no-op
+      # when the runner's cache already has this revision. Without it those
+      # tests FAIL under CI (they only skip on a developer box without it).
+      # No --with-deps: same reason as the E2E job's install.
+      - name: Install Chromium (form-engine tests)
+        run: pnpm exec playwright-core install chromium
+
       - name: Tests
         run: pnpm test
 
