@@ -11,20 +11,24 @@ import {
 
 /**
  * The reply-side transitions of `mysteryShops` (store.ts holds the send side
- * and the timer): what an inbound email or call may do to a waiting shop.
+ * and the timer): what an inbound email, call or WhatsApp may do to a waiting shop.
  * Each is a transaction that re-reads the shop, so concurrent replies, the
  * timer and a sweep settle it once.
  */
 
 /**
- * How a response was seen. `senderAuth` "pass" = the sender is proven: only
- * the call we placed being answered. "unknown" = taken on trust: every email
- * reply (an email sender is never provable) and a callback's caller ID.
- * Members see unknown as unverified.
+ * How a response was seen. `senderAuth` "pass" = the sender is proven: the
+ * call we placed being answered, and a WhatsApp reply (the sending number is
+ * WhatsApp's own registration, delivered on Meta's signed webhook). "unknown"
+ * = taken on trust: every email reply (an email sender is never provable) and
+ * a callback's caller ID. Members see unknown as unverified.
  * A reply whose sender FAILED the mail host's checks never settles a shop
  * (recordAuthFailedReply).
  */
-export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" };
+export type ResponseVia = {
+  responseVia: "email" | "answered" | "callback" | "whatsapp";
+  senderAuth: "pass" | "unknown";
+};
 
 /**
  * The first response inside the window wins; a missed shop is upgraded only
@@ -86,6 +90,35 @@ export async function markBounced(shopId: string): Promise<boolean> {
     const status = (await tx.get(ref)).data()?.status;
     if (status !== "sent" && status !== "missed") return false;
     tx.update(ref, { status: "failed", failure: { code: "bounced", reason: "The enquiry bounced: it was never delivered." } });
+    return true;
+  });
+}
+
+/**
+ * A sent (or missed) WhatsApp that Meta reported failed was never delivered:
+ * `failed`, code `undeliverable`, with Meta's error. It was sent, so the slot
+ * is kept. Never public.
+ */
+export async function markUndeliverable(shopId: string, detail: string | null): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const status = (await tx.get(ref)).data()?.status;
+    if (status !== "sent" && status !== "missed") return false;
+    const reason = `WhatsApp couldn't deliver the enquiry${detail ? ` (${detail})` : ""}.`;
+    tx.update(ref, { status: "failed", failure: { code: "undeliverable", reason } });
+    return true;
+  });
+}
+
+/** The first delivered / read receipt of a WhatsApp shop, at Meta's time. For the member's card only. */
+export async function stampDelivery(shopId: string, field: "deliveredAt" | "readAt", atMs: number): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    if (!shop || shop[field] != null) return false;
+    tx.update(ref, { [field]: new Date(atMs) });
     return true;
   });
 }

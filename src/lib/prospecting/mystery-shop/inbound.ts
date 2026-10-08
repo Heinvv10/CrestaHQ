@@ -5,12 +5,21 @@ import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { isDocId } from "@/lib/server/doc-id";
 import { callOutcome, callStartedAt, type CallReport } from "./call-match";
 import { decideEmail, senderAuthenticated, type InboundEmail } from "./email-match";
-import { closableShops, markBounced, recordAuthFailedReply, recordAutoReply, settleResponded } from "./replies";
+import {
+  closableShops,
+  markBounced,
+  markUndeliverable,
+  recordAuthFailedReply,
+  recordAutoReply,
+  settleResponded,
+  stampDelivery,
+} from "./replies";
 import { toMs } from "./model";
+import { isWhatsAppAutoReply } from "./whatsapp-match";
 
 /**
  * The inbound hooks: one call from each host path (IMAP mailbox sync, the
- * Vapi end-of-call webhook). Each only settles shops of the sub-account the
+ * Vapi end-of-call webhook, the WhatsApp Cloud webhook). Each only settles shops of the sub-account the
  * host path is already scoped to. The hosts wrap these so a failure here is
  * logged and never breaks them.
  */
@@ -82,4 +91,51 @@ export async function matchInboundCallback(subAccountId: string, callerPhone: st
   const docs = (await closableShops(subAccountId, "call")).filter((d) => d.data()?.target === caller);
   const { atMs } = callStartedAt(report);
   for (const d of docs) await settleResponded(d.id, atMs, { responseVia: "callback", senderAuth: "unknown" });
+}
+
+/**
+ * A WhatsApp message in to `subAccountId`'s Cloud number, at Meta's own
+ * timestamp: from a waiting WhatsApp shop's exact number = its response
+ * (an away / greeting text is only an automatic reply). Any other number,
+ * sub-account or channel never settles it.
+ */
+export async function matchMysteryShopWhatsApp(
+  subAccountId: string,
+  fromE164: string,
+  occurredAtMs: number,
+  text: string,
+): Promise<void> {
+  const from = normalizePhoneE164(fromE164);
+  if (!from) return;
+  const docs = (await closableShops(subAccountId, "whatsapp")).filter((d) => d.data()?.target === from);
+  const auto = isWhatsAppAutoReply(text);
+  for (const d of docs) {
+    if (auto) await recordAutoReply(d.id, occurredAtMs);
+    else await settleResponded(d.id, occurredAtMs, { responseVia: "whatsapp", senderAuth: "pass" });
+  }
+}
+
+/**
+ * A Cloud delivery receipt for one of `subAccountId`'s WhatsApp shops, matched
+ * on our message id (`providerRef`): failed = undeliverable, delivered / read
+ * stamped for the card.
+ */
+export async function recordMysteryShopWhatsAppStatus(
+  subAccountId: string,
+  providerMessageId: string,
+  status: "sent" | "delivered" | "read" | "failed",
+  atMs: number,
+  errorDetail: string | null,
+): Promise<void> {
+  if (!providerMessageId || status === "sent") return;
+  const snap = await getAdminDb()
+    .collection("mysteryShops")
+    .where("subAccountId", "==", subAccountId)
+    .where("channel", "==", "whatsapp")
+    .where("providerRef", "==", providerMessageId)
+    .get();
+  for (const d of snap.docs) {
+    if (status === "failed") await markUndeliverable(d.id, errorDetail);
+    else await stampDelivery(d.id, status === "delivered" ? "deliveredAt" : "readAt", atMs);
+  }
 }

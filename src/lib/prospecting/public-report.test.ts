@@ -167,6 +167,22 @@ describe("mystery shop (sections 11 and 12)", () => {
     expect((await resolvePublicReport(TOKEN))?.mysteryShop[0].items[0].outcome).toBe("missed");
   });
 
+  it("WhatsApp (section 12): the outcome, never the number, the message id or the delivery stamps", async () => {
+    seed();
+    shop("w1", {
+      channel: "whatsapp", target: TARGET_PHONE, targetLabel: TARGET_PHONE, responseMs: 14 * 60_000, providerRef: "wamid.SECRET",
+      responseVia: "whatsapp", senderAuth: "pass", deliveredAt: new Date("2026-10-08T08:00:02Z"), readAt: new Date("2026-10-08T08:01:00Z"),
+      enquiryText: "Hi, do you offer plumber in Gqeberha?",
+    });
+    const report = await resolvePublicReport(TOKEN);
+    expect(report?.mysteryShop).toEqual([
+      { key: "whatsapp_response", title: "WhatsApp responsiveness", items: [expect.objectContaining({ text: "Responded in 14 m on WhatsApp." })] },
+    ]);
+    const json = JSON.stringify(report?.mysteryShop);
+    for (const leak of ["829876543", "wamid", "SECRET", "deliveredAt", "readAt", "Gqeberha", "pass"]) expect(json).not.toContain(leak);
+    for (const leak of ["829876543", "wamid", "deliveredAt"]) expect(JSON.stringify(report)).not.toContain(leak);
+  });
+
   it("no settled shop → no section", async () => {
     seed();
     shop("e1", { status: "sent", respondedAt: null, responseMs: null });

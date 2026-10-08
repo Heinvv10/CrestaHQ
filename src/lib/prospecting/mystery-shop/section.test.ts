@@ -18,6 +18,7 @@ const shop = (over: Partial<MemberShop> = {}): MemberShop => ({
   respondedAt: "2026-10-08T10:14:00.000Z", responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
   jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
   failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown", sendUncertain: false, awaitingSync: false, disputed: false, missedConfirmedAt: null,
+  deliveredAt: null, readAt: null,
   ...over,
 });
 
@@ -201,5 +202,51 @@ describe("serializeShop", () => {
     expect(s.sentAt).toBe(SENT);
     expect(s.autoReplyAt).toBe("2026-10-08T08:00:01.000Z");
     expect(s).not.toHaveProperty("providerRef");
+  });
+});
+
+describe("WhatsApp (section 12)", () => {
+  const at = Date.parse("2026-10-08T08:05:00Z");
+  const wa = (over: Partial<MemberShop> = {}) =>
+    shop({ channel: "whatsapp", target: PHONE, status: "sent", respondedAt: null, responseMs: null, responseVia: null, senderAuth: null, ...over });
+
+  it.each([
+    [{}, `WhatsApp to ${PHONE} — sent 5 m ago, waiting for a reply (24 h)`],
+    [{ deliveredAt: "2026-10-08T08:00:02.000Z" }, `WhatsApp to ${PHONE} — sent 5 m ago, delivered, waiting for a reply (24 h)`],
+    [{ deliveredAt: "2026-10-08T08:00:02.000Z", readAt: "2026-10-08T08:01:00.000Z" }, `WhatsApp to ${PHONE} — sent 5 m ago, read, waiting for a reply (24 h)`],
+    [
+      { status: "responded" as const, responseMs: 14 * 60_000, responseVia: "whatsapp" as const, senderAuth: "pass" as const },
+      `WhatsApp to ${PHONE} — responded in 14 m (sender verified)`,
+    ],
+    [
+      { status: "failed" as const, failure: { code: "undeliverable", reason: "WhatsApp couldn't deliver the enquiry (131026)." } },
+      `WhatsApp to ${PHONE} — undeliverable: WhatsApp couldn't deliver the enquiry (131026).`,
+    ],
+  ])("status line %j", (over, line) => expect(shopStatusLine(wa(over), at)).toBe(line));
+
+  it("public: the outcome on WhatsApp, a confirmed miss valued; never the number, delivery stamps or an undeliverable shop", () => {
+    const shops = [
+      wa({ status: "responded", responseMs: 14 * 60_000, responseVia: "whatsapp", senderAuth: "pass", deliveredAt: SENT, readAt: SENT }),
+      wa({ id: "f1", status: "failed", sentAt: "2026-10-09T08:00:00.000Z", failure: { code: "undeliverable", reason: "x" } }),
+    ];
+    const [sec] = mysteryShopSections(shops, { audience: "public", nowMs: NOW });
+    expect(sec).toEqual({
+      key: "whatsapp_response",
+      title: "WhatsApp responsiveness",
+      items: [expect.objectContaining({ channel: "whatsapp", outcome: "responded", text: "Responded in 14 m on WhatsApp." })],
+    });
+    const missed = mysteryShopSections([wa({ status: "missed", missedConfirmedAt: "2026-10-09T10:00:00.000Z" })], { audience: "public", nowMs: NOW });
+    expect(missed[0].items[0].text).toBe("No response within 24 h — an estimated R1,500 lead missed.");
+    const json = JSON.stringify([sec, missed]);
+    expect(json).not.toContain("9876543");
+    expect(json).not.toMatch(/deliveredAt|readAt|undeliverable/);
+  });
+
+  it("serializeShop keeps the delivery stamps and a WhatsApp response", () => {
+    const s = serializeShop("w1", {
+      channel: "whatsapp", status: "responded", target: PHONE, sentAt: new Date(SENT), responseVia: "whatsapp", senderAuth: "pass",
+      deliveredAt: new Date(Date.parse(SENT) + 2000), readAt: { toMillis: () => Date.parse(SENT) + 60_000 },
+    });
+    expect(s).toMatchObject({ responseVia: "whatsapp", senderAuth: "pass", deliveredAt: "2026-10-08T08:00:02.000Z", readAt: "2026-10-08T08:01:00.000Z" });
   });
 });

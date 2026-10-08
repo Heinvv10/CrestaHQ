@@ -27,6 +27,10 @@ import {
   recordWhatsappDeliveryStatus,
 } from "@/lib/comms/whatsapp/delivery-status";
 import { createContactServerSide } from "@/lib/server/contacts-service";
+import {
+  matchMysteryShopWhatsApp,
+  recordMysteryShopWhatsAppStatus,
+} from "@/lib/prospecting/mystery-shop/inbound";
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { writeInboundMessageActivity } from "@/lib/server/contact-activities";
 import type { SubAccountDoc } from "@/types";
@@ -272,6 +276,19 @@ async function recordStatuses(
       routed++;
       const status = normalizeDeliveryStatus(s.status);
       if (!status) continue;
+      // A prospecting mystery shop sent as this message (PR 5b): undeliverable,
+      // or delivered/read for its card. Its own catch, so it never costs the row.
+      try {
+        await recordMysteryShopWhatsAppStatus(
+          route.subAccountId,
+          s.providerMessageId,
+          status,
+          s.timestampMs ?? Date.now(),
+          [s.errorCode, s.errorTitle].filter(Boolean).join(": ") || null,
+        );
+      } catch (err) {
+        console.error(`[whatsapp-cloud] mystery-shop status ${s.status} not recorded`, err);
+      }
       const r = await recordWhatsappDeliveryStatus({
         db: getAdminDb(),
         subAccountId: route.subAccountId,
@@ -521,6 +538,18 @@ async function handleInbound(
     await Promise.all(writes);
   } catch (err) {
     console.warn("[whatsapp-cloud] message-row write failed", err);
+  }
+
+  // A reply to a prospecting mystery shop (PR 5b), timed at Meta's own
+  // timestamp. After the row, on every delivery (first response wins, so a
+  // redelivery changes nothing), never for an opt-out word, and never able to
+  // fail the message: a failure is logged and the handler carries on.
+  if (nextOptedOut === null) {
+    try {
+      await matchMysteryShopWhatsApp(route.subAccountId, from, inbound.timestampMs ?? Date.now(), inbound.text);
+    } catch (err) {
+      console.error(`[whatsapp-cloud] mystery-shop match failed (sa=${route.subAccountId})`, err);
+    }
   }
 
   // What the inbox list and the timeline show for a caption-less file. Built
