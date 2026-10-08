@@ -180,9 +180,11 @@ export async function releaseShop(
  * How a response was seen. `senderAuth` "pass" = the sender is proven: only
  * the call we placed being answered. "unknown" = taken on trust: every email
  * reply (a From that failed Authentication-Results is refused, but a pass is
- * not provable) and a callback's caller ID. Members see unknown as unverified.
+ * not provable) and a callback's caller ID. "fail" = an email whose sender
+ * failed the mail host's checks. Members see unknown as unverified; the
+ * public page leaves a "fail" shop out.
  */
-export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" };
+export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" | "fail" };
 
 /** The first response inside the window wins; a missed shop is upgraded only by an in-window one. */
 export async function settleResponded(shopId: string, atMs: number, via: ResponseVia): Promise<boolean> {

@@ -4,7 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { isDocId } from "@/lib/server/doc-id";
 import { callOutcome, callStartedAt, type CallReport } from "./call-match";
-import { decideEmail, type InboundEmail } from "./email-match";
+import { decideEmail, senderAuthenticated, type InboundEmail } from "./email-match";
 import { closableShops, markBounced, recordAutoReply, settleResponded } from "./store";
 import { toMs } from "./model";
 
@@ -35,8 +35,9 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
       };
     }),
   );
-  // decideEmail closed nothing for a failing sender; an email sender is never provable, so unknown.
-  const via = { responseVia: "email", senderAuth: "unknown" } as const;
+  // An email sender is never provable: unknown, or fail when the mail host's checks failed it.
+  const auth = senderAuthenticated(message.authResults, message.from.slice(message.from.lastIndexOf("@") + 1));
+  const via = { responseVia: "email", senderAuth: auth } as const;
   for (const [shopId, decision] of decisions) {
     if (decision === "responded") await settleResponded(shopId, message.occurredAtMs, via);
     else if (decision === "auto_reply") await recordAutoReply(shopId, message.occurredAtMs);

@@ -118,11 +118,20 @@ describe("senderAuthenticated (Authentication-Results)", () => {
     expect(senderAuthenticated([`${MX} dkim=pass header.d=acme.co.za`, "other; dmarc=fail header.from=acme.co.za"], "acme.co.za")).toBe("fail");
   });
 
-  it("spf fail/softfail is fail unless an aligned dkim=pass in the same header rescues it (to unknown, never pass)", () => {
+  it("a hard spf=fail is fail only when its header has no dmarc result, and no aligned dkim=pass rescues it", () => {
     expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=none`], "acme.co.za")).toBe("fail");
-    expect(senderAuthenticated([`${MX} spf=softfail (sender not permitted) smtp.mailfrom=acme.co.za`], "acme.co.za")).toBe("fail");
+    expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dmarc=none header.from=acme.co.za`], "acme.co.za")).toBe("unknown");
     expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.d=acme.co.za header.s=s1`], "acme.co.za")).toBe("unknown");
     expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.i=@mail.acme.co.za`], "acme.co.za")).toBe("unknown");
+  });
+
+  it.each([
+    "spf=softfail; dkim=pass header.d=biz-co-za.20230601.gappssmtp.com; dmarc=none",
+    "spf=softfail smtp.mailfrom=biz.co.za; dmarc=none",
+    "spf=softfail (sender not permitted) smtp.mailfrom=biz.co.za",
+    "dmarc=none header.from=biz.co.za",
+  ])("%j is never a fail (softfail / dmarc=none)", (line) => {
+    expect(senderAuthenticated([`${MX} ${line}`], "biz.co.za")).toBe("unknown");
   });
 
   it("an unaligned dkim=pass (d=attacker.com) does not rescue an spf fail", () => {
@@ -146,17 +155,14 @@ describe("senderAuthenticated (Authentication-Results)", () => {
 
 describe("decideEmail with Authentication-Results", () => {
   const auth = (line: string) => ({ authResults: [`mx.crestahq.com; ${line}`] });
-  it("a dmarc=fail spoof of the target closes nothing and records nothing — not even an auto-reply", () => {
+  it("a dmarc=fail sender is no longer dropped: it responds (stamped fail by the caller, hidden publicly)", () => {
     const s = [shop("s1", "info@acme.co.za")];
-    expect(decide(mail("info@acme.co.za", auth("dmarc=fail header.from=acme.co.za")), s)).toEqual({ s1: "none" });
-    expect(decide(mail("info@acme.co.za", { ...auth("dmarc=fail"), subject: "Out of office" }), s)).toEqual({ s1: "none" });
+    expect(decide(mail("info@acme.co.za", auth("dmarc=fail header.from=acme.co.za")), s)).toEqual({ s1: "responded" });
   });
   it("spf=fail with aligned dkim=pass is accepted", () => {
     expect(decide(mail("info@acme.co.za", auth("spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.d=acme.co.za")), [shop("s1", "info@acme.co.za")])).toEqual({ s1: "responded" });
   });
-  it("unaligned dkim=pass with spf fail is ignored", () => {
-    expect(decide(mail("info@acme.co.za", auth("spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.d=attacker.com")), [shop("s1", "info@acme.co.za")])).toEqual({ s1: "none" });
-  });
+
   it("no Authentication-Results (unknown) still counts", () => {
     expect(decide(mail("info@acme.co.za", { authResults: [] }), [shop("s1", "info@acme.co.za")])).toEqual({ s1: "responded" });
   });

@@ -14,9 +14,10 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * as `auto_reply` and the shop keeps waiting for a person.
  *
  * The From header is forgeable, so the Authentication-Results headers are
- * read too (`senderAuthenticated`): a sender that FAILS them closes nothing
- * and records nothing. Anything else is "unknown" and counts as before — an
- * email sender is never "verified" (see senderAuthenticated).
+ * read too (`senderAuthenticated`). They never stop a match: a reply whose
+ * sender FAILED them still settles the shop, stamped senderAuth "fail", and
+ * the public page leaves such a shop out (no claim either way). An email
+ * sender is never "verified".
  *
  * A delivery-status notification (a bounce) is never a response or an
  * auto-reply, whoever sends it; one that names our Message-ID marks the shop
@@ -146,18 +147,21 @@ const dkimAligned = (r: AuthResult, fromDomain: string) =>
 
 /**
  * The Authentication-Results verdict on the From domain. "fail": any header
- * says dmarc=fail, or spf=fail/softfail with no aligned dkim=pass in that
- * same header. A real host's fail is genuine, and a sender will not inject a
- * fail against itself. There is no "pass": we cannot know whether the
- * receiving host stamps its own header, so a topmost dmarc=pass may be the
- * sender's own injected one. Everything else is "unknown".
+ * says dmarc=fail, or a hard spf=fail in a header with no dmarc result and no
+ * aligned dkim=pass. softfail and dmarc=none are never a fail (forwarders and
+ * Google Workspace relays produce them for real senders). A real host's fail
+ * is genuine, and a sender will not inject a fail against itself. There is no
+ * "pass": we cannot know whether the receiving host stamps its own header, so
+ * a topmost dmarc=pass may be the sender's own injected one. Everything else
+ * is "unknown".
  */
 export function senderAuthenticated(authResults: string[], fromDomain: string): SenderAuth {
   const parsed = authResults.map(parseAuthResults);
   for (const results of parsed) {
     if (results.some((r) => r.method === "dmarc" && r.result === "fail")) return "fail";
-    const spfFail = results.some((r) => r.method === "spf" && (r.result === "fail" || r.result === "softfail"));
-    if (spfFail && !results.some((r) => dkimAligned(r, fromDomain))) return "fail";
+    const spfFail = results.some((r) => r.method === "spf" && r.result === "fail");
+    const dmarcResult = results.some((r) => r.method === "dmarc");
+    if (spfFail && !dmarcResult && !results.some((r) => dkimAligned(r, fromDomain))) return "fail";
   }
   return "unknown";
 }
@@ -166,7 +170,6 @@ const msgId = (v: unknown) => (typeof v === "string" ? v.trim().replace(/^<|>$/g
 
 export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<string, EmailDecision> {
   const out = new Map<string, EmailDecision>(shops.map((s) => [s.id, "none"]));
-  if (senderAuthenticated(m.authResults, domainOf(m.from)) === "fail") return out;
   const thread = new Set([m.inReplyTo, ...m.references].map(msgId).filter(Boolean));
   if (isDeliveryReport(m)) {
     for (const s of shops) {

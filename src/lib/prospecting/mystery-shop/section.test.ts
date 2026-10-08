@@ -124,6 +124,15 @@ describe("uncertain sends and the mailbox sync", () => {
   });
 });
 
+describe("a reply that failed the sender check", () => {
+  it("is left off the public page (no claim either way) and marked on the member card", () => {
+    const failed = shop({ senderAuth: "fail" });
+    expect(mysteryShopSections([failed], { audience: "public", nowMs: NOW })).toEqual([]);
+    expect(mysteryShopSections([failed], { audience: "member", nowMs: NOW })[0].items[0].verified).toBe("Reply failed the sender check");
+    expect(shopStatusLine(failed, NOW)).toBe(`Email to ${EMAIL} — responded in 2 h 14 m (reply failed the sender check)`);
+  });
+});
+
 describe("sender verification (member only)", () => {
   it("the member view says whether the reply's sender was verified; the public view does not change", () => {
     const shops = [shop({ senderAuth: "unknown" }), shop({ id: "c1", channel: "call", target: PHONE, responseVia: "answered", senderAuth: "pass" })];

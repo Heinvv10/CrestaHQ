@@ -76,12 +76,11 @@ describe("email", () => {
     expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "unknown" });
   });
 
-  it("a spoofed From that fails DMARC closes nothing and records nothing", async () => {
+  it("a From that fails DMARC settles responded, stamped senderAuth fail (kept off the public page)", async () => {
     seedShop("s1");
     const spoof = { authResults: ["mx.crestahq.com; spf=fail smtp.mailfrom=acme.co.za; dmarc=fail header.from=acme.co.za"] };
     await matchMysteryShopEmail("sa1", email(EMAIL, spoof));
-    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, subject: "Out of office" }));
-    expect(shop("s1")).toMatchObject({ status: "sent", respondedAt: null, autoReplyAt: null });
+    expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "fail" });
   });
 
   it("a late-synced in-window reply upgrades a missed shop", async () => {
