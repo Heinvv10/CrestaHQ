@@ -35,7 +35,9 @@ const callReport = (over: Record<string, unknown> = {}) => ({
   receivedAtMs: SENT + 60_000,
   turns: [
     { role: "assistant" as const, content: "Hi, I'm calling from Cresta HQ.", secondsFromStart: 0.5 },
-    { role: "user" as const, content: "Yes we do.", secondsFromStart: 5 },
+    { role: "user" as const, content: "Bob's Plumbing, hello?", secondsFromStart: 5 },
+    { role: "assistant" as const, content: "Do you do plumbing in Gqeberha?", secondsFromStart: 7 },
+    { role: "user" as const, content: "Yes we do.", secondsFromStart: 10 },
   ],
   ...over,
 });

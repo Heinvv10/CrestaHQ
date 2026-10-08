@@ -1,20 +1,17 @@
 /**
  * A Vapi end-of-call report → the mystery-shop outcome. Pure.
  *
- * Answered = the callee spoke AFTER our opening line (by `secondsFromStart`,
- * else by transcript order) and it was not a machine. EVERY callee turn is
- * scanned for clear voicemail / phone-menu phrases ("leave a message after
- * the tone", "press 1 for …", Afrikaans "los 'n boodskap"): after the LAST
- * such turn there must be an exchange — an assistant turn then a callee turn
- * — so a menu that leads to a person is answered. When Vapi itself ended the
- * call as voicemail, a full callee → assistant → callee exchange is required
- * (after the last machine turn, if any), whatever was said. Otherwise a
- * dialogue is answered whatever the endedReason: our own pipeline errors
- * must never become the business's miss. No-answer / busy / failed WITHOUT a
- * dialogue, a silence timeout, or speech only before our opening (a "Hello?"
- * then a hang-up) is not answered. A call that is not answered leaves the shop
- * waiting; an inbound call from the target number inside the window then
- * counts as the response (a callback).
+ * Answered = a real exchange: the callee spoke after our opening line (by
+ * `secondsFromStart`, else by transcript order) AND a callee → assistant →
+ * callee exchange follows the LAST callee turn that sounds like a machine
+ * (voicemail greeting, phone menu: "you've reached", "leave your name and
+ * number", "press 1 for …", Afrikaans "los 'n boodskap" …), or anywhere when
+ * none does — whatever the endedReason, so our own pipeline errors after a
+ * conversation never become the business's miss. A single callee turn is
+ * ambiguous (a greeting we do not recognise could be a machine): not
+ * answered, which leaves a miss for a member to check before it is public.
+ * A call that is not answered leaves the shop waiting; an inbound call from
+ * the target number inside the window then counts as the response.
  *
  * The time of answer: Vapi reports no separate "answered" timestamp, so it is
  * the report's `startedAt` when present (the call going in-progress), else
@@ -39,7 +36,7 @@ export interface CallReport {
   turns: CallTurn[];
 }
 
-export type NotAnsweredReason = "voicemail" | "no_answer" | "busy" | "failed" | "no_speech";
+export type NotAnsweredReason = "voicemail" | "no_answer" | "busy" | "failed" | "no_speech" | "no_exchange";
 
 export type CallOutcome =
   | { answered: true; atMs: number; basis: "startedAt" | "endedAt" | "receivedAt" }
@@ -56,18 +53,18 @@ export function notAnsweredReason(endedReason: string | null): NotAnsweredReason
 
 /** Clear voicemail / phone-menu phrasing (en, af). Words a person also says ("not available", "please hold") are left out. */
 const MACHINE =
-  /after the (tone|beep)|at the tone|voice ?mail|mailbox is full|press [0-9] for|record your message|boodskap na die toon|los 'n boodskap/i;
+  /after the (tone|beep)|at the tone|voice ?mail|mailbox is full|press [0-9] for|record your message|leave (a|your) (message|name|number)|you(?:'|’)?ve reached|(can(?:'|’)?t|cannot|not able to) take your call|boodskap na die toon|los 'n boodskap/i;
 
 const spoke = (t: CallTurn, role: CallTurn["role"]) => t.role === role && !!t.content.trim();
 
-/** After index `from`: an assistant turn then a callee turn — preceded by a callee turn when `full`. */
-function exchangeAfter(turns: CallTurn[], from: number, full: boolean): boolean {
+/** After index `from`: a callee turn, then an assistant turn, then a callee turn. */
+function exchangeAfter(turns: CallTurn[], from: number): boolean {
   let i = from + 1;
   const next = (role: CallTurn["role"]) => {
     while (i < turns.length && !spoke(turns[i], role)) i++;
     return i++ < turns.length;
   };
-  return (!full || next("user")) && next("assistant") && next("user");
+  return next("user") && next("assistant") && next("user");
 }
 
 /** When the call started: see the file comment for the fallbacks. */
@@ -92,14 +89,10 @@ function repliedAfterOpening(turns: CallTurn[]): boolean {
 export function callOutcome(report: CallReport): CallOutcome {
   const { turns } = report;
   const lastMachine = turns.findLastIndex((t) => spoke(t, "user") && MACHINE.test(t.content));
-  const voicemail = notAnsweredReason(report.endedReason) === "voicemail";
-  const person =
-    repliedAfterOpening(turns) &&
-    (lastMachine === -1 || exchangeAfter(turns, lastMachine, false)) &&
-    (!voicemail || exchangeAfter(turns, lastMachine, true));
-  if (person) return { answered: true, ...callStartedAt(report) };
-  if (lastMachine !== -1 || voicemail) return { answered: false, reason: "voicemail" };
-  return { answered: false, reason: notAnsweredReason(report.endedReason) ?? "no_speech" };
+  const replied = repliedAfterOpening(turns);
+  if (replied && exchangeAfter(turns, lastMachine)) return { answered: true, ...callStartedAt(report) };
+  if (lastMachine !== -1) return { answered: false, reason: "voicemail" };
+  return { answered: false, reason: notAnsweredReason(report.endedReason) ?? (replied ? "no_exchange" : "no_speech") };
 }
 
 /** ISO string → ms, or null. */
