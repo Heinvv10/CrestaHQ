@@ -16,6 +16,7 @@ import { allowedTargets, emailDomainTrusted, matchTarget } from "@/lib/prospecti
 import { jobValueFor } from "@/lib/prospecting/mystery-shop/job-value";
 import { serializeShop } from "@/lib/prospecting/mystery-shop/section";
 import {
+  attachProviderRef,
   markSent,
   markUncertain,
   releaseShop,
@@ -211,6 +212,12 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       return false;
     });
     if (marked) await queueTimer(shopId, TIMER_DELAY_S, `mystery_shop_${shopId}`);
+    // Already moved by the stuck sweep: still keep the provider's id, so an answered call can settle it.
+    else if (result.providerRef) {
+      await attachProviderRef(shopId, result.providerRef).catch((err) =>
+        console.error("[prospecting/mystery-shop] provider id write failed", shopId, err),
+      );
+    }
     return refuse("send_uncertain", MAYBE_SENT, 502);
   }
   await queueTimer(shopId, TIMER_DELAY_S, `mystery_shop_${shopId}`);

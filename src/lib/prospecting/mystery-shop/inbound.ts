@@ -5,7 +5,7 @@ import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { isDocId } from "@/lib/server/doc-id";
 import { callOutcome, callStartedAt, type CallReport } from "./call-match";
 import { decideEmail, senderAuthenticated, type InboundEmail } from "./email-match";
-import { closableShops, markBounced, recordAuthFailedReply, recordAutoReply, settleResponded } from "./store";
+import { closableShops, markBounced, recordAuthFailedReply, recordAutoReply, settleResponded } from "./replies";
 import { toMs } from "./model";
 
 /**
