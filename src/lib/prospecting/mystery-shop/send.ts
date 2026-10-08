@@ -10,6 +10,7 @@ import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { MysteryShopChannel } from "./model";
 import { normalizeEmailTarget } from "./targets";
+import { formChannelState } from "./form/target";
 
 /**
  * Sending a mystery shop over the existing comms rails — never a hand-rolled
@@ -18,6 +19,7 @@ import { normalizeEmailTarget } from "./targets";
  * `providerRef`). A call goes through the native outbound gate with the
  * operator's per-send consent, then `placeContactCall` (its caps placeholder,
  * activity row and contact stamp), as a short capped call carrying the shop id.
+ * A website form is not sent here: the route queues its job (form/job.ts).
  */
 
 export type ChannelState = { available: boolean; reason?: string };
@@ -57,7 +59,7 @@ export async function channelStates(
     : !vapiAppUrlConfigured()
       ? { available: false, reason: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL)." }
       : { available: true };
-  return { email, call, whatsapp: NOT_YET, form: NOT_YET };
+  return { email, call, whatsapp: NOT_YET, form: formChannelState(sub) };
 }
 
 /**

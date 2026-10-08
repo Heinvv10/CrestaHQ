@@ -345,6 +345,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Mystery-shop 24 h timer (Prospecting PR 5) — same auth: the signature,
   // verified inside the route and bound to its URL.
   /^\/api\/automations\/prospecting\/mystery-shop$/,
+  // Mystery-shop website-form job (Prospecting PR 5c) — same auth: the
+  // signature, verified inside the route and bound to its URL.
+  /^\/api\/automations\/prospecting\/mystery-shop-form$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {

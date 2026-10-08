@@ -12,7 +12,11 @@ import {
   overdue,
   type MysteryShopChannel,
 } from "@/lib/prospecting/mystery-shop/model";
-import { allowedTargets, emailDomainTrusted, matchTarget } from "@/lib/prospecting/mystery-shop/targets";
+import { allowedTargets, emailDomainTrusted, formMatchDomains, matchTarget } from "@/lib/prospecting/mystery-shop/targets";
+import { serviceOf } from "@/lib/prospecting/mystery-shop/enquiry";
+import { NO_FORM, formTargetOf } from "@/lib/prospecting/mystery-shop/form/target";
+import { queueFormJob } from "@/lib/prospecting/mystery-shop/form/job";
+import { sweepStuckFormShop } from "@/lib/prospecting/mystery-shop/form/job-store";
 import { jobValueFor } from "@/lib/prospecting/mystery-shop/job-value";
 import { serializeShop } from "@/lib/prospecting/mystery-shop/section";
 import {
@@ -50,6 +54,14 @@ import { enquiryOf, loadContact, queueTimer, type ShopContact } from "@/lib/pros
  * MAY have gone out is kept `sent` + `sendUncertain` (slot kept, timer
  * queued, still blocking a second send) and answers 502 with a fixed warning.
  * A shop does not stamp `approachedAt` and does not block outreach workflows.
+ *
+ * Website form (PR 5c): the only allowed target is the latest ready report's
+ * lead-capture formUrl (403 channel_unavailable without one). The POST does
+ * not send: it reserves the shop `queued` and queues the form job
+ * (form/job.ts), answering 202 `{ shopId, status: "queued" }`; a job QStash
+ * would not take fails the shop (slot back) with 502. The GET sweep settles
+ * a stuck form shop by how far its run got (form/job-store.ts), never by the
+ * 10-minute rule.
  */
 
 const CONTACT_NOT_FOUND = { error: "Contact not found" };
@@ -57,6 +69,7 @@ const STUCK_AFTER_MS = 10 * 60_000;
 const TIMER_DELAY_S = (RESPONSE_WINDOW_MS + TIMER_GRACE_MS) / 1000;
 const MAYBE_SENT = "The enquiry may have been sent; check the contact's conversation before trying again.";
 const NOT_SENT = "The enquiry could not be sent. Check the channel's settings and try again.";
+const NOT_QUEUED = "The website form could not be queued. Try again.";
 
 const isChannel = (v: unknown): v is MysteryShopChannel =>
   typeof v === "string" && (MYSTERY_SHOP_CHANNELS as readonly string[]).includes(v);
@@ -92,7 +105,9 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     const settle = overdue(data, Date.now())
       ? settleMissed(d.id).then((s) => s === "missed" || (s === "awaiting_sync" && data.awaitingSync !== true))
       : data.status === "queued"
-        ? markUncertain(d.id, null, { olderThanMs: STUCK_AFTER_MS })
+        ? data.channel === "form"
+          ? sweepStuckFormShop(d.id)
+          : markUncertain(d.id, null, { olderThanMs: STUCK_AFTER_MS })
         : null;
     if (!settle) continue;
     swept =
@@ -108,8 +123,13 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
     .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
   const country = access.sub.defaultPhoneCountry;
   const states = await channelStates(subAccountId, access.sub);
+  const form = await formTargetOf(subAccountId, contact);
   const channels = Object.fromEntries(
-    MYSTERY_SHOP_CHANNELS.map((c) => [c, { ...states[c], targets: allowedTargets(c, contact, country) }]),
+    MYSTERY_SHOP_CHANNELS.map((c) => {
+      if (c !== "form") return [c, { ...states[c], targets: allowedTargets(c, contact, country) }];
+      if (!states.form.available || form.reason) return [c, { available: false, reason: states.form.reason ?? form.reason, targets: [] }];
+      return [c, { available: true, targets: form.url ? [form.url] : [] }];
+    }),
   );
   const { text: _text, hash: enquiryHash, ...enquiry } = enquiryOf(contact, access.sub);
   return NextResponse.json({
@@ -147,11 +167,14 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const state = (await channelStates(subAccountId, access.sub))[channel];
   if (!state.available) return refuse("channel_unavailable", state.reason ?? "This channel is not available.");
   const country = access.sub.defaultPhoneCountry;
-  const to = matchTarget(channel, target, allowedTargets(channel, contact, country), country);
+  const form = channel === "form" ? await formTargetOf(subAccountId, contact) : null;
+  if (form && !form.url) return refuse("channel_unavailable", form.reason ?? NO_FORM);
+  const allowed = form?.url ? [form.url] : allowedTargets(channel, contact, country);
+  const to = matchTarget(channel, target, allowed, country);
   if (!to) return refuse("target_not_allowed", "Only this contact's own address or number can be contacted.");
 
   const enquiry = enquiryOf(contact, access.sub);
-  const kind = channel === "email" ? "email" : "call";
+  const kind = channel === "email" ? "email" : channel === "form" ? "form" : "call";
   if (enquiryHash !== enquiry.hash[kind]) {
     return refuse("enquiry_changed", "The enquiry changed — reopen the dialog.", 409);
   }
@@ -171,6 +194,17 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
       enquiryText: enquiry.text[kind],
       ...jobValueFor(contact.prospecting, access.sub.prospectingJobValues),
       cap: mysteryShopCap(access.sub),
+      ...(channel === "form"
+        ? {
+            form: {
+              subject: enquiry.email.subject,
+              service: serviceOf(contact.prospecting),
+              matchDomains: formMatchDomains(to),
+              matchNumbers: allowedTargets("call", contact, country),
+              matchAddresses: allowedTargets("email", contact, country),
+            },
+          }
+        : {}),
     });
   } catch (err) {
     console.error("[prospecting/mystery-shop] reservation failed", err);
@@ -182,6 +216,13 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   if (reserved === "cap_reached") return refuse("cap_reached", "This month's mystery-shop limit is used up.");
 
   const { shopId } = reserved;
+  if (channel === "form") {
+    if (await queueFormJob(shopId, 0, `mystery_shop_form_${shopId}`)) return NextResponse.json({ shopId, status: "queued" }, { status: 202 });
+    await releaseShop(shopId, "failed", { code: "send_failed", reason: NOT_QUEUED }).catch((err) =>
+      console.error("[prospecting/mystery-shop] release failed", shopId, err),
+    );
+    return refuse("send_failed", NOT_QUEUED, 502);
+  }
   const result: SendResult = await sendMysteryShop({
     shopId, channel, target: to, subAccountId, sub: access.sub, contact, contactId, uid: access.uid, enquiry,
     consentAck: consentAck === true,

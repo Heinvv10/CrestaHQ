@@ -37,8 +37,8 @@ type ShopsResponse = {
   channels: Record<MysteryShopChannel, ChannelInfo>;
   cap: number;
   used: number;
-  enquiry: { email: { subject: string; body: string }; call: string };
-  enquiryHash: { email: string; call: string };
+  enquiry: { email: { subject: string; body: string }; call: string; form: string };
+  enquiryHash: { email: string; call: string; form: string };
 };
 
 const LABEL: Record<MysteryShopChannel, string> = { email: "Email", call: "AI call", whatsapp: "WhatsApp", form: "Website form" };
@@ -99,12 +99,18 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contactId, channel, confirm: true, target,
-          enquiryHash: data?.enquiryHash[channel === "email" ? "email" : "call"],
+          enquiryHash: data?.enquiryHash[channel === "email" || channel === "form" ? channel : "call"],
           ...(channel === "call" ? { consentAck: consent } : {}),
         }),
       });
       if (!res.ok) throw new Error(await errorOf(res));
-      toast.success(channel === "call" ? "Mystery-shop call placed" : "Mystery-shop enquiry sent");
+      toast.success(
+        channel === "call"
+          ? "Mystery-shop call placed"
+          : channel === "form"
+            ? "Website form queued — it is filled in within a few minutes"
+            : "Mystery-shop enquiry sent",
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -131,8 +137,13 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
   if (hidden) return null;
 
   const atCap = !!data && data.used >= data.cap;
+  // The form types the email's subject (where it has a subject field) and its own message.
   const enquiryText = (c: MysteryShopChannel) =>
-    !data ? "" : c === "email" ? `Subject: ${data.enquiry.email.subject}\n\n${data.enquiry.email.body}` : data.enquiry.call;
+    !data
+      ? ""
+      : c === "email" || c === "form"
+        ? `Subject: ${data.enquiry.email.subject}\n\n${c === "form" ? data.enquiry.form : data.enquiry.email.body}`
+        : data.enquiry.call;
 
   return (
     <div className="space-y-2 border-t pt-3" data-testid="mystery-shop">
@@ -214,7 +225,11 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
         <AlertDialogContent data-testid="mystery-shop-confirm">
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirming?.channel === "call" ? "Place a mystery-shop AI call?" : `Send a mystery-shop ${LABEL[confirming?.channel ?? "email"].toLowerCase()}?`}
+              {confirming?.channel === "call"
+                ? "Place a mystery-shop AI call?"
+                : confirming?.channel === "form"
+                  ? "Submit the website form?"
+                  : `Send a mystery-shop ${LABEL[confirming?.channel ?? "email"].toLowerCase()}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               Channel: {confirming ? LABEL[confirming.channel] : ""}. This contacts the business for real, from {business}.
@@ -274,7 +289,7 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
                 if (c) void send(c.channel, c.target);
               }}
             >
-              {confirming?.channel === "call" ? "Place the call" : "Send the enquiry"}
+              {confirming?.channel === "call" ? "Place the call" : confirming?.channel === "form" ? "Submit the form" : "Send the enquiry"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

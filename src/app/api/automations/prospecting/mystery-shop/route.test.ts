@@ -111,6 +111,14 @@ describe("an email shop and the mailbox sync", () => {
     }));
   });
 
+  it("a form shop waits for the mailbox too (its reply comes by email to the synced address)", async () => {
+    seed({ channel: "form" });
+    synced(new Date(Date.now() - 2 * DAY).toISOString());
+    expect(await (await call()).json()).toEqual({ ok: true, status: "awaiting_sync", requeue: 1 });
+    synced(new Date().toISOString());
+    expect(await (await call()).json()).toEqual({ ok: true, status: "missed" });
+  });
+
   it("a failing mailbox also waits; a synced, healthy one settles missed", async () => {
     seed({ channel: "email" });
     synced(new Date().toISOString(), "Mailbox login failed.");
