@@ -221,3 +221,26 @@ export async function requeueTimer(shopId: string): Promise<number | null> {
     return n + 1;
   });
 }
+
+/**
+ * A member's confirmation of a missed shop — the only way a miss reaches the
+ * public report. Keeps the first confirmation. The confirmation time, or why not.
+ */
+export async function confirmMissed(
+  shopId: string,
+  subAccountId: string,
+  uid: string,
+): Promise<Date | "not_found" | "not_missed"> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    if (!shop || shop.subAccountId !== subAccountId) return "not_found" as const;
+    if (shop.status !== "missed") return "not_missed" as const;
+    const at = toMs(shop.missedConfirmedAt);
+    if (at !== null) return new Date(at);
+    const now = new Date();
+    tx.update(ref, { missedConfirmedAt: now, missedConfirmedByUid: uid });
+    return now;
+  });
+}

@@ -130,7 +130,7 @@ describe("mystery shop (sections 11 and 12)", () => {
     shop("e1", {});
     shop("k1", {
       channel: "call", target: TARGET_PHONE, targetLabel: TARGET_PHONE, status: "missed", respondedAt: null,
-      responseMs: null, providerRef: "call-987",
+      responseMs: null, providerRef: "call-987", missedConfirmedAt: new Date("2026-10-09T10:00:00Z"), missedConfirmedByUid: "UID-SECRET",
     });
     shop("k0", { channel: "call", target: TARGET_PHONE, status: "failed", sentAt: null, failure: { code: "x", reason: "SECRET" } });
     shop("other", { contactId: "c9", target: "other@else.example" });
@@ -155,6 +155,16 @@ describe("mystery shop (sections 11 and 12)", () => {
     expect(json).not.toContain("Gqeberha");
     expect(json).not.toContain("SECRET");
     expect(json).not.toContain("other@else.example");
+    expect(json).not.toContain("UID-SECRET");
+  });
+
+  it("an unconfirmed miss is absent from the public report and its JSON; confirming it makes it public", async () => {
+    seed();
+    shop("k1", { channel: "call", target: TARGET_PHONE, status: "missed", respondedAt: null, responseMs: null });
+    expect((await resolvePublicReport(TOKEN))?.mysteryShop).toEqual([]);
+    expect(JSON.stringify(await resolvePublicReport(TOKEN))).not.toContain("lead missed");
+    shop("k1", { channel: "call", target: TARGET_PHONE, status: "missed", respondedAt: null, responseMs: null, missedConfirmedAt: new Date() });
+    expect((await resolvePublicReport(TOKEN))?.mysteryShop[0].items[0].outcome).toBe("missed");
   });
 
   it("no settled shop → no section", async () => {

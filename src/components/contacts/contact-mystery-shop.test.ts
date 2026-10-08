@@ -146,4 +146,18 @@ describe("ContactMysteryShop", () => {
     await click(q("mystery-shop-confirm-send"));
     expect(container.textContent).toContain("It's outside the calling window.");
   });
+
+  it("an unconfirmed miss offers 'Confirm no reply', which POSTs the confirmation; a confirmed one does not", async () => {
+    const missed = (id: string, missedConfirmedAt: string | null) => ({
+      id, channel: "email", status: "missed", target: EMAIL, sentAt: "2026-10-07T08:00:00.000Z", respondedAt: null,
+      responseMs: null, autoReplyAt: null, jobValueCents: 150_000, currency: "ZAR", enquiryText: "", failure: null,
+      createdAt: null, missedConfirmedAt,
+    });
+    payload.shops = [missed("m1", null), missed("m2", "2026-10-08T10:00:00.000Z")];
+    await mount();
+    expect(q("mystery-shop-status-m1")?.textContent).toContain("only confirmed misses appear on the report");
+    expect(q("mystery-shop-confirm-missed-m2")).toBeNull();
+    await click(q("mystery-shop-confirm-missed-m1"));
+    expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/mystery-shop/m1/confirm-missed") && init?.method === "POST")).toBe(true);
+  });
 });

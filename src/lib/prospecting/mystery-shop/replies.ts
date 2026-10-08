@@ -22,21 +22,26 @@ import {
 /**
  * How a response was seen. `senderAuth` "pass" = the sender is proven: only
  * the call we placed being answered. "unknown" = taken on trust: every email
- * reply (a From that failed Authentication-Results is refused, but a pass is
- * not provable) and a callback's caller ID. Members see unknown as unverified.
+ * reply (an email sender is never provable) and a callback's caller ID.
+ * Members see unknown as unverified.
  * A reply whose sender FAILED the mail host's checks never settles a shop
  * (recordAuthFailedReply).
  */
 export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" };
 
-/** The first response inside the window wins; a missed shop is upgraded only by an in-window one. */
+/**
+ * The first response inside the window wins; a missed shop is upgraded only
+ * by an in-window one (a late sync), and then responded wins outright: its
+ * confirmation and any dispute are cleared.
+ */
 export async function settleResponded(shopId: string, atMs: number, via: ResponseVia): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
     const shop = (await tx.get(ref)).data();
     if (!shop || !canSettleResponded(shop, atMs)) return false;
-    tx.update(ref, { status: "responded", respondedAt: new Date(atMs), responseMs: atMs - toMs(shop.sentAt)!, ...via });
+    const upgrade = shop.status === "missed" ? { missedConfirmedAt: null, missedConfirmedByUid: null, disputed: false } : {};
+    tx.update(ref, { status: "responded", respondedAt: new Date(atMs), responseMs: atMs - toMs(shop.sentAt)!, ...via, ...upgrade });
     return true;
   });
 }
@@ -44,7 +49,9 @@ export async function settleResponded(shopId: string, atMs: number, via: Respons
 /**
  * The first reply, in the window, whose sender failed the mail host's checks
  * (Authentication-Results). It is not a response: the shop keeps waiting, and
- * a later genuine reply settles it. If none comes, the miss is `disputed`.
+ * a later genuine reply settles it. If none comes, the miss is `disputed` —
+ * also when the failing reply is synced late, onto a shop already missed
+ * (closableShops bounds how late).
  */
 export async function recordAuthFailedReply(shopId: string, atMs: number): Promise<boolean> {
   const db = getAdminDb();
@@ -52,8 +59,9 @@ export async function recordAuthFailedReply(shopId: string, atMs: number): Promi
   return db.runTransaction(async (tx) => {
     const shop = (await tx.get(ref)).data();
     const sent = toMs(shop?.sentAt);
-    if (shop?.status !== "sent" || shop.authFailedReplyAt != null || sent === null || !inWindow(sent, atMs)) return false;
-    tx.update(ref, { authFailedReplyAt: new Date(atMs) });
+    const waiting = shop?.status === "sent" || shop?.status === "missed";
+    if (!waiting || shop.authFailedReplyAt != null || sent === null || !inWindow(sent, atMs)) return false;
+    tx.update(ref, { authFailedReplyAt: new Date(atMs), ...(shop.status === "missed" ? { disputed: true } : {}) });
     return true;
   });
 }

@@ -14,10 +14,10 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * as `auto_reply` and the shop keeps waiting for a person.
  *
  * The From header is forgeable, so the Authentication-Results headers are
- * read too (`senderAuthenticated`). They never stop a match: a reply whose
- * sender FAILED them still settles the shop, stamped senderAuth "fail", and
- * the public page leaves such a shop out (no claim either way). An email
- * sender is never "verified".
+ * read too (`senderAuthenticated`). They never change the decision here; the
+ * caller (inbound.ts) does not let a reply whose sender FAILED them settle
+ * the shop — it is only noted (`authFailedReplyAt`) and a miss after it is
+ * disputed. An email sender is never "verified".
  *
  * Anything that looks like a report (a bounce, a delay notice, a read
  * receipt, a postmaster message) is never a response or an auto-reply. Only a

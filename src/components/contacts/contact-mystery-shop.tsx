@@ -113,6 +113,21 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
     }
   };
 
+  /** A member's confirmation of a miss: only a confirmed miss appears on the public report. */
+  const confirmMissed = async (shopId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${base}/${encodeURIComponent(shopId)}/confirm-missed`, { method: "POST" });
+      if (!res.ok) throw new Error(await errorOf(res));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setBusy(false);
+      await load(true);
+    }
+  };
+
   if (hidden) return null;
 
   const atCap = !!data && data.used >= data.cap;
@@ -176,9 +191,23 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
         </Button>
       )}
       {data?.shops.map((s) => (
-        <p key={s.id} className="text-xs" data-testid={`mystery-shop-status-${s.id}`}>
-          {shopStatusLine(s, Date.now())}
-        </p>
+        <div key={s.id} className="space-y-1">
+          <p className="text-xs" data-testid={`mystery-shop-status-${s.id}`}>
+            {shopStatusLine(s, Date.now())}
+          </p>
+          {s.status === "missed" && !s.missedConfirmedAt && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void confirmMissed(s.id)}
+              data-testid={`mystery-shop-confirm-missed-${s.id}`}
+            >
+              Confirm no reply
+            </Button>
+          )}
+        </div>
       ))}
 
       <AlertDialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>

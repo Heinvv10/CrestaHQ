@@ -4,10 +4,14 @@ import { toMs, type MysteryShopChannel, type MysteryShopFailure, type MysterySho
  * Mystery shops → report sections 11 (speed to lead: email, call, form) and
  * 12 (WhatsApp responsiveness), plus the card's status lines. Pure.
  *
- * The PUBLIC view (share page, its JSON) shows only settled outcomes —
- * responded or missed — and is built field by field: no target, target
- * label, provider ref, enquiry text or failure ever reaches it. The member
- * view adds the target and shows an open shop as waiting.
+ * The PUBLIC view (share page, its JSON) shows only settled outcomes and is
+ * built field by field: no target, target label, provider ref, enquiry text
+ * or failure ever reaches it. A response is public as soon as it is seen; a
+ * MISS is public only once a member confirmed it (`missedConfirmedAt`) — the
+ * automatic evidence of "no reply" can always be incomplete (a lost webhook,
+ * a Junk folder, a callback from another number), so the operator checks
+ * first. The member view adds the target, shows open and unconfirmed shops,
+ * and carries the flags (disputed, send uncertain).
  */
 
 /** A shop as the member API returns it: JSON-safe, timestamps ISO. */
@@ -32,8 +36,10 @@ export interface MemberShop {
   sendUncertain: boolean;
   /** 24 h passed but the mailbox sync has not read that far yet (store.ts `settleMissed`). */
   awaitingSync: boolean;
-  /** Missed after a reply that failed the sender check (store.ts `settleMissed`). Never shown publicly. */
+  /** Missed after a reply that failed the sender check (store.ts `settleMissed`). A member flag. */
   disputed: boolean;
+  /** A member confirmed the miss after checking: only then is it public. */
+  missedConfirmedAt: string | null;
 }
 
 export interface MysteryShopItem {
@@ -81,6 +87,7 @@ export function serializeShop(id: string, d: Record<string, unknown>): MemberSho
     sendUncertain: d.sendUncertain === true,
     awaitingSync: d.awaitingSync === true,
     disputed: d.disputed === true,
+    missedConfirmedAt: iso(d.missedConfirmedAt),
   };
 }
 
@@ -139,7 +146,11 @@ function item(s: MemberShop, audience: "public" | "member", nowMs: number, timeZ
   if (audience === "public") return view;
   const verified = s.senderAuth ? `Reply sender ${s.senderAuth === "pass" ? "verified" : "unverified"}` : undefined;
   const member = { ...view, target: s.target, ...(outcome === "responded" && verified ? { verified } : {}) };
-  return s.disputed ? { ...member, note: "A reply arrived but failed the sender check." } : member;
+  const flags = [
+    s.disputed ? "A reply arrived but failed the sender check." : null,
+    outcome === "missed" && !s.missedConfirmedAt ? "Not confirmed: only confirmed misses appear on the public report." : null,
+  ].filter(Boolean);
+  return flags.length ? { ...member, note: flags.join(" ") } : member;
 }
 
 const SECTIONS: { key: MysteryShopSection["key"]; title: string; channels: MysteryShopChannel[] }[] = [
@@ -148,9 +159,10 @@ const SECTIONS: { key: MysteryShopSection["key"]; title: string; channels: Myste
 ];
 
 /**
- * The newest shop per channel that the audience may see (public: responded
- * or missed; member: also queued/sent), as sections. A section with nothing
- * to show is left out, so no shops = no sections.
+ * The newest shop per channel that the audience may see (public: responded,
+ * or missed AND confirmed; member: also unconfirmed misses and queued/sent),
+ * as sections. A section with nothing to show is left out, so no shops = no
+ * sections.
  */
 export function mysteryShopSections(
   shops: MemberShop[],
@@ -158,13 +170,8 @@ export function mysteryShopSections(
 ): MysteryShopSection[] {
   const shown = new Set(opts.audience === "public" ? ["responded", "missed"] : ["responded", "missed", "queued", "sent"]);
   const newest = [...shops]
-    // Public claims need evidence: no missed lead for a send that may not have gone out,
-    // and none for a miss disputed by a reply that failed the mail host's sender check.
-    .filter(
-      (s) =>
-        shown.has(s.status) &&
-        !(opts.audience === "public" && s.status === "missed" && (s.sendUncertain || s.disputed)),
-    )
+    // The one public rule for a miss: a member confirmed it.
+    .filter((s) => shown.has(s.status) && !(opts.audience === "public" && s.status === "missed" && !s.missedConfirmedAt))
     .sort((a, b) => (b.sentAt ?? b.createdAt ?? "").localeCompare(a.sentAt ?? a.createdAt ?? ""));
   return SECTIONS.map((sec) => ({
     key: sec.key,
@@ -194,11 +201,15 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
       if (s.responseVia === "callback") return `${head}called back after ${formatDuration(s.responseMs ?? 0)} (caller ID ${ok})`;
       return `${head}responded in ${formatDuration(s.responseMs ?? 0)} (sender ${ok})`;
     }
-    case "missed":
-      if (s.disputed) return `${head}missed — a reply arrived but failed the sender check`;
-      return `${head}no reply in 24 h — ${formatMoney(s.jobValueCents, s.currency)} lead missed${
-        s.sendUncertain ? " (send uncertain — may not have been delivered)" : ""
-      }`;
+    case "missed": {
+      const flags = [
+        s.disputed ? "a reply arrived but failed the sender check" : null,
+        s.sendUncertain ? "send uncertain — may not have been delivered" : null,
+      ].filter(Boolean);
+      const tail = flags.length ? ` (${flags.join("; ")})` : "";
+      if (s.missedConfirmedAt) return `${head}no reply in 24 h — ${formatMoney(s.jobValueCents, s.currency)} lead missed (confirmed)${tail}`;
+      return `${head}no reply detected in 24 h${tail}. Check the inbox, Junk folder and call log before confirming — only confirmed misses appear on the report.`;
+    }
     case "refused":
       return `${head}refused: ${s.failure?.reason ?? "not allowed"}`;
     default:

@@ -89,13 +89,23 @@ describe("email", () => {
     expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 3600_000, senderAuth: "unknown" });
   });
 
-  it("recordAuthFailedReply itself refuses a time outside the window, and a shop that is not waiting", async () => {
+  it("recordAuthFailedReply itself refuses a time outside the window, and a settled shop", async () => {
     seedShop("s1");
     expect(await recordAuthFailedReply("s1", SENT - 1)).toBe(false);
     expect(await recordAuthFailedReply("s1", SENT + 24 * 3600_000 + 1)).toBe(false);
-    seedShop("s2", { status: "missed" });
-    expect(await recordAuthFailedReply("s2", SENT + 60_000)).toBe(false);
+    for (const status of ["responded", "failed"]) {
+      seedShop("s2", { status });
+      expect(await recordAuthFailedReply("s2", SENT + 60_000)).toBe(false);
+    }
     expect(await recordAuthFailedReply("s1", SENT + 60_000)).toBe(true);
+  });
+
+  it("a late-synced failing reply on an already-missed shop records it and disputes the miss", async () => {
+    seedShop("s1", { status: "missed" });
+    const spoof = { authResults: ["mx.crestahq.com; dmarc=fail header.from=acme.co.za"], occurredAtMs: SENT + 60_000 };
+    await matchMysteryShopEmail("sa1", email(EMAIL, spoof));
+    expect(shop("s1")).toMatchObject({ status: "missed", disputed: true });
+    expect((shop("s1").authFailedReplyAt as Date).getTime()).toBe(SENT + 60_000);
   });
 
   it("a failing reply outside the window records nothing", async () => {
@@ -105,10 +115,12 @@ describe("email", () => {
     expect(shop("s1").authFailedReplyAt).toBeUndefined();
   });
 
-  it("a late-synced in-window reply upgrades a missed shop", async () => {
-    seedShop("s1", { status: "missed", sentAt: new Date(Date.now() - 30 * 3600_000) });
+  it("a late-synced in-window reply upgrades a missed shop — clearing a confirmation and a dispute (responded wins)", async () => {
+    seedShop("s1", {
+      status: "missed", sentAt: new Date(Date.now() - 30 * 3600_000), missedConfirmedAt: new Date(), missedConfirmedByUid: "u1", disputed: true,
+    });
     await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: Date.now() - 20 * 3600_000 }));
-    expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 10 * 3600_000 });
+    expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 10 * 3600_000, missedConfirmedAt: null, missedConfirmedByUid: null, disputed: false });
   });
 
   it("a bounce naming our Message-ID marks the shop failed/bounced and keeps the cap slot", async () => {

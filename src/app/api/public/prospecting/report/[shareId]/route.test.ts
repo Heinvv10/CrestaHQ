@@ -63,6 +63,7 @@ describe("a live share", () => {
     mem.seed("mysteryShops/s1", {
       agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "email", target: "EMAIL-SENTINEL@x.test",
       status: "missed", sentAt: new Date("2026-10-08T08:00:00Z"), jobValueCents: 150_000, currency: "ZAR",
+      missedConfirmedAt: new Date("2026-10-09T08:00:00Z"),
       enquiryText: "ENQUIRY-SENTINEL", providerRef: "REF-SENTINEL", createdByUid: "UID-SENTINEL",
     });
     const res = await get(await mint());

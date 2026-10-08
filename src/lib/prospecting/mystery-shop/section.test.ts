@@ -17,7 +17,7 @@ const shop = (over: Partial<MemberShop> = {}): MemberShop => ({
   id: "s1", channel: "email", status: "responded", target: EMAIL, sentAt: SENT,
   respondedAt: "2026-10-08T10:14:00.000Z", responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
   jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
-  failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown", sendUncertain: false, awaitingSync: false, disputed: false,
+  failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown", sendUncertain: false, awaitingSync: false, disputed: false, missedConfirmedAt: null,
   ...over,
 });
 
@@ -37,7 +37,7 @@ describe("formatting", () => {
 });
 
 describe("public sections", () => {
-  it("responded and missed, newest per channel, with the disclosure; no shops → no sections", () => {
+  it("responded and CONFIRMED missed, newest per channel, with the disclosure; no shops → no sections", () => {
     expect(mysteryShopSections([], { audience: "public", nowMs: NOW })).toEqual([]);
     const sections = mysteryShopSections(
       [
@@ -45,7 +45,7 @@ describe("public sections", () => {
         shop({ id: "old", sentAt: "2026-09-01T08:00:00.000Z", responseMs: 60_000 }),
         shop({
           id: "c1", channel: "call", status: "missed", target: PHONE, respondedAt: null, responseMs: null,
-          autoReplyAt: "2026-10-08T08:03:00.000Z",
+          autoReplyAt: "2026-10-08T08:03:00.000Z", missedConfirmedAt: "2026-10-09T10:00:00.000Z",
         }),
       ],
       { audience: "public", nowMs: NOW, timeZone: "Africa/Johannesburg" },
@@ -103,38 +103,53 @@ describe("member sections", () => {
   });
 });
 
-describe("uncertain sends and the mailbox sync", () => {
-  it("a send that may not have gone out never shows publicly as a missed lead; a response still does", () => {
-    const missed = shop({ status: "missed", sendUncertain: true, respondedAt: null, responseMs: null });
-    expect(mysteryShopSections([missed], { audience: "public", nowMs: NOW })).toEqual([]);
-    expect(mysteryShopSections([shop({ sendUncertain: true })], { audience: "public", nowMs: NOW })[0].items[0].outcome).toBe("responded");
-    // An older certain shop on the channel shows instead.
-    const older = shop({ id: "old", status: "missed", sentAt: "2026-09-01T08:00:00.000Z", respondedAt: null, responseMs: null });
-    expect(mysteryShopSections([missed, older], { audience: "public", nowMs: NOW })[0].items[0].disclosure).toContain("1 Sept 2026");
+describe("a public missed claim needs an operator's confirmation", () => {
+  const missed = (over: Partial<MemberShop> = {}) => shop({ status: "missed", respondedAt: null, responseMs: null, ...over });
+  const pub = (shops: MemberShop[]) => mysteryShopSections(shops, { audience: "public", nowMs: NOW });
+
+  it("an unconfirmed miss is member-only — whatever its flags; a confirmed one is public — whatever its flags", () => {
+    for (const flags of [{}, { sendUncertain: true }, { disputed: true }]) {
+      expect(pub([missed(flags)])).toEqual([]);
+      expect(pub([missed({ ...flags, missedConfirmedAt: "2026-10-09T10:00:00.000Z" })])[0].items[0].outcome).toBe("missed");
+    }
+    expect(mysteryShopSections([missed()], { audience: "member", nowMs: NOW })[0].items[0]).toMatchObject({
+      outcome: "missed", note: "Not confirmed: only confirmed misses appear on the public report.",
+    });
   });
+
+  it("a response is public without confirmation, an uncertain send included", () => {
+    expect(pub([shop({ sendUncertain: true })])[0].items[0].outcome).toBe("responded");
+  });
+
+  it("an unconfirmed miss does not hide an older confirmed one on the channel", () => {
+    const older = missed({ id: "old", sentAt: "2026-09-01T08:00:00.000Z", missedConfirmedAt: "2026-09-02T08:00:00.000Z" });
+    expect(pub([missed(), older])[0].items[0].disclosure).toContain("1 Sept 2026");
+  });
+
+  it("the card asks the operator to check before confirming, and lists the flags", () => {
+    const at = Date.parse("2026-10-09T09:00:00Z");
+    const check = "Check the inbox, Junk folder and call log before confirming — only confirmed misses appear on the report.";
+    expect(shopStatusLine(missed(), at)).toBe(`Email to ${EMAIL} — no reply detected in 24 h. ${check}`);
+    expect(shopStatusLine(missed({ sendUncertain: true, disputed: true }), at)).toBe(
+      `Email to ${EMAIL} — no reply detected in 24 h (a reply arrived but failed the sender check; send uncertain — may not have been delivered). ${check}`,
+    );
+    expect(shopStatusLine(missed({ missedConfirmedAt: "2026-10-09T10:00:00.000Z" }), at)).toBe(
+      `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed (confirmed)`,
+    );
+    expect(mysteryShopSections([missed({ disputed: true })], { audience: "member", nowMs: NOW })[0].items[0].note).toBe(
+      "A reply arrived but failed the sender check. Not confirmed: only confirmed misses appear on the public report.",
+    );
+  });
+
   it("the card says when a shop is waiting for the mailbox sync, or its send was uncertain", () => {
     const at = Date.parse("2026-10-09T09:00:00Z");
     const base = { status: "sent" as const, respondedAt: null, responseMs: null };
     expect(shopStatusLine(shop({ ...base, awaitingSync: true }), at)).toBe(
       `Email to ${EMAIL} — 24 h passed; waiting for the mailbox sync to catch up before calling it missed`,
     );
-    expect(shopStatusLine(shop({ status: "missed", sendUncertain: true, respondedAt: null, responseMs: null }), at)).toBe(
-      `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed (send uncertain — may not have been delivered)`,
-    );
     expect(shopStatusLine(shop({ ...base, sendUncertain: true }), Date.parse("2026-10-08T08:03:00Z"))).toBe(
       `Email to ${EMAIL} — may have been sent 3 m ago (the send did not confirm), waiting for a reply (24 h)`,
     );
-  });
-});
-
-describe("a disputed miss (a reply arrived but failed the sender check)", () => {
-  it("is left off the public page (no claim either way) and explained on the member card", () => {
-    const disputed = shop({ status: "missed", disputed: true, respondedAt: null, responseMs: null });
-    expect(mysteryShopSections([disputed], { audience: "public", nowMs: NOW })).toEqual([]);
-    expect(mysteryShopSections([disputed], { audience: "member", nowMs: NOW })[0].items[0].note).toBe(
-      "A reply arrived but failed the sender check.",
-    );
-    expect(shopStatusLine(disputed, NOW)).toBe(`Email to ${EMAIL} — missed — a reply arrived but failed the sender check`);
   });
 });
 
@@ -163,7 +178,7 @@ describe("status lines", () => {
     [{ status: "sent" as const }, `Email to ${EMAIL} — sent 3 m ago, waiting for a reply (24 h)`],
     [{}, `Email to ${EMAIL} — responded in 2 h 14 m (sender unverified)`],
     [{ channel: "call" as const, target: PHONE, responseVia: "answered" as const, senderAuth: "pass" as const }, `Call to ${PHONE} — responded in 2 h 14 m (sender verified)`],
-    [{ status: "missed" as const }, `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed`],
+    [{ status: "missed" as const, missedConfirmedAt: "2026-10-09T10:00:00.000Z" }, `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed (confirmed)`],
     [
       { channel: "call" as const, target: PHONE, status: "refused" as const, failure: { code: "outside_window", reason: "outside calling hours" } },
       `Call to ${PHONE} — refused: outside calling hours`,
@@ -179,7 +194,7 @@ describe("serializeShop", () => {
       responseMs: null, autoReplyAt: { toMillis: () => Date.parse(SENT) + 1000 }, jobValueCents: 150_000,
       currency: "ZAR", enquiryText: "x", failure: null, createdAt: new Date(SENT), providerRef: "<m@x>",
     });
-    expect(s).toMatchObject({ responseVia: null, senderAuth: null, sendUncertain: false, awaitingSync: false, disputed: false });
+    expect(s).toMatchObject({ responseVia: null, senderAuth: null, sendUncertain: false, awaitingSync: false, disputed: false, missedConfirmedAt: null });
     expect(s.sentAt).toBe(SENT);
     expect(s.autoReplyAt).toBe("2026-10-08T08:00:01.000Z");
     expect(s).not.toHaveProperty("providerRef");

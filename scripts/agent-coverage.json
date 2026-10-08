@@ -657,6 +657,12 @@
         "reason": "A mystery shop sends a real enquiry to a third-party business; every send is a person's act through a confirm dialog that names the exact recipient. Agent access is a separate decision."
       }
     },
+    "api/sub-accounts/[id]/prospecting/mystery-shop/[shopId]/confirm-missed:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Confirming a missed mystery shop publishes a claim about a third-party business; a person checks the inbox, Junk folder and call log first."
+      }
+    },
     "api/sub-accounts/[id]/prospecting/mystery-shop/settings:PUT": {
       "exclude": {
         "category": "human-only",
