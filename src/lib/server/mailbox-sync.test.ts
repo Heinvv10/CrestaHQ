@@ -258,56 +258,36 @@ it("an inbound archive header cannot hide customer email", async () => {
 });
 
 import { matchMysteryShopEmail } from "@/lib/prospecting/mystery-shop/inbound";
+const mailFrom = (from: string, to: string, extra = "") =>
+  ({ source: Buffer.from(`From: ${from}\r\nTo: ${to}\r\n${extra}Message-ID: <${from}>\r\n\r\nHi`) });
 it("hands each inbound message to the mystery-shop matcher at its arrival time, with its auto-reply headers", async () => {
   const { client } = setup();
   client.search.mockResolvedValue([1]);
   const at = new Date("2026-10-08T10:00:00Z");
+  const extra = "Subject: Re: Enquiry\r\nIn-Reply-To: <shop@crestahq.com>\r\nAuto-Submitted: auto-replied\r\nPrecedence: bulk\r\n";
   client.fetchOne.mockImplementation(async (_uid, q) =>
-    q.size
-      ? { size: 100, internalDate: at }
-      : {
-          source: Buffer.from(
-            "From: info@acme.co.za\r\nTo: me@example.com\r\nSubject: Re: Enquiry\r\nIn-Reply-To: <shop@crestahq.com>\r\nAuto-Submitted: auto-replied\r\nPrecedence: bulk\r\nMessage-ID: <r1@acme.co.za>\r\n\r\nThanks"
-          ),
-        }
+    q.size ? { size: 100, internalDate: at } : mailFrom("info@acme.co.za", "me@example.com", extra)
   );
   vi.mocked(matchMysteryShopEmail).mockClear();
   await syncMailbox("tenant-a");
-  expect(matchMysteryShopEmail).toHaveBeenCalledWith(
-    "tenant-a",
-    expect.objectContaining({
-      from: "info@acme.co.za",
-      subject: "Re: Enquiry",
-      inReplyTo: "<shop@crestahq.com>",
-      occurredAtMs: at.getTime(),
-      autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk" },
-    })
-  );
+  expect(matchMysteryShopEmail).toHaveBeenCalledWith("tenant-a", expect.objectContaining({
+    from: "info@acme.co.za", subject: "Re: Enquiry", inReplyTo: "<shop@crestahq.com>", occurredAtMs: at.getTime(),
+    autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk" },
+  }));
 });
 it("a failing mystery-shop matcher never breaks the sync; sent mail is never matched", async () => {
   const { client, c } = setup();
   c.sentFolder = "Sent";
   client.search.mockResolvedValue([1]);
   let folder = "";
-  client.getMailboxLock.mockImplementation(async (name?: unknown) => {
-    folder = String(name);
-    return { release: vi.fn() };
-  });
+  client.getMailboxLock.mockImplementation(async (name?: unknown) => ((folder = String(name)), { release: vi.fn() }));
   client.fetchOne.mockImplementation(async (_uid, q) =>
-    q.size
-      ? { size: 100, internalDate: new Date() }
-      : {
-          source: Buffer.from(
-            folder === "Sent"
-              ? "From: me@example.com\r\nTo: info@acme.co.za\r\nMessage-ID: <out@example.com>\r\n\r\nHi"
-              : "From: info@acme.co.za\r\nTo: me@example.com\r\nMessage-ID: <in@example.com>\r\n\r\nHi"
-          ),
-        }
+    q.size ? { size: 100, internalDate: new Date() }
+      : folder === "Sent" ? mailFrom("me@example.com", "info@acme.co.za") : mailFrom("info@acme.co.za", "me@example.com")
   );
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(matchMysteryShopEmail).mockClear().mockRejectedValue(new Error("firestore down"));
-  const result = await syncMailbox("a");
-  expect(result.imported).toBe(2);
+  expect((await syncMailbox("a")).imported).toBe(2);
   expect(matchMysteryShopEmail).toHaveBeenCalledTimes(1);
   expect(vi.mocked(matchMysteryShopEmail).mock.calls[0][1].from).toBe("info@acme.co.za");
 });
