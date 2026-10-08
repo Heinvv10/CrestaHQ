@@ -47,6 +47,7 @@ import {
   prospectReportQuota,
   prospectingFirstTouchCap,
 } from "@/lib/prospecting/quota";
+import { mysteryShopCap } from "@/lib/prospecting/mystery-shop/model";
 import { SubAccountBillingSection } from "@/components/agency/sub-account-billing-section";
 import { SubAccountUsageSection } from "@/components/agency/sub-account-usage-section";
 import { effectiveBillingState } from "@/lib/billing/status";
@@ -148,6 +149,8 @@ function ManageDialogBody({
   const initialProspectingQuota = String(prospectReportQuota(subAccount));
   // Same for the daily first-touch cap (20 when unset).
   const initialFirstTouchCap = String(prospectingFirstTouchCap(subAccount));
+  // And the monthly mystery-shop cap (10 when unset).
+  const initialMysteryShopCap = String(mysteryShopCap(subAccount));
   // "Hide vs. show as Locked" flag for the sidebar-gated features. HIDDEN is the
   // default — a disabled feature is omitted from the tenant's sidebar unless the
   // owner explicitly opts it into the greyed "Locked" row (field set to `false`).
@@ -208,6 +211,7 @@ function ManageDialogBody({
     initialProspectingQuota
   );
   const [firstTouchCap, setFirstTouchCap] = useState(initialFirstTouchCap);
+  const [mysteryCap, setMysteryCap] = useState(initialMysteryShopCap);
   const [broadcastsHidden, setBroadcastsHidden] = useState(
     initialBroadcastsHidden
   );
@@ -282,6 +286,7 @@ function ManageDialogBody({
   const prospectingQuotaDirty =
     prospectingQuota.trim() !== initialProspectingQuota;
   const firstTouchCapDirty = firstTouchCap.trim() !== initialFirstTouchCap;
+  const mysteryCapDirty = mysteryCap.trim() !== initialMysteryShopCap;
   const broadcastsHiddenDirty = broadcastsHidden !== initialBroadcastsHidden;
   const websiteHiddenDirty = websiteHidden !== initialWebsiteHidden;
   const socialHiddenDirty = socialHidden !== initialSocialHidden;
@@ -322,6 +327,7 @@ function ManageDialogBody({
     prospectingDirty ||
     prospectingQuotaDirty ||
     firstTouchCapDirty ||
+    mysteryCapDirty ||
     broadcastsHiddenDirty ||
     websiteHiddenDirty ||
     socialHiddenDirty ||
@@ -346,6 +352,11 @@ function ManageDialogBody({
     const cap = parseProspectReportQuota(firstTouchCap);
     if (firstTouchCapDirty && cap === null) {
       toast.error("Daily first-touch cap must be a whole number from 0 to 1000.");
+      return;
+    }
+    const shopCap = parseProspectReportQuota(mysteryCap);
+    if (mysteryCapDirty && shopCap === null) {
+      toast.error("Monthly mystery-shop cap must be a whole number from 0 to 1000.");
       return;
     }
     setSaving(true);
@@ -384,6 +395,7 @@ function ManageDialogBody({
         prospectingEnabled?: boolean;
         prospectingReportQuota?: number;
         prospectingDailyFirstTouchCap?: number;
+        prospectingMysteryShopCap?: number;
         broadcastsHiddenWhenDisabled?: boolean;
         websiteHiddenWhenDisabled?: boolean;
         socialPlannerHiddenWhenDisabled?: boolean;
@@ -434,6 +446,8 @@ function ManageDialogBody({
         payload.prospectingReportQuota = quota;
       if (firstTouchCapDirty && cap !== null)
         payload.prospectingDailyFirstTouchCap = cap;
+      if (mysteryCapDirty && shopCap !== null)
+        payload.prospectingMysteryShopCap = shopCap;
       if (broadcastsHiddenDirty)
         payload.broadcastsHiddenWhenDisabled = broadcastsHidden;
       if (websiteHiddenDirty) payload.websiteHiddenWhenDisabled = websiteHidden;
@@ -649,6 +663,9 @@ function ManageDialogBody({
       }
       if (firstTouchCapDirty) {
         parts.push(`Prospect first-touch cap set to ${cap} a day.`);
+      }
+      if (mysteryCapDirty) {
+        parts.push(`Mystery-shop cap set to ${shopCap} a month.`);
       }
       if (labsDirty) {
         parts.push(
@@ -1262,6 +1279,24 @@ function ManageDialogBody({
                 <span>
                   Workflow messages to prospects never contacted before, per
                   day (0–1000).
+                </span>
+                <span className="text-foreground font-medium">
+                  Monthly mystery-shop cap
+                </span>
+                <Input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={1}
+                  value={mysteryCap}
+                  onChange={(e) => setMysteryCap(e.target.value)}
+                  disabled={saving}
+                  className="h-8 w-24 text-xs"
+                  aria-label="Monthly mystery-shop cap"
+                />
+                <span>
+                  Speed-to-lead test enquiries (email or AI call) this
+                  sub-account may send each month (0–1000).
                 </span>
               </label>
             }
