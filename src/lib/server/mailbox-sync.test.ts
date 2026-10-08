@@ -281,7 +281,7 @@ it("hands each inbound message to the mystery-shop matcher at its arrival time, 
     authResults: ["mx; dmarc=pass"],
   }));
 });
-it("a failing mystery-shop matcher never breaks the sync; sent mail is never matched", async () => {
+it("sent mail is never handed to the mystery-shop matcher", async () => {
   const { client, c } = setup();
   c.sentFolder = "Sent";
   client.search.mockResolvedValue([1]);
@@ -291,8 +291,7 @@ it("a failing mystery-shop matcher never breaks the sync; sent mail is never mat
     q.size ? { size: 100, internalDate: new Date() }
       : folder === "Sent" ? mailFrom("me@example.com", "info@acme.co.za") : mailFrom("info@acme.co.za", "me@example.com")
   );
-  vi.spyOn(console, "error").mockImplementation(() => {});
-  vi.mocked(matchMysteryShopEmail).mockClear().mockRejectedValue(new Error("firestore down"));
+  vi.mocked(matchMysteryShopEmail).mockClear().mockResolvedValue(undefined);
   expect((await syncMailbox("a")).imported).toBe(2);
   expect(matchMysteryShopEmail).toHaveBeenCalledTimes(1);
   expect(vi.mocked(matchMysteryShopEmail).mock.calls[0][1].from).toBe("info@acme.co.za");

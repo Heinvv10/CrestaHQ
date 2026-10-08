@@ -125,7 +125,9 @@ export async function syncMailbox(subAccountId: string) {
           },
           { uid: true }
         );
-        const uids = (found || [])
+        // imapflow answers `false` when the search failed: never read that as "no mail".
+        if (!Array.isArray(found)) throw new MailboxError("Mailbox search failed. Retry sync.", 502);
+        const uids = found
           .filter((uid) => uid >= window.start && uid <= window.end)
           .sort((a, b) => a - b);
         let completed = true;
@@ -260,8 +262,12 @@ export async function syncMailbox(subAccountId: string) {
             if (result.inserted) summary.imported++;
             else summary.skipped++;
             if (direction === "inbound")
+              // A failed match must not let the cursor pass this message: fail the pass so it is re-read.
               await matchMysteryShopEmail(subAccountId, { ...input, ...signals, occurredAtMs: occurredAt.getTime() })
-                .catch((err) => console.error("[mailbox-sync] mystery-shop match failed", subAccountId, err));
+                .catch((err) => {
+                  console.error("[mailbox-sync] mystery-shop match failed", subAccountId, err);
+                  throw new MailboxError("Reply matching failed. Retry sync.", 502);
+                });
           }
           processed++;
           folderProcessed++;

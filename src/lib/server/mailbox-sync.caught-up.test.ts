@@ -14,14 +14,19 @@ vi.mock("@/lib/comms/imap", async (orig) => ({ ...(await orig<typeof import("@/l
 const { getAdminDb } = await import("@/lib/firebase/admin");
 const { connectMailbox } = await import("@/lib/comms/imap");
 const { syncMailbox } = await import("./mailbox-sync");
+const { matchMysteryShopEmail } = await import("@/lib/prospecting/mystery-shop/inbound");
 
 let subUpdates: Record<string, unknown>[];
-function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fail?: boolean; failIn?: string; onLock?: (f: string) => void; onFetch?: () => void } = {},
+let conn: Record<string, unknown>;
+function setup(uids: number[], uidNext: number, opts: {
+    sentFolder?: string; fail?: boolean; failIn?: string; onLock?: (f: string) => void; onFetch?: () => void;
+    search?: () => Promise<unknown>;
+  } = {},
 ) {
-  const c: Record<string, unknown> = {
+  const c: Record<string, unknown> = (conn = {
     enabled: true, verifiedAt: new Date().toISOString(), version: "v1", leaseToken: null, leaseUntil: 0, cursors: {},
     sentFolder: opts.sentFolder ?? null, ownAddresses: ["me@example.com"], initialSince: "2026-08-08T00:00:00Z",
-  };
+  });
   subUpdates = [];
   const tx = {
     get: vi.fn(async () => ({ data: () => structuredClone(c) })),
@@ -32,7 +37,7 @@ function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fai
   vi.mocked(connectMailbox).mockResolvedValue({
     mailbox: { uidValidity: BigInt(1), uidNext },
     getMailboxLock: vi.fn(async (name: string) => (opts.onLock?.(name), (folder = name), { release: vi.fn() })),
-    search: vi.fn(async () => uids),
+    search: vi.fn(opts.search ?? (async () => uids)),
     fetchOne: vi.fn(async (uid: number, q: { size?: boolean }) => {
       opts.onFetch?.();
       if ((opts.fail || opts.failIn === folder) && !q.size) throw new Error("socket closed");
@@ -43,6 +48,7 @@ function setup(uids: number[], uidNext: number, opts: { sentFolder?: string; fai
     close: vi.fn(),
   } as never);
 }
+const inboxUid = () => (conn.cursors as Record<string, { uid: number }>).INBOX?.uid ?? 0;
 const caughtUp = () => subUpdates.map((u) => u["mailboxConfig.inboxCaughtUpAt"]).filter(Boolean);
 
 beforeEach(() => vi.clearAllMocks());
@@ -100,4 +106,27 @@ it("is when the INBOX read began, not when a slower pass finished", async () => 
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("a failed IMAP search (imapflow answers false) fails the pass: no cursor advance, no stamp", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  setup([1, 2], 3, { search: async () => false });
+  await expect(syncMailbox("a")).rejects.toThrow("Mailbox search failed. Retry sync.");
+  expect(inboxUid()).toBe(0);
+  expect(caughtUp()).toEqual([]);
+});
+
+it("a failed mystery-shop match stops at that message and fails the pass; the next pass re-reads it", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  setup([1, 2, 3], 4);
+  vi.mocked(matchMysteryShopEmail).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("firestore down"));
+  await expect(syncMailbox("a")).rejects.toThrow();
+  expect(inboxUid()).toBe(1);
+  expect(caughtUp()).toEqual([]);
+  conn.leaseUntil = 0;
+  vi.mocked(matchMysteryShopEmail).mockClear();
+  await syncMailbox("a");
+  expect(vi.mocked(matchMysteryShopEmail).mock.calls.map(([, m]) => (m as { messageId?: string }).messageId)).toEqual(["<2@x>", "<3@x>"]);
+  expect(inboxUid()).toBe(3);
+  expect(caughtUp()).toHaveLength(1);
 });
