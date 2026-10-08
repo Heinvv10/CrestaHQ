@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
 const { mem } = await import("@/test/gbp-sync-store");
 const { matchInboundCallback, matchMysteryShopEmail, settleMysteryShopCall } = await import("./inbound");
-const { releaseShop } = await import("./store");
+const { releaseShop, requeueTimer } = await import("./store");
 
 const SENT = Date.now() - 3 * 3600_000;
 const EMAIL = "info@acme.co.za";
@@ -113,6 +113,16 @@ describe("email", () => {
     expect(mem.read("subAccounts/sa1/usage/2026-10")?.mysteryShops).toBe(3);
   });
 
+  it("a strict bounce also fails a shop already missed (a late-synced bounce inside its window)", async () => {
+    seedShop("s1", { status: "missed" });
+    const dsn = {
+      contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: null, failedRecipients: null,
+      text: "Message-ID: <s1@crestahq.com>", deliveryStatus: "Final-Recipient: rfc822; info@acme.co.za\nAction: failed",
+    };
+    await matchMysteryShopEmail("sa1", email("mailer-daemon@mx.google.com", { dsn }));
+    expect(shop("s1")).toMatchObject({ status: "failed", failure: { code: "bounced" } });
+  });
+
   it("a colleague's reply counts only when the target domain was trusted at send", async () => {
     seedShop("s1", { targetDomainTrusted: false });
     await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
@@ -197,6 +207,18 @@ describe("call", () => {
     await matchInboundCallback("sa1", null, callReport());
     await matchInboundCallback("sa2", PHONE, callReport());
     expect(shop("k1").status).toBe("sent");
+  });
+});
+
+describe("requeueTimer", () => {
+  it("counts only for a shop still sent; a settled one is never re-queued", async () => {
+    seedShop("s1");
+    expect(await requeueTimer("s1")).toBe(1);
+    for (const status of ["missed", "responded", "failed"]) {
+      seedShop("s2", { status });
+      expect(await requeueTimer("s2")).toBeNull();
+      expect(shop("s2").timerRequeues).toBeUndefined();
+    }
   });
 });
 

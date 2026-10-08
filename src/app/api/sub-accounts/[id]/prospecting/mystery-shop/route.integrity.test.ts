@@ -106,6 +106,18 @@ describe("a send that may have gone out", () => {
     expect(used()).toBe(1);
   });
 
+  it("when the stuck sweep moved the shop first (markSent finds it no longer queued), the provider's id is still kept", async () => {
+    send.mockImplementationOnce(async ({ shopId }: { shopId: string }) => {
+      // The GET sweep got there first: sent + sendUncertain, no provider id.
+      mem.seed(`mysteryShops/${shopId}`, { ...mem.read(`mysteryShops/${shopId}`), status: "sent", sendUncertain: true, sentAt: new Date(), providerRef: null });
+      return { ok: true, providerRef: "call_x" };
+    });
+    const res = await post(valid({ channel: "call", target: "0821234567" }));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual(MAYBE);
+    expect(shops()[0]).toMatchObject({ status: "sent", sendUncertain: true, providerRef: "call_x" });
+  });
+
   it("GET treats a queued shop stuck > 10 min as an uncertain send dated from creation — not failed, not refunded", async () => {
     mem.seed(USAGE, { mysteryShops: 2 });
     seedShop("stuck", { status: "queued", sentAt: null, createdAt: ago(11 * 60_000) });
@@ -120,6 +132,22 @@ describe("a send that may have gone out", () => {
 });
 
 describe("GET sweep", () => {
+  it("re-reads the list only when the sweep changed a shop (first flag of awaitingSync), not on every GET", async () => {
+    let gets = 0;
+    const real = storeDb.collection;
+    type Q = { where: (...a: unknown[]) => Q; get: () => Promise<unknown> };
+    const wrap = (q: Q): Q => ({ ...q, where: (...a: unknown[]) => wrap(q.where(...a)), get: () => (gets++, q.get()) });
+    vi.spyOn(storeDb, "collection").mockImplementation(((name: string) =>
+      name === "mysteryShops" ? wrap(real(name) as unknown as Q) : real(name)) as typeof storeDb.collection);
+    seedShop("mail", { sentAt: ago(DAY + 31 * 60_000) });
+    const first = (await (await list()).json()) as { shops: { awaitingSync: boolean }[] };
+    expect(first.shops[0].awaitingSync).toBe(true);
+    expect(gets).toBe(2);
+    gets = 0;
+    await list();
+    expect(gets).toBe(1);
+  });
+
   it("settles an overdue call shop missed; an email one only once the mailbox has synced past its window", async () => {
     const sent = ago(DAY + 31 * 60_000);
     seedShop("call", { channel: "call", sentAt: sent, contactId: "c1" });
