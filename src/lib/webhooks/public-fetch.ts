@@ -32,7 +32,7 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 export interface PublicFetchInit {
   method?: string;
   headers?: Record<string, string>;
-  body?: string;
+  body?: string | Uint8Array;
   signal?: AbortSignal;
   /** Tighter body cap than the default `MAX_RESPONSE_BYTES`. */
   maxBytes?: number;
