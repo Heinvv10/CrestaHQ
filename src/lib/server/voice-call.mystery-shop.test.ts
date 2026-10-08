@@ -63,4 +63,9 @@ it("a Vapi rejection placed nothing; a network error or a 5xx may have placed th
   expect(await place()).toMatchObject({ ok: false, uncertain: true });
   fetchMock.mockResolvedValueOnce(new Response('{"message":"upstream"}', { status: 502 }));
   expect(await place()).toMatchObject({ ok: false, uncertain: true });
+  // A 5xx with no body is still a 5xx: the call may exist.
+  fetchMock.mockResolvedValueOnce(new Response("", { status: 503 }));
+  expect(await place()).toMatchObject({ ok: false, uncertain: true });
+  fetchMock.mockResolvedValueOnce(new Response("", { status: 422 }));
+  expect(await place()).toMatchObject({ ok: false, uncertain: false });
 });

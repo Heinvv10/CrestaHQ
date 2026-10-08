@@ -61,8 +61,8 @@ export async function placeContactCall(opts: {
     });
     callId = result.callId;
   } catch (err) {
-    // A Vapi 4xx (or our missing key) placed nothing; a network error or a 5xx may have.
-    const placedNothing = err instanceof VapiError && (err.status < 500 || !err.body);
+    // Only a Vapi 4xx — a definite refusal — placed nothing; a network error or any 5xx may have.
+    const placedNothing = err instanceof VapiError && err.status >= 400 && err.status < 500;
     return { ok: false, error: err instanceof Error ? err.message : "Failed to place the call", uncertain: !placedNothing };
   }
 
