@@ -5,6 +5,7 @@ import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
 import { providerAttempted } from "@/lib/comms/provider-attempt";
 import { checkOutboundCompliance } from "@/lib/comms/voice/outbound-compliance";
 import { outboundVoiceReady, placeContactCall } from "@/lib/server/voice-call";
+import { vapiAppUrlConfigured } from "@/lib/comms/voice/vapi";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { MysteryShopChannel } from "./model";
@@ -50,7 +51,12 @@ export async function channelStates(
               ? { available: false, reason: "Mystery-shop email needs the SMTP sender and the synced mailbox to be the same address." }
               : { available: true };
   const voice = await outboundVoiceReady(subAccountId);
-  const call: ChannelState = voice.ok ? { available: true } : { available: false, reason: voice.error };
+  // The public URL Vapi calls back: checked here so a misconfiguration shows as unavailable, never as an uncertain send.
+  const call: ChannelState = !voice.ok
+    ? { available: false, reason: voice.error }
+    : !vapiAppUrlConfigured()
+      ? { available: false, reason: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL)." }
+      : { available: true };
   return { email, call, whatsapp: NOT_YET, form: NOT_YET };
 }
 

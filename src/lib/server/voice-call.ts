@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getAgentProfile, getChannelConfig } from "@/lib/comms/ai/agent";
-import { vapiAppUrlConfigured, vapiIsConfigured, createOutboundCall, VapiError } from "@/lib/comms/voice/vapi";
+import { vapiIsConfigured, createOutboundCall, VapiError } from "@/lib/comms/voice/vapi";
 import type { SubAccountDoc } from "@/types";
 import type { VoiceChannelConfig } from "@/types/ai";
 
@@ -26,9 +26,6 @@ export async function outboundVoiceReady(subAccountId: string): Promise<VoiceRea
   const voice = (await getChannelConfig(subAccountId, "voice"))?.voice ?? null;
   if (!voice || voice.outboundEnabled !== true) return { ok: false, status: 403, error: "Outbound calling isn't enabled in the Voice settings." };
   if (!vapiIsConfigured()) return { ok: false, status: 503, error: "Voice calling isn't configured on this deployment." };
-  if (!vapiAppUrlConfigured()) {
-    return { ok: false, status: 503, error: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL)." };
-  }
   if (!voice.vapiAssistantId || !voice.vapiPhoneNumberId) {
     return { ok: false, status: 400, error: "Enable the Voice channel first so the calling number is provisioned." };
   }

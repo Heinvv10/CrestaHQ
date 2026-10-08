@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * The send seam: channel availability and the provider calls, each faked at
@@ -37,6 +37,7 @@ const enquiry = { email: { subject: "Enquiry", body: "Hi" }, call: "Hi, I'm call
 const base = { shopId: "s1", subAccountId: "sa1", sub: SMTP_SUB, contact, contactId: "c1", uid: "u1", enquiry, consentAck: true };
 
 beforeEach(() => {
+  vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.test");
   sendEmail.mockReset().mockResolvedValue({ id: "<m1@crestahq.com>", saved: true });
   compliance.mockReset().mockResolvedValue({ allowed: true, e164: "+27821234567" });
   ready.mockReset().mockResolvedValue({ ok: true, voice: VOICE, agentTimezone: "Africa/Johannesburg" });
@@ -71,6 +72,19 @@ describe("channelStates", () => {
       const unknown = { ...SMTP_SUB, mailboxConfig: { enabled: true, verifiedAt: "x", username } } as unknown as SubAccountDoc;
       expect((await channelStates("sa1", unknown)).email).toEqual({ available: false, reason: "The mailbox address isn't known." });
     }
+  });
+});
+
+describe("the call channel and the public URL", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("is unavailable, not an uncertain send later, when the public URL Vapi calls back is not set", async () => {
+    vi.stubEnv("VAPI_PUBLIC_BASE_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
+    expect((await channelStates("sa1", SMTP_SUB)).call).toEqual({
+      available: false, reason: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL).",
+    });
+    vi.stubEnv("VAPI_PUBLIC_BASE_URL", "https://crm.example.com");
+    expect((await channelStates("sa1", SMTP_SUB)).call).toEqual({ available: true });
   });
 });
 
