@@ -2,8 +2,9 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { publishCallback } from "@/lib/automations/qstash";
-import { REPORT_ID, prospectingAccess } from "@/lib/prospecting/reports";
+import { isDocId } from "@/lib/server/doc-id";
+import { prospectingAccess } from "@/lib/prospecting/reports";
+import { isProspect } from "@/lib/prospecting/approach-guard";
 import {
   MYSTERY_SHOP_CHANNELS,
   RESPONSE_WINDOW_MS,
@@ -12,64 +13,66 @@ import {
   overdue,
   type MysteryShopChannel,
 } from "@/lib/prospecting/mystery-shop/model";
-import { allowedTargets, matchTarget } from "@/lib/prospecting/mystery-shop/targets";
-import { enquiryVars, renderEnquiries } from "@/lib/prospecting/mystery-shop/enquiry";
+import { allowedTargets, emailDomainTrusted, matchTarget } from "@/lib/prospecting/mystery-shop/targets";
 import { jobValueFor } from "@/lib/prospecting/mystery-shop/job-value";
 import { serializeShop } from "@/lib/prospecting/mystery-shop/section";
-import { markSent, releaseShop, reserveShop, settleMissed, shopsUsed } from "@/lib/prospecting/mystery-shop/store";
+import {
+  markSent,
+  markUncertain,
+  releaseShop,
+  reserveShop,
+  settleMissed,
+  shopsUsed,
+} from "@/lib/prospecting/mystery-shop/store";
 import { channelStates, sendMysteryShop, type SendResult } from "@/lib/prospecting/mystery-shop/send";
-import type { ContactProspecting, SubAccountDoc } from "@/types";
-import type { Contact } from "@/types/contacts";
+import { enquiryOf, loadContact, queueTimer } from "@/lib/prospecting/mystery-shop/context";
 
 /**
- * Speed-to-lead mystery shops for one contact (Prospecting PR 5).
+ * Speed-to-lead mystery shops for one prospect contact (Prospecting PR 5).
  *
  *   GET  ?contactId= → the contact's shops (newest first, member view), each
  *        channel's availability and allowed targets, the month's cap and use,
- *        and the enquiry as it would be sent. A `sent` shop whose 24 h timer
- *        should have fired is settled first, and a `queued` one stuck past
- *        STUCK_AFTER_MS (the send never finished) is released `failed`.
- *   POST `{ contactId, channel, confirm: true, target }` → send one neutral
- *        enquiry to the confirmed target. 202 `{ shopId }`.
+ *        and the enquiry as it would be sent with its hash. A `sent` shop whose
+ *        24 h timer should have fired is settled first (an email one only once
+ *        the mailbox sync has read past the window), and a `queued` one stuck
+ *        past STUCK_AFTER_MS is treated as an uncertain send.
+ *   POST `{ contactId, channel, confirm: true, target, enquiryHash, consentAck? }`
+ *        → send one neutral enquiry to the confirmed target. 202 `{ shopId }`.
  *
  * POST refusals, in order: 400 bad body; 403 gate_off; 404 contact (missing
- * or another sub-account's, the reports' body); 403 confirm_required; 403
- * channel_unavailable; 403 target_not_allowed (only the contact's own
- * values); 409 shop_in_progress; 403 cap_reached; 403 with the compliance
- * code when the send is refused (shop `refused`); 502 when the provider fails
- * (shop `failed`). Refused and failed shops give their cap slot back. A shop
- * does not stamp `approachedAt` and does not block outreach workflows.
+ * or another sub-account's, the reports' body); 403 not_a_prospect; 403
+ * confirm_required; 403 consent_required (a call without the operator's
+ * consent); 403 channel_unavailable; 403 target_not_allowed (only the
+ * contact's own values); 409 enquiry_changed (the hash of the text the dialog
+ * showed no longer matches); 409 shop_in_progress; 403 cap_reached; 403 with
+ * the compliance code when the send is refused (shop `refused`); 502 when the
+ * provider failed (shop `failed`). Both give their cap slot back. A send that
+ * MAY have gone out is kept `sent` + `sendUncertain` (slot kept, timer
+ * queued, still blocking a second send) and answers 502 with a fixed warning.
+ * A shop does not stamp `approachedAt` and does not block outreach workflows.
  */
 
 const CONTACT_NOT_FOUND = { error: "Contact not found" };
 const STUCK_AFTER_MS = 10 * 60_000;
 const TIMER_DELAY_S = (RESPONSE_WINDOW_MS + TIMER_GRACE_MS) / 1000;
+const MAYBE_SENT = "The enquiry may have been sent; check the contact's conversation before trying again.";
+const NOT_SENT = "The enquiry could not be sent. Check the channel's settings and try again.";
 
 const isChannel = (v: unknown): v is MysteryShopChannel =>
   typeof v === "string" && (MYSTERY_SHOP_CHANNELS as readonly string[]).includes(v);
 
 const refuse = (code: string, error: string, status = 403) => NextResponse.json({ error, code }, { status });
-
-async function loadContact(subAccountId: string, contactId: string): Promise<Contact | null> {
-  const snap = await getAdminDb().doc(`contacts/${contactId}`).get();
-  const data = snap.data();
-  return snap.exists && data?.subAccountId === subAccountId ? ({ ...data, id: snap.id } as Contact) : null;
-}
-
-const prospectingOf = (c: Contact) => (c as Contact & { prospecting?: ContactProspecting }).prospecting;
-const enquiryFor = (c: Contact, sub: SubAccountDoc) =>
-  renderEnquiries(sub.prospectingMysteryShopTemplates, enquiryVars({ ...c, prospecting: prospectingOf(c) }, sub.name));
+const notProspect = () => refuse("not_a_prospect", "Mystery shops are for prospects only.");
 
 export async function GET(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id: subAccountId } = await ctx.params;
   const access = await prospectingAccess(request, subAccountId);
   if (access instanceof NextResponse) return access;
   const contactId = new URL(request.url).searchParams.get("contactId");
-  if (!contactId || !REPORT_ID.test(contactId)) {
-    return NextResponse.json({ error: "contactId is required" }, { status: 400 });
-  }
+  if (!isDocId(contactId)) return NextResponse.json({ error: "contactId is required" }, { status: 400 });
   const contact = await loadContact(subAccountId, contactId);
   if (!contact) return NextResponse.json(CONTACT_NOT_FOUND, { status: 404 });
+  if (!isProspect(contact)) return notProspect();
 
   // Equality-only, sorted in memory: no composite index.
   const query = getAdminDb()
@@ -81,9 +84,9 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   for (const d of snap.docs) {
     const data = d.data() ?? {};
     const settle = overdue(data, Date.now())
-      ? settleMissed(d.id).then((s) => s === "missed")
+      ? settleMissed(d.id).then((s) => s === "missed" || (s === "awaiting_sync" && data.awaitingSync !== true))
       : data.status === "queued"
-        ? releaseShop(d.id, "failed", { code: "stuck", reason: "The send did not complete." }, { olderThanMs: STUCK_AFTER_MS })
+        ? markUncertain(d.id, null, { olderThanMs: STUCK_AFTER_MS })
         : null;
     if (!settle) continue;
     swept =
@@ -102,12 +105,14 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   const channels = Object.fromEntries(
     MYSTERY_SHOP_CHANNELS.map((c) => [c, { ...states[c], targets: allowedTargets(c, contact, country) }]),
   );
+  const { text: _text, hash: enquiryHash, ...enquiry } = enquiryOf(contact, access.sub);
   return NextResponse.json({
     shops,
     channels,
     cap: mysteryShopCap(access.sub),
     used: await shopsUsed(subAccountId),
-    enquiry: enquiryFor(contact, access.sub),
+    enquiry,
+    enquiryHash,
   });
 }
 
@@ -119,17 +124,19 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  const { contactId, channel, confirm, target } = body ?? {};
-  if (typeof contactId !== "string" || !REPORT_ID.test(contactId)) {
-    return NextResponse.json({ error: "contactId is required" }, { status: 400 });
-  }
+  const { contactId, channel, confirm, target, enquiryHash, consentAck } = body ?? {};
+  if (!isDocId(contactId)) return NextResponse.json({ error: "contactId is required" }, { status: 400 });
   if (!isChannel(channel)) return NextResponse.json({ error: "Unknown channel" }, { status: 400 });
 
   const access = await prospectingAccess(request, subAccountId);
   if (access instanceof NextResponse) return access;
   const contact = await loadContact(subAccountId, contactId);
   if (!contact) return NextResponse.json(CONTACT_NOT_FOUND, { status: 404 });
+  if (!isProspect(contact)) return notProspect();
   if (confirm !== true) return refuse("confirm_required", "Confirm the enquiry and its recipient first.");
+  if (channel === "call" && consentAck !== true) {
+    return refuse("consent_required", "Confirm you have consent to call this number.");
+  }
 
   const state = (await channelStates(subAccountId, access.sub))[channel];
   if (!state.available) return refuse("channel_unavailable", state.reason ?? "This channel is not available.");
@@ -137,21 +144,25 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const to = matchTarget(channel, target, allowedTargets(channel, contact, country), country);
   if (!to) return refuse("target_not_allowed", "Only this contact's own address or number can be contacted.");
 
-  const enquiry = enquiryFor(contact, access.sub);
-  const value = jobValueFor(prospectingOf(contact), access.sub.prospectingJobValues);
+  const enquiry = enquiryOf(contact, access.sub);
+  const kind = channel === "email" ? "email" : "call";
+  if (enquiryHash !== enquiry.hash[kind]) {
+    return refuse("enquiry_changed", "The enquiry changed — reopen the dialog.", 409);
+  }
   let reserved: Awaited<ReturnType<typeof reserveShop>>;
   try {
     reserved = await reserveShop({
       agencyId: access.agencyId,
       subAccountId,
       contactId,
-      reportId: prospectingOf(contact)?.lastReportId ?? null,
+      reportId: contact.prospecting?.lastReportId ?? null,
       uid: access.uid,
       channel,
       target: to,
       targetLabel: to,
-      enquiryText: channel === "email" ? `${enquiry.email.subject}\n\n${enquiry.email.body}` : enquiry.call,
-      ...value,
+      targetDomainTrusted: channel === "email" && emailDomainTrusted(to, contact.prospecting?.website || contact.website),
+      enquiryText: enquiry.text[kind],
+      ...jobValueFor(contact.prospecting, access.sub.prospectingJobValues),
       cap: mysteryShopCap(access.sub),
     });
   } catch (err) {
@@ -166,35 +177,36 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const { shopId } = reserved;
   const result: SendResult = await sendMysteryShop({
     shopId, channel, target: to, subAccountId, sub: access.sub, contact, contactId, uid: access.uid, enquiry,
-  }).catch((err) => ({ ok: false as const, kind: "failed" as const, reason: err instanceof Error ? err.message : "Send failed" }));
-  if (!result.ok) {
-    const failure = result.kind === "refused" ? { code: result.code, reason: result.reason } : { code: "send_failed", reason: result.reason };
+    consentAck: consentAck === true,
+  }).catch((err) => ({ ok: false as const, kind: "uncertain" as const, providerRef: null, reason: String(err) }));
+
+  if (!result.ok && result.kind !== "uncertain") {
+    if (result.kind === "failed") console.error("[prospecting/mystery-shop] send failed", shopId, result.reason);
+    const failure = result.kind === "refused" ? { code: result.code, reason: result.reason } : { code: "send_failed", reason: NOT_SENT };
     await releaseShop(shopId, result.kind, failure).catch((err) =>
       console.error("[prospecting/mystery-shop] release failed", shopId, err),
     );
-    return result.kind === "refused"
-      ? refuse(result.code, result.reason)
-      : refuse("send_failed", `The enquiry could not be sent: ${result.reason}`, 502);
+    return result.kind === "refused" ? refuse(result.code, result.reason) : refuse("send_failed", NOT_SENT, 502);
   }
 
-  try {
-    await markSent(shopId, result.providerRef);
-  } catch (err) {
-    console.error("[prospecting/mystery-shop] sent but not recorded", shopId, err);
-    return NextResponse.json({ error: "The enquiry was sent but could not be recorded. Do not send it again." }, { status: 500 });
+  // Sent — or maybe sent. A shop that may have gone out is never released: it stays open and timed.
+  let recorded = false;
+  if (result.ok) {
+    recorded = await markSent(shopId, result.providerRef).then(
+      (at) => at !== null,
+      (err) => (console.error("[prospecting/mystery-shop] sent but not recorded", shopId, err), false),
+    );
+  } else {
+    console.error("[prospecting/mystery-shop] send outcome unknown", shopId, result.reason);
   }
-  const timer = await publishCallback({
-    pathname: "/api/automations/prospecting/mystery-shop",
-    body: { shopId },
-    delaySeconds: TIMER_DELAY_S,
-    deduplicationId: `mystery_shop_${shopId}`,
-  }).catch(() => null);
-  if (!timer) {
-    // The send already happened; the GET sweep settles the shop instead.
-    await getAdminDb()
-      .doc(`mysteryShops/${shopId}`)
-      .update({ timerError: "The 24 h timer could not be queued." })
-      .catch((err) => console.error("[prospecting/mystery-shop] timerError write failed", shopId, err));
+  if (!recorded) {
+    const marked = await markUncertain(shopId, result.providerRef).catch((err) => {
+      console.error("[prospecting/mystery-shop] uncertain write failed", shopId, err);
+      return false;
+    });
+    if (marked) await queueTimer(shopId, TIMER_DELAY_S, `mystery_shop_${shopId}`);
+    return refuse("send_uncertain", MAYBE_SENT, 502);
   }
+  await queueTimer(shopId, TIMER_DELAY_S, `mystery_shop_${shopId}`);
   return NextResponse.json({ shopId }, { status: 202 });
 }

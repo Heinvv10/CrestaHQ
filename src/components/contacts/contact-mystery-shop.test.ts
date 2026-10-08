@@ -50,6 +50,7 @@ beforeEach(() => {
     cap: 10,
     used: 0,
     enquiry: { email: { subject: "Enquiry: plumber in Gqeberha", body: "Hi,\n\nDo you do plumber?" }, call: "Hi, I'm calling from Cresta HQ." },
+    enquiryHash: { email: "h-email", call: "h-call" },
   };
   fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
     init?.method === "POST" ? new Response(JSON.stringify({ shopId: "s1" }), { status: 202 }) : new Response(JSON.stringify(payload)),
@@ -90,15 +91,41 @@ describe("ContactMysteryShop", () => {
     expect(posts()).toHaveLength(0);
     await click(q("mystery-shop-confirm-send"));
     expect(posts()).toHaveLength(1);
-    expect(JSON.parse(posts()[0][1].body as string)).toEqual({ contactId: "c1", channel: "email", confirm: true, target: EMAIL });
+    expect(JSON.parse(posts()[0][1].body as string)).toEqual({
+      contactId: "c1", channel: "email", confirm: true, target: EMAIL, enquiryHash: "h-email",
+    });
   });
 
-  it("call: the dialog carries the consent line naming the business and the number", async () => {
+  it("call: the consent checkbox (the Call dialog's wording) gates the button and travels as consentAck", async () => {
     await mount();
     await click(q("mystery-shop-call"));
     expect(q("mystery-shop-consent")?.textContent).toBe(`I confirm Cresta HQ may place this AI call to ${PHONE} now.`);
-    await click(q("mystery-shop-confirm-send"));
-    expect(JSON.parse(posts()[0][1].body as string)).toMatchObject({ channel: "call", confirm: true, target: PHONE });
+    expect(q("mystery-shop-consent-ack")?.textContent).toContain("I confirm this contact has consented to receive calls from us");
+    const button = q("mystery-shop-confirm-send") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await click(button);
+    expect(posts()).toHaveLength(0);
+    await click(q("mystery-shop-consent-ack")!.querySelector("input"));
+    expect(button.disabled).toBe(false);
+    await click(button);
+    expect(JSON.parse(posts()[0][1].body as string)).toEqual({
+      contactId: "c1", channel: "call", confirm: true, target: PHONE, enquiryHash: "h-call", consentAck: true,
+    });
+  });
+
+  it("renders nothing for a contact that is not a prospect", async () => {
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ code: "not_a_prospect", error: "x" }), { status: 403 }));
+    await mount();
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("a later successful load clears an earlier error", async () => {
+    fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ error: "Temporarily unavailable" }), { status: 503 }));
+    await mount();
+    expect(container.textContent).toContain("Temporarily unavailable");
+    await click(q("mystery-shop-retry"));
+    expect(container.textContent).not.toContain("Temporarily unavailable");
+    expect(q("mystery-shop-email")).not.toBeNull();
   });
 
   it("shows a status line per shop and a refusal's reason", async () => {
@@ -115,6 +142,7 @@ describe("ContactMysteryShop", () => {
       new Response(JSON.stringify({ code: "outside_window", error: "It's outside the calling window." }), { status: 403 }),
     );
     await click(q("mystery-shop-call"));
+    await click(q("mystery-shop-consent-ack")!.querySelector("input"));
     await click(q("mystery-shop-confirm-send"));
     expect(container.textContent).toContain("It's outside the calling window.");
   });

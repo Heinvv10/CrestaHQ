@@ -24,8 +24,11 @@ import { shopStatusLine, type MemberShop } from "@/lib/prospecting/mystery-shop/
  * channel, disabled with the server's reason when the channel cannot send.
  * Every send goes through a confirm dialog naming the channel, the exact
  * recipient (picked from the contact's own values), the full enquiry and,
- * for a call, the operator's consent — the POST carries `confirm: true` only
- * from there. An AlertDialog, never window.confirm (it freezes automation).
+ * for a call, the operator's consent checkbox — the POST carries
+ * `confirm: true` (and `consentAck`) only from there, plus the hash of the
+ * enquiry shown, so the server refuses if it changed meanwhile. Renders
+ * nothing for a contact that is not a prospect. An AlertDialog, never
+ * window.confirm (it freezes automation).
  */
 
 type ChannelInfo = { available: boolean; reason?: string; targets: string[] };
@@ -35,6 +38,7 @@ type ShopsResponse = {
   cap: number;
   used: number;
   enquiry: { email: { subject: string; body: string }; call: string };
+  enquiryHash: { email: string; call: string };
 };
 
 const LABEL: Record<MysteryShopChannel, string> = { email: "Email", call: "AI call", whatsapp: "WhatsApp", form: "Website form" };
@@ -44,6 +48,10 @@ const NO_TARGET: Record<MysteryShopChannel, string> = {
   whatsapp: "This contact has no WhatsApp number.",
   form: "No contact form was found on this business's website.",
 };
+
+/** The Call dialog's consent wording (send-call-dialog.tsx). */
+const CONSENT =
+  "I confirm this contact has consented to receive calls from us, and that calling them now complies with the rules that apply where they are.";
 
 async function errorOf(res: Response): Promise<string> {
   const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -58,13 +66,21 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
   const [data, setData] = useState<ShopsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const [consent, setConsent] = useState(false);
   const [confirming, setConfirming] = useState<{ channel: MysteryShopChannel; target: string } | null>(null);
 
-  const load = useCallback(async () => {
+  /** `keepError`: after a send, keep its error on screen through the refresh. */
+  const load = useCallback(async (keepError = false) => {
     try {
       const res = await fetch(`${base}?contactId=${encodeURIComponent(contactId)}`);
+      if (res.status === 403) {
+        const body = (await res.clone().json().catch(() => ({}))) as { code?: string };
+        if (body.code === "not_a_prospect") return setHidden(true);
+      }
       if (!res.ok) throw new Error(await errorOf(res));
       setData((await res.json()) as ShopsResponse);
+      if (!keepError) setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't load mystery shops");
     }
@@ -81,7 +97,11 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
       const res = await fetch(base, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contactId, channel, confirm: true, target }),
+        body: JSON.stringify({
+          contactId, channel, confirm: true, target,
+          enquiryHash: data?.enquiryHash[channel === "email" ? "email" : "call"],
+          ...(channel === "call" ? { consentAck: consent } : {}),
+        }),
       });
       if (!res.ok) throw new Error(await errorOf(res));
       toast.success(channel === "call" ? "Mystery-shop call placed" : "Mystery-shop enquiry sent");
@@ -89,9 +109,11 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setBusy(false);
-      await load();
+      await load(true);
     }
   };
+
+  if (hidden) return null;
 
   const atCap = !!data && data.used >= data.cap;
   const enquiryText = (c: MysteryShopChannel) =>
@@ -119,7 +141,10 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
                 size="sm"
                 variant="outline"
                 disabled={!ready || atCap || busy}
-                onClick={() => setConfirming({ channel: c, target: info.targets[0] })}
+                onClick={() => {
+                  setConsent(false);
+                  setConfirming({ channel: c, target: info.targets[0] });
+                }}
                 data-testid={`mystery-shop-${c}`}
               >
                 {LABEL[c]}
@@ -145,6 +170,11 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
       )}
       {atCap && <p className="text-xs text-muted-foreground">This month&rsquo;s mystery-shop limit is used up.</p>}
       {error && <p className="text-xs text-destructive">{error}</p>}
+      {error && !data && (
+        <Button type="button" size="sm" variant="outline" onClick={() => void load()} data-testid="mystery-shop-retry">
+          Retry
+        </Button>
+      )}
       {data?.shops.map((s) => (
         <p key={s.id} className="text-xs" data-testid={`mystery-shop-status-${s.id}`}>
           {shopStatusLine(s, Date.now())}
@@ -184,9 +214,23 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
                 </p>
               </div>
               {confirming.channel === "call" && (
-                <p className="text-xs" data-testid="mystery-shop-consent">
-                  I confirm {business} may place this AI call to {confirming.target} now.
-                </p>
+                <>
+                  <p className="text-xs" data-testid="mystery-shop-consent">
+                    I confirm {business} may place this AI call to {confirming.target} now.
+                  </p>
+                  <label
+                    className="flex items-start gap-2.5 rounded-lg border bg-muted/30 p-3 text-xs"
+                    data-testid="mystery-shop-consent-ack"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={consent}
+                      onChange={(e) => setConsent(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 cursor-pointer"
+                    />
+                    <span>{CONSENT}</span>
+                  </label>
+                </>
               )}
             </div>
           )}
@@ -194,6 +238,7 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               data-testid="mystery-shop-confirm-send"
+              disabled={confirming?.channel === "call" && !consent}
               onClick={() => {
                 const c = confirming;
                 setConfirming(null);
