@@ -1,5 +1,6 @@
 import addressparser from "nodemailer/lib/addressparser";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import type { MysteryShopChannel } from "./model";
 
 /**
@@ -8,7 +9,9 @@ import type { MysteryShopChannel } from "./model";
  * contact's phone in E.164 (the contact write paths' normalisation, with the
  * workspace's default country for a bare national number). The report's
  * lead-capture section records only booleans (`phoneLink`, no numbers), so it
- * adds no call targets. WhatsApp and form are not live yet (PR 5b / 5c).
+ * adds no call targets. A form's target is not the contact's: it is the
+ * latest report's lead-capture `formUrl` (form/target.ts), compared here in
+ * its WHATWG serialisation. WhatsApp is PR 5b.
  */
 
 /** A plain address only: no quotes, comments, colons or spaces; domain labels joined by dots, ≥ 2 labels. */
@@ -27,8 +30,22 @@ export function normalizeEmailTarget(raw: unknown): string | null {
   return parsed.length === 1 && parsed[0]?.address?.toLowerCase() === v ? v : null;
 }
 
+/** An absolute http(s) URL without credentials, ≤ 2,048 chars, in its WHATWG serialisation; else null. */
+export function normalizeFormUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return null;
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) return null;
+  return url.href.length <= 2048 ? url.href : null;
+}
+
 export function normalizeTarget(channel: MysteryShopChannel, raw: unknown, country?: string | null): string | null {
   if (channel === "email") return normalizeEmailTarget(raw);
+  if (channel === "form") return normalizeFormUrl(raw);
   if (channel === "call") return typeof raw === "string" ? normalizePhoneE164(raw, country) : null;
   return null;
 }
@@ -73,6 +90,18 @@ export function isProviderDomain(domain: string): boolean {
   const take = labels.length >= 3 && TWO_LABEL_SUFFIX.test(labels.slice(-2).join(".")) ? 3 : 2;
   const registrable = labels.slice(-take).join(".");
   return PROVIDER_DOMAINS.has(registrable) || PROVIDER_FAMILIES.has(labels[labels.length - take] ?? "");
+}
+
+/**
+ * The email domains that answer for a form shop's business: the form URL's
+ * registrable domain, unless it is a mailbox / ISP provider's or the host is
+ * an IP address.
+ */
+export function formMatchDomains(formUrl: string): string[] {
+  const host = new URL(formUrl).hostname;
+  if (host.startsWith("[") || /^[0-9.]+$/.test(host)) return [];
+  const domain = registrableDomain(host);
+  return isProviderDomain(domain) ? [] : [domain];
 }
 
 /**

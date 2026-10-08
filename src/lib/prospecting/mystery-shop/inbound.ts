@@ -15,9 +15,11 @@ import { toMs } from "./model";
  * logged and never breaks them.
  */
 
-/** An inbound email in `subAccountId`'s mailbox, at its own arrival time. */
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+
+/** An inbound email in `subAccountId`'s mailbox, at its own arrival time. A form shop is matched against its senders set. */
 export async function matchMysteryShopEmail(subAccountId: string, message: InboundEmail): Promise<void> {
-  const docs = await closableShops(subAccountId, "email");
+  const docs = (await Promise.all([closableShops(subAccountId, "email"), closableShops(subAccountId, "form")])).flat();
   if (!docs.length) return;
   const decisions = decideEmail(
     message,
@@ -32,6 +34,7 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
         autoReplyAt: s.autoReplyAt,
         providerRef: s.providerRef,
         targetDomainTrusted: s.targetDomainTrusted,
+        ...(s.channel === "form" ? { senders: { addresses: strings(s.matchAddresses), domains: strings(s.matchDomains) } } : {}),
       };
     }),
   );
@@ -72,14 +75,19 @@ export async function settleMysteryShopCall(
 }
 
 /**
- * An inbound call to the sub-account: from a waiting call shop's exact number
- * = a callback, at the call's start. Caller ID can be spoofed and Vapi gives
+ * An inbound call to the sub-account: from a waiting call shop's exact number,
+ * or one of a waiting form shop's contact numbers (`matchNumbers`), = a
+ * callback, at the call's start. Caller ID can be spoofed and Vapi gives
  * no way to verify it, so it is recorded `senderAuth: "unknown"`.
  */
 export async function matchInboundCallback(subAccountId: string, callerPhone: string | null, report: CallReport): Promise<void> {
   const caller = normalizePhoneE164(callerPhone);
   if (!caller) return;
-  const docs = (await closableShops(subAccountId, "call")).filter((d) => d.data()?.target === caller);
+  const [calls, forms] = await Promise.all([closableShops(subAccountId, "call"), closableShops(subAccountId, "form")]);
+  const docs = [
+    ...calls.filter((d) => d.data()?.target === caller),
+    ...forms.filter((d) => strings(d.data()?.matchNumbers).includes(caller)),
+  ];
   const { atMs } = callStartedAt(report);
   for (const d of docs) await settleResponded(d.id, atMs, { responseVia: "callback", senderAuth: "unknown" });
 }

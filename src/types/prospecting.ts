@@ -37,6 +37,8 @@ export interface MysteryShopTemplates {
   emailSubject?: string;
   emailBody?: string;
   call?: string;
+  /** The website form's message; unset = the email body. */
+  form?: string;
 }
 
 /**

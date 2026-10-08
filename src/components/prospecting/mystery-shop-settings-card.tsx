@@ -25,6 +25,7 @@ const TEMPLATE_FIELDS: { key: keyof MysteryShopTemplates; label: string; rows: n
   { key: "emailSubject", label: "Email subject", rows: 1 },
   { key: "emailBody", label: "Email body", rows: 6 },
   { key: "call", label: "AI call opening line", rows: 3 },
+  { key: "form", label: "Website form message", rows: 6 },
 ];
 
 export function MysteryShopSettingsCard() {
@@ -118,7 +119,7 @@ export function MysteryShopSettingsCard() {
               rows={f.rows}
               maxLength={TEMPLATE_MAX_LEN}
               value={templates[f.key] ?? ""}
-              placeholder={DEFAULT_TEMPLATES[f.key]}
+              placeholder={f.key === "form" ? "Empty: the email body is used." : DEFAULT_TEMPLATES[f.key]}
               onChange={(e) => setTemplates({ ...templates, [f.key]: e.target.value })}
             />
           </label>

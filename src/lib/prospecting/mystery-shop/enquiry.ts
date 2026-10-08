@@ -9,14 +9,15 @@ import type { ContactProspecting, MysteryShopTemplates } from "@/types";
  * that it was a response-time test.
  */
 
-export const DEFAULT_TEMPLATES: Required<MysteryShopTemplates> = {
+/** No `form` default: the form message falls back to the (possibly overridden) email body. */
+export const DEFAULT_TEMPLATES: Required<Omit<MysteryShopTemplates, "form">> = {
   emailSubject: "Enquiry: {service} in {town}",
   emailBody: "Hi,\n\nDo you do {service} in {town}? What's your earliest availability?\n\nThanks,\n{business}",
   call: "Hi, I'm calling from {business}. Do you do {service} in {town}? What's your earliest availability?",
 };
 
 export const TEMPLATE_MAX_LEN = 2000;
-const TEMPLATE_KEYS = ["emailSubject", "emailBody", "call"] as const;
+const TEMPLATE_KEYS = ["emailSubject", "emailBody", "call", "form"] as const;
 
 export interface EnquiryVars {
   service: string;
@@ -61,6 +62,7 @@ export function renderEnquiries(templates: MysteryShopTemplates | null | undefin
   return {
     email: { subject: renderEnquiry(t.emailSubject, vars), body: renderEnquiry(t.emailBody, vars) },
     call: renderEnquiry(t.call, vars),
+    form: renderEnquiry(t.form ?? t.emailBody, vars),
   };
 }
 
@@ -69,7 +71,7 @@ function stripEmpty(t: MysteryShopTemplates | null | undefined): MysteryShopTemp
 }
 
 /**
- * The settings PUT's `templates`: an object of the three optional strings,
+ * The settings PUT's `templates`: an object of the four optional strings,
  * each at most TEMPLATE_MAX_LEN. A blank string clears that override. Null =
  * refuse the request.
  */

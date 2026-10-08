@@ -53,6 +53,38 @@ describe("sender match", () => {
   });
 });
 
+describe("form shops: a target set instead of a target address", () => {
+  const form = (extra: Partial<EmailShopCandidate> = {}) =>
+    shop("f1", "https://www.acme.co.za/contact", {
+      providerRef: "form:f1:1", targetDomainTrusted: undefined,
+      senders: { addresses: ["owner@gmail.com"], domains: ["acme.co.za"] }, ...extra,
+    });
+
+  it("any address at a match domain, or the contact's own address, responds", () => {
+    expect(decide(mail("Sales@ACME.co.za"), [form()])).toEqual({ f1: "responded" });
+    expect(decide(mail("owner@gmail.com"), [form()])).toEqual({ f1: "responded" });
+  });
+
+  it("another domain, a sub- or look-alike domain, or another gmail user does not", () => {
+    for (const from of ["someone@gmail.com", "x@mail.acme.co.za", "x@acme.co.za.evil.com", "x@evilacme.co.za", "acme.co.za"]) {
+      expect(decide(mail(from), [form()]), from).toEqual({ f1: "none" });
+    }
+    expect(decide(mail("x@acme.co.za"), [form({ senders: { addresses: [], domains: [] } })])).toEqual({ f1: "none" });
+  });
+
+  it("the window, first-wins and auto-reply rules are the email shop's", () => {
+    expect(decide(mail("x@acme.co.za", { occurredAtMs: SENT + RESPONSE_WINDOW_MS + 1 }), [form()])).toEqual({ f1: "none" });
+    expect(decide(mail("x@acme.co.za"), [form({ status: "responded" })])).toEqual({ f1: "none" });
+    const auto = mail("x@acme.co.za", { autoReply: { ...NO_HEADERS, autoSubmitted: "auto-replied" } });
+    expect(decide(auto, [form()])).toEqual({ f1: "auto_reply" });
+  });
+
+  it("a bounce never fails a form shop (nothing was emailed)", () => {
+    const dsn = { ...NO_DSN, contentType: "multipart/report", deliveryStatus: "Action: failed\nFinal-Recipient: rfc822; x@acme.co.za", text: "form:f1:1" };
+    expect(decide(mail("mailer-daemon@acme.co.za", { dsn, inReplyTo: "form:f1:1" }), [form()])).toEqual({ f1: "none" });
+  });
+});
+
 describe("window", () => {
   it("before the send or after 24 h is ignored", () => {
     const s = [shop("s1", "info@acme.co.za")];
