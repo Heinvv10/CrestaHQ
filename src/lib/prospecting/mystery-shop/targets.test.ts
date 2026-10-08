@@ -64,6 +64,9 @@ describe("form targets", () => {
     expect(formMatchDomains("https://acme.outlook.com/")).toEqual([]);
     expect(formMatchDomains("http://203.0.113.9/contact")).toEqual([]);
     expect(formMatchDomains("http://[2001:db8::1]/contact")).toEqual([]);
+    // A hosting platform's tenant is its own domain, never the platform's.
+    expect(formMatchDomains("https://acme.wixsite.com/contact")).toEqual(["acme.wixsite.com"]);
+    expect(formMatchDomains("https://acme.org.za/contact")).toEqual(["acme.org.za"]);
   });
 });
 

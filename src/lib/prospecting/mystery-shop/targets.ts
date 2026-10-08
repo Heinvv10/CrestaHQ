@@ -94,14 +94,12 @@ export function isProviderDomain(domain: string): boolean {
 
 /**
  * The email domains that answer for a form shop's business: the form URL's
- * registrable domain, unless it is a mailbox / ISP provider's or the host is
- * an IP address.
+ * registrable domain (Public Suffix List, so a hosting platform's tenant is
+ * its own), unless it is a mailbox / ISP provider's; none for an IP address.
  */
 export function formMatchDomains(formUrl: string): string[] {
-  const host = new URL(formUrl).hostname;
-  if (host.startsWith("[") || /^[0-9.]+$/.test(host)) return [];
-  const domain = registrableDomain(host);
-  return isProviderDomain(domain) ? [] : [domain];
+  const domain = registrableDomain(new URL(formUrl).hostname);
+  return domain && !isProviderDomain(domain) ? [domain] : [];
 }
 
 /**

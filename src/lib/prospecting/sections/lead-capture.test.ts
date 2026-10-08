@@ -68,6 +68,13 @@ describe("lead_capture formUrl (the mystery shop's form target)", () => {
     expect(detect(`<a href="https://shop.acme.co.za/contact">x</a>`, PAGE).formUrl).toBe("https://shop.acme.co.za/contact");
   });
 
+  it("never another tenant of a hosting platform", () => {
+    expect(detect(`<a href="https://evil.wixsite.com/contact">Contact</a>`, "https://acme.wixsite.com/home").formUrl).toBeNull();
+    expect(detect(`<a href="https://acme.wixsite.com/contact">Contact</a>`, "https://acme.wixsite.com/home").formUrl).toBe(
+      "https://acme.wixsite.com/contact",
+    );
+  });
+
   it("never another site, a non-http link or a page that was not fetched", () => {
     for (const a of [
       `<a href="https://other.co.za/contact">Contact</a>`,
