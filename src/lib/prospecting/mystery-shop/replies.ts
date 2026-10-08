@@ -48,7 +48,7 @@ export async function settleResponded(shopId: string, atMs: number, via: Respons
  * (Authentication-Results). It is not a response: the shop keeps waiting, and
  * a later genuine reply settles it. If none comes, the miss is `disputed` —
  * also when the failing reply is synced late, onto a shop already missed
- * (closableShops bounds how late).
+ * (closableShops bounds how late), which also withdraws its confirmation.
  */
 export async function recordAuthFailedReply(shopId: string, atMs: number): Promise<boolean> {
   const db = getAdminDb();
@@ -58,7 +58,9 @@ export async function recordAuthFailedReply(shopId: string, atMs: number): Promi
     const sent = toMs(shop?.sentAt);
     const waiting = shop?.status === "sent" || shop?.status === "missed";
     if (!waiting || shop.authFailedReplyAt != null || sent === null || !inWindow(sent, atMs)) return false;
-    tx.update(ref, { authFailedReplyAt: new Date(atMs), ...(shop.status === "missed" ? { disputed: true } : {}) });
+    // On a missed shop: disputed, and any confirmation withdrawn so the member re-decides with the dispute visible.
+    const missed = shop.status === "missed" ? { disputed: true, missedConfirmedAt: null, missedConfirmedByUid: null } : {};
+    tx.update(ref, { authFailedReplyAt: new Date(atMs), ...missed });
     return true;
   });
 }

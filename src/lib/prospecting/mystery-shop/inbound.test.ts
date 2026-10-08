@@ -102,11 +102,11 @@ describe("email", () => {
     expect(await recordAuthFailedReply("s1", SENT + 60_000)).toBe(true);
   });
 
-  it("a late-synced failing reply on an already-missed shop records it and disputes the miss", async () => {
-    seedShop("s1", { status: "missed" });
+  it("a late-synced failing reply on an already-missed shop records it, disputes the miss and withdraws a confirmation", async () => {
+    seedShop("s1", { status: "missed", missedConfirmedAt: new Date(), missedConfirmedByUid: "u1" });
     const spoof = { authResults: ["mx.crestahq.com; dmarc=fail header.from=acme.co.za"], occurredAtMs: SENT + 60_000 };
     await matchMysteryShopEmail("sa1", email(EMAIL, spoof));
-    expect(shop("s1")).toMatchObject({ status: "missed", disputed: true });
+    expect(shop("s1")).toMatchObject({ status: "missed", disputed: true, missedConfirmedAt: null, missedConfirmedByUid: null });
     expect((shop("s1").authFailedReplyAt as Date).getTime()).toBe(SENT + 60_000);
   });
 

@@ -187,7 +187,8 @@ export async function releaseShop(
  * sync pass that read the INBOX to its end) is at or after sentAt + 24 h and
  * the mailbox has no error. Until then it stays `sent` (`awaitingSync: true`)
  * and this returns "awaiting_sync". A miss after a reply that failed the
- * sender check is `disputed`: the public page makes no claim about it.
+ * sender check is flagged `disputed` for the member who decides whether to
+ * confirm it (only a confirmed miss is public).
  */
 export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<string | null> {
   const db = getAdminDb();
