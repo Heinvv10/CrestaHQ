@@ -2,10 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
-  MAX_TIMER_REQUEUES,
-  RESPONSE_WINDOW_MS,
-  TIMER_GRACE_MS,
-  TIMER_REQUEUE_MS,
+  LATE_REPLY_HORIZON_MS,
   canSettleResponded,
   inWindow,
   toMs,
@@ -91,14 +88,12 @@ export async function markBounced(shopId: string): Promise<boolean> {
   });
 }
 
-/**
- * A missed shop older than this cannot be upgraded by a late reply any more:
- * the longest the missed verdict can wait for the mailbox (the timer's grace
- * plus every re-queue) past the window.
- */
-const LATE_SYNC_MS = RESPONSE_WINDOW_MS + TIMER_GRACE_MS + MAX_TIMER_REQUEUES * TIMER_REQUEUE_MS;
 
-/** sent / recently missed shops of one channel in a sub-account — what an inbound reply may close. Equality-only. */
+/**
+ * sent / recently missed shops of one channel in a sub-account — what an
+ * inbound reply may close. A missed shop past LATE_REPLY_HORIZON_MS cannot be
+ * changed by a late reply any more. Equality-only.
+ */
 export async function closableShops(subAccountId: string, channel: MysteryShopChannel, nowMs = Date.now()) {
   const col = getAdminDb().collection("mysteryShops");
   const snaps = await Promise.all(
@@ -108,5 +103,5 @@ export async function closableShops(subAccountId: string, channel: MysteryShopCh
   );
   return snaps
     .flatMap((s) => s.docs)
-    .filter((d) => d.data()?.status !== "missed" || nowMs - (toMs(d.data()?.sentAt) ?? 0) <= LATE_SYNC_MS);
+    .filter((d) => d.data()?.status !== "missed" || nowMs - (toMs(d.data()?.sentAt) ?? 0) <= LATE_REPLY_HORIZON_MS);
 }

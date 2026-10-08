@@ -1,4 +1,4 @@
-import { canSettleResponded, inWindow, toMs } from "./model";
+import { LATE_REPLY_HORIZON_MS, canSettleResponded, inWindow, toMs } from "./model";
 
 /**
  * Does an inbound email close an open email mystery shop? Pure.
@@ -94,6 +94,7 @@ const DSN_SUBJECT = /\b(undeliverable|delivery status notification|mail delivery
 export function isDeliveryReport(m: Pick<InboundEmail, "dsn" | "from" | "subject">): boolean {
   return (
     /^multipart\/report\b/i.test(m.dsn.contentType?.trim() ?? "") ||
+    m.dsn.deliveryStatus.trim() !== "" ||
     m.dsn.msExchangeNdr != null ||
     m.dsn.failedRecipients != null ||
     /^(mailer-daemon|postmaster)@/i.test(m.from.trim()) ||
@@ -185,20 +186,28 @@ export function senderAuthenticated(authResults: string[], fromDomain: string): 
 const lower = (v: string) => v.trim().toLowerCase();
 
 /** The delivery-status part reports a hard failure for `target` (a block without a Final-Recipient counts). */
+/** A delivery-status field value without (comments) and <angle brackets>. */
+const field = (block: string, name: string) => {
+  const v = new RegExp(`^${name}:[ \\t]*(.*)$`, "im").exec(block)?.[1];
+  return v === undefined ? undefined : lower(v.replace(/\([^)]*\)/g, "").replace(/[<>]/g, ""));
+};
+
 function failedFor(deliveryStatus: string, target: string): boolean {
   return deliveryStatus.split(/\r?\n[ \t]*\r?\n/).some((block) => {
-    if (!/^action:[ \t]*failed[ \t]*$/im.test(block)) return false;
-    const rcpt = /^final-recipient:[ \t]*(.*)$/im.exec(block)?.[1];
-    return rcpt === undefined || lower(rcpt.replace(/^rfc822;/i, "")) === lower(target);
+    if (field(block, "action") !== "failed") return false;
+    const rcpt = field(block, "final-recipient");
+    return rcpt === undefined || rcpt.replace(/^rfc822;\s*/, "") === lower(target);
   });
 }
 
-/** A strict hard bounce of mail to `target`. Delay notices, receipts and look-alikes are not. */
+/**
+ * A strict hard bounce of mail to `target`. `deliveryStatus` is only ever the
+ * delivery-status part of a delivery-status report (lib/comms/delivery-status.ts),
+ * so delay notices, receipts and look-alikes in a plain body never count.
+ */
 export function bouncedFor(dsn: DsnSignals, target: string): boolean {
-  const ct = dsn.contentType ?? "";
-  const report = /^multipart\/report\b/i.test(ct.trim()) && /report-type\s*=\s*"?delivery-status\b/i.test(ct);
   return (
-    (report && failedFor(dsn.deliveryStatus, target)) ||
+    failedFor(dsn.deliveryStatus, target) ||
     lower(dsn.msExchangeNdr ?? "") === "true" ||
     (dsn.failedRecipients ?? "").split(/[,;\s]+/).map(lower).includes(lower(target))
   );
@@ -214,7 +223,8 @@ export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<s
       const ref = msgId(s.providerRef);
       const named = !!ref && (thread.has(ref) || m.dsn.text.includes(ref));
       const sent = toMs(s.sentAt);
-      const timely = sent !== null && inWindow(sent, m.occurredAtMs);
+      // A bounce may be synced late too: up to the same horizon as a late reply.
+      const timely = sent !== null && m.occurredAtMs >= sent && m.occurredAtMs <= sent + LATE_REPLY_HORIZON_MS;
       if (named && timely && (s.status === "sent" || s.status === "missed") && bouncedFor(m.dsn, s.target)) {
         out.set(s.id, "bounced");
       }

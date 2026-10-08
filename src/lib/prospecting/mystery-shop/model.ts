@@ -22,6 +22,12 @@ export const TIMER_GRACE_MS = 30 * 60_000;
 /** An email shop waiting for the mailbox sync re-checks this often, at most MAX_TIMER_REQUEUES times. */
 export const TIMER_REQUEUE_MS = 3600_000;
 export const MAX_TIMER_REQUEUES = 48;
+/**
+ * How long after the send a late-synced reply or bounce can still change a
+ * shop: the longest the missed verdict can wait for the mailbox (the timer's
+ * grace plus every re-queue) past the window.
+ */
+export const LATE_REPLY_HORIZON_MS = RESPONSE_WINDOW_MS + TIMER_GRACE_MS + MAX_TIMER_REQUEUES * TIMER_REQUEUE_MS;
 export const MYSTERY_SHOP_CAP_DEFAULT = 10;
 /** R1,500 — an estimated job for a niche the sub-account has not valued. */
 export const JOB_VALUE_DEFAULT_CENTS = 150_000;

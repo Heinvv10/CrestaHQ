@@ -7,6 +7,7 @@ import { simpleParser, type AddressObject } from "mailparser";
 import type { SmtpConnection } from "@/types/email";
 import type { MailboxConnection, MailboxMeta } from "@/types/mailbox";
 import type { MailSignals } from "@/lib/prospecting/mystery-shop/email-match";
+import { deliveryStatusPart } from "./delivery-status";
 export const MAX_MESSAGE_BYTES = 5 * 1024 * 1024;
 export class MailboxError extends Error {
   constructor(
@@ -237,26 +238,6 @@ export function mailSignalsFromRaw(raw: string): MailSignals {
       deliveryStatus: "",
     },
   };
-}
-/**
- * The message/delivery-status part of a multipart/report, read from the raw
- * source (mailparser folds it into `text`, where a person's words could
- * imitate it). Base64 decoded when so encoded; capped at 16 KB. "" if none.
- */
-export function deliveryStatusPart(source: string, contentType: string | null): string {
-  const ct = contentType?.trim() ?? "";
-  const boundary = /boundary\s*=\s*"?([^";\s]+)"?/i.exec(ct)?.[1];
-  if (!boundary || !/^multipart\/report\b/i.test(ct)) return "";
-  for (const part of source.split(`--${boundary}`).slice(1)) {
-    const split = part.search(/\r?\n\r?\n/);
-    if (split === -1) continue;
-    const head = part.slice(0, split).replace(/\r?\n[ \t]+/g, " ");
-    if (!/^[ \t]*content-type:[ \t]*message\/(global-)?delivery-status\b/im.test(head)) continue;
-    const body = part.slice(split).trim();
-    const text = /^[ \t]*content-transfer-encoding:[ \t]*base64/im.test(head) ? Buffer.from(body, "base64").toString("utf8") : body;
-    return text.trim().slice(0, 16384);
-  }
-  return "";
 }
 const REPORT_PART = /^(message\/(delivery-status|rfc822|global-headers|global-delivery-status)|text\/rfc822-headers)$/i;
 export async function parseMailboxMessage(source: Buffer) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RESPONSE_WINDOW_MS } from "./model";
+import { LATE_REPLY_HORIZON_MS, RESPONSE_WINDOW_MS } from "./model";
 import {
   decideEmail,
   isAutoReply,
@@ -209,10 +209,11 @@ describe("bounces (strict delivery-status notifications)", () => {
 
   it.each([
     ["a delay notice (Action: delayed)", bounce({ ...dsn({ contentType: REPORT, deliveryStatus: status("delayed") }) })],
-    ["a read receipt (report-type=disposition-notification)", bounce({ ...dsn({ contentType: "multipart/report; report-type=disposition-notification", deliveryStatus: status("failed") }) })],
+    // The parser returns no delivery-status part for a read receipt (delivery-status.test.ts).
+    ["a read receipt (report-type=disposition-notification)", bounce({ ...dsn({ contentType: "multipart/report; report-type=disposition-notification", deliveryStatus: "" }) })],
     ["a failure for another recipient", bounce({ ...dsn({ contentType: REPORT, deliveryStatus: status("failed", "boss@acme.co.za") }) })],
     ["a report naming no Message-ID of ours", bounce({ dsn: { ...NO_DSN, contentType: REPORT, deliveryStatus: status("failed"), text: "Message-ID: <other@x>" } })],
-    ["a report after the window", bounce({ occurredAtMs: SENT + RESPONSE_WINDOW_MS + 1 })],
+    ["a report after the late-reply horizon", bounce({ occurredAtMs: SENT + LATE_REPLY_HORIZON_MS + 1 })],
     ["a report before the send", bounce({ occurredAtMs: SENT - 1 })],
     ["Action: failed written in a plain-text body", mail("mailer-daemon@mx.example", { ...dsn({ contentType: "text/plain", text: `Message-ID: ${ref}\nAction: failed` }) })],
     ["a subject-only match", mail(T, { subject: "Undeliverable: Enquiry", inReplyTo: ref })],
@@ -221,6 +222,22 @@ describe("bounces (strict delivery-status notifications)", () => {
     ["X-Failed-Recipients for someone else", mail("mailer-daemon@mx.example", { inReplyTo: ref, ...dsn({ failedRecipients: "boss@acme.co.za" }) })],
   ])("%s does nothing at all — not a bounce, a response or an auto-reply", (_l, m) => {
     expect(decide(m, s())).toEqual({ s1: "none", s2: "none" });
+  });
+
+  it("a late bounce inside the late-reply horizon still bounces", () => {
+    expect(decide(bounce({ occurredAtMs: SENT + 30 * 3600_000 }), s())).toEqual({ s1: "bounced", s2: "none" });
+    expect(decide(bounce({ occurredAtMs: SENT + LATE_REPLY_HORIZON_MS }), s())).toEqual({ s1: "bounced", s2: "none" });
+  });
+
+  it("angle brackets and (comments) in Final-Recipient and Action are ignored", () => {
+    const ds = `Final-Recipient: rfc822; <INFO@acme.co.za> (original recipient)\nAction: failed (permanent failure)\nStatus: 5.1.1`;
+    expect(decide(bounce({ ...dsn({ contentType: REPORT, deliveryStatus: ds }) }), s())).toEqual({ s1: "bounced", s2: "none" });
+  });
+
+  it("a report nested in multipart/mixed (its delivery-status part found by the parser) bounces, and is never a response", () => {
+    const nested = mail(T, { ...dsn({ contentType: "multipart/mixed; boundary=m", deliveryStatus: status("failed") }) });
+    expect(isDeliveryReport(nested)).toBe(true);
+    expect(decide(nested, s())).toEqual({ s1: "bounced", s2: "none" });
   });
 
   it("an Exchange NDR (value true) or X-Failed-Recipients naming the target bounces", () => {
