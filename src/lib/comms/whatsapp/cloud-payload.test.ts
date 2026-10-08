@@ -77,7 +77,17 @@ describe("parseCloudInbound", () => {
       media: null,
       location: null,
       locationRejected: false,
+      timestampMs: 1756900000000,
     });
+  });
+
+  it("reads Meta's timestamp (Unix seconds) as ms; absent or malformed is null", () => {
+    const at = (timestamp: unknown) => parseCloudInbound(withMessages([{ from: "27821234567", id: "wamid.T", type: "text", text: { body: "x" }, timestamp }]))?.timestampMs;
+    expect(at("1756900000")).toBe(1756900000000);
+    expect(at(undefined)).toBeNull();
+    expect(at("17569e5")).toBeNull();
+    expect(at("-1")).toBeNull();
+    expect(at("")).toBeNull();
   });
 
   it("parses a shared location as Meta sends it, with no text", () => {
@@ -325,8 +335,8 @@ describe("parseCloudStatuses", () => {
       ],
     };
     expect(parseCloudStatuses(payload)).toEqual([
-      { providerMessageId: "wamid.A", status: "delivered", phoneNumberId: "PN1" },
-      { providerMessageId: "wamid.B", status: "read", phoneNumberId: "PN1" },
+      { providerMessageId: "wamid.A", status: "delivered", phoneNumberId: "PN1", timestampMs: 1756900000000 },
+      { providerMessageId: "wamid.B", status: "read", phoneNumberId: "PN1", timestampMs: 1756900001000 },
     ]);
   });
 
