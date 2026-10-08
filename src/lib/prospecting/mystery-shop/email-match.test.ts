@@ -104,15 +104,11 @@ describe("auto-replies", () => {
     expect(decide(m, [shop("s1", "info@acme.co.za")])).toEqual({ s1: "auto_reply" });
   });
 
-  it("list headers on a reply in OUR thread do not make it automatic (helpdesks add them to real replies)", () => {
+  it("list headers are automatic even in OUR thread (helpdesk auto-acknowledgements quote our Message-ID)", () => {
     const list = { autoReply: { ...NO_HEADERS, listId: "<support.acme.co.za>", listUnsubscribe: "<mailto:u@acme.co.za>" } };
     const s = [shop("s1", "info@acme.co.za")];
-    expect(decide(mail("info@acme.co.za", { ...list, inReplyTo: "<s1@crestahq.com>" }), s)).toEqual({ s1: "responded" });
-    expect(decide(mail("info@acme.co.za", { ...list, references: ["<x@y>", "<s1@crestahq.com>"] }), s)).toEqual({ s1: "responded" });
-    expect(decide(mail("info@acme.co.za", { ...list, inReplyTo: "<other@x>" }), s)).toEqual({ s1: "auto_reply" });
-    // A real auto-reply signal still wins in-thread.
-    const ooo = { autoReply: { ...list.autoReply, autoSubmitted: "auto-replied" }, inReplyTo: "<s1@crestahq.com>" };
-    expect(decide(mail("info@acme.co.za", ooo), s)).toEqual({ s1: "auto_reply" });
+    expect(decide(mail("info@acme.co.za", { ...list, inReplyTo: "<s1@crestahq.com>" }), s)).toEqual({ s1: "auto_reply" });
+    expect(decide(mail("info@acme.co.za", { ...list, references: ["<x@y>", "<s1@crestahq.com>"] }), s)).toEqual({ s1: "auto_reply" });
   });
 
   it.each(["Out of Office: back Monday", "Automatic reply: Enquiry", "Auto-Reply: thanks", "Autoreply", "out-of-office"])(
