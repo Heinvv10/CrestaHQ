@@ -179,6 +179,7 @@ it("imports an oversized message placeholder without source download", async () 
   client.fetchOne.mockResolvedValue({
     size: 6 * 1024 * 1024,
     internalDate: new Date(),
+    headers: Buffer.from("Authentication-Results: mx; dmarc=fail\r\n"),
     envelope: {
       from: [{ address: "other@example.com" }],
       to: [{ address: "me@example.com" }],
@@ -196,6 +197,7 @@ it("imports an oversized message placeholder without source download", async () 
     })
   );
   expect((c.cursors as Record<string, { uid: number }>).INBOX.uid).toBe(2);
+  expect(matchMysteryShopEmail).toHaveBeenCalledWith("a", expect.objectContaining({ authResults: ["mx; dmarc=fail"] }));
 });
 it("sweep isolates failures and continues other tenants", async () => {
   setup();
@@ -264,7 +266,7 @@ it("hands each inbound message to the mystery-shop matcher at its arrival time, 
   const { client } = setup();
   client.search.mockResolvedValue([1]);
   const at = new Date("2026-10-08T10:00:00Z");
-  const extra = "Subject: Re: Enquiry\r\nIn-Reply-To: <shop@crestahq.com>\r\nAuto-Submitted: auto-replied\r\nPrecedence: bulk\r\n";
+  const extra = "Subject: Re: Enquiry\r\nIn-Reply-To: <shop@crestahq.com>\r\nAuto-Submitted: auto-replied\r\nPrecedence: bulk\r\nAuthentication-Results: mx; dmarc=pass\r\n";
   client.fetchOne.mockImplementation(async (_uid, q) =>
     q.size ? { size: 100, internalDate: at } : mailFrom("info@acme.co.za", "me@example.com", extra)
   );
@@ -273,6 +275,7 @@ it("hands each inbound message to the mystery-shop matcher at its arrival time, 
   expect(matchMysteryShopEmail).toHaveBeenCalledWith("tenant-a", expect.objectContaining({
     from: "info@acme.co.za", subject: "Re: Enquiry", inReplyTo: "<shop@crestahq.com>", occurredAtMs: at.getTime(),
     autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk" },
+    authResults: ["mx; dmarc=pass"],
   }));
 });
 it("a failing mystery-shop matcher never breaks the sync; sent mail is never matched", async () => {

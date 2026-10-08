@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
+  authResultsFromRaw,
   connectMailbox,
   parseMailboxMessage,
   MAX_MESSAGE_BYTES,
@@ -140,7 +141,7 @@ export async function syncMailbox(subAccountId: string) {
               size: true,
               internalDate: true,
               envelope: true,
-              headers: ["X-CrestaHQ-Archive"],
+              headers: ["X-CrestaHQ-Archive", "Authentication-Results"],
             },
             { uid: true }
           );
@@ -178,6 +179,7 @@ export async function syncMailbox(subAccountId: string) {
                 metadata.headers?.toString() ?? ""
               ),
               autoReply: { autoSubmitted: null, xAutoreply: null, xAutorespond: null, precedence: null },
+              authResults: authResultsFromRaw(metadata.headers?.toString() ?? ""),
             };
           };
           if (
@@ -232,7 +234,7 @@ export async function syncMailbox(subAccountId: string) {
           )
             summary.skipped++;
           else {
-            const { date, archive: _archive, autoReply, ...input } = parsed;
+            const { date, archive: _archive, autoReply, authResults, ...input } = parsed;
             const occurredAt =
               metadata.internalDate instanceof Date
                 ? metadata.internalDate
@@ -253,7 +255,7 @@ export async function syncMailbox(subAccountId: string) {
             if (result.inserted) summary.imported++;
             else summary.skipped++;
             if (direction === "inbound")
-              await matchMysteryShopEmail(subAccountId, { ...input, autoReply, occurredAtMs: occurredAt.getTime() })
+              await matchMysteryShopEmail(subAccountId, { ...input, autoReply, authResults, occurredAtMs: occurredAt.getTime() })
                 .catch((err) => console.error("[mailbox-sync] mystery-shop match failed", subAccountId, err));
           }
           processed++;

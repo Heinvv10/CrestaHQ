@@ -25,7 +25,7 @@ function seedShop(id: string, extra: Record<string, unknown> = {}) {
 }
 const shop = (id: string) => mem.read(`mysteryShops/${id}`)!;
 const email = (from: string, over: Record<string, unknown> = {}) => ({
-  from, inReplyTo: null, references: [], autoReply: NO_HEADERS, subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000, ...over,
+  from, inReplyTo: null, references: [], autoReply: NO_HEADERS, authResults: [] as string[], subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000, ...over,
 });
 const callReport = (over: Record<string, unknown> = {}) => ({
   endedReason: "customer-ended-call", durationSec: 30, startedAtMs: SENT + 12_000, endedAtMs: SENT + 42_000,
@@ -61,6 +61,14 @@ describe("email", () => {
     seedShop("s1");
     await matchMysteryShopEmail("sa1", email("x@evil.example", { inReplyTo: "<s1@crestahq.com>" }));
     expect(shop("s1").status).toBe("sent");
+  });
+
+  it("a spoofed From that fails DMARC closes nothing and records nothing", async () => {
+    seedShop("s1");
+    const spoof = { authResults: ["mx.crestahq.com; spf=fail smtp.mailfrom=acme.co.za; dmarc=fail header.from=acme.co.za"] };
+    await matchMysteryShopEmail("sa1", email(EMAIL, spoof));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, subject: "Out of office" }));
+    expect(shop("s1")).toMatchObject({ status: "sent", respondedAt: null, autoReplyAt: null });
   });
 
   it("a late-synced in-window reply upgrades a missed shop", async () => {

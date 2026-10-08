@@ -11,6 +11,12 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * it closes nothing. The reply must arrive inside [sentAt, sentAt + 24 h].
  * An automatic reply (headers, or an out-of-office subject) is recorded once
  * as `auto_reply` and the shop keeps waiting for a person.
+ *
+ * The From header is forgeable, so the receiving server's
+ * Authentication-Results are read too (`senderAuthenticated`): a sender that
+ * FAILS them closes nothing and records nothing. Absent results ("unknown" —
+ * many small hosts never stamp them) behave as before; the member view shows
+ * such a reply as unverified.
  */
 
 export interface AutoReplyHeaders {
@@ -25,6 +31,8 @@ export interface InboundEmail {
   inReplyTo: string | null;
   references: string[];
   autoReply: AutoReplyHeaders;
+  /** Every Authentication-Results header, topmost (the receiving server's) first. */
+  authResults: string[];
   subject: string;
   occurredAtMs: number;
 }
@@ -81,10 +89,76 @@ export function isAutoReply(m: Pick<InboundEmail, "autoReply" | "subject">): boo
   return AUTO_SUBJECT.test(m.subject);
 }
 
+export type SenderAuth = "pass" | "fail" | "unknown";
+
+type AuthResult = { method: string; result: string; props: Record<string, string> };
+
+/** One Authentication-Results value → its method results. Comments are dropped; the authserv-id is skipped. */
+function parseAuthResults(header: string): AuthResult[] {
+  return header
+    .replace(/\([^)]*\)/g, " ")
+    .split(";")
+    .slice(1)
+    .flatMap((part) => {
+      const [head, ...rest] = part.trim().split(/\s+/);
+      const m = /^([a-z0-9-]+)=([a-z]+)$/i.exec(head ?? "");
+      if (!m) return [];
+      const props = Object.fromEntries(
+        rest.flatMap((kv) => {
+          const i = kv.indexOf("=");
+          return i > 0 ? [[kv.slice(0, i).toLowerCase(), kv.slice(i + 1).toLowerCase()]] : [];
+        }),
+      );
+      return [{ method: m[1].toLowerCase(), result: m[2].toLowerCase(), props }];
+    });
+}
+
+/** Two-label public suffixes like co.za / com.au: never an organisational domain of their own. */
+const PUBLIC_SUFFIX_2 = /^(co|com|org|net|ac|gov|edu|ltd|plc|web)\.[a-z]{2}$/;
+
+/** Relaxed DMARC-style alignment: the same domain, or one a subdomain of the other — never via a public suffix. */
+export function domainsAlign(a: string, b: string): boolean {
+  const x = a.toLowerCase().replace(/^@/, "").replace(/.*@/, "");
+  const y = b.toLowerCase();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const [longer, shorter] = x.length > y.length ? [x, y] : [y, x];
+  return longer.endsWith(`.${shorter}`) && shorter.includes(".") && !PUBLIC_SUFFIX_2.test(shorter);
+}
+
+const dkimAligned = (r: AuthResult, fromDomain: string) =>
+  r.method === "dkim" && r.result === "pass" &&
+  [r.props["header.d"], r.props["header.i"]].some((d) => !!d && domainsAlign(d, fromDomain));
+
+/**
+ * The receiving server's verdict on the From domain. "fail": any header says
+ * dmarc=fail, or spf=fail/softfail with no aligned dkim=pass in that same
+ * header. "pass" (read from the TOPMOST header only — the one our receiving
+ * server added; a lower one may be supplied by the sender): dmarc=pass,
+ * aligned dkim=pass, or spf=pass with an aligned smtp.mailfrom. Else unknown.
+ */
+export function senderAuthenticated(authResults: string[], fromDomain: string): SenderAuth {
+  const parsed = authResults.map(parseAuthResults);
+  for (const results of parsed) {
+    if (results.some((r) => r.method === "dmarc" && r.result === "fail")) return "fail";
+    const spfFail = results.some((r) => r.method === "spf" && (r.result === "fail" || r.result === "softfail"));
+    if (spfFail && !results.some((r) => dkimAligned(r, fromDomain))) return "fail";
+  }
+  const top = parsed[0] ?? [];
+  const pass = top.some(
+    (r) =>
+      (r.method === "dmarc" && r.result === "pass" && (!r.props["header.from"] || domainsAlign(r.props["header.from"], fromDomain))) ||
+      dkimAligned(r, fromDomain) ||
+      (r.method === "spf" && r.result === "pass" && !!r.props["smtp.mailfrom"] && domainsAlign(r.props["smtp.mailfrom"], fromDomain)),
+  );
+  return pass ? "pass" : "unknown";
+}
+
 const msgId = (v: unknown) => (typeof v === "string" ? v.trim().replace(/^<|>$/g, "") : "");
 
 export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<string, EmailDecision> {
   const out = new Map<string, EmailDecision>(shops.map((s) => [s.id, "none"]));
+  if (senderAuthenticated(m.authResults, domainOf(m.from)) === "fail") return out;
   const auto = isAutoReply(m);
   const eligible = shops.filter((s) => {
     if (!senderMatches(m.from, s.target)) return false;
