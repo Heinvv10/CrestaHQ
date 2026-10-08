@@ -12,11 +12,10 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * An automatic reply (headers, or an out-of-office subject) is recorded once
  * as `auto_reply` and the shop keeps waiting for a person.
  *
- * The From header is forgeable, so the receiving server's
- * Authentication-Results are read too (`senderAuthenticated`): a sender that
- * FAILS them closes nothing and records nothing. Absent results ("unknown" —
- * many small hosts never stamp them) behave as before; the member view shows
- * such a reply as unverified.
+ * The From header is forgeable, so the Authentication-Results headers are
+ * read too (`senderAuthenticated`): a sender that FAILS them closes nothing
+ * and records nothing. Anything else is "unknown" and counts as before — an
+ * email sender is never "verified" (see senderAuthenticated).
  */
 
 export interface AutoReplyHeaders {
@@ -89,7 +88,7 @@ export function isAutoReply(m: Pick<InboundEmail, "autoReply" | "subject">): boo
   return AUTO_SUBJECT.test(m.subject);
 }
 
-export type SenderAuth = "pass" | "fail" | "unknown";
+export type SenderAuth = "fail" | "unknown";
 
 type AuthResult = { method: string; result: string; props: Record<string, string> };
 
@@ -131,11 +130,12 @@ const dkimAligned = (r: AuthResult, fromDomain: string) =>
   [r.props["header.d"], r.props["header.i"]].some((d) => !!d && domainsAlign(d, fromDomain));
 
 /**
- * The receiving server's verdict on the From domain. "fail": any header says
- * dmarc=fail, or spf=fail/softfail with no aligned dkim=pass in that same
- * header. "pass" (read from the TOPMOST header only — the one our receiving
- * server added; a lower one may be supplied by the sender): dmarc=pass,
- * aligned dkim=pass, or spf=pass with an aligned smtp.mailfrom. Else unknown.
+ * The Authentication-Results verdict on the From domain. "fail": any header
+ * says dmarc=fail, or spf=fail/softfail with no aligned dkim=pass in that
+ * same header. A real host's fail is genuine, and a sender will not inject a
+ * fail against itself. There is no "pass": we cannot know whether the
+ * receiving host stamps its own header, so a topmost dmarc=pass may be the
+ * sender's own injected one. Everything else is "unknown".
  */
 export function senderAuthenticated(authResults: string[], fromDomain: string): SenderAuth {
   const parsed = authResults.map(parseAuthResults);
@@ -144,14 +144,7 @@ export function senderAuthenticated(authResults: string[], fromDomain: string): 
     const spfFail = results.some((r) => r.method === "spf" && (r.result === "fail" || r.result === "softfail"));
     if (spfFail && !results.some((r) => dkimAligned(r, fromDomain))) return "fail";
   }
-  const top = parsed[0] ?? [];
-  const pass = top.some(
-    (r) =>
-      (r.method === "dmarc" && r.result === "pass" && (!r.props["header.from"] || domainsAlign(r.props["header.from"], fromDomain))) ||
-      dkimAligned(r, fromDomain) ||
-      (r.method === "spf" && r.result === "pass" && !!r.props["smtp.mailfrom"] && domainsAlign(r.props["smtp.mailfrom"], fromDomain)),
-  );
-  return pass ? "pass" : "unknown";
+  return "unknown";
 }
 
 const msgId = (v: unknown) => (typeof v === "string" ? v.trim().replace(/^<|>$/g, "") : "");

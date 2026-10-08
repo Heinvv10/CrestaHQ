@@ -111,11 +111,11 @@ describe("senderAuthenticated (Authentication-Results)", () => {
     expect(senderAuthenticated([`${MX} dkim=pass header.d=acme.co.za`, "other; dmarc=fail header.from=acme.co.za"], "acme.co.za")).toBe("fail");
   });
 
-  it("spf fail/softfail is fail unless an aligned dkim=pass in the same header rescues it", () => {
+  it("spf fail/softfail is fail unless an aligned dkim=pass in the same header rescues it (to unknown, never pass)", () => {
     expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=none`], "acme.co.za")).toBe("fail");
     expect(senderAuthenticated([`${MX} spf=softfail (sender not permitted) smtp.mailfrom=acme.co.za`], "acme.co.za")).toBe("fail");
-    expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.d=acme.co.za header.s=s1`], "acme.co.za")).toBe("pass");
-    expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.i=@mail.acme.co.za`], "acme.co.za")).toBe("pass");
+    expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.d=acme.co.za header.s=s1`], "acme.co.za")).toBe("unknown");
+    expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.i=@mail.acme.co.za`], "acme.co.za")).toBe("unknown");
   });
 
   it("an unaligned dkim=pass (d=attacker.com) does not rescue an spf fail", () => {
@@ -124,13 +124,12 @@ describe("senderAuthenticated (Authentication-Results)", () => {
     expect(senderAuthenticated([`${MX} spf=fail smtp.mailfrom=acme.co.za; dkim=pass header.d=co.za`], "acme.co.za")).toBe("fail");
   });
 
-  it("pass: dmarc=pass, aligned dkim=pass, or spf=pass with an aligned mail-from — from the receiver's (top) header", () => {
-    expect(senderAuthenticated([`${MX} dmarc=pass (p=NONE) header.from=acme.co.za`], "acme.co.za")).toBe("pass");
-    expect(senderAuthenticated([`${MX} dkim=pass header.d=acme.co.za`], "acme.co.za")).toBe("pass");
-    expect(senderAuthenticated([`${MX} spf=pass smtp.mailfrom=bounce@acme.co.za`], "acme.co.za")).toBe("pass");
-    expect(senderAuthenticated([`${MX} spf=pass smtp.mailfrom=bounce@mailer.example`], "acme.co.za")).toBe("unknown");
-    // A pass claim in a lower (sender-supplied) header is not trusted.
-    expect(senderAuthenticated([`${MX} spf=none`, "forged; dmarc=pass header.from=acme.co.za"], "acme.co.za")).toBe("unknown");
+  it("never pass: an email sender is not provable — a topmost dmarc=pass may be the sender's own injected header", () => {
+    for (const line of ["dmarc=pass (p=NONE) header.from=acme.co.za", "dkim=pass header.d=acme.co.za", "spf=pass smtp.mailfrom=bounce@acme.co.za"]) {
+      expect(senderAuthenticated([`${MX} ${line}`], "acme.co.za")).toBe("unknown");
+    }
+    // A host that adds no header of its own leaves the sender's injected one on top.
+    expect(senderAuthenticated(["attacker.example; dmarc=pass header.from=acme.co.za"], "acme.co.za")).toBe("unknown");
   });
 
   it("no header is unknown", () => {

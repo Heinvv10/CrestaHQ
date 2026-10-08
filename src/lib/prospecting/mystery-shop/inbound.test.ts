@@ -63,10 +63,10 @@ describe("email", () => {
     expect(shop("s1").status).toBe("sent");
   });
 
-  it("a reply the receiving server authenticated is stored senderAuth pass", async () => {
+  it("an email reply is never stored verified, even with a (possibly injected) dmarc=pass on top", async () => {
     seedShop("s1");
     await matchMysteryShopEmail("sa1", email(EMAIL, { authResults: ["mx.crestahq.com; dmarc=pass header.from=acme.co.za"] }));
-    expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "pass" });
+    expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "unknown" });
   });
 
   it("a spoofed From that fails DMARC closes nothing and records nothing", async () => {

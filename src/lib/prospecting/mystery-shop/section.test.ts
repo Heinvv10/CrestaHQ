@@ -17,7 +17,7 @@ const shop = (over: Partial<MemberShop> = {}): MemberShop => ({
   id: "s1", channel: "email", status: "responded", target: EMAIL, sentAt: SENT,
   respondedAt: "2026-10-08T10:14:00.000Z", responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
   jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
-  failure: null, createdAt: SENT, responseVia: "email", senderAuth: "pass",
+  failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown",
   ...over,
 });
 
@@ -126,7 +126,8 @@ describe("status lines", () => {
   const at = Date.parse("2026-10-08T08:03:00Z");
   it.each([
     [{ status: "sent" as const }, `Email to ${EMAIL} — sent 3 m ago, waiting for a reply (24 h)`],
-    [{}, `Email to ${EMAIL} — responded in 2 h 14 m (sender verified)`],
+    [{}, `Email to ${EMAIL} — responded in 2 h 14 m (sender unverified)`],
+    [{ channel: "call" as const, target: PHONE, responseVia: "answered" as const, senderAuth: "pass" as const }, `Call to ${PHONE} — responded in 2 h 14 m (sender verified)`],
     [{ status: "missed" as const }, `Email to ${EMAIL} — no reply in 24 h — R1,500 lead missed`],
     [
       { channel: "call" as const, target: PHONE, status: "refused" as const, failure: { code: "outside_window", reason: "outside calling hours" } },

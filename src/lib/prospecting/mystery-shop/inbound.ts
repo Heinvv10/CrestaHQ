@@ -3,7 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { callOutcome, callStartedAt, type CallReport } from "./call-match";
-import { decideEmail, senderAuthenticated, type InboundEmail } from "./email-match";
+import { decideEmail, type InboundEmail } from "./email-match";
 import { closableShops, recordAutoReply, settleResponded } from "./store";
 
 /**
@@ -32,9 +32,8 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
       };
     }),
   );
-  // decideEmail already closed nothing for a "fail"; what is left is pass or unknown.
-  const auth = senderAuthenticated(message.authResults, message.from.slice(message.from.lastIndexOf("@") + 1));
-  const via = { responseVia: "email", senderAuth: auth === "pass" ? "pass" : "unknown" } as const;
+  // decideEmail closed nothing for a failing sender; an email sender is never provable, so unknown.
+  const via = { responseVia: "email", senderAuth: "unknown" } as const;
   for (const [shopId, decision] of decisions) {
     if (decision === "responded") await settleResponded(shopId, message.occurredAtMs, via);
     else if (decision === "auto_reply") await recordAutoReply(shopId, message.occurredAtMs);

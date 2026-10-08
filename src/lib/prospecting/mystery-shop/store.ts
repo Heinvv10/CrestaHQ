@@ -135,10 +135,10 @@ export async function releaseShop(
 }
 
 /**
- * How a response was seen. `senderAuth` "pass" = the sender is proven (the
- * mail host authenticated the From domain, or the call we placed was
- * answered); "unknown" = taken on trust (no Authentication-Results, or a
- * callback's caller ID). The member view shows unknown as unverified.
+ * How a response was seen. `senderAuth` "pass" = the sender is proven: only
+ * the call we placed being answered. "unknown" = taken on trust: every email
+ * reply (a From that failed Authentication-Results is refused, but a pass is
+ * not provable) and a callback's caller ID. Members see unknown as unverified.
  */
 export type ResponseVia = { responseVia: "email" | "answered" | "callback"; senderAuth: "pass" | "unknown" };
 
