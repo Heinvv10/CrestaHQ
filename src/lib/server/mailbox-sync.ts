@@ -10,7 +10,7 @@ import {
   mailboxPublicError,
 } from "@/lib/comms/imap";
 import { recordEmailMessage } from "@/lib/server/email-conversations";
-import { matchMysteryShopEmail } from "@/lib/prospecting/mystery-shop/inbound";
+import { matchOrSkip } from "@/lib/server/mailbox-match";
 import type { MailboxConnection, MailboxCursor } from "@/types/mailbox";
 export function cursorWindow(
   cursor: MailboxCursor | undefined,
@@ -60,6 +60,9 @@ export async function syncMailbox(subAccountId: string) {
         );
       tx.update(ref, {
         cursors,
+        // The reply matcher's failure count / skipped message (mailbox-match.ts).
+        ...(connection.matchFailure !== undefined ? { matchFailure: connection.matchFailure } : {}),
+        ...(connection.matchSkipped !== undefined ? { matchSkipped: connection.matchSkipped } : {}),
         ...(finish
           ? {
               leaseToken: null,
@@ -261,13 +264,10 @@ export async function syncMailbox(subAccountId: string) {
             });
             if (result.inserted) summary.imported++;
             else summary.skipped++;
-            if (direction === "inbound")
-              // A failed match must not let the cursor pass this message: fail the pass so it is re-read.
-              await matchMysteryShopEmail(subAccountId, { ...input, ...signals, occurredAtMs: occurredAt.getTime() })
-                .catch((err) => {
-                  console.error("[mailbox-sync] mystery-shop match failed", subAccountId, err);
-                  throw new MailboxError("Reply matching failed. Retry sync.", 502);
-                });
+            if (direction === "inbound") {
+              const message = { ...input, ...signals, occurredAtMs: occurredAt.getTime() };
+              await matchOrSkip(subAccountId, connection, { folder, uidValidity: validity, uid }, message);
+            }
           }
           processed++;
           folderProcessed++;

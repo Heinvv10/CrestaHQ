@@ -130,3 +130,34 @@ it("a failed mystery-shop match stops at that message and fails the pass; the ne
   expect(inboxUid()).toBe(3);
   expect(caughtUp()).toHaveLength(1);
 });
+
+it("a message whose matching fails on 3 passes in a row is logged, recorded and passed — the import never stalls", async () => {
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  setup([1, 2, 3], 4);
+  const poison = (_sa: string, m: { messageId?: string }) =>
+    m.messageId === "<2@x>" ? Promise.reject(new Error("bad message")) : Promise.resolve();
+  vi.mocked(matchMysteryShopEmail).mockReset().mockImplementation(poison as never);
+  for (const pass of [1, 2]) {
+    await expect(syncMailbox("a")).rejects.toThrow("Reply matching failed. Retry sync.");
+    expect(inboxUid()).toBe(1);
+    expect(conn.matchFailure).toMatchObject({ folder: "INBOX", uid: 2, count: pass });
+    conn.leaseUntil = 0;
+  }
+  await syncMailbox("a");
+  expect(inboxUid()).toBe(3);
+  expect(conn.matchSkipped).toMatchObject({ folder: "INBOX", uid: 2 });
+  expect(conn.matchFailure).toBeNull();
+  expect(errors).toHaveBeenCalledWith(expect.stringContaining("skipping"), "a", expect.objectContaining({ uid: 2 }), expect.any(Error));
+  vi.mocked(matchMysteryShopEmail).mockReset().mockResolvedValue(undefined);
+});
+
+it("a failure on another message starts the count again", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  setup([1, 2, 3], 4);
+  conn.matchFailure = { folder: "INBOX", uidValidity: "1", uid: 9, count: 2 };
+  vi.mocked(matchMysteryShopEmail).mockReset().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("x"));
+  await expect(syncMailbox("a")).rejects.toThrow("Reply matching failed. Retry sync.");
+  expect(conn.matchFailure).toMatchObject({ uid: 2, count: 1 });
+  expect(inboxUid()).toBe(1);
+  vi.mocked(matchMysteryShopEmail).mockReset().mockResolvedValue(undefined);
+});
