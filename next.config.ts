@@ -11,6 +11,12 @@ const nextConfig: NextConfig = {
   // bundle explicitly — otherwise readFileSync 404s on Vercel.
   outputFileTracingIncludes: {
     "/api/agency/setup/guide": ["./CLAUDE.md", "./SETUP.md", "./.env.example"],
+    // The mystery shop's form engine (and its health check) load playwright-core,
+    // which reads browsers.json and more at runtime by a path the tracer cannot
+    // follow: without the whole package, standalone throws MODULE_NOT_FOUND
+    // and the form channel reads as "not installed".
+    "/api/automations/prospecting/mystery-shop-form": ["./node_modules/playwright-core/**/*"],
+    "/api/sub-accounts/*/prospecting/mystery-shop": ["./node_modules/playwright-core/**/*"],
   },
 
   experimental: {
