@@ -23,8 +23,9 @@ import { shopStatusLine, type MemberShop } from "@/lib/prospecting/mystery-shop/
  * The Reports card's Mystery shop area (Prospecting PR 5): one button per
  * channel, disabled with the server's reason when the channel cannot send.
  * Every send goes through a confirm dialog naming the channel, the exact
- * recipient (picked from the contact's own values), the full enquiry and,
- * for a call, the operator's consent checkbox — the POST carries
+ * recipient (picked from the contact's own values), the full enquiry (for
+ * WhatsApp, the approved template as it will read) and, for a call, the
+ * operator's consent checkbox — the POST carries
  * `confirm: true` (and `consentAck`) only from there, plus the hash of the
  * enquiry shown, so the server refuses if it changed meanwhile. Renders
  * nothing for a contact that is not a prospect. An AlertDialog, never
@@ -37,11 +38,13 @@ type ShopsResponse = {
   channels: Record<MysteryShopChannel, ChannelInfo>;
   cap: number;
   used: number;
-  enquiry: { email: { subject: string; body: string }; call: string };
-  enquiryHash: { email: string; call: string };
+  enquiry: { email: { subject: string; body: string }; call: string; whatsapp: string | null };
+  enquiryHash: { email: string; call: string; whatsapp: string | null };
 };
 
 const LABEL: Record<MysteryShopChannel, string> = { email: "Email", call: "AI call", whatsapp: "WhatsApp", form: "Website form" };
+/** Which enquiry (and hash) a channel sends; the form has none yet. */
+const kindOf = (c: MysteryShopChannel) => (c === "email" || c === "whatsapp" ? c : "call");
 const NO_TARGET: Record<MysteryShopChannel, string> = {
   email: "This contact has no email address.",
   call: "This contact has no valid phone number.",
@@ -99,7 +102,7 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contactId, channel, confirm: true, target,
-          enquiryHash: data?.enquiryHash[channel === "email" ? "email" : "call"],
+          enquiryHash: data?.enquiryHash[kindOf(channel)],
           ...(channel === "call" ? { consentAck: consent } : {}),
         }),
       });
@@ -131,8 +134,11 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
   if (hidden) return null;
 
   const atCap = !!data && data.used >= data.cap;
-  const enquiryText = (c: MysteryShopChannel) =>
-    !data ? "" : c === "email" ? `Subject: ${data.enquiry.email.subject}\n\n${data.enquiry.email.body}` : data.enquiry.call;
+  const enquiryText = (c: MysteryShopChannel) => {
+    if (!data) return "";
+    const kind = kindOf(c);
+    return kind === "email" ? `Subject: ${data.enquiry.email.subject}\n\n${data.enquiry.email.body}` : (data.enquiry[kind] ?? "");
+  };
 
   return (
     <div className="space-y-2 border-t pt-3" data-testid="mystery-shop">
@@ -214,7 +220,9 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
         <AlertDialogContent data-testid="mystery-shop-confirm">
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirming?.channel === "call" ? "Place a mystery-shop AI call?" : `Send a mystery-shop ${LABEL[confirming?.channel ?? "email"].toLowerCase()}?`}
+              {confirming?.channel === "call"
+                ? "Place a mystery-shop AI call?"
+                : `Send a mystery-shop ${confirming?.channel === "whatsapp" ? "WhatsApp" : LABEL[confirming?.channel ?? "email"].toLowerCase()}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               Channel: {confirming ? LABEL[confirming.channel] : ""}. This contacts the business for real, from {business}.

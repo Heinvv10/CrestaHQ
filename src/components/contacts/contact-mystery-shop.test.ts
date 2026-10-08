@@ -44,13 +44,17 @@ beforeEach(() => {
     channels: {
       email: { available: true, targets: [EMAIL] },
       call: { available: true, targets: [PHONE] },
-      whatsapp: { available: false, reason: "Not available yet.", targets: [] },
+      whatsapp: { available: false, reason: "No WhatsApp sender is connected.", targets: [PHONE] },
       form: { available: false, reason: "Not available yet.", targets: [] },
     },
     cap: 10,
     used: 0,
-    enquiry: { email: { subject: "Enquiry: plumber in Gqeberha", body: "Hi,\n\nDo you do plumber?" }, call: "Hi, I'm calling from Cresta HQ." },
-    enquiryHash: { email: "h-email", call: "h-call" },
+    enquiry: {
+      email: { subject: "Enquiry: plumber in Gqeberha", body: "Hi,\n\nDo you do plumber?" },
+      call: "Hi, I'm calling from Cresta HQ.",
+      whatsapp: "Hi, do you offer plumber in Gqeberha? What's your earliest availability?",
+    },
+    enquiryHash: { email: "h-email", call: "h-call", whatsapp: "h-wa" },
   };
   fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
     init?.method === "POST" ? new Response(JSON.stringify({ shopId: "s1" }), { status: 202 }) : new Response(JSON.stringify(payload)),
@@ -68,7 +72,7 @@ describe("ContactMysteryShop", () => {
     await mount();
     expect((q("mystery-shop-email") as HTMLButtonElement).disabled).toBe(false);
     expect((q("mystery-shop-whatsapp") as HTMLButtonElement).disabled).toBe(true);
-    expect(q("mystery-shop-whatsapp-reason")?.textContent).toBe("WhatsApp: Not available yet.");
+    expect(q("mystery-shop-whatsapp-reason")?.textContent).toBe("WhatsApp: No WhatsApp sender is connected.");
     expect(q("mystery-shop-form-reason")?.textContent).toBe("Website form: Not available yet.");
   });
 
@@ -110,6 +114,21 @@ describe("ContactMysteryShop", () => {
     await click(button);
     expect(JSON.parse(posts()[0][1].body as string)).toEqual({
       contactId: "c1", channel: "call", confirm: true, target: PHONE, enquiryHash: "h-call", consentAck: true,
+    });
+  });
+
+  it("whatsapp: the dialog names the number and the template text, no consent checkbox; the confirm POSTs its hash", async () => {
+    (payload.channels as Record<string, unknown>).whatsapp = { available: true, targets: [PHONE] };
+    await mount();
+    await click(q("mystery-shop-whatsapp"));
+    expect(q("mystery-shop-confirm")?.textContent).toContain("Send a mystery-shop WhatsApp?");
+    expect(q("mystery-shop-target")?.textContent).toBe(PHONE);
+    expect(q("mystery-shop-enquiry")?.textContent).toBe("Hi, do you offer plumber in Gqeberha? What's your earliest availability?");
+    expect(q("mystery-shop-consent-ack")).toBeNull();
+    expect((q("mystery-shop-confirm-send") as HTMLButtonElement).disabled).toBe(false);
+    await click(q("mystery-shop-confirm-send"));
+    expect(JSON.parse(posts()[0][1].body as string)).toEqual({
+      contactId: "c1", channel: "whatsapp", confirm: true, target: PHONE, enquiryHash: "h-wa",
     });
   });
 
