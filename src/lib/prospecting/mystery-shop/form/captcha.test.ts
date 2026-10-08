@@ -22,9 +22,9 @@ afterEach(async () => {
   await site?.close();
 });
 
-async function run(body: string, title = "Contact") {
+async function run(body: string, title = "Contact", headers: Record<string, string> = {}) {
   site = await serve({
-    "/contact": (_q, res) => html(res, body.replace("<title>Contact</title>", `<title>${title}</title>`)),
+    "/contact": (_q, res) => html(res, body.replace("<title>Contact</title>", `<title>${title}</title>`), 200, headers),
     "/send": (_q, res) => html(res, "<h1>Thank you</h1>"),
   });
   const snapshot = capturingLaunch();
@@ -68,6 +68,12 @@ describe.skipIf(skipBrowser)("CAPTCHA and bot challenges are refused before typi
       expect(typed!.every((v) => v === "")).toBe(true);
     },
   );
+
+  it("a Cloudflare challenge response (cf-mitigated header), whatever the page says", async () => {
+    const { out, typed } = await run(form(SIMPLE_FIELDS), "Contact", { "cf-mitigated": "challenge" });
+    expect(out).toMatchObject({ kind: "refused", code: "captcha" });
+    expect(typed!.every((v) => v === "")).toBe(true);
+  });
 
   it("a captcha injected after load", async () => {
     const { out, typed } = await run(

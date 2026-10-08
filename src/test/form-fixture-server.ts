@@ -11,7 +11,7 @@ import type { FormIdentity } from "@/lib/prospecting/mystery-shop/form/mapping";
  * Fixture websites for the form-engine tests, served on 127.0.0.1 by the test
  * itself — never a real site. The SSRF guard refuses loopback, so the engine
  * is given `loopbackFetch(origin)`: a plain fetch (redirects NOT followed) for
- * that one fixture origin, the real publicFetch for an IP literal — which its
+ * that fixture origin (and any extra ones), the real publicFetch for an IP literal — which its
  * guard refuses before connecting (the tests stub NODE_ENV=production, and
  * this refuses to run without it) — and nothing at all for a host name: a
  * test (or a mutation of the guard) can never reach a real site or resolve a
@@ -81,10 +81,11 @@ export async function serve(routes: Record<string, Handler>): Promise<Fixture> {
 }
 
 /** The fixture origin unguarded (no redirects followed); everything else through the real publicFetch. */
-export function loopbackFetch(origin: string): FetchImpl {
+export function loopbackFetch(origin: string, ...more: string[]): FetchImpl {
+  const allowed = new Set([origin, ...more]);
   return async (url, init) => {
     const u = new URL(url);
-    if (u.origin === origin) {
+    if (allowed.has(u.origin)) {
       const body = typeof init.body === "string" || init.body === undefined ? init.body : Buffer.from(init.body);
       return fetch(url, { method: init.method, headers: init.headers, body, signal: init.signal, redirect: "manual" });
     }
@@ -93,6 +94,9 @@ export function loopbackFetch(origin: string): FetchImpl {
     return publicFetch(url, init);
   };
 }
+
+/** The same fixture under another host name: a different site to the engine (sameSite compares hosts). */
+export const otherSite = (origin: string) => origin.replace("127.0.0.1", "localhost");
 
 /** The fields a person types into (not hidden, checkbox, radio or button inputs, whose value is fixed). */
 const TYPED = `textarea, input:not([type]), input[type=text], input[type=email], input[type=tel], input[type=url], input[type=number], input[type=search]`;

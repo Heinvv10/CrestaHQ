@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  IDENTITY, SIMPLE_FIELDS, capturingLaunch, form, html, loopbackFetch, serve, skipBrowser, type Fixture, type Handler,
+  IDENTITY, SIMPLE_FIELDS, capturingLaunch, form, html, loopbackFetch, otherSite, serve, skipBrowser, type Fixture, type Handler,
 } from "@/test/form-fixture-server";
 import { runFormFill, type FormRunInput } from "./engine";
 
@@ -18,7 +18,8 @@ const redirectTo = (to: string): Handler => (_q, res) => html(res, "", 303, { lo
 async function run(routes: Record<string, Handler>, path = "/contact", over: Partial<FormRunInput> = {}) {
   site = await serve(routes);
   return runFormFill({
-    url: `${site.origin}${path}`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin),
+    // The fixture also answers as `localhost`: another site to the engine.
+    url: `${site.origin}${path}`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin, otherSite(site.origin)),
     limits: { settleMs: 100, confirmMs: 4_000 }, ...over,
   });
 }
@@ -115,6 +116,25 @@ describe.skipIf(skipBrowser)("confirmation", () => {
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
   });
 
+  it("a 2xx POST to another site is not a confirmation", async () => {
+    const out = await run({
+      "/contact": (_q, res) =>
+        html(res, scripted(`fetch(location.origin.replace("127.0.0.1", "localhost") + "/collect", { method: "POST", body: "x=1" }).catch(() => {});`)),
+      "/collect": (_q, res) => html(res, "{}", 200),
+    }, "/contact", { limits: { settleMs: 100, confirmMs: 1_500 } });
+    expect(site.posts.map((p) => p.path)).toContain("/collect");
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("a 2xx POST from before the click (analytics on load) is not a confirmation", async () => {
+    const out = await run({
+      "/contact": (_q, res) => html(res, scripted("") + `<script>fetch("/api/track", { method: "POST", body: "x=1" });</script>`),
+      "/api/track": (_q, res) => html(res, "{}", 200),
+    }, "/contact", { limits: { settleMs: 300, confirmMs: 1_500 } });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/track"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
   it("no signal at all → uncertain (it may have gone through), never failed", async () => {
     const out = await run({ "/contact": (_q, res) => html(res, scripted("")) }, "/contact", { limits: { settleMs: 100, confirmMs: 1_500 } });
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal", trace: { mappedFields: ["name", "email", "phone", "message"] } });
@@ -144,6 +164,32 @@ describe.skipIf(skipBrowser)("refusals, before anything is typed", () => {
     const out = await run({ "/a": redirectTo("/b"), "/b": redirectTo("/contact"), "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS)) }, "/a");
     expect(out).toMatchObject({ kind: "refused", code: "too_many_redirects" });
     expect(site.hits).not.toContain("GET /contact");
+  });
+
+  it("a script navigation after load counts as the second redirect too", async () => {
+    const out = await run({
+      "/a": redirectTo("/contact"),
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<script>location.href = "/elsewhere";</script>`),
+      "/elsewhere": (_q, res) => html(res, form(SIMPLE_FIELDS)),
+    }, "/a");
+    expect(out).toMatchObject({ kind: "refused", code: "too_many_redirects" });
+    expect(site.hits).not.toContain("GET /elsewhere");
+  });
+
+  it("a form page that moved to another site", async () => {
+    const out = await run({ "/a": (_q, res) => html(res, "", 302, { location: `${otherSite(site.origin)}/contact` }), "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS)) }, "/a");
+    expect(out).toMatchObject({ kind: "refused", code: "off_site" });
+    expect(site.posts).toEqual([]);
+  });
+
+  it("images, fonts and media are never fetched", async () => {
+    const out = await run({
+      "/contact": (_q, res) =>
+        html(res, form(SIMPLE_FIELDS) + `<img src="/logo.png"><video src="/v.mp4"></video><style>@font-face { font-family: x; src: url(/f.woff2); } body { font-family: x; }</style>`),
+      "/send": thanks,
+    });
+    expect(out.kind).toBe("sent");
+    expect(site.hits.filter((h) => /logo|v\.mp4|f\.woff2/.test(h))).toEqual([]);
   });
 
   it("a redirect to a javascript: URL", async () => {
