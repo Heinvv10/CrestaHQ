@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   connectMailbox,
+  mailSignalsFromRaw,
   parseMailboxMessage,
   MAX_MESSAGE_BYTES,
   MailboxError,
   mailboxPublicError,
 } from "@/lib/comms/imap";
 import { recordEmailMessage } from "@/lib/server/email-conversations";
+import { matchOrSkip } from "@/lib/server/mailbox-match";
 import type { MailboxConnection, MailboxCursor } from "@/types/mailbox";
 export function cursorWindow(
   cursor: MailboxCursor | undefined,
@@ -38,6 +40,8 @@ export async function syncMailbox(subAccountId: string) {
     return c;
   });
   const summary = { imported: 0, skipped: 0, hasMore: false };
+  // Set when this pass reads the INBOX to its end: the mystery-shop missed verdict waits for it.
+  let inboxCaughtUp = false;
   const checkpoint = async (
     cursors: Record<string, MailboxCursor>,
     finish = false,
@@ -71,6 +75,7 @@ export async function syncMailbox(subAccountId: string) {
           ...(!error
             ? { "mailboxConfig.lastSyncAt": new Date().toISOString() }
             : {}),
+          ...(!error && inboxCaughtUp ? { "mailboxConfig.inboxCaughtUpAt": new Date(started).toISOString() } : {}),
         });
     });
   let client: Awaited<ReturnType<typeof connectMailbox>> | undefined;
@@ -107,6 +112,7 @@ export async function syncMailbox(subAccountId: string) {
         connection.cursors[folder] = cursor;
         if (window.end < window.start) {
           cursor.initialComplete = true;
+          inboxCaughtUp ||= folder === "INBOX";
           await checkpoint(connection.cursors);
           continue;
         }
@@ -119,7 +125,9 @@ export async function syncMailbox(subAccountId: string) {
           },
           { uid: true }
         );
-        const uids = (found || [])
+        // imapflow answers `false` when the search failed: never read that as "no mail".
+        if (!Array.isArray(found)) throw new MailboxError("Mailbox search failed. Retry sync.", 502);
+        const uids = found
           .filter((uid) => uid >= window.start && uid <= window.end)
           .sort((a, b) => a - b);
         let completed = true;
@@ -139,7 +147,9 @@ export async function syncMailbox(subAccountId: string) {
               size: true,
               internalDate: true,
               envelope: true,
-              headers: ["X-CrestaHQ-Archive"],
+              // The mystery-shop matcher's signals, so the placeholder path reads them too.
+              headers: ["X-CrestaHQ-Archive", "Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond",
+                "Precedence", "List-Id", "List-Unsubscribe", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"],
             },
             { uid: true }
           );
@@ -176,6 +186,7 @@ export async function syncMailbox(subAccountId: string) {
               archive: !/^x-crestahq-archive:\s*no\s*$/im.test(
                 metadata.headers?.toString() ?? ""
               ),
+              signals: mailSignalsFromRaw(metadata.headers?.toString() ?? ""),
             };
           };
           if (
@@ -230,7 +241,7 @@ export async function syncMailbox(subAccountId: string) {
           )
             summary.skipped++;
           else {
-            const { date, archive: _archive, ...input } = parsed;
+            const { date, archive: _archive, signals, ...input } = parsed;
             const occurredAt =
               metadata.internalDate instanceof Date
                 ? metadata.internalDate
@@ -250,6 +261,10 @@ export async function syncMailbox(subAccountId: string) {
             });
             if (result.inserted) summary.imported++;
             else summary.skipped++;
+            if (direction === "inbound") {
+              const message = { ...input, ...signals, occurredAtMs: occurredAt.getTime() };
+              await matchOrSkip(subAccountId, connection, { folder, uidValidity: validity, uid }, message);
+            }
           }
           processed++;
           folderProcessed++;
@@ -258,8 +273,10 @@ export async function syncMailbox(subAccountId: string) {
         }
         if (completed) {
           cursor.uid = window.end;
-          if (window.end >= next - 1) cursor.initialComplete = true;
-          else summary.hasMore = true;
+          if (window.end >= next - 1) {
+            cursor.initialComplete = true;
+            inboxCaughtUp ||= folder === "INBOX";
+          } else summary.hasMore = true;
           await checkpoint(connection.cursors);
         }
       } finally {

@@ -8,6 +8,7 @@ import { publicSection, type PublicReportSection } from "@/lib/prospecting/publi
 import { displaySections } from "@/lib/prospecting/apexgeo-sections";
 import { resolveBrandColor } from "@/lib/branding/brand-color";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { mysteryShopSections, serializeShop, type MysteryShopSection } from "@/lib/prospecting/mystery-shop/section";
 import type { AppTheme, ProspectSectionResult } from "@/types";
 
 export type { PublicReportSection };
@@ -72,6 +73,12 @@ export interface PublicReport {
    * may forward for another business (see the SOW's data-changes section).
    */
   whatsappNumber: string | null;
+  /**
+   * Sections 11 and 12 (mystery shop): responded / missed outcomes only, via
+   * the public view of `mystery-shop/section.ts` — never a target. Empty when
+   * the contact has no settled shop.
+   */
+  mysteryShop: MysteryShopSection[];
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
@@ -107,11 +114,16 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     return null;
   }
 
-  const [agencySnap, subSnap, contactSnap, cta] = await Promise.all([
+  const [agencySnap, subSnap, contactSnap, cta, shopsSnap] = await Promise.all([
     db.doc(`agencies/${report.agencyId}`).get(),
     db.doc(`subAccounts/${report.subAccountId}`).get(),
     db.doc(`contacts/${report.contactId}`).get(),
     bookingCta(report.subAccountId),
+    // Equality-only: no composite index.
+    db.collection("mysteryShops")
+      .where("subAccountId", "==", report.subAccountId)
+      .where("contactId", "==", report.contactId)
+      .get(),
   ]);
   const sub = subSnap.data() ?? {};
   const contact = contactSnap.data();
@@ -141,5 +153,9 @@ export async function resolvePublicReport(token: string): Promise<PublicReport |
     whatsappNumber:
       str(sub.whatsappNumber) ??
       normalizePhoneE164(str(sub.whatsappCloudMeta?.displayPhoneNumber), str(sub.defaultPhoneCountry)),
+    mysteryShop: mysteryShopSections(
+      shopsSnap.docs.map((d) => serializeShop(d.id, d.data() ?? {})),
+      { audience: "public", nowMs: Date.now(), timeZone: str(sub.timezone) ?? undefined },
+    ),
   };
 }

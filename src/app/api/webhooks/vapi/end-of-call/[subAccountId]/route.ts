@@ -5,6 +5,8 @@ import { vapiWebhookAuthorized } from "@/lib/comms/voice/webhook-auth";
 import { handleVapiEndOfCall } from "@/lib/comms/voice/end-of-call";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 import { isDocId } from "@/lib/server/doc-id";
+import { isoMs } from "@/lib/prospecting/mystery-shop/call-match";
+import { matchInboundCallback, settleMysteryShopCall } from "@/lib/prospecting/mystery-shop/inbound";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -41,6 +43,8 @@ interface VapiServerMessage {
     type?: string;
     call?: {
       id?: string;
+      /** "inboundPhoneCall" | "outboundPhoneCall" | "webCall". */
+      type?: string;
       customer?: { number?: string };
       phoneNumber?: { number?: string };
       /** Metadata we stamped via assistantOverrides on outbound calls
@@ -50,8 +54,14 @@ interface VapiServerMessage {
         contactId?: string;
         campaignId?: string;
         test?: string;
+        /** A mystery-shop call (Prospecting PR 5). */
+        mysteryShopId?: string;
       };
+      startedAt?: string;
+      endedAt?: string;
     };
+    startedAt?: string;
+    endedAt?: string;
     durationSeconds?: number;
     summary?: string;
     endedReason?: string;
@@ -171,6 +181,24 @@ export async function POST(
 
   const structured = message.analysis?.structuredData ?? {};
   const transcript = extractTranscript(message);
+
+  // Mystery shops: this call's own outcome, or an inbound call that may be a
+  // business calling back. Never allowed to break the report handling below.
+  const callReport = {
+    endedReason: asString(message.endedReason),
+    durationSec: typeof message.durationSeconds === "number" ? Math.max(0, message.durationSeconds) : 0,
+    startedAtMs: isoMs(message.startedAt) ?? isoMs(message.call?.startedAt),
+    endedAtMs: isoMs(message.endedAt) ?? isoMs(message.call?.endedAt),
+    receivedAtMs: Date.now(),
+    turns: transcript,
+  };
+  const mysteryShopId = asString(message.call?.metadata?.mysteryShopId);
+  await (mysteryShopId
+    ? settleMysteryShopCall(subAccountId, mysteryShopId, callId, callReport)
+    : message.call?.type === "inboundPhoneCall"
+      ? matchInboundCallback(subAccountId, asString(message.call?.customer?.number), callReport)
+      : Promise.resolve()
+  ).catch((err) => console.error(`[vapi/end-of-call] mystery-shop match failed sa=${subAccountId}`, err));
 
   try {
     const result = await handleVapiEndOfCall({

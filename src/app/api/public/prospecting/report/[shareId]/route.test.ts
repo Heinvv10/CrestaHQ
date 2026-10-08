@@ -59,11 +59,18 @@ beforeEach(() => {
 
 describe("a live share", () => {
   it("returns exactly the whitelisted payload", async () => {
+    // A settled mystery shop to the contact's own address: its outcome is public, its target is not.
+    mem.seed("mysteryShops/s1", {
+      agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "email", target: "EMAIL-SENTINEL@x.test",
+      status: "missed", sentAt: new Date("2026-10-08T08:00:00Z"), jobValueCents: 150_000, currency: "ZAR",
+      missedConfirmedAt: new Date("2026-10-09T08:00:00Z"),
+      enquiryText: "ENQUIRY-SENTINEL", providerRef: "REF-SENTINEL", createdByUid: "UID-SENTINEL",
+    });
     const res = await get(await mint());
     expect(res.status).toBe(200);
     const text = await res.clone().text();
     const body = (await res.json()) as Record<string, unknown> & { sections: Record<string, unknown>[] };
-    expect(Object.keys(body).sort()).toEqual(["agency", "businessName", "cta", "generatedAt", "headline", "sections", "whatsappNumber"]);
+    expect(Object.keys(body).sort()).toEqual(["agency", "businessName", "cta", "generatedAt", "headline", "mysteryShop", "sections", "whatsappNumber"]);
     for (const s of body.sections) {
       expect(Object.keys(s).sort()).toEqual(["details", "findings", "key", "reason", "reasonCode", "score", "status"]);
     }
@@ -77,7 +84,8 @@ describe("a live share", () => {
     });
     // The ads section is only manual-check links: never public (C6).
     expect(body.sections.map((s) => s.key)).toEqual(["gbp"]);
-    for (const leak of ["RAW-SENTINEL", "UID-SENTINEL", "OWNER-SENTINEL", "EMAIL-SENTINEL", "PHONE-SENTINEL", "\"raw\"", "createdByUid", "agencyId", "subAccountId", "contactId", "usageMonth", "cost"]) {
+    expect((body.mysteryShop as { items: { text: string }[] }[])[0].items[0].text).toMatch(/R1,500 lead missed/);
+    for (const leak of ["RAW-SENTINEL", "UID-SENTINEL", "OWNER-SENTINEL", "EMAIL-SENTINEL", "PHONE-SENTINEL", "ENQUIRY-SENTINEL", "REF-SENTINEL", "\"raw\"", "createdByUid", "agencyId", "subAccountId", "contactId", "usageMonth", "cost"]) {
       expect(text).not.toContain(leak);
     }
   });

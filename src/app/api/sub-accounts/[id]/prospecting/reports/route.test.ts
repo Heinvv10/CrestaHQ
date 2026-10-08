@@ -248,6 +248,20 @@ describe("GET /[reportId]", () => {
     expect(theirs.status).toBe(404);
     expect(await theirs.text()).toBe(await missing.text());
   });
+  it("adds sections 11/12 from the contact's mystery shops, member view: target shown, open shop waiting", async () => {
+    seedReport("r1");
+    mem.seed("mysteryShops/s1", {
+      agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "email", target: "info@acme.co.za",
+      status: "sent", sentAt: new Date(), jobValueCents: 150_000, currency: "ZAR",
+    });
+    mem.seed("mysteryShops/s2", { subAccountId: "sa2", contactId: "c1", channel: "call", target: "+27820000000", status: "missed", sentAt: new Date() });
+    const body = (await (await item.GET(req("GET", "sa1/prospecting/reports/r1"), ctx("r1"))).json()) as {
+      mysteryShop: { key: string; items: { channel: string; outcome: string; target?: string }[] }[];
+    };
+    expect(body.mysteryShop).toEqual([
+      { key: "speed_to_lead", title: "Speed to lead", items: [expect.objectContaining({ channel: "email", outcome: "waiting", target: "info@acme.co.za" })] },
+    ]);
+  });
   it("keeps not-connected ApexGEO sections for members (the public page hides them, D6)", async () => {
     const { apexgeoPlaceholders, APEXGEO_REASON } = await import("@/lib/prospecting/apexgeo-sections");
     seedReport("r1", { sections: apexgeoPlaceholders("not_connected", APEXGEO_REASON.not_connected) });

@@ -9,8 +9,8 @@ import { rulesAccessToken, rulesFetch } from "../../test/rules-api";
  * (skips locally without FIREBASE_ADMIN_*, FAILS in CI without them).
  *
  * What must hold:
- *   - `prospectLists`, `prospectReports`: members (and the agency owner)
- *     read; NO client writes — the lists route and the report runner own them.
+ *   - `prospectLists`, `prospectReports`, `mysteryShops`: members (and the
+ *     agency owner) read; NO client writes — the server routes own them.
  *   - `prospectReportShares`: no client reads or writes at all, not even the
  *     agency owner — the public report route resolves a share server-side.
  *   - `workflowEnrolmentKeys` (the report announce's enrolment dedupe): no
@@ -150,6 +150,8 @@ const CON = "contacts/c1";
 const LST = "prospectLists/list1";
 const RPT = "prospectReports/r1";
 const SHR = "prospectReportShares/share1";
+const MSH = "mysteryShops/shop1";
+const SHOP = { ...TENANT, contactId: "c1", channel: "email", target: "info@acme.co.za", status: "sent", respondedAt: null };
 const FTC = "subAccounts/sa_1/prospectingFirstTouch/2026-09-27";
 const EKY = "workflowEnrolmentKeys/wf1_c1_report:r1";
 const KEYDOC = { ...TENANT, workflowId: "wf1", contactId: "c1", enrolmentKey: "report:r1", runId: "run1" };
@@ -178,6 +180,18 @@ const CASES: [string, Case, Outcome][] = [
   ["reports: admin cannot mark one ready", { caller: saAdmin, method: "update", path: RPT, before: REPORT, after: { ...REPORT, status: "ready", headline: "x" } }, "deny"],
   ["reports: owner cannot mark one ready", { caller: owner, method: "update", path: RPT, before: REPORT, after: { ...REPORT, status: "ready" } }, "deny"],
   ["reports: admin cannot delete one", { caller: saAdmin, method: "delete", path: RPT, before: REPORT }, "deny"],
+
+  // ---- mysteryShops: member-read, server-only write ----
+  ["mystery shops: sub-account admin reads", { caller: saAdmin, method: "get", path: MSH, before: SHOP }, "allow"],
+  ["mystery shops: collaborator lists (member)", { caller: collaborator, method: "list", path: MSH, before: SHOP }, "allow"],
+  ["mystery shops: agency owner reads", { caller: owner, method: "get", path: MSH, before: SHOP }, "allow"],
+  ["mystery shops: another sub-account's admin is denied", { caller: otherSaAdmin, method: "get", path: MSH, before: SHOP }, "deny: not a member"],
+  ["mystery shops: another agency's owner is denied", { caller: otherOwner, method: "get", path: MSH, before: SHOP }, "deny: not a member"],
+  ["mystery shops: signed-out is denied", { caller: null, method: "get", path: MSH, before: SHOP }, "deny"],
+  ["mystery shops: admin cannot create one (a send without the route)", { caller: saAdmin, method: "create", path: MSH, after: SHOP }, "deny"],
+  ["mystery shops: admin cannot mark one responded", { caller: saAdmin, method: "update", path: MSH, before: SHOP, after: { ...SHOP, status: "responded" } }, "deny"],
+  ["mystery shops: owner cannot change the target", { caller: owner, method: "update", path: MSH, before: SHOP, after: { ...SHOP, target: "x@y.z" } }, "deny"],
+  ["mystery shops: admin cannot delete one", { caller: saAdmin, method: "delete", path: MSH, before: SHOP }, "deny"],
 
   // ---- prospectReportShares: no client at all ----
   ["shares: agency owner cannot read one", { caller: owner, method: "get", path: SHR, before: SHARE }, "deny"],

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Loader2, Lock, Radar, Target } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
+import { MysteryShopSettingsCard } from "@/components/prospecting/mystery-shop-settings-card";
 import type { ProspectListQuery } from "@/types/prospecting";
 
 /**
@@ -115,6 +116,7 @@ export default function ProspectingPage() {
             Open Get Leads
           </Button>
         </div>
+        <MysteryShopSettingsCard />
       </div>
     );
   }
@@ -147,6 +149,7 @@ export default function ProspectingPage() {
           </li>
         ))}
       </ul>
+      <MysteryShopSettingsCard />
     </div>
   );
 }

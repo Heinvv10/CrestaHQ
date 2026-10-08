@@ -18,6 +18,7 @@ import type { BookingHost, BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 import { isDocId } from "@/lib/server/doc-id";
+import { mysteryShopCallPrompt } from "@/lib/prospecting/mystery-shop/enquiry";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -68,7 +69,7 @@ interface VapiLlmBody {
     /** Metadata we stamp via assistantOverrides on outbound calls (see
      *  createOutboundCall). Vapi echoes it back on every turn so we can
      *  pick the outbound persona. */
-    metadata?: { direction?: string; contactId?: string };
+    metadata?: { direction?: string; contactId?: string; mysteryShopId?: string };
   };
 }
 
@@ -241,6 +242,15 @@ export async function POST(
   });
   const contact = built.contact;
   let systemPrompt = built.systemPrompt;
+  // A mystery-shop call (Prospecting PR 5) never runs on the sales persona:
+  // its own short enquiry prompt, with the shop's text when the shop is this
+  // sub-account's call shop.
+  const mysteryShopId = body.call?.metadata?.mysteryShopId;
+  if (isOutboundCall && mysteryShopId) {
+    const shop = isDocId(mysteryShopId) ? (await getAdminDb().doc(`mysteryShops/${mysteryShopId}`).get()).data() : null;
+    const ours = shop?.subAccountId === subAccountId && shop?.channel === "call";
+    systemPrompt = mysteryShopCallPrompt(subAccount.name ?? "", ours ? String(shop?.enquiryText ?? "") : "");
+  }
 
   // ── Voice Booking v1 — live booking tools (inbound calls only) ──────
   // When the voice channel designates a bookable page, append the marker

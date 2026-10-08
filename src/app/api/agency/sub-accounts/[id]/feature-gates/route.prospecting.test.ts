@@ -117,3 +117,29 @@ describe("prospectingDailyFirstTouchCap", () => {
     expect(sub().prospectingDailyFirstTouchCap).toBeUndefined();
   });
 });
+
+describe("prospectingMysteryShopCap", () => {
+  it("stores an integer in 0–1000, bounds included", async () => {
+    expect(await patch({ prospectingMysteryShopCap: 0 })).toBe(200);
+    expect(sub().prospectingMysteryShopCap).toBe(0);
+    expect(await patch({ prospectingMysteryShopCap: 1000 })).toBe(200);
+    expect(sub().prospectingMysteryShopCap).toBe(1000);
+    expect(await patch({ prospectingMysteryShopCap: 4 })).toBe(200);
+    expect(sub().prospectingMysteryShopCap).toBe(4);
+  });
+
+  it.each([[-1], [1001], [2.5], ["10"], [null], [true]])(
+    "refuses %s with 400 and writes nothing",
+    async (bad) => {
+      mem.seed(`subAccounts/${SA}`, { ...sub(), prospectingMysteryShopCap: 7 });
+      expect(await patch({ prospectingMysteryShopCap: bad, prospectingEnabled: true })).toBe(400);
+      expect(sub().prospectingMysteryShopCap).toBe(7);
+      expect(sub().prospectingEnabledByAgency).toBeUndefined();
+    },
+  );
+
+  it("only the agency owner may set it", async () => {
+    expect(await patch({ prospectingMysteryShopCap: 3 }, "uid_admin")).toBe(403);
+    expect(sub().prospectingMysteryShopCap).toBeUndefined();
+  });
+});

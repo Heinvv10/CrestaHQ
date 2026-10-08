@@ -1235,6 +1235,16 @@ service cloud.firestore {
       );
       allow write: if false;
     }
+    // Speed-to-lead mystery shops (Prospecting PR 5). Same as the reports:
+    // members read (the card and the member report show the target); only
+    // the server writes — the send route, the reply matchers and the timer.
+    match /mysteryShops/{shopId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+    }
     // Public share handle for a report. No client reads it at all — the
     // public report route resolves it server-side, so share ids can't be
     // listed or probed through the client SDK.

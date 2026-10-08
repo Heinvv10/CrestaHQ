@@ -208,6 +208,8 @@ export interface SubAccountDoc {
   /** Unset preserves shared Resend. SMTP credentials are server-only. */
   emailProvider?: "resend" | "smtp";
   smtpConfig?: import("./email").SmtpMeta | null;
+  /** Public IMAP mailbox metadata (credentials are server-only). See lib/server/mailbox-sync.ts. */
+  mailboxConfig?: import("./mailbox").MailboxMeta | null;
   /**
    * Agency-controlled gate for the dedicated email sending domain feature.
    * Only the agency owner can flip this (PATCH /api/agency/sub-accounts/[id]/
@@ -409,6 +411,21 @@ export interface SubAccountDoc {
    * see lib/prospecting/quota.ts. Enforced by the approach guard.
    */
   prospectingDailyFirstTouchCap?: number;
+  /**
+   * Mystery shops a month, set by the agency owner (integer 0–1000).
+   * Undefined reads as `MYSTERY_SHOP_CAP_DEFAULT` (10) — see
+   * lib/prospecting/mystery-shop/model.ts. Enforced by the mystery-shop route.
+   */
+  prospectingMysteryShopCap?: number;
+  /**
+   * Estimated value of one job per niche (normalised prospect category →
+   * cents), for a missed mystery-shop lead. Unlisted niches read as
+   * `JOB_VALUE_DEFAULT_CENTS`. Written by sub-account admins through
+   * PUT /api/sub-accounts/[id]/prospecting/mystery-shop/settings.
+   */
+  prospectingJobValues?: Record<string, number>;
+  /** Overrides of the neutral mystery-shop enquiry; same PUT route. */
+  prospectingMysteryShopTemplates?: import("./prospecting").MysteryShopTemplates;
   /**
    * Get Leads: operator-defined custom service types shown in the business-
    * type picker alongside the curated list. Plain display labels (each

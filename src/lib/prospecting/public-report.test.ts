@@ -111,3 +111,65 @@ describe("raw speed metrics", () => {
     expect(report?.sections[0]?.details).toEqual({ lcpSeconds: 6.2, mobileViewport: true });
   });
 });
+
+describe("mystery shop (sections 11 and 12)", () => {
+  const TARGET_EMAIL = "owner@acme-plumbing.co.za";
+  const TARGET_PHONE = "+27829876543";
+  const shop = (id: string, extra: Record<string, unknown>) =>
+    mem.seed(`mysteryShops/${id}`, {
+      agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "email", target: TARGET_EMAIL,
+      targetLabel: TARGET_EMAIL, status: "responded", sentAt: new Date("2026-10-08T08:00:00Z"),
+      respondedAt: new Date("2026-10-08T10:14:00Z"), responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
+      jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
+      providerRef: "<ref-123@crestahq.com>", failure: null, createdAt: new Date("2026-10-08T08:00:00Z"),
+      ...extra,
+    });
+
+  it("shows settled outcomes and never a target, provider ref, enquiry or failure", async () => {
+    seed();
+    shop("e1", {});
+    shop("k1", {
+      channel: "call", target: TARGET_PHONE, targetLabel: TARGET_PHONE, status: "missed", respondedAt: null,
+      responseMs: null, providerRef: "call-987", missedConfirmedAt: new Date("2026-10-09T10:00:00Z"), missedConfirmedByUid: "UID-SECRET",
+    });
+    shop("k0", { channel: "call", target: TARGET_PHONE, status: "failed", sentAt: null, failure: { code: "x", reason: "SECRET" } });
+    shop("other", { contactId: "c9", target: "other@else.example" });
+    const report = await resolvePublicReport(TOKEN);
+    expect(report?.mysteryShop).toEqual([
+      {
+        key: "speed_to_lead",
+        title: "Speed to lead",
+        items: [
+          expect.objectContaining({ channel: "email", outcome: "responded", text: "Responded in 2 h 14 m by email." }),
+          expect.objectContaining({ channel: "call", outcome: "missed", text: "No response within 24 h — an estimated R1,500 lead missed." }),
+        ],
+      },
+    ]);
+    const json = JSON.stringify(report);
+    expect(json).not.toContain(TARGET_EMAIL);
+    expect(json).not.toContain("acme-plumbing");
+    expect(json).not.toContain("829876543");
+    expect(json).not.toContain("27829876543");
+    expect(json).not.toContain("ref-123");
+    expect(json).not.toContain("call-987");
+    expect(json).not.toContain("Gqeberha");
+    expect(json).not.toContain("SECRET");
+    expect(json).not.toContain("other@else.example");
+    expect(json).not.toContain("UID-SECRET");
+  });
+
+  it("an unconfirmed miss is absent from the public report and its JSON; confirming it makes it public", async () => {
+    seed();
+    shop("k1", { channel: "call", target: TARGET_PHONE, status: "missed", respondedAt: null, responseMs: null });
+    expect((await resolvePublicReport(TOKEN))?.mysteryShop).toEqual([]);
+    expect(JSON.stringify(await resolvePublicReport(TOKEN))).not.toContain("lead missed");
+    shop("k1", { channel: "call", target: TARGET_PHONE, status: "missed", respondedAt: null, responseMs: null, missedConfirmedAt: new Date() });
+    expect((await resolvePublicReport(TOKEN))?.mysteryShop[0].items[0].outcome).toBe("missed");
+  });
+
+  it("no settled shop → no section", async () => {
+    seed();
+    shop("e1", { status: "sent", respondedAt: null, responseMs: null });
+    expect((await resolvePublicReport(TOKEN))?.mysteryShop).toEqual([]);
+  });
+});

@@ -29,6 +29,17 @@ export interface ProspectListDoc {
 export type ProspectReportStatus = "queued" | "running" | "ready" | "failed";
 
 /**
+ * A sub-account's overrides of the neutral mystery-shop enquiry
+ * (lib/prospecting/mystery-shop/enquiry.ts). `{service}`, `{town}` and
+ * `{business}` are filled in per contact. Unset fields use the defaults.
+ */
+export interface MysteryShopTemplates {
+  emailSubject?: string;
+  emailBody?: string;
+  call?: string;
+}
+
+/**
  * Report section keys (docs/programme/prospecting-module.md, "Report
  * sections"). The runner measures business_details, gbp, reputation,
  * listings, tech_stack, ads, lead_capture. website_performance, ai_readiness

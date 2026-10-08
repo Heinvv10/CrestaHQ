@@ -62,7 +62,8 @@ jobs:
         run: pnpm exec playwright install chromium
 
       - name: Playwright
-        run: pnpm exec playwright test --grep-invert "@enrols-workflows"
+        # @not-on-prod: specs that write test records (mystery shops) the production app would act on.
+        run: pnpm exec playwright test --grep-invert "@enrols-workflows|@not-on-prod"
 
       # See the same step in ci.yml: error-context.md records input VALUES
       # (including E2E_PASSWORD) regardless of the spec's own trace/screenshot

@@ -608,5 +608,8 @@ describe("isPublicPath — the prospect report announce sweep", () => {
   it("opens the exact path the QStash schedule calls, and nothing under it", () => {
     expect(isPublicPath("/api/automations/prospecting/announce-sweep")).toBe(true);
     expect(isPublicPath("/api/automations/prospecting/announce-sweep/x")).toBe(false);
+    expect(isPublicPath("/api/automations/prospecting/mystery-shop")).toBe(true);
+    expect(isPublicPath("/api/automations/prospecting/mystery-shop/x")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/prospecting/mystery-shop")).toBe(false);
   });
 });

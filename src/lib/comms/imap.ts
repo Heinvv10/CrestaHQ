@@ -6,6 +6,8 @@ import { ImapFlow } from "imapflow";
 import { simpleParser, type AddressObject } from "mailparser";
 import type { SmtpConnection } from "@/types/email";
 import type { MailboxConnection, MailboxMeta } from "@/types/mailbox";
+import type { MailSignals } from "@/lib/prospecting/mystery-shop/email-match";
+import { deliveryStatusPart } from "./delivery-status";
 export const MAX_MESSAGE_BYTES = 5 * 1024 * 1024;
 export class MailboxError extends Error {
   constructor(
@@ -204,6 +206,40 @@ function addresses(
     flatten(a.value)
   );
 }
+/**
+ * The header signals the mystery-shop matcher reads
+ * (lib/prospecting/mystery-shop/email-match.ts), from a raw header block, so
+ * a full parse and the oversized-message placeholder read them alike:
+ * auto-responder headers, every Authentication-Results (topmost — the
+ * receiving server's — first; at most 10) and delivery-report headers.
+ * Values unfolded, each capped at 2,000 chars. `dsn.text` (the report and
+ * returned-headers parts) is filled by a full parse only.
+ */
+export function mailSignalsFromRaw(raw: string): MailSignals {
+  const unfolded = raw.replace(/\r?\n[ \t]+/g, " ");
+  const all = (name: string) =>
+    [...unfolded.matchAll(new RegExp(`^${name}:[ \\t]*(.*)$`, "gim"))].map((m) => m[1].trim().slice(0, 2000));
+  const one = (name: string) => all(name)[0] ?? null;
+  return {
+    autoReply: {
+      autoSubmitted: one("auto-submitted"),
+      xAutoreply: one("x-autoreply"),
+      xAutorespond: one("x-autorespond"),
+      precedence: one("precedence"),
+      listId: one("list-id"),
+      listUnsubscribe: one("list-unsubscribe"),
+    },
+    authResults: all("authentication-results").slice(0, 10),
+    dsn: {
+      contentType: one("content-type"),
+      msExchangeNdr: one("x-ms-exchange-message-is-ndr"),
+      failedRecipients: one("x-failed-recipients"),
+      text: "",
+      deliveryStatus: "",
+    },
+  };
+}
+const REPORT_PART = /^(message\/(delivery-status|rfc822|global-headers|global-delivery-status)|text\/rfc822-headers)$/i;
 export async function parseMailboxMessage(source: Buffer) {
   if (source.length > MAX_MESSAGE_BYTES)
     throw new MailboxError("Message exceeds the 5 MB import limit.");
@@ -213,6 +249,15 @@ export async function parseMailboxMessage(source: Buffer) {
     skipImageLinks: true,
     maxHtmlLengthToParse: MAX_MESSAGE_BYTES,
   });
+  const signals = mailSignalsFromRaw(mail.headerLines.map((l) => l.line).join("\r\n"));
+  // A bounce names our Message-ID in its report / returned-headers parts.
+  signals.dsn.text = [
+    mail.text ?? "",
+    ...mail.attachments.filter((a) => REPORT_PART.test(a.contentType)).map((a) => a.content.toString("utf8")),
+  ]
+    .join("\n")
+    .slice(0, 65536);
+  signals.dsn.deliveryStatus = deliveryStatusPart(source.toString("latin1"), signals.dsn.contentType);
   return {
     from: addresses(mail.from)[0] ?? "",
     to: [
@@ -239,5 +284,6 @@ export async function parseMailboxMessage(source: Buffer) {
     })),
     date: mail.date,
     archive: mail.headers.get("x-crestahq-archive") !== "no",
+    signals,
   };
 }

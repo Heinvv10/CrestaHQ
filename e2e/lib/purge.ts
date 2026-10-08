@@ -39,6 +39,8 @@ export async function purgeFixtureData(): Promise<void> {
     await purge("conversations", subAccountId);
     await purge("companies", subAccountId);
     await purge("snippets", subAccountId);
+    // Prospecting mystery shops (mystery-shop-email.spec.ts) outlive their contacts otherwise.
+    await purge("mysteryShops", subAccountId);
     // Stale ones only: events are not fully purged like the rows above, since
     // specs seed them per run and a concurrent run's may still be live.
     await reapStaleE2eEvents(subAccountId);

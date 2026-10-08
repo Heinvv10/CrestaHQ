@@ -3,6 +3,9 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: vi.fn() }));
 vi.mock("@/lib/server/email-conversations", () => ({
   recordEmailMessage: vi.fn(),
 }));
+vi.mock("@/lib/prospecting/mystery-shop/inbound", () => ({
+  matchMysteryShopEmail: vi.fn(async () => {}),
+}));
 import { cursorWindow } from "./mailbox-sync";
 it("resets on UIDVALIDITY change and bounds every search", () => {
   expect(
@@ -176,6 +179,7 @@ it("imports an oversized message placeholder without source download", async () 
   client.fetchOne.mockResolvedValue({
     size: 6 * 1024 * 1024,
     internalDate: new Date(),
+    headers: Buffer.from("Authentication-Results: mx; dmarc=fail\r\nAuto-Submitted: auto-replied\r\nX-Failed-Recipients: a@b.c\r\n"),
     envelope: {
       from: [{ address: "other@example.com" }],
       to: [{ address: "me@example.com" }],
@@ -193,6 +197,10 @@ it("imports an oversized message placeholder without source download", async () 
     })
   );
   expect((c.cursors as Record<string, { uid: number }>).INBOX.uid).toBe(2);
+  expect(matchMysteryShopEmail).toHaveBeenCalledWith("a", expect.objectContaining({ authResults: ["mx; dmarc=fail"],
+    autoReply: expect.objectContaining({ autoSubmitted: "auto-replied" }), dsn: expect.objectContaining({ failedRecipients: "a@b.c" }) }));
+  const asked = ["Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence", "List-Id", "List-Unsubscribe", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"];
+  expect(client.fetchOne).toHaveBeenCalledWith(1, expect.objectContaining({ headers: expect.arrayContaining(asked) }), { uid: true });
 });
 it("sweep isolates failures and continues other tenants", async () => {
   setup();
@@ -252,4 +260,39 @@ it("an inbound archive header cannot hide customer email", async () => {
   );
   const result = await syncMailbox("a");
   expect(result.imported).toBe(1);
+});
+
+import { matchMysteryShopEmail } from "@/lib/prospecting/mystery-shop/inbound";
+const mailFrom = (from: string, to: string, extra = "") =>
+  ({ source: Buffer.from(`From: ${from}\r\nTo: ${to}\r\n${extra}Message-ID: <${from}>\r\n\r\nHi`) });
+it("hands each inbound message to the mystery-shop matcher at its arrival time, with its auto-reply headers", async () => {
+  const { client } = setup();
+  client.search.mockResolvedValue([1]);
+  const at = new Date("2026-10-08T10:00:00Z");
+  const extra = "Subject: Re: Enquiry\r\nIn-Reply-To: <shop@crestahq.com>\r\nAuto-Submitted: auto-replied\r\nPrecedence: bulk\r\nAuthentication-Results: mx; dmarc=pass\r\n";
+  client.fetchOne.mockImplementation(async (_uid, q) =>
+    q.size ? { size: 100, internalDate: at } : mailFrom("info@acme.co.za", "me@example.com", extra)
+  );
+  vi.mocked(matchMysteryShopEmail).mockClear();
+  await syncMailbox("tenant-a");
+  expect(matchMysteryShopEmail).toHaveBeenCalledWith("tenant-a", expect.objectContaining({
+    from: "info@acme.co.za", subject: "Re: Enquiry", inReplyTo: "<shop@crestahq.com>", occurredAtMs: at.getTime(),
+    autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk", listId: null, listUnsubscribe: null },
+    authResults: ["mx; dmarc=pass"],
+  }));
+});
+it("sent mail is never handed to the mystery-shop matcher", async () => {
+  const { client, c } = setup();
+  c.sentFolder = "Sent";
+  client.search.mockResolvedValue([1]);
+  let folder = "";
+  client.getMailboxLock.mockImplementation(async (name?: unknown) => ((folder = String(name)), { release: vi.fn() }));
+  client.fetchOne.mockImplementation(async (_uid, q) =>
+    q.size ? { size: 100, internalDate: new Date() }
+      : folder === "Sent" ? mailFrom("me@example.com", "info@acme.co.za") : mailFrom("info@acme.co.za", "me@example.com")
+  );
+  vi.mocked(matchMysteryShopEmail).mockClear().mockResolvedValue(undefined);
+  expect((await syncMailbox("a")).imported).toBe(2);
+  expect(matchMysteryShopEmail).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(matchMysteryShopEmail).mock.calls[0][1].from).toBe("info@acme.co.za");
 });

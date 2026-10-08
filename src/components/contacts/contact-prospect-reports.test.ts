@@ -15,6 +15,8 @@ vi.mock("@/context/sub-account-context", () => ({
   useSubAccount: () => ({ subAccount, subAccountId: "sa1", saPath: (p: string) => `/sa/sa1${p}` }),
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), message: vi.fn() } }));
+// The Mystery shop area has its own test (contact-mystery-shop.test.ts) and its own fetches.
+vi.mock("@/components/contacts/contact-mystery-shop", () => ({ ContactMysteryShop: () => null }));
 
 import { ContactProspectReports, POLL_MS } from "./contact-prospect-reports";
 

@@ -113,10 +113,19 @@ These replace the "Approach guard" section above where they differ (it named the
 | 2 | **DONE (#288)** — `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Google Places/Firecrawl), QStash callback, quota enforcement, share page `/report/[token]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
 | 3 | **DONE (#302)** — ApexGEO connection + sections 5, 7, 8; "Not connected" state; deployed 7f7b4882, proven on #1000 2026-09-27 ([evidence](../parity/evidence/prospecting-pr3/README.md)) | recorded-response tests against the ApexGEO OpenAPI shapes; live proof on #1000 with a real key |
 | 4 | **BUILT (2026-09-27)** — Workflow trigger + merge tags + approach guard + daily cap ([mutations](../parity/evidence/prospecting-pr4/mutations.md)) | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
-| 5 | Mystery-shop actions (form/call, WhatsApp) with confirm dialog | **human gate**: sends reach a real business; first live run is to a number Hein owns |
+| 5 | Mystery-shop actions (form/call, WhatsApp) with confirm dialog. **5a BUILT (2026-10-08)**: shared model (`mysteryShops`), email + AI call, 24 h QStash timer, section 11/12 rendering, card + dialog, settings card. 5b WhatsApp, 5c contact form to follow | **human gate**: sends reach a real business; first live run is to a number Hein owns |
 | 6 | ApexSignal `push_leadstack.py` + cron; warm replies imported | proof: contacts visible in #1000 with tags; Hein's tasks created |
 
 Deploys: after 17:00 SAST, Hein's approval per deploy. `firebase deploy --only firestore:rules,firestore:indexes` after PR 1 (new collections) and again if PR 2 adds a composite index for `prospectReports` by `subAccountId + status`.
+
+**REVISED 2026-10-08 (PR 5a)** — decisions taken while building the mystery shop:
+
+- A mystery shop does not stamp `approachedAt` and is not a workflow step; the approach guard is unchanged. An open shop does **not** block outreach workflows to the same contact.
+- The email channel needs the IMAP mailbox connected as well as a verified SMTP sender: without mailbox sync no reply can be seen, and every shop would read as a missed lead on a public report.
+- Call targets are the contact's own phone only. The lead-capture section stores booleans (`phoneLink`), not numbers, so it adds no targets.
+- A call is "answered" only after a real exchange: the callee speaks after our opening, then we reply, then the callee speaks again — after the last callee turn that sounds like a voicemail greeting or phone menu ("leave your name and number", "press 1 for …", Afrikaans "los 'n boodskap" — not "you've reached", which people say when they answer), whatever Vapi's endedReason. A single callee turn is ambiguous, so it is not answered: the shop goes missed for a member to check. A miss is public only after a member confirms it (round 3). Vapi gives no answer timestamp: the response time is the report's `startedAt` (else `endedAt − duration`) minus the send.
+- SMS callbacks are not matched: Twilio is not configured on any sub-account.
+- The cap is `prospectingMysteryShopCap` (default 10 a month) on the usage ledger beside the report quota; a refused or failed send gives its slot back.
 
 ## What proves it worked
 
