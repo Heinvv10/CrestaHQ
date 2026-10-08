@@ -1,6 +1,7 @@
 # Agency Agent API (Agent API phase 2)
 
-> Status: **PLAN, rev 3 (2026-10-04, blind review rounds 1–3: REJECT → ACCEPT)**.
+> Status: **LIVE / COMPLETE (A1–A6), 2026-10-08** — live validation passed on prod (see
+> "Live validation" → *Result*). Planned as rev 3 (2026-10-04, blind review rounds 1–3: REJECT → ACCEPT).
 > Builds on the live v1 ([AGENT_API_V1_PLAN.md](AGENT_API_V1_PLAN.md),
 > [docs/features/agent-api.md](docs/features/agent-api.md)).
 > Owner rulings locked (Hein, 2026-10-04): one **agency-wide key** minted by the
@@ -708,6 +709,22 @@ firestore.rules / firestore.indexes.json
    and the sub-account, then asserts `workflows`, `bookingPages`, `forms`,
    `products`, `message_templates`, `snippets`, `pipelines`, `customFields` hold no
    doc with its id. Screenshots redacted before commit.
+
+**Result (2026-10-08, prod, agency CrestaHQ, key `A6 live (throwaway)`):** steps 0–7 passed.
+Census = Blitz + Velocity (untouched). Gate-off and made-up ids returned identical 404 bodies.
+Smoke #1012 was created with both gates, the owner as its only member, and gate + `agent.write` audit rows.
+Direct writes returned 200, `whatsapp` → proposal, `agent-api` → refused. Approve all took exactly the
+activation + publish rows ("skips 2 that need their own click"). Revoke → the pending row became
+`rejected: key_revoked`; REST and MCP → `revoked_api_key`. Switch off (reload + Firestore).
+`scripts/teardown-smoke-sub-account.ts`: dry run, then `--yes` → "Deleted 33 docs; re-read: none left";
+an independent Firestore check found nothing for the id; #1000's gates were unchanged.
+
+**REVISED 2026-10-08 (A6), deviations from the steps above:**
+- Step 5 `assign_billing_plan` was skipped (Hein, 2026-10-07): prod has no billing provider; the refusals were proven live in A4b.
+- Step 4 `labs true` on #1000 → 404, not a proposal: #1000's Agent API gate is off, so the key cannot reach it (correct). No row was written on #1000.
+- Step 5 `invite_member` → the approval failed cleanly ("account was removed or disabled"; the preview said so): the invitee's account had been removed the day before. This proves the blocked path; the invite email path was proven 2026-10-07 on #1000.
+- Step 4 `apply_snapshot`: the agency holds no snapshot; skipped.
+- Found: `create_booking_page` via an agent key requires the full editor payload, though its schema marks only `subAccountId`/`slug`/`name` required (the app's create route fills `defaultBookingPageFormData`; the capability does not). Follow-up fix.
 
 ## Open risks
 
