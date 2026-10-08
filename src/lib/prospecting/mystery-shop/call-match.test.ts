@@ -55,6 +55,14 @@ describe("answered needs a real exchange: callee → assistant → callee after 
     expect(callOutcome(report({ turns: [bot(0.5), user(3, phrase), bot(6), user(9, "Yes, tomorrow at 9.")] }))).toMatchObject({ answered: true });
   });
 
+  it("a person who greets with \"you've reached\" and then talks with us is answered", () => {
+    const turns = [
+      user(0.2, "Good morning, you've reached Bob's Plumbing, Sarah speaking."), bot(3),
+      user(7, "Yes, we can send someone at two. Bye."), bot(9, "Thank you, goodbye."),
+    ];
+    expect(callOutcome(report({ turns }))).toMatchObject({ answered: true });
+  });
+
   it("a phone menu then a person is answered only when the person and we exchange", () => {
     const menu = user(0.2, "Welcome to Acme. Press 1 for sales, press 2 for accounts.");
     expect(callOutcome(report({ turns: [menu, bot(4), user(9, "Hi, sales here, how can I help?")] }))).toEqual({ answered: false, reason: "voicemail" });
@@ -66,6 +74,7 @@ describe("machines", () => {
   it.each([
     "You've reached ABC Plumbing, please leave a message after the tone.",
     "You've reached Joe's Plumbing, please leave your name and number and we'll get back to you.",
+    "Hi, this is Joe's Plumbing. Leave your number and we'll call back.",
     "Please leave a message.",
     "Sorry, we can't take your call right now.",
     "We cannot take your call at the moment.",

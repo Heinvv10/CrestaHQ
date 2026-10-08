@@ -4,9 +4,10 @@
  * Answered = a real exchange: the callee spoke after our opening line (by
  * `secondsFromStart`, else by transcript order) AND a callee → assistant →
  * callee exchange follows the LAST callee turn that sounds like a machine
- * (voicemail greeting, phone menu: "you've reached", "leave your name and
- * number", "press 1 for …", Afrikaans "los 'n boodskap" …), or anywhere when
- * none does — whatever the endedReason, so our own pipeline errors after a
+ * (voicemail greeting, phone menu: "leave your name and number", "press 1
+ * for …", Afrikaans "los 'n boodskap" …; not "you've reached", which people
+ * say when they answer), or anywhere when none does — whatever the
+ * endedReason, so our own pipeline errors after a
  * conversation never become the business's miss. A single callee turn is
  * ambiguous (a greeting we do not recognise could be a machine): not
  * answered, which leaves a miss for a member to check before it is public.
@@ -53,7 +54,7 @@ export function notAnsweredReason(endedReason: string | null): NotAnsweredReason
 
 /** Clear voicemail / phone-menu phrasing (en, af). Words a person also says ("not available", "please hold") are left out. */
 const MACHINE =
-  /after the (tone|beep)|at the tone|voice ?mail|mailbox is full|press [0-9] for|record your message|leave (a|your) (message|name|number)|you(?:'|’)?ve reached|(can(?:'|’)?t|cannot|not able to) take your call|boodskap na die toon|los 'n boodskap/i;
+  /after the (tone|beep)|at the tone|voice ?mail|mailbox is full|press [0-9] for|record your message|leave (a|your) (message|name|number)|(can(?:'|’)?t|cannot|not able to) take your call|boodskap na die toon|los 'n boodskap/i;
 
 const spoke = (t: CallTurn, role: CallTurn["role"]) => t.role === role && !!t.content.trim();
 
