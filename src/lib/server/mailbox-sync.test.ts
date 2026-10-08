@@ -199,7 +199,7 @@ it("imports an oversized message placeholder without source download", async () 
   expect((c.cursors as Record<string, { uid: number }>).INBOX.uid).toBe(2);
   expect(matchMysteryShopEmail).toHaveBeenCalledWith("a", expect.objectContaining({ authResults: ["mx; dmarc=fail"],
     autoReply: expect.objectContaining({ autoSubmitted: "auto-replied" }), dsn: expect.objectContaining({ failedRecipients: "a@b.c" }) }));
-  const asked = ["Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"];
+  const asked = ["Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence", "List-Id", "List-Unsubscribe", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"];
   expect(client.fetchOne).toHaveBeenCalledWith(1, expect.objectContaining({ headers: expect.arrayContaining(asked) }), { uid: true });
 });
 it("sweep isolates failures and continues other tenants", async () => {
@@ -277,7 +277,7 @@ it("hands each inbound message to the mystery-shop matcher at its arrival time, 
   await syncMailbox("tenant-a");
   expect(matchMysteryShopEmail).toHaveBeenCalledWith("tenant-a", expect.objectContaining({
     from: "info@acme.co.za", subject: "Re: Enquiry", inReplyTo: "<shop@crestahq.com>", occurredAtMs: at.getTime(),
-    autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk" },
+    autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk", listId: null, listUnsubscribe: null },
     authResults: ["mx; dmarc=pass"],
   }));
 });

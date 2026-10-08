@@ -143,7 +143,7 @@ export async function syncMailbox(subAccountId: string) {
               envelope: true,
               // The mystery-shop matcher's signals, so the placeholder path reads them too.
               headers: ["X-CrestaHQ-Archive", "Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond",
-                "Precedence", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"],
+                "Precedence", "List-Id", "List-Unsubscribe", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"],
             },
             { uid: true }
           );

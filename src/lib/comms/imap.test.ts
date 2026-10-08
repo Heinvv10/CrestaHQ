@@ -77,12 +77,16 @@ describe("mail signals for the mystery-shop matcher", () => {
   it("reads auto-reply and delivery-report headers from a raw header block (the oversized path)", () => {
     const block = Array.from({ length: 12 }, (_, i) => `Authentication-Results: mx${i}; spf=pass`).join("\r\n");
     const s = mailSignalsFromRaw(
-      `Auto-Submitted: auto-replied\r\nX-Autoreply: yes\r\nPrecedence: bulk\r\nContent-Type: multipart/report;\r\n report-type=delivery-status\r\nX-MS-Exchange-Message-Is-Ndr: \r\nX-Failed-Recipients: info@acme.co.za\r\n${block}\r\n`
+      `Auto-Submitted: auto-replied\r\nX-Autoreply: yes\r\nPrecedence: bulk\r\nList-Id: <news.acme>\r\nList-Unsubscribe: <mailto:u@acme>\r\nContent-Type: multipart/report;\r\n report-type=delivery-status\r\nX-MS-Exchange-Message-Is-Ndr: \r\nX-Failed-Recipients: info@acme.co.za\r\n${block}\r\n`
     );
     expect(s.authResults).toHaveLength(10);
     expect(s.authResults[0]).toBe("mx0; spf=pass");
-    expect(s.autoReply).toEqual({ autoSubmitted: "auto-replied", xAutoreply: "yes", xAutorespond: null, precedence: "bulk" });
-    expect(s.dsn).toEqual({ contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: "", failedRecipients: "info@acme.co.za", text: "" });
+    expect(s.autoReply).toEqual({
+      autoSubmitted: "auto-replied", xAutoreply: "yes", xAutorespond: null, precedence: "bulk", listId: "<news.acme>", listUnsubscribe: "<mailto:u@acme>",
+    });
+    expect(s.dsn).toEqual({
+      contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: "", failedRecipients: "info@acme.co.za", text: "", deliveryStatus: "",
+    });
   });
   it("exposes a bounce's report and returned-headers text so it can be tied to our Message-ID", async () => {
     const raw = Buffer.from(
@@ -94,6 +98,17 @@ describe("mail signals for the mystery-shop matcher", () => {
     const { dsn } = (await parseMailboxMessage(raw)).signals;
     expect(dsn.contentType).toMatch(/^multipart\/report/);
     expect(dsn.text).toContain("<shop-1@crestahq.com>");
-    expect(dsn.text).toContain("Action: failed");
+    // Only the delivery-status MIME part, not the human-readable text.
+    expect(dsn.deliveryStatus).toBe("Final-Recipient: rfc822; info@acme.co.za\r\nAction: failed");
+  });
+  it("a delivery-status part is read even base64-encoded; a plain message has none", async () => {
+    const part = Buffer.from("Final-Recipient: rfc822; a@b.co\r\nAction: failed\r\n").toString("base64");
+    const raw = Buffer.from(
+      'From: x@y.z\r\nContent-Type: multipart/report; report-type="delivery-status";\r\n boundary="=_b"\r\n\r\n' +
+        `--=_b\r\nContent-Type: text/plain\r\n\r\nx\r\n--=_b\r\nContent-Type: message/delivery-status\r\nContent-Transfer-Encoding: base64\r\n\r\n${part}\r\n--=_b--\r\n`
+    );
+    expect((await parseMailboxMessage(raw)).signals.dsn.deliveryStatus).toBe("Final-Recipient: rfc822; a@b.co\r\nAction: failed");
+    const plain = Buffer.from("From: x@y.z\r\nContent-Type: text/plain\r\n\r\nAction: failed\r\n");
+    expect((await parseMailboxMessage(plain)).signals.dsn.deliveryStatus).toBe("");
   });
 });

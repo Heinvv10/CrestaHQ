@@ -19,9 +19,13 @@ import { canSettleResponded, inWindow, toMs } from "./model";
  * the public page leaves such a shop out (no claim either way). An email
  * sender is never "verified".
  *
- * A delivery-status notification (a bounce) is never a response or an
- * auto-reply, whoever sends it; one that names our Message-ID marks the shop
- * `bounced` (the enquiry never arrived).
+ * Anything that looks like a report (a bounce, a delay notice, a read
+ * receipt, a postmaster message) is never a response or an auto-reply. Only a
+ * STRICT hard bounce of this shop's own email marks it `bounced`: a
+ * delivery-status report whose delivery-status part says `Action: failed`
+ * for the target (or an Exchange NDR / X-Failed-Recipients naming it),
+ * naming our Message-ID, inside the window. Mail from the target carrying
+ * List-Id / List-Unsubscribe is automatic.
  */
 
 export interface AutoReplyHeaders {
@@ -29,14 +33,19 @@ export interface AutoReplyHeaders {
   xAutoreply: string | null;
   xAutorespond: string | null;
   precedence: string | null;
+  /** Mailing-list headers: newsletters and bulk mail, never a person. */
+  listId: string | null;
+  listUnsubscribe: string | null;
 }
 
 export interface DsnSignals {
   contentType: string | null;
   msExchangeNdr: string | null;
   failedRecipients: string | null;
-  /** The report and returned-headers parts' text (full parse only). */
+  /** The body and returned-headers parts' text, searched for our Message-ID (full parse only). */
   text: string;
+  /** The message/delivery-status MIME part only (full parse only). */
+  deliveryStatus: string;
 }
 
 /** What lib/comms/imap.ts reads from a message's headers for this matcher. */
@@ -81,7 +90,7 @@ export function senderMatches(from: string, target: string, domainTrusted: boole
 
 const DSN_SUBJECT = /\b(undeliverable|delivery status notification|mail delivery failed|returned mail|delivery has failed)\b/i;
 
-/** A bounce / non-delivery report, by its headers, sender or subject. */
+/** Looks like a report (bounce, delay, receipt, postmaster mail), by its headers, sender or subject. */
 export function isDeliveryReport(m: Pick<InboundEmail, "dsn" | "from" | "subject">): boolean {
   return (
     /^multipart\/report\b/i.test(m.dsn.contentType?.trim() ?? "") ||
@@ -101,6 +110,7 @@ export function isAutoReply(m: Pick<InboundEmail, "autoReply" | "subject">): boo
   if (auto && auto !== "no") return true;
   if (h.xAutoreply != null || h.xAutorespond != null) return true;
   if (/^(auto_reply|bulk|junk)$/i.test(h.precedence?.trim() ?? "")) return true;
+  if (h.listId != null || h.listUnsubscribe != null) return true;
   return AUTO_SUBJECT.test(m.subject);
 }
 
@@ -166,6 +176,28 @@ export function senderAuthenticated(authResults: string[], fromDomain: string): 
   return "unknown";
 }
 
+const lower = (v: string) => v.trim().toLowerCase();
+
+/** The delivery-status part reports a hard failure for `target` (a block without a Final-Recipient counts). */
+function failedFor(deliveryStatus: string, target: string): boolean {
+  return deliveryStatus.split(/\r?\n[ \t]*\r?\n/).some((block) => {
+    if (!/^action:[ \t]*failed[ \t]*$/im.test(block)) return false;
+    const rcpt = /^final-recipient:[ \t]*(.*)$/im.exec(block)?.[1];
+    return rcpt === undefined || lower(rcpt.replace(/^rfc822;/i, "")) === lower(target);
+  });
+}
+
+/** A strict hard bounce of mail to `target`. Delay notices, receipts and look-alikes are not. */
+export function bouncedFor(dsn: DsnSignals, target: string): boolean {
+  const ct = dsn.contentType ?? "";
+  const report = /^multipart\/report\b/i.test(ct.trim()) && /report-type\s*=\s*"?delivery-status\b/i.test(ct);
+  return (
+    (report && failedFor(dsn.deliveryStatus, target)) ||
+    lower(dsn.msExchangeNdr ?? "") === "true" ||
+    (dsn.failedRecipients ?? "").split(/[,;\s]+/).map(lower).includes(lower(target))
+  );
+}
+
 const msgId = (v: unknown) => (typeof v === "string" ? v.trim().replace(/^<|>$/g, "") : "");
 
 export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<string, EmailDecision> {
@@ -175,7 +207,11 @@ export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<s
     for (const s of shops) {
       const ref = msgId(s.providerRef);
       const named = !!ref && (thread.has(ref) || m.dsn.text.includes(ref));
-      if (named && (s.status === "sent" || s.status === "missed")) out.set(s.id, "bounced");
+      const sent = toMs(s.sentAt);
+      const timely = sent !== null && inWindow(sent, m.occurredAtMs);
+      if (named && timely && (s.status === "sent" || s.status === "missed") && bouncedFor(m.dsn, s.target)) {
+        out.set(s.id, "bounced");
+      }
     }
     return out;
   }

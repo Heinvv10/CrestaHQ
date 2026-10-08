@@ -14,7 +14,7 @@ const { releaseShop } = await import("./store");
 const SENT = Date.now() - 3 * 3600_000;
 const EMAIL = "info@acme.co.za";
 const PHONE = "+27821234567";
-const NO_HEADERS = { autoSubmitted: null, xAutoreply: null, xAutorespond: null, precedence: null };
+const NO_HEADERS = { autoSubmitted: null, xAutoreply: null, xAutorespond: null, precedence: null, listId: null, listUnsubscribe: null };
 
 function seedShop(id: string, extra: Record<string, unknown> = {}) {
   mem.seed(`mysteryShops/${id}`, {
@@ -27,7 +27,7 @@ function seedShop(id: string, extra: Record<string, unknown> = {}) {
 const shop = (id: string) => mem.read(`mysteryShops/${id}`)!;
 const email = (from: string, over: Record<string, unknown> = {}) => ({
   from, inReplyTo: null, references: [], autoReply: NO_HEADERS, authResults: [] as string[],
-  dsn: { contentType: null as string | null, msExchangeNdr: null, failedRecipients: null, text: "" }, subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000, ...over,
+  dsn: { contentType: null as string | null, msExchangeNdr: null, failedRecipients: null, text: "", deliveryStatus: "" }, subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000, ...over,
 });
 const callReport = (over: Record<string, unknown> = {}) => ({
   endedReason: "customer-ended-call", durationSec: 30, startedAtMs: SENT + 12_000, endedAtMs: SENT + 42_000,
@@ -92,7 +92,10 @@ describe("email", () => {
   it("a bounce naming our Message-ID marks the shop failed/bounced and keeps the cap slot", async () => {
     mem.seed("subAccounts/sa1/usage/2026-10", { mysteryShops: 3 });
     seedShop("s1", { usageMonth: "2026-10" });
-    const dsn = { contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: null, failedRecipients: null, text: "Message-ID: <s1@crestahq.com>" };
+    const dsn = {
+      contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: null, failedRecipients: null,
+      text: "Message-ID: <s1@crestahq.com>", deliveryStatus: "Final-Recipient: rfc822; info@acme.co.za\nAction: failed",
+    };
     await matchMysteryShopEmail("sa1", email("mailer-daemon@mx.google.com", { dsn, subject: "Delivery Status Notification (Failure)" }));
     expect(shop("s1")).toMatchObject({ status: "failed", failure: { code: "bounced" } });
     expect(mem.read("subAccounts/sa1/usage/2026-10")?.mysteryShops).toBe(3);
