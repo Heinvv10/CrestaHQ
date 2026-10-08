@@ -6,6 +6,8 @@ import { useParams } from "next/navigation";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { ReportSections } from "@/components/prospecting/report-view";
+import { MysteryShopSections } from "@/components/prospecting/mystery-shop-section";
+import type { MysteryShopSection } from "@/lib/prospecting/mystery-shop/section";
 import type { PublicReportSection } from "@/lib/prospecting/public-sections";
 import type { ProspectReportStatus } from "@/types/prospecting";
 
@@ -30,7 +32,7 @@ type State =
   | { kind: "loading" }
   | { kind: "not_found" }
   | { kind: "error"; message: string }
-  | { kind: "ready"; report: MemberReport };
+  | { kind: "ready"; report: MemberReport; mysteryShop: MysteryShopSection[] };
 
 export default function ProspectReportPage() {
   const { reportId } = useParams<{ reportId: string }>();
@@ -46,6 +48,7 @@ export default function ProspectReportPage() {
         const res = await fetch(`/api/sub-accounts/${subAccountId}/prospecting/reports/${encodeURIComponent(reportId)}`);
         const data = (await res.json().catch(() => ({}))) as {
           report?: MemberReport;
+          mysteryShop?: MysteryShopSection[];
           code?: string;
           error?: string;
         };
@@ -55,7 +58,7 @@ export default function ProspectReportPage() {
           setState({ kind: "error", message: "Prospecting is locked by your agency." });
         } else if (!res.ok || !data.report) {
           setState({ kind: "error", message: data.error ?? "Couldn't load the report." });
-        } else setState({ kind: "ready", report: data.report });
+        } else setState({ kind: "ready", report: data.report, mysteryShop: data.mysteryShop ?? [] });
       } catch {
         if (!cancelled) setState({ kind: "error", message: "Couldn't load the report." });
       }
@@ -123,6 +126,7 @@ export default function ProspectReportPage() {
         </button>
       </div>
       <ReportSections sections={report.sections} connectHref={saPath("/dashboard/settings")} showAll={showAll} />
+      <MysteryShopSections sections={state.mysteryShop} />
     </div>
   );
 }

@@ -19,6 +19,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { ContactMysteryShop } from "@/components/contacts/contact-mystery-shop";
 
 /**
  * Prospect reports for one contact, on the contact profile. Renders nothing
@@ -223,6 +224,8 @@ export function ContactProspectReports({ contactId }: { contactId: string }) {
           )}
         </div>
       ))}
+
+      <ContactMysteryShop contactId={contactId} />
 
       <AlertDialog open={revokeId !== null} onOpenChange={(open) => !open && setRevokeId(null)}>
         <AlertDialogContent>

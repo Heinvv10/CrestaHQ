@@ -12,6 +12,7 @@ export const FIXTURE_PUBLIC_REPORT: PublicReport = {
   agency: { name: "Example Growth Agency", logoUrl: null, appTheme: null, brandColor: "#0F766E" },
   cta: "/b/sa-example/intro-call",
   whatsappNumber: "+27000000000",
+  mysteryShop: [],
   sections: [
     {
       key: "ai_presence", status: "ok", score: 0, reason: null, reasonCode: null,

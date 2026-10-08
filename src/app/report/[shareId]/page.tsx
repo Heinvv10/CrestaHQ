@@ -2,6 +2,7 @@ import { cache, type CSSProperties } from "react";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ReportSections } from "@/components/prospecting/report-view";
+import { MysteryShopSections } from "@/components/prospecting/mystery-shop-section";
 import { DownloadPdf, ReportCta, ReportHero, RingGrid, TopFixes } from "@/components/prospecting/report-story";
 import { resolvePublicReport } from "@/lib/prospecting/public-report";
 import { heroText, reportStory } from "@/lib/prospecting/report-story";
@@ -114,6 +115,7 @@ export default async function SharedReportPage({
           <h2 className="mb-4 font-serif text-3xl">The rest of your check-up</h2>
           <ReportSections rows={story.rows} />
         </section>
+        <MysteryShopSections sections={report.mysteryShop} />
         <ReportCta
           line={story.ctaLine}
           agencyName={agencyName}
