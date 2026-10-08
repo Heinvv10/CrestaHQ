@@ -553,6 +553,9 @@ export async function createOutboundCall(input: {
    *  call metadata so the end-of-call handler can write the outcome back
    *  to the campaign recipient row. */
   campaignId?: string | null;
+  /** Mystery shop (Prospecting PR 5) — the LLM webhook swaps in its short
+   *  enquiry prompt and the end-of-call handler settles the shop. */
+  mysteryShopId?: string | null;
   firstMessage: string;
   /** Test call — the end-of-call pipeline short-circuits on this flag so
    *  a test leaves no Contact / Task / summary doc behind. */
@@ -568,6 +571,7 @@ export async function createOutboundCall(input: {
   const metadata: Record<string, string> = { direction: "outbound" };
   if (input.contactId) metadata.contactId = input.contactId;
   if (input.campaignId) metadata.campaignId = input.campaignId;
+  if (input.mysteryShopId) metadata.mysteryShopId = input.mysteryShopId;
   if (input.test) metadata.test = "1";
 
   const assistantOverrides: Record<string, unknown> = {

@@ -44,8 +44,10 @@ export async function placeContactCall(opts: {
   uid: string;
   voice: VoiceReady["voice"];
   customerNumber: string;
+  /** A mystery-shop call: its enquiry as the first message, its id in the call metadata, a length cap. */
+  mysteryShop?: { id: string; firstMessage: string; maxDurationSeconds: number };
 }): Promise<{ ok: true; callId: string } | { ok: false; error: string }> {
-  const { contact, contactId, voice, customerNumber } = opts;
+  const { contact, contactId, voice, customerNumber, mysteryShop } = opts;
   const db = getAdminDb();
   let callId: string;
   try {
@@ -54,7 +56,8 @@ export async function placeContactCall(opts: {
       phoneNumberId: voice.vapiPhoneNumberId,
       customerNumber,
       contactId,
-      firstMessage: voice.outboundFirstMessage,
+      firstMessage: mysteryShop?.firstMessage ?? voice.outboundFirstMessage,
+      ...(mysteryShop ? { mysteryShopId: mysteryShop.id, maxDurationSeconds: mysteryShop.maxDurationSeconds } : {}),
     });
     callId = result.callId;
   } catch (err) {

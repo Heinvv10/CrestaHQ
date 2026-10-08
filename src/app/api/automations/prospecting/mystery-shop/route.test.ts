@@ -1,0 +1,91 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * POST /api/automations/prospecting/mystery-shop — the 24 h timer. The QStash
+ * signature is verified for REAL (minted as QStash does, bound to this URL);
+ * Firestore is the in-memory store.
+ */
+
+vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+
+const KEY = "sig_test_current_key_for_mystery_shops";
+process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
+process.env.QSTASH_NEXT_SIGNING_KEY = "sig_test_next_key_for_mystery_shops";
+
+const { signQStashBody } = await import("../../../../../../e2e/lib/qstash");
+const { mem } = await import("@/test/gbp-sync-store");
+const { POST } = await import("./route");
+
+const ORIGINAL = { ...process.env };
+const URL_ = "http://127.0.0.1:3100/api/automations/prospecting/mystery-shop";
+const body = (shopId = "s1") => JSON.stringify({ shopId });
+const DAY = 24 * 3600_000;
+
+function call(b = body(), signature: string | null = signQStashBody(URL_, b)) {
+  const headers: Record<string, string> = signature ? { "upstash-signature": signature } : {};
+  return POST(new Request(URL_, { method: "POST", headers, body: b }));
+}
+const seed = (extra: Record<string, unknown> = {}) =>
+  mem.seed("mysteryShops/s1", {
+    subAccountId: "sa1", channel: "email", status: "sent", sentAt: new Date(Date.now() - DAY - 31 * 60_000),
+    respondedAt: null, ...extra,
+  });
+const status = () => mem.read("mysteryShops/s1")?.status;
+
+beforeEach(() => {
+  process.env.QSTASH_CURRENT_SIGNING_KEY = KEY;
+  process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
+  mem.clear();
+});
+afterEach(() => {
+  process.env = { ...ORIGINAL };
+});
+
+describe("the door", () => {
+  it("refuses an unsigned call, or one signed for another route, and changes nothing", async () => {
+    seed();
+    expect((await call(body(), null)).status).toBe(401);
+    expect((await call(body(), signQStashBody("http://127.0.0.1:3100/api/automations/prospecting/report", body()))).status).toBe(401);
+    expect(status()).toBe("sent");
+  });
+
+  it("answers 400 for a malformed body", async () => {
+    expect((await call(JSON.stringify({ shopId: "a/b" }))).status).toBe(400);
+    expect((await call("{nope")).status).toBe(400);
+  });
+});
+
+describe("the timer", () => {
+  it("turns a sent shop with no response into missed", async () => {
+    seed();
+    const res = await call();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, status: "missed" });
+    expect(status()).toBe("missed");
+  });
+
+  it("is idempotent: a second delivery is a 200 no-op", async () => {
+    seed();
+    await call();
+    const again = await call();
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ ok: true, status: "missed" });
+    expect(status()).toBe("missed");
+  });
+
+  it("leaves a responded shop alone", async () => {
+    seed({ status: "responded", respondedAt: new Date(), responseMs: 1000 });
+    expect(await (await call()).json()).toEqual({ ok: true, status: "responded" });
+    expect(mem.read("mysteryShops/s1")).toMatchObject({ status: "responded", responseMs: 1000 });
+  });
+
+  it("an early delivery (inside the window) does not settle the shop", async () => {
+    seed({ sentAt: new Date(Date.now() - DAY + 60_000) });
+    expect(await (await call()).json()).toEqual({ ok: true, status: "sent" });
+    expect(status()).toBe("sent");
+  });
+
+  it("a missing shop is a 200 no-op", async () => {
+    expect(await (await call(body("gone"))).json()).toEqual({ ok: true, status: null });
+  });
+});

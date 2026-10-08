@@ -342,6 +342,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Prospect report announce sweep (15-minute QStash schedule) — same auth:
   // the signature, verified inside the route and bound to its URL.
   /^\/api\/automations\/prospecting\/announce-sweep$/,
+  // Mystery-shop 24 h timer (Prospecting PR 5) — same auth: the signature,
+  // verified inside the route and bound to its URL.
+  /^\/api\/automations\/prospecting\/mystery-shop$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {

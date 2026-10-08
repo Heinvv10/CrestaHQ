@@ -297,6 +297,12 @@
         "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
       }
     },
+    "api/automations/prospecting/mystery-shop:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
     "api/automations/prospecting/report:POST": {
       "exclude": {
         "category": "internal",
@@ -638,6 +644,24 @@
       "tools": [
         "delete_product"
       ]
+    },
+    "api/sub-accounts/[id]/prospecting/mystery-shop:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Feeds that confirm dialog (allowed recipients, rendered enquiry); read only by the Reports card. Agent access is a separate decision with the send."
+      }
+    },
+    "api/sub-accounts/[id]/prospecting/mystery-shop:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "A mystery shop sends a real enquiry to a third-party business; every send is a person's act through a confirm dialog that names the exact recipient. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/prospecting/mystery-shop/settings:PUT": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The mystery-shop enquiry wording and job values sit with the per-send confirmation; sub-account admins set them on the Prospecting page."
+      }
     },
     "api/sub-accounts/[id]/quotes:POST": {
       "tools": [
