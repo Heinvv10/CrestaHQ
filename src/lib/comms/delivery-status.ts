@@ -27,7 +27,10 @@ export function deliveryStatusPart(source: string, contentType: string | null, d
   const boundary = /boundary\s*=\s*"?([^";\s]+)"?/i.exec(ct)?.[1];
   if (!boundary || !/^multipart\//i.test(ct) || depth > MAX_DEPTH) return "";
   const report = /^multipart\/report\b/i.test(ct) && /report-type\s*=\s*"?delivery-status\b/i.test(ct);
-  for (const part of source.split(`--${boundary}`).slice(1)) {
+  // Whole boundary lines only (boundary "b1" must not split "--b10"); the body may start with the first one.
+  const escaped = boundary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const line = new RegExp(String.raw`\r?\n--${escaped}(?:--)?[ \t]*(?=\r?\n|$)`);
+  for (const part of `\r\n${source}`.split(line).slice(1)) {
     const split = part.search(/\r?\n\r?\n/);
     if (split === -1) continue;
     const head = part.slice(0, split).replace(/\r?\n[ \t]+/g, " ");
