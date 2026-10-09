@@ -92,7 +92,7 @@ export async function GET(request: Request, ctx: { params: Promise<{ id: string 
   for (const d of snap.docs) {
     const data = d.data() ?? {};
     const settle = overdue(data, Date.now())
-      ? settleMissed(d.id).then((s) => s === "missed" || (s === "awaiting_sync" && data.awaitingSync !== true))
+      ? settleMissed(d.id).then((s) => s === "missed" || s === "failed" || (s === "awaiting_sync" && data.awaitingSync !== true))
       : data.status === "queued"
         ? markUncertain(d.id, null, { olderThanMs: STUCK_AFTER_MS })
         : null;

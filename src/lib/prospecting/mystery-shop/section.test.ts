@@ -18,7 +18,7 @@ const shop = (over: Partial<MemberShop> = {}): MemberShop => ({
   respondedAt: "2026-10-08T10:14:00.000Z", responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
   jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
   failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown", sendUncertain: false, awaitingSync: false, disputed: false, missedConfirmedAt: null,
-  deliveredAt: null, readAt: null,
+  deliveredAt: null, readAt: null, optOutAt: null,
   ...over,
 });
 

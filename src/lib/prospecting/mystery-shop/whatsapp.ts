@@ -11,6 +11,7 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 import { enquiryVars } from "./enquiry";
 import { SPEED_CHECK_TEMPLATE_NAME, missingTemplateReason, pickShopTemplate, templateProblem } from "./whatsapp-template";
 import type { ChannelState, SendResult } from "./send";
+import { recordProviderRef, stampSendStart } from "./store";
 
 /**
  * The WhatsApp mystery shop (PR 5b) over the existing template rail — never a
@@ -72,13 +73,15 @@ export async function whatsappEnquiryOf(
 }
 
 /**
- * Send the template to the confirmed target. The contact is sent with its
+ * Send the template to the confirmed target, timing the shop from just before
+ * Meta is asked and recording Meta's message id on it before anything else. The contact is sent with its
  * phone set to that target — the contact's own number in E.164, exactly what
  * the route checked — so the number checked is the number sent to.
  * `failed` = definitely not sent (refused before Meta, or Meta's 4xx);
  * `uncertain` = Meta may have it (an ambiguous answer, a 502, no message id).
  */
 export async function sendWhatsappShop(input: {
+  shopId: string;
   target: string;
   contact: Contact;
   contactId: string;
@@ -96,7 +99,18 @@ export async function sendWhatsappShop(input: {
   if (renderPreview(prepared.tpl.body, prepared.values) !== enquiry.text) {
     return { ok: false, kind: "refused", code: "enquiry_changed", reason: "The WhatsApp template changed — reopen the dialog." };
   }
+  // Timed from before Meta is asked; the message id on the shop the moment Meta gives it.
+  const started = await stampSendStart(input.shopId).catch((err) => {
+    console.error("[prospecting/mystery-shop] send start not recorded", input.shopId, err);
+    return null;
+  });
+  if (!started) return { ok: false, kind: "failed", reason: "The send could not be started." };
   const sent = await sendWhatsappTemplate({
+    onAccepted: (sid) =>
+      recordProviderRef(input.shopId, sid).then(
+        () => undefined,
+        (err) => console.error("[prospecting/mystery-shop] message id not recorded early", input.shopId, err),
+      ),
     subAccount: prepared.subAccount,
     tpl: prepared.tpl,
     values: prepared.values,

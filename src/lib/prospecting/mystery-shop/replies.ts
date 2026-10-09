@@ -95,7 +95,7 @@ export async function markBounced(shopId: string): Promise<boolean> {
 }
 
 /**
- * A sent (or missed) WhatsApp that Meta reported failed was never delivered:
+ * A sent (or missed, or queued with its id) WhatsApp that Meta reported failed was never delivered:
  * `failed`, code `undeliverable`, with Meta's error. It was sent, so the slot
  * is kept. Never public.
  */
@@ -104,7 +104,8 @@ export async function markUndeliverable(shopId: string, detail: string | null): 
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
     const status = (await tx.get(ref)).data()?.status;
-    if (status !== "sent" && status !== "missed") return false;
+    // Queued too: the id is recorded the moment Meta took it, before markSent.
+    if (status !== "queued" && status !== "sent" && status !== "missed") return false;
     const reason = `WhatsApp couldn't deliver the enquiry${detail ? ` (${detail})` : ""}.`;
     tx.update(ref, { status: "failed", failure: { code: "undeliverable", reason } });
     return true;

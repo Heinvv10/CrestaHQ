@@ -100,13 +100,53 @@ export async function reserveShop(input: ReserveInput): Promise<{ shopId: string
   });
 }
 
-/** queued → sent, with the provider's id. Returns the send time, or null if the shop was no longer queued. */
-export async function markSent(shopId: string, providerRef: string): Promise<Date | null> {
+/**
+ * WhatsApp: the send is starting. `sentAt` is stamped before the provider is
+ * asked (a WhatsApp Business greeting fires the instant the message lands, so
+ * timing from after our own post-send writes would put it before the send).
+ * The shop stays queued. The stamp, or null if it was no longer queued.
+ */
+export async function stampSendStart(shopId: string): Promise<Date | null> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
     if ((await tx.get(ref)).data()?.status !== "queued") return null;
     const sentAt = new Date();
+    tx.update(ref, { sentAt });
+    return sentAt;
+  });
+}
+
+/**
+ * WhatsApp: the provider's message id, the moment it is known — before the
+ * send's other writes — so a delivery receipt that arrives first finds the
+ * shop (inbound.ts `recordMysteryShopWhatsAppStatus`). Queued shops, first id only.
+ */
+export async function recordProviderRef(shopId: string, providerRef: string): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    if (shop?.status !== "queued" || shop.providerRef != null) return false;
+    tx.update(ref, { providerRef });
+    return true;
+  });
+}
+
+/** A send time stamped before the provider was asked (stampSendStart), else now. */
+const startedAt = (shop: FirebaseFirestore.DocumentData) => {
+  const ms = toMs(shop.sentAt);
+  return ms === null ? new Date() : new Date(ms);
+};
+
+/** queued → sent, with the provider's id. Returns the send time, or null if the shop was no longer queued. */
+export async function markSent(shopId: string, providerRef: string): Promise<Date | null> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    const shop = (await tx.get(ref)).data();
+    if (shop?.status !== "queued") return null;
+    const sentAt = startedAt(shop);
     tx.update(ref, { status: "sent", sentAt, providerRef });
     return sentAt;
   });
@@ -132,7 +172,7 @@ export async function markUncertain(
     if (shop?.status !== "queued") return false;
     const created = toMs(shop.createdAt);
     if (opts.olderThanMs !== undefined && (created === null || Date.now() - created <= opts.olderThanMs)) return false;
-    const sentAt = opts.olderThanMs !== undefined && created !== null ? new Date(created) : new Date();
+    const sentAt = toMs(shop.sentAt) === null && opts.olderThanMs !== undefined && created !== null ? new Date(created) : startedAt(shop);
     tx.update(ref, { status: "sent", sentAt, providerRef, sendUncertain: true });
     return true;
   });
@@ -188,7 +228,9 @@ export async function releaseShop(
  * the mailbox has no error. Until then it stays `sent` (`awaitingSync: true`)
  * and this returns "awaiting_sync". A miss after a reply that failed the
  * sender check is flagged `disputed` for the member who decides whether to
- * confirm it (only a confirmed miss is public).
+ * confirm it (only a confirmed miss is public). A WHATSAPP shop first reads
+ * its thread row: failed there → `failed` / undeliverable (returns "failed");
+ * delivered / read → stamped as the delivery evidence a confirmation needs.
  */
 export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<string | null> {
   const db = getAdminDb();
@@ -197,6 +239,24 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
     const shop = (await tx.get(ref)).data();
     if (!shop) return null;
     if (!canSettleMissed(shop, nowMs)) return shop.status as string;
+    // WhatsApp: the thread row the delivery-status writer keeps is evidence too.
+    // Failed = never delivered, so never a miss; delivered/read = proof for the
+    // member who confirms (stamped now when no receipt reached the shop itself).
+    if (shop.channel === "whatsapp" && typeof shop.providerRef === "string" && shop.providerRef) {
+      const row = (await tx.get(db.doc(`contacts/${shop.contactId}/whatsappMessages/${shop.providerRef}`))).data();
+      if (row?.status === "failed") {
+        const detail = typeof row.error === "string" && row.error ? ` (${row.error})` : "";
+        tx.update(ref, { status: "failed", failure: { code: "undeliverable", reason: `WhatsApp couldn't deliver the enquiry${detail}.` } });
+        return "failed";
+      }
+      const seen = new Date(nowMs);
+      const stamps = {
+        ...((row?.status === "delivered" || row?.status === "read") && shop.deliveredAt == null ? { deliveredAt: seen } : {}),
+        ...(row?.status === "read" && shop.readAt == null ? { readAt: seen } : {}),
+      };
+      tx.update(ref, { status: "missed", awaitingSync: false, ...stamps });
+      return "missed";
+    }
     if (shop.channel === "email") {
       const mailbox = (await tx.get(db.doc(`subAccounts/${shop.subAccountId}`))).data()?.mailboxConfig;
       const syncedAt = Date.parse(mailbox?.inboxCaughtUpAt ?? "");
@@ -226,12 +286,15 @@ export async function requeueTimer(shopId: string): Promise<number | null> {
 /**
  * A member's confirmation of a missed shop — the only way a miss reaches the
  * public report. Keeps the first confirmation. The confirmation time, or why not.
+ * A WhatsApp miss also needs a delivery receipt, no STOP from the business, and
+ * — after an automatic-looking reply — `reviewedAutoReply` (the member read the thread).
  */
 export async function confirmMissed(
   shopId: string,
   subAccountId: string,
   uid: string,
-): Promise<Date | "not_found" | "not_missed" | "send_uncertain"> {
+  opts: { reviewedAutoReply?: boolean } = {},
+): Promise<Date | "not_found" | "not_missed" | "send_uncertain" | "opted_out" | "not_delivered" | "review_auto_reply"> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
@@ -240,6 +303,14 @@ export async function confirmMissed(
     if (shop.status !== "missed") return "not_missed" as const;
     // An enquiry that may never have been sent cannot be published as a missed lead.
     if (shop.sendUncertain === true) return "send_uncertain" as const;
+    if (shop.channel === "whatsapp") {
+      // The business answered STOP: that is an answer, not a missed lead.
+      if (shop.optOutAt != null) return "opted_out" as const;
+      // Never publish a miss for a message WhatsApp never confirmed it delivered.
+      if (shop.deliveredAt == null) return "not_delivered" as const;
+      // An automatic-looking reply may have been a person: the member reads the thread first.
+      if (shop.autoReplyAt != null && opts.reviewedAutoReply !== true) return "review_auto_reply" as const;
+    }
     const at = toMs(shop.missedConfirmedAt);
     if (at !== null) return new Date(at);
     const now = new Date();

@@ -132,6 +132,28 @@ describe("ContactMysteryShop", () => {
     });
   });
 
+  it("a WhatsApp miss: no confirm without delivery or after STOP; after an automatic-looking reply only once the thread was read", async () => {
+    const wa = (id: string, extra: Record<string, unknown>) => ({
+      id, channel: "whatsapp", status: "missed", target: PHONE, sentAt: "2026-10-07T08:00:00.000Z", respondedAt: null,
+      responseMs: null, autoReplyAt: null, jobValueCents: 150_000, currency: "ZAR", enquiryText: "", failure: null,
+      createdAt: null, missedConfirmedAt: null, deliveredAt: "2026-10-07T08:00:02.000Z", optOutAt: null, ...extra,
+    });
+    payload.shops = [wa("w0", { deliveredAt: null }), wa("w1", { optOutAt: "2026-10-07T09:00:00.000Z" }), wa("w2", { autoReplyAt: "2026-10-07T08:00:05.000Z" })];
+    await mount();
+    expect(q("mystery-shop-confirm-missed-w0")).toBeNull();
+    expect(q("mystery-shop-miss-note-w0")?.textContent).toContain("WhatsApp never confirmed this message was delivered");
+    expect(q("mystery-shop-confirm-missed-w1")).toBeNull();
+    expect(q("mystery-shop-miss-note-w1")?.textContent).toContain("replied STOP");
+    expect(q("mystery-shop-miss-note-w2")?.textContent).toBe("A reply arrived that looked automatic — read the WhatsApp thread before confirming.");
+    const button = q("mystery-shop-confirm-missed-w2") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await click(q("mystery-shop-reviewed-w2"));
+    expect(button.disabled).toBe(false);
+    await click(button);
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/mystery-shop/w2/confirm-missed"))!;
+    expect(JSON.parse(call[1].body as string)).toEqual({ reviewedAutoReply: true });
+  });
+
   it("renders nothing for a contact that is not a prospect", async () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ code: "not_a_prospect", error: "x" }), { status: 403 }));
     await mount();

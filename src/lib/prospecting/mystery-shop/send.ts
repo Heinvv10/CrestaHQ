@@ -149,7 +149,9 @@ export async function sendMysteryShop(input: {
       : { ok: false, kind: "failed", reason: placed.error };
   }
   if (channel === "whatsapp") {
-    return sendWhatsappShop({ target, contact, contactId: input.contactId, uid: input.uid, enquiry: input.enquiry.whatsapp });
+    return sendWhatsappShop({
+      shopId: input.shopId, target, contact, contactId: input.contactId, uid: input.uid, enquiry: input.enquiry.whatsapp,
+    });
   }
   return { ok: false, kind: "refused", code: "channel_unavailable", reason: "Not available yet." };
 }

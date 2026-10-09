@@ -16,6 +16,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { MysteryShopConfirmMiss } from "./mystery-shop-confirm-miss";
 import { MYSTERY_SHOP_CHANNELS, type MysteryShopChannel } from "@/lib/prospecting/mystery-shop/model";
 import { shopStatusLine, type MemberShop } from "@/lib/prospecting/mystery-shop/section";
 
@@ -117,11 +118,14 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
   };
 
   /** A member's confirmation of a miss: only a confirmed miss appears on the public report. */
-  const confirmMissed = async (shopId: string) => {
+  const confirmMissed = async (shopId: string, reviewedAutoReply: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${base}/${encodeURIComponent(shopId)}/confirm-missed`, { method: "POST" });
+      const res = await fetch(`${base}/${encodeURIComponent(shopId)}/confirm-missed`, {
+        method: "POST",
+        ...(reviewedAutoReply ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewedAutoReply }) } : {}),
+      });
       if (!res.ok) throw new Error(await errorOf(res));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -201,18 +205,7 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
           <p className="text-xs" data-testid={`mystery-shop-status-${s.id}`}>
             {shopStatusLine(s, Date.now())}
           </p>
-          {s.status === "missed" && !s.missedConfirmedAt && !s.sendUncertain && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void confirmMissed(s.id)}
-              data-testid={`mystery-shop-confirm-missed-${s.id}`}
-            >
-              Confirm no reply
-            </Button>
-          )}
+          <MysteryShopConfirmMiss shop={s} busy={busy} onConfirm={(reviewed) => void confirmMissed(s.id, reviewed)} />
         </div>
       ))}
 

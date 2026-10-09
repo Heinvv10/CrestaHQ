@@ -143,6 +143,21 @@ describe("WhatsApp: the send", () => {
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ body: { shopId: shops()[0].id } }));
   });
 
+  it("the shop is timed from before Meta is asked, and carries Meta's id before the send's other writes", async () => {
+    const seen: Record<string, Record<string, unknown>> = {};
+    waSend.mockImplementation(async (a: { onAccepted: (sid: string) => Promise<void> }) => {
+      seen.before = { ...shops()[0] };
+      await a.onAccepted(WAMID);
+      seen.accepted = { ...shops()[0] };
+      return { ok: true, sid: WAMID };
+    });
+    expect((await post(wa())).status).toBe(202);
+    expect(seen.before).toMatchObject({ status: "queued", providerRef: null });
+    expect(seen.before.sentAt).toBeInstanceOf(Date);
+    expect(seen.accepted).toMatchObject({ status: "queued", providerRef: WAMID });
+    expect((shops()[0].sentAt as Date).getTime()).toBe((seen.before.sentAt as Date).getTime());
+  });
+
   it("no town: {{2}} reads 'your area' — never an empty parameter", async () => {
     seedContact("c1", { city: "  " });
     await readHashes();

@@ -164,12 +164,18 @@ export async function prepareWhatsappTemplateSend(
   return { ok: true, subAccount, tpl, values };
 }
 
-/** Send a prepared template, then write the thread, activity and inbox rows. */
+/**
+ * Send a prepared template, then write the thread, activity and inbox rows.
+ * `onAccepted` runs with the provider's message id the moment the provider
+ * took it, before those writes (a mystery shop records the id there so an
+ * early delivery receipt finds it); it must not throw.
+ */
 export async function sendWhatsappTemplate(input: PreparedTemplateSend & {
   contactId: string;
   contact: Contact;
   templateId: string;
   actorUid: string;
+  onAccepted?: (sid: string) => Promise<void>;
 }): Promise<{ ok: true; sid: string } | TemplateSendRefusal> {
   const { contactId, contact, templateId, subAccount, tpl, values, actorUid } = input;
   const db = getAdminDb();
@@ -224,6 +230,7 @@ export async function sendWhatsappTemplate(input: PreparedTemplateSend & {
       err instanceof Error ? err.message : "Failed to send WhatsApp template";
     return { ok: false, status: 502, error: message };
   }
+  await input.onAccepted?.(sid);
 
   const rendered = renderPreview(tpl.body, values);
   const preview = rendered.length > 80 ? `${rendered.slice(0, 80)}…` : rendered;

@@ -58,7 +58,7 @@ describe("sendWhatsappShop", () => {
     template("t1");
     const enquiry = await whatsappEnquiryOf("sa1", CONTACT, SUB);
     template("t1", { body: "Different words for {{1}} in {{2}}." });
-    expect(await sendWhatsappShop({ target: "+27821234567", contact: CONTACT, contactId: "c1", uid: "u1", enquiry })).toEqual({
+    expect(await sendWhatsappShop({ shopId: "s1", target: "+27821234567", contact: CONTACT, contactId: "c1", uid: "u1", enquiry })).toEqual({
       ok: false, kind: "refused", code: "enquiry_changed", reason: "The WhatsApp template changed — reopen the dialog.",
     });
     expect(waSend).not.toHaveBeenCalled();
@@ -67,11 +67,11 @@ describe("sendWhatsappShop", () => {
   it("refuses without an enquiry, and for an opted-out contact before anything else", async () => {
     template("t1");
     const enquiry = await whatsappEnquiryOf("sa1", CONTACT, SUB);
-    expect(await sendWhatsappShop({ target: "+27821234567", contact: CONTACT, contactId: "c1", uid: "u1", enquiry: null })).toMatchObject({
+    expect(await sendWhatsappShop({ shopId: "s1", target: "+27821234567", contact: CONTACT, contactId: "c1", uid: "u1", enquiry: null })).toMatchObject({
       kind: "refused", code: "channel_unavailable",
     });
     const optedOut = { ...CONTACT, whatsappOptedOut: true } as Contact;
-    expect(await sendWhatsappShop({ target: "+27821234567", contact: optedOut, contactId: "c1", uid: "u1", enquiry })).toMatchObject({
+    expect(await sendWhatsappShop({ shopId: "s1", target: "+27821234567", contact: optedOut, contactId: "c1", uid: "u1", enquiry })).toMatchObject({
       kind: "refused", code: "opted_out",
     });
     expect(waSend).not.toHaveBeenCalled();

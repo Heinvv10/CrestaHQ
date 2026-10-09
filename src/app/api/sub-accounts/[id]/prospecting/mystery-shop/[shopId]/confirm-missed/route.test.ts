@@ -9,11 +9,12 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 const { mem, claims } = await import("@/test/gbp-sync-store");
 const { POST } = await import("./route");
 
-const confirm = (shopId: string, uid = "admin1") =>
+const confirm = (shopId: string, uid = "admin1", body?: unknown) =>
   POST(
     new Request(`https://app.test/api/sub-accounts/sa1/prospecting/mystery-shop/${shopId}/confirm-missed`, {
       method: "POST",
       headers: { "x-user-uid": uid },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }),
     { params: Promise.resolve({ id: "sa1", shopId }) },
   );
@@ -57,6 +58,27 @@ describe("confirm-missed", () => {
       code: "send_uncertain", error: "This enquiry may not have been sent, so it can't be published as a missed lead.",
     });
     expect(shop("u1").missedConfirmedAt).toBeUndefined();
+  });
+
+  it("WhatsApp: 409 not_delivered without a receipt, opted_out after STOP, review_auto_reply until the thread was read", async () => {
+    const wa = (id: string, extra: Record<string, unknown>) =>
+      mem.seed(`mysteryShops/${id}`, { agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "whatsapp", status: "missed", ...extra });
+    const DELIVERED = { deliveredAt: new Date() };
+    wa("w0", {});
+    wa("w1", { ...DELIVERED, optOutAt: new Date() });
+    wa("w2", { ...DELIVERED, autoReplyAt: new Date() });
+    const expect409 = async (id: string, code: string, error: string, body?: unknown) => {
+      const res = await confirm(id, "admin1", body);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ code, error });
+      expect(shop(id).missedConfirmedAt).toBeUndefined();
+    };
+    await expect409("w0", "not_delivered", "WhatsApp never confirmed this message was delivered, so it can't be published as a missed lead.");
+    await expect409("w1", "opted_out", "The business replied STOP.");
+    const REVIEW = "A reply arrived that looked automatic — read the WhatsApp thread before confirming.";
+    await expect409("w2", "review_auto_reply", REVIEW);
+    await expect409("w2", "review_auto_reply", REVIEW, { reviewedAutoReply: "yes" });
+    expect((await confirm("w2", "admin1", { reviewedAutoReply: true })).status).toBe(200);
   });
 
   it("another sub-account's shop, a missing one and a bad id are the same 404", async () => {
