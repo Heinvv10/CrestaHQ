@@ -28,7 +28,6 @@ export interface RunnerJob {
 export const SUBMITTING = "submitting";
 export const GO = "go";
 
-const KINDS = new Set(["sent", "uncertain", "refused", "failed", "rejected"]);
 const SIGNALS = new Set(["navigation", "thank_you", "post_2xx"]);
 const ROLES: ReadonlySet<string> = new Set<FieldRole>(["name", "first", "last", "email", "phone", "company", "subject", "message", "service"]);
 const CODE = /^[a-z_]{1,40}$/;
@@ -70,7 +69,7 @@ export function checkResult(raw: unknown, submitted: boolean): FormResult {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return maybeSent("no result");
   const r = raw as Record<string, unknown>;
   const trace = checkTrace(r.trace);
-  if (typeof r.kind !== "string" || !KINDS.has(r.kind) || !trace) return maybeSent("malformed result");
+  if (!trace) return maybeSent("malformed result");
   const reason = typeof r.reason === "string" ? r.reason.slice(0, 500) : "";
   if (r.kind === "sent") return submitted ? { kind: "sent", trace } : maybeSent("sent without a submit", trace);
   if (typeof r.code !== "string" || !CODE.test(r.code)) return maybeSent("malformed code", trace);
@@ -82,6 +81,7 @@ export function checkResult(raw: unknown, submitted: boolean): FormResult {
   if (r.kind === "rejected") {
     return submitted && r.code === "form_rejected" ? { kind: "rejected", code: "form_rejected", reason, trace } : maybeSent("rejected without a submit", trace);
   }
+  // "uncertain" — and any kind it doesn't know, which can only be a maybe.
   const code = r.code === "timeout" || r.code === "captcha_after_submit" ? r.code : "no_signal";
   return { kind: "uncertain", code, reason, trace };
 }

@@ -17,6 +17,7 @@ const JOB: RunnerJob = {
   identity: { business: "Cresta HQ", email: "info@crestahq.com", phone: null, subject: "s", message: "m", service: "plumber" },
 };
 const TRACE = { finalUrl: "https://www.acme.co.za/thanks", signal: "navigation", mappedFields: ["name", "message"] };
+const REFUSED = { type: "result", result: { kind: "refused", code: "captcha", reason: "x", trace: { ...TRACE, signal: null } } };
 
 class FakeChild extends EventEmitter implements ChildLike {
   stdin = new PassThrough();
@@ -136,10 +137,11 @@ describe("an untrusted answer", () => {
 
   it.each([
     ["no result at all", [], false],
-    ["a garbled line", ["{not json"], false],
-    ["an unexpected message type", [{ type: "hello" }], false],
-    ["a result with an unknown kind", [{ type: "result", result: { kind: "won", trace: TRACE } }], true],
-    ["a result with a bad trace", [{ type: "result", result: { kind: "sent", trace: { mappedFields: ["password"] } } }], true],
+    ["a garbled line, even beside a valid refusal", ["{not json", REFUSED], false],
+    ["an unexpected message type, even beside a valid refusal", [{ type: "hello" }, REFUSED], false],
+    ["a result with an unknown kind", [{ type: "result", result: { kind: "won", code: "x", reason: "x", trace: TRACE } }], true],
+    ["a result with an unknown field role", [{ type: "result", result: { kind: "sent", trace: { ...TRACE, mappedFields: ["password"] } } }], true],
+    ["a result with no trace", [{ type: "result", result: { kind: "sent" } }], true],
     ["sent without a submit", [{ type: "result", result: { kind: "sent", trace: TRACE } }], false],
     ["a refusal AFTER the submit", [{ type: "result", result: { kind: "refused", code: "captcha", reason: "x", trace: TRACE } }], true],
     ["a code that is not a code", [{ type: "result", result: { kind: "failed", code: "DROP TABLE", reason: "x", trace: TRACE } }], false],
