@@ -14,6 +14,7 @@ describe("isWhatsAppAutoReply — WhatsApp Business away / greeting messages (Me
     "We're currently closed.",
     "I'm away from the office.",
     "We are currently away.",
+    "Away from the office until Monday.",
     "Outside of our business hours.",
     "Message received outside office hours",
     "Thanks for reaching out!",
@@ -48,6 +49,7 @@ describe("isWhatsAppAutoReply — WhatsApp Business away / greeting messages (Me
     "Thank you for your message! Yes we do plumbing in Gqeberha, today 2pm?",
     "Thanks! We'll get back to you within the hour about the plumbing job in Gqeberha, what's the address?",
     `Thank you for contacting us. ${"We do geysers, leaks and blocked drains across the metro and can quote today. ".repeat(4)}`,
+    "Thank you for contacting us! We'll get back to you. ".repeat(6),
   ])("a person (no phrase, or the phrase is not most of a short message): %j", (text) => {
     expect(isWhatsAppAutoReply(text, LATER)).toBe(false);
   });

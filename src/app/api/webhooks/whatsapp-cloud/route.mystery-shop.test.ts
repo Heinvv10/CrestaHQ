@@ -94,6 +94,11 @@ describe("whatsapp-cloud → mystery shop", () => {
     expect((mem.read(SHOP)?.optOutAt as Date).getTime()).toBe((SENT_S + 120) * 1000);
   });
 
+  it("a caption-less photo from the target number is a reply (Meta's type reaches the matcher)", async () => {
+    await post(value("pn_1", { messages: [{ from: "27821234567", id: "wamid.P", timestamp: String(SENT_S + 300), type: "image", image: { id: "m1", mime_type: "image/jpeg" } }] }));
+    expect(mem.read(SHOP)).toMatchObject({ status: "responded", responseMs: 300_000 });
+  });
+
   it("a reaction from the target number is not a reply", async () => {
     await post(value("pn_1", { messages: [{ from: "27821234567", id: "wamid.R", timestamp: String(SENT_S + 120), type: "reaction", reaction: { emoji: "👍" } }] }));
     expect(mem.read(SHOP)).toMatchObject({ status: "sent", autoReplyAt: null });

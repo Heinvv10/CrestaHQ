@@ -43,9 +43,11 @@ describe("the send's own record", () => {
 
   it("an uncertain send keeps the pre-stamped sentAt too", async () => {
     seed("q1", { status: "queued", sentAt: null, providerRef: null });
-    const started = await stampSendStart("q1");
+    expect(await stampSendStart("q1")).toBeInstanceOf(Date);
+    const started = new Date(Date.now() - 5_000);
+    await mem.db.doc("mysteryShops/q1").update({ sentAt: started });
     await markUncertain("q1", null);
-    expect((shop("q1").sentAt as Date).getTime()).toBe(started!.getTime());
+    expect((shop("q1").sentAt as Date).getTime()).toBe(started.getTime());
   });
 
   it("stamps only a queued shop, and records only the first id", async () => {
