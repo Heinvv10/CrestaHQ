@@ -3,16 +3,22 @@ import { connect as netConnect } from "node:net";
 
 /**
  * The form engine's network canary, run inside the container before
- * Chromium starts (runner-cli.ts): the host behind the container's default
- * gateway must NOT answer on ports a firewalled host never exposes to it. Any
- * answer means the host firewall (scripts/form-engine-firewall.sh) is not in
- * place, so the job is refused — nothing attempted — and the CRM marks the
- * channel unavailable until a later canary passes. Fails closed when it
- * cannot tell.
+ * Chromium starts (runner-cli.ts). With the host firewall
+ * (scripts/form-engine-firewall.sh) in place every packet from the container
+ * to the host is DROPped, so each probe — the container's default gateway and
+ * the default docker bridge's, on ports a host never exposes to it — must
+ * TIME OUT (or find no route). A connection, a refusal (the host answered:
+ * there is no firewall), no default gateway or any error it doesn't know
+ * means isolation cannot be shown: the job is refused, nothing attempted, and
+ * the CRM marks the channel unavailable until a later canary passes.
  */
 
 export const CANARY_PORTS = [22, 5432, 6379];
+/** The default docker bridge's gateway: the host on docker0. The firewall drops all RFC1918, this too. */
+export const DOCKER_BRIDGE_GATEWAY = "172.17.0.1";
 const CONNECT_MS = 1_500;
+
+export type Probe = "connected" | "refused" | "timeout" | "unreachable" | "error";
 
 /** The default route's gateway from /proc/net/route (little-endian hex), or null with no default route. */
 export async function defaultGateway(read: () => Promise<string> = () => readFile("/proc/net/route", "utf8")): Promise<string | null> {
@@ -25,34 +31,41 @@ export async function defaultGateway(read: () => Promise<string> = () => readFil
   return null;
 }
 
-/** Did a TCP connection open within CONNECT_MS? */
-export function tcpConnects(host: string, port: number): Promise<boolean> {
+/** One TCP probe, within CONNECT_MS. */
+export function tcpProbe(host: string, port: number): Promise<Probe> {
   return new Promise((resolve) => {
     const socket = netConnect({ host, port, timeout: CONNECT_MS });
-    const done = (ok: boolean) => {
+    const done = (p: Probe) => {
       socket.destroy();
-      resolve(ok);
+      resolve(p);
     };
-    socket.once("connect", () => done(true));
-    socket.once("timeout", () => done(false));
-    socket.once("error", () => done(false));
+    socket.once("connect", () => done("connected"));
+    socket.once("timeout", () => done("timeout"));
+    socket.once("error", (err: NodeJS.ErrnoException) =>
+      done(err.code === "ECONNREFUSED" ? "refused" : err.code === "EHOSTUNREACH" || err.code === "ENETUNREACH" ? "unreachable" : "error"),
+    );
   });
 }
 
+const notVerified = (why: string) => ({ ok: false as const, reason: `The form engine could not verify its isolation (${why}).` });
+
 export async function isolationCheck(
-  deps: { gateway?: () => Promise<string | null>; connect?: (host: string, port: number) => Promise<boolean> } = {},
+  deps: { gateway?: () => Promise<string | null>; connect?: (host: string, port: number) => Promise<Probe> } = {},
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let gateway: string | null;
   try {
     gateway = await (deps.gateway ?? (() => defaultGateway()))();
   } catch (err) {
-    return { ok: false, reason: `The form engine could not check its isolation (${err instanceof Error ? err.message : "no route table"}).` };
+    return notVerified(err instanceof Error ? err.message : "no route table");
   }
-  if (gateway === null) return { ok: true };
-  const connect = deps.connect ?? tcpConnects;
-  for (const port of CANARY_PORTS) {
-    if (await connect(gateway, port)) {
-      return { ok: false, reason: `The form engine's container can reach this server (${gateway}:${port}): the host firewall is not in place.` };
+  if (gateway === null) return notVerified("no default gateway");
+  const connect = deps.connect ?? tcpProbe;
+  for (const host of [...new Set([gateway, DOCKER_BRIDGE_GATEWAY])]) {
+    for (const port of CANARY_PORTS) {
+      const probe = await connect(host, port);
+      if (probe === "timeout" || probe === "unreachable") continue;
+      if (probe === "error") return notVerified(`${host}:${port} gave an unexpected error`);
+      return { ok: false, reason: `The form engine's container can reach this server (${host}:${port}): the host firewall is not in place.` };
     }
   }
   return { ok: true };
