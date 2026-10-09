@@ -94,6 +94,17 @@ describe("a reply to another of OUR emails (live 2026-10-09)", () => {
     expect(decide(mail("owner@gmail.com", { inReplyTo: OTHER }), [form], ["crestahq.com"])).toEqual({ f1: "none" });
     expect(decide(mail("sales@acme.co.za", { references: [OTHER] }), [form], ["crestahq.com"])).toEqual({ f1: "none" });
     expect(decide(mail("owner@gmail.com"), [form], ["crestahq.com"])).toEqual({ f1: "responded" });
+    // Nothing was emailed for a form, so a missing ref is no uncertain send: the guard still holds.
+    expect(decide(mail("owner@gmail.com", { inReplyTo: OTHER }), [{ ...form, providerRef: null }], ["crestahq.com"])).toEqual({ f1: "none" });
+  });
+
+  it("an email shop whose send ended uncertain (no providerRef) is still decided by the sender", () => {
+    const uncertain = [shop("s1", T, { providerRef: null })];
+    expect(decide(mail(T, { inReplyTo: OTHER, references: [OTHER] }), uncertain, ["crestahq.com"])).toEqual({ s1: "responded" });
+  });
+
+  it("another sender naming both another of our ids and the shop's own still settles nothing (sender first)", () => {
+    expect(decide(mail("attacker@evil.example", { inReplyTo: OTHER, references: [OTHER, REF] }), s(), ["crestahq.com"])).toEqual({ s1: "none" });
   });
 
   it("an auto-reply to another of our emails records nothing (not an auto_reply)", () => {

@@ -14,8 +14,9 @@ import { LATE_REPLY_HORIZON_MS, canSettleResponded, inWindow, toMs } from "./mod
  * it closes nothing. One exception: a thread naming a Message-ID of OURS (its
  * domain is one of the sub-account's own addresses' or an email shop's
  * providerRef's) but not this shop's providerRef answers another of our
- * emails, and is no response (nor auto-reply) to this shop. The reply must
- * arrive inside [sentAt, sentAt + 24 h].
+ * emails, and is no response (nor auto-reply) to this shop — unless it is an
+ * email shop whose send ended uncertain (no providerRef), which the sender
+ * still decides. The reply must arrive inside [sentAt, sentAt + 24 h].
  * An automatic reply (headers, or an out-of-office subject) is recorded once
  * as `auto_reply` and the shop keeps waiting for a person.
  *
@@ -257,7 +258,9 @@ export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[], ownIdD
   const eligible = shops.filter((s) => {
     if (!senderInTargetSet(m.from, s)) return false;
     // A reply to another of our emails (our id in the thread, but not this shop's) is no answer to this shop.
-    if (repliesToOurs && !thread.has(msgId(s.providerRef))) return false;
+    // An email shop whose send ended uncertain has no id to compare: the sender decides, as before.
+    const ref = msgId(s.providerRef);
+    if (repliesToOurs && (ref || s.senders) && !thread.has(ref)) return false;
     if (!auto) return canSettleResponded(s, m.occurredAtMs);
     const sent = toMs(s.sentAt);
     return s.status === "sent" && s.autoReplyAt == null && sent !== null && inWindow(sent, m.occurredAtMs);
