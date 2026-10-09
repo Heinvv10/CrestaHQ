@@ -54,7 +54,8 @@ export async function GET(
   ctx: { params: Promise<{ token: string }> },
 ) {
   const { token } = await ctx.params;
-  const reference = new URL(request.url).searchParams.get("reference");
+  const params = new URL(request.url).searchParams;
+  const reference = params.get("reference");
   const returning = reference !== null;
   const loaded = await loadPayableLink(token, { reference });
   if (!loaded.ok) return deadLink(loaded.error, loaded.status);
@@ -74,17 +75,23 @@ export async function GET(
     // Paystack redirects the payer before its webhook lands, so re-check
     // until the webhook has recorded this reference (then the branch above
     // renders "Payment received"), up to CONFIRM_RECHECKS reloads.
-    const params = new URL(request.url).searchParams;
-    const recheck = Number(params.get("recheck")) || 0;
+    // Anything but a positive finite count restarts at 0, so a crafted
+    // negative or infinite value cannot lift the cap.
+    const n = Number(params.get("recheck"));
+    const recheck = Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+    const exhausted = recheck >= CONFIRM_RECHECKS;
     params.set("recheck", String(recheck + 1));
-    const refresh =
-      recheck < CONFIRM_RECHECKS
-        ? `<meta http-equiv="refresh" content="3;url=?${esc(params.toString())}">`
-        : "";
+    const refresh = exhausted
+      ? ""
+      : `<meta http-equiv="refresh" content="3;url=?${esc(params.toString())}">`;
     return page(
       "Confirming payment",
       `<h1 style="font-size:20px;margin:0 0 8px;">Confirming your payment</h1>
-<p style="color:#52525b;font-size:14px;line-height:1.6;">Paystack is confirming your payment of ${esc(amount)} for ${esc(link.description)}. You can close this page — the sender is notified once it's confirmed.</p>`,
+<p style="color:#52525b;font-size:14px;line-height:1.6;">Paystack is confirming your payment of ${esc(amount)} for ${esc(link.description)}. You can close this page — the sender is notified once it's confirmed.</p>${
+        exhausted
+          ? `<p style="color:#52525b;font-size:14px;line-height:1.6;">This is taking longer than usual. If you were charged and don't hear back, contact the sender.</p>`
+          : ""
+      }`,
       200,
       refresh,
     );
