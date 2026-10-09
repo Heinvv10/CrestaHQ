@@ -277,7 +277,6 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
       }
       const seen = new Date(nowMs);
       const evidence = shop.deliveredAt != null || shop.readAt != null;
-      const sentMs = toMs(shop.sentAt)!;
       const replied = await inboundReply;
       tx.update(ref, {
         status: "missed",
