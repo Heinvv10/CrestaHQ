@@ -135,6 +135,7 @@ Deploys: after 17:00 SAST, Hein's approval per deploy. `firebase deploy --only f
 - A Cloud `failed` receipt for our message id makes the shop `failed` / `undeliverable` (slot kept, never public); `delivered` / `read` are stamped for the card.
 - Bridge and Twilio inbound are not matched: #1000 is Cloud. Cloud template sends are not metered (no template send on that rail is).
 - Review round 1: a reply within 60 s of the send, or a short message that is mostly greeting/away phrasing, is automatic; reactions and system notices don't count. Our WhatsApp AI never answers a number (or contact) with a WhatsApp shop inside the late-reply horizon (one guard in `maybeRespondWithAi`, all rails), and the send pauses the bot until then. A WhatsApp miss can be confirmed only with a delivery receipt, never after a STOP, and after an automatic-looking reply only once the member says they read the thread. One open WhatsApp shop per number.
+- Review round 2: the first minute runs from delivery (a greeting fires on delivery; before any receipt a reply is automatic); replies are matched even after Prospecting is switched off; a miss whose thread holds an inbound message from the target since the send needs the member to read it before confirming; a read receipt is delivery evidence; a STOP withdraws a confirmation.
 
 ## What proves it worked
 
