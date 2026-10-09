@@ -14,6 +14,8 @@ const { recordAuthFailedReply } = await import("./replies");
 
 const SENT = Date.now() - 3 * 3600_000;
 const EMAIL = "info@acme.co.za";
+/** The sub-account's own mailbox addresses (mailboxConnection.ownAddresses). */
+const OWN = ["hello@agency.co.za"];
 const PHONE = "+27821234567";
 const NO_HEADERS = { autoSubmitted: null, xAutoreply: null, xAutorespond: null, precedence: null, listId: null, listUnsubscribe: null };
 
@@ -56,26 +58,26 @@ describe("form shops", () => {
   it("an email from the form's domain or the contact's own address settles it", async () => {
     seedForm("f1");
     seedForm("f2", { contactId: "c2", matchDomains: ["other.co.za"], matchAddresses: [] });
-    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"), OWN);
     expect(shop("f1")).toMatchObject({ status: "responded", responseMs: 2 * 3600_000, responseVia: "email", senderAuth: "unknown" });
     expect(shop("f2").status).toBe("sent");
     seedForm("f3");
-    await matchMysteryShopEmail("sa1", email("Owner@Gmail.com"));
+    await matchMysteryShopEmail("sa1", email("Owner@Gmail.com"), OWN);
     expect(shop("f3").status).toBe("responded");
   });
 
   it("an email from anyone else, or one failing the sender check, does not", async () => {
     seedForm("f1");
-    await matchMysteryShopEmail("sa1", email("john@gmail.com"));
+    await matchMysteryShopEmail("sa1", email("john@gmail.com"), OWN);
     expect(shop("f1").status).toBe("sent");
-    await matchMysteryShopEmail("sa1", email("john@acme.co.za", { authResults: ["mx.example; dmarc=fail header.from=acme.co.za"] }));
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za", { authResults: ["mx.example; dmarc=fail header.from=acme.co.za"] }), OWN);
     expect(shop("f1")).toMatchObject({ status: "sent", authFailedReplyAt: expect.any(Date) });
   });
 
   it("an email shop and a form shop to the same business both settle on one reply", async () => {
     seedShop("s1");
     seedForm("f1");
-    await matchMysteryShopEmail("sa1", email(EMAIL));
+    await matchMysteryShopEmail("sa1", email(EMAIL), OWN);
     expect([shop("s1").status, shop("f1").status]).toEqual(["responded", "responded"]);
   });
 
@@ -89,7 +91,7 @@ describe("form shops", () => {
 
   it("another sub-account's form shop is never touched", async () => {
     seedForm("f1", { subAccountId: "sa2" });
-    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"), OWN);
     await matchInboundCallback("sa1", PHONE, callReport());
     expect(shop("f1").status).toBe("sent");
   });
@@ -98,47 +100,56 @@ describe("form shops", () => {
 describe("email", () => {
   it("a reply from the target settles the shop with the elapsed time; a second reply changes nothing", async () => {
     seedShop("s1");
-    await matchMysteryShopEmail("sa1", email(EMAIL));
+    await matchMysteryShopEmail("sa1", email(EMAIL), OWN);
     expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 2 * 3600_000, responseVia: "email", senderAuth: "unknown" });
-    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: SENT + 3 * 3600_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: SENT + 3 * 3600_000 }), OWN);
     expect(shop("s1").responseMs).toBe(2 * 3600_000);
   });
 
   it("only the mailbox's own sub-account's shops are considered", async () => {
     seedShop("s1", { subAccountId: "sa2" });
-    await matchMysteryShopEmail("sa1", email(EMAIL));
+    await matchMysteryShopEmail("sa1", email(EMAIL), OWN);
     expect(shop("s1").status).toBe("sent");
   });
 
   it("an auto-reply is recorded once and the shop keeps waiting", async () => {
     seedShop("s1");
-    await matchMysteryShopEmail("sa1", email(EMAIL, { autoReply: { ...NO_HEADERS, autoSubmitted: "auto-replied" }, occurredAtMs: SENT + 60_000 }));
-    await matchMysteryShopEmail("sa1", email(EMAIL, { subject: "Out of office", occurredAtMs: SENT + 120_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { autoReply: { ...NO_HEADERS, autoSubmitted: "auto-replied" }, occurredAtMs: SENT + 60_000 }), OWN);
+    await matchMysteryShopEmail("sa1", email(EMAIL, { subject: "Out of office", occurredAtMs: SENT + 120_000 }), OWN);
     expect(shop("s1")).toMatchObject({ status: "sent", respondedAt: null });
     expect((shop("s1").autoReplyAt as Date).getTime()).toBe(SENT + 60_000);
   });
 
+  it("a reply from the target to another email of ours (by the mailbox's own domain) settles nothing", async () => {
+    seedShop("s1");
+    seedForm("f1");
+    await matchMysteryShopEmail("sa1", email(EMAIL, { subject: "RE: Quick note", inReplyTo: "<1791.9556@Agency.co.za>" }), OWN);
+    expect([shop("s1").status, shop("f1").status]).toEqual(["sent", "sent"]);
+    await matchMysteryShopEmail("sa1", email(EMAIL, { inReplyTo: "<1791.9556@agency.co.za>", references: ["<s1@crestahq.com>"] }), OWN);
+    expect([shop("s1").status, shop("f1").status]).toEqual(["responded", "sent"]);
+  });
+
   it("a forged In-Reply-To from another sender closes nothing", async () => {
     seedShop("s1");
-    await matchMysteryShopEmail("sa1", email("x@evil.example", { inReplyTo: "<s1@crestahq.com>" }));
+    await matchMysteryShopEmail("sa1", email("x@evil.example", { inReplyTo: "<s1@crestahq.com>" }), OWN);
     expect(shop("s1").status).toBe("sent");
   });
 
   it("an email reply is never stored verified, even with a (possibly injected) dmarc=pass on top", async () => {
     seedShop("s1");
-    await matchMysteryShopEmail("sa1", email(EMAIL, { authResults: ["mx.crestahq.com; dmarc=pass header.from=acme.co.za"] }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { authResults: ["mx.crestahq.com; dmarc=pass header.from=acme.co.za"] }), OWN);
     expect(shop("s1")).toMatchObject({ status: "responded", responseVia: "email", senderAuth: "unknown" });
   });
 
   it("a reply that fails DMARC only records authFailedReplyAt (first one, in the window); the shop keeps waiting", async () => {
     seedShop("s1");
     const spoof = { authResults: ["mx.crestahq.com; spf=fail smtp.mailfrom=acme.co.za; dmarc=fail header.from=acme.co.za"] };
-    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, occurredAtMs: SENT + 60_000 }));
-    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, occurredAtMs: SENT + 120_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, occurredAtMs: SENT + 60_000 }), OWN);
+    await matchMysteryShopEmail("sa1", email(EMAIL, { ...spoof, occurredAtMs: SENT + 120_000 }), OWN);
     expect(shop("s1")).toMatchObject({ status: "sent", respondedAt: null });
     expect((shop("s1").authFailedReplyAt as Date).getTime()).toBe(SENT + 60_000);
     // A genuine (non-failing) reply afterwards still settles it.
-    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: SENT + 3600_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: SENT + 3600_000 }), OWN);
     expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 3600_000, senderAuth: "unknown" });
   });
 
@@ -156,7 +167,7 @@ describe("email", () => {
   it("a late-synced failing reply on an already-missed shop records it, disputes the miss and withdraws a confirmation", async () => {
     seedShop("s1", { status: "missed", missedConfirmedAt: new Date(), missedConfirmedByUid: "u1" });
     const spoof = { authResults: ["mx.crestahq.com; dmarc=fail header.from=acme.co.za"], occurredAtMs: SENT + 60_000 };
-    await matchMysteryShopEmail("sa1", email(EMAIL, spoof));
+    await matchMysteryShopEmail("sa1", email(EMAIL, spoof), OWN);
     expect(shop("s1")).toMatchObject({ status: "missed", disputed: true, missedConfirmedAt: null, missedConfirmedByUid: null });
     expect((shop("s1").authFailedReplyAt as Date).getTime()).toBe(SENT + 60_000);
   });
@@ -164,7 +175,7 @@ describe("email", () => {
   it("a failing reply outside the window records nothing", async () => {
     seedShop("s1");
     const spoof = { authResults: ["mx.crestahq.com; dmarc=fail header.from=acme.co.za"], occurredAtMs: SENT - 1 };
-    await matchMysteryShopEmail("sa1", email(EMAIL, spoof));
+    await matchMysteryShopEmail("sa1", email(EMAIL, spoof), OWN);
     expect(shop("s1").authFailedReplyAt).toBeUndefined();
   });
 
@@ -172,7 +183,7 @@ describe("email", () => {
     seedShop("s1", {
       status: "missed", sentAt: new Date(Date.now() - 30 * 3600_000), missedConfirmedAt: new Date(), missedConfirmedByUid: "u1", disputed: true,
     });
-    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: Date.now() - 20 * 3600_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: Date.now() - 20 * 3600_000 }), OWN);
     expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 10 * 3600_000, missedConfirmedAt: null, missedConfirmedByUid: null, disputed: false });
   });
 
@@ -183,7 +194,7 @@ describe("email", () => {
       contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: null, failedRecipients: null,
       text: "Message-ID: <s1@crestahq.com>", deliveryStatus: "Final-Recipient: rfc822; info@acme.co.za\nAction: failed",
     };
-    await matchMysteryShopEmail("sa1", email("mailer-daemon@mx.google.com", { dsn, subject: "Delivery Status Notification (Failure)" }));
+    await matchMysteryShopEmail("sa1", email("mailer-daemon@mx.google.com", { dsn, subject: "Delivery Status Notification (Failure)" }), OWN);
     expect(shop("s1")).toMatchObject({ status: "failed", failure: { code: "bounced" } });
     expect(mem.read("subAccounts/sa1/usage/2026-10")?.mysteryShops).toBe(3);
   });
@@ -194,36 +205,36 @@ describe("email", () => {
       contentType: "multipart/report; report-type=delivery-status", msExchangeNdr: null, failedRecipients: null,
       text: "Message-ID: <s1@crestahq.com>", deliveryStatus: "Final-Recipient: rfc822; info@acme.co.za\nAction: failed",
     };
-    await matchMysteryShopEmail("sa1", email("mailer-daemon@mx.google.com", { dsn }));
+    await matchMysteryShopEmail("sa1", email("mailer-daemon@mx.google.com", { dsn }), OWN);
     expect(shop("s1")).toMatchObject({ status: "failed", failure: { code: "bounced" } });
   });
 
   it("a colleague's reply counts only when the target domain was trusted at send", async () => {
     seedShop("s1", { targetDomainTrusted: false });
-    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"), OWN);
     expect(shop("s1").status).toBe("sent");
     seedShop("s2");
-    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"), OWN);
     expect(shop("s2").status).toBe("responded");
   });
 
   it("a missed shop inside the re-queue horizon (window + grace + 48 h) is still upgraded by a late in-window reply", async () => {
     const sentAt = Date.now() - (72 * 3600_000 + 15 * 60_000); // past the old 72 h cut-off, inside 72.5 h
     seedShop("s1", { status: "missed", sentAt: new Date(sentAt) });
-    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: sentAt + 3600_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: sentAt + 3600_000 }), OWN);
     expect(shop("s1").status).toBe("responded");
   });
 
   it("a missed shop past the re-queue horizon is no longer upgraded, even by an in-window reply", async () => {
     const sentAt = Date.now() - 4 * 24 * 3600_000;
     seedShop("s1", { status: "missed", sentAt: new Date(sentAt) });
-    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: sentAt + 3600_000 }));
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: sentAt + 3600_000 }), OWN);
     expect(shop("s1").status).toBe("missed");
   });
 
   it("call shops are not touched by email", async () => {
     seedShop("c1", { channel: "call", target: EMAIL });
-    await matchMysteryShopEmail("sa1", email(EMAIL));
+    await matchMysteryShopEmail("sa1", email(EMAIL), OWN);
     expect(shop("c1").status).toBe("sent");
   });
 });

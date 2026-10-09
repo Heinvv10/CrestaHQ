@@ -198,7 +198,7 @@ it("imports an oversized message placeholder without source download", async () 
   );
   expect((c.cursors as Record<string, { uid: number }>).INBOX.uid).toBe(2);
   expect(matchMysteryShopEmail).toHaveBeenCalledWith("a", expect.objectContaining({ authResults: ["mx; dmarc=fail"],
-    autoReply: expect.objectContaining({ autoSubmitted: "auto-replied" }), dsn: expect.objectContaining({ failedRecipients: "a@b.c" }) }));
+    autoReply: expect.objectContaining({ autoSubmitted: "auto-replied" }), dsn: expect.objectContaining({ failedRecipients: "a@b.c" }) }), ["me@example.com"]);
   const asked = ["Authentication-Results", "Auto-Submitted", "X-Autoreply", "X-Autorespond", "Precedence", "List-Id", "List-Unsubscribe", "Content-Type", "X-MS-Exchange-Message-Is-Ndr", "X-Failed-Recipients"];
   expect(client.fetchOne).toHaveBeenCalledWith(1, expect.objectContaining({ headers: expect.arrayContaining(asked) }), { uid: true });
 });
@@ -265,7 +265,7 @@ it("an inbound archive header cannot hide customer email", async () => {
 import { matchMysteryShopEmail } from "@/lib/prospecting/mystery-shop/inbound";
 const mailFrom = (from: string, to: string, extra = "") =>
   ({ source: Buffer.from(`From: ${from}\r\nTo: ${to}\r\n${extra}Message-ID: <${from}>\r\n\r\nHi`) });
-it("hands each inbound message to the mystery-shop matcher at its arrival time, with its auto-reply headers", async () => {
+it("hands each inbound message to the mystery-shop matcher at its arrival time, with its auto-reply headers and the mailbox's own addresses", async () => {
   const { client } = setup();
   client.search.mockResolvedValue([1]);
   const at = new Date("2026-10-08T10:00:00Z");
@@ -279,7 +279,7 @@ it("hands each inbound message to the mystery-shop matcher at its arrival time, 
     from: "info@acme.co.za", subject: "Re: Enquiry", inReplyTo: "<shop@crestahq.com>", occurredAtMs: at.getTime(),
     autoReply: { autoSubmitted: "auto-replied", xAutoreply: null, xAutorespond: null, precedence: "bulk", listId: null, listUnsubscribe: null },
     authResults: ["mx; dmarc=pass"],
-  }));
+  }), ["me@example.com"]);
 });
 it("sent mail is never handed to the mystery-shop matcher", async () => {
   const { client, c } = setup();

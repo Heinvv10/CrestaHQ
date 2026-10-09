@@ -62,7 +62,7 @@ export async function matchOrSkip(
   message: InboundEmail,
 ): Promise<void> {
   try {
-    await withTimeout(matchMysteryShopEmail(subAccountId, message));
+    await withTimeout(matchMysteryShopEmail(subAccountId, message, connection.ownAddresses));
   } catch (err) {
     let skip = false;
     await saveMatchState(subAccountId, connection.version, (current) => {
