@@ -64,6 +64,19 @@ describe("the mystery-shop hold on the WhatsApp AI", () => {
     expect(await respond()).toEqual({ kind: "skipped", reason: "no_prompt" });
   });
 
+  it("holds a reply from a business we form-shopped: by the contact, or by one of its numbers (PR 5c)", async () => {
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", matchNumbers: [PHONE], contactId: "cProspect" });
+    expect(await respond({ contact: contact("cAutoCreated") })).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    mem.clear();
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", matchNumbers: ["+27829999999"] });
+    expect(await respond()).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    mem.clear();
+    const old = new Date(Date.now() - LATE_REPLY_HORIZON_MS - 60_000);
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", matchNumbers: [PHONE], sentAt: old, createdAt: old });
+    shop("f2", { channel: "form", target: "https://x.co.za/", matchNumbers: ["+27829999999"], contactId: "cOther" });
+    expect(await respond()).toEqual({ kind: "skipped", reason: "no_prompt" });
+  });
+
   it("only on WhatsApp, and not while Prospecting is off for the sub-account", async () => {
     shop("w1");
     expect(await respond({ channelId: "sms" })).toEqual({ kind: "skipped", reason: "no_prompt" });

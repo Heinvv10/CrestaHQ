@@ -129,7 +129,8 @@ async function rowDelivered(shop: FirebaseFirestore.DocumentData): Promise<numbe
 /**
  * A WhatsApp message in to `subAccountId`'s Cloud number: from a waiting
  * WhatsApp shop's exact number = its response, or only an automatic reply
- * (whatsapp-match.ts). Only a content message counts; STOP is recorded on the
+ * (whatsapp-match.ts); likewise a waiting FORM shop whose contact has that
+ * number (`matchNumbers`). Only a content message counts; STOP is recorded on the
  * shop as an opt-out, START is ignored. Any other number, sub-account or
  * channel never settles it. Returns how many shops it changed.
  */
@@ -149,6 +150,16 @@ export async function matchMysteryShopWhatsApp(subAccountId: string, msg: Inboun
       : isWhatsAppAutoReply(msg.text, elapsed)
         ? await recordAutoReply(d.id, msg.atMs)
         : await settleResponded(d.id, msg.atMs, { responseVia: "whatsapp", senderAuth: "pass" });
+    if (done) changed++;
+  }
+  // A form shop: a WhatsApp from one of the contact's own numbers, timed from the submit (no receipt for a form).
+  // A STOP is no opt-out here — nothing was sent to that number.
+  const forms = msg.optOut ? [] : (await closableShops(subAccountId, "form")).filter((d) => strings(d.data()?.matchNumbers).includes(from));
+  for (const d of forms) {
+    const elapsed = msg.atMs - (toMs(d.data()?.sentAt) ?? msg.atMs);
+    const done = isWhatsAppAutoReply(msg.text, elapsed)
+      ? await recordAutoReply(d.id, msg.atMs)
+      : await settleResponded(d.id, msg.atMs, { responseVia: "whatsapp", senderAuth: "pass" });
     if (done) changed++;
   }
   return changed;
