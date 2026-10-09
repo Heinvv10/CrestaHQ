@@ -62,6 +62,43 @@ describe.skipIf(skipBrowser)("Q1: never 'sent' without an accepted enquiry", () 
   }, T);
 });
 
+describe.skipIf(skipBrowser)("Z1: a 3xx answer to the enquiry is never a confirmation by itself", () => {
+  const thanks = page("<h1>Thank you for your message</h1>");
+  const posted = (path: string) => site.posts.filter((p) => p.path === path).map((p) => new URLSearchParams(p.body).get("email"));
+
+  it("a 308 is re-posted (same body) for one hop, and that hop's answer decides", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 308, { location: "/send2" }), "/send2": thanks });
+    expect(posted("/send2")).toEqual([IDENTITY.email]);
+    expect(out).toMatchObject({ kind: "sent", trace: { finalUrl: `${site.origin}/send2` } });
+  }, T);
+
+  it("a 301 to the same path with a trailing slash is re-posted too", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 301, { location: "/send/" }), "/send/": thanks });
+    expect(site.posts.map((p) => p.path)).toEqual(["/send", "/send/"]);
+    expect(posted("/send/")).toEqual([IDENTITY.email]);
+    expect(out.kind).toBe("sent");
+  }, T);
+
+  it("a 307 to an internal address: re-posted only through the guard — refused, never sent", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 307, { location: `${internal.origin}/` }) });
+    expect(internal.hits).toEqual([]);
+    expect(out.kind).not.toBe("sent");
+  }, T);
+
+  it("a 302 to https on the same path: the hop fails here, so not sent, and the unloaded https page is never the trace", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 302, { location: `${site.origin.replace("http:", "https:")}/send` }) });
+    expect(out.kind).not.toBe("sent");
+    expect(out.trace.finalUrl ?? "").not.toMatch(/^https:/);
+  }, T);
+
+  it("any other 3xx after the POST (a 303 to a thank-you page) is uncertain, and its page is never the trace", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 303, { location: "/thank-you" }), "/thank-you": thanks });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+    expect(out.trace.finalUrl ?? "").not.toMatch(/thank-you/);
+    expect(site.hits).not.toContain("GET /thank-you");
+  }, T);
+});
+
 describe.skipIf(skipBrowser)("Q2: after the click", () => {
   it("a crash after the click is uncertain (it may have gone through), never failed", async () => {
     const out = await run(

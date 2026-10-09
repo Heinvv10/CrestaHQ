@@ -136,13 +136,30 @@ function isMainFrame(page: Page, req: Request): boolean {
   }
 }
 
-/** One request, redirects (for a sub-resource) followed hop by hop through `fetchImpl`. */
+/**
+ * A redirect the enquiry may follow — re-POSTed, same body, for ONE hop:
+ * a 307 / 308, or a 301 / 302 to the same path and query with only the
+ * scheme, the host (same site) or a trailing slash changed. Any other 3xx
+ * answer to the enquiry is not followed and never confirms anything.
+ */
+function repostable(status: number, from: URL, to: URL): boolean {
+  if (status === 307 || status === 308) return true;
+  const loose = (u: URL) => `${u.pathname.replace(/\/+$/, "")}${u.search}`;
+  return (status === 301 || status === 302) && loose(from) === loose(to) && sameSite(from.hostname, to.hostname);
+}
+
+/**
+ * One request through `fetchImpl`. Redirects: a sub-resource's are followed
+ * hop by hop ("follow"); a main document's never ("none", engine.ts decides);
+ * the enquiry's only as `repostable` allows ("enquiry").
+ */
 async function fetchHops(
   req: Request,
   opts: GuardOptions,
-  hops: number,
+  policy: "none" | "follow" | "enquiry",
 ): Promise<{ res: Response; url: string; body: Buffer }> {
   const { fetchImpl, signal, state } = opts;
+  const hops = policy === "follow" ? SUBRESOURCE_REDIRECTS : policy === "enquiry" ? 1 : 0;
   let url = req.url();
   let method = req.method();
   let body: Buffer | undefined = req.postDataBuffer() ?? undefined;
@@ -168,7 +185,10 @@ async function fetchHops(
     if (res.status < 300 || res.status > 399 || !location || i >= hops) return { res, url, body: data };
     const next = new URL(location, url);
     if (!httpish(next) || !portOk(next, opts.allowPorts)) throw new NonPublicUrlError(next.host || next.protocol);
-    if (res.status <= 303 && method !== "GET" && method !== "HEAD") {
+    if (policy === "enquiry") {
+      // Not re-POSTable: the 3xx itself is the answer (never a confirmation).
+      if (!repostable(res.status, new URL(url), next)) return { res, url, body: data };
+    } else if (res.status <= 303 && method !== "GET" && method !== "HEAD") {
       method = "GET";
       body = undefined;
     }
@@ -234,12 +254,13 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
     await acquire();
     try {
       if (signal.aborted) throw new Error("aborted");
-      const { res, url: finalUrl, body } = await fetchHops(req, opts, main ? 0 : SUBRESOURCE_REDIRECTS);
+      const { res, url: finalUrl, body } = await fetchHops(req, opts, carrier ? "enquiry" : main ? "none" : "follow");
       if (main && res.headers.get("cf-mitigated")) state.captcha ??= "Cloudflare challenge response";
       const host = new URL(finalUrl).hostname;
       const known = state.formUrl !== null && (sameSite(host, new URL(state.formUrl).hostname) || FORM_BACKENDS.test(host));
-      if (carrier && res.status >= 200 && res.status < 400) state.carrierOk ??= finalUrl;
+      // Only a 2xx to the enquiry (after at most one re-POST) counts; a 3xx never does.
       if (carrier && res.status >= 200 && res.status < 300) {
+        state.carrierOk ??= finalUrl;
         state.rejected ??= rejectionOf(body.subarray(0, 64 * 1024).toString("utf8"));
         if (known) state.postOk ??= finalUrl;
       }
@@ -247,11 +268,11 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
         const location = res.headers.get("location");
         const next = location ? new URL(location, finalUrl) : null;
         if (next && (!httpish(next) || !portOk(next, opts.allowPorts))) state.blocked = `redirect to ${next.protocol}//${next.host} is not allowed`;
-        else if (next) state.redirect = next.href;
-        if (afterClick && next && httpish(next) && !samePage(next.href, state.formUrl)) state.navigatedTo ??= next.href;
+        else if (next && !afterClick) state.redirect = next.href;
+        // After the click a redirect is never followed or recorded: the page it names was not loaded.
         return await route.fulfill({ status: 204, body: "" });
       }
-      if (main && afterClick && res.status < 400 && !samePage(finalUrl, state.formUrl)) state.navigatedTo ??= finalUrl;
+      if (main && afterClick && res.status >= 200 && res.status < 300 && !samePage(finalUrl, state.formUrl)) state.navigatedTo ??= finalUrl;
       return await fulfill(route, res, body);
     } catch (err) {
       const refused = err instanceof NonPublicUrlError;

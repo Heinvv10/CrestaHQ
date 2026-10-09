@@ -49,15 +49,14 @@ describe("traceUrl (what the member-only trace keeps)", () => {
 });
 
 describe.skipIf(skipBrowser)("field mapping on three fixture forms", () => {
-  it("a simple form: name, email, phone, message — after one redirect — and a POST-redirect-GET is a navigation", async () => {
+  it("a simple form: name, email, phone, message — after one redirect — confirmed by the page its POST returned", async () => {
     const out = await run({
       "/": redirectTo("/contact"),
       "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS)),
-      "/send": redirectTo("/thank-you"),
-      "/thank-you": thanks,
+      "/send": thanks,
     }, "/");
     expect(out).toMatchObject({ kind: "sent", trace: { signal: "navigation", mappedFields: ["name", "email", "phone", "message"] } });
-    expect(out.trace.finalUrl).toBe(`${site.origin}/thank-you`);
+    expect(out.trace.finalUrl).toBe(`${site.origin}/send`);
     expect(Object.fromEntries(posted())).toEqual({
       "your-name": "Cresta HQ", email: "info@crestahq.com", phone: "+27784356159", message: MESSAGE,
     });
