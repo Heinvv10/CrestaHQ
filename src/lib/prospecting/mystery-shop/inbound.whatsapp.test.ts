@@ -23,6 +23,8 @@ function seedShop(id: string, extra: Record<string, unknown> = {}) {
     ...extra,
   });
 }
+/** Delivered 2 s after the send (Meta's receipt), so the first-minute rule runs from there. */
+const seedDelivered = (id: string, extra: Record<string, unknown> = {}) => seedShop(id, { deliveredAt: new Date(SENT + 2_000), ...extra });
 const shop = (id: string) => mem.read(`mysteryShops/${id}`)!;
 const at = (ms: number) => SENT + ms;
 
@@ -32,8 +34,34 @@ const reply = (from: string, atMs: number, text: string, over: Record<string, un
   matchMysteryShopWhatsApp("sa1", { from, atMs, text, type: "text", optOut: null, ...over });
 
 describe("matchMysteryShopWhatsApp", () => {
+  it("the first minute runs from DELIVERY: a greeting 7 h after the send but 20 s after delivery is automatic", async () => {
+    seedShop("w1", { deliveredAt: new Date(at(7 * 3600_000)) });
+    await reply(PHONE, at(7 * 3600_000 + 20_000), "Hi! How can we help?");
+    expect(shop("w1")).toMatchObject({ status: "sent" });
+    await reply(PHONE, at(7 * 3600_000 + 40_000), "Yes we do, when do you need it?");
+    expect(shop("w1")).toMatchObject({ status: "sent" });
+    expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(7 * 3600_000 + 20_000));
+  });
+
+  it("a substantive reply 2 min after delivery is the response", async () => {
+    seedShop("w1", { deliveredAt: new Date(at(7 * 3600_000)) });
+    await reply(PHONE, at(7 * 3600_000 + 120_000), "Yes we do, when do you need it?");
+    expect(shop("w1")).toMatchObject({ status: "responded", responseMs: 7 * 3600_000 + 120_000 });
+  });
+
+  it("a read receipt counts as delivery; a reply before any receipt is automatic", async () => {
+    seedShop("r1", { readAt: new Date(at(1_000)) });
+    await reply(PHONE, at(5 * 60_000), "Yes we do, when do you need it?");
+    expect(shop("r1").status).toBe("responded");
+    mem.clear();
+    seedShop("n1");
+    await reply(PHONE, at(5 * 60_000), "Yes we do, when do you need it?");
+    expect(shop("n1")).toMatchObject({ status: "sent" });
+    expect((shop("n1").autoReplyAt as Date).getTime()).toBe(at(5 * 60_000));
+  });
+
   it("a reply from the target number settles the shop at Meta's timestamp; a second reply changes nothing", async () => {
-    seedShop("w1");
+    seedDelivered("w1");
     expect(await reply(PHONE, at(14 * 60_000), "Yes we do, where are you?")).toBe(1);
     expect(shop("w1")).toMatchObject({ status: "responded", responseMs: 14 * 60_000, responseVia: "whatsapp", senderAuth: "pass" });
     expect((shop("w1").respondedAt as Date).getTime()).toBe(at(14 * 60_000));
@@ -42,25 +70,25 @@ describe("matchMysteryShopWhatsApp", () => {
   });
 
   it("a different number never settles it", async () => {
-    seedShop("w1");
+    seedDelivered("w1");
     expect(await reply("+27821234568", at(5 * 60_000), "Yes we do")).toBe(0);
     expect(shop("w1").status).toBe("sent");
   });
 
   it("another sub-account's shop to the same number is never settled", async () => {
-    seedShop("w1", { subAccountId: "sa2" });
+    seedDelivered("w1", { subAccountId: "sa2" });
     await reply(PHONE, at(5 * 60_000), "Yes we do");
     expect(shop("w1").status).toBe("sent");
   });
 
   it("an email or call shop to the same number is not touched", async () => {
-    seedShop("k1", { channel: "call" });
+    seedDelivered("k1", { channel: "call" });
     await reply(PHONE, at(5 * 60_000), "Yes we do");
     expect(shop("k1").status).toBe("sent");
   });
 
   it("a greeting phrase is an automatic reply, recorded once; the shop keeps waiting for a person", async () => {
-    seedShop("w1");
+    seedDelivered("w1");
     expect(await reply(PHONE, at(2 * 60_000), "Thank you for contacting Acme! We'll get back to you soon.")).toBe(1);
     expect(shop("w1")).toMatchObject({ status: "sent" });
     expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(2 * 60_000));
@@ -71,7 +99,7 @@ describe("matchMysteryShopWhatsApp", () => {
   });
 
   it("anything in the first minute after the send is automatic, however human it reads", async () => {
-    seedShop("w1");
+    seedDelivered("w1");
     await reply(PHONE, at(20_000), "Yes we do, when do you need it?");
     expect(shop("w1")).toMatchObject({ status: "sent" });
     expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(20_000));
@@ -80,21 +108,21 @@ describe("matchMysteryShopWhatsApp", () => {
   it.each([["reaction", "👍"], ["system", "changed number"], ["unsupported", ""], ["text", "  "]])(
     "a %s message settles and records nothing",
     async (type, text) => {
-      seedShop("w1");
+      seedDelivered("w1");
       expect(await reply(PHONE, at(5 * 60_000), text, { type })).toBe(0);
       expect(shop("w1")).toMatchObject({ status: "sent", autoReplyAt: null });
     },
   );
 
   it("a caption-less photo from the number is a response", async () => {
-    seedShop("w1");
+    seedDelivered("w1");
     await reply(PHONE, at(5 * 60_000), "", { type: "image" });
     expect(shop("w1").status).toBe("responded");
   });
 
   it("a STOP records optOutAt on the waiting (or missed) shop and is never a response; START is ignored", async () => {
-    seedShop("w1");
-    seedShop("m1", { status: "missed", providerRef: "wamid.M" });
+    seedDelivered("w1");
+    seedDelivered("m1", { status: "missed", providerRef: "wamid.M" });
     expect(await reply(PHONE, at(5 * 60_000), "START", { optOut: false })).toBe(0);
     expect(shop("w1").optOutAt).toBeUndefined();
     expect(await reply(PHONE, at(6 * 60_000), "STOP", { optOut: true })).toBe(2);
@@ -106,14 +134,14 @@ describe("matchMysteryShopWhatsApp", () => {
   });
 
   it("a message timed outside the window (before the send, or after 24 h) settles nothing", async () => {
-    seedShop("w1");
+    seedDelivered("w1");
     await reply(PHONE, SENT - 60_000, "an older message, redelivered late");
     await reply(PHONE, at(24 * 3600_000 + 1), "Sorry, only saw this now");
     expect(shop("w1")).toMatchObject({ status: "sent", respondedAt: null, autoReplyAt: null });
   });
 
   it("a number that is not a valid phone matches nothing", async () => {
-    seedShop("w1", { target: "+" });
+    seedDelivered("w1", { target: "+" });
     expect(await reply("+", at(5 * 60_000), "Yes")).toBe(0);
     expect(shop("w1").status).toBe("sent");
   });

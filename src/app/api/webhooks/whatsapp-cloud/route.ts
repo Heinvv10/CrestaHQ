@@ -429,20 +429,18 @@ async function handleInbound(
   // timestamp. As soon as the sender is known, so nothing below (a contact
   // that cannot be created) can drop it; on every delivery (first response
   // wins, so a redelivery changes nothing); never able to fail the message —
-  // a failure is logged and the handler carries on. Skipped outright while
-  // Prospecting is off for the sub-account.
-  if (route.subAccount.prospectingEnabledByAgency === true) {
-    try {
-      await matchMysteryShopWhatsApp(route.subAccountId, {
-        from,
-        atMs: inbound.timestampMs ?? Date.now(),
-        text: inbound.text,
-        type: inbound.type,
-        optOut: nextOptedOut,
-      });
-    } catch (err) {
-      console.error(`[whatsapp-cloud] mystery-shop match failed (sa=${route.subAccountId})`, err);
-    }
+  // a failure is logged and the handler carries on. Always, even with
+  // Prospecting switched off since: a shop already sent still needs its reply.
+  try {
+    await matchMysteryShopWhatsApp(route.subAccountId, {
+      from,
+      atMs: inbound.timestampMs ?? Date.now(),
+      text: inbound.text,
+      type: inbound.type,
+      optOut: nextOptedOut,
+    });
+  } catch (err) {
+    console.error(`[whatsapp-cloud] mystery-shop match failed (sa=${route.subAccountId})`, err);
   }
 
   const matches = await db

@@ -5,8 +5,10 @@
  * WhatsApp Business greeting and away messages are sent by the app the moment
  * a message arrives, and Meta does not flag them. So a reply is automatic
  * (`autoReplyAt`; the shop keeps waiting) when:
- *   - it came within INSTANT_REPLY_MS of the send, whatever it says — no person
- *     reads and answers an enquiry that fast; or
+ *   - it came within INSTANT_REPLY_MS of the message reaching their phone,
+ *     whatever it says — a greeting fires on DELIVERY (which can be hours
+ *     after the send), and no person reads and answers that fast. The caller
+ *     measures from max(sent, delivered); before any receipt it passes 0; or
  *   - it is short (≤ SHORT_REPLY_MAX characters) and greeting / away /
  *     office-hours phrasing (en, af, zu) is most of it: the phrases' letters at
  *     least equal the rest's. "Thank you for contacting Acme Plumbing!" is
@@ -29,6 +31,7 @@ const AUTO_REPLY = new RegExp(
     "outside (?:of )?(?:our )?(?:business|office|working) hours",
     "our (?:business|office|working) hours",
     "currently (?:unavailable|closed)",
+    "how can (?:we|i) help",
     "welcome to",
     "reply \\d+ for",
     "dankie vir (?:u|jou) boodskap",

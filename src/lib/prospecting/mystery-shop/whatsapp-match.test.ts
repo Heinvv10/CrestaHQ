@@ -33,6 +33,8 @@ describe("isWhatsAppAutoReply — WhatsApp Business away / greeting messages (Me
     "Ons sal so gou moontlik terugkom.",
     "Ons sal jou so gou moontlik antwoord.",
     "Siyabonga ngokusithinta!",
+    "Hi! How can we help?",
+    "Hello, how can I help you?",
     "THANK YOU FOR\nCONTACTING US",
   ])("automatic (short, the phrase is most of it): %j", (text) => {
     expect(isWhatsAppAutoReply(text, LATER)).toBe(true);
@@ -50,6 +52,7 @@ describe("isWhatsAppAutoReply — WhatsApp Business away / greeting messages (Me
     "Thanks! We'll get back to you within the hour about the plumbing job in Gqeberha, what's the address?",
     `Thank you for contacting us. ${"We do geysers, leaks and blocked drains across the metro and can quote today. ".repeat(4)}`,
     "Thank you for contacting us! We'll get back to you. ".repeat(6),
+    "2 min away",
   ])("a person (no phrase, or the phrase is not most of a short message): %j", (text) => {
     expect(isWhatsAppAutoReply(text, LATER)).toBe(false);
   });
@@ -58,6 +61,8 @@ describe("isWhatsAppAutoReply — WhatsApp Business away / greeting messages (Me
     expect(isWhatsAppAutoReply("Yes we do, when do you need it?", INSTANT_REPLY_MS - 1)).toBe(true);
     expect(isWhatsAppAutoReply("Yes we do, when do you need it?", 0)).toBe(true);
     expect(isWhatsAppAutoReply("Yes we do, when do you need it?", INSTANT_REPLY_MS)).toBe(false);
+    expect(isWhatsAppAutoReply("Yes we do, when do you need it?", INSTANT_REPLY_MS + 1_000)).toBe(false);
+    expect(isWhatsAppAutoReply("Yes we do, when do you need it?", 90_000)).toBe(false);
   });
 });
 

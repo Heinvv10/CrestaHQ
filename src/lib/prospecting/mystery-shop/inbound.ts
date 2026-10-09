@@ -120,7 +120,11 @@ export async function matchMysteryShopWhatsApp(subAccountId: string, msg: Inboun
   const docs = (await closableShops(subAccountId, "whatsapp")).filter((d) => d.data()?.target === from);
   let changed = 0;
   for (const d of docs) {
-    const elapsed = msg.atMs - (toMs(d.data()?.sentAt) ?? msg.atMs);
+    // From the later of the send and the delivery receipt (a greeting fires on delivery);
+    // before any receipt, automatic.
+    const shop = d.data() ?? {};
+    const delivered = toMs(shop.deliveredAt) ?? toMs(shop.readAt);
+    const elapsed = delivered === null ? 0 : msg.atMs - Math.max(delivered, toMs(shop.sentAt) ?? delivered);
     const done = msg.optOut
       ? await recordOptOut(d.id, msg.atMs)
       : isWhatsAppAutoReply(msg.text, elapsed)

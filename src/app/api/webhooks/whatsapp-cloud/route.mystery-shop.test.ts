@@ -65,6 +65,7 @@ beforeEach(() => {
   mem.seed(SHOP, {
     agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "whatsapp", target: PHONE, status: "sent",
     sentAt: new Date(SENT_S * 1000), respondedAt: null, responseMs: null, autoReplyAt: null, providerRef: "wamid.OUT1",
+    deliveredAt: new Date((SENT_S + 2) * 1000),
   });
 });
 
@@ -111,11 +112,12 @@ describe("whatsapp-cloud → mystery shop", () => {
     expect(mem.read(SHOP)).toMatchObject({ status: "responded", responseMs: 14 * 60_000 });
   });
 
-  it("while Prospecting is off for the sub-account, no shop is looked at", async () => {
+  it("a reply still settles a shop after Prospecting was switched off; receipts are skipped then", async () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), prospectingEnabledByAgency: false });
-    await post(value("pn_1", message("27821234567", "Yes we do!", SENT_S + 14 * 60)));
     await post(value("pn_1", { statuses: [{ id: "wamid.OUT1", status: "failed", recipient_id: "27821234567" }] }));
     expect(mem.read(SHOP)?.status).toBe("sent");
+    await post(value("pn_1", message("27821234567", "Yes we do!", SENT_S + 14 * 60)));
+    expect(mem.read(SHOP)).toMatchObject({ status: "responded", responseMs: 14 * 60_000 });
   });
 
   it("a matcher failure is logged, the message is still recorded and Meta gets its 200", async () => {
