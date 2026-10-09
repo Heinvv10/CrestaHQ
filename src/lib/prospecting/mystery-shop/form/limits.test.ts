@@ -162,6 +162,17 @@ describe.skipIf(skipBrowser)("speculation rules", () => {
   }, T);
 });
 
+describe.skipIf(skipBrowser)("<link rel=prerender>", () => {
+  it("is fetched outside the route, so the dead proxy is what stops it: with the proxy, nothing arrives", async () => {
+    site = await serve({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<link rel="prerender" href="${internal.origin}/prerender"><link rel="prefetch" href="${internal.origin}/prefetch">`),
+      "/send": ok,
+    });
+    await fill({ limits: { totalMs: 15_000, settleMs: 3_000, confirmMs: 2_000 } });
+    expect(internal.hits).toEqual([]);
+  }, T);
+});
+
 describe.skipIf(skipBrowser)("the deadline and the submit stamp", () => {
   it.each([25, 60, 200])("a stamp that lands %ims after the deadline never leads to a click", async (lateMs) => {
     site = await serve({ "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS)), "/send": ok });

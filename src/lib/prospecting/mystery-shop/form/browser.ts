@@ -1,6 +1,5 @@
 import "server-only";
 
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,11 +17,13 @@ import { chromium, type BrowserContext } from "playwright-core";
  * may not use UDP outside the proxy, QUIC is off, and background, prefetch
  * and component-update traffic is disabled.
  *
- * Speculation rules (`<script type="speculationrules">` prefetch / prerender)
- * are fetched by the browser process, outside the route — no launch flag
- * stops them in this build, but the "Preload pages: never" preference does.
- * So each run gets its own throwaway profile carrying that preference
- * (deleted on close), launched as a persistent context.
+ * Preloads are fetched by the browser process, outside the route.
+ * Speculation rules (`<script type="speculationrules">` prefetch / prerender):
+ * no launch flag stops them in this build, but the "Preload pages: never"
+ * preference does, so each run gets its own throwaway profile carrying it
+ * (deleted on close), launched as a persistent context. `<link
+ * rel="prerender">` (NoStatePrefetch) escapes the route even with that
+ * preference: only the dead proxy stops it (limits.test.ts proves both).
  */
 
 const DEAD_PROXY = "http://127.0.0.1:9";
@@ -68,21 +69,4 @@ export async function launchFormBrowser(args: string[] = LAUNCH_ARGS): Promise<F
     await gone();
     throw err;
   }
-}
-
-const HEALTH_TTL_MS = 5 * 60_000;
-let health: { at: number; ok: boolean } | null = null;
-
-/** Is the engine's Chromium on disk? Cached for 5 minutes. A launch can still fail (the job's `engine_failed`). */
-export function formEngineAvailable(now = Date.now()): boolean {
-  if (health && now - health.at < HEALTH_TTL_MS) return health.ok;
-  let ok: boolean;
-  try {
-    ok = existsSync(chromium.executablePath());
-  } catch (err) {
-    console.error("[mystery-shop/form] chromium path lookup failed", err);
-    ok = false;
-  }
-  health = { at: now, ok };
-  return ok;
 }
