@@ -81,6 +81,10 @@ export interface CloudInbound {
   /** True when the message WAS a location but its coordinates were unusable,
    *  so the caller can log the drop. */
   locationRejected: boolean;
+  /** When the customer sent it — Meta's `timestamp` — in ms; null when absent. */
+  timestampMs: number | null;
+  /** Meta's message `type` (text, image, reaction, system, …); "" when absent. */
+  type: string;
 }
 
 export interface CloudMediaRef {
@@ -95,6 +99,12 @@ export interface CloudMediaRef {
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** Meta's `timestamp` (Unix seconds, a digit string) → ms; null when absent or malformed. */
+function timestampMs(v: unknown): number | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  return /^\d{1,12}$/.test(s) ? Number(s) * 1000 : null;
+}
 
 const MEDIA_KINDS: readonly WhatsappMediaKind[] = [
   "image",
@@ -258,6 +268,8 @@ function parseMessage(
     media: parseMediaRef(kind, message),
     location,
     locationRejected: kind === "location" && location === null,
+    timestampMs: timestampMs(message.timestamp),
+    type: kind,
   };
 }
 
@@ -272,6 +284,8 @@ export interface CloudStatus {
   /** First entry of `errors` on a failed receipt (e.g. 131047). */
   errorCode?: string;
   errorTitle?: string;
+  /** When Meta recorded the status — its `timestamp` — in ms. */
+  timestampMs?: number;
 }
 
 /** Delivery receipts. Partial entries are dropped — a status with no message
@@ -294,6 +308,7 @@ export function parseCloudStatuses(payload: unknown): CloudStatus[] {
         errorCode:
           typeof code === "number" || typeof code === "string" ? String(code) : undefined,
         errorTitle: str(err?.title) || undefined,
+        timestampMs: timestampMs(s?.timestamp) ?? undefined,
       });
     }
   }

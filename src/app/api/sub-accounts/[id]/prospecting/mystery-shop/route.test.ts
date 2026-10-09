@@ -208,11 +208,12 @@ describe("GET", () => {
       channels: {
         email: { available: true, targets: [EMAIL] },
         call: { available: true, targets: [PHONE] },
-        whatsapp: { available: false, reason: "Not available yet.", targets: [] },
+        whatsapp: { available: false, reason: "Not available yet.", targets: [PHONE] },
         form: { available: false, reason: "Not available yet.", targets: [] },
       },
-      enquiry: { email: { subject: "Enquiry: plumber in Gqeberha" } },
-      enquiryHash: { email: expect.stringMatching(/^[0-9a-f]{64}$/), call: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      // No WhatsApp template in this sub-account: no WhatsApp enquiry.
+      enquiry: { email: { subject: "Enquiry: plumber in Gqeberha" }, whatsapp: null },
+      enquiryHash: { email: expect.stringMatching(/^[0-9a-f]{64}$/), call: expect.stringMatching(/^[0-9a-f]{64}$/), whatsapp: null },
     });
     expect(body).not.toHaveProperty("text");
   });

@@ -30,7 +30,7 @@ export interface MemberShop {
   failure: MysteryShopFailure | null;
   createdAt: string | null;
   /** How the response was seen, and whether its sender is proven (replies.ts `ResponseVia`). Null until responded. */
-  responseVia: "email" | "answered" | "callback" | null;
+  responseVia: "email" | "answered" | "callback" | "whatsapp" | null;
   senderAuth: "pass" | "unknown" | null;
   /** The send may or may not have gone out (store.ts `markUncertain`). Such a miss cannot be confirmed, so it is never public. */
   sendUncertain: boolean;
@@ -40,6 +40,13 @@ export interface MemberShop {
   disputed: boolean;
   /** A member confirmed the miss after checking: only then is it public. */
   missedConfirmedAt: string | null;
+  /** WhatsApp delivery receipts (inbound.ts `recordMysteryShopWhatsAppStatus`). Member only. */
+  deliveredAt: string | null;
+  readAt: string | null;
+  /** The business replied STOP (replies.ts `recordOptOut`): such a miss can't be confirmed. Member only. */
+  optOutAt: string | null;
+  /** An inbound WhatsApp from the target the matcher did not take (store.ts `settleMissed`). Member only. */
+  replyNeedsReview: boolean;
 }
 
 export interface MysteryShopItem {
@@ -82,12 +89,16 @@ export function serializeShop(id: string, d: Record<string, unknown>): MemberSho
     enquiryText: String(d.enquiryText ?? ""),
     failure: f ? { code: String(f.code), reason: String(f.reason) } : null,
     createdAt: iso(d.createdAt),
-    responseVia: (["email", "answered", "callback"] as const).find((v) => v === d.responseVia) ?? null,
+    responseVia: (["email", "answered", "callback", "whatsapp"] as const).find((v) => v === d.responseVia) ?? null,
     senderAuth: d.senderAuth === "pass" || d.senderAuth === "unknown" ? d.senderAuth : null,
     sendUncertain: d.sendUncertain === true,
     awaitingSync: d.awaitingSync === true,
     disputed: d.disputed === true,
     missedConfirmedAt: iso(d.missedConfirmedAt),
+    deliveredAt: iso(d.deliveredAt),
+    readAt: iso(d.readAt),
+    optOutAt: iso(d.optOutAt),
+    replyNeedsReview: d.replyNeedsReview === true,
   };
 }
 
@@ -193,7 +204,7 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
       if (s.awaitingSync) return `${head}24 h passed; waiting for the mailbox sync to catch up before calling it missed`;
       return `${head}${s.sendUncertain ? "may have been sent" : "sent"} ${since(s.sentAt, nowMs)} ago${
         s.sendUncertain ? " (the send did not confirm)" : ""
-      }, waiting for a reply (24 h)${
+      }${s.readAt ? ", read" : s.deliveredAt ? ", delivered" : ""}, waiting for a reply (24 h)${
         s.autoReplyAt ? `; an automatic reply came after ${since(s.sentAt, Date.parse(s.autoReplyAt))}` : ""
       }`;
     case "responded": {
@@ -213,6 +224,9 @@ export function shopStatusLine(s: MemberShop, nowMs: number): string {
     }
     case "refused":
       return `${head}refused: ${s.failure?.reason ?? "not allowed"}`;
+    case "failed":
+      if (s.failure?.code === "undeliverable") return `${head}undeliverable: ${s.failure.reason}`;
+      return `${head}failed: ${s.failure?.reason ?? "the send did not go out"}`;
     default:
       return `${head}failed: ${s.failure?.reason ?? "the send did not go out"}`;
   }

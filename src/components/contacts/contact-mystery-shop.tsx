@@ -16,6 +16,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { MysteryShopConfirmMiss } from "./mystery-shop-confirm-miss";
 import { MYSTERY_SHOP_CHANNELS, type MysteryShopChannel } from "@/lib/prospecting/mystery-shop/model";
 import { shopStatusLine, type MemberShop } from "@/lib/prospecting/mystery-shop/section";
 
@@ -23,8 +24,9 @@ import { shopStatusLine, type MemberShop } from "@/lib/prospecting/mystery-shop/
  * The Reports card's Mystery shop area (Prospecting PR 5): one button per
  * channel, disabled with the server's reason when the channel cannot send.
  * Every send goes through a confirm dialog naming the channel, the exact
- * recipient (picked from the contact's own values), the full enquiry and,
- * for a call, the operator's consent checkbox — the POST carries
+ * recipient (picked from the contact's own values), the full enquiry (for
+ * WhatsApp, the approved template as it will read) and, for a call, the
+ * operator's consent checkbox — the POST carries
  * `confirm: true` (and `consentAck`) only from there, plus the hash of the
  * enquiry shown, so the server refuses if it changed meanwhile. Renders
  * nothing for a contact that is not a prospect. An AlertDialog, never
@@ -37,11 +39,13 @@ type ShopsResponse = {
   channels: Record<MysteryShopChannel, ChannelInfo>;
   cap: number;
   used: number;
-  enquiry: { email: { subject: string; body: string }; call: string; form: string };
-  enquiryHash: { email: string; call: string; form: string };
+  enquiry: { email: { subject: string; body: string }; call: string; whatsapp: string | null; form: string };
+  enquiryHash: { email: string; call: string; whatsapp: string | null; form: string };
 };
 
 const LABEL: Record<MysteryShopChannel, string> = { email: "Email", call: "AI call", whatsapp: "WhatsApp", form: "Website form" };
+/** Which enquiry (and hash) a channel sends; the form has none yet. */
+const kindOf = (c: MysteryShopChannel) => (c === "email" || c === "whatsapp" || c === "form" ? c : "call");
 const NO_TARGET: Record<MysteryShopChannel, string> = {
   email: "This contact has no email address.",
   call: "This contact has no valid phone number.",
@@ -99,11 +103,14 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contactId, channel, confirm: true, target,
-          enquiryHash: data?.enquiryHash[channel === "email" || channel === "form" ? channel : "call"],
+          enquiryHash: data?.enquiryHash[kindOf(channel)],
           ...(channel === "call" ? { consentAck: consent } : {}),
         }),
       });
       if (!res.ok) throw new Error(await errorOf(res));
+      // Taken by the provider but already reported undeliverable (WhatsApp).
+      const sent = (await res.json().catch(() => ({}))) as { status?: string; error?: string };
+      if (sent.status === "failed") throw new Error(sent.error ?? "The enquiry could not be delivered.");
       toast.success(
         channel === "call"
           ? "Mystery-shop call placed"
@@ -120,11 +127,14 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
   };
 
   /** A member's confirmation of a miss: only a confirmed miss appears on the public report. */
-  const confirmMissed = async (shopId: string) => {
+  const confirmMissed = async (shopId: string, reviewedAutoReply: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`${base}/${encodeURIComponent(shopId)}/confirm-missed`, { method: "POST" });
+      const res = await fetch(`${base}/${encodeURIComponent(shopId)}/confirm-missed`, {
+        method: "POST",
+        ...(reviewedAutoReply ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewedAutoReply }) } : {}),
+      });
       if (!res.ok) throw new Error(await errorOf(res));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -138,12 +148,14 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
 
   const atCap = !!data && data.used >= data.cap;
   // The form types the email's subject (where it has a subject field) and its own message.
-  const enquiryText = (c: MysteryShopChannel) =>
-    !data
-      ? ""
-      : c === "email" || c === "form"
-        ? `Subject: ${data.enquiry.email.subject}\n\n${c === "form" ? data.enquiry.form : data.enquiry.email.body}`
-        : data.enquiry.call;
+  const enquiryText = (c: MysteryShopChannel) => {
+    if (!data) return "";
+    const kind = kindOf(c);
+    if (kind === "email" || kind === "form") {
+      return `Subject: ${data.enquiry.email.subject}\n\n${kind === "form" ? data.enquiry.form : data.enquiry.email.body}`;
+    }
+    return data.enquiry[kind] ?? "";
+  };
 
   return (
     <div className="space-y-2 border-t pt-3" data-testid="mystery-shop">
@@ -206,18 +218,7 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
           <p className="text-xs" data-testid={`mystery-shop-status-${s.id}`}>
             {shopStatusLine(s, Date.now())}
           </p>
-          {s.status === "missed" && !s.missedConfirmedAt && !s.sendUncertain && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void confirmMissed(s.id)}
-              data-testid={`mystery-shop-confirm-missed-${s.id}`}
-            >
-              Confirm no reply
-            </Button>
-          )}
+          <MysteryShopConfirmMiss shop={s} busy={busy} onConfirm={(reviewed) => void confirmMissed(s.id, reviewed)} />
         </div>
       ))}
 
@@ -229,7 +230,7 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
                 ? "Place a mystery-shop AI call?"
                 : confirming?.channel === "form"
                   ? "Submit the website form?"
-                  : `Send a mystery-shop ${LABEL[confirming?.channel ?? "email"].toLowerCase()}?`}
+                  : `Send a mystery-shop ${confirming?.channel === "whatsapp" ? "WhatsApp" : LABEL[confirming?.channel ?? "email"].toLowerCase()}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               Channel: {confirming ? LABEL[confirming.channel] : ""}. This contacts the business for real, from {business}.

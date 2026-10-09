@@ -34,9 +34,16 @@ import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
 /**
  * A refusal, carrying the HTTP status the composer's route answers with.
- * `attempted`: the provider was contacted, so it may have gone out anyway.
+ * `attempted`: the provider was contacted, so it may have gone out anyway —
+ * unless `providerOutcome` says the provider definitely refused it.
  */
-export type TemplateSendRefusal = { ok: false; status: number; error: string; attempted?: boolean };
+export type TemplateSendRefusal = {
+  ok: false;
+  status: number;
+  error: string;
+  attempted?: boolean;
+  providerOutcome?: "DEFINITELY_REJECTED" | "AMBIGUOUS";
+};
 
 export type PreparedTemplateSend = {
   subAccount: SubAccountDoc;
@@ -157,12 +164,18 @@ export async function prepareWhatsappTemplateSend(
   return { ok: true, subAccount, tpl, values };
 }
 
-/** Send a prepared template, then write the thread, activity and inbox rows. */
+/**
+ * Send a prepared template, then write the thread, activity and inbox rows.
+ * `onAccepted` runs with the provider's message id the moment the provider
+ * took it, before those writes (a mystery shop records the id there so an
+ * early delivery receipt finds it); it must not throw.
+ */
 export async function sendWhatsappTemplate(input: PreparedTemplateSend & {
   contactId: string;
   contact: Contact;
   templateId: string;
   actorUid: string;
+  onAccepted?: (sid: string) => Promise<void>;
 }): Promise<{ ok: true; sid: string } | TemplateSendRefusal> {
   const { contactId, contact, templateId, subAccount, tpl, values, actorUid } = input;
   const db = getAdminDb();
@@ -198,7 +211,13 @@ export async function sendWhatsappTemplate(input: PreparedTemplateSend & {
     if (!result.ok) {
       // Only a provider's rejection is a failed ask; "not approved on this rail" never left.
       await logAsk(result.attempted && !result.refusedBy ? { ok: false, failureKind: result.error ?? "send_failed" } : null);
-      return { ok: false, status: 409, error: result.error ?? "Only an approved template can be sent.", attempted: result.attempted === true };
+      return {
+        ok: false,
+        status: 409,
+        error: result.error ?? "Only an approved template can be sent.",
+        attempted: result.attempted === true,
+        providerOutcome: result.providerOutcome,
+      };
     }
     sid = result.messageId ?? "";
     fromNumber = templateFrom;
@@ -211,6 +230,7 @@ export async function sendWhatsappTemplate(input: PreparedTemplateSend & {
       err instanceof Error ? err.message : "Failed to send WhatsApp template";
     return { ok: false, status: 502, error: message };
   }
+  await input.onAccepted?.(sid);
 
   const rendered = renderPreview(tpl.body, values);
   const preview = rendered.length > 80 ? `${rendered.slice(0, 80)}…` : rendered;

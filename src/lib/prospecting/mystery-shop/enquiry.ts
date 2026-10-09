@@ -10,7 +10,7 @@ import type { ContactProspecting, MysteryShopTemplates } from "@/types";
  */
 
 /** No `form` default: the form message falls back to the (possibly overridden) email body. */
-export const DEFAULT_TEMPLATES: Required<Omit<MysteryShopTemplates, "form">> = {
+export const DEFAULT_TEMPLATES: Required<Omit<MysteryShopTemplates, "form" | "whatsappTemplateId">> = {
   emailSubject: "Enquiry: {service} in {town}",
   emailBody: "Hi,\n\nDo you do {service} in {town}? What's your earliest availability?\n\nThanks,\n{business}",
   call: "Hi, I'm calling from {business}. Do you do {service} in {town}? What's your earliest availability?",

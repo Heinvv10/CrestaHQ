@@ -6,15 +6,20 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { prospectingEnabled, prospectingGateOff } from "@/lib/prospecting/gate";
 import { parseJobValues } from "@/lib/prospecting/mystery-shop/job-value";
 import { parseTemplates } from "@/lib/prospecting/mystery-shop/enquiry";
-import type { SubAccountDoc } from "@/types";
+import { isDocId } from "@/lib/server/doc-id";
+import type { MysteryShopTemplates, SubAccountDoc } from "@/types";
 
 /**
  * PUT — the sub-account's mystery-shop settings, from the Prospecting page:
- * `{ jobValues?, templates? }`. Each one sent replaces the whole stored map
- * (`prospectingJobValues`, `prospectingMysteryShopTemplates`); one left out is
- * kept. Sub-account admins only (agency owners count), 403 `gate_off` while
- * Prospecting is off, 400 for anything that does not validate — whole cents
- * 0–100,000,000, niche keys ≤ 60 chars, ≤ 50 niches, templates ≤ 2,000 chars.
+ * `{ jobValues?, templates?, whatsappTemplateId? }`. jobValues and templates
+ * each replace their whole stored map (`prospectingJobValues`,
+ * `prospectingMysteryShopTemplates`); one left out is kept. The WhatsApp
+ * template choice lives in the templates map but is its own field: saving the
+ * wording keeps it, and `whatsappTemplateId` (a template of THIS sub-account,
+ * or null for the default by name) keeps the wording. Sub-account admins only
+ * (agency owners count), 403 `gate_off` while Prospecting is off, 400 for
+ * anything that does not validate — whole cents 0–100,000,000, niche keys ≤ 60
+ * chars, ≤ 50 niches, templates ≤ 2,000 chars.
  * Like the Get Leads types, this is a feature-scoped admin route: there is no
  * general sub-account settings PATCH to extend.
  */
@@ -44,18 +49,31 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
     }
     update.prospectingJobValues = values;
   }
+  let templates: MysteryShopTemplates | undefined;
   if (body?.templates !== undefined) {
-    const templates = parseTemplates(body.templates);
-    if (!templates) {
+    const parsed = parseTemplates(body.templates);
+    if (!parsed) {
       return NextResponse.json(
         { error: "Templates may set emailSubject, emailBody, call and form, each up to 2,000 characters." },
         { status: 400 },
       );
     }
-    update.prospectingMysteryShopTemplates = templates;
+    templates = parsed;
+  }
+  const { whatsappTemplateId: storedChoice, ...storedWording } = sub.prospectingMysteryShopTemplates ?? {};
+  let chosen = storedChoice;
+  if (body?.whatsappTemplateId !== undefined) {
+    const id = body.whatsappTemplateId;
+    const exists =
+      id === null || (isDocId(id) && (await getAdminDb().doc(`subAccounts/${subAccountId}/whatsappTemplates/${id}`).get()).exists);
+    if (!exists) return NextResponse.json({ error: "Pick one of this sub-account's WhatsApp templates." }, { status: 400 });
+    chosen = id ?? undefined;
+  }
+  if (templates || body?.whatsappTemplateId !== undefined) {
+    update.prospectingMysteryShopTemplates = { ...(templates ?? storedWording), ...(chosen ? { whatsappTemplateId: chosen } : {}) };
   }
   if (!Object.keys(update).length) {
-    return NextResponse.json({ error: "Send jobValues or templates." }, { status: 400 });
+    return NextResponse.json({ error: "Send jobValues, templates or whatsappTemplateId." }, { status: 400 });
   }
   await ref.update(update);
   return NextResponse.json({ ok: true, ...update });

@@ -51,7 +51,8 @@ describe("channelStates", () => {
     expect(await channelStates("sa1", SMTP_SUB)).toEqual({
       email: { available: true },
       call: { available: true },
-      whatsapp: { available: false, reason: "Not available yet." },
+      // The WhatsApp rules are route.whatsapp.test.ts's; an agency gate off is the first of them.
+      whatsapp: { available: false, reason: "WhatsApp is disabled for this sub-account by your agency." },
       // The form needs the synced mailbox and the engine (form/target.test.ts), not SMTP.
       form: { available: true },
     });
@@ -167,9 +168,9 @@ describe("call", () => {
   });
 });
 
-describe("whatsapp and form", () => {
-  it.each(["whatsapp", "form"] as const)("%s is refused as not available yet, and nothing is sent", async (channel) => {
-    expect(await sendMysteryShop({ ...base, channel, target: "+27821234567" })).toEqual({
+describe("form", () => {
+  it("is refused as not available yet, and nothing is sent", async () => {
+    expect(await sendMysteryShop({ ...base, channel: "form", target: "https://acme.co.za/contact" })).toEqual({
       ok: false, kind: "refused", code: "channel_unavailable", reason: "Not available yet.",
     });
     expect(sendEmail).not.toHaveBeenCalled();
