@@ -378,8 +378,15 @@ installs into velo's `~/.cache/ms-playwright/` (`chromium-<rev>` and
 
 If the browser is missing, the form channel shows "The form engine isn't
 installed on this server." (the health check is cached for 5 minutes). To
-fix it, run the same command as velo in `~/crestahq`. A cache revision no
-release uses any more can be deleted.
+fix it, run the same command as velo in `~/crestahq`. The install step is
+not fatal: a failed download prints a WARNING and the deploy carries on with
+the form channel unavailable.
+
+A playwright version bump changes the Chromium revision, and the install
+then removes the old build. The previous colour, and a rollback to it, will
+show the form channel as unavailable until that release is redeployed.
+Keep `@playwright/test` and `playwright-core` pinned to the same version, so
+CI's E2E and the engine share one browser.
 
 ### One-time migration (owner, after 17:00 SAST or at the weekend)
 

@@ -203,8 +203,11 @@ pnpm install --frozen-lockfile || die "pnpm install"
 # and its tests run in the test gate below. Installed into this user's
 # ~/.cache/ms-playwright; a no-op when that revision is already there. No
 # --with-deps: the OS libraries are already on the box (CI's E2E runs here).
+# Not fatal: without it only the website-form channel is unavailable (and the
+# test gate, whose browser tests then skip, still runs everything else).
 say "Installing the form engine's Chromium"
-pnpm exec playwright-core install chromium || die "playwright chromium"
+pnpm exec playwright-core install chromium \
+  || echo "WARNING: form engine Chromium not installed — the website-form channel will show as unavailable"
 
 # ── Gates: everything that can fail runs BEFORE the service is touched ───────
 say "Lint + tenancy check"
