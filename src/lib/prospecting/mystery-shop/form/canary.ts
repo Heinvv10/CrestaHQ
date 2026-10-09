@@ -64,13 +64,14 @@ export async function isolationCheck(
   }
   if (gateway === null) return notVerified("no default gateway");
   const connect = deps.connect ?? tcpProbe;
-  for (const host of [...new Set([gateway, DOCKER_BRIDGE_GATEWAY])]) {
-    for (const port of CANARY_PORTS) {
-      const probe = await connect(host, port);
-      if (probe === "timeout" || probe === "unreachable") continue;
-      if (probe === "error") return notVerified(`${host}:${port} gave an unexpected error`);
-      return { ok: false, reason: `The form engine's container can reach this server (${host}:${port}): the host firewall is not in place.` };
-    }
+  const targets = [...new Set([gateway, DOCKER_BRIDGE_GATEWAY])].flatMap((host) => CANARY_PORTS.map((port) => ({ host, port })));
+  // All at once: a firewalled host times every probe out, so this takes one CONNECT_MS, not six.
+  const probes = await Promise.all(targets.map(({ host, port }) => connect(host, port)));
+  for (const [i, probe] of probes.entries()) {
+    const { host, port } = targets[i];
+    if (probe === "timeout" || probe === "unreachable") continue;
+    if (probe === "error") return notVerified(`${host}:${port} gave an unexpected error`);
+    return { ok: false, reason: `The form engine's container can reach this server (${host}:${port}): the host firewall is not in place.` };
   }
   return { ok: true };
 }

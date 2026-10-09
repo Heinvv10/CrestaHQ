@@ -35,3 +35,19 @@ describe("isolationBlocked", () => {
     expect(probe).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("a Firestore error", () => {
+  it("fails closed for the form channel only (never throws), and the next call retries instead of reusing it", async () => {
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const real = storeDb.doc.bind(storeDb);
+    const spy = vi.spyOn(storeDb, "doc").mockImplementationOnce(() => {
+      throw new Error("firestore down");
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const at = later();
+    await expect(isolationBlocked(async () => true, at)).resolves.toBe(true);
+    expect(console.error).toHaveBeenCalled();
+    spy.mockImplementation(real);
+    expect(await isolationBlocked(async () => true, at + 1_000)).toBe(false);
+  });
+});

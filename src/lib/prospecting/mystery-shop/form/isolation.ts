@@ -27,13 +27,20 @@ let checked: { at: number; blocked: Promise<boolean> } | null = null;
 /** True while the last canary reached the host and no canary since has passed. */
 export function isolationBlocked(probe: () => Promise<boolean> = () => runCanary(), now = Date.now()): Promise<boolean> {
   if (checked && now - checked.at < RECHECK_MS) return checked.blocked;
-  const blocked = (async () => {
+  const entry: { at: number; blocked: Promise<boolean> } = { at: now, blocked: Promise.resolve(true) };
+  entry.blocked = (async () => {
     const flag = (await getAdminDb().doc(DOC).get()).data();
     if (toMs(flag?.unisolatedAt) === null) return false;
     if (!(await probe())) return true;
     await recordIsolation(true);
     return false;
-  })();
-  checked = { at: now, blocked };
-  return blocked;
+  })().catch((err: unknown) => {
+    // Fail closed for the form channel only — never reject (that would fail every channel's state) —
+    // and don't keep the failure: the next call checks again.
+    console.error("[mystery-shop/form] isolation check failed; form channel off", err);
+    if (checked === entry) checked = null;
+    return true;
+  });
+  checked = entry;
+  return entry.blocked;
 }

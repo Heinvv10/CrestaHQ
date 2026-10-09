@@ -80,3 +80,20 @@ describe("probeOfError", () => {
     expect(probeOfError(code)).toBe(probe);
   });
 });
+
+describe("the canary's time", () => {
+  it("runs all six probes at once: about one probe's time, not six", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const connect = async (): Promise<Probe> => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 300));
+      inFlight--;
+      return "timeout";
+    };
+    const t0 = Date.now();
+    expect(await isolationCheck({ gateway: async () => "172.16.88.1", connect })).toEqual({ ok: true });
+    expect(peak).toBe(6);
+    expect(Date.now() - t0).toBeLessThan(1_200);
+  });
+});
