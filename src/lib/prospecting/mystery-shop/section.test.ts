@@ -246,7 +246,10 @@ describe("WhatsApp (section 12)", () => {
     const s = serializeShop("w1", {
       channel: "whatsapp", status: "responded", target: PHONE, sentAt: new Date(SENT), responseVia: "whatsapp", senderAuth: "pass",
       deliveredAt: new Date(Date.parse(SENT) + 2000), readAt: { toMillis: () => Date.parse(SENT) + 60_000 },
+      replyNeedsReview: true,
     });
+    expect(s.replyNeedsReview).toBe(true);
+    expect(serializeShop("w2", { channel: "whatsapp", status: "missed", replyNeedsReview: "yes" }).replyNeedsReview).toBe(false);
     expect(s).toMatchObject({ responseVia: "whatsapp", senderAuth: "pass", deliveredAt: "2026-10-08T08:00:02.000Z", readAt: "2026-10-08T08:01:00.000Z" });
   });
 });
