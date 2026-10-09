@@ -9,8 +9,21 @@ import { join } from "node:path";
  * by scripts/form-engine-image.mjs into docker/form-engine/dist/TAG at deploy
  * time, and the Next build traces that file — so a release always runs the
  * image built from its own sources. The channel is available only when that
- * image exists and `docker` answers for this user.
+ * image AND the engine's own network (FORM_NETWORK) exist and `docker`
+ * answers for this user.
  */
+
+/** The engine's own bridge network: no inter-container traffic, a fixed subnet (scripts/form-engine-image.mjs). */
+export const FORM_NETWORK = "leadstack-form";
+
+/** The docker CLI's environment: PATH, HOME and DOCKER_HOST only — never the CRM's secrets. */
+export function dockerEnv(env: Record<string, string | undefined> = process.env): Record<string, string> {
+  return {
+    PATH: env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    ...(env.HOME ? { HOME: env.HOME } : {}),
+    ...(env.DOCKER_HOST ? { DOCKER_HOST: env.DOCKER_HOST } : {}),
+  };
+}
 
 const TAG_FILE = "docker/form-engine/dist/TAG";
 const TAG = /^leadstack-form-engine:[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$/;
@@ -22,11 +35,11 @@ export async function formEngineImage(cwd = process.cwd()): Promise<string | nul
   return TAG.test(tag) ? tag : null;
 }
 
-/** `docker image inspect <tag>` succeeded within 10 s. */
-function imagePresent(tag: string): Promise<boolean> {
+/** `docker <args>` succeeded within 10 s. */
+function docker(args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile("docker", ["image", "inspect", "--format", "{{.Id}}", tag], { timeout: 10_000 }, (err) => {
-      if (err) console.error("[mystery-shop/form] form engine image not available", tag, err.message);
+    execFile("docker", args, { timeout: 10_000, env: dockerEnv() as NodeJS.ProcessEnv }, (err) => {
+      if (err) console.error("[mystery-shop/form] form engine not available", args.join(" "), err.message);
       resolve(!err);
     });
   });
@@ -34,10 +47,14 @@ function imagePresent(tag: string): Promise<boolean> {
 
 let health: { at: number; ok: Promise<boolean> } | null = null;
 
-/** Is the engine's image here and docker usable by this user? Cached for 5 minutes. */
+/** Is the engine's image here, its network too, and docker usable by this user? Cached for 5 minutes. */
 export function formEngineAvailable(now = Date.now()): Promise<boolean> {
   if (health && now - health.at < HEALTH_TTL_MS) return health.ok;
-  const ok = formEngineImage().then((tag) => (tag ? imagePresent(tag) : false));
+  const ok = formEngineImage().then(async (tag) =>
+    tag !== null &&
+    (await docker(["image", "inspect", "--format", "{{.Id}}", tag])) &&
+    docker(["network", "inspect", "--format", "{{.Id}}", FORM_NETWORK]),
+  );
   health = { at: now, ok };
   return ok;
 }

@@ -7,9 +7,10 @@ import { dockerArgs, runFormInContainer, type ChildLike } from "./container";
  * Docker-gated (FORM_ENGINE_DOCKER_TEST=1 and a working `docker`): builds the
  * real image and runs one fill end to end through the real container, with
  * the CRM's exact isolation argv. The fixture sits on the host, reached over
- * the docker bridge; the container is told (test-only `-e`) that this one
- * origin may be fetched unguarded. The page also tries the host's other
- * ports and the docker gateway — none of it may arrive.
+ * the engine's own network (leadstack-form); the container is told
+ * (test-only `-e`) that this one origin may be fetched unguarded. The page
+ * also tries the host's other ports, the default docker gateway and the
+ * metadata address — none of it may arrive.
  */
 
 const dockerWorks = (() => {
@@ -21,7 +22,8 @@ const dockerWorks = (() => {
   }
 })();
 const enabled = process.env.FORM_ENGINE_DOCKER_TEST === "1" && dockerWorks;
-const GATEWAY = "172.17.0.1";
+/** The engine network's gateway: the host, as seen from the form engine's containers. */
+const GATEWAY = "172.16.88.1";
 
 let site: Fixture;
 let internal: Fixture;
@@ -41,9 +43,8 @@ describe.skipIf(!enabled)("the form engine in its container", () => {
     const internalUrl = `http://${GATEWAY}:${new URL(internal.origin).port}`;
     site = await serve({
       "/contact": (_q, res) =>
-        html(res, form(SIMPLE_FIELDS) + `<script>for (const u of ["${internalUrl}/", "http://${GATEWAY}:4300/", "http://${GATEWAY}/", "http://169.254.169.254/"]) fetch(u).catch(() => {});</script>`),
-      "/send": (_q, res) => html(res, "", 303, { location: "/thank-you" }),
-      "/thank-you": (_q, res) => html(res, "<h1>Thank you</h1>"),
+        html(res, form(SIMPLE_FIELDS) + `<script>for (const u of ["${internalUrl}/", "http://${GATEWAY}:4300/", "http://172.17.0.1/", "http://169.254.169.254/"]) fetch(u).catch(() => {});</script>`),
+      "/send": (_q, res) => html(res, "<h1>Thank you</h1>"),
     }, "0.0.0.0");
     const origin = `http://${GATEWAY}:${new URL(site.origin).port}`;
     const stamp = vi.fn(async () => undefined);

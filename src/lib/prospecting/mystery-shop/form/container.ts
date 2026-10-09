@@ -4,7 +4,7 @@ import { execFile, spawn as nodeSpawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { FormResult } from "./engine";
-import { formEngineImage } from "./engine-image";
+import { FORM_NETWORK, dockerEnv, formEngineImage } from "./engine-image";
 import { GO, SUBMITTING, checkResult, maybeSent, type RunnerJob } from "./protocol";
 
 /**
@@ -13,23 +13,23 @@ import { GO, SUBMITTING, checkResult, maybeSent, type RunnerJob } from "./protoc
  * its user). The container gets the job on stdin and nothing else — no
  * environment, no volumes, no secrets — and answers on stdout (protocol.ts).
  *
- * Its answer is untrusted: validated field by field (checkResult), capped at
- * MAX_STDOUT, and anything missing, garbled or late is an uncertain send.
- * The only "nothing happened" outcomes it can produce are a validated
- * refused / failed result given before any submit was announced, and the
- * container never starting at all (no image, no docker). It is killed
- * (`docker kill`) at CONTAINER_MS whatever it is doing.
+ * Its answer is untrusted: validated field by field (checkResult) and capped
+ * at MAX_STDOUT. Before the CRM's `go` nothing can have been clicked, so any
+ * failure then is notStarted (slot back); after it, anything missing,
+ * garbled or late is an uncertain send. It runs on its own network
+ * (FORM_NETWORK), is never pulled, gets a minimal environment for the docker
+ * CLI, and is removed (`docker rm -f`) at CONTAINER_MS whatever it is doing.
  */
 
 export const CONTAINER_MS = 60_000;
 const MAX_STDOUT = 256 * 1024;
 const NOT_STARTED = "The form engine could not start; nothing was submitted.";
 
-/** Every isolation flag. The CRM passes no `-e` / `--env`, no `-v`, no `--privileged`, no host network. */
+/** Every isolation flag. The CRM passes no `-e` / `--env`, no `-v`, no `--privileged`, no host network, never pulls. */
 export function dockerArgs(name: string, image: string): string[] {
   return [
-    "run", "--rm", "-i", "--name", name,
-    "--network", "bridge",
+    "run", "--rm", "-i", "--pull", "never", "--name", name,
+    "--network", FORM_NETWORK,
     "--memory", "1g", "--memory-swap", "1g",
     "--pids-limit", "512",
     "--cpus", "1",
@@ -53,18 +53,21 @@ export interface ChildLike {
 }
 
 export interface ContainerDeps {
-  spawn?: (cmd: string, args: string[]) => ChildLike;
-  /** `docker kill <name>`. */
-  kill?: (name: string) => Promise<void>;
+  spawn?: (cmd: string, args: string[], env: Record<string, string>) => ChildLike;
+  /** Removes the container (`docker rm -f <name>`). */
+  remove?: (name: string) => Promise<void>;
   image?: () => Promise<string | null>;
   timeoutMs?: number;
 }
 
-const dockerKill = (name: string) =>
+/** Removing — not just killing — so a stuck container never lingers (`--rm` only acts on a clean exit). */
+export const removeArgs = (name: string) => ["rm", "-f", name];
+
+const dockerRemove = (name: string) =>
   new Promise<void>((resolve) => {
-    execFile("docker", ["kill", name], { timeout: 15_000 }, (err) => {
-      // Already gone (it finished, or --rm removed it) is the usual case.
-      if (err && !/No such container/i.test(err.message)) console.error("[mystery-shop/form] docker kill failed", name, err.message);
+    execFile("docker", removeArgs(name), { timeout: 15_000, env: dockerEnv() as NodeJS.ProcessEnv }, (err) => {
+      // Already gone (it finished, and --rm removed it) is the usual case.
+      if (err && !/No such container/i.test(err.message)) console.error("[mystery-shop/form] docker rm -f failed", name, err.message);
       resolve();
     });
   });
@@ -73,6 +76,13 @@ const notStarted = (): FormResult => ({
   kind: "failed", code: "engine_failed", reason: NOT_STARTED, trace: { finalUrl: null, signal: null, mappedFields: [] },
 });
 
+/**
+ * Until the CRM said `go`, nothing can have been submitted (the runner waits
+ * for it before the click): every failure then is `notStarted`, slot back,
+ * unless the container's validated answer says refused / failed itself.
+ * After `go` — or while the stamp that precedes it is in flight — only a
+ * validated answer is believed; anything else is an uncertain send.
+ */
 export async function runFormInContainer(
   job: RunnerJob,
   onBeforeSubmit: () => Promise<void>,
@@ -81,17 +91,19 @@ export async function runFormInContainer(
   const image = await (deps.image ?? formEngineImage)();
   if (!image) return notStarted();
   const name = `lsms-form-${randomUUID().slice(0, 12)}`;
-  const kill = deps.kill ?? dockerKill;
-  const spawn = deps.spawn ?? ((cmd: string, args: string[]) => nodeSpawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] }));
+  const remove = deps.remove ?? dockerRemove;
+  const spawn = deps.spawn ?? ((cmd: string, args: string[], env: Record<string, string>) => nodeSpawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env: env as NodeJS.ProcessEnv }));
 
   return new Promise<FormResult>((resolve) => {
     let settled = false;
+    let stamping = false;
     let submitted = false;
     let result: unknown;
     let broken: string | null = null;
     let bytes = 0;
     let buffer = "";
     let stderr = "";
+    const verdict = (why: string) => (submitted || stamping ? maybeSent(why) : notStarted());
     const finish = (r: FormResult) => {
       if (settled) return;
       settled = true;
@@ -100,26 +112,30 @@ export async function runFormInContainer(
     };
     const stop = (why: string) => {
       broken ??= why;
-      void kill(name);
-      child.kill("SIGKILL");
+      void remove(name);
+      child?.kill("SIGKILL");
     };
-    const timer = setTimeout(() => stop("it ran out of time"), deps.timeoutMs ?? CONTAINER_MS);
+    // The wall clock answers on its own: a hung stamp or a silent container can never keep the job waiting.
+    const timer = setTimeout(() => {
+      const r = verdict("it ran out of time");
+      stop("it ran out of time");
+      finish(r);
+    }, deps.timeoutMs ?? CONTAINER_MS);
 
-    let child: ChildLike;
+    let child: ChildLike | undefined;
     try {
-      child = spawn("docker", dockerArgs(name, image));
+      child = spawn("docker", dockerArgs(name, image), dockerEnv());
     } catch (err) {
       console.error("[mystery-shop/form] docker could not be run", err);
-      clearTimeout(timer);
-      return resolve(notStarted());
+      return finish(notStarted());
     }
-    // docker itself missing: nothing ran.
-    child.on("error", (err) => {
+    const proc = child;
+    proc.on("error", (err) => {
       console.error("[mystery-shop/form] docker could not be run", err);
-      finish(bytes === 0 ? notStarted() : maybeSent("docker failed"));
+      finish(verdict("docker failed"));
     });
-    child.stdin.on("error", (err) => console.error("[mystery-shop/form] container stdin closed", name, err.message));
-    child.stderr.on("data", (c: Buffer) => {
+    proc.stdin.on("error", (err) => console.error("[mystery-shop/form] container stdin closed", name, err.message));
+    proc.stderr.on("data", (c: Buffer) => {
       stderr = (stderr + c.toString("utf8")).slice(-4_000);
     });
 
@@ -131,16 +147,21 @@ export async function runFormInContainer(
         broken ??= "a garbled line";
         return;
       }
-      if (msg?.type === SUBMITTING && !submitted && result === undefined) {
+      if (msg?.type === SUBMITTING && !submitted && !stamping && result === undefined) {
+        stamping = true;
         try {
           // The stamp lands BEFORE the container may click: after it, anything is an uncertain send.
           await onBeforeSubmit();
         } catch (err) {
           console.error("[mystery-shop/form] submit stamp failed; stopping the container", name, err);
-          return stop("the submit could not be recorded");
+          stamping = false;
+          stop("the submit could not be recorded");
+          return finish(notStarted());
         }
+        stamping = false;
+        if (settled) return;
         submitted = true;
-        child.stdin.write(`${GO}\n`);
+        proc.stdin.write(`${GO}\n`);
       } else if (msg?.type === "result" && result === undefined) {
         result = msg.result;
       } else {
@@ -148,7 +169,7 @@ export async function runFormInContainer(
       }
     };
     let chain = Promise.resolve();
-    child.stdout.on("data", (c: Buffer) => {
+    proc.stdout.on("data", (c: Buffer) => {
       bytes += c.length;
       if (bytes > MAX_STDOUT) return stop("too much output");
       buffer += c.toString("utf8");
@@ -159,17 +180,20 @@ export async function runFormInContainer(
         if (line) chain = chain.then(() => onLine(line));
       }
     });
-    child.on("close", (code) => {
+    proc.on("close", (code) => {
       void chain.then(() => {
-        if (broken !== null || result === undefined) {
+        const checked = broken === null && result !== undefined ? checkResult(result, submitted) : null;
+        if (!submitted) {
+          // No go was sent: nothing was clicked. Its own validated refusal keeps its code; anything else is notStarted.
+          return finish(checked && (checked.kind === "refused" || checked.kind === "failed") ? checked : notStarted());
+        }
+        if (!checked) {
           console.error("[mystery-shop/form] container answer not trusted", name, { code, broken, stderr: stderr.slice(-500) });
-          // Before any announced submit and with no answer at all, a failure to start is still a maybe:
-          // only the container's own validated word, or docker never running, is "nothing happened".
           return finish(maybeSent(broken ?? `no result (exit ${code})`));
         }
-        finish(checkResult(result, submitted));
+        finish(checked);
       });
     });
-    child.stdin.write(`${JSON.stringify(job)}\n`);
+    proc.stdin.write(`${JSON.stringify(job)}\n`);
   });
 }

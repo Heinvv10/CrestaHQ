@@ -37,15 +37,19 @@ describe("formEngineImage", () => {
 });
 
 describe("formEngineAvailable", () => {
-  it("needs the tag AND docker image inspect to succeed; the answer is cached for 5 minutes", async () => {
+  it("needs the tag, the image AND the engine's network; the answer is cached for 5 minutes", async () => {
     const cwd = vi.spyOn(process, "cwd").mockReturnValue(release(TAG));
     inspect.mockReturnValue(new Error("No such image"));
     expect(await formEngineAvailable(1_000_000)).toBe(false);
     inspect.mockReturnValue(null);
     expect(await formEngineAvailable(1_000_000 + 60_000)).toBe(false);
     expect(await formEngineAvailable(1_000_000 + 5 * 60_000)).toBe(true);
-    expect(inspect).toHaveBeenLastCalledWith(["image", "inspect", "--format", "{{.Id}}", TAG]);
+    expect(inspect).toHaveBeenCalledWith(["image", "inspect", "--format", "{{.Id}}", TAG]);
+    expect(inspect).toHaveBeenLastCalledWith(["network", "inspect", "--format", "{{.Id}}", "leadstack-form"]);
+    inspect.mockImplementation((args) => (args[0] === "network" ? new Error("No such network") : null));
+    expect(await formEngineAvailable(1_000_000 + 10 * 60_000)).toBe(false);
+    inspect.mockReturnValue(null);
     cwd.mockReturnValue(release(null));
-    expect(await formEngineAvailable(1_000_000 + 10 * 60_000 + 1)).toBe(false);
+    expect(await formEngineAvailable(1_000_000 + 20 * 60_000)).toBe(false);
   });
 });
