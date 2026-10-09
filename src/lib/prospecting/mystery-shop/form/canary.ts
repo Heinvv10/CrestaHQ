@@ -31,6 +31,12 @@ export async function defaultGateway(read: () => Promise<string> = () => readFil
   return null;
 }
 
+/** A socket error, as a probe: refused = the host answered; no route = unreachable; anything else = unknown. */
+export function probeOfError(code: string | undefined): Probe {
+  if (code === "ECONNREFUSED") return "refused";
+  return code === "EHOSTUNREACH" || code === "ENETUNREACH" ? "unreachable" : "error";
+}
+
 /** One TCP probe, within CONNECT_MS. */
 export function tcpProbe(host: string, port: number): Promise<Probe> {
   return new Promise((resolve) => {
@@ -41,9 +47,7 @@ export function tcpProbe(host: string, port: number): Promise<Probe> {
     };
     socket.once("connect", () => done("connected"));
     socket.once("timeout", () => done("timeout"));
-    socket.once("error", (err: NodeJS.ErrnoException) =>
-      done(err.code === "ECONNREFUSED" ? "refused" : err.code === "EHOSTUNREACH" || err.code === "ENETUNREACH" ? "unreachable" : "error"),
-    );
+    socket.once("error", (err: NodeJS.ErrnoException) => done(probeOfError(err.code)));
   });
 }
 

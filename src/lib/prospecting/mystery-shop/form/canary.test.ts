@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
-import { CANARY_PORTS, DOCKER_BRIDGE_GATEWAY, defaultGateway, isolationCheck, tcpProbe, type Probe } from "./canary";
+import { CANARY_PORTS, DOCKER_BRIDGE_GATEWAY, defaultGateway, isolationCheck, probeOfError, tcpProbe, type Probe } from "./canary";
 
 /**
  * The container's network canary: with the host firewall in place, every
@@ -69,5 +69,14 @@ describe("tcpProbe (a real socket on loopback)", () => {
     expect(await tcpProbe("127.0.0.1", port)).toBe("connected");
     await new Promise<void>((r) => server.close(() => r()));
     expect(await tcpProbe("127.0.0.1", port)).toBe("refused");
+  });
+});
+
+describe("probeOfError", () => {
+  it.each([
+    ["ECONNREFUSED", "refused"], ["EHOSTUNREACH", "unreachable"], ["ENETUNREACH", "unreachable"],
+    ["ECONNRESET", "error"], ["EACCES", "error"], [undefined, "error"],
+  ])("%s → %s", (code, probe) => {
+    expect(probeOfError(code)).toBe(probe);
   });
 });
