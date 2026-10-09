@@ -32,7 +32,7 @@ import { Stop, bounded, captchaCheck, refuse, thanksCount, timedOut, waitForSign
  * move to its own process unchanged.
  */
 
-export const TOTAL_MS = 45_000;
+const TOTAL_MS = 45_000;
 const SETTLE_MS = 1_500;
 const CONFIRM_MS = 15_000;
 const CLOSE_MS = 5_000;
@@ -127,6 +127,11 @@ export async function runFormFill(input: FormRunInput): Promise<FormResult> {
     }
     if (controller.signal.aborted) throw new Error("timed out during launch");
     const { context } = browser;
+    // Only an http(s) page on 80 / 443 is ever opened: file:, data:, javascript: and the rest never reach the route.
+    const start = new URL(input.url);
+    if ((start.protocol !== "http:" && start.protocol !== "https:") || !(start.port === "" || (input.allowPorts ?? []).includes(start.port))) {
+      return { kind: "refused", code: "ssrf_blocked", reason: `The form address is not a public web page (${start.protocol}).`, trace };
+    }
     await context.addInitScript(NO_PEER_SCRIPT);
     await context.addInitScript(OPEN_SHADOW_SCRIPT);
     const page = await context.newPage();

@@ -13,7 +13,7 @@ vi.mock("@/lib/automations/qstash", () => ({ publishCallback: (...a: unknown[]) 
 
 const { mem } = await import("@/test/gbp-sync-store");
 const { runFormJob } = await import("./job");
-const { LEASE_PATH, MAX_FORM_REQUEUES, FORM_STUCK_MS, sweepStuckFormShop, takeLease } = await import("./job-store");
+const { LEASE_PATH, MAX_FORM_REQUEUES, FORM_STUCK_MS, releaseLease, sweepStuckFormShop, takeLease } = await import("./job-store");
 const { usageMonthKey } = await import("@/lib/server/usage-meter");
 import type { FormResult, FormRunInput } from "./engine";
 
@@ -173,6 +173,15 @@ describe("the lease: one form job per box", () => {
     await expect(job()).rejects.toThrow("boom");
     expect(mem.read(LEASE_PATH)).toBeUndefined();
     expect(await takeLease("next")).toBe(true);
+  });
+
+  it("another holder's release leaves the live lease alone", async () => {
+    await takeLease("job-A");
+    await releaseLease("job-B");
+    expect(mem.read(LEASE_PATH)?.holder).toBe("job-A");
+    expect(await takeLease("job-B")).toBe(false);
+    await releaseLease("job-A");
+    expect(mem.read(LEASE_PATH)).toBeUndefined();
   });
 
   it("is held while a run is going", async () => {

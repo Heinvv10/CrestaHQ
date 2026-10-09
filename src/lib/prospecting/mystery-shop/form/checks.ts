@@ -1,7 +1,7 @@
 import "server-only";
 
 import type { Page } from "playwright-core";
-import type { GuardState } from "./network";
+import { samePage, type GuardState } from "./network";
 import { CAPTCHA_SCRIPT, CAPTCHA_URL, THANKS_SCRIPT } from "./page-scan";
 
 /**
@@ -11,7 +11,7 @@ import { CAPTCHA_SCRIPT, CAPTCHA_URL, THANKS_SCRIPT } from "./page-scan";
  * the form, like a CAPTCHA would.
  */
 
-export const EVALUATE_MS = 3_000;
+const EVALUATE_MS = 3_000;
 const POLL_MS = 250;
 /** Frames Chromium will not let a page script into: whatever is in them cannot be checked. */
 const OPAQUE_FRAME = /^(file|chrome|chrome-extension|view-source|devtools):/i;
@@ -40,7 +40,7 @@ export function bounded<T>(work: Promise<T>, ms = EVALUATE_MS): Promise<T | type
 export const timedOut = (v: unknown): v is typeof TIMED_OUT => v === TIMED_OUT;
 
 /** The first CAPTCHA / challenge marker, on the wire or in any frame; `opaque` = a frame it could not look into. */
-export async function captchaMarker(page: Page, state: GuardState): Promise<{ marker: string | null; opaque: string | null }> {
+async function captchaMarker(page: Page, state: GuardState): Promise<{ marker: string | null; opaque: string | null }> {
   if (state.captcha) return { marker: state.captcha, opaque: null };
   for (const frame of page.frames()) {
     const url = frame.url();
@@ -81,7 +81,6 @@ export type Outcome =
 export async function waitForSignal(page: Page, state: GuardState, thanksBefore: number, confirmMs: number): Promise<Outcome> {
   const until = Date.now() + confirmMs;
   const formUrl = state.formUrl ?? "";
-  const bare = (u: string) => u.replace(/#.*$/, "");
   const captchaNow = async () => (await captchaMarker(page, state)).marker;
   while (Date.now() < until) {
     // The submit went to a refused address and nothing else was posted: nothing was sent.
@@ -95,7 +94,7 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
       const seen =
         state.navigatedTo !== null
           ? ({ signal: "navigation", finalUrl: state.navigatedTo } as const)
-          : /^https?:/.test(now) && bare(now) !== bare(formUrl)
+          : /^https?:/.test(now) && !samePage(now, formUrl)
             ? ({ signal: "navigation", finalUrl: now } as const)
             : (await thanksCount(page, thanksBefore)) > thanksBefore
               ? ({ signal: "thank_you", finalUrl: now } as const)

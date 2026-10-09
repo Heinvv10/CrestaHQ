@@ -17,11 +17,14 @@ import { carriesEnquiry, rejectionOf, type EnquiryMarkers } from "./evidence";
  * request ever slipped past the route.
  *
  * Redirects are followed HERE, one hop at a time, each hop through
- * `fetchImpl` again: a 3xx fulfilled to Chromium would be followed by the
- * browser's own network stack, bypassing the route. A main-frame 3xx is
- * not fulfilled at all: the navigation is cancelled (204) and the Location
- * recorded, so engine.ts decides whether to go there (that counts as the one
- * allowed redirect) — after the submit click it is the confirmation signal.
+ * `fetchImpl` again. Measured on this Chromium build (2026-10-09): a 3xx
+ * fulfilled for a MAIN-FRAME document is followed by the browser's own
+ * network stack, outside the route (without the dead proxy it reached the
+ * target directly); one fulfilled for a SUB-RESOURCE is not followed at all
+ * (the script just fails). So a main-frame 3xx is never fulfilled: the
+ * navigation is cancelled (204) and the Location recorded, and engine.ts
+ * decides whether to go there (that counts as the one allowed redirect) —
+ * after the submit click it may be the confirmation signal.
  *
  * Only the default ports (80 / 443) on every request and hop. A job's budget
  * keeps a hostile page from filling this process's memory: at most
@@ -36,10 +39,10 @@ export type FetchImpl = (url: string, init: PublicFetchInit) => Promise<Response
 
 export const MAX_BODY_BYTES = 5 * 1024 * 1024;
 /** Initial document + one redirect, before the submit. */
-export const MAX_MAIN_DOCUMENTS = 2;
+const MAX_MAIN_DOCUMENTS = 2;
 const SUBRESOURCE_REDIRECTS = 3;
-export const MAX_IN_FLIGHT = 6;
-export const MAX_REQUESTS = 150;
+const MAX_IN_FLIGHT = 6;
+const MAX_REQUESTS = 150;
 export const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
 
 const ALLOWED_TYPES = new Set(["document", "script", "xhr", "fetch", "stylesheet"]);
@@ -106,6 +109,20 @@ export interface GuardOptions {
 }
 
 class OverBudget extends Error {}
+
+/**
+ * The form page itself, whatever its query or fragment: going back to it
+ * (`/contact?error=1`) is the classic validation-error redirect, never a
+ * confirmation.
+ */
+export function samePage(a: string, b: string | null): boolean {
+  if (!b) return false;
+  const path = (u: string) => {
+    const x = new URL(u);
+    return `${x.origin}${x.pathname.replace(/\/$/, "")}`;
+  };
+  return path(a) === path(b);
+}
 
 /** A refused port, like a refused address: never connected to. */
 const portOk = (u: URL, allow: string[] | undefined) => u.port === "" || (allow ?? []).includes(u.port);
@@ -231,10 +248,10 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
         const next = location ? new URL(location, finalUrl) : null;
         if (next && (!httpish(next) || !portOk(next, opts.allowPorts))) state.blocked = `redirect to ${next.protocol}//${next.host} is not allowed`;
         else if (next) state.redirect = next.href;
-        if (afterClick && next && httpish(next) && next.href !== state.formUrl) state.navigatedTo ??= next.href;
+        if (afterClick && next && httpish(next) && !samePage(next.href, state.formUrl)) state.navigatedTo ??= next.href;
         return await route.fulfill({ status: 204, body: "" });
       }
-      if (main && afterClick && res.status < 400 && finalUrl !== state.formUrl) state.navigatedTo ??= finalUrl;
+      if (main && afterClick && res.status < 400 && !samePage(finalUrl, state.formUrl)) state.navigatedTo ??= finalUrl;
       return await fulfill(route, res, body);
     } catch (err) {
       const refused = err instanceof NonPublicUrlError;
