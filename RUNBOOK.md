@@ -369,11 +369,31 @@ connections while Next restarts:
 ### The form engine's container (mystery-shop website form)
 
 The mystery shop's website-form channel fills each form in a disposable
-Docker container: `docker run --rm -i` with no network but the default
-bridge, 1 GB memory (no swap), 512 pids, 1 CPU, every capability dropped,
-`no-new-privileges`, a read-only root, tmpfs `/tmp` and `/home/pwuser`, as the
-image's `pwuser`. It receives only the job on stdin (no environment, no
-volumes, no secrets) and is killed after 60 s.
+Docker container: `docker run --rm -i --pull never` on its own network
+(`leadstack-form`), 1 GB memory (no swap), 512 pids, 1 CPU, every capability
+dropped, `no-new-privileges`, a read-only root, tmpfs `/tmp` and
+`/home/pwuser`, as the image's `pwuser`. It receives only the job on stdin
+(no environment, no volumes, no secrets; the docker CLI itself runs with
+PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
+
+- **Network.** `leadstack-form`: bridge `br-lsms-form`, subnet
+  `172.16.88.0/24` (gateway `172.16.88.1`), inter-container traffic off. The
+  image script creates it if missing and refuses one with another subnet or
+  with icc on. The channel shows unavailable without it.
+- **Host firewall — Hein must review and run once, as root:**
+  `sudo bash scripts/form-engine-firewall.sh` (set `RESOLVER=<ip>` only if
+  the containers must reach a DNS resolver on a private address; docker's
+  embedded DNS needs nothing). It drops everything from that subnet to the
+  host itself (INPUT) and to RFC1918, 100.64/10 and 169.254/16 (DOCKER-USER),
+  allowing only replies. It is idempotent. iptables rules do not survive a
+  reboot: re-run it at boot (a root systemd unit after docker.service) or save
+  them with netfilter-persistent. **Until it has run, a renderer exploit
+  inside the container can reach host services:** measured 2026-10-09 from a
+  container on `leadstack-form`, the host's ports 22, 80, 5432 and 6379
+  answered (via 172.16.88.1, 172.17.0.1, the LAN, Tailscale and WireGuard
+  addresses); sibling containers and 169.254.169.254 did not. publicFetch
+  keeps the page itself off private addresses either way; the firewall is
+  the layer under it.
 
 - **Image.** `docker/form-engine/Dockerfile`, on
   `mcr.microsoft.com/playwright:v1.62.1-noble` (it ships the matching
