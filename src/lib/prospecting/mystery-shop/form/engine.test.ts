@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   IDENTITY, SIMPLE_FIELDS, capturingLaunch, form, html, loopbackFetch, otherSite, ports, serve, skipBrowser, type Fixture, type Handler,
 } from "@/test/form-fixture-server";
-import { runFormFill, type FormRunInput } from "./engine";
+import { runFormFill, traceUrl, type FormRunInput } from "./engine";
 
 /**
  * The form engine against fixture sites on 127.0.0.1, driving the real
@@ -36,6 +36,16 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   await site?.close();
+});
+
+describe("traceUrl (what the member-only trace keeps)", () => {
+  it("http(s) only, without the query (which may carry what was typed) or the fragment", () => {
+    expect(traceUrl("https://www.acme.co.za/thanks?email=info%40crestahq.com#top")).toBe("https://www.acme.co.za/thanks");
+    expect(traceUrl("javascript:alert(1)")).toBeNull();
+    expect(traceUrl("chrome-error://chromewebdata/")).toBeNull();
+    expect(traceUrl(null)).toBeNull();
+    expect(traceUrl("not a url")).toBeNull();
+  });
 });
 
 describe.skipIf(skipBrowser)("field mapping on three fixture forms", () => {
@@ -122,7 +132,8 @@ describe.skipIf(skipBrowser)("confirmation", () => {
 
   it("an error page from the POST is not a confirmation, nor is text that was already there", async () => {
     const out = await run({
-      "/contact": (_q, res) => html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: "x=1" });`)),
+      "/contact": (_q, res) =>
+        html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: new FormData(e.target) }).then(() => document.body.insertAdjacentHTML("beforeend", "<p>Thank you!</p>"));`)),
       "/api/enquiry": (_q, res) => html(res, "{}", 500),
     }, "/contact", { limits: { settleMs: 100, confirmMs: 1_500 } });
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });

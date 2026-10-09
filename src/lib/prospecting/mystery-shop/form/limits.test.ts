@@ -57,12 +57,31 @@ describe.skipIf(skipBrowser)("the job's budget", () => {
   it("a page whose own document is over the budget is too heavy (nothing submitted, refunded)", async () => {
     site = await serve({
       "/contact": (_q, res) =>
-        html(res, form(SIMPLE_FIELDS) + `<script>(async()=>{for (let k=0;k<200;k++) await fetch("/x?"+k).catch(()=>{}); location.href = "/contact?again";})();</script>`),
+        html(res, form(SIMPLE_FIELDS) + `<script>if (!location.search) Promise.all(Array.from({ length: 200 }, (_, k) => fetch("/x?"+k).catch(()=>{}))).then(() => { location.href = "/contact?again"; });</script>`),
       "/x": (_q, res) => html(res, "x"),
     });
-    const out = await fill({ limits: { totalMs: 20_000, settleMs: 4_000, confirmMs: 2_000 } });
+    const out = await fill({ limits: { totalMs: 25_000, settleMs: 6_000, confirmMs: 2_000 } });
     expect(site.hits.filter((h) => h.startsWith("GET /x")).length).toBeLessThanOrEqual(150);
-    expect(out.kind).not.toBe("sent");
+    expect(out).toMatchObject({ kind: "failed", code: "page_too_heavy" });
+  }, T);
+
+  it("at most 6 requests in flight at once; the rest wait", async () => {
+    let now = 0;
+    let peak = 0;
+    site = await serve({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<script>for (let k=0;k<20;k++) fetch("/slow?"+k).catch(()=>{});</script>`),
+      "/slow": (_q, res) => {
+        peak = Math.max(peak, ++now);
+        setTimeout(() => {
+          now--;
+          html(res, "x");
+        }, 300);
+      },
+      "/send": ok,
+    });
+    await fill({ limits: { totalMs: 20_000, settleMs: 3_000, confirmMs: 2_000 } });
+    expect(site.hits.filter((h) => h.includes("/slow")).length).toBeGreaterThan(6);
+    expect(peak).toBeLessThanOrEqual(6);
   }, T);
 });
 
@@ -83,6 +102,28 @@ describe.skipIf(skipBrowser)("ports", () => {
       },
     });
     expect(seen).toEqual([]);
+  }, T);
+
+  it("a redirect to another port — of the page or of a script — is never followed", async () => {
+    site = await serve({ "/contact": (_q, res) => html(res, "", 302, { location: `${internal.origin}/` }) });
+    expect(await fill()).toMatchObject({ kind: "refused", code: "ssrf_blocked" });
+    await site.close();
+    site = await serve({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<script src="/lib.js"></script>`),
+      "/lib.js": (_q, res) => html(res, "", 302, { location: `${internal.origin.replace("127.0.0.1", "203.0.113.9")}/lib.js` }),
+      "/send": ok,
+    });
+    const seen: string[] = [];
+    const inner = loopbackFetch(site.origin);
+    await fill({
+      fetchImpl: async (url, init) => {
+        if (url.startsWith(site.origin)) return inner(url, init);
+        seen.push(url);
+        throw new Error("not contacted");
+      },
+    });
+    expect(seen).toEqual([]);
+    expect(internal.hits).toEqual([]);
   }, T);
 
   it("a form page on another port is refused", async () => {

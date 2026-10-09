@@ -138,8 +138,8 @@ export async function runFormFill(input: FormRunInput): Promise<FormResult> {
     try {
       await load(page, input.url, state);
       await page.waitForTimeout(input.limits?.settleMs ?? SETTLE_MS);
-      if (state.tooManyRedirects) throw refuse("too_many_redirects", "The form page redirected more than once.");
       if (state.tooHeavy) throw new Stop("failed", "page_too_heavy", "The form page asked for too much; nothing was submitted.");
+      if (state.tooManyRedirects) throw refuse("too_many_redirects", "The form page redirected more than once.");
       trace.finalUrl = traceUrl(page.url());
       if (!sameSite(new URL(page.url()).hostname, new URL(input.url).hostname)) {
         throw refuse("off_site", "The form page moved to another website.");
