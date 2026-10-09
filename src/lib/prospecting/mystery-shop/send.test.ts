@@ -20,7 +20,7 @@ vi.mock("@/lib/server/voice-call", () => ({
   placeContactCall: (...a: unknown[]) => place(...a),
 }));
 
-vi.mock("./form/browser", () => ({ formEngineAvailable: () => true }));
+vi.mock("./form/engine-image", () => ({ formEngineAvailable: async () => true }));
 
 const { channelStates, sendMysteryShop } = await import("./send");
 const { EmailSuppressedError } = await import("@/lib/comms/email-suppression");

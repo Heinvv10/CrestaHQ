@@ -5,7 +5,7 @@ import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import type { SubAccountDoc } from "@/types";
 import { normalizeEmailTarget, normalizeFormUrl } from "../targets";
 import type { ChannelState } from "../send";
-import { formEngineAvailable } from "./browser";
+import { formEngineAvailable } from "./engine-image";
 import type { FormIdentity } from "./mapping";
 
 /**
@@ -45,17 +45,17 @@ const mailboxAddress = (sub: SubAccountDoc) => normalizeEmailTarget(sub.mailboxC
 
 /**
  * The form channel needs a working synced mailbox (its address goes in the
- * form and the reply is timed from it) and the engine's Chromium on disk.
+ * form and the reply is timed from it) and the engine's container image.
  * No SMTP: nothing is emailed.
  */
-export function formChannelState(sub: SubAccountDoc): ChannelState {
+export async function formChannelState(sub: SubAccountDoc): Promise<ChannelState> {
   const mailbox = sub.mailboxConfig;
   if (!mailbox?.enabled || !mailbox.verifiedAt) {
     return { available: false, reason: "Connect your IMAP mailbox in Messaging settings first, so replies can be timed." };
   }
   if (mailbox.lastError) return { available: false, reason: `The mailbox sync is failing: ${mailbox.lastError}` };
   if (!mailboxAddress(sub)) return { available: false, reason: "The mailbox address isn't known." };
-  if (!formEngineAvailable()) return { available: false, reason: "The form engine isn't installed on this server." };
+  if (!(await formEngineAvailable())) return { available: false, reason: "The form engine isn't installed on this server." };
   return { available: true };
 }
 

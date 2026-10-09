@@ -46,7 +46,8 @@ export const html = (res: http.ServerResponse, body: string, status = 200, heade
   res.end(body);
 };
 
-export async function serve(routes: Record<string, Handler>): Promise<Fixture> {
+/** `host` 0.0.0.0: reachable from a container through the docker bridge (the docker-gated test). */
+export async function serve(routes: Record<string, Handler>, host = "127.0.0.1"): Promise<Fixture> {
   const hits: string[] = [];
   const posts: { path: string; body: string }[] = [];
   const server = http.createServer((req, res) => {
@@ -66,7 +67,7 @@ export async function serve(routes: Record<string, Handler>): Promise<Fixture> {
     hits.push(`UPGRADE ${req.url}`);
     socket.destroy();
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const { port } = server.address() as { port: number };
   return {
     origin: `http://127.0.0.1:${port}`,

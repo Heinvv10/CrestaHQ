@@ -7,7 +7,8 @@ import type { SubAccountDoc } from "@/types";
 import { RESPONSE_WINDOW_MS, TIMER_GRACE_MS } from "../model";
 import { attachProviderRef, markSent, markUncertain, releaseShop } from "../store";
 import { queueTimer } from "../context";
-import { runFormFill, type FormResult, type FormRunInput } from "./engine";
+import type { FormResult, FormRunInput } from "./engine";
+import { runFormInContainer } from "./container";
 import { claimRun, countRequeue, markRejected, releaseLease, stampSubmit, takeLease } from "./job-store";
 import { formIdentity } from "./target";
 
@@ -66,7 +67,7 @@ async function settle(shopId: string, result: FormResult, providerRef: string, p
 
 export async function runFormJob(
   shopId: string,
-  deps: { run?: (input: FormRunInput) => Promise<FormResult>; fetchImpl?: FormRunInput["fetchImpl"] } = {},
+  deps: { run?: (input: FormRunInput) => Promise<FormResult> } = {},
 ): Promise<FormJobOutcome> {
   const db = getAdminDb();
   const shop = (await db.doc(`mysteryShops/${shopId}`).get()).data();
@@ -104,12 +105,11 @@ export async function runFormJob(
       await releaseShop(shopId, "refused", { code: "channel_unavailable", reason: "The mailbox address isn't known." });
       return "refused";
     }
-    const result = await (deps.run ?? runFormFill)({
-      url: String(shop.target),
-      identity,
-      fetchImpl: deps.fetchImpl,
-      onBeforeSubmit: () => stampSubmit(shopId),
-    });
+    const stamp = () => stampSubmit(shopId);
+    // In production the fill runs in its own container (container.ts); tests inject the in-process engine.
+    const result = deps.run
+      ? await deps.run({ url: String(shop.target), identity, onBeforeSubmit: stamp })
+      : await runFormInContainer({ url: String(shop.target), identity, traceId: shopId }, stamp);
     return await settle(shopId, result, `form:${shopId}:${Date.now()}`, identity.phone);
   } finally {
     await releaseLease(holder).catch(logged("lease release", shopId));

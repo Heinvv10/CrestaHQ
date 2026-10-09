@@ -60,7 +60,7 @@ export async function channelStates(
     : !vapiAppUrlConfigured()
       ? { available: false, reason: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL)." }
       : { available: true };
-  return { email, call, whatsapp: await whatsappState(subAccountId, sub), form: formChannelState(sub) };
+  return { email, call, whatsapp: await whatsappState(subAccountId, sub), form: await formChannelState(sub) };
 }
 
 /**

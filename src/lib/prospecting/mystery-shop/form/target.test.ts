@@ -4,7 +4,7 @@ import type { SubAccountDoc } from "@/types";
 /** The form channel's availability and the identity the form is filled with. formTargetOf: route.form.test.ts. */
 
 const available = vi.fn();
-vi.mock("./browser", () => ({ formEngineAvailable: () => available() }));
+vi.mock("./engine-image", () => ({ formEngineAvailable: async () => available() }));
 const { formChannelState, formIdentity } = await import("./target");
 
 const MAILBOX = { enabled: true, verifiedAt: "2026-10-01T00:00:00Z", username: "Info@CrestaHQ.com", lastError: null };
@@ -15,22 +15,22 @@ const enquiry = { subject: "Enquiry: plumber", message: "Hi", service: "plumber"
 beforeEach(() => available.mockReset().mockReturnValue(true));
 
 describe("formChannelState", () => {
-  it("needs a working synced mailbox with a known address, then the engine", () => {
-    expect(formChannelState(sub())).toEqual({ available: true });
-    expect(formChannelState(sub({ mailboxConfig: null }))).toMatchObject({ available: false, reason: expect.stringMatching(/IMAP/) });
-    expect(formChannelState(sub({ mailboxConfig: { ...MAILBOX, verifiedAt: "" } }))).toMatchObject({ available: false });
-    expect(formChannelState(sub({ mailboxConfig: { ...MAILBOX, enabled: false } }))).toMatchObject({ available: false });
-    expect(formChannelState(sub({ mailboxConfig: { ...MAILBOX, lastError: "Login failed." } }))).toEqual({
+  it("needs a working synced mailbox with a known address, then the engine", async () => {
+    expect(await formChannelState(sub())).toEqual({ available: true });
+    expect(await formChannelState(sub({ mailboxConfig: null }))).toMatchObject({ available: false, reason: expect.stringMatching(/IMAP/) });
+    expect(await formChannelState(sub({ mailboxConfig: { ...MAILBOX, verifiedAt: "" } }))).toMatchObject({ available: false });
+    expect(await formChannelState(sub({ mailboxConfig: { ...MAILBOX, enabled: false } }))).toMatchObject({ available: false });
+    expect(await formChannelState(sub({ mailboxConfig: { ...MAILBOX, lastError: "Login failed." } }))).toEqual({
       available: false, reason: "The mailbox sync is failing: Login failed.",
     });
-    expect(formChannelState(sub({ mailboxConfig: { ...MAILBOX, username: "desk" } }))).toEqual({
+    expect(await formChannelState(sub({ mailboxConfig: { ...MAILBOX, username: "desk" } }))).toEqual({
       available: false, reason: "The mailbox address isn't known.",
     });
   });
 
-  it("the engine missing is its own reason (the route's 403 channel_unavailable)", () => {
+  it("the engine missing is its own reason (the route's 403 channel_unavailable)", async () => {
     available.mockReturnValue(false);
-    expect(formChannelState(sub())).toEqual({ available: false, reason: "The form engine isn't installed on this server." });
+    expect(await formChannelState(sub())).toEqual({ available: false, reason: "The form engine isn't installed on this server." });
   });
 });
 

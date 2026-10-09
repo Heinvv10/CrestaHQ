@@ -124,9 +124,6 @@ importers:
       nodemailer:
         specifier: ^10.0.0
         version: 10.0.0
-      playwright-core:
-        specifier: 1.62.1
-        version: 1.62.1
       react:
         specifier: 19.1.0
         version: 19.1.0
@@ -233,12 +230,18 @@ importers:
       jsdom:
         specifier: 26.1.0
         version: 26.1.0
+      playwright-core:
+        specifier: 1.62.1
+        version: 1.62.1
       prettier:
         specifier: ^3.8.1
         version: 3.8.1
       prettier-plugin-tailwindcss:
         specifier: ^0.7.2
         version: 0.7.2(prettier@3.8.1)
+      rolldown:
+        specifier: 1.2.6
+        version: 1.2.6
       tailwindcss:
         specifier: ^4
         version: 4.2.1
