@@ -12,6 +12,7 @@ import { enquiryVars } from "./enquiry";
 import { SPEED_CHECK_TEMPLATE_NAME, missingTemplateReason, pickShopTemplate, templateProblem } from "./whatsapp-template";
 import type { ChannelState, SendResult } from "./send";
 import { recordProviderRef, stampSendStart } from "./store";
+import { LATE_REPLY_HORIZON_MS } from "./model";
 
 /**
  * The WhatsApp mystery shop (PR 5b) over the existing template rail — never a
@@ -120,6 +121,12 @@ export async function sendWhatsappShop(input: {
     actorUid: input.uid,
   });
   if (sent.ok) {
+    // The template send paused the bot for the usual 12 h; a business we
+    // mystery-shopped must not get a bot's answer however late it replies.
+    await getAdminDb()
+      .doc(`conversations/${input.contactId}`)
+      .update({ botPausedUntil: new Date(started.getTime() + LATE_REPLY_HORIZON_MS) })
+      .catch((err) => console.error("[prospecting/mystery-shop] bot pause not extended", input.shopId, err));
     return sent.sid ? { ok: true, providerRef: sent.sid } : { ok: false, kind: "uncertain", providerRef: null, reason: "No message id came back." };
   }
   if (sent.attempted && sent.providerOutcome === "DEFINITELY_REJECTED") return { ok: false, kind: "failed", reason: sent.error };

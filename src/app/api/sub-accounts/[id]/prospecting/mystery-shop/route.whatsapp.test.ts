@@ -158,6 +158,13 @@ describe("WhatsApp: the send", () => {
     expect((shops()[0].sentAt as Date).getTime()).toBe((seen.before.sentAt as Date).getTime());
   });
 
+  it("the conversation's bot stays paused until the shop's late-reply horizon, not the template send's 12 h", async () => {
+    mem.seed("conversations/c1", { subAccountId: "sa1", botPausedUntil: new Date(Date.now() + 12 * 3600_000) });
+    expect((await post(wa())).status).toBe(202);
+    const { LATE_REPLY_HORIZON_MS } = await import("@/lib/prospecting/mystery-shop/model");
+    expect((mem.read("conversations/c1")?.botPausedUntil as Date).getTime()).toBe((shops()[0].sentAt as Date).getTime() + LATE_REPLY_HORIZON_MS);
+  });
+
   it("no town: {{2}} reads 'your area' — never an empty parameter", async () => {
     seedContact("c1", { city: "  " });
     await readHashes();

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
+import { mysteryShopHoldsAi } from "@/lib/prospecting/mystery-shop/ai-hold";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
@@ -79,7 +80,8 @@ type AiSkipReason =
   | "bot_paused"
   | "quota"
   | "reply_loop"
-  | "llm_failed";
+  | "llm_failed"
+  | "mystery_shop";
 
 type RespondOutcome =
   | { kind: "replied"; replyText: string; tokens: number }
@@ -380,6 +382,27 @@ export async function maybeRespondWithAi(
   // The conversation/draft channel mirrors the platform for Meta DMs
   // ("messenger" | "instagram"); for Twilio channels it IS the channel id.
   const conversationChannel = (metaChannel ?? channelId) as ConversationChannel;
+
+  // Guard: a business we are mystery-shopping (Prospecting) must never get a
+  // bot's answer to our enquiry. First, and fail closed: if the shops can't be
+  // read, stay quiet.
+  if (channelId === "whatsapp") {
+    const held = await mysteryShopHoldsAi(subAccount, subAccountId, contact.id, replyTo).catch((err) => {
+      console.error("[ai/respond] mystery-shop check failed — not replying", err);
+      return true;
+    });
+    if (held) {
+      await logActivity({
+        contactId: contact.id,
+        agencyId: subAccount.agencyId,
+        subAccountId,
+        type: "ai_skipped",
+        content: "AI reply skipped — this number is being mystery-shopped (Prospecting).",
+        meta: { reason: "mystery_shop", channel: channelId },
+      });
+      return { kind: "skipped", reason: "mystery_shop" };
+    }
+  }
 
   // Guard: contact is opted out of this channel.
   if (transport.isOptedOut(contact)) {
