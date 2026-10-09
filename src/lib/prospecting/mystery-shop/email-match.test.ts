@@ -80,7 +80,7 @@ describe("form shops: a target set instead of a target address", () => {
   });
 
   it("a bounce never fails a form shop (nothing was emailed)", () => {
-    const dsn = { ...NO_DSN, contentType: "multipart/report", deliveryStatus: "Action: failed\nFinal-Recipient: rfc822; x@acme.co.za", text: "form:f1:1" };
+    const dsn = { ...NO_DSN, contentType: "multipart/report", deliveryStatus: "Action: failed", text: "form:f1:1" };
     expect(decide(mail("mailer-daemon@acme.co.za", { dsn, inReplyTo: "form:f1:1" }), [form()])).toEqual({ f1: "none" });
   });
 });

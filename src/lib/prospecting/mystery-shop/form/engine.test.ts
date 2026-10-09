@@ -126,13 +126,43 @@ describe.skipIf(skipBrowser)("confirmation", () => {
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
   });
 
-  it("a 2xx POST from before the click (analytics on load) is not a confirmation", async () => {
+  it("a 2xx POST from before the click (analytics while typing) is not a confirmation", async () => {
     const out = await run({
-      "/contact": (_q, res) => html(res, scripted("") + `<script>fetch("/api/track", { method: "POST", body: "x=1" });</script>`),
+      "/contact": (_q, res) =>
+        html(res, scripted("") + `<script>document.addEventListener("focusin", () => fetch("/api/track", { method: "POST", body: "x=1" }), { once: true });</script>`),
       "/api/track": (_q, res) => html(res, "{}", 200),
     }, "/contact", { limits: { settleMs: 300, confirmMs: 1_500 } });
     expect(site.posts.map((p) => p.path)).toEqual(["/api/track"]);
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("a submit whose connection dropped shows Chromium's error page: uncertain, not a navigation", async () => {
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS)),
+      "/send": (q) => q.socket.destroy(),
+    }, "/contact", { limits: { settleMs: 100, confirmMs: 1_500 } });
+    expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("a page that blanks itself after the submit has not navigated anywhere", async () => {
+    const out = await run({ "/contact": (_q, res) => html(res, scripted(`location.href = "about:blank";`)) }, "/contact", {
+      limits: { settleMs: 100, confirmMs: 1_500 },
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("the submit is stamped (onBeforeSubmit) before the form is posted; if that fails nothing is posted", async () => {
+    const postsAtStamp: number[] = [];
+    const routes = { "/contact": ((_q, res) => html(res, form(SIMPLE_FIELDS))) as Handler, "/send": thanks };
+    const ok = await run(routes, "/contact", { onBeforeSubmit: async () => void postsAtStamp.push(site.posts.length) });
+    expect(ok.kind).toBe("sent");
+    expect(postsAtStamp).toEqual([0]);
+    expect(site.posts).toHaveLength(1);
+    await site.close();
+    const failed = await run(routes, "/contact", { onBeforeSubmit: () => Promise.reject(new Error("firestore down")) });
+    expect(failed).toMatchObject({ kind: "failed", code: "engine_failed" });
+    expect(site.posts).toEqual([]);
   });
 
   it("no signal at all → uncertain (it may have gone through), never failed", async () => {

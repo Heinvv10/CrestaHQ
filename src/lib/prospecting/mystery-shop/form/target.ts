@@ -34,9 +34,9 @@ export async function formTargetOf(
   }
   const sections = Array.isArray(report.sections) ? (report.sections as { key?: unknown; raw?: Record<string, unknown> }[]) : [];
   const raw = sections.find((s) => s?.key === "lead_capture")?.raw;
-  if (!raw || !("formUrl" in raw)) return { url: null, reason: NEW_REPORT };
-  if (raw.formUrl === null) return { url: null, reason: null };
-  const url = normalizeFormUrl(raw.formUrl);
+  // A report from before lead capture recorded formUrl has no such key: undefined, so a new report is asked for.
+  if (raw?.formUrl === null) return { url: null, reason: null };
+  const url = normalizeFormUrl(raw?.formUrl);
   return url ? { url, reason: null } : { url: null, reason: NEW_REPORT };
 }
 
