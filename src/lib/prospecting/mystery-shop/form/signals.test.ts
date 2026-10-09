@@ -72,6 +72,23 @@ describe.skipIf(skipBrowser)("Z1: a 3xx answer to the enquiry is never a confirm
     expect(out).toMatchObject({ kind: "sent", trace: { finalUrl: `${site.origin}/send2` } });
   }, T);
 
+  it("a 302 to another path is not re-posted (and not followed): uncertain", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 302, { location: "/thank-you" }), "/thank-you": thanks });
+    expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("only ONE hop: a 308 whose target answers another 308 is uncertain", async () => {
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS)),
+      "/send": (_q, res) => html(res, "", 308, { location: "/send2" }),
+      "/send2": (_q, res) => html(res, "", 308, { location: "/send3" }),
+      "/send3": thanks,
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/send", "/send2"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
   it("a 301 to the same path with a trailing slash is re-posted too", async () => {
     const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 301, { location: "/send/" }), "/send/": thanks });
     expect(site.posts.map((p) => p.path)).toEqual(["/send", "/send/"]);

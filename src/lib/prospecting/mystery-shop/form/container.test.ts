@@ -130,6 +130,16 @@ describe("the submit handshake", () => {
     expect(r).toMatchObject({ kind: "failed", code: "engine_failed" });
   });
 
+  it("a stamp that fails answers at once, even if the container never closes", async () => {
+    stamp.mockRejectedValueOnce(new Error("firestore down"));
+    child.kill = (signal) => (child.killed.push(signal ?? "SIGTERM"), true);
+    const out = run({ timeoutMs: 10_000 });
+    await tick();
+    child.say({ type: "submitting" });
+    const r = await Promise.race([out, new Promise((res) => setTimeout(() => res("still waiting"), 1_000))]);
+    expect(r).toMatchObject({ kind: "failed", code: "engine_failed" });
+  });
+
   it("a stamp that hangs can't keep the job waiting: the wall clock answers uncertain (the stamp may land)", async () => {
     stamp.mockImplementationOnce(() => new Promise(() => undefined));
     const out = run({ timeoutMs: 100 });
