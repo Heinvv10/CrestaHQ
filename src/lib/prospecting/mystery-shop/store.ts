@@ -50,7 +50,8 @@ export interface ReserveInput {
 
 /**
  * Create the shop `queued` and charge the month, atomically. Refuses while the
- * contact has a queued/sent shop on the same channel, then at the cap. Every
+ * contact (for WhatsApp, or the number) has a queued/sent shop on the same
+ * channel, then at the cap. Every
  * reservation reads then writes the month's usage doc, so concurrent ones
  * conflict and the retry sees the other's shop. Throws on a Firestore error.
  */
@@ -66,7 +67,19 @@ export async function reserveShop(input: ReserveInput): Promise<{ shopId: string
   return db.runTransaction(async (tx) => {
     const used = usedOf((await tx.get(usageRef)).data());
     const existing = await tx.get(contactShops);
-    const open = existing.docs.some((d) => d.data()?.channel === input.channel && OPEN_STATUSES.has(d.data()?.status));
+    // WhatsApp: one open shop per NUMBER too — another contact can carry the same one.
+    const sameNumber =
+      input.channel === "whatsapp"
+        ? await tx.get(
+            db.collection("mysteryShops")
+              .where("subAccountId", "==", input.subAccountId)
+              .where("channel", "==", "whatsapp")
+              .where("target", "==", input.target),
+          )
+        : null;
+    const open =
+      existing.docs.some((d) => d.data()?.channel === input.channel && OPEN_STATUSES.has(d.data()?.status)) ||
+      !!sameNumber?.docs.some((d) => OPEN_STATUSES.has(d.data()?.status));
     if (open) return "shop_in_progress" as const;
     if (used >= input.cap) return "cap_reached" as const;
     const now = new Date();

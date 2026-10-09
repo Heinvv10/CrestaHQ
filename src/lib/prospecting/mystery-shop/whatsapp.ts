@@ -3,6 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { checkWhatsappReadiness } from "@/lib/comms/whatsapp/readiness";
+import { resolveWhatsappSender } from "@/lib/comms/whatsapp/resolve-sender";
 import { isDocId } from "@/lib/server/doc-id";
 import { prepareWhatsappTemplateSend, renderPreview, sendWhatsappTemplate } from "@/lib/server/whatsapp-template-send";
 import type { ContactProspecting, SubAccountDoc } from "@/types";
@@ -94,9 +95,23 @@ export async function sendWhatsappShop(input: {
     return { ok: false, kind: "refused", code: "opted_out", reason: "This contact has opted out of WhatsApp." };
   }
   if (!enquiry) return { ok: false, kind: "refused", code: "channel_unavailable", reason: "The WhatsApp template isn't available." };
+  // Any contact of this sub-account with this number that opted out: its STOP is the number's.
+  const sameNumber = await getAdminDb()
+    .collection("contacts")
+    .where("subAccountId", "==", input.contact.subAccountId)
+    .where("phone", "==", input.target)
+    .get();
+  if (sameNumber.docs.some((d) => d.data()?.whatsappOptedOut === true)) {
+    return { ok: false, kind: "refused", code: "opted_out", reason: "This number has opted out of WhatsApp." };
+  }
   const contact = { ...input.contact, phone: input.target };
   const prepared = await prepareWhatsappTemplateSend(contact, enquiry.templateId, { "1": enquiry.values[0], "2": enquiry.values[1] });
   if (!prepared.ok) return { ok: false, kind: "refused", code: "channel_unavailable", reason: prepared.error };
+  // Re-checked on the sub-account as just loaded: replies are only timed on the Cloud rail.
+  const sender = resolveWhatsappSender(prepared.subAccount);
+  if (!sender.ok || sender.provider !== "cloud") {
+    return { ok: false, kind: "refused", code: "channel_unavailable", reason: "The default WhatsApp sender is no longer a WhatsApp Cloud sender." };
+  }
   if (renderPreview(prepared.tpl.body, prepared.values) !== enquiry.text) {
     return { ok: false, kind: "refused", code: "enquiry_changed", reason: "The WhatsApp template changed — reopen the dialog." };
   }

@@ -231,6 +231,33 @@ describe("WhatsApp: the send", () => {
     expect((await post(wa())).status).toBe(409);
   });
 
+  it("409 shop_in_progress for another contact with the same number while a WhatsApp shop to it is open", async () => {
+    expect((await post(wa())).status).toBe(202);
+    await readHashes("c2");
+    const res = await post(wa({ contactId: "c2" }));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "shop_in_progress" });
+    expect(waSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("403 opted_out when ANY contact with this number opted out of WhatsApp", async () => {
+    mem.seed("contacts/cDup", { subAccountId: "sa1", agencyId: "ag1", phone: PHONE, whatsappOptedOut: true });
+    mem.seed("contacts/cElsewhere", { subAccountId: "sa2", agencyId: "ag1", phone: "+27821234599", whatsappOptedOut: true });
+    const res = await post(wa());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "opted_out" });
+    expect(waSend).not.toHaveBeenCalled();
+  });
+
+  it("refused when the freshly loaded sub-account's default sender is no longer Cloud", async () => {
+    seedSa(true, { whatsappEnabledByAgency: true, whatsappProvider: "twilio" });
+    const res = await post(wa());
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "channel_unavailable" });
+    expect(waSend).not.toHaveBeenCalled();
+    expect(shops()[0]).toMatchObject({ status: "refused" });
+  });
+
   it("409 shop_in_progress while a WhatsApp shop is open for the contact", async () => {
     expect((await post(wa())).status).toBe(202);
     const res = await post(wa());
