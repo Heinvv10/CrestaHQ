@@ -85,6 +85,12 @@ jobs:
       - name: Tests
         run: pnpm test
 
+      # The form engine's container runner, bundled as the image ships it, must
+      # answer an invalid job with one well-formed result line. (CI has no
+      # docker: the bundle runs on the runner's own node.)
+      - name: Form engine runner smoke
+        run: node scripts/form-engine-image.mjs --bundle-only && node scripts/form-engine-smoke.mjs local
+
       # Evaluates the repo's firestore.rules through the Firebase Rules test
       # API — nothing is deployed, no data is read. The Admin credential is
       # scoped to this step only, so no unit test above can reach production
