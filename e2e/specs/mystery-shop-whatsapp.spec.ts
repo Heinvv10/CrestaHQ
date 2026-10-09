@@ -22,37 +22,47 @@ import { whatsappCloudSecretPath } from "../../src/types/whatsapp-cloud";
  */
 
 const sa = () => readEnv().E2E_SUBACCOUNT_ID;
+// E.164-shaped so the contact's own-number rules apply; it is never dialled or messaged: the POST is
+// intercepted in the browser and the fixture's Cloud connection holds no real token.
 const PHONE = "+27820000001";
 const FIELDS = [
   "prospectingEnabledByAgency", "whatsappEnabledByAgency", "whatsappProvider", "whatsappCloudMeta", "whatsappSenders",
   "prospectingMysteryShopTemplates",
 ] as const;
 
-/** The fixture on the Cloud rail; `connected` decides whether its (fake) connection doc exists. Returns the restore. */
-async function onCloudRail(connected: boolean): Promise<() => Promise<void>> {
+/**
+ * Snapshot the fixture's fields and Cloud connection doc, and hand back the
+ * restore BEFORE anything is written, so a throw mid-setup still restores.
+ * `apply` then puts the fixture on the Cloud rail; `connected` decides whether
+ * its (fake) connection doc exists.
+ */
+async function cloudRailFixture() {
   await assertFixtureSubAccount(sa(), FIXTURE_PRIMARY_NAME);
   const db = adminDb();
   const saRef = db.doc(`subAccounts/${sa()}`);
   const connRef = db.doc(whatsappCloudSecretPath(sa()));
   const before = (await saRef.get()).data() ?? {};
   const priorConn = (await connRef.get()).data();
-  await saRef.update({
-    prospectingEnabledByAgency: true,
-    whatsappEnabledByAgency: true,
-    whatsappProvider: "cloud",
-    whatsappCloudMeta: { phoneNumberId: "e2e-mystery-phone", displayPhoneNumber: "+27 60 000 0000", verifiedName: "E2E", connectedAt: new Date(), connectedByUid: "e2e" },
-    // No sender registry: the default sender is the Cloud rail above.
-    whatsappSenders: FieldValue.delete(),
-    prospectingMysteryShopTemplates: FieldValue.delete(),
-  });
-  if (connected) await connRef.set({ phoneNumberId: "e2e-mystery-phone", wabaId: "e2e-waba", accessToken: "e2e-not-a-token" });
-  else await connRef.delete();
-  return async () => {
+  const restore = async () => {
     await assertFixtureSubAccount(sa(), FIXTURE_PRIMARY_NAME);
     await saRef.update(Object.fromEntries(FIELDS.map((f) => [f, before[f] === undefined ? FieldValue.delete() : before[f]])));
     if (priorConn) await connRef.set(priorConn);
     else await connRef.delete();
   };
+  const apply = async (connected: boolean) => {
+    await saRef.update({
+      prospectingEnabledByAgency: true,
+      whatsappEnabledByAgency: true,
+      whatsappProvider: "cloud",
+      whatsappCloudMeta: { phoneNumberId: "e2e-mystery-phone", displayPhoneNumber: "+27 60 000 0000", verifiedName: "E2E", connectedAt: new Date(), connectedByUid: "e2e" },
+      // No sender registry: the default sender is the Cloud rail above.
+      whatsappSenders: FieldValue.delete(),
+      prospectingMysteryShopTemplates: FieldValue.delete(),
+    });
+    if (connected) await connRef.set({ phoneNumberId: "e2e-mystery-phone", wabaId: "e2e-waba", accessToken: "e2e-not-a-token" });
+    else await connRef.delete();
+  };
+  return { restore, apply };
 }
 
 async function seedContact(stamp: number) {
@@ -67,23 +77,27 @@ async function seedContact(stamp: number) {
   });
 }
 
-async function cleanUp(contactRef: FirebaseFirestore.DocumentReference) {
+/** Every shop and the contact; each step its own, so one failing does not skip the rest. */
+async function cleanUp(contactRef: FirebaseFirestore.DocumentReference | null) {
+  if (!contactRef) return;
   const shops = await adminDb().collection("mysteryShops").where("subAccountId", "==", sa()).where("contactId", "==", contactRef.id).get();
   for (const d of shops.docs) await deleteScoped(d.ref);
   await deleteScoped(contactRef);
 }
 
 test("Mystery shop (WhatsApp): disabled with its reason when no sender is connected @not-on-prod", async ({ page }) => {
-  const restore = await onCloudRail(false);
-  const contactRef = await seedContact(Date.now());
+  const fixture = await cloudRailFixture();
+  let contactRef: FirebaseFirestore.DocumentReference | null = null;
   try {
+    await fixture.apply(false);
+    contactRef = await seedContact(Date.now());
     await page.goto(`/sa/${sa()}/contacts/${contactRef.id}`);
     await expect(page.getByTestId("mystery-shop")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("mystery-shop-whatsapp")).toBeDisabled();
     await expect(page.getByTestId("mystery-shop-whatsapp-reason")).toHaveText("WhatsApp: No WhatsApp sender is connected.");
   } finally {
     try {
-      await restore();
+      await fixture.restore();
     } finally {
       await cleanUp(contactRef);
     }
@@ -94,12 +108,14 @@ test("Mystery shop (WhatsApp): approved template → the dialog names the number
   const env = readEnv();
   const stamp = Date.now();
   const db = adminDb();
-  const restore = await onCloudRail(true);
+  const fixture = await cloudRailFixture();
   const tplRef = db.doc(`subAccounts/${sa()}/whatsappTemplates/e2e-speed-check-${stamp}`);
-  const contactRef = await seedContact(stamp);
-  const contactId = contactRef.id;
+  let contactRef: FirebaseFirestore.DocumentReference | null = null;
   const posted: unknown[] = [];
   try {
+    await fixture.apply(true);
+    contactRef = await seedContact(stamp);
+    const contactId = contactRef.id;
     await tplRef.set({
       agencyId: env.E2E_AGENCY_ID, subAccountId: sa(), createdByUid: "e2e", name: "leadstack_speed_check",
       displayName: "E2E speed check", category: "UTILITY", language: "en",
@@ -147,15 +163,20 @@ test("Mystery shop (WhatsApp): approved template → the dialog names the number
     await expect(card.getByText(new RegExp(`WhatsApp to \\${PHONE} — sent \\d+ (s|m) ago, delivered, waiting for a reply \\(24 h\\)`))).toBeVisible({
       timeout: 30_000,
     });
-    expect(posted).toEqual([
-      { contactId, channel: "whatsapp", confirm: true, target: PHONE, enquiryHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
-    ]);
+    // The interception caught the one POST: none reached the real route.
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toEqual({
+      contactId, channel: "whatsapp", confirm: true, target: PHONE, enquiryHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   } finally {
     try {
-      await restore();
+      await fixture.restore();
     } finally {
-      await deleteScoped(tplRef);
-      await cleanUp(contactRef);
+      try {
+        await deleteScoped(tplRef);
+      } finally {
+        await cleanUp(contactRef);
+      }
     }
   }
 });

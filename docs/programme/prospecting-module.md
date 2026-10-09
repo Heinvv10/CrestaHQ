@@ -134,6 +134,7 @@ Deploys: after 17:00 SAST, Hein's approval per deploy. `firebase deploy --only f
 - A reply counts from the target number only, at Meta's own message timestamp, with `senderAuth: "pass"` (the number is WhatsApp's registration on Meta's signed webhook). WhatsApp Business away / greeting texts (en, af) are `autoReplyAt` only. A STOP / START word from the number is an opt-out, not a response.
 - A Cloud `failed` receipt for our message id makes the shop `failed` / `undeliverable` (slot kept, never public); `delivered` / `read` are stamped for the card.
 - Bridge and Twilio inbound are not matched: #1000 is Cloud. Cloud template sends are not metered (no template send on that rail is).
+- Review round 1: a reply within 60 s of the send, or a short message that is mostly greeting/away phrasing, is automatic; reactions and system notices don't count. Our WhatsApp AI never answers a number (or contact) with a WhatsApp shop inside the late-reply horizon (one guard in `maybeRespondWithAi`, all rails), and the send pauses the bot until then. A WhatsApp miss can be confirmed only with a delivery receipt, never after a STOP, and after an automatic-looking reply only once the member says they read the thread. One open WhatsApp shop per number.
 
 ## What proves it worked
 
