@@ -240,9 +240,12 @@ describe("WhatsApp: the send", () => {
     expect(waSend).toHaveBeenCalledTimes(1);
   });
 
-  it("403 opted_out when ANY contact with this number opted out of WhatsApp", async () => {
+  it("403 opted_out when ANY contact with this number opted out of WhatsApp — in this sub-account only", async () => {
+    mem.seed("contacts/cElsewhere", { subAccountId: "sa2", agencyId: "ag1", phone: PHONE, whatsappOptedOut: true });
+    expect((await post(wa())).status).toBe(202);
+    await mem.db.doc(`mysteryShops/${shops()[0].id}`).update({ status: "responded" });
     mem.seed("contacts/cDup", { subAccountId: "sa1", agencyId: "ag1", phone: PHONE, whatsappOptedOut: true });
-    mem.seed("contacts/cElsewhere", { subAccountId: "sa2", agencyId: "ag1", phone: "+27821234599", whatsappOptedOut: true });
+    waSend.mockClear();
     const res = await post(wa());
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({ code: "opted_out" });
@@ -256,6 +259,15 @@ describe("WhatsApp: the send", () => {
     expect(await res.json()).toMatchObject({ code: "channel_unavailable" });
     expect(waSend).not.toHaveBeenCalled();
     expect(shops()[0]).toMatchObject({ status: "refused" });
+  });
+
+  it("the GET sweep turns an overdue shop whose thread row failed into undeliverable, not a miss", async () => {
+    expect((await post(wa())).status).toBe(202);
+    const id = shops()[0].id;
+    await mem.db.doc(`mysteryShops/${id}`).update({ sentAt: new Date(Date.now() - 26 * 3600_000) });
+    mem.seed(`contacts/c1/whatsappMessages/${WAMID}`, { direction: "outbound", status: "failed", error: "131026" });
+    const body = (await (await list()).json()) as { shops: Array<{ status: string; failure: { code: string } | null }> };
+    expect(body.shops[0]).toMatchObject({ status: "failed", failure: { code: "undeliverable" } });
   });
 
   it("409 shop_in_progress while a WhatsApp shop is open for the contact", async () => {

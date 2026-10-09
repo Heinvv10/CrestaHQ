@@ -55,6 +55,9 @@ describe("the send's own record", () => {
     await recordProviderRef("q1", "wamid.A");
     expect(await recordProviderRef("q1", "wamid.B")).toBe(false);
     expect(shop("q1").providerRef).toBe("wamid.A");
+    seed("f1", { status: "failed", providerRef: null });
+    expect(await recordProviderRef("f1", "wamid.F")).toBe(false);
+    expect(shop("f1").providerRef).toBeNull();
   });
 
   it("a failed receipt that beats markSent marks the queued shop undeliverable (it reached Meta: no refund)", async () => {
