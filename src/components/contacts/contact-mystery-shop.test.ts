@@ -138,13 +138,20 @@ describe("ContactMysteryShop", () => {
       responseMs: null, autoReplyAt: null, jobValueCents: 150_000, currency: "ZAR", enquiryText: "", failure: null,
       createdAt: null, missedConfirmedAt: null, deliveredAt: "2026-10-07T08:00:02.000Z", optOutAt: null, ...extra,
     });
-    payload.shops = [wa("w0", { deliveredAt: null }), wa("w1", { optOutAt: "2026-10-07T09:00:00.000Z" }), wa("w2", { autoReplyAt: "2026-10-07T08:00:05.000Z" })];
+    payload.shops = [
+      wa("w0", { deliveredAt: null }), wa("w1", { optOutAt: "2026-10-07T09:00:00.000Z" }), wa("w2", { autoReplyAt: "2026-10-07T08:00:05.000Z" }),
+      wa("w3", { deliveredAt: null, readAt: "2026-10-07T08:01:00.000Z" }), wa("w4", { replyNeedsReview: true }),
+    ];
     await mount();
     expect(q("mystery-shop-confirm-missed-w0")).toBeNull();
     expect(q("mystery-shop-miss-note-w0")?.textContent).toContain("WhatsApp never confirmed this message was delivered");
     expect(q("mystery-shop-confirm-missed-w1")).toBeNull();
     expect(q("mystery-shop-miss-note-w1")?.textContent).toContain("replied STOP");
     expect(q("mystery-shop-miss-note-w2")?.textContent).toBe("A reply arrived that looked automatic — read the WhatsApp thread before confirming.");
+    // A read receipt alone is delivery; an inbound the matcher did not take needs the same tick.
+    expect((q("mystery-shop-confirm-missed-w3") as HTMLButtonElement).disabled).toBe(false);
+    expect((q("mystery-shop-confirm-missed-w4") as HTMLButtonElement).disabled).toBe(true);
+    expect(q("mystery-shop-miss-note-w4")?.textContent).toBe("A reply arrived that looked automatic — read the WhatsApp thread before confirming.");
     const button = q("mystery-shop-confirm-missed-w2") as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     await click(q("mystery-shop-reviewed-w2"));

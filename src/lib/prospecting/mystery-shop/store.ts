@@ -243,7 +243,8 @@ export async function releaseShop(
  * sender check is flagged `disputed` for the member who decides whether to
  * confirm it (only a confirmed miss is public). A WHATSAPP shop first reads
  * its thread row: failed there → `failed` / undeliverable (returns "failed");
- * delivered / read → stamped as the delivery evidence a confirmation needs.
+ * delivered / read → stamped as the delivery evidence a confirmation needs; an
+ * inbound row from the target since the send → `replyNeedsReview`.
  */
 export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<string | null> {
   const db = getAdminDb();
@@ -252,22 +253,32 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
     const shop = (await tx.get(ref)).data();
     if (!shop) return null;
     if (!canSettleMissed(shop, nowMs)) return shop.status as string;
-    // WhatsApp: the thread row the delivery-status writer keeps is evidence too.
-    // Failed = never delivered, so never a miss; delivered/read = proof for the
-    // member who confirms (stamped now when no receipt reached the shop itself).
-    if (shop.channel === "whatsapp" && typeof shop.providerRef === "string" && shop.providerRef) {
-      const row = (await tx.get(db.doc(`contacts/${shop.contactId}/whatsappMessages/${shop.providerRef}`))).data();
+    // WhatsApp: the thread is evidence too. Our message's row failed = never
+    // delivered, so never a miss; delivered/read = proof for the member who
+    // confirms (stamped now when no receipt reached the shop itself). An
+    // inbound row from the target after the send is a reply the matcher may
+    // have lost: the miss needs the member to read the thread first.
+    if (shop.channel === "whatsapp") {
+      const hasRef = typeof shop.providerRef === "string" && shop.providerRef !== "";
+      const thread = `contacts/${shop.contactId}/whatsappMessages`;
+      const row = hasRef ? (await tx.get(db.doc(`${thread}/${shop.providerRef}`))).data() : undefined;
+      const inbound = await tx.get(db.collection(thread).where("direction", "==", "inbound"));
       if (row?.status === "failed") {
         const detail = typeof row.error === "string" && row.error ? ` (${row.error})` : "";
         tx.update(ref, { status: "failed", failure: { code: "undeliverable", reason: `WhatsApp couldn't deliver the enquiry${detail}.` } });
         return "failed";
       }
       const seen = new Date(nowMs);
-      const stamps = {
-        ...((row?.status === "delivered" || row?.status === "read") && shop.deliveredAt == null ? { deliveredAt: seen } : {}),
+      const evidence = shop.deliveredAt != null || shop.readAt != null;
+      const sentMs = toMs(shop.sentAt)!;
+      const replied = inbound.docs.some((d) => d.data()?.from === shop.target && (toMs(d.data()?.createdAt) ?? 0) >= sentMs);
+      tx.update(ref, {
+        status: "missed",
+        awaitingSync: false,
+        ...((row?.status === "delivered" || row?.status === "read") && !evidence ? { deliveredAt: seen } : {}),
         ...(row?.status === "read" && shop.readAt == null ? { readAt: seen } : {}),
-      };
-      tx.update(ref, { status: "missed", awaitingSync: false, ...stamps });
+        ...(replied ? { replyNeedsReview: true } : {}),
+      });
       return "missed";
     }
     if (shop.channel === "email") {
@@ -299,8 +310,9 @@ export async function requeueTimer(shopId: string): Promise<number | null> {
 /**
  * A member's confirmation of a missed shop — the only way a miss reaches the
  * public report. Keeps the first confirmation. The confirmation time, or why not.
- * A WhatsApp miss also needs a delivery receipt, no STOP from the business, and
- * — after an automatic-looking reply — `reviewedAutoReply` (the member read the thread).
+ * A WhatsApp miss also needs a delivery (or read) receipt, no STOP from the
+ * business, and — after an automatic-looking reply or an inbound one the
+ * matcher did not take (`replyNeedsReview`) — `reviewedAutoReply`.
  */
 export async function confirmMissed(
   shopId: string,
@@ -319,10 +331,12 @@ export async function confirmMissed(
     if (shop.channel === "whatsapp") {
       // The business answered STOP: that is an answer, not a missed lead.
       if (shop.optOutAt != null) return "opted_out" as const;
-      // Never publish a miss for a message WhatsApp never confirmed it delivered.
-      if (shop.deliveredAt == null) return "not_delivered" as const;
-      // An automatic-looking reply may have been a person: the member reads the thread first.
-      if (shop.autoReplyAt != null && opts.reviewedAutoReply !== true) return "review_auto_reply" as const;
+      // Never publish a miss for a message WhatsApp never confirmed it delivered (or read).
+      if (shop.deliveredAt == null && shop.readAt == null) return "not_delivered" as const;
+      // An automatic-looking reply, or an inbound one the matcher did not take, may have
+      // been a person: the member reads the thread first.
+      const toReview = shop.autoReplyAt != null || shop.replyNeedsReview === true;
+      if (toReview && opts.reviewedAutoReply !== true) return "review_auto_reply" as const;
     }
     const at = toMs(shop.missedConfirmedAt);
     if (at !== null) return new Date(at);

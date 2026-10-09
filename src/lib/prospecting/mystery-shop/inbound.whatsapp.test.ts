@@ -133,6 +133,12 @@ describe("matchMysteryShopWhatsApp", () => {
     expect((shop("w1").optOutAt as Date).getTime()).toBe(at(6 * 60_000));
   });
 
+  it("a STOP on a confirmed miss withdraws the confirmation (it was an answer)", async () => {
+    seedDelivered("m1", { status: "missed", missedConfirmedAt: new Date(), missedConfirmedByUid: "u1" });
+    await reply(PHONE, at(6 * 60_000), "STOP", { optOut: true });
+    expect(shop("m1")).toMatchObject({ status: "missed", missedConfirmedAt: null, missedConfirmedByUid: null });
+  });
+
   it("a message timed outside the window (before the send, or after 24 h) settles nothing", async () => {
     seedDelivered("w1");
     await reply(PHONE, SENT - 60_000, "an older message, redelivered late");

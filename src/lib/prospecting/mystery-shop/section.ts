@@ -45,6 +45,8 @@ export interface MemberShop {
   readAt: string | null;
   /** The business replied STOP (replies.ts `recordOptOut`): such a miss can't be confirmed. Member only. */
   optOutAt: string | null;
+  /** An inbound WhatsApp from the target the matcher did not take (store.ts `settleMissed`). Member only. */
+  replyNeedsReview: boolean;
 }
 
 export interface MysteryShopItem {
@@ -96,6 +98,7 @@ export function serializeShop(id: string, d: Record<string, unknown>): MemberSho
     deliveredAt: iso(d.deliveredAt),
     readAt: iso(d.readAt),
     optOutAt: iso(d.optOutAt),
+    replyNeedsReview: d.replyNeedsReview === true,
   };
 }
 

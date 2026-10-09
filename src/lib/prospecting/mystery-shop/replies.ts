@@ -125,7 +125,9 @@ export async function recordOptOut(shopId: string, atMs: number): Promise<boolea
     const sent = toMs(shop?.sentAt);
     const waiting = shop?.status === "sent" || shop?.status === "missed";
     if (!waiting || shop.optOutAt != null || sent === null || !inWindow(sent, atMs)) return false;
-    tx.update(ref, { optOutAt: new Date(atMs) });
+    // A STOP is an answer: a confirmed miss loses its confirmation.
+    const missed = shop.status === "missed" ? { missedConfirmedAt: null, missedConfirmedByUid: null } : {};
+    tx.update(ref, { optOutAt: new Date(atMs), ...missed });
     return true;
   });
 }

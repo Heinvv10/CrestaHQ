@@ -30,10 +30,10 @@ export function MysteryShopConfirmMiss({
     </p>
   );
   if (whatsapp && shop.optOutAt) return note("The business replied STOP, so this can't be published as a missed lead.");
-  if (whatsapp && !shop.deliveredAt) {
+  if (whatsapp && !shop.deliveredAt && !shop.readAt) {
     return note("WhatsApp never confirmed this message was delivered, so it can't be published as a missed lead.");
   }
-  const mustReview = whatsapp && !!shop.autoReplyAt;
+  const mustReview = whatsapp && (!!shop.autoReplyAt || shop.replyNeedsReview);
   return (
     <div className="space-y-1">
       {mustReview && (

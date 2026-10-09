@@ -104,6 +104,26 @@ describe("settleMissed reads the thread row first", () => {
     expect(shop("w2").deliveredAt).toBeUndefined();
   });
 
+  it("an inbound row from the target after the send flags the miss for review (a reply the matcher may have lost)", async () => {
+    seed("w1");
+    mem.seed("contacts/c1/whatsappMessages/in-old", { direction: "inbound", from: "+27821234567", createdAt: new Date(SENT - 60_000) });
+    mem.seed("contacts/c1/whatsappMessages/in-other", { direction: "inbound", from: "+27829999999", createdAt: new Date(SENT + 60_000) });
+    expect(await settleMissed("w1")).toBe("missed");
+    expect(shop("w1").replyNeedsReview).toBeUndefined();
+    seed("w2", { providerRef: "wamid.2" });
+    mem.seed("contacts/c1/whatsappMessages/in-1", { direction: "inbound", from: "+27821234567", createdAt: new Date(SENT + 3 * 3600_000) });
+    expect(await settleMissed("w2")).toBe("missed");
+    expect(shop("w2").replyNeedsReview).toBe(true);
+  });
+
+  it("a read receipt alone is delivery evidence: deliveredAt is not invented", async () => {
+    seed("w1", { readAt: new Date(SENT + 9_000) });
+    mem.seed(ROW, { direction: "outbound", status: "read" });
+    await settleMissed("w1");
+    expect(shop("w1").deliveredAt).toBeUndefined();
+    expect((shop("w1").readAt as Date).getTime()).toBe(SENT + 9_000);
+  });
+
   it("an email shop never looks for a WhatsApp row", async () => {
     seed("e1", { channel: "email" });
     mem.seed(ROW, { direction: "outbound", status: "failed" });
@@ -130,6 +150,17 @@ describe("confirmMissed for a WhatsApp miss", () => {
     seed("w1", { ...delivered, autoReplyAt: new Date(SENT + 10_000) });
     expect(await confirmMissed("w1", "sa1", "u1")).toBe("review_auto_reply");
     expect(await confirmMissed("w1", "sa1", "u1", { reviewedAutoReply: true })).toBeInstanceOf(Date);
+  });
+
+  it("a reply the matcher may have lost needs the same review", async () => {
+    seed("w1", { ...delivered, replyNeedsReview: true });
+    expect(await confirmMissed("w1", "sa1", "u1")).toBe("review_auto_reply");
+    expect(await confirmMissed("w1", "sa1", "u1", { reviewedAutoReply: true })).toBeInstanceOf(Date);
+  });
+
+  it("a read receipt alone is delivery enough", async () => {
+    seed("w1", { status: "missed", readAt: new Date(SENT + 9_000) });
+    expect(await confirmMissed("w1", "sa1", "u1")).toBeInstanceOf(Date);
   });
 
   it("a delivered miss with no automatic reply confirms; an email miss needs none of this", async () => {
