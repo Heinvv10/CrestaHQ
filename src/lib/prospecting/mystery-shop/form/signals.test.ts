@@ -72,12 +72,6 @@ describe.skipIf(skipBrowser)("Z1: a 3xx answer to the enquiry is never a confirm
     expect(out).toMatchObject({ kind: "sent", trace: { finalUrl: `${site.origin}/send2` } });
   }, T);
 
-  it("a 302 to another path is not re-posted (and not followed): uncertain", async () => {
-    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 302, { location: "/thank-you" }), "/thank-you": thanks });
-    expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
-    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
-  }, T);
-
   it("only ONE hop: a 308 whose target answers another 308 is uncertain", async () => {
     const out = await run({
       "/contact": page(form(SIMPLE_FIELDS)),
@@ -108,11 +102,59 @@ describe.skipIf(skipBrowser)("Z1: a 3xx answer to the enquiry is never a confirm
     expect(out.trace.finalUrl ?? "").not.toMatch(/^https:/);
   }, T);
 
-  it("any other 3xx after the POST (a 303 to a thank-you page) is uncertain, and its page is never the trace", async () => {
-    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 303, { location: "/thank-you" }), "/thank-you": thanks });
+  // Post-redirect-get: a 302/303 to ANOTHER path is followed with exactly one GET; only a 2xx HTML page that
+  // is not the form page and shows thank-you text confirms — so a spam bounce to the homepage never counts.
+  const prg = (to: string, routes: Record<string, Handler>) =>
+    run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 303, { location: to }), ...routes });
+
+  it("a 303 to a thank-you page that says thank you: sent, and that loaded page is the trace", async () => {
+    const out = await prg("/thank-you", { "/thank-you": thanks });
+    expect(out).toMatchObject({ kind: "sent", trace: { signal: "navigation", finalUrl: `${site.origin}/thank-you` } });
+    expect(site.hits.filter((h) => h === "GET /thank-you")).toHaveLength(1);
+  }, T);
+
+  it("a 303 to the homepage with no thank-you text (a spam bounce): uncertain", async () => {
+    const out = await prg("/", { "/": page("<h1>Acme Plumbing</h1><p>Plumbers in Gqeberha since 1999.</p>") });
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
-    expect(out.trace.finalUrl ?? "").not.toMatch(/thank-you/);
-    expect(site.hits).not.toContain("GET /thank-you");
+  }, T);
+
+  it("a 303 back to the form page with a query (/contact?sent=0), even saying thanks: uncertain", async () => {
+    const out = await run({
+      "/contact": (q, res) => html(res, q.url?.includes("sent=0") ? "<h1>Thanks — but please try again</h1>" : form(SIMPLE_FIELDS)),
+      "/send": (_q, res) => html(res, "", 303, { location: "/contact?sent=0" }),
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("a 302 to /thanks that answers 500 with thank-you text: uncertain", async () => {
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS)),
+      "/send": (_q, res) => html(res, "", 302, { location: "/thanks" }),
+      "/thanks": (_q, res) => html(res, "<h1>Thank you</h1>", 500),
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("a second redirect after the GET: uncertain, never followed", async () => {
+    const out = await prg("/thank-you", { "/thank-you": (_q, res) => html(res, "", 302, { location: "/really-thanks" }), "/really-thanks": thanks });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+    expect(site.hits).not.toContain("GET /really-thanks");
+  }, T);
+
+  it("a thank-you page that isn't HTML (JSON saying thanks): uncertain", async () => {
+    const out = await prg("/thank-you", { "/thank-you": (_q, res) => (res.writeHead(200, { "content-type": "application/json" }), res.end('{"message":"Thank you"}')) });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("a thank-you page whose thanks are hidden (not visible text): uncertain", async () => {
+    const out = await prg("/thank-you", { "/thank-you": page(`<h1>Acme</h1><p style="display:none">Thank you</p>`) });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("a 303 to an internal address is never followed", async () => {
+    const out = await prg(`${internal.origin}/thanks`, {});
+    expect(internal.hits).toEqual([]);
+    expect(out.kind).not.toBe("sent");
   }, T);
 });
 

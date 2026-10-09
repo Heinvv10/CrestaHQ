@@ -7,7 +7,7 @@ import { planFields, type FieldRole, type FormIdentity } from "./mapping";
 import { defaultFetch, installNetworkGuard, newGuardState, type FetchImpl, type GuardState } from "./network";
 import { OPEN_SHADOW_SCRIPT, SCAN_SCRIPT, chooseForm, type PageScan } from "./page-scan";
 import { enquiryMarkers } from "./evidence";
-import { Stop, bounded, captchaCheck, refuse, thanksCount, timedOut, waitForSignal } from "./checks";
+import { MARK_FORM_PAGE, Stop, bounded, captchaCheck, refuse, thanksCount, timedOut, waitForSignal } from "./checks";
 
 /**
  * One website contact-form fill, headless (PR 5c). Opens the form URL (at
@@ -182,6 +182,7 @@ export async function runFormFill(input: FormRunInput): Promise<FormResult> {
       const valid = await bounded(page.evaluate(`document.querySelectorAll("form")[${form.index}].checkValidity()`));
       if (valid !== true) throw refuse("invalid_form", "The form would not accept the values (its own validation failed).");
       const thanksBefore = await thanksCount(page, 0);
+      await bounded(page.evaluate(MARK_FORM_PAGE));
       await input.onBeforeSubmit?.();
       // The deadline passed while the submit was being stamped: the job has its answer; never click after it.
       if (controller.signal.aborted) throw new Error("deadline passed before the click");

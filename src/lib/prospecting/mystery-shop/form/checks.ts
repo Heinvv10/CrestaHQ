@@ -1,7 +1,8 @@
 import "server-only";
 
 import type { Page } from "playwright-core";
-import { samePage, type GuardState } from "./network";
+import type { GuardState } from "./network";
+import { samePage } from "./redirects";
 import { CAPTCHA_SCRIPT, CAPTCHA_URL, THANKS_SCRIPT } from "./page-scan";
 
 /**
@@ -61,6 +62,11 @@ export async function captchaCheck(page: Page, state: GuardState): Promise<void>
   if (marker) throw refuse("captcha", `The form is protected by a CAPTCHA or bot check (${marker}). It is never bypassed.`);
 }
 
+/** Marks the form's document; a page the post-redirect-get loaded has no such mark. */
+export const MARK_FORM_PAGE = "window.__lsmsFormPage = true";
+/** Thank-you phrases in the VISIBLE text of a document that is not the form page; -1 on the form page itself. */
+const PRG_THANKS = `(window.__lsmsFormPage ? -1 : ${THANKS_SCRIPT})`;
+
 export async function thanksCount(page: Page, fallback: number): Promise<number> {
   const n = await bounded(page.evaluate(THANKS_SCRIPT).catch(() => fallback));
   return timedOut(n) ? fallback : (n as number);
@@ -89,6 +95,13 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
     if (marker) return { captcha: marker };
     if (state.rejected) return { rejected: state.rejected };
     if (state.tooHeavy) return null;
+    if (state.prgPage) {
+      const n = await bounded(page.evaluate(PRG_THANKS).catch(() => -1));
+      if (!timedOut(n) && (n as number) > 0) {
+        const late = await captchaNow();
+        return late ? { captcha: late } : { signal: "navigation", finalUrl: state.prgPage };
+      }
+    }
     if (state.carrierOk) {
       const now = page.url();
       const seen =

@@ -6,6 +6,7 @@ import { NonPublicUrlError } from "@/lib/webhooks/validate-url";
 import { sameSite } from "@/lib/prospecting/registrable-domain";
 import { CAPTCHA_URL } from "./page-scan";
 import { carriesEnquiry, rejectionOf, type EnquiryMarkers } from "./evidence";
+import { postRedirectGet, repostable, samePage } from "./redirects";
 
 /**
  * The browser never opens a network connection itself. Every http(s) request
@@ -72,6 +73,8 @@ export interface GuardState {
   clickedAt: number | null;
   /** After the click: POSTs that went out (or may have: anything but a refused address). */
   postsOut: number;
+  /** After the click: the page a post-redirect-get loaded (2xx HTML, not the form page) — confirmed by its text. */
+  prgPage: string | null;
   /** After the click: a 2xx to a request carrying the enquiry, same site or a known backend. */
   postOk: string | null;
   /** After the click: a request carrying the enquiry was answered 2xx/3xx (its URL). */
@@ -91,7 +94,7 @@ export interface GuardState {
 export function newGuardState(): GuardState {
   return {
     blocked: null, fetchError: null, mainDocuments: 0, tooManyRedirects: false, redirect: null, captcha: null,
-    clickedAt: null, postsOut: 0, postOk: null, carrierOk: null, rejected: null, requests: 0, bytes: 0, tooHeavy: false,
+    clickedAt: null, postsOut: 0, prgPage: null, postOk: null, carrierOk: null, rejected: null, requests: 0, bytes: 0, tooHeavy: false,
     navigatedTo: null, formUrl: null,
   };
 }
@@ -110,20 +113,6 @@ export interface GuardOptions {
 
 class OverBudget extends Error {}
 
-/**
- * The form page itself, whatever its query or fragment: going back to it
- * (`/contact?error=1`) is the classic validation-error redirect, never a
- * confirmation.
- */
-export function samePage(a: string, b: string | null): boolean {
-  if (!b) return false;
-  const path = (u: string) => {
-    const x = new URL(u);
-    return `${x.origin}${x.pathname.replace(/\/$/, "")}`;
-  };
-  return path(a) === path(b);
-}
-
 /** A refused port, like a refused address: never connected to. */
 const portOk = (u: URL, allow: string[] | undefined) => u.port === "" || (allow ?? []).includes(u.port);
 
@@ -137,32 +126,23 @@ function isMainFrame(page: Page, req: Request): boolean {
 }
 
 /**
- * A redirect the enquiry may follow — re-POSTed, same body, for ONE hop:
- * a 307 / 308, or a 301 / 302 to the same path and query with only the
- * scheme, the host (same site) or a trailing slash changed. Any other 3xx
- * answer to the enquiry is not followed and never confirms anything.
- */
-function repostable(status: number, from: URL, to: URL): boolean {
-  if (status === 307 || status === 308) return true;
-  const loose = (u: URL) => `${u.pathname.replace(/\/+$/, "")}${u.search}`;
-  return (status === 301 || status === 302) && loose(from) === loose(to) && sameSite(from.hostname, to.hostname);
-}
-
-/**
  * One request through `fetchImpl`. Redirects: a sub-resource's are followed
  * hop by hop ("follow"); a main document's never ("none", engine.ts decides);
- * the enquiry's only as `repostable` allows ("enquiry").
+ * the enquiry's for ONE hop only — re-POSTed when `repostable`, or as a GET
+ * for a post-redirect-get (`followedGet`, which confirms only under the
+ * conditions in the route). Any other 3xx is returned as the answer.
  */
 async function fetchHops(
   req: Request,
   opts: GuardOptions,
   policy: "none" | "follow" | "enquiry",
-): Promise<{ res: Response; url: string; body: Buffer }> {
+): Promise<{ res: Response; url: string; body: Buffer; followedGet: boolean }> {
   const { fetchImpl, signal, state } = opts;
   const hops = policy === "follow" ? SUBRESOURCE_REDIRECTS : policy === "enquiry" ? 1 : 0;
   let url = req.url();
   let method = req.method();
   let body: Buffer | undefined = req.postDataBuffer() ?? undefined;
+  let followedGet = false;
   const headers = Object.fromEntries(Object.entries(await req.allHeaders()).filter(([k]) => !DROP_REQUEST.has(k)));
   for (let i = 0; ; i++) {
     const posting = method === "POST" && state.clickedAt !== null;
@@ -182,12 +162,18 @@ async function fetchHops(
     state.bytes += data.length;
     if (posting) state.postsOut++;
     const location = res.headers.get("location");
-    if (res.status < 300 || res.status > 399 || !location || i >= hops) return { res, url, body: data };
+    if (res.status < 300 || res.status > 399 || !location || i >= hops) return { res, url, body: data, followedGet };
     const next = new URL(location, url);
     if (!httpish(next) || !portOk(next, opts.allowPorts)) throw new NonPublicUrlError(next.host || next.protocol);
     if (policy === "enquiry") {
-      // Not re-POSTable: the 3xx itself is the answer (never a confirmation).
-      if (!repostable(res.status, new URL(url), next)) return { res, url, body: data };
+      if (postRedirectGet(res.status, new URL(url), next)) {
+        method = "GET";
+        body = undefined;
+        followedGet = true;
+      } else if (!repostable(res.status, new URL(url), next)) {
+        // Neither: the 3xx itself is the answer (never a confirmation).
+        return { res, url, body: data, followedGet };
+      }
     } else if (res.status <= 303 && method !== "GET" && method !== "HEAD") {
       method = "GET";
       body = undefined;
@@ -254,10 +240,20 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
     await acquire();
     try {
       if (signal.aborted) throw new Error("aborted");
-      const { res, url: finalUrl, body } = await fetchHops(req, opts, carrier ? "enquiry" : main ? "none" : "follow");
+      const { res, url: finalUrl, body, followedGet } = await fetchHops(req, opts, carrier ? "enquiry" : main ? "none" : "follow");
       if (main && res.headers.get("cf-mitigated")) state.captcha ??= "Cloudflare challenge response";
       const host = new URL(finalUrl).hostname;
       const known = state.formUrl !== null && (sameSite(host, new URL(state.formUrl).hostname) || FORM_BACKENDS.test(host));
+      // Post-redirect-get: only a 2xx HTML page that isn't the form page is a candidate, and it confirms
+      // only if its VISIBLE text says thank you once loaded (checks.ts). Never a carrierOk on its own.
+      if (carrier && followedGet) {
+        const htmlPage = res.status >= 200 && res.status < 300 && /text\/html/i.test(res.headers.get("content-type") ?? "");
+        if (main && htmlPage && !samePage(finalUrl, state.formUrl)) {
+          state.prgPage ??= finalUrl;
+          return await fulfill(route, res, body);
+        }
+        return main ? await route.fulfill({ status: 204, body: "" }) : await fulfill(route, res, body);
+      }
       // Only a 2xx to the enquiry (after at most one re-POST) counts; a 3xx never does.
       if (carrier && res.status >= 200 && res.status < 300) {
         state.carrierOk ??= finalUrl;
