@@ -79,6 +79,9 @@ describe("confirm-missed", () => {
     await expect409("w2", "review_auto_reply", REVIEW);
     await expect409("w2", "review_auto_reply", REVIEW, { reviewedAutoReply: "yes" });
     expect((await confirm("w2", "admin1", { reviewedAutoReply: true })).status).toBe(200);
+    wa("w3", { ...DELIVERED, replyNeedsReview: true });
+    await expect409("w3", "review_reply", "A WhatsApp message from this number arrived — read the thread before confirming.");
+    expect((await confirm("w3", "admin1", { reviewedAutoReply: true })).status).toBe(200);
   });
 
   it("another sub-account's shop, a missing one and a bad id are the same 404", async () => {

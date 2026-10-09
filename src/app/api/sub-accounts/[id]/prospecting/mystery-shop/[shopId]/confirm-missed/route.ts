@@ -13,14 +13,16 @@ import { confirmMissed } from "@/lib/prospecting/mystery-shop/store";
  * another sub-account's (the same body); 409 `not_missed` for any other
  * status; 409 `send_uncertain` for a miss whose enquiry may never have been sent.
  * A WhatsApp miss: 409 `opted_out` (the business replied STOP), `not_delivered`
- * (no delivery receipt) and `review_auto_reply` unless the body says
- * `{ reviewedAutoReply: true }` after an automatic-looking reply.
+ * (no delivery receipt), and — unless the body says `{ reviewedAutoReply: true }` —
+ * `review_auto_reply` after an automatic-looking reply or `review_reply` when
+ * the thread holds a message from the number the matcher did not take.
  */
 /** A WhatsApp miss's own refusals (store.ts `confirmMissed`). */
 const REFUSALS = {
   opted_out: "The business replied STOP.",
   not_delivered: "WhatsApp never confirmed this message was delivered, so it can't be published as a missed lead.",
   review_auto_reply: "A reply arrived that looked automatic — read the WhatsApp thread before confirming.",
+  review_reply: "A WhatsApp message from this number arrived — read the thread before confirming.",
 } as const;
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string; shopId: string }> }) {

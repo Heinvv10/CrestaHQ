@@ -108,6 +108,17 @@ export interface InboundWhatsApp {
 }
 
 /**
+ * A shop with no receipt of its own: the thread row the delivery-status
+ * writer keeps (what settleMissed trusts). Delivered/read there = delivered,
+ * at an unknown time — the row keeps none — so the send time stands in.
+ */
+async function rowDelivered(shop: FirebaseFirestore.DocumentData): Promise<number | null> {
+  if (typeof shop.providerRef !== "string" || !shop.providerRef || typeof shop.contactId !== "string") return null;
+  const row = (await getAdminDb().doc(`contacts/${shop.contactId}/whatsappMessages/${shop.providerRef}`).get()).data();
+  return row?.status === "delivered" || row?.status === "read" ? toMs(shop.sentAt) : null;
+}
+
+/**
  * A WhatsApp message in to `subAccountId`'s Cloud number: from a waiting
  * WhatsApp shop's exact number = its response, or only an automatic reply
  * (whatsapp-match.ts). Only a content message counts; STOP is recorded on the
@@ -123,7 +134,7 @@ export async function matchMysteryShopWhatsApp(subAccountId: string, msg: Inboun
     // From the later of the send and the delivery receipt (a greeting fires on delivery);
     // before any receipt, automatic.
     const shop = d.data() ?? {};
-    const delivered = toMs(shop.deliveredAt) ?? toMs(shop.readAt);
+    const delivered = toMs(shop.deliveredAt) ?? toMs(shop.readAt) ?? (await rowDelivered(shop));
     const elapsed = delivered === null ? 0 : msg.atMs - Math.max(delivered, toMs(shop.sentAt) ?? delivered);
     const done = msg.optOut
       ? await recordOptOut(d.id, msg.atMs)

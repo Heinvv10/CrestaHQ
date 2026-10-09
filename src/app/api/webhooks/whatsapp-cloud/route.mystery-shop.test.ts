@@ -112,11 +112,19 @@ describe("whatsapp-cloud → mystery shop", () => {
     expect(mem.read(SHOP)).toMatchObject({ status: "responded", responseMs: 14 * 60_000 });
   });
 
-  it("a reply still settles a shop after Prospecting was switched off; receipts are skipped then", async () => {
+  it("with Prospecting switched off, receipts still reach the shop and a substantive reply 14 min later is the response", async () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), prospectingEnabledByAgency: false });
-    await post(value("pn_1", { statuses: [{ id: "wamid.OUT1", status: "failed", recipient_id: "27821234567" }] }));
-    expect(mem.read(SHOP)?.status).toBe("sent");
-    await post(value("pn_1", message("27821234567", "Yes we do!", SENT_S + 14 * 60)));
+    mem.seed(SHOP, { ...mem.read(SHOP), deliveredAt: null });
+    await post(value("pn_1", { statuses: [{ id: "wamid.OUT1", status: "delivered", recipient_id: "27821234567", timestamp: String(SENT_S + 3) }] }));
+    expect((mem.read(SHOP)?.deliveredAt as Date).getTime()).toBe((SENT_S + 3) * 1000);
+    await post(value("pn_1", message("27821234567", "Yes we do, which suburb are you in?", SENT_S + 14 * 60)));
+    expect(mem.read(SHOP)).toMatchObject({ status: "responded", responseMs: 14 * 60_000 });
+  });
+
+  it("a delivered receipt that never reached the shop: the thread row is the evidence, and the reply still settles", async () => {
+    mem.seed(SHOP, { ...mem.read(SHOP), deliveredAt: null });
+    mem.seed("contacts/c1/whatsappMessages/wamid.OUT1", { subAccountId: "sa1", direction: "outbound", status: "delivered" });
+    await post(value("pn_1", message("27821234567", "Yes we do, which suburb are you in?", SENT_S + 14 * 60)));
     expect(mem.read(SHOP)).toMatchObject({ status: "responded", responseMs: 14 * 60_000 });
   });
 

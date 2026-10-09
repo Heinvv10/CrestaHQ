@@ -277,10 +277,10 @@ async function recordStatuses(
       const status = normalizeDeliveryStatus(s.status);
       if (!status) continue;
       // A prospecting mystery shop sent as this message (PR 5b): undeliverable,
-      // or delivered/read for its card. Its own catch, so it never costs the row.
-      // Skipped while Prospecting is off for the sub-account.
+      // or delivered/read (the reply timing needs it). Always, even with
+      // Prospecting switched off since. Its own catch, so it never costs the row.
       try {
-        if (route.subAccount.prospectingEnabledByAgency === true) await recordMysteryShopWhatsAppStatus(
+        await recordMysteryShopWhatsAppStatus(
           route.subAccountId,
           s.providerMessageId,
           status,

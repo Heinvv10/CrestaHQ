@@ -249,6 +249,14 @@ export async function releaseShop(
 export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<string | null> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
+  // Outside the transaction (a query there would contend with every inbound
+  // write): any inbound row from the target inside the window. If the thread
+  // can't be read, the miss is flagged for review rather than trusted.
+  const before = (await ref.get()).data();
+  const inboundReply = inboundFromTarget(before).catch((err) => {
+    console.error("[prospecting/mystery-shop] thread check failed", shopId, err);
+    return true;
+  });
   return db.runTransaction(async (tx) => {
     const shop = (await tx.get(ref)).data();
     if (!shop) return null;
@@ -262,7 +270,6 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
       const hasRef = typeof shop.providerRef === "string" && shop.providerRef !== "";
       const thread = `contacts/${shop.contactId}/whatsappMessages`;
       const row = hasRef ? (await tx.get(db.doc(`${thread}/${shop.providerRef}`))).data() : undefined;
-      const inbound = await tx.get(db.collection(thread).where("direction", "==", "inbound"));
       if (row?.status === "failed") {
         const detail = typeof row.error === "string" && row.error ? ` (${row.error})` : "";
         tx.update(ref, { status: "failed", failure: { code: "undeliverable", reason: `WhatsApp couldn't deliver the enquiry${detail}.` } });
@@ -271,7 +278,7 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
       const seen = new Date(nowMs);
       const evidence = shop.deliveredAt != null || shop.readAt != null;
       const sentMs = toMs(shop.sentAt)!;
-      const replied = inbound.docs.some((d) => d.data()?.from === shop.target && (toMs(d.data()?.createdAt) ?? 0) >= sentMs);
+      const replied = await inboundReply;
       tx.update(ref, {
         status: "missed",
         awaitingSync: false,
@@ -291,6 +298,21 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
     }
     tx.update(ref, { status: "missed", awaitingSync: false, ...(shop.authFailedReplyAt != null ? { disputed: true } : {}) });
     return "missed";
+  });
+}
+
+/** For a WhatsApp shop: has its contact's thread an inbound row from the target inside the 24 h window? */
+async function inboundFromTarget(shop: FirebaseFirestore.DocumentData | undefined): Promise<boolean> {
+  const sentMs = toMs(shop?.sentAt);
+  if (shop?.channel !== "whatsapp" || sentMs === null || typeof shop.contactId !== "string") return false;
+  const rows = await getAdminDb()
+    .collection(`contacts/${shop.contactId}/whatsappMessages`)
+    .where("direction", "==", "inbound")
+    .where("from", "==", shop.target)
+    .get();
+  return rows.docs.some((d) => {
+    const at = toMs(d.data()?.createdAt);
+    return at !== null && at >= sentMs && at <= sentMs + RESPONSE_WINDOW_MS;
   });
 }
 
@@ -319,7 +341,9 @@ export async function confirmMissed(
   subAccountId: string,
   uid: string,
   opts: { reviewedAutoReply?: boolean } = {},
-): Promise<Date | "not_found" | "not_missed" | "send_uncertain" | "opted_out" | "not_delivered" | "review_auto_reply"> {
+): Promise<
+  Date | "not_found" | "not_missed" | "send_uncertain" | "opted_out" | "not_delivered" | "review_auto_reply" | "review_reply"
+> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
@@ -335,8 +359,10 @@ export async function confirmMissed(
       if (shop.deliveredAt == null && shop.readAt == null) return "not_delivered" as const;
       // An automatic-looking reply, or an inbound one the matcher did not take, may have
       // been a person: the member reads the thread first.
-      const toReview = shop.autoReplyAt != null || shop.replyNeedsReview === true;
-      if (toReview && opts.reviewedAutoReply !== true) return "review_auto_reply" as const;
+      if (opts.reviewedAutoReply !== true) {
+        if (shop.autoReplyAt != null) return "review_auto_reply" as const;
+        if (shop.replyNeedsReview === true) return "review_reply" as const;
+      }
     }
     const at = toMs(shop.missedConfirmedAt);
     if (at !== null) return new Date(at);

@@ -43,6 +43,17 @@ describe("matchMysteryShopWhatsApp", () => {
     expect((shop("w1").autoReplyAt as Date).getTime()).toBe(at(7 * 3600_000 + 20_000));
   });
 
+  it("no receipt on the shop but the thread row says delivered: timed from the send, the reply is the response", async () => {
+    seedShop("w1");
+    mem.seed(`contacts/c1/whatsappMessages/${WAMID}`, { subAccountId: "sa1", direction: "outbound", status: "read" });
+    await reply(PHONE, at(5 * 60_000), "Yes we do, when do you need it?");
+    expect(shop("w1")).toMatchObject({ status: "responded", responseMs: 5 * 60_000 });
+    seedShop("w2", { providerRef: "wamid.SENT" });
+    mem.seed("contacts/c1/whatsappMessages/wamid.SENT", { subAccountId: "sa1", direction: "outbound", status: "sent" });
+    await reply(PHONE, at(6 * 60_000), "Yes we do, when do you need it?");
+    expect(shop("w2")).toMatchObject({ status: "sent" });
+  });
+
   it("a substantive reply 2 min after delivery is the response", async () => {
     seedShop("w1", { deliveredAt: new Date(at(7 * 3600_000)) });
     await reply(PHONE, at(7 * 3600_000 + 120_000), "Yes we do, when do you need it?");

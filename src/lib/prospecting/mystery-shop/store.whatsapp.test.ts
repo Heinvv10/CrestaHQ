@@ -108,12 +108,28 @@ describe("settleMissed reads the thread row first", () => {
     seed("w1");
     mem.seed("contacts/c1/whatsappMessages/in-old", { direction: "inbound", from: "+27821234567", createdAt: new Date(SENT - 60_000) });
     mem.seed("contacts/c1/whatsappMessages/in-other", { direction: "inbound", from: "+27829999999", createdAt: new Date(SENT + 60_000) });
+    // After the 24 h window: not a reply to this enquiry.
+    mem.seed("contacts/c1/whatsappMessages/in-late", { direction: "inbound", from: "+27821234567", createdAt: new Date(SENT + DAY + 60_000) });
     expect(await settleMissed("w1")).toBe("missed");
     expect(shop("w1").replyNeedsReview).toBeUndefined();
     seed("w2", { providerRef: "wamid.2" });
     mem.seed("contacts/c1/whatsappMessages/in-1", { direction: "inbound", from: "+27821234567", createdAt: new Date(SENT + 3 * 3600_000) });
     expect(await settleMissed("w2")).toBe("missed");
     expect(shop("w2").replyNeedsReview).toBe(true);
+  });
+
+  it("if the thread can't be read, the miss is flagged for review rather than trusted", async () => {
+    seed("w1");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { storeDb } = await import("@/test/gbp-sync-store");
+    const real = storeDb.collection.bind(storeDb);
+    const spy = vi.spyOn(storeDb, "collection").mockImplementation((path: string) => {
+      if (path.endsWith("/whatsappMessages")) throw new Error("thread down");
+      return real(path);
+    });
+    expect(await settleMissed("w1")).toBe("missed");
+    spy.mockRestore();
+    expect(shop("w1").replyNeedsReview).toBe(true);
   });
 
   it("a read receipt alone is delivery evidence: deliveredAt is not invented", async () => {
@@ -152,9 +168,9 @@ describe("confirmMissed for a WhatsApp miss", () => {
     expect(await confirmMissed("w1", "sa1", "u1", { reviewedAutoReply: true })).toBeInstanceOf(Date);
   });
 
-  it("a reply the matcher may have lost needs the same review", async () => {
+  it("a reply the matcher may have lost needs the same review (its own refusal)", async () => {
     seed("w1", { ...delivered, replyNeedsReview: true });
-    expect(await confirmMissed("w1", "sa1", "u1")).toBe("review_auto_reply");
+    expect(await confirmMissed("w1", "sa1", "u1")).toBe("review_reply");
     expect(await confirmMissed("w1", "sa1", "u1", { reviewedAutoReply: true })).toBeInstanceOf(Date);
   });
 
