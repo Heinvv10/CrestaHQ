@@ -27,8 +27,11 @@ import { isContentMessage, isWhatsAppAutoReply } from "./whatsapp-match";
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
-/** An inbound email in `subAccountId`'s mailbox, at its own arrival time. A form shop is matched against its senders set. */
-export async function matchMysteryShopEmail(subAccountId: string, message: InboundEmail): Promise<void> {
+/**
+ * An inbound email in `subAccountId`'s mailbox, at its own arrival time. A form shop is matched against its senders set.
+ * `ownAddresses` (the mailbox's own) mark which Message-IDs are ours: a reply to another of our emails settles nothing.
+ */
+export async function matchMysteryShopEmail(subAccountId: string, message: InboundEmail, ownAddresses: string[]): Promise<void> {
   const docs = (await Promise.all([closableShops(subAccountId, "email"), closableShops(subAccountId, "form")])).flat();
   if (!docs.length) return;
   const decisions = decideEmail(
@@ -47,6 +50,7 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
         ...(s.channel === "form" ? { senders: { addresses: strings(s.matchAddresses), domains: strings(s.matchDomains) } } : {}),
       };
     }),
+    ownAddresses.filter((a) => a.includes("@")).map((a) => a.slice(a.lastIndexOf("@") + 1)),
   );
   // An email sender is never provable (unknown). One the mail host's checks FAILED does not settle
   // the shop — a spoof must not block the genuine reply — it is only noted (authFailedReplyAt).

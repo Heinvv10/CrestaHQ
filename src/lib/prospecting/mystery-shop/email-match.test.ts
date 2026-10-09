@@ -23,7 +23,8 @@ const mail = (from: string, extra: Partial<InboundEmail> = {}): InboundEmail => 
   from, inReplyTo: null, references: [], autoReply: NO_HEADERS, authResults: [], dsn: NO_DSN, subject: "Re: Enquiry", occurredAtMs: SENT + 2 * 3600_000,
   ...extra,
 });
-const decide = (m: InboundEmail, shops: EmailShopCandidate[]) => Object.fromEntries(decideEmail(m, shops));
+const decide = (m: InboundEmail, shops: EmailShopCandidate[], ownIdDomains: string[] = []) =>
+  Object.fromEntries(decideEmail(m, shops, ownIdDomains));
 
 describe("sender match", () => {
   it("the target address itself responds", () => {
@@ -50,6 +51,55 @@ describe("sender match", () => {
     expect(decide(mail("john@acme.co.za", { references: ["<x@y>", "<s1@crestahq.com>"] }), shops)).toEqual({
       s1: "responded", s2: "none",
     });
+  });
+});
+
+describe("a reply to another of OUR emails (live 2026-10-09)", () => {
+  // The shop's own Message-ID, and an unrelated email the same sub-account sent (real-shaped ids).
+  const REF = "<c2fbe384-5d1e-4f0b-9a7c-3e2b1d0f9a11@crestahq.com>";
+  const OTHER = "<179153553652.955630.1847709756459389126@crestahq.com>";
+  const T = "hein@velocityfibre.co.za";
+  const s = () => [shop("s1", T, { providerRef: REF })];
+
+  it("a reply from the target to another of our emails is no response to the shop", () => {
+    expect(decide(mail(T, { subject: "RE: Quick note", inReplyTo: OTHER, references: [OTHER] }), s(), ["crestahq.com"])).toEqual({ s1: "none" });
+    // "Ours" from the shop's own Message-ID domain, with no own address passed.
+    expect(decide(mail(T, { inReplyTo: OTHER }), s())).toEqual({ s1: "none" });
+    // "Ours" also from the sub-account's own address domain alone (the shop's ref on another host), any case.
+    const own = [shop("s1", T, { providerRef: "<abc@mail.example.net>" })];
+    expect(decide(mail(T, { inReplyTo: "<x1@Mail.Agency.CO.ZA>" }), own, ["agency.co.za"])).toEqual({ s1: "responded" });
+    expect(decide(mail(T, { inReplyTo: "<x1@Mail.Agency.CO.ZA>" }), own, ["mail.agency.co.za"])).toEqual({ s1: "none" });
+    expect(decide(mail(T, { references: ["<x1@AGENCY.co.za>"] }), own, ["agency.co.za"])).toEqual({ s1: "none" });
+  });
+
+  it("a thread holding the shop's own Message-ID still responds, whatever else of ours it names", () => {
+    expect(decide(mail(T, { inReplyTo: OTHER, references: [OTHER, REF] }), s(), ["crestahq.com"])).toEqual({ s1: "responded" });
+    expect(decide(mail(T, { inReplyTo: REF }), s(), ["crestahq.com"])).toEqual({ s1: "responded" });
+  });
+
+  it("a fresh email from the target (no thread) still responds by sender", () => {
+    expect(decide(mail(T, { subject: "Enquiry" }), s(), ["crestahq.com"])).toEqual({ s1: "responded" });
+  });
+
+  it("a reply in the business's own thread (only foreign ids) still responds by sender", () => {
+    const foreign = "<DB9PR10MB5000.EURPRD10.PROD.OUTLOOK.COM>";
+    const m = mail(T, { inReplyTo: "<AM0PR01MB1234ABCD@AM0PR01MB1234.eurprd01.PROD.OUTLOOK.COM>", references: [foreign] });
+    expect(decide(m, s(), ["crestahq.com"])).toEqual({ s1: "responded" });
+  });
+
+  it("a form shop: a reply from the contact to one of our emails never counts", () => {
+    const form = shop("f1", "https://www.acme.co.za/contact", {
+      providerRef: "form:f1:1", targetDomainTrusted: undefined, senders: { addresses: ["owner@gmail.com"], domains: ["acme.co.za"] },
+    });
+    expect(decide(mail("owner@gmail.com", { inReplyTo: OTHER }), [form], ["crestahq.com"])).toEqual({ f1: "none" });
+    expect(decide(mail("sales@acme.co.za", { references: [OTHER] }), [form], ["crestahq.com"])).toEqual({ f1: "none" });
+    expect(decide(mail("owner@gmail.com"), [form], ["crestahq.com"])).toEqual({ f1: "responded" });
+  });
+
+  it("an auto-reply to another of our emails records nothing (not an auto_reply)", () => {
+    const auto = { autoReply: { ...NO_HEADERS, autoSubmitted: "auto-replied" }, subject: "Automatic reply: Quick note" };
+    expect(decide(mail(T, { ...auto, inReplyTo: OTHER }), s(), ["crestahq.com"])).toEqual({ s1: "none" });
+    expect(decide(mail(T, { ...auto, inReplyTo: REF }), s(), ["crestahq.com"])).toEqual({ s1: "auto_reply" });
   });
 });
 

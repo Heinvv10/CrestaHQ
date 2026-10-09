@@ -11,7 +11,11 @@ import { LATE_REPLY_HORIZON_MS, canSettleResponded, inWindow, toMs } from "./mod
  * the form site's domain) takes that place, and the rules are otherwise the same. A matching
  * In-Reply-To / References header only picks which of several sender-matching
  * shops the reply belongs to; on its own (a forged header from anyone else)
- * it closes nothing. The reply must arrive inside [sentAt, sentAt + 24 h].
+ * it closes nothing. One exception: a thread naming a Message-ID of OURS (its
+ * domain is one of the sub-account's own addresses' or an email shop's
+ * providerRef's) but not this shop's providerRef answers another of our
+ * emails, and is no response (nor auto-reply) to this shop. The reply must
+ * arrive inside [sentAt, sentAt + 24 h].
  * An automatic reply (headers, or an out-of-office subject) is recorded once
  * as `auto_reply` and the shop keeps waiting for a person.
  *
@@ -225,8 +229,10 @@ export function bouncedFor(dsn: DsnSignals, target: string): boolean {
 }
 
 const msgId = (v: unknown) => (typeof v === "string" ? v.trim().replace(/^<|>$/g, "") : "");
+const idDomain = (id: string) => (id.includes("@") ? domainOf(id) : "");
 
-export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<string, EmailDecision> {
+/** `ownIdDomains`: the domains of the sub-account's own addresses — a Message-ID there is one we sent. */
+export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[], ownIdDomains: string[]): Map<string, EmailDecision> {
   const out = new Map<string, EmailDecision>(shops.map((s) => [s.id, "none"]));
   const thread = new Set([m.inReplyTo, ...m.references].map(msgId).filter(Boolean));
   if (isDeliveryReport(m)) {
@@ -244,8 +250,14 @@ export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<s
     return out;
   }
   const auto = isAutoReply(m);
+  const ours = new Set(
+    [...ownIdDomains.map((d) => d.trim().toLowerCase()), ...shops.filter((s) => !s.senders).map((s) => idDomain(msgId(s.providerRef)))].filter(Boolean),
+  );
+  const repliesToOurs = [...thread].some((id) => ours.has(idDomain(id)));
   const eligible = shops.filter((s) => {
     if (!senderInTargetSet(m.from, s)) return false;
+    // A reply to another of our emails (our id in the thread, but not this shop's) is no answer to this shop.
+    if (repliesToOurs && !thread.has(msgId(s.providerRef))) return false;
     if (!auto) return canSettleResponded(s, m.occurredAtMs);
     const sent = toMs(s.sentAt);
     return s.status === "sent" && s.autoReplyAt == null && sent !== null && inWindow(sent, m.occurredAtMs);
