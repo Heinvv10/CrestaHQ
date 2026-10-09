@@ -12,7 +12,7 @@ const { formChannelState, formIdentity } = await import("./target");
 const MAILBOX = { enabled: true, verifiedAt: "2026-10-01T00:00:00Z", username: "Info@CrestaHQ.com", lastError: null };
 const sub = (over: Record<string, unknown> = {}) =>
   ({ name: "Cresta HQ", defaultPhoneCountry: "ZA", mailboxConfig: MAILBOX, ...over }) as unknown as SubAccountDoc;
-const enquiry = { subject: "Enquiry: plumber", message: "Hi", service: "plumber" };
+const enquiry = { subject: "Enquiry: plumber", message: "Hi", service: "plumber", town: "Gqeberha" };
 
 beforeEach(() => {
   available.mockReset().mockReturnValue(true);

@@ -20,6 +20,12 @@ describe("checkResult", () => {
     expect(checkResult({ kind: "uncertain", code: "made_up", reason: "x", trace: TRACE }, true)).toMatchObject({ code: "no_signal" });
   });
 
+  it("a trace that filled the town is believed", () => {
+    expect(checkResult({ kind: "sent", trace: { ...TRACE, mappedFields: ["name", "town", "message"] } }, true)).toEqual({
+      kind: "sent", trace: { ...TRACE, mappedFields: ["name", "town", "message"] },
+    });
+  });
+
   it("a reason is cut at 500 characters", () => {
     const r = checkResult({ kind: "refused", code: "captcha", reason: "x".repeat(900), trace: { ...TRACE, signal: null } }, false);
     expect(r).toMatchObject({ kind: "refused" });

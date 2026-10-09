@@ -130,7 +130,7 @@ describe("POST channel form: queued, not sent", () => {
     expect(mem.read(`mysteryShops/${shopId}`)).toMatchObject({
       channel: "form", status: "queued", target: FORM, targetLabel: FORM, sentAt: null,
       enquiryText: expect.stringContaining("Do you do plumber in Gqeberha?"),
-      formEnquiry: { subject: "Enquiry: plumber in Gqeberha", service: "plumber" },
+      formEnquiry: { subject: "Enquiry: plumber in Gqeberha", service: "plumber", town: "Gqeberha" },
       matchDomains: ["acme.co.za"], matchNumbers: [PHONE], matchAddresses: [EMAIL],
     });
     expect(publish).toHaveBeenCalledTimes(1);

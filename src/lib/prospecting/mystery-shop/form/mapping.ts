@@ -42,9 +42,11 @@ export interface FormIdentity {
   message: string;
   /** The prospect's service, as the enquiry names it ("plumber"). */
   service: string;
+  /** The town the enquiry names (the contact's city), if it names one. */
+  town: string | null;
 }
 
-export type FieldRole = "name" | "first" | "last" | "email" | "phone" | "company" | "subject" | "message" | "service";
+export type FieldRole = "name" | "first" | "last" | "email" | "phone" | "company" | "subject" | "message" | "service" | "town";
 
 export interface Fill {
   key: string;
@@ -59,6 +61,9 @@ export type FieldPlan =
 
 const TEXTLIKE = new Set(["", "text", "email", "tel", "url", "number", "search"]);
 const CONSENT = /privacy|terms|consent|agree|accept|gdpr|popia|policy|t&c|conditions/;
+/** Town / suburb / city (`address-level2` is the HTML autocomplete token) — never a street, postal code, province or country. */
+const TOWN = /\btown\b|suburb|\bcity\b|address-level2|\bdorp\b|voorstad/;
+const NOT_TOWN = /street|address-line|address-level1|postal|post.?code|\bzip|province|\bstate\b|country|area.?code|straat|poskode|provinsie/;
 const SERVICE_SELECT = /service|reason|interest|enquiry|inquiry|type|department|topic|category|product|regarding|subject/;
 
 /** The role of a text-like field or textarea, by type first, then by what it says it is. */
@@ -70,6 +75,7 @@ export function roleOf(f: Pick<FormField, "tag" | "type" | "hint">): FieldRole |
   if (/last.?name|\blname\b|surname|family.?name|\bvan\b/.test(h)) return "last";
   if (/compan|business|organi[sz]ation|\bfirm\b|besigheid|maatskappy/.test(h)) return "company";
   if (/subject|topic|onderwerp/.test(h)) return "subject";
+  if (f.tag === "input" && TOWN.test(h) && !NOT_TOWN.test(h)) return "town";
   if (/address|adres|street|suburb/.test(h)) return null;
   if (f.tag === "textarea" || /message|enquir|inquir|comment|question|details|how can we help|boodskap|vraag/.test(h)) {
     return "message";
@@ -102,7 +108,7 @@ export function planFields(fields: FormField[], id: FormIdentity): FieldPlan {
   const [first, last] = split(id.business);
   const values: Record<FieldRole, string | null> = {
     name: id.business, first, last, email: id.email, phone: id.phone, company: id.business,
-    subject: id.subject, message: id.message, service: null,
+    subject: id.subject, message: id.message, service: null, town: id.town,
   };
   const fills: Fill[] = [];
   const unmapped: string[] = [];

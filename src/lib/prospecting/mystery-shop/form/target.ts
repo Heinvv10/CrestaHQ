@@ -74,7 +74,7 @@ const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
  */
 export function formIdentity(
   sub: SubAccountDoc,
-  enquiry: { subject: string; message: string; service: string },
+  enquiry: { subject: string; message: string; service: string; town: string | null },
 ): FormIdentity | null {
   const email = mailboxAddress(sub);
   if (!email) return null;

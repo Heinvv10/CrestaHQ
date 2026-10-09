@@ -98,11 +98,13 @@ export async function runFormJob(
       return "failed";
     }
     const sub = (await db.doc(`subAccounts/${shop.subAccountId}`).get()).data() as SubAccountDoc | undefined;
-    const enquiry = (shop.formEnquiry ?? {}) as { subject?: unknown; service?: unknown };
+    const enquiry = (shop.formEnquiry ?? {}) as { subject?: unknown; service?: unknown; town?: unknown };
     const identity = sub
       ? formIdentity(sub, {
           subject: typeof enquiry.subject === "string" ? enquiry.subject : "",
           service: typeof enquiry.service === "string" ? enquiry.service : "",
+          // The enquiry text's own town; a shop queued before it was stored has none.
+          town: typeof enquiry.town === "string" && enquiry.town.trim() ? enquiry.town : null,
           message: String(shop.enquiryText ?? ""),
         })
       : null;

@@ -47,7 +47,7 @@ export interface ReserveInput {
   niche: string;
   cap: number;
   /** A form shop: the subject and service it types, and who may answer for the business (inbound.ts). */
-  form?: { subject: string; service: string; matchDomains: string[]; matchNumbers: string[]; matchAddresses: string[] };
+  form?: { subject: string; service: string; town: string | null; matchDomains: string[]; matchNumbers: string[]; matchAddresses: string[] };
 }
 
 /**
@@ -112,7 +112,7 @@ export async function reserveShop(input: ReserveInput): Promise<{ shopId: string
       usageMonth,
       ...(input.form
         ? {
-            formEnquiry: { subject: input.form.subject, service: input.form.service },
+            formEnquiry: { subject: input.form.subject, service: input.form.service, town: input.form.town },
             matchDomains: input.form.matchDomains,
             matchNumbers: input.form.matchNumbers,
             matchAddresses: input.form.matchAddresses,

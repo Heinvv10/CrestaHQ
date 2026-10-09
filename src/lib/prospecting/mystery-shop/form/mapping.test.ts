@@ -8,6 +8,7 @@ const ID: FormIdentity = {
   subject: "Enquiry: plumber in Gqeberha",
   message: "Hi,\n\nDo you do plumber in Gqeberha?",
   service: "plumber",
+  town: "Gqeberha",
 };
 let n = 0;
 const field = (hint: string, over: Partial<FormField> = {}): FormField => ({
@@ -26,14 +27,28 @@ describe("roleOf", () => {
     ["first name | fname", "text", "first"], ["surname", "text", "last"], ["last_name", "text", "last"],
     ["email address", "text", "email"], ["x", "email", "email"], ["phone", "text", "phone"], ["x", "tel", "phone"],
     ["whatsapp number", "text", "phone"], ["company name", "text", "company"], ["business", "text", "company"],
-    ["subject", "text", "subject"], ["your enquiry", "text", "message"], ["website", "text", null], ["city", "text", null],
+    ["subject", "text", "subject"], ["your enquiry", "text", "message"], ["website", "text", null], ["city", "text", "town"],
   ])("%s (%s) → %s", (hint, type, role) => {
     expect(roleOf({ tag: "input", type, hint })).toBe(role);
+  });
+
+  it.each([
+    "town or suburb | example: edenvale | where | bizwhere | address-level2", "town / city", "suburb", "x | address-level2", "dorp",
+  ])("%s → town", (hint) => {
+    expect(roleOf({ tag: "input", type: "text", hint })).toBe("town");
+  });
+
+  it.each([
+    "street address", "address | street-address", "postal code", "city | postal-code", "province", "state", "country",
+    "area code", "address", "location", "area", "address line 1 | address-line1", "region | address-level1",
+  ])("%s is never the town", (hint) => {
+    expect(roleOf({ tag: "input", type: "text", hint })).not.toBe("town");
   });
 
   it("a textarea is the message unless it says it is an address", () => {
     expect(roleOf({ tag: "textarea", type: "", hint: "anything" })).toBe("message");
     expect(roleOf({ tag: "textarea", type: "", hint: "street address" })).toBeNull();
+    expect(roleOf({ tag: "textarea", type: "", hint: "how can we help? | e.g. a leak at my house in town" })).toBe("message");
   });
 });
 
@@ -87,6 +102,32 @@ describe("planFields", () => {
       ok: false, code: "unmapped_required", reason: expect.stringContaining("phone"),
     });
     expect(plan([field("budget", { type: "radio", required: true }), field("m", { tag: "textarea" })])).toMatchObject({ code: "unmapped_required" });
+  });
+
+  it("fills a required town field with the enquiry's town (the crestahq.com form, plus a message)", () => {
+    const where = field("town or suburb | example: edenvale | where | bizwhere | address-level2", { required: true });
+    const p = plan([field("your name", { required: true }), where, field("m", { tag: "textarea" })]);
+    expect(p.ok && p.fills.find((f) => f.key === where.key)).toEqual({ key: where.key, role: "town", value: "Gqeberha", kind: "fill" });
+    expect(p.ok && p.roles).toEqual(["name", "town", "message"]);
+  });
+
+  it("without a town, a required town field still refuses and an optional one is left empty", () => {
+    for (const town of [null, ""]) {
+      expect(plan([field("town or suburb", { required: true }), field("m", { tag: "textarea" })], { ...ID, town })).toEqual({
+        ok: false, code: "unmapped_required", reason: "Required fields it can't fill: town or suburb.",
+      });
+      const p = plan([field("city"), field("m", { tag: "textarea" })], { ...ID, town });
+      expect(p.ok && p.fills.map((f) => f.role)).toEqual(["message"]);
+    }
+  });
+
+  it("the crestahq.com form as it stands (no message field) still refuses — for the message, no longer the town", () => {
+    const p = plan([
+      field("your name | person", { required: true }), field("business name | business", { required: true }),
+      field("town or suburb | where | address-level2", { required: true }), field("mobile number (whatsapp) | phone", { type: "tel", required: true }),
+      field("email address (optional) | email", { type: "email" }),
+    ]);
+    expect(p).toEqual({ ok: false, code: "unmapped_required", reason: "The form has no message field for the enquiry." });
   });
 
   it("an optional field it cannot fill is left empty, and an optional phone without a number too", () => {
