@@ -54,7 +54,7 @@ export type FormResult =
   | { kind: "sent"; trace: FormTrace }
   | { kind: "uncertain"; code: "no_signal" | "timeout" | "captcha_after_submit"; reason: string; trace: FormTrace }
   | { kind: "refused"; code: string; reason: string; trace: FormTrace }
-  | { kind: "failed"; code: "engine_failed" | "page_unavailable" | "page_too_heavy" | "timeout"; reason: string; trace: FormTrace }
+  | { kind: "failed"; code: "engine_failed" | "engine_unisolated" | "page_unavailable" | "page_too_heavy" | "timeout"; reason: string; trace: FormTrace }
   /** The site answered the enquiry with a refusal (a 2xx saying so): it went out, so the slot is kept; never public. */
   | { kind: "rejected"; code: "form_rejected"; reason: string; trace: FormTrace };
 

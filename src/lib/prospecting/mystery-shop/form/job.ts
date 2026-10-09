@@ -11,6 +11,7 @@ import type { FormResult, FormRunInput } from "./engine";
 import { runFormInContainer } from "./container";
 import { claimRun, countRequeue, markRejected, releaseLease, stampSubmit, takeLease } from "./job-store";
 import { formIdentity } from "./target";
+import { recordIsolation } from "./isolation";
 
 /**
  * The form shop's QStash job (`POST /api/automations/prospecting/mystery-shop-form`
@@ -48,6 +49,10 @@ const logged = (what: string, shopId: string) => (err: unknown) => {
 
 async function settle(shopId: string, result: FormResult, providerRef: string, phone: string | null): Promise<FormJobOutcome> {
   const ref = getAdminDb().doc(`mysteryShops/${shopId}`);
+  // The container's canary: it reached the host → the channel is off until one passes; any run past it → on.
+  const code = "code" in result ? result.code : null;
+  if (code === "engine_unisolated") await recordIsolation(false).catch(logged("isolation flag write", shopId));
+  else if (code !== "engine_failed") await recordIsolation(true).catch(logged("isolation flag write", shopId));
   await ref.update({ formTrace: result.trace, callbackNumber: phone }).catch(logged("trace write", shopId));
   if (result.kind === "rejected") {
     await markRejected(shopId, result.reason);

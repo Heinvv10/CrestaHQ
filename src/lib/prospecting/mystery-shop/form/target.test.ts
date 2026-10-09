@@ -5,6 +5,8 @@ import type { SubAccountDoc } from "@/types";
 
 const available = vi.fn();
 vi.mock("./engine-image", () => ({ formEngineAvailable: async () => available() }));
+const blocked = vi.fn();
+vi.mock("./isolation", () => ({ isolationBlocked: async () => blocked() }));
 const { formChannelState, formIdentity } = await import("./target");
 
 const MAILBOX = { enabled: true, verifiedAt: "2026-10-01T00:00:00Z", username: "Info@CrestaHQ.com", lastError: null };
@@ -12,7 +14,10 @@ const sub = (over: Record<string, unknown> = {}) =>
   ({ name: "Cresta HQ", defaultPhoneCountry: "ZA", mailboxConfig: MAILBOX, ...over }) as unknown as SubAccountDoc;
 const enquiry = { subject: "Enquiry: plumber", message: "Hi", service: "plumber" };
 
-beforeEach(() => available.mockReset().mockReturnValue(true));
+beforeEach(() => {
+  available.mockReset().mockReturnValue(true);
+  blocked.mockReset().mockReturnValue(false);
+});
 
 describe("formChannelState", () => {
   it("needs a working synced mailbox with a known address, then the engine", async () => {
@@ -25,6 +30,13 @@ describe("formChannelState", () => {
     });
     expect(await formChannelState(sub({ mailboxConfig: { ...MAILBOX, username: "desk" } }))).toEqual({
       available: false, reason: "The mailbox address isn't known.",
+    });
+  });
+
+  it("containers that can reach the host keep the channel off (the firewall is required)", async () => {
+    blocked.mockReturnValue(true);
+    expect(await formChannelState(sub())).toEqual({
+      available: false, reason: "The form engine can reach this server: install its host firewall first (RUNBOOK).",
     });
   });
 

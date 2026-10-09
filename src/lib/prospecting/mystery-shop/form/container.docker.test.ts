@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { IDENTITY, SIMPLE_FIELDS, form, html, serve, type Fixture } from "@/test/form-fixture-server";
-import { dockerArgs, runFormInContainer, type ChildLike } from "./container";
+import { dockerArgs, runCanary, runFormInContainer, type ChildLike } from "./container";
 
 /**
  * Docker-gated (FORM_ENGINE_DOCKER_TEST=1 and a working `docker`): builds the
@@ -39,7 +39,7 @@ afterAll(async () => {
 });
 
 describe.skipIf(!enabled)("the form engine in its container", () => {
-  it("fills a form end to end; the page cannot reach the host or the docker gateway", async () => {
+  it("fills a form end to end — or, until the host firewall is in, refuses engine_unisolated with nothing attempted", async () => {
     const internalUrl = `http://${GATEWAY}:${new URL(internal.origin).port}`;
     site = await serve({
       "/contact": (_q, res) =>
@@ -62,11 +62,19 @@ describe.skipIf(!enabled)("the form engine in its container", () => {
           spawn(cmd, [...args.slice(0, -1), "-e", `FORM_ENGINE_TEST_ORIGIN=${origin}`, args.at(-1)!], { stdio: ["pipe", "pipe", "pipe"] }) as unknown as ChildLike,
       },
     );
-    console.log("DOCKER RUN", JSON.stringify({ ms: Date.now() - t0, out, posts: site.posts, hits: site.hits, internal: internal.hits }));
+    // The canary decides first: until the host firewall is in, the job must refuse with nothing attempted.
+    const isolated = await runCanary({ image: async () => image });
+    console.log("DOCKER RUN", JSON.stringify({ isolated, ms: Date.now() - t0, out, posts: site.posts, hits: site.hits, internal: internal.hits }));
     expect(dockerArgs("x", image)).toContain("--read-only");
+    expect(internal.hits).toEqual([]);
+    if (!isolated) {
+      expect(out).toMatchObject({ kind: "failed", code: "engine_unisolated" });
+      expect(stamp).not.toHaveBeenCalled();
+      expect(site.hits).toEqual([]);
+      return;
+    }
     expect(out).toMatchObject({ kind: "sent", trace: { signal: "navigation" } });
     expect(stamp).toHaveBeenCalledTimes(1);
     expect(new URLSearchParams(site.posts[0]?.body).get("email")).toBe(IDENTITY.email);
-    expect(internal.hits).toEqual([]);
   }, 300_000);
 });

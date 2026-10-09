@@ -140,6 +140,8 @@ export async function runFormInContainer(
     });
 
     const onLine = async (line: string) => {
+      // Answered already (the clock, a failed stamp): a late "submitting" must never stamp a released shop.
+      if (settled) return;
       let msg: { type?: unknown; result?: unknown };
       try {
         msg = JSON.parse(line) as typeof msg;
@@ -195,5 +197,61 @@ export async function runFormInContainer(
       });
     });
     proc.stdin.write(`${JSON.stringify(job)}\n`);
+  });
+}
+
+const CANARY_MS = 30_000;
+
+/**
+ * A canary-only container (`{"canary":true}`): the runner checks it cannot
+ * reach the host (canary.ts) and answers `{"type":"canary","ok":…}` without
+ * starting Chromium. True only on a well-formed ok within CANARY_MS.
+ */
+export async function runCanary(deps: ContainerDeps = {}): Promise<boolean> {
+  const image = await (deps.image ?? formEngineImage)();
+  if (!image) return false;
+  const name = `lsms-canary-${randomUUID().slice(0, 12)}`;
+  const remove = deps.remove ?? dockerRemove;
+  const spawn = deps.spawn ?? ((cmd: string, args: string[], env: Record<string, string>) => nodeSpawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env: env as NodeJS.ProcessEnv }));
+  return new Promise<boolean>((resolve) => {
+    let out = "";
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => {
+      void remove(name);
+      finish(false);
+    }, deps.timeoutMs ?? CANARY_MS);
+    let child: ChildLike;
+    try {
+      child = spawn("docker", dockerArgs(name, image), dockerEnv());
+    } catch (err) {
+      console.error("[mystery-shop/form] canary could not run", err);
+      return finish(false);
+    }
+    child.on("error", (err) => {
+      console.error("[mystery-shop/form] canary could not run", err);
+      finish(false);
+    });
+    child.stdin.on("error", (err) => console.error("[mystery-shop/form] canary stdin closed", name, err.message));
+    child.stdout.on("data", (c: Buffer) => {
+      out = (out + c.toString("utf8")).slice(0, 4_096);
+    });
+    child.on("close", () => {
+      const ok = out.split("\n").some((line) => {
+        try {
+          const msg = JSON.parse(line) as { type?: unknown; ok?: unknown };
+          return msg.type === "canary" && msg.ok === true;
+        } catch {
+          return false;
+        }
+      });
+      finish(ok);
+    });
+    child.stdin.write(`${JSON.stringify({ canary: true })}\n`);
   });
 }

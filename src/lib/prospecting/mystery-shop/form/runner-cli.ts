@@ -12,6 +12,7 @@ import { publicFetch } from "@/lib/webhooks/public-fetch";
 import { launchFormBrowser } from "./browser";
 import { runFormFill } from "./engine";
 import { GO, SUBMITTING, type RunnerJob } from "./protocol";
+import { isolationCheck } from "./canary";
 import type { FetchImpl } from "./network";
 
 (process.env as Record<string, string>).NODE_ENV = "production";
@@ -54,7 +55,13 @@ async function main() {
   } catch {
     return fail("The job could not be read.");
   }
+  // Fail closed before Chromium starts: if this container can reach the host, the firewall is missing.
+  const isolated = await isolationCheck();
+  if ((job as { canary?: unknown })?.canary === true) return write({ type: "canary", ok: isolated.ok });
   if (typeof job?.url !== "string" || !job.identity || !ssrfGuardEnabled()) return fail("The job is malformed.");
+  if (!isolated.ok) {
+    return write({ type: "result", result: { kind: "failed", code: "engine_unisolated", reason: isolated.reason, trace: { finalUrl: null, signal: null, mappedFields: [] } } });
+  }
   // Chromium's own sandbox cannot start in this container on velo — measured 2026-10-09: "FATAL:
   // zygote_host_impl_linux.cc:128 No usable sandbox!" (the host restricts unprivileged user namespaces
   // through AppArmor). The locked-down, disposable container is the isolation (RUNBOOK).

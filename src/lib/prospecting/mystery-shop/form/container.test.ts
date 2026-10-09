@@ -1,7 +1,15 @@
 import { EventEmitter } from "node:events";
+const execFileCalls: { cmd: string; args: string[]; env: unknown }[] = [];
+vi.mock("node:child_process", async (orig) => ({
+  ...(await orig<typeof import("node:child_process")>()),
+  execFile: (cmd: string, args: string[], opts: { env?: unknown }, cb: (err: Error | null) => void) => {
+    execFileCalls.push({ cmd, args, env: opts.env });
+    cb(null);
+  },
+}));
 import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { dockerArgs, removeArgs, runFormInContainer, type ChildLike } from "./container";
+import { dockerArgs, removeArgs, runCanary, runFormInContainer, type ChildLike } from "./container";
 import { dockerEnv } from "./engine-image";
 import type { RunnerJob } from "./protocol";
 
@@ -94,6 +102,39 @@ describe("the docker run", () => {
 describe("stopping it", () => {
   it("is docker rm -f <name>, not docker kill", () => {
     expect(removeArgs("lsms-form-x")).toEqual(["rm", "-f", "lsms-form-x"]);
+  });
+});
+
+describe("after it answered", () => {
+  it("a late 'submitting' (after the clock answered) never stamps", async () => {
+    const r = await run({ timeoutMs: 30 });
+    expect(r).toMatchObject({ kind: "failed", code: "engine_failed" });
+    child.say({ type: "submitting" });
+    await tick();
+    await tick();
+    expect(stamp).not.toHaveBeenCalled();
+    expect(child.received).not.toContain("go");
+  });
+
+  it("docker failing after the go is uncertain (it may have clicked)", async () => {
+    const out = run();
+    await tick();
+    child.say({ type: "submitting" });
+    await tick();
+    await tick();
+    child.emit("error", new Error("docker died"));
+    expect((await out).kind).toBe("uncertain");
+  });
+
+  it("the default removal runs docker rm -f with the minimal environment", async () => {
+    execFileCalls.length = 0;
+    vi.stubEnv("FIREBASE_ADMIN_PRIVATE_KEY", "secret");
+    await runFormInContainer(JOB, stamp, { spawn: () => child, image: async () => IMAGE, timeoutMs: 30 });
+    vi.unstubAllEnvs();
+    const rm = execFileCalls.find((c) => c.args[0] === "rm");
+    expect(rm).toMatchObject({ cmd: "docker", args: ["rm", "-f", expect.stringMatching(/^lsms-form-/)] });
+    expect(rm!.env).toEqual(dockerEnv());
+    expect(JSON.stringify(rm!.env)).not.toContain("secret");
   });
 });
 
@@ -244,5 +285,28 @@ describe("the container never starting", () => {
     await tick();
     child.emit("error", Object.assign(new Error("spawn docker ENOENT"), { code: "ENOENT" }));
     expect(await out).toMatchObject({ kind: "failed", code: "engine_failed" });
+  });
+});
+
+describe("the canary-only container", () => {
+  const canary = async (lines: unknown[]) => {
+    const out = runCanary(deps({ timeoutMs: 2_000 }));
+    await tick();
+    for (const l of lines) child.say(l);
+    child.end();
+    return out;
+  };
+  it("sends only {canary:true} with the same locked-down argv, and believes only a well-formed ok", async () => {
+    expect(await canary([{ type: "canary", ok: true }])).toBe(true);
+    expect(JSON.parse(child.received[0])).toEqual({ canary: true });
+    expect(spawned[0].args.slice(0, 4)).toEqual(["run", "--rm", "-i", "--pull"]);
+  });
+  it.each([[[{ type: "canary", ok: false }]], [[]], [["garbage"]], [[{ type: "canary", ok: "true" }]]])("%j → not isolated", async (lines) => {
+    child = new FakeChild();
+    expect(await canary(lines)).toBe(false);
+  });
+  it("a silent container times out → not isolated, removed", async () => {
+    expect(await runCanary(deps({ timeoutMs: 30 }))).toBe(false);
+    expect(killed).toHaveLength(1);
   });
 });

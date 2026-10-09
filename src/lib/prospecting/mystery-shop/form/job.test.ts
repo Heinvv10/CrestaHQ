@@ -98,6 +98,25 @@ describe("a run", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("a container that could reach the host: failed engine_unisolated, refunded, and the channel flagged; a later run past the canary clears it", async () => {
+    run.mockResolvedValueOnce({ kind: "failed", code: "engine_unisolated", reason: "reachable", trace: TRACE } as FormResult);
+    expect(await job()).toBe("failed");
+    expect(shop()).toMatchObject({ status: "failed", failure: { code: "engine_unisolated" } });
+    expect(mem.read(USAGE)?.mysteryShops).toBe(0);
+    expect(mem.read("system/formEngine")?.unisolatedAt).toBeInstanceOf(Date);
+    seed({ status: "queued" });
+    mem.seed(USAGE, { mysteryShops: 1 });
+    expect(await job()).toBe("sent");
+    expect(mem.read("system/formEngine")).toMatchObject({ unisolatedAt: null });
+  });
+
+  it("a container that never got past starting does not clear the flag", async () => {
+    mem.seed("system/formEngine", { unisolatedAt: new Date() });
+    run.mockResolvedValueOnce({ kind: "failed", code: "engine_failed", reason: "x", trace: TRACE } as FormResult);
+    await job();
+    expect(mem.read("system/formEngine")?.unisolatedAt).toBeInstanceOf(Date);
+  });
+
   it("without a mailbox address the shop is refused before the browser starts", async () => {
     mem.seed("subAccounts/sa1", { name: "Cresta HQ", mailboxConfig: { username: "", enabled: true } });
     expect(await job()).toBe("refused");

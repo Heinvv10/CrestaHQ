@@ -6,6 +6,7 @@ import type { SubAccountDoc } from "@/types";
 import { normalizeEmailTarget, normalizeFormUrl } from "../targets";
 import type { ChannelState } from "../send";
 import { formEngineAvailable } from "./engine-image";
+import { isolationBlocked } from "./isolation";
 import type { FormIdentity } from "./mapping";
 
 /**
@@ -45,7 +46,8 @@ const mailboxAddress = (sub: SubAccountDoc) => normalizeEmailTarget(sub.mailboxC
 
 /**
  * The form channel needs a working synced mailbox (its address goes in the
- * form and the reply is timed from it) and the engine's container image.
+ * form and the reply is timed from it), the engine's container image, and
+ * containers that cannot reach the host (isolation.ts).
  * No SMTP: nothing is emailed.
  */
 export async function formChannelState(sub: SubAccountDoc): Promise<ChannelState> {
@@ -56,6 +58,9 @@ export async function formChannelState(sub: SubAccountDoc): Promise<ChannelState
   if (mailbox.lastError) return { available: false, reason: `The mailbox sync is failing: ${mailbox.lastError}` };
   if (!mailboxAddress(sub)) return { available: false, reason: "The mailbox address isn't known." };
   if (!(await formEngineAvailable())) return { available: false, reason: "The form engine isn't installed on this server." };
+  if (await isolationBlocked()) {
+    return { available: false, reason: "The form engine can reach this server: install its host firewall first (RUNBOOK)." };
+  }
   return { available: true };
 }
 
