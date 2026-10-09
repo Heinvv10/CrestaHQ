@@ -140,6 +140,26 @@ describe.skipIf(skipBrowser)("no false 'sent'", () => {
   }, T);
 });
 
+describe.skipIf(skipBrowser)("partial-lead capture", () => {
+  it("a page posting each field as it is typed, then a lazy CAPTCHA: refused, and NOTHING of the enquiry left", async () => {
+    const js = `document.querySelectorAll("input, textarea").forEach((el) => el.addEventListener("input", () =>
+        fetch("/capture?" + el.name + "=" + encodeURIComponent(el.value), { method: "POST", body: el.name + "=" + encodeURIComponent(el.value) }).catch(() => {})));
+      document.querySelector("textarea").addEventListener("focus", () => { const d = document.createElement("div"); d.className = "g-recaptcha"; document.body.append(d); });`;
+    const { out } = await go(() => ({ "/contact": page(form(SIMPLE_FIELDS) + `<script>${js}</script>`), "/capture": page("ok"), "/send": ok }));
+    expect(out).toMatchObject({ kind: "refused", code: "captcha" });
+    const leaked = site.hits.concat(site.posts.map((p) => p.body)).join("\n");
+    expect(decodeURIComponent(leaked)).not.toContain(IDENTITY.email);
+    expect(site.posts).toEqual(site.posts.filter((p) => !p.body.includes("crestahq")));
+  }, T);
+
+  it("without a CAPTCHA the form still goes, and the early copies never left", async () => {
+    const js = `document.querySelector("[name=email]").addEventListener("change", (e) => fetch("/capture", { method: "POST", body: "email=" + encodeURIComponent(e.target.value) }).catch(() => {}));`;
+    const { out } = await go(() => ({ "/contact": page(form(SIMPLE_FIELDS) + `<script>${js}</script>`), "/capture": page("ok"), "/send": ok }));
+    expect(out.kind).toBe("sent");
+    expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
+  }, T);
+});
+
 describe.skipIf(skipBrowser)("CAPTCHA misses", () => {
   it("a reCAPTCHA loaded by the click itself: uncertain, never sent", async () => {
     const lazy = `<script>let L=0;document.addEventListener("mousedown",()=>{if(L++)return;const s=document.createElement("script");s.src="https://www.goo"+"gle.com/recap"+"tcha/api.js";document.head.append(s);},true);</script>`;

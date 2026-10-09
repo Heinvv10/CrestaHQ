@@ -57,6 +57,11 @@ const DROP_RESPONSE = new Set(["connection", "keep-alive", "transfer-encoding", 
 const FORM_BACKENDS =
   /(^|\.)(formspree\.io|getform\.io|hsforms\.com|jotform\.com|typeform\.com|formsubmit\.co|web3forms\.com|usebasin\.com|formcarry\.com|wufoo\.com|zohopublic\.com)$/i;
 
+/** The form's own site, or a third-party form backend: where an answer to the enquiry may come from. */
+function knownHost(host: string, formUrl: string | null): boolean {
+  return formUrl !== null && (sameSite(host, new URL(formUrl).hostname) || FORM_BACKENDS.test(host));
+}
+
 export interface GuardState {
   /** Set when a main-frame document was refused (not a public address / not http(s)). */
   blocked: string | null;
@@ -166,7 +171,7 @@ async function fetchHops(
     const next = new URL(location, url);
     if (!httpish(next) || !portOk(next, opts.allowPorts)) throw new NonPublicUrlError(next.host || next.protocol);
     if (policy === "enquiry") {
-      if (postRedirectGet(res.status, new URL(url), next)) {
+      if (postRedirectGet(res.status, new URL(url), next, (host) => knownHost(host, state.formUrl))) {
         method = "GET";
         body = undefined;
         followedGet = true;
@@ -235,15 +240,18 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
       return route.abort("blockedbyclient");
     }
     const afterClick = state.clickedAt !== null;
-    // Started after the click and carrying our email or message: the enquiry itself.
-    const carrier = afterClick && carriesEnquiry(`${req.url()}\n${req.postDataBuffer()?.toString("utf8") ?? ""}`, opts.markers);
+    const carries = carriesEnquiry(`${req.url()}\n${req.postDataBuffer()?.toString("utf8") ?? ""}`, opts.markers);
+    // Before the click nothing of the enquiry may leave (a page capturing fields as they are typed —
+    // a partial lead, even when the form is then refused); after it, that request IS the enquiry.
+    if (carries && !afterClick) return route.abort("blockedbyclient");
+    const carrier = carries && afterClick;
     await acquire();
     try {
       if (signal.aborted) throw new Error("aborted");
       const { res, url: finalUrl, body, followedGet } = await fetchHops(req, opts, carrier ? "enquiry" : main ? "none" : "follow");
       if (main && res.headers.get("cf-mitigated")) state.captcha ??= "Cloudflare challenge response";
       const host = new URL(finalUrl).hostname;
-      const known = state.formUrl !== null && (sameSite(host, new URL(state.formUrl).hostname) || FORM_BACKENDS.test(host));
+      const known = knownHost(host, state.formUrl);
       // Post-redirect-get: only a 2xx HTML page that isn't the form page is a candidate, and it confirms
       // only if its VISIBLE text says thank you once loaded (checks.ts). Never a carrierOk on its own.
       if (carrier && followedGet) {

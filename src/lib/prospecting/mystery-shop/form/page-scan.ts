@@ -165,6 +165,19 @@ export const THANKS_SCRIPT = `(() => {
   return (t.match(/thank you|thanks|received|we'll be in touch|we will be in touch|message (has been )?sent|dankie/gi) || []).length;
 })()`;
 
+/**
+ * For a page a post-redirect-get loaded: how many enquiry-confirmation
+ * phrases its visible text has — tighter than THANKS_SCRIPT ("Thanks to our
+ * customers" is not one) — or 0 when it also has failure wording ("Sorry …
+ * please try again"). -1 on the form's own (marked) document.
+ */
+export const PRG_CONFIRM_SCRIPT = `(() => {
+  if (window.__lsmsFormPage) return -1;
+  const t = document.body ? document.body.innerText || "" : "";
+  if (/sorry|error|could not|couldn'?t|failed|try again|invalid/i.test(t)) return 0;
+  return (t.match(/thank you for (your (message|enquiry|inquiry|submission)|contacting|getting in touch|reaching out)|(your )?message (has been |was )?sent|we'?ll be in touch|(has been|was) received|dankie vir/gi) || []).length;
+})()`;
+
 /** The form with somewhere to write the enquiry: a textarea first, else the most fillable visible fields. */
 export function chooseForm(forms: ScannedForm[]): ScannedForm | null {
   const usable = forms.filter((f) => !f.search && f.fields.some((x) => x.visible && !x.trap));

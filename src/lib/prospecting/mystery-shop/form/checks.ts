@@ -3,7 +3,7 @@ import "server-only";
 import type { Page } from "playwright-core";
 import type { GuardState } from "./network";
 import { samePage } from "./redirects";
-import { CAPTCHA_SCRIPT, CAPTCHA_URL, THANKS_SCRIPT } from "./page-scan";
+import { CAPTCHA_SCRIPT, CAPTCHA_URL, PRG_CONFIRM_SCRIPT, THANKS_SCRIPT } from "./page-scan";
 
 /**
  * What engine.ts asks the page, every question bounded: a page or frame that
@@ -64,8 +64,6 @@ export async function captchaCheck(page: Page, state: GuardState): Promise<void>
 
 /** Marks the form's document; a page the post-redirect-get loaded has no such mark. */
 export const MARK_FORM_PAGE = "window.__lsmsFormPage = true";
-/** Thank-you phrases in the VISIBLE text of a document that is not the form page; -1 on the form page itself. */
-const PRG_THANKS = `(window.__lsmsFormPage ? -1 : ${THANKS_SCRIPT})`;
 
 export async function thanksCount(page: Page, fallback: number): Promise<number> {
   const n = await bounded(page.evaluate(THANKS_SCRIPT).catch(() => fallback));
@@ -96,7 +94,7 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
     if (state.rejected) return { rejected: state.rejected };
     if (state.tooHeavy) return null;
     if (state.prgPage) {
-      const n = await bounded(page.evaluate(PRG_THANKS).catch(() => -1));
+      const n = await bounded(page.evaluate(PRG_CONFIRM_SCRIPT).catch(() => -1));
       if (!timedOut(n) && (n as number) > 0) {
         const late = await captchaNow();
         return late ? { captcha: late } : { signal: "navigation", finalUrl: state.prgPage };

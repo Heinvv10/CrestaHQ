@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  IDENTITY, SIMPLE_FIELDS, form, html, loopbackFetch, ports, serve, skipBrowser, type Fixture, type Handler,
+  IDENTITY, SIMPLE_FIELDS, form, html, loopbackFetch, otherSite, ports, serve, skipBrowser, type Fixture, type Handler,
 } from "@/test/form-fixture-server";
 import { LAUNCH_ARGS, launchFormBrowser } from "./browser";
 import { runFormFill, type FormRunInput } from "./engine";
@@ -30,7 +30,8 @@ const noProxy = () => launchFormBrowser(LAUNCH_ARGS.filter((a) => !a.includes("p
 async function run(routes: Record<string, Handler>, over: Partial<FormRunInput> = {}, path = "/contact") {
   site = await serve(routes);
   return runFormFill({
-    url: `${site.origin}${path}`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin),
+    // The fixture also answers as `localhost`: another site to the engine.
+    url: `${site.origin}${path}`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin, otherSite(site.origin)),
     allowPorts: ports(site.origin, internal.origin), limits: { totalMs: 15_000, settleMs: 200, confirmMs: 2_000 }, ...over,
   });
 }
@@ -129,6 +130,65 @@ describe.skipIf(skipBrowser)("Z1: a 3xx answer to the enquiry is never a confirm
       "/thank-you": (_q, res) => html(res, "<h1>Thank you</h1>", 200, { "content-disposition": "attachment; filename=thanks.html" }),
     });
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it.each([
+    ["the homepage, thanking its customers", "/", "<h1>Thanks to 500 happy customers</h1><p>Award received 2024</p>"],
+    ["a page that thanks loosely (no enquiry phrase)", "/news", "<h1>Thanks to 500 happy customers</h1><p>Award received 2024</p>"],
+    ["an error page that thanks you for your patience", "/contact-error", "<h1>Sorry, something went wrong</h1><p>Thank you for your message — please try again. Thank you for your patience.</p>"],
+    ["the homepage even with the exact phrase", "/", "<h1>Thank you for your message</h1>"],
+  ])("a post-redirect-get to %s: uncertain", async (_name, to, body) => {
+    const out = await prg(to, { [to]: page(body) });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("a post-redirect-get to another site, however thankful: uncertain, and never fetched", async () => {
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS)),
+      "/send": (q, res) => html(res, "", 303, { location: `http://localhost:${q.socket.localPort}/thank-you` }),
+      "/thank-you": thanks,
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+    expect(site.hits).not.toContain("GET /thank-you");
+  }, T);
+
+  it("a 301 to another path is not a post-redirect-get: uncertain, not fetched", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 301, { location: "/thank-you" }), "/thank-you": thanks });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+    expect(site.hits).not.toContain("GET /thank-you");
+  }, T);
+
+  it("a 303 is never re-POSTed (not even to the same path with a slash)", async () => {
+    const out = await run({ "/contact": page(form(SIMPLE_FIELDS)), "/send": (_q, res) => html(res, "", 303, { location: "/send/" }), "/send/": thanks });
+    expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("post-redirect-get counts only for the page itself, not an XHR followed to a thank-you", async () => {
+    const js = `fetch("/api/send", { method: "POST", body: new FormData(e.target) }).then(() => { location.href = "/thank-you"; });`;
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS).replace("</form>", `</form><script>document.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); ${js} });</script>`)),
+      "/api/send": (_q, res) => html(res, "", 303, { location: "/thank-you" }),
+      "/thank-you": thanks,
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
+  it("a thank-you page carrying a CAPTCHA: uncertain captcha_after_submit", async () => {
+    const out = await prg("/thank-you", { "/thank-you": page(`<h1>Thank you for your message</h1><div class="g-recaptcha" data-sitekey="x"></div>`) });
+    expect(out).toMatchObject({ kind: "uncertain", code: "captcha_after_submit" });
+  }, T);
+
+  it("a 3xx after the click is never recorded as where the page went", async () => {
+    const js = `fetch(location.origin.replace("127.0.0.1", "localhost") + "/collect", { method: "POST", body: new FormData(e.target) }).then(() => { location.href = "/go"; });`;
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS).replace("</form>", `</form><script>document.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); ${js} });</script>`)),
+      "/collect": page("ok"),
+      "/go": (_q, res) => html(res, "", 302, { location: "/elsewhere" }),
+      "/elsewhere": page("<p>somewhere</p>"),
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+    expect(out.trace.finalUrl ?? "").not.toMatch(/elsewhere/);
   }, T);
 
   it("a 303 to the homepage with no thank-you text (a spam bounce): uncertain", async () => {

@@ -31,9 +31,13 @@ export function repostable(status: number, from: URL, to: URL): boolean {
   return (status === 301 || status === 302) && loose(from) === loose(to) && sameSite(from.hostname, to.hostname);
 }
 
-/** Post-redirect-get: a 302 / 303 from the enquiry to ANOTHER path (any query) — followed with one GET. */
-export function postRedirectGet(status: number, from: URL, to: URL): boolean {
+/**
+ * Post-redirect-get: a 302 / 303 from the enquiry to ANOTHER path (any
+ * query), on the form's own site or a known form backend (`known`), and
+ * never to the site's root — a bounce to the homepage proves nothing.
+ * Followed with one GET.
+ */
+export function postRedirectGet(status: number, from: URL, to: URL, known: (host: string) => boolean): boolean {
   const path = (u: URL) => u.pathname.replace(/\/+$/, "");
-  return (status === 302 || status === 303) && path(from) !== path(to);
+  return (status === 302 || status === 303) && path(from) !== path(to) && path(to) !== "" && known(to.hostname);
 }
-
