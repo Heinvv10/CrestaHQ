@@ -28,9 +28,12 @@ export const dynamic = "force-dynamic";
 const esc = (s: string) =>
   s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-function page(title: string, body: string, status = 200): NextResponse {
+/** Reloads of the "confirming" page before it stops re-checking (~1 min). */
+const CONFIRM_RECHECKS = 20;
+
+function page(title: string, body: string, status = 200, head = ""): NextResponse {
   return new NextResponse(
-    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${esc(title)}</title></head>
+    `<!doctype html><html><head>${head}<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${esc(title)}</title></head>
 <body style="font-family:system-ui,-apple-system,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#fafafa;color:#18181b;margin:0;">
 <div style="max-width:420px;width:100%;padding:32px;box-sizing:border-box;text-align:center;">${body}</div></body></html>`,
     { status, headers: { "content-type": "text/html; charset=utf-8" } },
@@ -68,10 +71,22 @@ export async function GET(
     );
   }
   if (returning) {
+    // Paystack redirects the payer before its webhook lands, so re-check
+    // until the webhook has recorded this reference (then the branch above
+    // renders "Payment received"), up to CONFIRM_RECHECKS reloads.
+    const params = new URL(request.url).searchParams;
+    const recheck = Number(params.get("recheck")) || 0;
+    params.set("recheck", String(recheck + 1));
+    const refresh =
+      recheck < CONFIRM_RECHECKS
+        ? `<meta http-equiv="refresh" content="3;url=?${esc(params.toString())}">`
+        : "";
     return page(
       "Confirming payment",
       `<h1 style="font-size:20px;margin:0 0 8px;">Confirming your payment</h1>
 <p style="color:#52525b;font-size:14px;line-height:1.6;">Paystack is confirming your payment of ${esc(amount)} for ${esc(link.description)}. You can close this page — the sender is notified once it's confirmed.</p>`,
+      200,
+      refresh,
     );
   }
 

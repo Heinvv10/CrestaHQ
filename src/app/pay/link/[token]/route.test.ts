@@ -185,6 +185,28 @@ describe("the payer returning from Paystack", () => {
     expect(html).not.toContain("can't be used");
   });
 
+  it("re-checks a confirming page, keeping the reference, so a late webhook still shows the payer it landed", async () => {
+    const res = await get("?trxref=pl-link1-0123456789abcdef&reference=pl-link1-0123456789abcdef");
+    expect(await res.text()).toContain(
+      '<meta http-equiv="refresh" content="3;url=?trxref=pl-link1-0123456789abcdef&#38;reference=pl-link1-0123456789abcdef&#38;recheck=1">',
+    );
+  });
+
+  it("stops re-checking once the confirming page has reloaded its limit", async () => {
+    const res = await get("?reference=pl-link1-0123456789abcdef&recheck=20");
+    const html = await res.text();
+    expect(html).toContain("Confirming your payment");
+    expect(html).not.toContain("http-equiv");
+  });
+
+  it("does not re-check a page that already says the payment was received", async () => {
+    const ref = "pl-link1-0123456789abcdef";
+    seedLink("link1", { token, status: "paid", paystackReference: ref });
+    const html = await (await get(`?reference=${ref}`)).text();
+    expect(html).toContain("Payment received");
+    expect(html).not.toContain("http-equiv");
+  });
+
   it("says confirming, not paid, when the link was paid under a different reference", async () => {
     seedLink("link1", { token, status: "paid", paystackReference: "pl-link1-ffffffffffffffff" });
     const res = await get("?reference=pl-link1-0123456789abcdef");
