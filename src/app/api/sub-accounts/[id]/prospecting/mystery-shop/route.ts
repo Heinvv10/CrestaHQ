@@ -51,6 +51,8 @@ import { whatsappEnquiryOf } from "@/lib/prospecting/mystery-shop/whatsapp";
  * provider failed (shop `failed`). Both give their cap slot back. A send that
  * MAY have gone out is kept `sent` + `sendUncertain` (slot kept, timer
  * queued, still blocking a second send) and answers 502 with a fixed warning.
+ * A WhatsApp send Meta reported undeliverable before it was recorded answers
+ * 200 `{ shopId, status: "failed", error }` (the slot is kept: it was sent).
  * A shop does not stamp `approachedAt` and does not block outreach workflows.
  */
 
@@ -210,6 +212,13 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     );
   } else {
     console.error("[prospecting/mystery-shop] send outcome unknown", shopId, result.reason);
+  }
+  if (!recorded && result.ok) {
+    // A WhatsApp `failed` receipt can land before markSent: Meta took it, then could not deliver it.
+    const now = (await getAdminDb().doc(`mysteryShops/${shopId}`).get().catch(() => null))?.data();
+    if (now?.status === "failed" && now.failure?.code === "undeliverable") {
+      return NextResponse.json({ shopId, status: "failed", error: String(now.failure.reason) });
+    }
   }
   if (!recorded) {
     const marked = await markUncertain(shopId, result.providerRef).catch((err) => {

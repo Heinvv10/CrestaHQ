@@ -76,6 +76,12 @@ describe("the mystery-shop hold on the WhatsApp AI", () => {
       if (path === "mysteryShops") throw new Error("firestore down");
       return real(path);
     });
-    expect(await respond()).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    expect(await respond()).toEqual({ kind: "skipped", reason: "mystery_shop_check_failed" });
+    expect(mem.list("contacts/c1/activities")[0]).toMatchObject({
+      type: "ai_skipped",
+      content: "AI reply skipped — the mystery-shop check could not run, so the AI stays quiet to be safe.",
+      meta: { reason: "mystery_shop_check_failed" },
+    });
+    expect(console.error).toHaveBeenCalled();
   });
 });

@@ -64,6 +64,16 @@ describe("sendWhatsappShop", () => {
     expect(waSend).not.toHaveBeenCalled();
   });
 
+  it("fails, sending nothing, when the send start can't be stamped (the shop is no longer queued)", async () => {
+    template("t1");
+    const enquiry = await whatsappEnquiryOf("sa1", CONTACT, SUB);
+    mem.seed("mysteryShops/s1", { subAccountId: "sa1", status: "sent" });
+    expect(await sendWhatsappShop({ shopId: "s1", target: "+27821234567", contact: CONTACT, contactId: "c1", uid: "u1", enquiry })).toEqual({
+      ok: false, kind: "failed", reason: "The send could not be started.",
+    });
+    expect(waSend).not.toHaveBeenCalled();
+  });
+
   it("refuses without an enquiry, and for an opted-out contact before anything else", async () => {
     template("t1");
     const enquiry = await whatsappEnquiryOf("sa1", CONTACT, SUB);

@@ -81,7 +81,8 @@ type AiSkipReason =
   | "quota"
   | "reply_loop"
   | "llm_failed"
-  | "mystery_shop";
+  | "mystery_shop"
+  | "mystery_shop_check_failed";
 
 type RespondOutcome =
   | { kind: "replied"; replyText: string; tokens: number }
@@ -389,18 +390,22 @@ export async function maybeRespondWithAi(
   if (channelId === "whatsapp") {
     const held = await mysteryShopHoldsAi(subAccount, subAccountId, contact.id, replyTo).catch((err) => {
       console.error("[ai/respond] mystery-shop check failed — not replying", err);
-      return true;
+      return "check_failed" as const;
     });
     if (held) {
+      const reason = held === "check_failed" ? "mystery_shop_check_failed" : "mystery_shop";
       await logActivity({
         contactId: contact.id,
         agencyId: subAccount.agencyId,
         subAccountId,
         type: "ai_skipped",
-        content: "AI reply skipped — this number is being mystery-shopped (Prospecting).",
-        meta: { reason: "mystery_shop", channel: channelId },
+        content:
+          held === "check_failed"
+            ? "AI reply skipped — the mystery-shop check could not run, so the AI stays quiet to be safe."
+            : "AI reply skipped — this number is being mystery-shopped (Prospecting).",
+        meta: { reason, channel: channelId },
       });
-      return { kind: "skipped", reason: "mystery_shop" };
+      return { kind: "skipped", reason };
     }
   }
 

@@ -108,6 +108,9 @@ export function ContactMysteryShop({ contactId }: { contactId: string }) {
         }),
       });
       if (!res.ok) throw new Error(await errorOf(res));
+      // Taken by the provider but already reported undeliverable (WhatsApp).
+      const sent = (await res.json().catch(() => ({}))) as { status?: string; error?: string };
+      if (sent.status === "failed") throw new Error(sent.error ?? "The enquiry could not be delivered.");
       toast.success(channel === "call" ? "Mystery-shop call placed" : "Mystery-shop enquiry sent");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");

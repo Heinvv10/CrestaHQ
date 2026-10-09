@@ -161,6 +161,20 @@ describe("ContactMysteryShop", () => {
     expect(JSON.parse(call[1].body as string)).toEqual({ reviewedAutoReply: true });
   });
 
+  it("a send reported undeliverable shows why instead of 'sent'", async () => {
+    (payload.channels as Record<string, unknown>).whatsapp = { available: true, targets: [PHONE] };
+    const { toast } = await import("sonner");
+    vi.mocked(toast.success).mockClear();
+    await mount();
+    fetchMock.mockImplementationOnce(async () =>
+      new Response(JSON.stringify({ shopId: "s1", status: "failed", error: "WhatsApp couldn't deliver the enquiry (131026)." }), { status: 200 }),
+    );
+    await click(q("mystery-shop-whatsapp"));
+    await click(q("mystery-shop-confirm-send"));
+    expect(container.textContent).toContain("WhatsApp couldn't deliver the enquiry (131026).");
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it("renders nothing for a contact that is not a prospect", async () => {
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ code: "not_a_prospect", error: "x" }), { status: 403 }));
     await mount();

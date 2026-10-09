@@ -165,6 +165,25 @@ describe("WhatsApp: the send", () => {
     expect((mem.read("conversations/c1")?.botPausedUntil as Date).getTime()).toBe((shops()[0].sentAt as Date).getTime() + LATE_REPLY_HORIZON_MS);
   });
 
+  it("a failed receipt that beat markSent: 200 with the undeliverable status and why, not 'may have been sent'", async () => {
+    waSend.mockImplementation(async (a: { onAccepted: (sid: string) => Promise<void> }) => {
+      await a.onAccepted(WAMID);
+      const { recordMysteryShopWhatsAppStatus } = await import("@/lib/prospecting/mystery-shop/inbound");
+      await recordMysteryShopWhatsAppStatus("sa1", WAMID, "failed", Date.now(), "131026: Message undeliverable");
+      return { ok: true, sid: WAMID };
+    });
+    const res = await post(wa());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      shopId: shops()[0].id,
+      status: "failed",
+      error: "WhatsApp couldn't deliver the enquiry (131026: Message undeliverable).",
+    });
+    expect(shops()[0]).toMatchObject({ status: "failed", failure: { code: "undeliverable" } });
+    expect(shops()[0].sendUncertain).toBeUndefined();
+    expect(used()).toBe(1);
+  });
+
   it("no town: {{2}} reads 'your area' — never an empty parameter", async () => {
     seedContact("c1", { city: "  " });
     await readHashes();
