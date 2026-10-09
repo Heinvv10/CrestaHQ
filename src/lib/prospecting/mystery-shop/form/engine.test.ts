@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  IDENTITY, SIMPLE_FIELDS, capturingLaunch, form, html, loopbackFetch, otherSite, serve, skipBrowser, type Fixture, type Handler,
+  IDENTITY, SIMPLE_FIELDS, capturingLaunch, form, html, loopbackFetch, otherSite, ports, serve, skipBrowser, type Fixture, type Handler,
 } from "@/test/form-fixture-server";
 import { runFormFill, type FormRunInput } from "./engine";
 
@@ -20,6 +20,7 @@ async function run(routes: Record<string, Handler>, path = "/contact", over: Par
   return runFormFill({
     // The fixture also answers as `localhost`: another site to the engine.
     url: `${site.origin}${path}`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin, otherSite(site.origin)),
+    allowPorts: ports(site.origin),
     limits: { settleMs: 100, confirmMs: 4_000 }, ...over,
   });
 }
@@ -93,19 +94,30 @@ const scripted = (script: string) =>
   `<footer>Thanks for visiting</footer><script>document.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); ${script} });</script>`;
 
 describe.skipIf(skipBrowser)("confirmation", () => {
-  it("new thank-you text on the same page", async () => {
+  it("new thank-you text on the same page, after the enquiry was posted", async () => {
     const out = await run({
-      "/contact": (_q, res) => html(res, scripted(`document.body.insertAdjacentHTML("beforeend", "<p>We'll be in touch soon.</p>");`)),
+      "/contact": (_q, res) =>
+        html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: new FormData(e.target) }).then(() => document.body.insertAdjacentHTML("beforeend", "<p>We'll be in touch soon.</p>"));`)),
+      "/api/enquiry": (_q, res) => html(res, "<p>ok</p>", 200),
     });
     expect(out).toMatchObject({ kind: "sent", trace: { signal: "thank_you" } });
   });
 
-  it("a 2xx to an XHR POST on the same site", async () => {
+  it("a 2xx to an XHR POST of the enquiry on the same site", async () => {
     const out = await run({
-      "/contact": (_q, res) => html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: "x=1" });`)),
+      "/contact": (_q, res) => html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: new URLSearchParams(new FormData(e.target)) });`)),
       "/api/enquiry": (_q, res) => html(res, "{}", 200),
     });
     expect(out).toMatchObject({ kind: "sent", trace: { signal: "post_2xx" } });
+  });
+
+  it("thank-you text, a URL change or a 2xx without the enquiry ever being sent is never 'sent'", async () => {
+    const out = await run({
+      "/contact": (_q, res) =>
+        html(res, scripted(`fetch("/api/ping", { method: "POST", body: "x=1" }); history.pushState(null, "", "/thanks"); document.body.insertAdjacentHTML("beforeend", "<p>Thank you!</p>");`)),
+      "/api/ping": (_q, res) => html(res, "{}", 200),
+    }, "/contact", { limits: { settleMs: 100, confirmMs: 1_500 } });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
   });
 
   it("an error page from the POST is not a confirmation, nor is text that was already there", async () => {

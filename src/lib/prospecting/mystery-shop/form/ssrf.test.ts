@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  IDENTITY, SIMPLE_FIELDS, form, html, loopbackFetch, serve, skipBrowser, type Fixture,
+  IDENTITY, SIMPLE_FIELDS, form, html, loopbackFetch, ports, serve, skipBrowser, type Fixture,
 } from "@/test/form-fixture-server";
 import { launchFormBrowser } from "./browser";
 import { runFormFill } from "./engine";
@@ -37,7 +37,8 @@ describe.skipIf(skipBrowser)("SSRF: the form URL itself", () => {
     ["a private network address", () => "http://10.255.255.1/contact"],
     ["IPv6 loopback", () => "http://[::1]/"],
   ])("%s is refused by the real publicFetch", async (_name, url) => {
-    const out = await runFormFill({ url: url(), identity: IDENTITY, fetchImpl: defaultFetch, limits });
+    // The internal port is allowed here, so it is the address check that refuses (the port rule is tested apart).
+    const out = await runFormFill({ url: url(), identity: IDENTITY, fetchImpl: defaultFetch, limits, allowPorts: ports(internal.origin) });
     expect(out).toMatchObject({ kind: "refused", code: "ssrf_blocked" });
     expect(internal.hits).toEqual([]);
   });
@@ -46,7 +47,10 @@ describe.skipIf(skipBrowser)("SSRF: the form URL itself", () => {
 describe.skipIf(skipBrowser)("SSRF: a public page leading somewhere private", () => {
   const run = async (routes: Parameters<typeof serve>[0]) => {
     site = await serve(routes);
-    return runFormFill({ url: `${site.origin}/contact`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin), limits });
+    return runFormFill({
+      url: `${site.origin}/contact`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin), limits,
+      allowPorts: ports(site.origin, internal.origin),
+    });
   };
 
   it("a redirect to a private host", async () => {
@@ -96,7 +100,7 @@ describe.skipIf(skipBrowser)("the launch backstop", () => {
   it("with no route at all, Chromium still cannot reach the network (dead proxy, loopback included)", async () => {
     const browser = await launchFormBrowser();
     try {
-      const page = await (await browser.newContext()).newPage();
+      const page = await browser.context.newPage();
       await expect(page.goto(`${internal.origin}/`, { timeout: 10_000 })).rejects.toThrow(/ERR_PROXY_CONNECTION_FAILED|ERR_/);
     } finally {
       await browser.close();

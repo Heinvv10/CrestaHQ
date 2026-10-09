@@ -4,7 +4,9 @@
  * aria-label, autocomplete, type). Pure: page-scan.ts reads the fields in the
  * browser, this decides, engine.ts types.
  *
- * Only VISIBLE fields are ever filled: hidden inputs and honeypots stay empty.
+ * Only VISIBLE fields are ever filled: hidden inputs and honeypots (`trap`:
+ * covered, clipped, tabindex -1 or named like one) stay empty, and a REQUIRED
+ * trap refuses the form (`honeypot_required`).
  * A required field this cannot fill truthfully refuses the whole form
  * (`unmapped_required`, naming the fields) — nothing is invented. A required
  * consent checkbox refuses too (`consent_checkbox`): ticking it would accept
@@ -22,6 +24,8 @@ export interface FormField {
   hint: string;
   required: boolean;
   visible: boolean;
+  /** Visible-looking but no person could type in it (page-scan.ts): a honeypot. */
+  trap?: boolean;
   options?: { value: string; text: string }[];
   /** The select's current value. */
   value?: string;
@@ -51,7 +55,7 @@ export interface Fill {
 
 export type FieldPlan =
   | { ok: true; fills: Fill[]; roles: FieldRole[] }
-  | { ok: false; code: "unmapped_required" | "consent_checkbox" | "file_upload"; reason: string };
+  | { ok: false; code: "unmapped_required" | "consent_checkbox" | "file_upload" | "honeypot_required"; reason: string };
 
 const TEXTLIKE = new Set(["", "text", "email", "tel", "url", "number", "search"]);
 const CONSENT = /privacy|terms|consent|agree|accept|gdpr|popia|policy|t&c|conditions/;
@@ -83,7 +87,11 @@ const split = (name: string) => {
 const label = (f: FormField) => f.hint.split(" | ").find((s) => s.trim()) || f.key;
 
 export function planFields(fields: FormField[], id: FormIdentity): FieldPlan {
-  const visible = fields.filter((f) => f.visible && f.type !== "hidden");
+  const trapRequired = fields.find((f) => f.visible && f.trap && f.required);
+  if (trapRequired) {
+    return { ok: false, code: "honeypot_required", reason: `A required field looks like a trap for bots ("${label(trapRequired)}").` };
+  }
+  const visible = fields.filter((f) => f.visible && !f.trap && f.type !== "hidden");
   if (visible.some((f) => f.type === "file" && f.required)) {
     return { ok: false, code: "file_upload", reason: "The form requires a file upload." };
   }

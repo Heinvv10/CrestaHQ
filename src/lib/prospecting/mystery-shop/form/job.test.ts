@@ -59,7 +59,7 @@ describe("a run", () => {
       },
     }));
     expect(shop()).toMatchObject({
-      status: "sent", providerRef: expect.stringMatching(/^form:f1:\d+$/), formTrace: TRACE,
+      status: "sent", providerRef: expect.stringMatching(/^form:f1:\d+$/), formTrace: TRACE, callbackNumber: "+27784356159",
       formStartedAt: expect.any(Date), formSubmitAt: expect.any(Date), sentAt: expect.any(Date),
     });
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({
@@ -81,11 +81,20 @@ describe("a run", () => {
     ["refused", "captcha"],
     ["failed", "timeout"],
     ["failed", "engine_failed"],
+    ["failed", "page_too_heavy"],
   ] as const)("%s (%s) → released with the code, the slot back, no timer", async (kind, code) => {
     run.mockResolvedValue({ kind, code, reason: "why", trace: TRACE } as FormResult);
     expect(await job()).toBe(kind);
     expect(shop()).toMatchObject({ status: kind, failure: { code, reason: "why" }, formTrace: TRACE });
     expect(mem.read(USAGE)?.mysteryShops).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("the site refusing the enquiry (form_rejected): failed, the slot KEPT (it went out), no timer, never public", async () => {
+    run.mockResolvedValue({ kind: "rejected", code: "form_rejected", reason: "The website refused the enquiry (spam).", trace: TRACE });
+    expect(await job()).toBe("rejected");
+    expect(shop()).toMatchObject({ status: "failed", failure: { code: "form_rejected", reason: "The website refused the enquiry (spam)." } });
+    expect(mem.read(USAGE)?.mysteryShops).toBe(1);
     expect(publish).not.toHaveBeenCalled();
   });
 

@@ -1,10 +1,10 @@
 import http from "node:http";
 import { existsSync } from "node:fs";
-import { chromium, type Browser } from "playwright-core";
+import { chromium } from "playwright-core";
 import { publicFetch } from "@/lib/webhooks/public-fetch";
 import { ssrfGuardEnabled } from "@/lib/webhooks/validate-url";
 import type { FetchImpl } from "@/lib/prospecting/mystery-shop/form/network";
-import { launchFormBrowser } from "@/lib/prospecting/mystery-shop/form/browser";
+import { launchFormBrowser, type FormBrowser } from "@/lib/prospecting/mystery-shop/form/browser";
 import type { FormIdentity } from "@/lib/prospecting/mystery-shop/form/mapping";
 
 /**
@@ -95,6 +95,9 @@ export function loopbackFetch(origin: string, ...more: string[]): FetchImpl {
   };
 }
 
+/** The fixtures' explicit ports, for `allowPorts` (production allows only 80 / 443). */
+export const ports = (...origins: string[]) => origins.map((o) => new URL(o).port);
+
 /** The same fixture under another host name: a different site to the engine (sameSite compares hosts). */
 export const otherSite = (origin: string) => origin.replace("127.0.0.1", "localhost");
 
@@ -102,26 +105,27 @@ export const otherSite = (origin: string) => origin.replace("127.0.0.1", "localh
 const TYPED = `textarea, input:not([type]), input[type=text], input[type=email], input[type=tel], input[type=url], input[type=number], input[type=search]`;
 
 /** launchFormBrowser, plus a snapshot of every typed field's value taken as the engine closes the browser. */
-export function capturingLaunch(): { launch: () => Promise<Browser>; values: () => string[] | null } {
+export function capturingLaunch(): { launch: () => Promise<FormBrowser>; values: () => string[] | null } {
   let values: string[] | null = null;
   return {
     values: () => values,
     launch: async () => {
       const browser = await launchFormBrowser();
-      const close = browser.close.bind(browser);
-      browser.close = async (...args) => {
-        if (values === null) {
-          values = [];
-          for (const page of browser.contexts().flatMap((c) => c.pages())) {
-            const v = (await page
-              .evaluate(`[...document.querySelectorAll(${JSON.stringify(TYPED)})].map((e) => e.value)`)
-              .catch(() => [])) as string[];
-            values.push(...v);
+      return {
+        context: browser.context,
+        close: async () => {
+          if (values === null) {
+            values = [];
+            for (const page of browser.context.pages()) {
+              const v = (await page
+                .evaluate(`[...document.querySelectorAll(${JSON.stringify(TYPED)})].map((e) => e.value)`)
+                .catch(() => [])) as string[];
+              values.push(...v);
+            }
           }
-        }
-        return close(...args);
+          return browser.close();
+        },
       };
-      return browser;
     },
   };
 }

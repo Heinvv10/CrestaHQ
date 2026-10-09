@@ -8,7 +8,7 @@ import { RESPONSE_WINDOW_MS, TIMER_GRACE_MS } from "../model";
 import { attachProviderRef, markSent, markUncertain, releaseShop } from "../store";
 import { queueTimer } from "../context";
 import { runFormFill, type FormResult, type FormRunInput } from "./engine";
-import { claimRun, countRequeue, releaseLease, stampSubmit, takeLease } from "./job-store";
+import { claimRun, countRequeue, markRejected, releaseLease, stampSubmit, takeLease } from "./job-store";
 import { formIdentity } from "./target";
 
 /**
@@ -22,7 +22,8 @@ import { formIdentity } from "./target";
  * Outcomes: confirmed → `sent` and the 24 h timer; submitted without a
  * confirmation (or timed out after the click) → `sent` + `sendUncertain`,
  * slot kept, timer queued; refused / failed before the click → released
- * with the code, slot back. Idempotent: only a `queued` form shop runs, and a
+ * with the code, slot back; the site refusing the enquiry (a 2xx saying so)
+ * → `failed` / `form_rejected`, slot kept (it went out), never public. Idempotent: only a `queued` form shop runs, and a
  * run that finds an earlier run's stamps settles it from them instead
  * (job-store.ts `claimRun`) — the form is never submitted twice.
  */
@@ -32,7 +33,7 @@ export const FORM_REQUEUE_S = 120;
 const TIMER_DELAY_S = (RESPONSE_WINDOW_MS + TIMER_GRACE_MS) / 1000;
 
 export type FormJobOutcome =
-  | "noop" | "requeued" | "requeue_failed" | "engine_busy" | "sent" | "uncertain" | "refused" | "failed";
+  | "noop" | "requeued" | "requeue_failed" | "engine_busy" | "sent" | "uncertain" | "refused" | "failed" | "rejected";
 
 /** Queue the job. Null when QStash did not take it. */
 export function queueFormJob(shopId: string, delaySeconds: number, deduplicationId: string) {
@@ -44,9 +45,13 @@ const logged = (what: string, shopId: string) => (err: unknown) => {
   return null;
 };
 
-async function settle(shopId: string, result: FormResult, providerRef: string): Promise<FormJobOutcome> {
+async function settle(shopId: string, result: FormResult, providerRef: string, phone: string | null): Promise<FormJobOutcome> {
   const ref = getAdminDb().doc(`mysteryShops/${shopId}`);
-  await ref.update({ formTrace: result.trace }).catch(logged("trace write", shopId));
+  await ref.update({ formTrace: result.trace, callbackNumber: phone }).catch(logged("trace write", shopId));
+  if (result.kind === "rejected") {
+    await markRejected(shopId, result.reason);
+    return "rejected";
+  }
   if (result.kind === "refused" || result.kind === "failed") {
     await releaseShop(shopId, result.kind, { code: result.code, reason: result.reason });
     return result.kind;
@@ -105,7 +110,7 @@ export async function runFormJob(
       fetchImpl: deps.fetchImpl,
       onBeforeSubmit: () => stampSubmit(shopId),
     });
-    return await settle(shopId, result, `form:${shopId}:${Date.now()}`);
+    return await settle(shopId, result, `form:${shopId}:${Date.now()}`, identity.phone);
   } finally {
     await releaseLease(holder).catch(logged("lease release", shopId));
   }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  IDENTITY, SIMPLE_FIELDS, capturingLaunch, form, html, loopbackFetch, serve, skipBrowser, type Fixture,
+  IDENTITY, SIMPLE_FIELDS, capturingLaunch, form, html, loopbackFetch, ports, serve, skipBrowser, type Fixture,
 } from "@/test/form-fixture-server";
 import { runFormFill } from "./engine";
 
@@ -30,6 +30,7 @@ async function run(body: string, title = "Contact", headers: Record<string, stri
   const snapshot = capturingLaunch();
   const out = await runFormFill({
     url: `${site.origin}/contact`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin), launch: snapshot.launch,
+    allowPorts: ports(site.origin),
     limits: { settleMs: 400, confirmMs: 2_000 },
   });
   return { out, typed: snapshot.values() };

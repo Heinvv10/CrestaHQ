@@ -77,6 +77,21 @@ export async function claimRun(shopId: string): Promise<Claim> {
   });
 }
 
+/**
+ * The site answered the enquiry with a refusal (engine `rejected`): the shop
+ * is `failed` / `form_rejected`, but a request DID go out, so the cap slot is
+ * kept (unlike releaseShop) and no timer runs. A failed shop is never public.
+ */
+export async function markRejected(shopId: string, reason: string): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`mysteryShops/${shopId}`);
+  return db.runTransaction(async (tx) => {
+    if ((await tx.get(ref)).data()?.status !== "queued") return false;
+    tx.update(ref, { status: "failed", failure: { code: "form_rejected", reason } });
+    return true;
+  });
+}
+
 /** Just before the click: from here on, a crash or timeout is an uncertain send. */
 export async function stampSubmit(shopId: string): Promise<void> {
   await getAdminDb().doc(`mysteryShops/${shopId}`).update({ formSubmitAt: new Date() });
