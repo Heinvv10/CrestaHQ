@@ -3,9 +3,10 @@
 #
 # NOT run by any deploy. Hein reviews it and runs it once, as root:
 #   sudo bash scripts/form-engine-firewall.sh
-# Idempotent: it (re)builds one chain, LSMS-FORM, and makes sure DOCKER-USER
-# and INPUT jump to it. iptables rules do not survive a reboot on their own —
-# see RUNBOOK.md ("The form engine's container") for making it persistent.
+# Idempotent: it rebuilds two chains, LSMS-FORM and LSMS-FORM-IN, atomically,
+# and makes sure DOCKER-USER and INPUT jump to them. iptables rules do not
+# survive a reboot or a docker restart on their own: the systemd unit
+# scripts/form-engine-firewall.service re-runs this (RUNBOOK.md).
 #
 # What it does, for traffic FROM the engine's network (leadstack-form,
 # 172.16.88.0/24 on bridge br-lsms-form, made by scripts/form-engine-image.mjs):
@@ -34,33 +35,49 @@ ip link show "$BRIDGE" >/dev/null 2>&1 || {
   exit 1
 }
 
-# One chain, rebuilt from scratch on every run.
-iptables -N "$CHAIN" 2>/dev/null || true
-iptables -F "$CHAIN"
-iptables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-if [ -n "$RESOLVER" ]; then
-  iptables -A "$CHAIN" -d "$RESOLVER" -p udp --dport 53 -j RETURN
-  iptables -A "$CHAIN" -d "$RESOLVER" -p tcp --dport 53 -j RETURN
-fi
-for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8; do
-  iptables -A "$CHAIN" -d "$net" -j DROP
-done
-iptables -A "$CHAIN" -j RETURN
+# Docker must still route forwarded traffic through DOCKER-USER, or the drops below never run.
+iptables -C FORWARD -j DOCKER-USER 2>/dev/null || {
+  echo "FORWARD does not jump to DOCKER-USER: docker's iptables integration is off; refusing to pretend." >&2
+  exit 1
+}
 
-# Forwarded traffic (to other hosts and other docker networks): DOCKER-USER.
-iptables -N DOCKER-USER 2>/dev/null || true
-iptables -C DOCKER-USER -s "$SUBNET" -j "$CHAIN" 2>/dev/null || iptables -I DOCKER-USER 1 -s "$SUBNET" -j "$CHAIN"
+# Both chains are rebuilt atomically: iptables-restore --noflush replaces just
+# these two chains (declared below, so they are emptied first) in one commit,
+# leaving every other rule (docker's, ufw's) untouched — no window in which the
+# chains are half-built.
+RESOLVER_RULES=""
+RESOLVER_IN=""
+if [ -n "$RESOLVER" ]; then
+  RESOLVER_RULES="-A $CHAIN -d $RESOLVER -p udp --dport 53 -j RETURN
+-A $CHAIN -d $RESOLVER -p tcp --dport 53 -j RETURN"
+  RESOLVER_IN="-A $CHAIN-IN -d $RESOLVER -p udp --dport 53 -j ACCEPT
+-A $CHAIN-IN -d $RESOLVER -p tcp --dport 53 -j ACCEPT"
+fi
+iptables-restore --noflush <<RULES
+*filter
+:$CHAIN - [0:0]
+:$CHAIN-IN - [0:0]
+-A $CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+$RESOLVER_RULES
+-A $CHAIN -d 10.0.0.0/8 -j DROP
+-A $CHAIN -d 172.16.0.0/12 -j DROP
+-A $CHAIN -d 192.168.0.0/16 -j DROP
+-A $CHAIN -d 100.64.0.0/10 -j DROP
+-A $CHAIN -d 169.254.0.0/16 -j DROP
+-A $CHAIN -d 127.0.0.0/8 -j DROP
+-A $CHAIN -j RETURN
+-A $CHAIN-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+$RESOLVER_IN
+-A $CHAIN-IN -j DROP
+COMMIT
+RULES
+
+# Forwarded traffic (to other hosts and other docker networks): DOCKER-USER, from this bridge only.
+iptables -C DOCKER-USER -i "$BRIDGE" -s "$SUBNET" -j "$CHAIN" 2>/dev/null \
+  || iptables -I DOCKER-USER 1 -i "$BRIDGE" -s "$SUBNET" -j "$CHAIN"
 
 # Traffic to the host itself (its addresses, the gateway, published ports): INPUT,
-# through its own chain jumped to FIRST, so no earlier ACCEPT (ufw, docker) wins.
-iptables -N "$CHAIN-IN" 2>/dev/null || true
-iptables -F "$CHAIN-IN"
-iptables -A "$CHAIN-IN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-if [ -n "$RESOLVER" ]; then
-  iptables -A "$CHAIN-IN" -d "$RESOLVER" -p udp --dport 53 -j ACCEPT
-  iptables -A "$CHAIN-IN" -d "$RESOLVER" -p tcp --dport 53 -j ACCEPT
-fi
-iptables -A "$CHAIN-IN" -j DROP
+# jumped to FIRST, so no earlier ACCEPT (ufw, docker) wins.
 iptables -C INPUT -i "$BRIDGE" -j "$CHAIN-IN" 2>/dev/null || iptables -I INPUT 1 -i "$BRIDGE" -j "$CHAIN-IN"
 
 echo "Form-engine firewall in place for $SUBNET ($BRIDGE)."

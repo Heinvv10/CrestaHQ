@@ -380,21 +380,34 @@ PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
   `172.16.88.0/24` (gateway `172.16.88.1`), inter-container traffic off. The
   image script creates it if missing and refuses one with another subnet or
   with icc on. The channel shows unavailable without it.
-- **Host firewall — Hein must review and run once, as root:**
-  `sudo bash scripts/form-engine-firewall.sh` (set `RESOLVER=<ip>` only if
-  the containers must reach a DNS resolver on a private address; docker's
-  embedded DNS needs nothing). It drops everything from that subnet to the
-  host itself (INPUT) and to RFC1918, 100.64/10 and 169.254/16 (DOCKER-USER),
-  allowing only replies. It is idempotent. iptables rules do not survive a
-  reboot: re-run it at boot (a root systemd unit after docker.service) or save
-  them with netfilter-persistent. **Until it has run, a renderer exploit
-  inside the container can reach host services:** measured 2026-10-09 from a
-  container on `leadstack-form`, the host's ports 22, 80, 5432 and 6379
-  answered (via 172.16.88.1, 172.17.0.1, the LAN, Tailscale and WireGuard
-  addresses); sibling containers and 169.254.169.254 did not. publicFetch
-  keeps the page itself off private addresses either way; the firewall is
-  the layer under it.
+- **Host firewall — REQUIRED; Hein reviews and installs it once, as root.**
+  `scripts/form-engine-firewall.sh` drops everything from that subnet to the
+  host itself (INPUT) and to RFC1918, 100.64/10, 169.254/16 and 127/8
+  (DOCKER-USER, from `br-lsms-form` only), allowing only replies (and DNS to
+  `RESOLVER=<ip>` if one is set; docker's embedded DNS needs nothing). It
+  rebuilds its two chains atomically (`iptables-restore --noflush`) and is
+  idempotent. `scripts/form-engine-firewall.service` re-applies it at boot and
+  on every docker restart. Install both once (a root-owned copy of the script,
+  never the deploy checkout's, which velo can write):
 
+  ```bash
+  cd ~/crestahq
+  sudo install -m 0755 -o root -g root scripts/form-engine-firewall.sh /usr/local/sbin/leadstack-form-firewall
+  sudo install -m 0644 -o root -g root scripts/form-engine-firewall.service /etc/systemd/system/leadstack-form-firewall.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now leadstack-form-firewall.service
+  sudo iptables -S LSMS-FORM && sudo iptables -S LSMS-FORM-IN
+  ```
+
+  Re-install the copy whenever the script changes. Do NOT use
+  netfilter-persistent / iptables-persistent: on this box installing them
+  removes ufw. **Until it runs, the channel stays unavailable:** every job
+  first checks that the container cannot reach the host (ports 22, 5432, 6379
+  on its gateway) and refuses with `engine_unisolated` if it can, and the
+  health check then shows the channel unavailable. Measured 2026-10-09 before
+  the firewall: the host's ports 22, 80, 5432 and 6379 answered from inside
+  the container (via 172.16.88.1, 172.17.0.1, the LAN, Tailscale and
+  WireGuard addresses); sibling containers and 169.254.169.254 did not.
 - **Image.** `docker/form-engine/Dockerfile`, on
   `mcr.microsoft.com/playwright:v1.62.1-noble` (it ships the matching
   Chromium). `node scripts/form-engine-image.mjs` bundles the runner, tags the

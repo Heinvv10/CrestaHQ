@@ -12,7 +12,8 @@
 // 4. Creates the engine's own network if missing: `leadstack-form`, bridge,
 //    subnet 172.16.88.0/24, inter-container traffic off. Host firewalling of
 //    that subnet is scripts/form-engine-firewall.sh (root, run once by hand).
-// 5. Only once the image AND the network exist: writes the tag to
+// 5. Smoke-runs the image (an invalid job must answer one result line).
+// 6. Only once the image, the network and the smoke pass: writes the tag to
 //    docker/form-engine/dist/TAG — the one place the app reads it from (the
 //    Next build traces it). Prints the tag.
 import { createHash } from "node:crypto";
@@ -47,7 +48,7 @@ const pw = realpathSync(join(root, "node_modules/playwright-core"));
 const version = JSON.parse(readFileSync(join(pw, "package.json"), "utf8")).version;
 cpSync(pw, join(dist, "node_modules/playwright-core"), { recursive: true, dereference: true });
 
-// The content hash of everything the image is built from (Dockerfile, seccomp profile, runner, playwright-core).
+// The content hash of everything the image is built from (Dockerfile, runner, playwright-core).
 const files = (dir) =>
   readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? files(join(dir, f)) : [join(dir, f)]));
 const hash = createHash("sha256");
@@ -78,9 +79,12 @@ if (!process.argv.includes("--bundle-only")) {
   const info = JSON.parse(execFileSync("docker", ["network", "inspect", NETWORK], { encoding: "utf8" }))[0];
   const subnet = info?.IPAM?.Config?.[0]?.Subnet;
   const icc = info?.Options?.["com.docker.network.bridge.enable_icc"];
-  if (subnet !== SUBNET || icc !== "false") {
-    throw new Error(`docker network ${NETWORK} exists with subnet ${subnet} and icc=${icc}; expected ${SUBNET}, icc=false`);
+  const bridge = info?.Options?.["com.docker.network.bridge.name"];
+  if (subnet !== SUBNET || icc !== "false" || bridge !== "br-lsms-form") {
+    throw new Error(`docker network ${NETWORK} exists with subnet ${subnet}, icc=${icc}, bridge ${bridge}; expected ${SUBNET}, icc=false, br-lsms-form`);
   }
+  // The image answers like a runner: an invalid job → one well-formed result line.
+  execFileSync("node", [join(root, "scripts/form-engine-smoke.mjs"), "docker", tag], { stdio: "inherit" });
   // Only now: the release's app reads this tag, so it must name an image (and network) that exist.
   writeFileSync(join(dist, "TAG"), `${tag}\n`);
 }
