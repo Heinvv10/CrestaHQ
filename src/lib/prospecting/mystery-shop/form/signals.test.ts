@@ -191,6 +191,15 @@ describe.skipIf(skipBrowser)("Z1: a 3xx answer to the enquiry is never a confirm
     expect(out.trace.finalUrl ?? "").not.toMatch(/elsewhere/);
   }, T);
 
+  it("the form page's own confirmation wording never counts while a post-redirect-get page never replaces it", async () => {
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS) + "<p>Thank you for contacting us — we reply within a day.</p>"),
+      "/send": (_q, res) => html(res, "", 303, { location: "/contact-error" }),
+      "/contact-error": (_q, res) => html(res, "<h1>Something went wrong</h1>", 200, { "content-disposition": "attachment; filename=error.html" }),
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
   it("a 303 to the homepage with no thank-you text (a spam bounce): uncertain", async () => {
     const out = await prg("/", { "/": page("<h1>Acme Plumbing</h1><p>Plumbers in Gqeberha since 1999.</p>") });
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
