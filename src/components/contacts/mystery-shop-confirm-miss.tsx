@@ -38,7 +38,11 @@ export function MysteryShopConfirmMiss({
     <div className="space-y-1">
       {mustReview && (
         <>
-          {note("A reply arrived that looked automatic — read the WhatsApp thread before confirming.")}
+          {note(
+            shop.autoReplyAt
+              ? "A reply arrived that looked automatic — read the WhatsApp thread before confirming."
+              : "A WhatsApp message from this number arrived — read the thread before confirming.",
+          )}
           <label className="flex items-center gap-2 text-xs">
             <input
               type="checkbox"

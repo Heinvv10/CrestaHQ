@@ -151,7 +151,9 @@ describe("ContactMysteryShop", () => {
     // A read receipt alone is delivery; an inbound the matcher did not take needs the same tick.
     expect((q("mystery-shop-confirm-missed-w3") as HTMLButtonElement).disabled).toBe(false);
     expect((q("mystery-shop-confirm-missed-w4") as HTMLButtonElement).disabled).toBe(true);
-    expect(q("mystery-shop-miss-note-w4")?.textContent).toBe("A reply arrived that looked automatic — read the WhatsApp thread before confirming.");
+    expect(q("mystery-shop-miss-note-w4")?.textContent).toBe("A WhatsApp message from this number arrived — read the thread before confirming.");
+    await click(q("mystery-shop-reviewed-w4"));
+    expect((q("mystery-shop-confirm-missed-w4") as HTMLButtonElement).disabled).toBe(false);
     const button = q("mystery-shop-confirm-missed-w2") as HTMLButtonElement;
     expect(button.disabled).toBe(true);
     await click(q("mystery-shop-reviewed-w2"));
