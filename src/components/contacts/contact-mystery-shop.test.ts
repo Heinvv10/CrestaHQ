@@ -44,13 +44,17 @@ beforeEach(() => {
     channels: {
       email: { available: true, targets: [EMAIL] },
       call: { available: true, targets: [PHONE] },
-      whatsapp: { available: false, reason: "Not available yet.", targets: [] },
+      whatsapp: { available: false, reason: "No WhatsApp sender is connected.", targets: [PHONE] },
       form: { available: false, reason: "Not available yet.", targets: [] },
     },
     cap: 10,
     used: 0,
-    enquiry: { email: { subject: "Enquiry: plumber in Gqeberha", body: "Hi,\n\nDo you do plumber?" }, call: "Hi, I'm calling from Cresta HQ." },
-    enquiryHash: { email: "h-email", call: "h-call" },
+    enquiry: {
+      email: { subject: "Enquiry: plumber in Gqeberha", body: "Hi,\n\nDo you do plumber?" },
+      call: "Hi, I'm calling from Cresta HQ.",
+      whatsapp: "Hi, do you offer plumber in Gqeberha? What's your earliest availability?",
+    },
+    enquiryHash: { email: "h-email", call: "h-call", whatsapp: "h-wa" },
   };
   fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
     init?.method === "POST" ? new Response(JSON.stringify({ shopId: "s1" }), { status: 202 }) : new Response(JSON.stringify(payload)),
@@ -68,7 +72,7 @@ describe("ContactMysteryShop", () => {
     await mount();
     expect((q("mystery-shop-email") as HTMLButtonElement).disabled).toBe(false);
     expect((q("mystery-shop-whatsapp") as HTMLButtonElement).disabled).toBe(true);
-    expect(q("mystery-shop-whatsapp-reason")?.textContent).toBe("WhatsApp: Not available yet.");
+    expect(q("mystery-shop-whatsapp-reason")?.textContent).toBe("WhatsApp: No WhatsApp sender is connected.");
     expect(q("mystery-shop-form-reason")?.textContent).toBe("Website form: Not available yet.");
   });
 
@@ -111,6 +115,66 @@ describe("ContactMysteryShop", () => {
     expect(JSON.parse(posts()[0][1].body as string)).toEqual({
       contactId: "c1", channel: "call", confirm: true, target: PHONE, enquiryHash: "h-call", consentAck: true,
     });
+  });
+
+  it("whatsapp: the dialog names the number and the template text, no consent checkbox; the confirm POSTs its hash", async () => {
+    (payload.channels as Record<string, unknown>).whatsapp = { available: true, targets: [PHONE] };
+    await mount();
+    await click(q("mystery-shop-whatsapp"));
+    expect(q("mystery-shop-confirm")?.textContent).toContain("Send a mystery-shop WhatsApp?");
+    expect(q("mystery-shop-target")?.textContent).toBe(PHONE);
+    expect(q("mystery-shop-enquiry")?.textContent).toBe("Hi, do you offer plumber in Gqeberha? What's your earliest availability?");
+    expect(q("mystery-shop-consent-ack")).toBeNull();
+    expect((q("mystery-shop-confirm-send") as HTMLButtonElement).disabled).toBe(false);
+    await click(q("mystery-shop-confirm-send"));
+    expect(JSON.parse(posts()[0][1].body as string)).toEqual({
+      contactId: "c1", channel: "whatsapp", confirm: true, target: PHONE, enquiryHash: "h-wa",
+    });
+  });
+
+  it("a WhatsApp miss: no confirm without delivery or after STOP; after an automatic-looking reply only once the thread was read", async () => {
+    const wa = (id: string, extra: Record<string, unknown>) => ({
+      id, channel: "whatsapp", status: "missed", target: PHONE, sentAt: "2026-10-07T08:00:00.000Z", respondedAt: null,
+      responseMs: null, autoReplyAt: null, jobValueCents: 150_000, currency: "ZAR", enquiryText: "", failure: null,
+      createdAt: null, missedConfirmedAt: null, deliveredAt: "2026-10-07T08:00:02.000Z", optOutAt: null, ...extra,
+    });
+    payload.shops = [
+      wa("w0", { deliveredAt: null }), wa("w1", { optOutAt: "2026-10-07T09:00:00.000Z" }), wa("w2", { autoReplyAt: "2026-10-07T08:00:05.000Z" }),
+      wa("w3", { deliveredAt: null, readAt: "2026-10-07T08:01:00.000Z" }), wa("w4", { replyNeedsReview: true }),
+    ];
+    await mount();
+    expect(q("mystery-shop-confirm-missed-w0")).toBeNull();
+    expect(q("mystery-shop-miss-note-w0")?.textContent).toContain("WhatsApp never confirmed this message was delivered");
+    expect(q("mystery-shop-confirm-missed-w1")).toBeNull();
+    expect(q("mystery-shop-miss-note-w1")?.textContent).toContain("replied STOP");
+    expect(q("mystery-shop-miss-note-w2")?.textContent).toBe("A reply arrived that looked automatic — read the WhatsApp thread before confirming.");
+    // A read receipt alone is delivery; an inbound the matcher did not take needs the same tick.
+    expect((q("mystery-shop-confirm-missed-w3") as HTMLButtonElement).disabled).toBe(false);
+    expect((q("mystery-shop-confirm-missed-w4") as HTMLButtonElement).disabled).toBe(true);
+    expect(q("mystery-shop-miss-note-w4")?.textContent).toBe("A WhatsApp message from this number arrived — read the thread before confirming.");
+    await click(q("mystery-shop-reviewed-w4"));
+    expect((q("mystery-shop-confirm-missed-w4") as HTMLButtonElement).disabled).toBe(false);
+    const button = q("mystery-shop-confirm-missed-w2") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    await click(q("mystery-shop-reviewed-w2"));
+    expect(button.disabled).toBe(false);
+    await click(button);
+    const call = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/mystery-shop/w2/confirm-missed"))!;
+    expect(JSON.parse(call[1].body as string)).toEqual({ reviewedAutoReply: true });
+  });
+
+  it("a send reported undeliverable shows why instead of 'sent'", async () => {
+    (payload.channels as Record<string, unknown>).whatsapp = { available: true, targets: [PHONE] };
+    const { toast } = await import("sonner");
+    vi.mocked(toast.success).mockClear();
+    await mount();
+    fetchMock.mockImplementationOnce(async () =>
+      new Response(JSON.stringify({ shopId: "s1", status: "failed", error: "WhatsApp couldn't deliver the enquiry (131026)." }), { status: 200 }),
+    );
+    await click(q("mystery-shop-whatsapp"));
+    await click(q("mystery-shop-confirm-send"));
+    expect(container.textContent).toContain("WhatsApp couldn't deliver the enquiry (131026).");
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it("renders nothing for a contact that is not a prospect", async () => {

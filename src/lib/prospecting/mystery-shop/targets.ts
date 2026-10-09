@@ -4,11 +4,12 @@ import type { MysteryShopChannel } from "./model";
 
 /**
  * What a mystery shop may contact: only the contact's own values, never
- * something typed in. Email = the contact's email, lower-cased; call = the
- * contact's phone in E.164 (the contact write paths' normalisation, with the
- * workspace's default country for a bare national number). The report's
- * lead-capture section records only booleans (`phoneLink`, no numbers), so it
- * adds no call targets. WhatsApp and form are not live yet (PR 5b / 5c).
+ * something typed in. Email = the contact's email, lower-cased; call and
+ * WhatsApp = the contact's phone in E.164 (the contact write paths'
+ * normalisation, with the workspace's default country for a bare national
+ * number). The report's lead-capture section records only booleans
+ * (`phoneLink`, `whatsapp`, no numbers), so it adds no call or WhatsApp
+ * targets. Form is not live yet (PR 5c).
  */
 
 /** A plain address only: no quotes, comments, colons or spaces; domain labels joined by dots, ≥ 2 labels. */
@@ -29,7 +30,7 @@ export function normalizeEmailTarget(raw: unknown): string | null {
 
 export function normalizeTarget(channel: MysteryShopChannel, raw: unknown, country?: string | null): string | null {
   if (channel === "email") return normalizeEmailTarget(raw);
-  if (channel === "call") return typeof raw === "string" ? normalizePhoneE164(raw, country) : null;
+  if (channel === "call" || channel === "whatsapp") return typeof raw === "string" ? normalizePhoneE164(raw, country) : null;
   return null;
 }
 
@@ -38,7 +39,7 @@ export function allowedTargets(
   contact: { email?: unknown; phone?: unknown },
   country?: string | null,
 ): string[] {
-  const own = channel === "email" ? contact.email : channel === "call" ? contact.phone : null;
+  const own = channel === "email" ? contact.email : channel === "call" || channel === "whatsapp" ? contact.phone : null;
   const t = normalizeTarget(channel, own, country);
   return t ? [t] : [];
 }

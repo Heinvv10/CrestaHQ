@@ -12,16 +12,18 @@ import { DEFAULT_TEMPLATES, TEMPLATE_MAX_LEN } from "@/lib/prospecting/mystery-s
 import { JOB_VALUE_DEFAULT_CENTS } from "@/lib/prospecting/mystery-shop/model";
 import { formatMoney } from "@/lib/prospecting/mystery-shop/section";
 import type { MysteryShopTemplates } from "@/types";
+import { MysteryShopWhatsappTemplate } from "./mystery-shop-whatsapp-template";
 
 /**
  * Prospecting page → Mystery shop settings (sub-account admins): the value of
- * one job per niche, used for a missed lead, and the enquiry wording. Saved
+ * one job per niche, used for a missed lead, the enquiry wording and the
+ * WhatsApp enquiry template (mystery-shop-whatsapp-template.tsx). Saved
  * through PUT …/prospecting/mystery-shop/settings, which validates; the page
  * reads the stored values back from the live sub-account doc.
  */
 
 type Row = { niche: string; rands: string };
-const TEMPLATE_FIELDS: { key: keyof MysteryShopTemplates; label: string; rows: number }[] = [
+const TEMPLATE_FIELDS: { key: keyof typeof DEFAULT_TEMPLATES; label: string; rows: number }[] = [
   { key: "emailSubject", label: "Email subject", rows: 1 },
   { key: "emailBody", label: "Email body", rows: 6 },
   { key: "call", label: "AI call opening line", rows: 3 },
@@ -32,7 +34,14 @@ export function MysteryShopSettingsCard() {
   const [rows, setRows] = useState<Row[]>(() =>
     Object.entries(subAccount?.prospectingJobValues ?? {}).map(([niche, cents]) => ({ niche, rands: String(cents / 100) })),
   );
-  const [templates, setTemplates] = useState<MysteryShopTemplates>(() => ({ ...subAccount?.prospectingMysteryShopTemplates }));
+  // The wording only: the WhatsApp template choice is saved as its own field.
+  const [templates, setTemplates] = useState<MysteryShopTemplates>(() => {
+    const { whatsappTemplateId: _id, ...wording } = subAccount?.prospectingMysteryShopTemplates ?? {};
+    return wording;
+  });
+  const [waTemplateId, setWaTemplateId] = useState<string | null>(
+    () => subAccount?.prospectingMysteryShopTemplates?.whatsappTemplateId ?? null,
+  );
   const [saving, setSaving] = useState(false);
   if (!isAdmin) return null;
 
@@ -52,7 +61,7 @@ export function MysteryShopSettingsCard() {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/prospecting/mystery-shop/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobValues, templates }),
+        body: JSON.stringify({ jobValues, templates, whatsappTemplateId: waTemplateId }),
       });
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(body.error ?? `Failed (HTTP ${res.status})`);
@@ -124,6 +133,7 @@ export function MysteryShopSettingsCard() {
           </label>
         ))}
       </div>
+      <MysteryShopWhatsappTemplate subAccountId={subAccountId} value={waTemplateId} onChange={setWaTemplateId} />
       <Button type="button" size="sm" onClick={() => void save()} disabled={saving}>
         {saving && <Loader2 className="h-4 w-4 animate-spin" />}
         Save

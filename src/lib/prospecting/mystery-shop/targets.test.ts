@@ -16,8 +16,15 @@ describe("allowedTargets", () => {
     expect(allowedTargets("call", { phone: "78893" }, "ZA")).toEqual([]);
   });
 
-  it("whatsapp and form have no targets yet", () => {
-    expect(allowedTargets("whatsapp", contact, "ZA")).toEqual([]);
+  it("whatsapp: the contact's phone in E.164, the same normalisation as a call", () => {
+    expect(allowedTargets("whatsapp", contact, "ZA")).toEqual(["+27821234567"]);
+    expect(allowedTargets("whatsapp", { phone: "78893" }, "ZA")).toEqual([]);
+    expect(allowedTargets("whatsapp", { email: "info@acme.co.za" }, "ZA")).toEqual([]);
+    expect(matchTarget("whatsapp", "082 123 4567", ["+27821234567"], "ZA")).toBe("+27821234567");
+    expect(matchTarget("whatsapp", "+27821234568", ["+27821234567"], "ZA")).toBeNull();
+  });
+
+  it("form has no targets yet", () => {
     expect(allowedTargets("form", contact, "ZA")).toEqual([]);
   });
 });

@@ -10,6 +10,7 @@ import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { MysteryShopChannel } from "./model";
 import { normalizeEmailTarget } from "./targets";
+import { sendWhatsappShop, whatsappState, type WhatsappEnquiry } from "./whatsapp";
 
 /**
  * Sending a mystery shop over the existing comms rails — never a hand-rolled
@@ -18,6 +19,8 @@ import { normalizeEmailTarget } from "./targets";
  * `providerRef`). A call goes through the native outbound gate with the
  * operator's per-send consent, then `placeContactCall` (its caps placeholder,
  * activity row and contact stamp), as a short capped call carrying the shop id.
+ * WhatsApp is an approved template through the composer's own service
+ * (whatsapp.ts); its message id is the `providerRef`.
  */
 
 export type ChannelState = { available: boolean; reason?: string };
@@ -57,14 +60,15 @@ export async function channelStates(
     : !vapiAppUrlConfigured()
       ? { available: false, reason: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL)." }
       : { available: true };
-  return { email, call, whatsapp: NOT_YET, form: NOT_YET };
+  return { email, call, whatsapp: await whatsappState(subAccountId, sub), form: NOT_YET };
 }
 
 /**
  * `failed` = the provider definitely did not take it (refused before the
  * call, or rejected it); `uncertain` = it may have gone out (an error after
  * the provider was asked — the repo's provider-attempt convention for email,
- * a network error or a Vapi 5xx for a call).
+ * a network error or a Vapi 5xx for a call, an ambiguous Meta answer for
+ * WhatsApp).
  */
 export type SendResult =
   | { ok: true; providerRef: string }
@@ -81,7 +85,7 @@ export async function sendMysteryShop(input: {
   contact: Contact;
   contactId: string;
   uid: string;
-  enquiry: { email: { subject: string; body: string }; call: string };
+  enquiry: { email: { subject: string; body: string }; call: string; whatsapp?: WhatsappEnquiry | null };
   /** The operator's per-call consent, as the confirm dialog sent it. */
   consentAck: boolean;
 }): Promise<SendResult> {
@@ -143,6 +147,11 @@ export async function sendMysteryShop(input: {
     return placed.uncertain
       ? { ok: false, kind: "uncertain", providerRef: null, reason: placed.error }
       : { ok: false, kind: "failed", reason: placed.error };
+  }
+  if (channel === "whatsapp") {
+    return sendWhatsappShop({
+      shopId: input.shopId, target, contact, contactId: input.contactId, uid: input.uid, enquiry: input.enquiry.whatsapp,
+    });
   }
   return { ok: false, kind: "refused", code: "channel_unavailable", reason: "Not available yet." };
 }
