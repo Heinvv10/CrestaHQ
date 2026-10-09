@@ -387,24 +387,42 @@ PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
   `RESOLVER=<ip>` if one is set; docker's embedded DNS needs nothing). It
   rebuilds its two chains atomically (`iptables-restore --noflush`) and is
   idempotent. `scripts/form-engine-firewall.service` re-applies it at boot and
-  on every docker restart. Install both once (a root-owned copy of the script,
-  never the deploy checkout's, which velo can write):
+  on every docker restart. Install both once, as `hein`, by pasting the block
+  below. It runs git as `velo` (as `hein`, git refuses velo's checkout with
+  "dubious ownership"). It installs both files straight from `origin/main`,
+  never from the working tree, so what was reviewed is what runs as root,
+  with no window between a check and the copy. Each file is confirmed to
+  exist on `origin/main` before anything is written, so a failed `git show`
+  can never install an empty file. The subshell stops at the first failing
+  step and prints why, without closing your shell. The names match the
+  unit's `ExecStart=/usr/local/sbin/leadstack-form-firewall`.
 
   ```bash
-  cd /home/velo/crestahq && git fetch origin main
-  # Install only the reviewed files: the deploy checkout's copies must match origin/main exactly.
-  if git diff --quiet origin/main -- scripts/form-engine-firewall.sh scripts/form-engine-firewall.service; then
-    sudo install -m 0755 -o root -g root scripts/form-engine-firewall.sh /usr/local/sbin/leadstack-form-firewall
-    sudo install -m 0644 -o root -g root scripts/form-engine-firewall.service /etc/systemd/system/leadstack-form-firewall.service
+  (
+    set -euo pipefail
+    repo=/home/velo/crestahq
+    sudo -u velo git -C "$repo" fetch origin main
+    sudo -u velo git -C "$repo" cat-file -e origin/main:scripts/form-engine-firewall.sh
+    sudo -u velo git -C "$repo" cat-file -e origin/main:scripts/form-engine-firewall.service
+    sudo -u velo git -C "$repo" show origin/main:scripts/form-engine-firewall.sh \
+      | sudo install -o root -g root -m 0755 /dev/stdin /usr/local/sbin/leadstack-form-firewall
+    sudo -u velo git -C "$repo" show origin/main:scripts/form-engine-firewall.service \
+      | sudo install -o root -g root -m 0644 /dev/stdin /etc/systemd/system/leadstack-form-firewall.service
     sudo systemctl daemon-reload
     sudo systemctl enable --now leadstack-form-firewall.service
-    sudo iptables -S LSMS-FORM && sudo iptables -S LSMS-FORM-IN
-  else
-    echo "The firewall files differ from origin/main: stop and review before installing."
-  fi
+  ) || echo "Form-engine firewall NOT installed: the step above failed (its message says why); nothing after it ran."
   ```
 
-  Re-install the copy whenever the script changes. Do NOT use
+  Verify:
+
+  ```bash
+  systemctl status leadstack-form-firewall.service --no-pager   # active (exited)
+  sudo iptables -S LSMS-FORM && sudo iptables -S LSMS-FORM-IN    # the drops, replies first
+  sudo iptables -S DOCKER-USER | grep LSMS-FORM                  # -i br-lsms-form -s 172.16.88.0/24 -j LSMS-FORM
+  sudo iptables -S INPUT | grep LSMS-FORM-IN                     # -i br-lsms-form -j LSMS-FORM-IN, first
+  ```
+
+  Re-run the install block whenever the script or the unit changes on main. Do NOT use
   netfilter-persistent / iptables-persistent: on this box installing them
   removes ufw. **Until it runs, the channel stays unavailable:** every job
   first checks that the container cannot reach the host (ports 22, 5432 and
