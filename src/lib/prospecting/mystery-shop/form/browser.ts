@@ -86,8 +86,3 @@ export function formEngineAvailable(now = Date.now()): boolean {
   health = { at: now, ok };
   return ok;
 }
-
-/** Test-only: forget the cached health. */
-export function resetFormEngineHealth(): void {
-  health = null;
-}

@@ -13,7 +13,7 @@ export const CAPTCHA_URL =
   /(google\.com|gstatic\.com|recaptcha\.net)\/recaptcha|hcaptcha\.com|challenges\.cloudflare\.com|\/cdn-cgi\/challenge-platform\/|friendlycaptcha|arkoselabs|funcaptcha/i;
 
 /** Words a CAPTCHA, a robot check or a quiz question shows (visible text, labels, placeholders). */
-export const CAPTCHA_TEXT = /captcha|not a robot|verify you are (a )?human|i'?m not a robot|anti-?spam|what is \d+\s*[+x×*-]\s*\d+/i;
+const CAPTCHA_TEXT = /captcha|not a robot|verify you are (a )?human|i'?m not a robot|anti-?spam|what is \d+\s*[+x×*-]\s*\d+/i;
 
 /**
  * Returns a short description of the first CAPTCHA / challenge marker on the

@@ -18,7 +18,7 @@ import type { FormIdentity } from "./mapping";
  * unavailable until a new report is generated.
  */
 
-export const NEW_REPORT = "Generate a new report to find the website's contact form.";
+const NEW_REPORT = "Generate a new report to find the website's contact form.";
 export const NO_FORM = "No contact form was found on this business's website.";
 
 /** `url` = the allowed target; else `reason` says why the channel is unavailable (null: the site has no form). */

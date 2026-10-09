@@ -14,7 +14,7 @@ import { markUncertain, releaseShop } from "../store";
  */
 
 export const LEASE_PATH = "system/mysteryShopFormLease";
-export const LEASE_MS = 90_000;
+const LEASE_MS = 90_000;
 /** Re-queues while the box is busy, 120 s apart, before the shop fails `engine_busy`. */
 export const MAX_FORM_REQUEUES = 10;
 /** A queued form shop this old is stuck: past every re-queue and run. */

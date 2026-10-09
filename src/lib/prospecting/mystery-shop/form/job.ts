@@ -29,7 +29,7 @@ import { formIdentity } from "./target";
  */
 
 export const FORM_JOB_PATH = "/api/automations/prospecting/mystery-shop-form";
-export const FORM_REQUEUE_S = 120;
+const FORM_REQUEUE_S = 120;
 const TIMER_DELAY_S = (RESPONSE_WINDOW_MS + TIMER_GRACE_MS) / 1000;
 
 export type FormJobOutcome =
