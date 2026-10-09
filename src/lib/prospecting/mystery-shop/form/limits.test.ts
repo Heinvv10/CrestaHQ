@@ -170,6 +170,11 @@ describe.skipIf(skipBrowser)("the deadline and the submit stamp", () => {
     const out = await fill({
       limits: { totalMs, settleMs: 300, confirmMs: 3_000 },
       onBeforeSubmit: () => new Promise((r) => setTimeout(r, Math.max(0, totalMs - (Date.now() - t0)) + lateMs)),
+      // A loaded box: closing Chromium takes a while, so the page is still alive when the stamp lands.
+      launch: async () => {
+        const b = await launchFormBrowser();
+        return { context: b.context, close: () => new Promise<void>((r) => setTimeout(r, 1_500)).then(b.close) };
+      },
     });
     await new Promise((r) => setTimeout(r, 1_000));
     expect(out).toMatchObject({ kind: "failed", code: "timeout" });
