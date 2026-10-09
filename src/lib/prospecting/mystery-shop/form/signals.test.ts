@@ -113,6 +113,24 @@ describe.skipIf(skipBrowser)("Z1: a 3xx answer to the enquiry is never a confirm
     expect(site.hits.filter((h) => h === "GET /thank-you")).toHaveLength(1);
   }, T);
 
+  it("a 303 to the same path with another query (/send?ok=1) is not a post-redirect-get: uncertain", async () => {
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS)),
+      "/send": (q, res) => (q.method === "POST" ? html(res, "", 303, { location: "/send?ok=1" }) : html(res, "<h1>Thank you</h1>")),
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+    expect(site.hits).not.toContain("GET /send?ok=1");
+  }, T);
+
+  it("the form page's own thanks never count, even while the new page never replaces it (a download)", async () => {
+    const out = await run({
+      "/contact": page(form(SIMPLE_FIELDS) + "<footer>Thanks for visiting</footer>"),
+      "/send": (_q, res) => html(res, "", 303, { location: "/thank-you" }),
+      "/thank-you": (_q, res) => html(res, "<h1>Thank you</h1>", 200, { "content-disposition": "attachment; filename=thanks.html" }),
+    });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  }, T);
+
   it("a 303 to the homepage with no thank-you text (a spam bounce): uncertain", async () => {
     const out = await prg("/", { "/": page("<h1>Acme Plumbing</h1><p>Plumbers in Gqeberha since 1999.</p>") });
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
