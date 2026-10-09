@@ -366,27 +366,35 @@ connections while Next restarts:
   script it started with. So when `git reset` brings in a changed deploy
   script, the run re-executes the new copy once.
 
-### The form engine's Chromium (mystery-shop website form)
+### The form engine's container (mystery-shop website form)
 
-The mystery shop's website-form channel fills forms in a headless Chromium
-from `playwright-core`. Every deploy runs
-`pnpm exec playwright-core install chromium` after `pnpm install` and before
-the gates. It is idempotent (a no-op when that revision is present) and
-installs into velo's `~/.cache/ms-playwright/` (`chromium-<rev>` and
-`chromium_headless_shell-<rev>`), the same layout CI's E2E uses. There is no
-`--with-deps`: the system libraries are already on the box.
+The mystery shop's website-form channel fills each form in a disposable
+Docker container: `docker run --rm -i` with no network but the default
+bridge, 1 GB memory (no swap), 512 pids, 1 CPU, every capability dropped,
+`no-new-privileges`, a read-only root, tmpfs `/tmp` and `/home/pwuser`, as the
+image's `pwuser`. It receives only the job on stdin (no environment, no
+volumes, no secrets) and is killed after 60 s.
 
-If the browser is missing, the form channel shows "The form engine isn't
-installed on this server." (the health check is cached for 5 minutes). To
-fix it, run the same command as velo in `~/crestahq`. The install step is
-not fatal: a failed download prints a WARNING and the deploy carries on with
-the form channel unavailable.
-
-A playwright version bump changes the Chromium revision, and the install
-then removes the old build. The previous colour, and a rollback to it, will
-show the form channel as unavailable until that release is redeployed.
-Keep `@playwright/test` and `playwright-core` pinned to the same version, so
-CI's E2E and the engine share one browser.
+- **Image.** `docker/form-engine/Dockerfile`, on
+  `mcr.microsoft.com/playwright:v1.62.1-noble` (it ships the matching
+  Chromium). `node scripts/form-engine-image.mjs` bundles the runner, tags the
+  image `leadstack-form-engine:<playwright>-<content hash>`, writes the tag to
+  `docker/form-engine/dist/TAG` and builds it if missing. Every deploy runs it
+  before the Next build, which traces the TAG file into the release. The step
+  is not fatal: a failure prints a WARNING and the form channel shows "The
+  form engine isn't installed on this server." (cached for 5 minutes).
+- **Check it.** `cat ~/crestahq/docker/form-engine/dist/TAG` then
+  `docker image inspect "$(cat …/TAG)" --format '{{.Size}}'` as velo.
+- **Prune old tags.** Each runner change makes a new tag, and the old
+  colour's release still uses its own. Prune only tags no release names:
+  `docker images leadstack-form-engine` and `docker rmi <tag>` for the rest.
+- **Chromium's sandbox is off inside the container.** It cannot start here:
+  "FATAL: zygote_host_impl_linux.cc:128 No usable sandbox!" (velo restricts
+  unprivileged user namespaces through AppArmor —
+  `kernel.apparmor_restrict_unprivileged_userns=1`). Leave the host setting
+  alone; the locked-down, disposable container is the isolation.
+- **Versions.** Keep `@playwright/test`, `playwright-core` and the
+  Dockerfile's base image tag on the same playwright version.
 
 ### One-time migration (owner, after 17:00 SAST or at the weekend)
 

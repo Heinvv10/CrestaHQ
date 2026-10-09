@@ -199,15 +199,15 @@ node scripts/gbp-deploy-check.mjs pre "$DEPLOY_DIR" \
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
 
-# The mystery shop's website-form engine drives playwright-core's Chromium,
-# and its tests run in the test gate below. Installed into this user's
-# ~/.cache/ms-playwright; a no-op when that revision is already there. No
-# --with-deps: the OS libraries are already on the box (CI's E2E runs here).
-# Not fatal: without it only the website-form channel is unavailable (and the
-# test gate, whose browser tests then skip, still runs everything else).
-say "Installing the form engine's Chromium"
-pnpm exec playwright-core install chromium \
-  || echo "WARNING: form engine Chromium not installed — the website-form channel will show as unavailable"
+# The mystery shop's website-form engine runs in its own disposable container
+# (src/lib/prospecting/mystery-shop/form/container.ts). Build its image now —
+# before the Next build, which traces the tag this writes into
+# docker/form-engine/dist/TAG. Idempotent: a no-op when the tag (the content
+# hash of the runner and its image) is already built. Not fatal: without it
+# only the website-form channel is unavailable. See RUNBOOK.md.
+say "Building the form engine's container image"
+node scripts/form-engine-image.mjs \
+  || echo "WARNING: form engine image not built — the website-form channel will show as unavailable"
 
 # ── Gates: everything that can fail runs BEFORE the service is touched ───────
 say "Lint + tenancy check"
