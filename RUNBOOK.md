@@ -391,20 +391,29 @@ PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
   never the deploy checkout's, which velo can write):
 
   ```bash
-  cd ~/crestahq
-  sudo install -m 0755 -o root -g root scripts/form-engine-firewall.sh /usr/local/sbin/leadstack-form-firewall
-  sudo install -m 0644 -o root -g root scripts/form-engine-firewall.service /etc/systemd/system/leadstack-form-firewall.service
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now leadstack-form-firewall.service
-  sudo iptables -S LSMS-FORM && sudo iptables -S LSMS-FORM-IN
+  cd /home/velo/crestahq && git fetch origin main
+  # Install only the reviewed files: the deploy checkout's copies must match origin/main exactly.
+  if git diff --quiet origin/main -- scripts/form-engine-firewall.sh scripts/form-engine-firewall.service; then
+    sudo install -m 0755 -o root -g root scripts/form-engine-firewall.sh /usr/local/sbin/leadstack-form-firewall
+    sudo install -m 0644 -o root -g root scripts/form-engine-firewall.service /etc/systemd/system/leadstack-form-firewall.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now leadstack-form-firewall.service
+    sudo iptables -S LSMS-FORM && sudo iptables -S LSMS-FORM-IN
+  else
+    echo "The firewall files differ from origin/main: stop and review before installing."
+  fi
   ```
 
   Re-install the copy whenever the script changes. Do NOT use
   netfilter-persistent / iptables-persistent: on this box installing them
   removes ufw. **Until it runs, the channel stays unavailable:** every job
-  first checks that the container cannot reach the host (ports 22, 5432, 6379
-  on its gateway) and refuses with `engine_unisolated` if it can, and the
-  health check then shows the channel unavailable. Measured 2026-10-09 before
+  first checks that the container cannot reach the host (ports 22, 5432 and
+  6379 on its gateway and on 172.17.0.1, all at once; only timeouts pass) and
+  refuses with `engine_unisolated` if it can, and the health check then shows
+  the channel unavailable. That canary only probes the host itself — the
+  INPUT path. It does not prove the DOCKER-USER drops (the LAN, Tailscale,
+  other docker networks); check those with `sudo iptables -S LSMS-FORM` after
+  installing. Measured 2026-10-09 before
   the firewall: the host's ports 22, 80, 5432 and 6379 answered from inside
   the container (via 172.16.88.1, 172.17.0.1, the LAN, Tailscale and
   WireGuard addresses); sibling containers and 169.254.169.254 did not.
@@ -416,7 +425,11 @@ PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
   before the Next build, which traces the TAG file into the release. The step
   is not fatal: a failure prints a WARNING and the form channel shows "The
   form engine isn't installed on this server." (cached for 5 minutes).
-- **Check it.** `cat ~/crestahq/docker/form-engine/dist/TAG` then
+- **Partial leads.** Before the submit click, the engine aborts any request
+  that carries our email address or the enquiry message (a page that saves
+  fields as they are typed). Only those two are matched: the business name
+  and the WhatsApp number typed into the form can still leave early.
+- **Check it.** `cat /home/velo/crestahq/docker/form-engine/dist/TAG` then
   `docker image inspect "$(cat …/TAG)" --format '{{.Size}}'` as velo.
 - **Prune old tags.** Each runner change makes a new tag, and the old
   colour's release still uses its own. Prune only tags no release names:
