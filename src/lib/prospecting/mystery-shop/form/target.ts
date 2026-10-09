@@ -63,9 +63,9 @@ const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
 
 /**
  * The sub-account's real identity as the form gets it: its name, the synced
- * mailbox address and its WhatsApp number (Branding, else the Cloud sender's)
- * in E.164 — the same number the public report shows. Null without a mailbox
- * address.
+ * mailbox address and its WhatsApp number in E.164 — the Cloud sender's
+ * (whose replies the Cloud webhook matches), else Branding's. Calls to that
+ * number are not matched; the card says so. Null without a mailbox address.
  */
 export function formIdentity(
   sub: SubAccountDoc,
@@ -74,8 +74,9 @@ export function formIdentity(
   const email = mailboxAddress(sub);
   if (!email) return null;
   const country = str(sub.defaultPhoneCountry);
+  // The Cloud sender's number first: its WhatsApp replies reach the Cloud webhook, where they are matched.
   const phone =
-    normalizePhoneE164(str(sub.whatsappNumber), country) ??
-    normalizePhoneE164(str(sub.whatsappCloudMeta?.displayPhoneNumber), country);
+    normalizePhoneE164(str(sub.whatsappCloudMeta?.displayPhoneNumber), country) ??
+    normalizePhoneE164(str(sub.whatsappNumber), country);
   return { business: sub.name, email, phone, ...enquiry };
 }

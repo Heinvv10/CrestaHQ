@@ -35,14 +35,14 @@ describe("formChannelState", () => {
 });
 
 describe("formIdentity", () => {
-  it("is the business name, the synced mailbox address and the WhatsApp number in E.164", () => {
-    expect(formIdentity(sub({ whatsappNumber: "078 435 6159" }), enquiry)).toEqual({
+  it("is the business name, the synced mailbox address and the Cloud WhatsApp number (whose replies are matched) in E.164", () => {
+    expect(formIdentity(sub({ whatsappCloudMeta: { displayPhoneNumber: "+27 78 435 6159" }, whatsappNumber: "082 000 0000" }), enquiry)).toEqual({
       business: "Cresta HQ", email: "info@crestahq.com", phone: "+27784356159", ...enquiry,
     });
   });
 
-  it("falls back to the Cloud sender's number; none at all is null (a required phone field then refuses)", () => {
-    expect(formIdentity(sub({ whatsappCloudMeta: { displayPhoneNumber: "+27 78 435 6159" } }), enquiry)?.phone).toBe("+27784356159");
+  it("falls back to Branding's WhatsApp number; none at all is null (a required phone field then refuses)", () => {
+    expect(formIdentity(sub({ whatsappNumber: "078 435 6159" }), enquiry)?.phone).toBe("+27784356159");
     expect(formIdentity(sub({ whatsappNumber: "not a number" }), enquiry)?.phone).toBeNull();
     expect(formIdentity(sub(), enquiry)?.phone).toBeNull();
   });

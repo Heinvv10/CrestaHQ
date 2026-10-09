@@ -47,6 +47,8 @@ export interface MemberShop {
   optOutAt: string | null;
   /** An inbound WhatsApp from the target the matcher did not take (store.ts `settleMissed`). Member only. */
   replyNeedsReview: boolean;
+  /** A form shop: the number typed into the form. Calls to it are not matched (only WhatsApp replies are). */
+  callbackNumber: string | null;
 }
 
 export interface MysteryShopItem {
@@ -99,6 +101,7 @@ export function serializeShop(id: string, d: Record<string, unknown>): MemberSho
     readAt: iso(d.readAt),
     optOutAt: iso(d.optOutAt),
     replyNeedsReview: d.replyNeedsReview === true,
+    callbackNumber: typeof d.callbackNumber === "string" ? d.callbackNumber : null,
   };
 }
 
@@ -194,8 +197,16 @@ export function mysteryShopSections(
   })).filter((sec) => sec.items.length > 0);
 }
 
-/** The Reports card's one line per shop. */
+/** The Reports card's one line per shop. A waiting or missed form shop adds that call-backs to its number aren't seen. */
 export function shopStatusLine(s: MemberShop, nowMs: number): string {
+  const note =
+    s.channel === "form" && s.callbackNumber && (s.status === "sent" || s.status === "missed")
+      ? ` Call-backs to ${s.callbackNumber} aren't tracked — check your phone before confirming a miss.`
+      : "";
+  return statusLine(s, nowMs) + note;
+}
+
+function statusLine(s: MemberShop, nowMs: number): string {
   const head = `${LABEL[s.channel]} to ${s.target} — `;
   switch (s.status) {
     case "queued":
