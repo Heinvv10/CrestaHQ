@@ -199,6 +199,16 @@ node scripts/gbp-deploy-check.mjs pre "$DEPLOY_DIR" \
 say "Installing dependencies"
 pnpm install --frozen-lockfile || die "pnpm install"
 
+# The mystery shop's website-form engine runs in its own disposable container
+# (src/lib/prospecting/mystery-shop/form/container.ts). Build its image now —
+# before the Next build, which traces the tag this writes into
+# docker/form-engine/dist/TAG. Idempotent: a no-op when the tag (the content
+# hash of the runner and its image) is already built. Not fatal: without it
+# only the website-form channel is unavailable. See RUNBOOK.md.
+say "Building the form engine's container image"
+node scripts/form-engine-image.mjs \
+  || echo "WARNING: form engine image not built — the website-form channel will show as unavailable"
+
 # ── Gates: everything that can fail runs BEFORE the service is touched ───────
 say "Lint + tenancy check"
 pnpm lint || die "lint"

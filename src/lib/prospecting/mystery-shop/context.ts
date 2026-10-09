@@ -24,15 +24,21 @@ export async function loadContact(subAccountId: string, contactId: string): Prom
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
 
 /**
- * The enquiry as rendered for this contact now: the email (subject + body) and
- * call texts exactly as stored on a shop, and a hash of each. The dialog echoes
- * the hash of the text it showed; a POST whose hash differs (the templates or
- * the contact changed meanwhile) is refused, so what is sent is what was seen.
+ * The enquiry as rendered for this contact now: the email (subject + body),
+ * call and form texts exactly as stored on a shop, and a hash of each. The
+ * dialog echoes the hash of the text it showed; a POST whose hash differs (the
+ * templates or the contact changed meanwhile) is refused, so what is sent is
+ * what was seen. The form's hash also covers the subject it types (and is
+ * prefixed, so it never equals the email hash of the same text).
  */
 export function enquiryOf(contact: ShopContact, sub: SubAccountDoc) {
   const rendered = renderEnquiries(sub.prospectingMysteryShopTemplates, enquiryVars(contact, sub.name));
-  const text = { email: `${rendered.email.subject}\n\n${rendered.email.body}`, call: rendered.call };
-  return { ...rendered, text, hash: { email: sha256(text.email), call: sha256(text.call) } };
+  const text = { email: `${rendered.email.subject}\n\n${rendered.email.body}`, call: rendered.call, form: rendered.form };
+  return {
+    ...rendered,
+    text,
+    hash: { email: sha256(text.email), call: sha256(text.call), form: sha256(`form\n${rendered.email.subject}\n\n${rendered.form}`) },
+  };
 }
 
 export const TIMER_PATH = "/api/automations/prospecting/mystery-shop";

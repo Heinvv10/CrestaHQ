@@ -11,6 +11,7 @@ import type { Contact } from "@/types/contacts";
 import type { MysteryShopChannel } from "./model";
 import { normalizeEmailTarget } from "./targets";
 import { sendWhatsappShop, whatsappState, type WhatsappEnquiry } from "./whatsapp";
+import { formChannelState } from "./form/target";
 
 /**
  * Sending a mystery shop over the existing comms rails — never a hand-rolled
@@ -21,11 +22,10 @@ import { sendWhatsappShop, whatsappState, type WhatsappEnquiry } from "./whatsap
  * activity row and contact stamp), as a short capped call carrying the shop id.
  * WhatsApp is an approved template through the composer's own service
  * (whatsapp.ts); its message id is the `providerRef`.
+ * A website form is not sent here: the route queues its job (form/job.ts).
  */
 
 export type ChannelState = { available: boolean; reason?: string };
-
-const NOT_YET: ChannelState = { available: false, reason: "Not available yet." };
 
 /** The synced mailbox's own address: the Reply-To, so the business's reply lands where it is read. */
 const mailboxAddress = (sub: SubAccountDoc) => normalizeEmailTarget(sub.mailboxConfig?.username);
@@ -60,7 +60,7 @@ export async function channelStates(
     : !vapiAppUrlConfigured()
       ? { available: false, reason: "Voice calling needs the app's public URL (VAPI_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL)." }
       : { available: true };
-  return { email, call, whatsapp: await whatsappState(subAccountId, sub), form: NOT_YET };
+  return { email, call, whatsapp: await whatsappState(subAccountId, sub), form: await formChannelState(sub) };
 }
 
 /**

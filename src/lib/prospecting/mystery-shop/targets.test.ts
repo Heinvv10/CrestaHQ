@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { allowedTargets, emailDomainTrusted, matchTarget, normalizeEmailTarget } from "./targets";
+import {
+  allowedTargets, emailDomainTrusted, formMatchDomains, matchTarget, normalizeEmailTarget, normalizeFormUrl,
+} from "./targets";
 
 const contact = { email: " Info@Acme.co.za ", phone: "082 123 4567" };
 
@@ -38,6 +40,40 @@ describe("matchTarget", () => {
     expect(matchTarget("call", "+27821234568", ["+27821234567"], "ZA")).toBeNull();
     expect(matchTarget("email", 42, ["info@acme.co.za"])).toBeNull();
     expect(matchTarget("email", "info@acme.co.za", [])).toBeNull();
+  });
+});
+
+describe("form targets", () => {
+  it("normalizeFormUrl: the WHATWG serialisation of an http(s) URL, nothing else", () => {
+    expect(normalizeFormUrl(" HTTPS://WWW.Acme.co.za:443/contact?x=1#top ")).toBe("https://www.acme.co.za/contact?x=1#top");
+    expect(normalizeFormUrl("https://www.acme.co.za")).toBe("https://www.acme.co.za/");
+    for (const bad of [
+      "javascript:alert(1)", "file:///etc/passwd", "ftp://acme.co.za/", "data:text/html,x", "/contact", "acme.co.za/contact",
+      "https://user:pw@acme.co.za/", `https://acme.co.za/${"x".repeat(2100)}`, 42, null, undefined,
+    ]) {
+      expect(normalizeFormUrl(bad), String(bad)).toBeNull();
+    }
+  });
+
+  it("matchTarget(form): only the report's URL, byte-for-byte after normalisation", () => {
+    const allowed = ["https://www.acme.co.za/contact"];
+    expect(matchTarget("form", "https://WWW.ACME.co.za:443/contact", allowed)).toBe("https://www.acme.co.za/contact");
+    expect(matchTarget("form", "https://www.acme.co.za/contact/", allowed)).toBeNull();
+    expect(matchTarget("form", "https://www.acme.co.za/contact?x", allowed)).toBeNull();
+    expect(matchTarget("form", "http://www.acme.co.za/contact", allowed)).toBeNull();
+    expect(matchTarget("form", "https://www.acme.co.za/contact", [])).toBeNull();
+  });
+
+  it("formMatchDomains: the form's registrable domain, never a mailbox provider's or an IP", () => {
+    expect(formMatchDomains("https://www.acme.co.za/contact")).toEqual(["acme.co.za"]);
+    expect(formMatchDomains("https://shop.acme.com/c")).toEqual(["acme.com"]);
+    expect(formMatchDomains("https://acme.mweb.co.za/contact")).toEqual([]);
+    expect(formMatchDomains("https://acme.outlook.com/")).toEqual([]);
+    expect(formMatchDomains("http://203.0.113.9/contact")).toEqual([]);
+    expect(formMatchDomains("http://[2001:db8::1]/contact")).toEqual([]);
+    // A hosting platform's tenant is its own domain, never the platform's.
+    expect(formMatchDomains("https://acme.wixsite.com/contact")).toEqual(["acme.wixsite.com"]);
+    expect(formMatchDomains("https://acme.org.za/contact")).toEqual(["acme.org.za"]);
   });
 });
 

@@ -54,7 +54,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
     const parsed = parseTemplates(body.templates);
     if (!parsed) {
       return NextResponse.json(
-        { error: "Templates may set emailSubject, emailBody and call, each up to 2,000 characters." },
+        { error: "Templates may set emailSubject, emailBody, call and form, each up to 2,000 characters." },
         { status: 400 },
       );
     }

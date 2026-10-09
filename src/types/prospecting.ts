@@ -37,6 +37,8 @@ export interface MysteryShopTemplates {
   emailSubject?: string;
   emailBody?: string;
   call?: string;
+  /** The website form's message; unset = the email body. */
+  form?: string;
   /**
    * The WhatsApp enquiry: a `subAccounts/{id}/whatsappTemplates` doc id (PR 5b).
    * Unset = the template named `leadstack_speed_check`

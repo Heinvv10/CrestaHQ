@@ -160,6 +160,9 @@ importers:
       tailwind-merge:
         specifier: ^3.5.0
         version: 3.5.0
+      tldts:
+        specifier: 7.0.26
+        version: 7.0.26
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
@@ -227,12 +230,18 @@ importers:
       jsdom:
         specifier: 26.1.0
         version: 26.1.0
+      playwright-core:
+        specifier: 1.62.1
+        version: 1.62.1
       prettier:
         specifier: ^3.8.1
         version: 3.8.1
       prettier-plugin-tailwindcss:
         specifier: ^0.7.2
         version: 0.7.2(prettier@3.8.1)
+      rolldown:
+        specifier: 1.2.6
+        version: 1.2.6
       tailwindcss:
         specifier: ^4
         version: 4.2.1

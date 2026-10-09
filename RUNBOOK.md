@@ -366,6 +366,100 @@ connections while Next restarts:
   script it started with. So when `git reset` brings in a changed deploy
   script, the run re-executes the new copy once.
 
+### The form engine's container (mystery-shop website form)
+
+The mystery shop's website-form channel fills each form in a disposable
+Docker container: `docker run --rm -i --pull never` on its own network
+(`leadstack-form`), 1 GB memory (no swap), 512 pids, 1 CPU, every capability
+dropped, `no-new-privileges`, a read-only root, tmpfs `/tmp` and
+`/home/pwuser`, as the image's `pwuser`. It receives only the job on stdin
+(no environment, no volumes, no secrets; the docker CLI itself runs with
+PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
+
+- **Network.** `leadstack-form`: bridge `br-lsms-form`, subnet
+  `172.16.88.0/24` (gateway `172.16.88.1`), inter-container traffic off. The
+  image script creates it if missing and refuses one with another subnet or
+  with icc on. The channel shows unavailable without it.
+- **Host firewall — REQUIRED; Hein reviews and installs it once, as root.**
+  `scripts/form-engine-firewall.sh` drops everything from that subnet to the
+  host itself (INPUT) and to RFC1918, 100.64/10, 169.254/16 and 127/8
+  (DOCKER-USER, from `br-lsms-form` only), allowing only replies (and DNS to
+  `RESOLVER=<ip>` if one is set; docker's embedded DNS needs nothing). It
+  rebuilds its two chains atomically (`iptables-restore --noflush`) and is
+  idempotent. `scripts/form-engine-firewall.service` re-applies it at boot and
+  on every docker restart. Install both once, as `hein`, by pasting the block
+  below. It runs git as `velo` (as `hein`, git refuses velo's checkout with
+  "dubious ownership"). It installs both files straight from `origin/main`,
+  never from the working tree, so what was reviewed is what runs as root,
+  with no window between a check and the copy. Each file is confirmed to
+  exist on `origin/main` before anything is written, so a failed `git show`
+  can never install an empty file. The subshell stops at the first failing
+  step and prints why, without closing your shell. The names match the
+  unit's `ExecStart=/usr/local/sbin/leadstack-form-firewall`.
+
+  ```bash
+  (
+    set -euo pipefail
+    repo=/home/velo/crestahq
+    sudo -u velo git -C "$repo" fetch origin main
+    sudo -u velo git -C "$repo" cat-file -e origin/main:scripts/form-engine-firewall.sh
+    sudo -u velo git -C "$repo" cat-file -e origin/main:scripts/form-engine-firewall.service
+    sudo -u velo git -C "$repo" show origin/main:scripts/form-engine-firewall.sh \
+      | sudo install -o root -g root -m 0755 /dev/stdin /usr/local/sbin/leadstack-form-firewall
+    sudo -u velo git -C "$repo" show origin/main:scripts/form-engine-firewall.service \
+      | sudo install -o root -g root -m 0644 /dev/stdin /etc/systemd/system/leadstack-form-firewall.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now leadstack-form-firewall.service
+  ) || echo "Form-engine firewall NOT installed: the step above failed (its message says why); nothing after it ran."
+  ```
+
+  Verify:
+
+  ```bash
+  systemctl status leadstack-form-firewall.service --no-pager   # active (exited)
+  sudo iptables -S LSMS-FORM && sudo iptables -S LSMS-FORM-IN    # the drops, replies first
+  sudo iptables -S DOCKER-USER | grep LSMS-FORM                  # -i br-lsms-form -s 172.16.88.0/24 -j LSMS-FORM
+  sudo iptables -S INPUT | grep LSMS-FORM-IN                     # -i br-lsms-form -j LSMS-FORM-IN, first
+  ```
+
+  Re-run the install block whenever the script or the unit changes on main. Do NOT use
+  netfilter-persistent / iptables-persistent: on this box installing them
+  removes ufw. **Until it runs, the channel stays unavailable:** every job
+  first checks that the container cannot reach the host (ports 22, 5432 and
+  6379 on its gateway and on 172.17.0.1, all at once; only timeouts pass) and
+  refuses with `engine_unisolated` if it can, and the health check then shows
+  the channel unavailable. That canary only probes the host itself — the
+  INPUT path. It does not prove the DOCKER-USER drops (the LAN, Tailscale,
+  other docker networks); check those with `sudo iptables -S LSMS-FORM` after
+  installing. Measured 2026-10-09 before
+  the firewall: the host's ports 22, 80, 5432 and 6379 answered from inside
+  the container (via 172.16.88.1, 172.17.0.1, the LAN, Tailscale and
+  WireGuard addresses); sibling containers and 169.254.169.254 did not.
+- **Image.** `docker/form-engine/Dockerfile`, on
+  `mcr.microsoft.com/playwright:v1.62.1-noble` (it ships the matching
+  Chromium). `node scripts/form-engine-image.mjs` bundles the runner, tags the
+  image `leadstack-form-engine:<playwright>-<content hash>`, writes the tag to
+  `docker/form-engine/dist/TAG` and builds it if missing. Every deploy runs it
+  before the Next build, which traces the TAG file into the release. The step
+  is not fatal: a failure prints a WARNING and the form channel shows "The
+  form engine isn't installed on this server." (cached for 5 minutes).
+- **Partial leads.** Before the submit click, the engine aborts any request
+  that carries our email address or the enquiry message (a page that saves
+  fields as they are typed). Only those two are matched: the business name
+  and the WhatsApp number typed into the form can still leave early.
+- **Check it.** `cat /home/velo/crestahq/docker/form-engine/dist/TAG` then
+  `docker image inspect "$(cat …/TAG)" --format '{{.Size}}'` as velo.
+- **Prune old tags.** Each runner change makes a new tag, and the old
+  colour's release still uses its own. Prune only tags no release names:
+  `docker images leadstack-form-engine` and `docker rmi <tag>` for the rest.
+- **Chromium's sandbox is off inside the container.** It cannot start here:
+  "FATAL: zygote_host_impl_linux.cc:128 No usable sandbox!" (velo restricts
+  unprivileged user namespaces through AppArmor —
+  `kernel.apparmor_restrict_unprivileged_userns=1`). Leave the host setting
+  alone; the locked-down, disposable container is the isolation.
+- **Versions.** Keep `@playwright/test`, `playwright-core` and the
+  Dockerfile's base image tag on the same playwright version.
+
 ### One-time migration (owner, after 17:00 SAST or at the weekend)
 
 Run as velo (`sudo -u velo -i`) once this change is on `origin/main`. The

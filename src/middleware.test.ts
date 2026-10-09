@@ -611,5 +611,8 @@ describe("isPublicPath — the prospect report announce sweep", () => {
     expect(isPublicPath("/api/automations/prospecting/mystery-shop")).toBe(true);
     expect(isPublicPath("/api/automations/prospecting/mystery-shop/x")).toBe(false);
     expect(isPublicPath("/api/sub-accounts/sa1/prospecting/mystery-shop")).toBe(false);
+    expect(isPublicPath("/api/automations/prospecting/mystery-shop-form")).toBe(true);
+    expect(isPublicPath("/api/automations/prospecting/mystery-shop-form/x")).toBe(false);
+    expect(isPublicPath("/api/automations/prospecting/mystery-shop-formx")).toBe(false);
   });
 });

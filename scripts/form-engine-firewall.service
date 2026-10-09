@@ -1,0 +1,18 @@
+# Re-applies the form-engine firewall (scripts/form-engine-firewall.sh) at boot
+# and whenever docker restarts. NOT installed by any deploy: Hein installs it
+# once, as root (RUNBOOK.md, "The form engine's container"). It runs a
+# root-owned copy of the script, never the one in the deploy checkout, which
+# velo can write to.
+[Unit]
+Description=LeadStack form engine firewall (leadstack-form network)
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/leadstack-form-firewall
+
+[Install]
+WantedBy=multi-user.target

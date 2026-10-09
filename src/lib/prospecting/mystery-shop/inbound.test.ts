@@ -44,6 +44,57 @@ const callReport = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => mem.clear());
 
+const FORM = "https://www.acme.co.za/contact";
+function seedForm(id: string, extra: Record<string, unknown> = {}) {
+  seedShop(id, {
+    channel: "form", target: FORM, providerRef: `form:${id}:1`, targetDomainTrusted: false,
+    matchDomains: ["acme.co.za"], matchAddresses: ["owner@gmail.com"], matchNumbers: [PHONE], ...extra,
+  });
+}
+
+describe("form shops", () => {
+  it("an email from the form's domain or the contact's own address settles it", async () => {
+    seedForm("f1");
+    seedForm("f2", { contactId: "c2", matchDomains: ["other.co.za"], matchAddresses: [] });
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    expect(shop("f1")).toMatchObject({ status: "responded", responseMs: 2 * 3600_000, responseVia: "email", senderAuth: "unknown" });
+    expect(shop("f2").status).toBe("sent");
+    seedForm("f3");
+    await matchMysteryShopEmail("sa1", email("Owner@Gmail.com"));
+    expect(shop("f3").status).toBe("responded");
+  });
+
+  it("an email from anyone else, or one failing the sender check, does not", async () => {
+    seedForm("f1");
+    await matchMysteryShopEmail("sa1", email("john@gmail.com"));
+    expect(shop("f1").status).toBe("sent");
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za", { authResults: ["mx.example; dmarc=fail header.from=acme.co.za"] }));
+    expect(shop("f1")).toMatchObject({ status: "sent", authFailedReplyAt: expect.any(Date) });
+  });
+
+  it("an email shop and a form shop to the same business both settle on one reply", async () => {
+    seedShop("s1");
+    seedForm("f1");
+    await matchMysteryShopEmail("sa1", email(EMAIL));
+    expect([shop("s1").status, shop("f1").status]).toEqual(["responded", "responded"]);
+  });
+
+  it("an inbound call from one of the contact's numbers is a callback; another number is not", async () => {
+    seedForm("f1");
+    seedForm("f2", { matchNumbers: ["+27821111111"] });
+    await matchInboundCallback("sa1", PHONE, callReport());
+    expect(shop("f1")).toMatchObject({ status: "responded", responseVia: "callback", senderAuth: "unknown" });
+    expect(shop("f2").status).toBe("sent");
+  });
+
+  it("another sub-account's form shop is never touched", async () => {
+    seedForm("f1", { subAccountId: "sa2" });
+    await matchMysteryShopEmail("sa1", email("john@acme.co.za"));
+    await matchInboundCallback("sa1", PHONE, callReport());
+    expect(shop("f1").status).toBe("sent");
+  });
+});
+
 describe("email", () => {
   it("a reply from the target settles the shop with the elapsed time; a second reply changes nothing", async () => {
     seedShop("s1");

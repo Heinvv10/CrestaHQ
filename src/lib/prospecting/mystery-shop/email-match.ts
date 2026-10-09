@@ -6,7 +6,9 @@ import { LATE_REPLY_HORIZON_MS, canSettleResponded, inWindow, toMs } from "./mod
  * The SENDER decides, never the thread: the reply must come from the target
  * address, or from another address at the target's domain when that domain
  * is the business's own (`targetDomainTrusted`, decided at send time against
- * its website — a gmail address proves nothing about a colleague). A matching
+ * its website — a gmail address proves nothing about a colleague). A form
+ * shop has no target address: its `senders` set (the contact's own address,
+ * the form site's domain) takes that place, and the rules are otherwise the same. A matching
  * In-Reply-To / References header only picks which of several sender-matching
  * shops the reply belongs to; on its own (a forged header from anyone else)
  * it closes nothing. The reply must arrive inside [sentAt, sentAt + 24 h].
@@ -74,6 +76,12 @@ export interface EmailShopCandidate {
   providerRef: unknown;
   /** The target's domain is the business's own (store.ts, at reserve). */
   targetDomainTrusted?: unknown;
+  /**
+   * A form shop's target set, in place of the target address: the contact's
+   * own address(es) and the form site's domain(s) (store.ts, at reserve).
+   * Nothing was emailed, so it never bounces.
+   */
+  senders?: { addresses: string[]; domains: string[] };
 }
 
 export type EmailDecision = "responded" | "auto_reply" | "bounced" | "none";
@@ -86,6 +94,14 @@ export function senderMatches(from: string, target: string, domainTrusted: boole
   if (!f.includes("@") || !t.includes("@")) return false;
   if (f === t) return true;
   return domainTrusted && domainOf(f) === domainOf(t);
+}
+
+/** The sender is in the shop's target set: its target address (+ its domain if trusted), or a form shop's senders. */
+function senderInTargetSet(from: string, s: EmailShopCandidate): boolean {
+  if (!s.senders) return senderMatches(from, s.target, s.targetDomainTrusted === true);
+  const f = from.trim().toLowerCase();
+  if (!f.includes("@")) return false;
+  return s.senders.addresses.some((a) => a.toLowerCase() === f) || s.senders.domains.some((d) => d.toLowerCase() === domainOf(f));
 }
 
 const DSN_SUBJECT = /\b(undeliverable|delivery status notification|mail delivery failed|returned mail|delivery has failed)\b/i;
@@ -215,6 +231,7 @@ export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<s
   const thread = new Set([m.inReplyTo, ...m.references].map(msgId).filter(Boolean));
   if (isDeliveryReport(m)) {
     for (const s of shops) {
+      if (s.senders) continue;
       const ref = msgId(s.providerRef);
       const named = !!ref && (thread.has(ref) || m.dsn.text.includes(ref));
       const sent = toMs(s.sentAt);
@@ -228,7 +245,7 @@ export function decideEmail(m: InboundEmail, shops: EmailShopCandidate[]): Map<s
   }
   const auto = isAutoReply(m);
   const eligible = shops.filter((s) => {
-    if (!senderMatches(m.from, s.target, s.targetDomainTrusted === true)) return false;
+    if (!senderInTargetSet(m.from, s)) return false;
     if (!auto) return canSettleResponded(s, m.occurredAtMs);
     const sent = toMs(s.sentAt);
     return s.status === "sent" && s.autoReplyAt == null && sent !== null && inWindow(sent, m.occurredAtMs);

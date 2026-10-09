@@ -46,6 +46,8 @@ export interface ReserveInput {
   currency: string;
   niche: string;
   cap: number;
+  /** A form shop: the subject and service it types, and who may answer for the business (inbound.ts). */
+  form?: { subject: string; service: string; matchDomains: string[]; matchNumbers: string[]; matchAddresses: string[] };
 }
 
 /**
@@ -108,6 +110,14 @@ export async function reserveShop(input: ReserveInput): Promise<{ shopId: string
       confirmedAt: now,
       createdAt: now,
       usageMonth,
+      ...(input.form
+        ? {
+            formEnquiry: { subject: input.form.subject, service: input.form.service },
+            matchDomains: input.form.matchDomains,
+            matchNumbers: input.form.matchNumbers,
+            matchAddresses: input.form.matchAddresses,
+          }
+        : {}),
     });
     return { shopId: shopRef.id };
   });
@@ -171,18 +181,18 @@ export async function markSent(shopId: string, providerRef: string): Promise<Dat
  * `sent` with `sendUncertain: true`, the cap slot kept, the 24 h clock
  * running, and the open shop still blocking a second send. With
  * `olderThanMs` (the stuck sweep): only a shop queued that long, dated from
- * its creation.
+ * its creation. `onlyIf` re-checks the shop inside the transaction.
  */
 export async function markUncertain(
   shopId: string,
   providerRef: string | null,
-  opts: { olderThanMs?: number } = {},
+  opts: { olderThanMs?: number; onlyIf?: (shop: FirebaseFirestore.DocumentData) => boolean } = {},
 ): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
     const shop = (await tx.get(ref)).data();
-    if (shop?.status !== "queued") return false;
+    if (shop?.status !== "queued" || (opts.onlyIf && !opts.onlyIf(shop))) return false;
     const created = toMs(shop.createdAt);
     if (opts.olderThanMs !== undefined && (created === null || Date.now() - created <= opts.olderThanMs)) return false;
     const sentAt = toMs(shop.sentAt) === null && opts.olderThanMs !== undefined && created !== null ? new Date(created) : startedAt(shop);
@@ -210,19 +220,20 @@ export async function attachProviderRef(shopId: string, providerRef: string): Pr
 /**
  * A queued shop that never sent → `failed` / `refused` with the reason, and
  * its cap slot back (floored at 0). Anything else is left alone, so a repeat
- * cannot release twice. With `olderThanMs`, only a shop queued that long ago.
+ * cannot release twice. With `olderThanMs`, only a shop queued that long ago;
+ * `onlyIf` re-checks the shop inside the transaction.
  */
 export async function releaseShop(
   shopId: string,
   status: "failed" | "refused",
   failure: MysteryShopFailure,
-  opts: { olderThanMs?: number } = {},
+  opts: { olderThanMs?: number; onlyIf?: (shop: FirebaseFirestore.DocumentData) => boolean } = {},
 ): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`mysteryShops/${shopId}`);
   return db.runTransaction(async (tx) => {
     const shop = (await tx.get(ref)).data();
-    if (shop?.status !== "queued") return false;
+    if (shop?.status !== "queued" || (opts.onlyIf && !opts.onlyIf(shop))) return false;
     const created = toMs(shop.createdAt);
     if (opts.olderThanMs !== undefined && (created === null || Date.now() - created <= opts.olderThanMs)) return false;
     const usageRef = db.doc(`subAccounts/${shop.subAccountId}/usage/${shop.usageMonth}`);
@@ -238,7 +249,7 @@ export async function releaseShop(
  * Returns the status after. An EMAIL shop is only judged once the INBOX has
  * been read past the window: `mailboxConfig.inboxCaughtUpAt` (the start of a
  * sync pass that read the INBOX to its end) is at or after sentAt + 24 h and
- * the mailbox has no error. Until then it stays `sent` (`awaitingSync: true`)
+ * the mailbox has no error (a form shop likewise: its reply comes by email). Until then it stays `sent` (`awaitingSync: true`)
  * and this returns "awaiting_sync". A miss after a reply that failed the
  * sender check is flagged `disputed` for the member who decides whether to
  * confirm it (only a confirmed miss is public). A WHATSAPP shop first reads
@@ -287,7 +298,8 @@ export async function settleMissed(shopId: string, nowMs = Date.now()): Promise<
       });
       return "missed";
     }
-    if (shop.channel === "email") {
+    // A form shop's reply arrives by email to the synced mailbox too.
+    if (shop.channel === "email" || shop.channel === "form") {
       const mailbox = (await tx.get(db.doc(`subAccounts/${shop.subAccountId}`))).data()?.mailboxConfig;
       const syncedAt = Date.parse(mailbox?.inboxCaughtUpAt ?? "");
       if (mailbox?.lastError || !(syncedAt >= toMs(shop.sentAt)! + RESPONSE_WINDOW_MS)) {

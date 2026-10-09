@@ -18,7 +18,7 @@ const shop = (over: Partial<MemberShop> = {}): MemberShop => ({
   respondedAt: "2026-10-08T10:14:00.000Z", responseMs: (2 * 60 + 14) * 60_000, autoReplyAt: null,
   jobValueCents: 150_000, currency: "ZAR", enquiryText: "Do you do plumber in Gqeberha?",
   failure: null, createdAt: SENT, responseVia: "email", senderAuth: "unknown", sendUncertain: false, awaitingSync: false, disputed: false, missedConfirmedAt: null,
-  deliveredAt: null, readAt: null, optOutAt: null, replyNeedsReview: false,
+  deliveredAt: null, readAt: null, optOutAt: null, replyNeedsReview: false, callbackNumber: null,
   ...over,
 });
 
@@ -202,6 +202,31 @@ describe("serializeShop", () => {
     expect(s.sentAt).toBe(SENT);
     expect(s.autoReplyAt).toBe("2026-10-08T08:00:01.000Z");
     expect(s).not.toHaveProperty("providerRef");
+  });
+});
+
+describe("form shops: the number typed into the form", () => {
+  const form = (over: Partial<MemberShop> = {}) =>
+    shop({ channel: "form", target: "https://www.acme.co.za/contact", status: "sent", respondedAt: null, responseMs: null,
+      responseVia: null, senderAuth: null, callbackNumber: "+27784356159", ...over });
+  const NOTE = " Call-backs to +27784356159 aren't tracked — check your phone before confirming a miss.";
+  const now = Date.parse("2026-10-08T08:05:00Z");
+
+  it("a waiting or missed form shop says call-backs to that number aren't tracked", () => {
+    expect(shopStatusLine(form(), now).endsWith(NOTE)).toBe(true);
+    expect(shopStatusLine(form({ status: "missed" }), now).endsWith(NOTE)).toBe(true);
+  });
+
+  it("not once it responded or failed, not without a number, never for another channel", () => {
+    expect(shopStatusLine(form({ status: "responded", responseMs: 60_000, responseVia: "email" }), now)).not.toContain("Call-backs");
+    expect(shopStatusLine(form({ status: "failed" }), now)).not.toContain("Call-backs");
+    expect(shopStatusLine(form({ callbackNumber: null }), now)).not.toContain("Call-backs");
+    expect(shopStatusLine(form({ channel: "email", target: EMAIL }), now)).not.toContain("Call-backs");
+  });
+
+  it("serializeShop carries the number (member view only)", () => {
+    expect(serializeShop("f1", { channel: "form", status: "sent", callbackNumber: "+27784356159" }).callbackNumber).toBe("+27784356159");
+    expect(serializeShop("f1", { channel: "form", status: "sent", callbackNumber: 5 }).callbackNumber).toBeNull();
   });
 });
 

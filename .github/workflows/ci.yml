@@ -74,8 +74,22 @@ jobs:
       - name: Typecheck
         run: pnpm exec tsc --noEmit
 
+      # The mystery shop's form-engine tests drive playwright-core's real
+      # Chromium (src/lib/prospecting/mystery-shop/form/*.test.ts). A no-op
+      # when the runner's cache already has this revision. Without it those
+      # tests FAIL under CI (they only skip on a developer box without it).
+      # No --with-deps: same reason as the E2E job's install.
+      - name: Install Chromium (form-engine tests)
+        run: pnpm exec playwright-core install chromium
+
       - name: Tests
         run: pnpm test
+
+      # The form engine's container runner, bundled as the image ships it, must
+      # answer an invalid job with one well-formed result line. (CI has no
+      # docker: the bundle runs on the runner's own node.)
+      - name: Form engine runner smoke
+        run: node scripts/form-engine-image.mjs --bundle-only && node scripts/form-engine-smoke.mjs local
 
       # Evaluates the repo's firestore.rules through the Firebase Rules test
       # API — nothing is deployed, no data is read. The Admin credential is

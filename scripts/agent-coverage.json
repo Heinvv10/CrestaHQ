@@ -303,6 +303,12 @@
         "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
       }
     },
+    "api/automations/prospecting/mystery-shop-form:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
     "api/automations/prospecting/report:POST": {
       "exclude": {
         "category": "internal",

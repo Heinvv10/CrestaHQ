@@ -19,6 +19,7 @@ import { ContactMysteryShop } from "./contact-mystery-shop";
 
 const EMAIL = "info@acme.co.za";
 const PHONE = "+27821234567";
+const FORM_URL = "https://www.acme.co.za/contact-us";
 let payload: Record<string, unknown>;
 let fetchMock: ReturnType<typeof vi.fn>;
 let root: Root;
@@ -53,8 +54,9 @@ beforeEach(() => {
       email: { subject: "Enquiry: plumber in Gqeberha", body: "Hi,\n\nDo you do plumber?" },
       call: "Hi, I'm calling from Cresta HQ.",
       whatsapp: "Hi, do you offer plumber in Gqeberha? What's your earliest availability?",
+      form: "Hi,\n\nForm message",
     },
-    enquiryHash: { email: "h-email", call: "h-call", whatsapp: "h-wa" },
+    enquiryHash: { email: "h-email", call: "h-call", whatsapp: "h-wa", form: "h-form" },
   };
   fetchMock = vi.fn(async (_url: string, init?: RequestInit) =>
     init?.method === "POST" ? new Response(JSON.stringify({ shopId: "s1" }), { status: 202 }) : new Response(JSON.stringify(payload)),
@@ -98,6 +100,22 @@ describe("ContactMysteryShop", () => {
     expect(JSON.parse(posts()[0][1].body as string)).toEqual({
       contactId: "c1", channel: "email", confirm: true, target: EMAIL, enquiryHash: "h-email",
     });
+  });
+
+  it("form: the dialog names the form URL and the subject + message it types; the POST carries the form hash; queued", async () => {
+    (payload.channels as Record<string, unknown>).form = { available: true, targets: [FORM_URL] };
+    await mount();
+    await click(q("mystery-shop-form"));
+    expect(q("mystery-shop-target")?.textContent).toBe(FORM_URL);
+    expect(q("mystery-shop-enquiry")?.textContent).toBe("Subject: Enquiry: plumber in Gqeberha\n\nHi,\n\nForm message");
+    expect(container.ownerDocument.body.textContent).toContain("Submit the website form?");
+    expect(q("mystery-shop-consent")).toBeNull();
+    await click(q("mystery-shop-confirm-send"));
+    expect(JSON.parse(posts()[0][1].body as string)).toEqual({
+      contactId: "c1", channel: "form", confirm: true, target: FORM_URL, enquiryHash: "h-form",
+    });
+    const { toast } = await import("sonner");
+    expect(toast.success).toHaveBeenCalledWith("Website form queued — it is filled in within a few minutes");
   });
 
   it("call: the consent checkbox (the Call dialog's wording) gates the button and travels as consentAck", async () => {

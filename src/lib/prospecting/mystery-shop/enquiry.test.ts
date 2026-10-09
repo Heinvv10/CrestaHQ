@@ -11,7 +11,16 @@ describe("renderEnquiries", () => {
         body: "Hi,\n\nDo you do plumber in Gqeberha? What's your earliest availability?\n\nThanks,\nCresta HQ",
       },
       call: "Hi, I'm calling from Cresta HQ. Do you do plumber in Gqeberha? What's your earliest availability?",
+      form: "Hi,\n\nDo you do plumber in Gqeberha? What's your earliest availability?\n\nThanks,\nCresta HQ",
     });
+  });
+
+  it("the form message is its own template, else the (possibly overridden) email body", () => {
+    expect(renderEnquiries({ emailBody: "Body for {service}" }, vars).form).toBe("Body for plumber");
+    expect(renderEnquiries({ emailBody: "Body", form: "Form for {service} in {town}" }, vars).form).toBe(
+      "Form for plumber in Gqeberha",
+    );
+    expect(renderEnquiries({ emailBody: "Body", form: "  " }, vars).form).toBe("Body");
   });
 
   it("without a town drops ' in {town}' whole — never a dangling 'in'", () => {
@@ -35,11 +44,12 @@ describe("renderEnquiries", () => {
 });
 
 describe("parseTemplates", () => {
-  it("accepts the three keys, trims, drops blanks", () => {
+  it("accepts the four keys, trims, drops blanks", () => {
     expect(parseTemplates({ emailSubject: " Hi {service} ", call: "" })).toEqual({ emailSubject: "Hi {service}" });
+    expect(parseTemplates({ form: " Hi,\n\nForm " })).toEqual({ form: "Hi,\n\nForm" });
     expect(parseTemplates({})).toEqual({});
   });
-  it.each([[null], [[]], ["x"], [{ other: "x" }], [{ call: 5 }], [{ emailBody: "x".repeat(2001) }]])(
+  it.each([[null], [[]], ["x"], [{ other: "x" }], [{ call: 5 }], [{ emailBody: "x".repeat(2001) }], [{ form: "x".repeat(2001) }]])(
     "refuses %j",
     (bad) => expect(parseTemplates(bad)).toBeNull(),
   );

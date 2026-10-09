@@ -8,7 +8,8 @@ import { LATE_REPLY_HORIZON_MS, toMs } from "./model";
 /**
  * Must our WhatsApp AI stay quiet for this inbound? Yes when the sender's
  * number (whichever contact it landed on — an inbound can auto-create a
- * duplicate) or the contact itself has a WhatsApp mystery shop sent (or being
+ * duplicate) or the contact itself has a WhatsApp mystery shop — or a form
+ * shop, by its contact or one of the contact's numbers — sent (or being
  * sent) within LATE_REPLY_HORIZON_MS, in any status: a business we
  * mystery-shopped must never get a bot's answer, and the reply that settled
  * the shop is held too. Checked by maybeRespondWithAi for every WhatsApp
@@ -28,12 +29,22 @@ export async function mysteryShopHoldsAi(
     .collection("mysteryShops")
     .where("subAccountId", "==", subAccountId)
     .where("channel", "==", "whatsapp");
+  // Form shops (PR 5c): the business may WhatsApp the number the form gave it, from any of its contact's numbers.
+  const forms = getAdminDb().collection("mysteryShops").where("subAccountId", "==", subAccountId).where("channel", "==", "form");
   const snaps = await Promise.all([
     shops.where("contactId", "==", contactId).get(),
     ...(from ? [shops.where("target", "==", from).get()] : []),
+    forms.get(),
   ]);
+  const ours = (d: FirebaseFirestore.QueryDocumentSnapshot) => {
+    const shop = d.data() ?? {};
+    if (shop.channel !== "form") return true;
+    const numbers: unknown[] = Array.isArray(shop.matchNumbers) ? shop.matchNumbers : [];
+    return shop.contactId === contactId || (from !== null && numbers.includes(from));
+  };
   return snaps
     .flatMap((s) => s.docs)
+    .filter(ours)
     .some((d) => {
       const at = toMs(d.data()?.sentAt) ?? toMs(d.data()?.createdAt);
       return at !== null && nowMs - at <= LATE_REPLY_HORIZON_MS;

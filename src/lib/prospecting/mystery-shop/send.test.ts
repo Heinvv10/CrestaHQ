@@ -20,6 +20,8 @@ vi.mock("@/lib/server/voice-call", () => ({
   placeContactCall: (...a: unknown[]) => place(...a),
 }));
 
+vi.mock("./form/engine-image", () => ({ formEngineAvailable: async () => true }));
+
 const { channelStates, sendMysteryShop } = await import("./send");
 const { EmailSuppressedError } = await import("@/lib/comms/email-suppression");
 import type { SubAccountDoc } from "@/types";
@@ -51,8 +53,10 @@ describe("channelStates", () => {
       call: { available: true },
       // The WhatsApp rules are route.whatsapp.test.ts's; an agency gate off is the first of them.
       whatsapp: { available: false, reason: "WhatsApp is disabled for this sub-account by your agency." },
-      form: { available: false, reason: "Not available yet." },
+      // The form needs the synced mailbox and the engine (form/target.test.ts), not SMTP.
+      form: { available: true },
     });
+    expect((await channelStates("sa1", { ...SMTP_SUB, emailProvider: "resend" })).form).toEqual({ available: true });
     ready.mockResolvedValue({ ok: false, status: 403, error: "Outbound calling is disabled for this workspace." });
     const noSmtp = await channelStates("sa1", { ...SMTP_SUB, emailProvider: "resend" });
     expect(noSmtp.email).toMatchObject({ available: false, reason: expect.stringMatching(/SMTP/) });

@@ -11,6 +11,10 @@ const nextConfig: NextConfig = {
   // bundle explicitly — otherwise readFileSync 404s on Vercel.
   outputFileTracingIncludes: {
     "/api/agency/setup/guide": ["./CLAUDE.md", "./SETUP.md", "./.env.example"],
+    // The mystery shop's form engine runs in its own container; the app only
+    // reads the image tag the deploy wrote (scripts/form-engine-image.mjs).
+    "/api/automations/prospecting/mystery-shop-form": ["./docker/form-engine/dist/TAG"],
+    "/api/sub-accounts/*/prospecting/mystery-shop": ["./docker/form-engine/dist/TAG"],
   },
 
   experimental: {
