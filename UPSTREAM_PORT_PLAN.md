@@ -16,7 +16,7 @@ Locked scope for porting upstream `leadstack-agency` changes into this fork. Ups
 
    One upstream change should come over: it removes the tracked `.claude/settings.local.json` (tracked in 898bcd5 and in our fork, absent in 1.0.40; it holds the upstream author's absolute path). Done in N6.
 6. **Upstream's assistant tools live in one big file.** Its `src/lib/ai-suite/capabilities.ts` grew by 2,908 lines; we split ours into `src/lib/ai-suite/capabilities/*.ts`. New tools must go into new files, never a copy of upstream's file.
-7. **Circular import between Web Voice and Website v2.** `web-voice-service` imports `resolvedAppUrl()` from `website-handoff-service`, which imports `updateWebVoiceSettings` back. Move `resolvedAppUrl` into a neutral `src/lib/server/app-url.ts`. It also does a GET with `redirect: "follow"` at runtime (`resolveFinalUrl`, 3 s timeout), which is exposed to the known DNS stalls on velo. `resolveFinalUrl` exists to follow redirects (the apex→www CORS fix). `resolveLiveUrl` feeds it a gitpage-reported URL, which is not ours, so it must go through the SSRF guard (`ssrf-callers.test.ts` enforces this). But `publicFetch` in `lib/webhooks/public-fetch.ts` never follows redirects (a raw `http.request`; a 3xx comes back as the response, with no `res.url`), so the port is a **manual redirect loop for `resolveLiveUrl`**: one `publicFetch` per hop, reading `Location`, resolving it against the current URL, capped at ~5 hops, so every hop is re-checked. `resolvedAppUrl` fetches our own `NEXT_PUBLIC_APP_URL` (operator-set, not tenant-controlled), so it may keep plain `fetch` with redirect follow.
+7. **Circular import between Web Voice and Website v2.** `web-voice-service` imports `resolvedAppUrl()` from `website-handoff-service`, which imports `updateWebVoiceSettings` back. Move `resolvedAppUrl` into a neutral `src/lib/server/app-url.ts`. It also does a GET with `redirect: "follow"` at runtime (`resolveFinalUrl`, 3 s timeout), which is exposed to the known DNS stalls on velo. `resolveFinalUrl` exists to follow redirects (the apex→www CORS fix). `resolveLiveUrl` feeds it a gitpage-reported URL, which is not ours, so it must go through the SSRF guard (`ssrf-callers.test.ts` has hand-written cases only and does not scan for new callers, so the port must **add a `resolveLiveUrl` case pointing at a loopback server**). But `publicFetch` in `lib/webhooks/public-fetch.ts` never follows redirects (a raw `http.request`; a 3xx comes back as the response, with no `res.url`), so the port is a **manual redirect loop for `resolveLiveUrl`**: one `publicFetch` per hop, reading `Location`, resolving it against the current URL, capped at ~5 hops, so every hop is re-checked. Keep `resolveFinalUrl`'s guarantees (upstream `website-handoff-service.ts:133-148`): it never throws; ONE `AbortSignal.timeout(3000)` is shared across all hops; and on hitting the hop cap, a missing `Location`, `NonPublicUrlError` or any other error it returns the input URL. Pass a small `maxBytes` to `publicFetch`, which otherwise buffers up to 5 MB per GET (`public-fetch.ts:29`). `resolvedAppUrl` fetches our own `NEXT_PUBLIC_APP_URL` (operator-set, not tenant-controlled), so it may keep plain `fetch` with redirect follow.
 8. **Real bugs in our own pipelines (new find).** These still use hard-coded `won`/`lost` or default-pipeline labels:
    - `src/lib/comms/ai/context.ts:81,87,100` — the AI agent treats a deal that is Won in a custom pipeline as still open.
    - `components/dashboard/leads-map.tsx:57,326`
@@ -232,8 +232,9 @@ Lane B (website): WS-1 ─► WS-2 ─┬─► WS-3 (also needs STL-1, for form
                                 ├─► WS-4
                   WS-1 ─► WS-5 ─┴─► WS-6 (needs WS-2, G and WV-1) ─► WS-7
 Lane C (dialer):  G ─► SP-2 ─► SP-3
-Lane D (voice):   G + WS-3 (app-url) ─► WV-1 ─► WV-2 ─► WV-3 ─► WV-4 (needs N4) ─► WV-5 (needs WS-3, WS-6)
-                                  └─► WV-1 also gates WS-6 in lane B
+Lane D (voice):   G + WS-3 (app-url) ─► WV-1 ─► WV-2 ─► WV-3 ─► WV-4 (needs N4)
+                                  ├─► WV-1 also gates WS-6 in lane B
+                                  └─► WV-5 (needs WV-1, WS-3, WS-6; not WV-4)
 ```
 
 **Changes to the order you proposed (P0 → snapshot → STL → Website v2 → Web Voice → dialer):**
@@ -323,7 +324,7 @@ All settled; see **Hein's rulings** at the bottom. Open per-unit decisions are r
 {"id":"sp-2-dialer-server","priority":2,"complexity":"high","success_criteria":["authToken via readSubAccountSecret","signature mutation test","voiceOptedOut blocked server-side","gate enforced"],"passes":false},
 {"id":"n7-email-ai-drafts","priority":2,"complexity":"high","success_criteria":["draft-only, never auto-sent","own agency gate default off","IMAP inbound hook tested","Playwright through the real server","docs updated","Hein gate"],"passes":false},
 {"id":"n8-ghl-pipeline-import","priority":1,"complexity":"medium","success_criteria":["pipelines recreated on import from fixtures","no live sub-account writes in tests","Hein gate"],"passes":false},
-{"id":"n12-kb-refresh","priority":8,"complexity":"low","success_criteria":["~19 cards adapted for Paystack, WhatsApp Cloud/bridge and SMTP","last in Lane A, after WS-7 and WV-5"],"passes":false},
+{"id":"n12-kb-refresh","priority":8,"complexity":"low","success_criteria":["15 cards adapted for Paystack, WhatsApp Cloud/bridge and SMTP","last in Lane A, after WS-7 and WV-5"],"passes":false},
 {"id":"sp-3-dialer-ui","priority":3,"complexity":"medium","success_criteria":["Call button only when dialerConfig.enabled and gate on","call_placed timeline row"],"passes":false}]}
 ```
 ---
