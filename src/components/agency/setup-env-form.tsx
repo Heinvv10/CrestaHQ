@@ -368,6 +368,14 @@ export function SetupEnvForm() {
     )
     .filter((g) => g.keys.length > 0);
 
+  // Fully-configured groups (every key live and shape-valid) drop into a
+  // collapsed "already configured" section at the bottom so the board leads
+  // with what still needs doing — those keys rarely change once set.
+  const isDoneGroup = (g: StatusGroup) =>
+    g.keys.every((k) => k.state === "active" && k.valid !== false);
+  const todoGroups = otherGroups.filter((g) => !isDoneGroup(g));
+  const doneGroups = otherGroups.filter(isDoneGroup);
+
   async function openGuide(name: string) {
     setGuideKey(name);
     setGuideText("");
@@ -696,7 +704,7 @@ export function SetupEnvForm() {
                   </div>
                 )}
 
-                {otherGroups.map((g) => (
+                {todoGroups.map((g) => (
                   <div key={g.title} className="space-y-2">
                     <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                       {g.title}
@@ -706,6 +714,34 @@ export function SetupEnvForm() {
                     </div>
                   </div>
                 ))}
+
+                {otherGroups.length > 0 && todoGroups.length === 0 && (
+                  <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-emerald-700 dark:text-emerald-400">
+                    Everything in the catalog is configured. Nice.
+                  </p>
+                )}
+
+                {doneGroups.length > 0 && (
+                  <details className="rounded-xl border bg-muted/20 p-3">
+                    <summary className="cursor-pointer text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                      Already configured · {doneGroups.length}{" "}
+                      {doneGroups.length === 1 ? "group" : "groups"} — rarely
+                      needs touching (expand to replace a value)
+                    </summary>
+                    <div className="mt-4 space-y-5">
+                      {doneGroups.map((g) => (
+                        <div key={g.title} className="space-y-2">
+                          <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                            {g.title}
+                          </p>
+                          <div className="divide-y rounded-xl border bg-background">
+                            {g.keys.map(renderKeyRow)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
 
                 {/* Vercel prerequisites — presence only, never editable or shown.
                     Set manually in Vercel; the form can't write its own creds. */}
