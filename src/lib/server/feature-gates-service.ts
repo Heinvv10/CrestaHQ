@@ -62,6 +62,10 @@ export type AgencyGateField =
   | "googleEnabledByAgency"
   // Per-member Google Calendar sync — standalone for the same reason.
   | "googleCalendarEnabledByAgency"
+  // Web Voice and the browser dialer — standalone: each connects to an outside
+  // account the client owns, an explicit per-client decision.
+  | "webVoiceEnabledByAgency"
+  | "dialerEnabledByAgency"
   // Agent API — standalone: external agent access to a client's CRM is an
   // explicit per-client decision, not a plan perk.
   | "agentApiEnabledByAgency"

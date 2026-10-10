@@ -49,6 +49,8 @@ const GATE_FIELDS: Record<AgencyGateField, true> = {
   webinar1EnabledByAgency: true,
   googleEnabledByAgency: true,
   googleCalendarEnabledByAgency: true,
+  webVoiceEnabledByAgency: true,
+  dialerEnabledByAgency: true,
 };
 
 /**

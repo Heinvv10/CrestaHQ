@@ -236,6 +236,18 @@ export const FEATURE_GATES: Record<
     field: "googleCalendarEnabledByAgency",
     label: "Google Calendar sync (per team member)",
   },
+  // Web Voice and the dialer spend/reach outside accounts: the assistant can
+  // switch them off, never on.
+  "web-voice": {
+    field: "webVoiceEnabledByAgency",
+    label: "Web Voice (website visitors talk to the chat assistant)",
+    assistantMayEnable: false,
+  },
+  dialer: {
+    field: "dialerEnabledByAgency",
+    label: "Browser phone dialer (calls via the client's own Twilio)",
+    assistantMayEnable: false,
+  },
   "reviews-ai": {
     field: "reviewsAiEnabledByAgency",
     label: "Reviews AI (sentiment and reply drafts)",

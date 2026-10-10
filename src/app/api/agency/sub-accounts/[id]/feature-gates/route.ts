@@ -77,6 +77,8 @@ interface PatchBody {
   webinar1Enabled?: boolean;
   googleEnabled?: boolean;
   googleCalendarEnabled?: boolean;
+  webVoiceEnabled?: boolean;
+  dialerEnabled?: boolean;
   reviewsAiEnabled?: boolean;
   reviewsAutoReplyEnabled?: boolean;
   agentApiEnabled?: boolean;
@@ -203,6 +205,8 @@ export async function PATCH(
   const wantsWebinar1 = typeof body.webinar1Enabled === "boolean";
   const wantsGoogle = typeof body.googleEnabled === "boolean";
   const wantsGoogleCalendar = typeof body.googleCalendarEnabled === "boolean";
+  const wantsWebVoice = typeof body.webVoiceEnabled === "boolean";
+  const wantsDialer = typeof body.dialerEnabled === "boolean";
   const wantsReviewsAi = typeof body.reviewsAiEnabled === "boolean";
   const wantsReviewsAutoReply =
     typeof body.reviewsAutoReplyEnabled === "boolean";
@@ -259,6 +263,8 @@ export async function PATCH(
     !wantsWebinar1 &&
     !wantsGoogle &&
     !wantsGoogleCalendar &&
+    !wantsWebVoice &&
+    !wantsDialer &&
     !wantsReviewsAi &&
     !wantsReviewsAutoReply &&
     !wantsAgentApi &&
@@ -380,6 +386,12 @@ export async function PATCH(
   }
   if (typeof body.googleCalendarEnabled === "boolean") {
     gates.googleCalendarEnabledByAgency = body.googleCalendarEnabled;
+  }
+  if (typeof body.webVoiceEnabled === "boolean") {
+    gates.webVoiceEnabledByAgency = body.webVoiceEnabled;
+  }
+  if (typeof body.dialerEnabled === "boolean") {
+    gates.dialerEnabledByAgency = body.dialerEnabled;
   }
   if (typeof body.reviewsAiEnabled === "boolean") {
     gates.reviewsAiEnabledByAgency = body.reviewsAiEnabled;
@@ -509,6 +521,8 @@ export async function PATCH(
     ...(wantsGoogleCalendar
       ? { googleCalendarEnabled: body.googleCalendarEnabled }
       : {}),
+    ...(wantsWebVoice ? { webVoiceEnabled: body.webVoiceEnabled } : {}),
+    ...(wantsDialer ? { dialerEnabled: body.dialerEnabled } : {}),
     ...(wantsReviewsAi ? { reviewsAiEnabled: body.reviewsAiEnabled } : {}),
     ...(wantsReviewsAutoReply
       ? { reviewsAutoReplyEnabled: body.reviewsAutoReplyEnabled }

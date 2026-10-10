@@ -308,6 +308,8 @@ export async function POST(request: Request) {
         webinar1EnabledByAgency: false,
         googleEnabledByAgency: false,
         googleCalendarEnabledByAgency: false,
+        webVoiceEnabledByAgency: false,
+        dialerEnabledByAgency: false,
         reviewsAiEnabledByAgency: false,
         reviewsAutoReplyEnabledByAgency: false,
         // Agent API ships OFF — an external LLM agent acting as sub-account
