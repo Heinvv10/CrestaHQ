@@ -33,7 +33,9 @@ const {
   createWebsiteForSubAccount,
   normalizeWebsiteConfig,
   pollAttemptCapFor,
+  pollChainStaleAfterMs,
   pollDelayFor,
+  pollWindowSecondsFor,
   submitWebsiteBuildForSubAccount,
   websiteLimitsPath,
   WebsiteServiceError,
@@ -69,6 +71,37 @@ describe("pollDelayFor", () => {
     expect(pollDelayFor(14)).toBe(20);
     expect(pollDelayFor(15)).toBe(40);
     expect(pollDelayFor(119)).toBe(40);
+  });
+});
+
+describe("pollWindowSecondsFor", () => {
+  it("is the wall clock the cap really spans, backoff included", () => {
+    // 90 ticks: 20s to the first, 20s after ticks 1–14, 40s after ticks 15–90.
+    expect(pollWindowSecondsFor(1200)).toBe(20 + 14 * 20 + 76 * 40);
+    expect(Math.floor(pollWindowSecondsFor(1200) / 60)).toBe(55);
+    // The 45-tick floor.
+    expect(pollWindowSecondsFor(null)).toBe(20 + 14 * 20 + 31 * 40);
+    expect(Math.floor(pollWindowSecondsFor(300) / 60)).toBe(25);
+    // The 120-tick ceiling.
+    expect(pollWindowSecondsFor(86_400)).toBe(20 + 14 * 20 + 106 * 40);
+  });
+
+  it("is built from pollDelayFor, tick by tick", () => {
+    for (const estimate of [null, 300, 800, 1200, 1600]) {
+      const cap = pollAttemptCapFor(estimate);
+      let seconds = pollDelayFor(0);
+      for (let attempts = 1; attempts <= cap; attempts++) seconds += pollDelayFor(attempts);
+      expect(pollWindowSecondsFor(estimate)).toBe(seconds);
+    }
+  });
+});
+
+describe("pollChainStaleAfterMs", () => {
+  it("is two of the chain's current intervals", () => {
+    expect(pollChainStaleAfterMs(0)).toBe(2 * pollDelayFor(0) * 1000);
+    expect(pollChainStaleAfterMs(14)).toBe(40_000);
+    expect(pollChainStaleAfterMs(15)).toBe(80_000);
+    expect(pollChainStaleAfterMs(90)).toBe(2 * pollDelayFor(90) * 1000);
   });
 });
 
@@ -212,10 +245,24 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     expect(sent()).not.toHaveProperty("callbackUrl");
   });
 
-  it("still builds, without an editor invite, when the builder has no Auth record or email", async () => {
+  it("still builds, without an editor invite, when the builder has no Auth record — and says why in the log", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await build({ uid: "u_gone" });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("[website/build] could not read the builder's email");
+    expect(warn.mock.calls[0][0]).toContain("uid=u_gone");
+    warn.mockRestore();
     expect(sent()).not.toHaveProperty("editorEmail");
     expect(mem.read(SITE)).toMatchObject({ status: "queued", editorEmail: null });
+  });
+
+  it("a builder with an Auth record but no email is not an error: no invite, no warning", async () => {
+    users.u_noemail = {};
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await build({ uid: "u_noemail" });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+    expect(sent()).not.toHaveProperty("editorEmail");
   });
 
   it("sends no LeadStack form or widget wiring yet (the WS-3 hand-off is not ported)", async () => {

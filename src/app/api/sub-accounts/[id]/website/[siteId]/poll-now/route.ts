@@ -8,6 +8,8 @@ import { isDocId } from "@/lib/server/doc-id";
 import { cleanText, GitpageError, pollBuild } from "@/lib/gitpage/client";
 import {
   isSettleable,
+  pollChainStaleAfterMs,
+  pollDelayFor,
   settleWebsiteBuild,
   transitionWebsite,
   WEBSITE_IN_FLIGHT,
@@ -23,7 +25,7 @@ export const dynamic = "force-dynamic";
  * against gitpage's status endpoint without going through QStash. Use cases:
  * the QStash chain has stalled (NEXT_PUBLIC_APP_URL mismatch, region drift,
  * signing-key issues) and the build is stuck queued/building far past
- * the 15-min cap, OR the doc settled as "failed" via the poll-cap timeout
+ * the poll cap, OR the doc settled as "failed" via the poll-cap timeout
  * while gitpage kept building (long builds run 10–14 min and can exceed the
  * cap) — re-checking resurrects it to ready without a rebuild.
  *
@@ -33,10 +35,16 @@ export const dynamic = "force-dynamic";
  *   - On 4xx → settle as failed
  *   - On still-in-flight: a doc that had settled as "failed" is RESUMED —
  *     back to building, attempts reset, one new QStash chain. A doc that is
- *     already queued/building only has its stage refreshed: its chain is
- *     taken to be live, so no second chain is started and its attempt count
- *     (the poll cap) is left alone. Otherwise every click would add a chain
- *     and push the cap out again, without bound.
+ *     already queued/building has its stage refreshed, and a chain is
+ *     started for it ONLY if its own has died: the doc has not been written
+ *     for two poll intervals (`pollChainStaleAfterMs`; a live chain writes
+ *     it every tick). That revive writes `updatedAt` in the same guarded
+ *     transition that checks it, so of any number of clicks only the first
+ *     finds the doc stale and only it publishes. The attempt count (the
+ *     poll cap) is never reset for a doc in flight. Without the staleness
+ *     test every click would add a chain; without the revive a card whose
+ *     chain died would spin forever, since in-flight cards offer neither
+ *     Rebuild nor Remove.
  *
  * Writes go through `transitionWebsite`, guarded on the job this request
  * read: a `ready` site is never written over, and a site reset or rebuilt
@@ -49,7 +57,12 @@ export const dynamic = "force-dynamic";
  * here): it only finishes a build already accepted. Why: settleWebsiteBuild.
  */
 
-const POLL_INTERVAL_SECONDS = 20;
+/** Firestore Timestamp, Date, or anything else (null: not a time). */
+function millisOf(value: unknown): number | null {
+  if (value instanceof Date) return value.getTime();
+  const toMillis = (value as { toMillis?: unknown } | null)?.toMillis;
+  return typeof toMillis === "function" ? (toMillis.call(value) as number) : null;
+}
 
 export async function POST(
   request: Request,
@@ -189,7 +202,7 @@ export async function POST(
       const result = await publishCallback({
         pathname: `/api/sub-accounts/${subAccountId}/website/${siteId}/poll`,
         body: { subAccountId, siteId, formResponseId },
-        delaySeconds: POLL_INTERVAL_SECONDS,
+        delaySeconds: pollDelayFor(0),
         // Manual trigger gets its own dedup namespace + timestamp so it
         // never collides with whatever the original (possibly broken)
         // chain published.
@@ -206,28 +219,62 @@ export async function POST(
     });
   }
 
-  // Queued or building: refresh the stage only. No new chain, and the
-  // attempt count stays where the live chain has it.
+  // Queued or building. The attempt count stays where the chain has it.
   const nextStatus =
     pollResult.statusPhase && pollResult.statusPhase !== "processing"
       ? "building"
       : websiteDoc.status;
+  const stage = { status: nextStatus, statusPhase: pollResult.statusPhase };
+  const inFlight = (rescheduled: boolean) =>
+    NextResponse.json({
+      ok: true,
+      deferred: "in-flight",
+      status: nextStatus,
+      statusPhase: pollResult.statusPhase,
+      rescheduled,
+    });
+
+  // A dead chain: nothing has written the doc for two of its intervals.
+  // Checked on the doc as the transaction reads it, and the write that
+  // passes the check is the one that makes the doc fresh again — so the
+  // first of several clicks revives, and the rest find nothing stale.
+  const attempts = websiteDoc.pollAttempts ?? 0;
+  const staleAfterMs = pollChainStaleAfterMs(attempts);
+  const revived = await transitionWebsite(
+    docRef,
+    {
+      expectJobId: formResponseId,
+      fromStatuses: WEBSITE_IN_FLIGHT,
+      when: (fresh) => {
+        const writtenAt = millisOf(fresh.updatedAt);
+        return writtenAt === null || Date.now() - writtenAt > staleAfterMs;
+      },
+    },
+    { ...stage, updatedAt: FieldValue.serverTimestamp() },
+  );
+  if (revived.applied) {
+    let rescheduled = false;
+    if (qstashIsConfigured()) {
+      const result = await publishCallback({
+        pathname: `/api/sub-accounts/${subAccountId}/website/${siteId}/poll`,
+        body: { subAccountId, siteId, formResponseId },
+        delaySeconds: pollDelayFor(attempts),
+        deduplicationId: `website_${subAccountId}_${siteId}_${formResponseId}_manual_${Date.now()}`,
+      });
+      rescheduled = result !== null;
+    }
+    return inFlight(rescheduled);
+  }
+  if (revived.reason !== "condition") return reportCurrent();
+
+  // The chain is alive: refresh the stage only. `updatedAt` is deliberately
+  // NOT touched — it is the chain's own heartbeat, and a click that bumped
+  // it would hide a chain that dies later from every click after it.
   const refreshed = await transitionWebsite(
     docRef,
     { expectJobId: formResponseId, fromStatuses: WEBSITE_IN_FLIGHT },
-    {
-      status: nextStatus,
-      statusPhase: pollResult.statusPhase,
-      updatedAt: FieldValue.serverTimestamp(),
-    },
+    stage,
   );
   if (!refreshed.applied) return reportCurrent();
-
-  return NextResponse.json({
-    ok: true,
-    deferred: "in-flight",
-    status: nextStatus,
-    statusPhase: pollResult.statusPhase,
-    rescheduled: false,
-  });
+  return inFlight(false);
 }

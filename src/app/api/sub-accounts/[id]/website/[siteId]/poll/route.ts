@@ -14,6 +14,7 @@ import {
   isSettleable,
   pollAttemptCapFor,
   pollDelayFor,
+  pollWindowSecondsFor,
   settleWebsiteBuild,
   transitionWebsite,
   WEBSITE_IN_FLIGHT,
@@ -34,9 +35,11 @@ export const dynamic = "force-dynamic";
  *
  * Cap math (Build v2): the cap derives from gitpage's
  * `estimatedDurationSeconds` on the doc — `pollAttemptCapFor` gives 45 ticks
- * (the historical 15-minute window) for a standard build and up to 120 for a
- * premium one; `pollDelayFor` backs the cadence off from 20s to 40s after
- * five minutes so a 20-minute premium build costs ~40 ticks, not 60.
+ * for a job with no estimate and up to 120 for a premium one (90 for its
+ * usual 20-minute estimate); `pollDelayFor` backs the cadence off from 20s
+ * to 40s after five minutes so a 20-minute premium build costs ~40 ticks,
+ * not 60. The wall clock the cap spans is `pollWindowSecondsFor`: about 55
+ * minutes for 90 ticks.
  * Terminal states are handed to `settleWebsiteBuild`, the same handler the
  * `build.settled` callback uses — so premium hand-off runs exactly once.
  *
@@ -128,8 +131,9 @@ export async function POST(
   // Cap: bail with "failed" once the job has had 1.5× gitpage's estimate.
   const maxAttempts = pollAttemptCapFor(websiteDoc.estimatedDurationSeconds);
   if (attempts > maxAttempts) {
-    const minutes = Math.round(
-      ((websiteDoc.estimatedDurationSeconds ?? 300) * 1.5) / 60,
+    // The time actually waited, from the same helpers that paced the ticks.
+    const minutes = Math.floor(
+      pollWindowSecondsFor(websiteDoc.estimatedDurationSeconds) / 60,
     );
     const timedOut = await transitionWebsite(docRef, stillThisJob, {
       status: "failed",
@@ -232,7 +236,7 @@ export async function POST(
     // rather than letting it spin in queued/building forever, so the
     // operator sees a real error and can hit Rebuild (or Re-check now
     // to retry). Without this guard, a transient Upstash blip silently
-    // strands the build past the 15-min cap.
+    // strands the build past the poll cap.
     const stranded = await transitionWebsite(docRef, stillThisJob, {
       status: "failed",
       errorMessage:

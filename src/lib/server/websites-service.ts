@@ -12,13 +12,13 @@ import {
   GitpageError,
   gitpageIsConfigured,
   submitBuild,
+  type PollBuildResult,
 } from "@/lib/gitpage/client";
 import {
   markGitpageBuildSucceeded,
   markGitpageKeyInvalid,
 } from "@/lib/gitpage/heartbeat";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
-import type { PollBuildResult } from "@/lib/gitpage/client";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   blankWebsiteConfig,
@@ -38,9 +38,11 @@ export const WEBSITE_MAX_POLL_ATTEMPTS = 120;
 /**
  * How many poll ticks a job gets before we give up. gitpage reports an
  * `estimatedDurationSeconds` on accept (300 for standard, 1200 for premium);
- * the cap is 1.5× that at the base cadence, clamped to [45, 120] ticks, so a
- * standard build keeps the historical 15-minute window and a premium build
- * gets ~45 minutes of wall clock once the backoff kicks in.
+ * the cap is 1.5× that at the base cadence, clamped to [45, 120] ticks. The
+ * wall clock those ticks span is longer than ticks × 20s, because the
+ * cadence backs off (`pollDelayFor`): `pollWindowSecondsFor` computes it —
+ * about 55 minutes for a premium build's 90 ticks, about 25 for the 45-tick
+ * floor.
  */
 export function pollAttemptCapFor(estimatedDurationSeconds: number | null | undefined): number {
   const est = typeof estimatedDurationSeconds === "number" && estimatedDurationSeconds > 0
@@ -53,6 +55,29 @@ export function pollAttemptCapFor(estimatedDurationSeconds: number | null | unde
 /** Poll delay for the NEXT tick: 20s for the first 5 minutes, then 40s. */
 export function pollDelayFor(attempts: number): number {
   return attempts >= 15 ? WEBSITE_POLL_BACKOFF_SECONDS : WEBSITE_POLL_INTERVAL_SECONDS;
+}
+
+/**
+ * Wall-clock seconds from a build's submit to the tick that gives up on it:
+ * the first poll's delay, then the delay after each tick up to the cap (the
+ * tick after the cap is the one that times the build out). The one place
+ * the poll window's length is worked out — the timeout message and the docs
+ * quote this, not a number of their own.
+ */
+export function pollWindowSecondsFor(estimatedDurationSeconds: number | null | undefined): number {
+  const cap = pollAttemptCapFor(estimatedDurationSeconds);
+  let seconds = WEBSITE_POLL_INTERVAL_SECONDS;
+  for (let attempts = 1; attempts <= cap; attempts++) seconds += pollDelayFor(attempts);
+  return seconds;
+}
+
+/**
+ * How long a site may sit in flight without a write before its poll chain
+ * is taken to be dead: two of the chain's own intervals. A live chain
+ * writes the doc on every tick, at most `pollDelayFor` apart.
+ */
+export function pollChainStaleAfterMs(attempts: number): number {
+  return 2 * pollDelayFor(attempts) * 1000;
 }
 
 /**
@@ -439,26 +464,17 @@ export function normalizeWebsiteConfig(config: WebsiteConfig): void {
     config.build_type = "local";
   }
 
-  // Build v2: quality defaults to premium; the premium-only flags are
-  // normalised to booleans and dropped for standard builds so a standard
-  // doc never carries half-filled premium state.
-  // Premium only since 2026-10-01 — Standard is no longer offered anywhere
-  // (UI, assistant, API). Old drafts saved as "standard" build as premium.
+  // Build v2: every build is premium, and the premium flags are normalised
+  // to booleans. Premium only since 2026-10-01 — Standard is no longer
+  // offered anywhere (UI, assistant, API). Old drafts saved as "standard"
+  // build as premium.
   config.quality = "premium";
-  if (config.quality === "premium") {
-    config.include_form = config.include_form !== false;
-    config.include_chat = config.include_chat !== false;
-    config.include_voice = config.include_voice !== false;
-    config.concept = typeof config.concept === "string" && config.concept.trim() ? config.concept.trim() : null;
-    config.hero_motion = config.hero_motion ?? null;
-    config.premium_details = config.premium_details ?? null;
-  } else {
-    config.include_form = false;
-    config.include_chat = false;
-    config.include_voice = false;
-    config.concept = null;
-    config.hero_motion = null;
-  }
+  config.include_form = config.include_form !== false;
+  config.include_chat = config.include_chat !== false;
+  config.include_voice = config.include_voice !== false;
+  config.concept = typeof config.concept === "string" && config.concept.trim() ? config.concept.trim() : null;
+  config.hero_motion = config.hero_motion ?? null;
+  config.premium_details = config.premium_details ?? null;
 
   if (config.niche != null && !isNicheKey(config.niche)) {
     throw new WebsiteServiceError(
@@ -600,7 +616,11 @@ export async function submitWebsiteBuildForSubAccount(input: {
   try {
     const u = await getAdminAuth().getUser(input.buildByUid);
     editorEmail = u.email?.trim().toLowerCase() || undefined;
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[website/build] could not read the builder's email — no editor invite sa=${subAccountId} site=${siteId} uid=${input.buildByUid}`,
+      err,
+    );
     editorEmail = undefined;
   }
 

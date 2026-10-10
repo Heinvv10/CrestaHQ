@@ -121,6 +121,8 @@ const seedSite = (patch: Record<string, unknown> = {}) =>
     pollAttempts: 3,
     quality: "premium",
     estimatedDurationSeconds: 1200,
+    // Just written: a site whose poll chain is alive.
+    updatedAt: new Date(),
     ...patch,
   });
 
@@ -217,7 +219,9 @@ describe("POST …/website/[siteId]/poll — the QStash tick", () => {
     expect(await (await tick()).json()).toEqual({ ok: true, settled: "timeout" });
     const site = mem.read(SITE)!;
     expect(site).toMatchObject({ status: "failed", pollAttempts: 91, gitpageJobId: JOB });
-    expect(site.errorMessage).toContain("(30+ min)");
+    // 90 ticks: 20s to the first, 20s after each of the next 14, 40s after
+    // each of the 76 after that — 3,340s. Not the 30 that 1.5 × the estimate says.
+    expect(site.errorMessage).toContain("(55+ min)");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -225,6 +229,7 @@ describe("POST …/website/[siteId]/poll — the QStash tick", () => {
     seedSite({ pollAttempts: 45, estimatedDurationSeconds: null });
     expect(await (await tick()).json()).toEqual({ ok: true, settled: "timeout" });
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(mem.read(SITE)?.errorMessage).toContain("(25+ min)");
   });
 
   it("refuses a tick whose QStash signature does not verify, writing nothing", async () => {
@@ -273,7 +278,7 @@ describe("poll tick and build.settled callback for the same job", () => {
 
 describe("POST …/website/[siteId]/poll-now — the manual re-check", () => {
   it("resurrects a site the poll cap settled as failed once gitpage has published", async () => {
-    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (30+ min).", pollAttempts: 91 });
+    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (55+ min).", pollAttempts: 91 });
     gitpageSays(PUBLISHED);
     expect(await (await recheck()).json()).toEqual({
       ok: true,
@@ -421,7 +426,7 @@ describe("something else reaches the site while a poll tick is talking to gitpag
 });
 
 describe("a build the poll cap gave up on", () => {
-  const timedOut = { status: "failed", errorMessage: "Build is taking longer than expected (30+ min).", pollAttempts: 91 };
+  const timedOut = { status: "failed", errorMessage: "Build is taking longer than expected (55+ min).", pollAttempts: 91 };
 
   it("R3: a late Published callback makes it ready", async () => {
     seedSite({ pollAttempts: 90 });
@@ -474,7 +479,8 @@ describe("R4: Published with no usable live URL is not a settled site", () => {
 
 describe("R10: the manual re-check never multiplies poll chains", () => {
   it("on a build still in flight it refreshes the stage only: no new chain, attempts untouched", async () => {
-    seedSite({ pollAttempts: 40 });
+    const writtenAt = new Date();
+    seedSite({ pollAttempts: 40, updatedAt: writtenAt });
     gitpageSays(IN_PROGRESS);
     for (let click = 0; click < 3; click++) {
       expect(await (await recheck()).json()).toEqual({
@@ -487,10 +493,12 @@ describe("R10: the manual re-check never multiplies poll chains", () => {
     }
     expect(qstash.publishCallback).not.toHaveBeenCalled();
     expect(mem.read(SITE)).toMatchObject({ status: "building", statusPhase: "images", pollAttempts: 40 });
+    // The chain's heartbeat is the chain's: a click does not refresh it.
+    expect(mem.read(SITE)?.updatedAt).toEqual(writtenAt);
   });
 
   it("on a failed build gitpage is still running it resumes with ONE chain, however often it is clicked", async () => {
-    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (30+ min).", pollAttempts: 91 });
+    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (55+ min).", pollAttempts: 91 });
     gitpageSays(IN_PROGRESS);
     expect(await (await recheck()).json()).toMatchObject({ deferred: "in-flight", status: "building", rescheduled: true });
     expect(mem.read(SITE)).toMatchObject({ status: "building", errorMessage: null, pollAttempts: 0 });
@@ -502,7 +510,7 @@ describe("R10: the manual re-check never multiplies poll chains", () => {
   });
 
   it("two re-checks of a failed build at once start one chain between them", async () => {
-    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (30+ min).", pollAttempts: 91 });
+    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (55+ min).", pollAttempts: 91 });
     gitpageSays(IN_PROGRESS);
     await Promise.all([recheck(), recheck()]);
     expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
@@ -652,5 +660,135 @@ describe("R13 / R2-1: repeated reports for one job", () => {
     const res = await callback({ ...FAILED, formResponseId: "build_new" });
     expect(await res.json()).toEqual({ ok: true, settled: "failed" });
     expect(mem.read(SITE)?.settledDelivery).toEqual({ jobId: "build_new", status: "failed" });
+  });
+});
+
+describe("a poll chain that died while the site still says building", () => {
+  const NOW = Date.UTC(2026, 9, 10, 12, 0, 0);
+  const ago = (ms: number) => new Date(NOW - ms);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("is revived by a re-check: ONE chain, at the chain's own cadence, attempts kept", async () => {
+    // Two 20s intervals and a second: nothing has written the doc since.
+    seedSite({ pollAttempts: 7, updatedAt: ago(41_000) });
+    gitpageSays(IN_PROGRESS);
+    expect(await (await recheck()).json()).toEqual({
+      ok: true,
+      deferred: "in-flight",
+      status: "building",
+      statusPhase: "images",
+      rescheduled: true,
+    });
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+    expect(qstash.publishCallback.mock.calls[0][0]).toMatchObject({
+      pathname: "/api/sub-accounts/sa1/website/site1/poll",
+      body: { subAccountId: "sa1", siteId: "site1", formResponseId: JOB },
+      delaySeconds: 20,
+    });
+    expect(mem.read(SITE)).toMatchObject({ status: "building", statusPhase: "images", pollAttempts: 7 });
+    expect((mem.read(SITE)?.updatedAt as Date).getTime()).toBe(NOW);
+  });
+
+  it("is NOT revived while it is fresh: exactly two intervals old is still alive", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: ago(40_000) });
+    gitpageSays(IN_PROGRESS);
+    expect(await (await recheck()).json()).toMatchObject({ deferred: "in-flight", rescheduled: false });
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+  });
+
+  it("measures staleness in the chain's CURRENT interval: after the backoff, 41s is still alive and 81s is dead", async () => {
+    seedSite({ pollAttempts: 20, updatedAt: ago(41_000) });
+    gitpageSays(IN_PROGRESS);
+    expect(await (await recheck()).json()).toMatchObject({ rescheduled: false });
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+
+    seedSite({ pollAttempts: 20, updatedAt: ago(81_000) });
+    expect(await (await recheck()).json()).toMatchObject({ rescheduled: true });
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+    expect(qstash.publishCallback.mock.calls[0][0]).toMatchObject({ delaySeconds: 40 });
+    expect(mem.read(SITE)).toMatchObject({ pollAttempts: 20 });
+  });
+
+  it("five rapid clicks on a dead chain start exactly one", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: ago(10 * 60_000) });
+    gitpageSays(IN_PROGRESS);
+    const answers = await Promise.all(Array.from({ length: 5 }, () => recheck().then((r) => r.json())));
+    expect(answers.filter((a) => a.rescheduled === true)).toHaveLength(1);
+    expect(answers.filter((a) => a.rescheduled === false)).toHaveLength(4);
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+    expect(mem.read(SITE)).toMatchObject({ status: "building", pollAttempts: 7 });
+  });
+
+  it("five clicks one after another start exactly one, too", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: ago(10 * 60_000) });
+    gitpageSays(IN_PROGRESS);
+    for (let click = 0; click < 5; click++) await recheck();
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("a click on a live chain does not hide that chain dying later", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: ago(5_000) });
+    gitpageSays(IN_PROGRESS);
+    expect(await (await recheck()).json()).toMatchObject({ rescheduled: false });
+
+    // No tick ever comes. 36s after the click the doc is 41s unwritten.
+    vi.setSystemTime(NOW + 36_000);
+    expect(await (await recheck()).json()).toMatchObject({ rescheduled: true });
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("a doc with no write time at all counts as dead", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: null });
+    gitpageSays(IN_PROGRESS);
+    expect(await (await recheck()).json()).toMatchObject({ rescheduled: true });
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a Firestore Timestamp as well as a Date", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: { toMillis: () => NOW - 5_000 } });
+    gitpageSays(IN_PROGRESS);
+    expect(await (await recheck()).json()).toMatchObject({ rescheduled: false });
+    seedSite({ pollAttempts: 7, updatedAt: { toMillis: () => NOW - 41_000 } });
+    expect(await (await recheck()).json()).toMatchObject({ rescheduled: true });
+  });
+
+  it("a callback that settles during the click on a dead chain still settles once: no chain, the site is reported ready", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: ago(10 * 60_000) });
+    gitpageSaysWhile(async () => {
+      expect(await (await callback()).json()).toEqual({ ok: true, settled: "ready" });
+    }, IN_PROGRESS);
+    expect(await (await recheck()).json()).toEqual({
+      ok: true,
+      settled: "ready",
+      liveUrl: "https://acme.gitlab.io/site",
+    });
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+    const settled = mem.read(SITE);
+    expect(settled).toMatchObject(READY);
+
+    // Nothing left that could settle it a second time.
+    gitpageSays(PUBLISHED);
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toEqual(settled);
+  });
+
+  it("a revived chain's tick carries on from the attempt count, towards the same cap", async () => {
+    seedSite({ pollAttempts: 89, updatedAt: ago(10 * 60_000) });
+    gitpageSays(IN_PROGRESS);
+    await recheck();
+    expect(await (await tick()).json()).toEqual({ ok: true, deferred: "in-progress" });
+    expect(mem.read(SITE)).toMatchObject({ pollAttempts: 90 });
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "timeout" });
+  });
+
+  it("does not publish when QStash would not take it, and says so", async () => {
+    seedSite({ pollAttempts: 7, updatedAt: ago(10 * 60_000) });
+    gitpageSays(IN_PROGRESS);
+    qstash.publishCallback.mockResolvedValueOnce(null);
+    expect(await (await recheck()).json()).toMatchObject({ deferred: "in-flight", rescheduled: false });
   });
 });

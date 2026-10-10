@@ -126,7 +126,7 @@ export default function WebsitePage() {
         <p className="mt-1 text-sm text-muted-foreground">
           Build up to {MAX_WEBSITES_PER_SUBACCOUNT} marketing sites for this
           client via gitpage.site. Add a site, fill in the details, hit Build,
-          and we&apos;ll return a live URL in a minute or two.
+          and we&apos;ll return a live URL in 10–20 minutes.
         </p>
       </header>
 
