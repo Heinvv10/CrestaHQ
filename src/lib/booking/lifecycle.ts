@@ -155,7 +155,9 @@ export async function fireBookingTrigger(
   });
   if (!actor) {
     // Handled now, not when after() runs: a rejection in between would be unhandled.
-    const settled = Promise.resolve(fired).catch((err) => console.warn("[booking/lifecycle] workflow trigger failed", err));
+    const settled = Promise.resolve(fired).catch((err) =>
+      console.warn("[booking/lifecycle] workflow trigger failed", err),
+    );
     runAfterResponse(() => settled);
     return null;
   }

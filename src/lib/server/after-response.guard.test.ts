@@ -8,6 +8,12 @@ import { describe, expect, it } from "vitest";
  * bare `void someCall(...)` / `void (async () => ...)()`, which is cut off
  * mid-flight. This scans server source for those statements. A new one fails
  * here: convert it, or add it below with the reason it must stay bare.
+ *
+ * Limits: it is a text check for statements that START with `void`. It does
+ * not catch an un-awaited chain with no `void` (`x().catch(...)`), a wrapped
+ * `void (expr)` form, or `void fired;` on a live promise — those need type
+ * information (a TypeScript-checker scan for Promise-typed expression
+ * statements, as used to build the runAfterResponse port).
  */
 
 const ROOT = join(__dirname, "..", "..", "..");
