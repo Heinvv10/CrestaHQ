@@ -17,7 +17,12 @@ import {
   MAX_BUMPS_PER_CHECKOUT_PAGE,
   slugifyCheckoutSlug,
 } from "@/types/checkout-pages";
-import type { CheckoutPage } from "@/types/checkout-pages";
+import type { CheckoutPage, CheckoutThemeId } from "@/types/checkout-pages";
+import {
+  DEFAULT_CHECKOUT_THEME_ID,
+  isCheckoutThemeId,
+} from "@/lib/checkout/themes";
+import { ThemePresetPicker } from "@/components/checkout/theme-preset-picker";
 import type { Product } from "@/types/products";
 
 /**
@@ -262,6 +267,14 @@ function CheckoutPageEditor({
   const [headline, setHeadline] = useState(page?.headline ?? "");
   const [subheadline, setSubheadline] = useState(page?.subheadline ?? "");
   const [successUrl, setSuccessUrl] = useState(page?.successUrl ?? "");
+  // A page saved before presets existed has none, and keeps none (so its
+  // original look) until one is picked here — saving any other field never
+  // restyles it. New pages start on the default preset.
+  const stored = page?.themePreset;
+  const savedPreset = isCheckoutThemeId(stored) ? stored : null;
+  const [themePreset, setThemePreset] = useState<CheckoutThemeId | null>(
+    page ? savedPreset : DEFAULT_CHECKOUT_THEME_ID,
+  );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -301,6 +314,7 @@ function CheckoutPageEditor({
         headline: headline.trim(),
         subheadline: subheadline.trim(),
         successUrl: successUrl.trim() || null,
+        themePreset,
       };
       if (publish !== undefined) {
         payload.status = publish ? "published" : "draft";
@@ -487,6 +501,16 @@ function CheckoutPageEditor({
             </p>
           </div>
         )}
+      </div>
+
+      <div className="space-y-2">
+        <Label>Style</Label>
+        <ThemePresetPicker
+          value={themePreset}
+          onChange={setThemePreset}
+          allowNone={editing && savedPreset === null}
+          noneBlurb="Keep this page's original look."
+        />
       </div>
 
       <div className="space-y-1.5">

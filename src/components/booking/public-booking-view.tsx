@@ -13,6 +13,11 @@ import {
 import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { PublicServicePicker } from "@/components/booking/public-service-picker";
 import type { BookingPage, IntakeField } from "@/types/booking";
+import {
+  CHECKOUT_THEMES,
+  checkoutThemeCssVars,
+  isCheckoutThemeId,
+} from "@/lib/checkout/themes";
 import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 
 /**
@@ -255,22 +260,53 @@ export function PublicBookingView({
     setSelectedSlot(null);
   }
 
-  // Accent style — applied to primary buttons + selected slot ring.
-  const accent = branding.accentColor;
-  const accentStyle: React.CSSProperties = accent
-    ? { backgroundColor: accent, borderColor: accent }
-    : {};
+  // Optional style preset (shared with checkout pages). Applied by
+  // overriding the shadcn CSS variables on <main> — inline style beats both
+  // :root and .dark, so the visitor's OS theme can't fight the preset. The
+  // `dark` class rides along for dark presets so `dark:` status-color
+  // variants (amber/emerald/rose) keep their contrast. Only a known preset
+  // id is looked up: null, absent or an unrecognised stored value all mean
+  // no preset, and then nothing below adds a style or class.
+  const theme = isCheckoutThemeId(page.themePreset)
+    ? CHECKOUT_THEMES[page.themePreset]
+    : null;
+  const themeStyle = theme
+    ? ({
+        ...checkoutThemeCssVars(theme),
+        background: theme.pageBg,
+      } as React.CSSProperties)
+    : undefined;
+
+  // Accent style — applied to primary buttons + selected slot ring. A
+  // per-page accent color wins over the preset's accent.
+  const accent = branding.accentColor ?? theme?.accent ?? null;
+  const accentStyle: React.CSSProperties = branding.accentColor
+    ? {
+        backgroundColor: branding.accentColor,
+        borderColor: branding.accentColor,
+      }
+    : theme
+      ? {
+          backgroundColor: theme.buttonBg,
+          borderColor: theme.buttonBg,
+          color: theme.buttonText,
+        }
+      : {};
 
   return (
     <main
       ref={rootRef}
-      className={
+      className={`${
         embedded
           ? "bg-muted/30 px-3 py-4 text-foreground"
           : "min-h-screen bg-muted/30 px-4 py-10 text-foreground sm:py-16"
-      }
+      }${theme?.isDark ? " dark" : ""}`}
+      style={themeStyle}
     >
-      <article className="mx-auto max-w-3xl space-y-8 rounded-3xl border bg-card p-6 shadow-sm sm:p-10">
+      <article
+        className="mx-auto max-w-3xl space-y-8 rounded-3xl border bg-card p-6 shadow-sm sm:p-10"
+        style={theme ? { borderRadius: theme.cardRadius } : undefined}
+      >
         {/* ── Hero ──────────────────────────────────────────── */}
         <header className="space-y-3 text-center">
           {branding.logoUrl ? (
@@ -284,12 +320,26 @@ export function PublicBookingView({
           ) : (
             <span
               className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl text-white"
-              style={{ backgroundColor: accent ?? "#0F766E" }}
+              style={{
+                backgroundColor: accent ?? "#0F766E",
+                color: theme && !branding.accentColor ? theme.buttonText : undefined,
+              }}
             >
               <CalendarClock className="h-6 w-6" />
             </span>
           )}
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          <h1
+            className="text-2xl font-bold tracking-tight sm:text-3xl"
+            style={
+              theme
+                ? {
+                    textTransform: theme.headingTransform,
+                    letterSpacing: theme.headingSpacing,
+                    fontWeight: theme.headingWeight,
+                  }
+                : undefined
+            }
+          >
             {page.name}
           </h1>
           {page.description && (
@@ -321,7 +371,7 @@ export function PublicBookingView({
               setActiveDay(null);
               setSelectedSlot(null);
             }}
-            className="rounded-md border border-input bg-background px-2 py-1 text-xs focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            className="rounded-md border border-input bg-background px-2 py-1 text-xs focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_option]:bg-background [&_option]:text-foreground"
           >
             <option value={viewerTz}>{viewerTz}</option>
             {pageTz !== viewerTz && <option value={pageTz}>{pageTz}</option>}
@@ -869,7 +919,7 @@ function ExtraField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           required={field.required}
-          className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_option]:bg-background [&_option]:text-foreground"
         >
           <option value="" disabled>
             Pick one…

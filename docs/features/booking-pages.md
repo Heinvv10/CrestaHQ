@@ -40,6 +40,16 @@ All optional; absent ⇒ the old behaviour. Applied in [page-slots.ts](../../src
 
 **Behaviour change for existing pages:** before SP3 `bufferMinutes` was only the slot step and never padded existing events — a 15-min buffer still allowed a slot starting right when a manual event ended. It now pads busy time as the after-buffer. Slots next to the page's own on-grid bookings are unchanged (the step already leaves that gap); a slot whose after-buffer runs into an off-grid manual event, or a same-page booking closer than the buffer, is no longer offered.
 
+## Style presets (shared with checkout pages)
+
+Five presets — Clean, Midnight, Noir Lime, Sunset, Ocean — restyle the public booking page (`/b`, and the embed) and the public checkout page (`/co`). One table, [src/lib/checkout/themes.ts](../../src/lib/checkout/themes.ts), holds every value; the ids in `CHECKOUT_THEME_IDS` ([src/types/checkout-pages.ts](../../src/types/checkout-pages.ts)) are stored on the page doc as `themePreset` and are append-only. Both editors use the same picker ([src/components/checkout/theme-preset-picker.tsx](../../src/components/checkout/theme-preset-picker.tsx)). *Ported from upstream 1.0.40; not yet walked in a browser as of 2026-10-11.*
+
+- **A preset is style only.** Content and layout are the same with or without one. Nothing a tenant types reaches a `style` or `class` attribute through a preset: the stored value is only ever compared against the id list, and the styles come from the table.
+- **No preset = the look the page always had.** `themePreset` null, absent, or an id this build does not know all mean "no preset". On `/b` that is the app's own tokens plus the page's optional `accentColor`, with no added markup. On `/co` it is `legacyCheckoutTheme()`: the exact values the page hard-coded before presets, pinned byte for byte by [src/test/checkout-legacy-markup.json](../../src/test/checkout-legacy-markup.json) (captured at the commit before presets; do not regenerate it to make a test pass).
+- **Booking:** the preset is applied by setting the shadcn CSS variables inline on `<main>` (plus the `dark` class for dark presets), so every `bg-card` / `text-muted-foreground` underneath follows. A page's own `accentColor` still wins over the preset's accent. "Brand default" in the picker clears the preset. `/e/[token]` (reschedule/cancel) is not themed.
+- **Checkout:** a new page starts on Clean. A page saved before presets shows "Brand default" in the editor and keeps no preset until one is picked, so saving another field never restyles it; once a preset is saved the page's own `appearance.accent` no longer applies.
+- **Writes:** an unknown id is refused with "Unknown style preset." by `validateThemePreset` (booking routes and the agent's `create_booking_page` / `update_booking_page`) and by `sanitizeCheckoutPagePayload` (checkout routes).
+
 ## Send flow
 
 1. **Public page** (`/b/[subAccountId]/[slug]`) — server-renders the page config; the client fetches slots from the availability endpoint below.

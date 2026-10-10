@@ -3,6 +3,7 @@ import "server-only";
 import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BookingPage, BookingPageFormData } from "@/types/booking";
+import { CHECKOUT_THEME_IDS } from "@/types/checkout-pages";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { CapabilityUserError, type PreviewRow, type ValidateResult } from "./types";
 import { hasUnsafeText, lookAlikeProblem, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
@@ -16,7 +17,7 @@ export const slugParam = { type: "string", description: "The page's slug (from l
 export const FORM_KEYS = [
   "slug", "name", "description", "status", "durationMinutes", "bufferMinutes", "bufferBeforeMinutes", "slotIntervalMinutes",
   "workingHours", "dateOverrides", "timezone", "visibleDays", "minNoticeHours", "maxPerDay", "intakeFields", "hosts",
-  "allowHostSelection", "calendarType", "distribution", "seatsPerSlot", "services", "logoUrl", "accentColor", "meetingUrl",
+  "allowHostSelection", "calendarType", "distribution", "seatsPerSlot", "services", "logoUrl", "accentColor", "themePreset", "meetingUrl",
   "confirmationMessage", "redirectUrl", "redirectAppendParams", "remindersEnabled", "reminderOffsetsMinutes", "payment",
   "defaultTerritoryId",
 ] as const satisfies ReadonlyArray<keyof BookingPageFormData>;
@@ -30,6 +31,7 @@ export const PAGE_PROPS: Record<string, unknown> = {
   status: { type: "string", enum: ["draft", "published"], description: "published: bookable by the public." },
   timezone: { type: "string", description: "IANA zone. Omitted on create: the sub-account's own timezone." },
   confirmationMessage: { type: "string" },
+  themePreset: { enum: [...CHECKOUT_THEME_IDS, null], description: "Style preset of the public page. null: the standard look." },
 };
 
 /** The asked fields: every text in them visible (line breaks allowed), and a name that imitates nothing. */
