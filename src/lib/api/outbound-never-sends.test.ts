@@ -163,6 +163,7 @@ async function drain() {
   for (let seen = -1; seen !== fired.length; ) {
     seen = fired.length;
     await Promise.allSettled(fired);
+    await flushAfterResponse();
     await new Promise((r) => setTimeout(r, 0));
   }
 }

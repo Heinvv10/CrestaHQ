@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -61,7 +62,6 @@ const shape = async (res: Response) => {
   const names = [...res.headers.keys()].filter((h) => h !== "x-request-id").sort();
   return { status: res.status, body, names };
 };
-const settle = () => new Promise((r) => setTimeout(r, 10));
 const under = (prefix: string) => mem.all().filter((d) => d.path.startsWith(prefix));
 
 const UNREACHABLE: Array<[string, unknown]> = [
@@ -155,7 +155,7 @@ describe("a JSON-RPC batch", () => {
     expect(byId[3]!.isError).toBe(true);
     expect(JSON.stringify(out)).not.toMatch(/Ann sa[256]/);
     expect(under("agencies/ag1/agentCalls").map((d) => (d.data as { subAccountId: string }).subAccountId)).toEqual(["sa1", "sa1"]);
-    await settle();
+    await flushAfterResponse();
     expect(under("subAccounts/null")).toEqual([]);
     expect(under("subAccounts/sa2/")).toEqual([]);
     expect(under("subAccounts/sa6/")).toEqual([]);

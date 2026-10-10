@@ -69,7 +69,7 @@ beforeEach(() => {
 afterEach(async () => {
   AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(thrower), 1);
   await flushAfterResponse();
-  });
+});
 
 describe("request logs by key level", () => {
   it("a reached call logs under its target only", async () => {

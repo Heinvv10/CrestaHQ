@@ -85,7 +85,10 @@ beforeEach(() => {
   );
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(async () => {
+  await flushAfterResponse();
+  vi.unstubAllGlobals();
+});
 
 describe("a redelivered first payment", () => {
   it("Stripe: does not revive a workspace cancelled since it was paid", async () => {
@@ -270,6 +273,7 @@ describe("activation and subscription recording — the ordinary path", () => {
     });
     // Proves a subscription exists, not that anyone paid for it.
     expect(billing()).toMatchObject({ status: "pending", stripeSubscriptionId: "SUB_1" });
+    await flushAfterResponse();
     expect(emitWebhookEvent).not.toHaveBeenCalled();
   });
 

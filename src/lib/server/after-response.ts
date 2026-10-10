@@ -34,7 +34,7 @@ import { after } from "next/server";
  * those schedule) has settled. It is for tests only — production code has no
  * use for it, and it does not wait for work handed to the real `after()`.
  */
-const pending = new Set<Promise<void>>();
+const pending = new Set<Promise<unknown>>();
 
 export async function flushAfterResponse(): Promise<void> {
   while (pending.size > 0) await Promise.all([...pending]);
@@ -50,7 +50,7 @@ export function runAfterResponse(fn: () => unknown): void {
   try {
     after(run);
   } catch {
-    const task: Promise<void> = run().then(() => {
+    const task: Promise<unknown> = run().finally(() => {
       pending.delete(task);
     });
     pending.add(task);

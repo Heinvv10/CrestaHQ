@@ -54,7 +54,6 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 const reviewName = "accounts/a/locations/l/reviews/r1";
-/** Grace period for the one negative assertion (nothing is delivered). */
 
 describe("sendAutoReplyAlert", () => {
   it("edited_low: push and email carry the star and at most the first 80 characters — never more, never a name", async () => {
@@ -130,7 +129,7 @@ describe("sendAutoReplyAlert", () => {
     // Let the held send finish: a task that never settles would hang every later flush.
     for (const r of sent.release) r();
     await flushAfterResponse();
-    });
+  });
 
   it("fake mode: the doc is written, nothing is delivered", async () => {
     mode.fake = true;

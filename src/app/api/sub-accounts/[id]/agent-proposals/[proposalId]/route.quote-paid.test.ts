@@ -222,7 +222,8 @@ describe("mark_quote_paid", () => {
       seedPaidWorkflow();
       const id = await proposeId();
       expect((await decide(id, "approve")).status).toBe(200);
-      await vi.waitFor(() => expect(mem.list("workflowRuns")).toEqual([expect.objectContaining({ workflowId: "wf_paid" })]));
+      await flushAfterResponse();
+      expect(mem.list("workflowRuns")).toEqual([expect.objectContaining({ workflowId: "wf_paid" })]);
     });
 
     it("steps edited inside the paid write (after execute's checks) -> paid, but that workflow isn't started (checked at enrolment)", async () => {
@@ -232,7 +233,8 @@ describe("mark_quote_paid", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       expect((await decide(id, "approve")).status).toBe(200);
       expect(mem.read("quotes/q1")!.status).toBe("paid");
-      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining("wf_paid not started")));
+      await flushAfterResponse();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("wf_paid not started"));
       warn.mockRestore();
       expect(mem.list("workflowRuns")).toEqual([]);
     });
@@ -241,7 +243,8 @@ describe("mark_quote_paid", () => {
       seedPaidWorkflow();
       const { markQuotePaidServerSide } = await import("@/lib/server/quotes-service");
       expect(await markQuotePaidServerSide({ quoteId: "q1", expectSubAccountId: "sa1" })).toMatchObject({ ok: true });
-      await vi.waitFor(() => expect(mem.list("workflowRuns")).toEqual([expect.objectContaining({ workflowId: "wf_paid" })]));
+      await flushAfterResponse();
+      expect(mem.list("workflowRuns")).toEqual([expect.objectContaining({ workflowId: "wf_paid" })]);
     });
 
     it("a quote.paid workflow activated inside the paid write (never reviewed) isn't started", async () => {

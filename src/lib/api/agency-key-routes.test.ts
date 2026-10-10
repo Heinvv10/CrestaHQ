@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
@@ -64,6 +64,9 @@ const send = (handler: Handler, method: string) =>
     { params: Promise.resolve({ id: "x1", name: "sub_account_stats", formId: "f1" }) },
   );
 const code = async (res: Response) => ((await res.clone().json()) as { error?: { code?: string } }).error?.code;
+
+// Every request writes a log row after the response; keep it out of the next test.
+afterEach(() => flushAfterResponse());
 
 describe("withApiAuth routes and agency keys", () => {
   it("finds the v1 routes (the scan is not vacuous)", () => {

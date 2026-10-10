@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
@@ -38,6 +38,9 @@ const call = (name: string, body: unknown, extra: Record<string, string> = {}, r
   );
 const list = (auth = `Bearer ${key}`) =>
   GET(new Request("http://localhost/api/v1/tools", { headers: { authorization: auth } }), { params: undefined });
+
+// Request logs are written after the response: keep them out of the next test.
+afterEach(() => flushAfterResponse());
 
 beforeEach(() => {
   mem.clear();

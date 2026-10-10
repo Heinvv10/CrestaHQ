@@ -64,8 +64,9 @@ beforeEach(() => {
   key = mintKey(["agent"]);
   AI_SUITE_CAPABILITIES.push(outbound);
 });
-afterEach(() => {
+afterEach(async () => {
   AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(outbound), 1);
+  await flushAfterResponse();
 });
 
 describe("GET /api/v1/tools", () => {
