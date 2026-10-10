@@ -10,6 +10,11 @@ import {
 } from "@/lib/automations/qstash";
 import { GitpageError, pollBuild } from "@/lib/gitpage/client";
 import { markGitpageKeyInvalid } from "@/lib/gitpage/heartbeat";
+import {
+  pollAttemptCapFor,
+  pollDelayFor,
+  settleWebsiteBuild,
+} from "@/lib/server/websites-service";
 import type { WebsiteDoc } from "@/types/website";
 
 export const dynamic = "force-dynamic";
@@ -22,15 +27,16 @@ export const dynamic = "force-dynamic";
  *      operator may have hit Rebuild, or a previous tick already settled).
  *   3. Calls gitpage's status endpoint.
  *   4. Updates Firestore: success / failure / still-pending.
- *   5. If still pending and we're under the cap (15 min × 4 polls/min),
- *      reschedules itself for +20s.
+ *   5. If still pending and we're under the cap, reschedules itself.
  *
- * Cap math: gitpage suggests 15-30s cadence, hard stop at 15 minutes.
- * 15 minutes / 20s = 45 polls.
+ * Cap math (Build v2): the cap derives from gitpage's
+ * `estimatedDurationSeconds` on the doc — `pollAttemptCapFor` gives 45 ticks
+ * (the historical 15-minute window) for a standard build and up to 120 for a
+ * premium one; `pollDelayFor` backs the cadence off from 20s to 40s after
+ * five minutes so a 20-minute premium build costs ~40 ticks, not 60.
+ * Terminal states are handed to `settleWebsiteBuild`, the same handler the
+ * `build.settled` callback uses — so premium hand-off runs exactly once.
  */
-
-const POLL_INTERVAL_SECONDS = 20;
-const MAX_POLL_ATTEMPTS = 45;
 
 interface PollPayload {
   subAccountId?: string;
@@ -102,12 +108,15 @@ export async function POST(
 
   const attempts = (websiteDoc.pollAttempts ?? 0) + 1;
 
-  // Cap: bail with "failed" after MAX_POLL_ATTEMPTS.
-  if (attempts > MAX_POLL_ATTEMPTS) {
+  // Cap: bail with "failed" once the job has had 1.5× gitpage's estimate.
+  const maxAttempts = pollAttemptCapFor(websiteDoc.estimatedDurationSeconds);
+  if (attempts > maxAttempts) {
+    const minutes = Math.round(
+      ((websiteDoc.estimatedDurationSeconds ?? 300) * 1.5) / 60,
+    );
     await docRef.update({
       status: "failed",
-      errorMessage:
-        "Build is taking longer than expected (15+ min). gitpage may still finish — click Re-check now in a few minutes.",
+      errorMessage: `Build is taking longer than expected (${minutes}+ min). gitpage may still finish — click Re-check now in a few minutes.`,
       pollAttempts: attempts,
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -157,26 +166,17 @@ export async function POST(
     return NextResponse.json({ ok: true, deferred: "transient" });
   }
 
-  // Terminal states — update the doc and stop polling.
+  // Terminal states — settle the doc (and run the premium hand-off) and
+  // stop polling.
   if (pollResult.isTerminal) {
-    if (pollResult.status === "Published") {
-      await docRef.update({
-        status: "ready",
-        liveUrl: pollResult.pagesUrl,
-        errorMessage: null,
-        partialErrors: pollResult.partialErrors,
-        pollAttempts: attempts,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return NextResponse.json({ ok: true, settled: "ready" });
-    }
-    await docRef.update({
-      status: "failed",
-      errorMessage: pollResult.error ?? "gitpage build failed without details.",
-      pollAttempts: attempts,
-      updatedAt: FieldValue.serverTimestamp(),
+    const settled = await settleWebsiteBuild({
+      subAccountId,
+      siteId,
+      site: websiteDoc,
+      result: pollResult,
+      attempts,
     });
-    return NextResponse.json({ ok: true, settled: "failed" });
+    return NextResponse.json({ ok: true, settled });
   }
 
   // Still in flight. Bump status to "building" if gitpage has moved past
@@ -195,6 +195,7 @@ export async function POST(
 
   await docRef.update({
     status: nextStatus,
+    statusPhase: pollResult.statusPhase,
     pollAttempts: attempts,
     updatedAt: FieldValue.serverTimestamp(),
   });
@@ -237,7 +238,7 @@ async function rescheduleNext(
   const result = await publishCallback({
     pathname: `/api/sub-accounts/${subAccountId}/website/${siteId}/poll`,
     body: { subAccountId, siteId, formResponseId },
-    delaySeconds: POLL_INTERVAL_SECONDS,
+    delaySeconds: pollDelayFor(attempts),
     deduplicationId: `website_${subAccountId}_${siteId}_${formResponseId}_${attempts}`,
   });
   return result !== null;

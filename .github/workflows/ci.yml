@@ -315,6 +315,16 @@ jobs:
       # Signs the OAuth `state`. Per-run, not a stored secret: nothing outlives
       # the job that signs and verifies it.
       AUTOMATIONS_TOKEN_SECRET: e2e-state-${{ github.run_id }}-${{ github.run_attempt }}
+      # The gitpage build-settled callback (website-build-settled.spec.ts) is
+      # verified with an HMAC under GITPAGE_API_KEY; the spec signs with the
+      # same string. Per-run and NOT a gitpage credential. Nothing in the suite
+      # calls gitpage, and GITPAGE_API_URL points at a closed loopback port so
+      # a stray call fails on this box instead of presenting this string to
+      # gitpage.site — a 401 from there would flip system/gitpageStatus in the
+      # production Firestore this job shares. (The boot heartbeat is already
+      # skipped on a loopback app URL: instrumentation.ts.)
+      GITPAGE_API_KEY: gp_e2e-${{ github.run_id }}-${{ github.run_attempt }}
+      GITPAGE_API_URL: http://127.0.0.1:9
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

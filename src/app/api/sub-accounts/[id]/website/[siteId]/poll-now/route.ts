@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { GitpageError, pollBuild } from "@/lib/gitpage/client";
+import { settleWebsiteBuild } from "@/lib/server/websites-service";
 import { markGitpageKeyInvalid } from "@/lib/gitpage/heartbeat";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import type { WebsiteDoc } from "@/types/website";
@@ -98,29 +99,21 @@ export async function POST(
   }
 
   if (pollResult.isTerminal) {
-    if (pollResult.status === "Published") {
-      await docRef.update({
-        status: "ready",
-        liveUrl: pollResult.pagesUrl,
-        errorMessage: null,
-        partialErrors: pollResult.partialErrors,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return NextResponse.json({
-        ok: true,
-        settled: "ready",
-        liveUrl: pollResult.pagesUrl,
-      });
-    }
-    await docRef.update({
-      status: "failed",
-      errorMessage: pollResult.error ?? "gitpage build failed without details.",
-      updatedAt: FieldValue.serverTimestamp(),
+    // Same settle path as the QStash tick + the build.settled callback, so
+    // a premium hand-off also runs when the operator re-checks by hand.
+    const settled = await settleWebsiteBuild({
+      subAccountId,
+      siteId,
+      site: websiteDoc,
+      result: pollResult,
+      attempts: websiteDoc.pollAttempts ?? 0,
     });
     return NextResponse.json({
       ok: true,
-      settled: "failed",
-      errorMessage: pollResult.error,
+      settled,
+      ...(settled === "ready"
+        ? { liveUrl: pollResult.pagesUrl }
+        : { errorMessage: pollResult.error }),
     });
   }
 

@@ -192,7 +192,7 @@
     "api/webhooks": {
       "exclude": {
         "category": "public-unauth",
-        "reason": "Inbound provider webhooks (Meta, Stripe, Paystack, Twilio, Vapi, Webinar1, WhatsApp), authenticated by provider signatures."
+        "reason": "Inbound provider webhooks (gitpage, Meta, Stripe, Paystack, Twilio, Vapi, Webinar1, WhatsApp), authenticated by provider signatures."
       }
     },
     "api/webhooks-out": {
@@ -768,6 +768,18 @@
       "tools": [
         "list_webhooks"
       ]
+    },
+    "api/sub-accounts/[id]/website/[siteId]:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The website wizard's per-step draft save (the config and the step to resume on): form state for a person filling it in. The website tools are chat-only, and create_website builds in one call."
+      }
+    },
+    "api/sub-accounts/[id]/website/concepts:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Feeds the website builder's concept picker: a member-authed proxy over gitpage's design directions. The website tools are chat-only; an assistant tool for it is unit WS-7 of UPSTREAM_PORT_PLAN.md."
+      }
     },
     "api/sub-accounts/[id]/whatsapp-templates:GET": {
       "tools": [

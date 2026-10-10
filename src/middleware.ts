@@ -232,6 +232,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   /^\/api\/gitpage-reminder\/step$/,
   // gitpage build poll: /api/sub-accounts/{id}/website/{siteId}/poll
   /^\/api\/sub-accounts\/[^/]+\/website\/[^/]+\/poll$/,
+  // gitpage → LeadStack `build.settled` callback (Website Build v2) —
+  // HMAC-signed with GITPAGE_API_KEY inside the route.
+  /^\/api\/webhooks\/gitpage\/build-settled$/,
   // Social Planner publish callback — QStash callback, signature-verified
   // inside the route (same security model as /api/workflows/step).
   /^\/api\/social\/publish\/step$/,
