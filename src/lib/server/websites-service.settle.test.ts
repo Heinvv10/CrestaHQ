@@ -176,4 +176,34 @@ describe("settleWebsiteBuild", () => {
     expect(await settle(site, failed, 4)).toBe("noop");
     expect(mem.read(SITE)).toMatchObject({ status: "failed", errorMessage: "first report" });
   });
+
+  it("R4: does not settle Published without a live URL — a site is never ready with no address", async () => {
+    const site = seedSite();
+    const before = mem.read(SITE);
+    expect(await settle(site, { ...published, pagesUrl: null }, 4)).toBe("noop");
+    expect(mem.read(SITE)).toEqual(before);
+  });
+
+  it("R13: records the report it applied and ignores a repeat of it", async () => {
+    const site = seedSite();
+    expect(await settle(site, failed, 4)).toBe("failed");
+    expect(mem.read(SITE)?.settledDelivery).toEqual({ jobId: JOB, status: "failed" });
+
+    // The operator resumed the build; the same failure report arrives again.
+    await mem.db.doc(SITE).update({ status: "building", errorMessage: null });
+    const resumed = mem.read(SITE);
+    expect(await settle(site, failed, 9)).toBe("noop");
+    expect(mem.read(SITE)).toEqual(resumed);
+
+    // Published for the same job is a different report, and lands.
+    expect(await settle(site, published, 9)).toBe("ready");
+    expect(mem.read(SITE)).toMatchObject({ status: "ready", settledDelivery: { jobId: JOB, status: "Published" } });
+  });
+
+  it("does nothing for a site with no job id", async () => {
+    const site = seedSite({ gitpageJobId: null });
+    const before = mem.read(SITE);
+    expect(await settle(site, published, 4)).toBe("noop");
+    expect(mem.read(SITE)).toEqual(before);
+  });
 });

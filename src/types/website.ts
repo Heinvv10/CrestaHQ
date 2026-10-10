@@ -338,6 +338,12 @@ export interface WebsiteDoc {
   /** Email gitpage invited as an editor for the current build (the builder). */
   editorEmail?: string | null;
   /**
+   * The terminal report `settleWebsiteBuild` last applied: which job, and
+   * whether gitpage said Published or failed. A repeat of the same report
+   * for the same job is ignored (a replayed callback cannot re-settle).
+   */
+  settledDelivery?: { jobId: string; status: "Published" | "failed" } | null;
+  /**
    * Custom domain the operator serves this site on (set in GitLab/GitHub),
    * e.g. "www.peakyoga.com". Allow-listed for Web Chat; preferred over
    * liveUrl wherever LeadStack shows or reads the site.

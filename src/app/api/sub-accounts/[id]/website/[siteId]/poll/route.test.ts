@@ -31,6 +31,7 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
 
 const { POST: poll } = await import("./route");
 const { POST: pollNow } = await import("../poll-now/route");
+const { DELETE: removeOrReset } = await import("../route");
 const { POST: buildSettled } = await import("@/app/api/webhooks/gitpage/build-settled/route");
 
 const KEY = "gp_test_key";
@@ -53,17 +54,40 @@ const IN_PROGRESS = { status: "processing", statusPhase: "images", quality: "pre
 const fetchMock = vi.fn();
 /** What gitpage's status endpoint answers for the next poll. */
 const gitpageSays = (body: Record<string, unknown>, status = 200) =>
-  fetchMock.mockResolvedValue(Response.json(body, { status }));
+  // A fresh Response per poll: a body can be read only once.
+  fetchMock.mockImplementation(async () => Response.json(body, { status }));
 
-const tick = () =>
+/**
+ * gitpage answers the next poll with `body` — but only after `during` has
+ * run. The poll tick has read the site doc by then and not yet written, so
+ * `during` is whatever else reached the doc in that gap.
+ */
+const gitpageSaysWhile = (during: () => Promise<unknown>, body: Record<string, unknown>, status = 200) =>
+  fetchMock.mockImplementationOnce(async () => {
+    await during();
+    return Response.json(body, { status });
+  });
+
+const tick = (formResponseId = JOB) =>
   poll(
     new Request("https://app.test/api/sub-accounts/sa1/website/site1/poll", {
       method: "POST",
       headers: { "upstash-signature": "sig" },
-      body: JSON.stringify({ subAccountId: "sa1", siteId: "site1", formResponseId: JOB }),
+      body: JSON.stringify({ subAccountId: "sa1", siteId: "site1", formResponseId }),
     }),
     params,
   );
+
+const reset = () =>
+  removeOrReset(
+    new Request("https://app.test/api/sub-accounts/sa1/website/site1?reset=1", {
+      method: "DELETE",
+      headers: { "x-user-uid": "u_owner" },
+    }),
+    params,
+  );
+
+const READY = { status: "ready", liveUrl: "https://acme.gitlab.io/site" };
 
 const recheck = () =>
   pollNow(
@@ -269,5 +293,242 @@ describe("POST …/website/[siteId]/poll-now — the manual re-check", () => {
     expect(await (await recheck()).json()).toMatchObject({ ok: true, ignored: "not-in-flight" });
     expect(mem.read(SITE)).toEqual(before);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("something else reaches the site while a poll tick is talking to gitpage", () => {
+  it("R1: a callback that settles during an in-progress tick is not written over, and the site is made ready exactly once", async () => {
+    gitpageSaysWhile(async () => {
+      expect(await (await callback()).json()).toEqual({ ok: true, settled: "ready" });
+    }, IN_PROGRESS);
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toMatchObject(READY);
+    // The stale tick must not keep the chain alive.
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+
+    const settled = mem.read(SITE);
+    gitpageSays(PUBLISHED);
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toEqual(settled);
+  });
+
+  it("R2: a callback that settles during a tick gitpage answers 429 leaves the site ready", async () => {
+    gitpageSaysWhile(() => callback(), { message: "Hourly cap reached." }, 429);
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null });
+  });
+
+  it("a callback that settles during a tick whose poll fails transiently leaves the site ready and ends the chain", async () => {
+    gitpageSaysWhile(() => callback(), { error: "upstream down" }, 503);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    warn.mockRestore();
+    expect(mem.read(SITE)).toMatchObject(READY);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+  });
+
+  it("a callback that settles just as the next poll cannot be scheduled leaves the site ready", async () => {
+    gitpageSays(IN_PROGRESS);
+    qstash.publishCallback.mockImplementationOnce(async () => {
+      await callback();
+      return null;
+    });
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null });
+  });
+
+  it("R6: a reset during a tick leaves a draft with no job, and the next tick is stale", async () => {
+    gitpageSaysWhile(async () => {
+      expect((await reset()).status).toBe(200);
+    }, IN_PROGRESS);
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toMatchObject({ status: "draft", gitpageJobId: null, liveUrl: null, pollAttempts: 0 });
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+
+    gitpageSays(PUBLISHED);
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toMatchObject({ status: "draft", gitpageJobId: null, liveUrl: null });
+  });
+
+  it("a site removed during a tick ends the tick quietly instead of failing it", async () => {
+    gitpageSaysWhile(() => mem.db.doc(SITE).delete(), IN_PROGRESS);
+    const res = await tick();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toBeUndefined();
+  });
+
+  it("R7: an old job's tick at the cap cannot time out the new job that replaced it mid-tick", async () => {
+    // The old job is one tick from the cap, and still in progress at gitpage.
+    seedSite({ pollAttempts: 89 });
+    const rebuilt = { status: "queued", gitpageJobId: "build_new", pollAttempts: 0, errorMessage: null };
+    gitpageSaysWhile(async () => {
+      await mem.db.doc(SITE).update(rebuilt);
+    }, IN_PROGRESS);
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toMatchObject(rebuilt);
+
+    // And the old job's NEXT tick, past the cap, is refused on its job id.
+    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
+    expect(mem.read(SITE)).toMatchObject(rebuilt);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+  });
+
+  it("R7: an old job's Published result cannot settle the new job", async () => {
+    gitpageSaysWhile(
+      () => mem.db.doc(SITE).update({ status: "queued", gitpageJobId: "build_new", pollAttempts: 0 }),
+      PUBLISHED,
+    );
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "noop" });
+    expect(mem.read(SITE)).toMatchObject({ status: "queued", gitpageJobId: "build_new", liveUrl: null });
+  });
+});
+
+describe("a build the poll cap gave up on", () => {
+  const timedOut = { status: "failed", errorMessage: "Build is taking longer than expected (30+ min).", pollAttempts: 91 };
+
+  it("R3: a late Published callback makes it ready", async () => {
+    seedSite({ pollAttempts: 90 });
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "timeout" });
+    expect(mem.read(SITE)).toMatchObject({ status: "failed", gitpageJobId: JOB });
+
+    expect(await (await callback()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null, gitpagePageId: "page_42" });
+  });
+
+  it("a late FAILED callback changes nothing: only success can reopen it", async () => {
+    seedSite(timedOut);
+    const before = mem.read(SITE);
+    const res = await callback({ ...PUBLISHED, status: "failed", pagesUrl: null, error: "Deploy failed." });
+    expect(await res.json()).toEqual({ ok: true, ignored: "already-settled" });
+    expect(mem.read(SITE)).toEqual(before);
+  });
+});
+
+describe("R4: Published with no usable live URL is not a settled site", () => {
+  const NO_URL = { ...PUBLISHED, pagesUrl: null };
+
+  it("the tick keeps polling instead of marking the site ready", async () => {
+    gitpageSays(NO_URL);
+    expect(await (await tick()).json()).toEqual({ ok: true, deferred: "in-progress" });
+    expect(mem.read(SITE)).toMatchObject({ status: "building", liveUrl: null, pollAttempts: 4 });
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+
+    // gitpage has the address on the next tick: now it settles.
+    gitpageSays(PUBLISHED);
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject(READY);
+  });
+
+  it.each([
+    ["none", null],
+    ["a javascript: URL", "javascript:alert(document.cookie)"],
+    ["a plain-http URL", "http://acme.gitlab.io/site"],
+  ])("the callback with %s settles nothing and leaves the poll to finish it", async (_label, pagesUrl) => {
+    expect(await (await callback({ ...PUBLISHED, pagesUrl })).json()).toEqual({ ok: true, settled: "noop" });
+    expect(mem.read(SITE)).toMatchObject({ status: "building", liveUrl: null });
+  });
+
+  it("the manual re-check treats it as still building", async () => {
+    gitpageSays(NO_URL);
+    expect(await (await recheck()).json()).toMatchObject({ ok: true, deferred: "in-flight", status: "building" });
+    expect(mem.read(SITE)).toMatchObject({ status: "building", liveUrl: null });
+  });
+});
+
+describe("R10: the manual re-check never multiplies poll chains", () => {
+  it("on a build still in flight it refreshes the stage only: no new chain, attempts untouched", async () => {
+    seedSite({ pollAttempts: 40 });
+    gitpageSays(IN_PROGRESS);
+    for (let click = 0; click < 3; click++) {
+      expect(await (await recheck()).json()).toEqual({
+        ok: true,
+        deferred: "in-flight",
+        status: "building",
+        statusPhase: "images",
+        rescheduled: false,
+      });
+    }
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+    expect(mem.read(SITE)).toMatchObject({ status: "building", statusPhase: "images", pollAttempts: 40 });
+  });
+
+  it("on a failed build gitpage is still running it resumes with ONE chain, however often it is clicked", async () => {
+    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (30+ min).", pollAttempts: 91 });
+    gitpageSays(IN_PROGRESS);
+    expect(await (await recheck()).json()).toMatchObject({ deferred: "in-flight", status: "building", rescheduled: true });
+    expect(mem.read(SITE)).toMatchObject({ status: "building", errorMessage: null, pollAttempts: 0 });
+
+    await recheck();
+    await recheck();
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+    expect(mem.read(SITE)).toMatchObject({ status: "building", pollAttempts: 0 });
+  });
+
+  it("two re-checks of a failed build at once start one chain between them", async () => {
+    seedSite({ status: "failed", errorMessage: "Build is taking longer than expected (30+ min).", pollAttempts: 91 });
+    gitpageSays(IN_PROGRESS);
+    await Promise.all([recheck(), recheck()]);
+    expect(qstash.publishCallback).toHaveBeenCalledTimes(1);
+    expect(mem.read(SITE)).toMatchObject({ status: "building", pollAttempts: 0 });
+  });
+
+  it("a callback that settles during the re-check is reported, not written over", async () => {
+    gitpageSaysWhile(() => callback(), IN_PROGRESS);
+    expect(await (await recheck()).json()).toEqual({
+      ok: true,
+      settled: "ready",
+      liveUrl: "https://acme.gitlab.io/site",
+    });
+    expect(mem.read(SITE)).toMatchObject(READY);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+  });
+
+  it("a callback that settles during a re-check gitpage answers 4xx leaves the site ready", async () => {
+    gitpageSaysWhile(() => callback(), { message: "Job not found." }, 404);
+    expect(await (await recheck()).json()).toMatchObject({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null });
+  });
+
+  it("re-checking a build gitpage already reported as failed tells the operator so again", async () => {
+    const FAILED = { status: "failed", error: "Deploy failed.", quality: "premium", failedStage: "deploy" };
+    gitpageSays(FAILED);
+    expect(await (await recheck()).json()).toEqual({ ok: true, settled: "failed", errorMessage: "Deploy failed." });
+    const settled = mem.read(SITE);
+    gitpageSays(FAILED);
+    expect(await (await recheck()).json()).toEqual({ ok: true, settled: "failed", errorMessage: "Deploy failed." });
+    expect(mem.read(SITE)).toEqual(settled);
+  });
+});
+
+describe("R13: a replayed callback", () => {
+  const FAILED = { ...PUBLISHED, status: "failed", pagesUrl: null, error: "Deploy failed.", failedStage: "deploy" };
+
+  it("records which job's report settled the site", async () => {
+    await callback();
+    expect(mem.read(SITE)?.settledDelivery).toEqual({ jobId: JOB, status: "Published" });
+  });
+
+  it("cannot re-fail a build the operator resumed after the same failure report", async () => {
+    expect(await (await callback(FAILED)).json()).toEqual({ ok: true, settled: "failed" });
+    // gitpage picks the job back up; the operator re-checks and it resumes.
+    gitpageSays(IN_PROGRESS);
+    await recheck();
+    expect(mem.read(SITE)).toMatchObject({ status: "building", errorMessage: null });
+
+    expect(await (await callback(FAILED)).json()).toEqual({ ok: true, settled: "noop" });
+    expect(mem.read(SITE)).toMatchObject({ status: "building", errorMessage: null });
+
+    // A DIFFERENT report for the same job still lands.
+    expect(await (await callback()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject(READY);
+  });
+
+  it("a rebuild starts clean: the new job's first report is not mistaken for a repeat", async () => {
+    await callback(FAILED);
+    await mem.db.doc(SITE).update({ status: "building", gitpageJobId: "build_new", errorMessage: null });
+    const res = await callback({ ...FAILED, formResponseId: "build_new" });
+    expect(await res.json()).toEqual({ ok: true, settled: "failed" });
+    expect(mem.read(SITE)?.settledDelivery).toEqual({ jobId: "build_new", status: "failed" });
   });
 });

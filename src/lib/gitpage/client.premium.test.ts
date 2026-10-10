@@ -14,6 +14,7 @@ import {
 const {
   PREMIUM_CLAUDE_MODEL,
   pollBuild,
+  safePagesUrl,
   settledPayloadToPollResult,
   submitBuild,
 } = await import("./client");
@@ -224,5 +225,101 @@ describe("reading a build's status", () => {
       statusPhase: "render",
       isTerminal: false,
     });
+  });
+});
+
+describe("R5: the live URL gitpage reports", () => {
+  it.each([
+    ["a GitLab Pages path URL", "https://acme.gitlab.io/site", "https://acme.gitlab.io/site"],
+    ["a bare origin (stored in href form)", "https://www.peakyoga.com", "https://www.peakyoga.com/"],
+    ["a query string", "https://acme.gitlab.io/site?ref=a%20b", "https://acme.gitlab.io/site?ref=a%20b"],
+    ["an upper-case host", "https://ACME.GitLab.io/Site", "https://acme.gitlab.io/Site"],
+  ])("accepts %s", (_label, raw, stored) => {
+    expect(safePagesUrl(raw)).toBe(stored);
+    expect(settledPayloadToPollResult({ status: "Published", pagesUrl: raw }).pagesUrl).toBe(stored);
+  });
+
+  it.each([
+    ["javascript:", "javascript:alert(document.cookie)"],
+    ["javascript: in mixed case with a leading space", " JaVaScRiPt:alert(1)"],
+    ["data:", "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=="],
+    ["vbscript:", "vbscript:msgbox(1)"],
+    ["file:", "file:///etc/passwd"],
+    ["plain http", "http://acme.gitlab.io/site"],
+    ["protocol-relative", "//acme.gitlab.io/site"],
+    ["a relative path", "/site"],
+    ["the cloud metadata address", "https://169.254.169.254/latest/meta-data/"],
+    ["a link-local IPv6 literal", "https://[fe80::1]/"],
+    ["loopback", "https://127.0.0.1/"],
+    ["a private address", "https://10.0.0.5/"],
+    ["a decimal-encoded loopback", "https://2130706433/"],
+    ["localhost", "https://localhost:4300/"],
+    ["an IPv4-mapped IPv6 loopback", "https://[::ffff:127.0.0.1]/"],
+    ["a newline", "https://acme.gitlab.io/site\nSet-Cookie: a=b"],
+    ["a carriage return and newline", "https://acme.gitlab.io/\r\nLocation: https://evil.example"],
+    ["a tab inside the scheme", "java\tscript:alert(1)"],
+    ["a NUL", "https://acme.gitlab.io/\u0000"],
+    ["a space", "https://acme.gitlab.io/my site"],
+    ["a username", "https://acme.gitlab.io@evil.example/"],
+    ["a username and password", "https://user:pass@acme.gitlab.io/"],
+    ["2,049 characters", `https://acme.gitlab.io/${"a".repeat(2049 - "https://acme.gitlab.io/".length)}`],
+    ["900 KB", `https://acme.gitlab.io/${"a".repeat(900 * 1024)}`],
+    ["an empty string", ""],
+    ["not a URL", "acme.gitlab.io/site"],
+    ["a number", 42],
+    ["an object", { href: "https://acme.gitlab.io/site" }],
+    ["null", null],
+  ])("refuses %s", (_label, raw) => {
+    expect(safePagesUrl(raw)).toBeNull();
+    expect(settledPayloadToPollResult({ status: "Published", pagesUrl: raw }).pagesUrl).toBeNull();
+  });
+
+  it("accepts exactly 2,048 characters", () => {
+    const url = `https://acme.gitlab.io/${"a".repeat(2048 - "https://acme.gitlab.io/".length)}`;
+    expect(url).toHaveLength(2048);
+    expect(safePagesUrl(url)).toBe(url);
+  });
+
+  it("a status answer from the poll endpoint is held to the same rule", async () => {
+    fetchMock.mockImplementation(async () => Response.json({ status: "Published", pagesUrl: "javascript:alert(1)" }));
+    expect((await pollBuild("build_abc")).pagesUrl).toBeNull();
+  });
+});
+
+describe("R5 / R11: other fields of a status body", () => {
+  it.each([
+    ["a number", 200],
+    ["an object", { state: "Published" }],
+    ["an array", ["failed"]],
+    ["null", null],
+    ["missing", undefined],
+  ])("R11: a status that is %s reads as processing, without throwing", (_label, status) => {
+    const result = settledPayloadToPollResult({ status, pagesUrl: "https://acme.gitlab.io/site" });
+    expect(result).toMatchObject({ status: "processing", isTerminal: false });
+  });
+
+  it("cuts error and stage text and caps the partial-error list", () => {
+    const result = settledPayloadToPollResult({
+      status: "failed",
+      quality: "premium",
+      error: "E".repeat(10_000),
+      statusPhase: "S".repeat(10_000),
+      failedStage: "F".repeat(10_000),
+      concept: "C".repeat(10_000),
+      partialErrors: [...Array.from({ length: 100 }, () => "P".repeat(10_000)), 7, null],
+      theme: { primaryColor: "#000000", conceptName: "N".repeat(10_000) },
+    });
+    expect(result.error).toHaveLength(500);
+    expect(result.statusPhase).toHaveLength(120);
+    expect(result.partialErrors).toHaveLength(20);
+    expect(result.partialErrors!.every((e) => e.length === 500)).toBe(true);
+    expect(result.premium?.failedStage).toHaveLength(120);
+    expect(result.premium?.concept).toHaveLength(120);
+    expect(result.premium?.theme?.conceptName).toHaveLength(120);
+  });
+
+  it("drops an over-long page id rather than truncating it into a different id", () => {
+    expect(settledPayloadToPollResult({ status: "Published", pageId: "p".repeat(121) }).pageId).toBeNull();
+    expect(settledPayloadToPollResult({ status: "Published", pageId: "p".repeat(120) }).pageId).toBe("p".repeat(120));
   });
 });

@@ -152,7 +152,12 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     return JSON.parse(init.body) as Record<string, unknown>;
   };
 
+  // The hourly build limit is module state: each test starts in a new hour.
+  let clock = Date.UTC(2026, 9, 10, 8, 0, 0);
   beforeEach(() => {
+    clock += 60 * 60 * 1000 + 1;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(clock);
     process.env.GITPAGE_API_KEY = "gp_test_key";
     process.env.GITPAGE_API_URL = "https://gitpage.test";
     process.env.NEXT_PUBLIC_APP_URL = "https://crm.example.test/";
@@ -160,15 +165,20 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     mem.seed("subAccounts/sa1", { agencyId: "ag1", websiteEnabledByAgency: true, name: "Acme" });
     mem.seed(SITE, { id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "draft", provisioning: { errors: ["old"] } });
     publishCallback.mockReset().mockResolvedValue({ messageId: "m1" });
-    fetchMock.mockReset().mockResolvedValue(
-      Response.json(
-        { formResponseId: "build_abc", pollUrl: "https://gitpage.test/s/build_abc", estimatedDurationSeconds: 1200 },
+    // Each accepted submit gets its own job id, as gitpage issues them.
+    let jobs = 0;
+    fetchMock.mockReset().mockImplementation(async () => {
+      jobs += 1;
+      const id = jobs === 1 ? "build_abc" : `build_abc_${jobs}`;
+      return Response.json(
+        { formResponseId: id, pollUrl: `https://gitpage.test/s/${id}`, estimatedDurationSeconds: 1200 },
         { status: 202 },
-      ),
-    );
+      );
+    });
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     for (const [name, value] of [
       ["GITPAGE_API_KEY", ORIGINAL.key],
@@ -232,6 +242,90 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       editorEmail: "owner@acme.test",
       config: { quality: "premium", include_form: true, include_chat: true },
     });
+  });
+
+  it.each(["queued", "building"])("R10: refuses with 409 while the site is %s, without calling gitpage or touching the job", async (status) => {
+    mem.seed(SITE, { id: "site1", agencyId: "ag1", subAccountId: "sa1", status, gitpageJobId: "build_running" });
+    const before = mem.read(SITE);
+    await expect(build()).rejects.toMatchObject({ status: 409 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(publishCallback).not.toHaveBeenCalled();
+    expect(mem.read(SITE)).toEqual(before);
+  });
+
+  it("R10: of two submits for one site at once, one takes it and the other gets 409 — the site holds exactly one job", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const results = await Promise.allSettled([build(), build()]);
+    error.mockRestore();
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const lost = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(lost.reason).toMatchObject({ status: 409 });
+    const won = results.find((r) => r.status === "fulfilled") as PromiseFulfilledResult<{ formResponseId: string }>;
+    expect(mem.read(SITE)).toMatchObject({ status: "queued", gitpageJobId: won.value.formResponseId });
+    // One poll chain, for the job the site actually holds.
+    expect(publishCallback).toHaveBeenCalledTimes(1);
+    expect(publishCallback.mock.calls[0][0].body.formResponseId).toBe(won.value.formResponseId);
+  });
+
+  it("R10: a build on an id with no doc is refused at the site cap, before gitpage is called", async () => {
+    await mem.db.doc(SITE).delete();
+    for (let i = 1; i <= 5; i++) {
+      mem.seed(`subAccounts/sa1/website/s${i}`, { id: `s${i}`, subAccountId: "sa1", status: "draft" });
+    }
+    await expect(build()).rejects.toMatchObject({ status: 409 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mem.read(SITE)).toBeUndefined();
+    expect(mem.list("subAccounts/sa1/website")).toHaveLength(5);
+  });
+
+  it("a build on an id with no doc still creates it, stamped with its tenancy, while under the cap", async () => {
+    await mem.db.doc(SITE).delete();
+    await build();
+    expect(mem.read(SITE)).toMatchObject({
+      id: "site1",
+      agencyId: "ag1",
+      subAccountId: "sa1",
+      status: "queued",
+      gitpageJobId: "build_abc",
+    });
+  });
+
+  it("R10: a sub-account gets 10 build submits an hour; the 11th is 429 with a retry time and never reaches gitpage", async () => {
+    const rebuild = async () => {
+      await mem.db.doc(SITE).update({ status: "ready" });
+      return build();
+    };
+    for (let i = 0; i < 10; i++) await rebuild();
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+
+    const before = mem.read(SITE);
+    await mem.db.doc(SITE).update({ status: "ready" });
+    await expect(build()).rejects.toMatchObject({ status: 429, retryAfterSec: expect.any(Number) });
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+    expect(mem.read(SITE)).toMatchObject({ gitpageJobId: before?.gitpageJobId, status: "ready" });
+
+    // Another workspace is not held back by this one...
+    mem.seed("subAccounts/sa2", { agencyId: "ag1", websiteEnabledByAgency: true, name: "Other" });
+    await submitWebsiteBuildForSubAccount({
+      subAccountId: "sa2",
+      siteId: "siteB",
+      config: sampleWebsiteConfig(),
+      buildByUid: "u1",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(11);
+
+    // ...and this one is let through again once the hour has passed.
+    vi.setSystemTime(clock + 60 * 60 * 1000 + 1);
+    await build();
+    expect(fetchMock).toHaveBeenCalledTimes(12);
+  });
+
+  it("a submit refused before gitpage is called does not use up the hourly allowance", async () => {
+    mem.seed(SITE, { id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "building", gitpageJobId: "build_running" });
+    for (let i = 0; i < 25; i++) await expect(build()).rejects.toMatchObject({ status: 409 });
+    await mem.db.doc(SITE).update({ status: "failed" });
+    await build();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("schedules the first poll 20 seconds out", async () => {

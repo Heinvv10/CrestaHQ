@@ -19,7 +19,7 @@ vi.mock("@/lib/firebase/admin", () => ({
   getAdminAuth: () => ({ getUser: async (uid: string) => ({ customClaims: claims[uid] ?? {} }) }),
 }));
 
-const { PATCH } = await import("./route");
+const { PATCH, DELETE } = await import("./route");
 
 const SITE = "subAccounts/sa1/website/site1";
 
@@ -63,7 +63,45 @@ describe("PATCH /api/sub-accounts/[id]/website/[siteId] — draft save", () => {
     expect(mem.read(SITE)).toEqual(before);
   });
 
-  it.each(["draft", "failed", "ready"])("saves the draft and the step on a %s site without touching its build state", async (status) => {
+  it("R8: refuses with 409 on a failed site that still carries its job — a re-check could yet make that build the live site", async () => {
+    seedSite("failed");
+    const before = mem.read(SITE);
+    expect(before?.gitpageJobId).toBe("build_abc");
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    expect(res.status).toBe(409);
+    expect(mem.read(SITE)).toEqual(before);
+  });
+
+  it("saves on a failed site whose job is gone (nothing left to resume)", async () => {
+    seedSite("failed");
+    await mem.db.doc(SITE).update({ gitpageJobId: null });
+    expect((await patch({ config: { heading: "After" } })).status).toBe(200);
+    expect(mem.read(SITE)).toMatchObject({ config: { heading: "After" }, status: "failed" });
+  });
+
+  it("the check and the write are one step: a build that starts between them is not written over", async () => {
+    seedSite("draft");
+    // Let the save read the draft, then land a build submit before it commits.
+    const runTransaction = mem.db.runTransaction;
+    let raced = false;
+    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) =>
+      runTransaction(async (tx) => {
+        const out = await fn(tx);
+        if (!raced) {
+          raced = true;
+          await mem.db.doc(SITE).update({ status: "queued", gitpageJobId: "build_new", config: { heading: "Submitted" } });
+        }
+        return out;
+      }),
+    );
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    spy.mockRestore();
+    expect(raced).toBe(true);
+    expect(res.status).toBe(409);
+    expect(mem.read(SITE)).toMatchObject({ status: "queued", gitpageJobId: "build_new", config: { heading: "Submitted" } });
+  });
+
+  it.each(["draft", "ready"])("saves the draft and the step on a %s site without touching its build state", async (status) => {
     seedSite(status);
     const before = mem.read(SITE)!;
     const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
@@ -124,5 +162,37 @@ describe("PATCH /api/sub-accounts/[id]/website/[siteId] — draft save", () => {
     expect((await patch({ config: { heading: "After" } }, { uid: "u_member" })).status).toBe(403);
     expect((await patch({ config: { heading: "After" } }, { uid: "u_outsider" })).status).toBe(403);
     expect(mem.read(SITE)).toEqual(before);
+  });
+});
+
+describe("DELETE /api/sub-accounts/[id]/website/[siteId]?reset=1", () => {
+  const reset = (siteId = "site1") =>
+    DELETE(
+      new Request(`https://app.test/api/sub-accounts/sa1/website/${siteId}?reset=1`, {
+        method: "DELETE",
+        headers: { "x-user-uid": "u_admin" },
+      }),
+      { params: Promise.resolve({ id: "sa1", siteId }) },
+    );
+
+  it.each(["queued", "building", "ready", "failed"])("resets a %s site to a draft with no job, keeping its config", async (status) => {
+    seedSite(status);
+    await mem.db.doc(SITE).update({ settledDelivery: { jobId: "build_abc", status: "failed" }, statusPhase: "images" });
+    expect((await reset()).status).toBe(200);
+    expect(mem.read(SITE)).toMatchObject({
+      status: "draft",
+      gitpageJobId: null,
+      liveUrl: null,
+      errorMessage: null,
+      pollAttempts: 0,
+      statusPhase: null,
+      settledDelivery: null,
+      config: { heading: "Before" },
+    });
+  });
+
+  it("answers 404 for a site that does not exist, creating nothing", async () => {
+    expect((await reset("nope")).status).toBe(404);
+    expect(mem.read("subAccounts/sa1/website/nope")).toBeUndefined();
   });
 });

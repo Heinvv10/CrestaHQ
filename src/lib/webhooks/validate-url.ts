@@ -106,7 +106,7 @@ export function isNonPublicAddress(ip: string): boolean {
  * IPv6 literals carry brackets). Names are NOT resolved here — see
  * `resolvePublicAddresses` for that.
  */
-function isBlockedHostname(hostname: string): boolean {
+export function isBlockedHostname(hostname: string): boolean {
   // One trailing dot is the fully-qualified spelling of the same name.
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   if (h === "localhost" || h.endsWith(".localhost")) return true;

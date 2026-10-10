@@ -11,6 +11,7 @@ import {
   premiumDetailsPayload,
   premiumModeFor,
 } from "@/lib/website/premium";
+import { isBlockedHostname } from "@/lib/webhooks/validate-url";
 
 /**
  * The Claude tier LeadStack forces for premium builds. gitpage's own users
@@ -234,16 +235,54 @@ export interface GitpagePremiumStatus {
   theme: GitpageTheme | null;
 }
 
+/**
+ * Bounds on what a status answer or a `build.settled` body may put on a site
+ * doc. The doc is read by every member's browser, and these strings come
+ * from outside: a signed body is still someone else's data.
+ */
+const MAX_PAGES_URL_LENGTH = 2048;
+const MAX_ERROR_LENGTH = 500;
+const MAX_LABEL_LENGTH = 120;
+const MAX_PARTIAL_ERRORS = 20;
+
+/** A string cut to `max`, or null for anything that is not a string. */
+function clip(value: unknown, max: number): string | null {
+  return typeof value === "string" ? value.slice(0, max) : null;
+}
+
+/**
+ * The live URL gitpage reports, or null unless it is a plain public https
+ * address: at most 2,048 characters, no whitespace or control characters
+ * (`new URL` silently strips tabs and newlines, so they are refused before
+ * parsing), parses, `https:`, no embedded credentials, and not localhost or
+ * a non-public IP literal. The card renders it as a link and the hand-off
+ * will allow-list its host, so `javascript:`, `data:` and `http:` never get
+ * as far as the doc. Returned in `URL.href` form.
+ */
+export function safePagesUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  if (/[\u0000-\u0020\u007f]/.test(raw)) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return null;
+  if (isBlockedHostname(url.hostname)) return null;
+  return url.href.length <= MAX_PAGES_URL_LENGTH ? url.href : null;
+}
+
 function readPremium(body: Record<string, unknown>): GitpagePremiumStatus | null {
   if (body.quality !== "premium") return null;
   const persona = body.agentPersona as Partial<GitpageAgentPersona> | undefined;
   const theme = body.theme as Partial<GitpageTheme> | undefined;
   return {
     quality: "premium",
-    concept: typeof body.concept === "string" ? body.concept : null,
+    concept: clip(body.concept, MAX_LABEL_LENGTH),
     estimatedDurationSeconds:
       typeof body.estimatedDurationSeconds === "number" ? body.estimatedDurationSeconds : null,
-    failedStage: typeof body.failedStage === "string" ? body.failedStage : null,
+    failedStage: clip(body.failedStage, MAX_LABEL_LENGTH),
     imageProvider: typeof body.imageProvider === "string" ? body.imageProvider : null,
     imageCount: typeof body.imageCount === "number" ? body.imageCount : null,
     briefSource: typeof body.briefSource === "string" ? body.briefSource : null,
@@ -273,7 +312,9 @@ function readPremium(body: Record<string, unknown>): GitpagePremiumStatus | null
             ...(typeof theme.typeSystem === "string" && { typeSystem: theme.typeSystem }),
             ...(typeof theme.archetype === "string" && { archetype: theme.archetype }),
             ...(typeof theme.concept === "string" && { concept: theme.concept }),
-            ...(typeof theme.conceptName === "string" && { conceptName: theme.conceptName }),
+            ...(typeof theme.conceptName === "string" && {
+              conceptName: theme.conceptName.slice(0, MAX_LABEL_LENGTH),
+            }),
           }
         : null,
   };
@@ -319,16 +360,20 @@ export async function pollBuild(
 }
 
 function normalisePollBody(body: Record<string, unknown>): PollBuildResult {
-  const rawStatus = (body.status as string) ?? "processing";
-  const statusPhase =
-    typeof body.statusPhase === "string" ? body.statusPhase : null;
-  const pagesUrl = typeof body.pagesUrl === "string" ? body.pagesUrl : null;
+  // A status that is not a string (a number, an object, missing) reads as
+  // still in flight, never as a TypeError.
+  const rawStatus = typeof body.status === "string" ? body.status : "processing";
+  const statusPhase = clip(body.statusPhase, MAX_LABEL_LENGTH);
+  const pagesUrl = safePagesUrl(body.pagesUrl);
   const repoUrl = typeof body.repoUrl === "string" ? body.repoUrl : null;
-  const error = typeof body.error === "string" ? body.error : null;
+  const error = clip(body.error, MAX_ERROR_LENGTH);
   const updatedAt =
     typeof body.updatedAt === "string" ? body.updatedAt : null;
   const partialErrors = Array.isArray(body.partialErrors)
-    ? body.partialErrors.filter((v): v is string => typeof v === "string")
+    ? body.partialErrors
+        .filter((v): v is string => typeof v === "string")
+        .slice(0, MAX_PARTIAL_ERRORS)
+        .map((v) => v.slice(0, MAX_ERROR_LENGTH))
     : null;
 
   // Defensive matching per gitpage's guidance: any string starting with
@@ -356,7 +401,11 @@ function normalisePollBody(body: Record<string, unknown>): PollBuildResult {
     isTerminal,
     updatedAt,
     premium: readPremium(body),
-    pageId: typeof body.pageId === "string" && body.pageId ? body.pageId : null,
+    // An id is used whole or not at all: an over-long one is not an id.
+    pageId:
+      typeof body.pageId === "string" && body.pageId && body.pageId.length <= MAX_LABEL_LENGTH
+        ? body.pageId
+        : null,
   };
 }
 

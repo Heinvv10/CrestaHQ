@@ -209,3 +209,122 @@ describe("POST /api/webhooks/gitpage/build-settled — what a signed callback ma
     expect(mem.read(SITE)).toMatchObject(untouched);
   });
 });
+
+describe("POST /api/webhooks/gitpage/build-settled — what it will read", () => {
+  const CAP = 64 * 1024;
+  const big = () => JSON.stringify({ ...JSON.parse(payload()), kbText: "x".repeat(CAP) });
+
+  it("refuses a body over 64 KB by its Content-Length, before the signature is even looked at", async () => {
+    const body = big();
+    const res = await POST(
+      new Request("https://app.test/api/webhooks/gitpage/build-settled", {
+        method: "POST",
+        headers: { "content-length": String(Buffer.byteLength(body)), "x-gitpage-signature": sign(body) },
+        body,
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect(mem.read(SITE)).toMatchObject(untouched);
+  });
+
+  it("refuses a body over 64 KB by the bytes actually read when Content-Length is absent or lies", async () => {
+    const body = big();
+    for (const declared of [undefined, "10"]) {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(body));
+          controller.close();
+        },
+      });
+      const res = await POST(
+        new Request("https://app.test/api/webhooks/gitpage/build-settled", {
+          method: "POST",
+          headers: {
+            "x-gitpage-signature": sign(body),
+            ...(declared ? { "content-length": declared } : {}),
+          },
+          body: stream,
+          duplex: "half",
+        } as RequestInit),
+      );
+      expect(res.status).toBe(413);
+    }
+    expect(mem.read(SITE)).toMatchObject(untouched);
+  });
+
+  it("still accepts a signed body just under the cap", async () => {
+    const body = JSON.stringify({ ...JSON.parse(payload()), kbText: "x".repeat(CAP - 1024) });
+    expect(Buffer.byteLength(body)).toBeLessThan(CAP);
+    const res = await post(body, sign(body));
+    expect(res.status).toBe(200);
+    expect(mem.read(SITE)).toMatchObject({ status: "ready" });
+  });
+});
+
+describe("POST /api/webhooks/gitpage/build-settled — a signed body is still someone else's data", () => {
+  const signed = (patch: Record<string, unknown>) => {
+    const body = payload(patch);
+    return post(body, sign(body));
+  };
+
+  it.each([
+    ["a number", 7],
+    ["an object", { toLowerCase: "x" }],
+    ["an array", ["Published"]],
+    ["null", null],
+    ["true", true],
+  ])("R11: a status that is %s reads as still in flight — 200, no TypeError, nothing settled", async (_label, status) => {
+    const res = await signed({ status });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: "not-terminal" });
+    expect(mem.read(SITE)).toMatchObject(untouched);
+  });
+
+  it.each([
+    ["javascript:", "javascript:alert(document.cookie)"],
+    ["data:", "data:text/html,<script>alert(1)</script>"],
+    ["plain http", "http://acme.gitlab.io/site"],
+    ["a link-local address", "https://169.254.169.254/latest/meta-data/"],
+    ["localhost", "https://localhost/admin"],
+    ["an injected newline", "https://acme.gitlab.io/site\nSet-Cookie: session=1"],
+    ["embedded credentials", "https://acme.gitlab.io@evil.example/site"],
+    ["2,100 characters", `https://acme.gitlab.io/${"a".repeat(2100)}`],
+    ["a non-string", { href: "https://acme.gitlab.io/site" }],
+  ])("R5: Published with %s as its live URL never reaches the site doc", async (_label, pagesUrl) => {
+    const res = await signed({ pagesUrl });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, settled: "noop" });
+    expect(mem.read(SITE)).toMatchObject(untouched);
+  });
+
+  it("R5: over-long error and stage text is cut before it is stored", async () => {
+    await signed({ status: "failed", pagesUrl: null, error: "E".repeat(20_000), failedStage: "S".repeat(2_000) });
+    const site = mem.read(SITE)!;
+    expect(site.status).toBe("failed");
+    expect((site.errorMessage as string).length).toBe(500);
+    expect((site.statusPhase as string).length).toBe(120);
+  });
+
+  it("R5: partial errors are capped in number and length, and an over-long page id is dropped", async () => {
+    await signed({
+      partialErrors: Array.from({ length: 30 }, () => "P".repeat(600)),
+      pageId: "p".repeat(500),
+    });
+    const site = mem.read(SITE)!;
+    expect(site.status).toBe("ready");
+    expect(site.partialErrors).toHaveLength(20);
+    expect((site.partialErrors as string[]).every((e) => e.length === 500)).toBe(true);
+    expect(site.gitpagePageId).toBeUndefined();
+  });
+
+  it.each([
+    ["a path", "sa1/website/site1/x"],
+    ["a parent path", "../sa1"],
+    ["empty", ""],
+  ])("treats a sub-account id that is %s as missing, never as a Firestore path", async (_label, subAccountId) => {
+    const res = await signed({ subAccountId });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, ignored: "missing-ids" });
+    expect(mem.read(SITE)).toMatchObject(untouched);
+  });
+});
