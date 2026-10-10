@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Charge payment — a write that decides whether a client gets what they paid
@@ -93,6 +94,7 @@ describe("markSubAccountChargePaid", () => {
     // The money is real, so dropping it is not an option — but the agency
     // believes this charge is void and has to be told to refund it.
     expect(updates[0].status).toBe("paid");
+    await flushAfterResponse();
     expect(added[0]?.detail).toMatchObject({ paidAfterCancel: true });
   });
 });

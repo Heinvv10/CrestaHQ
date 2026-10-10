@@ -1,6 +1,7 @@
 import { Timestamp } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   SCHEDULE,
@@ -295,6 +296,7 @@ describe("normal cycles are still charged", () => {
     const calls = stubAutoCharge();
     await runOneSchedule(SCHEDULE, at("2026-03-01"));
     expect(calls).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendPushForEvent).toHaveBeenCalledTimes(1);
   });
 

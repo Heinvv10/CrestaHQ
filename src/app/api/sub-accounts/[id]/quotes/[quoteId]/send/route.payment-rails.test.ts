@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Behaviour-pinning tests for the invoice PAYMENT RAILS on the send route.
@@ -137,6 +138,7 @@ describe("invoice payment rails", () => {
       fireQuoteTrigger,
       emitQuoteWebhook,
     ]) {
+      await flushAfterResponse();
       expect(consumer).toHaveBeenCalledWith(
         expect.objectContaining(fresh),
         "quote_sent",

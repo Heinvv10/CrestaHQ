@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * The recurring-invoice run. Every guard here protects a customer from being
@@ -229,12 +230,16 @@ describe("generating a cycle", () => {
     expect(outcome).toMatchObject({ kind: "generated", sent: false });
     expect(written[0].status).toBe("draft");
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    // Drain the draft-waiting push so it cannot land in the next test.
+    await flushAfterResponse();
+    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
   });
 
   it("tells the operator a review-first draft is waiting", async () => {
     schedule = makeSchedule({ reviewFirst: true });
     await runOneSchedule("sch_1", NOW);
     // A draft nobody knows about is an invoice nobody sends.
+    await flushAfterResponse();
     expect(sendPushForEvent).toHaveBeenCalledTimes(1);
     expect(sendPushForEvent).toHaveBeenCalledWith(
       expect.objectContaining({

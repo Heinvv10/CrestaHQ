@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import type { AiSuiteCapability } from "@/lib/ai-suite/capabilities";
 
@@ -37,7 +38,6 @@ const call = (name: string, body: unknown, extra: Record<string, string> = {}) =
     }),
     { params: Promise.resolve({ name }) }
   );
-const settle = () => new Promise((r) => setTimeout(r, 10));
 // Logs are written fire-and-forget; one from a previous test can land after
 // the store was cleared, so every read filters by path.
 const logs = (path: string) => mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === path);
@@ -64,8 +64,9 @@ beforeEach(() => {
   key = mintKey(["agent"]);
   AI_SUITE_CAPABILITIES.push(outbound);
 });
-afterEach(() => {
+afterEach(async () => {
   AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(outbound), 1);
+  await flushAfterResponse();
 });
 
 describe("GET /api/v1/tools", () => {
@@ -102,7 +103,7 @@ describe("POST /api/v1/tools/{name}", () => {
     const res = await call("find_contacts", { query: "ann@private.io" });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { result: string }).result).toContain("Ann Private");
-    await settle();
+    await flushAfterResponse();
     const [log] = logs("/api/v1/tools/find_contacts");
     expect(log).toMatchObject({ responseStatus: 200, requestBody: "", responseBody: "" });
     expect(JSON.stringify(log)).not.toContain("Ann Private");
@@ -112,7 +113,7 @@ describe("POST /api/v1/tools/{name}", () => {
   it("a write tool logs its response normally", async () => {
     const res = await call("create_contact", { name: "Logged Contact" });
     expect(res.status).toBe(200);
-    await settle();
+    await flushAfterResponse();
     expect(String(logs("/api/v1/tools/create_contact")[0]!.responseBody)).toContain("Logged Contact");
   });
 

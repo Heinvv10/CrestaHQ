@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { Timestamp } from "firebase-admin/firestore";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
@@ -78,6 +79,7 @@ describe("mark_deal_completed", () => {
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("deals/d1")!.completed).toBe(true);
+    await flushAfterResponse();
     expect(reviewAsk).toHaveBeenCalledTimes(1);
     expect(reviewAsk).toHaveBeenCalledWith({
       subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "deal_completed", expect: { phone: "+27821111111", channel: "sms", body: SMS_TEXT },
@@ -121,6 +123,8 @@ describe("mark_deal_completed", () => {
     waTemplate();
     const id = await proposeId();
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
+    expect(reviewAsk).toHaveBeenCalledTimes(1);
     expect(reviewAsk.mock.calls[0]![0]).toMatchObject({ expect: { channel: "whatsapp_template", fingerprint: (row(id).pinned as { fingerprint: string }).fingerprint } });
     mem.seed("deals/d1", DEAL);
     reviewAsk.mockClear();
@@ -195,6 +199,7 @@ describe("mark_deal_completed", () => {
       expect(res.status).toBe(200);
     });
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
     expect(reviewAsk).toHaveBeenCalledTimes(1);
   });
 

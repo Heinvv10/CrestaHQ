@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { NextResponse } from "next/server";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
@@ -34,8 +35,12 @@ function chunked(text: string, headers: Record<string, string> = {}) {
   return { body, headers, duplex: "half" } as RequestInit;
 }
 
-const send = (r: typeof route, init: RequestInit) =>
-  r(
+// Every request writes one request-log row after the response; each test
+// waits for its own rows (afterEach) so none lands in the next test.
+let requests = 0;
+const send = (r: typeof route, init: RequestInit) => {
+  requests++;
+  return r(
     new Request("http://localhost/api/v1/things", {
       method: "POST",
       ...init,
@@ -43,8 +48,15 @@ const send = (r: typeof route, init: RequestInit) =>
     }),
     { params: undefined },
   );
+};
+
+afterEach(async () => {
+  await flushAfterResponse();
+  expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(requests);
+});
 
 beforeEach(() => {
+  requests = 0;
   mem.clear();
   handler.mockClear();
   mem.seed("subAccounts/sa1", { agencyId: "ag1", apiAccessEnabledByAgency: true });
@@ -83,10 +95,9 @@ describe("withApiAuth body cap (256 KB)", () => {
 
   it("the 413 is logged without the body", async () => {
     await send(route, chunked(jsonOf(MAX_BODY_BYTES + 1)));
-    await new Promise((r) => setTimeout(r, 20));
-    // (the previous test's un-awaited log may land here too; both are 413s)
+    await flushAfterResponse();
+    expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(1);
     const logs = mem.list("subAccounts/sa1/apiRequestLogs");
-    expect(logs.length).toBeGreaterThan(0);
     for (const l of logs) expect(l).toMatchObject({ responseStatus: 413, errorCode: "body_too_large", requestBody: "" });
   });
 });
@@ -105,8 +116,9 @@ describe("POST /api/v1/tools/{name} takes the agent-sized cap", () => {
   // 403 insufficient_scope past the 256 KB default, 413 past 1 MiB.
   it("a 300 KB body passes the cap; one over 1 MiB doesn't", async () => {
     const { POST } = await import("@/app/api/v1/tools/[name]/route");
-    const tool = (body: string) =>
-      POST(
+    const tool = (body: string) => {
+      requests++;
+      return POST(
         new Request("http://localhost/api/v1/tools/create_contact", {
           method: "POST",
           headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
@@ -114,6 +126,7 @@ describe("POST /api/v1/tools/{name} takes the agent-sized cap", () => {
         }),
         { params: Promise.resolve({ name: "create_contact" }) },
       );
+    };
     expect(await (await tool(jsonOf(300 * 1024))).json()).toMatchObject({ error: { code: "insufficient_scope" } });
     expect(await (await tool(jsonOf(MAX_AGENT_BODY_BYTES + 1))).json()).toMatchObject({ error: { code: "body_too_large" } });
   });

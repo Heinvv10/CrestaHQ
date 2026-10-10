@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
 /**
@@ -85,6 +86,7 @@ async function drain() {
   for (let seen = -1; seen !== fired.length; ) {
     seen = fired.length;
     await Promise.allSettled(fired);
+    await flushAfterResponse();
     await new Promise((r) => setTimeout(r, 0));
   }
 }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -39,7 +40,6 @@ const rawPost = (body: unknown, bearer = key) =>
     },
     body: JSON.stringify(body),
   }));
-const settle = () => new Promise((r) => setTimeout(r, 10));
 
 beforeEach(() => {
   mem.clear();
@@ -69,7 +69,7 @@ describe("REPRO 2: an exhausted key cannot amplify one request into many log row
     while (checkAndCount({ keyId, mode: "live", scope: "agent" }).ok);
     const batch = Array.from({ length: 100 }, (_, i) => call(i + 1, "find_contacts", { query: "ann" }));
     for (let n = 0; n < 3; n++) expect((await rawPost(batch)).status).toBe(429);
-    await settle();
+    await flushAfterResponse();
     expect(keyLogs().length).toBeLessThanOrEqual(3);
   });
 
@@ -78,7 +78,7 @@ describe("REPRO 2: an exhausted key cannot amplify one request into many log row
     const batch = Array.from({ length: 100 }, (_, i) => call(i + 1, "find_contacts", { query: "ann" }));
     const res = await rawPost(batch); // the request token (covering call 1) + 3 more calls run, 96 refused
     expect(res.status).toBe(200);
-    await settle();
+    await flushAfterResponse();
     const rows = keyLogs();
     const summary = rows.filter((l) => l.path === "/api/mcp");
     expect(summary).toHaveLength(1);
@@ -97,7 +97,7 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
     expect(text).toContain("Added contact");
     expect(text).not.toMatch(/call stack/i);
     expect(contactsNamed("Deep Nest")).toHaveLength(1);
-    await settle();
+    await flushAfterResponse();
     const rows = keyLogs().filter((l) => l.path === "/api/mcp#create_contact");
     expect(rows).toHaveLength(1);
     expect(String(rows[0]!.requestBody)).toContain("Deep Nest"); // the validated args, not the raw
@@ -113,11 +113,13 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
       throw new Error("log boom");
     });
     const res = await rawPost(call(1, "create_contact", { name: "Log Boom" }));
-    spy.mockRestore();
     const text = JSON.stringify(await res.json());
     expect(text).toContain("Added contact");
     expect(text).not.toContain("log boom");
+    // The throwing spy must stay in place until the deferred log write runs.
+    await flushAfterResponse();
     expect(warn).toHaveBeenCalledWith("[after-response] background task failed", expect.any(Error));
+    spy.mockRestore();
     warn.mockRestore();
   });
 
@@ -133,7 +135,7 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
     expect(res.status).toBe(200);
     expect(JSON.stringify(await res.json())).toContain("Added contact");
     expect(contactsNamed("Deep Rest")).toHaveLength(1);
-    await settle();
+    await flushAfterResponse();
     expect(keyLogs().filter((l) => l.path === "/api/v1/tools/create_contact")).toHaveLength(1);
   });
 });
@@ -141,7 +143,7 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
 describe("unknown or misspelled names log no bodies", () => {
   it("MCP", async () => {
     await rawPost(call(1, "find_contact", { query: "ann@private.io" }));
-    await settle();
+    await flushAfterResponse();
     const rows = keyLogs().filter((l) => l.path === "/api/mcp#find_contact");
     expect(rows).toMatchObject([{ requestBody: "", responseBody: "" }]);
     expect(JSON.stringify(rows)).not.toContain("ann@private.io");
@@ -156,7 +158,7 @@ describe("unknown or misspelled names log no bodies", () => {
       }),
       { params: Promise.resolve({ name: "find_contact" }) }
     );
-    await settle();
+    await flushAfterResponse();
     const rows = keyLogs().filter((l) => l.path === "/api/v1/tools/find_contact");
     expect(rows).toMatchObject([{ requestBody: "", responseBody: "" }]);
     expect(JSON.stringify(rows)).not.toContain("ann@private.io");

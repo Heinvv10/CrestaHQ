@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * A repeat cancel (double click, a second tab, a replayed request) answers
@@ -51,6 +52,7 @@ describe("visitor cancel", () => {
     expect((await cancel(token)).status).toBe(200);
     await Promise.all([cancel(token), cancel(token)]);
     expect(mem.read("events/e1")?.status).toBe("cancelled");
+    await flushAfterResponse();
     expect(triggers).toHaveBeenCalledTimes(1);
     expect(webhooks).toHaveBeenCalledTimes(1);
     expect(activities).toHaveBeenCalledTimes(1);

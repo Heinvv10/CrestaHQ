@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   AMOUNT,
@@ -102,6 +103,7 @@ describe("R1: marked paid by hand while the charge was unconfirmed, then Paystac
     });
     expect(attempt().state).toBe("refused");
     expect(declines()).toBe(0);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(triggers("invoice.charge_failed")).toBe(0);
     const tasks = tasksAbout(PAID_BY_HAND);
@@ -118,6 +120,7 @@ describe("R1: marked paid by hand while the charge was unconfirmed, then Paystac
     await markPaid();
     verifyAnswers("failed");
     await sweep(2 * HOUR);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(raised().status).toBe("paid");
   });
@@ -130,7 +133,9 @@ describe("R1: marked paid by hand while the charge was unconfirmed, then Paystac
     expect(await recheckCardCharge(SA, raised().id)).toEqual({ ok: true, outcome: "failed_but_paid" });
     expect(attempt().state).toBe("refused");
     expect(declines()).toBe(0);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     expect(mem.list("tasks")).toHaveLength(tasks);
   });
@@ -159,6 +164,7 @@ describe("R1: marked paid by hand while the charge was unconfirmed, then Paystac
     const res = await sendQuoteServerSide({ subAccountId: SA, quoteId: raised().id, actor: { kind: "system", reason: "test" } });
     expect(res).toMatchObject({ ok: false, failure: { code: "already_paid", status: 409, error: "This invoice is already paid." } });
     expect(raised().status).toBe("paid");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });
@@ -180,6 +186,7 @@ describe("the blind review's MEDIUM: the follow-up after a decline throws", () =
     expect(await sweep(2 * HOUR)).toMatchObject({ declined: 1 });
     vi.mocked(mem.db.doc).mockRestore();
     expect(raised().autoCharge).toMatchObject({ state: "declined" });
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(tasksAbout("could not be emailed automatically").map((t) => t.title)).toEqual([
       "Card charge for invoice INV-2026-0004 was declined, but the invoice could not be emailed automatically: Firestore unavailable. Send it by hand.",

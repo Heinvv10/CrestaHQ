@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import type { AiSuiteCapability } from "@/lib/ai-suite/capabilities";
 
@@ -47,7 +48,6 @@ const call = (name: string, body: unknown, headers: Record<string, string> = {})
     }),
     { params: Promise.resolve({ name }) },
   );
-const settle = () => new Promise((r) => setTimeout(r, 10));
 const logs = () => mem.all().map((d) => d.path).filter((p) => p.includes("/apiRequestLogs/"));
 const logsUnder = (prefix: string) => logs().filter((p) => p.startsWith(prefix));
 
@@ -68,7 +68,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(thrower), 1);
-  await settle();
+  await flushAfterResponse();
 });
 
 describe("request logs by key level", () => {
@@ -76,7 +76,7 @@ describe("request logs by key level", () => {
     const res = await call("find_contacts", { subAccountId: "sa1", query: "ann" });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { result: string }).result).toContain("Ann One");
-    await settle();
+    await flushAfterResponse();
     expect(logs()).toHaveLength(1);
     expect(logsUnder("subAccounts/sa1/apiRequestLogs/")).toHaveLength(1);
   });
@@ -87,7 +87,7 @@ describe("request logs by key level", () => {
   ])("past reach, %s still logs under the target", async (_label, name, body) => {
     const res = await call(name, body);
     expect(res.status).toBe(400);
-    await settle();
+    await flushAfterResponse();
     expect(logs()).toHaveLength(1);
     expect(logsUnder("subAccounts/sa1/apiRequestLogs/")).toHaveLength(1);
   });
@@ -97,9 +97,9 @@ describe("request logs by key level", () => {
     ["an agency-level call", "list_sub_accounts", {}, 200],
   ])("%s logs under the agency only", async (_label, name, body, status) => {
     expect((await call(name, body)).status).toBe(status);
-    await settle();
-    expect(logsUnder("subAccounts/")).toEqual([]);
+    await flushAfterResponse();
     expect(logsUnder("agencies/ag1/apiRequestLogs/")).toHaveLength(1);
+    expect(logsUnder("subAccounts/")).toEqual([]);
   });
 });
 
@@ -120,7 +120,7 @@ describe("logUnder is structural", () => {
     );
     const res = await route(new Request("http://localhost/x", { headers: { authorization: `Bearer ${key}` } }), {});
     expect(res.status).toBe(200);
-    await settle();
+    await flushAfterResponse();
     expect(logs()).toHaveLength(1);
     expect(logsUnder("subAccounts/sa1/apiRequestLogs/")).toHaveLength(1);
   });

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import { mintApiKey } from "@/lib/api/keys";
 
@@ -88,12 +89,17 @@ describe("POST /api/v1/deals", () => {
     expect(res.status, JSON.stringify(res.json)).toBe(201);
     expect(dealOf(res.json)).toMatchObject({ stage: "qualified", pipeline_id: "default" });
     expect(mem.read(`deals/${dealOf(res.json).id as string}`)?.pipelineId).toBe("default");
+    // Drain the deferred deal.created so it cannot land in a later test.
+    await flushAfterResponse();
+    expect(webhooks).toContain("deal.created");
   });
 
   it("pipeline_id=p2 accepts p2's stages and refuses the default's", async () => {
     const ok = await post({ ...base, stage: "open", pipeline_id: "p2" });
     expect(ok.status).toBe(201);
     expect(dealOf(ok.json).pipeline_id).toBe("p2");
+    await flushAfterResponse();
+    expect(webhooks).toContain("deal.created");
 
     const bad = await post({ ...base, stage: "qualified", pipeline_id: "p2" });
     expect(bad.status).toBe(400);
@@ -109,6 +115,8 @@ describe("PATCH /api/v1/deals/:id", () => {
   it("validates stage against the deal's own pipeline", async () => {
     const created = await post({ ...base, stage: "open", pipeline_id: "p2" });
     const id = dealOf(created.json).id as string;
+    await flushAfterResponse();
+    expect(webhooks).toContain("deal.created");
     // "won" is a default-pipeline id, not a p2 stage.
     const bad = await patch(id, { stage: "won" });
     expect(bad.status).toBe(400);
@@ -118,19 +126,24 @@ describe("PATCH /api/v1/deals/:id", () => {
   it("won / lost webhooks come from the pipeline's terminal flags", async () => {
     const created = await post({ ...base, stage: "open", pipeline_id: "p2" });
     const id = dealOf(created.json).id as string;
+    await flushAfterResponse();
+    expect(webhooks).toContain("deal.created");
     webhooks.length = 0;
 
     const won = await patch(id, { stage: "renewed" });
     expect(won.status).toBe(200);
+    await flushAfterResponse();
     expect(webhooks).toEqual(["deal.updated", "deal.stage.changed", "deal.won"]);
 
     webhooks.length = 0;
     const lost = await patch(id, { stage: "churned" });
     expect(lost.status).toBe(200);
+    await flushAfterResponse();
     expect(webhooks).toEqual(["deal.updated", "deal.stage.changed", "deal.lost"]);
 
     webhooks.length = 0;
     await patch(id, { stage: "open" });
+    await flushAfterResponse();
     expect(webhooks).toEqual(["deal.updated", "deal.stage.changed"]);
   });
 
@@ -142,6 +155,7 @@ describe("PATCH /api/v1/deals/:id", () => {
     const ok = await patch("legacy", { stage: "won" });
     expect(ok.status).toBe(200);
     expect(dealOf(ok.json).pipeline_id).toBe("default");
+    await flushAfterResponse();
     expect(webhooks).toContain("deal.won");
   });
 });

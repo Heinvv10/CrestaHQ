@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import { AGENCY_FIXTURE_ARGS, FIXTURE_ARGS } from "@/test/outbound-fixtures";
@@ -92,6 +93,9 @@ const TRIGGERS = Object.keys(TRIGGER_LABELS);
 const agentCaps = () =>
   AI_SUITE_CAPABILITIES.filter((c) => c.level === "sub-account" && availableOn(c, "agent"));
 
+// Deferred work from one test (pushes, webhooks) must not land in the next.
+afterEach(() => flushAfterResponse());
+
 beforeEach(() => {
   fired.length = 0;
   for (const s of Object.values(spies)) s.mockClear();
@@ -159,6 +163,7 @@ async function drain() {
   for (let seen = -1; seen !== fired.length; ) {
     seen = fired.length;
     await Promise.allSettled(fired);
+    await flushAfterResponse();
     await new Promise((r) => setTimeout(r, 0));
   }
 }
@@ -279,8 +284,13 @@ describe("staff push for an agent's contact carries fixed text only", () => {
     const { AGENT_CONTACT_PUSH_BODY } = await import("@/lib/push/events");
     await dispatchAgentTool(auth, "create_contact", { name: "Click evil.example NOW", email: "x@y.io" });
     await drain();
+    await flushAfterResponse();
+    const contact = mem.list("contacts").find((c) => c.name === "Click evil.example NOW");
+    expect(contact, "the agent's contact was created").toBeDefined();
+    const mine = sendPushForEvent.mock.calls.map(([p]) => p).filter((p) => (p as { tag?: string }).tag === `lead-${contact!.id}`);
+    expect(mine).toHaveLength(1);
     expect(sendPushForEvent).toHaveBeenCalledTimes(1);
-    const push = sendPushForEvent.mock.calls[0]![0];
+    const push = mine[0]!;
     expect(push).toMatchObject({ title: "New contact", body: AGENT_CONTACT_PUSH_BODY });
     expect(JSON.stringify(push)).not.toContain("evil.example");
   });
@@ -288,6 +298,7 @@ describe("staff push for an agent's contact carries fixed text only", () => {
   it("the tenant's own webhook still receives the event (exempt, like the human path)", async () => {
     await dispatchAgentTool(auth, "create_contact", { name: "Webhook Contact" });
     await drain();
+    await flushAfterResponse();
     expect(publishCallback.mock.calls.map(([o]) => o.pathname)).toContain(TENANT_WEBHOOK_STEP);
   });
 });

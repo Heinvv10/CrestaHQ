@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * The hourly quality poll: the pure transition rule, then the sweep for real
@@ -205,6 +206,9 @@ describe("runWhatsappQualitySweep", () => {
         resolvedAt: null,
       }),
     ]);
+    await flushAfterResponse();
+    expect(edges.sendPushForEvent).toHaveBeenCalledTimes(1);
+    expect(edges.sendEmail).toHaveBeenCalledTimes(1);
     expect(edges.sendPushForEvent).toHaveBeenCalledWith({
       subAccountId: "sa_a",
       agencyId: AGENCY,

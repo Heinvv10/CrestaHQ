@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * PATCH /api/v1/contacts/:id — a tag applied over the API must enrol the
@@ -151,6 +152,9 @@ describe("PATCH /api/v1/contacts/:id — workflow triggers", () => {
     });
     // The reservation stays charged — the trigger owns it from here.
     expect(enrolmentCount).toBe(1);
+    // Drain the deferred contact.updated so it cannot land in the next test.
+    await flushAfterResponse();
+    expect(emitWebhookEvent).toHaveBeenCalledTimes(1);
   });
 
   it("fires nothing, and RELEASES its reservation, when tags don't change", async () => {
@@ -160,6 +164,7 @@ describe("PATCH /api/v1/contacts/:id — workflow triggers", () => {
     expect(contactUpdates).toHaveLength(1);
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     // contact.updated still fires — only the enrolment trigger is silent.
+    await flushAfterResponse();
     expect(emitWebhookEvent).toHaveBeenCalledTimes(1);
     // Asserted on the BUCKET, not on the mocked trigger: `fireWorkflowTrigger`
     // is mocked, so "it wasn't called" cannot see whether the reservation

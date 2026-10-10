@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Route-handler tests for POST /api/contacts/bulk. Firestore is a recording
@@ -205,6 +206,7 @@ describe("add_tag / remove_tag", () => {
       ["contacts/a", { tags: ["lead", "vip"], updatedAt: "ts" }],
       ["contacts/b", { tags: ["vip"], updatedAt: "ts" }],
     ]);
+    await flushAfterResponse();
     expect(fake.trigger).toHaveBeenCalledTimes(1);
     expect(fake.trigger).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 const m = vi.hoisted(() => ({
   contact: {
     subAccountId: "sa",
@@ -119,6 +120,7 @@ it("an inbound opt-out keyword notifies staff but starts no workflow", async () 
     optOut: true,
   });
   expect(m.writes).toHaveBeenCalled();
+  await flushAfterResponse();
   expect(emitWebhookEvent).toHaveBeenCalledWith(
     expect.objectContaining({ type: "message.received" })
   );
@@ -127,6 +129,7 @@ it("an inbound opt-out keyword notifies staff but starts no workflow", async () 
 });
 it("an ordinary inbound still fires message.received automation", async () => {
   await upsertConversationForMessage({ ...input, direction: "inbound" });
+  await flushAfterResponse();
   expect(emitWebhookEvent).toHaveBeenCalledWith(
     expect.objectContaining({ type: "message.received" })
   );

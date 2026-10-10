@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Behaviour-pinning tests for the SEND-AND-PERSIST half of the send route:
@@ -174,6 +175,7 @@ describe("lifecycle", () => {
 
   it("fires the trigger and the outbound webhook", async () => {
     await call();
+    await flushAfterResponse();
     expect(fireQuoteTrigger).toHaveBeenCalledWith(
       expect.objectContaining({ id: QUOTE_ID }),
       "quote_sent",

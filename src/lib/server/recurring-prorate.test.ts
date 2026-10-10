@@ -1,6 +1,7 @@
 import { Timestamp } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { computeQuoteTotals } from "@/lib/quotes/calc";
 import { SCHEDULE, chargeCalls, seedCardSchedule, seedMandate, stubAutoCharge, tasksAbout } from "@/test/auto-charge-harness";
@@ -70,6 +71,10 @@ async function billedOnce(anchor: number, firstDue: string, over: Record<string,
   seedCardSchedule({ chargeMode: "invoice", anchorDay: anchor, nextRunAt: midnight(firstDue), ...over });
   await runOneSchedule(SCHEDULE, at(firstDue));
   expect(quotes()).toHaveLength(1);
+  // A review-first cycle pushes after the run returns; let it land before the
+  // mocks are cleared or it is counted against the next step.
+  if (over.reviewFirst) await flushAfterResponse();
+  if (over.reviewFirst) expect(sendPushForEvent).toHaveBeenCalledTimes(1);
   vi.clearAllMocks();
 }
 
@@ -152,6 +157,7 @@ describe("gap: 15th → 20th", () => {
     await edit("2026-07-01", { anchorDay: 20 });
     expect(quotes()[1]).toMatchObject({ status: "draft", prorated: "gap" });
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
+    await flushAfterResponse();
     expect(sendPushForEvent).toHaveBeenCalledTimes(1);
   });
 

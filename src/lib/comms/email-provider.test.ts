@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 const mocks = vi.hoisted(() => ({
   resend: vi.fn(),
   smtp: vi.fn(),
@@ -73,6 +74,7 @@ it("sends using only the owning tenant's SMTP and meters success", async () => {
     })
   );
   expect(mocks.resend).not.toHaveBeenCalled();
+  await flushAfterResponse();
   expect(mocks.usage).toHaveBeenCalledWith({
     subAccountId: "sa1",
     unit: "emailsSent",

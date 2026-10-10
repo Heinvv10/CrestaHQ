@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import { beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
@@ -23,6 +24,8 @@ process.env.STRIPE_WEBHOOK_SECRET = SECRET;
 
 mem.db = createMemoryFirestore();
 const { POST } = await import("./route");
+
+const paidEvents = () => dispatch.emitWebhookEvent.mock.calls.filter(([e]) => e.type === "billing.charge.paid");
 
 function deliver(type: string, object: Record<string, unknown>) {
   const payload = JSON.stringify({ id: "evt_1", object: "event", type, data: { object } });
@@ -80,6 +83,9 @@ it("an unpaid (delayed-method) charge checkout is not marked paid until the paym
 
   expect((await deliver("checkout.session.async_payment_succeeded", chargeSession("cs_a"))).status).toBe(200);
   expect(mem.db.read("billingCharges/ch1")).toMatchObject({ status: "paid", stripeCheckoutSessionId: "cs_a" });
+  // Drain the deferred charge.paid so it cannot land in the next test.
+  await flushAfterResponse();
+  expect(paidEvents()).toHaveLength(1);
 });
 
 it("an unpaid plan checkout does not activate the workspace; the settled payment does", async () => {
@@ -107,6 +113,9 @@ it("a second payment of an already-paid charge is recorded; a redelivery of the 
     stripeCheckoutSessionId: "cs_a",
     extraPaymentRefs: ["cs_b"],
   });
+  // Drain the deferred charge.paid so it cannot land in the next test.
+  await flushAfterResponse();
+  expect(paidEvents()).toHaveLength(1);
 });
 
 it("two payments racing for one charge: one marks it paid, the other is recorded, charge.paid fires once", async () => {
@@ -118,6 +127,6 @@ it("two payments racing for one charge: one marks it paid, the other is recorded
   expect(charge.status).toBe("paid");
   expect(charge.extraPaymentRefs).toHaveLength(1);
   expect([charge.stripeCheckoutSessionId, ...(charge.extraPaymentRefs as string[])].sort()).toEqual(["cs_a", "cs_b"]);
-  const paidEvents = dispatch.emitWebhookEvent.mock.calls.filter(([e]) => e.type === "billing.charge.paid");
-  expect(paidEvents).toHaveLength(1);
+  await flushAfterResponse();
+  expect(paidEvents()).toHaveLength(1);
 });

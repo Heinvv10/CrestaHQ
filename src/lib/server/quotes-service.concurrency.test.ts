@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
@@ -39,6 +40,7 @@ describe("overlapping mark-paid calls", () => {
     expect(results.filter((r) => r.ok)).toHaveLength(1);
     expect(results.filter((r) => !r.ok && r.code === "already_paid")).toHaveLength(2);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    await flushAfterResponse();
     expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
     expect(effects.emitQuoteWebhook).toHaveBeenCalledTimes(1);

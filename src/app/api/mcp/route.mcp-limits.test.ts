@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -38,7 +39,6 @@ const rawPost = (body: unknown, bearer = key) =>
     },
     body: JSON.stringify(body),
   }));
-const settle = () => new Promise((r) => setTimeout(r, 10));
 const logs = (path: string) => mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === path);
 
 beforeEach(() => {
@@ -137,7 +137,7 @@ describe("refused before any message runs", () => {
       error: { type: "rate_limit_error", code: "rate_limited", request_id: expect.any(String) },
     });
     expect(contactsNamed("Too Many")).toEqual([]);
-    await settle();
+    await flushAfterResponse();
     expect(logs("/api/mcp").filter((l) => l.keyId === keyId)).toMatchObject([{ responseStatus: 429, errorCode: "rate_limited" }]);
   });
 

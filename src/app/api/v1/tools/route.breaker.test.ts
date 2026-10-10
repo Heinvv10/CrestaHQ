@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -37,7 +38,9 @@ const call = (name: string, body: unknown, extra: Record<string, string> = {}, r
   );
 const list = (auth = `Bearer ${key}`) =>
   GET(new Request("http://localhost/api/v1/tools", { headers: { authorization: auth } }), { params: undefined });
-const settle = () => new Promise((r) => setTimeout(r, 20));
+
+// Request logs are written after the response: keep them out of the next test.
+afterEach(() => flushAfterResponse());
 
 beforeEach(() => {
   mem.clear();
@@ -187,17 +190,23 @@ describe("idempotency", () => {
 });
 
 describe("PII persistence", () => {
+  const logFor = (res: Response) =>
+    mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.requestId === res.headers.get("x-request-id"));
   it("after a read by email, no collection holds the contact's name or email", async () => {
     const r = await call("find_contacts", { query: "ann@private.io" });
     expect(r.status).toBe(200);
     expect(await r.text()).toContain("Ann Private");
-    await settle();
+    // The request log is the row that could hold PII: wait for it, or this checks nothing.
+    await flushAfterResponse();
+    expect(logFor(r)).toHaveLength(1);
     const hits = mem.all().filter((d) => d.path !== "contacts/c1" && /Ann Private|ann@private\.io/.test(JSON.stringify(d.data)));
     expect(hits.map((h) => `${h.path}: ${JSON.stringify(h.data).slice(0, 300)}`)).toEqual([]);
   });
   it("after a read by name, no collection holds the contact's name", async () => {
-    await call("find_contacts", { query: "Ann Private" });
-    await settle();
+    const r = await call("find_contacts", { query: "Ann Private" });
+    // The request log is the row that could hold PII: wait for it, or this checks nothing.
+    await flushAfterResponse();
+    expect(logFor(r)).toHaveLength(1);
     const hits = mem.all().filter((d) => d.path !== "contacts/c1" && /Ann Private/.test(JSON.stringify(d.data)));
     expect(hits.map((h) => h.path)).toEqual([]);
   });
@@ -238,9 +247,9 @@ describe("round 2", () => {
     expect(JSON.parse(text)).toMatchObject({ error: { code: "internal_error" } });
     expect(text).not.toContain("internal-host");
     expect(logged).toHaveBeenCalledWith("[api/v1] precheck threw", expect.any(Error));
-    await settle();
+    await flushAfterResponse();
+    expect(mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === "/api/v1/tools/create_contact")).toHaveLength(1);
     const rows = mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === "/api/v1/tools/create_contact");
-    expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ responseStatus: 500, errorCode: "internal_error" });
     expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);
     expect(contacts(/"X"/)).toEqual([]);

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -110,6 +111,7 @@ describe("updateDealServerSide — stage moves", () => {
     });
     await tick();
     expect(fired.map((f) => f.type)).toEqual(["pipeline.stage.changed", "deal.lost"]);
+    await flushAfterResponse();
     expect(webhooks).toContain("deal.lost");
     expect(mem.read(`deals/${id}`)?.lostReason).toBe("price");
 
