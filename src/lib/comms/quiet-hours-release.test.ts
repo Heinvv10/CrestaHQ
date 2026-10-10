@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -90,6 +91,7 @@ describe("holding", () => {
         delaySeconds: 9 * 3600,
       }),
     );
+    await flushAfterResponse();
     expect(sendSms).not.toHaveBeenCalled();
   });
 
@@ -117,6 +119,7 @@ describe("releasing", () => {
     await mem.db.doc("contacts/c1").update({ smsOptedOut: true });
     vi.setSystemTime(OPEN);
     await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "skipped", reason: "opted_out" });
+    await flushAfterResponse();
     expect(sendSms).not.toHaveBeenCalled();
   });
 
@@ -131,6 +134,7 @@ describe("releasing", () => {
   it("holds again, unsent, when it is still quiet hours at release", async () => {
     const id = await holdSms();
     await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "skipped", reason: "held_again" });
+    await flushAfterResponse();
     expect(sendSms).not.toHaveBeenCalled();
     expect(mem.list("subAccounts/sa1/quietHoursHolds").filter((d) => d.status === "pending")).toHaveLength(1);
   });
@@ -154,6 +158,7 @@ describe("releasing", () => {
     const ai = await holdSms("ai_reply");
     resolveAgent.mockResolvedValue({ effective: { enabled: false } });
     await expect(releaseQuietHoursHold("sa1", ai)).resolves.toEqual({ outcome: "skipped", reason: "ai_disabled" });
+    await flushAfterResponse();
     expect(sendSms).not.toHaveBeenCalled();
   });
 
@@ -162,6 +167,7 @@ describe("releasing", () => {
     await mem.db.doc("contacts/c1").update({ phone: "+27829999999" });
     vi.setSystemTime(OPEN);
     await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "skipped", reason: "number_changed" });
+    await flushAfterResponse();
     expect(sendSms).not.toHaveBeenCalled();
   });
 
@@ -206,6 +212,7 @@ describe("held AI replies", () => {
     mem.seed("contacts/c1/messages/out", { direction: "outbound", ...row, createdAt: new Date(NIGHT.getTime() + 60_000) });
     vi.setSystemTime(OPEN);
     await expect(releaseQuietHoursHold("sa1", id)).resolves.toEqual({ outcome: "skipped", reason: "already_answered" });
+    await flushAfterResponse();
     expect(sendSms).not.toHaveBeenCalled();
   });
 

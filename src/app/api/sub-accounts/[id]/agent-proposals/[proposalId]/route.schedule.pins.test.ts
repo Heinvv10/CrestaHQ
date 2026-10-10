@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { NextResponse } from "next/server";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
@@ -78,6 +79,7 @@ describe.each([
     const r = await fireScheduledMessage("c1", doc.id as string, (doc.sendAt as { toMillis(): number }).toMillis());
     expect(r).toMatchObject({ outcome: "failed" });
     expect(booked()[0]).toMatchObject({ status: "failed", failureCode: "recipient_changed" });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 });

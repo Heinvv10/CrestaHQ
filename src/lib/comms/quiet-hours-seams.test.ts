@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import type { SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc } from "@/types/whatsapp-templates";
 
@@ -82,6 +83,7 @@ describe("SMS seam", () => {
     const err = await sms().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(QuietHoursDeferredError);
     expect((err as InstanceType<typeof QuietHoursDeferredError>).hold.until).toEqual(OPEN);
+    await flushAfterResponse();
     expect(sendSmsVia).not.toHaveBeenCalled();
   });
 
@@ -103,6 +105,7 @@ describe("WhatsApp free-form seam", () => {
     const r = await wa("automated");
     expect(r).toMatchObject({ ok: false, refusedBy: "quiet_hours", attempted: false });
     expect(r.quietHours?.until).toEqual(OPEN);
+    await flushAfterResponse();
     expect(sendWhatsappCloud).not.toHaveBeenCalled();
   });
 
@@ -122,6 +125,7 @@ describe("WhatsApp template seam", () => {
     vi.setSystemTime(NIGHT);
     const r = await waTemplate();
     expect(r).toMatchObject({ ok: false, refusedBy: "quiet_hours" });
+    await flushAfterResponse();
     expect(sendWhatsappCloud).not.toHaveBeenCalled();
   });
 

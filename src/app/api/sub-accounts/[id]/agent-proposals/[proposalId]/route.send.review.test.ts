@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
 /**
@@ -59,6 +60,7 @@ describe("consent", () => {
     expect(await first.json()).toMatchObject({ error: "preview_changed" });
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id)).toMatchObject({ status: "failed", error: message });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 });
@@ -122,6 +124,7 @@ describe("breaker round 2", () => {
     const res = await decide(id, "approve");
     expect(res.status).toBe(409);
     expect((await res.json()).preview).toContainEqual({ label: "In reply to", value: expect.stringContaining("Second") });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 });
@@ -191,6 +194,7 @@ describe("pinned-value guards", () => {
   ])("a pin that doesn't match %s is refused, 0 sends", async (_label, pinned) => {
     await expect(getCapability("send_message")!.execute({ ...buildAgentContext(auth), approved: { pinned } }, args))
       .rejects.toBeInstanceOf(CapabilityUserError);
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 });

@@ -73,6 +73,7 @@ describe("reconcileContactFromCapture — early exits", () => {
     });
     expect(res).toBeNull();
     expect(adds).toHaveLength(0);
+    await flushAfterResponse();
     expect(emitContactCreated).not.toHaveBeenCalled();
   });
 
@@ -224,6 +225,7 @@ describe("reconcileContactFromCapture — creating a contact", () => {
     await reconcile({
       capture: { name: null, email: "jane@example.com", phone: null },
     });
+    await flushAfterResponse();
     expect(emitContactCreated).not.toHaveBeenCalled();
   });
 

@@ -141,6 +141,7 @@ describe("PATCH /api/v1/contacts/:id — workflow triggers", () => {
     const res = await patch({ tags: ["lead", "audit-booked"] });
 
     expect(res.status).toBe(200);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).toHaveBeenCalledTimes(1);
     expect(fireWorkflowTrigger).toHaveBeenCalledWith({
       subAccountId: "sa1",
@@ -162,6 +163,7 @@ describe("PATCH /api/v1/contacts/:id — workflow triggers", () => {
 
     expect(res.status).toBe(200);
     expect(contactUpdates).toHaveLength(1);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     // contact.updated still fires — only the enrolment trigger is silent.
     await flushAfterResponse();
@@ -177,6 +179,7 @@ describe("PATCH /api/v1/contacts/:id — workflow triggers", () => {
     const res = await patch({ name: "Thandi M" });
 
     expect(res.status).toBe(200);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     expect(enrolmentCount).toBe(0);
   });
@@ -208,6 +211,7 @@ describe("PATCH /api/v1/contacts/:id — workflow triggers", () => {
 
     expect(res.status).toBe(200);
     expect(contactUpdates).toHaveLength(1);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     // Test mode reserves nothing, so it must release nothing.
     expect(enrolmentCount).toBe(0);
@@ -231,6 +235,7 @@ describe("PATCH /api/v1/contacts/:id — hourly enrolment cap", () => {
 
     expect(res.status).toBe(200);
     expect(contactUpdates).toHaveLength(1);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -257,6 +262,7 @@ describe("PATCH /api/v1/contacts/:id — hourly enrolment cap", () => {
     // Refused, not truncated: the tag is not on the contact and nobody enrolled.
     expect(contactUpdates).toEqual([]);
     expect(contact!.tags).toEqual(["lead"]);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     expect(emitWebhookEvent).not.toHaveBeenCalled();
     // The refused reservation was handed straight back.

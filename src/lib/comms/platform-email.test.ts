@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * A deployment that sends only through per-sub-account SMTP has no shared
@@ -96,6 +97,7 @@ describe("member invite with no shared sender", () => {
     expect(res).toMatchObject({ mailed: true, mailError: null });
     expect(m.smtpFor.mock.calls).toEqual([[SA]]);
     expect(smtpSend.mock.calls.map(([, msg]) => msg.to)).toEqual(["new@example.com"]);
+    await flushAfterResponse();
     expect(m.resendSend).not.toHaveBeenCalled();
     // Platform mail is not client spend.
     expect(m.recordUsage).not.toHaveBeenCalled();
@@ -113,6 +115,7 @@ describe("member invite with no shared sender", () => {
     expect(res.mailed).toBe(false);
     // Generic for the UI; the detail is only in the server log.
     expect(res.mailError).toBe("No email could be sent — configure SMTP in Settings.");
+    await flushAfterResponse();
     expect(smtpSend).not.toHaveBeenCalled();
     expect(m.resendSend).not.toHaveBeenCalled();
     expect(errors).toHaveBeenCalledWith(expect.stringContaining(`sub-account ${NO_SMTP} has no verified SMTP`));
@@ -129,6 +132,7 @@ describe("shared sender configured", () => {
   it("is preferred over the sub-account's SMTP", async () => {
     const res = await invite(SA);
     expect(res.mailed).toBe(true);
+    await flushAfterResponse();
     expect(m.resendSend).toHaveBeenCalledTimes(1);
     expect(smtpSend).not.toHaveBeenCalled();
   });
@@ -183,6 +187,7 @@ describe("operator booking cancel (unchanged path) with no shared sender", () =>
     expect(outcome.emailSent).toBe(true);
     expect(m.smtpFor.mock.calls).toEqual([[SA]]);
     expect(smtpSend.mock.calls.map(([, msg]) => msg.to)).toEqual(["visitor@example.com"]);
+    await flushAfterResponse();
     expect(m.resendSend).not.toHaveBeenCalled();
   });
 });

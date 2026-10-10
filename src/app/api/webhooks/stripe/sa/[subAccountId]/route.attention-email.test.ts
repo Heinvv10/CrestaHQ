@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { deliverTo, mem, seedConnection, seedInvoice, seedOrder, session } from "@/test/stripe-orders-harness";
 
@@ -43,12 +44,14 @@ it("a second payment for a paid invoice emails the sub-account admins once, acro
   seedOrder("o1");
   seedOrder("o2");
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
+  await flushAfterResponse();
   expect(sendEmail).not.toHaveBeenCalled();
 
   expect((await deliver("checkout.session.completed", session("cs_o2"), "evt_2")).status).toBe(200);
   expect((await deliver("checkout.session.completed", session("cs_o2"), "evt_2")).status).toBe(200);
 
   expect(mem.read("orders/o2")).toMatchObject({ attention: expect.stringMatching(/already paid/i), attentionOpen: true });
+  await flushAfterResponse();
   expect(sendEmail).toHaveBeenCalledTimes(1);
   expect(sendEmail.mock.calls[0][0]).toMatchObject({ to: "admin@gym.example" });
   expect(sendEmail.mock.calls[0][0].text).toContain("pi_cs_o2");

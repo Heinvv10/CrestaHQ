@@ -106,6 +106,7 @@ describe("gap: 15th → 20th", () => {
     ]);
     expect(total(gap)).toBe(185.48); // R1,150 × 5 ÷ 31
     expect(gap).toMatchObject({ recurringInvoiceId: SCHEDULE, prorated: "gap" });
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(sendQuoteServerSide.mock.calls[0][0].quoteId).toBe(gap.id);
     expect(gaps()).toMatchObject([{ state: "raised", invoiceId: gap.id }]);
@@ -135,6 +136,7 @@ describe("gap: 15th → 20th", () => {
     expect((await edit("2026-07-01", { anchorDay: 20 })).status).toBe(200);
     expect((await edit("2026-07-02", { anchorDay: 20, name: "Renamed" })).status).toBe(200);
     expect(quotes()).toHaveLength(2);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
   });
 
@@ -156,6 +158,7 @@ describe("gap: 15th → 20th", () => {
     await billedOnce(15, "2026-06-15", { reviewFirst: true });
     await edit("2026-07-01", { anchorDay: 20 });
     expect(quotes()[1]).toMatchObject({ status: "draft", prorated: "gap" });
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     await flushAfterResponse();
     expect(sendPushForEvent).toHaveBeenCalledTimes(1);
@@ -170,6 +173,7 @@ describe("gap: 15th → 20th", () => {
 
     await edit("2026-07-01", { anchorDay: 20 });
     expect(chargeCalls(calls)).toHaveLength(1);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(sendQuoteServerSide.mock.calls[0][0].quoteId).toBe(quotes()[1].id);
     const [task] = tasksAbout("deliberate");
@@ -275,6 +279,7 @@ describe("the sweep guarantees the gap invoice", () => {
     vi.clearAllMocks();
     expect(await raisePendingProrations(at("2026-07-02"))).toBe(1);
     expect(quotes()).toHaveLength(2);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     expect(tasksAbout("whether it was sent is unknown")).toHaveLength(1);
     expect(gaps()).toMatchObject([{ state: "raised" }]);
@@ -412,6 +417,7 @@ describe("overlap: 20th → 15th", () => {
     await edit("2026-06-22", { anchorDay: 19 });
     await runOneSchedule(SCHEDULE, at("2026-07-19"));
     expect(chargeCalls(calls)).toHaveLength(1);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     const [task] = tasksAbout("deliberate pro-rated credit");
     expect(`${task.title} ${task.notes}`).not.toMatch(/fix one/i);

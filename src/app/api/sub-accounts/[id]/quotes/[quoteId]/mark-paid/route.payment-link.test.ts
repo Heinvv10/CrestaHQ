@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { NextResponse } from "next/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { KEY, SA, mem, seedAttempt, seedInvoice, seedLink, seedSub, stubPaystack, verified } from "@/test/paystack-links-harness";
 
@@ -75,6 +76,7 @@ it("operator marks paid in the retry window: the redelivery raises no refund fla
   expect((await deliver()).status).toBe(200);
   expect(mem.read("paymentLinks/link1")!.invoiceAttention ?? null).toBeNull();
   expect(mem.read("paymentLinks/link1")!.invoiceSettledAt).toBeInstanceOf(Date);
+  await flushAfterResponse();
   expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
 });
 

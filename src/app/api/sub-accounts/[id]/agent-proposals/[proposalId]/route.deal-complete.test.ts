@@ -75,6 +75,7 @@ describe("mark_deal_completed", () => {
     expect(row(id).preview).toContainEqual({ label: "Message", value: SMS_TEXT, multiline: true });
     expect(row(id).pinned).toEqual({ dealId: "d1", contactId: "c1", phone: "+27821111111", channel: "sms", body: SMS_TEXT, fingerprint: null });
     expect(row(id).preview).toContainEqual({ label: "Stage", value: "Won (Won stage)" });
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
     expect((await decide(id, "approve")).status).toBe(200);
@@ -134,6 +135,7 @@ describe("mark_deal_completed", () => {
       reviews({ channel: "whatsapp_template", whatsappTemplateId: "rt2" });
     });
     expect((await decide(id2, "approve")).status).toBe(422);
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -151,6 +153,7 @@ describe("mark_deal_completed", () => {
     const res = await decide(id, "approve");
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: "preview_changed" });
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
   });
@@ -169,6 +172,7 @@ describe("mark_deal_completed", () => {
     const id = await proposeId();
     inExecuteWindow(() => mem.seed("deals/d1", { ...DEAL, completed: true }));
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -177,6 +181,7 @@ describe("mark_deal_completed", () => {
     const id = await proposeId();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("deals/d1")!.completed).toBe(true);
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -186,6 +191,7 @@ describe("mark_deal_completed", () => {
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The deal's contact changed since this was reviewed; it was not marked completed.");
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -209,6 +215,7 @@ describe("mark_deal_completed", () => {
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The deal is no longer on a Won stage; it was not marked completed.");
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -232,6 +239,7 @@ describe("mark_deal_completed", () => {
     const res = await decide(id, "approve");
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: "preview_changed" });
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -247,6 +255,7 @@ describe("mark_deal_completed", () => {
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The deal's contact, their number or the review request changed since this was reviewed; nothing was changed.");
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 });

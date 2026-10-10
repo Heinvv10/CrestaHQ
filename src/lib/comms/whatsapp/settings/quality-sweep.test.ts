@@ -170,6 +170,7 @@ describe("runWhatsappQualitySweep", () => {
     expect(quality("sa_a")).toEqual({ rating: "GREEN", nameStatus: "APPROVED", status: "CONNECTED", checkedAt: NOW, changedAt: NOW });
     expect(quality("sa_b")?.rating).toBe("RED");
     expect(alerts("sa_b")).toEqual([]);
+    await flushAfterResponse();
     expect(edges.sendEmail).not.toHaveBeenCalled();
     expect(edges.sendPushForEvent).not.toHaveBeenCalled();
     // The rest of the doc survived the merge.
@@ -231,6 +232,7 @@ describe("runWhatsappQualitySweep", () => {
     const result = await runWhatsappQualitySweep({ now: NOW });
     expect(result).toEqual({ processed: 1, alerted: 1, recovered: 0, failed: 0, skipped: 0 });
     expect(alerts("sa_a")).toHaveLength(1);
+    await flushAfterResponse();
     expect(edges.sendPushForEvent).not.toHaveBeenCalled();
     expect(edges.sendEmail).not.toHaveBeenCalled();
     expect(warned).toContain("[whatsapp-quality] fake mode: push/email suppressed sa=sa_a");
@@ -244,6 +246,7 @@ describe("runWhatsappQualitySweep", () => {
     const result = await runWhatsappQualitySweep({ now: NOW });
     expect(result.alerted).toBe(1);
     expect(alerts("sa_a")).toHaveLength(1); // the alert doc does not depend on either channel
+    await flushAfterResponse();
     expect(edges.sendEmail).not.toHaveBeenCalled();
     expect(warned).toContain("[whatsapp-quality] push not configured, alert not delivered sa=sa_a");
     expect(warned).toContain("[whatsapp-quality] email not configured, alert not delivered sa=sa_a");
@@ -274,6 +277,7 @@ describe("runWhatsappQualitySweep", () => {
     expect(result).toEqual({ processed: 1, alerted: 0, recovered: 0, failed: 0, skipped: 0 });
     expect(quality("sa_a")).toMatchObject({ rating: "RED", changedAt: NOW });
     expect(alerts("sa_a")).toEqual([]);
+    await flushAfterResponse();
     expect(edges.sendEmail).not.toHaveBeenCalled();
   });
 
@@ -286,6 +290,7 @@ describe("runWhatsappQualitySweep", () => {
     expect(result).toEqual({ processed: 1, alerted: 0, recovered: 1, failed: 0, skipped: 0 });
     expect(mem.read(`${alertsCollection("sa_a")}/al_open`)?.resolvedAt).toEqual(NOW);
     expect(mem.read(`${alertsCollection("sa_a")}/al_old`)?.resolvedAt).toEqual(EARLIER);
+    await flushAfterResponse();
     expect(edges.sendEmail).not.toHaveBeenCalled();
     expect(edges.sendPushForEvent).not.toHaveBeenCalled();
   });

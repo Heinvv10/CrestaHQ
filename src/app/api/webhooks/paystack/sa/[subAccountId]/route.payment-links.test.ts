@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   KEY,
@@ -95,6 +96,7 @@ describe("charge.success → payment link paid", () => {
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -108,6 +110,7 @@ describe("charge.success → payment link paid", () => {
     expect(res.status).toBe(200);
     // Not rewritten at all — not merely rewritten with the same values.
     expect((await mem.db.doc("paymentLinks/link1").get()).version).toBe(version);
+    await flushAfterResponse();
     expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
@@ -121,6 +124,7 @@ describe("charge.success → payment link paid", () => {
     expect(link().invoiceAttention ?? null).toBeNull();
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid", paidVia: { rail: "paystack_link", linkId: "link1", reference: REF } });
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
     expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
   });
@@ -131,6 +135,7 @@ describe("charge.success → payment link paid", () => {
     verifyAnswer = () => verified({ reference: REF, amount: 115000 });
     await deliver();
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
@@ -181,6 +186,7 @@ describe("charge.success → payment link paid", () => {
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
     expect(link().invoiceAttention).toMatch(/changed/i);
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
@@ -203,6 +209,7 @@ describe("charge.success → payment link paid", () => {
     expect((await deliver()).status).toBe(200);
     expect(link().invoiceAttention ?? null).toBeNull();
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -251,8 +258,10 @@ describe("charge.success → payment link paid", () => {
     await deliver();
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
     await deliver();
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -389,6 +398,7 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     expect(link().status).toBe("paid");
     expect(link().invoiceAttention).toMatch(/changed/i);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
@@ -418,6 +428,7 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     await deliver();
     expect(link().status).toBe("paid");
     expect(link().invoiceAttention).toMatch(/already paid/i);
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 
@@ -441,6 +452,7 @@ describe("invoice cannot be marked — link paid, flagged for the operator", () 
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
     expect(link().invoiceAttention ?? null).toBeNull();
     expect(link().invoiceSettledAt).toBeInstanceOf(Date);
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 

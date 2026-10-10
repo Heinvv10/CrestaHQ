@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   AMOUNT,
@@ -109,12 +110,14 @@ afterEach(() => {
 describe("Paystack now says the charge failed", () => {
   it("declines as a synchronous decline does, emails the invoice with a pay link, fires charge_failed once", async () => {
     await cycle("send_otp");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     verifyAnswers("failed");
     expect(await sweep(2 * HOUR)).toEqual({ checked: 1, paid: 0, declined: 1, alerted: 0, overBudget: 0 });
     expect(attempt().state).toBe("refused");
     expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined" });
     expect(declines()).toBe(1);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect((sendEmail.mock.calls[0]![0] as { text: string }).text).toContain("/pay/link/");
     expect(raised().status).toBe("sent");
@@ -128,6 +131,7 @@ describe("Paystack now says the charge failed", () => {
     const before = raised();
     expect(await sweep(3 * HOUR)).toEqual({ checked: 0, paid: 0, declined: 0, alerted: 0, overBudget: 0 });
     expect(raised()).toEqual(before);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(triggers("invoice.charge_failed")).toBe(1);
     expect(declines()).toBe(1);
@@ -139,6 +143,7 @@ describe("Paystack now says the charge failed", () => {
     expect(await sweep(2 * HOUR)).toMatchObject({ checked: 1, declined: 0 });
     expect(raised().autoCharge).toMatchObject({ state: "declined" });
     expect(declines()).toBe(1);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(triggers("invoice.charge_failed")).toBe(0);
   });
@@ -153,6 +158,7 @@ describe("Paystack now says success", () => {
     expect(attempt().state).toBe("settled");
     expect(triggers("invoice.charge_succeeded")).toBe(1);
     expect(triggers("invoice.charge_failed")).toBe(0);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -162,6 +168,7 @@ describe("Paystack now says success", () => {
     expect(await sweep(2 * HOUR)).toMatchObject({ checked: 1 });
     expect(raised()).toMatchObject({ status: "paid", paidVia: { rail: "paystack_auto" } });
     expect(triggers("invoice.charge_succeeded")).toBe(1);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -187,6 +194,7 @@ describe("Paystack now says success", () => {
     expect(raced).toBe(true);
     expect(raised()).toMatchObject({ status: "paid", paidVia: { rail: "paystack_auto" } });
     expect(triggers("invoice.charge_succeeded")).toBe(1);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });

@@ -103,6 +103,7 @@ describe("a cycle due too soon after the previous cycle", () => {
 
     await runOneSchedule(SCHEDULE, at("2026-03-15"));
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(raised().id).toBe(sendQuoteServerSide.mock.calls[0][0].quoteId);
     const [task] = tasksAbout("too soon");
@@ -126,6 +127,7 @@ describe("a cycle due too soon after the previous cycle", () => {
     await edit("2026-02-21", { chargeMode: "card" });
     await runOneSchedule(SCHEDULE, at("2026-03-15"));
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(tasksAbout("too soon")).toHaveLength(1);
   });
@@ -145,6 +147,7 @@ describe("an edit never skips a month", () => {
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`]);
     // R1000 × 4 days ÷ 30 (1 Apr – 1 May), before tax.
     expect(raised().globalDiscount).toEqual({ type: "flat", value: 133.33 });
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     await runOneSchedule(SCHEDULE, at("2026-05-01"));
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c6`]);
@@ -155,6 +158,7 @@ describe("an edit never skips a month", () => {
     await runOneSchedule(SCHEDULE, at("2026-03-05"));
     await edit("2026-03-06", { anchorDay: 20 });
     expect(nextRun()).toBe("2026-04-19T22:00:00.000Z");
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(await runOneSchedule(SCHEDULE, at("2026-04-20"))).toMatchObject({ kind: "generated" });
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
@@ -189,6 +193,7 @@ describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 
     // The gap to the old lastDueAt (1 Feb) only grew: not "too soon".
     await runOneSchedule(SCHEDULE, at("2026-04-01"));
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
   });
 
@@ -199,6 +204,7 @@ describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 
     await edit("2026-02-21", { anchorDay: 15 });
     await runOneSchedule(SCHEDULE, at("2026-03-20"));
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
   });
 
@@ -208,6 +214,7 @@ describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 
     seedOn20th({ cardMandateId: null });
     const calls = stubAutoCharge();
     await runOneSchedule(SCHEDULE, at("2026-02-20"));
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     const current = mem.read(`recurringInvoices/${SCHEDULE}`)!;
     mem.seed(`recurringInvoices/${SCHEDULE}`, { ...current, cardMandateId: "m1" });
@@ -215,6 +222,7 @@ describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 
     await edit("2026-02-21", { anchorDay: 15 });
     await runOneSchedule(SCHEDULE, at("2026-03-15"));
     expect(refs(calls)).toEqual([]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(2);
     expect(tasksAbout("too soon")).toHaveLength(1);
   });
@@ -228,6 +236,7 @@ describe("round 4: legacy schedules, and a cycle that raised nothing", () => {
     expect(nextRun()).toBe("2026-03-14T22:00:00.000Z");
     await runOneSchedule(SCHEDULE, at("2026-03-15"));
     expect(refs(calls)).toEqual([]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
     expect(tasksAbout("too soon")).toHaveLength(1);
   });
@@ -262,6 +271,7 @@ describe("normal cycles are still charged", () => {
     await runOneSchedule(SCHEDULE, at("2026-02-28"));
     await runOneSchedule(SCHEDULE, at("2026-03-31"));
     expect(refs(calls)).toEqual([`ra-${SCHEDULE}-c4`, `ra-${SCHEDULE}-c5`, `ra-${SCHEDULE}-c6`]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
   });
 
@@ -291,6 +301,7 @@ describe("normal cycles are still charged", () => {
   it("a card cycle sends no review-draft push; review wins over a stored card mode, and notifies", async () => {
     stubAutoCharge();
     await runOneSchedule(SCHEDULE, at("2026-03-01"));
+    await flushAfterResponse();
     expect(sendPushForEvent).not.toHaveBeenCalled();
     seedCardSchedule({ reviewFirst: true });
     const calls = stubAutoCharge();

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { QUOTE, SMTP } from "@/test/quote-fixtures";
 
@@ -59,9 +60,11 @@ describe("send_quote", () => {
     expect(message).toContain(QUOTE_LINK_SHOWN);
     expect(rowOf(id, "Line items")).toBe("1 \u00d7 Install @ ZAR 500 = ZAR 500");
     expect(row(id).pinned).toMatchObject({ quoteId: "q1", to: "ann@x.io", rail: null, fingerprint: expect.any(String) });
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
 
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const sent = sendEmail.mock.calls[0]![0] as { to: string; subject: string; text: string; replyTo?: string };
     expect(sent.to).toBe("ann@x.io");
@@ -81,6 +84,7 @@ describe("send_quote", () => {
     expect(rowOf(id, "Payment")).toBe("a PayPal link on the quote's page");
     expect(row(id).pinned).toMatchObject({ rail: "paypal" });
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 
@@ -94,6 +98,7 @@ describe("send_quote", () => {
     beforeNextTransaction(async () => change());
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The recipient, the document or the email changed since it was approved; nothing was sent.");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(mem.read("quotes/q1")!.status).toBe("draft");
   });
@@ -110,6 +115,7 @@ describe("send_quote", () => {
     const { quoteId: _q, ...expect_ } = row(id).pinned as Record<string, unknown>;
     const r = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: { ...expect_, ...tamper } as never });
     expect(r).toMatchObject({ ok: false, failure: { code: "changed_since_approval" } });
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     const ok = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: expect_ as never });
     expect(ok).toMatchObject({ ok: true });
@@ -199,6 +205,7 @@ describe("send_quote", () => {
     beforeNextTransaction(async () => mem.seed("quotes/q1", { ...QUOTE, lineItems: [{ ...QUOTE.lineItems[0], unitPrice: 5000 }] }));
     const r = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: expect_ as never });
     expect(r).toMatchObject({ ok: false, failure: { code: "changed_while_sending" } });
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   AMOUNT,
@@ -220,6 +221,7 @@ describe("R8: the paid guard's race", () => {
       await markPaid();
     });
     await sweep(2 * HOUR);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(raised().status).toBe("paid");
   });

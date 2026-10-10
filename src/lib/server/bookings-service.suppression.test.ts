@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Paid-booking confirmation against the suppression list: real mark-paid →
@@ -51,6 +52,7 @@ describe("paid booking confirmation", () => {
     suppress("thandi@example.co.za");
     const suppressionReads = vi.spyOn(mem.db, "doc");
     expect(await markPaid()).toMatchObject({ ok: true });
+    await flushAfterResponse();
     expect(smtpSend).not.toHaveBeenCalled();
     // One suppression lookup: the ICS-less retry is skipped, not re-refused.
     expect(suppressionReads.mock.calls.filter(([p]) => String(p).includes("/emailSuppressions/"))).toHaveLength(1);

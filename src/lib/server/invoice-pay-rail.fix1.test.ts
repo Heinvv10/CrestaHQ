@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { SA, mem, seedInvoice, seedSchedule, seedSub } from "@/test/paystack-links-harness";
 
@@ -91,6 +92,7 @@ describe("R2: a pending or unconfirmed card charge gets no pay link", () => {
       expect(res.failure.error).not.toMatch(/pending|unconfirmed|being confirmed|no clear outcome/);
     }
     expect(links()).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 

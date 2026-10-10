@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { seedPr13, VOICE } from "@/test/pr13-fixtures";
 
@@ -57,8 +58,10 @@ describe("send_message", () => {
     const res = await decide(id, "approve");
     expect(await res.json()).toMatchObject({ error: "preview_changed" });
     expect(fromOf(id)).toBe("+27870000002");
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -68,6 +71,7 @@ describe("send_message", () => {
     beforeNextTransaction(async () => setSub({ twilioConfig: twilio("+27870000002") }));
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id)).toMatchObject({ status: "failed", error: "The number it would be sent from changed since this was reviewed; nothing was sent." });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -116,6 +120,7 @@ describe("send_message", () => {
     const id = await propose("send_message", { conversationId: "c1", channel: "whatsapp", body: "Hi" });
     setSub(cloud("+27870000012"));
     expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -130,6 +135,7 @@ describe("send_message", () => {
     );
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id)).toMatchObject({ status: "failed", error: "The number it would be sent from changed since this was reviewed; nothing was sent." });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 

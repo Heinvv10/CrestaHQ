@@ -61,6 +61,7 @@ describe("visitor cancel", () => {
   it("does nothing to a booking that was already cancelled some other way", async () => {
     mem.seed("events/e1", { ...mem.read("events/e1"), status: "cancelled", cancelReason: "payment_expired" });
     expect((await cancel(token)).status).toBe(200);
+    await flushAfterResponse();
     expect(triggers).not.toHaveBeenCalled();
     expect(webhooks).not.toHaveBeenCalled();
     expect(mem.read("events/e1")?.cancelReason).toBe("payment_expired");

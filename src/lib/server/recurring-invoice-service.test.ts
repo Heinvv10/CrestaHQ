@@ -229,6 +229,7 @@ describe("generating a cycle", () => {
     const outcome = await runOneSchedule("sch_1", NOW);
     expect(outcome).toMatchObject({ kind: "generated", sent: false });
     expect(written[0].status).toBe("draft");
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     // Drain the draft-waiting push so it cannot land in the next test.
     await flushAfterResponse();
@@ -254,6 +255,7 @@ describe("generating a cycle", () => {
 
   it("does not notify for an invoice that was sent automatically", async () => {
     await runOneSchedule("sch_1", NOW);
+    await flushAfterResponse();
     expect(sendPushForEvent).not.toHaveBeenCalled();
   });
 
@@ -295,6 +297,7 @@ describe("claiming — one invoice per cycle", () => {
     expect(first.kind).toBe("generated");
     expect(second).toEqual({ kind: "skipped", reason: "not_due" });
     expect(written).toHaveLength(1);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(1);
   });
 
@@ -452,6 +455,7 @@ describe("a schedule that is far behind", () => {
     // raises and sends a real invoice every night until it catches up.
     expect(outcome).toEqual({ kind: "skipped", reason: "too_stale" });
     expect(written).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     expect(claim().nextRunAt).toBeTruthy();
     expect(String(claim().lastError)).toContain("Raise it by hand");
@@ -554,6 +558,7 @@ describe("ending a schedule", () => {
 
     expect(outcome).toEqual({ kind: "skipped", reason: "already_finished" });
     expect(written).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     expect(claim().status).toBe("completed");
   });

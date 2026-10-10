@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   AMOUNT,
@@ -110,6 +111,7 @@ describe("a card cycle's charge recorded by the verified webhook", () => {
     expect(succeeded()).toEqual([
       [{ agencyId: "ag1", subAccountId: SA, type: "invoice.charge_succeeded", contactId: "c1" }],
     ]);
+    await flushAfterResponse();
     expect(fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -120,6 +122,7 @@ describe("a card cycle's charge recorded by the verified webhook", () => {
     expect((await deliver()).status).toBe(200);
     expect(raised()).toEqual(after);
     expect(succeeded()).toHaveLength(1);
+    await flushAfterResponse();
     expect(fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -154,6 +157,7 @@ describe("a success settled before the decline answer was recorded", () => {
     await runOneSchedule(SCHEDULE, NOW);
     expect(attempt()).toMatchObject({ state: "settled" });
     expect((raised().autoCharge as { state?: string } | undefined)?.state).not.toBe("declined");
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
     expect(mem.read(`paymentMandates/${MANDATE}`)).toMatchObject({ consecutiveDeclines: 1 });
@@ -216,6 +220,7 @@ describe("recording a decline", () => {
     expect(thrown).toBe(true);
     expect(attempt()).toMatchObject({ state: "refused" });
     expect(raised().autoCharge).toMatchObject({ state: "needs_attention", reason: "late" });
+    await flushAfterResponse();
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
     expect(fireWorkflowTrigger.mock.calls.filter(([i]) => i.type === "invoice.charge_failed")).toHaveLength(0);
   });

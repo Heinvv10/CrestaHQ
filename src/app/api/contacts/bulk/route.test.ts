@@ -159,6 +159,7 @@ describe("tenancy", () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ foreignIds: ["b"] });
     expect(fake.batches).toHaveLength(0);
+    await flushAfterResponse();
     expect(fake.trigger).not.toHaveBeenCalled();
   });
 
@@ -229,6 +230,7 @@ describe("add_tag / remove_tag", () => {
     expect(fake.batches[0].updates).toEqual([
       ["contacts/a", { tags: ["lead"], updatedAt: "ts" }],
     ]);
+    await flushAfterResponse();
     expect(fake.trigger).not.toHaveBeenCalled();
   });
 
