@@ -195,6 +195,13 @@ export function inSubAccount(base: AiSuiteCapability): AiSuiteCapability {
     // `subAccountId` on the base tool instead. approval / agentArgs /
     // preview are deliberately not copied.
     surfaces: (base.surfaces ?? ["chat"]).filter((s) => s === "chat"),
+    // The base's chat refusal, for the named sub-account (as execute gets
+    // it, but unresolved: a refusal reads no data, and the args' id is what
+    // validate returned — a name the model passed stays a name).
+    chatRefusal:
+      base.chatRefusal &&
+      ((args, ctx) =>
+        base.chatRefusal!(args, { ...ctx, subAccountId: args.subAccountId as string, subAccountRole: "agencyOwner" })),
     menuLabel: `${base.menuLabel} — in a sub-account you name`,
     description: `${base.description} AGENCY VARIANT: performs this inside one of your sub-accounts. Resolve the sub-account's id with list_sub_accounts first — never guess ids. Exception: if the user identifies the sub-account by its account number (e.g. '#1011') or you already know its exact name, you may pass that as subAccountId — it's resolved server-side within this agency. If what the user said could match more than one sub-account (e.g. 'rode' when both 'Rode Plumbing' and 'Rode Sound' exist), ask which one BEFORE proposing.`,
     parameters: {

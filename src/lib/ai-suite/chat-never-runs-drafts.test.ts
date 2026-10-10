@@ -138,12 +138,15 @@ describe("chat can never run steps nobody reviewed in the builder", () => {
     expect(mem.read("workflows/wf_agent")).toMatchObject({ status: "draft", startNodeId: "x1", nodes: { x2: { type: "webhook" } } });
   });
 
-  it("executing every chat capability (and pointing each workflow / contact id at the exfil drafts) starts no run", async () => {
+  it("executing every chat capability (with every workflow-id parameter and contact id pointed at the exfil drafts) starts no run", async () => {
     const ran = new Set<string>();
     for (const cap of chatCaps()) {
       const args = { ...argsFor(cap.name)! };
       for (const wfId of ["wf_chat", "wf_agent", "wf_paused"]) {
-        if ("workflowId" in args) args.workflowId = wfId;
+        // Any parameter naming a workflow id (workflowId today), set or not in the fixture.
+        for (const key of Object.keys((cap.parameters as { properties?: object }).properties ?? {})) {
+          if (/workflow\w*id$/i.test(key)) args[key] = wfId;
+        }
         if ("contactId" in args) args.contactId = "c1";
         const v = cap.validate(args);
         if (!v.ok) continue;

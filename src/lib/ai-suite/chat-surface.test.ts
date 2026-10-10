@@ -154,6 +154,31 @@ describe("agency variants keep their base's surfaces", () => {
     expect(tools).toContain("find_contacts_in_sub_account");
   });
 
+  it("a variant carries its base's chat refusal, for the named sub-account: no card in the agency chat", async () => {
+    const base: AiSuiteCapability = {
+      ...injectAgentOnly("__refusing_base", false),
+      surfaces: ["chat"],
+      validate: (raw) => ({ ok: true, args: { go: (raw as { go?: boolean }).go === true } }),
+      chatRefusal: (args, ctx) => (args.go ? `refused in ${ctx.subAccountId} as ${ctx.subAccountRole}` : undefined),
+    };
+    const variant = inSubAccount(base);
+    AI_SUITE_CAPABILITIES.push(variant);
+    injected.push(variant);
+    const owner = { uid: "u1", email: "a@example.com", displayName: "", agencyId: "ag1" };
+    expect(variant.chatRefusal?.({ subAccountId: "sa1", go: true }, owner)).toBe("refused in sa1 as agencyOwner");
+    expect(variant.chatRefusal?.({ subAccountId: "sa1" }, owner)).toBeUndefined();
+
+    mem.seed("agencies/ag1", { agencyAssistantEnabled: true });
+    runAiSuiteTurn.mockResolvedValueOnce({
+      text: "",
+      toolCall: { id: "call_1", name: variant.name, args: { subAccountId: "sa1", subAccountName: "W", go: true } },
+    });
+    const res = await chat.POST(post({ level: "agency", messages: [{ role: "user", content: "go" }] }));
+    expect(await res.json()).toEqual({ type: "message", text: "refused in sa1 as agencyOwner" });
+    expect(variant.chatRefusal).toBeDefined();
+    expect(inSubAccount(injectAgentOnly("__plain_base", false)).chatRefusal).toBeUndefined();
+  });
+
   it("the delegation loop carried a chat-only base's surfaces onto its variant", () => {
     expect(getCapability("create_webhook_in_sub_account")!.surfaces).toEqual(["chat"]);
   });

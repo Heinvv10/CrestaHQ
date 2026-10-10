@@ -119,14 +119,16 @@ Line counts are additions, tests excluded. "Churn" means `git diff 898bcd5 origi
   - Registry and agency-delegated list entries in `capabilities.ts` (churn 4,152); `pnpm check:tenancy` must pass.
   - **Widen `surfaces` to include `"chat"`** for `list_workflows`, `get_workflow`, `update_workflow` and `set_workflow_status` (see HAVE row), and update `capability-names.test.ts`. Chat writes are admin-only and confirm-gated.
   - **Merge: Hein gate** (it changes what the in-app assistant may do).
+  - **REVISED 2026-10-10:** `test_workflow` was removed (PR #382 adversarial review: chat could write a draft's steps through `update_workflow` and run them behind a model-written card; an agent's approval-free draft edit could be run the same way). In chat, `set_workflow_status` may pause or set to draft but never activate: no confirm card is offered for `active`, and execute refuses it too. A capability may now declare `chatRefusal`: the chat route answers with it instead of a confirm card, and `inSubAccount` forwards it. `chat-never-runs-drafts.test.ts` pins that no chat capability starts a run.
 - **STL-2 (~450):**
   - `speed_to_lead_readiness` (~250), **rewritten**: email readiness via `emailIsConfigured(sub)` (SMTP, else Resend env; problem 4), our WhatsApp sender/template checks, Twilio SMS with `sharedSmsAllowed`, QStash, push and usage.
   - `update_website_cta` (~90) plus `updateWebsiteCtaAndRebuild` in `websites-service.ts` (churn 30).
   - `check_website_status` reports CTA and site id.
   - `speedToLeadSection` in `lib/ai-suite/prompt.ts` (churn 0).
   - KB card `speed-to-lead-setup` (KB churn 34).
+  - **REVISED 2026-10-10:** the playbook sends the admin to the workflow builder to Test and to Activate. Chat has no `test_workflow` and cannot activate a workflow.
 - **Do not port `configure_workflow`.** Point the playbook at our `get_workflow` + `update_workflow`, which STL-1 makes chat-callable.
-- **Flags:** `test_workflow` sends real messages, and `update_website_cta` republishes a public site. Make both chat-only (not callable through the Agent API) and put a human gate on merge.
+- **Flags:** `test_workflow` sends real messages, and `update_website_cta` republishes a public site. Make both chat-only (not callable through the Agent API) and put a human gate on merge. **REVISED 2026-10-10:** `test_workflow` no longer exists (see STL-1); the flag stands for `update_website_cta`.
 - **Verify:** readiness tests per channel (SMTP set or unset, **Resend env only** with no SMTP, gate off, no approved template); `create_form` blocks duplicate names; tenancy check passes; `list_workflows`/`update_workflow` callable from chat and still refused to non-admins.
 - **Docs:** `docs/features/workflows.md` (new tools, chat surface); `docs/features/ai-agents.md` if the playbook changes agent behaviour.
 
@@ -305,7 +307,7 @@ All settled; see **Hein's rulings** at the bottom. Open per-unit decisions are r
 {"id":"n6-small-fixes","priority":1,"complexity":"low","success_criteria":["no sr-only phantom scrollbar","tracked .claude/settings.local.json removed","Hein gate","resend status syncs on GET","metadataBase falls back safely","done groups collapse"],"passes":false},
 {"id":"n3-style-presets","priority":1,"complexity":"medium","success_criteria":["unknown preset rejected","null preset byte-identical","Playwright on /b and /co"],"passes":false},
 {"id":"g-gates-webvoice-dialer","priority":1,"complexity":"low","success_criteria":["both gates default false at both creation sites","PATCH, dialog and FEATURE_GATES wired","assistantMayEnable false"],"passes":false},
-{"id":"stl-1-forms-workflow","priority":1,"complexity":"medium","success_criteria":["forms-service mirrors UI presets","list_forms/create_form/test_workflow pass check:tenancy","test_workflow chat-only","list/get/update_workflow and set_workflow_status callable from chat, admin-only, confirm-gated","capability-names.test.ts surfaces updated","Hein gate"],"passes":false},
+{"id":"stl-1-forms-workflow","priority":1,"complexity":"medium","success_criteria":["forms-service mirrors UI presets","list_forms/create_form pass check:tenancy","no test_workflow: no chat capability starts a run (chat-never-runs-drafts.test.ts)","list/get/update_workflow and set_workflow_status callable from chat, admin-only, confirm-gated","chat never activates a workflow (no card; execute refuses)","capability-names.test.ts surfaces updated","Hein gate"],"passes":false},
 {"id":"stl-2-readiness-cta","priority":2,"complexity":"medium","success_criteria":["readiness uses emailIsConfigured(sub) (SMTP or Resend env, incl. a Resend-only test case) and our WA rails","update_website_cta chat-only","prompt section renders only with actions"],"passes":false},
 {"id":"n2a-workspace-capabilities","priority":3,"complexity":"medium","success_criteria":["9 tools anchored on ctx.subAccountId","confirm-gated writes","every tool states surface and approval class","pause_all_workflows chat-only","mark_booking_paid decided (chat-only or approval class) and outbound-never-sends passes","Hein gate"],"passes":false},
 {"id":"n2b-agency-capabilities","priority":4,"complexity":"medium","success_criteria":["Paystack-correct billing_overview","comp_client chat-only","deployment_setup_status exempted in tenancy script"],"passes":false},
@@ -334,3 +336,4 @@ All settled; see **Hein's rulings** at the bottom. Open per-unit decisions are r
 2. Dialer: **gated** — `dialerEnabledByAgency`, default off (unit G).
 3. Optional extras: **N7 Email AI drafts, N8 GHL pipeline import, N12 KB card refresh are IN scope.** N9/N10/N11/N13 remain optional.
 4. Merge-dark rule: Web Voice, Website v2 and dialer merge behind their gate, default off, docs marked NOT runtime-verified; first client to enable triggers a live walk.
+5. **REVISED 2026-10-10:** nothing the in-app chat writes may execute until a person reviews the steps in the builder (its Test button, or activation). Any capability widened to chat must not skip an approval class its agent path enforces: refuse it in chat (`chatRefusal` plus an execute check) instead.
