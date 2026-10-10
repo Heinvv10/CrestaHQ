@@ -97,7 +97,9 @@ function CalendarSkeleton() {
           </div>
         ))}
       </div>
-      <div className="sr-only">
+      {/* hidden (not sr-only): sr-only is position:absolute and, with no
+          positioned ancestor, hangs off the window and adds a second scrollbar */}
+      <div className="hidden" aria-hidden>
         <CalendarDays />
       </div>
     </div>

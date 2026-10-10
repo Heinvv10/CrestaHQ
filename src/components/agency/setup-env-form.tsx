@@ -417,10 +417,10 @@ export function SetupEnvForm() {
               type="button"
               onClick={() => openGuide(k.name)}
               title="Where do I get this key? (AI)"
+              aria-label={`Where do I get ${k.name}?`}
               className="shrink-0 text-muted-foreground/50 transition-colors hover:text-violet-500"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              <span className="sr-only">Where do I get {k.name}?</span>
             </button>
           )}
           {revealValue !== undefined && (
@@ -728,12 +728,10 @@ export function SetupEnvForm() {
                                 type="button"
                                 onClick={() => openGuide(k.name)}
                                 title="Where do I get this key? (AI)"
+                                aria-label={`Where do I get ${k.name}?`}
                                 className="shrink-0 text-muted-foreground/50 transition-colors hover:text-violet-500"
                               >
                                 <Sparkles className="h-3.5 w-3.5" />
-                                <span className="sr-only">
-                                  Where do I get {k.name}?
-                                </span>
                               </button>
                             )}
                           </div>
