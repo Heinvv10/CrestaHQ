@@ -123,4 +123,20 @@ describe("ConversationDetailPage composer", () => {
       expect(initialComposerChannel(options, "whatsapp")).toBe("whatsapp");
     }
   });
+
+  it("stays mounted if loading flips back on with the doc in hand", async () => {
+    ctx.value = {
+      ...ctx.value,
+      subAccount: {
+        whatsappEnabledByAgency: true,
+        twilioConfig: { whatsappFromNumber: "+27110000000" },
+      },
+      loading: false,
+    };
+    await render();
+    expect(container.querySelector('[data-testid="composer"]')).not.toBeNull();
+    ctx.value = { ...ctx.value, loading: true };
+    await render();
+    expect(container.querySelector('[data-testid="composer"]')).not.toBeNull();
+  });
 });
