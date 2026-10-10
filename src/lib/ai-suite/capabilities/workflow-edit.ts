@@ -19,6 +19,11 @@ import { readableJson, tenantWorkflow, workflowFingerprint, workflowIdParam, wor
  * transaction). The status never changes here: that is set_workflow_status.
  */
 
+/** Refusing a direct edit to an active workflow, per surface. */
+const ACTIVE_AGENT = "The workflow is active now, so editing it needs approval: send the edit again.";
+const ACTIVE_CHAT =
+  "The workflow is active, so it can't be edited here. Pause it first (set_workflow_status paused), make the edit, then set it active again.";
+
 /** Changes what a run executes next (runs read the steps live). */
 const touchesSteps = (args: Record<string, unknown>) => args.nodes !== undefined || args.startNodeId !== undefined;
 
@@ -109,7 +114,7 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
     surfaces: ["chat", "agent"],
     menuLabel: "Edit a workflow (a person approves edits to an active one)",
     description:
-      "Change a workflow's name, trigger, re-entry, steps (`nodes` replaces them all; read get_workflow first) or start step. A draft or paused workflow changes at once; an active one is queued for a sub-account admin to approve. It never changes the status (use set_workflow_status).",
+      "Change a workflow's name, trigger, re-entry, steps (`nodes` replaces them all; read get_workflow first) or start step. A draft or paused workflow changes at once. An active one: through the Agent API the edit is queued for a sub-account admin to approve; in the in-app assistant it is refused, so pause it first (set_workflow_status paused), edit it, then set it active again. It never changes the status (use set_workflow_status).",
     parameters: {
       type: "object",
       properties: {
@@ -176,7 +181,8 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
               throw new CapabilityUserError("The workflow changed since this was reviewed; nothing was changed.");
             }
           } else if (current.status === "active") {
-            throw new CapabilityUserError("The workflow is active now, so editing it needs approval: send the edit again.");
+            // Only the agent surface has an approval queue; chat has none.
+            throw new CapabilityUserError(ctx.apiKey ? ACTIVE_AGENT : ACTIVE_CHAT);
           } else if (touchesSteps(args) && liveRun) {
             throw new CapabilityUserError("The workflow has runs in progress, so changing its steps needs approval: send the edit again.");
           }

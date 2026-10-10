@@ -27,7 +27,7 @@ vi.mock("@/lib/ai-suite/model", () => ({
 vi.mock("@/lib/ai-suite/usage", () => ({ recordAiSuiteUsage: async () => undefined }));
 vi.mock("@/lib/ai-suite/audit", () => ({ recordAiSuiteAction: async () => undefined }));
 
-const { toolsForLevel } = await import("./capabilities");
+const { getCapability, toolsForLevel } = await import("./capabilities");
 const chat = await import("@/app/api/ai-suite/chat/route");
 const confirm = await import("@/app/api/ai-suite/confirm/route");
 
@@ -89,10 +89,34 @@ describe("an admin in chat", () => {
     expect(mem.read("workflows/wf_active")!.status).toBe("paused");
   });
 
-  it("update_workflow still refuses an active workflow (no approval in chat)", async () => {
+  it("update_workflow still refuses an active workflow, saying to pause it first (no approval queue in chat)", async () => {
     const res = await doConfirm("update_workflow", { workflowId: "wf_active", name: "Renamed" });
     expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe(
+      "The workflow is active, so it can't be edited here. Pause it first (set_workflow_status paused), make the edit, then set it active again."
+    );
     expect(mem.read("workflows/wf_active")!.name).toBe("Speed to lead");
+  });
+
+  it("the agent surface keeps today's refusal wording", async () => {
+    const cap = getCapability("update_workflow")!;
+    const agentCtx = {
+      uid: "apikey:abcd1234", email: "", displayName: "Key", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin",
+      apiKey: { keyId: "k1", keyPrefix: "abcd1234", keyLevel: "sub-account" as const, mode: "live" as const, enrolmentCapPerHour: 50 },
+    };
+    await expect(cap.execute(agentCtx, { workflowId: "wf_active", name: "Renamed" })).rejects.toThrow(
+      /^The workflow is active now, so editing it needs approval: send the edit again\.$/
+    );
+    expect(mem.read("workflows/wf_active")!.name).toBe("Speed to lead");
+  });
+
+  it("the description offered in chat promises no approval queue for chat", () => {
+    const tool = toolsForLevel("sub-account", { agencyRoleIsOwner: false, subAccountRole: "admin" }).find(
+      (t) => t.function.name === "update_workflow"
+    )!;
+    const description = tool.function.description as string;
+    expect(description).not.toContain("an active one is queued for a sub-account admin to approve");
+    expect(description).toContain("in the in-app assistant it is refused, so pause it first (set_workflow_status paused)");
   });
 
   it("another sub-account's workflow is refused", async () => {
