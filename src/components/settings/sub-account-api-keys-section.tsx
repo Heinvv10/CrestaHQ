@@ -58,7 +58,7 @@ const SCOPE_HELP: Record<ApiKeyScope, string> = {
 };
 
 export function SubAccountApiKeysSection() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading: subLoading } = useSubAccount();
   const gateOpen = subAccount?.apiAccessEnabledByAgency === true;
   const [keys, setKeys] = useState<ApiKeyResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,6 +95,16 @@ export function SubAccountApiKeysSection() {
   }, [isAdmin, gateOpen, refetch]);
 
   if (!isAdmin) return null;
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has API access on.
+  if (subLoading) {
+    return (
+      <section className="rounded-2xl border bg-card p-6">
+        <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
+      </section>
+    );
+  }
 
   if (!gateOpen) {
     return (

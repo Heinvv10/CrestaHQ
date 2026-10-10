@@ -61,7 +61,7 @@ import type { Product } from "@/types/products";
 
 export default function FunnelsPage() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, subAccount, isAdmin, saPath } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, saPath, loading } = useSubAccount();
 
   const [funnels, setFunnels] = useState<Funnel[]>([]);
   const [checkoutPages, setCheckoutPages] = useState<CheckoutPage[]>([]);
@@ -98,6 +98,18 @@ export default function FunnelsPage() {
       unsubP();
     };
   }, [authLoading, user, subAccountId, labsOn, subAccount?.agencyId]);
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has Labs on.
+  if (loading) {
+    return (
+      <div className="mx-auto w-full max-w-3xl p-6">
+        <div className="flex justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
 
   if (!labsOn) {
     return (

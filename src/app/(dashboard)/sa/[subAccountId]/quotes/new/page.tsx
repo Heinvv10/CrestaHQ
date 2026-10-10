@@ -35,7 +35,7 @@ export default function NewQuotePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
+  const { subAccountId, agencyId, saPath, subAccount, loading: subLoading } = useSubAccount();
   // Either rail lets an invoice be sent — card is offered on the public
   // invoice page, paypal.me mints a link at send time.
   const paymentReady = canPayInvoice(subAccount);
@@ -159,7 +159,8 @@ export default function NewQuotePage() {
         </p>
       </Card>
 
-      {kind === "invoice" && !paymentReady && (
+      {/* Not while the workspace loads: a null doc reads as no rail. */}
+      {kind === "invoice" && !subLoading && !paymentReady && (
         <div className="flex items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="flex-1 text-sm">

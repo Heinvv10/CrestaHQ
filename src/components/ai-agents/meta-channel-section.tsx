@@ -37,7 +37,7 @@ import type { AiAgentProfile, AiChannelConfig } from "@/types/ai";
  *     amber hint explains how to add Instagram.
  */
 export function MetaChannelSection() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
 
   const [profile, setProfile] = useState<AiAgentProfile | null>(null);
   const [config, setConfig] = useState<AiChannelConfig | null>(null);
@@ -111,6 +111,16 @@ export function MetaChannelSection() {
   const instagramReady = metaCanInstagramDm(subAccount?.metaConfig);
   const igLinked = !!subAccount?.metaConfig?.instagramBusinessAccountId;
   const profileReady = !!profile?.systemPrompt?.trim();
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has the Meta inbox and AI on.
+  if (loading) {
+    return (
+      <section className="rounded-2xl border bg-card p-6">
+        <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
+      </section>
+    );
+  }
 
   // Either agency gate off → locked card (mirrors the WhatsApp pattern).
   if (!inboxGateOn || !agentGateOn) {

@@ -31,7 +31,7 @@ import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured
  *   - Persona: same as every channel — a non-empty persona prompt is required.
  */
 export function WhatsappChannelSection() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
 
   const [profile, setProfile] = useState<AiAgentProfile | null>(null);
   const [config, setConfig] = useState<AiChannelConfig | null>(null);
@@ -102,6 +102,16 @@ export function WhatsappChannelSection() {
 
   const whatsappConfigured = whatsappSenderConfigured(subAccount);
   const profileReady = !!profile?.systemPrompt?.trim();
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has WhatsApp on.
+  if (loading) {
+    return (
+      <section className="rounded-2xl border bg-card p-6">
+        <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
+      </section>
+    );
+  }
 
   // Agency gate locked state — mirrors the email-domain section's locked card.
   if (!agencyEnabled) {

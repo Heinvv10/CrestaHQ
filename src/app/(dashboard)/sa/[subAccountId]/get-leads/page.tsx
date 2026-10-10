@@ -125,7 +125,7 @@ function defaultImportTag(origin: SearchOrigin): string {
 }
 
 export default function GetLeadsPage() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   const gateOn = subAccount?.getLeadsEnabledByAgency === true;
   const prospectingOn = subAccount?.prospectingEnabledByAgency === true;
 
@@ -231,6 +231,19 @@ export default function GetLeadsPage() {
   // Every import after saving sends it; a new search clears it.
   const [savedListId, setSavedListId] = useState<string | null>(null);
   const [savingList, setSavingList] = useState(false);
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has Get Leads on.
+  if (loading) {
+    return (
+      <div className="mx-auto w-full max-w-5xl space-y-6">
+        <Header />
+        <div className="flex justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
 
   if (!gateOn) {
     return (

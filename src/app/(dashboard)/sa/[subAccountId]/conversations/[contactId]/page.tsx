@@ -52,7 +52,7 @@ export default function ConversationDetailPage() {
   const isWebChat = !!webSessionId;
 
   const { user, loading: authLoading } = useAuth();
-  const { subAccount, subAccountId, saPath } = useSubAccount();
+  const { subAccount, subAccountId, saPath, loading: subLoading } = useSubAccount();
   // The list's filter query, carried back so "Back" returns to the same view.
   const listQuery = useSearchParams().toString();
   const { theme, setTheme } = useConversationTheme();
@@ -330,8 +330,12 @@ export default function ConversationDetailPage() {
           )}
           {/* Waits for the conversation doc: the opening channel is its
               lastChannel, and a composer mounted before it would start on
-              the fallback instead (SP2 T7). */}
-          {contact && convReady && (
+              the fallback instead (SP2 T7). Waits for the workspace doc too:
+              until it arrives every agency-gated channel reads as off, so the
+              thread would open on another channel and keep it. Once the doc
+              is in hand it stays mounted, or a later auth pass would drop
+              the reply being typed. */}
+          {contact && convReady && !(subLoading && !subAccount) && (
             <ConversationComposer
               key={contact.id}
               emailReply={emailReply?.contactId === contact.id ? emailReply : null}

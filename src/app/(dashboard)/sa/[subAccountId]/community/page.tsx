@@ -35,7 +35,7 @@ import type { CommunityGroup, GroupMode } from "@/types/community";
  * to its settings + its public `/c/[saId]/[slug]` landing page.
  */
 export default function CommunityPage() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   const [groups, setGroups] = useState<CommunityGroup[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -43,10 +43,10 @@ export default function CommunityPage() {
   const gateOn = subAccount?.communityEnabledByAgency === true;
 
   useEffect(() => {
-    if (!gateOn) {
-      setLoaded(true);
-      return;
-    }
+    // Gated off renders the locked view, which never reads `loaded`; marking
+    // it loaded here showed "No groups yet" once the gate came on, until the
+    // first snapshot.
+    if (!gateOn) return;
     return subscribeToCommunityGroups(
       subAccountId,
       (list) => {
@@ -58,6 +58,18 @@ export default function CommunityPage() {
       () => setLoaded(true),
     );
   }, [subAccountId, gateOn]);
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has Community on.
+  if (loading) {
+    return (
+      <div className="mx-auto w-full max-w-5xl p-6">
+        <div className="flex justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
 
   if (!gateOn) {
     return (

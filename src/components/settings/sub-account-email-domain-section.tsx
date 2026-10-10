@@ -103,7 +103,7 @@ function ReplyToBanner({ action }: { action: string }) {
 }
 
 export function SubAccountEmailDomainSection() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   const cfg = subAccount?.resendConfig ?? null;
   const gateOpen = subAccount?.emailDomainEnabledByAgency === true;
   const needsReplyTo = !subAccount?.replyToEmail?.trim();
@@ -247,7 +247,9 @@ export function SubAccountEmailDomainSection() {
         </div>
       </header>
 
-      {!gateOpen ? (
+      {/* Until the workspace doc arrives the gate reads as off; showing
+          "Disabled" then flashes it on every load of a workspace that has it on. */}
+      {loading ? null : !gateOpen ? (
         <div className="flex items-start gap-3 rounded-lg border border-dashed bg-muted/30 p-4 text-sm">
           <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div className="text-muted-foreground">

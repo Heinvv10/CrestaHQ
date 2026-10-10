@@ -56,7 +56,7 @@ interface CreateFormState {
 }
 
 export function SubAccountWebhooksSection() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading: subLoading } = useSubAccount();
   const gateOpen = subAccount?.apiAccessEnabledByAgency === true;
   const [subs, setSubs] = useState<WebhookSubscriptionResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -96,6 +96,16 @@ export function SubAccountWebhooksSection() {
   }, [isAdmin, gateOpen, refetch]);
 
   if (!isAdmin) return null;
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has API access on.
+  if (subLoading) {
+    return (
+      <section className="rounded-2xl border bg-card p-6">
+        <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
+      </section>
+    );
+  }
 
   if (!gateOpen) {
     return (

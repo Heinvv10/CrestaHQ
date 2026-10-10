@@ -36,7 +36,7 @@ import { Label } from "@/components/ui/label";
  */
 
 export function SubAccountSmsSection() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   // Disabling dedicated SMS moves this workspace onto the AGENCY's shared
   // number (spends the agency's balance, loses inbound routing) — the
   // DELETE route is agency-owner-only, so only show owners the control.
@@ -674,7 +674,9 @@ export function SubAccountSmsSection() {
           </div>
         </div>
 
-        {!mctbGateOn ? (
+        {/* Until the workspace doc arrives the gate reads as off; showing
+            "Locked" then flashes it on every load of a workspace that has it on. */}
+        {loading ? null : !mctbGateOn ? (
           <div className="bg-muted/30 text-muted-foreground mt-3 flex items-start gap-2 rounded-lg border p-3 text-xs">
             <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>

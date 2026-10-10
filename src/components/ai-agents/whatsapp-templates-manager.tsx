@@ -58,7 +58,7 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 export function WhatsappTemplatesManager() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   const [templates, setTemplates] = useState<
     (WhatsappTemplateDoc & { id: string })[]
   >([]);
@@ -279,6 +279,16 @@ export function WhatsappTemplatesManager() {
   }
 
   if (!isAdmin) return null;
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has WhatsApp on.
+  if (loading) {
+    return (
+      <section className="rounded-2xl border bg-card p-6">
+        <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
+      </section>
+    );
+  }
 
   if (!agencyEnabled) {
     return (
