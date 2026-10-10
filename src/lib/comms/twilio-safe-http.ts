@@ -30,7 +30,12 @@ export function sanitizeTwilioTransportError(err: unknown): Error {
   return safe;
 }
 
-/** Passed as `httpClient` to every `twilio(sid, token, …)` this app builds. */
+/**
+ * Passed as `httpClient` to every `twilio(sid, token, …)` this app builds.
+ * Passing `httpClient` makes the SDK skip constructing its own default client,
+ * so any client options (timeout, autoRetry, maxRetries, ca, region) must be
+ * given to `new SafeTwilioRequestClient({...})`, NOT to `twilio(sid, token, {...})`.
+ */
 export class SafeTwilioRequestClient extends RequestClient {
   override async request<TData>(opts: RequestOptions<TData>): Promise<Response<TData>> {
     try {

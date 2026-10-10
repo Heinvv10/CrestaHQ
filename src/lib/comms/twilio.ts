@@ -61,6 +61,8 @@ function getEnvTwilio(): Twilio {
         "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are not set. Add them to .env.local to enable shared-mode SMS, or configure a dedicated number on the sub-account.",
       );
     }
+    // Client options (timeout, autoRetry, maxRetries, ca, region) go to new SafeTwilioRequestClient({...}):
+    // passing httpClient makes the SDK skip building its own default client.
     _envClient = twilio(sid, token, { httpClient: new SafeTwilioRequestClient() });
   }
   return _envClient;
@@ -165,6 +167,8 @@ export async function findDedicatedNumberHolder(opts: {
  * for whatever lifecycle they want.
  */
 export function buildTwilioClient(accountSid: string, authToken: string): Twilio {
+  // Client options (timeout, autoRetry, maxRetries, ca, region) go to new SafeTwilioRequestClient({...}):
+  // passing httpClient makes the SDK skip building its own default client.
   return twilio(accountSid, authToken, { httpClient: new SafeTwilioRequestClient() });
 }
 
@@ -195,6 +199,8 @@ export async function getTwilioForSubAccount(
     const authToken = await readSubAccountSecret(subAccountId, "twilio", cfg);
     let client = _saClientCache.get(subAccountId);
     if (!client) {
+      // Client options (timeout, autoRetry, maxRetries, ca, region) go to new SafeTwilioRequestClient({...}):
+      // passing httpClient makes the SDK skip building its own default client.
       client = twilio(cfg.accountSid, authToken, { httpClient: new SafeTwilioRequestClient() });
       _saClientCache.set(subAccountId, client);
     }

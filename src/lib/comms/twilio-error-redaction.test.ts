@@ -14,9 +14,10 @@ vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({ doc: () => ({ get: async () => ({ exists: false, data: () => undefined }) }) }),
 }));
 vi.mock("@/lib/server/usage-meter", () => ({ recordUsage: vi.fn(), checkQuota: async () => ({ allowed: true }) }));
-vi.mock("@/lib/agency/policy", () => ({ agencyAllowsSharedSms: async () => false }));
+const policy = vi.hoisted(() => ({ shared: false }));
+vi.mock("@/lib/agency/policy", () => ({ agencyAllowsSharedSms: async () => policy.shared }));
 
-import { buildTwilioClient, getTwilioForSubAccount, sendSmsForSubAccount } from "./twilio";
+import { buildTwilioClient, getTwilioForSubAccount, sendSms, sendSmsForSubAccount } from "./twilio";
 import { sanitizeTwilioTransportError } from "./twilio-safe-http";
 import type { SubAccountDoc } from "@/types";
 
@@ -36,7 +37,7 @@ afterEach(() => vi.restoreAllMocks());
 
 function leaks(value: unknown): boolean {
   const dumps = [inspect(value, { depth: 10, showHidden: true }), JSON.stringify(value, Object.getOwnPropertyNames(value as object))];
-  return dumps.some((d) => d.includes(B64) || d.includes(TOKEN));
+  return dumps.some((d) => d.includes(B64) || d.includes(TOKEN) || d.includes(SID));
 }
 
 describe("Twilio transport errors never carry the credential", () => {
@@ -75,6 +76,39 @@ describe("Twilio transport errors never carry the credential", () => {
     expect(leaks(err)).toBe(false);
     for (const s of spies) for (const call of s.mock.calls) expect(call.map((a) => inspect(a, { depth: 10 })).join(" ")).not.toContain(B64);
     expect(spies[1].mock.calls.length).toBe(1);
+  });
+});
+
+describe("shared mode (platform-wide env credential)", () => {
+  const ENV_SID = "ACenvshared00000000000000000000000";
+  const ENV_TOKEN = "platform-wide-env-auth-token";
+  const ENV_B64 = Buffer.from(`${ENV_SID}:${ENV_TOKEN}`).toString("base64");
+  const envLeaks = (v: unknown) =>
+    [inspect(v, { depth: 10, showHidden: true }), JSON.stringify(v, Object.getOwnPropertyNames(v as object))].some(
+      (d) => d.includes(ENV_B64) || d.includes(ENV_TOKEN) || d.includes(ENV_SID),
+    );
+
+  it("sendSmsForSubAccount (shared) and legacy sendSms throw clean errors", async () => {
+    vi.stubEnv("TWILIO_ACCOUNT_SID", ENV_SID);
+    vi.stubEnv("TWILIO_AUTH_TOKEN", ENV_TOKEN);
+    vi.stubEnv("TWILIO_FROM_NUMBER", "+15017122661");
+    policy.shared = true;
+    try {
+      const sub = { agencyId: "ag1" } as unknown as SubAccountDoc;
+      const resolved = await getTwilioForSubAccount("sa-shared", sub);
+      expect(resolved.mode).toBe("shared");
+      resolved.client.api.baseUrl = baseUrl; // the cached env client, also used by sendSms
+      const viaSub = await sendSmsForSubAccount({ subAccountId: "sa-shared", subAccount: sub, to: "+15005550006", body: "hi" }).catch((e) => e);
+      const legacy = await sendSms({ to: "+15005550006", body: "hi" }).catch((e) => e);
+      for (const err of [viaSub, legacy]) {
+        expect(err).toBeInstanceOf(Error);
+        expect(err.code).toBe("ECONNRESET");
+        expect(envLeaks(err)).toBe(false);
+      }
+    } finally {
+      policy.shared = false;
+      vi.unstubAllEnvs();
+    }
   });
 });
 
