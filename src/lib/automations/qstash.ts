@@ -16,6 +16,8 @@ import { Client, Receiver } from "@upstash/qstash";
 
 let _client: Client | null = null;
 let _receiver: Receiver | null = null;
+let _legacyReceiver: Receiver | null = null;
+let _legacyHalfWarned = false;
 
 function getClient(): Client | null {
   if (!process.env.QSTASH_TOKEN) return null;
@@ -43,6 +45,46 @@ function getReceiver(): Receiver | null {
     });
   }
   return _receiver;
+}
+
+/**
+ * The OLD QStash account's signing keys, kept only while its delayed messages
+ * (up to ~7 days out) drain after production moves to a new account. Both keys
+ * must be set; one alone is ignored.
+ */
+function getLegacyReceiver(): Receiver | null {
+  // Trimmed like the health check and env schema: whitespace-only = unset.
+  const current = process.env.QSTASH_LEGACY_CURRENT_SIGNING_KEY?.trim();
+  const next = process.env.QSTASH_LEGACY_NEXT_SIGNING_KEY?.trim();
+  if (!current || !next) {
+    if ((current || next) && !_legacyHalfWarned) {
+      _legacyHalfWarned = true;
+      console.warn(
+        "[qstash] only one of QSTASH_LEGACY_CURRENT_SIGNING_KEY / QSTASH_LEGACY_NEXT_SIGNING_KEY is set; legacy signature verification is off",
+      );
+    }
+    return null;
+  }
+  if (!_legacyReceiver) {
+    _legacyReceiver = new Receiver({
+      currentSigningKey: current,
+      nextSigningKey: next,
+    });
+  }
+  return _legacyReceiver;
+}
+
+async function verifyWith(
+  receiver: Receiver,
+  signature: string,
+  body: string,
+  url?: string,
+): Promise<boolean> {
+  try {
+    return await receiver.verify(url ? { signature, body, url } : { signature, body });
+  } catch {
+    return false;
+  }
 }
 
 export function qstashIsConfigured(): boolean {
@@ -130,7 +172,9 @@ export async function publishSocialPost(
  * Verify an inbound QStash callback's signature. Returns true if the body
  * matches the Upstash-Signature header. With `url`, the signature must also
  * have been minted for exactly that destination (the JWT `sub`), so a signed
- * call meant for another route cannot be replayed here.
+ * call meant for another route cannot be replayed here. A call the primary
+ * keys refuse is retried against the optional legacy pair (an old account's
+ * still-queued deliveries), under the same `url` binding.
  */
 export async function verifyQStashSignature(
   signature: string,
@@ -139,9 +183,7 @@ export async function verifyQStashSignature(
 ): Promise<boolean> {
   const receiver = getReceiver();
   if (!receiver) return false;
-  try {
-    return await receiver.verify(url ? { signature, body, url } : { signature, body });
-  } catch {
-    return false;
-  }
+  if (await verifyWith(receiver, signature, body, url)) return true;
+  const legacy = getLegacyReceiver();
+  return legacy ? verifyWith(legacy, signature, body, url) : false;
 }

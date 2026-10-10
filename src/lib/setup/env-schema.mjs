@@ -234,8 +234,16 @@ export const GROUPS = [
       ["QSTASH_TOKEN", "req"],
       ["QSTASH_CURRENT_SIGNING_KEY", "req"],
       ["QSTASH_NEXT_SIGNING_KEY", "req"],
+      // An OLD QStash account's keys, set only after an account move so its
+      // still-queued deliveries verify; remove once they drain (max ~7 days).
+      ["QSTASH_LEGACY_CURRENT_SIGNING_KEY", "opt"],
+      ["QSTASH_LEGACY_NEXT_SIGNING_KEY", "opt"],
       ["AUTOMATIONS_TOKEN_SECRET", "req"],
     ],
+    deep(add, env) {
+      if (env.has("QSTASH_LEGACY_CURRENT_SIGNING_KEY") !== env.has("QSTASH_LEGACY_NEXT_SIGNING_KEY"))
+        add("warn", "only one QSTASH_LEGACY_*_SIGNING_KEY is set — both are needed, so the old account's deliveries are NOT being verified");
+    },
   },
   {
     title: "WhatsApp bridge fleet (wa-manager)",
