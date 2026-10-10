@@ -33,7 +33,7 @@ import type { Product } from "@/types/products";
 
 export default function CheckoutPagesPage() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, subAccount, isAdmin, saPath } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, saPath, loading } = useSubAccount();
 
   const [pages, setPages] = useState<CheckoutPage[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -62,6 +62,16 @@ export default function CheckoutPagesPage() {
     () => products.filter((p) => p.active),
     [products],
   );
+
+  // Until the workspace doc arrives the gate reads as off; showing "Locked"
+  // then flashes it on every load of a workspace that has Payments on.
+  if (loading) {
+    return (
+      <div className="mx-auto w-full max-w-3xl p-6">
+        <Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
 
   if (!gateOn) {
     return (
