@@ -17,6 +17,7 @@ import {
   CHECKOUT_THEMES,
   checkoutThemeCssVars,
   isCheckoutThemeId,
+  isHexColor,
 } from "@/lib/checkout/themes";
 import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 
@@ -278,12 +279,17 @@ export function PublicBookingView({
     : undefined;
 
   // Accent style — applied to primary buttons + selected slot ring. A
-  // per-page accent color wins over the preset's accent.
-  const accent = branding.accentColor ?? theme?.accent ?? null;
-  const accentStyle: React.CSSProperties = branding.accentColor
+  // per-page accent color wins over the preset's accent. The stored colour
+  // is used only if it is a plain hex (#RGB or #RRGGBB, what the validator
+  // stores): anything else would be written into the style attribute as-is.
+  const ownAccent = isHexColor(branding.accentColor, true)
+    ? branding.accentColor
+    : null;
+  const accent = ownAccent ?? theme?.accent ?? null;
+  const accentStyle: React.CSSProperties = ownAccent
     ? {
-        backgroundColor: branding.accentColor,
-        borderColor: branding.accentColor,
+        backgroundColor: ownAccent,
+        borderColor: ownAccent,
       }
     : theme
       ? {
@@ -322,7 +328,7 @@ export function PublicBookingView({
               className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl text-white"
               style={{
                 backgroundColor: accent ?? "#0F766E",
-                color: theme && !branding.accentColor ? theme.buttonText : undefined,
+                color: theme && !ownAccent ? theme.buttonText : undefined,
               }}
             >
               <CalendarClock className="h-6 w-6" />

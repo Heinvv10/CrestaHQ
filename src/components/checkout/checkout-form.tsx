@@ -16,6 +16,11 @@ import type { CheckoutTheme } from "@/lib/checkout/themes";
  * We own this page purely so bumps can exist — Stripe's hosted Checkout can't
  * express "tick to add". Card fields stay on Stripe; nothing sensitive is
  * typed here.
+ *
+ * Layout order is deliberate: buyer fields → the main product's price line →
+ * the bump offer(s) → ticked bumps + total → pay. The bump sits AFTER the
+ * price the buyer came expecting to pay (the classic order-bump position),
+ * and the total beneath it re-states the sum with the bump included.
  */
 
 export interface CheckoutBump {
@@ -112,12 +117,6 @@ export function CheckoutForm({
     }
   }
 
-  // A page saved before presets existed keeps the values it hard-coded then
-  // (`theme.legacy`), so it renders exactly as it always did.
-  const legacy = theme.legacy;
-  const muted = legacy ? legacy.formMuted : theme.muted;
-  const checkboxAccent = legacy ? undefined : theme.accent;
-
   const inputStyle: React.CSSProperties = {
     width: "100%",
     padding: "10px 12px",
@@ -130,6 +129,8 @@ export function CheckoutForm({
     boxSizing: "border-box",
   };
 
+  const tickedBumps = bumps.filter((b) => ticked.has(b.id));
+
   return (
     <form onSubmit={handleSubmit} style={{ display: "grid", gap: 20 }}>
       {cancelled && (
@@ -140,7 +141,7 @@ export function CheckoutForm({
             background: "rgba(245,158,11,0.08)",
             border: "1px solid rgba(245,158,11,0.3)",
             fontSize: 13,
-            color: legacy ? legacy.noticeText : "#b45309",
+            color: "#b45309",
           }}
         >
           Checkout was cancelled — nothing was charged. You can try again below.
@@ -177,7 +178,7 @@ export function CheckoutForm({
                     alignItems: "flex-start",
                     fontSize: 12,
                     lineHeight: 1.5,
-                    color: muted,
+                    color: theme.muted,
                   }}
                 >
                   <input
@@ -189,7 +190,7 @@ export function CheckoutForm({
                         [f.id]: e.target.checked ? "yes" : "",
                       }))
                     }
-                    style={{ marginTop: 2, accentColor: checkboxAccent }}
+                    style={{ marginTop: 2, accentColor: theme.accent }}
                   />
                   <span>{f.consentText}</span>
                 </label>
@@ -216,8 +217,26 @@ export function CheckoutForm({
         </div>
       )}
 
+      {/* The main offer's price line — what the buyer came expecting to pay. */}
+      <div
+        style={{
+          borderTop: `1px solid ${theme.divider}`,
+          paddingTop: 14,
+          display: "grid",
+          gap: 6,
+          fontSize: 13,
+        }}
+      >
+        <Row
+          label={mainName}
+          value={money.format(mainPriceCents / 100)}
+          muted={theme.muted}
+        />
+      </div>
+
       {/* Order bumps — the reason this page exists rather than linking
-          straight to Stripe. */}
+          straight to Stripe. Rendered BELOW the main price line: the classic
+          bump position is after the expected price, before the total. */}
       {bumps.length > 0 && (
         <div style={{ display: "grid", gap: 8 }}>
           {bumps.map((b) => {
@@ -230,9 +249,7 @@ export function CheckoutForm({
                   gap: 10,
                   alignItems: "flex-start",
                   padding: 14,
-                  borderRadius: legacy
-                    ? legacy.bumpRadius
-                    : Math.max(theme.inputRadius, 2),
+                  borderRadius: Math.max(theme.inputRadius, 2),
                   cursor: "pointer",
                   border: on ? `2px solid ${theme.accent}` : theme.bumpBorder,
                   background: on ? theme.accentSoft : theme.bumpBg,
@@ -249,7 +266,7 @@ export function CheckoutForm({
                       return next;
                     })
                   }
-                  style={{ marginTop: 3, accentColor: checkboxAccent }}
+                  style={{ marginTop: 3, accentColor: theme.accent }}
                 />
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span
@@ -271,7 +288,7 @@ export function CheckoutForm({
                         marginTop: 3,
                         fontSize: 12.5,
                         lineHeight: 1.5,
-                        color: muted,
+                        color: theme.muted,
                       }}
                     >
                       {b.pitch}
@@ -284,6 +301,7 @@ export function CheckoutForm({
         </div>
       )}
 
+      {/* Ticked bumps as receipt lines + the running total. */}
       <div
         style={{
           borderTop: `1px solid ${theme.divider}`,
@@ -293,28 +311,21 @@ export function CheckoutForm({
           fontSize: 13,
         }}
       >
-        <Row
-          label={mainName}
-          value={money.format(mainPriceCents / 100)}
-          muted={muted}
-        />
-        {bumps
-          .filter((b) => ticked.has(b.id))
-          .map((b) => (
-            <Row
-              key={b.id}
-              label={b.name}
-              value={money.format(b.unitPriceCents / 100)}
-              muted={muted}
-            />
-          ))}
+        {tickedBumps.map((b) => (
+          <Row
+            key={b.id}
+            label={b.name}
+            value={money.format(b.unitPriceCents / 100)}
+            muted={theme.muted}
+          />
+        ))}
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
             fontWeight: 700,
             fontSize: 16,
-            marginTop: 6,
+            marginTop: tickedBumps.length ? 6 : 0,
           }}
         >
           <span>Total</span>
@@ -336,17 +347,13 @@ export function CheckoutForm({
           background: theme.buttonBg,
           color: theme.buttonText,
           fontSize: 15,
-          fontWeight: legacy ? legacy.buttonWeight : 700,
+          fontWeight: 700,
           fontFamily: "inherit",
-          // Left off unless the preset sets them (CSS default otherwise).
-          textTransform:
-            theme.headingTransform === "none"
-              ? undefined
-              : theme.headingTransform,
+          textTransform: theme.headingTransform,
           letterSpacing:
             theme.headingTransform === "uppercase"
               ? theme.headingSpacing
-              : undefined,
+              : "normal",
           cursor: submitting ? "default" : "pointer",
           opacity: submitting ? 0.7 : 1,
         }}

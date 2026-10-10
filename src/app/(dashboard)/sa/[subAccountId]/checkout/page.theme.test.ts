@@ -4,9 +4,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * The Style picker in the checkout-page editor. A new page starts on the
- * default preset; a page saved before presets existed keeps none until one
- * is picked, so saving any other field never restyles it.
+ * The Style picker in the checkout-page editor (upstream's behaviour): a new
+ * page starts on the default preset; a page saved before presets opens on
+ * the preset nearest its look and saves that; what is picked is what the
+ * save sends as `themePreset`.
  */
 
 // One object per hook for the whole run: the page's effects depend on them,
@@ -39,7 +40,7 @@ let root: Root;
 let container: HTMLDivElement;
 const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ ok: true, id: "p1" }));
 
-const page = (themePreset?: unknown) => ({
+const page = (themePreset?: unknown, theme = "light") => ({
   id: "p1",
   name: "Offer",
   slug: "offer",
@@ -49,7 +50,7 @@ const page = (themePreset?: unknown) => ({
   headline: "",
   subheadline: "",
   successUrl: null,
-  appearance: { theme: "light", accent: "#7c3aed", hideChrome: false, hideTitle: false },
+  appearance: { theme, accent: "#7c3aed", hideChrome: false, hideTitle: false },
   ...(themePreset === undefined ? {} : { themePreset }),
 });
 
@@ -89,37 +90,46 @@ afterEach(async () => {
 });
 
 describe("checkout page editor style preset", () => {
-  it("a new page starts on the default preset, with no way to clear it", async () => {
+  it("a new page starts on the default preset", async () => {
     await open(null);
     expect(chosen()).toEqual(["Clean"]);
+  });
+
+  it("never offers to clear the preset", async () => {
+    await open(page());
     expect(container.textContent).not.toContain("Brand default");
   });
 
-  it("a page saved before presets opens with none chosen, and saving it sends none", async () => {
+  it("a page saved before presets opens on the nearest preset and saves it", async () => {
     await open(page());
-    expect(chosen()).toEqual(["Brand default"]);
+    expect(chosen()).toEqual(["Clean"]);
     const req = await save();
     expect(req).toMatchObject({ method: "PATCH", url: "/api/sub-accounts/sa1/checkout-pages/p1" });
-    expect(req.body.themePreset).toBeNull();
+    expect(req.body.themePreset).toBe("clean");
   });
 
-  it("sends the preset picked for such a page", async () => {
-    await open(page());
+  it("a dark page saved before presets opens on Midnight", async () => {
+    await open(page(undefined, "dark"));
+    expect(chosen()).toEqual(["Midnight"]);
+    expect((await save()).body.themePreset).toBe("midnight");
+  });
+
+  it("opens on the stored preset and sends it back", async () => {
+    await open(page("noir-lime"));
+    expect(chosen()).toEqual(["Noir Lime"]);
+    expect((await save()).body.themePreset).toBe("noir-lime");
+  });
+
+  it("sends the preset that was picked", async () => {
+    await open(page("noir-lime"));
     await act(async () => button("Sunset").click());
     expect(chosen()).toEqual(["Sunset"]);
     expect((await save()).body.themePreset).toBe("sunset");
   });
 
-  it("opens on the stored preset, sends it back, and no longer offers to clear it", async () => {
-    await open(page("midnight"));
-    expect(chosen()).toEqual(["Midnight"]);
-    expect(container.textContent).not.toContain("Brand default");
-    expect((await save()).body.themePreset).toBe("midnight");
-  });
-
-  it("opens an unrecognised stored preset as none", async () => {
-    await open(page("bogus"));
-    expect(chosen()).toEqual(["Brand default"]);
-    expect((await save()).body.themePreset).toBeNull();
+  it.each([["bogus"], ["constructor"], [42]])("opens an unrecognised stored preset (%s) on a real one, so the page can still be saved", async (stored) => {
+    await open(page(stored));
+    expect(chosen()).toEqual(["Clean"]);
+    expect((await save()).body.themePreset).toBe("clean");
   });
 });

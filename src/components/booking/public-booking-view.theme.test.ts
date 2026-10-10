@@ -5,8 +5,9 @@ import { CHECKOUT_THEMES } from "@/lib/checkout/themes";
 
 /**
  * Style presets on the public booking page, through the real /b and embed
- * server pages: a page with no preset gets no preset markup at all, and a
- * known preset restyles it from the preset table alone.
+ * server pages: a page with no preset gets no preset markup at all, a known
+ * preset restyles it from the preset table alone, and the page's own accent
+ * reaches a style attribute only when it is a plain hex colour.
  */
 
 const h = () => import("@/test/booking-harness");
@@ -42,6 +43,37 @@ describe("a booking page with no preset", () => {
   it("keeps the page's own accent, and only that, on the logo chip", async () => {
     seed("accent", { accentColor: "#FF5500" });
     expect((await open("accent")).match(LOGO_CHIP)?.[1]).toBe("background-color:#FF5500");
+  });
+
+  it("keeps a 3-digit accent too, as the validator stores it", async () => {
+    seed("short", { accentColor: "#F50" });
+    expect((await open("short")).match(LOGO_CHIP)?.[1]).toBe("background-color:#F50");
+  });
+
+  it.each([
+    ["extra CSS declarations", "red;position:fixed;inset:0;background:url(https://evil.example/x)"],
+    ["a hex followed by more CSS", "#FF5500;background:url(https://evil.example/x)"],
+    ["a CSS function", "url(https://evil.example/x)"],
+    ["markup", '"><script src="https://evil.example/x"></script>'],
+    ["a colour name", "red"],
+    ["a hex with a trailing newline", "#FF5500\n"],
+    ["a non-string", ["#FF5500"]],
+  ])("ignores a stored accent that is %s, on /b and in the embed", async (_label, accentColor) => {
+    seed("clean");
+    const [expected, expectedEmbed] = [await open("clean"), await openEmbed("clean")];
+    seed("clean", { accentColor });
+    for (const [html, plain] of [[await open("clean"), expected], [await openEmbed("clean"), expectedEmbed]]) {
+      expect(html).not.toContain("evil.example");
+      expect(html).not.toContain("position:fixed");
+      expect(html).toBe(plain);
+    }
+  });
+
+  it("with a preset, falls back to the preset's accent when the stored one is not a hex", async () => {
+    seed("both", { themePreset: "noir-lime", accentColor: "red;background:url(https://evil.example/x)" });
+    const html = await open("both");
+    expect(html).not.toContain("evil.example");
+    expect(html.match(LOGO_CHIP)?.[1]).toBe("background-color:#ccff00;color:#0a0a0a");
   });
 
   it.each([

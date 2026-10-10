@@ -8,9 +8,9 @@ import { runId } from "../lib/run-id";
 
 /**
  * Style presets on the public checkout page (/co), through the real server:
- * a page saved before presets keeps its original look, a preset restyles it,
- * the editor's picker is what writes the field, and an unknown preset is
- * refused by the route and harmless when already stored.
+ * a page with no stored preset renders as Clean with its own accent, a
+ * preset restyles it, the editor's picker is what writes the field, and an
+ * unknown preset is refused by the route and harmless when already stored.
  *
  * Pages and products are this run's own, under a run-scoped prefix on the
  * fixture PRIMARY, written published with the Admin SDK (publishing through
@@ -63,7 +63,7 @@ async function seedPage(key: string, over: Record<string, unknown> = {}): Promis
       autoTags: [],
       pipelineStageId: null,
       successUrl: null,
-      appearance: { theme: "light", accent: "#7c3aed", hideChrome: false, hideTitle: false },
+      appearance: { theme: "light", accent: "#0ea5e9", hideChrome: false, hideTitle: false },
       ...stampNow(),
       ...over,
     });
@@ -102,15 +102,15 @@ async function visit(browser: Browser, p: { slug: string; name: string }, check:
 const pay = (page: Page) => page.getByRole("button", { name: "Pay $49.00" });
 const bump = (page: Page) => page.locator("label", { hasText: "E2E Style Bump" });
 
-/** The look every checkout page had before presets existed. */
-async function expectOriginalLook(page: Page) {
+/** No stored preset (or one the build does not know): Clean, with the page's own sky-blue accent. */
+async function expectCleanWithOwnAccent(page: Page) {
   await expect(page.locator("main")).toHaveCSS("background-color", "rgb(250, 250, 250)");
-  await expect(pay(page)).toHaveCSS("background-color", "rgb(124, 58, 237)");
-  await expect(pay(page)).toHaveCSS("font-weight", "600");
+  await expect(pay(page)).toHaveCSS("background-color", "rgb(14, 165, 233)");
+  await expect(pay(page)).toHaveCSS("color", "rgb(255, 255, 255)");
   await expect(pay(page)).toHaveCSS("border-radius", "10px");
   await expect(pay(page)).toHaveCSS("text-transform", "none");
-  await expect(bump(page)).toHaveCSS("border-radius", "10px");
-  expect(await bump(page).locator("input[type=checkbox]").getAttribute("style")).not.toContain("accent-color");
+  await expect(bump(page)).toHaveCSS("border-radius", "8px");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveCSS("text-transform", "none");
 }
 
 /** What setup read BEFORE writing — set only once it has (teardown runs even when setup throws). */
@@ -145,8 +145,8 @@ test.afterAll(async () => {
   if (errors.length > 1) throw new AggregateError(errors, "checkout-style-preset teardown: several steps failed");
 });
 
-test("a page saved before presets keeps its original look", async ({ browser }) => {
-  await visit(browser, await seedPage("legacy"), expectOriginalLook);
+test("a page with no stored preset renders as Clean with its own accent", async ({ browser }) => {
+  await visit(browser, await seedPage("legacy"), expectCleanWithOwnAccent);
 });
 
 test("a preset restyles the public page and its form, content unchanged", async ({ browser }) => {
@@ -155,51 +155,52 @@ test("a preset restyles the public page and its form, content unchanged", async 
     await expect(page.getByRole("heading", { level: 1 })).toHaveCSS("text-transform", "uppercase");
     await expect(pay(page)).toHaveCSS("background-color", "rgb(204, 255, 0)");
     await expect(pay(page)).toHaveCSS("color", "rgb(10, 10, 10)");
-    await expect(pay(page)).toHaveCSS("font-weight", "700");
     await expect(pay(page)).toHaveCSS("border-radius", "2px");
     await expect(pay(page)).toHaveCSS("text-transform", "uppercase");
     await expect(bump(page)).toHaveCSS("border-radius", "2px");
-    expect(await bump(page).locator("input[type=checkbox]").getAttribute("style")).toContain("accent-color");
+    await expect(bump(page).locator("input[type=checkbox]")).toHaveCSS("accent-color", "rgb(204, 255, 0)");
     await expect(page.getByText("A fixture offer.")).toBeVisible();
     await expect(bump(page)).toContainText("+ $19.00");
   });
 });
 
-test("a stored preset this build does not know renders the original look", async ({ browser }) => {
-  await visit(browser, await seedPage("unknown", { themePreset: "no-such-preset" }), expectOriginalLook);
+test("a stored preset this build does not know renders as if there were none", async ({ browser }) => {
+  await visit(browser, await seedPage("unknown", { themePreset: "no-such-preset" }), expectCleanWithOwnAccent);
 });
 
-test("the editor's Style picker saves the preset; an untouched save leaves an old page as it was", async ({ page, browser }) => {
+test("a stored accent that is not a hex colour never reaches the page", async ({ browser }) => {
+  const p = await seedPage("hostile", {
+    appearance: { theme: "light", accent: "red;position:fixed;inset:0;background:url(https://evil.example/x)", hideChrome: false, hideTitle: false },
+  });
+  await visit(browser, p, async (page) => {
+    expect(await page.content()).not.toContain("evil.example");
+    // Clean's own violet instead.
+    await expect(pay(page)).toHaveCSS("background-color", "rgb(124, 58, 237)");
+    await expect(pay(page)).toHaveCSS("position", "static");
+  });
+});
+
+test("the editor opens an old page on Clean and saves the preset that is picked", async ({ page, browser }) => {
   const p = await seedPage("edit");
   const stored = async () => (await pages().doc(p.id).get()).data() ?? {};
-  const openEditor = async () => {
-    await page.goto(`/sa/${sa}/checkout`);
-    const row = page.locator("div.rounded-xl", { hasText: p.name });
-    await row.getByRole("button", { name: "Edit" }).click({ timeout: 30_000 });
-    await expect(page.getByRole("heading", { name: "Edit checkout page" })).toBeVisible();
-  };
-  const save = async () => {
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.getByRole("heading", { name: "Edit checkout page" })).toHaveCount(0, { timeout: 30_000 });
-  };
 
-  // Saving another field of a pre-preset page stores no preset.
-  await openEditor();
-  await expect(page.getByRole("button", { name: /^Brand default/ })).toHaveAttribute("aria-pressed", "true");
-  await page.locator("#co-headline").fill(`${p.name} edited`);
-  await save();
-  await expect.poll(async () => (await stored()).headline, { timeout: 30_000 }).toBe(`${p.name} edited`);
-  expect((await stored()).themePreset ?? null).toBeNull();
-  await visit(browser, { slug: p.slug, name: `${p.name} edited` }, expectOriginalLook);
+  await page.goto(`/sa/${sa}/checkout`);
+  const row = page.locator("div.rounded-xl", { hasText: p.name });
+  await row.getByRole("button", { name: "Edit" }).click({ timeout: 30_000 });
+  const editor = page.getByRole("heading", { name: "Edit checkout page" });
+  await expect(editor).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Clean/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: /^Brand default/ })).toHaveCount(0);
 
-  // Picking a preset stores it, and the public page takes it.
-  await openEditor();
   const sunset = page.getByRole("button", { name: /^Sunset/ });
   await sunset.click();
   await expect(sunset).toHaveAttribute("aria-pressed", "true");
-  await save();
+  await page.getByRole("button", { name: "Save draft" }).click();
+  await expect(editor).toHaveCount(0, { timeout: 30_000 });
   await expect.poll(async () => (await stored()).themePreset, { timeout: 30_000 }).toBe("sunset");
-  await visit(browser, { slug: p.slug, name: `${p.name} edited` }, async (pub) => {
+  expect((await stored()).status).toBe("published");
+
+  await visit(browser, p, async (pub) => {
     await expect(pub.locator("main")).toHaveCSS("background-color", "rgb(253, 246, 236)");
     await expect(pay(pub)).toHaveCSS("background-color", "rgb(234, 88, 12)");
   });

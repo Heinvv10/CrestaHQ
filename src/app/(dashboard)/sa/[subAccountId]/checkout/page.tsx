@@ -20,7 +20,7 @@ import {
 import type { CheckoutPage, CheckoutThemeId } from "@/types/checkout-pages";
 import {
   DEFAULT_CHECKOUT_THEME_ID,
-  isCheckoutThemeId,
+  resolveCheckoutTheme,
 } from "@/lib/checkout/themes";
 import { ThemePresetPicker } from "@/components/checkout/theme-preset-picker";
 import type { Product } from "@/types/products";
@@ -267,13 +267,10 @@ function CheckoutPageEditor({
   const [headline, setHeadline] = useState(page?.headline ?? "");
   const [subheadline, setSubheadline] = useState(page?.subheadline ?? "");
   const [successUrl, setSuccessUrl] = useState(page?.successUrl ?? "");
-  // A page saved before presets existed has none, and keeps none (so its
-  // original look) until one is picked here — saving any other field never
-  // restyles it. New pages start on the default preset.
-  const stored = page?.themePreset;
-  const savedPreset = isCheckoutThemeId(stored) ? stored : null;
-  const [themePreset, setThemePreset] = useState<CheckoutThemeId | null>(
-    page ? savedPreset : DEFAULT_CHECKOUT_THEME_ID,
+  // Legacy pages (pre-presets) resolve to the preset that matches how they
+  // already render, so opening the editor never silently restyles them.
+  const [themePreset, setThemePreset] = useState<CheckoutThemeId>(
+    page ? resolveCheckoutTheme(page).id : DEFAULT_CHECKOUT_THEME_ID,
   );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -507,9 +504,7 @@ function CheckoutPageEditor({
         <Label>Style</Label>
         <ThemePresetPicker
           value={themePreset}
-          onChange={setThemePreset}
-          allowNone={editing && savedPreset === null}
-          noneBlurb="Keep this page's original look."
+          onChange={(next) => setThemePreset(next ?? DEFAULT_CHECKOUT_THEME_ID)}
         />
       </div>
 

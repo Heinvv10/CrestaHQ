@@ -10,8 +10,9 @@ import { runId } from "../lib/run-id";
  * Style presets on the public booking page (/b), through the real server and
  * the real stylesheet: a page with no preset keeps the standard look, a
  * preset restyles it (the CSS variables set on <main> actually reach the
- * card), the editor's picker is what writes the field, and an unknown preset
- * is refused by the route and harmless when already stored.
+ * card), the editor's picker is what writes the field, an unknown preset is
+ * refused by the route and harmless when already stored, and a stored accent
+ * that is not a hex colour is ignored.
  *
  * Pages are this run's own, under a run-scoped slug prefix on the fixture
  * PRIMARY; nothing is booked. The visitor's colour scheme is pinned to light
@@ -136,6 +137,15 @@ test("a stored preset this build does not know renders the standard look", async
   const slug = `${PREFIX}unknown-${stamp}`;
   await seedPage(slug, { themePreset: "no-such-preset" });
   await visit(browser, slug, expectStandardLook);
+});
+
+test("a stored accent that is not a hex colour never reaches the page", async ({ browser }) => {
+  const slug = `${PREFIX}accent-${stamp}`;
+  await seedPage(slug, { accentColor: "red;position:fixed;inset:0;background:url(https://evil.example/x)" });
+  await visit(browser, slug, async (page) => {
+    expect(await page.content()).not.toContain("evil.example");
+    await expectStandardLook(page);
+  });
 });
 
 test("the editor's Style picker saves the preset, and Brand default clears it", async ({ page, browser }) => {

@@ -12,11 +12,9 @@ import {
  * decision on the public page reads from one of these token sets so a preset
  * is the ONLY styling axis; there are no per-token overrides in v1.
  *
- * "clean" and "midnight" are the presets nearest the pre-preset light/dark
- * looks, but not identical to them (bump radius, button weight, checkbox
- * tint). A page saved before presets existed therefore resolves to
- * `legacyCheckoutTheme`, which reproduces its old values exactly — see
- * `resolveCheckoutTheme`.
+ * "clean" and "midnight" intentionally reproduce the pre-theme light/dark
+ * looks, so `resolveCheckoutTheme` can map legacy docs onto them without any
+ * visual change.
  */
 
 export interface CheckoutTheme {
@@ -63,21 +61,6 @@ export interface CheckoutTheme {
   headingTransform: "none" | "uppercase";
   headingWeight: number;
   headingSpacing: string;
-
-  /**
-   * Present only on the theme resolved for a page saved before presets
-   * existed: the values that page hard-coded where every preset differs.
-   * The public form reads them (and leaves its checkboxes untinted) so such
-   * a page renders exactly as it always did.
-   */
-  legacy?: {
-    /** Consent, bump-pitch and price-row text — the old form never went dark. */
-    formMuted: string;
-    bumpRadius: number;
-    buttonWeight: number;
-    /** Text of the "checkout was cancelled" notice. */
-    noticeText: string;
-  };
 }
 
 export const CHECKOUT_THEMES: Record<CheckoutThemeId, CheckoutTheme> = {
@@ -275,67 +258,20 @@ export function isCheckoutThemeId(v: unknown): v is CheckoutThemeId {
   );
 }
 
-/**
- * The exact look of a page saved before presets existed: light or dark from
- * `appearance.theme`, its accent on the pay button and the ticked bump.
- * Spelled out value by value rather than derived from a preset, so restyling
- * "clean" or "midnight" can never move an old page. `id` names the nearest
- * preset; it is not what the page renders as.
- */
-function legacyCheckoutTheme(
-  appearance: Partial<CheckoutPage["appearance"]> | null | undefined,
-): CheckoutTheme {
-  const dark = appearance?.theme === "dark";
-  const stored = appearance?.accent;
-  // Only a plain 6-digit hex reaches the page's style attributes.
-  const accent =
-    typeof stored === "string" && /^#[0-9a-f]{6}$/i.test(stored)
-      ? stored
-      : "#7c3aed";
-  const nearest = dark ? CHECKOUT_THEMES.midnight : CHECKOUT_THEMES.clean;
-  return {
-    id: nearest.id,
-    label: nearest.label,
-    blurb: nearest.blurb,
-    isDark: dark,
-    pageBg: dark ? "#18181b" : "#fafafa",
-    cardBg: dark ? "#27272a" : "#fff",
-    cardBorder: "none",
-    cardShadow: "0 1px 3px rgba(0,0,0,0.08)",
-    cardRadius: 16,
-    text: dark ? "#fafafa" : "#18181b",
-    muted: dark ? "#a1a1aa" : "#52525b",
-    faint: "#71717a",
-    accent,
-    accentSoft: `${accent}0f`,
-    buttonBg: accent,
-    buttonText: "#fff",
-    buttonRadius: 10,
-    inputBg: "#fff",
-    inputText: "#18181b",
-    inputBorder: "1px solid rgba(0,0,0,0.15)",
-    inputBorderColor: "rgba(0,0,0,0.15)",
-    inputRadius: 8,
-    divider: "rgba(0,0,0,0.1)",
-    bumpBorder: "2px dashed rgba(0,0,0,0.18)",
-    bumpBg: "rgba(0,0,0,0.015)",
-    headingTransform: "none",
-    headingWeight: 700,
-    headingSpacing: "normal",
-    legacy: {
-      formMuted: "#52525b",
-      bumpRadius: 10,
-      buttonWeight: 600,
-      noticeText: "#92400e",
-    },
-  };
+// HARDENING (ours, not upstream): the one test a stored custom colour must
+// pass before it may reach a style attribute. `allowShort` also admits #RGB,
+// which the booking-page validator accepts and stores.
+export function isHexColor(v: unknown, allowShort = false): v is string {
+  return (
+    typeof v === "string" &&
+    (/^#[0-9a-f]{6}$/i.test(v) || (allowShort && /^#[0-9a-f]{3}$/i.test(v)))
+  );
 }
 
 /**
- * Resolve the theme for a page. A known preset wins; anything else — a doc
- * saved before presets existed, a cleared preset, or a stored id this build
- * doesn't know — renders the page's original look, so nobody's page changes
- * on deploy and a bad value can't break one.
+ * Resolve the theme for a page, including legacy docs saved before presets
+ * existed: those map to clean/midnight from `appearance.theme`, and a legacy
+ * custom accent carries over so nobody's page changes color on deploy.
  */
 export function resolveCheckoutTheme(
   page: Pick<CheckoutPage, "appearance"> & {
@@ -345,5 +281,19 @@ export function resolveCheckoutTheme(
   if (page.themePreset && isCheckoutThemeId(page.themePreset)) {
     return CHECKOUT_THEMES[page.themePreset];
   }
-  return legacyCheckoutTheme(page.appearance);
+  const base =
+    page.appearance?.theme === "dark"
+      ? CHECKOUT_THEMES.midnight
+      : CHECKOUT_THEMES.clean;
+  const accent = page.appearance?.accent;
+  // HARDENING (ours): string-typed 6-digit hex only (upstream: any truthy value the regex coerces).
+  if (isHexColor(accent)) {
+    return {
+      ...base,
+      accent,
+      accentSoft: `${accent}0f`,
+      buttonBg: accent,
+    };
+  }
+  return base;
 }

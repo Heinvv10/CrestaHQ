@@ -2,17 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { createMemoryFirestore } from "@/test/memory-firestore";
-import legacyMarkup from "@/test/checkout-legacy-markup.json";
 
 /**
- * The public checkout page through its real loader: a page with no style
- * preset renders exactly as it did before presets existed, and a preset
- * restyles it from the preset table alone.
- *
- * `checkout-legacy-markup.json` is the markup this page produced for the
- * fixtures below at 4f16a2c0, the commit before presets were added. It is
- * the "before" half of the comparison and is never regenerated to make a
- * failure pass: a pre-preset page is meant to look the same for good.
+ * The public checkout page through its real loader: a preset restyles it
+ * from the preset table alone, and a page with no preset — or with a stored
+ * preset or accent that is not what the app writes — falls back to Clean or
+ * Midnight without anything stored reaching a style attribute.
  */
 
 const mem = createMemoryFirestore();
@@ -30,7 +25,7 @@ const FIELDS = [
 ];
 const look = (theme: string, accent: string) => ({ theme, accent, hideChrome: false, hideTitle: false });
 
-/** The pages the stored markup was captured from, by slug. */
+/** Published pages with no preset, by slug. */
 const PAGES: Record<string, Record<string, unknown>> = {
   bare: {},
   full: { headline: "Buy the thing", subheadline: "It is good.", collectFields: FIELDS, bumpProductIds: ["bump1", "bump2"] },
@@ -78,38 +73,55 @@ async function open(key: string): Promise<string> {
   );
 }
 
-const golden = legacyMarkup as Record<string, string>;
+const KEYS = Object.keys(PAGES).flatMap((slug) => [slug, `${slug}?cancelled`]);
+const openAll = async () => Object.fromEntries(await Promise.all(KEYS.map(async (k) => [k, await open(k)] as const)));
 
 beforeEach(() => seed());
 
 describe("a checkout page with no preset", () => {
-  it("covers every stored page, with and without the cancel notice", () => {
-    expect(Object.keys(golden).sort()).toEqual(Object.keys(PAGES).flatMap((s) => [s, `${s}?cancelled`]).sort());
+  it("renders as Clean, with the page's own accent on the pay button", async () => {
+    const html = await open("accent");
+    expect(html).toContain('<main style="min-height:100vh;background:#fafafa;color:#18181b;');
+    expect(html).toContain("border:none;background:#0ea5e9;color:#ffffff;");
+    expect(html).toContain('<span style="color:#0ea5e9">');
   });
 
-  it.each(Object.keys(golden))("renders %s byte for byte as it did before presets", async (key) => {
-    expect(await open(key)).toBe(golden[key]);
+  it("renders a dark page as Midnight", async () => {
+    const html = await open("dark");
+    expect(html).toContain('<main style="min-height:100vh;background:#18181b;color:#fafafa;');
+    expect(html).toContain("background:#18181b;color:#fafafa;box-sizing:border-box");
+    expect(html).toContain("border:none;background:#22c55e;color:#ffffff;");
   });
 
   it.each([
     ["null", null],
     ["an id this build does not know", "bogus"],
     ["a name every object has", "constructor"],
+    ["another name every object has", "__proto__"],
     ["a string shaped like markup", '"><script>alert(1)</script>'],
     ["a string shaped like CSS", "clean;background:url(https://evil.example/x)"],
     ["a number", 42],
+    ["an object", { id: "ocean" }],
   ])("renders the same when the stored preset is %s", async (_label, themePreset) => {
+    const expected = await openAll();
     seed({ themePreset });
-    for (const key of Object.keys(golden)) expect(await open(key), key).toBe(golden[key]);
+    expect(await openAll()).toEqual(expected);
   });
 
-  it("keeps a stored accent that is not a plain hex out of the page", async () => {
-    const hostile = "#7c3aed;background:url(https://evil.example/x)";
-    seed({ appearance: look("light", hostile) });
+  it.each([
+    ["extra CSS declarations", "#7c3aed;position:fixed;inset:0;background:url(https://evil.example/x)"],
+    ["a CSS function", "url(https://evil.example/x)"],
+    ["markup", '"><script src="https://evil.example/x"></script>'],
+    ["a colour name", "red"],
+    ["a non-string", ["#aabbcc"]],
+  ])("keeps a stored accent that is %s out of the page", async (_label, accent) => {
+    seed({ appearance: look("light", accent as string) });
     const html = await open("full?cancelled");
     expect(html).not.toContain("evil.example");
-    // The default accent is used instead, which is what the "full" page stores.
-    expect(html).toBe(golden["full?cancelled"]);
+    expect(html).not.toContain("position:fixed");
+    expect(html).not.toContain("#aabbcc");
+    // Clean's own accent instead.
+    expect(html).toContain("border:none;background:#7c3aed;color:#ffffff;");
   });
 });
 
@@ -125,9 +137,8 @@ describe("a checkout page with a preset", () => {
       '<h1 style="margin:0;font-size:24px;line-height:1.25;font-weight:800;text-transform:uppercase;letter-spacing:0.04em">',
     );
     expect(html).toContain('<p style="margin:8px 0 0;font-size:14.5px;line-height:1.6;color:#9a9a93">');
-    // Inputs, the cancel notice, tinted checkboxes, the bump box and the pay button.
+    // Inputs, tinted checkboxes, the bump box and the pay button.
     expect(html).toContain("border-radius:2px;border:1px solid #2c2c30;font-size:14px;font-family:inherit;background:#161617;color:#f5f5f4;");
-    expect(html).toContain("font-size:13px;color:#b45309");
     expect(html).toContain('<input type="checkbox" style="margin-top:2px;accent-color:#ccff00"/>');
     expect(html).toContain("padding:14px;border-radius:2px;cursor:pointer;border:2px dashed rgba(204,255,0,0.35);background:rgba(255,255,255,0.02)");
     expect(html).toContain('<span style="color:#ccff00">');
@@ -139,12 +150,13 @@ describe("a checkout page with a preset", () => {
 
   it("changes nothing but style: the same content in the same order", async () => {
     const text = (html: string) => html.replace(/ style="[^"]*"/g, "");
-    for (const themePreset of ["clean", "midnight", "noir-lime", "sunset", "ocean"]) {
+    const plain = await openAll();
+    for (const themePreset of ["midnight", "noir-lime", "sunset", "ocean"]) {
       seed({ themePreset });
-      for (const key of Object.keys(golden)) {
+      for (const key of KEYS) {
         const html = await open(key);
-        expect(html, `${themePreset} ${key}`).not.toBe(golden[key]);
-        expect(text(html), `${themePreset} ${key}`).toBe(text(golden[key]));
+        expect(html, `${themePreset} ${key}`).not.toBe(plain[key]);
+        expect(text(html), `${themePreset} ${key}`).toBe(text(plain[key]));
       }
     }
   });

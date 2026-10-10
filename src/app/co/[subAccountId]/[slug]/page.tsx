@@ -130,9 +130,7 @@ export default async function PublicCheckoutPage({
         <div
           style={{
             background: theme.cardBg,
-            // Properties at their CSS default are left off, as they were
-            // before presets, so a page with no preset renders unchanged.
-            border: theme.cardBorder === "none" ? undefined : theme.cardBorder,
+            border: theme.cardBorder,
             borderRadius: theme.cardRadius,
             padding: "28px 24px",
             boxShadow: theme.cardShadow,
@@ -144,14 +142,8 @@ export default async function PublicCheckoutPage({
               fontSize: 24,
               lineHeight: 1.25,
               fontWeight: theme.headingWeight,
-              textTransform:
-                theme.headingTransform === "none"
-                  ? undefined
-                  : theme.headingTransform,
-              letterSpacing:
-                theme.headingSpacing === "normal"
-                  ? undefined
-                  : theme.headingSpacing,
+              textTransform: theme.headingTransform,
+              letterSpacing: theme.headingSpacing,
             }}
           >
             {page.headline || page.name}
