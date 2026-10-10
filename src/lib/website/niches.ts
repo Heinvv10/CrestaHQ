@@ -4,6 +4,12 @@ import type {
   WebsiteConfig,
 } from "@/types/website";
 import {
+  sampleAiAutomationLocalConfig,
+  sampleAiAutomationVslConfig,
+  sampleAiConsultingLocalConfig,
+  sampleAiConsultingVslConfig,
+  sampleAgencyConsultingLocalConfig,
+  sampleAgencyConsultingVslConfig,
   sampleGymFitnessLocalConfig,
   sampleGymFitnessVslConfig,
   sampleHomeServicesLocalConfig,
@@ -30,6 +36,9 @@ export const NICHE_KEYS: readonly Niche[] = [
   "home_services",
   "real_estate",
   "gym_fitness",
+  "agency_consulting",
+  "ai_consulting",
+  "ai_automation",
 ] as const;
 
 export interface NicheMeta {
@@ -40,6 +49,8 @@ export interface NicheMeta {
   defaultColorScheme: ColorScheme;
   /** Single emoji used as the niche tile glyph. */
   emoji: string;
+  /** Remote-first niches: the contact page works without a street address. */
+  addressOptional?: boolean;
 }
 
 export const NICHE_META: Record<Niche, NicheMeta> = {
@@ -66,6 +77,32 @@ export const NICHE_META: Record<Niche, NicheMeta> = {
     description: "Studios / PTs / Boutique Gyms",
     defaultColorScheme: "Dark Mode",
     emoji: "💪",
+  },
+  agency_consulting: {
+    key: "agency_consulting",
+    label: "Agency & Consulting",
+    shortLabel: "Agency",
+    description: "Studios / Consultancies / B2B services",
+    defaultColorScheme: "Standard",
+    emoji: "🎯",
+  },
+  ai_consulting: {
+    key: "ai_consulting",
+    label: "AI Consulting",
+    shortLabel: "AI Consulting",
+    description: "Strategy / Readiness / Governance / Training",
+    defaultColorScheme: "Standard",
+    emoji: "🧭",
+    addressOptional: true,
+  },
+  ai_automation: {
+    key: "ai_automation",
+    label: "AI Automation Agency",
+    shortLabel: "AI Automation",
+    description: "AI agents / Workflow automation / Chat & voice bots",
+    defaultColorScheme: "Dark Mode",
+    emoji: "⚡",
+    addressOptional: true,
   },
 };
 
@@ -112,5 +149,13 @@ export function nicheSample(
       return buildType === "vsl"
         ? sampleGymFitnessVslConfig
         : sampleGymFitnessLocalConfig;
+    case "agency_consulting":
+      return buildType === "vsl"
+        ? sampleAgencyConsultingVslConfig
+        : sampleAgencyConsultingLocalConfig;
+    case "ai_consulting":
+      return buildType === "vsl" ? sampleAiConsultingVslConfig : sampleAiConsultingLocalConfig;
+    case "ai_automation":
+      return buildType === "vsl" ? sampleAiAutomationVslConfig : sampleAiAutomationLocalConfig;
   }
 }
