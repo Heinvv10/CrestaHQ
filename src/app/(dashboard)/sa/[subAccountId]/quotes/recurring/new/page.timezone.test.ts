@@ -88,3 +88,13 @@ it("keeps the operator's edit when the doc changes afterwards", async () => {
   await render();
   expect(fields.values?.timezone).toBe("Europe/London");
 });
+
+it("keeps the form mounted if loading flips back on with the doc in hand", async () => {
+  ctx.value = { ...ctx.value, subAccount: { timezone: "Africa/Johannesburg" }, loading: false };
+  await render();
+  fields.onChange = null;
+  ctx.value = { ...ctx.value, loading: true };
+  await render();
+  expect(fields.onChange).not.toBeNull();
+  expect(container.querySelector(".animate-spin")).toBeNull();
+});
