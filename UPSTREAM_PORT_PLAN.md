@@ -16,7 +16,7 @@ Locked scope for porting upstream `leadstack-agency` changes into this fork. Ups
 
    One upstream change should come over: it removes the tracked `.claude/settings.local.json` (tracked in 898bcd5 and in our fork, absent in 1.0.40; it holds the upstream author's absolute path). Done in N6.
 6. **Upstream's assistant tools live in one big file.** Its `src/lib/ai-suite/capabilities.ts` grew by 2,908 lines; we split ours into `src/lib/ai-suite/capabilities/*.ts`. New tools must go into new files, never a copy of upstream's file.
-7. **Circular import between Web Voice and Website v2.** `web-voice-service` imports `resolvedAppUrl()` from `website-handoff-service`, which imports `updateWebVoiceSettings` back. Move `resolvedAppUrl` into a neutral `src/lib/server/app-url.ts`. It also does a GET with `redirect: "follow"` at runtime (`resolveFinalUrl`, 3 s timeout), which is exposed to the known DNS stalls on velo. `resolveLiveUrl` likewise fetches a gitpage-reported URL; both fetches must go through `lib/webhooks/public-fetch.ts` (SSRF guard, enforced by `ssrf-callers.test.ts`).
+7. **Circular import between Web Voice and Website v2.** `web-voice-service` imports `resolvedAppUrl()` from `website-handoff-service`, which imports `updateWebVoiceSettings` back. Move `resolvedAppUrl` into a neutral `src/lib/server/app-url.ts`. It also does a GET with `redirect: "follow"` at runtime (`resolveFinalUrl`, 3 s timeout), which is exposed to the known DNS stalls on velo. `resolveFinalUrl` exists to follow redirects (the apex→www CORS fix). `resolveLiveUrl` feeds it a gitpage-reported URL, which is not ours, so it must go through the SSRF guard (`ssrf-callers.test.ts` enforces this). But `publicFetch` in `lib/webhooks/public-fetch.ts` never follows redirects (a raw `http.request`; a 3xx comes back as the response, with no `res.url`), so the port is a **manual redirect loop for `resolveLiveUrl`**: one `publicFetch` per hop, reading `Location`, resolving it against the current URL, capped at ~5 hops, so every hop is re-checked. `resolvedAppUrl` fetches our own `NEXT_PUBLIC_APP_URL` (operator-set, not tenant-controlled), so it may keep plain `fetch` with redirect follow.
 8. **Real bugs in our own pipelines (new find).** These still use hard-coded `won`/`lost` or default-pipeline labels:
    - `src/lib/comms/ai/context.ts:81,87,100` — the AI agent treats a deal that is Won in a custom pipeline as still open.
    - `components/dashboard/leads-map.tsx:57,326`
@@ -200,16 +200,17 @@ Shared-file churn is low throughout: `website-builder.tsx`, `types/website.ts`, 
 - **N2a, workspace tools (~580; Hein gate):** `pause_all_workflows` (56), `find_awaiting_payment_bookings` + `mark_booking_paid` (103), `list_communities` + `add_course` + `add_lesson` (250), `watchdog_status` + `configure_watchdog` (171; `upsertWatchdogConfig` exists at `agents-watchdog-service.ts:83`).
   - `pause_all_workflows`: `pause=false` resumes every automation, so **chat-only**, admin, confirm-gated.
   - `mark_booking_paid` **sends the customer's booking confirmation email** (`markBookingPaid` in `bookings-service.ts` rotates the token and confirms). It needs a decision before build: chat-only (human-confirmed), or an approval class so `outbound-never-sends.test.ts` passes on the agent surface. Do not leave it a direct write on `agent`.
+  - **Every N2 tool placed on the agent surface needs a row in `src/test/outbound-fixtures.ts`** (`FIXTURE_ARGS` for sub-account tools, `AGENCY_FIXTURE_ARGS` for agent-callable agency tools in N2b), or `outbound-never-sends.test.ts` fails its coverage assertion (`:176`, `:226`). That applies to the read tools and to any N2a decision that widens `update_contact`, `list_pipelines`, etc. onto a new surface, not only `mark_booking_paid`.
   - Read tools (`find_awaiting_payment_bookings`, `list_communities`, `watchdog_status`) take `chat` + `agent`; writes `add_course`, `add_lesson`, `configure_watchdog` are chat-only, admin, confirm-gated unless N2a records a reason to widen. Also decide here the surfaces for `update_contact`, `list_pipelines`, `create_pipeline`, `list_quotes`, `mark_quote_paid` and `list_snapshots`.
 - **N2b, agency tools (~410; Hein gate):** `billing_overview`, `comp_client`, `resend_checkout_link`, `sub_account_usage`, `set_usage_limits`, `deployment_setup_status`. `compSubAccount`, `mintCheckoutLink`, `effectiveBillingState`, `getEffectiveQuotas` and `computeOverage` already exist in ours, adapted to Paystack. `deployment_setup_status` needs an `EXTERNAL_ONLY` exemption in `scripts/check-capability-tenancy.mjs` (churn 198).
 - **Flag:** `comp_client` cancels a subscription, which is irreversible. Make it chat-only.
 
 **In scope per Hein's rulings (7 and 8 are Hein gates; 12 merges last in Lane A)**
-- **N7 Email AI drafts (~350; Hein gate: customer-facing AI replies; own lane, after P0).** Upstream's draft-only `"email"` channel: `agent.ts` (churn 125), `gates.ts` (18), `prompt.ts` (12), `respond.ts` (304), channels route (153), new `email-channel-section` 197, email AI page (0). It needs a new hook in our IMAP inbound path; today `email-conversations.ts` never calls `maybeRespondWithAi`. Upstream gates it on the Resend email-domain gate, so it gets its **own new agency gate** (default off, wired per feature-gates.md including `GATE_FIELDS`). Optionally add the quoted-reply collapse (`lib/email-quote.ts` 87). Do N11 with it.
+- **N7 Email AI drafts (~350; Hein gate: customer-facing AI replies; own lane, after P0 and G).** Upstream's draft-only `"email"` channel: `agent.ts` (churn 125), `gates.ts` (18), `prompt.ts` (12), `respond.ts` (304), channels route (153), new `email-channel-section` 197, email AI page (0). It needs a new hook in our IMAP inbound path; today `email-conversations.ts` never calls `maybeRespondWithAi`. Upstream gates it on the Resend email-domain gate, so it gets its **own new agency gate** (default off, wired per feature-gates.md including `GATE_FIELDS`). Optionally add the quoted-reply collapse (`lib/email-quote.ts` 87). Do N11 with it.
   - **Verify:** drafts are never auto-sent (outbound seams stay at 0); gate off gives no draft; inbound SMTP/IMAP path hook tested; a Playwright spec through the real server on the email AI settings page.
   - **Docs:** `docs/environment.md` for any new env var; `docs/architecture/firestore-collections.md` for new private docs; new `docs/features/email-ai.md` (or a section in `ai-agents.md`).
 - **N8 Recreate GHL pipelines on import (~180; Hein gate: writes imported client data).** `ghl/start` (22), `transform` (49), `bulk-write` (243), wizard (34). Test against fixtures only, never a live sub-account.
-- **N12 KB card refresh (~19 upstream cards, est. ~300 lines; last in Lane A, after WS-7 and WV-5).** Adapt for Paystack, WhatsApp Cloud/bridge and SMTP, and write the cards for the units as they actually shipped.
+- **N12 KB card refresh (15 new upstream cards, ~180 lines; last in Lane A, after WS-7 and WV-5).** Upstream added 19 cards between 1.0.26 and 1.0.40 (our `knowledge-base.ts` has 45 cards, none of these). Excluded: `speed-to-lead-setup` (STL-2 writes it), `fix-bugs-with-claude-code` (N13), `email-sending-domain` (the Resend-domain feature; adapt for SMTP/Resend or skip) and `deployment-and-support` (upstream's own support model). The 15 to port, each adapted to Paystack, WhatsApp Cloud/bridge and SMTP and written for what shipped: `calendar-sync` (describe our Google Calendar sync, not upstream's), `checkout-pages`, `meta-connection`, `voice-agent`, `outbound-voice`, `phone-dialer` (P5), `webinars`, `sms-whatsapp-setup`, `web-chat`, `web-voice` (P4), `funnels-labs`, `phone-region`, `your-account`, `which-key-powers-what`, `data-ownership-backups`. `phone-dialer` and `web-voice` only land if their gate has shipped, and say they are agency-enabled. Upstream's edits to 32 existing cards belong to the feature PRs that change those features, not here.
 
 **Optional (each needs a decision before it's built)**
 - **N9 `GET /api/v1/pipelines` (34).** The Agent API already offers `list_pipelines`.
@@ -224,7 +225,7 @@ Shared-file churn is low throughout: `website-builder.tsx`, `types/website.ts`, 
 ```
 P0 runAfterResponse (in flight) ──► everything rebases after it merges
 Lane E (independent, parallel after P0): N1 · N4 · N5 · N6 · N3 · P1 · N8
-Lane F (own lane, after P0): N7
+Lane F (own lane, after P0 and G): N7
 Lane A (one at a time, all edit the capabilities registry + KB):
         STL-1 ─► STL-2 ─► N2a ─► N2b ─► WS-7 ─► WV-5 (create_website arg) ─► N12
 Lane B (website): WS-1 ─► WS-2 ─┬─► WS-3 (also needs STL-1, for forms-service)
@@ -239,12 +240,13 @@ Lane D (voice):   G + WS-3 (app-url) ─► WV-1 ─► WV-2 ─► WV-3 ─► 
 - N1 goes right after P0, in parallel with P1. It's a live correctness bug.
 - The dialer doesn't need to wait until the end. Its files don't overlap with the website or voice work; it shares only the gate files, so the two gates go into one PR (G) to avoid six-file conflicts.
 - WS-6 now waits for G and WV-1 (its wizard reads `webVoiceEnabledByAgency` and `webVoiceMeta`), so lane B's last UI PR trails the first voice PR.
-- N7 is its own lane after P0 and has its own gate; N12 is the last Lane A PR.
+- N7 is its own lane after P0 **and G**: its new gate touches the same files as G; it has its own merge gate; N12 is the last Lane A PR.
 - STL must come before WS-3, because the hand-off needs `forms-service`. Web Voice must come after WS-3 (the `app-url` module and the hand-off voice branch). Both of these match your order.
 
 **Expect small rebases where parallel PRs touch the same file:**
 - `middleware.ts`: WS-2, WS-4, WV-2
-- `types/tenancy.ts`: G, SP-2, WV-1
+- `types/tenancy.ts`: G, N7 (new gate), SP-2, WV-1
+- Gate-wiring files (`feature-gates` route and service, manage dialog, `FEATURE_GATES` in `helpers.ts`, `audit/record.ts` `GATE_FIELDS`, `api/auth/signup`, `sub-accounts-service`): G, N7
 - `env-schema.mjs`: P1, WS-4
 - `capability-names.test.ts`: STL-1, N2a, N2b, WS-7 (every surface change edits the table)
 - `package.json` / lockfile: SP-3, WV-4 — merge these one at a time
@@ -282,9 +284,9 @@ Lane D (voice):   G + WS-3 (app-url) ─► WV-1 ─► WV-2 ─► WV-3 ─► 
 | SP-3 | 470 | Hein gate |
 | N7 | 350 | Hein gate (customer-facing AI replies) |
 | N8 | 180 | Hein gate (writes imported client data) |
-| N12 | 300 | eligible |
+| N12 | 180 | eligible |
 
-That is about 13,600 added lines over 28 PRs (25 core plus N7, N8 and N12; N1 grew to ~250). Production deploys stay after-hours with Hein's explicit go.
+That is about 13,500 added lines over 28 PRs (25 core plus N7, N8 and N12; N1 grew to ~250). Production deploys stay after-hours with Hein's explicit go.
 
 ---
 
@@ -298,31 +300,31 @@ All settled; see **Hein's rulings** at the bottom. Open per-unit decisions are r
 {"id":"n1-pipeline-terminal-sweep","priority":1,"complexity":"low","success_criteria":["AI context excludes custom-pipeline Won deals from Active","workspace_stats, create_deal pipeline arg and STAGE_IDS are pipeline-aware","leads-map/quote-builder/palette/dashboard use per-pipeline terminals","tests fail when dealOutcome is mutated"],"passes":false},
 {"id":"p1-setup-snapshot-dialog","priority":1,"complexity":"low","success_criteria":["summary.groups has no key names","dismissal stored in users/{uid}/settings, no rules change","owner-only show rule tested","live walk on prod"],"passes":false},
 {"id":"n4-webchat-contrast","priority":1,"complexity":"low","success_criteria":["textOnAccent unit-tested","widget bubble readable on yellow accent"],"passes":false},
-{"id":"n5-chart-axes","priority":2,"complexity":"low","success_criteria":["y-axis labels and tooltips render; currency formatting on Won chart"],"passes":false},
-{"id":"n6-small-fixes","priority":2,"complexity":"low","success_criteria":["no sr-only phantom scrollbar","tracked .claude/settings.local.json removed","Hein gate","resend status syncs on GET","metadataBase falls back safely","done groups collapse"],"passes":false},
-{"id":"n3-style-presets","priority":2,"complexity":"medium","success_criteria":["unknown preset rejected","null preset byte-identical","Playwright on /b and /co"],"passes":false},
-{"id":"g-gates-webvoice-dialer","priority":2,"complexity":"low","success_criteria":["both gates default false at both creation sites","PATCH, dialog and FEATURE_GATES wired","assistantMayEnable false"],"passes":false},
-{"id":"stl-1-forms-workflow","priority":3,"complexity":"medium","success_criteria":["forms-service mirrors UI presets","list_forms/create_form/test_workflow pass check:tenancy","test_workflow chat-only","list/get/update_workflow and set_workflow_status callable from chat, admin-only, confirm-gated","capability-names.test.ts surfaces updated","Hein gate"],"passes":false},
-{"id":"stl-2-readiness-cta","priority":3,"complexity":"medium","success_criteria":["readiness uses emailIsConfigured(sub) (SMTP or Resend env, incl. a Resend-only test case) and our WA rails","update_website_cta chat-only","prompt section renders only with actions"],"passes":false},
-{"id":"n2a-workspace-capabilities","priority":4,"complexity":"medium","success_criteria":["9 tools anchored on ctx.subAccountId","confirm-gated writes","every tool states surface and approval class","pause_all_workflows chat-only","mark_booking_paid decided (chat-only or approval class) and outbound-never-sends passes","Hein gate"],"passes":false},
+{"id":"n5-chart-axes","priority":1,"complexity":"low","success_criteria":["y-axis labels and tooltips render; currency formatting on Won chart"],"passes":false},
+{"id":"n6-small-fixes","priority":1,"complexity":"low","success_criteria":["no sr-only phantom scrollbar","tracked .claude/settings.local.json removed","Hein gate","resend status syncs on GET","metadataBase falls back safely","done groups collapse"],"passes":false},
+{"id":"n3-style-presets","priority":1,"complexity":"medium","success_criteria":["unknown preset rejected","null preset byte-identical","Playwright on /b and /co"],"passes":false},
+{"id":"g-gates-webvoice-dialer","priority":1,"complexity":"low","success_criteria":["both gates default false at both creation sites","PATCH, dialog and FEATURE_GATES wired","assistantMayEnable false"],"passes":false},
+{"id":"stl-1-forms-workflow","priority":1,"complexity":"medium","success_criteria":["forms-service mirrors UI presets","list_forms/create_form/test_workflow pass check:tenancy","test_workflow chat-only","list/get/update_workflow and set_workflow_status callable from chat, admin-only, confirm-gated","capability-names.test.ts surfaces updated","Hein gate"],"passes":false},
+{"id":"stl-2-readiness-cta","priority":2,"complexity":"medium","success_criteria":["readiness uses emailIsConfigured(sub) (SMTP or Resend env, incl. a Resend-only test case) and our WA rails","update_website_cta chat-only","prompt section renders only with actions"],"passes":false},
+{"id":"n2a-workspace-capabilities","priority":3,"complexity":"medium","success_criteria":["9 tools anchored on ctx.subAccountId","confirm-gated writes","every tool states surface and approval class","pause_all_workflows chat-only","mark_booking_paid decided (chat-only or approval class) and outbound-never-sends passes","Hein gate"],"passes":false},
 {"id":"n2b-agency-capabilities","priority":4,"complexity":"medium","success_criteria":["Paystack-correct billing_overview","comp_client chat-only","deployment_setup_status exempted in tenancy script"],"passes":false},
-{"id":"ws-1-types-libs","priority":5,"complexity":"medium","success_criteria":["premium parse/validate tests","addressOptional niches"],"passes":false},
-{"id":"ws-2-client-settle-callback","priority":5,"complexity":"high","success_criteria":["HMAC mutation test","idempotent settle on race","poll cap/backoff"],"passes":false},
-{"id":"ws-3-handoff","priority":5,"complexity":"high","success_criteria":["emailIsConfigured(sub) given the sub-account doc; Resend-only tenant still passes","steps independent and idempotent","workflow published only when sendable and QStash set"],"passes":false},
-{"id":"ws-4-domain-pagespeed-edit","priority":6,"complexity":"medium","success_criteria":["www/apex allowlist","pagespeed QStash-signed"],"passes":false},
-{"id":"ws-5-form-ui","priority":6,"complexity":"medium","success_criteria":["premium sections render; validation keys map to steps"],"passes":false},
-{"id":"ws-6-wizard-card","priority":7,"complexity":"high","success_criteria":["depends on G and WV-1","draft saved per step","no Rebuild on live sites","docs NOT runtime-verified"],"passes":false},
+{"id":"ws-1-types-libs","priority":1,"complexity":"medium","success_criteria":["premium parse/validate tests","addressOptional niches"],"passes":false},
+{"id":"ws-2-client-settle-callback","priority":2,"complexity":"high","success_criteria":["HMAC mutation test","idempotent settle on race","poll cap/backoff"],"passes":false},
+{"id":"ws-3-handoff","priority":3,"complexity":"high","success_criteria":["emailIsConfigured(sub) given the sub-account doc; Resend-only tenant still passes","steps independent and idempotent","workflow published only when sendable and QStash set"],"passes":false},
+{"id":"ws-4-domain-pagespeed-edit","priority":3,"complexity":"medium","success_criteria":["www/apex allowlist","pagespeed QStash-signed"],"passes":false},
+{"id":"ws-5-form-ui","priority":2,"complexity":"medium","success_criteria":["premium sections render; validation keys map to steps"],"passes":false},
+{"id":"ws-6-wizard-card","priority":5,"complexity":"high","success_criteria":["depends on G and WV-1","draft saved per step","no Rebuild on live sites","docs NOT runtime-verified"],"passes":false},
 {"id":"ws-7-assistant","priority":6,"complexity":"low","success_criteria":["list_website_concepts; create_website premium args"],"passes":false},
-{"id":"wv-1-connection","priority":7,"complexity":"high","success_criteria":["key probed before store","secret only in private/","app-url extracted"],"passes":false},
-{"id":"wv-2-call-path","priority":7,"complexity":"high","success_criteria":["token and path-secret mutation tests","cap reservation transactional","gate off gives 403"],"passes":false},
-{"id":"wv-3-card","priority":7,"complexity":"medium","success_criteria":["locked state when gate off"],"passes":false},
+{"id":"wv-1-connection","priority":4,"complexity":"high","success_criteria":["key probed before store","secret only in private/","app-url extracted"],"passes":false},
+{"id":"wv-2-call-path","priority":5,"complexity":"high","success_criteria":["token and path-secret mutation tests","cap reservation transactional","gate off gives 403"],"passes":false},
+{"id":"wv-3-card","priority":6,"complexity":"medium","success_criteria":["locked state when gate off"],"passes":false},
 {"id":"wv-4-widget","priority":7,"complexity":"medium","success_criteria":["mic hidden when voiceEnabled false (live-checkable)","SDK lazy-loaded"],"passes":false},
-{"id":"wv-5-website-voice","priority":8,"complexity":"low","success_criteria":["hand-off never turns voice off"],"passes":false},
-{"id":"sp-2-dialer-server","priority":7,"complexity":"high","success_criteria":["authToken via readSubAccountSecret","signature mutation test","voiceOptedOut blocked server-side","gate enforced"],"passes":false},
-{"id":"n7-email-ai-drafts","priority":8,"complexity":"high","success_criteria":["draft-only, never auto-sent","own agency gate default off","IMAP inbound hook tested","Playwright through the real server","docs updated","Hein gate"],"passes":false},
-{"id":"n8-ghl-pipeline-import","priority":8,"complexity":"medium","success_criteria":["pipelines recreated on import from fixtures","no live sub-account writes in tests","Hein gate"],"passes":false},
-{"id":"n12-kb-refresh","priority":9,"complexity":"low","success_criteria":["~19 cards adapted for Paystack, WhatsApp Cloud/bridge and SMTP","last in Lane A, after WS-7 and WV-5"],"passes":false},
-{"id":"sp-3-dialer-ui","priority":7,"complexity":"medium","success_criteria":["Call button only when dialerConfig.enabled and gate on","call_placed timeline row"],"passes":false}]}
+{"id":"wv-5-website-voice","priority":7,"complexity":"low","success_criteria":["hand-off never turns voice off"],"passes":false},
+{"id":"sp-2-dialer-server","priority":2,"complexity":"high","success_criteria":["authToken via readSubAccountSecret","signature mutation test","voiceOptedOut blocked server-side","gate enforced"],"passes":false},
+{"id":"n7-email-ai-drafts","priority":2,"complexity":"high","success_criteria":["draft-only, never auto-sent","own agency gate default off","IMAP inbound hook tested","Playwright through the real server","docs updated","Hein gate"],"passes":false},
+{"id":"n8-ghl-pipeline-import","priority":1,"complexity":"medium","success_criteria":["pipelines recreated on import from fixtures","no live sub-account writes in tests","Hein gate"],"passes":false},
+{"id":"n12-kb-refresh","priority":8,"complexity":"low","success_criteria":["~19 cards adapted for Paystack, WhatsApp Cloud/bridge and SMTP","last in Lane A, after WS-7 and WV-5"],"passes":false},
+{"id":"sp-3-dialer-ui","priority":3,"complexity":"medium","success_criteria":["Call button only when dialerConfig.enabled and gate on","call_placed timeline row"],"passes":false}]}
 ```
 ---
 
