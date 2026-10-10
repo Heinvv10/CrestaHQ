@@ -84,3 +84,12 @@ it.each([
   const d = (ys as number[]).map((y, i) => ({ x: String(i), y }));
   expect(axis(render({ data: d })).map((l) => l.t)).toEqual(want);
 });
+
+it("draws the midpoint label at the y of the value it shows ([5,1] -> tick 3)", () => {
+  const h = 140;
+  const html = render({ data: [{ x: "a", y: 5 }, { x: "b", y: 1 }], height: h });
+  const m = [...html.matchAll(/<text x="[\d.]+" y="([\d.]+)"[^>]*text-anchor="end"[^>]*>([^<]*)<\/text>/g)].map((x) => ({ y: Number(x[1]), t: x[2] }));
+  const mid = m.find((l) => l.t === "3")!;
+  // text y is baseline + 3; plot y for value 3 on a 0..5 axis
+  expect(mid.y - 3).toBeCloseTo(h - 18 - (3 / 5) * (h - 36), 5);
+});

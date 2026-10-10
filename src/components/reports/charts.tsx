@@ -52,11 +52,14 @@ export function AreaChart({
   const fmtAxis = formatAxis ?? fmt;
   // Axis labels: 0, midpoint, max. Never two identical labels in a row, and
   // an empty / all-zero series shows just "0".
-  const axisLabels: { frac: number; text: string }[] = [];
-  for (const frac of max > 0 ? [0, 0.5, 1] : [0]) {
-    const text = fmtAxis(frac * max);
+  // The tick VALUE is chosen first (an integer series gets an integer
+  // midpoint); both the label and its y position derive from that value.
+  const mid = hasFractions ? max / 2 : Math.round(max / 2);
+  const axisLabels: { value: number; text: string }[] = [];
+  for (const value of max > 0 ? [0, mid, max] : [0]) {
+    const text = fmtAxis(value);
     if (axisLabels.length && axisLabels[axisLabels.length - 1].text === text) continue;
-    axisLabels.push({ frac, text });
+    axisLabels.push({ value, text });
   }
   // Size the left gutter from the longest label (~5.5 units per 9px glyph)
   // so a long currency value is never clipped at x=0.
@@ -126,11 +129,11 @@ export function AreaChart({
       {/* Y axis — 0, the midpoint, and the series max, so the scale is
           always visible and always relative to what's actually in the
           data rather than a fixed ceiling. */}
-      {axisLabels.map(({ frac, text }) => {
-        const y = h - padY - frac * (h - 2 * padY);
+      {axisLabels.map(({ value, text }) => {
+        const y = h - padY - (value / scale) * (h - 2 * padY);
         return (
           <text
-            key={frac}
+            key={value}
             x={padLeft - 8}
             y={y + 3}
             textAnchor="end"
