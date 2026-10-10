@@ -32,7 +32,9 @@ touched.
    this when the browser dials with `params: { contactId }`. In order:
    - It verifies the Twilio signature with the sub-account's token, read from
      `private/twilioCredentials`.
-   - It checks the agency gate, then `dialerConfig.enabled`.
+   - It checks the agency gate, then `dialerConfig.enabled`, then that dedicated
+     Twilio is still switched on (`subAccountTwilioIsConfigured`). Switching
+     dedicated Twilio off, with the credentials kept, stops new calls and new tokens.
    - It checks that the caller (`From: client:<uid>`) can still act on the contact.
      This is `requireContactAccessible`: active member or agency owner, plus territory
      scope.
@@ -50,29 +52,20 @@ touched.
    - Dialer-only: a number libphonenumber gives no country for (non-geographic:
      satellite, +800, +882 and the like) is never dialled, allow-list or not. The AI
      voice path does not have this rule.
-   - It refuses when this contact is `voiceOptedOut`, or when any opted-out contact
-     in the sub-account names the same number. Contacts have no normalised phone
-     field, so this is not a lookup by format. The route reads the sub-account's
-     opted-out contacts (`subAccountId` + `voiceOptedOut == true`, paged) and
-     compares digits only (`optOutCoversNumber` in `src/lib/comms/dialer.ts`): an
-     opted-out contact blocks the call when the digits of its stored phone equal the
-     target's E.164 digits, or contain the target's national significant number
-     (only when that is 7 or more digits). That covers a trunk `0`, a `00` prefix,
-     any punctuation and a trailing extension. It over-blocks on purpose: a
-     different country's number with the same national digits also blocks.
-     **Not matched:** an opted-out contact whose stored phone does not contain the
-     national number at all (a typo, or a different number for the same person), and,
-     for a number whose national part is under 7 digits, any spelling whose digits
-     are not exactly the E.164 digits.
-   - **Fail closed:** the scan reads at most 2,000 opted-out contacts. If the
-     sub-account has more and none of those read matched, the call is refused with a
-     spoken message and `[dialer/twiml] opt_out_scan_over_cap` is logged.
+   - It refuses when the dialled contact is `voiceOptedOut`. **Voice opt-out is per
+     contact**, as upstream has it: a duplicate contact holding the same number is
+     not blocked. **Nothing in the app sets `voiceOptedOut` today** — there is no UI
+     and no server path that writes it; it is only read (here, by the AI voice gate
+     and by voice campaigns). A number-wide voice do-not-call list belongs with
+     whatever feature first records a voice opt-out, using a normalised number
+     written at opt-out time.
 
    Every one of these checks, and the `<Dial>`, reads the one canonical number: the
    contact's phone parsed once. The stored string is never dialled or checked on
    its own.
 
-   If every check passes, it writes a `call_placed` activity (`dialer_<CallSid>`) and
+   If every check passes, it writes a `call_placed` activity (`dialer_<CallSid>`; skipped
+   when the `CallSid` is not a plain document id) and
    answers `<Dial callerId=fromNumber answerOnBridge><Number>E.164</Number>`.
    **The number dialled always comes from the contact doc, normalised to E.164.** Any
    `To` or phone number in the request is ignored.
@@ -84,8 +77,19 @@ touched.
    on the client's own Twilio account (Twilio's own Voice geo-permissions still apply).
 4. **Status callback** (`POST /api/webhooks/twilio/dialer/status/[saId]?contactId=`).
    This is the `<Dial action>`. It is signature-checked the same way, and the
-   signature covers the query string. It updates the activity row with the outcome,
-   the duration and, only when recording is on, the `RecordingUrl`.
+   signature covers the query string. It updates the activity row with the outcome
+   and the duration. It is not behind the agency gate or the dedicated-Twilio
+   switch, so a call already in progress still gets its outcome recorded. The body
+   is signed with the tenant's own token, so its values are still checked:
+   - `contactId` and `CallSid` must be plain document ids. Otherwise nothing is
+     written and Twilio still gets its 200.
+   - A status Twilio does not document is stored as `ended`.
+   - The duration is clamped to a whole number of seconds between 0 and 24 hours.
+   - `RecordingUrl` is stored as `meta.recordingUrl` only when this sub-account has
+     `recordCalls` on **and** the URL starts with `https://api.twilio.com/`.
+
+   **For SP-3:** treat `meta.recordingUrl`, like the rest of `meta`, as untrusted
+   when rendering it. Check the scheme and host again before making it a link.
 
 ## Safety
 
@@ -126,8 +130,10 @@ See [feature-gates.md](../architecture/feature-gates.md).
 
 The remote clean-up is **best-effort**:
 
-- If Twilio refuses a remove, the error is logged and the disable still succeeds, so
-  the key or app may be left on the client's account.
+- If Twilio refuses a remove, the error's message is logged and the disable still
+  succeeds, so the key or app may be left on the client's account. Only the message
+  is ever logged: the error object a failed Twilio call rejects with carries the
+  account's credential in its request headers.
 - If dedicated Twilio creds are no longer configured when the dialer is disabled, the
   remote resources cannot be reached and are left in place (logged).
 - A failed first provision (app created, then key creation fails) also leaves that

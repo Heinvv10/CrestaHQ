@@ -10,9 +10,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
  * Pins: the contact's phone must be a valid number with NO default region
  * ("+…" form) — a local-format number is refused, never guessed at; a number
  * with no country is never dialled; the Voice channel's allowedCountries is
- * honoured; only the E.164 is dialled; an opted-out contact whose stored
- * digits name the same number blocks the call whatever its spelling; and past
- * the scan cap the call is refused.
+ * honoured; only the E.164 is dialled; and a voice opt-out is per contact.
  */
 
 const mem = createMemoryFirestore();
@@ -86,7 +84,9 @@ const allowOnly = (countries: string[]) =>
 
 describe("dialer TwiML webhook — the number dialled", () => {
   it("never dials an unparseable or invalid number, or one carrying XML", async () => {
-    for (const phone of ["1-900-PAYME-NOW", "+447700900123", "+1555</Number><Number>+19005550100"]) {
+    // "+27821234567890" and "+33123" parse WITH a country and are still not
+    // valid numbers — the validity check alone must stop them.
+    for (const phone of ["1-900-PAYME-NOW", "+447700900123", "+27821234567890", "+33123", "+1555</Number><Number>+19005550100"]) {
       withPhone(phone);
       const body = await (await call(placed())).text();
       expect(body, phone).not.toContain("<Dial");
@@ -129,75 +129,11 @@ describe("dialer TwiML webhook — the number dialled", () => {
   });
 });
 
-describe("dialer TwiML webhook — voice opt-out belongs to the number", () => {
-  const optedOut = (id: string, phone: unknown, sa = "sa1") =>
-    mem.seed(`contacts/${id}`, { subAccountId: sa, agencyId: "ag1", phone, voiceOptedOut: true });
-
-  it("refuses when another contact in this sub-account with the same number opted out", async () => {
+describe("dialer TwiML webhook — voice opt-out is per contact", () => {
+  it("refuses the opted-out contact; a duplicate contact with the same number is not blocked", async () => {
     mem.seed("contacts/c1", { ...mem.read("contacts/c1"), voiceOptedOut: true });
     mem.seed("contacts/c1dup", { subAccountId: "sa1", agencyId: "ag1", phone: CONTACT_PHONE, territoryId: "t1" });
-    expect(await (await call(placed({ contactId: "c1dup" }))).text()).not.toContain("<Dial");
-  });
-
-  it("a sibling's opt-out blocks in every spelling of the number, for each dialable spelling", async () => {
-    const SIBLING = [
-      "+27821234567",
-      "27821234567",
-      "082 123 4567",
-      "0821234567",
-      "+27 82 123 4567",
-      "082-123-4567",
-      "(082) 123 4567",
-      "0027821234567",
-      "+27 82 123 4567 ext. 12",
-      "0821234567x9",
-    ];
-    for (const dialled of ["+27821234567", "+27 82 123 4567", "+27 (82) 123-4567"]) {
-      for (const sibling of SIBLING) {
-        mem.clear();
-        seed();
-        withPhone(dialled);
-        expect(await (await call(placed())).text(), `${dialled} alone`).toContain("<Number>+27821234567</Number>");
-        optedOut("sib", sibling);
-        expect(await (await call(placed())).text(), `${dialled} vs ${sibling}`).not.toContain("<Dial");
-      }
-    }
-  });
-
-  it("does not block on a different number, a short digit overlap, a blank phone or another sub-account", async () => {
-    withPhone("+27821234567");
-    optedOut("o1", "+27821234568");
-    optedOut("o2", "234567"); // 6 digits: under the 7-digit floor
-    optedOut("o3", "");
-    optedOut("o4", null);
-    optedOut("o5", "+27821234567", "sa2");
-    expect(await (await call(placed())).text()).toContain("<Number>+27821234567</Number>");
-  });
-
-  it("a national number under 7 digits matches on the whole E.164 only, never as a substring", async () => {
-    withPhone("+6834002"); // Niue: national number "4002"
-    optedOut("o1", "+27114002000"); // contains 4002 — another number entirely
-    expect(await (await call(placed())).text()).toContain("<Number>+6834002</Number>");
-    optedOut("o2", "(683) 4002");
     expect(await (await call(placed())).text()).not.toContain("<Dial");
-  });
-
-  it("fails closed past the scan cap: refuses and warns, even though no opted-out contact matches", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    for (let i = 0; i < 2000; i += 1) optedOut(`o${String(i).padStart(4, "0")}`, `+2711000${String(i).padStart(4, "0")}`);
-    expect(await (await call(placed())).text()).toContain("<Dial"); // exactly the cap: all read, none match
-    optedOut("o2000", "+27110009999");
-    const body = await (await call(placed({ CallSid: "CA0002" }))).text();
-    expect(body).not.toContain("<Dial");
-    expect(body).toContain("opt-out list");
-    expect(warn.mock.calls.some((c) => String(c[0]).includes("opt_out_scan_over_cap"))).toBe(true);
-    expect(mem.read("contacts/c1/activities/dialer_CA0002")).toBeUndefined();
-    warn.mockRestore();
-  });
-
-  it("a match beyond the first page is still found", async () => {
-    for (let i = 0; i < 700; i += 1) optedOut(`o${String(i).padStart(4, "0")}`, `+2711000${String(i).padStart(4, "0")}`);
-    optedOut("zzz", "(500) 555-0006");
-    expect(await (await call(placed())).text()).not.toContain("<Dial");
+    expect(await (await call(placed({ contactId: "c1dup" }))).text()).toContain("<Dial");
   });
 });

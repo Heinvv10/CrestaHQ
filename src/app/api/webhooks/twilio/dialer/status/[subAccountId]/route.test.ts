@@ -101,6 +101,7 @@ describe("dialer status callback", () => {
   });
 
   it("keeps the TwiML route's createdAt/createdBy and adds the recording URL", async () => {
+    seed({ dialerConfig: { enabled: true, recordCalls: true } });
     mem.seed("contacts/c1/activities/dialer_CA0001", {
       type: "call_placed",
       createdBy: "u1",
@@ -114,9 +115,54 @@ describe("dialer status callback", () => {
     });
   });
 
-  it("still records the outcome after the agency gate is switched off mid-call", async () => {
-    seed({ dialerEnabledByAgency: false });
+  it("still records the outcome after the gate, or dedicated Twilio, is switched off mid-call", async () => {
+    seed({
+      dialerEnabledByAgency: false,
+      twilioConfig: { enabled: false, accountSid: "AC_sa1", authTokenSet: true, fromNumber: "+15017122661" },
+    });
     expect((await call()).status).toBe(200);
     expect(row()).toMatchObject({ content: "Phone call — 1m 5s" });
+  });
+
+  it("R8: a path-shaped contactId or CallSid is answered 200 and writes nothing", async () => {
+    mem.seed("contacts/c1/notes/n1", { subAccountId: "sa1", agencyId: "ag1" });
+    const before = mem.all().length;
+    expect((await call({ contactId: "c1/notes/n1" })).status).toBe(200);
+    for (const CallSid of ["x/sub/y", "..", "__x__"]) {
+      const res = await call({ body: { ...params, CallSid } });
+      expect(res.status, CallSid).toBe(200);
+      expect(await res.text()).toContain("<Hangup");
+    }
+    expect(mem.all().length).toBe(before);
+  });
+
+  it("R9: a RecordingUrl is stored only with recording on and only from Twilio", async () => {
+    const TWILIO_URL = "https://api.twilio.com/2010-04-01/Accounts/AC_sa1/Recordings/RE1";
+    const stored = async (RecordingUrl: string) => {
+      await call({ body: { ...params, RecordingUrl } });
+      return (row()?.meta as { recordingUrl?: string }).recordingUrl;
+    };
+    expect(await stored(TWILIO_URL)).toBeUndefined(); // recording is off
+    seed({ dialerConfig: { enabled: true, recordCalls: true } });
+    for (const url of ["https://evil.test/rec.mp3", "javascript:alert(1)", "http://api.twilio.com/x", "https://api.twilio.com.evil.test/x"]) {
+      expect(await stored(url), url).toBeUndefined();
+    }
+    expect(await stored(TWILIO_URL)).toBe(TWILIO_URL);
+  });
+
+  it("R9: an unknown status reads as ended — prototype keys included — and the duration is clamped", async () => {
+    for (const DialCallStatus of ["constructor", "toString", "__proto__", "<b>pwned</b>", ""]) {
+      await call({ body: { ...params, DialCallStatus } });
+      expect(row(), DialCallStatus).toMatchObject({ content: "Phone call — ended", meta: { status: "ended" } });
+    }
+    const duration = async (DialCallDuration: string) => {
+      await call({ body: { ...params, DialCallDuration } });
+      return (row()?.meta as { durationSec: number }).durationSec;
+    };
+    expect(await duration("-5")).toBe(0);
+    expect(await duration("abc")).toBe(0);
+    expect(await duration("1e999")).toBe(0);
+    expect(await duration("12.7")).toBe(12);
+    expect(await duration("999999999")).toBe(86_400);
   });
 });

@@ -175,6 +175,21 @@ describe("dialer TwiML webhook — guards", () => {
     expect(await (await call(placed())).text()).toContain('record="record-from-answer-dual"');
   });
 
+  it("R6: dedicated Twilio switched off (creds kept) stops the dialler", async () => {
+    seed({ twilioConfig: { enabled: false, accountSid: "AC_sa1", authTokenSet: true, fromNumber: FROM_NUMBER } });
+    const res = await call(placed());
+    expect(res.status).toBe(200); // signature still verifies with the kept token
+    expect(await res.text()).not.toContain("<Dial");
+    expect(activity()).toBeUndefined();
+  });
+
+  it("R8: a path-shaped CallSid still dials but writes no activity row", async () => {
+    for (const CallSid of ["x/sub/y", "..", "__x__"]) {
+      expect(await (await call(placed({ CallSid }))).text(), CallSid).toContain("<Dial");
+    }
+    expect(mem.all().filter((d) => d.path.includes("/activities/"))).toEqual([]);
+  });
+
   it("a disabled dialer is refused in TwiML", async () => {
     seed({ dialerConfig: null });
     expect(await (await call(placed())).text()).not.toContain("<Dial");

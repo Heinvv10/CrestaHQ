@@ -99,6 +99,15 @@ describe("dialer token", () => {
     }
   });
 
+  it("R6: dedicated Twilio switched off (creds kept) stops new tokens", async () => {
+    seed({ twilioConfig: { enabled: false, accountSid: "AC_sa1", authTokenSet: true, fromNumber: "+15017122661" } });
+    const res = await mint("collab");
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(await res.json())).not.toContain("token");
+    seed();
+    expect((await mint("collab")).status).toBe(200);
+  });
+
   it("a disabled dialer is 403; a missing provision is 503; a missing id is 400", async () => {
     seed({ dialerConfig: null });
     expect((await mint("collab")).status).toBe(403);

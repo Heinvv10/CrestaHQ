@@ -7,6 +7,7 @@ import {
   dialerEnabled,
   dialerGateOn,
   dialerGateRefusal,
+  dialerTwilioReady,
   getDialerPrivate,
   mintDialerToken,
 } from "@/lib/comms/dialer";
@@ -17,7 +18,8 @@ import type { SubAccountDoc } from "@/types";
  * Device. Any active member of the sub-account (or its agency owner) can call
  * — same trust level as sending an SMS from a contact. The browser only ever
  * sees this scoped JWT — the API key secret stays in the Admin-SDK-only
- * private doc. Refused with 403 `gate_off` while `dialerEnabledByAgency` is off.
+ * private doc. Refused with 403 `gate_off` while `dialerEnabledByAgency` is off,
+ * and with 403 while the dialer or dedicated Twilio is switched off.
  */
 export async function POST(request: Request) {
   let body: { subAccountId?: string };
@@ -45,6 +47,12 @@ export async function POST(request: Request) {
   if (!dialerEnabled(sub)) {
     return NextResponse.json(
       { error: "The dialer isn't enabled for this workspace." },
+      { status: 403 },
+    );
+  }
+  if (!dialerTwilioReady(sub)) {
+    return NextResponse.json(
+      { error: "Dedicated Twilio is switched off for this workspace, so the dialer can't place calls." },
       { status: 403 },
     );
   }

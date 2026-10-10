@@ -6,6 +6,7 @@ import twilio from "twilio";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireContactAccessible } from "@/lib/comms/route-auth";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
+import { isDocId } from "@/lib/server/doc-id";
 import {
   countryBlocked,
   validDialNumber,
@@ -17,7 +18,8 @@ import {
   dialerGateOn,
   dialerGateRefusal,
   dialerStatusUrl,
-  numberVoiceOptOut,
+  dialerTwilioReady,
+  errText,
   uidFromClientAddress,
   validateDialerSignature,
 } from "@/lib/comms/dialer";
@@ -37,7 +39,8 @@ export const dynamic = "force-dynamic";
  * SERVER-side from the contact doc — any `To` the browser sends is ignored.
  *
  * Guards before any dial: agency gate `dialerEnabledByAgency` (403 — Twilio
- * plays its application-error message), dialerConfig.enabled re-check, the
+ * plays its application-error message), dialerConfig.enabled re-check,
+ * dedicated Twilio still switched on (`subAccountTwilioIsConfigured`), the
  * caller (`From: client:<uid>`, the identity we minted into the token) can
  * still act on the contact (active member or agency owner, territory scope —
  * `requireContactAccessible`, as on every other comms route), the contact
@@ -45,11 +48,11 @@ export const dynamic = "force-dynamic";
  * default region (so stored in "+…" international form) in the Voice
  * channel's `allowedCountries` when one is set — the same two checks, parsed
  * the same way, as the AI outbound path (outbound-compliance.ts) — it has a
- * country (dialer-only: non-geographic numbers are never dialled), and
- * neither it nor any other contact in this sub-account whose stored digits
- * name the same number is `voiceOptedOut` (fail closed past the scan cap).
- * Each refusal is a spoken rejection + hangup, so the call never leaves
- * Twilio. Only the normalised E.164 is ever dialled.
+ * country (dialer-only: non-geographic numbers are never dialled), and the
+ * contact is not `voiceOptedOut` (per contact — a duplicate contact holding
+ * the same number is not checked). Each refusal is a spoken rejection +
+ * hangup, so the call never leaves Twilio. Only the normalised E.164 is ever
+ * dialled.
  *
  * Side-effect: writes the `call_placed` activity row (deterministic id
  * `dialer_<CallSid>`) so the call shows on the timeline immediately; the
@@ -96,9 +99,10 @@ export async function POST(
   if (!dialerEnabled(sub)) {
     return rejection("The dialer is disabled for this workspace. Goodbye.");
   }
+  // Dedicated Twilio switched off (creds kept) stops the dialer too.
   const fromNumber = sub?.twilioConfig?.fromNumber;
-  if (!fromNumber) {
-    return rejection("No caller I D number is configured. Goodbye.");
+  if (!dialerTwilioReady(sub) || !fromNumber) {
+    return rejection("The phone number for this workspace is switched off. Goodbye.");
   }
 
   const contactId = (params["contactId"] ?? "").trim();
@@ -118,8 +122,8 @@ export async function POST(
   // stored in "+…" international form. A locally formatted number is refused
   // rather than guessed at: its meaning would change with the workspace's
   // region setting, and a wrong guess dials a stranger. Validity, the
-  // no-country rule, the allow-list, the opt-out check and the <Dial> below
-  // all read `dialable` — never the stored string.
+  // no-country rule, the allow-list and the <Dial> below all read `dialable`
+  // — never the stored string.
   const dialable = validDialNumber(contact.phone);
   if (!dialable) {
     return rejection(
@@ -135,24 +139,17 @@ export async function POST(
   if (countryBlocked(dialable.country, voice?.allowedCountries)) {
     return rejection("Calls to that country aren't enabled for this workspace. Goodbye.");
   }
-  const optOut =
-    contact.voiceOptedOut === true ? "opted_out" : await numberVoiceOptOut(subAccountId, dialable);
-  if (optOut === "over_cap") {
-    // Fail closed: too many opted-out contacts to check this number against.
-    console.warn("[dialer/twiml] opt_out_scan_over_cap — call refused", { subAccountId });
-    return rejection(
-      "The opt-out list for this workspace is too large to check, so the call cannot be placed. Goodbye.",
-    );
-  }
-  if (optOut === "opted_out") {
+  // Per contact, as upstream: only the dialled contact's own flag is checked.
+  if (contact.voiceOptedOut === true) {
     return rejection(
       "This contact has opted out of phone calls, so the call cannot be placed. Goodbye.",
     );
   }
 
   // Timeline row up-front — the operator sees the call the moment it dials.
+  // CallSid becomes part of a document path; a path-shaped one is not written.
   const callSid = params["CallSid"] ?? "";
-  if (callSid) {
+  if (isDocId(callSid)) {
     try {
       await db
         .collection("contacts")
@@ -167,7 +164,7 @@ export async function POST(
           createdAt: FieldValue.serverTimestamp(),
         });
     } catch (err) {
-      console.warn("[dialer/twiml] activity write failed", err);
+      console.warn("[dialer/twiml] activity write failed", errText(err));
     }
   }
 

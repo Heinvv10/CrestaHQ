@@ -11,6 +11,7 @@ import {
   dialerPrivateRef,
   dialerTwilioCreds,
   dialerTwimlUrl,
+  errText,
   getDialerPrivate,
 } from "@/lib/comms/dialer";
 import type { SubAccountDoc } from "@/types";
@@ -36,6 +37,10 @@ import type { SubAccountDoc } from "@/types";
  * sub-account can always tear down what it provisioned after the gate is
  * switched off. The Twilio auth token is read from `private/twilioCredentials`
  * via `readSubAccountSecret`, never from the member-readable parent doc.
+ *
+ * PATCH does not look at the dedicated-Twilio state: it places no call and
+ * reaches no Twilio API, and the flag it writes is only read by the TwiML
+ * webhook, which refuses while dedicated Twilio is off.
  */
 
 async function loadSub(subAccountId: string) {
@@ -101,6 +106,7 @@ export async function POST(
       });
     }
   } catch (err) {
+    // The message only — never the error object (see errText).
     const message =
       err instanceof Error ? err.message : "Twilio provisioning failed.";
     return NextResponse.json({ error: message }, { status: 502 });
@@ -181,13 +187,13 @@ export async function DELETE(
       .applications(priv.twimlAppSid)
       .remove()
       .catch((err: unknown) => {
-        console.warn("[dialer] TwiML App remove failed", subAccountId, err);
+        console.warn("[dialer] TwiML App remove failed", subAccountId, errText(err));
       });
     await client
       .keys(priv.apiKeySid)
       .remove()
       .catch((err: unknown) => {
-        console.warn("[dialer] API key remove failed", subAccountId, err);
+        console.warn("[dialer] API key remove failed", subAccountId, errText(err));
       });
   } else if (priv) {
     console.warn(
@@ -198,7 +204,7 @@ export async function DELETE(
   await dialerPrivateRef(subAccountId)
     .delete()
     .catch((err: unknown) => {
-      console.warn("[dialer] private doc delete failed", subAccountId, err);
+      console.warn("[dialer] private doc delete failed", subAccountId, errText(err));
     });
 
   await subRef.set(

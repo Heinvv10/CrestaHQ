@@ -68,20 +68,15 @@ function consumeBurstSlot(subAccountId: string, perMinuteCap: number): boolean {
 /**
  * Check 1 — a number libphonenumber calls valid with NO default region (so in
  * practice written in "+…" international form), normalised to E.164, with its
- * country (null for a non-geographic number such as +882 or +800) and its
- * national significant number. Shared with the human browser dialer, which
- * dials only `e164`.
+ * country (null for a non-geographic number such as +882 or +800). Shared with
+ * the human browser dialer, which dials only `e164`.
  */
 export function validDialNumber(
   phone: string | null | undefined,
-): { e164: string; country: string | null; national: string } | null {
+): { e164: string; country: string | null } | null {
   const parsed = phone ? parsePhoneNumberFromString(phone) : null;
   if (!parsed || !parsed.isValid()) return null;
-  return {
-    e164: parsed.number,
-    country: parsed.country ?? countryForPhone(parsed.number),
-    national: parsed.nationalNumber,
-  };
+  return { e164: parsed.number, country: parsed.country ?? countryForPhone(parsed.number) };
 }
 
 /**

@@ -2,7 +2,6 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import twilio from "twilio";
-import { FieldPath } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
@@ -39,6 +38,26 @@ export function dialerGateOn(
   return sub?.dialerEnabledByAgency === true;
 }
 
+/**
+ * Dedicated Twilio is on and complete — the predicate provisioning uses. The
+ * dialer has no shared-sender mode, so switching dedicated Twilio off (creds
+ * kept) must stop new calls and new tokens too.
+ */
+export function dialerTwilioReady(
+  sub?: Partial<Pick<SubAccountDoc, "twilioConfig">> | null,
+): boolean {
+  return subAccountTwilioIsConfigured(sub?.twilioConfig);
+}
+
+/**
+ * The only form of a caught error the dialer logs: its message. A failed
+ * Twilio REST call rejects with the raw AxiosError, and that object's
+ * `config.headers.Authorization` is `Basic base64(accountSid:authToken)`.
+ */
+export function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function dialerGateRefusal(): NextResponse {
   return NextResponse.json(
     {
@@ -59,7 +78,7 @@ export async function dialerTwilioCreds(
   sub: Partial<Pick<SubAccountDoc, "twilioConfig">> | null | undefined,
 ): Promise<{ accountSid: string; authToken: string; fromNumber: string } | null> {
   const cfg = sub?.twilioConfig;
-  if (!cfg || !subAccountTwilioIsConfigured(cfg)) return null;
+  if (!cfg || !dialerTwilioReady(sub)) return null;
   const authToken = await readSubAccountSecret(subAccountId, "twilio", cfg);
   if (!authToken) return null;
   return { accountSid: cfg.accountSid, authToken, fromNumber: cfg.fromNumber };
@@ -72,62 +91,6 @@ export async function dialerAuthToken(
 ): Promise<string> {
   if (!sub?.twilioConfig) return "";
   return readSubAccountSecret(subAccountId, "twilio", sub.twilioConfig);
-}
-
-/** Most opted-out contacts the dialer will read for one call before refusing. */
-export const VOICE_OPT_OUT_SCAN_CAP = 2000;
-const VOICE_OPT_OUT_PAGE = 500;
-
-/**
- * Does an opted-out contact's stored phone name the number about to be
- * dialled? Digits only, no parsing: contacts have no normalised phone field
- * and the stored string may be in any spelling. It blocks when the stored
- * digits equal the target's E.164 digits, or contain the target's national
- * significant number (7+ digits) — which covers a trunk "0", a "00"/"011"
- * prefix, any punctuation, and a trailing extension. It over-blocks (another
- * country's number with the same national digits) by design.
- */
-export function optOutCoversNumber(
-  storedPhone: unknown,
-  target: { e164: string; national: string },
-): boolean {
-  const digits = typeof storedPhone === "string" ? storedPhone.replace(/\D/g, "") : "";
-  if (!digits) return false;
-  if (digits === target.e164.replace(/\D/g, "")) return true;
-  return target.national.length >= 7 && digits.includes(target.national);
-}
-
-/**
- * A voice opt-out belongs to the number, not one contact doc. Reads the
- * sub-account's opted-out contacts (two equality filters, paged by document
- * id — no composite index) and compares each with {@link optOutCoversNumber}.
- * `over_cap` when there are more than {@link VOICE_OPT_OUT_SCAN_CAP} to read
- * and none of the first ones matched: the caller must refuse (fail closed).
- */
-export async function numberVoiceOptOut(
-  subAccountId: string,
-  target: { e164: string; national: string },
-): Promise<"clear" | "opted_out" | "over_cap"> {
-  const base = getAdminDb()
-    .collection("contacts")
-    .where("subAccountId", "==", subAccountId)
-    .where("voiceOptedOut", "==", true)
-    .select("phone")
-    .orderBy(FieldPath.documentId());
-  let seen = 0;
-  let cursor: string | null = null;
-  for (;;) {
-    // One past the cap, so "exactly the cap" and "more than the cap" differ.
-    const want = Math.min(VOICE_OPT_OUT_PAGE, VOICE_OPT_OUT_SCAN_CAP + 1 - seen);
-    const snap = await (cursor ? base.startAfter(cursor) : base).limit(want).get();
-    for (const d of snap.docs) {
-      if (optOutCoversNumber(d.data().phone, target)) return "opted_out";
-    }
-    seen += snap.docs.length;
-    if (seen > VOICE_OPT_OUT_SCAN_CAP) return "over_cap";
-    if (snap.docs.length < want) return "clear";
-    cursor = snap.docs[snap.docs.length - 1]!.id;
-  }
 }
 
 export function dialerPrivateRef(subAccountId: string) {

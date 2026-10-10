@@ -4,9 +4,11 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import twilio from "twilio";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
 import {
   dialerActivityId,
   dialerAuthToken,
+  errText,
   formatCallDuration,
   validateDialerSignature,
 } from "@/lib/comms/dialer";
@@ -24,10 +26,21 @@ export const dynamic = "force-dynamic";
  *
  * Signature checked against the sub-account's auth token from
  * `private/twilioCredentials` (`readSubAccountSecret`). Deliberately NOT
- * behind `dialerEnabledByAgency`: a call already placed when the gate is
- * switched off still gets its outcome recorded. It only ever updates a row
- * for a contact in this sub-account.
+ * behind `dialerEnabledByAgency`, nor behind the dedicated-Twilio switch: a
+ * call already placed when either is switched off still gets its outcome
+ * recorded. It only ever updates a row for a contact in this sub-account.
+ *
+ * The body is signed by the tenant's own token, so its values are still
+ * checked: `contactId` and `CallSid` must be plain document ids (else nothing
+ * is written — the answer is still 200), the status must be one Twilio
+ * documents, the duration is clamped, and a RecordingUrl is stored only when
+ * this sub-account has recording on and the URL is Twilio's.
  */
+
+/** Twilio's longest call is 24 hours. */
+const MAX_CALL_SECONDS = 86_400;
+/** Recordings Twilio made are served from here; anything else is not stored. */
+const TWILIO_MEDIA_PREFIX = "https://api.twilio.com/";
 
 const OUTCOME_LABEL: Record<string, string> = {
   completed: "completed",
@@ -57,14 +70,25 @@ export async function POST(
     return new NextResponse("Invalid signature", { status: 403 });
   }
 
+  // Everything below is caller-supplied (signed, but by the tenant's own
+  // token): each value is checked before it reaches a path or the document.
   const contactId = new URL(request.url).searchParams.get("contactId") ?? "";
   const callSid = params["CallSid"] ?? "";
-  const dialStatus = params["DialCallStatus"] ?? "";
-  const durationSec = Number(params["DialCallDuration"] ?? "0") || 0;
-  const recordingUrl = params["RecordingUrl"] || null;
+  const rawStatus = params["DialCallStatus"] ?? "";
+  const dialStatus = Object.hasOwn(OUTCOME_LABEL, rawStatus) ? rawStatus : "ended";
+  const rawDuration = Number(params["DialCallDuration"]);
+  const durationSec = Number.isFinite(rawDuration)
+    ? Math.min(Math.max(Math.floor(rawDuration), 0), MAX_CALL_SECONDS)
+    : 0;
+  const rawRecordingUrl = params["RecordingUrl"] ?? "";
+  const recordingUrl =
+    sub?.dialerConfig?.recordCalls === true && rawRecordingUrl.startsWith(TWILIO_MEDIA_PREFIX)
+      ? rawRecordingUrl
+      : null;
 
-  if (contactId && callSid) {
-    const outcome = OUTCOME_LABEL[dialStatus] ?? (dialStatus || "ended");
+  // Both ids become document-path segments; a path-shaped one is not written.
+  if (isDocId(contactId) && isDocId(callSid)) {
+    const outcome = OUTCOME_LABEL[dialStatus] ?? "ended";
     const content =
       outcome === "completed"
         ? `Phone call — ${formatCallDuration(durationSec)}`
@@ -88,7 +112,7 @@ export async function POST(
             content,
             meta: {
               callSid,
-              status: dialStatus || "ended",
+              status: dialStatus,
               durationSec,
               // Twilio-hosted media. Publicly fetchable by anyone holding the
               // URL unless the account enables "Enforce HTTP Auth on Media URLs".
@@ -105,7 +129,7 @@ export async function POST(
         );
       }
     } catch (err) {
-      console.warn("[dialer/status] activity update failed", err);
+      console.warn("[dialer/status] activity update failed", errText(err));
     }
   }
 
