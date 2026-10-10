@@ -17,6 +17,21 @@ const { POST } = await import("./route");
 
 const BASE = "https://crm.example.test/api/webhooks/twilio/dialer/status";
 const params = { CallSid: "CA0001", DialCallStatus: "completed", DialCallDuration: "65" };
+/** A real-shaped account SID: a RecordingUrl is only stored when pinned to one. */
+const SID = `AC${"0123456789abcdef".repeat(2)}`;
+const OTHER_SID = `AC${"f".repeat(32)}`;
+const REC = `https://api.twilio.com/2010-04-01/Accounts/${SID}/Recordings/RE${"a1".repeat(16)}`;
+/** `recordingOn()` uses SID; `recordingOn(x)` uses x, including undefined. */
+const recordingOn = (...accountSid: [unknown?]) =>
+  seed({
+    dialerConfig: { enabled: true, recordCalls: true },
+    twilioConfig: {
+      enabled: true,
+      accountSid: accountSid.length > 0 ? accountSid[0] : SID,
+      authTokenSet: true,
+      fromNumber: "+15017122661",
+    },
+  });
 
 function seed(over: Record<string, unknown> = {}) {
   mem.seed("subAccounts/sa1", {
@@ -101,17 +116,17 @@ describe("dialer status callback", () => {
   });
 
   it("keeps the TwiML route's createdAt/createdBy and adds the recording URL", async () => {
-    seed({ dialerConfig: { enabled: true, recordCalls: true } });
+    recordingOn();
     mem.seed("contacts/c1/activities/dialer_CA0001", {
       type: "call_placed",
       createdBy: "u1",
       content: "Phone call — in progress",
     });
-    await call({ body: { ...params, DialCallStatus: "no-answer", RecordingUrl: "https://api.twilio.com/rec/RE1" } });
+    await call({ body: { ...params, DialCallStatus: "no-answer", RecordingUrl: REC } });
     expect(row()).toMatchObject({
       createdBy: "u1",
       content: "Phone call — no answer",
-      meta: { recordingUrl: "https://api.twilio.com/rec/RE1" },
+      meta: { recordingUrl: REC },
     });
   });
 
@@ -136,18 +151,69 @@ describe("dialer status callback", () => {
     expect(mem.all().length).toBe(before);
   });
 
-  it("R9: a RecordingUrl is stored only with recording on and only from Twilio", async () => {
-    const TWILIO_URL = "https://api.twilio.com/2010-04-01/Accounts/AC_sa1/Recordings/RE1";
+  describe("R9: the RecordingUrl is stored only as an exact recording on this sub-account's own Twilio account", () => {
     const stored = async (RecordingUrl: string) => {
+      await mem.db.doc("contacts/c1/activities/dialer_CA0001").delete();
       await call({ body: { ...params, RecordingUrl } });
       return (row()?.meta as { recordingUrl?: string }).recordingUrl;
     };
-    expect(await stored(TWILIO_URL)).toBeUndefined(); // recording is off
-    seed({ dialerConfig: { enabled: true, recordCalls: true } });
-    for (const url of ["https://evil.test/rec.mp3", "javascript:alert(1)", "http://api.twilio.com/x", "https://api.twilio.com.evil.test/x"]) {
-      expect(await stored(url), url).toBeUndefined();
-    }
-    expect(await stored(TWILIO_URL)).toBe(TWILIO_URL);
+
+    it("stores a valid own-account URL, with and without .mp3 / .wav — and only with recording on", async () => {
+      // Recording off, everything else valid: the switch alone must drop it.
+      seed({ twilioConfig: { enabled: true, accountSid: SID, authTokenSet: true, fromNumber: "+15017122661" } });
+      expect(await stored(REC)).toBeUndefined();
+      seed({
+        dialerConfig: { enabled: true },
+        twilioConfig: { enabled: true, accountSid: SID, authTokenSet: true, fromNumber: "+15017122661" },
+      });
+      expect(await stored(REC)).toBeUndefined();
+      recordingOn();
+      for (const url of [REC, `${REC}.mp3`, `${REC}.wav`]) expect(await stored(url), url).toBe(url);
+    });
+
+    it("drops another account's recording, other hosts and a regional host", async () => {
+      recordingOn();
+      for (const url of [
+        REC.replace(SID, OTHER_SID),
+        REC.replace("api.twilio.com", "api.ie1.twilio.com"),
+        REC.replace("api.twilio.com", "apiXtwilio.com"),
+        REC.replace("api.twilio.com", "api.twilio.com.evil.test"),
+        REC.replace("https://", "http://"),
+        "https://evil.test/rec.mp3",
+        "javascript:alert(1)",
+        `https://api.twilio.com/2010-04-01/Accounts/${SID}/Recordings/RE1`,
+        `${REC}.exe`,
+      ]) {
+        expect(await stored(url), url).toBeUndefined();
+      }
+    });
+
+    it("drops anything before or after the URL: 200 KB of padding, CR/LF, quotes, a query", async () => {
+      recordingOn();
+      for (const url of [
+        `${REC}${"A".repeat(200_000)}`,
+        `${REC}?${"a=1&".repeat(50_000)}`,
+        `${REC}\r\nSet-Cookie: x=1`,
+        `${REC}\n`,
+        `\n${REC}`,
+        `${REC}"><script>alert(1)</script>`,
+        `${REC}' onerror='alert(1)`,
+        `${REC}\u0000`,
+        `x${REC}`,
+        `${REC}.mp3.mp3`,
+      ]) {
+        expect(await stored(url), JSON.stringify(url.slice(0, 140))).toBeUndefined();
+      }
+    });
+
+    it("stores nothing when the sub-account's account SID is missing or mis-shaped", async () => {
+      for (const sid of [undefined, null, "", "AC_sa1", ".*", `AC${"g".repeat(32)}`, `${SID}0`, SID.toUpperCase()]) {
+        recordingOn(sid);
+        const url = `https://api.twilio.com/2010-04-01/Accounts/${String(sid)}/Recordings/RE${"a1".repeat(16)}`;
+        expect(await stored(url), String(sid)).toBeUndefined();
+        expect(await stored(REC), String(sid)).toBeUndefined();
+      }
+    });
   });
 
   it("R9: an unknown status reads as ended — prototype keys included — and the duration is clamped", async () => {

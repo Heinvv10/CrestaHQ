@@ -34,13 +34,28 @@ export const dynamic = "force-dynamic";
  * checked: `contactId` and `CallSid` must be plain document ids (else nothing
  * is written — the answer is still 200), the status must be one Twilio
  * documents, the duration is clamped, and a RecordingUrl is stored only when
- * this sub-account has recording on and the URL is Twilio's.
+ * this sub-account has recording on and the URL is exactly a recording on its
+ * own Twilio account ({@link ownRecordingUrl}).
  */
 
 /** Twilio's longest call is 24 hours. */
 const MAX_CALL_SECONDS = 86_400;
-/** Recordings Twilio made are served from here; anything else is not stored. */
-const TWILIO_MEDIA_PREFIX = "https://api.twilio.com/";
+const ACCOUNT_SID = /^AC[0-9a-f]{32}$/;
+
+/**
+ * The RecordingUrl, only when it is exactly a recording on THIS sub-account's
+ * own Twilio account at api.twilio.com: nothing before or after it, no other
+ * account's SID, no other host. Regional hosts (api.ie1.twilio.com …) are not
+ * accepted. A missing or mis-shaped account SID stores nothing.
+ */
+function ownRecordingUrl(raw: string, accountSid: unknown): string | null {
+  if (typeof accountSid !== "string" || !ACCOUNT_SID.test(accountSid)) return null;
+  const sid = accountSid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exact = new RegExp(
+    `^https://api\\.twilio\\.com/2010-04-01/Accounts/${sid}/Recordings/RE[0-9a-f]{32}(\\.(mp3|wav))?$`,
+  );
+  return exact.test(raw) ? raw : null;
+}
 
 const OUTCOME_LABEL: Record<string, string> = {
   completed: "completed",
@@ -80,10 +95,9 @@ export async function POST(
   const durationSec = Number.isFinite(rawDuration)
     ? Math.min(Math.max(Math.floor(rawDuration), 0), MAX_CALL_SECONDS)
     : 0;
-  const rawRecordingUrl = params["RecordingUrl"] ?? "";
   const recordingUrl =
-    sub?.dialerConfig?.recordCalls === true && rawRecordingUrl.startsWith(TWILIO_MEDIA_PREFIX)
-      ? rawRecordingUrl
+    sub?.dialerConfig?.recordCalls === true
+      ? ownRecordingUrl(params["RecordingUrl"] ?? "", sub.twilioConfig?.accountSid)
       : null;
 
   // Both ids become document-path segments; a path-shaped one is not written.

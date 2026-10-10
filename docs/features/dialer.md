@@ -86,7 +86,17 @@ touched.
    - A status Twilio does not document is stored as `ended`.
    - The duration is clamped to a whole number of seconds between 0 and 24 hours.
    - `RecordingUrl` is stored as `meta.recordingUrl` only when this sub-account has
-     `recordCalls` on **and** the URL starts with `https://api.twilio.com/`.
+     `recordCalls` on **and** the URL is exactly a recording on its own Twilio
+     account: `https://api.twilio.com/2010-04-01/Accounts/<its accountSid>/Recordings/RE<32 hex>`,
+     optionally ending `.mp3` or `.wav`, with nothing before or after. Another
+     account's recording, any other host, a query string, padding or control
+     characters are all dropped, and nothing is stored when `twilioConfig.accountSid`
+     is missing or not `AC` + 32 hex characters.
+   - **Known gap for the live walk:** only `api.twilio.com` is accepted. If the
+     client's Twilio account serves recordings from a regional host
+     (`api.ie1.twilio.com`, `api.au1.twilio.com` and so on), the URL is dropped and
+     the call's row has no recording link. Check what Twilio actually sends on the
+     first recorded call.
 
    **For SP-3:** treat `meta.recordingUrl`, like the rest of `meta`, as untrusted
    when rendering it. Check the scheme and host again before making it a link.
