@@ -14,32 +14,54 @@ export function AreaChart({
   height = 140,
   className,
   tone = "indigo",
-  formatValue = (v) => Math.round(v).toLocaleString(),
+  formatValue,
+  formatAxis,
 }: {
   data: Point[];
   height?: number;
   className?: string;
   tone?: "indigo" | "emerald" | "amber" | "violet";
-  /** Formats a value for the hover tooltip and the y-axis labels. */
+  /** Formats a value for the hover tooltip (full precision). */
   formatValue?: (v: number) => string;
+  /** Formats the y-axis labels; pass a compact formatter for long values. Defaults to formatValue. */
+  formatAxis?: (v: number) => string;
 }) {
   const id = useId().replace(/:/g, "");
   const w = 600;
   const h = height;
   // Asymmetric padding — the left side needs room for the y-axis labels,
   // the right side just needs the line's last point to clear the edge.
-  const padLeft = 34;
   const padRight = 14;
   const padY = 18;
   // The axis always starts at 0 and tops out at the series max (never a
   // fixed ceiling), so a quiet stretch and a traffic spike both use the
   // chart's full height instead of one flattening the other.
-  const max = Math.max(1, ...data.map((d) => d.y));
+  // Non-finite values plot as 0, so the axis never prints NaN.
+  const ys = data.map((d) => (Number.isFinite(d.y) ? d.y : 0));
+  const max = Math.max(0, ...ys);
+  const scale = max > 0 ? max : 1;
+  const fmt =
+    formatValue ??
+    ((v: number) =>
+      v.toLocaleString(undefined, { maximumFractionDigits: max < 10 ? 1 : 0 }));
+  const fmtAxis = formatAxis ?? fmt;
+  // Axis labels: 0, midpoint, max. Never two identical labels in a row, and
+  // an empty / all-zero series shows just "0".
+  const axisLabels: { frac: number; text: string }[] = [];
+  for (const frac of max > 0 ? [0, 0.5, 1] : [0]) {
+    const text = fmtAxis(frac * max);
+    if (axisLabels.length && axisLabels[axisLabels.length - 1].text === text) continue;
+    axisLabels.push({ frac, text });
+  }
+  // Size the left gutter from the longest label (~5.5 units per 9px glyph)
+  // so a long currency value is never clipped at x=0.
+  const longest = Math.max(...axisLabels.map((l) => l.text.length));
+  const padLeft = Math.max(34, Math.ceil(longest * 5.5) + 10);
   const stepX = data.length > 1 ? (w - padLeft - padRight) / (data.length - 1) : 0;
 
-  const pts = data.map((d, i) => {
+  const pts = ys.map((_, i) => {
     const x = padLeft + i * stepX;
-    const y = h - padY - (d.y / max) * (h - 2 * padY);
+    const y = h - padY - (ys[i] / scale) * (h - 2 * padY);
     return [x, y] as const;
   });
 
@@ -69,6 +91,8 @@ export function AreaChart({
   return (
     <svg
       viewBox={`0 0 ${w} ${h}`}
+      role="img"
+      aria-label={`Trend chart, ${data.length} points, peak ${fmt(max)}`}
       className={cn("h-auto w-full", className)}
       preserveAspectRatio="none"
     >
@@ -97,7 +121,7 @@ export function AreaChart({
       {/* Y axis — 0, the midpoint, and the series max, so the scale is
           always visible and always relative to what's actually in the
           data rather than a fixed ceiling. */}
-      {[0, 0.5, 1].map((frac) => {
+      {axisLabels.map(({ frac, text }) => {
         const y = h - padY - frac * (h - 2 * padY);
         return (
           <text
@@ -107,7 +131,7 @@ export function AreaChart({
             textAnchor="end"
             className="fill-muted-foreground text-[9px] tabular-nums"
           >
-            {formatValue(frac * max)}
+            {text}
           </text>
         );
       })}
@@ -131,7 +155,7 @@ export function AreaChart({
                   2px, too small to reliably hover — carrying the native
                   browser tooltip with this point's exact value. */}
               <circle cx={x} cy={y} r={9} fill="transparent">
-                <title>{`${data[i].x}: ${formatValue(data[i].y)}`}</title>
+                <title>{`${data[i].x}: ${fmt(ys[i])}`}</title>
               </circle>
             </g>
           ))}

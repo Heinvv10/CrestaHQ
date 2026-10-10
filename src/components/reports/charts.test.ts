@@ -33,3 +33,44 @@ it("defaults to rounded locale numbers and keeps axis text on theme tokens", () 
   expect(html).toContain("fill-muted-foreground");
   expect(html).not.toMatch(/(fill|stroke)="(white|#[0-9a-fA-F]{3,6})/i);
 });
+
+const render = (props: Record<string, unknown>) => renderToStaticMarkup(createElement(AreaChart, props as never));
+const axis = (html: string) =>
+  [...html.matchAll(/<text x="([\d.]+)"[^>]*text-anchor="end"[^>]*>([^<]*)<\/text>/g)].map((m) => ({ x: Number(m[1]), t: m[2] }));
+
+it("shows only '0' for empty, all-zero and single-zero series", () => {
+  for (const d of [[], [{ x: "a", y: 0 }, { x: "b", y: 0 }], [{ x: "a", y: 0 }]]) {
+    expect(axis(render({ data: d })).map((l) => l.t)).toEqual(["0"]);
+  }
+});
+
+it("never prints duplicate axis labels for fractional data (max < 1)", () => {
+  const labels = axis(render({ data: [{ x: "a", y: 0.3 }, { x: "b", y: 0.6 }] })).map((l) => l.t);
+  expect(labels).toEqual(["0", "0.3", "0.6"]);
+  expect(new Set(labels).size).toBe(labels.length);
+});
+
+it("keeps a 9-digit currency axis label inside the viewBox", () => {
+  const html = render({
+    data: [{ x: "a", y: 0 }, { x: "b", y: 617_283_000 }],
+    formatAxis: (v: number) => formatCurrency(v, "ZAR"),
+  });
+  const labels = axis(html);
+  const widest = labels.reduce((m, l) => Math.max(m, l.t.length), 0);
+  for (const l of labels) expect(l.x - l.t.length * 5.5).toBeGreaterThanOrEqual(0);
+  expect(widest).toBeGreaterThan(8);
+});
+
+it("treats NaN / Infinity as 0 and never prints NaN", () => {
+  const html = render({ data: [{ x: "a", y: Number.NaN }, { x: "b", y: 5 }, { x: "c", y: Infinity }] });
+  expect(html).not.toMatch(/NaN|Infinity/);
+});
+
+it("exposes the chart as an image with a label", () => {
+  expect(render({ data })).toMatch(/<svg[^>]*role="img"[^>]*aria-label="Trend chart, 3 points/);
+});
+
+it("drops a midpoint label that formats the same as a neighbour", () => {
+  const labels = axis(render({ data: [{ x: "a", y: 0 }, { x: "b", y: 1 }], formatValue: (v: number) => String(Math.round(v)) })).map((l) => l.t);
+  expect(labels).toEqual(["0", "1"]);
+});
