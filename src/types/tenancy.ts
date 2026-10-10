@@ -571,6 +571,21 @@ export interface SubAccountDoc {
    */
   googleCalendarEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for Web Voice (ElevenLabs): website visitors talk
+   * to the web-chat assistant through the sub-account's own ElevenLabs key.
+   * Opt-in: `false` at creation, read `=== true`. Standalone (NOT in
+   * `PLAN_GATE_KEYS`). No tear-down: the stored connection and the ElevenLabs
+   * agent are preserved. Layered on `webChatEnabledByAgency`.
+   */
+  webVoiceEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for the browser phone dialer (softphone) that
+   * places calls through the sub-account's own Twilio account. Opt-in:
+   * `false` at creation, read `=== true`. Standalone (NOT in
+   * `PLAN_GATE_KEYS`). No tear-down: stored dialer config is preserved.
+   */
+  dialerEnabledByAgency?: boolean;
+  /**
    * Agency-controlled gate for Reviews AI (SP5): AI sentiment on synced Google
    * reviews and AI reply drafts (SP5 c — they only fill the reply box). Spends the agency's OpenRouter
    * credits. Opt-in: `false` at creation, read `=== true`. Plan-managed

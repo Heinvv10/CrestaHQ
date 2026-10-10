@@ -82,6 +82,13 @@ describe("gateRoute", () => {
     for (const gate of PROPOSAL_GATES) for (const on of [true, false]) expect(gateRoute(gate, on), gate).toBe("proposal");
   });
 
+  it("web-voice and dialer are refused when enabled, a proposal when disabled", () => {
+    for (const gate of ["web-voice", "dialer"]) {
+      expect(gateRoute(gate, true), gate).toBe("refused");
+      expect(gateRoute(gate, false), gate).toBe("proposal");
+    }
+  });
+
   it("a gate in no set defaults to a proposal", () => {
     expect(gateRoute("a-gate-added-tomorrow", true)).toBe("proposal");
     expect(gateRoute("a-gate-added-tomorrow", false)).toBe("proposal");

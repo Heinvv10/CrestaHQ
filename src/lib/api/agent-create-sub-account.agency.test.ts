@@ -240,6 +240,7 @@ describe("via chat (the Agency Assistant)", () => {
       getLeadsEnabledByAgency: false, prospectingEnabledByAgency: false, missedCallTextBackEnabledByAgency: false,
       labsEnabledByAgency: false, paymentsEnabledByAgency: false, stripeConnectionMeta: null,
       webinar1EnabledByAgency: false, googleEnabledByAgency: false, googleCalendarEnabledByAgency: false,
+      webVoiceEnabledByAgency: false, dialerEnabledByAgency: false,
       reviewsAiEnabledByAgency: false, reviewsAutoReplyEnabledByAgency: false, agentApiEnabledByAgency: false,
       webinar1ConnectionMeta: null, aiSuiteEnabledByAgency: false, metaConfig: null, bookingConfig: null,
       sendWindow: null, bookingLink: null, replyToEmail: null, automationsPaused: false, accountContact: null,

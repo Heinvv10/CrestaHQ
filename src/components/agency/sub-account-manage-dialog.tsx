@@ -17,6 +17,7 @@ import {
   MessageSquareText,
   MessagesSquare,
   MonitorPlay,
+  Phone,
   PhoneIncoming,
   PhoneMissed,
   PhoneOutgoing,
@@ -131,6 +132,8 @@ function ManageDialogBody({
   const initialGoogle = subAccount.googleEnabledByAgency === true;
   const initialGoogleCalendar =
     subAccount.googleCalendarEnabledByAgency === true;
+  const initialWebVoice = subAccount.webVoiceEnabledByAgency === true;
+  const initialDialer = subAccount.dialerEnabledByAgency === true;
   const initialReviewsAi = subAccount.reviewsAiEnabledByAgency === true;
   const initialReviewsAutoReply =
     subAccount.reviewsAutoReplyEnabledByAgency === true;
@@ -198,6 +201,8 @@ function ManageDialogBody({
   const [googleCalendarEnabled, setGoogleCalendarEnabled] = useState(
     initialGoogleCalendar
   );
+  const [webVoiceEnabled, setWebVoiceEnabled] = useState(initialWebVoice);
+  const [dialerEnabled, setDialerEnabled] = useState(initialDialer);
   const [missedCallEnabled, setMissedCallEnabled] = useState(initialMissedCall);
   const [aiSuiteEnabled, setAiSuiteEnabled] = useState(initialAiSuite);
   const [aiSuiteModel, setAiSuiteModel] = useState<"opus" | "sonnet">(
@@ -273,6 +278,8 @@ function ManageDialogBody({
   const webinar1HiddenDirty = webinar1Hidden !== initialWebinar1Hidden;
   const googleDirty = googleEnabled !== initialGoogle;
   const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
+  const webVoiceDirty = webVoiceEnabled !== initialWebVoice;
+  const dialerDirty = dialerEnabled !== initialDialer;
   const reviewsAiDirty = reviewsAiEnabled !== initialReviewsAi;
   const reviewsAutoReplyDirty =
     reviewsAutoReplyEnabled !== initialReviewsAutoReply;
@@ -316,6 +323,8 @@ function ManageDialogBody({
     webinar1HiddenDirty ||
     googleDirty ||
     googleCalendarDirty ||
+    webVoiceDirty ||
+    dialerDirty ||
     reviewsAiDirty ||
     reviewsAutoReplyDirty ||
     agentApiDirty ||
@@ -384,6 +393,8 @@ function ManageDialogBody({
         webinar1HiddenWhenDisabled?: boolean;
         googleEnabled?: boolean;
         googleCalendarEnabled?: boolean;
+        webVoiceEnabled?: boolean;
+        dialerEnabled?: boolean;
         reviewsAiEnabled?: boolean;
         reviewsAutoReplyEnabled?: boolean;
         agentApiEnabled?: boolean;
@@ -429,6 +440,12 @@ function ManageDialogBody({
       if (googleDirty) payload.googleEnabled = googleEnabled;
       if (googleCalendarDirty) {
         payload.googleCalendarEnabled = googleCalendarEnabled;
+      }
+      if (webVoiceDirty) {
+        payload.webVoiceEnabled = webVoiceEnabled;
+      }
+      if (dialerDirty) {
+        payload.dialerEnabled = dialerEnabled;
       }
       if (reviewsAiDirty) payload.reviewsAiEnabled = reviewsAiEnabled;
       if (reviewsAutoReplyDirty) {
@@ -600,6 +617,20 @@ function ManageDialogBody({
           googleCalendarEnabled
             ? "Google Calendar sync enabled."
             : "Google Calendar sync disabled. Members' connections are preserved; re-enabling resumes instantly."
+        );
+      }
+      if (webVoiceDirty) {
+        parts.push(
+          webVoiceEnabled
+            ? "Web Voice enabled."
+            : "Web Voice disabled. The stored connection is preserved; re-enabling resumes instantly."
+        );
+      }
+      if (dialerDirty) {
+        parts.push(
+          dialerEnabled
+            ? "Phone dialer enabled."
+            : "Phone dialer disabled. The stored dialer setup is preserved; re-enabling resumes instantly."
         );
       }
       if (reviewsAiDirty) {
@@ -1119,6 +1150,39 @@ function ManageDialogBody({
             card, refuses new connects and stops the sync; connections are
             preserved, so re-enabling resumes instantly. Disconnecting stays
             available either way.
+          </GateToggle>
+
+          <GateToggle
+            checked={webVoiceEnabled}
+            onChange={setWebVoiceEnabled}
+            disabled={saving}
+            icon={
+              <Phone className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+            }
+            title="Web Voice"
+          >
+            When enabled, this sub-account can connect its own ElevenLabs
+            account so website visitors can talk to the web chat assistant
+            (mic button in the widget). Needs Web Chat AI. Each spoken reply
+            still spends your OpenRouter tokens; the client&apos;s ElevenLabs
+            account pays the voice minutes. Web Voice is not available in
+            this build yet, so the switch only takes effect once it ships.
+          </GateToggle>
+
+          <GateToggle
+            checked={dialerEnabled}
+            onChange={setDialerEnabled}
+            disabled={saving}
+            icon={
+              <PhoneOutgoing className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+            }
+            title="Phone dialer"
+          >
+            When enabled, team members can place and take calls from the
+            browser through this sub-account&apos;s own Twilio account (it
+            needs its Twilio credentials connected). Calls are billed to the
+            client&apos;s Twilio account. The dialer is not available in this
+            build yet, so the switch only takes effect once it ships.
           </GateToggle>
 
           <GateToggle

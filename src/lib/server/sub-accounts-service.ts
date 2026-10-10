@@ -219,6 +219,9 @@ export function writeNewSubAccount(
     webinar1EnabledByAgency: false,
     googleEnabledByAgency: false,
     googleCalendarEnabledByAgency: false,
+    // Web Voice and the browser dialer are opt-in, standalone gates.
+    webVoiceEnabledByAgency: false,
+    dialerEnabledByAgency: false,
     // Reviews AI (SP5) spends the agency's OpenRouter credits — opt-in.
     reviewsAiEnabledByAgency: false,
     // Review auto-reply posts to Google without a click — opt-in.
