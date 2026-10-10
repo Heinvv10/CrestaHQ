@@ -1,5 +1,6 @@
 import type { WebsiteConfig } from "@/types/website";
-import { isNicheKey } from "@/lib/website/niches";
+import { isNicheKey, NICHE_META } from "@/lib/website/niches";
+import { validatePremiumDetails } from "@/lib/website/premium";
 
 /**
  * Server-side + client-side validation for a WebsiteConfig payload. Returns
@@ -59,6 +60,19 @@ export function validateWebsiteConfig(config: WebsiteConfig): ValidationErrors {
   else if (!URL_RE.test(config.cta_link.trim()))
     errors.cta_link = "Must start with http:// or https://.";
 
+  // Premium extras (Build v2) — lengths/shapes only; facts are the operator's.
+  if (config.quality != null && config.quality !== "standard" && config.quality !== "premium") {
+    errors.quality = "Must be standard or premium.";
+  }
+  if (config.hero_motion != null && !["still", "loop", "atmosphere"].includes(config.hero_motion)) {
+    errors.hero_motion = "Must be still, loop or atmosphere.";
+  }
+  if (config.premium_details) {
+    for (const [field, message] of Object.entries(validatePremiumDetails(config.premium_details))) {
+      errors[`premium_details.${field}`] = message;
+    }
+  }
+
   // Default missing build_type to "local" — back-compat for docs that
   // pre-date the VSL feature.
   const buildType = config.build_type ?? "local";
@@ -67,7 +81,7 @@ export function validateWebsiteConfig(config: WebsiteConfig): ValidationErrors {
   // "no niche, run a generic build"). A non-null value must be a known key.
   if (config.niche != null && !isNicheKey(config.niche)) {
     errors.niche =
-      'Niche must be one of: home_services, real_estate, gym_fitness. Leave blank for a generic build.';
+      "Niche must be one of: home_services, real_estate, gym_fitness, agency_consulting, ai_consulting, ai_automation. Leave blank for a generic build.";
   }
   const niche = isNicheKey(config.niche) ? config.niche : null;
 
@@ -90,10 +104,13 @@ export function validateWebsiteConfig(config: WebsiteConfig): ValidationErrors {
     } else {
       if (!biz.business_name.trim())
         errors["business_details.business_name"] = "Required.";
-      if (!biz.business_street.trim())
-        errors["business_details.business_street"] = "Required.";
-      if (!biz.business_city.trim())
-        errors["business_details.business_city"] = "Required.";
+      // Remote-first niches (AI consulting / automation) don't need an address.
+      if (!NICHE_META[niche].addressOptional) {
+        if (!biz.business_street.trim())
+          errors["business_details.business_street"] = "Required.";
+        if (!biz.business_city.trim())
+          errors["business_details.business_city"] = "Required.";
+      }
     }
   } else {
     // Generic local: pages + conditional sections.
