@@ -33,7 +33,7 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     name: "set_workflow_status",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
-    surfaces: ["agent"],
+    surfaces: ["chat", "agent"],
     menuLabel: "Pause, draft or activate a workflow (a person approves activating)",
     description:
       "Set a workflow's status: `paused` or `draft` stop it at once; `active` is queued for a sub-account admin to approve, showing the exact trigger and steps that will run.",

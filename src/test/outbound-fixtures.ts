@@ -59,6 +59,8 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   update_workflow: { workflowId: "wf_draft", name: "Renamed" },
   set_workflow_status: { workflowId: "wf_draft", status: "paused" },
   delete_workflow: { workflowId: "wf_draft" },
+  list_forms: {},
+  create_form: { name: "Agent enquiry form", template: "contact" },
   create_contact: { name: "Agent Contact", email: "agent@x.io", phone: "+27821234567" },
   create_task: { title: "Call Ann", contactId: "c1", contactName: "Ann" },
   find_tasks: { filter: "all-open" },

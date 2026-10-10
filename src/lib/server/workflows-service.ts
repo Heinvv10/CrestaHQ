@@ -355,6 +355,9 @@ export async function createWorkflowServerSide(opts: {
   template?: WorkflowTemplate;
   /** An API agent's write: stamped (see agentEditStamp). */
   actor?: AgentActor;
+  /** Pins a form-triggered workflow to one form. The caller has already
+   *  checked the form belongs to this sub-account. */
+  formId?: string;
 }): Promise<string> {
   const db = getAdminDb();
   const subSnap = await db.doc(`subAccounts/${opts.subAccountId}`).get();
@@ -376,7 +379,7 @@ export async function createWorkflowServerSide(opts: {
     createdByUid: opts.createdByUid,
     name: opts.name.trim() || "Untitled workflow",
     status: "draft",
-    trigger: seed.trigger,
+    trigger: opts.formId ? { ...seed.trigger, formId: opts.formId } : seed.trigger,
     reentry: seed.reentry ?? "every_time",
     startNodeId: seed.startNodeId,
     nodes: seed.nodes,
