@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CalendarDays } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useSubAccountContacts } from "@/context/contacts-context";
@@ -96,11 +95,6 @@ function CalendarSkeleton() {
             )}
           </div>
         ))}
-      </div>
-      {/* hidden (not sr-only): sr-only is position:absolute and, with no
-          positioned ancestor, hangs off the window and adds a second scrollbar */}
-      <div className="hidden" aria-hidden>
-        <CalendarDays />
       </div>
     </div>
   );
