@@ -135,6 +135,20 @@ async function checkFirebaseAdmin(): Promise<IntegrationHealth> {
     label: k,
     status: process.env[k]?.trim() ? "ok" : "missing",
   }));
+  // Optional: an old account's keys, kept only while its deliveries drain.
+  const legacy = ["QSTASH_LEGACY_CURRENT_SIGNING_KEY", "QSTASH_LEGACY_NEXT_SIGNING_KEY"]
+    .filter((k) => process.env[k]?.trim()).length;
+  if (legacy > 0) {
+    subChecks.push(
+      legacy === 2
+        ? { label: "Legacy signing keys (old account)", status: "ok" }
+        : {
+            label: "Legacy signing keys (old account)",
+            status: "partial",
+            detail: "Only one QSTASH_LEGACY_*_SIGNING_KEY is set — both are needed, so old-account deliveries are refused.",
+          },
+    );
+  }
 
   if (presence.ok) {
     const ping = await withTimeout(async () => {

@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { Client } from "@upstash/qstash";
 import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -21,7 +22,8 @@ import { gbpSyncScheduled } from "@/lib/gbp/sync/schedule";
  *     single Firestore read (~10ms) instead of 2 QStash API calls
  *     (~200ms). The marker also stores the `baseUrl` it registered
  *     against, so a redeploy that changes `NEXT_PUBLIC_APP_URL` blows
- *     the cache and re-registers immediately.
+ *     the cache and re-registers immediately. So does a different
+ *     `QSTASH_TOKEN` (an account move), via a short hash of the token.
  *
  * Failure mode:
  *   - QStash down / network failure: log + skip. The next cold start
@@ -137,6 +139,14 @@ function activeSchedules(): ScheduleSpec[] {
 function scheduleVersion(): string {
   return gbpSyncScheduled() ? `${BASE_SCHEDULE_VERSION}+gbp-sync` : BASE_SCHEDULE_VERSION;
 }
+/**
+ * Which QStash account the schedules were registered on: a short hash of the
+ * token (never the token). A move to another account re-registers on the next
+ * cold start instead of waiting out a marker fresh from the old account.
+ */
+function qstashAccount(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
 const MARKER_PATH = "system/scheduleRegistration";
 const SKIP_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -153,6 +163,7 @@ export async function ensureSchedulesRegistered(): Promise<void> {
   // Gate: no QStash credentials → nothing to register. Local dev without
   // a tunnel falls into this path; that's correct.
   if (!process.env.QSTASH_TOKEN) return;
+  const account = qstashAccount(process.env.QSTASH_TOKEN);
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
   if (!baseUrl) return;
   // Skip in non-production runtimes where re-registering across hot reloads
@@ -174,6 +185,7 @@ export async function ensureSchedulesRegistered(): Promise<void> {
       if (
         lastUrl === baseUrl &&
         data.scheduleVersion === scheduleVersion() &&
+        data.qstashAccount === account &&
         lastAt &&
         Date.now() - lastAt.getTime() < SKIP_AGE_MS
       ) {
@@ -231,6 +243,7 @@ export async function ensureSchedulesRegistered(): Promise<void> {
       {
         baseUrl,
         scheduleVersion: scheduleVersion(),
+        qstashAccount: account,
         registeredAt: FieldValue.serverTimestamp(),
         scheduleIds: activeSchedules().map((s) => s.scheduleId),
         lastResults: results,
