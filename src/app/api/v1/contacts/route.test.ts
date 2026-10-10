@@ -148,7 +148,7 @@ describe("POST /api/v1/contacts — workflow triggers", () => {
     // `finally` reconciles once it settles (the engine is mocked here).
     expect(enrolmentCount).toBe(1);
     // The webhook the route already emitted must survive the move.
-    expect(emitWebhookEvent).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(emitWebhookEvent).toHaveBeenCalledTimes(1));
     expect(emitWebhookEvent.mock.calls[0]![0]).toMatchObject({
       type: "contact.created",
     });

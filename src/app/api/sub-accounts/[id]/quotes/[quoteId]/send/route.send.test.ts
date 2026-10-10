@@ -174,14 +174,16 @@ describe("lifecycle", () => {
 
   it("fires the trigger and the outbound webhook", async () => {
     await call();
-    expect(fireQuoteTrigger).toHaveBeenCalledWith(
-      expect.objectContaining({ id: QUOTE_ID }),
-      "quote_sent",
-    );
-    expect(emitQuoteWebhook).toHaveBeenCalledWith(
-      expect.objectContaining({ id: QUOTE_ID }),
-      "quote_sent",
-    );
+    await vi.waitFor(() => {
+      expect(fireQuoteTrigger).toHaveBeenCalledWith(
+        expect.objectContaining({ id: QUOTE_ID }),
+        "quote_sent",
+      );
+      expect(emitQuoteWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({ id: QUOTE_ID }),
+        "quote_sent",
+      );
+    });
   });
 
   it("swallows a failed lifecycle write and still reports success", async () => {

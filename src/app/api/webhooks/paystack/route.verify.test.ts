@@ -139,7 +139,8 @@ describe("plan payment", () => {
     const first = await deliver({ reference: "ref_ok", metadata: planMeta });
     expect(first.status).toBe(200);
     expect(billing().status).toBe("active");
-    expect(applyFeatureGates).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(applyFeatureGates).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mem.list("billingEvents").filter((e) => e.event === "activated")).toHaveLength(1));
 
     const replay = await deliver({ reference: "ref_ok", metadata: planMeta });
     expect(replay.status).toBe(200);
@@ -273,6 +274,7 @@ describe("one-time charge", () => {
     verifyAs = () => verified({ reference: "ref_c3", amount: 500000, metadata: chargeMeta });
     expect((await deliver({ reference: "ref_c3", metadata: chargeMeta })).status).toBe(200);
     expect(charge().status).toBe("paid");
+    await vi.waitFor(() => expect(mem.list("billingEvents").filter((e) => e.event === "charge.paid")).toHaveLength(1));
     expect((await deliver({ reference: "ref_c3", metadata: chargeMeta })).status).toBe(200);
     expect(mem.list("billingEvents").filter((e) => e.event === "charge.paid")).toHaveLength(1);
   });

@@ -39,10 +39,12 @@ describe("overlapping mark-paid calls", () => {
     expect(results.filter((r) => r.ok)).toHaveLength(1);
     expect(results.filter((r) => !r.ok && r.code === "already_paid")).toHaveLength(2);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
-    expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
-    expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
-    expect(effects.emitQuoteWebhook).toHaveBeenCalledTimes(1);
-    expect(review).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(effects.recordQuoteActivity).toHaveBeenCalledTimes(1);
+      expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
+      expect(effects.emitQuoteWebhook).toHaveBeenCalledTimes(1);
+      expect(review).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("stores paidVia in the same write, and hands it back to a loser", async () => {

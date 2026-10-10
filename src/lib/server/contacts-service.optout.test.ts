@@ -66,10 +66,12 @@ it("an ordinary new contact still announces itself", async () => {
   await createContactServerSide(input);
 
   expect(m.written[0]).not.toHaveProperty("whatsappOptedOut");
-  expect(emitWebhookEvent).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "contact.created" })
-  );
-  expect(fireWorkflowTrigger).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "contact.created" })
-  );
+  await vi.waitFor(() => {
+    expect(emitWebhookEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "contact.created" })
+    );
+    expect(fireWorkflowTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "contact.created" })
+    );
+  });
 });

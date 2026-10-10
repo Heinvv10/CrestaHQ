@@ -76,8 +76,7 @@ describe("request logs by key level", () => {
     const res = await call("find_contacts", { subAccountId: "sa1", query: "ann" });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { result: string }).result).toContain("Ann One");
-    await settle();
-    expect(logs()).toHaveLength(1);
+    await vi.waitFor(() => expect(logs()).toHaveLength(1));
     expect(logsUnder("subAccounts/sa1/apiRequestLogs/")).toHaveLength(1);
   });
 
@@ -87,8 +86,7 @@ describe("request logs by key level", () => {
   ])("past reach, %s still logs under the target", async (_label, name, body) => {
     const res = await call(name, body);
     expect(res.status).toBe(400);
-    await settle();
-    expect(logs()).toHaveLength(1);
+    await vi.waitFor(() => expect(logs()).toHaveLength(1));
     expect(logsUnder("subAccounts/sa1/apiRequestLogs/")).toHaveLength(1);
   });
 
@@ -97,9 +95,8 @@ describe("request logs by key level", () => {
     ["an agency-level call", "list_sub_accounts", {}, 200],
   ])("%s logs under the agency only", async (_label, name, body, status) => {
     expect((await call(name, body)).status).toBe(status);
-    await settle();
+    await vi.waitFor(() => expect(logsUnder("agencies/ag1/apiRequestLogs/")).toHaveLength(1));
     expect(logsUnder("subAccounts/")).toEqual([]);
-    expect(logsUnder("agencies/ag1/apiRequestLogs/")).toHaveLength(1);
   });
 });
 
@@ -120,8 +117,7 @@ describe("logUnder is structural", () => {
     );
     const res = await route(new Request("http://localhost/x", { headers: { authorization: `Bearer ${key}` } }), {});
     expect(res.status).toBe(200);
-    await settle();
-    expect(logs()).toHaveLength(1);
+    await vi.waitFor(() => expect(logs()).toHaveLength(1));
     expect(logsUnder("subAccounts/sa1/apiRequestLogs/")).toHaveLength(1);
   });
 });

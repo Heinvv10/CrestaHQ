@@ -295,7 +295,7 @@ describe("normal cycles are still charged", () => {
     const calls = stubAutoCharge();
     await runOneSchedule(SCHEDULE, at("2026-03-01"));
     expect(calls).toHaveLength(0);
-    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(sendPushForEvent).toHaveBeenCalledTimes(1));
   });
 
   it("a too-stale fast-forward or an already-finished close records nothing", async () => {

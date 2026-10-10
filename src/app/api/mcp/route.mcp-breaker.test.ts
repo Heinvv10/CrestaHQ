@@ -78,14 +78,15 @@ describe("REPRO 2: an exhausted key cannot amplify one request into many log row
     const batch = Array.from({ length: 100 }, (_, i) => call(i + 1, "find_contacts", { query: "ann" }));
     const res = await rawPost(batch); // the request token (covering call 1) + 3 more calls run, 96 refused
     expect(res.status).toBe(200);
-    await settle();
-    const rows = keyLogs();
-    const summary = rows.filter((l) => l.path === "/api/mcp");
-    expect(summary).toHaveLength(1);
-    expect(summary[0]).toMatchObject({ responseStatus: 429, errorCode: "rate_limited" });
-    expect(JSON.parse(String(summary[0]!.responseBody))).toEqual({ rateLimitedCalls: 96 });
-    expect(rows.filter((l) => l.path === "/api/mcp#find_contacts")).toHaveLength(4);
-    expect(rows).toHaveLength(5); // 4 calls + 1 summary: no row per refused call
+    await vi.waitFor(() => {
+      const rows = keyLogs();
+      const summary = rows.filter((l) => l.path === "/api/mcp");
+      expect(summary).toHaveLength(1);
+      expect(summary[0]).toMatchObject({ responseStatus: 429, errorCode: "rate_limited" });
+      expect(JSON.parse(String(summary[0]!.responseBody))).toEqual({ rateLimitedCalls: 96 });
+      expect(rows.filter((l) => l.path === "/api/mcp#find_contacts")).toHaveLength(4);
+      expect(rows).toHaveLength(5); // 4 calls + 1 summary: no row per refused call
+    });
   });
 });
 
@@ -97,11 +98,12 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
     expect(text).toContain("Added contact");
     expect(text).not.toMatch(/call stack/i);
     expect(contactsNamed("Deep Nest")).toHaveLength(1);
-    await settle();
-    const rows = keyLogs().filter((l) => l.path === "/api/mcp#create_contact");
-    expect(rows).toHaveLength(1);
-    expect(String(rows[0]!.requestBody)).toContain("Deep Nest"); // the validated args, not the raw
-    expect(String(rows[0]!.requestBody)).not.toContain('"junk"');
+    await vi.waitFor(() => {
+      const rows = keyLogs().filter((l) => l.path === "/api/mcp#create_contact");
+      expect(rows).toHaveLength(1);
+      expect(String(rows[0]!.requestBody)).toContain("Deep Nest"); // the validated args, not the raw
+      expect(String(rows[0]!.requestBody)).not.toContain('"junk"');
+    });
   });
 
   it("a log that throws never changes the result", async () => {
@@ -113,11 +115,14 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
       throw new Error("log boom");
     });
     const res = await rawPost(call(1, "create_contact", { name: "Log Boom" }));
-    spy.mockRestore();
     const text = JSON.stringify(await res.json());
     expect(text).toContain("Added contact");
     expect(text).not.toContain("log boom");
-    expect(warn).toHaveBeenCalledWith("[after-response] background task failed", expect.any(Error));
+    // The throwing spy must stay in place until the deferred log write runs.
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith("[after-response] background task failed", expect.any(Error))
+    );
+    spy.mockRestore();
     warn.mockRestore();
   });
 
@@ -133,18 +138,20 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
     expect(res.status).toBe(200);
     expect(JSON.stringify(await res.json())).toContain("Added contact");
     expect(contactsNamed("Deep Rest")).toHaveLength(1);
-    await settle();
-    expect(keyLogs().filter((l) => l.path === "/api/v1/tools/create_contact")).toHaveLength(1);
+    await vi.waitFor(() =>
+      expect(keyLogs().filter((l) => l.path === "/api/v1/tools/create_contact")).toHaveLength(1)
+    );
   });
 });
 
 describe("unknown or misspelled names log no bodies", () => {
   it("MCP", async () => {
     await rawPost(call(1, "find_contact", { query: "ann@private.io" }));
-    await settle();
-    const rows = keyLogs().filter((l) => l.path === "/api/mcp#find_contact");
-    expect(rows).toMatchObject([{ requestBody: "", responseBody: "" }]);
-    expect(JSON.stringify(rows)).not.toContain("ann@private.io");
+    await vi.waitFor(() => {
+      const rows = keyLogs().filter((l) => l.path === "/api/mcp#find_contact");
+      expect(rows).toMatchObject([{ requestBody: "", responseBody: "" }]);
+      expect(JSON.stringify(rows)).not.toContain("ann@private.io");
+    });
   });
 
   it("REST", async () => {
@@ -156,10 +163,11 @@ describe("unknown or misspelled names log no bodies", () => {
       }),
       { params: Promise.resolve({ name: "find_contact" }) }
     );
-    await settle();
-    const rows = keyLogs().filter((l) => l.path === "/api/v1/tools/find_contact");
-    expect(rows).toMatchObject([{ requestBody: "", responseBody: "" }]);
-    expect(JSON.stringify(rows)).not.toContain("ann@private.io");
+    await vi.waitFor(() => {
+      const rows = keyLogs().filter((l) => l.path === "/api/v1/tools/find_contact");
+      expect(rows).toMatchObject([{ requestBody: "", responseBody: "" }]);
+      expect(JSON.stringify(rows)).not.toContain("ann@private.io");
+    });
   });
 });
 

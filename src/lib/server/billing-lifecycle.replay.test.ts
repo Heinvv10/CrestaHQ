@@ -97,7 +97,7 @@ describe("a redelivered first payment", () => {
     expect(billing().status).toBe("canceled");
     // Re-applying the plan's gates would overwrite what the agency set by hand.
     expect(applyFeatureGates).toHaveBeenCalledTimes(1);
-    expect(events("activated")).toHaveLength(1);
+    await vi.waitFor(() => expect(events("activated")).toHaveLength(1));
   });
 
   it("Paystack: does not revive a workspace cancelled since it was paid", async () => {
@@ -116,7 +116,7 @@ describe("a redelivered first payment", () => {
 
     expect(billing().status).toBe("canceled");
     expect(applyFeatureGates).toHaveBeenCalledTimes(1);
-    expect(events("activated")).toHaveLength(1);
+    await vi.waitFor(() => expect(events("activated")).toHaveLength(1));
   });
 
   it("does not activate a re-assignment of the same plan that has not been paid", async () => {

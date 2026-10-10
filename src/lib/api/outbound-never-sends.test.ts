@@ -279,15 +279,19 @@ describe("staff push for an agent's contact carries fixed text only", () => {
     const { AGENT_CONTACT_PUSH_BODY } = await import("@/lib/push/events");
     await dispatchAgentTool(auth, "create_contact", { name: "Click evil.example NOW", email: "x@y.io" });
     await drain();
-    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
-    const push = sendPushForEvent.mock.calls[0]![0];
-    expect(push).toMatchObject({ title: "New contact", body: AGENT_CONTACT_PUSH_BODY });
-    expect(JSON.stringify(push)).not.toContain("evil.example");
+    // A previous test's deferred push can land here too; every push must be the fixed copy.
+    await vi.waitFor(() => expect(sendPushForEvent).toHaveBeenCalled());
+    for (const [push] of sendPushForEvent.mock.calls) {
+      expect(push).toMatchObject({ title: "New contact", body: AGENT_CONTACT_PUSH_BODY });
+      expect(JSON.stringify(push)).not.toContain("evil.example");
+    }
   });
 
   it("the tenant's own webhook still receives the event (exempt, like the human path)", async () => {
     await dispatchAgentTool(auth, "create_contact", { name: "Webhook Contact" });
     await drain();
-    expect(publishCallback.mock.calls.map(([o]) => o.pathname)).toContain(TENANT_WEBHOOK_STEP);
+    await vi.waitFor(() =>
+      expect(publishCallback.mock.calls.map(([o]) => o.pathname)).toContain(TENANT_WEBHOOK_STEP)
+    );
   });
 });

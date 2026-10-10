@@ -110,7 +110,7 @@ describe("updateDealServerSide — stage moves", () => {
     });
     await tick();
     expect(fired.map((f) => f.type)).toEqual(["pipeline.stage.changed", "deal.lost"]);
-    expect(webhooks).toContain("deal.lost");
+    await vi.waitFor(() => expect(webhooks).toContain("deal.lost"));
     expect(mem.read(`deals/${id}`)?.lostReason).toBe("price");
 
     // Back to an open stage: no won/lost, reason cleared.

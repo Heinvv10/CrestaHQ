@@ -137,10 +137,12 @@ describe("invoice payment rails", () => {
       fireQuoteTrigger,
       emitQuoteWebhook,
     ]) {
-      expect(consumer).toHaveBeenCalledWith(
-        expect.objectContaining(fresh),
-        "quote_sent",
-        ...(consumer === recordQuoteActivity ? [{ extra: "re-sent" }] : []),
+      await vi.waitFor(() =>
+        expect(consumer).toHaveBeenCalledWith(
+          expect.objectContaining(fresh),
+          "quote_sent",
+          ...(consumer === recordQuoteActivity ? [{ extra: "re-sent" }] : []),
+        ),
       );
     }
   });

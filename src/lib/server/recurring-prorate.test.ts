@@ -70,6 +70,9 @@ async function billedOnce(anchor: number, firstDue: string, over: Record<string,
   seedCardSchedule({ chargeMode: "invoice", anchorDay: anchor, nextRunAt: midnight(firstDue), ...over });
   await runOneSchedule(SCHEDULE, at(firstDue));
   expect(quotes()).toHaveLength(1);
+  // A review-first cycle pushes after the run returns; let it land before the
+  // mocks are cleared or it is counted against the next step.
+  if (over.reviewFirst) await vi.waitFor(() => expect(sendPushForEvent).toHaveBeenCalledTimes(1));
   vi.clearAllMocks();
 }
 
@@ -152,7 +155,7 @@ describe("gap: 15th → 20th", () => {
     await edit("2026-07-01", { anchorDay: 20 });
     expect(quotes()[1]).toMatchObject({ status: "draft", prorated: "gap" });
     expect(sendQuoteServerSide).not.toHaveBeenCalled();
-    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(sendPushForEvent).toHaveBeenCalledTimes(1));
   });
 
   it("a card schedule's pro-rata is emailed, never charged, and the Task says it is deliberate; 20 Jul is charged in full", async () => {

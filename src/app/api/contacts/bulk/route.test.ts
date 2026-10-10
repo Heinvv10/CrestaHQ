@@ -205,7 +205,7 @@ describe("add_tag / remove_tag", () => {
       ["contacts/a", { tags: ["lead", "vip"], updatedAt: "ts" }],
       ["contacts/b", { tags: ["vip"], updatedAt: "ts" }],
     ]);
-    expect(fake.trigger).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(fake.trigger).toHaveBeenCalledTimes(1));
     expect(fake.trigger).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "contact.tag.added",

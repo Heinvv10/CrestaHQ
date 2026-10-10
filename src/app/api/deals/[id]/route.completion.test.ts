@@ -35,7 +35,7 @@ beforeEach(() => {
 
 it("a Won deal first marked completed asks for a review, once", async () => {
   expect((await patch({ completed: true })).status).toBe(200);
-  expect(fake.ask).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() => expect(fake.ask).toHaveBeenCalledTimes(1));
   expect(fake.ask).toHaveBeenCalledWith({ subAccountId: "sa", agencyId: "ag", contactId: "c1", trigger: "deal_completed" });
 });
 

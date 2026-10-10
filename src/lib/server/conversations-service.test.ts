@@ -119,19 +119,23 @@ it("an inbound opt-out keyword notifies staff but starts no workflow", async () 
     optOut: true,
   });
   expect(m.writes).toHaveBeenCalled();
-  expect(emitWebhookEvent).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "message.received" })
+  await vi.waitFor(() =>
+    expect(emitWebhookEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "message.received" })
+    )
   );
   expect(resumeWaitingRunsOnReply).not.toHaveBeenCalled();
   expect(fireWorkflowTrigger).not.toHaveBeenCalled();
 });
 it("an ordinary inbound still fires message.received automation", async () => {
   await upsertConversationForMessage({ ...input, direction: "inbound" });
-  expect(emitWebhookEvent).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "message.received" })
-  );
-  expect(resumeWaitingRunsOnReply).toHaveBeenCalled();
-  expect(fireWorkflowTrigger).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "message.received" })
-  );
+  await vi.waitFor(() => {
+    expect(emitWebhookEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "message.received" })
+    );
+    expect(resumeWaitingRunsOnReply).toHaveBeenCalled();
+    expect(fireWorkflowTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "message.received" })
+    );
+  });
 });

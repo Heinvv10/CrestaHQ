@@ -63,7 +63,6 @@ const send = (handler: Handler, method: string) =>
     { params: Promise.resolve({ id: "x1", name: "sub_account_stats", formId: "f1" }) },
   );
 const code = async (res: Response) => ((await res.clone().json()) as { error?: { code?: string } }).error?.code;
-const settle = () => new Promise((r) => setTimeout(r, 10));
 
 describe("withApiAuth routes and agency keys", () => {
   it("finds the v1 routes (the scan is not vacuous)", () => {
@@ -83,8 +82,7 @@ describe("withApiAuth routes and agency keys", () => {
       }
     }
     expect(checked).toBeGreaterThanOrEqual(24);
-    await settle();
-    expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(checked);
+    await vi.waitFor(() => expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(checked));
     expect(mem.all().filter((d) => d.path.startsWith("subAccounts/") && d.path.includes("/apiRequestLogs/"))).toEqual([]);
   });
 

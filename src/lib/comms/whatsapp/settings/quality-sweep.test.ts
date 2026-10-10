@@ -205,6 +205,10 @@ describe("runWhatsappQualitySweep", () => {
         resolvedAt: null,
       }),
     ]);
+    await vi.waitFor(() => {
+      expect(edges.sendPushForEvent).toHaveBeenCalledTimes(1);
+      expect(edges.sendEmail).toHaveBeenCalledTimes(1);
+    });
     expect(edges.sendPushForEvent).toHaveBeenCalledWith({
       subAccountId: "sa_a",
       agencyId: AGENCY,

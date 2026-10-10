@@ -88,9 +88,8 @@ describe("an agency key on each transport", () => {
     const res = await v1Contacts(agencyKey);
     expect(res.status).toBe(403);
     expect(await code(res)).toBe("agency_key_not_allowed");
-    await settle();
+    await vi.waitFor(() => expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1));
     const logs = mem.list("agencies/ag1/apiRequestLogs");
-    expect(logs).toHaveLength(1);
     expect(logs[0]).toMatchObject({ subAccountId: null, errorCode: "agency_key_not_allowed", requestBody: "" });
     expect(pathsUnder("subAccounts/").filter((p) => p.includes("/apiRequestLogs/"))).toEqual([]);
   });
@@ -98,27 +97,30 @@ describe("an agency key on each transport", () => {
   it.each(TRANSPORTS)("%s takes it → 200", async (_label, send) => {
     const res = await send(agencyKey);
     expect(res.status).toBe(200);
+    // The REST transports write a request log after the response (MCP's
+    // list does not): drain it so it cannot land in the next test.
+    if (_label.startsWith("POST /api/mcp")) return;
+    await vi.waitFor(() => expect(pathsUnder("").filter((p) => p.includes("/apiRequestLogs/"))).toHaveLength(1));
   });
 
   it("a targeted tools call logs under its target, the listing under the agency", async () => {
     expect((await restCall(agencyKey)).status).toBe(200);
     expect((await restTools(agencyKey)).status).toBe(200);
-    await settle();
-    expect(mem.list("subAccounts/sa1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools/find_contacts" })]);
-    expect(mem.list("agencies/ag1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools" })]);
+    await vi.waitFor(() => {
+      expect(mem.list("subAccounts/sa1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools/find_contacts" })]);
+      expect(mem.list("agencies/ag1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools" })]);
+    });
   });
 
   it("the agency key's lastUsedAt bump lands on its own doc", async () => {
     await mcpList(agencyKey);
-    await settle();
-    expect(mem.read(KEY_PATH)?.lastUsedAt).toBeDefined();
+    await vi.waitFor(() => expect(mem.read(KEY_PATH)?.lastUsedAt).toBeDefined());
   });
 
   it("a sub-account key still works and logs under its sub-account", async () => {
     const res = await v1Contacts(subKey);
     expect(res.status).toBe(200);
-    await settle();
-    expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(1);
+    await vi.waitFor(() => expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(1));
     expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(0);
   });
 });
@@ -189,9 +191,8 @@ describe("level and owner come from the doc path", () => {
     agencyKey = seedKey(KEY_PATH, { agencyId: "ag2", subAccountId: "sa1", createdByUid: "owner1" });
     const res = await v1Contacts(agencyKey);
     expect(await code(res)).toBe("agency_key_not_allowed");
-    await settle();
+    await vi.waitFor(() => expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1));
     expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(0);
-    expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1);
   });
 
   it("the switch and minter are read from the PATH's agency, not the data's", async () => {

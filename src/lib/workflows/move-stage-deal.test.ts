@@ -94,10 +94,12 @@ describe("move_stage moves the contact's deal", () => {
     expect(stageOf("otherPipe")).toBe("new");
     expect(mem.read("contacts/c1")?.pipelineStage).toBe("installed");
     expect(stepLog()).toBe("stage:installed;deal:moved:newer");
-    expect(webhooks).toEqual([
-      { type: "deal.updated", dealId: "newer" },
-      { type: "deal.stage.changed", dealId: "newer" },
-    ]);
+    await vi.waitFor(() =>
+      expect(webhooks).toEqual([
+        { type: "deal.updated", dealId: "newer" },
+        { type: "deal.stage.changed", dealId: "newer" },
+      ])
+    );
   });
 
   it("the move fires pipeline.stage.changed like a manual move, carrying the hop count", async () => {
@@ -160,6 +162,8 @@ describe("move_stage moves the contact's deal", () => {
     expect(stageOf("won")).toBe("done");
     expect(stageOf("lost")).toBe("dropped");
     expect(stageOf("open")).toBe("installed");
+    // Drain the move's webhooks so they cannot land in the next test.
+    await vi.waitFor(() => expect(webhooks).toHaveLength(2));
   });
 
   it("only won/lost deals ⇒ no deal moves, contact still written", async () => {
@@ -240,10 +244,10 @@ describe("move_stage moves the contact's deal", () => {
       await runStep(next.id, "s");
       await flush();
     }
-    const moves = webhooks.filter((w) => w.type === "deal.stage.changed");
+    const moves = () => webhooks.filter((w) => w.type === "deal.stage.changed");
     // run1 (depth 0) and the chained runs at depth 1–4 each move; the run
     // at depth 5 is enrolled but refuses, which ends the chain.
-    expect(moves).toHaveLength(5);
+    await vi.waitFor(() => expect(moves()).toHaveLength(5));
     expect(mem.list("workflowRuns")).toHaveLength(6);
   });
 });

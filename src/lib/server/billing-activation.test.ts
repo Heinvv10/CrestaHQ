@@ -93,6 +93,6 @@ describe("markSubAccountChargePaid", () => {
     // The money is real, so dropping it is not an option — but the agency
     // believes this charge is void and has to be told to refund it.
     expect(updates[0].status).toBe("paid");
-    expect(added[0]?.detail).toMatchObject({ paidAfterCancel: true });
+    await vi.waitFor(() => expect(added[0]?.detail).toMatchObject({ paidAfterCancel: true }));
   });
 });
