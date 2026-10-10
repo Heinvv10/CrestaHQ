@@ -17,8 +17,8 @@ import { computeQuoteTotals } from "@/lib/quotes/calc";
 import { formatCurrency, toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { usePipelines } from "@/hooks/use-pipeline-stages";
-import { dealOutcome } from "@/lib/pipelines/stages";
-import { getStage, type Deal } from "@/types/deals";
+import { dealOutcome, dealStage } from "@/lib/pipelines/stages";
+import type { Deal } from "@/types/deals";
 import type {
   Quote,
   QuoteDiscount,
@@ -236,7 +236,7 @@ export function QuoteBuilder({
     setDealId(null);
   }
 
-  const { pipelines, byId } = usePipelines();
+  const { pipelines } = usePipelines();
   // Open (non-terminal on their OWN pipeline) deals for the selected
   // contact — the candidates for "this quote is the proposal for that deal".
   const openDeals = useMemo(
@@ -701,7 +701,7 @@ export function QuoteBuilder({
                   </option>
                   {openDeals.map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.title} · {getStage(d.stageId, byId(d.pipelineId).stages).label} ·{" "}
+                      {d.title} · {dealStage(d, pipelines)?.label ?? d.stageId} ·{" "}
                       {formatCurrency(d.value, d.currency)}
                     </option>
                   ))}

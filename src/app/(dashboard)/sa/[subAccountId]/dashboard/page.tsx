@@ -27,9 +27,9 @@ import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToDeals } from "@/lib/firestore/deals";
 import { subscribeToForms } from "@/lib/firestore/forms";
 import { formatCurrency, daysSince, toDate } from "@/lib/format";
-import { DEFAULT_PIPELINE_ID, getStage, type Deal } from "@/types/deals";
+import { DEFAULT_PIPELINE_ID, type Deal } from "@/types/deals";
 import { usePipelines, usePipelineStages } from "@/hooks/use-pipeline-stages";
-import { dealOutcome, dealPipelineId } from "@/lib/pipelines/stages";
+import { dealOutcome, dealPipelineId, dealStage } from "@/lib/pipelines/stages";
 import type { Contact } from "@/types/contacts";
 import type { LeadForm } from "@/types/forms";
 import { Button } from "@/components/ui/button";
@@ -93,7 +93,7 @@ export default function DashboardPage() {
   const displayName = user?.displayName?.trim() ?? "";
 
   // Won / lost / open by each deal's OWN pipeline's terminal stages.
-  const { pipelines, byId } = usePipelines();
+  const { pipelines } = usePipelines();
   const openDeals = useMemo(
     () => deals.filter((d) => dealOutcome(d, pipelines) === "open"),
     [deals, pipelines],
@@ -352,7 +352,8 @@ export default function DashboardPage() {
                   </div>
                   <ul className="space-y-1">
                     {recentDeals.map((d) => {
-                      const stage = getStage(d.stageId, byId(d.pipelineId).stages);
+                      // Unresolved pipeline/stage: raw id, neutral tone.
+                      const stage = dealStage(d, pipelines) ?? { label: d.stageId, tone: "" };
                       const c = contactById.get(d.contactId);
                       const days = daysSince(d.stageChangedAt);
                       return (

@@ -16,8 +16,8 @@ import "mapbox-gl/dist/mapbox-gl.css";
 import { useSubAccount } from "@/context/sub-account-context";
 import { formatCurrency } from "@/lib/format";
 import { usePipelines } from "@/hooks/use-pipeline-stages";
-import { dealOutcome } from "@/lib/pipelines/stages";
-import { getStage, type Deal } from "@/types/deals";
+import { dealOutcome, dealStage } from "@/lib/pipelines/stages";
+import type { Deal } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
 import { contactDisplayName } from "@/lib/contacts/display-name";
 
@@ -51,7 +51,7 @@ export function LeadsMap({
   const router = useRouter();
   const mapRef = useRef<MapRef | null>(null);
   const [popup, setPopup] = useState<PopupState | null>(null);
-  const { pipelines, byId } = usePipelines();
+  const { pipelines } = usePipelines();
 
   // Build a contactId -> best-available deal lookup. Prefer open deals
   // (most recent first); fall back to the most recent closed deal. This
@@ -90,9 +90,9 @@ export function LeadsMap({
       type: "FeatureCollection" as const,
       features: located.map((c) => {
         const deal = dealByContact.get(c.id) ?? null;
-        const stage = deal
-          ? getStage(deal.stageId, byId(deal.pipelineId).stages)
-          : null;
+        // Unresolved pipeline/stage: the raw id, neutral tone — never a
+        // guessed stage of another pipeline.
+        const stage = deal ? dealStage(deal, pipelines) : undefined;
         return {
           type: "Feature" as const,
           geometry: {
@@ -104,7 +104,7 @@ export function LeadsMap({
             name: contactDisplayName(c),
             city: c.city ?? null,
             country: c.country ?? null,
-            dealStageLabel: stage?.label ?? null,
+            dealStageLabel: deal ? (stage?.label ?? deal.stageId) : null,
             dealStageTone: stage?.tone ?? null,
             dealValue: deal?.value ?? null,
             dealCurrency: deal?.currency ?? null,
@@ -112,7 +112,7 @@ export function LeadsMap({
         };
       }),
     }),
-    [located, dealByContact, byId],
+    [located, dealByContact, pipelines],
   );
 
   // Imperative hover + cursor handling. react-map-gl's declarative event

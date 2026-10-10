@@ -87,3 +87,8 @@ it("hides the picker when the contact's only deal is Won in a custom pipeline", 
   expect(await options([deal("custom_won", "live", "installs")])).toEqual([]);
   expect(container.querySelector("#linked-deal")).toBeNull();
 });
+
+it("a deal whose pipeline is gone is labelled by its raw stage id, not the default's", async () => {
+  const opts = await options([deal("orphan", "won", "deleted")]);
+  expect(opts.map((o) => o.split(" · ").slice(0, 2).join(" · "))).toEqual(["orphan · won"]);
+});

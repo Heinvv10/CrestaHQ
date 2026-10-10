@@ -64,7 +64,13 @@ export async function buildContactContextBlock(
       [...new Set(deals.map(dealPipelineId))].map(async (id) => ({
         id,
         stages: await readPipelineStages(contact.subAccountId, id).catch(
-          () => null,
+          (err) => {
+            console.warn(
+              `[ai/context] pipeline ${id} read failed for ${contact.subAccountId}; its deals are left out`,
+              err,
+            );
+            return null;
+          },
         ),
       })),
     )

@@ -16,6 +16,7 @@ import type { ActivityType } from "@/types/contacts";
 import type { WebhookEventType } from "@/types/webhooks";
 import { GLOBAL_TERRITORY_ID, type AutomationTriggerType } from "@/types";
 import { appendStageEntry } from "@/lib/server/deal-stage-history";
+import { readPipelineStages } from "@/lib/pipelines/server";
 import { refInSubAccount } from "@/lib/server/tenant-ref";
 import type { Quote } from "@/types/quotes";
 
@@ -272,6 +273,18 @@ export async function autoCreateDealForAcceptedQuote(
       territoryId = GLOBAL_TERRITORY_ID;
     }
 
+    // The default pipeline's stages are editable: land on whichever stage
+    // carries its Won flag, not the literal id "won".
+    const wonStage = (await readPipelineStages(quote.subAccountId))?.find(
+      (s) => s.terminal === "won",
+    );
+    if (!wonStage) {
+      console.warn(
+        `[quotes/lifecycle] auto-create deal skipped: the default pipeline of ${quote.subAccountId} has no won stage`,
+      );
+      return null;
+    }
+
     const db = getAdminDb();
     const ref = db.collection("deals").doc();
     const deal = {
@@ -279,7 +292,7 @@ export async function autoCreateDealForAcceptedQuote(
       value: totals.total,
       currency: quote.currency,
       contactId: quote.contactId,
-      stageId: "won",
+      stageId: wonStage.id,
       priority: "medium",
       agencyId: quote.agencyId,
       subAccountId: quote.subAccountId,
@@ -313,9 +326,9 @@ export async function autoCreateDealForAcceptedQuote(
         .collection("activities")
         .add({
           type: "pipeline_moved" satisfies ActivityType,
-          content: `Deal "Quote ${quote.quoteNumber} accepted" created at Won (auto, from accepted quote)`,
+          content: `Deal "Quote ${quote.quoteNumber} accepted" created at ${wonStage.label} (auto, from accepted quote)`,
           createdBy: "quote",
-          meta: { dealId: ref.id, toStageId: "won", quoteId: quote.id },
+          meta: { dealId: ref.id, toStageId: wonStage.id, quoteId: quote.id },
           createdAt: FieldValue.serverTimestamp(),
         });
     } catch (err) {

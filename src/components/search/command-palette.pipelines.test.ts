@@ -7,21 +7,23 @@ import type { Deal, PipelineDoc } from "@/types/deals";
 
 /**
  * Cmd+K deal rows carry the stage label from the deal's OWN pipeline. The
- * palette renders above SubAccountProvider, so it loads pipelines itself;
- * until they arrive (or if the load fails) a row shows its raw stage id,
- * never the default pipeline's first stage.
+ * palette renders above SubAccountProvider, so it loads pipelines itself.
+ * Until they arrive (or if the load fails) default-pipeline deals use the
+ * canonical labels and other pipelines' deals show their raw stage id —
+ * never the default's first stage, nor a previous sub-account's labels.
  */
 
 const state = vi.hoisted(() => ({
   deals: [] as Deal[],
   pipelines: Promise.resolve([]) as Promise<PipelineDoc[]>,
+  subAccountId: "sa1",
   fetched: [] as string[],
   user: { uid: "u1" },
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: state.user }) }));
 vi.mock("@/hooks/use-active-sub-account-id", () => ({
-  useActiveSubAccountId: () => ({ subAccountId: "sa1", agencyId: "ag1" }),
+  useActiveSubAccountId: () => ({ subAccountId: state.subAccountId, agencyId: "ag1" }),
 }));
 vi.mock("@/hooks/use-effective-territory-filter", () => ({
   useEffectiveTerritoryFilter: () => ({ ready: true, filter: null }),
@@ -65,6 +67,7 @@ let root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.fetched = [];
+  state.subAccountId = "sa1";
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -98,11 +101,25 @@ it("labels each deal from its own pipeline", async () => {
   expect(state.fetched).toEqual(["sa1"]);
 });
 
-it("a failed pipelines load shows raw stage ids, not the default's 'New'", async () => {
+it("a failed pipelines load: default labels for default deals, raw ids for others", async () => {
   const err = vi.spyOn(console, "error").mockImplementation(() => {});
-  state.deals = [deal("custom_live", "live", "installs")];
+  state.deals = [deal("custom_live", "live", "installs"), deal("default_proposal", "proposal")];
   state.pipelines = Promise.reject(new Error("HTTP 500"));
-  expect(await dealSubtitles()).toEqual({ custom_live: "live" });
+  expect(await dealSubtitles()).toEqual({ custom_live: "live", default_proposal: "Proposal" });
   expect(err).toHaveBeenCalledWith("[command-palette] pipelines load failed", expect.any(Error));
   err.mockRestore();
+});
+
+it("switching sub-account never labels from the previous sub-account's pipelines", async () => {
+  state.deals = [deal("custom_signoff", "won", "installs")];
+  state.pipelines = Promise.resolve([syntheticDefaultPipeline("sa1"), installs]);
+  expect(await dealSubtitles()).toEqual({ custom_signoff: "Awaiting sign-off" });
+
+  // sa2 also has a pipeline id "installs" (ids are per sub-account); its
+  // pipelines are still loading.
+  state.subAccountId = "sa2";
+  state.deals = [deal("sa2_installs", "won", "installs"), deal("sa2_default", "won")];
+  state.pipelines = new Promise(() => {});
+  expect(await dealSubtitles()).toEqual({ sa2_installs: "won", sa2_default: "Won" });
+  expect(state.fetched).toEqual(["sa1", "sa2"]);
 });

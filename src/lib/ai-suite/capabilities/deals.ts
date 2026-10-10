@@ -203,7 +203,13 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
         args.currency as string
       )}) for ${args.contactName}${
         args.pipeline ? ` in the “${args.pipeline}” pipeline` : ""
-      }${args.stage ? ` at stage “${args.stage}”` : ""}.`,
+      }${
+        args.stage
+          ? ` at stage “${args.stage}”`
+          : args.pipeline
+            ? " at that pipeline's first stage"
+            : ""
+      }.`,
     execute: async (ctx, args) => {
       // The contact id came from the model — verify it's in THIS workspace.
       const c = isDocId(args.contactId)
@@ -228,9 +234,17 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
       if (args.pipeline) {
         const want = (args.pipeline as string).toLowerCase();
         const all = await listPipelines(ctx.subAccountId!);
+        // An id is unique; a name need not be — refuse a name two
+        // pipelines share rather than silently taking the first.
+        const named = all.filter((p) => p.name.toLowerCase() === want);
         const pipeline =
           all.find((p) => p.id === args.pipeline) ??
-          all.find((p) => p.name.toLowerCase() === want);
+          (named.length === 1 ? named[0] : undefined);
+        if (!pipeline && named.length > 1) {
+          throw new CapabilityUserError(
+            `More than one pipeline is called “${args.pipeline}”: ${named.map((p) => `${oneLine(p.name)} (id: ${p.id})`).join(", ")}. Pass the pipeline's id instead.`
+          );
+        }
         if (!pipeline) {
           throw new CapabilityUserError(
             `There's no pipeline called “${args.pipeline}” in this workspace (it has: ${all.map((p) => oneLine(p.name)).join(", ")}).`

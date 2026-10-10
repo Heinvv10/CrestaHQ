@@ -27,7 +27,7 @@ import { subscribeToEvents } from "@/lib/firestore/events";
 import { subscribeToForms } from "@/lib/firestore/forms";
 import { toDate, formatCurrency } from "@/lib/format";
 import { fetchPipelines } from "@/lib/pipelines/client";
-import { dealStage } from "@/lib/pipelines/stages";
+import { dealStage, syntheticDefaultPipeline } from "@/lib/pipelines/stages";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -137,7 +137,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [forms, setForms] = useState<LeadForm[]>([]);
-  const [pipelines, setPipelines] = useState<PipelineDoc[]>([]);
+  // Keyed by sub-account so a switch never labels from the previous one's.
+  const [loadedPipelines, setLoadedPipelines] = useState<{
+    subAccountId: string;
+    list: PipelineDoc[];
+  } | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -178,10 +182,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     let live = true;
     fetchPipelines(activeSubAccountId)
       .then((list) => {
-        if (live) setPipelines(list);
+        if (live) setLoadedPipelines({ subAccountId: activeSubAccountId, list });
       })
       .catch((err) => {
-        // Keep the last-known list; unresolved deals show their stage id.
+        // Keep the synthesized default (below); other pipelines' deals show
+        // their stage id until a load succeeds.
         console.error("[command-palette] pipelines load failed", err);
       });
     return () => {
@@ -195,6 +200,16 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       setActiveIndex(0);
     }
   }, [open]);
+
+  // Until this sub-account's pipelines load (or if the load failed), the
+  // default's canonical stages — as SubAccountProvider does on a cold start.
+  const pipelines = useMemo(
+    () =>
+      loadedPipelines && loadedPipelines.subAccountId === activeSubAccountId
+        ? loadedPipelines.list
+        : [syntheticDefaultPipeline(activeSubAccountId ?? "")],
+    [loadedPipelines, activeSubAccountId],
+  );
 
   const contactById = useMemo(() => {
     const m = new Map<string, Contact>();

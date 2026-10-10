@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { listPipelines } from "@/lib/pipelines/server";
+import { readPipelines } from "@/lib/pipelines/server";
 import { dealPipelineId } from "@/lib/pipelines/stages";
 import {
   canSeeTerritory,
@@ -187,7 +187,8 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
       // pipeline: stage ids are only unique within one ("won" can be an
       // open stage elsewhere), and open value is every stage without a
       // won/lost terminal flag.
-      const pipelines = await listPipelines(said);
+      // Read-only: never seeds the default pipeline doc.
+      const pipelines = await readPipelines(said);
       const byStage = new Map<string, { count: number; value: number }>();
       let currency = "USD";
       for (const d of dealsDocs) {

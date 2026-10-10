@@ -184,6 +184,15 @@ describe("updateDealServerSide — stage moves", () => {
     expect(mem.read(`deals/${id}`)).toMatchObject({ pipelineId: "p2", stageId: "open" });
   });
 
+  it("a cross-pipeline move's activity names the stage on the SOURCE pipeline", async () => {
+    const { id } = await createDealServerSide({ ...base, pipelineId: "p2", stageId: "renewed" });
+    await updateDealServerSide({
+      dealId: id, patch: { pipelineId: "default", stageId: "proposal" }, userId: "u1", source: "app",
+    });
+    const contents = mem.list("contacts/c1/activities").map((a) => a.content);
+    expect(contents).toContain('Deal "Deal" moved from Renewed to Proposal');
+  });
+
   it("create refuses a stage the pipeline lacks", async () => {
     await expect(
       createDealServerSide({ ...base, stageId: "renewed" }),

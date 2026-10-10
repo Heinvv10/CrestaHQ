@@ -3,7 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { DEFAULT_PIPELINE_ID, type PipelineDoc } from "@/types/deals";
-import { dealPipelineId, seedDefaultStages } from "./stages";
+import { dealPipelineId, seedDefaultStages, syntheticDefaultPipeline } from "./stages";
 
 /**
  * Admin-SDK reads/writes for `subAccounts/{id}/pipelines`. The default
@@ -90,6 +90,26 @@ export async function listPipelines(subAccountId: string): Promise<PipelineDoc[]
   await ensureDefaultPipeline(subAccountId);
   const snap = await pipelinesCol(subAccountId).get();
   const list = snap.docs.map((d) => toDoc(d.id, d.data()));
+  list.sort(
+    (a, b) =>
+      Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name),
+  );
+  return list;
+}
+
+/**
+ * `listPipelines` WITHOUT seeding, for read-only callers: a default not yet
+ * created reads as the one it would be seeded with. Empty when the
+ * sub-account is missing.
+ */
+export async function readPipelines(subAccountId: string): Promise<PipelineDoc[]> {
+  const snap = await pipelinesCol(subAccountId).get();
+  const list = snap.docs.map((d) => toDoc(d.id, d.data()));
+  if (!list.some((p) => p.id === DEFAULT_PIPELINE_ID)) {
+    const sub = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
+    if (!sub.exists) return [];
+    list.push(syntheticDefaultPipeline(subAccountId, sub.data()!.pipelineStages));
+  }
   list.sort(
     (a, b) =>
       Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name),

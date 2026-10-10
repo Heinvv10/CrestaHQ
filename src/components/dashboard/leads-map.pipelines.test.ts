@@ -91,3 +91,8 @@ it("a lone closed custom deal is labelled from its pipeline, not 'New'", async (
   const byContact = await features([deal("d_live", "c1", "live", "installs")], [contact("c1")]);
   expect(byContact.c1).toMatchObject({ dealStageLabel: "Live" });
 });
+
+it("a deal whose pipeline is gone shows its raw stage id with no stage colour", async () => {
+  const byContact = await features([deal("d_orphan", "c1", "won", "deleted")], [contact("c1")]);
+  expect(byContact.c1).toMatchObject({ dealStageLabel: "won", dealStageTone: null });
+});

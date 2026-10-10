@@ -69,3 +69,21 @@ it("a deal whose pipeline is gone is left out rather than guessed", async () => 
   const block = await buildContactContextBlock(contact);
   expect(block ?? "").not.toContain("Orphan");
 });
+
+it("a failed pipeline read is logged and its deals left out", async () => {
+  deal("d1", { title: "Fibre 100", pipelineId: "installs", stageId: "booked" }, 1);
+  const real = mem.db.collection.bind(mem.db);
+  const col = vi.spyOn(mem.db, "collection").mockImplementation((path: string) => {
+    if (path.endsWith("/pipelines")) throw new Error("UNAVAILABLE");
+    return real(path);
+  });
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const block = await buildContactContextBlock(contact);
+  expect(block ?? "").not.toContain("Fibre 100");
+  expect(warn).toHaveBeenCalledWith(
+    expect.stringContaining("[ai/context] pipeline installs read failed for sa1"),
+    expect.any(Error),
+  );
+  warn.mockRestore();
+  col.mockRestore();
+});

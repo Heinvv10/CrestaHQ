@@ -61,6 +61,13 @@ describe("workspace_stats", () => {
     expect(resultText).toContain("  - Won: 1 (USD 1,000)");
   });
 
+  it("is read-only: writes no default pipeline doc", async () => {
+    mem.seed("deals/d1", { ...tenant, stageId: "new", value: 100, currency: "USD" });
+    const { resultText } = await run("workspace_stats");
+    expect(resultText).toContain("  - New: 1 (USD 100)");
+    expect(mem.read("subAccounts/sa1/pipelines/default")).toBeUndefined();
+  });
+
   it("an empty extra pipeline is not listed", async () => {
     mem.seed("deals/d1", { ...tenant, stageId: "new", value: 100, currency: "USD" });
     const { resultText } = await run("workspace_stats");
@@ -111,6 +118,36 @@ describe("create_deal with a pipeline", () => {
     if (!v.ok) throw new Error(v.error);
     await expect(run("create_deal", v.args)).rejects.toThrow(/no pipeline called “Renewals”.*Default, Installs/);
     expect(mem.list("deals")).toHaveLength(0);
+  });
+
+  it("refuses a name two pipelines share, listing their ids; an id still resolves", async () => {
+    mem.seed("subAccounts/sa1/pipelines/installs2", {
+      ...tenant, name: "installs", isDefault: false,
+      stages: [{ id: "queued", label: "Queued", tone: "" }],
+    });
+    const v = createArgs({ pipeline: "Installs" });
+    if (!v.ok) throw new Error(v.error);
+    const err = await run("create_deal", v.args).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CapabilityUserError);
+    expect((err as Error).message).toMatch(/^More than one pipeline is called “Installs”: .*Pass the pipeline's id instead\.$/);
+    expect((err as Error).message).toContain("Installs (id: installs)");
+    expect((err as Error).message).toContain("installs (id: installs2)");
+    expect(mem.list("deals")).toHaveLength(0);
+    const byId = createArgs({ pipeline: "installs2" });
+    if (!byId.ok) throw new Error(byId.error);
+    const res = await run("create_deal", byId.args);
+    expect(mem.read(`deals/${res.ref!.id}`)).toMatchObject({ pipelineId: "installs2", stageId: "queued" });
+  });
+
+  it("the confirm summary names the pipeline and the stage that will be used", () => {
+    const summarize = getCapability("create_deal")!.summarize;
+    const named = createArgs({ pipeline: "Installs" });
+    const staged = createArgs({ pipeline: "Installs", stage: "live" });
+    const plain = createArgs({});
+    if (!named.ok || !staged.ok || !plain.ok) throw new Error("validate failed");
+    expect(summarize(named.args)).toBe("Create a deal “Fibre” (USD 5) for Ann in the “Installs” pipeline at that pipeline's first stage.");
+    expect(summarize(staged.args)).toBe("Create a deal “Fibre” (USD 5) for Ann in the “Installs” pipeline at stage “live”.");
+    expect(summarize(plain.args)).toBe("Create a deal “Fibre” (USD 5) for Ann at stage “new”.");
   });
 
   it("without a pipeline, still defaults to the default pipeline's 'new'", async () => {
