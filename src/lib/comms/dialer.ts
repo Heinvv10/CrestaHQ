@@ -2,7 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import twilio from "twilio";
-import { parsePhoneNumberFromString } from "libphonenumber-js";
+import { FieldPath } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
@@ -74,52 +74,60 @@ export async function dialerAuthToken(
   return readSubAccountSecret(subAccountId, "twilio", sub.twilioConfig);
 }
 
+/** Most opted-out contacts the dialer will read for one call before refusing. */
+export const VOICE_OPT_OUT_SCAN_CAP = 2000;
+const VOICE_OPT_OUT_PAGE = 500;
+
 /**
- * The strings a contact holding this number may have in `phone`. Contacts
- * have no normalised phone field: the write paths store E.164 where the input
- * parsed and the as-typed string otherwise, and every lookup (dedupe, the
- * STOP handlers) is an exact match on `phone`. So the opt-out lookup asks for
- * the canonical E.164 and the common ways the same number is written —
- * without the "+", national and international format, national digits — plus
- * the dialled contact's own stored string (the dedupe path's second
- * candidate). Any other spelling ("082-123-4567", "(082) 123 4567",
- * "0027…", an extension) is NOT matched.
+ * Does an opted-out contact's stored phone name the number about to be
+ * dialled? Digits only, no parsing: contacts have no normalised phone field
+ * and the stored string may be in any spelling. It blocks when the stored
+ * digits equal the target's E.164 digits, or contain the target's national
+ * significant number (7+ digits) — which covers a trunk "0", a "00"/"011"
+ * prefix, any punctuation, and a trailing extension. It over-blocks (another
+ * country's number with the same national digits) by design.
  */
-export function storedPhoneFormats(e164: string, stored?: string | null): string[] {
-  const parsed = parsePhoneNumberFromString(e164);
-  const national = parsed?.formatNational() ?? "";
-  return [
-    ...new Set(
-      [
-        e164,
-        e164.replace(/^\+/, ""),
-        national,
-        national.replace(/\D/g, ""),
-        parsed?.formatInternational() ?? "",
-        stored?.trim() ?? "",
-      ].filter(Boolean),
-    ),
-  ];
+export function optOutCoversNumber(
+  storedPhone: unknown,
+  target: { e164: string; national: string },
+): boolean {
+  const digits = typeof storedPhone === "string" ? storedPhone.replace(/\D/g, "") : "";
+  if (!digits) return false;
+  if (digits === target.e164.replace(/\D/g, "")) return true;
+  return target.national.length >= 7 && digits.includes(target.national);
 }
 
 /**
- * A voice opt-out belongs to the number, not one contact doc: true when any
- * contact in this sub-account holding the number (see storedPhoneFormats) has
- * opted out. Equality filters only — no composite index.
+ * A voice opt-out belongs to the number, not one contact doc. Reads the
+ * sub-account's opted-out contacts (two equality filters, paged by document
+ * id — no composite index) and compares each with {@link optOutCoversNumber}.
+ * `over_cap` when there are more than {@link VOICE_OPT_OUT_SCAN_CAP} to read
+ * and none of the first ones matched: the caller must refuse (fail closed).
  */
-export async function numberVoiceOptedOut(
+export async function numberVoiceOptOut(
   subAccountId: string,
-  e164: string,
-  stored?: string | null,
-): Promise<boolean> {
-  const snap = await getAdminDb()
+  target: { e164: string; national: string },
+): Promise<"clear" | "opted_out" | "over_cap"> {
+  const base = getAdminDb()
     .collection("contacts")
     .where("subAccountId", "==", subAccountId)
-    .where("phone", "in", storedPhoneFormats(e164, stored))
     .where("voiceOptedOut", "==", true)
-    .limit(1)
-    .get();
-  return !snap.empty;
+    .select("phone")
+    .orderBy(FieldPath.documentId());
+  let seen = 0;
+  let cursor: string | null = null;
+  for (;;) {
+    // One past the cap, so "exactly the cap" and "more than the cap" differ.
+    const want = Math.min(VOICE_OPT_OUT_PAGE, VOICE_OPT_OUT_SCAN_CAP + 1 - seen);
+    const snap = await (cursor ? base.startAfter(cursor) : base).limit(want).get();
+    for (const d of snap.docs) {
+      if (optOutCoversNumber(d.data().phone, target)) return "opted_out";
+    }
+    seen += snap.docs.length;
+    if (seen > VOICE_OPT_OUT_SCAN_CAP) return "over_cap";
+    if (snap.docs.length < want) return "clear";
+    cursor = snap.docs[snap.docs.length - 1]!.id;
+  }
 }
 
 export function dialerPrivateRef(subAccountId: string) {

@@ -181,84 +181,8 @@ describe("dialer TwiML webhook — guards", () => {
   });
 });
 
-// Breaker repros from the PR #385 review, kept as permanent tests.
-describe("dialer TwiML webhook — number checks (shared with the AI voice path)", () => {
-  const withPhone = (phone: string) => mem.seed("contacts/c1", { ...mem.read("contacts/c1"), phone });
-  const allowOnly = (countries: string[]) =>
-    mem.seed("subAccounts/sa1/aiAgent/voice", { voice: { allowedCountries: countries } });
-
-  it("never dials an unparseable or invalid number, or one carrying XML", async () => {
-    for (const phone of ["1-900-PAYME-NOW", "+447700900123", "+1555</Number><Number>+19005550100"]) {
-      withPhone(phone);
-      const body = await (await call(placed())).text();
-      expect(body, phone).not.toContain("<Dial");
-      expect(body).not.toContain("<Number>+19005550100");
-    }
-    expect(activity()).toBeUndefined();
-  });
-
-  it("dials the normalised E.164, not the stored string", async () => {
-    withPhone("+1 (500) 555-0006");
-    expect(await (await call(placed())).text()).toContain(`<Number>${CONTACT_PHONE}</Number>`);
-  });
-
-  it("R1a: a non-geographic number (+882, +800) is never dialled, with no allow-list set", async () => {
-    for (const phone of ["+88216000000", "+80012345678"]) {
-      withPhone(phone);
-      expect(await (await call(placed())).text(), phone).not.toContain("<Dial");
-    }
-    expect(activity()).toBeUndefined();
-  });
-
-  it("honours the Voice channel's allowedCountries", async () => {
-    allowOnly(["ZA"]);
-    expect(await (await call(placed())).text()).not.toContain("<Dial");
-    withPhone("+27821234567");
-    expect(await (await call(placed())).text()).toContain("<Number>+27821234567</Number>");
-  });
-
-  it("parses a national-format number with the workspace phone region, like the contact write paths", async () => {
-    withPhone("082 123 4567");
-    expect(await (await call(placed())).text()).not.toContain("<Dial"); // region unset reads as US
-    seed({ defaultPhoneCountry: "ZA" });
-    withPhone("082 123 4567");
-    expect(await (await call(placed())).text()).toContain("<Number>+27821234567</Number>");
-    withPhone("+1 (500) 555-0006"); // a "+" number keeps its own country
-    expect(await (await call(placed())).text()).toContain(`<Number>${CONTACT_PHONE}</Number>`);
-    allowOnly(["US"]); // the allow-list applies to the parsed result
-    withPhone("082 123 4567");
-    expect(await (await call(placed())).text()).not.toContain("<Dial");
-    allowOnly(["ZA"]); // …including a foreign number written with the region's "00" prefix
-    withPhone("0044 7911 123456");
-    expect(await (await call(placed())).text()).not.toContain("<Dial");
-  });
-
-  it("refuses when another contact in this sub-account with the same number opted out", async () => {
-    mem.seed("contacts/c1", { ...mem.read("contacts/c1"), voiceOptedOut: true });
-    mem.seed("contacts/c1dup", { subAccountId: "sa1", agencyId: "ag1", phone: CONTACT_PHONE, territoryId: "t1" });
-    expect(await (await call(placed({ contactId: "c1dup" }))).text()).not.toContain("<Dial");
-  });
-
-  it("a sibling's opt-out blocks whichever common format either contact's phone is stored in", async () => {
-    const FORMATS = ["+27821234567", "27821234567", "082 123 4567", "0821234567", "+27 82 123 4567"];
-    for (const dialled of FORMATS) {
-      for (const sibling of FORMATS) {
-        mem.clear();
-        seed({ defaultPhoneCountry: "ZA" });
-        withPhone(dialled);
-        expect(await (await call(placed())).text(), `${dialled} alone`).toContain("<Number>+27821234567</Number>");
-        mem.seed("contacts/sib", { subAccountId: "sa1", agencyId: "ag1", phone: sibling, voiceOptedOut: true });
-        expect(await (await call(placed())).text(), `${dialled} vs ${sibling}`).not.toContain("<Dial");
-      }
-    }
-  });
-
-  it("an opt-out on the same number in ANOTHER sub-account does not block", async () => {
-    mem.seed("contacts/x1", { subAccountId: "sa2", agencyId: "ag1", phone: CONTACT_PHONE, voiceOptedOut: true });
-    expect(await (await call(placed())).text()).toContain("<Dial");
-  });
-});
-
+// Breaker repros from the PR #385 review, kept as permanent tests (number
+// and opt-out checks are in route.numbers.test.ts).
 describe("dialer TwiML webhook — breaker controls", () => {
   it("a multi-segment contactId is refused, not resolved to a sub-document", async () => {
     mem.seed("contacts/c1/notes/n1", { subAccountId: "sa1", agencyId: "ag1", phone: "+27821234567" });

@@ -6,7 +6,6 @@ import twilio from "twilio";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireContactAccessible } from "@/lib/comms/route-auth";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
-import { coercePhoneCountry } from "@/lib/contacts/phone";
 import {
   countryBlocked,
   validDialNumber,
@@ -18,7 +17,7 @@ import {
   dialerGateOn,
   dialerGateRefusal,
   dialerStatusUrl,
-  numberVoiceOptedOut,
+  numberVoiceOptOut,
   uidFromClientAddress,
   validateDialerSignature,
 } from "@/lib/comms/dialer";
@@ -42,15 +41,15 @@ export const dynamic = "force-dynamic";
  * caller (`From: client:<uid>`, the identity we minted into the token) can
  * still act on the contact (active member or agency owner, territory scope —
  * `requireContactAccessible`, as on every other comms route), the contact
- * belongs to this sub-account, its phone is a valid number (libphonenumber,
- * parsed with the workspace `defaultPhoneCountry` as fallback, like the
- * contact write paths) in the Voice channel's `allowedCountries` when one is
- * set — the same two checks the AI outbound path applies
- * (outbound-compliance.ts) — it has a country (dialer-only: non-geographic
- * numbers are never dialled), and neither
- * it nor any other contact in this sub-account with the same number is
- * `voiceOptedOut`. Each refusal is a spoken rejection + hangup, so the call
- * never leaves Twilio. Only the normalised E.164 is ever dialled.
+ * belongs to this sub-account, its phone is a valid number parsed with no
+ * default region (so stored in "+…" international form) in the Voice
+ * channel's `allowedCountries` when one is set — the same two checks, parsed
+ * the same way, as the AI outbound path (outbound-compliance.ts) — it has a
+ * country (dialer-only: non-geographic numbers are never dialled), and
+ * neither it nor any other contact in this sub-account whose stored digits
+ * name the same number is `voiceOptedOut` (fail closed past the scan cap).
+ * Each refusal is a spoken rejection + hangup, so the call never leaves
+ * Twilio. Only the normalised E.164 is ever dialled.
  *
  * Side-effect: writes the `call_placed` activity row (deterministic id
  * `dialer_<CallSid>`) so the call shows on the timeline immediately; the
@@ -114,24 +113,18 @@ export async function POST(
   if (contact instanceof NextResponse || contact.subAccountId !== subAccountId) {
     return rejection("That contact could not be found. Goodbye.");
   }
-  // ONE canonical number. `dialable` is the contact's phone parsed once, as the
-  // contact write paths parse it (workspace phone region as the fallback for a
-  // bare national number; a "+" number keeps its own country). Validity, the
-  // no-country rule, the allow-list, the opt-out lookup and the <Dial> below
+  // ONE canonical number. `dialable` is the contact's phone parsed once, with
+  // NO default region — the same parse as the AI voice gate — so it must be
+  // stored in "+…" international form. A locally formatted number is refused
+  // rather than guessed at: its meaning would change with the workspace's
+  // region setting, and a wrong guess dials a stranger. Validity, the
+  // no-country rule, the allow-list, the opt-out check and the <Dial> below
   // all read `dialable` — never the stored string.
-  //
-  // Intended difference from the AI voice gate, which parses with NO region:
-  // a number written without "+" (national format "082 123 4567", or the
-  // region's international prefix "0044 …") is callable here and refused
-  // there (`no_phone`). Nothing else differs in the dialer's favour — a "+"
-  // number parses identically in both, the allow-list is applied to the
-  // parsed country either way, and the no-country rule only removes numbers.
-  const dialable = validDialNumber(
-    contact.phone,
-    coercePhoneCountry(sub?.defaultPhoneCountry),
-  );
+  const dialable = validDialNumber(contact.phone);
   if (!dialable) {
-    return rejection("That contact has no valid phone number. Goodbye.");
+    return rejection(
+      "That contact's phone number is not a valid international number. Save it in international format, starting with a plus and the country code, then try again. Goodbye.",
+    );
   }
   // Dialer-only rule: a number with no country (non-geographic — satellite,
   // +800, +882 international networks) is never dialled, allow-list or not.
@@ -142,10 +135,16 @@ export async function POST(
   if (countryBlocked(dialable.country, voice?.allowedCountries)) {
     return rejection("Calls to that country aren't enabled for this workspace. Goodbye.");
   }
-  if (
-    contact.voiceOptedOut === true ||
-    (await numberVoiceOptedOut(subAccountId, dialable.e164, contact.phone))
-  ) {
+  const optOut =
+    contact.voiceOptedOut === true ? "opted_out" : await numberVoiceOptOut(subAccountId, dialable);
+  if (optOut === "over_cap") {
+    // Fail closed: too many opted-out contacts to check this number against.
+    console.warn("[dialer/twiml] opt_out_scan_over_cap — call refused", { subAccountId });
+    return rejection(
+      "The opt-out list for this workspace is too large to check, so the call cannot be placed. Goodbye.",
+    );
+  }
+  if (optOut === "opted_out") {
     return rejection(
       "This contact has opted out of phone calls, so the call cannot be placed. Goodbye.",
     );

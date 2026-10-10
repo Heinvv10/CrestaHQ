@@ -1,7 +1,7 @@
 import "server-only";
 
 import { Timestamp } from "firebase-admin/firestore";
-import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { checkQuota } from "@/lib/server/usage-meter";
@@ -66,25 +66,22 @@ function consumeBurstSlot(subAccountId: string, perMinuteCap: number): boolean {
 }
 
 /**
- * Check 1 — a number libphonenumber calls valid, normalised to E.164, with
- * its country (null for a non-geographic number such as +882 or +800).
- * Shared with the human browser dialer, which dials only `e164`.
- *
- * `fallbackCountry` is the dialer's alone: the workspace phone region the
- * contact write paths parse a bare national number with (lib/contacts/phone.ts).
- * The AI gate below passes none, so it parses exactly as it always has.
+ * Check 1 — a number libphonenumber calls valid with NO default region (so in
+ * practice written in "+…" international form), normalised to E.164, with its
+ * country (null for a non-geographic number such as +882 or +800) and its
+ * national significant number. Shared with the human browser dialer, which
+ * dials only `e164`.
  */
 export function validDialNumber(
   phone: string | null | undefined,
-  fallbackCountry?: CountryCode,
-): { e164: string; country: string | null } | null {
-  const parsed = !phone
-    ? null
-    : fallbackCountry
-      ? parsePhoneNumberFromString(phone, fallbackCountry)
-      : parsePhoneNumberFromString(phone);
+): { e164: string; country: string | null; national: string } | null {
+  const parsed = phone ? parsePhoneNumberFromString(phone) : null;
   if (!parsed || !parsed.isValid()) return null;
-  return { e164: parsed.number, country: parsed.country ?? countryForPhone(parsed.number) };
+  return {
+    e164: parsed.number,
+    country: parsed.country ?? countryForPhone(parsed.number),
+    national: parsed.nationalNumber,
+  };
 }
 
 /**

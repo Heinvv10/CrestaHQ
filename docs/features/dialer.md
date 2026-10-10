@@ -39,29 +39,38 @@ touched.
    - It checks that the contact is in this sub-account (the `contactId` must be a plain
      document id; `requireContactAccessible` refuses anything containing `/`).
    - It applies the two number checks the AI outbound path uses
-     (`validDialNumber` / `countryBlocked` in `outbound-compliance.ts`): the phone must
-     be a valid number to libphonenumber, and in the Voice channel's
-     `allowedCountries` when that list is set. The dialer parses a bare national
-     number with the workspace phone region (`defaultPhoneCountry`, unset reads as
-     US) as the fallback, as the contact write paths do; a `+` number keeps its own
-     country.
+     (`validDialNumber` / `countryBlocked` in `outbound-compliance.ts`), parsed the
+     same way: the phone must be a valid number to libphonenumber **with no default
+     region**, and in the Voice channel's `allowedCountries` when that list is set.
+     In practice the contact's phone must be stored in international form (`+…`).
+     A locally formatted number (`082 123 4567`) is refused with a spoken message
+     telling the operator to save it in international format. It is never
+     interpreted through the workspace phone region: that setting can change or be
+     unset (it then reads as US), and a wrong guess dials a stranger.
    - Dialer-only: a number libphonenumber gives no country for (non-geographic:
      satellite, +800, +882 and the like) is never dialled, allow-list or not. The AI
      voice path does not have this rule.
-   - It refuses when this contact, or any other contact in the sub-account holding the
-     same number, is `voiceOptedOut`. Contacts have no normalised phone field, so the
-     sibling lookup is an exact match on `phone` against a candidate set built from
-     the canonical E.164 (`storedPhoneFormats` in `src/lib/comms/dialer.ts`): E.164
-     (`+27821234567`), without the `+` (`27821234567`), national format
-     (`082 123 4567`), national digits (`0821234567`), international format
-     (`+27 82 123 4567`), plus the dialled contact's own stored string. That is a
-     superset of what the STOP handlers and the dedupe paths match on. **Not
-     matched:** a sibling stored in any other spelling, for example `082-123-4567`,
-     `(082) 123 4567`, `0027821234567`, or a number with an extension.
+   - It refuses when this contact is `voiceOptedOut`, or when any opted-out contact
+     in the sub-account names the same number. Contacts have no normalised phone
+     field, so this is not a lookup by format. The route reads the sub-account's
+     opted-out contacts (`subAccountId` + `voiceOptedOut == true`, paged) and
+     compares digits only (`optOutCoversNumber` in `src/lib/comms/dialer.ts`): an
+     opted-out contact blocks the call when the digits of its stored phone equal the
+     target's E.164 digits, or contain the target's national significant number
+     (only when that is 7 or more digits). That covers a trunk `0`, a `00` prefix,
+     any punctuation and a trailing extension. It over-blocks on purpose: a
+     different country's number with the same national digits also blocks.
+     **Not matched:** an opted-out contact whose stored phone does not contain the
+     national number at all (a typo, or a different number for the same person), and,
+     for a number whose national part is under 7 digits, any spelling whose digits
+     are not exactly the E.164 digits.
+   - **Fail closed:** the scan reads at most 2,000 opted-out contacts. If the
+     sub-account has more and none of those read matched, the call is refused with a
+     spoken message and `[dialer/twiml] opt_out_scan_over_cap` is logged.
 
    Every one of these checks, and the `<Dial>`, reads the one canonical number: the
-   contact's phone parsed once with the workspace region. The stored string is never
-   dialled or checked on its own.
+   contact's phone parsed once. The stored string is never dialled or checked on
+   its own.
 
    If every check passes, it writes a `call_placed` activity (`dialer_<CallSid>`) and
    answers `<Dial callerId=fromNumber answerOnBridge><Number>E.164</Number>`.
