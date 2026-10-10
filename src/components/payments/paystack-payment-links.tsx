@@ -19,7 +19,7 @@ import type { PaymentLink } from "@/types/payment-links";
 /** Ad-hoc Paystack payment link form + every link in the workspace. */
 export function PaystackPaymentLinks() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, subAccount } = useSubAccount();
+  const { subAccountId, subAccount, loading } = useSubAccount();
   const [links, setLinks] = useState<PaymentLink[] | null>(null);
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
@@ -78,6 +78,16 @@ export function PaystackPaymentLinks() {
       toast.error(body.error ?? "Couldn't deactivate the link");
     }
   };
+
+  // Until the workspace doc arrives the gate reads as off; showing "Locked"
+  // then flashes it on every load of a workspace that has Payments on.
+  if (loading) {
+    return (
+      <Card className="p-8 text-center text-sm text-muted-foreground">
+        <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+      </Card>
+    );
+  }
 
   if (!gateOn) {
     return (
