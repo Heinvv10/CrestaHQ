@@ -50,6 +50,20 @@ describe("the style preset through the booking-page tools", () => {
     expect(mem.read(`${P}/legacy`)!.themePreset ?? null).toBeNull();
   });
 
+  it.each([["aurora"], ["constructor"], [42]])("a page storing a preset this build does not know (%s) can still be edited, and ends with none", async (stored) => {
+    mem.seed(`${P}/retired`, { ...PAGE, id: "retired", slug: "retired", name: "Retired", themePreset: stored });
+    expect(await call("update_booking_page", { slug: "retired", durationMinutes: 45 })).toMatchObject({ ok: true });
+    const after = mem.read(`${P}/retired`)!;
+    expect(after.durationMinutes).toBe(45);
+    expect(after.themePreset).toBeNull();
+  });
+
+  it("a caller's own preset still wins over an unknown stored one", async () => {
+    mem.seed(`${P}/retired`, { ...PAGE, id: "retired", slug: "retired", name: "Retired", themePreset: "aurora" });
+    expect(await call("update_booking_page", { slug: "retired", themePreset: "sunset" })).toMatchObject({ ok: true });
+    expect(mem.read(`${P}/retired`)!.themePreset).toBe("sunset");
+  });
+
   it("refuses an unknown preset and writes nothing", async () => {
     expect(await call("update_booking_page", { slug: "styled", themePreset: "bogus" })).toMatchObject({ ok: false, message: "Unknown style preset." });
     expect(mem.read(`${P}/styled`)!.themePreset).toBe("ocean");
