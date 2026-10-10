@@ -1,6 +1,7 @@
 import "server-only";
 
 import twilio, { type Twilio } from "twilio";
+import { SafeTwilioRequestClient } from "@/lib/comms/twilio-safe-http";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { segmentInfo } from "@/lib/comms/sms-segments";
@@ -60,7 +61,7 @@ function getEnvTwilio(): Twilio {
         "TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN are not set. Add them to .env.local to enable shared-mode SMS, or configure a dedicated number on the sub-account.",
       );
     }
-    _envClient = twilio(sid, token);
+    _envClient = twilio(sid, token, { httpClient: new SafeTwilioRequestClient() });
   }
   return _envClient;
 }
@@ -164,7 +165,7 @@ export async function findDedicatedNumberHolder(opts: {
  * for whatever lifecycle they want.
  */
 export function buildTwilioClient(accountSid: string, authToken: string): Twilio {
-  return twilio(accountSid, authToken);
+  return twilio(accountSid, authToken, { httpClient: new SafeTwilioRequestClient() });
 }
 
 /**
@@ -194,7 +195,7 @@ export async function getTwilioForSubAccount(
     const authToken = await readSubAccountSecret(subAccountId, "twilio", cfg);
     let client = _saClientCache.get(subAccountId);
     if (!client) {
-      client = twilio(cfg.accountSid, authToken);
+      client = twilio(cfg.accountSid, authToken, { httpClient: new SafeTwilioRequestClient() });
       _saClientCache.set(subAccountId, client);
     }
     return {
