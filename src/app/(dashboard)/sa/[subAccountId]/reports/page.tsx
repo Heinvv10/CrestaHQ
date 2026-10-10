@@ -13,7 +13,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { useEffectiveTerritoryFilter } from "@/hooks/use-effective-territory-filter";
 import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToDeals } from "@/lib/firestore/deals";
-import { formatCurrency, toDate } from "@/lib/format";
+import { formatCurrency, formatCurrencyCompact, toDate } from "@/lib/format";
 import {
   AreaChart,
   BarChart,
@@ -405,7 +405,12 @@ export default function ReportsPage() {
               {wonValue === 0 ? (
                 <EmptyHint text="No wins in this range yet." />
               ) : (
-                <AreaChart data={wonTimeline} tone="emerald" />
+                <AreaChart
+                  data={wonTimeline}
+                  tone="emerald"
+                  formatValue={(v) => formatCurrency(v, currency)}
+                  formatAxis={(v) => formatCurrencyCompact(v, currency)}
+                />
               )}
             </section>
 

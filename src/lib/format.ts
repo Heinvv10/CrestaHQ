@@ -94,3 +94,19 @@ export function formatCurrency(value: number, currency = "USD"): string {
     return `${currency} ${value.toLocaleString()}`;
   }
 }
+
+/** Compact currency for chart axes, e.g. "$617.3M"; no decimals under 1000. */
+export function formatCurrencyCompact(value: number, currency = "USD"): string {
+  const n = Number.isFinite(value) ? value : 0;
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      notation: "compact",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: Math.abs(n) < 1000 ? 0 : 1,
+    }).format(n);
+  } catch {
+    return `${currency} ${n.toLocaleString()}`;
+  }
+}
