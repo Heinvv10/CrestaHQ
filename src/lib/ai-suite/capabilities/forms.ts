@@ -9,7 +9,7 @@ import {
 } from "@/lib/server/forms-service";
 import type { FormTemplate } from "@/types/forms";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
-import { str } from "./helpers";
+import { agentActor, str } from "./helpers";
 import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 
 /**
@@ -118,6 +118,7 @@ export const FORM_CAPABILITIES: AiSuiteCapability[] = [
           createdByUid: ctx.uid,
           name,
           template: args.template as FormTemplate,
+          actor: agentActor(ctx, "create_form"),
         });
       } catch (err) {
         if (err instanceof FormServiceError) {

@@ -67,6 +67,8 @@ describe("create_form", () => {
       name: "Free quote", subAccountId: "sa1", agencyId: "ag1", createdByUid: "u_admin", enabled: true,
     });
     expect(r.resultText).toContain(`/f/${r.ref!.id}`);
+    // A person's write carries no agent stamp.
+    expect(mem.read(`forms/${r.ref!.id}`)).not.toHaveProperty("lastAgentEditKey");
   });
 
   it("anchors to ctx, not to anything in the args", async () => {
@@ -95,11 +97,11 @@ describe("create_form", () => {
     expect(v({ name: "Quote" })).toEqual({ ok: true, args: { name: "Quote", template: "contact" } });
   });
 
-  it("the agent surface writes it directly into the key's sub-account", async () => {
+  it("the agent surface writes it directly into the key's sub-account, stamped as an agent write", async () => {
     const r = await dispatchAgentTool(auth, "create_form", { name: "Agent form" });
     expect(r).toMatchObject({ ok: true });
     expect(mem.list("forms").filter((f) => f.name === "Agent form")).toEqual([
-      expect.objectContaining({ subAccountId: "sa1", agencyId: "ag1" }),
+      expect.objectContaining({ subAccountId: "sa1", agencyId: "ag1", lastAgentEditKey: "abcd1234", lastAgentEditAt: expect.any(Date) }),
     ]);
   });
 });

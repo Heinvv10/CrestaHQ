@@ -89,7 +89,19 @@ describe("an admin in chat", () => {
     expect(mem.read("workflows/wf_active")!.status).toBe("paused");
   });
 
-  it("set_workflow_status active is refused in chat, pointing at the workflow page; nothing written", async () => {
+  it("set_workflow_status active gets no confirm card in chat, only the pointer to the workflow page", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.example.com");
+    const before = JSON.stringify(mem.all());
+    const body = await (await ask("set_workflow_status", { workflowId: "wf_draft", status: "active" })).json();
+    expect(body.type).toBe("message");
+    expect(body).not.toHaveProperty("proposal");
+    expect(body.text).toContain("needs a person to review its exact trigger and steps");
+    expect(body.text).toContain("https://crm.example.com/sa/sa1/workflows/wf_draft");
+    expect(JSON.stringify(mem.all())).toBe(before);
+    vi.unstubAllEnvs();
+  });
+
+  it("set_workflow_status active sent straight to confirm (no card) is refused there too; nothing written", async () => {
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.example.com");
     const before = JSON.stringify(mem.all());
     const res = await doConfirm("set_workflow_status", { workflowId: "wf_draft", status: "active" });

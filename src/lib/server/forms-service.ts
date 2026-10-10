@@ -2,6 +2,8 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
+import type { AgentActor } from "@/lib/workflows/agent-hold";
 import {
   contactFormFields,
   contactFormSettings,
@@ -104,6 +106,8 @@ export async function createFormServerSide(opts: {
   createdByUid: string;
   name: string;
   template?: FormTemplate;
+  /** An API agent's write: stamped (see agentEditStamp). */
+  actor?: AgentActor;
 }): Promise<string> {
   const db = getAdminDb();
   const subSnap = await db.doc(`subAccounts/${opts.subAccountId}`).get();
@@ -134,6 +138,7 @@ export async function createFormServerSide(opts: {
     submissionCount: 0,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
+    ...agentEditStamp(opts.actor),
   });
   return ref.id;
 }

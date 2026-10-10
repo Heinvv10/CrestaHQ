@@ -27,7 +27,6 @@ import { COMMUNITY_CAPABILITIES } from "./capabilities/community";
 import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
 import { WORKFLOW_EDIT_CAPABILITIES } from "./capabilities/workflow-edit";
 import { WORKFLOW_STATUS_CAPABILITIES } from "./capabilities/workflow-status";
-import { WORKFLOW_TEST_CAPABILITIES } from "./capabilities/workflow-test";
 import { FORM_CAPABILITIES } from "./capabilities/forms";
 import { DEAL_EDIT_CAPABILITIES } from "./capabilities/deal-edit";
 import { DEAL_COMPLETE_CAPABILITIES } from "./capabilities/deal-complete";
@@ -134,7 +133,6 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...WORKFLOW_CAPABILITIES,
   ...WORKFLOW_EDIT_CAPABILITIES,
   ...WORKFLOW_STATUS_CAPABILITIES,
-  ...WORKFLOW_TEST_CAPABILITIES,
   ...FORM_CAPABILITIES,
   ...CONTACT_CAPABILITIES,
   ...CONTACT_EDIT_CAPABILITIES,
@@ -360,11 +358,10 @@ const AGENCY_DELEGATED = [
   "research_website_reference",
   "create_website",
   "check_website_status",
-  // Speed-to-Lead setup — the owner can run it inside a named client
-  // workspace (test_workflow stays chat-only on its variant too).
+  // Speed-to-Lead setup — the owner can manage forms in a named client
+  // workspace.
   "list_forms",
   "create_form",
-  "test_workflow",
 ];
 for (const name of AGENCY_DELEGATED) {
   const base = AI_SUITE_CAPABILITIES.find((c) => c.name === name);

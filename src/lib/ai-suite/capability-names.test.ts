@@ -84,7 +84,6 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["update_workflow",                           "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
   ["set_workflow_status",                       "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
   ["delete_workflow",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
-  ["test_workflow",                             "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["list_forms",                                "sub-account", "subAccountMember", true, null],
   ["create_form",                               "sub-account", "subAccountAdmin",  false, null],
   ["create_contact",                            "sub-account", "subAccountMember", false, null],
@@ -161,7 +160,6 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["check_website_status_in_sub_account",       "agency",      "agencyOwner",      true, ["chat"]],
   ["list_forms_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
   ["create_form_in_sub_account",                "agency",      "agencyOwner",      false, ["chat"]],
-  ["test_workflow_in_sub_account",              "agency",      "agencyOwner",      false, ["chat"]],
 ];
 
 describe("AI Suite capability registry", () => {
