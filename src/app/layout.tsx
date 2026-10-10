@@ -30,8 +30,8 @@ const instrumentSerif = Instrument_Serif({
 // variant derives title + description from CUSTOM_BRAND so the buyer edits
 // one config file to brand both the page chrome and the rendered landing.
 export const metadata: Metadata = {
-  // Resolves relative OG / icon / manifest URLs against the app origin;
-  // without it production builds resolve them against localhost.
+  // Resolves relative OG / icon / manifest URLs against the app origin.
+  // Undefined (unset/invalid URL) leaves Next.js's own default in force.
   metadataBase: resolveMetadataBase(process.env.NEXT_PUBLIC_APP_URL),
   ...(LANDING_VARIANT === "custom"
     ? {
