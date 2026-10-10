@@ -248,6 +248,8 @@ export async function createInviteServerSide(
   // Zapier flow) see new teammate invites in real time. Fire-and-forget;
   // dispatch failures don't unwind the invite. We emit on every call
   // including resends — `reused: true` lets subscribers distinguish.
+  // Taken now: the webhook itself is emitted after the response.
+  const createdAt = new Date().toISOString();
   runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId: (sub.agencyId as string) ?? "",
@@ -263,7 +265,7 @@ export async function createInviteServerSide(
         assigned_territory_ids: assignedTerritoryIds,
         reused,
         mailed,
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
       },
     },
   }));
@@ -423,6 +425,8 @@ async function addExistingUserAsMember(params: {
   // (which only covers brand-new invitees). `already_member` lets subscribers
   // distinguish a fresh add from a role update on an existing member.
   // Fire-and-forget; dispatch failures don't unwind the membership.
+  // Taken now: the webhook itself is emitted after the response.
+  const addedAt = new Date().toISOString();
   runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId,
@@ -437,7 +441,7 @@ async function addExistingUserAsMember(params: {
         added_by_uid: invitedByUid,
         assigned_territory_ids: assignedTerritoryIds,
         already_member: alreadyMember,
-        added_at: new Date().toISOString(),
+        added_at: addedAt,
       },
     },
   }));

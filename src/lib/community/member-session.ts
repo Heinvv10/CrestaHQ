@@ -43,7 +43,9 @@ export async function getCurrentMember(
   // Best-effort "last active" stamp; never block the read on it.
   runAfterResponse(() => ref
     .set({ lastSeenAt: FieldValue.serverTimestamp() }, { merge: true })
-    .catch(() => {}));
+    .catch((err) =>
+      console.warn(`[community/member-session] lastSeenAt stamp failed member=${verified.memberId}`, err),
+    ));
 
   return { id: snap.id, ...data };
 }

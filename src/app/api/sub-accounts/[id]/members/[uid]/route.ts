@@ -178,7 +178,9 @@ export async function DELETE(
       { subAccounts: { [subAccountId]: FieldValue.delete() } },
       { merge: true },
     )
-    .catch(() => {}));
+    .catch((err) =>
+      console.warn(`[members/DELETE] notification pref cleanup failed for ${targetUid}`, err),
+    ));
 
   // 2. If the user has no remaining active memberships AND no agency role,
   //    disable them globally. BEST-EFFORT: the member removal above has

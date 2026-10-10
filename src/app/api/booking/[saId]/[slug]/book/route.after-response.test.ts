@@ -42,7 +42,8 @@ it("hands the booking_page_booked webhook to after() instead of starting it befo
   const body = (await res.json()) as { eventId?: string };
   expect(res.status, JSON.stringify(body)).toBe(200);
   expect(m.emitBookingWebhook).not.toHaveBeenCalled();
-  expect(m.afterTasks.length).toBeGreaterThan(0);
+  // The Google Calendar push (pushBookingToGoogleAfterResponse) and the webhook.
+  expect(m.afterTasks).toHaveLength(2);
 
   await Promise.all(m.afterTasks.map((t) => t()));
 

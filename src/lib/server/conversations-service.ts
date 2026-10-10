@@ -260,7 +260,8 @@ export async function upsertConversationForMessage(
       // HUMAN replied after this message arrived — `lastHumanReplyAt`, set only
       // on the operator-reply path. An AI or workflow send in that window does
       // not suppress it: an automated reply is not a human handling the tap.
-      runAfterResponse(() => Promise.resolve(resumed)
+      // Chained now, so `resumed` has its handler before after() runs.
+      const lateTap = Promise.resolve(resumed)
         .then(async (n) => {
           if (!input.buttonTap || n !== 0) return;
           await db.runTransaction(async (tx) => {
@@ -273,7 +274,8 @@ export async function upsertConversationForMessage(
             });
           });
         })
-        .catch((err) => console.warn("[conversations/upsert] late-tap flag failed", err)));
+        .catch((err) => console.warn("[conversations/upsert] late-tap flag failed", err));
+      runAfterResponse(() => lateTap);
       // And enrolls the contact in message.received workflows (the trigger's
       // optional channel filter narrows inside fireWorkflowTrigger).
       runAfterResponse(() => fireWorkflowTrigger({

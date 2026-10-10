@@ -423,6 +423,8 @@ export async function handleVapiEndOfCall(input: {
   // Always emit `voice.call.completed`; additionally emit
   // `voice.call.captured` when the call produced contact identity, so
   // subscribers can filter for "hot" voice events.
+  // Taken now: the webhook itself is emitted after the response.
+  const endedAt = new Date().toISOString();
   runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId: subAccount.agencyId,
@@ -439,7 +441,7 @@ export async function handleVapiEndOfCall(input: {
         ended_reason: payload.endedReason,
         contact_id: contactId,
         callback_requested: callbackRequested,
-        ended_at: new Date().toISOString(),
+        ended_at: endedAt,
       },
     },
   }));

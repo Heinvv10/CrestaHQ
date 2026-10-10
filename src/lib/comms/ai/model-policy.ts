@@ -258,9 +258,11 @@ export function replyModelFallback(subAccountId: string, channelId: string) {
   return {
     fallbackToDefault: true,
     onModelRejected: (model: string) => {
+      // Taken now: the flag itself is written after the response.
+      const at = Date.now();
       runAfterResponse(() => getAdminDb()
         .doc(`subAccounts/${subAccountId}/aiAgent/${channelId}`)
-        .set({ modelRejected: { model, at: Date.now() } }, { merge: true })
+        .set({ modelRejected: { model, at } }, { merge: true })
         .catch((err: unknown) =>
           console.warn(`[ai-models] sa=${subAccountId}: couldn't flag rejected model: ${String(err)}`),
         ));

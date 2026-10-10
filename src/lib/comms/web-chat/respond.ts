@@ -487,7 +487,12 @@ export async function respondToWebChat(
     runAfterResponse(() => markCapturePromptShown({
       subAccountId: input.subAccountId,
       sessionId: input.sessionId,
-    }).catch(() => {}));
+    }).catch((err) => {
+      console.warn(
+        `[web-chat/respond] capture-prompt stamp failed sa=${input.subAccountId}`,
+        err,
+      );
+    }));
   }
 
   runAfterResponse(() => incrementChannelTokens(

@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { CapabilityOutcomeUnknown, CapabilityUserError, type ExecuteResult } from "@/lib/ai-suite/capabilities";
 import { EXECUTE_DEADLINE_MS, transitionIf } from "@/lib/server/agent-proposals";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Running an approved proposal and settling its outcome: the one place the
@@ -151,6 +152,17 @@ export async function executeAndSettle(input: {
     await settleProposal(input.id, input.claimId, outcome, input.audit);
     return outcome;
   })();
+  // Past the deadline the response goes out while `run` keeps going. Keep
+  // the function alive until it settles, registered now while the response
+  // is open: a request's FIRST after() registered after the response closed
+  // never runs, so the late settle and anything it hands to runAfterResponse
+  // would be dropped. Its errors are seen by the race below, or by the
+  // post-deadline catch.
+  const kept = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  runAfterResponse(() => kept);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"deadline">((resolve) => {
     timer = setTimeout(() => resolve("deadline"), EXECUTE_DEADLINE_MS);

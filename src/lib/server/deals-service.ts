@@ -342,7 +342,9 @@ function fireDealTrigger(opts: {
     ...(opts.actor ? { hold: opts.actor } : {}),
   });
   if (!opts.actor) {
-    runAfterResponse(() => fired);
+    // Handled now, not when after() runs: a rejection in between would be unhandled.
+    const settled = Promise.resolve(fired).catch((err) => console.warn("[deals-service] workflow trigger failed", err));
+    runAfterResponse(() => settled);
     return null;
   }
   return fired;
