@@ -7,6 +7,7 @@ import {
   resolveCheckoutTheme,
 } from "@/lib/checkout/themes";
 import { CHECKOUT_THEME_IDS } from "@/types/checkout-pages";
+import { contrast, hexToRgb } from "@/test/contrast";
 
 /**
  * Style presets for the public checkout and booking pages: which stored
@@ -117,6 +118,23 @@ describe("resolveCheckoutTheme", () => {
     expect(resolveCheckoutTheme({ appearance: undefined as never })).toBe(CHECKOUT_THEMES.clean);
     expect(resolveCheckoutTheme({ appearance: null as never })).toBe(CHECKOUT_THEMES.clean);
   });
+});
+
+describe("preset contrast", () => {
+  it.each(Object.values(CHECKOUT_THEMES).map((t) => [t.label, t] as const))(
+    "%s: the button's text meets WCAG AA (4.5:1) on its background",
+    (_label, t) => {
+      expect(contrast(hexToRgb(t.buttonText), hexToRgb(t.buttonBg))).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
+  it.each(Object.values(CHECKOUT_THEMES).map((t) => [t.label, t] as const))(
+    "%s: body and muted text meet AA on the card",
+    (_label, t) => {
+      expect(contrast(hexToRgb(t.text), hexToRgb(t.cardBg))).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(hexToRgb(t.muted), hexToRgb(t.cardBg))).toBeGreaterThanOrEqual(4.5);
+    },
+  );
 });
 
 describe("checkoutThemeCssVars", () => {

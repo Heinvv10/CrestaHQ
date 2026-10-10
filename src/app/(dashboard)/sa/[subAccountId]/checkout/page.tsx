@@ -267,8 +267,10 @@ function CheckoutPageEditor({
   const [headline, setHeadline] = useState(page?.headline ?? "");
   const [subheadline, setSubheadline] = useState(page?.subheadline ?? "");
   const [successUrl, setSuccessUrl] = useState(page?.successUrl ?? "");
-  // Legacy pages (pre-presets) resolve to the preset that matches how they
-  // already render, so opening the editor never silently restyles them.
+  // A page with no stored preset opens on the one it resolves to (Clean or
+  // Midnight). Its first save stores that preset, and from then on the
+  // page's own `appearance.accent` (settable only through the API) no longer
+  // applies — so that save does restyle a page that had a custom accent.
   const [themePreset, setThemePreset] = useState<CheckoutThemeId>(
     page ? resolveCheckoutTheme(page).id : DEFAULT_CHECKOUT_THEME_ID,
   );

@@ -202,7 +202,7 @@ test("the editor opens an old page on Clean and saves the preset that is picked"
 
   await visit(browser, p, async (pub) => {
     await expect(pub.locator("main")).toHaveCSS("background-color", "rgb(253, 246, 236)");
-    await expect(pay(pub)).toHaveCSS("background-color", "rgb(234, 88, 12)");
+    await expect(pay(pub)).toHaveCSS("background-color", "rgb(205, 77, 11)");
   });
 });
 

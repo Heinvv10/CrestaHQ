@@ -121,10 +121,10 @@ describe("a booking page with a preset", () => {
     expect(html.match(LOGO_CHIP)?.[1]).toBe("background-color:#ccff00;color:#0a0a0a");
   });
 
-  it("does not mark a light preset dark", async () => {
+  it("marks a light preset light, not dark", async () => {
     seed("sunset", { themePreset: "sunset" });
     const main = tag(await open("sunset"), "main")!;
-    expect(main).toContain('class="min-h-screen bg-muted/30 px-4 py-10 text-foreground sm:py-16"');
+    expect(main).toContain('class="min-h-screen bg-muted/30 px-4 py-10 text-foreground sm:py-16 light"');
     expect(main).toContain("background:#fdf6ec");
     expect(main).toContain("--muted:rgba(0,0,0,0.05)");
   });
@@ -132,8 +132,8 @@ describe("a booking page with a preset", () => {
   it("applies in the embed too, keeping the embed's own shell classes", async () => {
     seed("ocean", { themePreset: "ocean" });
     const main = tag(await openEmbed("ocean"), "main")!;
-    expect(main).toContain('class="bg-muted/30 px-3 py-4 text-foreground"');
-    expect(main).toContain("--primary:#0284c7");
+    expect(main).toContain('class="bg-muted/30 px-3 py-4 text-foreground light"');
+    expect(main).toContain("--primary:#027dbc");
   });
 
   it("lets the page's own accent win over the preset's", async () => {
@@ -143,9 +143,9 @@ describe("a booking page with a preset", () => {
     expect(tag(html, "main")).toContain("--primary:#ccff00");
   });
 
-  it("changes nothing but style and the dark marker", async () => {
+  it("changes nothing but style and the light/dark marker", async () => {
     seed("none");
-    const strip = (html: string) => html.replace(/ style="[^"]*"/g, "").replace(/ dark"/, '"');
+    const strip = (html: string) => html.replace(/ style="[^"]*"/g, "").replace(/ (dark|light)"/, '"');
     const plain = strip(await open("none"));
     for (const id of Object.keys(CHECKOUT_THEMES)) {
       seed("none", { themePreset: id });

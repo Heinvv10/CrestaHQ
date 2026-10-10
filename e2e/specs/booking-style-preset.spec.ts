@@ -76,9 +76,9 @@ async function purge() {
   }
 }
 
-/** The public page as a signed-out visitor sees it. */
-async function visit(browser: Browser, slug: string, check: (page: Page) => Promise<void>) {
-  const context = await browser.newContext({ storageState: { cookies: [], origins: [] }, colorScheme: "light", timezoneId: "UTC" });
+/** The public page as a signed-out visitor sees it, in a light or dark OS theme. */
+async function visit(browser: Browser, slug: string, check: (page: Page) => Promise<void>, colorScheme: "light" | "dark" = "light") {
+  const context = await browser.newContext({ storageState: { cookies: [], origins: [] }, colorScheme, timezoneId: "UTC" });
   try {
     const page = await context.newPage();
     const res = await page.goto(`/b/${sa}/${slug}`);
@@ -131,6 +131,28 @@ test("a preset restyles the public page from the preset alone", async ({ browser
     await expect(h1).toHaveCSS("text-transform", "uppercase");
     await expect(h1).toHaveCSS("color", "rgb(245, 245, 244)");
   });
+});
+
+test("a dark-mode visitor on a light preset gets the light status colour, with no dark: variant", async ({ browser }) => {
+  const slug = `${PREFIX}osdark-${stamp}`;
+  await seedPage(slug, { themePreset: "sunset", payment: { amount: 50, currency: "USD", description: null, holdHours: 24 } });
+  await visit(
+    browser,
+    slug,
+    async (page) => {
+      // The visitor really is in dark mode: the app marks <html> for it.
+      await expect(page.locator("html")).toHaveClass(/(^|\s)dark(\s|$)/);
+      const main = page.locator("main");
+      await expect(main).toHaveClass(/(^|\s)light(\s|$)/);
+      await expect(main).toHaveCSS("background-color", "rgb(253, 246, 236)");
+      await expect(page.locator("article")).toHaveCSS("background-color", "rgb(255, 253, 248)");
+      const chip = page.getByText("USD 50 deposit");
+      await expect(chip).toHaveClass(/(^|\s)text-emerald-700(\s|$)/);
+      await expect(chip).not.toHaveClass(/dark:/);
+      expect(await main.evaluate((el) => el.outerHTML)).not.toContain("dark:");
+    },
+    "dark",
+  );
 });
 
 test("a stored preset this build does not know renders the standard look", async ({ browser }) => {

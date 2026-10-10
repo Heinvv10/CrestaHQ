@@ -131,6 +131,11 @@ export function CheckoutForm({
 
   const tickedBumps = bumps.filter((b) => ticked.has(b.id));
 
+  // HARDENING (ours, not upstream): status colours follow the preset's lightness. Upstream's fixed
+  // #dc2626 / #b45309 fall to 3.1:1 and 2.6:1 on the dark presets' cards.
+  const dangerText = theme.isDark ? "#f87171" : "#dc2626";
+  const noticeText = theme.isDark ? "#fbbf24" : "#b45309";
+
   return (
     <form onSubmit={handleSubmit} style={{ display: "grid", gap: 20 }}>
       {cancelled && (
@@ -141,7 +146,7 @@ export function CheckoutForm({
             background: "rgba(245,158,11,0.08)",
             border: "1px solid rgba(245,158,11,0.3)",
             fontSize: 13,
-            color: "#b45309",
+            color: noticeText,
           }}
         >
           Checkout was cancelled — nothing was charged. You can try again below.
@@ -157,7 +162,7 @@ export function CheckoutForm({
                 style={{ fontSize: 13, fontWeight: 600 }}
               >
                 {f.label}
-                {f.required && <span style={{ color: "#dc2626" }}> *</span>}
+                {f.required && <span style={{ color: dangerText }}> *</span>}
               </label>
               {f.type === "textarea" ? (
                 <textarea
@@ -334,7 +339,7 @@ export function CheckoutForm({
       </div>
 
       {error && (
-        <p style={{ fontSize: 13, color: "#dc2626", margin: 0 }}>{error}</p>
+        <p style={{ fontSize: 13, color: dangerText, margin: 0 }}>{error}</p>
       )}
 
       <button

@@ -169,7 +169,8 @@ export const CHECKOUT_THEMES: Record<CheckoutThemeId, CheckoutTheme> = {
     faint: "#a8a29e",
     accent: "#ea580c",
     accentSoft: "rgba(234,88,12,0.07)",
-    buttonBg: "#ea580c",
+    // HARDENING (ours, not upstream): upstream's #ea580c is 3.56:1 under white text; this is the nearest shade at 4.5:1.
+    buttonBg: "#cd4d0b",
     buttonText: "#ffffff",
     buttonRadius: 12,
     inputBg: "#ffffff",
@@ -199,7 +200,8 @@ export const CHECKOUT_THEMES: Record<CheckoutThemeId, CheckoutTheme> = {
     faint: "#64748b",
     accent: "#0284c7",
     accentSoft: "rgba(2,132,199,0.06)",
-    buttonBg: "#0284c7",
+    // HARDENING (ours, not upstream): upstream's #0284c7 is 4.10:1 under white text; this is the nearest shade at 4.5:1.
+    buttonBg: "#027dbc",
     buttonText: "#ffffff",
     buttonRadius: 10,
     inputBg: "#ffffff",

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
 import { createMemoryFirestore } from "@/test/memory-firestore";
+import { contrast, hexToRgb, over, parseRgba } from "@/test/contrast";
+import { CHECKOUT_THEMES } from "@/lib/checkout/themes";
 
 /**
  * The public checkout page through its real loader: a preset restyles it
@@ -161,10 +163,28 @@ describe("a checkout page with a preset", () => {
     }
   });
 
+  it.each(Object.values(CHECKOUT_THEMES).map((t) => [t.label, t] as const))(
+    "%s: the required mark and the cancel notice are readable on the card (4.5:1)",
+    async (_label, theme) => {
+      seed({ themePreset: theme.id });
+      const html = await open("full?cancelled");
+      const card = hexToRgb(theme.cardBg);
+
+      const marks = [...html.matchAll(/<span style="color:(#[0-9a-f]{6})"> \*<\/span>/g)].map((m) => m[1]);
+      expect(marks.length).toBeGreaterThan(0);
+      for (const mark of marks) expect(contrast(hexToRgb(mark), card), `required mark ${mark}`).toBeGreaterThanOrEqual(4.5);
+
+      const notice = /background:(rgba\([^)]*\));border:[^;]*;font-size:13px;color:(#[0-9a-f]{6})">Checkout was cancelled/.exec(html);
+      expect(notice).not.toBeNull();
+      const tint = parseRgba(notice![1]);
+      expect(contrast(hexToRgb(notice![2]), over(tint.rgb, tint.alpha, card)), `cancel notice ${notice![2]}`).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
   it("uses the preset's accent, not the page's own", async () => {
     seed({ themePreset: "ocean" });
     const html = await open("accent");
-    expect(html).toContain("background:#0284c7;color:#ffffff;");
+    expect(html).toContain("background:#027dbc;color:#ffffff;");
     expect(html).not.toContain("#0ea5e9");
   });
 });
