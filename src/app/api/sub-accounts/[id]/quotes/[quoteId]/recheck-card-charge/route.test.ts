@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   AMOUNT,
@@ -126,8 +127,10 @@ describe("Paystack says it was not paid", () => {
     expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined" });
     expect(mem.read(`paymentAttempts/${REF}`)!.state).toBe("refused");
     expect(mem.read(`paymentMandates/${MANDATE}`)!.consecutiveDeclines).toBe(1);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     // The button records; it never emails on its own (the stale sweep does).
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(await send()).toMatchObject({ ok: true });
     expect((sendEmail.mock.calls.at(-1)![0] as { text: string }).text).toContain("/pay/link/");
