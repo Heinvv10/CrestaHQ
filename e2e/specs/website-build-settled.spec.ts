@@ -2,8 +2,8 @@ import { createHmac } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { blankWebsiteConfig } from "../../src/types/website";
 import { adminDb } from "../lib/admin";
-import { FIXTURE_PRIMARY_NAME, readEnv, requireGitpageApiKey } from "../lib/env";
-import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
+import { FIXTURE_PRIMARY_NAME, FIXTURE_SECONDARY_NAME, readEnv, requireGitpageApiKey } from "../lib/env";
+import { assertFixtureSubAccount, deleteScoped, fixtureSubAccountIds } from "../lib/guard";
 import { runId } from "../lib/run-id";
 
 /**
@@ -15,16 +15,24 @@ import { runId } from "../lib/run-id";
  *     changed after signing are each answered 401 with the site untouched —
  *     by the ROUTE, which proves middleware lets the path through without a
  *     session rather than bouncing it to /login.
- *  2. A correctly signed callback settles the seeded fixture site
- *     (building → ready, with the live URL and gitpage's page id).
- *  3. A second delivery of the same callback is acknowledged and changes
+ *  2. A valid signature is not enough to reach a site: the callback settles
+ *     only the site that owns the job id INSIDE the sub-account it names. A
+ *     signed callback carrying the primary's job id but the secondary's
+ *     tenant, the secondary's job id but the primary's tenant, or an unknown
+ *     job id settles nothing.
+ *  3. A correctly signed callback settles the seeded fixture site
+ *     (building → ready, with the live URL and gitpage's page id) and leaves
+ *     the other fixture site as it was.
+ *  4. A second delivery of the same callback is acknowledged and changes
  *     nothing — the settle is once-only.
- *  4. The website page still renders the settled site (the card is the
+ *  5. The website page still renders the settled site (the card is the
  *     pre-v2 builder; it must cope with the v2 fields the settle writes).
  *
  * gitpage itself is never called: the callback path only reads and writes
- * the site doc. One site doc on the fixture PRIMARY, id and job id scoped to
- * this run, deleted through the fixture guard afterwards.
+ * the site doc. Two site docs, one per fixture sub-account, ids and job ids
+ * scoped to this run, deleted through the fixture guard afterwards. Every
+ * body this spec signs names a fixture sub-account — `signed()` refuses to
+ * sign anything else, so a bug here cannot aim a valid callback at a client.
  */
 
 test.skip(
@@ -39,10 +47,42 @@ const JOB_ID = `build_e2e_${runId()}`;
 const SITE_NAME = `E2E build-settled ${runId()}`;
 const LIVE_URL = `https://e2e-${runId()}.example.test/site`;
 
+// The other fixture tenant's site: a build in flight that no callback in
+// this spec is addressed to.
+const OTHER_JOB_ID = `build_e2e_other_${runId()}`;
+
 const primaryId = () => readEnv().E2E_SUBACCOUNT_ID;
+const secondaryId = () => readEnv().E2E_SUBACCOUNT_ID_SECONDARY;
 const siteRef = () => adminDb().doc(`subAccounts/${primaryId()}/website/${SITE_ID}`);
-const guard = () => assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
+const otherRef = () => adminDb().doc(`subAccounts/${secondaryId()}/website/${SITE_ID}`);
+const guard = async () => {
+  await assertFixtureSubAccount(primaryId(), FIXTURE_PRIMARY_NAME);
+  await assertFixtureSubAccount(secondaryId(), FIXTURE_SECONDARY_NAME);
+};
 const site = async () => (await siteRef().get()).data() ?? null;
+const other = async () => (await otherRef().get()).data() ?? null;
+
+const BUILDING = { status: "building", liveUrl: null, pollAttempts: 2 };
+
+const seed = (subAccountId: string, gitpageJobId: string, name: string) => ({
+  id: SITE_ID,
+  agencyId: readEnv().E2E_AGENCY_ID,
+  subAccountId,
+  name,
+  status: "building",
+  gitpageJobId,
+  liveUrl: null,
+  errorMessage: null,
+  partialErrors: null,
+  pollAttempts: 2,
+  lastBuildAt: null,
+  lastBuildByUid: null,
+  quality: "premium",
+  estimatedDurationSeconds: 1200,
+  config: { ...blankWebsiteConfig(), heading: name },
+  createdAt: new Date(),
+  updatedAt: new Date(),
+});
 
 const callbackBody = (patch: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -65,34 +105,36 @@ const headers = (signature?: string) => ({
   ...(signature === undefined ? {} : { "x-gitpage-signature": signature }),
 });
 
+/**
+ * Headers + body for a callback carrying a VALID signature. Throws unless
+ * the body names a fixture sub-account: a correctly signed callback is the
+ * one request here that can change a site, so it is never minted for any
+ * other tenant.
+ */
+function signed(patch: Record<string, unknown> = {}) {
+  const data = callbackBody(patch);
+  const named = (JSON.parse(data) as { subAccountId?: unknown }).subAccountId;
+  if (typeof named !== "string" || !fixtureSubAccountIds().includes(named)) {
+    throw new Error(`refusing to sign a callback for non-fixture sub-account ${String(named)}`);
+  }
+  return { headers: headers(sign(data, requireGitpageApiKey())), data, maxRedirects: 0 };
+}
+
 test.beforeAll(async () => {
   await guard();
-  await siteRef().set({
-    id: SITE_ID,
-    agencyId: readEnv().E2E_AGENCY_ID,
-    subAccountId: primaryId(),
-    name: SITE_NAME,
-    status: "building",
-    gitpageJobId: JOB_ID,
-    liveUrl: null,
-    errorMessage: null,
-    partialErrors: null,
-    pollAttempts: 2,
-    lastBuildAt: null,
-    lastBuildByUid: null,
-    quality: "premium",
-    estimatedDurationSeconds: 1200,
-    config: { ...blankWebsiteConfig(), heading: SITE_NAME },
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  });
+  await siteRef().set(seed(primaryId(), JOB_ID, SITE_NAME));
+  await otherRef().set(seed(secondaryId(), OTHER_JOB_ID, `${SITE_NAME} (other tenant)`));
 });
 
 test.afterAll(async () => {
   await guard();
-  // Re-reads the doc and refuses unless it is stamped with the fixture
-  // sub-account AND the E2E agency.
-  await deleteScoped(siteRef());
+  // deleteScoped re-reads each doc and refuses unless it is stamped with a
+  // fixture sub-account AND the E2E agency.
+  try {
+    await deleteScoped(siteRef());
+  } finally {
+    await deleteScoped(otherRef());
+  }
 });
 
 test.describe("the callback, with no session", () => {
@@ -120,14 +162,34 @@ test.describe("the callback, with no session", () => {
     });
     expect(tampered.status()).toBe(401);
 
-    expect(await site()).toMatchObject({ status: "building", liveUrl: null, pollAttempts: 2 });
+    expect(await site()).toMatchObject(BUILDING);
+    expect(await other()).toMatchObject(BUILDING);
+  });
+
+  test("a valid signature settles nothing unless the job id belongs to a site in the tenant it names", async ({ request }) => {
+    // This site's job id, the other tenant's sub-account.
+    const wrongTenant = await request.post(PATH, signed({ subAccountId: secondaryId() }));
+    expect(wrongTenant.status()).toBe(200);
+    expect(await wrongTenant.json()).toEqual({ ok: true, ignored: "site-not-found" });
+
+    // The other tenant's job id, this sub-account.
+    const wrongJob = await request.post(PATH, signed({ formResponseId: OTHER_JOB_ID }));
+    expect(wrongJob.status()).toBe(200);
+    expect(await wrongJob.json()).toEqual({ ok: true, ignored: "site-not-found" });
+
+    // A job id no site holds.
+    const unknownJob = await request.post(PATH, signed({ formResponseId: `build_e2e_nobody_${runId()}` }));
+    expect(unknownJob.status()).toBe(200);
+    expect(await unknownJob.json()).toEqual({ ok: true, ignored: "site-not-found" });
+
+    expect(await site()).toMatchObject(BUILDING);
+    expect(await other()).toMatchObject(BUILDING);
   });
 
   test("a signed callback settles the site once; a second delivery changes nothing", async ({ request }) => {
-    const key = requireGitpageApiKey();
-    const body = callbackBody();
+    const otherBefore = await other();
 
-    const first = await request.post(PATH, { headers: headers(sign(body, key)), data: body, maxRedirects: 0 });
+    const first = await request.post(PATH, signed());
     expect(first.status()).toBe(200);
     expect(await first.json()).toEqual({ ok: true, settled: "ready" });
 
@@ -143,15 +205,14 @@ test.describe("the callback, with no session", () => {
 
     // gitpage retries, or the poll loop's copy arrives late: same job, a
     // different URL this time so an applied duplicate would be visible.
-    const replayBody = callbackBody({ pagesUrl: "https://replayed.example.test/" });
-    const replay = await request.post(PATH, {
-      headers: headers(sign(replayBody, key)),
-      data: replayBody,
-      maxRedirects: 0,
-    });
+    const replay = await request.post(PATH, signed({ pagesUrl: "https://replayed.example.test/" }));
     expect(replay.status()).toBe(200);
     expect(await replay.json()).toEqual({ ok: true, ignored: "already-settled" });
     expect(await site()).toEqual(settled);
+
+    // The settle reached this site and no other: the other tenant's build
+    // is byte-for-byte what it was.
+    expect(await other()).toEqual(otherBefore);
   });
 });
 

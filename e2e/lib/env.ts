@@ -118,8 +118,9 @@ export function requireQStashSigningKey(): string {
 /**
  * The key website-build-settled.spec.ts signs gitpage's `build.settled`
  * callback with. Not in REQUIRED, for the same reason as QStash's: one spec
- * needs it. The server verifies with the same variable, so the E2E job sets
- * a per-run value that is not a gitpage credential (see ci.yml).
+ * needs it. The server verifies with the same variable, so the E2E job
+ * generates a random value for each run, which is not a gitpage credential
+ * (see ci.yml).
  */
 export function requireGitpageApiKey(): string {
   const value = process.env.GITPAGE_API_KEY;

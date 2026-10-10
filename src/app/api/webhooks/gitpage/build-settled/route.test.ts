@@ -183,6 +183,16 @@ describe("POST /api/webhooks/gitpage/build-settled — what a signed callback ma
     expect(mem.read(SITE)).toMatchObject(untouched);
   });
 
+  it("ignores this site's job id when the callback names another sub-account", async () => {
+    mem.seed("subAccounts/sa2/website/siteB", {
+      id: "siteB", agencyId: "ag1", subAccountId: "sa2", status: "building", gitpageJobId: "build_other",
+    });
+    const res = await signed({ subAccountId: "sa2" });
+    expect(await res.json()).toEqual({ ok: true, ignored: "site-not-found" });
+    expect(mem.read("subAccounts/sa2/website/siteB")).toMatchObject({ status: "building" });
+    expect(mem.read(SITE)).toMatchObject(untouched);
+  });
+
   it("ignores a callback with no job or sub-account id, and one that is not terminal", async () => {
     expect(await (await signed({ formResponseId: undefined })).json()).toEqual({ ok: true, ignored: "missing-ids" });
     expect(await (await signed({ subAccountId: 7 })).json()).toEqual({ ok: true, ignored: "missing-ids" });

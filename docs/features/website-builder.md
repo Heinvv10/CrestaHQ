@@ -39,7 +39,7 @@ Premium is gitpage's staged build: one of three authored design directions ("con
 
 **Known limit.** Only the terminal write is guarded. A poll tick's other writes (the in-flight status bump, the cap timeout, a 4xx from gitpage) are plain updates made after an earlier read, as upstream's are. A callback that settles the site between such a tick's read and its write is overwritten by it (`ready` → `building` or `failed`); the next tick or a Re-check then settles it again. That is harmless today and matters once the WS-3 hand-off runs on settle.
 
-**Tests.** Unit and seam tests sit beside each file (`route.test.ts` for the callback, PATCH, concepts and poll routes; `websites-service.settle.test.ts`, `websites-service.build-v2.test.ts`, `client.premium.test.ts`). [e2e/specs/website-build-settled.spec.ts](../../e2e/specs/website-build-settled.spec.ts) posts unsigned, mis-signed and signed callbacks to the real server and loads the website page. The E2E job sets a per-run `GITPAGE_API_KEY` that is not a gitpage credential, with `GITPAGE_API_URL` pointed at a closed loopback port.
+**Tests.** Unit and seam tests sit beside each file (`route.test.ts` for the callback, PATCH, concepts and poll routes; `websites-service.settle.test.ts`, `websites-service.build-v2.test.ts`, `client.premium.test.ts`). [e2e/specs/website-build-settled.spec.ts](../../e2e/specs/website-build-settled.spec.ts) posts unsigned, mis-signed and signed callbacks to the real server and loads the website page. The E2E job generates a random `GITPAGE_API_KEY` for each run (masked, never derived from the run id, and not a gitpage credential), with `GITPAGE_API_URL` pointed at a closed loopback port.
 
 ## AI-driven website builds (Workspace Assistant action)
 
