@@ -61,9 +61,13 @@ export type FieldPlan =
 
 const TEXTLIKE = new Set(["", "text", "email", "tel", "url", "number", "search"]);
 const CONSENT = /privacy|terms|consent|agree|accept|gdpr|popia|policy|t&c|conditions/;
-/** Town / suburb / city (`address-level2` is the HTML autocomplete token) — never a street, postal code, province or country. */
-const TOWN = /\btown\b|suburb|\bcity\b|address-level2|\bdorp\b|voorstad/;
-const NOT_TOWN = /street|address-line|address-level1|postal|post.?code|\bzip|province|\bstate\b|country|area.?code|straat|poskode|provinsie/;
+/**
+ * Town / suburb / city (`address-level2` is the HTML autocomplete token); whole words, `_` and `-` count as
+ * breaks (billing_city). Never a field that also says address (bar that token), street, postal code, zip,
+ * province, state, country or area code.
+ */
+const TOWN = /(?<![a-z])(town|city|dorp)(?![a-z])|suburb|voorstad|address-level2/;
+const NOT_TOWN = /address(?!-level2)|adres|street|straat|postal|post.?code|poskode|(?<![a-z])(zip|state)(?![a-z])|province|provinsie|country|area.?code/;
 const SERVICE_SELECT = /service|reason|interest|enquiry|inquiry|type|department|topic|category|product|regarding|subject/;
 
 /** The role of a text-like field or textarea, by type first, then by what it says it is. */
@@ -73,9 +77,10 @@ export function roleOf(f: Pick<FormField, "tag" | "type" | "hint">): FieldRole |
   if (f.type === "tel" || /phone|\btel\b|mobile|cell|whatsapp|contact number|nommer|selfoon/.test(h)) return "phone";
   if (/first.?name|\bfname\b|given.?name|voornaam/.test(h)) return "first";
   if (/last.?name|\blname\b|surname|family.?name|\bvan\b/.test(h)) return "last";
+  // Before company: a "business city" field wants the town, not the business name.
+  if (f.tag === "input" && TOWN.test(h) && !NOT_TOWN.test(h)) return "town";
   if (/compan|business|organi[sz]ation|\bfirm\b|besigheid|maatskappy/.test(h)) return "company";
   if (/subject|topic|onderwerp/.test(h)) return "subject";
-  if (f.tag === "input" && TOWN.test(h) && !NOT_TOWN.test(h)) return "town";
   if (/address|adres|street|suburb/.test(h)) return null;
   if (f.tag === "textarea" || /message|enquir|inquir|comment|question|details|how can we help|boodskap|vraag/.test(h)) {
     return "message";

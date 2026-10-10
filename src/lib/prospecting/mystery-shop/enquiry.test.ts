@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { enquiryVars, mysteryShopCallPrompt, parseTemplates, renderEnquiries, serviceOf } from "./enquiry";
+import { enquiryVars, formTownOf, mysteryShopCallPrompt, parseTemplates, renderEnquiries, serviceOf } from "./enquiry";
 
 const vars = enquiryVars({ city: "Gqeberha", prospecting: { category: "plumber" } }, "Cresta HQ");
 
@@ -60,6 +60,20 @@ describe("parseTemplates", () => {
   });
   it("accepts exactly 2,000 characters", () => {
     expect(parseTemplates({ emailBody: "x".repeat(2000) })).toEqual({ emailBody: "x".repeat(2000) });
+  });
+});
+
+describe("formTownOf (the town a form field may get: one the shown form enquiry names)", () => {
+  it("the defaults name it in the subject and the message", () => {
+    expect(formTownOf(null, vars)).toBe("Gqeberha");
+    expect(formTownOf({ emailSubject: "Enquiry" }, vars)).toBe("Gqeberha");
+    expect(formTownOf({ emailBody: "Do you do {service}?" }, vars)).toBe("Gqeberha");
+    expect(formTownOf({ emailBody: "Hi", form: "Plumbing in {town}?" }, vars)).toBe("Gqeberha");
+  });
+  it("is null when neither the subject nor the form message uses {town}, or there is no town", () => {
+    expect(formTownOf({ emailSubject: "Enquiry", emailBody: "Do you do {service}?" }, vars)).toBeNull();
+    expect(formTownOf({ emailSubject: "Enquiry", form: "Hi", call: "in {town}" }, vars)).toBeNull();
+    expect(formTownOf(null, { ...vars, town: null })).toBeNull();
   });
 });
 

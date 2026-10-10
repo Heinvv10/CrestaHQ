@@ -28,12 +28,14 @@ describe("roleOf", () => {
     ["email address", "text", "email"], ["x", "email", "email"], ["phone", "text", "phone"], ["x", "tel", "phone"],
     ["whatsapp number", "text", "phone"], ["company name", "text", "company"], ["business", "text", "company"],
     ["subject", "text", "subject"], ["your enquiry", "text", "message"], ["website", "text", null], ["city", "text", "town"],
+    ["company name | organization", "text", "company"], ["business name | bizname", "text", "company"], ["billing_state", "text", null],
   ])("%s (%s) → %s", (hint, type, role) => {
     expect(roleOf({ tag: "input", type, hint })).toBe(role);
   });
 
   it.each([
     "town or suburb | example: edenvale | where | bizwhere | address-level2", "town / city", "suburb", "x | address-level2", "dorp",
+    "billing_city", "your_city", "town-name", "business city", "company town", "suburb or estate",
   ])("%s → town", (hint) => {
     expect(roleOf({ tag: "input", type: "text", hint })).toBe("town");
   });
@@ -41,6 +43,10 @@ describe("roleOf", () => {
   it.each([
     "street address", "address | street-address", "postal code", "city | postal-code", "province", "state", "country",
     "area code", "address", "location", "area", "address line 1 | address-line1", "region | address-level1",
+    // Each says town, and each is excluded by its own NOT_TOWN word.
+    "town address", "city | address", "dorp | adres", "town | street", "dorp | straat", "city | postal", "city postcode",
+    "dorp | poskode", "city zip", "city | state", "town | province", "voorstad | provinsie", "city | country", "city | area-code",
+    "suburb | address-line1", "city | address-level1", "townhouse", "capacity", "hometown",
   ])("%s is never the town", (hint) => {
     expect(roleOf({ tag: "input", type: "text", hint })).not.toBe("town");
   });
