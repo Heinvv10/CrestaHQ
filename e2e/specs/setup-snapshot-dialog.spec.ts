@@ -43,7 +43,7 @@ test("owner sees the setup snapshot once and can dismiss it for good", async ({
     // only the stored flag can be what keeps the dialog away.
     const fresh = await context.newPage();
     await fresh.goto("/agency");
-    await fresh.waitForLoadState("networkidle");
+    await fresh.waitForURL(/\/agency$/, { timeout: 30_000 });
     await fresh.waitForTimeout(15_000);
     await expect(
       fresh.getByRole("dialog", { name: "Your setup at a glance" }),
