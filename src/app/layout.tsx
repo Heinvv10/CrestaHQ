@@ -6,6 +6,7 @@ import { AnalyticsScripts } from "@/components/analytics-scripts";
 import { SwRegister } from "@/components/pwa/sw-register";
 import { PwaLinks } from "@/components/pwa/pwa-links";
 import { CUSTOM_BRAND, LANDING_VARIANT } from "@/config/landing";
+import { resolveMetadataBase } from "@/lib/metadata-base";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -29,10 +30,19 @@ const instrumentSerif = Instrument_Serif({
 // variant derives title + description from CUSTOM_BRAND so the buyer edits
 // one config file to brand both the page chrome and the rendered landing.
 export const metadata: Metadata = {
+  // Resolves relative OG / icon / manifest URLs against the app origin;
+  // without it production builds resolve them against localhost.
+  metadataBase: resolveMetadataBase(process.env.NEXT_PUBLIC_APP_URL),
   ...(LANDING_VARIANT === "custom"
     ? {
         title: `${CUSTOM_BRAND.name} — ${CUSTOM_BRAND.tagline}`,
         description: CUSTOM_BRAND.shortDescription,
+        openGraph: {
+          type: "website",
+          siteName: CUSTOM_BRAND.name,
+          title: `${CUSTOM_BRAND.name} — ${CUSTOM_BRAND.tagline}`,
+          description: CUSTOM_BRAND.shortDescription,
+        },
       }
     : {
         title: "LeadStack — Own Your CRM, Never Rent It Again",
