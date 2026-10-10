@@ -71,6 +71,10 @@ afterEach(async () => {
 it("takes the workspace timezone when the doc arrives after mount", async () => {
   ctx.value = { ...ctx.value, subAccount: null, loading: true };
   await render();
+  // No form to edit before the timezone is known: a first edit stores the
+  // whole schedule, UTC fallback included.
+  expect(fields.onChange).toBeNull();
+  expect(container.querySelector(".animate-spin")).not.toBeNull();
   ctx.value = { ...ctx.value, subAccount: { timezone: "Africa/Johannesburg" }, loading: false };
   await render();
   expect(fields.values?.timezone).toBe("Africa/Johannesburg");
