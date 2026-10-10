@@ -4,6 +4,10 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import {
+  requireWebsiteEnabledSub,
+  WebsiteServiceError,
+} from "@/lib/server/websites-service";
 import type { WebsiteConfig, WebsiteDoc } from "@/types/website";
 
 const WIZARD_STEPS = new Set(["start", "business", "pages", "video", "location", "look", "story", "review"]);
@@ -16,6 +20,11 @@ const MAX_CONFIG_BYTES = 100_000;
  * step to resume on. Refused while a build is in flight so a save can't
  * change the config a running job was submitted with. Never touches status,
  * job id or live URL.
+ *
+ * Behind the `websiteEnabledByAgency` gate like create and build (upstream
+ * has no check here): a draft is the input to a build the workspace may not
+ * start. DELETE below stays open with the gate off, as it always has, so a
+ * gated-off workspace can still remove a site.
  */
 export async function PATCH(
   request: Request,
@@ -24,6 +33,15 @@ export async function PATCH(
   const { id: subAccountId, siteId } = await ctx.params;
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
+
+  try {
+    await requireWebsiteEnabledSub(subAccountId);
+  } catch (err) {
+    if (err instanceof WebsiteServiceError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
   let body: { config?: WebsiteConfig; wizardStep?: string | null };
   try {

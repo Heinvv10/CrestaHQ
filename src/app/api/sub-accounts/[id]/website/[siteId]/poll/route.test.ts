@@ -135,6 +135,13 @@ describe("POST …/website/[siteId]/poll — the QStash tick", () => {
     expect(qstash.publishCallback).not.toHaveBeenCalled();
   });
 
+  it("still polls a build to its end after the workspace's website gate is switched off", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: false });
+    gitpageSays(PUBLISHED);
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject({ status: "ready" });
+  });
+
   it("settles a failed build with the stage it failed at", async () => {
     gitpageSays({ status: "failed", error: "Render failed.", quality: "premium", failedStage: "render" });
     expect(await (await tick()).json()).toEqual({ ok: true, settled: "failed" });
@@ -247,6 +254,13 @@ describe("POST …/website/[siteId]/poll-now — the manual re-check", () => {
     gitpageSays({ status: "failed", error: "Deploy failed.", quality: "premium", failedStage: "deploy" });
     expect(await (await recheck()).json()).toEqual({ ok: true, settled: "failed", errorMessage: "Deploy failed." });
     expect(mem.read(SITE)).toMatchObject({ status: "failed", errorMessage: "Deploy failed.", statusPhase: "deploy" });
+  });
+
+  it("still finishes a build after the workspace's website gate is switched off", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: false });
+    gitpageSays(PUBLISHED);
+    expect(await (await recheck()).json()).toMatchObject({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject({ status: "ready" });
   });
 
   it("leaves an already-live site alone", async () => {

@@ -92,8 +92,13 @@ export class WebsiteServiceError extends Error {
 const GATE_OFF_MESSAGE =
   "The website builder is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.";
 
-/** Load the sub-account doc + enforce the agency website gate. */
-async function requireWebsiteEnabledSub(subAccountId: string): Promise<{
+/**
+ * Load the sub-account doc + enforce the agency website gate. Throws a
+ * `WebsiteServiceError` (403 gate off, 404 no such sub-account). Exported
+ * for the builder's own routes that do not go through create/build — the
+ * wizard draft save and the concepts proxy.
+ */
+export async function requireWebsiteEnabledSub(subAccountId: string): Promise<{
   agencyId: string;
   name: string | undefined;
   data: Record<string, unknown>;
@@ -453,6 +458,19 @@ async function runWebsiteHandoff(_input: {
  * read "building" — gets "noop" and runs nothing, so the hand-off cannot run
  * twice for one publish. (Upstream leaves this to each caller's own read of
  * the status, which two concurrent callers both pass.)
+ *
+ * The `websiteEnabledByAgency` gate is deliberately NOT checked here, nor in
+ * the three routes that end here (the QStash poll, Re-check now, the
+ * `build.settled` callback) — as upstream. The gate stops NEW work: create,
+ * build, the draft save and the concepts proxy all 403. A build submitted
+ * while the gate was on has already been accepted by gitpage and will
+ * publish there whatever we do; refusing to record that would leave the doc
+ * "building" forever, with a live site the card cannot show, and docs/
+ * architecture/feature-gates.md promises the published site is preserved
+ * when the gate goes off. So settling only makes the doc truthful.
+ * WS-3: the hand-off does new work in the workspace (chat allowlist, a
+ * workflow that messages leads) — decide there whether a gated-off
+ * workspace gets it.
  */
 export async function settleWebsiteBuild(input: {
   subAccountId: string;

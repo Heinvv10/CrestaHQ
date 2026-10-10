@@ -165,6 +165,12 @@ describe("POST /api/webhooks/gitpage/build-settled — what a signed callback ma
     expect(mem.read(SITE)).toMatchObject({ status: "failed", errorMessage: "Deploy failed.", statusPhase: "deploy" });
   });
 
+  it("still settles a build whose workspace has had the website gate switched off since", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: false });
+    expect(await (await signed()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: "https://acme.gitlab.io/site" });
+  });
+
   it("ignores a duplicate delivery once the site has settled", async () => {
     await signed();
     const settled = mem.read(SITE);

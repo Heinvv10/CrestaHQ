@@ -30,6 +30,9 @@ export const dynamic = "force-dynamic";
  *
  * Returns the resolved/intermediate state so the caller can update the UI
  * without waiting for Firestore to fan-out.
+ *
+ * No `websiteEnabledByAgency` check, on purpose (there has never been one
+ * here): it only finishes a build already accepted. Why: settleWebsiteBuild.
  */
 
 const POLL_INTERVAL_SECONDS = 20;

@@ -57,8 +57,8 @@ beforeEach(() => {
   process.env.GITPAGE_API_KEY = KEY;
   process.env.GITPAGE_API_URL = "https://gitpage.test";
   mem.clear();
-  mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme" });
-  mem.seed("subAccounts/sa2", { agencyId: "ag1", name: "Sibling" });
+  mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: true });
+  mem.seed("subAccounts/sa2", { agencyId: "ag1", name: "Sibling", websiteEnabledByAgency: true });
   mem.seed("subAccounts/sa1/subAccountMembers/u_member", { role: "member", status: "active" });
   mem.seed("subAccounts/sa1/subAccountMembers/u_suspended", { role: "member", status: "active" });
   fetchMock.mockReset().mockResolvedValue(Response.json({ concepts: [CARD] }));
@@ -111,6 +111,25 @@ describe("GET /api/sub-accounts/[id]/website/concepts", () => {
     expect((await get({ uid: "u_suspended" })).status).toBe(403);
     expect((await get({ subAccountId: "nope" })).status).toBe(404);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["switched off", { websiteEnabledByAgency: false }],
+    ["never set", {}],
+  ])("refuses with the builder's 403 when the agency gate is %s, before calling gitpage", async (_label, gate) => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", ...gate });
+    for (const uid of ["u_member", "u_owner"]) {
+      const res = await get({ uid, niche: "gym_fitness" });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: expect.stringContaining("website builder is disabled") });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("the gate is the workspace's own: a sibling with the builder on does not open it", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: false });
+    expect((await get({ uid: "u_owner", subAccountId: "sa1" })).status).toBe(403);
+    expect((await get({ uid: "u_owner", subAccountId: "sa2" })).status).toBe(200);
   });
 
   it("refuses an unknown niche rather than forwarding it", async () => {

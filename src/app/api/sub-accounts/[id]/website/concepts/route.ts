@@ -8,6 +8,10 @@ import {
   gitpageIsConfigured,
 } from "@/lib/gitpage/client";
 import { isNicheKey } from "@/lib/website/niches";
+import {
+  requireWebsiteEnabledSub,
+  WebsiteServiceError,
+} from "@/lib/server/websites-service";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +22,10 @@ export const dynamic = "force-dynamic";
  * studio-style design directions per niche) for the website builder's
  * concept picker. Member-auth; the agency's gitpage key never reaches the
  * browser. `niche` omitted/blank = the generic (no-niche) concepts.
+ *
+ * Behind the `websiteEnabledByAgency` gate like create and build (upstream
+ * has no check here): the call spends the agency's gitpage key, and the
+ * picker it feeds is part of a builder the workspace does not have.
  */
 export async function GET(
   request: Request,
@@ -26,6 +34,15 @@ export async function GET(
   const { id: subAccountId } = await ctx.params;
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) return access;
+
+  try {
+    await requireWebsiteEnabledSub(subAccountId);
+  } catch (err) {
+    if (err instanceof WebsiteServiceError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
   if (!gitpageIsConfigured()) {
     return NextResponse.json(

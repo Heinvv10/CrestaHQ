@@ -36,6 +36,9 @@ export const dynamic = "force-dynamic";
  * five minutes so a 20-minute premium build costs ~40 ticks, not 60.
  * Terminal states are handed to `settleWebsiteBuild`, the same handler the
  * `build.settled` callback uses — so premium hand-off runs exactly once.
+ *
+ * No `websiteEnabledByAgency` check, on purpose: a build accepted while the
+ * gate was on is polled to its end after it goes off. Why: settleWebsiteBuild.
  */
 
 interface PollPayload {

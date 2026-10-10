@@ -22,6 +22,9 @@ export const dynamic = "force-dynamic";
  * arrives first settles the doc; the other sees a non-in-flight status and
  * no-ops. Always 200 on anything but a bad signature so gitpage never
  * retry-storms.
+ *
+ * No `websiteEnabledByAgency` check, on purpose: a build accepted while the
+ * gate was on still settles after it goes off. Why: settleWebsiteBuild.
  */
 export async function POST(request: Request) {
   const apiKey = process.env.GITPAGE_API_KEY;

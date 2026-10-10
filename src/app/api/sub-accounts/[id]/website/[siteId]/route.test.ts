@@ -49,7 +49,7 @@ const seedSite = (status: string) =>
 
 beforeEach(() => {
   mem.clear();
-  mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme" });
+  mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: true });
   mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "admin", status: "active" });
   mem.seed("subAccounts/sa1/subAccountMembers/u_member", { role: "member", status: "active" });
 });
@@ -102,6 +102,19 @@ describe("PATCH /api/sub-accounts/[id]/website/[siteId] — draft save", () => {
   it("answers 404 for a site that does not exist in this sub-account", async () => {
     seedSite("draft");
     expect((await patch({ config: { heading: "After" } }, { siteId: "nope" })).status).toBe(404);
+  });
+
+  it.each([
+    ["switched off", { websiteEnabledByAgency: false }],
+    ["never set", {}],
+  ])("refuses with the builder's 403 when the agency gate is %s, saving nothing", async (_label, gate) => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", ...gate });
+    seedSite("draft");
+    const before = mem.read(SITE);
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: expect.stringContaining("website builder is disabled") });
+    expect(mem.read(SITE)).toEqual(before);
   });
 
   it("is admin-only: no session, a non-admin member and another agency's user are all refused", async () => {
