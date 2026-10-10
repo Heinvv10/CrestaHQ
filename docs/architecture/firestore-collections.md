@@ -281,6 +281,17 @@ and provider. Disconnect atomically deletes the secret and selects Resend.
 docs written before the move; `scripts/migrate-private-credentials.ts` copies
 those into the private docs and deletes the legacy fields.
 
+### Browser dialer (softphone)
+`subAccounts/{id}/private/dialer {apiKeySid, apiKeySecret, twimlAppSid, createdAt}`
+(`DialerPrivateDoc`) holds the Twilio API key and TwiML App the provisioning
+route (`POST /api/sub-accounts/[id]/dialer`) minted on the sub-account's own
+Twilio account. Admin SDK only under the `private/{docId}` deny rule; written
+by that route, deleted by its `DELETE`. The parent carries only the
+non-secret `dialerConfig {enabled, recordCalls}` (`DialerConfig`, server-written).
+Calls log a `call_placed` activity at `contacts/{id}/activities/dialer_{CallSid}`,
+written by the dialer TwiML webhook and updated by its status callback. No new
+index. See [dialer.md](../features/dialer.md).
+
 ### Workspace mailbox and email conversations
 
 `subAccounts/{id}/private/mailboxConnection` stores verified IMAPS credentials,
