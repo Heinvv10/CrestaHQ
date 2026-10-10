@@ -106,23 +106,53 @@ describe("verifyQStashSignature", () => {
     expect(await verify(sign("sig_some_other_account_key", URL_, BODY), BODY, URL_)).toBe(false);
   });
 
-  it("ignores a half-configured legacy pair, and never logs a key", async () => {
+  it("ignores a half-configured legacy pair: the same legacy call that passes with both keys is refused, with one warning", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    withLegacy();
+    const legacySigned = sign(LEGACY.current, URL_, BODY);
+    expect(await (await load())(legacySigned, BODY, URL_)).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+
     for (const [current, next] of [
       [LEGACY.current, ""],
       ["", LEGACY.next],
+      [LEGACY.current, "   "],
+      ["\t ", LEGACY.next],
     ]) {
+      warn.mockClear();
       vi.stubEnv("QSTASH_LEGACY_CURRENT_SIGNING_KEY", current);
       vi.stubEnv("QSTASH_LEGACY_NEXT_SIGNING_KEY", next);
       const verify = await load();
-      // Signed with whichever legacy key IS set: still refused.
-      expect(await verify(sign(current || next, URL_, BODY), BODY, URL_)).toBe(false);
+      // Signed with whichever legacy key IS still set: refused, because the pair is ignored.
+      const signedWithRemaining = sign(current.trim() || next.trim(), URL_, BODY);
+      expect(await verify(signedWithRemaining, BODY, URL_)).toBe(false);
+      expect(await verify(legacySigned, BODY, URL_)).toBe(false);
       expect(await verify(sign(PRIMARY.current, URL_, BODY), BODY, URL_)).toBe(true);
+      // Warned exactly once per process, naming the variables and no key.
+      expect(warn).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify(warn.mock.calls);
+      expect(logged).toContain("QSTASH_LEGACY_CURRENT_SIGNING_KEY");
+      for (const key of [...Object.values(PRIMARY), ...Object.values(LEGACY)]) {
+        expect(logged).not.toContain(key);
+      }
     }
-    const logged = JSON.stringify(warn.mock.calls);
-    for (const key of [...Object.values(PRIMARY), ...Object.values(LEGACY)]) {
-      expect(logged).not.toContain(key);
-    }
+  });
+
+  it("treats whitespace around legacy keys as not part of the key", async () => {
+    vi.stubEnv("QSTASH_LEGACY_CURRENT_SIGNING_KEY", ` ${LEGACY.current}\n`);
+    vi.stubEnv("QSTASH_LEGACY_NEXT_SIGNING_KEY", `${LEGACY.next} `);
+    const verify = await load();
+    expect(await verify(sign(LEGACY.current, URL_, BODY), BODY, URL_)).toBe(true);
+    expect(await verify(sign(LEGACY.next, URL_, BODY), BODY, URL_)).toBe(true);
+  });
+
+  it("is silent and refuses legacy calls when both legacy keys are blank or whitespace", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("QSTASH_LEGACY_CURRENT_SIGNING_KEY", "  ");
+    vi.stubEnv("QSTASH_LEGACY_NEXT_SIGNING_KEY", "");
+    const verify = await load();
+    expect(await verify(sign(LEGACY.current, URL_, BODY), BODY, URL_)).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("refuses everything when the primary pair is unset, even with a legacy pair", async () => {

@@ -53,8 +53,9 @@ function getReceiver(): Receiver | null {
  * must be set; one alone is ignored.
  */
 function getLegacyReceiver(): Receiver | null {
-  const current = process.env.QSTASH_LEGACY_CURRENT_SIGNING_KEY;
-  const next = process.env.QSTASH_LEGACY_NEXT_SIGNING_KEY;
+  // Trimmed like the health check and env schema: whitespace-only = unset.
+  const current = process.env.QSTASH_LEGACY_CURRENT_SIGNING_KEY?.trim();
+  const next = process.env.QSTASH_LEGACY_NEXT_SIGNING_KEY?.trim();
   if (!current || !next) {
     if ((current || next) && !_legacyHalfWarned) {
       _legacyHalfWarned = true;
