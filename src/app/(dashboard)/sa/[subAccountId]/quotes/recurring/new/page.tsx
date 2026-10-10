@@ -35,9 +35,12 @@ export default function NewRecurringInvoicePage() {
   const { contacts } = useSubAccountContacts();
   const [products, setProducts] = useState<Product[]>([]);
   const [contactId, setContactId] = useState(searchParams.get("contactId") ?? "");
-  const [schedule, setSchedule] = useState<ScheduleFormValues>(() =>
-    defaultScheduleValues(subAccount?.timezone ?? "UTC"),
-  );
+  // Defaults follow the workspace doc until the operator edits the schedule:
+  // on a hard load the doc arrives after mount, and defaults captured at mount
+  // would bill in UTC instead of the workspace's timezone.
+  const [editedSchedule, setSchedule] = useState<ScheduleFormValues | null>(null);
+  const schedule =
+    editedSchedule ?? defaultScheduleValues(subAccount?.timezone ?? "UTC");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
