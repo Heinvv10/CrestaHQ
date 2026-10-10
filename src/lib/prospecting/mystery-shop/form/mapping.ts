@@ -80,8 +80,9 @@ export function roleOf(f: Pick<FormField, "tag" | "type" | "hint" | "named">): F
   if (f.type === "tel" || /phone|\btel\b|mobile|cell|whatsapp|contact number|nommer|selfoon/.test(h)) return "phone";
   if (/first.?name|\bfname\b|given.?name|voornaam/.test(h)) return "first";
   if (/last.?name|\blname\b|surname|family.?name|\bvan\b/.test(h)) return "last";
-  // The town is read from what the field IS, never its placeholder; "business city" is ambiguous: no role.
-  if (TOWN.test(f.named) && COMPANY.test(f.named)) return null;
+  // The town is read from what the field IS, never its placeholder. A town field that mentions a business
+  // anywhere ("business city", or "City" with "e.g. near the business park") is ambiguous: no role.
+  if (TOWN.test(f.named) && COMPANY.test(h)) return null;
   if (COMPANY.test(h)) return "company";
   if (/subject|topic|onderwerp/.test(h)) return "subject";
   if (f.tag === "input" && TOWN.test(f.named) && !NOT_TOWN.test(f.named)) return "town";

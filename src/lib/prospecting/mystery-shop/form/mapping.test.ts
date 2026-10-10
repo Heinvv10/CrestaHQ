@@ -70,6 +70,12 @@ describe("roleOf", () => {
     expect(plan([field("business city", { required: true }), field("m", { tag: "textarea" })])).toMatchObject({
       ok: false, code: "unmapped_required", reason: "Required fields it can't fill: business city.",
     });
+    // The business word only in the placeholder: still ambiguous, never the business name typed into a City field.
+    const city = field("city | e.g. near the business park | city", { named: "city | city", required: true });
+    expect(roleOf(city)).toBeNull();
+    expect(plan([city, field("m", { tag: "textarea" })])).toEqual({
+      ok: false, code: "unmapped_required", reason: "Required fields it can't fill: city.",
+    });
   });
 
   it("a textarea is the message unless it says it is an address", () => {
