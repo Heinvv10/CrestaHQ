@@ -80,13 +80,16 @@ export type Outcome =
   | { signal: "navigation" | "thank_you" | "post_2xx"; finalUrl: string }
   | { captcha: string }
   | { rejected: string }
+  | { refusedLate: string }
   | null;
 
 /**
  * After the click, for up to `confirmMs`. A signal counts only once a request
  * carrying the enquiry was answered 2xx/3xx (`carrierOk`); a 2xx that says the
  * site refused it is `rejected`; a CAPTCHA appearing, or the page outgrowing
- * its budget, means it cannot be called sent (null / captcha → uncertain).
+ * its budget, means it cannot be called sent (null / captcha → uncertain) —
+ * and so does a refusal that only came after the site had taken the enquiry
+ * (`refusedLate`): never `rejected`, which would invite a second enquiry.
  * A navigation or thank-you text is reported as soon as it is seen; a bare 2xx
  * (`post_2xx`) only once RENDER_MS has passed without either, or the window
  * closes — never later than `confirmMs`.
@@ -97,7 +100,9 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
   const captchaNow = async () => (await captchaMarker(page, state)).marker;
   const settled = async (seen: NonNullable<Outcome>): Promise<Outcome> => {
     const late = await captchaNow();
-    return late ? { captcha: late } : state.rejected ? { rejected: state.rejected } : seen;
+    if (late) return { captcha: late };
+    if (state.rejected) return { rejected: state.rejected };
+    return state.refusedLate ? { refusedLate: state.refusedLate } : seen;
   };
   /** When a bare 2xx was first all there was to go on. */
   let postSeenAt: number | null = null;
@@ -107,6 +112,7 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
     const marker = await captchaNow();
     if (marker) return { captcha: marker };
     if (state.rejected) return { rejected: state.rejected };
+    if (state.refusedLate) return { refusedLate: state.refusedLate };
     if (state.tooHeavy) return null;
     if (state.prgPage) {
       const n = await bounded(page.evaluate(PRG_CONFIRM_SCRIPT).catch(() => -1));

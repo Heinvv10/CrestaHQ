@@ -86,6 +86,8 @@ export interface GuardState {
   carrierOk: string | null;
   /** After the click: a 2xx answer to the enquiry that says the site refused it. */
   rejected: string | null;
+  /** After the click: such a refusal, but answered after `postOk` — the enquiry had already been taken (checks.ts). */
+  refusedLate: string | null;
   /** The job's budget: requests routed, response bytes, and whether a main document hit it. */
   requests: number;
   bytes: number;
@@ -99,8 +101,8 @@ export interface GuardState {
 export function newGuardState(): GuardState {
   return {
     blocked: null, fetchError: null, mainDocuments: 0, tooManyRedirects: false, redirect: null, captcha: null,
-    clickedAt: null, postsOut: 0, prgPage: null, postOk: null, carrierOk: null, rejected: null, requests: 0, bytes: 0, tooHeavy: false,
-    navigatedTo: null, formUrl: null,
+    clickedAt: null, postsOut: 0, prgPage: null, postOk: null, carrierOk: null, rejected: null, refusedLate: null, requests: 0, bytes: 0,
+    tooHeavy: false, navigatedTo: null, formUrl: null,
   };
 }
 
@@ -265,7 +267,8 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
       // Only a 2xx to the enquiry (after at most one re-POST) counts; a 3xx never does.
       if (carrier && res.status >= 200 && res.status < 300) {
         state.carrierOk ??= finalUrl;
-        state.rejected ??= rejectionOf(body.subarray(0, 64 * 1024).toString("utf8"));
+        // A refusal after the site took the enquiry (its own retry, a second endpoint) is never `rejected`: that invites a second one.
+        state[state.postOk ? "refusedLate" : "rejected"] ??= rejectionOf(body.subarray(0, 64 * 1024).toString("utf8"));
         if (known) state.postOk ??= finalUrl;
       }
       if (main && res.status >= 300 && res.status <= 399) {

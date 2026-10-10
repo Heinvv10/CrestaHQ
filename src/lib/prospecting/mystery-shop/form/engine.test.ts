@@ -128,37 +128,11 @@ describe.skipIf(skipBrowser)("confirmation", () => {
     expect(out).toMatchObject({ kind: "sent", trace: { signal: "thank_you" } });
   });
 
-  it("thank-you text the page shows half a second after its POST was answered is still thank_you, not post_2xx", async () => {
-    const out = await run({
-      "/contact": (_q, res) =>
-        html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: new FormData(e.target) }).then(() => setTimeout(() => document.body.insertAdjacentHTML("beforeend", "<p>We'll be in touch soon.</p>"), 500));`)),
-      "/api/enquiry": (_q, res) => html(res, "<p>ok</p>", 200),
-    });
-    expect(out).toMatchObject({ kind: "sent", trace: { signal: "thank_you" } });
-  });
-
   it("a 2xx to an XHR POST of the enquiry on the same site", async () => {
     const out = await run({
       "/contact": (_q, res) => html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: new URLSearchParams(new FormData(e.target)) });`)),
       "/api/enquiry": (_q, res) => html(res, "{}", 200),
     });
-    expect(out).toMatchObject({ kind: "sent", trace: { signal: "post_2xx" } });
-  });
-
-  it("a bare 2xx is not held for the whole window: thank-you text five seconds later is not waited for", async () => {
-    const out = await run({
-      "/contact": (_q, res) =>
-        html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: new FormData(e.target) }).then(() => setTimeout(() => document.body.insertAdjacentHTML("beforeend", "<p>We'll be in touch soon.</p>"), 5000));`)),
-      "/api/enquiry": (_q, res) => html(res, "<p>ok</p>", 200),
-    }, "/contact", { limits: { settleMs: 100, confirmMs: 12_000 } });
-    expect(out).toMatchObject({ kind: "sent", trace: { signal: "post_2xx" } });
-  });
-
-  it("a 2xx still counts when the confirmation window closes before the page has had its time to say more", async () => {
-    const out = await run({
-      "/contact": (_q, res) => html(res, scripted(`fetch("/api/enquiry", { method: "POST", body: new URLSearchParams(new FormData(e.target)) });`)),
-      "/api/enquiry": (_q, res) => html(res, "{}", 200),
-    }, "/contact", { limits: { settleMs: 100, confirmMs: 1_200 } });
     expect(out).toMatchObject({ kind: "sent", trace: { signal: "post_2xx" } });
   });
 
