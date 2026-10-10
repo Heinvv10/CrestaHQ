@@ -36,7 +36,7 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     surfaces: ["chat", "agent"],
     menuLabel: "Pause, draft or activate a workflow (a person approves activating)",
     description:
-      "Set a workflow's status: `paused` or `draft` stop it at once; `active` is queued for a sub-account admin to approve, showing the exact trigger and steps that will run.",
+      "Set a workflow's status: `paused` or `draft` stop it at once; `active` is queued for a sub-account admin to approve, showing the exact trigger and steps that will run. In the in-app assistant `active` is refused: the admin activates it on the workflow's page.",
     parameters: {
       type: "object",
       properties: { workflowId: workflowIdParam, status: { type: "string", enum: [...STATUSES] } },
@@ -67,6 +67,16 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const status = args.status as WorkflowStatus;
+      // Chat (no API key, nothing approved) never activates: activating needs
+      // a person to review the exact trigger and steps (the agent path's
+      // pinned preview and fingerprint check), which a chat card doesn't show.
+      if (status === "active" && !ctx.apiKey && !ctx.approved) {
+        const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
+        const page = `${(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")}/sa/${ctx.subAccountId}/workflows/${wf.id}`;
+        throw new CapabilityUserError(
+          `Activating a workflow needs a person to review its exact trigger and steps, so I can't do it from here. Open the workflow and activate it there: ${page}`
+        );
+      }
       const done = await updateWorkflowGuarded({
         subAccountId: ctx.subAccountId!,
         workflowId: args.workflowId as string,

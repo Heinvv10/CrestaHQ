@@ -25,6 +25,8 @@ const { availableOn, getCapability, CapabilityUserError } = await import("@/lib/
 const { FORM_TRIGGERED_TEMPLATES } = await import("./workflows");
 const { createWorkflowServerSide } = await import("@/lib/server/workflows-service");
 const { WORKFLOW_TEMPLATES } = await import("./helpers");
+const { workflowFingerprint } = await import("./workflow-support");
+const { getWorkflow } = await import("@/lib/server/workflows-service");
 
 const ctx = { uid: "u_admin", email: "admin@x.io", displayName: "", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin" };
 const run = async (name: string, args: Record<string, unknown>) => {
@@ -122,5 +124,21 @@ describe("test_workflow", () => {
     const v = getCapability("test_workflow")!.validate;
     expect(v({ workflowId: "wf1" }).ok).toBe(false);
     expect(v({ workflowId: "wf1", contactId: "c1/scheduledMessages/s1" }).ok).toBe(false);
+  });
+});
+
+describe("set_workflow_status active on the agent surface is unchanged", () => {
+  it("queues an approval proposal and writes nothing to the workflow", async () => {
+    const r = await dispatchAgentTool(auth, "set_workflow_status", { workflowId: "wf1", status: "active" });
+    expect(r).toMatchObject({ ok: true, proposal: { status: "pending" } });
+    expect(mem.list("agentProposals")).toHaveLength(1);
+    expect(mem.read("workflows/wf1")!.status).toBe("draft");
+  });
+
+  it("the approved execute (pinned fingerprint) still activates", async () => {
+    const wf = (await getWorkflow("sa1", "wf1"))!;
+    const approvedCtx = { ...ctx, approved: { pinned: { workflowId: "wf1", fingerprint: workflowFingerprint(wf) } } };
+    await getCapability("set_workflow_status")!.execute(approvedCtx, { workflowId: "wf1", status: "active" });
+    expect(mem.read("workflows/wf1")!.status).toBe("active");
   });
 });

@@ -89,6 +89,18 @@ describe("an admin in chat", () => {
     expect(mem.read("workflows/wf_active")!.status).toBe("paused");
   });
 
+  it("set_workflow_status active is refused in chat, pointing at the workflow page; nothing written", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.example.com");
+    const before = JSON.stringify(mem.all());
+    const res = await doConfirm("set_workflow_status", { workflowId: "wf_draft", status: "active" });
+    expect(res.status).toBe(400);
+    const { error } = await res.json();
+    expect(error).toContain("needs a person to review its exact trigger and steps");
+    expect(error).toContain("https://crm.example.com/sa/sa1/workflows/wf_draft");
+    expect(JSON.stringify(mem.all())).toBe(before);
+    vi.unstubAllEnvs();
+  });
+
   it("update_workflow still refuses an active workflow, saying to pause it first (no approval queue in chat)", async () => {
     const res = await doConfirm("update_workflow", { workflowId: "wf_active", name: "Renamed" });
     expect(res.status).toBe(400);
