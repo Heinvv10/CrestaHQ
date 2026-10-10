@@ -162,18 +162,29 @@ export async function GET(
   }
 
   const fresh = await getSendingDomain(cfg.domainId);
-  // Sync the stored status from this read-only check. Resend verifies
-  // asynchronously, so a plain record refresh advances the stepper — without
-  // the Verify button, which RE-TRIGGERS a full check. Writes only on change.
-  if (fresh.ok && fresh.status !== cfg.status) {
+  // Promote a pending domain to verified from this read-only check, so the
+  // stepper advances without the Verify button (which re-triggers a full
+  // check). UPGRADE ONLY: Resend's transient statuses map to "pending", and a
+  // GET must never demote a verified domain (tenantFrom would fall back to the
+  // shared sender). The transaction re-reads the doc so a domain replaced or a
+  // config deleted mid-call is never written to or recreated.
+  if (fresh.ok && fresh.status === "verified" && cfg.status !== "verified") {
+    const ref = getAdminDb().doc(`subAccounts/${subAccountId}`);
     try {
-      await getAdminDb()
-        .doc(`subAccounts/${subAccountId}`)
-        .update({
-          "resendConfig.status": fresh.status,
+      await getAdminDb().runTransaction(async (tx) => {
+        const current = (await tx.get(ref)).data()?.resendConfig as
+          | ResendConfig
+          | null
+          | undefined;
+        if (current?.domainId !== cfg.domainId || current.status !== cfg.status) {
+          return;
+        }
+        tx.update(ref, {
+          "resendConfig.status": "verified",
           "resendConfig.lastValidatedAt": new Date(),
           updatedAt: FieldValue.serverTimestamp(),
         });
+      });
     } catch (err) {
       console.error("[sub-accounts/resend] status sync failed", subAccountId, err);
     }
