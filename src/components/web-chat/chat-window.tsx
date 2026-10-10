@@ -8,6 +8,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
+import { textOnAccent } from "@/components/web-chat/contrast";
 
 /**
  * Self-contained chat widget rendered inside the /embed/chat/[saId]
@@ -92,6 +93,8 @@ const WAITING_NOTE = "Thanks for waiting — we'll follow up as soon as we can."
 
 export function ChatWindow(props: ChatWindowProps) {
   const { subAccountId, welcomeMessage, accentColor, embedded } = props;
+  // Light accents (yellow, lime, pastels) need dark text, not white.
+  const onAccent = useMemo(() => textOnAccent(accentColor), [accentColor]);
 
   const [sessionId, setSessionId] = useState<string>("");
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -416,7 +419,7 @@ export function ChatWindow(props: ChatWindowProps) {
         }
         .lswc-bubble-user {
           background: ${accentColor};
-          color: white;
+          color: ${onAccent};
           align-self: flex-end;
           border-bottom-right-radius: 4px;
         }
@@ -447,7 +450,7 @@ export function ChatWindow(props: ChatWindowProps) {
       <div
         style={{
           background: accentColor,
-          color: "white",
+          color: onAccent,
           padding: "14px 16px",
           display: "flex",
           alignItems: "center",
@@ -461,7 +464,7 @@ export function ChatWindow(props: ChatWindowProps) {
               width: 32,
               height: 32,
               borderRadius: "50%",
-              background: "rgba(255,255,255,0.2)",
+              background: onAccent === "#ffffff" ? "rgba(255,255,255,0.2)" : "rgba(15,23,42,0.08)",
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
@@ -485,7 +488,7 @@ export function ChatWindow(props: ChatWindowProps) {
             aria-label="Close chat"
             style={{
               background: "transparent",
-              color: "white",
+              color: onAccent,
               border: 0,
               cursor: "pointer",
               fontSize: 22,
@@ -589,7 +592,7 @@ export function ChatWindow(props: ChatWindowProps) {
           aria-label="Send"
           style={{
             background: accentColor,
-            color: "white",
+            color: onAccent,
             border: 0,
             borderRadius: 10,
             padding: "0 16px",
@@ -632,6 +635,7 @@ function InlineCaptureForm(props: {
   onSkip: () => void;
 }) {
   const { fields, accentColor, onSubmit, onSkip } = props;
+  const onAccent = textOnAccent(accentColor);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -734,7 +738,7 @@ function InlineCaptureForm(props: {
           style={{
             flex: 1,
             background: accentColor,
-            color: "white",
+            color: onAccent,
             border: 0,
             borderRadius: 8,
             padding: "9px 12px",
