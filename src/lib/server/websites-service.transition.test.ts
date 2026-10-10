@@ -103,6 +103,37 @@ describe("transitionWebsite", () => {
     expect(mem.read(SITE)).toBeUndefined();
   });
 
+  it("counts the cap in the sub-account the doc is written under, whatever the patch says", async () => {
+    mem.clear();
+    // sa1 is full; sa2 is empty. The doc path is in sa1.
+    for (let i = 1; i <= 5; i++) mem.seed(`subAccounts/sa1/website/s${i}`, { id: `s${i}`, subAccountId: "sa1", status: "draft" });
+    await expect(
+      transitionWebsite(
+        ref(),
+        { fromStatuses: ["draft"], orMissing: true },
+        { agencyId: "ag1", subAccountId: "sa2", status: "queued" },
+      ),
+    ).rejects.toThrow(/without agencyId and subAccountId/);
+    expect(mem.read(SITE)).toBeUndefined();
+    expect(mem.list("subAccounts/sa1/website")).toHaveLength(5);
+  });
+
+  it.each([
+    ["a nested collection under a site", "subAccounts/sa1/website/x/y/z"],
+    ["another collection", "subAccounts/sa1/forms/f1"],
+    ["a top-level collection", "website/site1"],
+  ])("refuses to create a doc in %s", async (_label, path) => {
+    mem.clear();
+    await expect(
+      transitionWebsite(
+        mem.db.doc(path) as unknown as FirebaseFirestore.DocumentReference,
+        { fromStatuses: ["draft"], orMissing: true },
+        { agencyId: "ag1", subAccountId: "sa1", status: "queued" },
+      ),
+    ).rejects.toThrow(/refusing to create a site doc at/);
+    expect(mem.all()).toEqual([]);
+  });
+
   it("holds a creation to the sub-account's site cap", async () => {
     mem.clear();
     for (let i = 1; i <= 5; i++) mem.seed(`subAccounts/sa1/website/s${i}`, { id: `s${i}`, subAccountId: "sa1", status: "draft" });

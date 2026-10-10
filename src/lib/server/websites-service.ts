@@ -19,6 +19,7 @@ import {
 } from "@/lib/gitpage/heartbeat";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import type { PollBuildResult } from "@/lib/gitpage/client";
+import { isDocId } from "@/lib/server/doc-id";
 import {
   blankWebsiteConfig,
   effectiveQuality,
@@ -103,33 +104,73 @@ const BUSY_RETRY_AFTER_SEC = 5;
  */
 async function reserveBuildSubmit(
   subAccountId: string,
-): Promise<{ ok: true } | { ok: false; retryAfterSec: number; busy?: true }> {
+): Promise<{ ok: true; windowStart: number } | { ok: false; retryAfterSec: number; busy?: true }> {
   const db = getAdminDb();
   const ref = db.doc(websiteLimitsPath(subAccountId));
   const reserve = () => db.runTransaction(async (tx) => {
     const cur = (await tx.get(ref)).data() as { windowStart?: unknown; count?: unknown } | undefined;
     const now = Date.now();
+    // A window is open for an hour from its start. A start slightly in the
+    // future is another instance's clock running ahead and is still this
+    // window; one an hour or more away is not a window at all.
     const windowStart =
-      typeof cur?.windowStart === "number" && now - cur.windowStart < BUILD_WINDOW_MS
+      typeof cur?.windowStart === "number" &&
+      Number.isFinite(cur.windowStart) &&
+      Math.abs(now - cur.windowStart) < BUILD_WINDOW_MS
         ? cur.windowStart
         : null;
-    const count = windowStart !== null && typeof cur?.count === "number" ? cur.count : 0;
-    if (windowStart !== null && count >= WEBSITE_BUILDS_PER_HOUR) {
-      const left = windowStart + BUILD_WINDOW_MS - now;
+    // Inside an open window a count that is not a whole number ≥ 0 is not
+    // read as "none used": it is read as "all used" (fails closed).
+    const stored = cur?.count;
+    const count =
+      windowStart === null
+        ? 0
+        : typeof stored === "number" && Number.isInteger(stored) && stored >= 0
+          ? stored
+          : WEBSITE_BUILDS_PER_HOUR;
+    if (count >= WEBSITE_BUILDS_PER_HOUR) {
+      const left = (windowStart ?? now) + BUILD_WINDOW_MS - now;
       return { ok: false, retryAfterSec: Math.max(1, Math.ceil(left / 1000)) } as const;
     }
+    const start = windowStart ?? now;
     tx.set(
       ref,
-      { windowStart: windowStart ?? now, count: count + 1, updatedAt: FieldValue.serverTimestamp() },
+      { windowStart: start, count: count + 1, updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
-    return { ok: true } as const;
+    return { ok: true, windowStart: start } as const;
   });
   try {
     return await reserve();
   } catch (err) {
     if (!isContention(err)) throw err;
     return { ok: false, retryAfterSec: BUSY_RETRY_AFTER_SEC, busy: true };
+  }
+}
+
+/**
+ * Give back a reservation whose submit never reached gitpage (the request
+ * itself threw: no connection, DNS, a reset). Ten of those in a row would
+ * otherwise lock a workspace out for an hour over an outage it did not
+ * cause and that cost gitpage nothing. Only ever one, only in the window
+ * the reservation was counted in (a new window's count is not ours to
+ * touch), never below zero, and in a transaction so concurrent releases and
+ * reservations cannot lose each other's updates. A release that cannot be
+ * made is dropped: the submit stays counted, which is the safe side.
+ */
+async function releaseBuildSubmit(subAccountId: string, windowStart: number): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(websiteLimitsPath(subAccountId));
+  try {
+    await db.runTransaction(async (tx) => {
+      const cur = (await tx.get(ref)).data() as { windowStart?: unknown; count?: unknown } | undefined;
+      if (cur?.windowStart !== windowStart) return;
+      const count = cur.count;
+      if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) return;
+      tx.set(ref, { count: count - 1, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    });
+  } catch (err) {
+    console.warn(`[website/build] could not release a build reservation sa=${subAccountId}`, err);
   }
 }
 
@@ -215,9 +256,20 @@ export async function transitionWebsite(
     const snap = await tx.get(docRef);
     if (!snap.exists) {
       if (!guard.orMissing) return { applied: false, reason: "missing" } as const;
-      // A doc this helper creates is a tenant doc like any other.
-      const { agencyId, subAccountId } = patch;
-      if (typeof agencyId !== "string" || !agencyId || typeof subAccountId !== "string" || !subAccountId) {
+      // The cap is counted where the doc will be WRITTEN: the sub-account
+      // comes from the doc's own path, never from the patch, and the path
+      // must be exactly subAccounts/{id}/website/{siteId} — a site id that
+      // is really a path ("x/y/z") would create a doc in a nested
+      // collection that the count never sees.
+      const at = /^subAccounts\/([^/]+)\/website\/[^/]+$/.exec(docRef.path);
+      if (!at) {
+        throw new Error(`transitionWebsite: refusing to create a site doc at ${docRef.path}`);
+      }
+      const subAccountId = at[1];
+      // A doc this helper creates is a tenant doc like any other, stamped
+      // with the sub-account it lives under.
+      const { agencyId } = patch;
+      if (typeof agencyId !== "string" || !agencyId || patch.subAccountId !== subAccountId) {
         throw new Error("transitionWebsite: refusing to create a site doc without agencyId and subAccountId");
       }
       if (!(await siteSlotFree(tx, subAccountId)).free) {
@@ -486,6 +538,12 @@ export async function submitWebsiteBuildForSubAccount(input: {
   buildByUid: string;
 }): Promise<{ formResponseId: string; estimatedDurationSeconds?: number }> {
   const { subAccountId, siteId, config } = input;
+  // Ids, never paths. Both go into Firestore paths below; a site id like
+  // "x/y/z" would address (and, on a first build, create) a doc in a nested
+  // collection that the site cap does not count.
+  if (!isDocId(subAccountId) || !isDocId(siteId)) {
+    throw new WebsiteServiceError("Website not found.", 404);
+  }
   const { agencyId, name: subAccountName } =
     await requireWebsiteEnabledSub(subAccountId);
 
@@ -577,6 +635,12 @@ export async function submitWebsiteBuildForSubAccount(input: {
       editorEmail,
     });
   } catch (err) {
+    // Any HTTP answer from gitpage — 4xx and 5xx included — keeps its
+    // reservation: gitpage was reached. Only a request that itself threw
+    // gives it back.
+    if (!(err instanceof GitpageError)) {
+      await releaseBuildSubmit(subAccountId, rate.windowStart);
+    }
     if (err instanceof GitpageError) {
       // 401 means the API key is invalid (rotated upstream, never set,
       // typo'd). Flip the cached status so the UI surfaces the correct CTA.
