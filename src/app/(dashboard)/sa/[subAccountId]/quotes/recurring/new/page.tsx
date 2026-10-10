@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { QuoteBuilder, type QuoteFormValues } from "@/components/quotes/quote-builder";
 import { RecurringScheduleFields } from "@/components/quotes/recurring-schedule-fields";
@@ -35,9 +35,14 @@ export default function NewRecurringInvoicePage() {
   const { contacts } = useSubAccountContacts();
   const [products, setProducts] = useState<Product[]>([]);
   const [contactId, setContactId] = useState(searchParams.get("contactId") ?? "");
-  const [schedule, setSchedule] = useState<ScheduleFormValues>(() =>
-    defaultScheduleValues(subAccount?.timezone ?? "UTC"),
-  );
+  // Defaults follow the workspace doc until the operator edits the schedule:
+  // on a hard load the doc arrives after mount, and defaults captured at mount
+  // would bill in UTC instead of the workspace's timezone. The first edit
+  // stores the whole schedule, so the form below waits for the doc — and
+  // stays mounted once it has one, or a later auth pass would drop the draft.
+  const [editedSchedule, setSchedule] = useState<ScheduleFormValues | null>(null);
+  const schedule =
+    editedSchedule ?? defaultScheduleValues(subAccount?.timezone ?? "UTC");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -136,7 +141,9 @@ export default function NewRecurringInvoicePage() {
         </div>
       )}
 
-      {contacts.length === 0 ? (
+      {subLoading && !subAccount ? (
+        <Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
+      ) : contacts.length === 0 ? (
         <Card className="p-5">
           <p className="text-sm text-muted-foreground">
             No contacts in this sub-account yet.{" "}
