@@ -454,13 +454,14 @@ async function handleSubmit(
   let dealId: string | null = null;
   if (form.settings.createDeal) {
     // The configured stage may have been deleted from the default pipeline
-    // since the form was saved; land on its first stage instead.
+    // since the form was saved; land on its first open stage instead (the
+    // first stage when every stage is terminal).
     const configuredStageId = form.settings.pipelineStageId ?? "new";
     const stages = await readPipelineStages(subAccountId);
     const stageId =
       !stages || stages.some((s) => s.id === configuredStageId)
         ? configuredStageId
-        : (stages[0]?.id ?? configuredStageId);
+        : ((stages.find((s) => !s.terminal) ?? stages[0])?.id ?? configuredStageId);
     const title =
       interpolate(form.settings.dealTitleTemplate || "New lead", bag) ||
       "New lead";

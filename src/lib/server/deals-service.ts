@@ -550,12 +550,21 @@ export async function updateDealServerSide(opts: {
       nextTerminal === "lost" && write.lostReason
         ? ` — ${write.lostReason as string}`
         : "";
-    // A cross-pipeline move left a stage of the SOURCE pipeline.
+    // A cross-pipeline move left a stage of the SOURCE pipeline. The move
+    // has committed: a failed label read must not stop the emits below.
     const fromLabel =
       previousPipelineId === pipelineId
         ? getStage(previousStage, stages).label
         : ((
-            await readPipelineStages(existing.subAccountId as string, previousPipelineId)
+            await readPipelineStages(existing.subAccountId as string, previousPipelineId).catch(
+              (err) => {
+                console.warn(
+                  `[deals-service] source pipeline ${previousPipelineId} read failed for deal ${fresh.id}; activity shows the raw stage id`,
+                  err,
+                );
+                return null;
+              },
+            )
           )?.find((s) => s.id === previousStage)?.label ?? previousStage);
     await writePipelineActivity(data.contactId, {
       content: `Deal "${data.title}" moved from ${fromLabel} to ${getStage(toStage, stages).label}${reasonSuffix}`,
