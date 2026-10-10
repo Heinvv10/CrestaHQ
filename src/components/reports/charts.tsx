@@ -40,10 +40,15 @@ export function AreaChart({
   const ys = data.map((d) => (Number.isFinite(d.y) ? d.y : 0));
   const max = Math.max(0, ...ys);
   const scale = max > 0 ? max : 1;
+  // One decimal only when the data itself has fractions; a count series
+  // (all integers) must never show a "2.5" midpoint.
+  const hasFractions = ys.some((y) => !Number.isInteger(y));
   const fmt =
     formatValue ??
     ((v: number) =>
-      v.toLocaleString(undefined, { maximumFractionDigits: max < 10 ? 1 : 0 }));
+      v.toLocaleString(undefined, {
+        maximumFractionDigits: hasFractions && max < 10 ? 1 : 0,
+      }));
   const fmtAxis = formatAxis ?? fmt;
   // Axis labels: 0, midpoint, max. Never two identical labels in a row, and
   // an empty / all-zero series shows just "0".

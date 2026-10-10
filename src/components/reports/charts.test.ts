@@ -74,3 +74,13 @@ it("drops a midpoint label that formats the same as a neighbour", () => {
   const labels = axis(render({ data: [{ x: "a", y: 0 }, { x: "b", y: 1 }], formatValue: (v: number) => String(Math.round(v)) })).map((l) => l.t);
   expect(labels).toEqual(["0", "1"]);
 });
+
+it.each([
+  [[1, 0, 1], ["0", "1"]],
+  [[3, 0, 2], ["0", "2", "3"]],
+  [[5, 1], ["0", "3", "5"]],
+  [[0.4, 0.8], ["0", "0.4", "0.8"]],
+])("count series %j shows integer-only axis, fractions only for fractional data", (ys, want) => {
+  const d = (ys as number[]).map((y, i) => ({ x: String(i), y }));
+  expect(axis(render({ data: d })).map((l) => l.t)).toEqual(want);
+});
