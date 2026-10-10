@@ -23,10 +23,12 @@ const ALLOWED: Array<[string, string, string]> = [
   ["src/lib/audio/notification-sounds.ts", "void ctx.resume().catch(", "browser-only module (AudioContext); never runs on the server"],
 ];
 
-// A statement that starts with `void` and voids a call, an async IIFE, or a
-// chain continued on the next line. `void x;` (an unused-value marker) and an
-// arrow body `=> void x` are not statements of this shape.
-const BARE_VOID = /^void\s+(\(\s*async\b|[A-Za-z_$][\w$.]*\s*(\(|$))/;
+// A `void` statement that voids a call, an async IIFE, or a chain continued
+// on the next line, wherever a statement can begin: line start, after `;`,
+// `{`, `}`, `)` (an `if (...)` / `for (...)` body) or `else`. `void x;` (an
+// unused-value marker) and an arrow body `=> void x` are not statements of
+// this shape.
+const BARE_VOID = /(^|[;{})]|\belse)\s*void\s+(\(\s*async\b|[A-Za-z_$][\w$.]*\s*(\(|$))/;
 
 function serverFiles(): string[] {
   const out: string[] = [];
@@ -67,7 +69,33 @@ function bareVoids(rel: string): Array<{ line: number; text: string }> {
 }
 
 const isAllowed = (rel: string, text: string) =>
-  ALLOWED.some(([f, start]) => f === rel && text.startsWith(start));
+  ALLOWED.some(([f, start]) => f === rel && text.includes(start));
+
+describe("BARE_VOID", () => {
+  it.each([
+    ["own line", "void f();"],
+    ["own line, async IIFE", "void (async () => { await g(); })();"],
+    ["chain continued on the next line", "void ref"],
+    ["if body", "if (c) void f();"],
+    ["for body", "for (const x of xs) void f(x);"],
+    ["block", "{ void f(); }"],
+    ["function body", "export function _m() { void Promise.resolve(1); }"],
+    ["after a statement", "a(); void f();"],
+    ["else", "} else void f();"],
+  ])("catches a bare void: %s", (_shape, line) => {
+    expect(BARE_VOID.test(line)).toBe(true);
+  });
+
+  it.each([
+    ["arrow body", "const g = () => void f();"],
+    ["arrow body after params", "update: (r, d) => void writes.push([r, d]),"],
+    ["unused-value marker", "void fired;"],
+    ["void return type", "function h(): void {"],
+    ["callback type", "onClose: (cb: () => void) => void;"],
+  ])("leaves alone: %s", (_shape, line) => {
+    expect(BARE_VOID.test(line)).toBe(false);
+  });
+});
 
 describe("no bare fire-and-forget in server code", () => {
   const files = serverFiles();
@@ -89,7 +117,7 @@ describe("no bare fire-and-forget in server code", () => {
 
   it("has no stale allow-list entries", () => {
     const stale = ALLOWED.filter(
-      ([f, start]) => !files.includes(f) || !bareVoids(f).some((h) => h.text.startsWith(start)),
+      ([f, start]) => !files.includes(f) || !bareVoids(f).some((h) => h.text.includes(start)),
     ).map(([f, start]) => `${f}  ${start}`);
     expect(stale).toEqual([]);
   });
