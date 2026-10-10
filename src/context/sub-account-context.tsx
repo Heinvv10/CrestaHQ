@@ -109,6 +109,9 @@ export function SubAccountProvider({
       setSubLoading(false);
       return;
     }
+    // The branch above ran while auth was still settling; loading stays
+    // honest until THIS listener's first snapshot, or a gate reads as off.
+    setSubLoading(true);
     const unsub = onSnapshot(
       doc(getFirebaseDb(), "subAccounts", subAccountId),
       (snap) => {
