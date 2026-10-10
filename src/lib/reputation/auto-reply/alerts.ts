@@ -6,6 +6,7 @@ import { gbpProviderMode } from "@/lib/gbp/provider/mode";
 import { pushIsConfigured } from "@/lib/push/config";
 import { sendPushForEvent } from "@/lib/push/send";
 import { reviewsAiMode } from "../ai/mode";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Review auto-reply alerts (AUTO_REPLY_V1_PLAN.md "Alerts", PR 4), through
@@ -87,12 +88,12 @@ export async function sendAutoReplyAlert(sa: string, alert: AutoReplyAlert, now 
     }
     const msg = message(sa, alert);
     if (!pushIsConfigured()) console.warn(`[reputation/auto-reply] push not configured, alert not delivered sa=${sa}`);
-    void sendPushForEvent({
+    runAfterResponse(() => sendPushForEvent({
       subAccountId: sa, agencyId: sub.agencyId, title: msg.title, body: msg.body, url: msg.url,
       // Per review for edited_low, so a second edited review does not replace the first on the device.
       tag: alert.kind === "edited_low" ? `auto-reply-edited-${alert.reviewDocId}` : `auto-reply-${alert.kind}-${sa}`,
-    });
-    void emailOwner(sa, sub, msg);
+    }));
+    runAfterResponse(() => emailOwner(sa, sub, msg));
   } catch (err) {
     console.warn(`[reputation/auto-reply] alert ${alert.kind} failed sa=${sa} kind=${kindOf(err)}`);
   }

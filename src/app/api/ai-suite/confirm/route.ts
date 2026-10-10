@@ -13,6 +13,7 @@ import {
 import { recordAiSuiteAction } from "@/lib/ai-suite/audit";
 import { recordAiSuiteUsage } from "@/lib/ai-suite/usage";
 import type { AiSuiteConfirmRequest } from "@/types/ai-suite";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 export const dynamic = "force-dynamic";
 
@@ -172,12 +173,12 @@ export async function POST(request: Request) {
       confirmedByEmail: ctx.email,
       resultRef: result.ref ?? null,
     });
-    void recordAiSuiteUsage({
+    runAfterResponse(() => recordAiSuiteUsage({
       level,
       agencyId: ctx.agencyId,
       subAccountId: ctx.subAccountId,
       kind: "action",
-    });
+    }));
     return NextResponse.json({ ok: true, resultText: result.resultText });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown error";

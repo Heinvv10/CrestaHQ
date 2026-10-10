@@ -9,6 +9,7 @@ import {
 } from "@/lib/community/member-auth";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { Member } from "@/types/community";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Reads the member session cookie, verifies the HMAC signature, confirms the
@@ -40,9 +41,9 @@ export async function getCurrentMember(
   if (data.status !== "active") return null;
 
   // Best-effort "last active" stamp; never block the read on it.
-  void ref
+  runAfterResponse(() => ref
     .set({ lastSeenAt: FieldValue.serverTimestamp() }, { merge: true })
-    .catch(() => {});
+    .catch(() => {}));
 
   return { id: snap.id, ...data };
 }

@@ -7,6 +7,7 @@ import { normalizePhoneLenient } from "@/lib/contacts/phone";
 import { emitContactCreatedById } from "@/lib/server/contacts-service";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { Contact } from "@/types/contacts";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Reconcile a visitor identity (email / phone / name) to a Contact in
@@ -152,11 +153,11 @@ export async function reconcileBookingContact(
 
   // A booking from a new visitor mints a real contact — fire contact.created
   // the same way every other create path does.
-  void emitContactCreatedById({
+  runAfterResponse(() => emitContactCreatedById({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     contactId: ref.id,
-  });
+  }));
 
   return { id: ref.id, created: true };
 }

@@ -28,6 +28,7 @@ import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 import type { Contact, ContactAttribution } from "@/types/contacts";
 import { isDocId } from "@/lib/server/doc-id";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 type SubmitBody = {
   values: Record<string, string>;
@@ -530,13 +531,13 @@ async function handleSubmit(
     const v = (body.values?.[f.id] ?? "").toString().trim();
     if (v) formData[f.label] = v;
   }
-  void fireWorkflowTrigger({
+  runAfterResponse(() => fireWorkflowTrigger({
     agencyId,
     subAccountId,
     type: "form.submitted",
     contactId: contactRef.id,
     context: { formId: id, formName: form.name, formData },
-  });
+  }));
 
   // Outbound webhooks: a public form submission is a real contact (and
   // optionally a deal) being born, so it fires the same events a manual add
@@ -545,18 +546,18 @@ async function handleSubmit(
   // contact; a deduped resubmit reuses an existing one and must not
   // re-announce its creation.
   if (contactCreated) {
-    void emitContactCreatedById({
+    runAfterResponse(() => emitContactCreatedById({
       subAccountId,
       agencyId,
       contactId: contactRef.id,
-    });
+    }));
   }
   if (dealId) {
-    void emitDealCreatedById({ subAccountId, agencyId, dealId });
+    runAfterResponse(() => emitDealCreatedById({ subAccountId, agencyId, dealId }));
   }
   // form.submitted carries the new contact + raw values, matching the
   // public-API submissions endpoint's payload shape.
-  void (async () => {
+  runAfterResponse(async () => {
     try {
       const csnap = await db.collection("contacts").doc(contactRef.id).get();
       await emitWebhookEvent({
@@ -577,7 +578,7 @@ async function handleSubmit(
     } catch (err) {
       console.warn("[forms/submit] form.submitted emit failed", err);
     }
-  })();
+  });
 
   return jsonWithCors({
     ok: true,

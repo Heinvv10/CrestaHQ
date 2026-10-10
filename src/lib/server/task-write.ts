@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { serializeTaskForApi, type TaskPatchInput } from "@/lib/api/serializers/tasks";
 import { refInSubAccount } from "@/lib/server/tenant-ref";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Patching a task, shared by `PATCH /api/v1/tasks/[id]` and the agent's
@@ -71,13 +72,13 @@ export async function patchTaskServerSide(opts: {
   const task = serializeTaskForApi(fresh.id, fresh.data()!, wireMode);
 
   if (firedCompleted) {
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId: opts.subAccountId,
       agencyId: opts.agencyId,
       mode: wireMode,
       type: "task.completed",
       payload: { task },
-    });
+    }));
   }
   return { ok: true, task };
 }

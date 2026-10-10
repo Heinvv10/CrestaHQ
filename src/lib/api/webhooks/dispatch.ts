@@ -9,6 +9,7 @@ import {
 import { findMatchingSubscriptions } from "@/lib/firestore/webhook-subscriptions";
 import { dispatchPushForWebhookEvent } from "@/lib/push/events";
 import type { WebhookEventType } from "@/types/webhooks";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Emit a webhook event from anywhere in the codebase. Fire-and-forget —
@@ -68,7 +69,7 @@ export async function emitWebhookEvent(
     // four speed-to-lead events, no-ops without VAPID keys, and swallows
     // its own errors. Test-mode events never notify a phone.
     if (input.mode === "live") {
-      void dispatchPushForWebhookEvent(input);
+      runAfterResponse(() => dispatchPushForWebhookEvent(input));
     }
 
     const subscriptions = await findMatchingSubscriptions(

@@ -6,6 +6,7 @@ import { pushIsConfigured } from "@/lib/push/config";
 import { sendPushForEvent } from "@/lib/push/send";
 import type { SubAccountDoc } from "@/types";
 import type { WaQualityRating, WhatsappQualityAlertDoc } from "@/types/whatsapp-cloud";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * What a quality DROP does beyond storing the reading: an alert doc, a push
@@ -66,14 +67,14 @@ export async function recordQualityDrop(input: DropInput): Promise<void> {
   if (!pushIsConfigured()) {
     console.warn(`[whatsapp-quality] push not configured, alert not delivered sa=${subAccountId}`);
   }
-  void sendPushForEvent({
+  runAfterResponse(() => sendPushForEvent({
     subAccountId,
     agencyId: sub.agencyId,
     title: `WhatsApp quality dropped to ${LABEL[to]}`,
     body: `${number} — check the WhatsApp settings page`,
     url: settingsUrl,
     tag: `wa-quality-${phoneNumberId}`,
-  });
+  }));
   await emailOwner(subAccountId, sub, { from, to, number, settingsUrl });
 }
 

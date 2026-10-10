@@ -16,6 +16,7 @@ import {
 } from "@/types/orders";
 import type { ContactAttribution } from "@/types/contacts";
 import type { WebhookEventType } from "@/types/webhooks";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Orders service — the ONE write path for `orders/{id}`.
@@ -326,7 +327,7 @@ export function emitOrderEvents(opts: {
   type: WebhookEventType;
   activity: { type: "order_paid" | "order_refunded"; content: string } | null;
 }): void {
-  void (async () => {
+  runAfterResponse(async () => {
     const wire = serializeOrderForApi(opts.order);
 
     try {
@@ -378,5 +379,5 @@ export function emitOrderEvents(opts: {
         console.warn("[orders-service] activity write failed", err);
       }
     }
-  })();
+  });
 }

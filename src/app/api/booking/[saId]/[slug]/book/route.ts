@@ -55,6 +55,7 @@ import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { isDocId } from "@/lib/server/doc-id";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Public booking submission. Unauthenticated; security comes from:
@@ -685,12 +686,12 @@ export async function POST(
       "event_confirmed",
     );
   }
-  void emitBookingWebhook({
+  runAfterResponse(() => emitBookingWebhook({
     eventId: created.eventDocRef.id,
     agencyId,
     subAccountId: saId,
     type: "booking_page_booked",
-  });
+  }));
 
   // Post-booking redirect — confirmed (free) bookings only. Paid holds
   // stay on the in-app confirmation so the PayPal CTA is always shown.

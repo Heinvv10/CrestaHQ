@@ -7,6 +7,7 @@ import { normalizePhoneLenient } from "@/lib/contacts/phone";
 import { emitContactCreatedById } from "@/lib/server/contacts-service";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { Contact } from "@/types/contacts";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Channel-agnostic identity-capture pipeline. Used by Web Chat (visitor
@@ -283,11 +284,11 @@ export async function reconcileContactFromCapture(
   // A brand-new contact fires contact.created regardless of which channel
   // created it. The channel's own event (webchat.lead.captured /
   // voice.call.captured) still fires separately at the call site.
-  void emitContactCreatedById({
+  runAfterResponse(() => emitContactCreatedById({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     contactId: contactRef.id,
-  });
+  }));
 
   return { contactId: contactRef.id, created: true };
 }

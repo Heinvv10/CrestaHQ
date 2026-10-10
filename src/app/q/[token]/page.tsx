@@ -8,6 +8,7 @@ import { emitQuoteWebhook, recordQuoteActivity } from "@/lib/quotes/lifecycle";
 import { PublicQuoteView } from "@/components/quotes/public-quote-view";
 import { LogoMark } from "@/components/brand/logo-mark";
 import type { Quote } from "@/types/quotes";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 export const dynamic = "force-dynamic";
 
@@ -71,7 +72,7 @@ export default async function PublicQuotePage({ params }: PageProps) {
       // wrote — saves a round-trip refresh.
       quote.status = "viewed";
       await recordQuoteActivity(quote, "quote_viewed");
-      void emitQuoteWebhook(quote, "quote_viewed");
+      runAfterResponse(() => emitQuoteWebhook(quote, "quote_viewed"));
     } catch (err) {
       console.error("[/q/[token]] viewedAt update failed", err);
     }

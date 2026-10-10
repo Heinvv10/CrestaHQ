@@ -10,6 +10,7 @@ import { serializeContactForApi } from "@/lib/api/serializers/contacts";
 import { fireWorkflowTrigger } from "@/lib/workflows/engine";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { FormField } from "@/types/forms";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Forms ingest — programmatic submission of a hosted-form payload.
@@ -155,13 +156,13 @@ export const POST = withApiAuth<{ formId: string }>(
     // Speed-to-Lead + any other configured automations. Live mode only —
     // test submissions must never SMS / email a real person.
     if (ctx.mode === "live") {
-      void fireWorkflowTrigger({
+      runAfterResponse(() => fireWorkflowTrigger({
         agencyId: ctx.agencyId,
         subAccountId: ctx.subAccountId,
         type: "form.submitted",
         contactId: contactRef.id,
         context: { formId: params.formId },
-      });
+      }));
     }
 
     const created = await contactRef.get();
@@ -171,7 +172,7 @@ export const POST = withApiAuth<{ formId: string }>(
       ctx.mode,
     );
 
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId: ctx.subAccountId,
       agencyId: ctx.agencyId,
       mode: ctx.mode,
@@ -185,7 +186,7 @@ export const POST = withApiAuth<{ formId: string }>(
           values,
         },
       },
-    });
+    }));
 
     return applyCors(
       apiOk(

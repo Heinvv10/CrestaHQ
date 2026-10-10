@@ -12,6 +12,7 @@ import type { ActivityType } from "@/types/contacts";
 import type { WebhookEventType } from "@/types/webhooks";
 import type { AutomationTriggerType } from "@/types";
 import type { CalendarEvent } from "@/types/events";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Side-effects fired off the back of a booking-event lifecycle change.
@@ -153,7 +154,7 @@ export async function fireBookingTrigger(
     ...(expectedStepsFingerprints ? { expectedStepsFingerprints } : {}),
   });
   if (!actor) {
-    void fired;
+    runAfterResponse(() => fired);
     return null;
   }
   return fired;

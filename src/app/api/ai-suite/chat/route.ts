@@ -32,6 +32,7 @@ import type {
   AiSuiteChatResponse,
   AiSuiteLevel,
 } from "@/types/ai-suite";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 export const dynamic = "force-dynamic";
 
@@ -313,13 +314,13 @@ export async function POST(request: Request) {
           // A lookup that resolved a navigation target short-circuits: show
           // the user the message + button directly (no final model turn).
           if (execResult.navigate) {
-            void recordAiSuiteUsage({
+            runAfterResponse(() => recordAiSuiteUsage({
               level: lvl,
               agencyId: usageAgencyId,
               subAccountId:
                 level === "sub-account" ? body.subAccountId : undefined,
               kind: "message",
-            });
+            }));
             const response: AiSuiteChatResponse = {
               type: "navigate",
               text: execResult.resultText,
@@ -365,12 +366,12 @@ export async function POST(request: Request) {
   }
 
   // Count this turn toward daily usage (best-effort; never blocks the reply).
-  void recordAiSuiteUsage({
+  runAfterResponse(() => recordAiSuiteUsage({
     level: lvl,
     agencyId: usageAgencyId,
     subAccountId: level === "sub-account" ? body.subAccountId : undefined,
     kind: "message",
-  });
+  }));
 
   // Did the model request a write action? Validate it and surface a
   // proposal — nothing executes here. (A readonly call landing here means

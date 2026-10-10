@@ -17,6 +17,7 @@ import {
 } from "@/types/quotes";
 import type { Quote } from "@/types/quotes";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 export const dynamic = "force-dynamic";
 
@@ -173,7 +174,7 @@ export async function POST(
     if (payload.action === "accept") {
       await recordQuoteActivity(freshQuote, "quote_accepted");
       await fireQuoteTrigger(freshQuote, "quote_accepted");
-      void emitQuoteWebhook(freshQuote, "quote_accepted");
+      runAfterResponse(() => emitQuoteWebhook(freshQuote, "quote_accepted"));
       // Pipeline outcome: a linked deal moves to Won; otherwise the
       // Won-stage deal auto-creates when the operator opted in (the
       // helper no-ops when the flag is false).
@@ -184,7 +185,7 @@ export async function POST(
         extra: `reason: ${reason}${noteSuffix}`,
       });
       await fireQuoteTrigger(freshQuote, "quote_declined");
-      void emitQuoteWebhook(freshQuote, "quote_declined");
+      runAfterResponse(() => emitQuoteWebhook(freshQuote, "quote_declined"));
     }
   }
 

@@ -15,6 +15,7 @@ import { checkAndCount } from "@/lib/api/rate-limit";
 import { captureRequestLog } from "@/lib/api/logs";
 import { dispatchAgentTool, isAgentWriteTool } from "@/lib/api/agent-dispatch";
 import { agentToolsFor } from "@/lib/api/agent-tools-listing";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * The MCP face of the Agent API (AGENT_API_V1_PLAN.md, PR5): a low-level
@@ -183,7 +184,9 @@ function log(
     errorCode: string | null;
   },
 ): void {
-  void captureRequestLog({
+  // Measured now: the log itself is written after the response.
+  const latencyMs = Date.now() - start;
+  runAfterResponse(() => captureRequestLog({
     subAccountId: row.subAccountId,
     agencyId: auth.agencyId,
     keyId: auth.keyId,
@@ -198,8 +201,8 @@ function log(
     responseStatus: row.status,
     responseBodyJson: row.body,
     errorCode: row.errorCode,
-    latencyMs: Date.now() - start,
-  });
+    latencyMs,
+  }));
 }
 
 /** An SDK-produced JSON-RPC error (e.g. a tools/call whose params fail its

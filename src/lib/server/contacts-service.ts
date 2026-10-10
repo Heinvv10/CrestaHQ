@@ -22,6 +22,7 @@ import { normalizePhoneLenient } from "@/lib/contacts/phone";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { isDocId } from "@/lib/server/doc-id";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Server-side Contact write service — the single chokepoint where a contact
@@ -216,14 +217,14 @@ export function announceContactCreated(
     input.mode
   );
 
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     mode: input.mode,
     type: "contact.created",
     payload: { contact },
     ...(input.actor ? { byAgent: true } : {}),
-  });
+  }));
   const trigger =
     input.mode === "live"
       ? fireWorkflowTrigger({
@@ -409,14 +410,14 @@ export async function updateContactServerSide(opts: {
   const fresh = await ref.get();
   const contact = serializeContactForApi(fresh.id, fresh.data()!, mode);
 
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: existing.subAccountId,
     agencyId: existing.agencyId,
     mode,
     type: "contact.updated",
     payload: { contact },
     ...(opts.actor ? { byAgent: true } : {}),
-  });
+  }));
   // Replace-semantics patch → diff against the pre-update tags.
   const trigger = patch.tags
     ? fireTagsAdded({
@@ -503,12 +504,12 @@ export async function emitContactCreatedById(opts: {
       payload: { contact },
     });
     if (mode === "live") {
-      void fireWorkflowTrigger({
+      runAfterResponse(() => fireWorkflowTrigger({
         subAccountId: opts.subAccountId,
         agencyId: opts.agencyId,
         type: "contact.created",
         contactId: opts.contactId,
-      });
+      }));
     }
   } catch (err) {
     console.warn("[contacts-service] emitContactCreatedById failed", err);
@@ -529,11 +530,11 @@ export function emitContactDeleted(opts: {
 }): void {
   const mode = opts.mode ?? (opts.data.mode as Mode) ?? "live";
   const contact = serializeContactForApi(opts.contactId, opts.data, mode);
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: opts.subAccountId,
     agencyId: opts.agencyId,
     mode,
     type: "contact.deleted",
     payload: { contact },
-  });
+  }));
 }

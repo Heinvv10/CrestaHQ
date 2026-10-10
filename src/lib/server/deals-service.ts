@@ -28,6 +28,7 @@ import type { WebhookEventType } from "@/types/webhooks";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { appendStageEntry, type StageMoveSource } from "./deal-stage-history";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Server-side Deal write service — the single chokepoint where a deal is
@@ -154,7 +155,7 @@ export function emitDealEvents(opts: {
   events: { type: WebhookEventType; extra?: Record<string, unknown> }[];
   contact?: DealContactSummary | null;
 }): void {
-  void (async () => {
+  runAfterResponse(async () => {
     try {
       const contact =
         opts.contact !== undefined
@@ -172,7 +173,7 @@ export function emitDealEvents(opts: {
     } catch (err) {
       console.warn("[deals-service] emitDealEvents failed", err);
     }
-  })();
+  });
 }
 
 /** Write a `pipeline_moved` activity to the contact's timeline (Admin SDK). */
@@ -341,7 +342,7 @@ function fireDealTrigger(opts: {
     ...(opts.actor ? { hold: opts.actor } : {}),
   });
   if (!opts.actor) {
-    void fired;
+    runAfterResponse(() => fired);
     return null;
   }
   return fired;

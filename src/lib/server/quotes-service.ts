@@ -11,6 +11,7 @@ import {
 } from "@/lib/quotes/lifecycle";
 import { maybeSendReviewRequest, type SendReviewInput } from "@/lib/reviews/request";
 import type { Quote, QuotePaidVia } from "@/types/quotes";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Quotes service — the single server-side path that flips a quote/invoice to
@@ -168,16 +169,16 @@ export async function markQuotePaidServerSide(input: {
   await fireQuoteTrigger(withId, "quote_marked_paid", input.expectWorkflows).catch((err: unknown) =>
     console.error(`[quotes-service] trigger failed quote=${input.quoteId}`, err),
   );
-  void emitQuoteWebhook(withId, "quote_marked_paid");
+  runAfterResponse(() => emitQuoteWebhook(withId, "quote_marked_paid"));
   if (input.reviewExpect !== null) {
     const { contactId: _reviewed, ...expect } = input.reviewExpect ?? {};
-    void maybeSendReviewRequest({
+    runAfterResponse(() => maybeSendReviewRequest({
       subAccountId: quote.subAccountId,
       agencyId: quote.agencyId,
       contactId: quote.contactId,
       trigger: "quote_paid",
       ...(input.reviewExpect ? { expect: expect as NonNullable<SendReviewInput["expect"]> } : {}),
-    });
+    }));
   }
 
   return { ok: true, quote: withId };

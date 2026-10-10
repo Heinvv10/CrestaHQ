@@ -15,6 +15,7 @@ import {
 } from "@/lib/server/contacts-service";
 import type { CustomFieldValue } from "@/types/custom-fields";
 import type { TriggerOutcome } from "@/lib/workflows/engine";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Upsert a contact by phone — the phone is the identity, and a second call
@@ -207,13 +208,13 @@ export async function upsertContactByPhone(
     { ...written.after, updatedAt: new Date() },
     input.mode,
   );
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     mode: input.mode,
     type: "contact.updated",
     payload: { contact },
-  });
+  }));
   const tagTrigger = tagFire(written.beforeTags, written.after.tags);
   return {
     kind: "updated",

@@ -14,6 +14,7 @@ import {
   type SendOrigin,
 } from "@/lib/comms/quiet-hours";
 import type { SubAccountDoc, TwilioConfig } from "@/types";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Two-mode Twilio client resolution:
@@ -301,12 +302,12 @@ export async function sendSmsForSubAccount({
         body,
       }),
     );
-    void recordUsage({
+    runAfterResponse(() => recordUsage({
       subAccountId,
       unit: "smsSegments",
       qty: segmentInfo(body).segments,
       subAccount,
-    });
+    }));
     return { sid: msg.sid, mode: resolved.mode, from: resolved.fromNumber };
   } catch (err) {
     if ((err as { code?: number })?.code === 21610) {
@@ -375,12 +376,12 @@ export async function sendWhatsappForSubAccount({
     body,
     ...whatsappStatusCallback(),
   }).catch(rethrowAttempted);
-  void recordUsage({
+  runAfterResponse(() => recordUsage({
     subAccountId,
     unit: "whatsappMessages",
     qty: 1,
     subAccount,
-  });
+  }));
   return { sid: msg.sid, from };
 }
 
@@ -438,12 +439,12 @@ export async function sendWhatsappTemplateForSubAccount({
     contentVariables: JSON.stringify(varMap),
     ...whatsappStatusCallback(),
   }).catch(rethrowAttempted);
-  void recordUsage({
+  runAfterResponse(() => recordUsage({
     subAccountId,
     unit: "whatsappMessages",
     qty: 1,
     subAccount,
-  });
+  }));
   return { sid: msg.sid, from };
 }
 

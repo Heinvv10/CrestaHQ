@@ -10,6 +10,7 @@ import { getSmtpConnection, sendSmtpEmail, SmtpError, validEmail } from "./smtp"
 import { markProviderAttempted, rethrowAttempted } from "@/lib/comms/provider-attempt";
 import { assertNotSuppressed } from "@/lib/comms/email-suppression";
 import type { ResendConfig } from "@/types/tenancy";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 let _client: Resend | null = null;
 
@@ -196,11 +197,11 @@ export async function sendEmail({
       archive,
     });
     if (meter?.subAccountId) {
-      void recordUsage({
+      runAfterResponse(() => recordUsage({
         subAccountId: meter.subAccountId,
         unit: "emailsSent",
         qty: 1,
-      });
+      }));
     }
     if (!archive) return result;
     try {
@@ -262,11 +263,11 @@ export async function sendEmail({
     throw markProviderAttempted(new Error("Resend send failed: no message id returned"));
   }
   if (meter?.subAccountId) {
-    void recordUsage({
+    runAfterResponse(() => recordUsage({
       subAccountId: meter.subAccountId,
       unit: "emailsSent",
       qty: 1,
-    });
+    }));
   }
   return { id: result.data.id };
 }

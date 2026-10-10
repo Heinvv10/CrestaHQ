@@ -29,6 +29,7 @@ import { emitContactCreatedById } from "@/lib/server/contacts-service";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Voice Booking v1 — the AI voice agent booking real appointments during a
@@ -216,7 +217,7 @@ export async function bookVoiceSlot(input: {
     });
     contactId = ref.id;
     contactCreated = true;
-    void emitContactCreatedById({ subAccountId, agencyId, contactId: ref.id });
+    runAfterResponse(() => emitContactCreatedById({ subAccountId, agencyId, contactId: ref.id }));
   } else if (callerName) {
     // Best-effort: fill a missing name on the existing contact.
     try {
@@ -373,12 +374,12 @@ export async function bookVoiceSlot(input: {
       },
       "event_confirmed",
     );
-    void emitBookingWebhook({
+    runAfterResponse(() => emitBookingWebhook({
       eventId: eventDocRef.id,
       agencyId,
       subAccountId,
       type: "booking_page_booked",
-    });
+    }));
   } catch (err) {
     console.warn("[voice-booking] side effects failed", err);
   }

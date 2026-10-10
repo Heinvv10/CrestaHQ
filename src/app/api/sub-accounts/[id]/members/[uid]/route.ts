@@ -7,6 +7,7 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { deleteConnectionForRemovedMember } from "@/lib/google-calendar/connection";
 import { removeMemberGoogleCopies } from "@/lib/google-calendar/push";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Sub-account-level member management.
@@ -171,13 +172,13 @@ export async function DELETE(
   // this sub-account so their settings toggle list doesn't keep a stale
   // entry. The send helper re-checks membership at send time, so this is
   // cleanup, not the security gate. Best-effort.
-  void db
+  runAfterResponse(() => db
     .doc(`users/${targetUid}/settings/notifications`)
     .set(
       { subAccounts: { [subAccountId]: FieldValue.delete() } },
       { merge: true },
     )
-    .catch(() => {});
+    .catch(() => {}));
 
   // 2. If the user has no remaining active memberships AND no agency role,
   //    disable them globally. BEST-EFFORT: the member removal above has

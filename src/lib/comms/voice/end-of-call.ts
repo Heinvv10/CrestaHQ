@@ -8,6 +8,7 @@ import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { recordUsage } from "@/lib/server/usage-meter";
 import type { SubAccountDoc, VoiceCampaignOutcome } from "@/types";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * End-of-call orchestrator for the Vapi voice agent. Called from the
@@ -380,12 +381,12 @@ export async function handleVapiEndOfCall(input: {
 
   // Usage Metering v1 — every call (inbound + outbound) lands here once
   // (doc id = callId dedupes retried webhook deliveries upstream).
-  void recordUsage({
+  runAfterResponse(() => recordUsage({
     subAccountId,
     unit: "voiceSeconds",
     qty: payload.durationSec,
     subAccount,
-  });
+  }));
 
   // Trace the call on the contact — the timeline is the first place an
   // operator looks, and an AI-answered call previously left nothing there.
@@ -422,7 +423,7 @@ export async function handleVapiEndOfCall(input: {
   // Always emit `voice.call.completed`; additionally emit
   // `voice.call.captured` when the call produced contact identity, so
   // subscribers can filter for "hot" voice events.
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId: subAccount.agencyId,
     mode: "live",
@@ -441,9 +442,9 @@ export async function handleVapiEndOfCall(input: {
         ended_at: new Date().toISOString(),
       },
     },
-  });
+  }));
   if (contactId && (capturedEmail || capturedName || capturedPhone)) {
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId,
       agencyId: subAccount.agencyId,
       mode: "live",
@@ -463,7 +464,7 @@ export async function handleVapiEndOfCall(input: {
           callback_requested: callbackRequested,
         },
       },
-    });
+    }));
   }
 
   return { contactId, contactCreated, taskId, emailSent, errors };

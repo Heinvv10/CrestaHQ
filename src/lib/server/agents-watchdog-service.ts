@@ -21,6 +21,7 @@ import {
 } from "@/types/custom-agents";
 import type { ConversationChannel, ConversationDoc } from "@/types/conversations";
 import type { SubAccountDoc } from "@/types";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Inbox Follow-up Watchdog — the Labs autonomous agent (Custom Agents v1).
@@ -466,7 +467,7 @@ async function runWatchdogForSubAccount(
           // territory like every other contact-keyed push. If that read
           // fails, no push (never an unscoped one); the sweep carries on.
           const pushContactId = conv.contactId;
-          void contactTerritoryId(pushContactId)
+          runAfterResponse(() => contactTerritoryId(pushContactId)
             .then((territoryId) =>
               sendPushForEvent({
                 subAccountId,
@@ -480,12 +481,13 @@ async function runWatchdogForSubAccount(
             )
             .catch((err) =>
               console.warn("[watchdog] territory read failed; push skipped", err),
-            );
+            ));
         }
 
         // Activity row — best-effort, never blocks the sweep.
-        db.collection("contacts")
-          .doc(conv.contactId)
+        const activityContactId = conv.contactId;
+        runAfterResponse(() => db.collection("contacts")
+          .doc(activityContactId)
           .collection("activities")
           .add({
             type: "ai_agent_flagged",
@@ -498,7 +500,7 @@ async function runWatchdogForSubAccount(
           })
           .catch((err) =>
             console.warn("[watchdog] activity write failed", err),
-          );
+          ));
 
         // Dedupe stamp — one alert per inbound message, self-re-arming.
         await db.doc(`conversations/${conv.id}`).update({

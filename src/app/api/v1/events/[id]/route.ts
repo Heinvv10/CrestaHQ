@@ -17,6 +17,7 @@ import type { CalendarEvent } from "@/types/events";
 import { refInSubAccount } from "@/lib/server/tenant-ref";
 import { removeBookingFromGoogleBeforeDelete } from "@/lib/google-calendar/push";
 import { isLongEvent } from "@/lib/booking/long-event";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
   const snap = await getAdminDb().doc(`events/${params.id}`).get();
@@ -137,12 +138,12 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     return apiError(ctx, "invalid_request", "google_removal_failed", removal.message, { status: 409 });
   }
   await ref.delete();
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: ctx.subAccountId,
     agencyId: ctx.agencyId,
     mode: ctx.mode,
     type: "booking.cancelled",
     payload: { event: { id: params.id, object: "event", deleted: true } },
-  });
+  }));
   return apiOk(ctx, { id: params.id, object: "event", deleted: true });
 });

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * OpenRouter's public model list, cached in Firestore so model pickers and
@@ -205,9 +206,9 @@ export async function getModelCatalog(now: number = Date.now()): Promise<ModelCa
 export async function readModelCatalogForReply(now: number = Date.now()): Promise<ModelCatalog | null> {
   const doc = await readDoc();
   if (isStale(doc, now)) {
-    refreshModelCatalog({ now }).catch((err: unknown) =>
+    runAfterResponse(() => refreshModelCatalog({ now }).catch((err: unknown) =>
       console.warn(`[ai-models] background refresh failed: ${String(err)}`),
-    );
+    ));
   }
   return asCatalog(doc);
 }

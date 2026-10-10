@@ -15,6 +15,7 @@ import {
   type ResolvedAiAgent,
 } from "@/types/ai";
 import { legacyAiConfigPath, migratedLegacyDocs } from "@/lib/comms/ai/legacy-config";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 const PROFILE_DOC = "profile";
 // Literal union — gives us the same narrow string type without an unused
@@ -198,7 +199,7 @@ export async function incrementChannelTokens(
   // Usage Metering v1 — every customer-facing channel (SMS/WhatsApp/Meta,
   // web chat, voice LLM turns) funnels through here, so this is the one
   // aiTokens meter point. Best-effort; never blocks the reply path.
-  void recordUsage({ subAccountId, unit: "aiTokens", qty: tokens });
+  runAfterResponse(() => recordUsage({ subAccountId, unit: "aiTokens", qty: tokens }));
 }
 
 // ============================================================

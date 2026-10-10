@@ -12,6 +12,7 @@ import {
   type ModelCatalog,
 } from "@/lib/comms/ai/model-catalog";
 import type { AgencyDoc, AiModelPolicy } from "@/types";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Agency allow-list for AI Agents models. The owner ticks models from the
@@ -257,12 +258,12 @@ export function replyModelFallback(subAccountId: string, channelId: string) {
   return {
     fallbackToDefault: true,
     onModelRejected: (model: string) => {
-      getAdminDb()
+      runAfterResponse(() => getAdminDb()
         .doc(`subAccounts/${subAccountId}/aiAgent/${channelId}`)
         .set({ modelRejected: { model, at: Date.now() } }, { merge: true })
         .catch((err: unknown) =>
           console.warn(`[ai-models] sa=${subAccountId}: couldn't flag rejected model: ${String(err)}`),
-        );
+        ));
     },
   };
 }

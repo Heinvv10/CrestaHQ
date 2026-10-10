@@ -23,6 +23,7 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * QStash callback that auto-cancels an `awaiting_payment` event whose
@@ -200,11 +201,11 @@ async function runExpireSideEffects(event: CalendarEvent): Promise<void> {
     },
     "event_cancelled",
   );
-  void emitBookingWebhook({
+  runAfterResponse(() => emitBookingWebhook({
     eventId: event.id,
     agencyId: event.agencyId,
     subAccountId: event.subAccountId,
     type: "booking_cancelled",
     cancelReason: "payment hold expired",
-  });
+  }));
 }
