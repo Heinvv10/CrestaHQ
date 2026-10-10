@@ -114,12 +114,15 @@ function allTimezones(): string[] {
 
 export function BookingPageEditor({ mode, initial, initialType }: Props) {
   const router = useRouter();
-  const { subAccountId, subAccount, saPath } = useSubAccount();
+  const { subAccountId, subAccount, saPath, loading: subLoading } = useSubAccount();
   const scopingOn = subAccount?.territoryScopingEnabled === true;
   // Either rail unlocks the Payment section — see lib/payments/can-take-payment.
   const hasPaypal = hasPaypalRail(subAccount);
   const hasCard = hasCardRail(subAccount);
   const canTakePayment = hasPaypal || hasCard;
+  // A null doc while the workspace loads reads as no rail; don't say so yet.
+  // The deposit control stays disabled until the rails are known.
+  const noRail = !subLoading && !canTakePayment;
 
   const hydrated: BookingPageFormData = useMemo(() => {
     if (mode === "edit" && initial) {
@@ -969,10 +972,12 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
             ? hasCard
               ? "Require a deposit before the slot is confirmed. Card payments confirm the booking automatically; PayPal deposits you mark paid manually once the funds land."
               : "Require a PayPal.me deposit before the slot is confirmed. You mark each booking paid manually once the funds land."
-            : "Connect Stripe or a PayPal.me username under Settings → Payments to require deposits."
+            : noRail
+              ? "Connect Stripe or a PayPal.me username under Settings → Payments to require deposits."
+              : undefined
         }
       >
-        {!canTakePayment && (
+        {noRail && (
           <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>

@@ -18,7 +18,7 @@ import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured
  * fetch alongside the SMS one here.
  */
 export default function AiAgentsOverviewPage() {
-  const { subAccountId, subAccount } = useSubAccount();
+  const { subAccountId, subAccount, loading: subLoading } = useSubAccount();
   const [smsConfig, setSmsConfig] = useState<AiChannelConfig | null>(null);
   const [voiceConfig, setVoiceConfig] = useState<AiChannelConfig | null>(null);
   const [whatsappConfig, setWhatsappConfig] = useState<AiChannelConfig | null>(
@@ -66,6 +66,9 @@ export default function AiAgentsOverviewPage() {
     };
   }, [subAccountId]);
 
+  // Every status below reads the workspace doc too, which is null while it
+  // loads — so a channel would read "Not configured" before we know.
+  const ready = loaded && !subLoading;
   const dedicatedSmsConfigured = !!subAccount?.twilioConfig?.enabled;
   // AI channel gates default ON (opt-out) — undefined reads as enabled.
   const smsEnabled =
@@ -129,7 +132,8 @@ export default function AiAgentsOverviewPage() {
       {/* Suppressed when the operator deliberately went vapi-managed for
           voice — that mode needs no Twilio, so the nag would be wrong. SMS /
           WhatsApp cards still show their own not-configured state. */}
-      {!dedicatedSmsConfigured &&
+      {ready &&
+        !dedicatedSmsConfigured &&
         !(
           voiceConfig?.voice?.numberMode === "vapi-managed" &&
           voiceConfig.voice.vapiPhoneNumberId
@@ -171,7 +175,7 @@ export default function AiAgentsOverviewPage() {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Channels
         </h2>
-        {!loaded ? (
+        {!ready ? (
           <p className="text-sm text-muted-foreground">
             Loading channel status…
           </p>
