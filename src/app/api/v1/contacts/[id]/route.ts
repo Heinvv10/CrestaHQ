@@ -20,6 +20,7 @@ import { loadCustomFieldDefs } from "@/lib/custom-fields/load-defs";
 import { prospectingEnabled } from "@/lib/prospecting/gate";
 import type { SubAccountDoc } from "@/types";
 import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Public API v1: single-contact routes.
@@ -190,7 +191,7 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     await batch.commit();
   }
 
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: ctx.subAccountId,
     agencyId: ctx.agencyId,
     mode: ctx.mode,
@@ -198,7 +199,7 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     payload: {
       contact: { id: params.id, object: "contact", deleted: true },
     },
-  });
+  }));
 
   return apiOk(ctx, { id: params.id, object: "contact", deleted: true });
 });

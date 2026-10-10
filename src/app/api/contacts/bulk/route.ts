@@ -15,6 +15,7 @@ import {
 } from "@/lib/server/contact-delete";
 import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import { serializeContactForApi } from "@/lib/api/serializers/contacts";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 type Mode = "live" | "test";
 
@@ -201,22 +202,22 @@ export async function POST(request: Request) {
     const data = snap.data()!;
     const mode = (data.mode as Mode) ?? "live";
     const merged = { ...data, ...patch };
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId,
       agencyId: data.agencyId as string,
       mode,
       type: "contact.updated",
       payload: { contact: serializeContactForApi(snap.id, merged, mode) },
-    });
+    }));
     if (action.type === "add_tag") {
-      void fireTagsAdded({
+      runAfterResponse(() => fireTagsAdded({
         subAccountId,
         agencyId: data.agencyId as string,
         contactId: snap.id,
         mode,
         before: data.tags,
         after: patch.tags as string[],
-      });
+      }));
     }
   }
 

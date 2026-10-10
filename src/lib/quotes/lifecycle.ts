@@ -18,6 +18,7 @@ import { GLOBAL_TERRITORY_ID, type AutomationTriggerType } from "@/types";
 import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import { refInSubAccount } from "@/lib/server/tenant-ref";
 import type { Quote } from "@/types/quotes";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Side-effects fired off the back of a quote lifecycle event. Keeps the
@@ -158,13 +159,13 @@ export async function fireQuoteTrigger(
         ? ("quote.paid" as const)
         : null;
   if (type) {
-    void fireWorkflowTrigger({
+    runAfterResponse(() => fireWorkflowTrigger({
       agencyId: quote.agencyId,
       subAccountId: quote.subAccountId,
       type,
       contactId: quote.contactId,
       ...(expectedStepsFingerprints ? { expectedStepsFingerprints } : {}),
-    });
+    }));
   }
 }
 
@@ -327,11 +328,11 @@ export async function autoCreateDealForAcceptedQuote(
 
     // The auto-created Won deal is a real deal — fire deal.created like any
     // other deal creation path.
-    void emitDealCreatedById({
+    runAfterResponse(() => emitDealCreatedById({
       subAccountId: quote.subAccountId,
       agencyId: quote.agencyId,
       dealId: ref.id,
-    });
+    }));
 
     return ref.id;
   } catch (err) {

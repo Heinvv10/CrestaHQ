@@ -10,6 +10,7 @@ import type {
   UsageRates,
   UsageUnit,
 } from "@/types/usage";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Usage Metering v1 — the single write/check path for the per-workspace
@@ -350,13 +351,13 @@ export async function recordUsage(input: {
         { cappedAt: { [input.unit]: FieldValue.serverTimestamp() } },
         { merge: true },
       );
-      void notifyOwner(input.subAccountId, input.unit, 100, used, limit);
+      runAfterResponse(() => notifyOwner(input.subAccountId, input.unit, 100, used, limit));
     } else if (pct >= 80 && !data.warnedAt?.[input.unit]) {
       await ref.set(
         { warnedAt: { [input.unit]: FieldValue.serverTimestamp() } },
         { merge: true },
       );
-      void notifyOwner(input.subAccountId, input.unit, 80, used, limit);
+      runAfterResponse(() => notifyOwner(input.subAccountId, input.unit, 80, used, limit));
     }
   } catch (err) {
     console.warn("[usage-meter] recordUsage failed", {

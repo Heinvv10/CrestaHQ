@@ -19,6 +19,7 @@ import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import type { SubAccountDoc } from "@/types";
 import { isDocId } from "@/lib/server/doc-id";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 export const dynamic = "force-dynamic";
 
@@ -336,7 +337,7 @@ export async function POST(request: Request) {
   // in real time. Fire-and-forget; webhook failures don't block the
   // visitor's thank-you reply.
   if (contactId) {
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId,
       agencyId: sa.agencyId,
       mode: "live",
@@ -351,7 +352,7 @@ export async function POST(request: Request) {
         contact_id: contactId,
         task_id: followUp.taskId,
       },
-    });
+    }));
   }
 
   // Templated thank-you so the next reply doesn't need an LLM round-trip.

@@ -16,6 +16,7 @@ import type {
   ConversationBotMode,
   ConversationChannel,
 } from "@/types/conversations";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * How long a manual (human) reply pauses the bot on that conversation. The
@@ -218,7 +219,7 @@ export async function upsertConversationForMessage(
     // a no-op and existing behavior is byte-for-byte unchanged.
     if (input.direction === "inbound" && input.contactId) {
       const contactId = input.contactId;
-      void emitWebhookEvent({
+      runAfterResponse(() => emitWebhookEvent({
         subAccountId: input.subAccountId,
         agencyId: input.agencyId,
         mode: "live",
@@ -232,7 +233,7 @@ export async function upsertConversationForMessage(
             preview: preview,
           },
         },
-      });
+      }));
       // Informational only above (staff push, outbound webhook). An opt-out
       // stops here: resuming or enrolling a workflow would race the opt-out
       // the caller is about to apply.
@@ -259,7 +260,8 @@ export async function upsertConversationForMessage(
       // HUMAN replied after this message arrived — `lastHumanReplyAt`, set only
       // on the operator-reply path. An AI or workflow send in that window does
       // not suppress it: an automated reply is not a human handling the tap.
-      void Promise.resolve(resumed)
+      // Chained now, so `resumed` has its handler before after() runs.
+      const lateTap = Promise.resolve(resumed)
         .then(async (n) => {
           if (!input.buttonTap || n !== 0) return;
           await db.runTransaction(async (tx) => {
@@ -273,15 +275,16 @@ export async function upsertConversationForMessage(
           });
         })
         .catch((err) => console.warn("[conversations/upsert] late-tap flag failed", err));
+      runAfterResponse(() => lateTap);
       // And enrolls the contact in message.received workflows (the trigger's
       // optional channel filter narrows inside fireWorkflowTrigger).
-      void fireWorkflowTrigger({
+      runAfterResponse(() => fireWorkflowTrigger({
         subAccountId: input.subAccountId,
         agencyId: input.agencyId,
         type: "message.received",
         contactId,
         context: { channel: input.channel },
-      });
+      }));
     }
   } catch (err) {
     console.warn("[conversations/upsert] failed", err);

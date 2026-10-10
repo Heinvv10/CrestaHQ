@@ -14,6 +14,7 @@ import type {
   Lesson,
   ResourceLink,
 } from "@/types/community";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Server-side Classroom service (Admin SDK). Courses live under a group;
@@ -465,7 +466,7 @@ export async function markLessonCompleteServerSide(opts: {
   );
 
   const wasAlreadyComplete = existing?.status === "completed";
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: opts.subAccountId,
     agencyId: opts.agencyId,
     mode: "live",
@@ -477,9 +478,9 @@ export async function markLessonCompleteServerSide(opts: {
       memberId: opts.memberId,
       progressPct,
     },
-  });
+  }));
   if (isComplete && !wasAlreadyComplete) {
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId: opts.subAccountId,
       agencyId: opts.agencyId,
       mode: "live",
@@ -489,7 +490,7 @@ export async function markLessonCompleteServerSide(opts: {
         courseId: opts.courseId,
         memberId: opts.memberId,
       },
-    });
+    }));
   }
 
   return { progressPct, completed: isComplete };

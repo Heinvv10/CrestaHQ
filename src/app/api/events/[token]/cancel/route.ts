@@ -26,6 +26,7 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Public cancel endpoint. The HMAC token IS the credential; we don't
@@ -192,11 +193,11 @@ async function runSideEffects(event: CalendarEvent): Promise<void> {
     },
     "event_cancelled",
   );
-  void emitBookingWebhook({
+  runAfterResponse(() => emitBookingWebhook({
     eventId: event.id,
     agencyId: event.agencyId,
     subAccountId: event.subAccountId,
     type: "booking_cancelled",
     cancelReason: "by attendee",
-  });
+  }));
 }

@@ -19,6 +19,7 @@ import type { SubAccountDoc } from "@/types";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 import { isDocId } from "@/lib/server/doc-id";
 import { mysteryShopCallPrompt } from "@/lib/prospecting/mystery-shop/enquiry";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -336,7 +337,7 @@ export async function POST(
       );
     }
 
-    void incrementChannelTokens(subAccountId, "voice", totalTokens);
+    runAfterResponse(() => incrementChannelTokens(subAccountId, "voice", totalTokens));
 
     // Defensive: strip any [[...]] markers, leftover JSON-ish brackets,
     // or asterisks from the reply before TTS speaks it. Voice safety
@@ -532,7 +533,7 @@ async function runBookingToolIfRequested(input: {
     if (allowHostSelection) {
       const r = resolveRequestedHost(page, attrs);
       if (r.invalid) {
-        void stampBookingAttempt(subAccountId, input.callId);
+        runAfterResponse(() => stampBookingAttempt(subAccountId, input.callId));
         return invalidHostResult(page);
       }
       hostUid = r.hostUid;
@@ -563,7 +564,7 @@ async function runBookingToolIfRequested(input: {
       // The caller tried to book but it didn't complete — record the
       // attempt so the end-of-call handler follows up if the call ends
       // without a booking.
-      void stampBookingAttempt(subAccountId, input.callId);
+      runAfterResponse(() => stampBookingAttempt(subAccountId, input.callId));
       // Not booked. Include fresh alternatives in the same result so
       // recovery doesn't cost another tool round. Distinguish the reasons:
       // an `invalid_slot` is almost always the model reconstructing the
@@ -613,14 +614,14 @@ async function runBookingToolIfRequested(input: {
     if (allowHostSelection) {
       const r = resolveRequestedHost(page, attrs);
       if (r.invalid) {
-        void stampBookingAttempt(subAccountId, input.callId);
+        runAfterResponse(() => stampBookingAttempt(subAccountId, input.callId));
         return invalidHostResult(page);
       }
       hostUid = r.hostUid;
     }
     // The caller wants to see times — that's booking intent. Record it so a
     // call that ends before a booking still creates a follow-up Task.
-    void stampBookingAttempt(subAccountId, input.callId);
+    runAfterResponse(() => stampBookingAttempt(subAccountId, input.callId));
     try {
       const slots = await listVoiceSlots(subAccountId, input.page, hostUid);
       const forHost = hostUid

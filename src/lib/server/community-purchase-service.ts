@@ -10,6 +10,7 @@ import type { Purchase, PurchaseScope } from "@/types/community";
 import { hasCardRail } from "@/lib/payments/can-take-payment";
 import type { PayPalConfig } from "@/types";
 import type { SubAccountDoc } from "@/types/tenancy";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * One-time PayPal purchases for group access or a single course. v1 is
@@ -204,7 +205,7 @@ export async function markPurchasePaidServerSide(opts: {
     if (!wasActive) batch.update(groupRef, { memberCount: FieldValue.increment(1) });
     await batch.commit();
     if (!wasActive) {
-      void emitWebhookEvent({
+      runAfterResponse(() => emitWebhookEvent({
         subAccountId: opts.subAccountId,
         agencyId: purchase.agencyId,
         mode: "live",
@@ -214,7 +215,7 @@ export async function markPurchasePaidServerSide(opts: {
           memberId: purchase.memberId,
           via: "purchase",
         },
-      });
+      }));
     }
   }
   // scope "course": access is read live from this paid purchase — no extra
@@ -227,7 +228,7 @@ export async function markPurchasePaidServerSide(opts: {
     ...(opts.paidOrderId ? { paidOrderId: opts.paidOrderId } : {}),
   });
 
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: opts.subAccountId,
     agencyId: purchase.agencyId,
     mode: "live",
@@ -241,7 +242,7 @@ export async function markPurchasePaidServerSide(opts: {
       amountCents: purchase.amountCents,
       currency: purchase.currency,
     },
-  });
+  }));
 
   return { ok: true };
 }

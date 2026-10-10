@@ -38,6 +38,7 @@ import { webChatConversationId } from "@/types/conversations";
 import type { SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
 import type { WebChatSession } from "@/types/web-chat";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Web-chat reply orchestrator. Mirrors `maybeRespondWithAi` for SMS but
@@ -338,8 +339,9 @@ export async function respondToWebChat(
       const subAccount = saSnap.data() as SubAccountDoc | undefined;
       const appUrl =
         process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
-      void sendEscalationNotification({
-        to: eff.escalationNotifyEmail,
+      const to = eff.escalationNotifyEmail;
+      runAfterResponse(() => sendEscalationNotification({
+        to,
         businessName:
           eff.businessName.trim() || subAccount?.name || "your business",
         contactName: session.capturedName ?? "(anonymous web visitor)",
@@ -354,7 +356,7 @@ export async function respondToWebChat(
           `[web-chat/respond] escalation email failed sa=${input.subAccountId}`,
           err,
         );
-      });
+      }));
     }
     return finalize(input, session, {
       kind: "escalated",
@@ -482,23 +484,28 @@ export async function respondToWebChat(
   // If we're going to render an inline form, stamp the session so the
   // next turn won't ask again even if the bot tries.
   if (formFields) {
-    void markCapturePromptShown({
+    runAfterResponse(() => markCapturePromptShown({
       subAccountId: input.subAccountId,
       sessionId: input.sessionId,
-    }).catch(() => {});
+    }).catch((err) => {
+      console.warn(
+        `[web-chat/respond] capture-prompt stamp failed sa=${input.subAccountId}`,
+        err,
+      );
+    }));
   }
 
-  void incrementChannelTokens(
+  runAfterResponse(() => incrementChannelTokens(
     input.subAccountId,
     "web-chat",
     completion.totalTokens,
-  );
+  ));
 
   // Suggest mode: don't reply to the visitor. Park the drafted reply on the
   // conversation for an operator to approve/edit + send from the inbox, and
   // give the visitor a holding line (the widget polls for the human's send).
   if (controls.botMode === "suggest") {
-    void setConversationDraft({
+    runAfterResponse(() => setConversationDraft({
       contactId: contactId ?? null,
       conversationKey: webChatConversationId(input.sessionId),
       sessionId: input.sessionId,
@@ -511,7 +518,7 @@ export async function respondToWebChat(
       body: cleanText,
       model: completion.model,
       tokens: completion.totalTokens,
-    });
+    }));
     // Stay silent to the visitor — the drafted reply waits for operator
     // approval; the approved send reaches the widget via the poll. Suggest
     // mode only runs after the within-hours gate above passed, so it's never

@@ -17,6 +17,7 @@ import {
   UNPAID_INVOICE_STATUSES,
   type RecurringInvoiceDoc,
 } from "@/types/recurring-invoices";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * What one recurring cycle actually does: raise the invoice, send it, then
@@ -83,7 +84,7 @@ export function notifyDraftForReview(
   schedule: RecurringInvoiceDoc,
   invoice: { invoiceId: string; quoteNumber: string; territoryId: string },
 ): void {
-  void sendPushForEvent({
+  runAfterResponse(() => sendPushForEvent({
     subAccountId: schedule.subAccountId,
     agencyId: schedule.agencyId,
     title: "Recurring invoice ready to review",
@@ -91,7 +92,7 @@ export function notifyDraftForReview(
     url: `/sa/${schedule.subAccountId}/quotes/${invoice.invoiceId}`,
     tag: `quote-${invoice.invoiceId}`,
     territoryId: invoice.territoryId,
-  });
+  }));
 }
 
 /**

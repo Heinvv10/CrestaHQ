@@ -21,6 +21,7 @@ import {
   type SubAccountBilling,
   type SubAccountBillingStatus,
 } from "@/types/billing";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Client Billing's LIFECYCLE — the state changes a payment provider drives:
@@ -59,7 +60,7 @@ export function recordBillingEvent(entry: {
     | "charge.canceled";
   detail: Record<string, unknown>;
 }): void {
-  getAdminDb()
+  runAfterResponse(() => getAdminDb()
     .collection("billingEvents")
     .add({
       ...entry,
@@ -67,7 +68,7 @@ export function recordBillingEvent(entry: {
     })
     .catch((err) =>
       console.warn("[billing] failed to record billing event", err),
-    );
+    ));
 }
 
 /** Normalize an untrusted gates payload into a full PlanGates record. */
@@ -230,7 +231,7 @@ export async function activateSubAccountPlan(input: {
       reference: input.reference,
     },
   });
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId,
     mode: "live",
@@ -242,7 +243,7 @@ export async function activateSubAccountPlan(input: {
       priceCents: billing.priceCents ?? null,
       currency: billing.currency ?? null,
     },
-  });
+  }));
 }
 
 /** Stripe's `checkout.session.completed` for a sub-account plan. */
@@ -441,7 +442,7 @@ export async function applySubAccountSubscriptionStatus(input: {
             ? "billing.activated"
             : null;
     if (eventType) {
-      void emitWebhookEvent({
+      runAfterResponse(() => emitWebhookEvent({
         subAccountId,
         agencyId,
         mode: "live",
@@ -453,7 +454,7 @@ export async function applySubAccountSubscriptionStatus(input: {
           previousStatus: billing.status,
           status: nextStatus,
         },
-      });
+      }));
     }
   }
 }
@@ -728,7 +729,7 @@ export async function markSubAccountChargePaid(input: {
       ...(wasCanceled ? { paidAfterCancel: true } : {}),
     },
   });
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: charge.subAccountId,
     agencyId: charge.agencyId,
     mode: "live",
@@ -740,5 +741,5 @@ export async function markSubAccountChargePaid(input: {
       amountCents: charge.amountCents,
       currency: charge.currency,
     },
-  });
+  }));
 }

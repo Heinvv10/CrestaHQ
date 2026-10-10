@@ -10,6 +10,7 @@ import {
 } from "@/lib/api/serializers/events";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { isLongEvent } from "@/lib/booking/long-event";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Server-side calendar-event create — fires `event.created` from the
@@ -114,13 +115,13 @@ export async function createEventServerSide(
   const stored = { ...doc, createdAt: now, updatedAt: now };
   const event = serializeEventForApi(ref.id, stored, input.mode);
 
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     mode: input.mode,
     type: "event.created",
     payload: { event },
-  });
+  }));
 
   return { id: ref.id, event, stored };
 }

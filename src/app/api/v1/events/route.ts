@@ -12,6 +12,7 @@ import {
 } from "@/lib/api/serializers/events";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { isLongEvent } from "@/lib/booking/long-event";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -127,12 +128,12 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     wire.created_at = now.toISOString();
     wire.updated_at = now.toISOString();
   }
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: ctx.subAccountId,
     agencyId: ctx.agencyId,
     mode: ctx.mode,
     type: "event.created",
     payload: { event: wire },
-  });
+  }));
   return apiOk(ctx, { event: wire }, { status: 201 });
 });

@@ -40,6 +40,7 @@ import { captureRequestLog } from "@/lib/api/logs";
 import { MAX_BODY_BYTES } from "@/lib/api/body-limit";
 import { bodyTooLarge, invalidParam, readJsonBody } from "@/lib/api/request-guards";
 import type { ApiKeyDoc, ApiKeyMode, ApiKeyScope } from "@/types/api";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Public-API request lifecycle: auth → version resolve → (optional)
@@ -298,9 +299,9 @@ export async function authenticateApiRequest(
     candidate.level === "agency"
       ? { level: "agency", agencyId: candidate.agencyId }
       : { level: "sub-account", subAccountId: candidate.subAccountId };
-  void bumpApiKeyLastUsed(owner, candidate.id).catch((err) => {
+  runAfterResponse(() => bumpApiKeyLastUsed(owner, candidate.id).catch((err) => {
     console.warn("[api/auth] bumpApiKeyLastUsed failed", err);
-  });
+  }));
 
   const fields: ApiAuthFields = {
     agencyId: candidate.agencyId,
@@ -399,7 +400,9 @@ export function refuseAgencyKey(
     "agency_key_not_allowed",
     "This endpoint takes a sub-account API key. Agency keys are not accepted here.",
   );
-  void captureRequestLog({
+  // Measured now: the log itself is written after the response.
+  const latencyMs = Date.now() - start;
+  runAfterResponse(() => captureRequestLog({
     subAccountId: null,
     agencyId: ctx.agencyId,
     keyId: ctx.keyId,
@@ -414,8 +417,8 @@ export function refuseAgencyKey(
     responseStatus: response.status,
     responseBodyJson: null,
     errorCode: "agency_key_not_allowed",
-    latencyMs: Date.now() - start,
-  });
+    latencyMs,
+  }));
   return response;
 }
 
@@ -503,7 +506,9 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
               .clone()
               .json()
               .catch(() => null);
-      void captureRequestLog({
+      // Measured now: the log itself is written after the response.
+      const latencyMs = Date.now() - start;
+      runAfterResponse(() => captureRequestLog({
         subAccountId: logSubAccountId,
         agencyId: ctx.agencyId,
         keyId: ctx.keyId,
@@ -518,8 +523,8 @@ export function withApiAuth<P extends Record<string, string> = Record<string, st
         responseStatus: response.status,
         responseBodyJson: redact.responseBody ? null : bodyJson,
         errorCode: errorCode ?? null,
-        latencyMs: Date.now() - start,
-      });
+        latencyMs,
+      }));
       return response;
     };
 

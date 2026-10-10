@@ -15,6 +15,7 @@ import type { AuditActor } from "@/lib/audit/types";
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { renderSystemEmail, type SystemEmailBrand } from "@/lib/comms/system-email";
 import { generateInviteToken } from "@/lib/server/invite-token";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Server-side member invites — the single write path shared by the invite
@@ -247,7 +248,9 @@ export async function createInviteServerSide(
   // Zapier flow) see new teammate invites in real time. Fire-and-forget;
   // dispatch failures don't unwind the invite. We emit on every call
   // including resends — `reused: true` lets subscribers distinguish.
-  void emitWebhookEvent({
+  // Taken now: the webhook itself is emitted after the response.
+  const createdAt = new Date().toISOString();
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId: (sub.agencyId as string) ?? "",
     mode: "live",
@@ -262,10 +265,10 @@ export async function createInviteServerSide(
         assigned_territory_ids: assignedTerritoryIds,
         reused,
         mailed,
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
       },
     },
-  });
+  }));
 
   return {
     inviteId,
@@ -422,7 +425,9 @@ async function addExistingUserAsMember(params: {
   // (which only covers brand-new invitees). `already_member` lets subscribers
   // distinguish a fresh add from a role update on an existing member.
   // Fire-and-forget; dispatch failures don't unwind the membership.
-  void emitWebhookEvent({
+  // Taken now: the webhook itself is emitted after the response.
+  const addedAt = new Date().toISOString();
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId,
     mode: "live",
@@ -436,10 +441,10 @@ async function addExistingUserAsMember(params: {
         added_by_uid: invitedByUid,
         assigned_territory_ids: assignedTerritoryIds,
         already_member: alreadyMember,
-        added_at: new Date().toISOString(),
+        added_at: addedAt,
       },
     },
-  });
+  }));
 
   // Notify the user they now have access. No accept link — they already have
   // an account and access is live. Skipped when they were already a member.

@@ -18,6 +18,7 @@ import { differsBeforeRail, differsFromReviewed, quoteFingerprint, type QuoteSen
 import type { TerritoryDenial } from "@/lib/auth/territory-filter";
 import type { Quote } from "@/types/quotes";
 import type { SubAccountDoc } from "@/types";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Quote/invoice SEND service — the single server-side path that mints a
@@ -283,7 +284,7 @@ export async function sendQuoteServerSide(input: {
       extra: wasResend ? "re-sent" : null,
     });
     await fireQuoteTrigger(quote, "quote_sent");
-    void emitQuoteWebhook(quote, "quote_sent");
+    runAfterResponse(() => emitQuoteWebhook(quote, "quote_sent"));
 
     return {
       ok: true,

@@ -33,6 +33,7 @@ import {
   SUB_ACCOUNT_CHARGE_KIND,
   SUB_ACCOUNT_PLAN_KIND,
 } from "@/lib/billing/kinds";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Client Billing v1 service — the single write path for agency plans
@@ -656,7 +657,7 @@ export async function assignPlanToSubAccount(input: {
       event: "plan.switched",
       detail: { planId: plan.id, planName: plan.name, priceCents },
     });
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId: input.subAccountId,
       agencyId: input.agencyId,
       mode: "live",
@@ -669,7 +670,7 @@ export async function assignPlanToSubAccount(input: {
         currency: plan.currency,
         status: billing?.status ?? "active",
       },
-    });
+    }));
     return { status: billing?.status ?? "active", checkoutUrl: null };
   }
 
@@ -708,7 +709,7 @@ export async function assignPlanToSubAccount(input: {
       specialPriceCents: input.specialPriceCents,
     },
   });
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     mode: "live",
@@ -721,7 +722,7 @@ export async function assignPlanToSubAccount(input: {
       currency: plan.currency,
       status: "pending",
     },
-  });
+  }));
 
   return { status: "pending", checkoutUrl: buildCheckoutUrl(token) };
 }

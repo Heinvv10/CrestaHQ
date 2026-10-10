@@ -13,6 +13,7 @@ import { checkAndCount } from "@/lib/api/rate-limit";
 import { agentPrecheck } from "@/lib/api/agent-precheck";
 import { handleMcpRequest } from "@/lib/api/agent-mcp";
 import { MAX_AGENT_BODY_BYTES, readBodyCapped } from "@/lib/api/body-limit";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * POST /api/mcp — the Agent API over MCP (Streamable HTTP, stateless).
@@ -36,7 +37,9 @@ export async function POST(request: Request): Promise<Response> {
   if (auth instanceof Response) return auth;
 
   const refuse = (response: Response, code: string) => {
-    void captureRequestLog({
+    // Measured now: the log itself is written after the response.
+    const latencyMs = Date.now() - start;
+    runAfterResponse(() => captureRequestLog({
       subAccountId: auth.subAccountId,
       agencyId: auth.agencyId,
       keyId: auth.keyId,
@@ -51,8 +54,8 @@ export async function POST(request: Request): Promise<Response> {
       responseStatus: response.status,
       responseBodyJson: null,
       errorCode: code,
-      latencyMs: Date.now() - start,
-    });
+      latencyMs,
+    }));
     return response;
   };
 

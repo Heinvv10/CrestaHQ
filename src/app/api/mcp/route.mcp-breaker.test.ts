@@ -105,7 +105,9 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
   });
 
   it("a log that throws never changes the result", async () => {
-    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    // The log is written after the response (runAfterResponse), so its
+    // failure is swallowed and logged there, not by the tool path.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const logs = await import("@/lib/api/logs");
     const spy = vi.spyOn(logs, "captureRequestLog").mockImplementation(() => {
       throw new Error("log boom");
@@ -115,8 +117,8 @@ describe("REPRO 3: a write whose raw args can't be serialised still returns its 
     const text = JSON.stringify(await res.json());
     expect(text).toContain("Added contact");
     expect(text).not.toContain("log boom");
-    expect(err).toHaveBeenCalledWith("[api/mcp] request log failed", expect.any(Error));
-    err.mockRestore();
+    expect(warn).toHaveBeenCalledWith("[after-response] background task failed", expect.any(Error));
+    warn.mockRestore();
   });
 
   it("REST: the same args → 200, one contact, one log row", async () => {

@@ -10,6 +10,7 @@ import {
   type TaskApiObject,
 } from "@/lib/api/serializers/tasks";
 import { GLOBAL_TERRITORY_ID } from "@/types";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Server-side Task write service — create + complete go through here so
@@ -94,13 +95,13 @@ export async function createTaskServerSide(
     input.mode,
   );
 
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
     mode: input.mode,
     type: "task.created",
     payload: { task },
-  });
+  }));
 
   if (input.contactId && isDocId(input.contactId)) {
     await writeTaskCreatedActivity(db, {
@@ -204,13 +205,13 @@ export async function setTaskCompletedServerSide(opts: {
   const task = serializeTaskForApi(fresh.id, fresh.data()!, mode);
 
   if (justCompleted) {
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId: existing.subAccountId,
       agencyId: existing.agencyId,
       mode,
       type: "task.completed",
       payload: { task },
-    });
+    }));
   }
 
   return { id: fresh.id, task };

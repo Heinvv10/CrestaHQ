@@ -14,6 +14,7 @@ import type {
   GroupStatus,
   ResourceLink,
 } from "@/types/community";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /** Normalize an admin-entered link list: trim, drop empties, cap at 10. */
 function cleanLinks(links: ResourceLink[]): ResourceLink[] {
@@ -356,13 +357,13 @@ export async function joinGroupServerSide(opts: {
 
   if (becomesActive) {
     await groupRef.update({ memberCount: FieldValue.increment(1) });
-    void emitWebhookEvent({
+    runAfterResponse(() => emitWebhookEvent({
       subAccountId: opts.subAccountId,
       agencyId: opts.agencyId,
       mode: "live",
       type: "community.member.joined",
       payload: { groupId: opts.groupId, memberId: opts.memberId, via: "open" },
-    });
+    }));
   }
 
   return becomesActive ? { status: "active" } : { status: "pending" };
@@ -384,13 +385,13 @@ export async function approveMembershipServerSide(opts: {
 
   await memRef.update({ status: "active" });
   await groupRef.update({ memberCount: FieldValue.increment(1) });
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId: opts.subAccountId,
     agencyId: opts.agencyId,
     mode: "live",
     type: "community.member.approved",
     payload: { groupId: opts.groupId, memberId: opts.memberId },
-  });
+  }));
 }
 
 /** Staff: promote a member to moderator (inline pin/delete rights) or demote. */

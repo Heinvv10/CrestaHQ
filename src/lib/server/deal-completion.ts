@@ -2,6 +2,7 @@ import "server-only";
 
 import { maybeSendReviewRequest, type SendReviewInput } from "@/lib/reviews/request";
 import type { DealWriteResult } from "./deals-service";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * The Google review request a deal's completion may send: only when a Won
@@ -23,12 +24,12 @@ export function askReviewIfNewlyCompleted(opts: {
   // writers completing it at once, only one sees "not yet".
   const becameCompleted = opts.completed === true && result.previousCompleted !== true;
   if (becameCompleted && result.stageTerminal === "won") {
-    void maybeSendReviewRequest({
+    runAfterResponse(() => maybeSendReviewRequest({
       subAccountId: before.subAccountId as string,
       agencyId: before.agencyId as string,
       contactId: (result.deal.contact_id ?? before.contactId) as string,
       trigger: "deal_completed",
       ...(opts.expect ? { expect: opts.expect } : {}),
-    });
+    }));
   }
 }

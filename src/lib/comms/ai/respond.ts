@@ -42,6 +42,7 @@ import type { ConversationChannel } from "@/types/conversations";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import { isQuietHoursDeferred } from "@/lib/comms/quiet-hours";
 import { holdForQuietHours } from "@/lib/comms/quiet-hours-hold";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 interface RespondInput {
   subAccountId: string;
@@ -648,7 +649,7 @@ export async function maybeRespondWithAi(
       model: completion.model,
       tokens: completion.totalTokens,
     });
-    void incrementChannelTokens(subAccountId, channelId, completion.totalTokens);
+    runAfterResponse(() => incrementChannelTokens(subAccountId, channelId, completion.totalTokens));
     return {
       kind: "drafted",
       replyText: completion.text,
@@ -689,7 +690,7 @@ export async function maybeRespondWithAi(
         },
         hold: err.hold,
       });
-      void incrementChannelTokens(subAccountId, channelId, completion.totalTokens);
+      runAfterResponse(() => incrementChannelTokens(subAccountId, channelId, completion.totalTokens));
       return { kind: "held", replyText: completion.text, tokens: completion.totalTokens };
     }
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -748,7 +749,7 @@ export async function maybeRespondWithAi(
     },
   });
 
-  void incrementChannelTokens(subAccountId, channelId, completion.totalTokens);
+  runAfterResponse(() => incrementChannelTokens(subAccountId, channelId, completion.totalTokens));
 
   return {
     kind: "replied",

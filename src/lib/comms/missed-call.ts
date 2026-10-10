@@ -13,6 +13,7 @@ import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import { renderMergeTags } from "@/lib/messaging/merge-tags";
 import type { MissedCallConfig, SubAccountDoc } from "@/types";
 import type { Contact } from "@/types/contacts";
+import { runAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Missed Call Text Back (MCTB) server helpers.
@@ -199,7 +200,7 @@ export async function handleMissedCall(input: {
   // category + speed-to-lead push), independent of whether the text-back
   // below sends, gets suppressed by opt-out, or fails. Emitted once per
   // call (the claim above already deduped Twilio retries). Self-guarded.
-  void emitWebhookEvent({
+  runAfterResponse(() => emitWebhookEvent({
     subAccountId,
     agencyId,
     mode: "live",
@@ -213,7 +214,7 @@ export async function handleMissedCall(input: {
         call_sid: callSid || null,
       },
     },
-  });
+  }));
 
   // Always log the missed call, even when we suppress the text (opt-out).
   const logActivity = async (content: string) => {
