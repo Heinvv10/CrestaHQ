@@ -10,6 +10,7 @@ import { OfflineBanner } from "@/components/dashboard/offline-banner";
 import { BottomTabBar } from "@/components/pwa/bottom-tab-bar";
 import { AppBadge } from "@/components/pwa/app-badge";
 import { AppAccent } from "@/components/theme/app-accent";
+import { SetupSnapshotDialog } from "@/components/agency/setup-snapshot-dialog";
 import {
   AgencyBrandingProvider,
   type AgencyBranding,
@@ -73,6 +74,7 @@ export function DashboardAppShell({
         <BottomTabBar onMore={() => setSidebarOpen(true)} />
         <AppBadge />
         <AppAccent />
+        <SetupSnapshotDialog />
         <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
       </div>
     </AgencyBrandingProvider>

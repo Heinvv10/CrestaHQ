@@ -25,6 +25,7 @@ for (const [path, name] of [
   ["@/components/pwa/bottom-tab-bar", "BottomTabBar"],
   ["@/components/pwa/app-badge", "AppBadge"],
   ["@/components/theme/app-accent", "AppAccent"],
+  ["@/components/agency/setup-snapshot-dialog", "SetupSnapshotDialog"],
 ] as const) {
   vi.doMock(path, () => ({ [name]: () => null }));
 }

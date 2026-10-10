@@ -202,7 +202,7 @@ export const GROUPS = [
     },
   },
   {
-    title: "Email (Resend)",
+    title: "Email",
     tier: "feature",
     off: "outbound email + email automations disabled",
     vars: [
@@ -273,6 +273,17 @@ export const GROUPS = [
     vars: [
       ["VAPI_API_KEY", "req"],
       ["VAPI_WEBHOOK_SECRET", "req"],
+    ],
+  },
+  {
+    // One OAuth client serves both Google Business Profile (reviews) and
+    // Google Calendar sync — see src/lib/google/oauth.ts.
+    title: "Google (Business Profile + Calendar)",
+    tier: "feature",
+    off: "Connect Google is unavailable — Business Profile reviews and Google Calendar sync can't be linked",
+    vars: [
+      ["GOOGLE_CLIENT_ID", "req"],
+      ["GOOGLE_CLIENT_SECRET", "req"],
     ],
   },
   {

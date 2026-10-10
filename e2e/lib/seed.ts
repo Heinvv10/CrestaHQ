@@ -1,5 +1,5 @@
 import { FieldValue } from "firebase-admin/firestore";
-import { adminDb } from "./admin";
+import { adminAuth, adminDb } from "./admin";
 import { readEnv } from "./env";
 
 /**
@@ -61,6 +61,47 @@ export async function ownerUid(agencyId: string): Promise<string> {
     throw new Error(`Agency ${agencyId} has no ownerUid.`);
   }
   return uid;
+}
+
+/**
+ * The uid the suite signs in as (E2E_EMAIL), refusing unless it is the
+ * fixture agency's owner — so a per-user write below can only ever land on
+ * the E2E owner, never on a real account an env typo pointed at.
+ */
+async function e2eOwnerUid(): Promise<string> {
+  const env = readEnv();
+  const [{ uid }, expected] = await Promise.all([
+    adminAuth().getUserByEmail(env.E2E_EMAIL),
+    ownerUid(env.E2E_AGENCY_ID),
+  ]);
+  if (uid !== expected) {
+    throw new Error(
+      `E2E_EMAIL resolves to ${uid}, not the fixture agency's owner ${expected}. Refusing to write user settings.`,
+    );
+  }
+  return uid;
+}
+
+/**
+ * The owner's "Don't show this again" flag for the setup-snapshot dialog
+ * (users/{uid}/settings/setupSnapshot). The dialog opens 10s after an owner
+ * session resolves and would swallow clicks in any spec that outlives that,
+ * so the fixture owner starts dismissed; setup-snapshot-dialog.spec.ts flips
+ * it and restores it.
+ */
+export async function setSetupSnapshotDismissed(
+  dismissed: boolean,
+): Promise<void> {
+  const uid = await e2eOwnerUid();
+  await adminDb()
+    .doc(`users/${uid}/settings/setupSnapshot`)
+    .set({ dismissed, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+}
+
+export async function readSetupSnapshotDismissed(): Promise<boolean> {
+  const uid = await e2eOwnerUid();
+  const snap = await adminDb().doc(`users/${uid}/settings/setupSnapshot`).get();
+  return snap.data()?.dismissed === true;
 }
 
 async function ensureForm(
@@ -491,6 +532,7 @@ export async function ensureSeed(): Promise<SeedResult> {
   const workflowId = await ensureWorkflow(agencyId, primary, uid, formId);
   await ensureMarkerContact(agencyId, primary, uid, MARKER_PRIMARY_NAME);
   await ensureMarkerContact(agencyId, secondary, uid, MARKER_SECONDARY_NAME);
+  await setSetupSnapshotDismissed(true);
 
   return { formId, workflowId, addTagNodeId: ADD_TAG_NODE_ID };
 }
