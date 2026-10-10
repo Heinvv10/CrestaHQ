@@ -2,8 +2,8 @@ import { expect, it } from "vitest";
 import { resolveMetadataBase } from "./metadata-base";
 
 it("uses a valid app URL as the origin", () => {
-  expect(resolveMetadataBase("https://crm.example.com").origin).toBe("https://crm.example.com");
-  expect(resolveMetadataBase("  https://crm.example.com/  ").href).toBe("https://crm.example.com/");
+  expect(resolveMetadataBase("https://crm.example.com")?.origin).toBe("https://crm.example.com");
+  expect(resolveMetadataBase("  https://crm.example.com/  ")?.href).toBe("https://crm.example.com/");
 });
 
 it("returns undefined (Next default) on missing, empty or malformed values", () => {
