@@ -725,10 +725,10 @@ export function SetupEnvForm() {
                 {otherGroups.length > 0 &&
                   todoGroups.length === 0 &&
                   pinnedKeyDone && (
-                  <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-emerald-700 dark:text-emerald-400">
-                    All keys in the catalog are configured.
-                  </p>
-                )}
+                    <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-emerald-700 dark:text-emerald-400">
+                      All keys in the catalog are configured.
+                    </p>
+                  )}
 
                 {doneGroups.length > 0 && (
                   // Open while any key in here holds an unsaved typed value, so
