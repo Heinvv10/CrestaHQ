@@ -98,7 +98,7 @@ describe.skipIf(skipBrowser)("field mapping on four fixture forms", () => {
 
   it("the crestahq.com audit form (plus a message box): the town goes in `where`, the honeypot and the opt-in stay empty", async () => {
     const fields = `<label for="p">Your name</label><input id="p" name="person" autocomplete="name" required>
-      <label for="b">Business name</label><input id="b" name="business" autocomplete="organization" required>
+      <label for="b">Business name</label><input id="b" name="business" placeholder="Example: Cape Town Plumbers" autocomplete="organization" required>
       <label for="w">Town or suburb</label><input id="w" name="where" placeholder="Example: Edenvale" autocomplete="address-level2" required>
       <label for="t">Mobile number (WhatsApp)</label><input id="t" name="phone" type="tel" autocomplete="tel" required>
       <label for="e">Email address (optional)</label><input id="e" name="email" type="email">

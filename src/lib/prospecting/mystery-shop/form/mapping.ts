@@ -22,6 +22,8 @@ export interface FormField {
   type: string;
   /** name, id, placeholder, label, aria-label and autocomplete, lower-cased and joined. */
   hint: string;
+  /** `hint` without the placeholder, which holds example VALUES ("e.g. Cape Town Plumbers"): what the field IS. */
+  named: string;
   required: boolean;
   visible: boolean;
   /** Visible-looking but no person could type in it (page-scan.ts): a honeypot. */
@@ -67,20 +69,22 @@ const CONSENT = /privacy|terms|consent|agree|accept|gdpr|popia|policy|t&c|condit
  * province, state, country or area code.
  */
 const TOWN = /(?<![a-z])(town|city|dorp)(?![a-z])|suburb|voorstad|address-level2/;
-const NOT_TOWN = /address(?!-level2)|adres|street|straat|postal|post.?code|poskode|(?<![a-z])(zip|state)(?![a-z])|province|provinsie|country|area.?code/;
+const NOT_TOWN = /address(?!-level2)|adres|street|straat|postal|post.?code|poskode|(?<![a-z])zip|(?<![a-z])(state|code)(?![a-z])|province|provinsie|country|area.?code/;
+const COMPANY = /compan|business|organi[sz]ation|\bfirm\b|besigheid|maatskappy/;
 const SERVICE_SELECT = /service|reason|interest|enquiry|inquiry|type|department|topic|category|product|regarding|subject/;
 
 /** The role of a text-like field or textarea, by type first, then by what it says it is. */
-export function roleOf(f: Pick<FormField, "tag" | "type" | "hint">): FieldRole | null {
+export function roleOf(f: Pick<FormField, "tag" | "type" | "hint" | "named">): FieldRole | null {
   const h = f.hint;
   if (f.type === "email" || /e-?mail/.test(h)) return "email";
   if (f.type === "tel" || /phone|\btel\b|mobile|cell|whatsapp|contact number|nommer|selfoon/.test(h)) return "phone";
   if (/first.?name|\bfname\b|given.?name|voornaam/.test(h)) return "first";
   if (/last.?name|\blname\b|surname|family.?name|\bvan\b/.test(h)) return "last";
-  // Before company: a "business city" field wants the town, not the business name.
-  if (f.tag === "input" && TOWN.test(h) && !NOT_TOWN.test(h)) return "town";
-  if (/compan|business|organi[sz]ation|\bfirm\b|besigheid|maatskappy/.test(h)) return "company";
+  // The town is read from what the field IS, never its placeholder; "business city" is ambiguous: no role.
+  if (TOWN.test(f.named) && COMPANY.test(f.named)) return null;
+  if (COMPANY.test(h)) return "company";
   if (/subject|topic|onderwerp/.test(h)) return "subject";
+  if (f.tag === "input" && TOWN.test(f.named) && !NOT_TOWN.test(f.named)) return "town";
   if (/address|adres|street|suburb/.test(h)) return null;
   if (f.tag === "textarea" || /message|enquir|inquir|comment|question|details|how can we help|boodskap|vraag/.test(h)) {
     return "message";

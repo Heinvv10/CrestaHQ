@@ -135,8 +135,10 @@ export const SCAN_SCRIPT = `(() => {
       el.setAttribute("data-lsms", key);
       const hint = [labelOf(el), el.getAttribute("placeholder"), el.getAttribute("aria-label"), el.getAttribute("name"),
         el.id, el.getAttribute("autocomplete")].filter(Boolean).join(" | ").toLowerCase();
+      const named = [labelOf(el), el.getAttribute("aria-label"), el.getAttribute("name"),
+        el.id, el.getAttribute("autocomplete")].filter(Boolean).join(" | ").toLowerCase();
       const shown = type !== "hidden" && visible(el);
-      const f = { key, tag, type, hint, required: el.required || el.getAttribute("aria-required") === "true",
+      const f = { key, tag, type, hint, named, required: el.required || el.getAttribute("aria-required") === "true",
         visible: shown, trap: shown && trap(el) };
       if (tag === "select") {
         f.options = [...el.options].map((o) => ({ value: o.value, text: text(o) }));
