@@ -2,6 +2,7 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import twilio from "twilio";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
@@ -71,6 +72,54 @@ export async function dialerAuthToken(
 ): Promise<string> {
   if (!sub?.twilioConfig) return "";
   return readSubAccountSecret(subAccountId, "twilio", sub.twilioConfig);
+}
+
+/**
+ * The strings a contact holding this number may have in `phone`. Contacts
+ * have no normalised phone field: the write paths store E.164 where the input
+ * parsed and the as-typed string otherwise, and every lookup (dedupe, the
+ * STOP handlers) is an exact match on `phone`. So the opt-out lookup asks for
+ * the canonical E.164 and the common ways the same number is written —
+ * without the "+", national and international format, national digits — plus
+ * the dialled contact's own stored string (the dedupe path's second
+ * candidate). Any other spelling ("082-123-4567", "(082) 123 4567",
+ * "0027…", an extension) is NOT matched.
+ */
+export function storedPhoneFormats(e164: string, stored?: string | null): string[] {
+  const parsed = parsePhoneNumberFromString(e164);
+  const national = parsed?.formatNational() ?? "";
+  return [
+    ...new Set(
+      [
+        e164,
+        e164.replace(/^\+/, ""),
+        national,
+        national.replace(/\D/g, ""),
+        parsed?.formatInternational() ?? "",
+        stored?.trim() ?? "",
+      ].filter(Boolean),
+    ),
+  ];
+}
+
+/**
+ * A voice opt-out belongs to the number, not one contact doc: true when any
+ * contact in this sub-account holding the number (see storedPhoneFormats) has
+ * opted out. Equality filters only — no composite index.
+ */
+export async function numberVoiceOptedOut(
+  subAccountId: string,
+  e164: string,
+  stored?: string | null,
+): Promise<boolean> {
+  const snap = await getAdminDb()
+    .collection("contacts")
+    .where("subAccountId", "==", subAccountId)
+    .where("phone", "in", storedPhoneFormats(e164, stored))
+    .where("voiceOptedOut", "==", true)
+    .limit(1)
+    .get();
+  return !snap.empty;
 }
 
 export function dialerPrivateRef(subAccountId: string) {

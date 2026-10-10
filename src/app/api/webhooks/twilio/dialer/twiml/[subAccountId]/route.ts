@@ -6,6 +6,7 @@ import twilio from "twilio";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireContactAccessible } from "@/lib/comms/route-auth";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
+import { coercePhoneCountry } from "@/lib/contacts/phone";
 import {
   countryBlocked,
   validDialNumber,
@@ -17,6 +18,7 @@ import {
   dialerGateOn,
   dialerGateRefusal,
   dialerStatusUrl,
+  numberVoiceOptedOut,
   uidFromClientAddress,
   validateDialerSignature,
 } from "@/lib/comms/dialer";
@@ -40,9 +42,12 @@ export const dynamic = "force-dynamic";
  * caller (`From: client:<uid>`, the identity we minted into the token) can
  * still act on the contact (active member or agency owner, territory scope —
  * `requireContactAccessible`, as on every other comms route), the contact
- * belongs to this sub-account, its phone is a valid number (libphonenumber)
- * in the Voice channel's `allowedCountries` when one is set — the same two
- * checks the AI outbound path applies (outbound-compliance.ts) — and neither
+ * belongs to this sub-account, its phone is a valid number (libphonenumber,
+ * parsed with the workspace `defaultPhoneCountry` as fallback, like the
+ * contact write paths) in the Voice channel's `allowedCountries` when one is
+ * set — the same two checks the AI outbound path applies
+ * (outbound-compliance.ts) — it has a country (dialer-only: non-geographic
+ * numbers are never dialled), and neither
  * it nor any other contact in this sub-account with the same number is
  * `voiceOptedOut`. Each refusal is a spoken rejection + hangup, so the call
  * never leaves Twilio. Only the normalised E.164 is ever dialled.
@@ -64,22 +69,6 @@ function rejection(message: string) {
   res.say(message);
   res.hangup();
   return twiml(res);
-}
-
-/**
- * A voice opt-out belongs to the number, not one contact doc: refuse when any
- * contact in this sub-account with the same phone (as E.164 or as stored) has
- * opted out. Equality filters only — no composite index needed.
- */
-async function numberOptedOut(subAccountId: string, e164: string, raw: string): Promise<boolean> {
-  const snap = await getAdminDb()
-    .collection("contacts")
-    .where("subAccountId", "==", subAccountId)
-    .where("phone", "in", [...new Set([e164, raw])])
-    .where("voiceOptedOut", "==", true)
-    .limit(1)
-    .get();
-  return !snap.empty;
 }
 
 export async function POST(
@@ -125,15 +114,38 @@ export async function POST(
   if (contact instanceof NextResponse || contact.subAccountId !== subAccountId) {
     return rejection("That contact could not be found. Goodbye.");
   }
-  const dialable = validDialNumber(contact.phone);
+  // ONE canonical number. `dialable` is the contact's phone parsed once, as the
+  // contact write paths parse it (workspace phone region as the fallback for a
+  // bare national number; a "+" number keeps its own country). Validity, the
+  // no-country rule, the allow-list, the opt-out lookup and the <Dial> below
+  // all read `dialable` — never the stored string.
+  //
+  // Intended difference from the AI voice gate, which parses with NO region:
+  // a number written without "+" (national format "082 123 4567", or the
+  // region's international prefix "0044 …") is callable here and refused
+  // there (`no_phone`). Nothing else differs in the dialer's favour — a "+"
+  // number parses identically in both, the allow-list is applied to the
+  // parsed country either way, and the no-country rule only removes numbers.
+  const dialable = validDialNumber(
+    contact.phone,
+    coercePhoneCountry(sub?.defaultPhoneCountry),
+  );
   if (!dialable) {
     return rejection("That contact has no valid phone number. Goodbye.");
+  }
+  // Dialer-only rule: a number with no country (non-geographic — satellite,
+  // +800, +882 international networks) is never dialled, allow-list or not.
+  if (!dialable.country) {
+    return rejection("Calls to that kind of number aren't supported. Goodbye.");
   }
   const voice = (await getChannelConfig(subAccountId, "voice"))?.voice ?? null;
   if (countryBlocked(dialable.country, voice?.allowedCountries)) {
     return rejection("Calls to that country aren't enabled for this workspace. Goodbye.");
   }
-  if (contact.voiceOptedOut === true || (await numberOptedOut(subAccountId, dialable.e164, contact.phone))) {
+  if (
+    contact.voiceOptedOut === true ||
+    (await numberVoiceOptedOut(subAccountId, dialable.e164, contact.phone))
+  ) {
     return rejection(
       "This contact has opted out of phone calls, so the call cannot be placed. Goodbye.",
     );

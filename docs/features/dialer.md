@@ -41,10 +41,27 @@ touched.
    - It applies the two number checks the AI outbound path uses
      (`validDialNumber` / `countryBlocked` in `outbound-compliance.ts`): the phone must
      be a valid number to libphonenumber, and in the Voice channel's
-     `allowedCountries` when that list is set (a non-geographic number such as +882
-     is outside any list).
-   - It refuses when this contact, or any other contact in the sub-account with the
-     same number (as E.164 or as stored on this contact), is `voiceOptedOut`.
+     `allowedCountries` when that list is set. The dialer parses a bare national
+     number with the workspace phone region (`defaultPhoneCountry`, unset reads as
+     US) as the fallback, as the contact write paths do; a `+` number keeps its own
+     country.
+   - Dialer-only: a number libphonenumber gives no country for (non-geographic:
+     satellite, +800, +882 and the like) is never dialled, allow-list or not. The AI
+     voice path does not have this rule.
+   - It refuses when this contact, or any other contact in the sub-account holding the
+     same number, is `voiceOptedOut`. Contacts have no normalised phone field, so the
+     sibling lookup is an exact match on `phone` against a candidate set built from
+     the canonical E.164 (`storedPhoneFormats` in `src/lib/comms/dialer.ts`): E.164
+     (`+27821234567`), without the `+` (`27821234567`), national format
+     (`082 123 4567`), national digits (`0821234567`), international format
+     (`+27 82 123 4567`), plus the dialled contact's own stored string. That is a
+     superset of what the STOP handlers and the dedupe paths match on. **Not
+     matched:** a sibling stored in any other spelling, for example `082-123-4567`,
+     `(082) 123 4567`, `0027821234567`, or a number with an extension.
+
+   Every one of these checks, and the `<Dial>`, reads the one canonical number: the
+   contact's phone parsed once with the workspace region. The stored string is never
+   dialled or checked on its own.
 
    If every check passes, it writes a `call_placed` activity (`dialer_<CallSid>`) and
    answers `<Dial callerId=fromNumber answerOnBridge><Number>E.164</Number>`.
@@ -53,9 +70,9 @@ touched.
 
    The AI-only checks (per-call consent ack, calling window, minutes quota, daily /
    per-number / burst caps, scrub provider) are not applied: an operator is placing
-   and hearing the call. **With no `allowedCountries` set, any valid number is dialled,
-   including premium-rate and non-geographic ones**, on the client's own Twilio
-   account (Twilio's own Voice geo-permissions still apply).
+   and hearing the call. **With no `allowedCountries` set, any valid number with a
+   country is dialled, including a country's own premium-rate ranges (e.g. US 1-900)**,
+   on the client's own Twilio account (Twilio's own Voice geo-permissions still apply).
 4. **Status callback** (`POST /api/webhooks/twilio/dialer/status/[saId]?contactId=`).
    This is the `<Dial action>`. It is signature-checked the same way, and the
    signature covers the query string. It updates the activity row with the outcome,
