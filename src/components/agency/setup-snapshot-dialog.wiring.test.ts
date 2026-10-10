@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const auth = vi.hoisted(() => ({
   value: { user: { uid: "u1" }, loading: false, agencyRole: "owner" } as unknown,
 }));
+const nav = vi.hoisted(() => ({ path: "/agency" }));
+vi.mock("next/navigation", () => ({ usePathname: () => nav.path }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => auth.value }));
 vi.mock("@/lib/firebase/client", () => ({ getFirebaseDb: () => "db" }));
 const fs = vi.hoisted(() => ({
@@ -46,6 +48,7 @@ const mount = async () => {
 };
 
 beforeEach(() => {
+  nav.path = "/agency";
   fs.dismissed = false;
   fs.paths = [];
   fs.setDoc.mockReset().mockResolvedValue(undefined);
@@ -115,6 +118,21 @@ describe("SetupSnapshotDialog wiring", () => {
       expect(fs.setDoc).toHaveBeenCalledTimes(1);
       expect(fs.setDoc.mock.calls[0][0]).toBe("users/u1/settings/setupSnapshot");
       expect(fs.setDoc.mock.calls[0][1]).toMatchObject({ dismissed: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not open on /agency/setup itself", async () => {
+    nav.path = "/agency/setup";
+    vi.useFakeTimers();
+    try {
+      await mount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+      expect(sessionStorage.getItem("setup-snapshot-shown")).toBeNull();
     } finally {
       vi.useRealTimers();
     }

@@ -74,7 +74,7 @@ export function DashboardAppShell({
         <BottomTabBar onMore={() => setSidebarOpen(true)} />
         <AppBadge />
         <AppAccent />
-      <SetupSnapshotDialog />
+        <SetupSnapshotDialog />
         <CommandPalette open={searchOpen} onOpenChange={setSearchOpen} />
       </div>
     </AgencyBrandingProvider>

@@ -26,24 +26,26 @@ import { LANDING_VARIANT } from "@/config/landing";
  *     but each unconfigured/partial group is reported as remaining.
  */
 const EMAIL_TITLE = "Email";
+const SMTP_SCAN_LIMIT = 50;
 
 /**
  * Email is configured by the shared Resend env OR by a sub-account's own
  * verified SMTP (`emailIsConfigured(sub)`) — an SMTP-only deployment has no
- * Resend env at all and must not read "Not set up". Fails soft to the env
- * verdict when the read fails.
+ * Resend env at all and must not read "Not set up". Only
+ * consulted when the env verdict is "off"; a half-set Resend stays visible.
+ * Fails soft (logged) to the env verdict when the read fails.
  */
 async function anySubAccountSendsViaSmtp(agencyId: string): Promise<boolean> {
   try {
     const snap = await getAdminDb()
       .collection("subAccounts")
       .where("agencyId", "==", agencyId)
+      .where("emailProvider", "==", "smtp")
+      .limit(SMTP_SCAN_LIMIT)
       .get();
-    return snap.docs.some((d) => {
-      const sub = d.data() as EmailAccount;
-      return sub.emailProvider === "smtp" && emailIsConfigured(sub);
-    });
-  } catch {
+    return snap.docs.some((d) => emailIsConfigured(d.data() as EmailAccount));
+  } catch (e) {
+    console.warn("[setup-summary] SMTP sub-account lookup failed", e);
     return false;
   }
 }
@@ -73,7 +75,7 @@ export async function GET(request: Request) {
 
   for (const g of relevant) {
     const res = evaluateGroup(g, getValue);
-    if (g.title === EMAIL_TITLE && res.status !== "ok") {
+    if (g.title === EMAIL_TITLE && res.status === "off") {
       if (await anySubAccountSendsViaSmtp(auth.agencyId!)) res.status = "ok";
     }
     groups.push({

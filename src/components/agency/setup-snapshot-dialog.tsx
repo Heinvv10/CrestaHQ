@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   ArrowRight,
   Check,
@@ -184,9 +185,15 @@ export function SetupSnapshotDialog() {
   const [dontShowAgain, setDontShowAgain] = useState(false);
 
   const isOwner = !loading && !!user && agencyRole === "owner";
+  const uid = user?.uid;
+  // Read at fire time (not an effect dep): a route change must neither
+  // refetch nor restart the 10s timer.
+  const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
 
   useEffect(() => {
-    if (!isOwner || !user) return;
+    if (!isOwner || !uid) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -202,7 +209,7 @@ export function SetupSnapshotDialog() {
     void (async () => {
       // Per-user "don't show again" lives in their own settings subcollection.
       try {
-        const snap = await getDoc(dismissalRef(user.uid));
+        const snap = await getDoc(dismissalRef(uid));
         const dismissed = snap.data()?.dismissed === true;
         if (cancelled || !shouldShowSetupSnapshot({ isOwner, shownThisSession, dismissed })) return;
       } catch {
@@ -219,7 +226,8 @@ export function SetupSnapshotDialog() {
       if (cancelled || !data?.ok || !Array.isArray(data.groups)) return;
       setSummary(data);
       timer = setTimeout(() => {
-        if (cancelled) return;
+        // Don't point the owner at the Guided setup page they're already on.
+        if (cancelled || pathnameRef.current?.startsWith("/agency/setup")) return;
         setOpen(true);
         try {
           sessionStorage.setItem(SESSION_KEY, "1");
@@ -233,7 +241,7 @@ export function SetupSnapshotDialog() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [isOwner, user]);
+  }, [isOwner, uid]);
 
   function handleOpenChange(next: boolean) {
     setOpen(next);

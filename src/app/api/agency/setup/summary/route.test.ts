@@ -90,6 +90,12 @@ describe("GET /api/agency/setup/summary Email row", () => {
     expect(await emailStatus()).toBe("ok");
   });
 
+  it("keeps a half-set Resend verdict visible even with a verified SMTP sub-account", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_x"); // EMAIL_FROM missing -> "check"
+    mem.seed("subAccounts/s1", { agencyId: "ag1", ...smtp(true) });
+    expect(await emailStatus()).toBe("check");
+  });
+
   it("ignores unverified SMTP and other agencies' SMTP", async () => {
     mem.seed("subAccounts/s1", { agencyId: "ag1", ...smtp(false) });
     mem.seed("subAccounts/s2", { agencyId: "other", ...smtp(true) });
