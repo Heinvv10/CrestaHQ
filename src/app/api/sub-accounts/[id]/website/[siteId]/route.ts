@@ -4,12 +4,21 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { isDocId } from "@/lib/server/doc-id";
 import {
   requireWebsiteEnabledSub,
   transitionWebsite,
   WebsiteServiceError,
 } from "@/lib/server/websites-service";
 import type { WebsiteConfig, WebsiteDoc } from "@/types/website";
+
+/**
+ * A site id is a document id, never a path. Answered before anything
+ * touches Firestore: "a/b" would address a doc in a nested collection, and
+ * an id that makes the doc path an even number of segments is not a
+ * document path at all — the Admin SDK throws on it, which would be a 500.
+ */
+const siteNotFound = () => NextResponse.json({ error: "Website not found." }, { status: 404 });
 
 const WIZARD_STEPS = new Set(["start", "business", "pages", "video", "location", "look", "story", "review"]);
 const MAX_CONFIG_BYTES = 100_000;
@@ -36,6 +45,7 @@ export async function PATCH(
   ctx: { params: Promise<{ id: string; siteId: string }> },
 ) {
   const { id: subAccountId, siteId } = await ctx.params;
+  if (!isDocId(siteId)) return siteNotFound();
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
@@ -112,6 +122,7 @@ export async function DELETE(
   ctx: { params: Promise<{ id: string; siteId: string }> },
 ) {
   const { id: subAccountId, siteId } = await ctx.params;
+  if (!isDocId(siteId)) return siteNotFound();
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 

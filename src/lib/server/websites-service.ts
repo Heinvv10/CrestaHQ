@@ -97,14 +97,17 @@ const BUSY_RETRY_AFTER_SEC = 5;
 /**
  * Take one of the sub-account's hourly build submits, or say when the next
  * is free. A fixed window: the first submit opens it, the hour after that
- * closes it. The reservation is kept whatever gitpage then answers — a
- * refused or failed submit still counts — because the point is to bound
- * calls to gitpage, and un-counting on failure is how a bound leaks.
+ * closes it. A reservation is consumed whatever happens after it is taken:
+ * gitpage accepting, gitpage answering 4xx or 5xx, or the request throwing.
+ * There is deliberately no way to give one back — un-counting on failure is
+ * how a bound leaks, and a throw cannot be told from "sent, answer lost".
+ * The cost: ten failed attempts in the hour, including during a gitpage
+ * outage, lock builds for the workspace until the window rolls.
  * Fails closed: a reservation that cannot be made (contention) is a refusal.
  */
 async function reserveBuildSubmit(
   subAccountId: string,
-): Promise<{ ok: true; windowStart: number } | { ok: false; retryAfterSec: number; busy?: true }> {
+): Promise<{ ok: true } | { ok: false; retryAfterSec: number; busy?: true }> {
   const db = getAdminDb();
   const ref = db.doc(websiteLimitsPath(subAccountId));
   const reserve = () => db.runTransaction(async (tx) => {
@@ -132,45 +135,18 @@ async function reserveBuildSubmit(
       const left = (windowStart ?? now) + BUILD_WINDOW_MS - now;
       return { ok: false, retryAfterSec: Math.max(1, Math.ceil(left / 1000)) } as const;
     }
-    const start = windowStart ?? now;
     tx.set(
       ref,
-      { windowStart: start, count: count + 1, updatedAt: FieldValue.serverTimestamp() },
+      { windowStart: windowStart ?? now, count: count + 1, updatedAt: FieldValue.serverTimestamp() },
       { merge: true },
     );
-    return { ok: true, windowStart: start } as const;
+    return { ok: true } as const;
   });
   try {
     return await reserve();
   } catch (err) {
     if (!isContention(err)) throw err;
     return { ok: false, retryAfterSec: BUSY_RETRY_AFTER_SEC, busy: true };
-  }
-}
-
-/**
- * Give back a reservation whose submit never reached gitpage (the request
- * itself threw: no connection, DNS, a reset). Ten of those in a row would
- * otherwise lock a workspace out for an hour over an outage it did not
- * cause and that cost gitpage nothing. Only ever one, only in the window
- * the reservation was counted in (a new window's count is not ours to
- * touch), never below zero, and in a transaction so concurrent releases and
- * reservations cannot lose each other's updates. A release that cannot be
- * made is dropped: the submit stays counted, which is the safe side.
- */
-async function releaseBuildSubmit(subAccountId: string, windowStart: number): Promise<void> {
-  const db = getAdminDb();
-  const ref = db.doc(websiteLimitsPath(subAccountId));
-  try {
-    await db.runTransaction(async (tx) => {
-      const cur = (await tx.get(ref)).data() as { windowStart?: unknown; count?: unknown } | undefined;
-      if (cur?.windowStart !== windowStart) return;
-      const count = cur.count;
-      if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) return;
-      tx.set(ref, { count: count - 1, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-    });
-  } catch (err) {
-    console.warn(`[website/build] could not release a build reservation sa=${subAccountId}`, err);
   }
 }
 
@@ -397,6 +373,11 @@ export async function createWebsiteForSubAccount(input: {
   name?: string;
 }): Promise<{ siteId: string; agencyId: string }> {
   const { subAccountId } = input;
+  // An id, never a path — as the build checks. Without this only the gate
+  // read below stands between a path-shaped value and a nested create.
+  if (!isDocId(subAccountId)) {
+    throw new WebsiteServiceError("Sub-account not found", 404);
+  }
   const { agencyId } = await requireWebsiteEnabledSub(subAccountId);
 
   const db = getAdminDb();
@@ -635,12 +616,11 @@ export async function submitWebsiteBuildForSubAccount(input: {
       editorEmail,
     });
   } catch (err) {
-    // Any HTTP answer from gitpage — 4xx and 5xx included — keeps its
-    // reservation: gitpage was reached. Only a request that itself threw
-    // gives it back.
-    if (!(err instanceof GitpageError)) {
-      await releaseBuildSubmit(subAccountId, rate.windowStart);
-    }
+    // Whatever happened, the reservation taken above stays taken — an HTTP
+    // error and a request that threw alike. A throw does not prove gitpage
+    // was not reached (a timeout, an answer lost after the request was
+    // sent), so giving the reservation back would let a caller who can make
+    // requests fail that way start builds without limit.
     if (err instanceof GitpageError) {
       // 401 means the API key is invalid (rotated upstream, never set,
       // typo'd). Flip the cached status so the UI surfaces the correct CTA.

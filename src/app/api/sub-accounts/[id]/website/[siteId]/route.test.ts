@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -194,5 +194,55 @@ describe("DELETE /api/sub-accounts/[id]/website/[siteId]?reset=1", () => {
   it("answers 404 for a site that does not exist, creating nothing", async () => {
     expect((await reset("nope")).status).toBe(404);
     expect(mem.read("subAccounts/sa1/website/nope")).toBeUndefined();
+  });
+});
+
+describe("a site id that is not a document id", () => {
+  // A failed assertion must not leave its spies on the shared db.
+  afterEach(() => vi.restoreAllMocks());
+
+  // "a/b" makes the doc path six segments (a doc in a nested collection);
+  // "a/b/c" makes it seven, which the real Admin SDK refuses to build at all.
+  const BAD_IDS = ["a/b", "a/b/c", "site1/private/x", "..", ".", "", "__site__"];
+  const call = (method: "PATCH" | "DELETE", siteId: string, query = "") => {
+    const init = {
+      method,
+      headers: { "content-type": "application/json", "x-user-uid": "u_admin" },
+      ...(method === "PATCH" ? { body: JSON.stringify({ config: { heading: "After" } }) } : {}),
+    };
+    const request = new Request(`https://app.test/api/sub-accounts/sa1/website/x${query}`, init);
+    const params = { params: Promise.resolve({ id: "sa1", siteId }) };
+    return method === "PATCH" ? PATCH(request, params) : DELETE(request, params);
+  };
+
+  it.each([
+    ["the draft save", "PATCH", ""],
+    ["a reset", "DELETE", "?reset=1"],
+    ["Remove", "DELETE", ""],
+  ] as const)("%s answers 404 before anything touches Firestore", async (_label, method, query) => {
+    seedSite("draft");
+    mem.seed("subAccounts/sa1/website/a/b/c", { id: "c", subAccountId: "sa1", status: "draft" });
+    mem.seed("subAccounts/sa1/website/site1/private/x", { id: "x", subAccountId: "sa1", status: "draft" });
+    const before = mem.all();
+    const doc = vi.spyOn(mem.db, "doc");
+    const collection = vi.spyOn(mem.db, "collection");
+    const runTransaction = vi.spyOn(mem.db, "runTransaction");
+    for (const siteId of BAD_IDS) {
+      const res = await call(method, siteId, query);
+      expect(res.status, `site id ${JSON.stringify(siteId)}`).toBe(404);
+    }
+    expect(doc).not.toHaveBeenCalled();
+    expect(collection).not.toHaveBeenCalled();
+    expect(runTransaction).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    expect(mem.all()).toEqual(before);
+  });
+
+  it("an ordinary id still reaches the doc", async () => {
+    seedSite("draft");
+    expect((await call("PATCH", "site1")).status).toBe(200);
+    expect((await call("DELETE", "site1", "?reset=1")).status).toBe(200);
+    expect((await call("DELETE", "site1")).status).toBe(200);
+    expect(mem.read(SITE)).toBeUndefined();
   });
 });

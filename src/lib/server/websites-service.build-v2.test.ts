@@ -384,7 +384,7 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       ["500", 500, { error: "Internal error." }],
       ["502", 502, { error: "Bad gateway." }],
       ["503 with no JSON body", 503, null],
-    ])("R3-1: an HTTP %s from gitpage still uses up one of the ten — gitpage was reached", async (_label, status, body) => {
+    ])("an HTTP %s from gitpage uses up one of the ten", async (_label, status, body) => {
       fetchMock.mockImplementation(async () =>
         body === null ? new Response("<html>down</html>", { status }) : Response.json(body, { status }),
       );
@@ -394,79 +394,48 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       expect(fetchMock).toHaveBeenCalledTimes(10);
     });
 
-    it("R3-1: a submit that never reached gitpage gives its reservation back — an outage does not lock the workspace out", async () => {
+    it.each([
+      ["a network error", () => new TypeError("fetch failed")],
+      ["a timeout", () => Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" })],
+      ["a connection reset after the request was sent", () => Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })],
+    ])("a request that throws (%s) ALSO uses up one of the ten — a throw does not prove gitpage was not reached", async (_label, failure) => {
       fetchMock.mockImplementation(async () => {
-        throw new TypeError("fetch failed");
+        throw failure();
       });
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 10; i++) {
         await expect(build()).rejects.toMatchObject({ status: 502 });
-        expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 0 });
+        expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: i + 1 });
       }
-      expect(fetchMock).toHaveBeenCalledTimes(12);
-      expect(mem.read(SITE)).toMatchObject({ status: "draft" });
+      // The eleventh attempt is refused without a call, outage or not...
+      await expect(build()).rejects.toMatchObject({ status: 429, retryAfterSec: 60 * 60 });
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 10 });
 
-      // gitpage is back: the full allowance is still there, and still ends at ten.
+      // ...and nothing but the window rolling opens it again.
+      vi.setSystemTime(T0 + HOUR - 1);
+      await expect(build()).rejects.toMatchObject({ status: 429 });
+      vi.setSystemTime(T0 + HOUR);
       fetchMock.mockImplementation(async () =>
         Response.json({ formResponseId: "build_back", pollUrl: "https://gitpage.test/s/build_back" }, { status: 202 }),
       );
-      for (let i = 0; i < 10; i++) await rebuild();
-      await mem.db.doc(SITE).update({ status: "ready" });
-      await expect(build()).rejects.toMatchObject({ status: 429 });
-      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ count: 10 });
+      await build();
+      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0 + HOUR, count: 1 });
     });
 
-    it("R3-1: only the failed submit's own reservation is given back", async () => {
-      for (let i = 0; i < 4; i++) await rebuild();
-      await mem.db.doc(SITE).update({ status: "ready" });
-      fetchMock.mockImplementationOnce(async () => {
-        throw new TypeError("fetch failed");
-      });
-      await expect(build()).rejects.toMatchObject({ status: 502 });
-      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 4 });
-    });
-
-    it("R3-1: a release never takes the count below zero", async () => {
-      // The count is back at zero by the time the request fails.
-      fetchMock.mockImplementationOnce(async () => {
-        await mem.db.doc(websiteLimitsPath("sa1")).set({ windowStart: T0, count: 0 });
-        throw new TypeError("fetch failed");
-      });
-      await expect(build()).rejects.toMatchObject({ status: 502 });
-      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 0 });
-    });
-
-    it("R3-1: a release does not touch a window that opened after its reservation", async () => {
-      fetchMock.mockImplementationOnce(async () => {
-        await mem.db.doc(websiteLimitsPath("sa1")).set({ windowStart: T0 + HOUR, count: 4 });
-        throw new TypeError("fetch failed");
-      });
-      await expect(build()).rejects.toMatchObject({ status: 502 });
-      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0 + HOUR, count: 4 });
-    });
-
-    it("R3-1: five submits failing at once each give back exactly their own reservation", async () => {
-      for (let i = 0; i < 3; i++) await rebuild();
-      for (let i = 0; i < 5; i++) {
-        mem.seed(`subAccounts/sa1/website/c${i}`, { id: `c${i}`, agencyId: "ag1", subAccountId: "sa1", status: "ready" });
+    it("a mix of accepted, rejected and thrown submits all count, in whatever order", async () => {
+      const answers: Array<() => Promise<Response>> = [
+        async () => Response.json({ formResponseId: "b1", pollUrl: "https://gitpage.test/s/b1" }, { status: 202 }),
+        async () => { throw new TypeError("fetch failed"); },
+        async () => Response.json({ error: "Bad gateway." }, { status: 502 }),
+        async () => { throw new TypeError("fetch failed"); },
+        async () => Response.json({ message: "Invalid palette." }, { status: 422 }),
+      ];
+      for (const answer of answers) {
+        await mem.db.doc(SITE).update({ status: "ready" });
+        fetchMock.mockImplementationOnce(answer);
+        await build().catch(() => undefined);
       }
-      fetchMock.mockImplementation(async () => {
-        throw new TypeError("fetch failed");
-      });
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const results = await Promise.allSettled(Array.from({ length: 5 }, (_, i) => build({ siteId: `c${i}` })));
-      expect(results.every((r) => r.status === "rejected")).toBe(true);
-      // Each either never got a reservation (429: it lost the contention and
-      // was refused) or got one, failed to reach gitpage (502) and gave it back.
-      const statuses = (results as PromiseRejectedResult[]).map((r) => r.reason.status as number);
-      for (const status of statuses) expect([429, 502]).toContain(status);
-      expect(statuses).toContain(502);
-      // Back to the three real submits, plus any release that itself lost the
-      // contention and was dropped (logged; it stays counted). Never under
-      // three, and no reservation given back twice.
-      const dropped = warn.mock.calls.length;
-      warn.mockRestore();
-      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 3 + dropped });
-      expect(dropped).toBeLessThan(statuses.filter((x) => x === 502).length);
+      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 5 });
     });
 
     it.each([
@@ -518,6 +487,36 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       }
       expect(fetchMock).not.toHaveBeenCalled();
       expect(mem.all().filter((d) => d.path.startsWith("subAccounts/sa1/website/"))).toHaveLength(5);
+    });
+
+    it.each([
+      ["a site doc's path", "sa1/website/site1"],
+      ["a nested path", "sa1/x/y"],
+      ["a two-segment path", "sa1/website"],
+      ["a parent reference", ".."],
+      ["empty", ""],
+    ])("Add website refuses a sub-account id that is %s with 404, before anything touches Firestore", async (_label, subAccountId) => {
+      // A doc at that path that would pass the gate read, were it reached.
+      mem.seed("subAccounts/sa1/website/site1", { agencyId: "ag1", subAccountId: "sa1", websiteEnabledByAgency: true });
+      mem.seed("subAccounts/sa1/x/y", { agencyId: "ag1", websiteEnabledByAgency: true });
+      const before = mem.all();
+      const doc = vi.spyOn(mem.db, "doc");
+      const collection = vi.spyOn(mem.db, "collection");
+      const runTransaction = vi.spyOn(mem.db, "runTransaction");
+      await expect(createWebsiteForSubAccount({ subAccountId })).rejects.toMatchObject({ status: 404 });
+      expect(doc).not.toHaveBeenCalled();
+      expect(collection).not.toHaveBeenCalled();
+      expect(runTransaction).not.toHaveBeenCalled();
+      doc.mockRestore();
+      collection.mockRestore();
+      runTransaction.mockRestore();
+      expect(mem.all()).toEqual(before);
+    });
+
+    it("Add website on a path-shaped sub-account id that passes the gate read would otherwise create a nested site: it does not", async () => {
+      mem.seed("subAccounts/sa1/x/y", { agencyId: "ag1", websiteEnabledByAgency: true });
+      await expect(createWebsiteForSubAccount({ subAccountId: "sa1/x/y" })).rejects.toMatchObject({ status: 404 });
+      expect(mem.all().filter((d) => d.path.startsWith("subAccounts/sa1/x/y/"))).toEqual([]);
     });
 
     it("refuses a sub-account id that is a path", async () => {

@@ -301,6 +301,28 @@ describe("POST …/website/[siteId]/poll-now — the manual re-check", () => {
     expect(mem.read(SITE)).toMatchObject({ status: "ready" });
   });
 
+  it("answers 404 for a site id that is not a document id, before anything touches Firestore or gitpage", async () => {
+    const before = mem.all();
+    const doc = vi.spyOn(mem.db, "doc");
+    const runTransaction = vi.spyOn(mem.db, "runTransaction");
+    for (const siteId of ["a/b", "a/b/c", "site1/private/x", "..", "", "__site__"]) {
+      const res = await pollNow(
+        new Request("https://app.test/api/sub-accounts/sa1/website/x/poll-now", {
+          method: "POST",
+          headers: { "x-user-uid": "u_owner" },
+        }),
+        { params: Promise.resolve({ id: "sa1", siteId }) },
+      );
+      expect(res.status, `site id ${JSON.stringify(siteId)}`).toBe(404);
+    }
+    expect(doc).not.toHaveBeenCalled();
+    expect(runTransaction).not.toHaveBeenCalled();
+    doc.mockRestore();
+    runTransaction.mockRestore();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mem.all()).toEqual(before);
+  });
+
   it("leaves an already-live site alone", async () => {
     seedSite({ status: "ready", liveUrl: "https://acme.gitlab.io/site" });
     const before = mem.read(SITE);

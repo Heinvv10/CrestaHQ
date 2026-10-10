@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { isDocId } from "@/lib/server/doc-id";
 import { cleanText, GitpageError, pollBuild } from "@/lib/gitpage/client";
 import {
   isSettleable,
@@ -55,6 +56,11 @@ export async function POST(
   ctx: { params: Promise<{ id: string; siteId: string }> },
 ) {
   const { id: subAccountId, siteId } = await ctx.params;
+  // A document id, never a path — answered before anything touches
+  // Firestore (see the same check in ../route.ts).
+  if (!isDocId(siteId)) {
+    return NextResponse.json({ error: "No website doc." }, { status: 404 });
+  }
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
