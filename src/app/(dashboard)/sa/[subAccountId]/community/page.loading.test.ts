@@ -17,9 +17,10 @@ const ctx = vi.hoisted(() => ({
   },
 }));
 vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ctx.value }));
+const groups = vi.hoisted(() => ({ emitNow: true }));
 vi.mock("@/lib/firestore/community-groups", () => ({
   subscribeToCommunityGroups: (_id: string, onData: (l: unknown[]) => void) => {
-    onData([]);
+    if (groups.emitNow) onData([]);
     return () => {};
   },
 }));
@@ -40,6 +41,7 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  groups.emitNow = true;
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -66,5 +68,14 @@ describe("CommunityPage gate", () => {
     await render();
     expect(container.textContent).not.toContain("Community is locked");
     expect(container.textContent).toContain("Skool-style groups");
+  });
+
+  it("does not claim 'No groups yet' between the doc arriving and the first snapshot", async () => {
+    groups.emitNow = false;
+    ctx.value = { subAccountId: "sa1", subAccount: null, isAdmin: true, loading: true };
+    await render();
+    ctx.value = { subAccountId: "sa1", subAccount: { communityEnabledByAgency: true }, isAdmin: true, loading: false };
+    await render();
+    expect(container.textContent).not.toContain("No groups yet");
   });
 });

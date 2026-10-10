@@ -43,10 +43,10 @@ export default function CommunityPage() {
   const gateOn = subAccount?.communityEnabledByAgency === true;
 
   useEffect(() => {
-    if (!gateOn) {
-      setLoaded(true);
-      return;
-    }
+    // Gated off renders the locked view, which never reads `loaded`; marking
+    // it loaded here showed "No groups yet" once the gate came on, until the
+    // first snapshot.
+    if (!gateOn) return;
     return subscribeToCommunityGroups(
       subAccountId,
       (list) => {
