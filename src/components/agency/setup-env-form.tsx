@@ -371,13 +371,10 @@ export function SetupEnvForm() {
   // Fully-configured groups (every key live and shape-valid) drop into a
   // collapsed "already configured" section at the bottom so the board leads
   // with what still needs doing — those keys rarely change once set.
-  // A group holding an unsaved typed value stays visible, so what "Save N keys"
-  // counts is never hidden inside the collapsed section.
+  // Partition on SERVER status only: a group that moved while the user typed
+  // would change parent, remounting its input and dropping focus.
   const isDoneGroup = (g: StatusGroup) =>
-    g.keys.every(
-      (k) =>
-        k.state === "active" && k.valid !== false && !values[k.name]?.trim(),
-    );
+    g.keys.every((k) => k.state === "active" && k.valid !== false);
   // The pinned OpenRouter key sits outside otherGroups, so "all done" must
   // check it separately.
   const pinnedKeyDone =
@@ -734,7 +731,15 @@ export function SetupEnvForm() {
                 )}
 
                 {doneGroups.length > 0 && (
-                  <details className="rounded-xl border bg-muted/20 p-3">
+                  // Open while any key in here holds an unsaved typed value, so
+                  // what "Save N keys" counts is never hidden. Otherwise the
+                  // user's own toggle stands.
+                  <details
+                    open={doneGroups.some((g) =>
+                      g.keys.some((k) => values[k.name]?.trim()),
+                    )}
+                    className="rounded-xl border bg-muted/20 p-3"
+                  >
                     <summary className="cursor-pointer text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                       Already configured · {doneGroups.length}{" "}
                       {doneGroups.length === 1 ? "group" : "groups"} — rarely
