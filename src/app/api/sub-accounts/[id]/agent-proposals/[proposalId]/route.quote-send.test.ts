@@ -64,6 +64,7 @@ describe("send_quote", () => {
     expect(sendEmail).not.toHaveBeenCalled();
 
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const sent = sendEmail.mock.calls[0]![0] as { to: string; subject: string; text: string; replyTo?: string };
     expect(sent.to).toBe("ann@x.io");
@@ -97,6 +98,7 @@ describe("send_quote", () => {
     beforeNextTransaction(async () => change());
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The recipient, the document or the email changed since it was approved; nothing was sent.");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(mem.read("quotes/q1")!.status).toBe("draft");
   });
@@ -113,6 +115,7 @@ describe("send_quote", () => {
     const { quoteId: _q, ...expect_ } = row(id).pinned as Record<string, unknown>;
     const r = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: { ...expect_, ...tamper } as never });
     expect(r).toMatchObject({ ok: false, failure: { code: "changed_since_approval" } });
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     const ok = await sendQuoteServerSide({ subAccountId: "sa1", quoteId: "q1", actor: { kind: "system", reason: "test" }, expect: expect_ as never });
     expect(ok).toMatchObject({ ok: true });

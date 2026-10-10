@@ -117,6 +117,7 @@ describe("Paystack now says the charge failed", () => {
     expect(attempt().state).toBe("refused");
     expect(raised().autoCharge).toMatchObject({ reference: REF, state: "declined" });
     expect(declines()).toBe(1);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect((sendEmail.mock.calls[0]![0] as { text: string }).text).toContain("/pay/link/");
     expect(raised().status).toBe("sent");

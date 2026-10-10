@@ -58,6 +58,7 @@ describe("quota alert with no shared sender", () => {
     expect(msg.to).toBe("owner@agency.test");
     // The agency has no supportEmail: replies reach its owner, not the client's mailbox.
     expect(msg.replyTo).toBe("owner@agency.test");
+    await flushAfterResponse();
     expect(m.resendSend).not.toHaveBeenCalled();
   });
 

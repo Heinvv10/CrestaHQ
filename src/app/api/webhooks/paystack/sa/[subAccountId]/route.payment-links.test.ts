@@ -261,6 +261,7 @@ describe("charge.success → payment link paid", () => {
     await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
     await deliver();
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
   });
 

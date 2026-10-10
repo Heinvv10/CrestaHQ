@@ -135,6 +135,7 @@ describe("mark_deal_completed", () => {
       reviews({ channel: "whatsapp_template", whatsappTemplateId: "rt2" });
     });
     expect((await decide(id2, "approve")).status).toBe(422);
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -254,6 +255,7 @@ describe("mark_deal_completed", () => {
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The deal's contact, their number or the review request changed since this was reviewed; nothing was changed.");
     expect(mem.read("deals/d1")!.completed).toBeUndefined();
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 });

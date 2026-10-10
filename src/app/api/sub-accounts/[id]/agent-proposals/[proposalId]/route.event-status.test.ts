@@ -113,6 +113,7 @@ describe("set_event_status", () => {
     expect(sendEmail).not.toHaveBeenCalled();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(sendEmail.mock.calls[0]![0]).toMatchObject({ to: "ann@x.io", subject: pinned.notice.subject, text: pinned.notice.text });
   });

@@ -61,6 +61,7 @@ describe("send_message", () => {
     await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
     expect((await decide(id, "approve")).status).toBe(200);
+    await flushAfterResponse();
     expect(send).toHaveBeenCalledTimes(1);
   });
 

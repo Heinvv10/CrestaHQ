@@ -62,6 +62,7 @@ it("a transient failure marking the invoice paid answers 5xx, and Stripe's retry
   // A further replay is a quiet no-op: no flag, no second trigger.
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
   expect(mem.read("orders/o1")!.attention ?? null).toBeNull();
+  await flushAfterResponse();
   expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
 });
 

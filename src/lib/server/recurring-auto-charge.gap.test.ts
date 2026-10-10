@@ -222,6 +222,7 @@ describe("the guard is keyed on cycle due dates, not on when a sweep ran (round 
     await edit("2026-02-21", { anchorDay: 15 });
     await runOneSchedule(SCHEDULE, at("2026-03-15"));
     expect(refs(calls)).toEqual([]);
+    await flushAfterResponse();
     expect(sendQuoteServerSide).toHaveBeenCalledTimes(2);
     expect(tasksAbout("too soon")).toHaveLength(1);
   });
