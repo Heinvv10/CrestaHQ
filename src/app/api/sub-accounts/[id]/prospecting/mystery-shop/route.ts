@@ -13,7 +13,7 @@ import {
   type MysteryShopChannel,
 } from "@/lib/prospecting/mystery-shop/model";
 import { allowedTargets, emailDomainTrusted, formMatchDomains, matchTarget } from "@/lib/prospecting/mystery-shop/targets";
-import { serviceOf } from "@/lib/prospecting/mystery-shop/enquiry";
+import { enquiryVars, formTownOf, serviceOf } from "@/lib/prospecting/mystery-shop/enquiry";
 import { NO_FORM, formTargetOf } from "@/lib/prospecting/mystery-shop/form/target";
 import { queueFormJob } from "@/lib/prospecting/mystery-shop/form/job";
 import { sweepStuckFormShop } from "@/lib/prospecting/mystery-shop/form/job-store";
@@ -206,6 +206,8 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
             form: {
               subject: enquiry.email.subject,
               service: serviceOf(contact.prospecting),
+              // The town the shown (hashed) form enquiry names, for a form's town field; else none.
+              town: formTownOf(access.sub.prospectingMysteryShopTemplates, enquiryVars(contact, access.sub.name)),
               matchDomains: formMatchDomains(to),
               matchNumbers: allowedTargets("call", contact, country),
               matchAddresses: allowedTargets("email", contact, country),

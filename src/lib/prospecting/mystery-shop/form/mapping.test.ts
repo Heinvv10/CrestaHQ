@@ -8,10 +8,11 @@ const ID: FormIdentity = {
   subject: "Enquiry: plumber in Gqeberha",
   message: "Hi,\n\nDo you do plumber in Gqeberha?",
   service: "plumber",
+  town: "Gqeberha",
 };
 let n = 0;
 const field = (hint: string, over: Partial<FormField> = {}): FormField => ({
-  key: `f${n++}`, tag: "input", type: "text", hint, required: false, visible: true, ...over,
+  key: `f${n++}`, tag: "input", type: "text", hint, named: hint, required: false, visible: true, ...over,
 });
 const plan = (fields: FormField[], id: FormIdentity = ID) => planFields(fields, id);
 const filled = (fields: FormField[], id?: FormIdentity) => {
@@ -26,14 +27,61 @@ describe("roleOf", () => {
     ["first name | fname", "text", "first"], ["surname", "text", "last"], ["last_name", "text", "last"],
     ["email address", "text", "email"], ["x", "email", "email"], ["phone", "text", "phone"], ["x", "tel", "phone"],
     ["whatsapp number", "text", "phone"], ["company name", "text", "company"], ["business", "text", "company"],
-    ["subject", "text", "subject"], ["your enquiry", "text", "message"], ["website", "text", null], ["city", "text", null],
+    ["subject", "text", "subject"], ["your enquiry", "text", "message"], ["website", "text", null], ["city", "text", "town"],
+    ["company name | organization", "text", "company"], ["business name | bizname", "text", "company"], ["billing_state", "text", null],
   ])("%s (%s) → %s", (hint, type, role) => {
-    expect(roleOf({ tag: "input", type, hint })).toBe(role);
+    expect(roleOf({ tag: "input", type, hint, named: hint })).toBe(role);
+  });
+
+  it.each([
+    "town or suburb | example: edenvale | where | bizwhere | address-level2", "town / city", "suburb", "x | address-level2", "dorp",
+    "billing_city", "your_city", "town-name", "suburb or estate",
+  ])("%s → town", (hint) => {
+    expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBe("town");
+  });
+
+  it.each([
+    "street address", "address | street-address", "postal code", "city | postal-code", "province", "state", "country",
+    "area code", "address", "location", "area", "address line 1 | address-line1", "region | address-level1",
+    // Each says town, and each is excluded by its own NOT_TOWN word.
+    "town address", "city | address", "dorp | adres", "town | street", "dorp | straat", "city | postal", "city postcode",
+    "dorp | poskode", "city zip", "city | state", "town | province", "voorstad | provinsie", "city | country", "city | area-code",
+    "suburb | address-line1", "city | address-level1", "townhouse", "capacity", "hometown", "city areacode",
+    "zipcode | city", "city | zip_code", "city_code",
+  ])("%s is never the town", (hint) => {
+    expect(roleOf({ tag: "input", type: "text", hint, named: hint })).not.toBe("town");
+  });
+
+  it("the town is never read from a placeholder (example values): company and subject fields keep their role", () => {
+    const r = (label: string, placeholder: string) =>
+      roleOf({ tag: "input", type: "text", hint: `${label.split(" | ")[0]} | ${placeholder} | ${label.split(" | ").slice(1).join(" | ")}`, named: label });
+    expect(r("business name | business", "e.g. cape town plumbers")).toBe("company");
+    expect(r("business name | bizname", "e.g. city plumbing")).toBe("company");
+    expect(r("subject | subject", "town house enquiry")).toBe("subject");
+    expect(r("your name | name", "e.g. sam from cape town")).toBe("name");
+    expect(r("how can we help | help", "e.g. a burst geyser in my town")).toBe("message");
+    expect(r("town or suburb | where | address-level2", "example: edenvale")).toBe("town");
+  });
+
+  it("a field that says both business and town is ambiguous: no role (a required one refuses)", () => {
+    for (const hint of ["business city", "company town", "business_city", "organisation | address-level2"]) {
+      expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBeNull();
+    }
+    expect(plan([field("business city", { required: true }), field("m", { tag: "textarea" })])).toMatchObject({
+      ok: false, code: "unmapped_required", reason: "Required fields it can't fill: business city.",
+    });
+    // The business word only in the placeholder: still ambiguous, never the business name typed into a City field.
+    const city = field("city | e.g. near the business park | city", { named: "city | city", required: true });
+    expect(roleOf(city)).toBeNull();
+    expect(plan([city, field("m", { tag: "textarea" })])).toEqual({
+      ok: false, code: "unmapped_required", reason: "Required fields it can't fill: city.",
+    });
   });
 
   it("a textarea is the message unless it says it is an address", () => {
-    expect(roleOf({ tag: "textarea", type: "", hint: "anything" })).toBe("message");
-    expect(roleOf({ tag: "textarea", type: "", hint: "street address" })).toBeNull();
+    expect(roleOf({ tag: "textarea", type: "", hint: "anything", named: "anything" })).toBe("message");
+    expect(roleOf({ tag: "textarea", type: "", hint: "street address", named: "street address" })).toBeNull();
+    expect(roleOf({ tag: "textarea", type: "", hint: "how can we help? | e.g. a leak at my house in town", named: "how can we help? | e.g. a leak at my house in town" })).toBe("message");
   });
 });
 
@@ -87,6 +135,32 @@ describe("planFields", () => {
       ok: false, code: "unmapped_required", reason: expect.stringContaining("phone"),
     });
     expect(plan([field("budget", { type: "radio", required: true }), field("m", { tag: "textarea" })])).toMatchObject({ code: "unmapped_required" });
+  });
+
+  it("fills a required town field with the enquiry's town (the crestahq.com form, plus a message)", () => {
+    const where = field("town or suburb | example: edenvale | where | bizwhere | address-level2", { required: true });
+    const p = plan([field("your name", { required: true }), where, field("m", { tag: "textarea" })]);
+    expect(p.ok && p.fills.find((f) => f.key === where.key)).toEqual({ key: where.key, role: "town", value: "Gqeberha", kind: "fill" });
+    expect(p.ok && p.roles).toEqual(["name", "town", "message"]);
+  });
+
+  it("without a town, a required town field still refuses and an optional one is left empty", () => {
+    for (const town of [null, ""]) {
+      expect(plan([field("town or suburb", { required: true }), field("m", { tag: "textarea" })], { ...ID, town })).toEqual({
+        ok: false, code: "unmapped_required", reason: "Required fields it can't fill: town or suburb.",
+      });
+      const p = plan([field("city"), field("m", { tag: "textarea" })], { ...ID, town });
+      expect(p.ok && p.fills.map((f) => f.role)).toEqual(["message"]);
+    }
+  });
+
+  it("the crestahq.com form as it stands (no message field) still refuses — for the message, no longer the town", () => {
+    const p = plan([
+      field("your name | person", { required: true }), field("business name | business", { required: true }),
+      field("town or suburb | where | address-level2", { required: true }), field("mobile number (whatsapp) | phone", { type: "tel", required: true }),
+      field("email address (optional) | email", { type: "email" }),
+    ]);
+    expect(p).toEqual({ ok: false, code: "unmapped_required", reason: "The form has no message field for the enquiry." });
   });
 
   it("an optional field it cannot fill is left empty, and an optional phone without a number too", () => {

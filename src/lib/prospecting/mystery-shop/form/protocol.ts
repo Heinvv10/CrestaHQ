@@ -29,7 +29,7 @@ export const SUBMITTING = "submitting";
 export const GO = "go";
 
 const SIGNALS = new Set(["navigation", "thank_you", "post_2xx"]);
-const ROLES: ReadonlySet<string> = new Set<FieldRole>(["name", "first", "last", "email", "phone", "company", "subject", "message", "service"]);
+const ROLES: ReadonlySet<string> = new Set<FieldRole>(["name", "first", "last", "email", "phone", "company", "subject", "message", "service", "town"]);
 const CODE = /^[a-z_]{1,40}$/;
 const EMPTY_TRACE: FormTrace = { finalUrl: null, signal: null, mappedFields: [] };
 

@@ -14,7 +14,7 @@ vi.mock("@/lib/automations/qstash", async () => (await import("@/test/mystery-sh
 vi.mock("@/lib/prospecting/mystery-shop/send", async () => (await import("@/test/mystery-shop-route-harness")).sendMock());
 
 const { mem } = await import("@/test/gbp-sync-store");
-const { EMAIL, OK, PHONE, USAGE, list, post, publish, resetRouteHarness, seedContact, seedShop, send, shops, states, used } =
+const { EMAIL, OK, PHONE, USAGE, list, post, publish, resetRouteHarness, seedContact, seedSa, seedShop, send, shops, states, used } =
   await import("@/test/mystery-shop-route-harness");
 const { FORM_STUCK_MS } = await import("@/lib/prospecting/mystery-shop/form/job-store");
 
@@ -130,7 +130,7 @@ describe("POST channel form: queued, not sent", () => {
     expect(mem.read(`mysteryShops/${shopId}`)).toMatchObject({
       channel: "form", status: "queued", target: FORM, targetLabel: FORM, sentAt: null,
       enquiryText: expect.stringContaining("Do you do plumber in Gqeberha?"),
-      formEnquiry: { subject: "Enquiry: plumber in Gqeberha", service: "plumber" },
+      formEnquiry: { subject: "Enquiry: plumber in Gqeberha", service: "plumber", town: "Gqeberha" },
       matchDomains: ["acme.co.za"], matchNumbers: [PHONE], matchAddresses: [EMAIL],
     });
     expect(publish).toHaveBeenCalledTimes(1);
@@ -138,6 +138,13 @@ describe("POST channel form: queued, not sent", () => {
       pathname: "/api/automations/prospecting/mystery-shop-form", body: { shopId }, delaySeconds: 0,
       deduplicationId: `mystery_shop_form_${shopId}`,
     });
+  });
+
+  it("stores no town when the shown form enquiry does not name it (a required town field then refuses)", async () => {
+    seedSa(true, { prospectingMysteryShopTemplates: { emailSubject: "Enquiry", emailBody: "Do you do {service}?" } });
+    hash = (await get()).enquiryHash;
+    const { shopId } = (await (await formPost()).json()) as { shopId: string };
+    expect(mem.read(`mysteryShops/${shopId}`)?.formEnquiry).toEqual({ subject: "Enquiry", service: "plumber", town: null });
   });
 
   it("a job QStash would not take: 502, the shop failed and its slot back", async () => {

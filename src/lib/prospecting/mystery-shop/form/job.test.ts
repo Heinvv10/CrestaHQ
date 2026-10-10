@@ -27,7 +27,7 @@ const job = () => runFormJob("f1", { run });
 function seed(extra: Record<string, unknown> = {}) {
   mem.seed("mysteryShops/f1", {
     agencyId: "ag1", subAccountId: "sa1", contactId: "c1", channel: "form", target: URL_, status: "queued",
-    sentAt: null, respondedAt: null, enquiryText: "Hi,\n\nDo you do plumber?", formEnquiry: { subject: "Enquiry: plumber", service: "plumber" },
+    sentAt: null, respondedAt: null, enquiryText: "Hi,\n\nDo you do plumber?", formEnquiry: { subject: "Enquiry: plumber", service: "plumber", town: "Gqeberha" },
     providerRef: null, failure: null, createdAt: new Date(), usageMonth: usageMonthKey(), ...extra,
   });
 }
@@ -55,7 +55,7 @@ describe("a run", () => {
       url: URL_,
       identity: {
         business: "Cresta HQ", email: "info@crestahq.com", phone: "+27784356159",
-        subject: "Enquiry: plumber", service: "plumber", message: "Hi,\n\nDo you do plumber?",
+        subject: "Enquiry: plumber", service: "plumber", town: "Gqeberha", message: "Hi,\n\nDo you do plumber?",
       },
     }));
     expect(shop()).toMatchObject({
@@ -67,6 +67,14 @@ describe("a run", () => {
     }));
     expect(mem.read(LEASE_PATH)).toBeUndefined();
     expect(mem.read(USAGE)?.mysteryShops).toBe(1);
+  });
+
+  it("a shop queued before the town was stored, or with a blank one, fills with no town (a required town field then refuses)", async () => {
+    for (const formEnquiry of [{ subject: "Enquiry: plumber", service: "plumber" }, { subject: "S", service: "p", town: " " }]) {
+      seed({ formEnquiry });
+      await job();
+      expect(run.mock.lastCall?.[0].identity.town).toBeNull();
+    }
   });
 
   it("no confirmation → sent + sendUncertain, the slot kept, the timer queued", async () => {

@@ -66,6 +66,15 @@ export function renderEnquiries(templates: MysteryShopTemplates | null | undefin
   };
 }
 
+/**
+ * The town a form's town field may get: only when the form enquiry (its subject or message — what the
+ * form hash covers) names it, so it is one the operator saw. Else null.
+ */
+export function formTownOf(templates: MysteryShopTemplates | null | undefined, vars: EnquiryVars): string | null {
+  const t = { ...DEFAULT_TEMPLATES, ...stripEmpty(templates) };
+  return vars.town && [t.emailSubject, t.form ?? t.emailBody].some((s) => s.includes("{town}")) ? vars.town : null;
+}
+
 function stripEmpty(t: MysteryShopTemplates | null | undefined): MysteryShopTemplates {
   return Object.fromEntries(Object.entries(t ?? {}).filter(([, v]) => typeof v === "string" && v.trim()));
 }

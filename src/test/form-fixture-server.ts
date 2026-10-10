@@ -138,6 +138,7 @@ export const IDENTITY: FormIdentity = {
   subject: "Enquiry: plumber in Gqeberha",
   message: "Hi,\n\nDo you do plumber in Gqeberha? What's your earliest availability?\n\nThanks,\nCresta HQ",
   service: "plumber",
+  town: "Gqeberha",
 };
 
 export const form = (inner: string, attrs = 'method="post" action="/send"') => `<!doctype html><html><head><title>Contact</title></head>

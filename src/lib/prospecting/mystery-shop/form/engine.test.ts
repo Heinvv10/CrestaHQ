@@ -6,7 +6,7 @@ import { runFormFill, traceUrl, type FormRunInput } from "./engine";
 
 /**
  * The form engine against fixture sites on 127.0.0.1, driving the real
- * headless Chromium: field mapping on three forms, every confirmation signal,
+ * headless Chromium: field mapping on four forms, every confirmation signal,
  * the refusals, and the time limit. CAPTCHA and SSRF: captcha.test.ts and
  * ssrf.test.ts.
  */
@@ -48,7 +48,7 @@ describe("traceUrl (what the member-only trace keeps)", () => {
   });
 });
 
-describe.skipIf(skipBrowser)("field mapping on three fixture forms", () => {
+describe.skipIf(skipBrowser)("field mapping on four fixture forms", () => {
   it("a simple form: name, email, phone, message — after one redirect — confirmed by the page its POST returned", async () => {
     const out = await run({
       "/": redirectTo("/contact"),
@@ -93,6 +93,22 @@ describe.skipIf(skipBrowser)("field mapping on three fixture forms", () => {
     expect(Object.fromEntries(posted())).toEqual({
       _wpcf7: "42", _wpcf7_unit_tag: "wpcf7-f42", "your-name": "Cresta HQ", "your-email": "info@crestahq.com",
       "your-subject": IDENTITY.subject, "your-message": MESSAGE, "website-hp": "", "your-name-confirm": "",
+    });
+  });
+
+  it("the crestahq.com audit form (plus a message box): the town goes in `where`, the honeypot and the opt-in stay empty", async () => {
+    const fields = `<label for="p">Your name</label><input id="p" name="person" autocomplete="name" required>
+      <label for="b">Business name</label><input id="b" name="business" placeholder="Example: Cape Town Plumbers" autocomplete="organization" required>
+      <label for="w">Town or suburb</label><input id="w" name="where" placeholder="Example: Edenvale" autocomplete="address-level2" required>
+      <label for="t">Mobile number (WhatsApp)</label><input id="t" name="phone" type="tel" autocomplete="tel" required>
+      <label for="e">Email address (optional)</label><input id="e" name="email" type="email">
+      <input type="text" name="website_url" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+      <label><input name="marketingConsent" type="checkbox" value="yes"> Send me tips</label>
+      <textarea name="message" placeholder="Anything else?"></textarea><button type="submit">Get my audit</button>`;
+    const out = await run({ "/contact": (_q, res) => html(res, form(fields, 'id="auditForm" method="post" action="/send"')), "/send": thanks });
+    expect(out).toMatchObject({ kind: "sent", trace: { mappedFields: ["name", "company", "town", "phone", "email", "message"] } });
+    expect(Object.fromEntries(posted())).toEqual({
+      person: "Cresta HQ", business: "Cresta HQ", where: "Gqeberha", phone: "+27784356159", email: "info@crestahq.com", website_url: "", message: MESSAGE,
     });
   });
 });

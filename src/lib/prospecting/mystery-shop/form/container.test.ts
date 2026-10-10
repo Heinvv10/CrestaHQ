@@ -23,7 +23,7 @@ import type { RunnerJob } from "./protocol";
 const IMAGE = "leadstack-form-engine:1.62.1-0123456789ab";
 const JOB: RunnerJob = {
   url: "https://www.acme.co.za/contact", traceId: "f1",
-  identity: { business: "Cresta HQ", email: "info@crestahq.com", phone: null, subject: "s", message: "m", service: "plumber" },
+  identity: { business: "Cresta HQ", email: "info@crestahq.com", phone: null, subject: "s", message: "m", service: "plumber", town: null },
 };
 const TRACE = { finalUrl: "https://www.acme.co.za/thanks", signal: "navigation", mappedFields: ["name", "message"] };
 const REFUSED = { type: "result", result: { kind: "refused", code: "captcha", reason: "x", trace: { ...TRACE, signal: null } } };
