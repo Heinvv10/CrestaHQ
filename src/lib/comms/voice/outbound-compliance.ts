@@ -65,6 +65,31 @@ function consumeBurstSlot(subAccountId: string, perMinuteCap: number): boolean {
   return true;
 }
 
+/**
+ * Check 1 — a number libphonenumber calls valid, normalised to E.164, with
+ * its country. Shared with the human browser dialer, which dials only `e164`.
+ */
+export function validDialNumber(
+  phone: string | null | undefined,
+): { e164: string; country: string | null } | null {
+  const parsed = phone ? parsePhoneNumberFromString(phone) : null;
+  if (!parsed || !parsed.isValid()) return null;
+  return { e164: parsed.number, country: parsed.country ?? countryForPhone(parsed.number) };
+}
+
+/**
+ * Check 4 — the optional country allow-list (null or empty = allow all). A
+ * number with no country (non-geographic, e.g. +882) is blocked whenever a
+ * list is set. Shared with the human browser dialer.
+ */
+export function countryBlocked(
+  country: string | null,
+  allowedCountries: string[] | null | undefined,
+): boolean {
+  if (!allowedCountries || allowedCountries.length === 0) return false;
+  return !country || !allowedCountries.includes(country);
+}
+
 export async function checkOutboundCompliance(input: {
   subAccountId: string;
   contact: Contact;
@@ -78,17 +103,15 @@ export async function checkOutboundCompliance(input: {
   const { subAccountId, contact, voice, agentTimezone, consentAck } = input;
 
   // 1. Valid phone
-  const parsed = contact.phone
-    ? parsePhoneNumberFromString(contact.phone)
-    : null;
-  if (!parsed || !parsed.isValid()) {
+  const dialable = validDialNumber(contact.phone);
+  if (!dialable) {
     return {
       allowed: false,
       code: "no_phone",
       reason: "This contact has no valid phone number.",
     };
   }
-  const e164 = parsed.number;
+  const { e164, country } = dialable;
 
   // 2. Voice opt-out (independent of SMS opt-out)
   if (contact.voiceOptedOut === true) {
@@ -125,16 +148,13 @@ export async function checkOutboundCompliance(input: {
   }
 
   // 4. Country allow-list (optional; null = allow all)
-  if (voice.allowedCountries && voice.allowedCountries.length > 0) {
-    const country = parsed.country ?? countryForPhone(e164);
-    if (!country || !voice.allowedCountries.includes(country)) {
-      return {
-        allowed: false,
-        code: "country_blocked",
-        reason: `Calls to ${country ?? "this country"} aren't enabled for this workspace.`,
-        e164,
-      };
-    }
+  if (countryBlocked(country, voice.allowedCountries)) {
+    return {
+      allowed: false,
+      code: "country_blocked",
+      reason: `Calls to ${country ?? "this country"} aren't enabled for this workspace.`,
+      e164,
+    };
   }
 
   // 5. Calling window — evaluated in the CONTACT's local timezone

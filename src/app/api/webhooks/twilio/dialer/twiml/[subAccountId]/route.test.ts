@@ -180,3 +180,84 @@ describe("dialer TwiML webhook — guards", () => {
     expect(await (await call(placed())).text()).not.toContain("<Dial");
   });
 });
+
+// Breaker repros from the PR #385 review, kept as permanent tests.
+describe("dialer TwiML webhook — number checks (shared with the AI voice path)", () => {
+  const withPhone = (phone: string) => mem.seed("contacts/c1", { ...mem.read("contacts/c1"), phone });
+  const allowOnly = (countries: string[]) =>
+    mem.seed("subAccounts/sa1/aiAgent/voice", { voice: { allowedCountries: countries } });
+
+  it("never dials an unparseable or invalid number, or one carrying XML", async () => {
+    for (const phone of ["1-900-PAYME-NOW", "+447700900123", "+1555</Number><Number>+19005550100"]) {
+      withPhone(phone);
+      const body = await (await call(placed())).text();
+      expect(body, phone).not.toContain("<Dial");
+      expect(body).not.toContain("<Number>+19005550100");
+    }
+    expect(activity()).toBeUndefined();
+  });
+
+  it("dials the normalised E.164, not the stored string", async () => {
+    withPhone("+1 (500) 555-0006");
+    expect(await (await call(placed())).text()).toContain(`<Number>${CONTACT_PHONE}</Number>`);
+  });
+
+  it("honours the Voice channel's allowedCountries; a non-geographic number is outside any list", async () => {
+    allowOnly(["ZA"]);
+    for (const phone of [CONTACT_PHONE, "+88216000000"]) {
+      withPhone(phone);
+      expect(await (await call(placed())).text(), phone).not.toContain("<Dial");
+    }
+    withPhone("+27821234567");
+    expect(await (await call(placed())).text()).toContain("<Number>+27821234567</Number>");
+  });
+
+  it("refuses when another contact in this sub-account with the same number opted out", async () => {
+    mem.seed("contacts/c1", { ...mem.read("contacts/c1"), voiceOptedOut: true });
+    mem.seed("contacts/c1dup", { subAccountId: "sa1", agencyId: "ag1", phone: CONTACT_PHONE, territoryId: "t1" });
+    expect(await (await call(placed({ contactId: "c1dup" }))).text()).not.toContain("<Dial");
+  });
+
+  it("an opt-out on the same number in ANOTHER sub-account does not block", async () => {
+    mem.seed("contacts/x1", { subAccountId: "sa2", agencyId: "ag1", phone: CONTACT_PHONE, voiceOptedOut: true });
+    expect(await (await call(placed())).text()).toContain("<Dial");
+  });
+});
+
+describe("dialer TwiML webhook — breaker controls", () => {
+  it("a multi-segment contactId is refused, not resolved to a sub-document", async () => {
+    mem.seed("contacts/c1/notes/n1", { subAccountId: "sa1", agencyId: "ag1", phone: "+27821234567" });
+    expect(await (await call(placed({ contactId: "c1/notes/n1" }))).text()).not.toContain("<Dial");
+  });
+
+  it("a member of both sub-accounts cannot bill sa1 for an sa2 contact", async () => {
+    mem.seed("subAccounts/sa2/subAccountMembers/u1", { role: "admin", status: "active" });
+    expect(await (await call(placed({ contactId: "c_other" }))).text()).not.toContain("<Dial");
+  });
+
+  it("sa2's token, or spoofed host headers, cannot sign into sa1's URL", async () => {
+    mem.seed("subAccounts/sa2/private/twilioCredentials", { authToken: "tok_sa2" });
+    expect((await call(placed(), { token: "tok_sa2" })).status).toBe(403);
+    const params = placed();
+    const sig = twilio.getExpectedTwilioSignature("tok_wrong", "http://evil.test/api/webhooks/twilio/dialer/twiml/sa1", params);
+    const res = await POST(
+      new Request(`${BASE}/sa1`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-twilio-signature": sig,
+          "x-forwarded-host": "evil.test",
+          "x-forwarded-proto": "http",
+        },
+        body: new URLSearchParams(params).toString(),
+      }),
+      { params: Promise.resolve({ subAccountId: "sa1" }) },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("no secret appears in the TwiML", async () => {
+    mem.seed("subAccounts/sa1/private/dialer", { apiKeySid: "SKx", apiKeySecret: "SECRET_api", twimlAppSid: "APx" });
+    expect(await (await call(placed())).text()).not.toMatch(/tok_private|SECRET_api/);
+  });
+});

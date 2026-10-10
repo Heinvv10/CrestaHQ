@@ -5,6 +5,11 @@ import { FieldValue } from "firebase-admin/firestore";
 import twilio from "twilio";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireContactAccessible } from "@/lib/comms/route-auth";
+import { getChannelConfig } from "@/lib/comms/ai/agent";
+import {
+  countryBlocked,
+  validDialNumber,
+} from "@/lib/comms/voice/outbound-compliance";
 import {
   dialerActivityId,
   dialerAuthToken,
@@ -35,8 +40,12 @@ export const dynamic = "force-dynamic";
  * caller (`From: client:<uid>`, the identity we minted into the token) can
  * still act on the contact (active member or agency owner, territory scope —
  * `requireContactAccessible`, as on every other comms route), the contact
- * belongs to this sub-account and has a phone, and `contact.voiceOptedOut`
- * (spoken rejection + hangup — the call never leaves Twilio).
+ * belongs to this sub-account, its phone is a valid number (libphonenumber)
+ * in the Voice channel's `allowedCountries` when one is set — the same two
+ * checks the AI outbound path applies (outbound-compliance.ts) — and neither
+ * it nor any other contact in this sub-account with the same number is
+ * `voiceOptedOut`. Each refusal is a spoken rejection + hangup, so the call
+ * never leaves Twilio. Only the normalised E.164 is ever dialled.
  *
  * Side-effect: writes the `call_placed` activity row (deterministic id
  * `dialer_<CallSid>`) so the call shows on the timeline immediately; the
@@ -55,6 +64,22 @@ function rejection(message: string) {
   res.say(message);
   res.hangup();
   return twiml(res);
+}
+
+/**
+ * A voice opt-out belongs to the number, not one contact doc: refuse when any
+ * contact in this sub-account with the same phone (as E.164 or as stored) has
+ * opted out. Equality filters only — no composite index needed.
+ */
+async function numberOptedOut(subAccountId: string, e164: string, raw: string): Promise<boolean> {
+  const snap = await getAdminDb()
+    .collection("contacts")
+    .where("subAccountId", "==", subAccountId)
+    .where("phone", "in", [...new Set([e164, raw])])
+    .where("voiceOptedOut", "==", true)
+    .limit(1)
+    .get();
+  return !snap.empty;
 }
 
 export async function POST(
@@ -100,10 +125,15 @@ export async function POST(
   if (contact instanceof NextResponse || contact.subAccountId !== subAccountId) {
     return rejection("That contact could not be found. Goodbye.");
   }
-  if (!contact.phone) {
-    return rejection("That contact has no phone number. Goodbye.");
+  const dialable = validDialNumber(contact.phone);
+  if (!dialable) {
+    return rejection("That contact has no valid phone number. Goodbye.");
   }
-  if (contact.voiceOptedOut === true) {
+  const voice = (await getChannelConfig(subAccountId, "voice"))?.voice ?? null;
+  if (countryBlocked(dialable.country, voice?.allowedCountries)) {
+    return rejection("Calls to that country aren't enabled for this workspace. Goodbye.");
+  }
+  if (contact.voiceOptedOut === true || (await numberOptedOut(subAccountId, dialable.e164, contact.phone))) {
     return rejection(
       "This contact has opted out of phone calls, so the call cannot be placed. Goodbye.",
     );
@@ -140,6 +170,6 @@ export async function POST(
       ? { record: "record-from-answer-dual" as const }
       : {}),
   });
-  dial.number(contact.phone);
+  dial.number(dialable.e164);
   return twiml(res);
 }

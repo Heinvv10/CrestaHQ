@@ -36,13 +36,26 @@ touched.
    - It checks that the caller (`From: client:<uid>`) can still act on the contact.
      This is `requireContactAccessible`: active member or agency owner, plus territory
      scope.
-   - It checks that the contact is in this sub-account, has a phone number, and is not
-     `voiceOptedOut`.
-   
+   - It checks that the contact is in this sub-account (the `contactId` must be a plain
+     document id; `requireContactAccessible` refuses anything containing `/`).
+   - It applies the two number checks the AI outbound path uses
+     (`validDialNumber` / `countryBlocked` in `outbound-compliance.ts`): the phone must
+     be a valid number to libphonenumber, and in the Voice channel's
+     `allowedCountries` when that list is set (a non-geographic number such as +882
+     is outside any list).
+   - It refuses when this contact, or any other contact in the sub-account with the
+     same number (as E.164 or as stored on this contact), is `voiceOptedOut`.
+
    If every check passes, it writes a `call_placed` activity (`dialer_<CallSid>`) and
-   answers `<Dial callerId=fromNumber answerOnBridge><Number>contact.phone</Number>`.
-   **The number dialled always comes from the contact doc.** Any `To` or phone number
-   in the request is ignored.
+   answers `<Dial callerId=fromNumber answerOnBridge><Number>E.164</Number>`.
+   **The number dialled always comes from the contact doc, normalised to E.164.** Any
+   `To` or phone number in the request is ignored.
+
+   The AI-only checks (per-call consent ack, calling window, minutes quota, daily /
+   per-number / burst caps, scrub provider) are not applied: an operator is placing
+   and hearing the call. **With no `allowedCountries` set, any valid number is dialled,
+   including premium-rate and non-geographic ones**, on the client's own Twilio
+   account (Twilio's own Voice geo-permissions still apply).
 4. **Status callback** (`POST /api/webhooks/twilio/dialer/status/[saId]?contactId=`).
    This is the `<Dial action>`. It is signature-checked the same way, and the
    signature covers the query string. It updates the activity row with the outcome,
@@ -52,7 +65,9 @@ touched.
 
 - **Recording is off by default.** `recordCalls` must be `true` (set through
   `PATCH …/dialer {recordCalls}`) before `<Dial record="record-from-answer-dual">` is
-  emitted. Consent laws vary by region.
+  emitted. Consent laws vary by region. If recording is enabled, the stored
+  `RecordingUrl` may be publicly fetchable by anyone holding it unless the client
+  turns on "Enforce HTTP Auth on Media URLs" in Twilio.
 - **Signatures.** Both webhooks validate `X-Twilio-Signature` against the token in
   `private/twilioCredentials`, falling back to a legacy `twilioConfig.authToken` only
   when the private doc is absent (`readSubAccountSecret`). An unknown sub-account

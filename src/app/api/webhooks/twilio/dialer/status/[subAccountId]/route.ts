@@ -90,7 +90,8 @@ export async function POST(
               callSid,
               status: dialStatus || "ended",
               durationSec,
-              // Twilio-hosted media — opening it requires Twilio login.
+              // Twilio-hosted media. Publicly fetchable by anyone holding the
+              // URL unless the account enables "Enforce HTTP Auth on Media URLs".
               ...(recordingUrl ? { recordingUrl } : {}),
             },
             ...(existing.exists
