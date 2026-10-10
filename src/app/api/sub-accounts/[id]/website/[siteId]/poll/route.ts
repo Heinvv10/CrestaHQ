@@ -8,7 +8,7 @@ import {
   qstashIsConfigured,
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
-import { GitpageError, pollBuild } from "@/lib/gitpage/client";
+import { cleanText, GitpageError, pollBuild } from "@/lib/gitpage/client";
 import { markGitpageKeyInvalid } from "@/lib/gitpage/heartbeat";
 import {
   isSettleable,
@@ -164,7 +164,7 @@ export async function POST(
       }
       const rejected = await transitionWebsite(docRef, stillThisJob, {
         status: "failed",
-        errorMessage: `gitpage rejected the poll: ${err.message.slice(0, 300)}`,
+        errorMessage: `gitpage rejected the poll: ${cleanText(err.message, 300) ?? "no details"}`,
         pollAttempts: attempts,
         updatedAt: FieldValue.serverTimestamp(),
       });

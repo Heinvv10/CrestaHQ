@@ -19,7 +19,6 @@ import {
 } from "@/lib/gitpage/heartbeat";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import type { PollBuildResult } from "@/lib/gitpage/client";
-import { createFixedWindowLimiter } from "@/lib/server/fixed-window-limit";
 import {
   blankWebsiteConfig,
   effectiveQuality,
@@ -60,14 +59,106 @@ export function pollDelayFor(attempts: number): number {
  * build spends the agency's model and image budget on gitpage's side, and
  * gitpage's own cap (30 an hour) is per AGENCY, so without this one
  * workspace could use up every other workspace's builds. Ten covers five
- * sites built and rebuilt once. Same in-memory limiter as the AI test panel
- * (per instance, resets on a cold start).
+ * sites built and rebuilt once.
  */
 export const WEBSITE_BUILDS_PER_HOUR = 10;
-const checkBuildRateLimit = createFixedWindowLimiter({
-  limit: WEBSITE_BUILDS_PER_HOUR,
-  windowMs: 60 * 60 * 1000,
-});
+const BUILD_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * `subAccounts/{id}/private/websiteLimits` — Admin SDK only, under the
+ * generic `private/{docId}` deny rule. Two jobs, both needing one doc every
+ * writer for the sub-account contends on:
+ *   `windowStart` (ms) + `count`  the hourly build counter, reserved in a
+ *                                 transaction BEFORE gitpage is called, so
+ *                                 it holds across instances and under
+ *                                 concurrency (an in-memory limiter is per
+ *                                 process and resets on a restart);
+ *   `createSeq`                   bumped by every transaction that creates a
+ *                                 site doc, which makes two creations
+ *                                 conflict and so makes the site-count cap
+ *                                 atomic (a count query alone gives no
+ *                                 protection against a concurrent insert).
+ */
+export const websiteLimitsPath = (subAccountId: string) =>
+  `subAccounts/${subAccountId}/private/websiteLimits`;
+
+/**
+ * A transaction that gave up after its retries because other transactions
+ * kept winning the same doc (gRPC ABORTED). On the limits doc that means
+ * many submits or creates for one sub-account at the same instant; the
+ * callers below answer it as "busy, try again" rather than a bare 500.
+ */
+function isContention(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === 10;
+}
+const BUSY_RETRY_AFTER_SEC = 5;
+
+/**
+ * Take one of the sub-account's hourly build submits, or say when the next
+ * is free. A fixed window: the first submit opens it, the hour after that
+ * closes it. The reservation is kept whatever gitpage then answers — a
+ * refused or failed submit still counts — because the point is to bound
+ * calls to gitpage, and un-counting on failure is how a bound leaks.
+ * Fails closed: a reservation that cannot be made (contention) is a refusal.
+ */
+async function reserveBuildSubmit(
+  subAccountId: string,
+): Promise<{ ok: true } | { ok: false; retryAfterSec: number; busy?: true }> {
+  const db = getAdminDb();
+  const ref = db.doc(websiteLimitsPath(subAccountId));
+  const reserve = () => db.runTransaction(async (tx) => {
+    const cur = (await tx.get(ref)).data() as { windowStart?: unknown; count?: unknown } | undefined;
+    const now = Date.now();
+    const windowStart =
+      typeof cur?.windowStart === "number" && now - cur.windowStart < BUILD_WINDOW_MS
+        ? cur.windowStart
+        : null;
+    const count = windowStart !== null && typeof cur?.count === "number" ? cur.count : 0;
+    if (windowStart !== null && count >= WEBSITE_BUILDS_PER_HOUR) {
+      const left = windowStart + BUILD_WINDOW_MS - now;
+      return { ok: false, retryAfterSec: Math.max(1, Math.ceil(left / 1000)) } as const;
+    }
+    tx.set(
+      ref,
+      { windowStart: windowStart ?? now, count: count + 1, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+    return { ok: true } as const;
+  });
+  try {
+    return await reserve();
+  } catch (err) {
+    if (!isContention(err)) throw err;
+    return { ok: false, retryAfterSec: BUSY_RETRY_AFTER_SEC, busy: true };
+  }
+}
+
+/**
+ * Whether the sub-account has room for one more site doc — read INSIDE the
+ * caller's transaction, after it has read the limits doc, and followed by
+ * `claimSiteSlot` when the caller goes on to create. Reading and then
+ * writing the one limits doc is what serialises creators; the count that a
+ * second creator sees on its re-run includes the first one's doc.
+ */
+async function siteSlotFree(
+  tx: FirebaseFirestore.Transaction,
+  subAccountId: string,
+): Promise<{ free: boolean; count: number }> {
+  const db = getAdminDb();
+  await tx.get(db.doc(websiteLimitsPath(subAccountId)));
+  const existing = await tx.get(db.collection(`subAccounts/${subAccountId}/website`));
+  return { free: existing.size < MAX_WEBSITES_PER_SUBACCOUNT, count: existing.size };
+}
+
+function claimSiteSlot(tx: FirebaseFirestore.Transaction, subAccountId: string): void {
+  tx.set(
+    getAdminDb().doc(websiteLimitsPath(subAccountId)),
+    { createSeq: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() },
+    { merge: true },
+  );
+}
+
+const SITE_CAP_MESSAGE = `You can create up to ${MAX_WEBSITES_PER_SUBACCOUNT} websites per sub-account. Remove one to add another.`;
 
 /** A build that gitpage has accepted and not yet reported as finished. */
 export const WEBSITE_IN_FLIGHT: readonly WebsiteStatus[] = ["queued", "building"];
@@ -83,13 +174,20 @@ export interface WebsiteTransitionGuard {
   expectJobId?: string | null;
   /** A further condition on the doc as the transaction reads it. */
   when?: (fresh: WebsiteDoc) => boolean;
-  /** Create the doc when it does not exist (the build submit only). */
+  /**
+   * Create the doc when it does not exist. Only for a writer that itself
+   * read the doc as absent and means to create it: a doc that vanished
+   * under a writer who read it (a Remove) must stay gone. The patch must
+   * carry the tenancy keys, and the creation is held to the site cap.
+   */
   orMissing?: boolean;
+  /** Write with set-merge instead of update (the build submit, as before). */
+  merge?: boolean;
 }
 
 export type WebsiteTransitionResult =
   | { applied: true }
-  | { applied: false; reason: "missing" | "job" | "status" | "condition" };
+  | { applied: false; reason: "missing" | "job" | "status" | "condition" | "cap" };
 
 /**
  * The ONE way a website doc's build state is written.
@@ -117,7 +215,16 @@ export async function transitionWebsite(
     const snap = await tx.get(docRef);
     if (!snap.exists) {
       if (!guard.orMissing) return { applied: false, reason: "missing" } as const;
+      // A doc this helper creates is a tenant doc like any other.
+      const { agencyId, subAccountId } = patch;
+      if (typeof agencyId !== "string" || !agencyId || typeof subAccountId !== "string" || !subAccountId) {
+        throw new Error("transitionWebsite: refusing to create a site doc without agencyId and subAccountId");
+      }
+      if (!(await siteSlotFree(tx, subAccountId)).free) {
+        return { applied: false, reason: "cap" } as const;
+      }
       tx.set(docRef, patch, { merge: true });
+      claimSiteSlot(tx, subAccountId);
       return { applied: true } as const;
     }
     const fresh = snap.data() as WebsiteDoc;
@@ -130,9 +237,7 @@ export async function transitionWebsite(
     if (guard.when && !guard.when(fresh)) {
       return { applied: false, reason: "condition" } as const;
     }
-    // The submit writes with set-merge, as it always has (it may be creating
-    // the doc); every other writer replaces the fields it names.
-    if (guard.orMissing) tx.set(docRef, patch, { merge: true });
+    if (guard.merge) tx.set(docRef, patch, { merge: true });
     else tx.update(docRef, patch);
     return { applied: true } as const;
   });
@@ -141,10 +246,14 @@ export async function transitionWebsite(
 /**
  * Whether a terminal result can be recorded. gitpage can report Published
  * a moment before it has the address; a site is not "ready" without one,
- * so that result is treated as still in flight and the poll comes back.
+ * so Published with NO address is treated as still in flight and the poll
+ * comes back. Published with an address that was refused is settleable —
+ * as a failure that names it (`settleWebsiteBuild`): waiting would only run
+ * the poll to its cap with nobody told why.
  */
 export function isSettleable(result: PollBuildResult): boolean {
-  return result.isTerminal && (result.status !== "Published" || !!result.pagesUrl);
+  if (!result.isTerminal) return false;
+  return result.status !== "Published" || !!result.pagesUrl || !!result.pagesUrlRefused;
 }
 
 /**
@@ -190,6 +299,9 @@ export class WebsiteServiceError extends Error {
     this.retryAfterSec = extra?.retryAfterSec;
   }
 }
+
+const BUSY_MESSAGE =
+  "Too many website changes are being made for this workspace at once. Try again in a moment.";
 
 const ALREADY_BUILDING_MESSAGE =
   "This site is building right now — wait for it to finish before starting another build.";
@@ -237,14 +349,6 @@ export async function createWebsiteForSubAccount(input: {
 
   const db = getAdminDb();
   const col = db.collection(`subAccounts/${subAccountId}/website`);
-  const existing = await col.get();
-  if (existing.size >= MAX_WEBSITES_PER_SUBACCOUNT) {
-    throw new WebsiteServiceError(
-      `You can create up to ${MAX_WEBSITES_PER_SUBACCOUNT} websites per sub-account. Remove one to add another.`,
-      409,
-    );
-  }
-
   const ref = col.doc();
   const now = FieldValue.serverTimestamp();
   const docData: Omit<WebsiteDoc, "createdAt" | "updatedAt" | "lastBuildAt"> & {
@@ -255,7 +359,7 @@ export async function createWebsiteForSubAccount(input: {
     id: ref.id,
     agencyId,
     subAccountId,
-    name: input.name?.trim() || `Website ${existing.size + 1}`,
+    name: input.name?.trim() || "",
     status: "draft",
     gitpageJobId: null,
     liveUrl: null,
@@ -268,7 +372,23 @@ export async function createWebsiteForSubAccount(input: {
     createdAt: now,
     updatedAt: now,
   };
-  await ref.set(docData);
+  // The count and the create are one transaction, serialised on the limits
+  // doc: of several creates at once, only as many as there are free slots
+  // go through.
+  let created: boolean;
+  try {
+    created = await db.runTransaction(async (tx) => {
+      const slot = await siteSlotFree(tx, subAccountId);
+      if (!slot.free) return false;
+      tx.set(ref, { ...docData, name: docData.name || `Website ${slot.count + 1}` });
+      claimSiteSlot(tx, subAccountId);
+      return true;
+    });
+  } catch (err) {
+    if (!isContention(err)) throw err;
+    throw new WebsiteServiceError(BUSY_MESSAGE, 429, { retryAfterSec: BUSY_RETRY_AFTER_SEC });
+  }
+  if (!created) throw new WebsiteServiceError(SITE_CAP_MESSAGE, 409);
 
   return { siteId: ref.id, agencyId };
 }
@@ -398,20 +518,25 @@ export async function submitWebsiteBuildForSubAccount(input: {
     throw new WebsiteServiceError(ALREADY_BUILDING_MESSAGE, 409);
   }
   // A build on an id that has no doc creates one, so it counts against the
-  // per-sub-account cap exactly as `createWebsiteForSubAccount` does.
+  // per-sub-account cap exactly as `createWebsiteForSubAccount` does. This
+  // is the early no, before anything is spent; the write below enforces the
+  // cap atomically with the creation.
   if (isFirst) {
     const existing = await db.collection(`subAccounts/${subAccountId}/website`).get();
     if (existing.size >= MAX_WEBSITES_PER_SUBACCOUNT) {
-      throw new WebsiteServiceError(
-        `You can create up to ${MAX_WEBSITES_PER_SUBACCOUNT} websites per sub-account. Remove one to add another.`,
-        409,
-      );
+      throw new WebsiteServiceError(SITE_CAP_MESSAGE, 409);
     }
   }
-  const rate = checkBuildRateLimit(subAccountId);
+  // The real bound on calls to gitpage. The 409 above stops a second build
+  // of a site that is building, but a reset clears that state and two
+  // submits in the same instant both pass it; this counter is what neither
+  // can get round.
+  const rate = await reserveBuildSubmit(subAccountId);
   if (!rate.ok) {
     throw new WebsiteServiceError(
-      `This workspace has started ${WEBSITE_BUILDS_PER_HOUR} website builds in the last hour. Try again later.`,
+      rate.busy
+        ? BUSY_MESSAGE
+        : `This workspace has started ${WEBSITE_BUILDS_PER_HOUR} website builds in the last hour. Try again later.`,
       429,
       { retryAfterSec: rate.retryAfterSec },
     );
@@ -512,18 +637,36 @@ export async function submitWebsiteBuildForSubAccount(input: {
 
   // Atomic with the status check: of two submits that both passed the early
   // check above, one takes the site and the other is told it is building.
-  // gitpage has accepted the loser's build too — it is logged, and nothing
-  // here tracks it; the hourly limit above bounds how often that can happen.
-  const taken = await transitionWebsite(
-    docRef,
-    { fromStatuses: ["draft", "ready", "failed"], orMissing: true },
-    update,
-  );
-  if (!taken.applied) {
+  // The doc is created only if THIS submit read it as absent (`isFirst`): a
+  // site removed while gitpage was being called stays removed. gitpage has
+  // accepted the loser's build in each of these cases — it is logged, and
+  // nothing here tracks it; the hourly counter bounds how often that can be.
+  const orphaned = (why: string) =>
     console.error(
-      `[website/build] lost the site to a concurrent build sa=${subAccountId} site=${siteId} orphanedJob=${submission.formResponseId}`,
+      `[website/build] build not recorded (${why}) sa=${subAccountId} site=${siteId} orphanedJob=${submission.formResponseId}`,
     );
-    throw new WebsiteServiceError(ALREADY_BUILDING_MESSAGE, 409);
+  let taken: WebsiteTransitionResult;
+  try {
+    taken = await transitionWebsite(
+      docRef,
+      { fromStatuses: ["draft", "ready", "failed"], orMissing: isFirst, merge: true },
+      update,
+    );
+  } catch (err) {
+    orphaned(isContention(err) ? "contention" : "write failed");
+    if (!isContention(err)) throw err;
+    throw new WebsiteServiceError(BUSY_MESSAGE, 429, { retryAfterSec: BUSY_RETRY_AFTER_SEC });
+  }
+  if (!taken.applied) {
+    orphaned(taken.reason);
+    throw new WebsiteServiceError(
+      taken.reason === "missing"
+        ? "This site was removed while its build was being submitted."
+        : taken.reason === "cap"
+          ? SITE_CAP_MESSAGE
+          : ALREADY_BUILDING_MESSAGE,
+      409,
+    );
   }
 
   // Schedule the first QStash poll. Without QStash the build doc just sits
@@ -611,11 +754,16 @@ async function runWebsiteHandoff(_input: {
  * which two concurrent callers both pass.)
  *
  * Also "noop", with nothing written:
- *  - Published without a usable live URL (`isSettleable`): a site is not
- *    ready without an address, so the poll finishes it when gitpage has one.
+ *  - Published with NO live URL (`isSettleable`): a site is not ready
+ *    without an address, so the poll finishes it when gitpage has one.
  *  - A repeat of the report already applied for this job
- *    (`settledDelivery`): a replayed callback cannot re-settle a site, e.g.
- *    re-fail a build the operator has since resumed.
+ *    (`settledDelivery`) while the site is still settled that way. The
+ *    record is cleared whenever the site goes back in flight (a resume, a
+ *    new build), so a second, genuine failure of a resumed build lands.
+ *
+ * Published with an address that was REFUSED settles as `failed`, with a
+ * message naming the address: the site exists at gitpage, we will not link
+ * to it, and the operator has to be told rather than left polling.
  *
  * The `websiteEnabledByAgency` gate is deliberately NOT checked here, nor in
  * the three routes that end here (the QStash poll, Re-check now, the
@@ -642,7 +790,15 @@ export async function settleWebsiteBuild(input: {
   const jobId = site.gitpageJobId;
   if (!jobId || !isSettleable(result)) return "noop";
   const docRef = getAdminDb().doc(`subAccounts/${subAccountId}/website/${siteId}`);
-  const published = result.status === "Published";
+  // "published" below means: will be written as ready. Published at a
+  // refused address is settled as a failure.
+  const published = result.status === "Published" && !!result.pagesUrl;
+  const refused = result.status === "Published" && !published ? result.pagesUrlRefused : null;
+  if (refused) {
+    console.error(
+      `[website/settle] refused live URL sa=${subAccountId} site=${siteId} job=${jobId} url=${JSON.stringify(refused)}`,
+    );
+  }
   const delivery = { jobId, status: published ? ("Published" as const) : ("failed" as const) };
 
   // WS-3 SEAM: upstream stores `await resolveLiveUrl(result.pagesUrl)` — the
@@ -679,7 +835,9 @@ export async function settleWebsiteBuild(input: {
         }
       : {
           status: "failed",
-          errorMessage: result.error ?? "gitpage build failed without details.",
+          errorMessage: refused
+            ? `gitpage published this site at an address that was refused: "${refused}". Only a public https address is accepted.`
+            : (result.error ?? "gitpage build failed without details."),
           statusPhase: result.premium?.failedStage ?? result.statusPhase ?? null,
           pollAttempts: input.attempts,
           settledDelivery: delivery,

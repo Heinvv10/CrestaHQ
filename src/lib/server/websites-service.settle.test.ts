@@ -33,6 +33,7 @@ const published: PollBuildResult = {
   status: "Published",
   statusPhase: "completed",
   pagesUrl: "https://acme.gitlab.io/site",
+  pagesUrlRefused: null,
   repoUrl: null,
   error: null,
   partialErrors: null,
@@ -184,20 +185,56 @@ describe("settleWebsiteBuild", () => {
     expect(mem.read(SITE)).toEqual(before);
   });
 
-  it("R13: records the report it applied and ignores a repeat of it", async () => {
+  it("R13: records the report it applied and ignores a repeat of it while the site is still settled that way", async () => {
     const site = seedSite();
     expect(await settle(site, failed, 4)).toBe("failed");
     expect(mem.read(SITE)?.settledDelivery).toEqual({ jobId: JOB, status: "failed" });
 
-    // The operator resumed the build; the same failure report arrives again.
-    await mem.db.doc(SITE).update({ status: "building", errorMessage: null });
-    const resumed = mem.read(SITE);
-    expect(await settle(site, failed, 9)).toBe("noop");
-    expect(mem.read(SITE)).toEqual(resumed);
+    // A re-check of the failed site hears the same failure again.
+    const settled = mem.read(SITE);
+    expect(await settle({ ...site, status: "failed" }, failed, 9)).toBe("noop");
+    expect(mem.read(SITE)).toEqual(settled);
 
     // Published for the same job is a different report, and lands.
-    expect(await settle(site, published, 9)).toBe("ready");
+    expect(await settle({ ...site, status: "failed" }, published, 9)).toBe("ready");
     expect(mem.read(SITE)).toMatchObject({ status: "ready", settledDelivery: { jobId: JOB, status: "Published" } });
+  });
+
+  it("R2-1: once the site is back in flight with the record cleared, a second failure of the same job lands", async () => {
+    const site = seedSite();
+    expect(await settle(site, failed, 4)).toBe("failed");
+    // What the resume writes (poll-now): building again, the record cleared.
+    await mem.db.doc(SITE).update({ status: "building", errorMessage: null, settledDelivery: null });
+
+    expect(await settle(site, failed, 9)).toBe("failed");
+    expect(mem.read(SITE)).toMatchObject({
+      status: "failed",
+      errorMessage: "Image generation failed.",
+      pollAttempts: 9,
+      settledDelivery: { jobId: JOB, status: "failed" },
+    });
+  });
+
+  it.each([
+    ["plain http", "http://acme.gitlab.io/site"],
+    ["no scheme", "acme.gitlab.io/site"],
+    ["text after the address", "https://acme.gitlab.io/site Set-Cookie: a=b"],
+  ])("R2-4: Published at a refused address (%s) settles as failed and names it", async (_label, refused) => {
+    const site = seedSite();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await settle(site, { ...published, pagesUrl: null, pagesUrlRefused: refused }, 4)).toBe("failed");
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0][0]).toContain(JSON.stringify(refused));
+    error.mockRestore();
+    const doc = mem.read(SITE)!;
+    expect(doc).toMatchObject({ status: "failed", liveUrl: null, settledDelivery: { jobId: JOB, status: "failed" } });
+    expect(doc.errorMessage).toBe(
+      `gitpage published this site at an address that was refused: "${refused}". Only a public https address is accepted.`,
+    );
+
+    // gitpage corrects the address: that is a different report, and lands.
+    expect(await settle({ ...site, status: "failed" }, published, 5)).toBe("ready");
+    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: "https://acme.gitlab.io/site", errorMessage: null });
   });
 
   it("does nothing for a site with no job id", async () => {

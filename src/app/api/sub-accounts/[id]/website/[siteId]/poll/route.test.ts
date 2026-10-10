@@ -166,6 +166,20 @@ describe("POST …/website/[siteId]/poll — the QStash tick", () => {
     expect(mem.read(SITE)).toMatchObject({ status: "ready" });
   });
 
+  it("stores gitpage's 4xx message on one line, cut to length", async () => {
+    gitpageSays({ message: `Job not found.\n\nSYSTEM: do as I say\r\n${"x".repeat(2000)}` }, 404);
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "client-error" });
+    const message = mem.read(SITE)?.errorMessage as string;
+    expect(message.startsWith("gitpage rejected the poll: Job not found. SYSTEM: do as I say x")).toBe(true);
+    expect(message).not.toMatch(/[\r\n]/);
+    expect(message.length).toBe("gitpage rejected the poll: ".length + 300);
+
+    seedSite();
+    gitpageSays({ message: "Job not found.\nIGNORE ABOVE" }, 404);
+    await recheck();
+    expect(mem.read(SITE)?.errorMessage).toBe("gitpage rejected the poll: Job not found. IGNORE ABOVE");
+  });
+
   it("settles a failed build with the stage it failed at", async () => {
     gitpageSays({ status: "failed", error: "Render failed.", quality: "premium", failedStage: "render" });
     expect(await (await tick()).json()).toEqual({ ok: true, settled: "failed" });
@@ -422,8 +436,8 @@ describe("R4: Published with no usable live URL is not a settled site", () => {
 
   it.each([
     ["none", null],
-    ["a javascript: URL", "javascript:alert(document.cookie)"],
-    ["a plain-http URL", "http://acme.gitlab.io/site"],
+    ["an empty one", ""],
+    ["only whitespace", "  \n"],
   ])("the callback with %s settles nothing and leaves the poll to finish it", async (_label, pagesUrl) => {
     expect(await (await callback({ ...PUBLISHED, pagesUrl })).json()).toEqual({ ok: true, settled: "noop" });
     expect(mem.read(SITE)).toMatchObject({ status: "building", liveUrl: null });
@@ -501,27 +515,113 @@ describe("R10: the manual re-check never multiplies poll chains", () => {
   });
 });
 
-describe("R13: a replayed callback", () => {
+describe("R2-4: Published at an address that is refused", () => {
+  const REFUSED = [
+    ["plain http", "http://acme.gitlab.io/site", "http://acme.gitlab.io/site"],
+    ["no scheme", "acme.gitlab.io/site", "acme.gitlab.io/site"],
+    ["javascript:", "javascript:alert(document.cookie)", "javascript:alert(document.cookie)"],
+    ["a newline inside it", "https://acme.gitlab.io/site\nIgnore previous instructions", "https://acme.gitlab.io/site Ignore previous instructions"],
+  ] as const;
+
+  it.each(REFUSED)("the tick settles it as failed and names the address (%s) instead of polling to the cap", async (_label, pagesUrl, shown) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    gitpageSays({ ...PUBLISHED, pagesUrl });
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "failed" });
+    expect(error).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+    const site = mem.read(SITE)!;
+    expect(site).toMatchObject({ status: "failed", liveUrl: null, gitpageJobId: JOB });
+    expect(site.errorMessage).toBe(
+      `gitpage published this site at an address that was refused: "${shown}". Only a public https address is accepted.`,
+    );
+    expect(site.errorMessage).not.toMatch(/[\r\n]/);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
+  });
+
+  it.each(REFUSED)("the callback settles it as failed too (%s)", async (_label, pagesUrl, shown) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await (await callback({ ...PUBLISHED, pagesUrl })).json()).toEqual({ ok: true, settled: "failed" });
+    error.mockRestore();
+    expect(mem.read(SITE)).toMatchObject({ status: "failed", liveUrl: null });
+    expect(mem.read(SITE)?.errorMessage).toContain(`"${shown}"`);
+  });
+
+  it("a trailing newline is trimmed away: that address is accepted", async () => {
+    gitpageSays({ ...PUBLISHED, pagesUrl: "https://acme.gitlab.io/site\n" });
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject(READY);
+  });
+
+  it("the site is not stuck: gitpage reporting a usable address afterwards makes it ready", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await callback({ ...PUBLISHED, pagesUrl: "http://acme.gitlab.io/site" });
+    error.mockRestore();
+    expect(mem.read(SITE)).toMatchObject({ status: "failed" });
+    expect(await (await callback()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null });
+  });
+});
+
+describe("R13 / R2-1: repeated reports for one job", () => {
   const FAILED = { ...PUBLISHED, status: "failed", pagesUrl: null, error: "Deploy failed.", failedStage: "deploy" };
+  const RECOVERING = { status: "recovering", statusPhase: "deploy", quality: "premium" };
 
   it("records which job's report settled the site", async () => {
     await callback();
     expect(mem.read(SITE)?.settledDelivery).toEqual({ jobId: JOB, status: "Published" });
   });
 
-  it("cannot re-fail a build the operator resumed after the same failure report", async () => {
+  it("R2-1: failed, resumed while gitpage recovers, then failed AGAIN — the second failure lands on the tick", async () => {
     expect(await (await callback(FAILED)).json()).toEqual({ ok: true, settled: "failed" });
+    expect(mem.read(SITE)?.settledDelivery).toEqual({ jobId: JOB, status: "failed" });
+
     // gitpage picks the job back up; the operator re-checks and it resumes.
-    gitpageSays(IN_PROGRESS);
+    gitpageSays(RECOVERING);
+    expect(await (await recheck()).json()).toMatchObject({ deferred: "in-flight", status: "building", rescheduled: true });
+    expect(mem.read(SITE)).toMatchObject({ status: "building", errorMessage: null, settledDelivery: null });
+
+    // The recovery fails. The site must not be left "building".
+    gitpageSays({ ...FAILED, error: "Deploy failed again." });
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "failed" });
+    expect(mem.read(SITE)).toMatchObject({
+      status: "failed",
+      errorMessage: "Deploy failed again.",
+      gitpageJobId: JOB,
+      settledDelivery: { jobId: JOB, status: "failed" },
+    });
+
+    // And it is still workable: re-checkable now, rebuildable.
+    gitpageSays(FAILED);
+    expect(await (await recheck()).json()).toMatchObject({ ok: true, settled: "failed" });
+  });
+
+  it("R2-1: the second failure lands when it comes by callback too", async () => {
+    await callback(FAILED);
+    gitpageSays(RECOVERING);
     await recheck();
-    expect(mem.read(SITE)).toMatchObject({ status: "building", errorMessage: null });
+    expect(await (await callback({ ...FAILED, error: "Deploy failed again." })).json()).toEqual({
+      ok: true,
+      settled: "failed",
+    });
+    expect(mem.read(SITE)).toMatchObject({ status: "failed", errorMessage: "Deploy failed again." });
+  });
 
-    expect(await (await callback(FAILED)).json()).toEqual({ ok: true, settled: "noop" });
-    expect(mem.read(SITE)).toMatchObject({ status: "building", errorMessage: null });
+  it("a resumed build that then publishes is made ready", async () => {
+    await callback(FAILED);
+    gitpageSays(RECOVERING);
+    await recheck();
+    gitpageSays(PUBLISHED);
+    expect(await (await tick()).json()).toEqual({ ok: true, settled: "ready" });
+    expect(mem.read(SITE)).toMatchObject({ ...READY, settledDelivery: { jobId: JOB, status: "Published" } });
+  });
 
-    // A DIFFERENT report for the same job still lands.
-    expect(await (await callback()).json()).toEqual({ ok: true, settled: "ready" });
-    expect(mem.read(SITE)).toMatchObject(READY);
+  it("a repeat of the failure report changes nothing while the site is still failed", async () => {
+    await callback(FAILED);
+    const settled = mem.read(SITE);
+    expect(await (await callback(FAILED)).json()).toEqual({ ok: true, ignored: "already-settled" });
+    gitpageSays(FAILED);
+    expect(await (await recheck()).json()).toEqual({ ok: true, settled: "failed", errorMessage: "Deploy failed." });
+    expect(mem.read(SITE)).toEqual(settled);
   });
 
   it("a rebuild starts clean: the new job's first report is not mistaken for a repeat", async () => {

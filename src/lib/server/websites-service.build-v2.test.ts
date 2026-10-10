@@ -30,10 +30,12 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
 }));
 
 const {
+  createWebsiteForSubAccount,
   normalizeWebsiteConfig,
   pollAttemptCapFor,
   pollDelayFor,
   submitWebsiteBuildForSubAccount,
+  websiteLimitsPath,
   WebsiteServiceError,
 } = await import("./websites-service");
 
@@ -136,14 +138,6 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     app: process.env.NEXT_PUBLIC_APP_URL,
   };
 
-  const build = (opts: { uid?: string; config?: WebsiteConfig } = {}) =>
-    submitWebsiteBuildForSubAccount({
-      subAccountId: "sa1",
-      siteId: "site1",
-      config: opts.config ?? { ...sampleWebsiteConfig(), quality: "standard" },
-      buildByUid: opts.uid ?? "u1",
-    });
-
   /** The JSON body of the one request the build sent to gitpage. */
   const sent = () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -152,12 +146,15 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     return JSON.parse(init.body) as Record<string, unknown>;
   };
 
-  // The hourly build limit is module state: each test starts in a new hour.
-  let clock = Date.UTC(2026, 9, 10, 8, 0, 0);
+  const build = (opts: { uid?: string; config?: WebsiteConfig; siteId?: string; subAccountId?: string } = {}) =>
+    submitWebsiteBuildForSubAccount({
+      subAccountId: opts.subAccountId ?? "sa1",
+      siteId: opts.siteId ?? "site1",
+      config: opts.config ?? { ...sampleWebsiteConfig(), quality: "standard" },
+      buildByUid: opts.uid ?? "u1",
+    });
+
   beforeEach(() => {
-    clock += 60 * 60 * 1000 + 1;
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(clock);
     process.env.GITPAGE_API_KEY = "gp_test_key";
     process.env.GITPAGE_API_URL = "https://gitpage.test";
     process.env.NEXT_PUBLIC_APP_URL = "https://crm.example.test/";
@@ -290,34 +287,215 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     });
   });
 
-  it("R10: a sub-account gets 10 build submits an hour; the 11th is 429 with a retry time and never reaches gitpage", async () => {
+  describe("the hourly build counter", () => {
+    const HOUR = 60 * 60 * 1000;
+    const T0 = Date.UTC(2026, 9, 10, 8, 0, 0);
     const rebuild = async () => {
       await mem.db.doc(SITE).update({ status: "ready" });
       return build();
     };
-    for (let i = 0; i < 10; i++) await rebuild();
-    expect(fetchMock).toHaveBeenCalledTimes(10);
-
-    const before = mem.read(SITE);
-    await mem.db.doc(SITE).update({ status: "ready" });
-    await expect(build()).rejects.toMatchObject({ status: 429, retryAfterSec: expect.any(Number) });
-    expect(fetchMock).toHaveBeenCalledTimes(10);
-    expect(mem.read(SITE)).toMatchObject({ gitpageJobId: before?.gitpageJobId, status: "ready" });
-
-    // Another workspace is not held back by this one...
-    mem.seed("subAccounts/sa2", { agencyId: "ag1", websiteEnabledByAgency: true, name: "Other" });
-    await submitWebsiteBuildForSubAccount({
-      subAccountId: "sa2",
-      siteId: "siteB",
-      config: sampleWebsiteConfig(),
-      buildByUid: "u1",
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(T0);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(11);
 
-    // ...and this one is let through again once the hour has passed.
-    vi.setSystemTime(clock + 60 * 60 * 1000 + 1);
-    await build();
-    expect(fetchMock).toHaveBeenCalledTimes(12);
+    it("R10: a sub-account gets 10 build submits an hour; the 11th is 429 with a retry time and never reaches gitpage", async () => {
+      for (let i = 0; i < 10; i++) await rebuild();
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 10 });
+
+      vi.setSystemTime(T0 + 20 * 60 * 1000);
+      const before = mem.read(SITE);
+      await mem.db.doc(SITE).update({ status: "ready" });
+      await expect(build()).rejects.toMatchObject({ status: 429, retryAfterSec: 40 * 60 });
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+      expect(mem.read(SITE)).toMatchObject({ gitpageJobId: before?.gitpageJobId, status: "ready" });
+      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 10 });
+
+      // Another workspace is not held back by this one...
+      mem.seed("subAccounts/sa2", { agencyId: "ag1", websiteEnabledByAgency: true, name: "Other" });
+      await build({ subAccountId: "sa2", siteId: "siteB" });
+      expect(fetchMock).toHaveBeenCalledTimes(11);
+
+      // ...and this one is let through again once the hour has passed.
+      vi.setSystemTime(T0 + HOUR);
+      await build();
+      expect(fetchMock).toHaveBeenCalledTimes(12);
+      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0 + HOUR, count: 1 });
+    });
+
+    it("R2-5: 25 submits at once, each for its own site, never reach gitpage more than 10 times — and every one that does was counted", async () => {
+      for (let i = 0; i < 25; i++) {
+        mem.seed(`subAccounts/sa1/website/c${i}`, { id: `c${i}`, agencyId: "ag1", subAccountId: "sa1", status: "ready" });
+      }
+      const results = await Promise.allSettled(
+        Array.from({ length: 25 }, (_, i) => build({ siteId: `c${i}` })),
+      );
+      const through = results.filter((r) => r.status === "fulfilled").length;
+      // A reservation that loses to contention is refused (fails closed), so
+      // fewer than ten may get through in one burst — never more.
+      expect(through).toBeGreaterThan(0);
+      expect(through).toBeLessThanOrEqual(10);
+      expect(fetchMock).toHaveBeenCalledTimes(through);
+      expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ count: through });
+      for (const r of results.filter((r): r is PromiseRejectedResult => r.status === "rejected")) {
+        expect(r.reason).toBeInstanceOf(WebsiteServiceError);
+        expect(r.reason).toMatchObject({ status: 429, retryAfterSec: expect.any(Number) });
+      }
+
+      // The rest of the hour's allowance is still there, and it ends at ten.
+      for (let i = through; i < 10; i++) await rebuild();
+      await mem.db.doc(SITE).update({ status: "ready" });
+      await expect(build()).rejects.toMatchObject({ status: 429 });
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+    });
+
+    it("the reset route is no way round it: reset-and-rebuild is still 10 an hour", async () => {
+      // A reset clears the in-flight state, so the 409 does not apply — only the counter does.
+      const resetAndBuild = async () => {
+        await mem.db.doc(SITE).update({ status: "draft", gitpageJobId: null });
+        return build();
+      };
+      for (let i = 0; i < 10; i++) await resetAndBuild();
+      await expect(resetAndBuild()).rejects.toMatchObject({ status: 429 });
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+    });
+
+    it("counts across instances: a second copy of the service sees the first one's submits", async () => {
+      for (let i = 0; i < 10; i++) await rebuild();
+      vi.resetModules();
+      const other = await import("./websites-service");
+      expect(other.submitWebsiteBuildForSubAccount).not.toBe(submitWebsiteBuildForSubAccount);
+      await mem.db.doc(SITE).update({ status: "ready" });
+      await expect(
+        other.submitWebsiteBuildForSubAccount({
+          subAccountId: "sa1",
+          siteId: "site1",
+          config: sampleWebsiteConfig(),
+          buildByUid: "u1",
+        }),
+      ).rejects.toMatchObject({ status: 429 });
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+    });
+
+    it("a submit gitpage rejects still uses up one of the ten", async () => {
+      fetchMock.mockImplementation(async () => Response.json({ message: "Invalid palette." }, { status: 422 }));
+      for (let i = 0; i < 10; i++) await expect(build()).rejects.toMatchObject({ status: 422 });
+      await expect(build()).rejects.toMatchObject({ status: 429 });
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+    });
+  });
+
+  describe("R2-3: the site is removed while the submit is waiting on gitpage", () => {
+    const acceptedAfter = (during: () => Promise<unknown>) =>
+      fetchMock.mockImplementationOnce(async () => {
+        await during();
+        return Response.json(
+          { formResponseId: "build_orphan", pollUrl: "https://gitpage.test/s/build_orphan", estimatedDurationSeconds: 1200 },
+          { status: 202 },
+        );
+      });
+
+    it("stays removed: the build is refused with 409, the orphaned job is logged, no poll is scheduled", async () => {
+      acceptedAfter(() => mem.db.doc(SITE).delete());
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      await expect(build()).rejects.toMatchObject({ status: 409 });
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0][0]).toContain("orphanedJob=build_orphan");
+      expect(error.mock.calls[0][0]).toContain("(missing)");
+      error.mockRestore();
+      expect(mem.read(SITE)).toBeUndefined();
+      expect(mem.list("subAccounts/sa1/website")).toEqual([]);
+      expect(publishCallback).not.toHaveBeenCalled();
+    });
+
+    it("a doc the submit does create always carries its tenancy keys", async () => {
+      await mem.db.doc(SITE).delete();
+      await build();
+      expect(mem.read(SITE)).toMatchObject({ id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "queued" });
+      for (const site of mem.list("subAccounts/sa1/website")) {
+        expect(site.agencyId).toBe("ag1");
+        expect(site.subAccountId).toBe("sa1");
+      }
+    });
+  });
+
+  describe("R2-6: the site cap under concurrency", () => {
+    it("8 builds at once on never-created ids leave exactly 5 sites, each with its tenancy keys", async () => {
+      await mem.db.doc(SITE).delete();
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const results = await Promise.allSettled(
+        Array.from({ length: 8 }, (_, i) => build({ siteId: `n${i}` })),
+      );
+      error.mockRestore();
+      const sites = mem.list("subAccounts/sa1/website");
+      const through = results.filter((r) => r.status === "fulfilled").length;
+      expect(sites.length).toBeLessThanOrEqual(5);
+      expect(sites).toHaveLength(through);
+      for (const r of results.filter((r): r is PromiseRejectedResult => r.status === "rejected")) {
+        expect(r.reason).toBeInstanceOf(WebsiteServiceError);
+        expect([409, 429]).toContain(r.reason.status);
+      }
+      for (const site of sites) {
+        expect(site).toMatchObject({ agencyId: "ag1", subAccountId: "sa1", status: "queued" });
+      }
+      // Only the builds that took a slot are polled.
+      expect(publishCallback).toHaveBeenCalledTimes(through);
+
+      // Fill what is left one at a time: the sixth site is refused at the cap.
+      for (let i = sites.length; i < 5; i++) await build({ siteId: `late${i}` });
+      await expect(build({ siteId: "sixth" })).rejects.toMatchObject({ status: 409 });
+      expect(mem.list("subAccounts/sa1/website")).toHaveLength(5);
+    });
+
+    it("3 sites exist: 8 builds at once on new ids add exactly 2", async () => {
+      for (let i = 0; i < 2; i++) {
+        mem.seed(`subAccounts/sa1/website/old${i}`, { id: `old${i}`, agencyId: "ag1", subAccountId: "sa1", status: "ready" });
+      }
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      await Promise.allSettled(Array.from({ length: 8 }, (_, i) => build({ siteId: `n${i}` })));
+      error.mockRestore();
+      // site1 + old0 + old1 were there; two slots were free.
+      expect(mem.list("subAccounts/sa1/website")).toHaveLength(5);
+    });
+
+    it("8 creates at once (the Add website route) leave exactly 5 sites", async () => {
+      await mem.db.doc(SITE).delete();
+      const results = await Promise.allSettled(
+        Array.from({ length: 8 }, () => createWebsiteForSubAccount({ subAccountId: "sa1" })),
+      );
+      const through = results.filter((r) => r.status === "fulfilled").length;
+      let sites = mem.list("subAccounts/sa1/website");
+      expect(sites.length).toBeLessThanOrEqual(5);
+      expect(sites).toHaveLength(through);
+      for (const r of results.filter((r): r is PromiseRejectedResult => r.status === "rejected")) {
+        expect(r.reason).toBeInstanceOf(WebsiteServiceError);
+        expect([409, 429]).toContain(r.reason.status);
+      }
+      for (let i = sites.length; i < 5; i++) await createWebsiteForSubAccount({ subAccountId: "sa1" });
+      await expect(createWebsiteForSubAccount({ subAccountId: "sa1" })).rejects.toMatchObject({ status: 409 });
+      sites = mem.list("subAccounts/sa1/website");
+      expect(sites).toHaveLength(5);
+      // Numbered from the count each create saw inside its transaction: no two alike.
+      expect(sites.map((s) => s.name).sort()).toEqual(["Website 1", "Website 2", "Website 3", "Website 4", "Website 5"]);
+    });
+
+    it("creates and new-id builds at once share the one cap", async () => {
+      await mem.db.doc(SITE).delete();
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      await Promise.allSettled([
+        ...Array.from({ length: 4 }, () => createWebsiteForSubAccount({ subAccountId: "sa1" })),
+        ...Array.from({ length: 4 }, (_, i) => build({ siteId: `n${i}` })),
+      ]);
+      error.mockRestore();
+      expect(mem.list("subAccounts/sa1/website").length).toBeLessThanOrEqual(5);
+      for (let i = mem.list("subAccounts/sa1/website").length; i < 5; i++) {
+        await createWebsiteForSubAccount({ subAccountId: "sa1" });
+      }
+      await expect(build({ siteId: "sixth" })).rejects.toMatchObject({ status: 409 });
+      await expect(createWebsiteForSubAccount({ subAccountId: "sa1" })).rejects.toMatchObject({ status: 409 });
+      expect(mem.list("subAccounts/sa1/website")).toHaveLength(5);
+    });
   });
 
   it("a submit refused before gitpage is called does not use up the hourly allowance", async () => {

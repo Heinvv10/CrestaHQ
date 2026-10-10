@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { GitpageError, pollBuild } from "@/lib/gitpage/client";
+import { cleanText, GitpageError, pollBuild } from "@/lib/gitpage/client";
 import {
   isSettleable,
   settleWebsiteBuild,
@@ -119,7 +119,7 @@ export async function POST(
         { expectJobId: formResponseId, fromStatuses: recheckableStates },
         {
           status: "failed",
-          errorMessage: `gitpage rejected the poll: ${err.message.slice(0, 300)}`,
+          errorMessage: `gitpage rejected the poll: ${cleanText(err.message, 300) ?? "no details"}`,
           updatedAt: FieldValue.serverTimestamp(),
         },
       );
@@ -169,6 +169,10 @@ export async function POST(
         statusPhase: pollResult.statusPhase,
         errorMessage: null,
         pollAttempts: 0,
+        // Back in flight: whatever report settled it before no longer
+        // describes it. Left in place, a second genuine failure of this
+        // job would read as a repeat and never land, stranding "building".
+        settledDelivery: null,
         updatedAt: FieldValue.serverTimestamp(),
       },
     );

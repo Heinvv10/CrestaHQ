@@ -82,9 +82,37 @@ describe("transitionWebsite", () => {
     expect(res).toEqual({ applied: false, reason: "missing" });
     expect(mem.read(SITE)).toBeUndefined();
 
-    const created = await transitionWebsite(ref(), { fromStatuses: ["draft"], orMissing: true }, { status: "queued", gitpageJobId: "job_a" });
+    const created = await transitionWebsite(
+      ref(),
+      { fromStatuses: ["draft"], orMissing: true },
+      { id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "queued", gitpageJobId: "job_a" },
+    );
     expect(created).toEqual({ applied: true });
-    expect(mem.read(SITE)).toMatchObject({ status: "queued", gitpageJobId: "job_a" });
+    expect(mem.read(SITE)).toMatchObject({ agencyId: "ag1", subAccountId: "sa1", status: "queued", gitpageJobId: "job_a" });
+  });
+
+  it.each([
+    ["no tenancy keys", {}],
+    ["no agencyId", { subAccountId: "sa1" }],
+    ["an empty subAccountId", { agencyId: "ag1", subAccountId: "" }],
+  ])("refuses to create a doc with %s", async (_label, keys) => {
+    mem.clear();
+    await expect(
+      transitionWebsite(ref(), { fromStatuses: ["draft"], orMissing: true }, { ...keys, status: "queued" }),
+    ).rejects.toThrow(/without agencyId and subAccountId/);
+    expect(mem.read(SITE)).toBeUndefined();
+  });
+
+  it("holds a creation to the sub-account's site cap", async () => {
+    mem.clear();
+    for (let i = 1; i <= 5; i++) mem.seed(`subAccounts/sa1/website/s${i}`, { id: `s${i}`, subAccountId: "sa1", status: "draft" });
+    const res = await transitionWebsite(
+      ref(),
+      { fromStatuses: ["draft"], orMissing: true },
+      { agencyId: "ag1", subAccountId: "sa1", status: "queued" },
+    );
+    expect(res).toEqual({ applied: false, reason: "cap" });
+    expect(mem.read(SITE)).toBeUndefined();
   });
 
   it("of two writers that both read the doc in flight, only the first applies", async () => {
