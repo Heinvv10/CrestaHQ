@@ -371,8 +371,18 @@ export function SetupEnvForm() {
   // Fully-configured groups (every key live and shape-valid) drop into a
   // collapsed "already configured" section at the bottom so the board leads
   // with what still needs doing — those keys rarely change once set.
+  // A group holding an unsaved typed value stays visible, so what "Save N keys"
+  // counts is never hidden inside the collapsed section.
   const isDoneGroup = (g: StatusGroup) =>
-    g.keys.every((k) => k.state === "active" && k.valid !== false);
+    g.keys.every(
+      (k) =>
+        k.state === "active" && k.valid !== false && !values[k.name]?.trim(),
+    );
+  // The pinned OpenRouter key sits outside otherGroups, so "all done" must
+  // check it separately.
+  const pinnedKeyDone =
+    !openRouterKey ||
+    (openRouterKey.state === "active" && openRouterKey.valid !== false);
   const todoGroups = otherGroups.filter((g) => !isDoneGroup(g));
   const doneGroups = otherGroups.filter(isDoneGroup);
 
@@ -715,9 +725,11 @@ export function SetupEnvForm() {
                   </div>
                 ))}
 
-                {otherGroups.length > 0 && todoGroups.length === 0 && (
+                {otherGroups.length > 0 &&
+                  todoGroups.length === 0 &&
+                  pinnedKeyDone && (
                   <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-emerald-700 dark:text-emerald-400">
-                    Everything in the catalog is configured. Nice.
+                    All keys in the catalog are configured.
                   </p>
                 )}
 
