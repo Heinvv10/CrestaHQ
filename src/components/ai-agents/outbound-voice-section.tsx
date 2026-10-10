@@ -42,7 +42,7 @@ const TEST_DURATION_S = 60;
  * until that's done. Gated by the agency-level `outboundVoiceEnabledByAgency`.
  */
 export function OutboundVoiceSection() {
-  const { subAccountId, subAccount, isAdmin, saPath } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, saPath, loading } = useSubAccount();
 
   const [config, setConfig] = useState<AiChannelConfig | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -318,7 +318,13 @@ export function OutboundVoiceSection() {
         </div>
       </header>
 
-      {!gateOn ? (
+      {/* Until the workspace doc arrives the gate reads as off; showing
+          "Locked" then flashes it on every load of a workspace that has it on. */}
+      {loading ? (
+        <div className="flex justify-center py-8">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : !gateOn ? (
         <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5 text-sm text-amber-800 dark:text-amber-400">
           <strong>Locked by your agency.</strong> Outbound calling consumes
           call minutes and carries compliance weight, so the agency owner

@@ -1,6 +1,6 @@
 "use client";
 
-import { FlaskConical, Lock } from "lucide-react";
+import { FlaskConical, Loader2, Lock } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { WatchdogSection } from "@/components/labs/watchdog-section";
 import { FunnelsSection } from "@/components/labs/funnels-section";
@@ -19,8 +19,20 @@ import { FunnelsSection } from "@/components/labs/funnels-section";
  * is deliberately a thin shell so adding/removing an experiment is one card.
  */
 export default function LabsPage() {
-  const { subAccount } = useSubAccount();
+  const { subAccount, loading } = useSubAccount();
   const labsEnabled = subAccount?.labsEnabledByAgency === true;
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has Labs on.
+  if (loading) {
+    return (
+      <div className="mx-auto w-full max-w-3xl">
+        <div className="flex justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
+  }
 
   if (!labsEnabled) {
     return (

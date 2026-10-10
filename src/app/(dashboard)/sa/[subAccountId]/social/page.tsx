@@ -49,7 +49,7 @@ const STATUS_BADGE: Record<SocialPostStatus, string> = {
 };
 
 export default function SocialPlannerPage() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
   const [posts, setPosts] = useState<SocialPostDoc[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState<"calendar" | "connections">("calendar");
@@ -100,6 +100,19 @@ export default function SocialPlannerPage() {
     } finally {
       setDeletingId(null);
     }
+  }
+
+  // Until the workspace doc arrives the gate reads as off; showing "locked"
+  // then flashes it on every load of a workspace that has the Social Planner on.
+  if (loading) {
+    return (
+      <div className="mx-auto w-full max-w-5xl space-y-6">
+        <Header />
+        <div className="flex justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      </div>
+    );
   }
 
   // ── Gate: locked state ────────────────────────────────────────────
