@@ -1165,9 +1165,8 @@ function ManageDialogBody({
             account so website visitors can talk to the web chat assistant
             (mic button in the widget). Needs Web Chat AI. Each spoken reply
             still spends your OpenRouter tokens; the client&apos;s ElevenLabs
-            account pays the voice minutes. Disabling hides the mic and
-            refuses new voice sessions; the stored connection is preserved, so
-            re-enabling resumes instantly.
+            account pays the voice minutes. Web Voice is not available in
+            this build yet, so the switch only takes effect once it ships.
           </GateToggle>
 
           <GateToggle
@@ -1182,9 +1181,8 @@ function ManageDialogBody({
             When enabled, team members can place and take calls from the
             browser through this sub-account&apos;s own Twilio account (it
             needs its Twilio credentials connected). Calls are billed to the
-            client&apos;s Twilio account. Disabling hides the dialer and
-            refuses new calls; the stored dialer setup is preserved, so
-            re-enabling resumes instantly.
+            client&apos;s Twilio account. The dialer is not available in this
+            build yet, so the switch only takes effect once it ships.
           </GateToggle>
 
           <GateToggle
