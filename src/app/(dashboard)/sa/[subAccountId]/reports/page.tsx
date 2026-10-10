@@ -405,7 +405,11 @@ export default function ReportsPage() {
               {wonValue === 0 ? (
                 <EmptyHint text="No wins in this range yet." />
               ) : (
-                <AreaChart data={wonTimeline} tone="emerald" />
+                <AreaChart
+                  data={wonTimeline}
+                  tone="emerald"
+                  formatValue={(v) => formatCurrency(v, currency)}
+                />
               )}
             </section>
 

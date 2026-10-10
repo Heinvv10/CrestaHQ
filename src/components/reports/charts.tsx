@@ -14,22 +14,31 @@ export function AreaChart({
   height = 140,
   className,
   tone = "indigo",
+  formatValue = (v) => Math.round(v).toLocaleString(),
 }: {
   data: Point[];
   height?: number;
   className?: string;
   tone?: "indigo" | "emerald" | "amber" | "violet";
+  /** Formats a value for the hover tooltip and the y-axis labels. */
+  formatValue?: (v: number) => string;
 }) {
   const id = useId().replace(/:/g, "");
   const w = 600;
   const h = height;
-  const padX = 20;
+  // Asymmetric padding — the left side needs room for the y-axis labels,
+  // the right side just needs the line's last point to clear the edge.
+  const padLeft = 34;
+  const padRight = 14;
   const padY = 18;
+  // The axis always starts at 0 and tops out at the series max (never a
+  // fixed ceiling), so a quiet stretch and a traffic spike both use the
+  // chart's full height instead of one flattening the other.
   const max = Math.max(1, ...data.map((d) => d.y));
-  const stepX = data.length > 1 ? (w - 2 * padX) / (data.length - 1) : 0;
+  const stepX = data.length > 1 ? (w - padLeft - padRight) / (data.length - 1) : 0;
 
   const pts = data.map((d, i) => {
-    const x = padX + i * stepX;
+    const x = padLeft + i * stepX;
     const y = h - padY - (d.y / max) * (h - 2 * padY);
     return [x, y] as const;
   });
@@ -75,14 +84,31 @@ export function AreaChart({
         return (
           <line
             key={f}
-            x1={padX}
-            x2={w - padX}
+            x1={padLeft}
+            x2={w - padRight}
             y1={y}
             y2={y}
             className="stroke-border"
             strokeDasharray="2 3"
             strokeWidth="0.5"
           />
+        );
+      })}
+      {/* Y axis — 0, the midpoint, and the series max, so the scale is
+          always visible and always relative to what's actually in the
+          data rather than a fixed ceiling. */}
+      {[0, 0.5, 1].map((frac) => {
+        const y = h - padY - frac * (h - 2 * padY);
+        return (
+          <text
+            key={frac}
+            x={padLeft - 8}
+            y={y + 3}
+            textAnchor="end"
+            className="fill-muted-foreground text-[9px] tabular-nums"
+          >
+            {formatValue(frac * max)}
+          </text>
         );
       })}
       {pts.length > 0 && (
@@ -94,13 +120,20 @@ export function AreaChart({
             className={cn("stroke-[1.5]", strokeByTone[tone])}
           />
           {pts.map(([x, y], i) => (
-            <circle
-              key={i}
-              cx={x}
-              cy={y}
-              r={2}
-              className={cn("fill-background stroke-[1.5]", strokeByTone[tone])}
-            />
+            <g key={i}>
+              <circle
+                cx={x}
+                cy={y}
+                r={2}
+                className={cn("fill-background stroke-[1.5]", strokeByTone[tone])}
+              />
+              {/* Generous invisible hit target — the visible dot is only
+                  2px, too small to reliably hover — carrying the native
+                  browser tooltip with this point's exact value. */}
+              <circle cx={x} cy={y} r={9} fill="transparent">
+                <title>{`${data[i].x}: ${formatValue(data[i].y)}`}</title>
+              </circle>
+            </g>
           ))}
         </>
       )}
@@ -108,7 +141,7 @@ export function AreaChart({
       {labels.map((i) => (
         <text
           key={i}
-          x={padX + i * stepX}
+          x={padLeft + i * stepX}
           y={h - 2}
           textAnchor="middle"
           className="fill-muted-foreground text-[9px]"

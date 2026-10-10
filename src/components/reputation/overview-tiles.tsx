@@ -88,7 +88,7 @@ export function Trend({ data }: { data: Data }) {
         </div>
         <div>
           <p className="mb-2 text-xs text-muted-foreground">Average rating per {per}</p>
-          {rating.length ? <AreaChart data={rating} tone="amber" /> : <p className="text-sm text-muted-foreground">No ratings in this range.</p>}
+          {rating.length ? <AreaChart data={rating} tone="amber" formatValue={(v) => v.toFixed(1)} /> : <p className="text-sm text-muted-foreground">No ratings in this range.</p>}
         </div>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">Periods start on {per === "week" ? "Mondays" : "the 1st"}, UTC.</p>
