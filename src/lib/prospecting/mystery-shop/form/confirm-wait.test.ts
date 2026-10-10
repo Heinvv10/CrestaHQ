@@ -78,6 +78,21 @@ describe.skipIf(skipBrowser)("a taken enquiry is sent or uncertain, never reject
     expect((out as { reason: string }).reason).toBe("The website took the enquiry, then refused a later request (ok:false); it may have gone through.");
   });
 
+  it("only another website had answered 2xx when the form's own site refuses: still rejected (it was never taken)", async () => {
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<script>document.querySelector("form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const body = new URLSearchParams(new FormData(e.target));
+        fetch(location.origin.replace("127.0.0.1", "localhost") + "/collect", { method: "POST", body })
+          .then(() => fetch("/api/enquiry", { method: "POST", body }));
+      });</script>`),
+      "/collect": (_q, res) => html(res, "{}", 200, { "access-control-allow-origin": "*" }),
+      "/api/enquiry": (_q, res) => html(res, '{"ok":false}', 200, { "content-type": "application/json" }),
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/collect", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "rejected", code: "form_rejected" });
+  });
+
   it("a CAPTCHA appearing 500 ms later: uncertain/captcha_after_submit", async () => {
     const captcha = `const d = document.createElement("div"); d.className = "g-recaptcha"; document.body.append(d);`;
     const out = await run({ "/contact": contact(`setTimeout(() => { ${captcha} }, 500);`), "/api/enquiry": ok });
