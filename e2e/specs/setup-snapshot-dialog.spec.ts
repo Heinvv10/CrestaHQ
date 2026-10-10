@@ -34,7 +34,7 @@ test("owner sees the setup snapshot once and can dismiss it for good", async ({
       await expect(dialog.getByText(label, { exact: true })).toBeVisible();
     }
 
-    await dialog.getByLabel("Don't show this again").click();
+    await dialog.getByRole("checkbox", { name: "Don't show this again" }).click();
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
     await expect.poll(readSetupSnapshotDismissed, { timeout: 15_000 }).toBe(true);
