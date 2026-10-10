@@ -70,3 +70,8 @@ PAYMENTS_V1_PLAN.md
 
 # services/qcontact-import run state (seen case ids)
 .qcontact-import-state.json
+
+# Claude Code per-machine permissions. The shared allowlist is
+# .claude/settings.json (tracked); this .local. file can hold absolute local
+# paths and must never ship to a buyer.
+.claude/settings.local.json
