@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * A contact created from an inbound WhatsApp opt-out (a never-seen number
@@ -66,12 +67,11 @@ it("an ordinary new contact still announces itself", async () => {
   await createContactServerSide(input);
 
   expect(m.written[0]).not.toHaveProperty("whatsappOptedOut");
-  await vi.waitFor(() => {
-    expect(emitWebhookEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "contact.created" })
-    );
-    expect(fireWorkflowTrigger).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "contact.created" })
-    );
-  });
+  await flushAfterResponse();
+  expect(emitWebhookEvent).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "contact.created" })
+  );
+  expect(fireWorkflowTrigger).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "contact.created" })
+  );
 });

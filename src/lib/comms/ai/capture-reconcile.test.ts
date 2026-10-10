@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Regression tests for `reconcileContactFromCapture` — the boundary where LLM
@@ -210,13 +211,12 @@ describe("reconcileContactFromCapture — creating a contact", () => {
     const res = await reconcile({
       capture: { name: null, email: "jane@example.com", phone: null },
     });
-    await vi.waitFor(() =>
-      expect(emitContactCreated).toHaveBeenCalledWith({
-        subAccountId: SA,
-        agencyId: AG,
-        contactId: res!.contactId,
-      })
-    );
+    await flushAfterResponse();
+    expect(emitContactCreated).toHaveBeenCalledWith({
+      subAccountId: SA,
+      agencyId: AG,
+      contactId: res!.contactId,
+    });
   });
 
   it("does NOT fire contact.created when an existing contact was matched", async () => {

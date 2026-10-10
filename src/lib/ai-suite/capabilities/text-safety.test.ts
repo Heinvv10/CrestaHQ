@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, decide, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
 /**
@@ -76,7 +77,8 @@ describe("an approved channel change is a person's write", () => {
     const r = await dispatchAgentTool(auth, "update_contact_channels", { contactId: "c1", email: "new@x.io" });
     if (!("proposal" in r)) throw new Error("expected a proposal");
     expect((await decide(r.proposal.id, "approve")).status).toBe(200);
-    await vi.waitFor(() => expect(emit.mock.calls.map(([e]) => e).filter((e) => e.type === "contact.updated")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(emit.mock.calls.map(([e]) => e).filter((e) => e.type === "contact.updated")).toHaveLength(1);
     const updated = emit.mock.calls.map(([e]) => e).filter((e) => e.type === "contact.updated");
     expect(updated[0]).not.toHaveProperty("byAgent");
     expect(mem.list("agentProposals").map((p) => p.approval)).toEqual(["channel_change"]);

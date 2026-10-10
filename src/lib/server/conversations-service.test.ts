@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 const m = vi.hoisted(() => ({
   contact: {
     subAccountId: "sa",
@@ -119,23 +120,21 @@ it("an inbound opt-out keyword notifies staff but starts no workflow", async () 
     optOut: true,
   });
   expect(m.writes).toHaveBeenCalled();
-  await vi.waitFor(() =>
-    expect(emitWebhookEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "message.received" })
-    )
+  await flushAfterResponse();
+  expect(emitWebhookEvent).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "message.received" })
   );
   expect(resumeWaitingRunsOnReply).not.toHaveBeenCalled();
   expect(fireWorkflowTrigger).not.toHaveBeenCalled();
 });
 it("an ordinary inbound still fires message.received automation", async () => {
   await upsertConversationForMessage({ ...input, direction: "inbound" });
-  await vi.waitFor(() => {
-    expect(emitWebhookEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "message.received" })
-    );
-    expect(resumeWaitingRunsOnReply).toHaveBeenCalled();
-    expect(fireWorkflowTrigger).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "message.received" })
-    );
-  });
+  await flushAfterResponse();
+  expect(emitWebhookEvent).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "message.received" })
+  );
+  expect(resumeWaitingRunsOnReply).toHaveBeenCalled();
+  expect(fireWorkflowTrigger).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "message.received" })
+  );
 });

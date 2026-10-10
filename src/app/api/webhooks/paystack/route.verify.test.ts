@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { mem, stubPaystack, verified, type PaystackCall } from "@/test/paystack-links-harness";
 
@@ -139,11 +140,13 @@ describe("plan payment", () => {
     const first = await deliver({ reference: "ref_ok", metadata: planMeta });
     expect(first.status).toBe(200);
     expect(billing().status).toBe("active");
-    await vi.waitFor(() => expect(applyFeatureGates).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(mem.list("billingEvents").filter((e) => e.event === "activated")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(applyFeatureGates).toHaveBeenCalledTimes(1);
+    expect(mem.list("billingEvents").filter((e) => e.event === "activated")).toHaveLength(1);
 
     const replay = await deliver({ reference: "ref_ok", metadata: planMeta });
     expect(replay.status).toBe(200);
+    await flushAfterResponse();
     expect(applyFeatureGates).toHaveBeenCalledTimes(1);
     expect(mem.list("billingEvents").filter((e) => e.event === "activated")).toHaveLength(1);
     expect(flags()).toHaveLength(0);
@@ -274,8 +277,10 @@ describe("one-time charge", () => {
     verifyAs = () => verified({ reference: "ref_c3", amount: 500000, metadata: chargeMeta });
     expect((await deliver({ reference: "ref_c3", metadata: chargeMeta })).status).toBe(200);
     expect(charge().status).toBe("paid");
-    await vi.waitFor(() => expect(mem.list("billingEvents").filter((e) => e.event === "charge.paid")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(mem.list("billingEvents").filter((e) => e.event === "charge.paid")).toHaveLength(1);
     expect((await deliver({ reference: "ref_c3", metadata: chargeMeta })).status).toBe(200);
+    await flushAfterResponse();
     expect(mem.list("billingEvents").filter((e) => e.event === "charge.paid")).toHaveLength(1);
   });
 });

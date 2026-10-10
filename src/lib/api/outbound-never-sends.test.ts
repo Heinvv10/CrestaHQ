@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, mem, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { QUOTE, SCHEDULE, SMTP } from "@/test/quote-fixtures";
 import { AGENCY_FIXTURE_ARGS, FIXTURE_ARGS } from "@/test/outbound-fixtures";
@@ -91,6 +92,9 @@ setupAgentProposalTests();
 const TRIGGERS = Object.keys(TRIGGER_LABELS);
 const agentCaps = () =>
   AI_SUITE_CAPABILITIES.filter((c) => c.level === "sub-account" && availableOn(c, "agent"));
+
+// Deferred work from one test (pushes, webhooks) must not land in the next.
+afterEach(() => flushAfterResponse());
 
 beforeEach(() => {
   fired.length = 0;
@@ -279,19 +283,21 @@ describe("staff push for an agent's contact carries fixed text only", () => {
     const { AGENT_CONTACT_PUSH_BODY } = await import("@/lib/push/events");
     await dispatchAgentTool(auth, "create_contact", { name: "Click evil.example NOW", email: "x@y.io" });
     await drain();
-    // A previous test's deferred push can land here too; every push must be the fixed copy.
-    await vi.waitFor(() => expect(sendPushForEvent).toHaveBeenCalled());
-    for (const [push] of sendPushForEvent.mock.calls) {
-      expect(push).toMatchObject({ title: "New contact", body: AGENT_CONTACT_PUSH_BODY });
-      expect(JSON.stringify(push)).not.toContain("evil.example");
-    }
+    await flushAfterResponse();
+    const contact = mem.list("contacts").find((c) => c.name === "Click evil.example NOW");
+    expect(contact, "the agent's contact was created").toBeDefined();
+    const mine = sendPushForEvent.mock.calls.map(([p]) => p).filter((p) => (p as { tag?: string }).tag === `lead-${contact!.id}`);
+    expect(mine).toHaveLength(1);
+    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
+    const push = mine[0]!;
+    expect(push).toMatchObject({ title: "New contact", body: AGENT_CONTACT_PUSH_BODY });
+    expect(JSON.stringify(push)).not.toContain("evil.example");
   });
 
   it("the tenant's own webhook still receives the event (exempt, like the human path)", async () => {
     await dispatchAgentTool(auth, "create_contact", { name: "Webhook Contact" });
     await drain();
-    await vi.waitFor(() =>
-      expect(publishCallback.mock.calls.map(([o]) => o.pathname)).toContain(TENANT_WEBHOOK_STEP)
-    );
+    await flushAfterResponse();
+    expect(publishCallback.mock.calls.map(([o]) => o.pathname)).toContain(TENANT_WEBHOOK_STEP);
   });
 });

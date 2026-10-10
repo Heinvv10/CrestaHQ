@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Behaviour-pinning tests for the SEND-AND-PERSIST half of the send route:
@@ -174,16 +175,15 @@ describe("lifecycle", () => {
 
   it("fires the trigger and the outbound webhook", async () => {
     await call();
-    await vi.waitFor(() => {
-      expect(fireQuoteTrigger).toHaveBeenCalledWith(
-        expect.objectContaining({ id: QUOTE_ID }),
-        "quote_sent",
-      );
-      expect(emitQuoteWebhook).toHaveBeenCalledWith(
-        expect.objectContaining({ id: QUOTE_ID }),
-        "quote_sent",
-      );
-    });
+    await flushAfterResponse();
+    expect(fireQuoteTrigger).toHaveBeenCalledWith(
+      expect.objectContaining({ id: QUOTE_ID }),
+      "quote_sent",
+    );
+    expect(emitQuoteWebhook).toHaveBeenCalledWith(
+      expect.objectContaining({ id: QUOTE_ID }),
+      "quote_sent",
+    );
   });
 
   it("swallows a failed lifecycle write and still reports success", async () => {

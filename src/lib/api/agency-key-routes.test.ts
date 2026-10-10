@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -82,7 +83,8 @@ describe("withApiAuth routes and agency keys", () => {
       }
     }
     expect(checked).toBeGreaterThanOrEqual(24);
-    await vi.waitFor(() => expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(checked));
+    await flushAfterResponse();
+    expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(checked);
     expect(mem.all().filter((d) => d.path.startsWith("subAccounts/") && d.path.includes("/apiRequestLogs/"))).toEqual([]);
   });
 

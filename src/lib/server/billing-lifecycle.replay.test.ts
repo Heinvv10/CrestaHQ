@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import type Stripe from "stripe";
 
 import { mem, stubPaystack, verified } from "@/test/paystack-links-harness";
@@ -97,7 +98,8 @@ describe("a redelivered first payment", () => {
     expect(billing().status).toBe("canceled");
     // Re-applying the plan's gates would overwrite what the agency set by hand.
     expect(applyFeatureGates).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(events("activated")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(events("activated")).toHaveLength(1);
   });
 
   it("Paystack: does not revive a workspace cancelled since it was paid", async () => {
@@ -116,7 +118,8 @@ describe("a redelivered first payment", () => {
 
     expect(billing().status).toBe("canceled");
     expect(applyFeatureGates).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(events("activated")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(events("activated")).toHaveLength(1);
   });
 
   it("does not activate a re-assignment of the same plan that has not been paid", async () => {

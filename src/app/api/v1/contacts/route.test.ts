@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * POST /api/v1/contacts — the public API must enrol contacts in workflows,
@@ -148,7 +149,8 @@ describe("POST /api/v1/contacts — workflow triggers", () => {
     // `finally` reconciles once it settles (the engine is mocked here).
     expect(enrolmentCount).toBe(1);
     // The webhook the route already emitted must survive the move.
-    await vi.waitFor(() => expect(emitWebhookEvent).toHaveBeenCalledTimes(1));
+    await flushAfterResponse();
+    expect(emitWebhookEvent).toHaveBeenCalledTimes(1);
     expect(emitWebhookEvent.mock.calls[0]![0]).toMatchObject({
       type: "contact.created",
     });

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import type { AiSuiteCapability } from "@/lib/ai-suite/capabilities";
 
@@ -101,18 +102,18 @@ describe("POST /api/v1/tools/{name}", () => {
     const res = await call("find_contacts", { query: "ann@private.io" });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { result: string }).result).toContain("Ann Private");
-    await vi.waitFor(() => {
-      const [log] = logs("/api/v1/tools/find_contacts");
-      expect(log).toMatchObject({ responseStatus: 200, requestBody: "", responseBody: "" });
-      expect(JSON.stringify(log)).not.toContain("Ann Private");
-      expect(JSON.stringify(log)).not.toContain("ann@private.io");
-    });
+    await flushAfterResponse();
+    const [log] = logs("/api/v1/tools/find_contacts");
+    expect(log).toMatchObject({ responseStatus: 200, requestBody: "", responseBody: "" });
+    expect(JSON.stringify(log)).not.toContain("Ann Private");
+    expect(JSON.stringify(log)).not.toContain("ann@private.io");
   });
 
   it("a write tool logs its response normally", async () => {
     const res = await call("create_contact", { name: "Logged Contact" });
     expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(String(logs("/api/v1/tools/create_contact")[0]!.responseBody)).toContain("Logged Contact"));
+    await flushAfterResponse();
+    expect(String(logs("/api/v1/tools/create_contact")[0]!.responseBody)).toContain("Logged Contact");
   });
 
   it("an admin key → 403 insufficient_scope", async () => {

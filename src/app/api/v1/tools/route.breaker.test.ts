@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -193,14 +194,16 @@ describe("PII persistence", () => {
     expect(r.status).toBe(200);
     expect(await r.text()).toContain("Ann Private");
     // The request log is the row that could hold PII: wait for it, or this checks nothing.
-    await vi.waitFor(() => expect(logFor(r)).toHaveLength(1));
+    await flushAfterResponse();
+    expect(logFor(r)).toHaveLength(1);
     const hits = mem.all().filter((d) => d.path !== "contacts/c1" && /Ann Private|ann@private\.io/.test(JSON.stringify(d.data)));
     expect(hits.map((h) => `${h.path}: ${JSON.stringify(h.data).slice(0, 300)}`)).toEqual([]);
   });
   it("after a read by name, no collection holds the contact's name", async () => {
     const r = await call("find_contacts", { query: "Ann Private" });
     // The request log is the row that could hold PII: wait for it, or this checks nothing.
-    await vi.waitFor(() => expect(logFor(r)).toHaveLength(1));
+    await flushAfterResponse();
+    expect(logFor(r)).toHaveLength(1);
     const hits = mem.all().filter((d) => d.path !== "contacts/c1" && /Ann Private/.test(JSON.stringify(d.data)));
     expect(hits.map((h) => h.path)).toEqual([]);
   });
@@ -241,9 +244,8 @@ describe("round 2", () => {
     expect(JSON.parse(text)).toMatchObject({ error: { code: "internal_error" } });
     expect(text).not.toContain("internal-host");
     expect(logged).toHaveBeenCalledWith("[api/v1] precheck threw", expect.any(Error));
-    await vi.waitFor(() =>
-      expect(mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === "/api/v1/tools/create_contact")).toHaveLength(1)
-    );
+    await flushAfterResponse();
+    expect(mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === "/api/v1/tools/create_contact")).toHaveLength(1);
     const rows = mem.list("subAccounts/sa1/apiRequestLogs").filter((l) => l.path === "/api/v1/tools/create_contact");
     expect(rows[0]).toMatchObject({ responseStatus: 500, errorCode: "internal_error" });
     expect(mem.list("subAccounts/sa1/apiIdempotency")).toEqual([]);

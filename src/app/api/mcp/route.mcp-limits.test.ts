@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -136,9 +137,8 @@ describe("refused before any message runs", () => {
       error: { type: "rate_limit_error", code: "rate_limited", request_id: expect.any(String) },
     });
     expect(contactsNamed("Too Many")).toEqual([]);
-    await vi.waitFor(() =>
-      expect(logs("/api/mcp").filter((l) => l.keyId === keyId)).toMatchObject([{ responseStatus: 429, errorCode: "rate_limited" }])
-    );
+    await flushAfterResponse();
+    expect(logs("/api/mcp").filter((l) => l.keyId === keyId)).toMatchObject([{ responseStatus: 429, errorCode: "rate_limited" }]);
   });
 
   it("a batch repeating a request id is a JSON-RPC -32600, and none of it runs", async () => {

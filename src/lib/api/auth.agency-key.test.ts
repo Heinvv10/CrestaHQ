@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
 /**
@@ -58,7 +59,6 @@ const restCall = (key: string) =>
     { params: Promise.resolve({ name: "find_contacts" }) },
   );
 const code = async (res: Response) => ((await res.json()) as { error?: { code?: string } }).error?.code;
-const settle = () => new Promise((r) => setTimeout(r, 10));
 const pathsUnder = (prefix: string) => mem.all().map((d) => d.path).filter((p) => p.startsWith(prefix));
 
 beforeEach(() => {
@@ -72,7 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await settle();
+  await flushAfterResponse();
   // Nothing an agency key does may land under a sub-account named "null".
   expect(pathsUnder("subAccounts/null")).toEqual([]);
 });
@@ -88,7 +88,8 @@ describe("an agency key on each transport", () => {
     const res = await v1Contacts(agencyKey);
     expect(res.status).toBe(403);
     expect(await code(res)).toBe("agency_key_not_allowed");
-    await vi.waitFor(() => expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1);
     const logs = mem.list("agencies/ag1/apiRequestLogs");
     expect(logs[0]).toMatchObject({ subAccountId: null, errorCode: "agency_key_not_allowed", requestBody: "" });
     expect(pathsUnder("subAccounts/").filter((p) => p.includes("/apiRequestLogs/"))).toEqual([]);
@@ -100,27 +101,29 @@ describe("an agency key on each transport", () => {
     // The REST transports write a request log after the response (MCP's
     // list does not): drain it so it cannot land in the next test.
     if (_label.startsWith("POST /api/mcp")) return;
-    await vi.waitFor(() => expect(pathsUnder("").filter((p) => p.includes("/apiRequestLogs/"))).toHaveLength(1));
+    await flushAfterResponse();
+    expect(pathsUnder("").filter((p) => p.includes("/apiRequestLogs/"))).toHaveLength(1);
   });
 
   it("a targeted tools call logs under its target, the listing under the agency", async () => {
     expect((await restCall(agencyKey)).status).toBe(200);
     expect((await restTools(agencyKey)).status).toBe(200);
-    await vi.waitFor(() => {
-      expect(mem.list("subAccounts/sa1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools/find_contacts" })]);
-      expect(mem.list("agencies/ag1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools" })]);
-    });
+    await flushAfterResponse();
+    expect(mem.list("subAccounts/sa1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools/find_contacts" })]);
+    expect(mem.list("agencies/ag1/apiRequestLogs")).toEqual([expect.objectContaining({ path: "/api/v1/tools" })]);
   });
 
   it("the agency key's lastUsedAt bump lands on its own doc", async () => {
     await mcpList(agencyKey);
-    await vi.waitFor(() => expect(mem.read(KEY_PATH)?.lastUsedAt).toBeDefined());
+    await flushAfterResponse();
+    expect(mem.read(KEY_PATH)?.lastUsedAt).toBeDefined();
   });
 
   it("a sub-account key still works and logs under its sub-account", async () => {
     const res = await v1Contacts(subKey);
     expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(1);
     expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(0);
   });
 });
@@ -191,7 +194,8 @@ describe("level and owner come from the doc path", () => {
     agencyKey = seedKey(KEY_PATH, { agencyId: "ag2", subAccountId: "sa1", createdByUid: "owner1" });
     const res = await v1Contacts(agencyKey);
     expect(await code(res)).toBe("agency_key_not_allowed");
-    await vi.waitFor(() => expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(mem.list("agencies/ag1/apiRequestLogs")).toHaveLength(1);
     expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(0);
   });
 

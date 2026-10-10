@@ -1,6 +1,7 @@
 import { Timestamp } from "firebase-admin/firestore";
 import { NextResponse } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   SCHEDULE,
@@ -295,7 +296,8 @@ describe("normal cycles are still charged", () => {
     const calls = stubAutoCharge();
     await runOneSchedule(SCHEDULE, at("2026-03-01"));
     expect(calls).toHaveLength(0);
-    await vi.waitFor(() => expect(sendPushForEvent).toHaveBeenCalledTimes(1));
+    await flushAfterResponse();
+    expect(sendPushForEvent).toHaveBeenCalledTimes(1);
   });
 
   it("a too-stale fast-forward or an already-finished close records nothing", async () => {

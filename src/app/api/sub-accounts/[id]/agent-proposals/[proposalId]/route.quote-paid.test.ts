@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { QUOTE } from "@/test/quote-fixtures";
 
@@ -77,7 +78,8 @@ describe("mark_quote_paid", () => {
     expect(mem.read("quotes/q1")!.status).toBe("paid");
     expect(markPaid.spy).toHaveBeenCalledTimes(1);
     expect(markPaid.spy.mock.calls[0]![0]).toMatchObject({ quoteId: "q1", expectSubAccountId: "sa1", expectTotalCents: 50000, expectCurrency: "ZAR" });
-    await vi.waitFor(() => expect(reviewAsk).toHaveBeenCalledTimes(1));
+    await flushAfterResponse();
+    expect(reviewAsk).toHaveBeenCalledTimes(1);
     expect(reviewAsk).toHaveBeenCalledWith({
       subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "quote_paid", expect: { phone: "+27821111111", channel: "sms", body: SMS_TEXT },
     });
@@ -114,7 +116,8 @@ describe("mark_quote_paid", () => {
     });
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("It was marked paid meanwhile (by someone else); nothing more was done.");
-    await vi.waitFor(() => expect(reviewAsk).toHaveBeenCalledTimes(1));
+    await flushAfterResponse();
+    expect(reviewAsk).toHaveBeenCalledTimes(1);
     expect(reviewAsk.mock.calls[0]![0]).not.toHaveProperty("expect");
   });
 

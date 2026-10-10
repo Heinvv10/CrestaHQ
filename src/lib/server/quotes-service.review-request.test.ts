@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
@@ -37,7 +38,8 @@ describe("quote paid → review request", () => {
   it("marking a quote paid asks for a review with trigger quote_paid", async () => {
     mem.seed("quotes/q1", { ...QUOTE });
     expect(await markQuotePaidServerSide({ quoteId: "q1", expectSubAccountId: "sa1" })).toMatchObject({ ok: true });
-    await vi.waitFor(() => expect(dispatcher.send).toHaveBeenCalledTimes(1));
+    await flushAfterResponse();
+    expect(dispatcher.send).toHaveBeenCalledTimes(1);
     expect(dispatcher.send).toHaveBeenCalledWith({ subAccountId: "sa1", agencyId: "ag1", contactId: "c1", trigger: "quote_paid" });
   });
 

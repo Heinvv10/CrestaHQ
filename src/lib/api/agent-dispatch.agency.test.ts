@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth as subKey, inject, mem, setupDispatchTests } from "@/test/agent-dispatch-harness";
 import type { AgencyApiAuthContext, ApiAuthContext } from "@/lib/api/auth";
 
@@ -260,17 +261,20 @@ describe("logs and idempotency by level", () => {
 
   it("a refused call logs under the agency only; a reached one under its target", async () => {
     await mcpCall("sa2");
-    await vi.waitFor(() => expect(logPaths().filter((p) => p.startsWith("agencies/ag1/apiRequestLogs/"))).toHaveLength(1));
+    await flushAfterResponse();
+    expect(logPaths().filter((p) => p.startsWith("agencies/ag1/apiRequestLogs/"))).toHaveLength(1);
     expect(logPaths().filter((p) => p.startsWith("subAccounts/"))).toEqual([]);
     await mcpCall("sa1");
-    await vi.waitFor(() => expect(logPaths().filter((p) => p.startsWith("subAccounts/sa1/apiRequestLogs/"))).toHaveLength(1));
+    await flushAfterResponse();
+    expect(logPaths().filter((p) => p.startsWith("subAccounts/sa1/apiRequestLogs/"))).toHaveLength(1);
     expect(logPaths().filter((p) => p.startsWith("subAccounts/") && !p.startsWith("subAccounts/sa1/"))).toEqual([]);
   });
 
   it("a call that throws past reach logs under its target, as on REST", async () => {
     await inject({ name: "__fixture_throw", execute: vi.fn(async () => { throw new CapabilityUserError("Not here."); }) });
     await mcpCall("sa1", "__fixture_throw");
-    await vi.waitFor(() => expect(logPaths()).toHaveLength(1));
+    await flushAfterResponse();
+    expect(logPaths()).toHaveLength(1);
     expect(logPaths()[0]).toMatch(/^subAccounts\/sa1\/apiRequestLogs\//);
   });
 

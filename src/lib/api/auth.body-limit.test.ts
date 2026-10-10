@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { NextResponse } from "next/server";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 
@@ -50,7 +51,8 @@ const send = (r: typeof route, init: RequestInit) => {
 };
 
 afterEach(async () => {
-  await vi.waitFor(() => expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(requests));
+  await flushAfterResponse();
+  expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(requests);
 });
 
 beforeEach(() => {
@@ -93,7 +95,8 @@ describe("withApiAuth body cap (256 KB)", () => {
 
   it("the 413 is logged without the body", async () => {
     await send(route, chunked(jsonOf(MAX_BODY_BYTES + 1)));
-    await vi.waitFor(() => expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(1));
+    await flushAfterResponse();
+    expect(mem.list("subAccounts/sa1/apiRequestLogs")).toHaveLength(1);
     const logs = mem.list("subAccounts/sa1/apiRequestLogs");
     for (const l of logs) expect(l).toMatchObject({ responseStatus: 413, errorCode: "body_too_large", requestBody: "" });
   });

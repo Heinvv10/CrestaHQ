@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createMemoryFirestore } from "@/test/memory-firestore";
@@ -128,7 +129,8 @@ describe("tools/call", () => {
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toContain("Ann Private");
     expect(textOf(r)).not.toMatch(/Ann Other|ann@other\.io/);
-    await vi.waitFor(() => expect(logs("/api/mcp#find_contacts")[0]).toMatchObject({ responseStatus: 200, requestBody: "", responseBody: "" }));
+    await flushAfterResponse();
+    expect(logs("/api/mcp#find_contacts")[0]).toMatchObject({ responseStatus: 200, requestBody: "", responseBody: "" });
     const [log] = logs("/api/mcp#find_contacts");
     expect(JSON.stringify(log)).not.toMatch(/Ann Private|ann@private\.io/);
   });
@@ -137,7 +139,8 @@ describe("tools/call", () => {
     const r = await (await connect()).callTool({ name: "create_contact", arguments: { name: "Mcp Contact" } });
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toContain("Mcp Contact");
-    await vi.waitFor(() => expect(String(logs("/api/mcp#create_contact")[0]!.responseBody)).toContain("Mcp Contact"));
+    await flushAfterResponse();
+    expect(String(logs("/api/mcp#create_contact")[0]!.responseBody)).toContain("Mcp Contact");
   });
 
   it("an approval capability is queued as a proposal: id, summary, preview — never pinned or rev; execute never called", async () => {
@@ -155,11 +158,10 @@ describe("tools/call", () => {
 
   it("a caller-supplied tool name cannot forge a log line", async () => {
     await (await connect()).callTool({ name: "x\nFAKE\u2028y", arguments: {} });
-    await vi.waitFor(() => {
-      const paths = mem.list("subAccounts/sa1/apiRequestLogs").map((l) => String(l.path));
-      expect(paths).toContain("/api/mcp#x?FAKE?y");
-      expect(paths.some((p) => /[\n\u2028]/.test(p))).toBe(false);
-    });
+    await flushAfterResponse();
+    const paths = mem.list("subAccounts/sa1/apiRequestLogs").map((l) => String(l.path));
+    expect(paths).toContain("/api/mcp#x?FAKE?y");
+    expect(paths.some((p) => /[\n\u2028]/.test(p))).toBe(false);
   });
 
   it("a capped read carries truncated: true — in MCP structuredContent and the REST body alike", async () => {
@@ -210,9 +212,8 @@ describe("HTTP-level refusals", () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), agentApiEnabledByAgency: false });
     await expect(client.callTool({ name: "find_contacts", arguments: { query: "ann" } })).rejects.toMatchObject({ code: 403 });
     // Logs are fire-and-forget: wait for this call's refusal row to land.
-    await vi.waitFor(() =>
-      expect(logs("/api/mcp").filter((l) => l.keyId === keyId)).toMatchObject([{ responseStatus: 403, errorCode: "agent_api_disabled" }])
-    );
+    await flushAfterResponse();
+    expect(logs("/api/mcp").filter((l) => l.keyId === keyId)).toMatchObject([{ responseStatus: 403, errorCode: "agent_api_disabled" }]);
   });
 
   it("GET and DELETE → 405", async () => {

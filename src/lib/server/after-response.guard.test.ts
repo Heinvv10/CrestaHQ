@@ -21,7 +21,6 @@ const SCAN = ["src/app", "src/lib", "src/middleware.ts"];
 
 /** [file, start of the statement, why it stays a bare void]. */
 const ALLOWED: Array<[string, string, string]> = [
-  ["src/lib/server/after-response.ts", "void run();", "the helper's own no-request-scope fallback"],
   ["src/lib/google-calendar/push.ts", "void pushBookingToGoogle(eventId);", "existing after() helper's no-request-scope fallback"],
   ["src/lib/reputation/sentiment-after.ts", "void work().catch(", "existing after() helper's no-request-scope fallback"],
   ["src/lib/prospecting/mystery-shop/form/container.ts", "void remove(name);", "docker form runner: needs a long-lived host, never serverless"],
