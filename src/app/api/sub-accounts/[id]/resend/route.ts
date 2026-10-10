@@ -162,6 +162,22 @@ export async function GET(
   }
 
   const fresh = await getSendingDomain(cfg.domainId);
+  // Sync the stored status from this read-only check. Resend verifies
+  // asynchronously, so a plain record refresh advances the stepper — without
+  // the Verify button, which RE-TRIGGERS a full check. Writes only on change.
+  if (fresh.ok && fresh.status !== cfg.status) {
+    try {
+      await getAdminDb()
+        .doc(`subAccounts/${subAccountId}`)
+        .update({
+          "resendConfig.status": fresh.status,
+          "resendConfig.lastValidatedAt": new Date(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+    } catch (err) {
+      console.error("[sub-accounts/resend] status sync failed", subAccountId, err);
+    }
+  }
   return NextResponse.json({
     ok: true,
     config: cfg,
