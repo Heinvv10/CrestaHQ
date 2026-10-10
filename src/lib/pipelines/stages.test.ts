@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dealOutcome, validateStages } from "./stages";
+import { dealOutcome, dealStage, validateStages } from "./stages";
 import { PIPELINE_STAGES } from "@/types/deals";
 
 const pipelines = [
@@ -31,6 +31,15 @@ describe("dealOutcome", () => {
   it("unknown pipeline or stage counts as open", () => {
     expect(dealOutcome({ pipelineId: "gone", stageId: "won" }, pipelines)).toBe("open");
     expect(dealOutcome({ stageId: "deleted_stage" }, pipelines)).toBe("open");
+  });
+});
+
+describe("dealStage", () => {
+  it("looks the stage up on the deal's own pipeline", () => {
+    expect(dealStage({ stageId: "won" }, pipelines)?.label).toBe("Won");
+    expect(dealStage({ pipelineId: "p2", stageId: "won" }, pipelines)?.label).toBe("Not actually won");
+    expect(dealStage({ pipelineId: "p2", stageId: "proposal" }, pipelines)).toBeUndefined();
+    expect(dealStage({ pipelineId: "gone", stageId: "won" }, pipelines)).toBeUndefined();
   });
 });
 

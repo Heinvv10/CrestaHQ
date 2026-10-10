@@ -16,8 +16,9 @@ import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { computeQuoteTotals } from "@/lib/quotes/calc";
 import { formatCurrency, toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { usePipelineStages } from "@/hooks/use-pipeline-stages";
-import { getStage, type Deal } from "@/types/deals";
+import { usePipelines } from "@/hooks/use-pipeline-stages";
+import { dealOutcome, dealStage } from "@/lib/pipelines/stages";
+import type { Deal } from "@/types/deals";
 import type {
   Quote,
   QuoteDiscount,
@@ -235,20 +236,19 @@ export function QuoteBuilder({
     setDealId(null);
   }
 
-  const stages = usePipelineStages();
-  // Open (non-terminal) deals for the selected contact — the candidates
-  // for "this quote is the proposal for that deal".
+  const { pipelines } = usePipelines();
+  // Open (non-terminal on their OWN pipeline) deals for the selected
+  // contact — the candidates for "this quote is the proposal for that deal".
   const openDeals = useMemo(
     () =>
       dealContactId
         ? deals.filter(
             (d) =>
               d.contactId === dealContactId &&
-              d.stageId !== "won" &&
-              d.stageId !== "lost",
+              dealOutcome(d, pipelines) === "open",
           )
         : [],
-    [deals, dealContactId],
+    [deals, dealContactId, pipelines],
   );
   // Keep the saved link renderable even when it isn't in the open list
   // (deal already Won, or the parent didn't pass deals).
@@ -701,7 +701,7 @@ export function QuoteBuilder({
                   </option>
                   {openDeals.map((d) => (
                     <option key={d.id} value={d.id}>
-                      {d.title} · {getStage(d.stageId, stages).label} ·{" "}
+                      {d.title} · {dealStage(d, pipelines)?.label ?? d.stageId} ·{" "}
                       {formatCurrency(d.value, d.currency)}
                     </option>
                   ))}

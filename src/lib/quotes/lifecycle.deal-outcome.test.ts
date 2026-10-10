@@ -85,4 +85,36 @@ describe("applyDealOutcomeForAcceptedQuote", () => {
     );
     expect(mem.list("dealStageHistory")).toHaveLength(2);
   });
+
+  it("the auto-created deal lands on the default pipeline's Won-flagged stage, whatever its id", async () => {
+    mem.seed("subAccounts/sa1/pipelines/default", {
+      name: "Default", isDefault: true, agencyId: "ag1", subAccountId: "sa1",
+      stages: [
+        { id: "new", label: "New", tone: "" },
+        { id: "won", label: "Was won, now open", tone: "" },
+        { id: "closed", label: "Closed", tone: "", terminal: "won" },
+      ],
+    });
+    await applyDealOutcomeForAcceptedQuote(quote("gone"));
+    const created = mem.list("deals").find((d) => !["d_won", "d_nowon"].includes(d.id))!;
+    expect(created).toMatchObject({ stageId: "closed" });
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({ content: expect.stringContaining("created at Closed"), meta: expect.objectContaining({ toStageId: "closed" }) }),
+    ]);
+  });
+
+  it("no Won stage on the default pipeline: nothing is auto-created", async () => {
+    mem.seed("subAccounts/sa1/pipelines/default", {
+      name: "Default", isDefault: true, agencyId: "ag1", subAccountId: "sa1",
+      stages: [{ id: "new", label: "New", tone: "" }],
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await applyDealOutcomeForAcceptedQuote(quote("gone"));
+    expect(mem.list("deals")).toHaveLength(2);
+    expect(mem.list("dealStageHistory")).toHaveLength(0);
+    // Refused on purpose, by name — not swallowed as a crash.
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("has no won stage"));
+    expect(error).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
 });

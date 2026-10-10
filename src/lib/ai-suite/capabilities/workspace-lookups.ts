@@ -1,7 +1,8 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { PIPELINE_STAGES } from "@/types/deals";
+import { readPipelines } from "@/lib/pipelines/server";
+import { dealPipelineId } from "@/lib/pipelines/stages";
 import {
   canSeeTerritory,
   collectVisible,
@@ -182,28 +183,40 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
         ).then((d) => d.slice(0, 500)),
       ]);
 
-      // Pipeline rollup in memory (bounded by the 1000-deal cap above).
+      // Pipeline rollup in memory (bounded by the 1000-deal cap above), per
+      // pipeline: stage ids are only unique within one ("won" can be an
+      // open stage elsewhere), and open value is every stage without a
+      // won/lost terminal flag.
+      // Read-only: never seeds the default pipeline doc.
+      const pipelines = await readPipelines(said);
       const byStage = new Map<string, { count: number; value: number }>();
       let currency = "USD";
       for (const d of dealsDocs) {
         const data = d.data();
-        const stage = (data.stageId as string) ?? "new";
-        const row = byStage.get(stage) ?? { count: 0, value: 0 };
+        const key = `${dealPipelineId(data)}:${(data.stageId as string) ?? "new"}`;
+        const row = byStage.get(key) ?? { count: 0, value: 0 };
         row.count += 1;
         row.value += typeof data.value === "number" ? data.value : 0;
-        byStage.set(stage, row);
+        byStage.set(key, row);
         if (typeof data.currency === "string" && data.currency)
           currency = data.currency;
       }
-      const stageLines = PIPELINE_STAGES.map((s) => {
-        const row = byStage.get(s.id);
-        return `  - ${s.label}: ${row?.count ?? 0}${
-          row?.value ? ` (${fmtMoney(row.value, currency)})` : ""
-        }`;
-      });
-      const openValue = PIPELINE_STAGES.filter(
-        (s) => s.id !== "won" && s.id !== "lost"
-      ).reduce((sum, s) => sum + (byStage.get(s.id)?.value ?? 0), 0);
+      const stageLines: string[] = [];
+      let openValue = 0;
+      for (const p of pipelines) {
+        const rows = p.stages.map((s) => ({ s, row: byStage.get(`${p.id}:${s.id}`) }));
+        // A pipeline beyond the default is listed only when it holds deals.
+        if (!p.isDefault && rows.every(({ row }) => !row)) continue;
+        if (pipelines.length > 1) stageLines.push(`  ${oneLine(p.name)}:`);
+        for (const { s, row } of rows) {
+          stageLines.push(
+            `  - ${oneLine(s.label)}: ${row?.count ?? 0}${
+              row?.value ? ` (${fmtMoney(row.value, currency)})` : ""
+            }`
+          );
+          if (!s.terminal) openValue += row?.value ?? 0;
+        }
+      }
 
       let overdue = 0;
       for (const t of openTaskDocs) {

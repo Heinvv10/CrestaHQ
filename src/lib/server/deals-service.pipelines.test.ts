@@ -184,6 +184,54 @@ describe("updateDealServerSide — stage moves", () => {
     expect(mem.read(`deals/${id}`)).toMatchObject({ pipelineId: "p2", stageId: "open" });
   });
 
+  it("a cross-pipeline move's activity names the stage on the SOURCE pipeline", async () => {
+    const { id } = await createDealServerSide({ ...base, pipelineId: "p2", stageId: "renewed" });
+    await updateDealServerSide({
+      dealId: id, patch: { pipelineId: "default", stageId: "proposal" }, userId: "u1", source: "app",
+    });
+    const contents = mem.list("contacts/c1/activities").map((a) => a.content);
+    expect(contents).toContain('Deal "Deal" moved from Renewed to Proposal');
+  });
+
+  it("a failed source-pipeline read still fires the move's events and triggers", async () => {
+    const { id } = await createDealServerSide({ ...base, pipelineId: "p2", stageId: "renewed" });
+    await tick();
+    fired.length = 0;
+    webhooks.length = 0;
+    const real = mem.db.collection.bind(mem.db);
+    let reads = 0;
+    // The move's own transaction reads the DESTINATION pipeline; fail only
+    // the later read of the source (p2) pipeline doc.
+    const col = vi.spyOn(mem.db, "collection").mockImplementation((path: string) => {
+      const c = real(path);
+      if (path !== "subAccounts/sa1/pipelines") return c;
+      return new Proxy(c, {
+        get(target, prop, recv) {
+          if (prop !== "doc") return Reflect.get(target, prop, recv);
+          return (docId: string) => {
+            if (docId === "p2") {
+              reads += 1;
+              return { get: async () => { throw new Error("UNAVAILABLE"); } };
+            }
+            return target.doc(docId);
+          };
+        },
+      });
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await updateDealServerSide({
+      dealId: id, patch: { pipelineId: "default", stageId: "won" }, userId: "u1", source: "app",
+    });
+    await tick();
+    col.mockRestore();
+    expect(reads).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("[deals-service] source pipeline p2 read failed"), expect.any(Error));
+    warn.mockRestore();
+    expect(mem.list("contacts/c1/activities").map((a) => a.content)).toContain('Deal "Deal" moved from renewed to Won');
+    expect(fired.map((f) => f.type)).toEqual(expect.arrayContaining(["pipeline.stage.changed", "deal.won"]));
+    expect(webhooks).toEqual(expect.arrayContaining(["deal.updated", "deal.stage.changed", "deal.won"]));
+  });
+
   it("create refuses a stage the pipeline lacks", async () => {
     await expect(
       createDealServerSide({ ...base, stageId: "renewed" }),

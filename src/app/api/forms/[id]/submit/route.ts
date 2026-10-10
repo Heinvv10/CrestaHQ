@@ -8,6 +8,7 @@ import { serializeContactForApi } from "@/lib/api/serializers/contacts";
 import { emitContactCreatedById } from "@/lib/server/contacts-service";
 import { emitDealCreatedById } from "@/lib/server/deals-service";
 import { appendStageEntry } from "@/lib/server/deal-stage-history";
+import { readPipelineStages } from "@/lib/pipelines/server";
 import {
   EMPTY_LOCATION,
   ipFromRequest,
@@ -453,7 +454,15 @@ async function handleSubmit(
   // Optional: open a deal in the configured pipeline stage.
   let dealId: string | null = null;
   if (form.settings.createDeal) {
-    const stageId = form.settings.pipelineStageId ?? "new";
+    // The configured stage may have been deleted from the default pipeline
+    // since the form was saved; land on its first open stage instead (the
+    // first stage when every stage is terminal).
+    const configuredStageId = form.settings.pipelineStageId ?? "new";
+    const stages = await readPipelineStages(subAccountId);
+    const stageId =
+      !stages || stages.some((s) => s.id === configuredStageId)
+        ? configuredStageId
+        : ((stages.find((s) => !s.terminal) ?? stages[0])?.id ?? configuredStageId);
     const title =
       interpolate(form.settings.dealTitleTemplate || "New lead", bag) ||
       "New lead";

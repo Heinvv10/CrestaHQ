@@ -146,6 +146,19 @@ export function validateStages(raw: unknown): Validation<PipelineStage[]> {
   return { ok: true, value: out };
 }
 
+/**
+ * The stage a deal sits on, looked up on ITS pipeline (absent `pipelineId`
+ * = default) — never the default's stage of the same id. Undefined when the
+ * pipeline or the stage can't be found.
+ */
+export function dealStage(
+  deal: { pipelineId?: string; stageId: string },
+  pipelines: Pick<PipelineDoc, "id" | "stages">[],
+): PipelineStage | undefined {
+  const pipeline = pipelines.find((p) => p.id === dealPipelineId(deal));
+  return pipeline && findStage(pipeline, deal.stageId);
+}
+
 export type DealOutcome = "open" | "won" | "lost";
 
 /**

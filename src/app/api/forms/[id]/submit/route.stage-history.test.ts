@@ -33,8 +33,8 @@ beforeEach(() => {
   });
 });
 
-it("the created deal gets its entry row", async () => {
-  const res = await POST(
+const submit = () =>
+  POST(
     new Request("http://x/api/forms/f1/submit", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -42,6 +42,9 @@ it("the created deal gets its entry row", async () => {
     }),
     { params: Promise.resolve({ id: "f1" }) },
   );
+
+it("the created deal gets its entry row", async () => {
+  const res = await submit();
   const body = (await res.json()) as { dealId: string };
   expect(res.status, JSON.stringify(body)).toBe(200);
   expect(mem.read(`deals/${body.dealId}`)?.stageId).toBe("qualified");
@@ -51,4 +54,30 @@ it("the created deal gets its entry row", async () => {
       source: "form", subAccountId: "sa1", agencyId: "ag1", mode: "live",
     }),
   ]);
+});
+
+it("a configured stage since deleted from the default pipeline falls back to its first OPEN stage", async () => {
+  mem.seed("subAccounts/sa1/pipelines/default", {
+    name: "Default", isDefault: true, agencyId: "ag1", subAccountId: "sa1",
+    stages: [
+      { id: "closed", label: "Closed", tone: "", terminal: "won" },
+      { id: "inbound", label: "Inbound", tone: "" },
+      { id: "dead", label: "Dead", tone: "", terminal: "lost" },
+    ],
+  });
+  const res = await submit();
+  const body = (await res.json()) as { dealId: string };
+  expect(res.status, JSON.stringify(body)).toBe(200);
+  expect(mem.read(`deals/${body.dealId}`)?.stageId).toBe("inbound");
+});
+
+it("every stage terminal: falls back to the first stage, as before", async () => {
+  mem.seed("subAccounts/sa1/pipelines/default", {
+    name: "Default", isDefault: true, agencyId: "ag1", subAccountId: "sa1",
+    stages: [{ id: "closed", label: "Closed", tone: "", terminal: "won" }, { id: "dead", label: "Dead", tone: "", terminal: "lost" }],
+  });
+  const res = await submit();
+  const body = (await res.json()) as { dealId: string };
+  expect(res.status, JSON.stringify(body)).toBe(200);
+  expect(mem.read(`deals/${body.dealId}`)?.stageId).toBe("closed");
 });

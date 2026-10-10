@@ -27,9 +27,9 @@ import { useSubAccountContacts } from "@/context/contacts-context";
 import { subscribeToDeals } from "@/lib/firestore/deals";
 import { subscribeToForms } from "@/lib/firestore/forms";
 import { formatCurrency, daysSince, toDate } from "@/lib/format";
-import { getStage, type Deal } from "@/types/deals";
+import { DEFAULT_PIPELINE_ID, type Deal } from "@/types/deals";
 import { usePipelines, usePipelineStages } from "@/hooks/use-pipeline-stages";
-import { dealOutcome } from "@/lib/pipelines/stages";
+import { dealOutcome, dealPipelineId, dealStage } from "@/lib/pipelines/stages";
 import type { Contact } from "@/types/contacts";
 import type { LeadForm } from "@/types/forms";
 import { Button } from "@/components/ui/button";
@@ -133,11 +133,17 @@ export default function DashboardPage() {
     )
     .slice(0, 5);
 
+  // The snapshot is the DEFAULT pipeline; another pipeline's stage ids can
+  // collide with its ids ("won" may be an open stage there), so its deals
+  // are left out rather than counted against the default's rows.
   const stages = usePipelineStages();
   const stageCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const s of stages) m.set(s.id, 0);
-    for (const d of deals) m.set(d.stageId, (m.get(d.stageId) ?? 0) + 1);
+    for (const d of deals) {
+      if (dealPipelineId(d) !== DEFAULT_PIPELINE_ID) continue;
+      m.set(d.stageId, (m.get(d.stageId) ?? 0) + 1);
+    }
     return m;
   }, [deals, stages]);
   const maxStageCount = Math.max(1, ...Array.from(stageCounts.values()));
@@ -346,7 +352,8 @@ export default function DashboardPage() {
                   </div>
                   <ul className="space-y-1">
                     {recentDeals.map((d) => {
-                      const stage = getStage(d.stageId, stages);
+                      // Unresolved pipeline/stage: raw id, neutral tone.
+                      const stage = dealStage(d, pipelines) ?? { label: d.stageId, tone: "" };
                       const c = contactById.get(d.contactId);
                       const days = daysSince(d.stageChangedAt);
                       return (
