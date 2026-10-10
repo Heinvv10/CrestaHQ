@@ -168,15 +168,21 @@ export async function GET(
   // GET must never demote a verified domain (tenantFrom would fall back to the
   // shared sender). The transaction re-reads the doc so a domain replaced or a
   // config deleted mid-call is never written to or recreated.
+  let promotionSkipped = false;
   if (fresh.ok && fresh.status === "verified" && cfg.status !== "verified") {
     const ref = getAdminDb().doc(`subAccounts/${subAccountId}`);
     try {
       await getAdminDb().runTransaction(async (tx) => {
-        const current = (await tx.get(ref)).data()?.resendConfig as
-          | ResendConfig
-          | null
-          | undefined;
-        if (current?.domainId !== cfg.domainId || current.status !== cfg.status) {
+        const data = (await tx.get(ref)).data();
+        const current = data?.resendConfig as ResendConfig | null | undefined;
+        // Same preconditions as the explicit Verify route (verify/route.ts).
+        if (
+          current?.domainId !== cfg.domainId ||
+          current.status !== cfg.status ||
+          data?.emailDomainEnabledByAgency !== true ||
+          !data?.replyToEmail?.trim?.()
+        ) {
+          promotionSkipped = true;
           return;
         }
         tx.update(ref, {
@@ -186,13 +192,16 @@ export async function GET(
         });
       });
     } catch (err) {
+      promotionSkipped = true;
       console.error("[sub-accounts/resend] status sync failed", subAccountId, err);
     }
   }
   return NextResponse.json({
     ok: true,
     config: cfg,
-    status: fresh.ok ? fresh.status : cfg.status,
+    // A skipped promotion means `fresh` may describe a domain we did not
+    // store; report what is stored.
+    status: fresh.ok && !promotionSkipped ? fresh.status : cfg.status,
     records: fresh.records,
     error: fresh.error,
   });

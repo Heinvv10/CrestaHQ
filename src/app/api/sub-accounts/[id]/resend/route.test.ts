@@ -33,7 +33,14 @@ const cfg = (status: string, domainId = "d1") => ({
   domainName: "mail.x.com",
   status,
 });
-const doc = (resendConfig: unknown) => ({ data: () => ({ resendConfig }) });
+const doc = (resendConfig: unknown, extra: Record<string, unknown> = {}) => ({
+  data: () => ({
+    resendConfig,
+    emailDomainEnabledByAgency: true,
+    replyToEmail: "hi@x.com",
+    ...extra,
+  }),
+});
 const fresh = (status: string) =>
   m.getDomain.mockResolvedValue({ ok: true, status, records: [] });
 
@@ -101,6 +108,32 @@ it("status changed mid-call -> no write", async () => {
   fresh("verified");
   await call();
   expect(m.txUpdate).not.toHaveBeenCalled();
+});
+
+it("gate off in the transaction -> no write, reports the stored status", async () => {
+  m.get.mockResolvedValue(doc(cfg("pending")));
+  m.txGet.mockResolvedValue(doc(cfg("pending"), { emailDomainEnabledByAgency: false }));
+  fresh("verified");
+  const body = await (await call()).json();
+  expect(m.txUpdate).not.toHaveBeenCalled();
+  expect(body.status).toBe("pending");
+});
+
+it("missing or blank replyToEmail -> no write", async () => {
+  for (const replyToEmail of [undefined, "", "   "]) {
+    m.get.mockResolvedValue(doc(cfg("pending")));
+    m.txGet.mockResolvedValue(doc(cfg("pending"), { replyToEmail }));
+    fresh("verified");
+    await call();
+  }
+  expect(m.txUpdate).not.toHaveBeenCalled();
+});
+
+it("domain replaced mid-call reports the stored status, not the fresh one", async () => {
+  m.get.mockResolvedValue(doc(cfg("pending", "d1")));
+  m.txGet.mockResolvedValue(doc(cfg("pending", "d2")));
+  fresh("verified");
+  expect((await (await call()).json()).status).toBe("pending");
 });
 
 it("does not write when the Resend lookup failed", async () => {
