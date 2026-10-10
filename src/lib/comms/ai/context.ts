@@ -2,7 +2,9 @@ import "server-only";
 
 import type { Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { getStage, type Deal } from "@/types/deals";
+import { readPipelineStages } from "@/lib/pipelines/server";
+import { dealOutcome, dealPipelineId, dealStage } from "@/lib/pipelines/stages";
+import type { Deal, PipelineStage } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
 
 const MAX_DEALS_INCLUDED = 3;
@@ -52,6 +54,22 @@ export async function buildContactContextBlock(
       }))
     : [];
 
+  // Each deal's stage lives on ITS pipeline: a deal Won in a custom
+  // pipeline must not read as active, nor carry the default's label. Read
+  // without seeding (this runs on every reply). A pipeline that can't be
+  // read leaves its deals unresolved, and an unresolved deal is left out
+  // below rather than described with a guessed stage.
+  const pipelines = (
+    await Promise.all(
+      [...new Set(deals.map(dealPipelineId))].map(async (id) => ({
+        id,
+        stages: await readPipelineStages(contact.subAccountId, id).catch(
+          () => null,
+        ),
+      })),
+    )
+  ).filter((p): p is { id: string; stages: PipelineStage[] } => !!p.stages);
+
   const lines: string[] = [];
 
   // ---- Identity ----
@@ -77,14 +95,13 @@ export async function buildContactContextBlock(
   }
 
   // ---- Active (non-terminal) deals ----
-  const activeDeals = deals.filter((d) => {
-    const stage = getStage(d.stageId);
-    return stage.terminal !== "won" && stage.terminal !== "lost";
-  });
+  const activeDeals = deals.filter(
+    (d) => dealStage(d, pipelines) && dealOutcome(d, pipelines) === "open",
+  );
 
   if (activeDeals.length > 0) {
     const dealLines = activeDeals.map((d) => {
-      const stage = getStage(d.stageId);
+      const stage = dealStage(d, pipelines)!;
       const ageDays = ageInDays(d.stageChangedAt ?? d.createdAt);
       const value = d.value
         ? `${d.currency || "USD"} ${d.value.toLocaleString()}`
@@ -97,7 +114,7 @@ export async function buildContactContextBlock(
   }
 
   // ---- Won/lost deals (mention only the most recent terminal one if any) ----
-  const lastWon = deals.find((d) => getStage(d.stageId).terminal === "won");
+  const lastWon = deals.find((d) => dealOutcome(d, pipelines) === "won");
   if (lastWon) {
     lines.push(
       `Past sale: "${lastWon.title}" (${lastWon.currency || "USD"} ${lastWon.value.toLocaleString()})`,

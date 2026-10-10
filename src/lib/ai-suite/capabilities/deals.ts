@@ -3,13 +3,16 @@ import "server-only";
 import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createDealServerSide } from "@/lib/server/deals-service";
-import {
-  getStage,
-  type DealPriority,
-  type PipelineStageId,
+import { listPipelines, readPipelineStages } from "@/lib/pipelines/server";
+import { dealPipelineId, dealStage } from "@/lib/pipelines/stages";
+import type {
+  DealPriority,
+  PipelineStage,
+  PipelineStageId,
 } from "@/types/deals";
 import { scopedDocs, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
+import { oneLine } from "./text-safety";
 import {
   str,
   STAGE_IDS,
@@ -52,7 +55,7 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) =>
       `Search deals${args.query ? ` matching “${args.query}”` : ""}${
-        args.stage ? ` in ${getStage(args.stage as PipelineStageId).label}` : ""
+        args.stage ? ` in stage “${args.stage}”` : ""
       }.`,
     execute: async (ctx, args) => {
       const q = ((args.query as string) || "").toLowerCase();
@@ -82,10 +85,23 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
       if (matches.length === 0) {
         return { resultText: "No deals matched." };
       }
+      // Each label from the deal's OWN pipeline (read-only: no seeding).
+      const pipelines = (
+        await Promise.all(
+          [...new Set(matches.map((d) => dealPipelineId(d.data())))].map(
+            async (id) => ({
+              id,
+              stages: await readPipelineStages(ctx.subAccountId!, id),
+            })
+          )
+        )
+      ).filter((p): p is { id: string; stages: PipelineStage[] } => !!p.stages);
       const lines = matches.map((d) => {
         const data = d.data();
+        const stageId = String(data.stageId ?? "");
         return `- ${data.title} — id: ${d.id}, stage: ${
-          getStage(data.stageId as PipelineStageId).label
+          dealStage({ pipelineId: data.pipelineId, stageId }, pipelines)
+            ?.label ?? stageId
         }, value: ${fmtMoney(
           typeof data.value === "number" ? data.value : 0,
           (data.currency as string) || "USD"
@@ -124,7 +140,12 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
         },
         stage: {
           type: "string",
-          description: `Optional starting stage id on the default pipeline (${STAGE_IDS.join(", ")}, or a stage the admin added). Defaults to 'new'.`,
+          description: `Optional starting stage id on the deal's pipeline (default pipeline: ${STAGE_IDS.join(", ")}, or a stage the admin added; other pipelines define their own — see list_pipelines). Defaults to 'new' on the default pipeline, else the named pipeline's first stage.`,
+        },
+        pipeline: {
+          type: "string",
+          description:
+            "Optional pipeline name or id when the workspace runs several (e.g. 'Installs'). Omit for the default pipeline.",
         },
       },
       required: ["title", "value", "contactId", "contactName"],
@@ -161,7 +182,8 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
           error: "the currency must be a 3-letter code like USD",
         };
       }
-      const stage = (str(raw, "stage") || "new").slice(0, 40);
+      const pipeline = str(raw, "pipeline").slice(0, 60);
+      const stage = (str(raw, "stage") || (pipeline ? "" : "new")).slice(0, 40);
       return {
         ok: true,
         args: {
@@ -171,6 +193,7 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
           contactId,
           contactName: str(raw, "contactName"),
           stage,
+          pipeline,
         },
       };
     },
@@ -178,7 +201,9 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
       `Create a deal “${args.title}” (${fmtMoney(
         args.value as number,
         args.currency as string
-      )}) for ${args.contactName} in ${getStage(args.stage as PipelineStageId).label}.`,
+      )}) for ${args.contactName}${
+        args.pipeline ? ` in the “${args.pipeline}” pipeline` : ""
+      }${args.stage ? ` at stage “${args.stage}”` : ""}.`,
     execute: async (ctx, args) => {
       // The contact id came from the model — verify it's in THIS workspace.
       const c = isDocId(args.contactId)
@@ -195,7 +220,26 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
         contactTerritory,
         "That contact"
       );
-      // The service validates the stage against the default pipeline.
+      // The pipeline (name or id) resolves against THIS sub-account's live
+      // pipelines; the service then validates the stage against it.
+      let pipelineId: string | undefined;
+      let pipelineName = "";
+      let stageId = args.stage as PipelineStageId;
+      if (args.pipeline) {
+        const want = (args.pipeline as string).toLowerCase();
+        const all = await listPipelines(ctx.subAccountId!);
+        const pipeline =
+          all.find((p) => p.id === args.pipeline) ??
+          all.find((p) => p.name.toLowerCase() === want);
+        if (!pipeline) {
+          throw new CapabilityUserError(
+            `There's no pipeline called “${args.pipeline}” in this workspace (it has: ${all.map((p) => oneLine(p.name)).join(", ")}).`
+          );
+        }
+        pipelineId = pipeline.id;
+        if (!pipeline.isDefault) pipelineName = oneLine(pipeline.name);
+        stageId ||= pipeline.stages[0]?.id ?? "";
+      }
       const res = await createDealServerSide({
         subAccountId: ctx.subAccountId!,
         agencyId: ctx.agencyId,
@@ -206,7 +250,8 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
         value: args.value as number,
         currency: args.currency as string,
         contactId: args.contactId as string,
-        stageId: args.stage as PipelineStageId,
+        stageId,
+        pipelineId,
         priority: "medium" as DealPriority,
         // The deal lives in its contact's territory, as tasks/events do.
         territoryId:
@@ -217,8 +262,8 @@ export const DEAL_CAPABILITIES: AiSuiteCapability[] = [
         resultText: `Created the deal “${args.title}” (${fmtMoney(
           args.value as number,
           args.currency as string
-        )}) for ${args.contactName} in ${
-          res.stage.label
+        )}) for ${args.contactName} in ${res.stage.label}${
+          pipelineName ? ` (${pipelineName} pipeline)` : ""
         }. You'll see it on the Pipeline board.`,
         ref: { kind: "deal", id: res.id },
         ...(res.held ? { held: res.held, holdFailures: res.holdFailures ?? [] } : {}),

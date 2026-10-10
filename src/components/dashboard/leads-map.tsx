@@ -15,6 +15,8 @@ import {
 import "mapbox-gl/dist/mapbox-gl.css";
 import { useSubAccount } from "@/context/sub-account-context";
 import { formatCurrency } from "@/lib/format";
+import { usePipelines } from "@/hooks/use-pipeline-stages";
+import { dealOutcome } from "@/lib/pipelines/stages";
 import { getStage, type Deal } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
 import { contactDisplayName } from "@/lib/contacts/display-name";
@@ -25,7 +27,9 @@ interface PopupState {
   name: string;
   city: string | null;
   country: string | null;
-  dealStageId: string | null;
+  /** Resolved on the deal's OWN pipeline when the GeoJSON is built. */
+  dealStageLabel: string | null;
+  dealStageTone: string | null;
   dealValue: number | null;
   dealCurrency: string | null;
 }
@@ -47,6 +51,7 @@ export function LeadsMap({
   const router = useRouter();
   const mapRef = useRef<MapRef | null>(null);
   const [popup, setPopup] = useState<PopupState | null>(null);
+  const { pipelines, byId } = usePipelines();
 
   // Build a contactId -> best-available deal lookup. Prefer open deals
   // (most recent first); fall back to the most recent closed deal. This
@@ -54,11 +59,11 @@ export function LeadsMap({
   // work on this lead, and at what stage."
   const dealByContact = useMemo(() => {
     const map = new Map<string, Deal>();
-    const TERMINAL = new Set(["won", "lost"]);
-    // Sort once: open deals first, then by most recent stageChangedAt
+    // Sort once: open deals first, then by most recent stageChangedAt.
+    // Open = not on a won/lost stage of the deal's OWN pipeline.
     const sorted = [...deals].sort((a, b) => {
-      const aOpen = !TERMINAL.has(a.stageId);
-      const bOpen = !TERMINAL.has(b.stageId);
+      const aOpen = dealOutcome(a, pipelines) === "open";
+      const bOpen = dealOutcome(b, pipelines) === "open";
       if (aOpen !== bOpen) return aOpen ? -1 : 1;
       return 0;
     });
@@ -66,7 +71,7 @@ export function LeadsMap({
       if (!map.has(d.contactId)) map.set(d.contactId, d);
     }
     return map;
-  }, [deals]);
+  }, [deals, pipelines]);
 
   const located = useMemo(
     () =>
@@ -85,6 +90,9 @@ export function LeadsMap({
       type: "FeatureCollection" as const,
       features: located.map((c) => {
         const deal = dealByContact.get(c.id) ?? null;
+        const stage = deal
+          ? getStage(deal.stageId, byId(deal.pipelineId).stages)
+          : null;
         return {
           type: "Feature" as const,
           geometry: {
@@ -96,14 +104,15 @@ export function LeadsMap({
             name: contactDisplayName(c),
             city: c.city ?? null,
             country: c.country ?? null,
-            dealStageId: deal?.stageId ?? null,
+            dealStageLabel: stage?.label ?? null,
+            dealStageTone: stage?.tone ?? null,
             dealValue: deal?.value ?? null,
             dealCurrency: deal?.currency ?? null,
           },
         };
       }),
     }),
-    [located, dealByContact],
+    [located, dealByContact, byId],
   );
 
   // Imperative hover + cursor handling. react-map-gl's declarative event
@@ -131,7 +140,8 @@ export function LeadsMap({
         name: String(p.name ?? "Unnamed"),
         city: p.city ? String(p.city) : null,
         country: p.country ? String(p.country) : null,
-        dealStageId: p.dealStageId ? String(p.dealStageId) : null,
+        dealStageLabel: p.dealStageLabel ? String(p.dealStageLabel) : null,
+        dealStageTone: p.dealStageTone ? String(p.dealStageTone) : null,
         dealValue: typeof p.dealValue === "number" ? p.dealValue : null,
         dealCurrency: p.dealCurrency ? String(p.dealCurrency) : null,
       });
@@ -322,8 +332,9 @@ function ContactPopup({ popup }: { popup: PopupState }) {
   const place =
     [popup.city, popup.country].filter(Boolean).join(", ") ||
     "Location unknown";
-  const hasDeal = !!popup.dealStageId;
-  const stage = hasDeal ? getStage(popup.dealStageId) : null;
+  const stage = popup.dealStageLabel
+    ? { label: popup.dealStageLabel, tone: popup.dealStageTone ?? "" }
+    : null;
   const valueLabel =
     popup.dealValue != null
       ? formatCurrency(popup.dealValue, popup.dealCurrency ?? "USD")

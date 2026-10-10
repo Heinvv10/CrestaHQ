@@ -26,7 +26,8 @@ import { subscribeToTasks } from "@/lib/firestore/tasks";
 import { subscribeToEvents } from "@/lib/firestore/events";
 import { subscribeToForms } from "@/lib/firestore/forms";
 import { toDate, formatCurrency } from "@/lib/format";
-import { getStage } from "@/types/deals";
+import { fetchPipelines } from "@/lib/pipelines/client";
+import { dealStage } from "@/lib/pipelines/stages";
 import { cn } from "@/lib/utils";
 import {
   Dialog,
@@ -34,7 +35,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { Contact } from "@/types/contacts";
-import type { Deal } from "@/types/deals";
+import type { Deal, PipelineDoc } from "@/types/deals";
 import type { Task } from "@/types/tasks";
 import type { CalendarEvent } from "@/types/events";
 import type { LeadForm } from "@/types/forms";
@@ -136,6 +137,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [forms, setForms] = useState<LeadForm[]>([]);
+  const [pipelines, setPipelines] = useState<PipelineDoc[]>([]);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -169,6 +171,24 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     territoryFilter,
   ]);
 
+  // Stage labels come from each deal's OWN pipeline. The palette renders
+  // above SubAccountProvider, so it loads the pipelines itself.
+  useEffect(() => {
+    if (!open || !user || !activeSubAccountId) return;
+    let live = true;
+    fetchPipelines(activeSubAccountId)
+      .then((list) => {
+        if (live) setPipelines(list);
+      })
+      .catch((err) => {
+        // Keep the last-known list; unresolved deals show their stage id.
+        console.error("[command-palette] pipelines load failed", err);
+      });
+    return () => {
+      live = false;
+    };
+  }, [open, user, activeSubAccountId]);
+
   useEffect(() => {
     if (!open) {
       setQuery("");
@@ -198,13 +218,13 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         });
       }
       for (const d of deals.slice(0, 3)) {
-        const stage = getStage(d.stageId);
+        const stageLabel = dealStage(d, pipelines)?.label ?? d.stageId;
         const contact = contactById.get(d.contactId);
         out.push({
           kind: "deal",
           id: d.id,
           title: d.title,
-          subtitle: `${stage.label} · ${formatCurrency(d.value, d.currency)}${
+          subtitle: `${stageLabel} · ${formatCurrency(d.value, d.currency)}${
             contact ? ` · ${contact.name}` : ""
           }`,
           href: `${linkPrefix}/pipeline`,
@@ -240,13 +260,13 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     }
     for (const d of deals) {
       if (match(d.title)) {
-        const stage = getStage(d.stageId);
+        const stageLabel = dealStage(d, pipelines)?.label ?? d.stageId;
         const contact = contactById.get(d.contactId);
         out.push({
           kind: "deal",
           id: d.id,
           title: d.title,
-          subtitle: `${stage.label} · ${formatCurrency(d.value, d.currency)}${
+          subtitle: `${stageLabel} · ${formatCurrency(d.value, d.currency)}${
             contact ? ` · ${contact.name}` : ""
           }`,
           href: `${linkPrefix}/pipeline`,
@@ -305,7 +325,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     }
 
     return out;
-  }, [query, contacts, deals, tasks, events, forms, contactById, linkPrefix]);
+  }, [query, contacts, deals, pipelines, tasks, events, forms, contactById, linkPrefix]);
 
   const grouped = useMemo(() => {
     const order: Result["kind"][] = ["contact", "deal", "task", "event", "form"];

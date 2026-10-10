@@ -26,9 +26,9 @@ import { AttentionList } from "@/components/billing/attention-list";
 import { StageHistoryReport } from "@/components/reports/stage-history-report";
 import { subscribeToOrders } from "@/lib/firestore/orders";
 import type { Order } from "@/types/orders";
-import { type Deal } from "@/types/deals";
+import { DEFAULT_PIPELINE_ID, type Deal } from "@/types/deals";
 import { usePipelines, usePipelineStages } from "@/hooks/use-pipeline-stages";
-import { dealOutcome } from "@/lib/pipelines/stages";
+import { dealOutcome, dealPipelineId } from "@/lib/pipelines/stages";
 import { cn } from "@/lib/utils";
 
 type RangeKey = "7d" | "30d" | "90d" | "all";
@@ -145,7 +145,8 @@ export default function ReportsPage() {
 
   // Pipeline funnel (all deals, current state — not filtered, since the
   // funnel is a "right now" view, not a historical one). Default pipeline
-  // only; deals in other pipelines have stage ids that never match a row.
+  // only; another pipeline's stage ids can collide with the default's ("won"
+  // may be an open stage there), so its deals are skipped, not matched.
   const stages = usePipelineStages();
   const funnelData = useMemo(() => {
     const counts = new Map<string, number>();
@@ -155,6 +156,7 @@ export default function ReportsPage() {
       values.set(s.id, 0);
     }
     for (const d of deals) {
+      if (dealPipelineId(d) !== DEFAULT_PIPELINE_ID) continue;
       counts.set(d.stageId, (counts.get(d.stageId) ?? 0) + 1);
       values.set(
         d.stageId,
