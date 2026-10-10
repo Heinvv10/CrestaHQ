@@ -1,7 +1,9 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { requireAgencyOwner } from "@/lib/auth/require-agency-owner";
+import { requireAgencyOwnerAny } from "@/lib/auth/require-tenancy";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { emailIsConfigured, type EmailAccount } from "@/lib/comms/resend";
 import { GROUPS, evaluateGroup } from "@/lib/setup/catalog";
 import { LANDING_VARIANT } from "@/config/landing";
 
@@ -13,7 +15,8 @@ import { LANDING_VARIANT } from "@/config/landing";
  * owner AT Guided setup before they've enabled anything. Safe to expose
  * because it returns counts + group titles only (which are public knowledge,
  * they're in the repo) — no key names, no values, and no Vercel round-trip.
- * Pure in-memory evaluation of `process.env`, so it's instant.
+ * Evaluation of `process.env` is in-memory; the one Firestore read is the
+ * Email row's "does any sub-account send through verified SMTP" check.
  *
  * Required-vs-optional maps straight onto the catalog's tiers:
  *   • tier "boot"    → required to run. Any group at "error" (missing
@@ -22,8 +25,31 @@ import { LANDING_VARIANT } from "@/config/landing";
  *   • tier "feature" → optional integrations; "off" is a fine steady state
  *     but each unconfigured/partial group is reported as remaining.
  */
+const EMAIL_TITLE = "Email";
+
+/**
+ * Email is configured by the shared Resend env OR by a sub-account's own
+ * verified SMTP (`emailIsConfigured(sub)`) — an SMTP-only deployment has no
+ * Resend env at all and must not read "Not set up". Fails soft to the env
+ * verdict when the read fails.
+ */
+async function anySubAccountSendsViaSmtp(agencyId: string): Promise<boolean> {
+  try {
+    const snap = await getAdminDb()
+      .collection("subAccounts")
+      .where("agencyId", "==", agencyId)
+      .get();
+    return snap.docs.some((d) => {
+      const sub = d.data() as EmailAccount;
+      return sub.emailProvider === "smtp" && emailIsConfigured(sub);
+    });
+  } catch {
+    return false;
+  }
+}
+
 export async function GET(request: Request) {
-  const auth = await requireAgencyOwner(request);
+  const auth = await requireAgencyOwnerAny(request);
   if (auth instanceof NextResponse) return auth;
 
   const getValue = (k: string) => process.env[k];
@@ -35,9 +61,27 @@ export async function GET(request: Request) {
   const requiredIssues: string[] = [];
   let featuresConfigured = 0;
   const featuresRemaining: string[] = [];
+  // Per-group snapshot for the owner's setup-snapshot dialog. Titles +
+  // statuses only (plus the catalog's own "what's off" copy) — no key names
+  // and no values.
+  const groups: {
+    title: string;
+    tier: string;
+    status: string;
+    off: string | null;
+  }[] = [];
 
   for (const g of relevant) {
     const res = evaluateGroup(g, getValue);
+    if (g.title === EMAIL_TITLE && res.status !== "ok") {
+      if (await anySubAccountSendsViaSmtp(auth.agencyId!)) res.status = "ok";
+    }
+    groups.push({
+      title: g.title,
+      tier: g.tier,
+      status: res.status,
+      off: g.off ?? null,
+    });
     if (g.tier === "boot") {
       if (res.status === "error") {
         missingRequiredKeys += res.missingReq.length;
@@ -58,5 +102,6 @@ export async function GET(request: Request) {
     featuresConfigured,
     featuresTotal: featuresConfigured + featuresRemaining.length,
     featuresRemaining,
+    groups,
   });
 }
