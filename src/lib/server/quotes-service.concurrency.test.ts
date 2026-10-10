@@ -84,6 +84,7 @@ describe("expected total and currency, checked inside the compare-and-set", () =
     const res = await markQuotePaidServerSide({ quoteId: "inv1", expectSubAccountId: "sa1", ...expect_ });
     expect(res).toMatchObject({ ok: false, code: "amount_changed" });
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
   });
 });

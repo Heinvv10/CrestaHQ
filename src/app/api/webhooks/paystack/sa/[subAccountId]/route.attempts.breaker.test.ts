@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   KEY,
@@ -187,6 +188,7 @@ describe("BREAK-2 — a live→test key switch cannot settle a real invoice", ()
     expect((await deliver(ref, KEY)).status).toBe(200);
     expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
     expect(mem.read(`paymentLinks/${link.id}`)).toMatchObject({ status: "open" });
+    await flushAfterResponse();
     expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
     expect(attempt(ref).state).toBe("flagged");
     expect(String(mem.read(`paymentLinks/${link.id}`)!.attention)).toContain(ref);

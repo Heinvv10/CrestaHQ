@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 const m = vi.hoisted(() => ({
   send: vi.fn(),
   record: vi.fn(),
@@ -67,6 +68,7 @@ it("returns accepted save failure without throwing or retrying delivery", async 
     saved: false,
     warning: expect.stringContaining("sent"),
   });
+  await flushAfterResponse();
   expect(m.send).toHaveBeenCalledTimes(1);
 });
 it("does not capture rejected SMTP delivery", async () => {

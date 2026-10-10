@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   NOW,
@@ -70,6 +71,7 @@ describe("first card cycle, no card saved yet", () => {
     const calls = stubAutoCharge();
     expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: true });
     expect(chargeCalls(calls)).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const [link] = mem.list("paymentLinks");
     expect(link).toMatchObject({ invoiceId: raised().id, recurringInvoiceId: SCHEDULE, createdByUid: "u1" });
@@ -133,6 +135,7 @@ describe("a later cycle that can't charge", () => {
     const calls = stubAutoCharge();
     expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: true });
     expect(chargeCalls(calls)).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(mem.list("paymentLinks")[0].mandate).toBeTruthy();
     expect(tasksAbout("the saved card was removed")).toHaveLength(1);
@@ -191,6 +194,7 @@ describe("first card cycle whose invoice can't be sent (B4, B5)", () => {
     mem.seed(`subAccounts/${SA}/private/paystackConnection`, {});
     stubAutoCharge();
     expect(await runOneSchedule(SCHEDULE, NOW)).toMatchObject({ kind: "generated", sent: false });
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     const tasks = mem.list("tasks");
     expect(tasks).toHaveLength(1);

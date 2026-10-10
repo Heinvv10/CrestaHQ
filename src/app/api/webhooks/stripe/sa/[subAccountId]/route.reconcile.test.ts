@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   deliverTo,
@@ -55,6 +56,7 @@ it("a transient failure marking the invoice paid answers 5xx, and Stripe's retry
 
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
   expect(mem.read("quotes/inv1")).toMatchObject({ status: "paid" });
+  await flushAfterResponse();
   expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
 
   // A further replay is a quiet no-op: no flag, no second trigger.
@@ -93,6 +95,7 @@ it("an invoice raised after the session opened is not marked paid for the old am
   expect(mem.read("orders/o1")).toMatchObject({ status: "paid" });
   expect(mem.read("quotes/inv1")).toMatchObject({ status: "sent" });
   expect(mem.read("orders/o1")!.attention).toMatch(/changed after checkout/i);
+  await flushAfterResponse();
   expect(effects.fireQuoteTrigger).not.toHaveBeenCalled();
 });
 
@@ -113,6 +116,7 @@ it("a second payment for an already-paid invoice is flagged on its order; the fi
   expect(mem.read("orders/o2")).toMatchObject({ status: "paid" });
   expect(mem.read("orders/o2")!.attention).toMatch(/already paid/i);
   expect(mem.read("orders/o1")!.attention ?? null).toBeNull();
+  await flushAfterResponse();
   expect(effects.fireQuoteTrigger).toHaveBeenCalledTimes(1);
 });
 

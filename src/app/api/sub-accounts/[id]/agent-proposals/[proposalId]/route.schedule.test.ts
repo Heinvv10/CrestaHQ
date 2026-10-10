@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { NextResponse } from "next/server";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
@@ -71,6 +72,7 @@ describe("propose", () => {
     expect(row(id).pinned).toMatchObject({ contactId: "c1", channel: "sms", to: "+27821111111" });
     expect(booked()).toEqual([]);
     expect(publish).not.toHaveBeenCalled();
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -127,6 +129,7 @@ describe("approve", () => {
       id: `agent_${id}_${row(id).claimId}`, pinnedTo: "+27821111111", createdByUid: "u_admin", status: "pending", channel: "sms",
     });
     expect(publish).toHaveBeenCalledTimes(1);
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -191,6 +194,7 @@ describe("fire", () => {
     const r = await approveAndFire(() => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" }));
     expect(r).toMatchObject({ outcome: "failed", reason: "The recipient changed since this was approved, so it was not sent." });
     expect(booked()[0]).toMatchObject({ status: "failed", failureCode: "recipient_changed" });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -203,6 +207,7 @@ describe("fire", () => {
     });
     expect(r).toMatchObject({ outcome: "failed", reason: "The number it would go out from changed since this was approved, so it was not sent." });
     expect(booked()[0]).toMatchObject({ status: "failed", failureCode: "sender_changed" });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -238,6 +243,7 @@ describe("fire", () => {
     const r = await fireScheduledMessage("c1", doc.id as string, (doc.sendAt as { toMillis(): number }).toMillis());
     expect(r).toMatchObject({ outcome: "failed" });
     expect(booked()[0]).toMatchObject({ failureCode: "sender_changed" });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -271,6 +277,7 @@ describe("fire", () => {
     mem.seed("contacts/c1", { ...ANN, emailOptedOut: true });
     const r = await fireScheduledMessage("c1", doc.id as string, (doc.sendAt as { toMillis(): number }).toMillis());
     expect(r).toMatchObject({ outcome: "failed", reason: "This contact has opted out of email." });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 });

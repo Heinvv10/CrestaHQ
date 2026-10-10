@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 const m = vi.hoisted(() => ({
   fireWorkflowTrigger: vi.fn(),
@@ -71,6 +72,7 @@ describe("fireBookingTrigger — event_* -> booking.* mapping", () => {
 
   it("no-ops without a contactId", async () => {
     await fireBookingTrigger({ ...event, contactId: null }, "event_completed");
+    await flushAfterResponse();
     expect(m.fireWorkflowTrigger).not.toHaveBeenCalled();
   });
 });

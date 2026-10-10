@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
 /**
@@ -44,6 +45,7 @@ describe("update_deal", () => {
   it("`completed: true` on a Won deal is dropped: the deal isn't completed and no review request is sent", async () => {
     expect(await call("update_deal", { dealId: "d1", title: "Fibre 200", completed: true })).toMatchObject({ ok: true });
     expect(deal()!.completed).toBeUndefined();
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(await call("update_deal", { dealId: "d1", completed: true })).toMatchObject({ ok: false, code: "invalid_args" });
   });

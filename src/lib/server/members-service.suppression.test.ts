@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Member invites and "you've been added" emails are addressed on a
@@ -109,6 +110,7 @@ describe.each([
 
   it("shared rail: replies go to the inviter", async () => {
     await invite(to);
+    await flushAfterResponse();
     expect(m.send).toHaveBeenCalledTimes(1);
     expect((m.send.mock.calls[0][0] as { replyTo?: string }).replyTo).toBe(inviter);
   });
@@ -116,6 +118,7 @@ describe.each([
   it("SMTP rail: the agency support address, not the inviter's", async () => {
     delete process.env.RESEND_API_KEY;
     await invite(to);
+    await flushAfterResponse();
     expect(smtpSend).toHaveBeenCalledTimes(1);
     expect((smtpSend.mock.calls[0][1] as { replyTo?: string }).replyTo).toBe("support@agency.test");
   });

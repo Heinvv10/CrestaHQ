@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { Timestamp } from "firebase-admin/firestore";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { REVIEWS, seedPr13 } from "@/test/pr13-fixtures";
@@ -58,6 +59,7 @@ describe("send_review_request", () => {
     expect(row(id).preview).toContainEqual({ label: "Message", value: SMS_TEXT, multiline: true });
     expect(rowOf(id, "Last asked")).toBe("never (at most once every 90 days)");
     expect(rowOf(id, "Opted out of SMS")).toBe("no");
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(reviewAsk).toHaveBeenCalledWith({
@@ -81,6 +83,7 @@ describe("send_review_request", () => {
     const id = await proposeId();
     beforeNextTransaction(async () => mem.seed("contacts/c1", { ...ANN, phone: "+27829999999" }));
     expect((await decide(id, "approve")).status).toBe(422);
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 

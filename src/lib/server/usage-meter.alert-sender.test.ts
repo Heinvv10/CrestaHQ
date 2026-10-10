@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * The quota alert to the agency owner is platform mail ABOUT one workspace.
@@ -50,6 +51,7 @@ beforeEach(() => {
 describe("quota alert with no shared sender", () => {
   it("emails the agency owner through the capped workspace's own SMTP", async () => {
     await recordUsage({ subAccountId: "sa-mail", unit: "smsSegments", qty: 10 });
+    await flushAfterResponse();
     await vi.waitFor(() => expect(smtpSend).toHaveBeenCalledTimes(1), { timeout: 10_000 });
     expect(m.smtpFor.mock.calls).toEqual([["sa-mail"]]);
     const msg = smtpSend.mock.calls[0][1] as { to: string; replyTo?: string };
@@ -65,6 +67,7 @@ describe("quota alert with no shared sender", () => {
       expect(errors).toHaveBeenCalledWith(expect.stringContaining("sub-account sa-nomail has no verified SMTP")),
       { timeout: 10_000 },
     );
+    await flushAfterResponse();
     expect(smtpSend).not.toHaveBeenCalled();
     expect(m.resendSend).not.toHaveBeenCalled();
   });

@@ -68,6 +68,7 @@ describe("token + public URL", () => {
     expect(body.error).toBe(
       "Failed to mint quote token. Check AUTOMATIONS_TOKEN_SECRET is configured.",
     );
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -78,6 +79,7 @@ describe("token + public URL", () => {
     expect(body.error).toBe(
       "NEXT_PUBLIC_APP_URL isn't configured — set it so quote links resolve.",
     );
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });
@@ -135,6 +137,7 @@ describe("send", () => {
     expect(status).toBe(502);
     expect(body.error).toBe("Send failed: mailbox full");
     expect(state.quoteUpdates).toHaveLength(0);
+    await flushAfterResponse();
     expect(recordQuoteActivity).not.toHaveBeenCalled();
     expect(fireQuoteTrigger).not.toHaveBeenCalled();
     expect(emitQuoteWebhook).not.toHaveBeenCalled();
@@ -191,6 +194,7 @@ describe("lifecycle", () => {
     const { status, body } = await call();
     expect(status).toBe(200);
     expect(body).toMatchObject({ ok: true, sentTo: "recipient@example.com" });
+    await flushAfterResponse();
     expect(recordQuoteActivity).toHaveBeenCalledTimes(1);
   });
 });

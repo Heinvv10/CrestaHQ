@@ -73,6 +73,7 @@ it("sends using only the owning tenant's SMTP and meters success", async () => {
       replyTo: "sender@example.com",
     })
   );
+  await flushAfterResponse();
   expect(mocks.resend).not.toHaveBeenCalled();
   await flushAfterResponse();
   expect(mocks.usage).toHaveBeenCalledWith({
@@ -94,6 +95,7 @@ it("never falls back to Resend or meters a failed SMTP send", async () => {
       meter: { subAccountId: "sa1" },
     })
   ).rejects.toThrow("SMTP unavailable");
+  await flushAfterResponse();
   expect(mocks.resend).not.toHaveBeenCalled();
   expect(mocks.usage).not.toHaveBeenCalled();
 });

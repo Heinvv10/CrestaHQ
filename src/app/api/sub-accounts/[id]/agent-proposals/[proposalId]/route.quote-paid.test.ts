@@ -71,6 +71,7 @@ describe("mark_quote_paid", () => {
       quoteId: "q1", totalCents: 50000, currency: "ZAR", paidVia: null, contactId: "c1", phone: "+27821111111", channel: "sms", body: SMS_TEXT, fingerprint: null, workflows: [],
     });
     expect(markPaid.spy).not.toHaveBeenCalled();
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(mem.read("quotes/q1")!.status).toBe("accepted");
 
@@ -94,6 +95,7 @@ describe("mark_quote_paid", () => {
     expect(rowOf(id, "Review request")).toBe("None: review requests for paid quotes are off in this workspace.");
     beforeNextTransaction(async () => reviews({ triggerOnQuotePaid: true }));
     expect((await decide(id, "approve")).status).toBe(422);
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
     expect(mem.read("quotes/q1")!.status).toBe("accepted");
   });
@@ -104,6 +106,7 @@ describe("mark_quote_paid", () => {
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("quotes/q1")!.status).toBe("paid");
     expect(markPaid.spy.mock.calls[0]![0]).toMatchObject({ reviewExpect: null });
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -127,6 +130,7 @@ describe("mark_quote_paid", () => {
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The total or currency changed since this was reviewed; it was not marked paid.");
     expect(mem.read("quotes/q1")!.status).toBe("accepted");
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -136,6 +140,7 @@ describe("mark_quote_paid", () => {
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id).error).toBe("The quote's contact changed since this was reviewed; it was not marked paid.");
     expect(mem.read("quotes/q1")!.status).toBe("accepted");
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 
@@ -157,6 +162,7 @@ describe("mark_quote_paid", () => {
     beforeNextTransaction(async () => change());
     expect((await decide(id, "approve")).status).toBe(422);
     expect(markPaid.spy).not.toHaveBeenCalled();
+    await flushAfterResponse();
     expect(reviewAsk).not.toHaveBeenCalled();
   });
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 
 /**
@@ -53,6 +54,7 @@ describe("propose", () => {
       { label: "Message", value: "Your install is booked for Tuesday.", multiline: true },
     ]);
     expect(row(id)).toMatchObject({ approval: "outbound", contactId: "c1", pinned: { contactId: "c1", channel: "sms", to: "+27821111111" } });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -101,6 +103,7 @@ describe("propose", () => {
     expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c2", channel: "sms", body: "x" }))
       .toMatchObject({ ok: false, httpStatus: 400 });
     expect(JSON.stringify(mem.all())).toBe(before);
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -108,6 +111,7 @@ describe("propose", () => {
     expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "email", body: "x" })).toMatchObject({ ok: false, code: "invalid_args" });
     mem.seed("contacts/c1", { ...ANN, phone: "" });
     expect(await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body: "x" })).toMatchObject({ ok: false, message: "This contact has no phone number." });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 });
@@ -117,6 +121,7 @@ describe("approve", () => {
     const id = await proposeSms();
     const res = await decide(id, "approve");
     expect(res.status).toBe(200);
+    await flushAfterResponse();
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0]![0]).toMatchObject({
       channel: "sms", contactId: "c1", body: "Your install is booked for Tuesday.",
@@ -128,6 +133,7 @@ describe("approve", () => {
   it("two concurrent approves → one send", async () => {
     const id = await proposeSms();
     expect((await Promise.all([decide(id, "approve"), decide(id, "approve")])).map((r) => r.status).sort()).toEqual([200, 409]);
+    await flushAfterResponse();
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -137,6 +143,7 @@ describe("approve", () => {
     const res = await decide(id, "approve");
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ error: "preview_changed" });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -146,6 +153,7 @@ describe("approve", () => {
     const res = await decide(id, "approve");
     expect(res.status).toBe(422);
     expect(row(id)).toMatchObject({ status: "failed", error: "The recipient changed since this was reviewed; nothing was sent." });
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 
@@ -154,6 +162,7 @@ describe("approve", () => {
     const id = await proposeSms();
     expect((await decide(id, "approve")).status).toBe(422);
     expect(row(id)).toMatchObject({ status: "failed", error: "This contact has opted out of SMS (replied STOP)." });
+    await flushAfterResponse();
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -165,6 +174,7 @@ describe("approve", () => {
     expect(mem.list("aiSuiteActions")).toEqual([expect.objectContaining({ agentProposalId: id, status: "unknown" })]);
     const again = await dispatchAgentTool(auth, "send_message", { conversationId: "c1", channel: "sms", body: "Your install is booked for Tuesday." });
     expect(again).toMatchObject({ ok: false, code: "outcome_unknown" });
+    await flushAfterResponse();
     expect(send).toHaveBeenCalledTimes(1);
   });
 
@@ -237,6 +247,7 @@ describe("execute guards", () => {
     const args = { conversationId: "c1", channel: "sms", body: "x" };
     await expect(cap.execute(buildAgentContext(auth), args)).rejects.toBeInstanceOf(CapabilityUserError);
     await expect(cap.execute({ ...buildAgentContext(auth), approved: { pinned: null } }, args)).rejects.toBeInstanceOf(CapabilityUserError);
+    await flushAfterResponse();
     expect(send).not.toHaveBeenCalled();
   });
 

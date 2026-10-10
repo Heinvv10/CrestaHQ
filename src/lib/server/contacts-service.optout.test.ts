@@ -59,6 +59,7 @@ it("writes the contact opted out and fires no contact.created webhook or workflo
 
   expect(res).toMatchObject({ id: "c_new", firedTrigger: false });
   expect(m.written).toEqual([expect.objectContaining({ whatsappOptedOut: true })]);
+  await flushAfterResponse();
   expect(emitWebhookEvent).not.toHaveBeenCalled();
   expect(fireWorkflowTrigger).not.toHaveBeenCalled();
 });

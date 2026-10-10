@@ -137,6 +137,7 @@ describe("POST /api/v1/contacts — workflow triggers", () => {
 
     expect(res.status).toBe(201);
     expect(contactsCreated).toHaveLength(1);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).toHaveBeenCalledTimes(1);
     expect(fireWorkflowTrigger).toHaveBeenCalledWith({
       subAccountId: "sa1",
@@ -164,6 +165,7 @@ describe("POST /api/v1/contacts — workflow triggers", () => {
     const res = await post({ name: "No tags, no email, no anything" });
 
     expect(res.status).toBe(201);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).toHaveBeenCalledTimes(1);
     expect(fireWorkflowTrigger.mock.calls[0]![0]).toMatchObject({
       type: "contact.created",
@@ -181,6 +183,7 @@ describe("POST /api/v1/contacts — workflow triggers", () => {
     expect(res.status).toBe(201);
     expect(contactsCreated).toHaveLength(1);
     expect(contactsCreated[0]!.data.mode).toBe("test");
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     // Nothing was reserved, so nothing may be released either — a stray
     // release here would drive the bucket negative.
@@ -208,6 +211,7 @@ describe("POST /api/v1/contacts — hourly enrolment cap", () => {
 
     expect(res.status).toBe(201);
     expect(contactsCreated).toHaveLength(1);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -220,6 +224,7 @@ describe("POST /api/v1/contacts — hourly enrolment cap", () => {
     expect(body.error.code).toBe("workflow_enrolment_cap");
     // Refused, not silently truncated: nothing written, nothing enrolled.
     expect(contactsCreated).toEqual([]);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     expect(emitWebhookEvent).not.toHaveBeenCalled();
     expect(res.headers.get("Retry-After")).toBeTruthy();

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { SA, mem, seedInvoice, seedSchedule, seedSub } from "@/test/paystack-links-harness";
 
@@ -67,12 +68,14 @@ describe("Paystack-only workspace", () => {
     expect(res).toMatchObject({ ok: false, failure: { code: "no_payment_rail", status: 503 } });
     if (!res.ok) expect(res.failure.error).toBe("Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.");
     expect(links()).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
   it("refuses when the agency has Payments off", async () => {
     sub({ paymentsEnabledByAgency: false });
     expect(await send()).toMatchObject({ ok: false, failure: { code: "no_payment_rail" } });
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -86,6 +89,7 @@ describe("Paystack-only workspace", () => {
     // Refused before any rail is chosen (sendQuoteServerSide's paid guard).
     expect(await send()).toMatchObject({ ok: false, failure: { code: "already_paid", status: 409 } });
     expect(links()).toHaveLength(0);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 

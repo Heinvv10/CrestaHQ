@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * The shared send helper refuses a suppressed address before any provider is
@@ -65,6 +66,7 @@ describe("sendEmail suppression", () => {
         sendEmail({ to, subject: "Hi", text: "Hello", meter: { subAccountId: SA } })
       ).rejects.toThrow("Invalid recipient email address.");
       expect(wireRecipients()).toEqual([]);
+      await flushAfterResponse();
       expect(resend.send).not.toHaveBeenCalled();
     }
   );
@@ -87,12 +89,14 @@ describe("sendEmail suppression", () => {
     await expect(
       sendEmail({ to: "gone@example.com", subject: "Hi", text: "Hello", meter: { subAccountId: SA } })
     ).rejects.toBeInstanceOf(EmailSuppressedError);
+    await flushAfterResponse();
     expect(resend.send).not.toHaveBeenCalled();
   });
 
   it("does not check deployment mail that names no sub-account", async () => {
     suppress("gone@example.com");
     await sendEmail({ to: "gone@example.com", subject: "Invite", text: "Join" });
+    await flushAfterResponse();
     expect(resend.send).toHaveBeenCalledTimes(1);
   });
 

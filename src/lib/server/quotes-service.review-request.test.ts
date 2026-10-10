@@ -50,6 +50,7 @@ describe("quote paid → review request", () => {
     for (const quoteId of ["paid", "draft", "other", "missing"]) {
       expect(await markQuotePaidServerSide({ quoteId, expectSubAccountId: "sa1" })).toMatchObject({ ok: false });
     }
+    await flushAfterResponse();
     expect(dispatcher.send).not.toHaveBeenCalled();
   });
 });

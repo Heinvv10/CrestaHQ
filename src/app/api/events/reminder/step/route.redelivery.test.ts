@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * QStash delivers at least once. A redelivered reminder must not email the
@@ -68,6 +69,7 @@ describe("a redelivered reminder", () => {
     expect((await remind()).status).toBe(200);
     expect((await remind()).status).toBe(200);
     await Promise.all([remind(), remind()]);
+    await flushAfterResponse();
     expect(smtpSend).toHaveBeenCalledTimes(1);
   });
 
@@ -77,6 +79,7 @@ describe("a redelivered reminder", () => {
     const moved = issueEventToken("e1");
     mem.seed("events/e1", { ...mem.read("events/e1"), publicTokenHash: moved.hash });
     await remind(60, moved.token);
+    await flushAfterResponse();
     expect(smtpSend).toHaveBeenCalledTimes(3);
   });
 });
@@ -87,6 +90,7 @@ describe("a failure before the send", () => {
     await expect(remind()).rejects.toThrow("render blew up");
     expect((await remind()).status).toBe(200);
     await remind();
+    await flushAfterResponse();
     expect(smtpSend).toHaveBeenCalledTimes(1);
   });
 });
@@ -96,6 +100,7 @@ describe("a failed send", () => {
     smtpSend.mockRejectedValueOnce(Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
     expect((await remind()).status).toBe(503);
     expect((await remind()).status).toBe(200);
+    await flushAfterResponse();
     expect(smtpSend).toHaveBeenCalledTimes(2);
   });
 
@@ -103,6 +108,7 @@ describe("a failed send", () => {
     smtpSend.mockRejectedValueOnce(new SmtpError("Invalid recipient email address."));
     expect((await remind()).status).toBe(200);
     await remind();
+    await flushAfterResponse();
     expect(smtpSend).toHaveBeenCalledTimes(1);
   });
 });

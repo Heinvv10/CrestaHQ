@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { mem, post, resetBookingHarness, seedEvent, seedPage, slot } from "@/test/booking-harness";
 
 /**
@@ -59,6 +60,7 @@ describe("push call sites", () => {
     const { changeEventStatus } = await import("@/lib/server/event-status-service");
     seedEvent("e1", "09:00", "09:30");
     await changeEventStatus(mem.read("events/e1") as never, "no_show");
+    await flushAfterResponse();
     expect(push.now).not.toHaveBeenCalled();
     seedEvent("e2", "09:00", "09:30");
     await changeEventStatus(mem.read("events/e2") as never, "cancelled");
@@ -107,6 +109,7 @@ describe("push call sites", () => {
     expect(auth.member).toHaveBeenCalledWith(expect.any(Request), "sa_other");
     expect(push.now).toHaveBeenCalledWith("e1");
     expect((await retry()).status).toBe(429);
+    await flushAfterResponse();
     expect(push.now).toHaveBeenCalledTimes(1);
     vi.setSystemTime(new Date(Date.now() + 31_000));
     expect((await retry()).status).toBe(200);

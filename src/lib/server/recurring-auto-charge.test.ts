@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import {
   AMOUNT,
@@ -125,6 +126,7 @@ describe("a card cycle", () => {
     expect(invoice.paidVia).toBeUndefined();
     expect(invoice.autoCharge).toEqual({ reference: REF, mandateId: MANDATE, state: "pending", reason: null });
     expect(emailed()).toBe(0);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
     expect(schedule().lastError).toBeNull();
   });
@@ -160,6 +162,7 @@ describe("a declined card", () => {
     expect(triggers("invoice.charge_failed")).toEqual([
       [{ agencyId: "ag1", subAccountId: SA, type: "invoice.charge_failed", contactId: "c1" }],
     ]);
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).toHaveBeenCalledTimes(1);
   });
 
@@ -260,6 +263,7 @@ describe("no clear answer from Paystack", () => {
     expect(raised().autoCharge).toMatchObject({ state: "unknown" });
     expect(schedule().lastError).toContain(REF);
     expect(mandate().consecutiveDeclines).toBeUndefined();
+    await flushAfterResponse();
     expect(fireWorkflowTrigger).not.toHaveBeenCalled();
   });
 });

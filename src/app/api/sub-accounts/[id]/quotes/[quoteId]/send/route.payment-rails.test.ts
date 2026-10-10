@@ -67,6 +67,7 @@ describe("invoice payment rails", () => {
     expect(body.error).toBe(
       "Connect Paystack, Stripe or PayPal under Settings → Payments before sending invoices.",
     );
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -158,6 +159,7 @@ describe("invoice payment rails", () => {
     expect(status).toBe(200);
     expect(body.paymentLinkUrl).toBeNull();
     expect(state.quoteUpdates[0]).not.toHaveProperty("paymentLinkUrl");
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 
@@ -167,6 +169,7 @@ describe("invoice payment rails", () => {
     const { status, body } = await call();
     expect(status).toBe(500);
     expect(String(body.error)).toContain("Failed to build PayPal link:");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 

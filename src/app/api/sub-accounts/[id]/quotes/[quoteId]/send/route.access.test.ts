@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Behaviour-pinning tests for the quote/invoice SEND route — the guards that
@@ -71,6 +72,7 @@ describe("membership", () => {
     expect(status).toBe(401);
     expect(body.error).toBe("Unauthorized");
     expect(state.docReads).toEqual([]);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(state.quoteUpdates).toHaveLength(0);
   });
@@ -84,6 +86,7 @@ describe("pre-flight guards", () => {
     expect(body.error).toBe(
       "Email isn't configured for this sub-account — connect an email provider in Settings → Messaging.",
     );
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(state.quoteUpdates).toHaveLength(0);
   });
@@ -100,6 +103,7 @@ describe("pre-flight guards", () => {
     const { status, body } = await call();
     expect(status).toBe(403);
     expect(body.error).toBe("Quote belongs to a different sub-account");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -108,6 +112,7 @@ describe("pre-flight guards", () => {
     const { status, body } = await call();
     expect(status).toBe(403);
     expect(body.error).toBe(DENIAL_MESSAGE);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(state.quoteUpdates).toHaveLength(0);
   });
@@ -139,6 +144,7 @@ describe("pre-flight guards", () => {
     expect(status).toBe(404);
     expect(body.error).toBe("Recipient contact no longer exists");
     expect(JSON.stringify(body)).not.toContain("someone-else@example.com");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect(state.quoteUpdates).toHaveLength(0);
   });
@@ -156,6 +162,7 @@ describe("pre-flight guards", () => {
     state.contactDoc = { email: "   ", name: "Jane Doe", subAccountId: SUB_ID };
     const { status } = await call();
     expect(status).toBe(400);
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });

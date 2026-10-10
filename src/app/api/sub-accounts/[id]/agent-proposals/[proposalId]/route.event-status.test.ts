@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { SMTP } from "@/test/quote-fixtures";
 import { pastEvent } from "@/test/booking-fixtures";
@@ -108,6 +109,7 @@ describe("set_event_status", () => {
     const pinned = row(id).pinned as { notice: { to: string; subject: string; text: string } };
     expect(pinned.notice).toMatchObject({ to: "ann@x.io", subject: expect.stringContaining("Cancelled:") });
     expect(mem.read("events/ev1")!.status).toBe("scheduled");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
@@ -122,6 +124,7 @@ describe("set_event_status", () => {
     google.during = () => mem.seed("contacts/c1", ANN);
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -148,6 +151,7 @@ describe("set_event_status", () => {
     expect((await decide(id, "approve")).status).toBe(200);
     expect(row(id).result).toMatchObject({ resultText: "It was already cancelled (by someone else); nothing more was done." });
     await vi.waitFor(() => expect(mem.list("workflowRuns")).toHaveLength(1));
+    await flushAfterResponse();
     expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 
@@ -172,6 +176,7 @@ describe("set_event_status", () => {
     beforeNextTransaction(async () => workflow("booking.cancelled"));
     expect((await decide(id, "approve")).status).toBe(422);
     expect(mem.read("events/ev1")!.status).toBe("scheduled");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -185,6 +190,7 @@ describe("set_event_status", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("workflows were NOT started") });
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
     await new Promise((r) => setTimeout(r, 50));
     expect(mem.list("workflowRuns")).toEqual([]);
@@ -212,6 +218,7 @@ describe("set_event_status", () => {
     beforeNextTransaction(async () => mem.seed("contacts/c1", { ...ANN, email: "other@x.io" }));
     expect((await decide(id, "approve")).status).toBe(422);
     expect(mem.read("events/ev1")!.status).toBe("scheduled");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -220,6 +227,7 @@ describe("set_event_status", () => {
     google.during = () => mem.seed("contacts/c1", { ...ANN, email: "other@x.io" });
     expect((await decide(id, "approve")).status).toBe(200);
     expect(mem.read("events/ev1")!.status).toBe("cancelled");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -271,6 +279,7 @@ describe("set_event_status", () => {
     expect(res.status).toBe(422);
     expect(await res.json()).toMatchObject({ error: expect.stringContaining("or their steps") });
     expect(mem.read("events/ev1")!.status).toBe("scheduled");
+    await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 });

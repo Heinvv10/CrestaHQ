@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { deliverTo, mem, seedConnection, seedInvoice, seedOrder, session } from "@/test/stripe-orders-harness";
 
@@ -43,6 +44,7 @@ it("a second payment for a paid invoice emails the sub-account admins once, acro
   seedOrder("o1");
   seedOrder("o2");
   expect((await deliver("checkout.session.completed", session("cs_o1"))).status).toBe(200);
+  await flushAfterResponse();
   expect(sendEmail).not.toHaveBeenCalled();
 
   expect((await deliver("checkout.session.completed", session("cs_o2"), "evt_2")).status).toBe(200);

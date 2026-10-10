@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
  * Quote / invoice send against the sub-account's suppression list. The route,
@@ -60,6 +61,7 @@ describe.each(["quote", "invoice"])("%s send", (kind) => {
     expect(body.error).toContain("hard bounce");
     expect(wireRecipients()).toEqual([]);
     expect(state.quoteUpdates).toEqual([]);
+    await flushAfterResponse();
     expect(fireQuoteTrigger).not.toHaveBeenCalled();
   });
 });
