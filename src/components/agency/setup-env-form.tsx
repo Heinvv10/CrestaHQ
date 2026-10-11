@@ -368,6 +368,21 @@ export function SetupEnvForm() {
     )
     .filter((g) => g.keys.length > 0);
 
+  // Fully-configured groups (every key live and shape-valid) drop into a
+  // collapsed "already configured" section at the bottom so the board leads
+  // with what still needs doing — those keys rarely change once set.
+  // Partition on SERVER status only: a group that moved while the user typed
+  // would change parent, remounting its input and dropping focus.
+  const isDoneGroup = (g: StatusGroup) =>
+    g.keys.every((k) => k.state === "active" && k.valid !== false);
+  // The pinned OpenRouter key sits outside otherGroups, so "all done" must
+  // check it separately.
+  const pinnedKeyDone =
+    !openRouterKey ||
+    (openRouterKey.state === "active" && openRouterKey.valid !== false);
+  const todoGroups = otherGroups.filter((g) => !isDoneGroup(g));
+  const doneGroups = otherGroups.filter(isDoneGroup);
+
   async function openGuide(name: string) {
     setGuideKey(name);
     setGuideText("");
@@ -417,10 +432,10 @@ export function SetupEnvForm() {
               type="button"
               onClick={() => openGuide(k.name)}
               title="Where do I get this key? (AI)"
+              aria-label={`Where do I get ${k.name}?`}
               className="shrink-0 text-muted-foreground/50 transition-colors hover:text-violet-500"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              <span className="sr-only">Where do I get {k.name}?</span>
             </button>
           )}
           {revealValue !== undefined && (
@@ -696,7 +711,7 @@ export function SetupEnvForm() {
                   </div>
                 )}
 
-                {otherGroups.map((g) => (
+                {todoGroups.map((g) => (
                   <div key={g.title} className="space-y-2">
                     <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                       {g.title}
@@ -706,6 +721,44 @@ export function SetupEnvForm() {
                     </div>
                   </div>
                 ))}
+
+                {otherGroups.length > 0 &&
+                  todoGroups.length === 0 &&
+                  pinnedKeyDone && (
+                    <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 text-sm text-emerald-700 dark:text-emerald-400">
+                      All keys in the catalog are configured.
+                    </p>
+                  )}
+
+                {doneGroups.length > 0 && (
+                  // Open while any key in here holds an unsaved typed value, so
+                  // what "Save N keys" counts is never hidden. Otherwise the
+                  // user's own toggle stands.
+                  <details
+                    open={doneGroups.some((g) =>
+                      g.keys.some((k) => values[k.name]?.trim()),
+                    )}
+                    className="rounded-xl border bg-muted/20 p-3"
+                  >
+                    <summary className="cursor-pointer text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                      Already configured · {doneGroups.length}{" "}
+                      {doneGroups.length === 1 ? "group" : "groups"} — rarely
+                      needs touching (expand to replace a value)
+                    </summary>
+                    <div className="mt-4 space-y-5">
+                      {doneGroups.map((g) => (
+                        <div key={g.title} className="space-y-2">
+                          <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                            {g.title}
+                          </p>
+                          <div className="divide-y rounded-xl border bg-background">
+                            {g.keys.map(renderKeyRow)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
 
                 {/* Vercel prerequisites — presence only, never editable or shown.
                     Set manually in Vercel; the form can't write its own creds. */}
@@ -728,12 +781,10 @@ export function SetupEnvForm() {
                                 type="button"
                                 onClick={() => openGuide(k.name)}
                                 title="Where do I get this key? (AI)"
+                                aria-label={`Where do I get ${k.name}?`}
                                 className="shrink-0 text-muted-foreground/50 transition-colors hover:text-violet-500"
                               >
                                 <Sparkles className="h-3.5 w-3.5" />
-                                <span className="sr-only">
-                                  Where do I get {k.name}?
-                                </span>
                               </button>
                             )}
                           </div>
