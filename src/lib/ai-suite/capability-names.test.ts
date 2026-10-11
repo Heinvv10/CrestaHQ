@@ -78,12 +78,14 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["update_webhook_url",                        "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["create_community",                          "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["create_workflow",                           "sub-account", "subAccountAdmin",  false, null],
-  ["list_workflows",                            "sub-account", "subAccountAdmin",  true, ["agent"]],
-  ["get_workflow",                              "sub-account", "subAccountAdmin",  true, ["agent"]],
+  ["list_workflows",                            "sub-account", "subAccountAdmin",  true, ["chat", "agent"]],
+  ["get_workflow",                              "sub-account", "subAccountAdmin",  true, ["chat", "agent"]],
   ["list_workflow_runs",                        "sub-account", "subAccountAdmin",  true, ["agent"]],
-  ["update_workflow",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
-  ["set_workflow_status",                       "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["update_workflow",                           "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
+  ["set_workflow_status",                       "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
   ["delete_workflow",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["list_forms",                                "sub-account", "subAccountMember", true, null],
+  ["create_form",                               "sub-account", "subAccountAdmin",  false, null],
   ["create_contact",                            "sub-account", "subAccountMember", false, null],
   ["get_contact",                               "sub-account", "subAccountMember", true, ["agent"]],
   ["update_contact",                            "sub-account", "subAccountMember", false, ["agent"]],
@@ -156,6 +158,8 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["research_website_reference_in_sub_account", "agency",      "agencyOwner",      true, ["chat"]],
   ["create_website_in_sub_account",             "agency",      "agencyOwner",      false, ["chat"]],
   ["check_website_status_in_sub_account",       "agency",      "agencyOwner",      true, ["chat"]],
+  ["list_forms_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
+  ["create_form_in_sub_account",                "agency",      "agencyOwner",      false, ["chat"]],
 ];
 
 describe("AI Suite capability registry", () => {

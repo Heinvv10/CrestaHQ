@@ -27,6 +27,7 @@ import { COMMUNITY_CAPABILITIES } from "./capabilities/community";
 import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
 import { WORKFLOW_EDIT_CAPABILITIES } from "./capabilities/workflow-edit";
 import { WORKFLOW_STATUS_CAPABILITIES } from "./capabilities/workflow-status";
+import { FORM_CAPABILITIES } from "./capabilities/forms";
 import { DEAL_EDIT_CAPABILITIES } from "./capabilities/deal-edit";
 import { DEAL_COMPLETE_CAPABILITIES } from "./capabilities/deal-complete";
 import { PIPELINE_CAPABILITIES } from "./capabilities/pipelines";
@@ -132,6 +133,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...WORKFLOW_CAPABILITIES,
   ...WORKFLOW_EDIT_CAPABILITIES,
   ...WORKFLOW_STATUS_CAPABILITIES,
+  ...FORM_CAPABILITIES,
   ...CONTACT_CAPABILITIES,
   ...CONTACT_EDIT_CAPABILITIES,
   ...CONTACT_TAG_CAPABILITIES,
@@ -193,6 +195,13 @@ export function inSubAccount(base: AiSuiteCapability): AiSuiteCapability {
     // `subAccountId` on the base tool instead. approval / agentArgs /
     // preview are deliberately not copied.
     surfaces: (base.surfaces ?? ["chat"]).filter((s) => s === "chat"),
+    // The base's chat refusal, for the named sub-account (as execute gets
+    // it, but unresolved: a refusal reads no data, and the args' id is what
+    // validate returned — a name the model passed stays a name).
+    chatRefusal:
+      base.chatRefusal &&
+      ((args, ctx) =>
+        base.chatRefusal!(args, { ...ctx, subAccountId: args.subAccountId as string, subAccountRole: "agencyOwner" })),
     menuLabel: `${base.menuLabel} — in a sub-account you name`,
     description: `${base.description} AGENCY VARIANT: performs this inside one of your sub-accounts. Resolve the sub-account's id with list_sub_accounts first — never guess ids. Exception: if the user identifies the sub-account by its account number (e.g. '#1011') or you already know its exact name, you may pass that as subAccountId — it's resolved server-side within this agency. If what the user said could match more than one sub-account (e.g. 'rode' when both 'Rode Plumbing' and 'Rode Sound' exist), ask which one BEFORE proposing.`,
     parameters: {
@@ -356,6 +365,10 @@ const AGENCY_DELEGATED = [
   "research_website_reference",
   "create_website",
   "check_website_status",
+  // Speed-to-Lead setup — the owner can manage forms in a named client
+  // workspace.
+  "list_forms",
+  "create_form",
 ];
 for (const name of AGENCY_DELEGATED) {
   const base = AI_SUITE_CAPABILITIES.find((c) => c.name === name);

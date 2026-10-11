@@ -63,6 +63,8 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `update_workflow` | write; `workflow_activate` when the workflow is active, or the edit changes its steps while runs are in progress | admin | Change a workflow's name, trigger, re-entry, steps (`nodes` replaces them all; read get_workflow first) or start step. | which fields change, and that later enrolments and runs in progress take the new steps |
 | `set_workflow_status` | write; `workflow_activate` when status=active | admin | Set a workflow's status: `paused` or `draft` stop it at once; `active` is queued for a sub-account admin to approve, showing the exact trigger and steps that will run. | activating: the exact trigger and steps (pinned) and what runs from approval on |
 | `delete_workflow` | `hard_delete` | admin | Delete a workflow permanently. | the workflow, its id and creation time, its trigger and steps |
+| `list_forms` | read | member | List this workspace's forms with id, name, enabled flag, submission count, public URL, and iframe embed snippet. |  |
+| `create_form` | write | admin | Create a new public lead-capture form in this workspace from a preset. |  |
 | `create_contact` | write | member | Add a new contact to this sub-account. |  |
 | `get_contact` | read | member | Read one contact's details: name, phone, email, company, address, tags, custom fields and messaging opt-outs. |  |
 | `update_contact` | write | member | Edit a contact's name, company, address, custom fields (merged into the existing ones) or tags (replaces the tag list; prefer add_tags / remove_tags). |  |

@@ -385,6 +385,13 @@ export async function POST(request: Request) {
       availableOn(cap, "chat")
     ) {
       const validated = cap.validate(turn.toolCall.args);
+      // An approval chat can't give (e.g. activating a workflow): say so
+      // instead of offering a card for it.
+      const refusal = validated.ok ? cap.chatRefusal?.(validated.args, actionCtx) : undefined;
+      if (refusal) {
+        const response: AiSuiteChatResponse = { type: "message", text: refusal };
+        return NextResponse.json(response);
+      }
       if (validated.ok) {
         const response: AiSuiteChatResponse = {
           type: "proposal",
