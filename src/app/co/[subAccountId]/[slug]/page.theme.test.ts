@@ -4,6 +4,7 @@ import type { ReactElement } from "react";
 import { createMemoryFirestore } from "@/test/memory-firestore";
 import { contrast, hexToRgb, over, parseRgba } from "@/test/contrast";
 import { CHECKOUT_THEMES } from "@/lib/checkout/themes";
+import { stringsSentToClient } from "@/test/sent-to-client";
 
 /**
  * The public checkout page through its real loader: a preset restyles it
@@ -124,6 +125,30 @@ describe("a checkout page with no preset", () => {
     expect(html).not.toContain("#aabbcc");
     // Clean's own accent instead.
     expect(html).toContain("border:none;background:#7c3aed;color:#ffffff;");
+  });
+});
+
+describe("what the checkout page sends to the browser", () => {
+  /** The element tree the server page returns: its markup plus the props it gives the client form. */
+  const tree = async (slug: string) =>
+    PublicCheckoutPage({ params: Promise.resolve({ subAccountId: SA, slug }), searchParams: Promise.resolve({}) });
+
+  it("includes the form's props (so this test does see them)", async () => {
+    const sent = stringsSentToClient(await tree("full"));
+    expect(sent).toContain("theme");
+    expect(sent).toContain("I agree to be contacted.");
+  });
+
+  it.each([
+    ["accent", { appearance: look("light", "red;position:fixed;inset:0;background:url(https://evil.example/x)") }],
+    ["accent", { appearance: look("dark", "</script><script>fetch('https://evil.example/x')</script>") }],
+    ["preset", { themePreset: "clean;background:url(https://evil.example/x)" }],
+    ["preset", { themePreset: "</script><script>fetch('https://evil.example/x')</script>" }],
+  ])("sends nothing of a hostile stored %s, in markup or in props", async (_label, stored) => {
+    seed(stored);
+    for (const slug of Object.keys(PAGES)) {
+      expect(stringsSentToClient(await tree(slug)).filter((s) => s.includes("evil.example")), slug).toEqual([]);
+    }
   });
 });
 

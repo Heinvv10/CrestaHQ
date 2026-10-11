@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ReactElement } from "react";
+import { cloneElement, type ReactElement } from "react";
 
 /**
  * The reschedule/cancel page takes its accent from the booking page. Through
@@ -30,6 +30,34 @@ async function open(accentColor: unknown): Promise<string> {
 
 beforeEach(() => resetBookingHarness());
 afterEach(() => vi.useRealTimers());
+
+/**
+ * The server page drops a bad stored accent before the view sees it; this
+ * hands the view one directly, as a caller that skipped the page would.
+ */
+async function viewGiven(accentColor: unknown): Promise<string> {
+  seedPage("p");
+  const issued = issueEventToken("e1");
+  seedEvent("e1", "10:00", "10:30", { title: "Intro", bookingPageSlug: "p", publicTokenHash: issued.hash });
+  const el = (await PublicEventPage({ params: Promise.resolve({ token: issued.token }) })) as ReactElement<{ branding: Record<string, unknown> }>;
+  return renderToStaticMarkup(cloneElement(el, { branding: { ...el.props.branding, accentColor } }));
+}
+
+describe("the view's own check, given an accent the server page would have dropped", () => {
+  it.each([
+    ["extra CSS declarations", "red;position:fixed;inset:0;background:url(https://evil.example/x)"],
+    ["a hex followed by more CSS", "#FF5500;background:url(https://evil.example/x)"],
+    ["a non-string", ["#FF5500"]],
+  ])("ignores an accent that is %s", async (_label, accent) => {
+    const html = await viewGiven(accent);
+    expect(html).not.toContain("evil.example");
+    expect(html).toBe(await viewGiven(null));
+  });
+
+  it("uses a real accent", async () => {
+    expect((await viewGiven("#F50")).match(LOGO_CHIP)?.[1]).toBe("background-color:#F50");
+  });
+});
 
 describe("the accent on the reschedule/cancel page", () => {
   it.each([["#FF5500"], ["#F50"]])("uses a stored hex accent (%s)", async (accent) => {

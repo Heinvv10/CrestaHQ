@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ReactElement } from "react";
+import { cloneElement, type ReactElement } from "react";
 import { CHECKOUT_THEMES } from "@/lib/checkout/themes";
 
 /**
@@ -92,6 +92,47 @@ describe("a booking page with no preset", () => {
     seed("absent", { accentColor: "#FF5500", themePreset });
     expect(await open("absent")).toBe(expected);
     expect(await openEmbed("absent")).toBe(expectedEmbed);
+  });
+});
+
+/**
+ * The server pages drop a bad stored value before the component sees it, so
+ * the cases above no longer reach the component's own check. These hand it
+ * the bad value directly, as a caller that skipped the server page would.
+ */
+describe("the view's own check, given props the server page would have dropped", () => {
+  type ViewProps = { page: Record<string, unknown>; branding: Record<string, unknown> };
+  const view = async (over: { accentColor?: unknown; themePreset?: unknown }) => {
+    seed("direct");
+    const el = (await PublicBookingPage(params("direct"))) as ReactElement<ViewProps>;
+    return renderToStaticMarkup(
+      cloneElement(el, {
+        page: { ...el.props.page, ...over },
+        branding: { ...el.props.branding, ...("accentColor" in over ? { accentColor: over.accentColor } : {}) },
+      }),
+    );
+  };
+
+  it.each([
+    ["extra CSS declarations", "red;position:fixed;inset:0;background:url(https://evil.example/x)"],
+    ["a hex followed by more CSS", "#FF5500;background:url(https://evil.example/x)"],
+    ["a non-string", ["#FF5500"]],
+  ])("ignores an accent that is %s", async (_label, accentColor) => {
+    const html = await view({ accentColor });
+    expect(html).not.toContain("evil.example");
+    expect(html).toBe(await view({}));
+  });
+
+  it("uses a real accent", async () => {
+    expect((await view({ accentColor: "#FF5500" })).match(LOGO_CHIP)?.[1]).toBe("background-color:#FF5500");
+  });
+
+  it.each([["bogus"], ["constructor"], ["__proto__"], [42], [{ id: "ocean" }]])("ignores an unknown preset (%s)", async (themePreset) => {
+    expect(await view({ themePreset })).toBe(await view({}));
+  });
+
+  it("applies a real preset", async () => {
+    expect(tag(await view({ themePreset: "ocean" }), "main")).toContain("--primary:#027dbc");
   });
 });
 

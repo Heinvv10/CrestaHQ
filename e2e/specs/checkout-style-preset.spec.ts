@@ -174,6 +174,7 @@ test("a stored accent that is not a hex colour never reaches the page", async ({
   });
   await visit(browser, p, async (page) => {
     expect(await page.content()).not.toContain("evil.example");
+    expect(await (await page.request.get(`/co/${sa}/${p.slug}`)).text()).not.toContain("evil.example");
     // Clean's own violet instead.
     await expect(pay(page)).toHaveCSS("background-color", "rgb(124, 58, 237)");
     await expect(pay(page)).toHaveCSS("position", "static");

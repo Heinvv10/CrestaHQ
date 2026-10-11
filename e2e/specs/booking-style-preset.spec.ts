@@ -158,7 +158,11 @@ test("a dark-mode visitor on a light preset gets the light status colour, with n
 test("a stored preset this build does not know renders the standard look", async ({ browser }) => {
   const slug = `${PREFIX}unknown-${stamp}`;
   await seedPage(slug, { themePreset: "no-such-preset" });
-  await visit(browser, slug, expectStandardLook);
+  await visit(browser, slug, async (page) => {
+    await expectStandardLook(page);
+    expect(await page.content()).not.toContain("no-such-preset");
+    expect(await (await page.request.get(`/b/${sa}/${slug}`)).text()).not.toContain("no-such-preset");
+  });
 });
 
 test("a stored accent that is not a hex colour never reaches the page", async ({ browser }) => {
@@ -167,6 +171,12 @@ test("a stored accent that is not a hex colour never reaches the page", async ({
   await visit(browser, slug, async (page) => {
     expect(await page.content()).not.toContain("evil.example");
     await expectStandardLook(page);
+    // The raw responses too, where the props sent for hydration live.
+    for (const path of [`/b/${sa}/${slug}`, `/embed/booking/${sa}/${slug}`]) {
+      const res = await page.request.get(path);
+      expect(res.status(), path).toBe(200);
+      expect(await res.text(), path).not.toContain("evil.example");
+    }
   });
 });
 
