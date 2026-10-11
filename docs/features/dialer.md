@@ -1,0 +1,162 @@
+# Browser phone dialer (Softphone v1)
+
+*Part of the [LeadStack CRM](../../CLAUDE.md) docs. Feature index: [README.md](README.md).*
+
+> **Status: server side only (SP-2). NOT runtime-verified.** It merges dark behind
+> `dialerEnabledByAgency` (default off). No call has gone through a real Twilio
+> account. The UI (Call button, call bar, settings card) comes in SP-3. The first
+> client to switch the gate on triggers a live walk (UPSTREAM_PORT_PLAN.md, Hein's
+> ruling 4).
+
+Ported from upstream LeadStack 1.0.31 (read at 1.0.40, `68798611`). Team members
+place outbound calls to contacts from the browser through the sub-account's own
+Twilio account (Twilio Voice JS SDK). The dialer is outbound-only: the token grants
+no incoming calls, and the number's inbound voice handler (Vapi BYOC / MCTB) is never
+touched.
+
+## How a call flows
+
+1. **Provision** (`POST /api/sub-accounts/[id]/dialer`, sub-account admin). This needs
+   dedicated Twilio (`twilioConfig.enabled`, accountSid, auth token, fromNumber). It
+   creates a TwiML App (voice URL is our TwiML webhook) and an API key **on the
+   client's own Twilio account**. The secrets go to `subAccounts/{id}/private/dialer`
+   and the non-secret `dialerConfig {enabled: true, recordCalls}` goes on the
+   sub-account doc. It is idempotent: when the private doc exists, a repeat call only
+   refreshes the TwiML App's voice URL (this heals a changed `NEXT_PUBLIC_APP_URL`)
+   and mints nothing new.
+2. **Token** (`POST /api/comms/dialer/token`, body `{subAccountId}`). Any active
+   member of the sub-account, or the parent agency's owner, gets a 1-hour Twilio
+   AccessToken. Its identity is their uid and its only grant is outgoing calls through
+   the TwiML App. The browser never sees the API key secret.
+3. **TwiML webhook** (`POST /api/webhooks/twilio/dialer/twiml/[saId]`). Twilio calls
+   this when the browser dials with `params: { contactId }`. In order:
+   - It verifies the Twilio signature with the sub-account's token, read from
+     `private/twilioCredentials`.
+   - It checks the agency gate, then `dialerConfig.enabled`, then that dedicated
+     Twilio is still switched on (`subAccountTwilioIsConfigured`). Switching
+     dedicated Twilio off, with the credentials kept, stops new calls and new tokens.
+   - It checks that the caller (`From: client:<uid>`) can still act on the contact.
+     This is `requireContactAccessible`: active member or agency owner, plus territory
+     scope.
+   - It checks that the contact is in this sub-account (the `contactId` must be a plain
+     document id; `requireContactAccessible` refuses anything containing `/`).
+   - It applies the two number checks the AI outbound path uses
+     (`validDialNumber` / `countryBlocked` in `outbound-compliance.ts`), parsed the
+     same way: the phone must be a valid number to libphonenumber **with no default
+     region**, and in the Voice channel's `allowedCountries` when that list is set.
+     In practice the contact's phone must be stored in international form (`+…`).
+     A locally formatted number (`082 123 4567`) is refused with a spoken message
+     telling the operator to save it in international format. It is never
+     interpreted through the workspace phone region: that setting can change or be
+     unset (it then reads as US), and a wrong guess dials a stranger.
+   - Dialer-only: a number libphonenumber gives no country for (non-geographic:
+     satellite, +800, +882 and the like) is never dialled, allow-list or not. The AI
+     voice path does not have this rule.
+   - It refuses when the dialled contact is `voiceOptedOut`. **Voice opt-out is per
+     contact**, as upstream has it: a duplicate contact holding the same number is
+     not blocked. **Nothing in the app sets `voiceOptedOut` today** — there is no UI
+     and no server path that writes it; it is only read (here, by the AI voice gate
+     and by voice campaigns). A number-wide voice do-not-call list belongs with
+     whatever feature first records a voice opt-out, using a normalised number
+     written at opt-out time.
+
+   Every one of these checks, and the `<Dial>`, reads the one canonical number: the
+   contact's phone parsed once. The stored string is never dialled or checked on
+   its own.
+
+   If every check passes, it writes a `call_placed` activity (`dialer_<CallSid>`; skipped
+   when the `CallSid` is not a plain document id) and
+   answers `<Dial callerId=fromNumber answerOnBridge><Number>E.164</Number>`.
+   **The number dialled always comes from the contact doc, normalised to E.164.** Any
+   `To` or phone number in the request is ignored.
+
+   The AI-only checks (per-call consent ack, calling window, minutes quota, daily /
+   per-number / burst caps, scrub provider) are not applied: an operator is placing
+   and hearing the call. **With no `allowedCountries` set, any valid number with a
+   country is dialled, including a country's own premium-rate ranges (e.g. US 1-900)**,
+   on the client's own Twilio account (Twilio's own Voice geo-permissions still apply).
+4. **Status callback** (`POST /api/webhooks/twilio/dialer/status/[saId]?contactId=`).
+   This is the `<Dial action>`. It is signature-checked the same way, and the
+   signature covers the query string. It updates the activity row with the outcome
+   and the duration. It is not behind the agency gate or the dedicated-Twilio
+   switch, so a call already in progress still gets its outcome recorded. The body
+   is signed with the tenant's own token, so its values are still checked:
+   - `contactId` and `CallSid` must be plain document ids. Otherwise nothing is
+     written and Twilio still gets its 200.
+   - A status Twilio does not document is stored as `ended`.
+   - The duration is clamped to a whole number of seconds between 0 and 24 hours.
+   - `RecordingUrl` is stored as `meta.recordingUrl` only when this sub-account has
+     `recordCalls` on **and** the URL is exactly a recording on its own Twilio
+     account: `https://api.twilio.com/2010-04-01/Accounts/<its accountSid>/Recordings/RE<32 hex>`,
+     optionally ending `.mp3` or `.wav`, with nothing before or after. Another
+     account's recording, any other host, a query string, padding or control
+     characters are all dropped, and nothing is stored when `twilioConfig.accountSid`
+     is missing or not `AC` + 32 hex characters.
+   - **Known gap for the live walk:** only `api.twilio.com` is accepted. If the
+     client's Twilio account serves recordings from a regional host
+     (`api.ie1.twilio.com`, `api.au1.twilio.com` and so on), the URL is dropped and
+     the call's row has no recording link. Check what Twilio actually sends on the
+     first recorded call.
+
+   **For SP-3:** treat `meta.recordingUrl`, like the rest of `meta`, as untrusted
+   when rendering it. Check the scheme and host again before making it a link.
+
+## Safety
+
+- **Recording is off by default.** `recordCalls` must be `true` (set through
+  `PATCH …/dialer {recordCalls}`) before `<Dial record="record-from-answer-dual">` is
+  emitted. Consent laws vary by region. If recording is enabled, the stored
+  `RecordingUrl` may be publicly fetchable by anyone holding it unless the client
+  turns on "Enforce HTTP Auth on Media URLs" in Twilio.
+- **Signatures.** Both webhooks validate `X-Twilio-Signature` against the token in
+  `private/twilioCredentials`, falling back to a legacy `twilioConfig.authToken` only
+  when the private doc is absent (`readSubAccountSecret`). An unknown sub-account
+  gets 404 and a bad signature gets 403.
+- **Public paths.** Both webhooks sit under the existing public `/api/webhooks/twilio`
+  middleware prefix, so the middleware is unchanged.
+- **No new env vars, no rules change.** The `private/*` docs are already deny-all.
+
+## Agency gate
+
+`dialerEnabledByAgency`, opt-in, **ours only** (upstream has no dialer gate). While it
+is off:
+
+- Provisioning (`POST`), the recording toggle (`PATCH`), the token route and the
+  TwiML webhook (after the signature check) return 403 `{ code: "gate_off" }`.
+- `DELETE …/dialer` stays ungated, so a sub-account can always tear down what it
+  provisioned.
+- The status callback stays ungated, so a call already in progress still gets its
+  outcome recorded.
+- Switching the gate off does not tear anything down.
+
+See [feature-gates.md](../architecture/feature-gates.md).
+
+## Disable and remote clean-up
+
+`DELETE /api/sub-accounts/[id]/dialer` (sub-account admin) matches upstream:
+
+- It tries to remove the TwiML App and the API key from the client's Twilio account.
+- It deletes `private/dialer` and sets `dialerConfig: null`.
+
+The remote clean-up is **best-effort**:
+
+- If Twilio refuses a remove, the error's message is logged and the disable still
+  succeeds, so the key or app may be left on the client's account. Only the message
+  is ever logged: the error object a failed Twilio call rejects with carries the
+  account's credential in its request headers.
+- If dedicated Twilio creds are no longer configured when the dialer is disabled, the
+  remote resources cannot be reached and are left in place (logged).
+- A failed first provision (app created, then key creation fails) also leaves that
+  app behind, as upstream does.
+
+## Files
+
+- `src/lib/comms/dialer.ts`: gate, creds (`readSubAccountSecret`), signature check,
+  token minting, URLs
+- `src/app/api/sub-accounts/[id]/dialer/route.ts`: provision, toggle recording,
+  disable
+- `src/app/api/comms/dialer/token/route.ts`
+- `src/app/api/webhooks/twilio/dialer/{twiml,status}/[subAccountId]/route.ts`
+- Types: `DialerConfig`, `DialerPrivateDoc` (`src/types/tenancy.ts`), and the
+  `call_placed` activity (`src/types/contacts.ts`)
+- Tests: a `route.test.ts` beside each route, plus `e2e/specs/dialer-webhooks.spec.ts`

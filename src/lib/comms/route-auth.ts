@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { territoryGate } from "@/lib/auth/territory-filter";
+import { isDocId } from "@/lib/server/doc-id";
 import type { Contact } from "@/types/contacts";
 
 export function requireUid(request: Request):
@@ -37,6 +38,11 @@ export async function requireContactAccessible(
       { error: "Missing contactId" },
       { status: 400 },
     );
+  }
+  // A "/" in the id would address a subcollection doc (e.g. a member-written
+  // note) that carries the contact's tenancy keys — treat it as not found.
+  if (!isDocId(contactId)) {
+    return NextResponse.json({ error: "Contact not found" }, { status: 404 });
   }
   const db = getAdminDb();
   const snap = await db.collection("contacts").doc(contactId).get();

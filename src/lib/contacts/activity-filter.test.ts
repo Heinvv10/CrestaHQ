@@ -39,6 +39,7 @@ const ALL_TYPES = [
   "voice_call_initiated",
   "voice_call_completed",
   "missed_call",
+  "call_placed",
   "quiet_hours_held",
   "quote_sent",
   "quote_viewed",

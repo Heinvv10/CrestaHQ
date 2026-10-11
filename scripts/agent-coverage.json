@@ -878,6 +878,30 @@
         "category": "public-unauth",
         "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
       }
+    },
+    "api/comms/dialer/token:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Mints a Twilio Voice token for a signed-in person's browser to place a live phone call; an agent cannot hold a voice call, and placing calls for agents is start_voice_call."
+      }
+    },
+    "api/sub-accounts/[id]/dialer:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Provisions the browser dialer on the client's own Twilio account (mints an API key and TwiML App, toggles call recording, tears them down); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/dialer:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Provisions the browser dialer on the client's own Twilio account (mints an API key and TwiML App, toggles call recording, tears them down); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/dialer:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Provisions the browser dialer on the client's own Twilio account (mints an API key and TwiML App, toggles call recording, tears them down); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
     }
   }
 }

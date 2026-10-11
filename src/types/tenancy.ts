@@ -196,6 +196,16 @@ export interface SubAccountDoc {
   // v1; the per-sub-account credential UI lands when Workflows ships.
   twilioConfig: TwilioConfig | null;
   /**
+   * Softphone v1 — the human browser dialer (outbound-only, Twilio Voice JS
+   * SDK over the sub-account's own Twilio). NON-SECRET flags only, so the
+   * client can gate the Call button + settings card; the provisioned Twilio
+   * API key/secret + TwiML App sid live in `subAccounts/{id}/private/dialer`
+   * (Admin SDK only). Server-written via /api/sub-accounts/[id]/dialer.
+   * Undefined on legacy docs reads as disabled. Usable only while
+   * `dialerEnabledByAgency === true`.
+   */
+  dialerConfig?: DialerConfig | null;
+  /**
    * Per-sub-account dedicated email sending domain (platform-managed model).
    * When `status === "verified"`, email sent on behalf of this sub-account
    * goes out from `emailFrom` on the tenant's own verified (sub)domain — all
@@ -1078,6 +1088,37 @@ export interface GoogleReviewConfig {
    */
   reminder?: { everyDays: number | null; maxRetries: number } | null;
   updatedAt: Date;
+}
+
+/**
+ * Softphone v1 (browser dialer) — client-visible flags. The Twilio secrets
+ * this feature provisions (API key sid/secret + TwiML App sid) are NOT here:
+ * sub-account docs are member-readable, so they live in the Admin-SDK-only
+ * `subAccounts/{id}/private/dialer` doc ({@link DialerPrivateDoc}).
+ */
+export interface DialerConfig {
+  /** Master switch — set true by successful provisioning, false on disable. */
+  enabled: boolean;
+  /**
+   * Record outbound dialer calls (dual-channel, from answer). Default false —
+   * recording-consent laws vary by region; the settings card says so.
+   */
+  recordCalls: boolean;
+}
+
+/**
+ * Admin-SDK-only secrets at `subAccounts/{id}/private/dialer` (covered by the
+ * generic `private/{docId}` deny rule — same model as the Webinar1 + Stripe
+ * connections). Written by the dialer provisioning route only.
+ */
+export interface DialerPrivateDoc {
+  /** Twilio API Key SID (SK…) minted on the sub-account's own account. */
+  apiKeySid: string;
+  /** The API key secret — returned once by Twilio at creation. */
+  apiKeySecret: string;
+  /** TwiML App (AP…) whose voice URL is our dialer TwiML webhook. */
+  twimlAppSid: string;
+  createdAt: Date;
 }
 
 export interface ResendConfig {
