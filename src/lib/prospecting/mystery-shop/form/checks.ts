@@ -14,6 +14,12 @@ import { CAPTCHA_SCRIPT, CAPTCHA_URL, PRG_CONFIRM_SCRIPT, THANKS_SCRIPT } from "
 
 const EVALUATE_MS = 3_000;
 const POLL_MS = 250;
+/**
+ * A bare 2xx is the weakest signal, and it is known here before the page has even been handed the answer
+ * (network.ts records it, then fulfils the route). The page gets this long — the settle time it had after
+ * loading — to navigate or say thank you first.
+ */
+const RENDER_MS = 1_500;
 /** Frames Chromium will not let a page script into: whatever is in them cannot be checked. */
 const OPAQUE_FRAME = /^(file|chrome|chrome-extension|view-source|devtools):/i;
 
@@ -74,24 +80,39 @@ export type Outcome =
   | { signal: "navigation" | "thank_you" | "post_2xx"; finalUrl: string }
   | { captcha: string }
   | { rejected: string }
+  | { refusedLate: string }
   | null;
 
 /**
  * After the click, for up to `confirmMs`. A signal counts only once a request
  * carrying the enquiry was answered 2xx/3xx (`carrierOk`); a 2xx that says the
  * site refused it is `rejected`; a CAPTCHA appearing, or the page outgrowing
- * its budget, means it cannot be called sent (null / captcha → uncertain).
+ * its budget, means it cannot be called sent (null / captcha → uncertain) —
+ * and so does a refusal that only came after the site had taken the enquiry
+ * (`refusedLate`): never `rejected`, which would invite a second enquiry.
+ * A navigation or thank-you text is reported as soon as it is seen; a bare 2xx
+ * (`post_2xx`) only once RENDER_MS has passed without either, or the window
+ * closes — never later than `confirmMs`.
  */
 export async function waitForSignal(page: Page, state: GuardState, thanksBefore: number, confirmMs: number): Promise<Outcome> {
   const until = Date.now() + confirmMs;
   const formUrl = state.formUrl ?? "";
   const captchaNow = async () => (await captchaMarker(page, state)).marker;
+  const settled = async (seen: NonNullable<Outcome>): Promise<Outcome> => {
+    const late = await captchaNow();
+    if (late) return { captcha: late };
+    if (state.rejected) return { rejected: state.rejected };
+    return state.refusedLate ? { refusedLate: state.refusedLate } : seen;
+  };
+  /** When a bare 2xx was first all there was to go on. */
+  let postSeenAt: number | null = null;
   while (Date.now() < until) {
     // The submit went to a refused address and nothing else was posted: nothing was sent.
     if (state.blocked && state.postsOut === 0) throw refuse("ssrf_blocked", `The form submits to a non-public address: ${state.blocked}`);
     const marker = await captchaNow();
     if (marker) return { captcha: marker };
     if (state.rejected) return { rejected: state.rejected };
+    if (state.refusedLate) return { refusedLate: state.refusedLate };
     if (state.tooHeavy) return null;
     if (state.prgPage) {
       const n = await bounded(page.evaluate(PRG_CONFIRM_SCRIPT).catch(() => -1));
@@ -109,15 +130,16 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
             ? ({ signal: "navigation", finalUrl: now } as const)
             : (await thanksCount(page, thanksBefore)) > thanksBefore
               ? ({ signal: "thank_you", finalUrl: now } as const)
-              : state.postOk
-                ? ({ signal: "post_2xx", finalUrl: now } as const)
-                : null;
-      if (seen) {
-        const late = await captchaNow();
-        return late ? { captcha: late } : state.rejected ? { rejected: state.rejected } : seen;
+              : null;
+      if (seen) return settled(seen);
+      if (state.postOk) {
+        postSeenAt ??= Date.now();
+        if (Date.now() - postSeenAt >= RENDER_MS) return settled({ signal: "post_2xx", finalUrl: now });
       }
     }
     await page.waitForTimeout(POLL_MS);
   }
+  // The window closed while the page still had time to say more: the 2xx stands.
+  if (postSeenAt !== null && !state.tooHeavy) return settled({ signal: "post_2xx", finalUrl: page.url() });
   return null;
 }
