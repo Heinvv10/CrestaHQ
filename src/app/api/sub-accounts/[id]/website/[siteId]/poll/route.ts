@@ -8,8 +8,17 @@ import {
   qstashIsConfigured,
   verifyQStashSignature,
 } from "@/lib/automations/qstash";
-import { GitpageError, pollBuild } from "@/lib/gitpage/client";
+import { cleanText, GitpageError, pollBuild } from "@/lib/gitpage/client";
 import { markGitpageKeyInvalid } from "@/lib/gitpage/heartbeat";
+import {
+  isSettleable,
+  pollAttemptCapFor,
+  pollDelayFor,
+  pollWindowSecondsFor,
+  settleWebsiteBuild,
+  transitionWebsite,
+  WEBSITE_IN_FLIGHT,
+} from "@/lib/server/websites-service";
 import type { WebsiteDoc } from "@/types/website";
 
 export const dynamic = "force-dynamic";
@@ -22,15 +31,27 @@ export const dynamic = "force-dynamic";
  *      operator may have hit Rebuild, or a previous tick already settled).
  *   3. Calls gitpage's status endpoint.
  *   4. Updates Firestore: success / failure / still-pending.
- *   5. If still pending and we're under the cap (15 min × 4 polls/min),
- *      reschedules itself for +20s.
+ *   5. If still pending and we're under the cap, reschedules itself.
  *
- * Cap math: gitpage suggests 15-30s cadence, hard stop at 15 minutes.
- * 15 minutes / 20s = 45 polls.
+ * Cap math (Build v2): the cap derives from gitpage's
+ * `estimatedDurationSeconds` on the doc — `pollAttemptCapFor` gives 45 ticks
+ * for a job with no estimate and up to 120 for a premium one (90 for its
+ * usual 20-minute estimate); `pollDelayFor` backs the cadence off from 20s
+ * to 40s after five minutes so a 20-minute premium build costs ~40 ticks,
+ * not 60. The wall clock the cap spans is `pollWindowSecondsFor`: about 55
+ * minutes for 90 ticks.
+ * Terminal states are handed to `settleWebsiteBuild`, the same handler the
+ * `build.settled` callback uses — so premium hand-off runs exactly once.
+ *
+ * No `websiteEnabledByAgency` check, on purpose: a build accepted while the
+ * gate was on is polled to its end after it goes off. Why: settleWebsiteBuild.
+ *
+ * Every write below goes through `transitionWebsite`, guarded on THIS tick's
+ * job and an in-flight status. The tick reads the doc, then spends up to
+ * seconds talking to gitpage; whatever happened to the doc meanwhile (the
+ * callback settled it, the operator reset or rebuilt it) wins, the write is
+ * a no-op, and the tick ends as stale without rescheduling.
  */
-
-const POLL_INTERVAL_SECONDS = 20;
-const MAX_POLL_ATTEMPTS = 45;
 
 interface PollPayload {
   subAccountId?: string;
@@ -101,16 +122,26 @@ export async function POST(
   }
 
   const attempts = (websiteDoc.pollAttempts ?? 0) + 1;
+  const stillThisJob = {
+    expectJobId: payload.formResponseId,
+    fromStatuses: WEBSITE_IN_FLIGHT,
+  };
+  const stale = () => NextResponse.json({ ok: true, ignored: "stale-tick" });
 
-  // Cap: bail with "failed" after MAX_POLL_ATTEMPTS.
-  if (attempts > MAX_POLL_ATTEMPTS) {
-    await docRef.update({
+  // Cap: bail with "failed" once the job has had 1.5× gitpage's estimate.
+  const maxAttempts = pollAttemptCapFor(websiteDoc.estimatedDurationSeconds);
+  if (attempts > maxAttempts) {
+    // The time actually waited, from the same helpers that paced the ticks.
+    const minutes = Math.floor(
+      pollWindowSecondsFor(websiteDoc.estimatedDurationSeconds) / 60,
+    );
+    const timedOut = await transitionWebsite(docRef, stillThisJob, {
       status: "failed",
-      errorMessage:
-        "Build is taking longer than expected (15+ min). gitpage may still finish — click Re-check now in a few minutes.",
+      errorMessage: `Build is taking longer than expected (${minutes}+ min). gitpage may still finish — click Re-check now in a few minutes.`,
       pollAttempts: attempts,
       updatedAt: FieldValue.serverTimestamp(),
     });
+    if (!timedOut.applied) return stale();
     return NextResponse.json({ ok: true, settled: "timeout" });
   }
 
@@ -135,19 +166,21 @@ export async function POST(
       if (err.status === 401) {
         await markGitpageKeyInvalid();
       }
-      await docRef.update({
+      const rejected = await transitionWebsite(docRef, stillThisJob, {
         status: "failed",
-        errorMessage: `gitpage rejected the poll: ${err.message}`,
+        errorMessage: `gitpage rejected the poll: ${cleanText(err.message, 300) ?? "no details"}`,
         pollAttempts: attempts,
         updatedAt: FieldValue.serverTimestamp(),
       });
+      if (!rejected.applied) return stale();
       return NextResponse.json({ ok: true, settled: "client-error" });
     }
     console.warn("[website/poll] gitpage poll threw — rescheduling", err);
-    await docRef.update({
+    const counted = await transitionWebsite(docRef, stillThisJob, {
       pollAttempts: attempts,
       updatedAt: FieldValue.serverTimestamp(),
     });
+    if (!counted.applied) return stale();
     await rescheduleNext(
       subAccountId,
       siteId,
@@ -157,26 +190,18 @@ export async function POST(
     return NextResponse.json({ ok: true, deferred: "transient" });
   }
 
-  // Terminal states — update the doc and stop polling.
-  if (pollResult.isTerminal) {
-    if (pollResult.status === "Published") {
-      await docRef.update({
-        status: "ready",
-        liveUrl: pollResult.pagesUrl,
-        errorMessage: null,
-        partialErrors: pollResult.partialErrors,
-        pollAttempts: attempts,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return NextResponse.json({ ok: true, settled: "ready" });
-    }
-    await docRef.update({
-      status: "failed",
-      errorMessage: pollResult.error ?? "gitpage build failed without details.",
-      pollAttempts: attempts,
-      updatedAt: FieldValue.serverTimestamp(),
+  // Terminal states — settle the doc (and run the premium hand-off) and
+  // stop polling. Published without a live URL yet is not settleable: it
+  // falls through and is polled again like any build still in flight.
+  if (isSettleable(pollResult)) {
+    const settled = await settleWebsiteBuild({
+      subAccountId,
+      siteId,
+      site: websiteDoc,
+      result: pollResult,
+      attempts,
     });
-    return NextResponse.json({ ok: true, settled: "failed" });
+    return NextResponse.json({ ok: true, settled });
   }
 
   // Still in flight. Bump status to "building" if gitpage has moved past
@@ -193,11 +218,13 @@ export async function POST(
       ? "building"
       : websiteDoc.status;
 
-  await docRef.update({
+  const bumped = await transitionWebsite(docRef, stillThisJob, {
     status: nextStatus,
+    statusPhase: pollResult.statusPhase,
     pollAttempts: attempts,
     updatedAt: FieldValue.serverTimestamp(),
   });
+  if (!bumped.applied) return stale();
   const rescheduled = await rescheduleNext(
     subAccountId,
     siteId,
@@ -209,14 +236,15 @@ export async function POST(
     // rather than letting it spin in queued/building forever, so the
     // operator sees a real error and can hit Rebuild (or Re-check now
     // to retry). Without this guard, a transient Upstash blip silently
-    // strands the build past the 15-min cap.
-    await docRef.update({
+    // strands the build past the poll cap.
+    const stranded = await transitionWebsite(docRef, stillThisJob, {
       status: "failed",
       errorMessage:
         "Couldn't schedule the next poll. Try Re-check now or Rebuild.",
       pollAttempts: attempts,
       updatedAt: FieldValue.serverTimestamp(),
     });
+    if (!stranded.applied) return stale();
     return NextResponse.json({ ok: true, settled: "reschedule-failed" });
   }
   return NextResponse.json({ ok: true, deferred: "in-progress" });
@@ -237,7 +265,7 @@ async function rescheduleNext(
   const result = await publishCallback({
     pathname: `/api/sub-accounts/${subAccountId}/website/${siteId}/poll`,
     body: { subAccountId, siteId, formResponseId },
-    delaySeconds: POLL_INTERVAL_SECONDS,
+    delaySeconds: pollDelayFor(attempts),
     deduplicationId: `website_${subAccountId}_${siteId}_${formResponseId}_${attempts}`,
   });
   return result !== null;

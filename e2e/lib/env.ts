@@ -115,6 +115,25 @@ export function requireQStashSigningKey(): string {
   return value;
 }
 
+/**
+ * The key website-build-settled.spec.ts signs gitpage's `build.settled`
+ * callback with. Not in REQUIRED, for the same reason as QStash's: one spec
+ * needs it. The server verifies with the same variable, so the E2E job
+ * generates a random value for each run, which is not a gitpage credential
+ * (see ci.yml).
+ */
+export function requireGitpageApiKey(): string {
+  const value = process.env.GITPAGE_API_KEY;
+  if (!value || !value.trim()) {
+    throw new Error(
+      "GITPAGE_API_KEY is not set, so the build-settled callback cannot be " +
+        "signed. The server answers 503 without it, and the webhook's " +
+        "signature check is unprovable.",
+    );
+  }
+  return value;
+}
+
 /** Where global setup parks the agency-owner session for the specs. */
 export const STORAGE_STATE = "e2e/.auth/owner.json";
 

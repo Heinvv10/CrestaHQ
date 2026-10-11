@@ -53,7 +53,8 @@ src/
         members/[uid]/            Update role / revoke access
         twilio/                   Save dedicated Twilio creds (auto-wires inbound webhook)
         website/                  POST create-site (cap-enforced); [siteId]/build|poll|
-        website/[siteId]/...      poll-now|DELETE (reset via ?reset=1, else remove)
+        website/[siteId]/...      poll-now|PATCH (wizard draft)|DELETE (reset via ?reset=1, else remove)
+        website/concepts/         GET — member-authed proxy over gitpage's premium concept cards
       contacts/[id]/              DELETE contact + subcollections + referencing deals/tasks
       forms/[id]/submit/          Public form submission (unauthenticated; admin SDK)
       comms/email/send/           Send email (Resend, shared-sender)
@@ -64,6 +65,7 @@ src/
       u/[token]/                  POST unsubscribe (flips contact.emailOptedOut)
       cron/gitpage-heartbeat/     Daily QStash-scheduled gitpage subscription-status refresh
       cron/whatsapp-quality/      Hourly QStash-scheduled WhatsApp Cloud quality-rating poll (alerts on a drop from GREEN)
+      webhooks/gitpage/build-settled/  gitpage's build.settled callback (public; HMAC of the raw body with GITPAGE_API_KEY)
       webhooks/stripe/            Stripe subscription webhook
       webhooks/twilio/inbound/    Inbound SMS (STOP/START opt-out + chat-thread writes + AI auto-reply)
       sub-accounts/[id]/

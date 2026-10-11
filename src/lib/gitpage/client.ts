@@ -1,7 +1,26 @@
 import "server-only";
 
-import type { WebsiteConfig } from "@/types/website";
+import {
+  effectiveQuality,
+  wantsChatWidget,
+  wantsLeadForm,
+  type WebsiteConfig,
+} from "@/types/website";
 import { isNicheKey, NICHE_FORCED_PAGES } from "@/lib/website/niches";
+import {
+  premiumDetailsPayload,
+  premiumModeFor,
+} from "@/lib/website/premium";
+import { isBlockedHostname } from "@/lib/webhooks/validate-url";
+
+/**
+ * The Claude tier LeadStack forces for premium builds. gitpage's own users
+ * pick their tier on the dashboard (Haiku by default); LeadStack-triggered
+ * premium builds always run the brief on Opus so quality doesn't depend on
+ * the agency's gitpage preference. gitpage still requires the agency's
+ * gitpage account to hold a Claude/OpenRouter key.
+ */
+export const PREMIUM_CLAUDE_MODEL = "opus-5.5";
 
 /**
  * gitpage.site client — wraps the v1 API calls we need:
@@ -53,6 +72,24 @@ export interface SubmitBuildInput {
   subAccountName?: string;
   /** If set, gitpage POSTs `build.settled` here when the build finishes. */
   callbackUrl?: string;
+  /**
+   * The LeadStack user who started the build. gitpage invites this email as
+   * an "editor" on the new site (content + publish, no settings) so they can
+   * edit it with the GitPage MCP. Skipped by gitpage when it's the owner.
+   */
+  editorEmail?: string;
+  /**
+   * Premium only — the LeadStack endpoints gitpage bakes into the site so
+   * the contact form posts to THIS sub-account and the chat widget loads
+   * for it. All must be https URLs under `appUrl` (gitpage validates).
+   */
+  leadstack?: {
+    appUrl: string;
+    subAccountId: string;
+    formId?: string;
+    formSubmitUrl?: string;
+    widgetScriptUrl?: string;
+  };
 }
 
 export interface SubmitBuildResult {
@@ -155,6 +192,163 @@ export interface PollBuildResult {
   isTerminal: boolean;
   /** ISO timestamp from gitpage. Used for the heartbeat-stuck check. */
   updatedAt: string | null;
+  /**
+   * Set when the body carried a live URL that was REFUSED (`safePagesUrl`):
+   * the offered value, cleaned and cut for display. Distinguishes "gitpage
+   * has no address yet" (both null — keep polling) from "gitpage gave an
+   * address we will not store" (settle as failed and say so).
+   */
+  pagesUrlRefused: string | null;
+  /** Premium (Build v2) additive fields — null/absent on standard builds. */
+  premium: GitpagePremiumStatus | null;
+  /** gitpage page record id — what the GitPage MCP tools call `pageId`. */
+  pageId: string | null;
+}
+
+/** Chat-bot persona gitpage derives from the brief (premium publish). */
+export interface GitpageAgentPersona {
+  systemPrompt: string;
+  businessName: string;
+  hoursStart: number;
+  hoursEnd: number;
+  escalationKeywords: string[];
+  welcomeMessage: string;
+}
+
+/** Theme tokens gitpage reports for the published premium site. */
+export interface GitpageTheme {
+  primaryColor: string;
+  accentInk?: string;
+  surface?: string;
+  ink?: string;
+  mode?: "light" | "dark";
+  typeSystem?: string;
+  archetype?: string;
+  concept?: string;
+  conceptName?: string;
+}
+
+export interface GitpagePremiumStatus {
+  quality: "standard" | "premium";
+  concept: string | null;
+  estimatedDurationSeconds: number | null;
+  failedStage: string | null;
+  imageProvider: string | null;
+  imageCount: number | null;
+  briefSource: string | null;
+  /** Hand-off artefacts — only present once Published. */
+  kbText: string | null;
+  agentPersona: GitpageAgentPersona | null;
+  theme: GitpageTheme | null;
+}
+
+/**
+ * Bounds on what a status answer or a `build.settled` body may put on a site
+ * doc. The doc is read by every member's browser, and these strings come
+ * from outside: a signed body is still someone else's data.
+ */
+const MAX_PAGES_URL_LENGTH = 2048;
+const MAX_ERROR_LENGTH = 500;
+const MAX_LABEL_LENGTH = 120;
+const MAX_PARTIAL_ERRORS = 20;
+const MAX_REFUSED_URL_LENGTH = 200;
+
+/**
+ * Text from gitpage made safe to store and show: every run of control
+ * characters (newlines and tabs included, C1 and the Unicode line/paragraph
+ * separators too) becomes one space, the ends are trimmed, and the result is
+ * cut to `max`. Null for anything that is not a string or is empty after
+ * that. These strings reach the site card and the assistant's
+ * `check_website_status` answer, where a newline is how one line of status
+ * turns into several lines of someone else's instructions.
+ */
+export function cleanText(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim();
+  return cleaned ? cleaned.slice(0, max) : null;
+}
+
+/**
+ * The live URL gitpage reports, or null unless it is a plain public https
+ * address: trimmed first, then at most 2,048 characters, no whitespace or
+ * control characters inside it (`new URL` silently strips tabs and newlines,
+ * so they are refused before parsing), parses, `https:`, no embedded
+ * credentials, and not localhost or
+ * a non-public IP literal. The card renders it as a link and the hand-off
+ * will allow-list its host, so `javascript:`, `data:` and `http:` never get
+ * as far as the doc. Returned in `URL.href` form.
+ */
+export function safePagesUrl(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (/[\u0000-\u0020\u007f]/.test(trimmed)) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return null;
+  if (isBlockedHostname(url.hostname)) return null;
+  return url.href.length <= MAX_PAGES_URL_LENGTH ? url.href : null;
+}
+
+function readPremium(body: Record<string, unknown>): GitpagePremiumStatus | null {
+  if (body.quality !== "premium") return null;
+  const persona = body.agentPersona as Partial<GitpageAgentPersona> | undefined;
+  const theme = body.theme as Partial<GitpageTheme> | undefined;
+  return {
+    quality: "premium",
+    concept: cleanText(body.concept, MAX_LABEL_LENGTH),
+    estimatedDurationSeconds:
+      typeof body.estimatedDurationSeconds === "number" ? body.estimatedDurationSeconds : null,
+    failedStage: cleanText(body.failedStage, MAX_LABEL_LENGTH),
+    imageProvider: typeof body.imageProvider === "string" ? body.imageProvider : null,
+    imageCount: typeof body.imageCount === "number" ? body.imageCount : null,
+    briefSource: typeof body.briefSource === "string" ? body.briefSource : null,
+    kbText: typeof body.kbText === "string" && body.kbText.trim() ? body.kbText : null,
+    agentPersona:
+      persona && typeof persona.systemPrompt === "string" && persona.systemPrompt.trim()
+        ? {
+            systemPrompt: persona.systemPrompt,
+            businessName: typeof persona.businessName === "string" ? persona.businessName : "",
+            hoursStart: typeof persona.hoursStart === "number" ? persona.hoursStart : 0,
+            hoursEnd: typeof persona.hoursEnd === "number" ? persona.hoursEnd : 0,
+            escalationKeywords: Array.isArray(persona.escalationKeywords)
+              ? persona.escalationKeywords.filter((k): k is string => typeof k === "string")
+              : [],
+            welcomeMessage:
+              typeof persona.welcomeMessage === "string" ? persona.welcomeMessage : "",
+          }
+        : null,
+    theme:
+      theme && typeof theme.primaryColor === "string"
+        ? {
+            primaryColor: theme.primaryColor,
+            ...(typeof theme.accentInk === "string" && { accentInk: theme.accentInk }),
+            ...(typeof theme.surface === "string" && { surface: theme.surface }),
+            ...(typeof theme.ink === "string" && { ink: theme.ink }),
+            ...((theme.mode === "light" || theme.mode === "dark") && { mode: theme.mode }),
+            ...(typeof theme.typeSystem === "string" && { typeSystem: theme.typeSystem }),
+            ...(typeof theme.archetype === "string" && { archetype: theme.archetype }),
+            ...(typeof theme.concept === "string" && { concept: theme.concept }),
+            ...(cleanText(theme.conceptName, MAX_LABEL_LENGTH) && {
+              conceptName: cleanText(theme.conceptName, MAX_LABEL_LENGTH)!,
+            }),
+          }
+        : null,
+  };
+}
+
+/**
+ * Normalise a `build.settled` callback body (gitpage → LeadStack) into the
+ * same shape `pollBuild` returns, so one settle handler serves both paths.
+ * The callback carries the same fields as the status endpoint.
+ */
+export function settledPayloadToPollResult(
+  body: Record<string, unknown>,
+): PollBuildResult {
+  return normalisePollBody(body);
 }
 
 export async function pollBuild(
@@ -182,16 +376,33 @@ export async function pollBuild(
     throw new GitpageError(message, res.status, body);
   }
 
-  const rawStatus = (body.status as string) ?? "processing";
-  const statusPhase =
-    typeof body.statusPhase === "string" ? body.statusPhase : null;
-  const pagesUrl = typeof body.pagesUrl === "string" ? body.pagesUrl : null;
+  return normalisePollBody(body);
+}
+
+function normalisePollBody(body: Record<string, unknown>): PollBuildResult {
+  // A status that is not a string (a number, an object, missing) reads as
+  // still in flight, never as a TypeError.
+  const rawStatus = typeof body.status === "string" ? body.status : "processing";
+  const statusPhase = cleanText(body.statusPhase, MAX_LABEL_LENGTH);
+  const pagesUrl = safePagesUrl(body.pagesUrl);
+  // Present but refused. An empty or missing value is "no address yet".
+  const offered = body.pagesUrl;
+  const pagesUrlRefused =
+    pagesUrl !== null || offered === undefined || offered === null
+      ? null
+      : typeof offered === "string"
+        ? cleanText(offered, MAX_REFUSED_URL_LENGTH)
+        : "a value that is not text";
   const repoUrl = typeof body.repoUrl === "string" ? body.repoUrl : null;
-  const error = typeof body.error === "string" ? body.error : null;
+  const error = cleanText(body.error, MAX_ERROR_LENGTH);
   const updatedAt =
     typeof body.updatedAt === "string" ? body.updatedAt : null;
   const partialErrors = Array.isArray(body.partialErrors)
-    ? body.partialErrors.filter((v): v is string => typeof v === "string")
+    ? body.partialErrors
+        .filter((v): v is string => typeof v === "string")
+        .map((v) => cleanText(v, MAX_ERROR_LENGTH))
+        .filter((v): v is string => v !== null)
+        .slice(0, MAX_PARTIAL_ERRORS)
     : null;
 
   // Defensive matching per gitpage's guidance: any string starting with
@@ -213,12 +424,95 @@ export async function pollBuild(
     status,
     statusPhase,
     pagesUrl,
+    pagesUrlRefused,
     repoUrl,
     error,
     partialErrors: partialErrors && partialErrors.length > 0 ? partialErrors : null,
     isTerminal,
     updatedAt,
+    premium: readPremium(body),
+    // An id is used whole or not at all: an over-long one is not an id.
+    pageId:
+      typeof body.pageId === "string" &&
+      body.pageId.length <= MAX_LABEL_LENGTH &&
+      cleanText(body.pageId, MAX_LABEL_LENGTH) === body.pageId
+        ? body.pageId
+        : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// fetchConcepts — premium "pitch cards" (three studio-style options per niche)
+
+export interface GitpageConceptCard {
+  id: string;
+  /** Niche key, or "generic" for the no-niche concepts. */
+  niche: string;
+  name: string;
+  /** One-paragraph studio pitch shown on the picker card. */
+  pitch: string;
+  /** Who this concept suits. */
+  fit: string;
+  archetype: string;
+  typeSystem: string;
+  defaultMode: "light" | "dark";
+  modes: string[];
+  /** Accent hex per mode, e.g. { light: "#B13F2B", dark: "#F2C14E" }. */
+  accents: Record<string, string>;
+  heroMotion: string;
+}
+
+/**
+ * GET /api/v1/concepts?niche=… — read-only, cached by gitpage for 5 min.
+ * Pass the niche key, or null for the generic (no-niche) concepts.
+ */
+export async function fetchConcepts(
+  niche: string | null,
+): Promise<GitpageConceptCard[]> {
+  const url = `${getBaseUrl()}/api/v1/concepts${niche ? `?niche=${encodeURIComponent(niche)}` : ""}`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${getApiKey()}` },
+    next: { revalidate: 300 },
+  } as RequestInit);
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await res.json()) as Record<string, unknown>;
+  } catch {
+    // fallthrough
+  }
+  if (!res.ok) {
+    const message =
+      typeof body.message === "string"
+        ? body.message
+        : typeof body.error === "string"
+          ? body.error
+          : `gitpage GET failed: ${res.status}`;
+    throw new GitpageError(message, res.status, body);
+  }
+  const list = Array.isArray(body.concepts) ? body.concepts : [];
+  return list
+    .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+    .filter((c) => typeof c.id === "string" && typeof c.name === "string")
+    .map((c) => ({
+      id: c.id as string,
+      niche: typeof c.niche === "string" ? c.niche : "generic",
+      name: c.name as string,
+      pitch: typeof c.pitch === "string" ? c.pitch : "",
+      fit: typeof c.fit === "string" ? c.fit : "",
+      archetype: typeof c.archetype === "string" ? c.archetype : "",
+      typeSystem: typeof c.typeSystem === "string" ? c.typeSystem : "",
+      defaultMode: c.defaultMode === "dark" ? "dark" : "light",
+      modes: Array.isArray(c.modes) ? c.modes.filter((m): m is string => typeof m === "string") : [],
+      accents:
+        c.accents && typeof c.accents === "object"
+          ? Object.fromEntries(
+              Object.entries(c.accents as Record<string, unknown>).filter(
+                (e): e is [string, string] => typeof e[1] === "string",
+              ),
+            )
+          : {},
+      heroMotion: typeof c.heroMotion === "string" ? c.heroMotion : "still",
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +559,7 @@ function configToGitpagePayload(input: SubmitBuildInput) {
     subAccountId: input.subAccountId,
     ...(input.subAccountName ? { subAccountName: input.subAccountName } : {}),
     ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
+    ...(input.editorEmail ? { editorEmail: input.editorEmail } : {}),
 
     heading: c.heading,
     heroStatement: c.hero_statement,
@@ -289,6 +584,37 @@ function configToGitpagePayload(input: SubmitBuildInput) {
 
   if (c.design_color_palette === "Custom" && c.custom_colors.trim()) {
     payload.customColors = c.custom_colors.trim();
+  }
+
+  // Premium (Build v2): quality + forced Opus tier + the premium block +
+  // the LeadStack wiring. Standard builds send none of this, so the v1
+  // request stays byte-identical for them.
+  if (effectiveQuality(c) === "premium") {
+    payload.quality = "premium";
+    payload.claudeModel = PREMIUM_CLAUDE_MODEL;
+    payload.premium = {
+      ...(c.concept && { concept: c.concept }),
+      mode: premiumModeFor(c),
+      ...(c.hero_motion && { heroMotion: c.hero_motion }),
+      ...premiumDetailsPayload(c.premium_details),
+    };
+    const notes = c.premium_details?.reference_notes?.trim();
+    if (notes) payload.referenceNotes = notes;
+    if (input.leadstack) {
+      const ls = input.leadstack;
+      payload.leadstack = {
+        appUrl: ls.appUrl,
+        subAccountId: ls.subAccountId,
+        ...(wantsLeadForm(c) && ls.formId && ls.formSubmitUrl
+          ? { formId: ls.formId, formSubmitUrl: ls.formSubmitUrl }
+          : {}),
+        ...(wantsChatWidget(c) && ls.widgetScriptUrl
+          ? { widgetScriptUrl: ls.widgetScriptUrl }
+          : {}),
+      };
+    }
+  } else {
+    payload.quality = "standard";
   }
 
   if (buildType === "vsl") {

@@ -291,6 +291,9 @@ export function WebsiteBuilder({
       const payload = (await res.json().catch(() => ({}))) as {
         error?: string;
         settled?: "ready" | "failed" | "client-error";
+        deferred?: "in-flight";
+        rescheduled?: boolean;
+        ignored?: string;
       };
       if (!res.ok) throw new Error(payload.error ?? "Could not re-check.");
       if (payload.settled === "ready") {
@@ -299,8 +302,12 @@ export function WebsiteBuilder({
         toast.error("Build failed on gitpage's side.");
       } else if (payload.settled === "client-error") {
         toast.error("gitpage rejected the poll — check the error.");
-      } else {
+      } else if (payload.deferred === "in-flight" && payload.rescheduled) {
         toast.success("Still building — restarted the poll loop.");
+      } else if (payload.deferred === "in-flight") {
+        toast.success("Still building — status refreshed.");
+      } else {
+        toast.info("Nothing to re-check — this site isn't building.");
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not re-check.");
@@ -403,7 +410,7 @@ export function WebsiteBuilder({
                 <Loader2 className="h-3 w-3 animate-spin" />
                 {status === "queued"
                   ? "Build queued — gitpage is starting up…"
-                  : "Building your site… (1–3 min)"}
+                  : "Building your premium site… (10–20 min)"}
               </p>
             )}
             {status === "ready" && liveUrl && (
@@ -1097,8 +1104,7 @@ export function WebsiteBuilder({
                   {status === "failed" ? "Try the build again" : "Ready to build?"}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Builds typically take 1–3 minutes. We&apos;ll show progress
-                  here.
+                  Builds take 10–20 minutes. We&apos;ll show progress here.
                 </p>
               </div>
               <Button type="submit" disabled={submitting}>
@@ -1193,12 +1199,12 @@ function BuildModePicker({
   const options: Array<{ id: BuildMode; label: string; hint: string }> = [
     {
       id: "standard_local",
-      label: "Standard local site",
+      label: "Business website",
       hint: "Multi-page site — home, services, contact, terms.",
     },
     {
       id: "standard_vsl",
-      label: "Standard VSL funnel",
+      label: "Video funnel (VSL)",
       hint: "Single page with a video and one call-to-action.",
     },
     {

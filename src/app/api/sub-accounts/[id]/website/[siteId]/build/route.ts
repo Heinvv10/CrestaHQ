@@ -66,7 +66,12 @@ export async function POST(
             ? { gitpageStatus: err.gitpageStatus, gitpageBody: err.gitpageBody }
             : {}),
         },
-        { status: err.status },
+        {
+          status: err.status,
+          ...(err.retryAfterSec !== undefined
+            ? { headers: { "Retry-After": String(err.retryAfterSec) } }
+            : {}),
+        },
       );
     }
     console.error("[website/build] failed", err);

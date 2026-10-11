@@ -39,7 +39,7 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
             : status === "failed"
               ? `failed${w.errorMessage ? ` — ${w.errorMessage}` : ""}`
               : status === "queued" || status === "building"
-                ? "building now (usually 1–3 minutes)"
+                ? "building now (premium — usually 10–20 minutes)"
                 : "draft (not built yet)";
         return `- “${name}”: ${detail}`;
       });

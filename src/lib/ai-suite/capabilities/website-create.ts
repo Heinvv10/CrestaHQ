@@ -385,7 +385,7 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
           : `multi-page site (${nicheLabel})`;
       return `Create & BUILD the website “${
         args.siteName || args.heading
-      }” — ${kind}, ${args.colorScheme === "Dark Mode" ? "dark mode" : "standard colours"}, heading “${args.heading}”. This submits a real build (uses one of your agency's website builds; live in ~1–3 minutes).`;
+      }” — ${kind}, ${args.colorScheme === "Dark Mode" ? "dark mode" : "standard colours"}, heading “${args.heading}”. This submits a real build (uses one of your agency's website builds; live in ~10–20 minutes).`;
     },
     execute: async (ctx, args) => {
       const subAccountId = ctx.subAccountId!;
@@ -540,7 +540,7 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
       return {
         resultText: `The build for “${
           (args.siteName as string) || (args.heading as string)
-        }” is submitted — it takes about 1–3 minutes to generate. Watch it go live under Sidebar → Website; the card shows the live URL when it's ready.`,
+        }” is submitted — it takes about 10–20 minutes (brief → photography → design → publish). Watch it go live under Sidebar → Website; the card shows the live URL when it's ready.`,
         ref: { kind: "website", id: siteId },
       };
     },
