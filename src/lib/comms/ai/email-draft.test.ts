@@ -106,7 +106,7 @@ afterEach(async () => {
 
 describe("Email AI drafts", () => {
   it("writes a draft, never a send — even with the conversation in auto mode", async () => {
-    seed();
+    seed({ conversation: { botMode: "auto" } });
     await maybeDraftEmailReply(EMAIL);
     await flushAfterResponse();
     expect(seamCalls()).toEqual(NO_SEAMS);
