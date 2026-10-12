@@ -147,12 +147,18 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
   const save = async () => {
     setBusy(true);
     const allowedOrigins = origins.split("\n").map((o) => o.trim()).filter(Boolean);
-    const { ok, data } = await call(api, "PUT", { enabled, allowedOrigins, maxReviews: Number(maxReviews), layout, theme });
+    // The widget this form was opened on: a stale form must not overwrite a newer one.
+    const expectedPublicId = meta?.publicId ?? null;
+    const { ok, data } = await call(api, "PUT", { enabled, allowedOrigins, maxReviews: Number(maxReviews), layout, theme, expectedPublicId });
     setBusy(false);
     if (ok && data.widget) {
       setOrigins(data.widget.allowedOrigins.join("\n"));
       setErrors([]);
       toast.success("Widget saved.");
+      return;
+    }
+    if (data.code === "widget_changed") {
+      toast.error(data.error ?? "The widget changed since this page loaded. Reload to see it, then save again.");
       return;
     }
     setErrors(data.details?.length ? data.details.map((d) => `${d.value} — ${REASONS[d.reason] ?? d.reason}`) : [data.error ?? "That didn't work. Please try again."]);

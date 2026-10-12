@@ -951,7 +951,12 @@ Below the panel, for admins, the public widget card (`widget-section.tsx`):
 `gbp-widget-errors` (the server's reason per rejected origin),
 `gbp-widget-snippet`, `gbp-widget-feed-url`, `gbp-widget-rotate`,
 `gbp-widget-revoke`; with the gate off only Revoke — each rendered by
-`components/gbp/widget-section.test.ts`. SP5 PR (e) adds `gbp-widget-layout`
+`components/gbp/widget-section.test.ts`. Save sends `expectedPublicId` — the widget
+the form was opened on, null for the "create" form; the PUT refuses a save
+whose expectation is not the stored widget with 409 `widget_changed` (nothing
+written), shown as a toast to reload — so a form opened before another
+admin created, rotated or revoked the widget never overwrites it. A PUT
+without the field (curl, scripts) saves unconditionally. SP5 PR (e) adds `gbp-widget-layout`
 (Carousel / Grid / List / Badge) and `gbp-widget-theme` (Light / Dark), saved
 with Save, and `gbp-widget-preview` — "Preview (saved settings)"
 (`widget-preview.tsx`): the real embed script against this widget's feed,
