@@ -305,7 +305,9 @@ whose one transactional writer (`commitWebVoiceState`) changes it together with
 the parent's display copy and applies only if `rev` is still what the caller
 read. The key is checked against ElevenLabs before it is ever stored. The parent
 carries only the non-secret `webVoiceMeta` (`WebVoiceMeta`: settings, `ready`,
-`keyLast4`, `lastError`, `connectedAt`; null = not connected), server-written.
+`keyLast4`, `lastError`, `connectedAt`; null = not connected; `ready` stays false until
+WV-2 ships the reply webhook), server-written. `webVoiceMeta` (and the dialer's
+`dialerConfig`) are in `CHANNEL_CONNECTION_FIELDS` (`lib/agency/channel-connections.ts`).
 Disconnect deletes the connection doc and `private/webVoiceUsage` (the call
 path's usage counters, written from WV-2). No new index. See
 [web-voice.md](../features/web-voice.md).

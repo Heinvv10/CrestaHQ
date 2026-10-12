@@ -35,6 +35,8 @@ const CONNECTED: Record<string, unknown> = {
   apexgeoConnected: true,
   mailboxConfig: { host: "imap.example.com", port: 993, username: "a@example.com" },
   ghlImportConfig: { locationId: "loc1", connectedByUid: "owner1" },
+  webVoiceMeta: { keyLast4: "abcd", ready: false },
+  dialerConfig: { enabled: true, recordCalls: false },
 };
 
 describe("hasChannelConnection", () => {
@@ -56,5 +58,7 @@ describe("hasChannelConnection", () => {
     expect(hasChannelConnection({ ...FRESH, whatsappSenders: [] })).toBe(false);
     expect(hasChannelConnection({ ...FRESH, apexgeoConnected: false })).toBe(false);
     expect(hasChannelConnection({ ...FRESH, smtpConfig: null, paypalConfig: null })).toBe(false);
+    // What the Web Voice and dialer disconnect routes leave behind.
+    expect(hasChannelConnection({ ...FRESH, webVoiceMeta: null, dialerConfig: null })).toBe(false);
   });
 });
