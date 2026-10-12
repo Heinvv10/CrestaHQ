@@ -86,3 +86,29 @@ it("a pre-pipeline deal (no pipelineId field) re-imported onto the default write
   await importDeals([deal({})]);
   expect(mem.list("dealStageHistory")).toHaveLength(1);
 });
+
+it("a pipeline_id that is a path fails only its own record; the rest of the chunk writes", async () => {
+  // Real Firestore throws on a doc path with an odd segment count; the
+  // in-memory one doesn't, so enforce it here — a malformed id must never
+  // reach db.doc, where a throw would fail the whole chunk.
+  const realDoc = mem.db.doc;
+  mem.db.doc = ((path: string) => {
+    if (path.split("/").length % 2 !== 0) throw new Error(`invalid document path ${path}`);
+    return realDoc(path);
+  }) as typeof realDoc;
+  try {
+    const r = await importDeals([
+      deal({ external_id: "a", pipeline_id: "a/b", stage: "follow_up" }),
+      deal({ external_id: "b", pipeline_id: "P1/x/y", stage: "follow_up" }),
+      deal({ external_id: "c", pipeline_id: "P1", stage: "follow_up" }),
+    ]);
+    expect(r.errors.map((e) => [e.externalId, e.error])).toEqual([
+      ["a", "`pipeline_id` is not a valid id."],
+      ["b", "`pipeline_id` is not a valid id."],
+    ]);
+    expect(r.created).toBe(1);
+    expect(mem.list("deals").map((d) => d.pipelineId)).toEqual(["P1"]);
+  } finally {
+    mem.db.doc = realDoc;
+  }
+});

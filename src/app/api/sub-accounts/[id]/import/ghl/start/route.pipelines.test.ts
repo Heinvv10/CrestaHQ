@@ -20,10 +20,13 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/auth/require-tenancy", () => ({
   requireSubAccountAdmin: async () => ({ uid: "u_admin" }),
 }));
+const publishCallback = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ messageId: string } | null> => ({ messageId: "m1" })),
+);
 vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => true,
   verifyQStashSignature: async () => true,
-  publishCallback: async () => ({ messageId: "m1" }),
+  publishCallback,
 }));
 vi.mock("@/lib/server/sub-account-secrets", () => ({
   readSubAccountSecret: async () => "tok",
@@ -73,6 +76,7 @@ const dealsByTitle = () =>
   Object.fromEntries(mem.list("deals").map((d) => [d.title, [d.pipelineId, d.stageId]]));
 
 beforeEach(() => {
+  publishCallback.mockClear();
   mem.clear();
   mem.seed("subAccounts/sa1", {
     agencyId: "ag1",
@@ -127,5 +131,39 @@ describe("GHL import with createPipelines", () => {
     const body = (await res.json()) as { pipelinesCreated: number; pipelineWarnings?: string[] };
     expect(body.pipelinesCreated).toBe(1);
     expect(body.pipelineWarnings).toEqual([expect.stringContaining('"Broken"')]);
+  });
+
+  it("a second run reuses the pipeline: same deal pipelines and stages, no new stage-history rows", async () => {
+    const run = async () => {
+      const body = (await (
+        await startImport({ createPipelines: true, ghlPipelines: SAMPLE_PIPELINES })
+      ).json()) as { jobId: string; pipelinesCreated: number };
+      expect(body.pipelinesCreated).toBe(1);
+      await drain(body.jobId);
+    };
+    await run();
+    const deals = dealsByTitle();
+    const rows = mem.list("dealStageHistory").length;
+    expect(rows).toBe(3);
+
+    await run();
+    expect(mem.list("subAccounts/sa1/pipelines").map((p) => p.id)).toEqual(["ghl_pl_sales"]);
+    expect(mem.list("deals")).toHaveLength(3);
+    expect(dealsByTitle()).toEqual(deals);
+    expect(mem.list("dealStageHistory")).toHaveLength(rows);
+  });
+
+  it("a retry after the enqueue failed reuses the pipeline the failed start created", async () => {
+    publishCallback.mockResolvedValueOnce(null);
+    const failed = await startImport({ createPipelines: true, ghlPipelines: SAMPLE_PIPELINES });
+    expect(failed.status).toBe(502);
+    expect(mem.list("subAccounts/sa1/pipelines")).toHaveLength(1);
+
+    const body = (await (
+      await startImport({ createPipelines: true, ghlPipelines: SAMPLE_PIPELINES })
+    ).json()) as { jobId: string };
+    expect(mem.list("subAccounts/sa1/pipelines").map((p) => p.id)).toEqual(["ghl_pl_sales"]);
+    await drain(body.jobId);
+    expect(dealsByTitle()["Website rebuild"]).toEqual(["ghl_pl_sales", "proposal_sent"]);
   });
 });

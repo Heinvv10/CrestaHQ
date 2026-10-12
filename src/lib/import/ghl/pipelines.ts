@@ -1,6 +1,7 @@
 import "server-only";
 
-import { createPipeline } from "@/lib/pipelines/write";
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
 import {
   MAX_STAGES,
   PIPELINE_NAME_MAX,
@@ -11,7 +12,7 @@ import {
   type Validation,
 } from "@/lib/pipelines/stages";
 import { isDocId } from "@/lib/server/doc-id";
-import type { PipelineStage } from "@/types/deals";
+import type { PipelineDoc, PipelineStage } from "@/types/deals";
 import type { GhlPipelineTarget } from "@/lib/import/ghl/transform";
 
 /**
@@ -20,12 +21,19 @@ import type { GhlPipelineTarget } from "@/lib/import/ghl/transform";
  * LeadStack-id map. The pipeline list comes from the wizard's preview, so
  * every id, name and count is checked here; anything that fails is skipped
  * with a warning and its deals take the legacy squash-onto-default path.
+ *
+ * Idempotent, like the rest of the importer: a GHL pipeline always lands in
+ * `pipelines/ghl_<ghlId>`, created or extended in one transaction, and the
+ * doc's `externalStageIds` remembers which stage each GHL stage became. A
+ * re-run (or a retry after a failed enqueue) reuses the pipeline and its
+ * stages and only adds GHL stages it has not seen; it never renames or
+ * removes anything the operator has since changed.
  */
 
 /** Bound on pipelines one import request may create. */
 export const MAX_IMPORTED_PIPELINES = 25;
-/** GHL stages kept per pipeline — Won and Lost are appended. */
-const KEPT_STAGES = MAX_STAGES - 2;
+/** Bound on the GHL stages of one pipeline read from the request. */
+const MAX_GHL_STAGES = 200;
 
 export interface RecreatedGhlPipelines {
   pipelineMap: Record<string, GhlPipelineTarget>;
@@ -34,39 +42,127 @@ export interface RecreatedGhlPipelines {
   warnings: string[];
 }
 
+type GhlStage = { id: string; name: string };
+
+/** The GHL bookkeeping on an imported pipeline doc. */
+interface ImportedPipelineFields {
+  externalSource: "ghl";
+  externalId: string;
+  /** GHL stage id → the stage id it became on this pipeline. */
+  externalStageIds: Record<string, string>;
+}
+
 /**
- * GHL stage names → a validated stage list with Won/Lost appended (GHL
- * tracks outcomes as status, not stages). `ids[i]` is the stage created for
- * the i-th name; undefined when that name was dropped (blank or over
- * `KEPT_STAGES`).
+ * Merge GHL stages into a pipeline's current stages (`[]` for a new one).
+ * A GHL stage already mapped (`known`) to a stage still on the pipeline
+ * keeps it; any other becomes a new open stage, inserted before the first
+ * terminal. Won/Lost are appended if missing (GHL tracks outcomes as
+ * status, not stages). `dropped` counts GHL stages left unmapped — blank,
+ * or no room under `MAX_STAGES`.
  */
-export function importedStages(
-  names: string[],
-): Validation<{ stages: PipelineStage[]; ids: (string | undefined)[] }> {
-  const used = new Set<string>();
+export function mergeImportedStages(
+  current: PipelineStage[],
+  known: Record<string, string>,
+  ghlStages: GhlStage[],
+): Validation<{ stages: PipelineStage[]; byGhlId: Record<string, string>; dropped: number }> {
+  const used = new Set(current.map((s) => s.id));
   const unique = (base: string) => {
     let id = base;
     for (let n = 2; used.has(id); n++) id = `${base.slice(0, 36)}_${n}`;
     used.add(id);
     return id;
   };
-  const raw: { id: string; label: string; terminal?: "won" | "lost" }[] = [];
-  const ids: (string | undefined)[] = [];
-  for (const [i, name] of names.entries()) {
-    const label = name.trim().slice(0, STAGE_LABEL_MAX).trim();
-    if (!label || raw.length >= KEPT_STAGES) {
-      ids.push(undefined);
+  const hasWon = current.some((s) => s.terminal === "won");
+  const hasLost = current.some((s) => s.terminal === "lost");
+  // Room for open stages once Won and Lost are both present.
+  const room = MAX_STAGES - current.length - (hasWon ? 0 : 1) - (hasLost ? 0 : 1);
+  const added: { id: string; label: string }[] = [];
+  const byGhlId: Record<string, string> = {};
+  let dropped = 0;
+  for (const [i, g] of ghlStages.entries()) {
+    const mapped = Object.hasOwn(known, g.id) ? known[g.id] : undefined;
+    if (mapped && current.some((s) => s.id === mapped)) {
+      byGhlId[g.id] = mapped;
+      continue;
+    }
+    const label = g.name.trim().slice(0, STAGE_LABEL_MAX).trim();
+    if (!label || added.length >= room) {
+      dropped++;
       continue;
     }
     const id = unique(slugifyStageId(label) || `stage_${i + 1}`);
-    raw.push({ id, label });
-    ids.push(id);
+    added.push({ id, label });
+    byGhlId[g.id] = id;
   }
-  if (raw.length === 0) raw.push({ id: unique("new"), label: "New" });
-  raw.push({ id: unique("won"), label: "Won", terminal: "won" });
-  raw.push({ id: unique("lost"), label: "Lost", terminal: "lost" });
+  if (added.length === 0 && !current.some((s) => !s.terminal)) {
+    added.push({ id: unique("new"), label: "New" });
+  }
+  const firstTerminal = current.findIndex((s) => s.terminal);
+  const at = firstTerminal === -1 ? current.length : firstTerminal;
+  const raw: { id: string; label: string; terminal?: "won" | "lost" }[] = [
+    ...current.slice(0, at),
+    ...added,
+    ...current.slice(at),
+  ];
+  if (!hasWon) raw.push({ id: unique("won"), label: "Won", terminal: "won" });
+  if (!hasLost) raw.push({ id: unique("lost"), label: "Lost", terminal: "lost" });
   const valid = validateStages(raw);
-  return valid.ok ? { ok: true, value: { stages: valid.value, ids } } : valid;
+  return valid.ok ? { ok: true, value: { stages: valid.value, byGhlId, dropped } } : valid;
+}
+
+/**
+ * Create `pipelines/ghl_<ghlId>`, or extend it with GHL stages it lacks, in
+ * one transaction (two concurrent starts cannot both create it). Null when
+ * the sub-account is missing.
+ */
+async function upsertGhlPipeline(opts: {
+  subAccountId: string;
+  createdByUid: string;
+  ghlId: string;
+  name: string;
+  ghlStages: GhlStage[];
+}): Promise<
+  | Validation<{ id: string; stages: PipelineStage[]; byGhlId: Record<string, string>; dropped: number }>
+  | null
+> {
+  const db = getAdminDb();
+  const subRef = db.doc(`subAccounts/${opts.subAccountId}`);
+  const ref = db.doc(`subAccounts/${opts.subAccountId}/pipelines/ghl_${opts.ghlId}`);
+  return db.runTransaction(async (tx) => {
+    const [sub, snap] = await tx.getAll(subRef, ref);
+    const agencyId = sub.data()?.agencyId as string | undefined;
+    if (!sub.exists || !agencyId) return null;
+    const existing = snap.exists
+      ? (snap.data() as Omit<PipelineDoc, "id"> & Partial<ImportedPipelineFields>)
+      : null;
+    const known = existing?.externalStageIds ?? {};
+    const merged = mergeImportedStages(existing?.stages ?? [], known, opts.ghlStages);
+    if (!merged.ok) return merged;
+    const { stages, byGhlId } = merged.value;
+    const externalStageIds = { ...known, ...byGhlId };
+    if (!existing) {
+      const doc: Omit<PipelineDoc, "id"> & ImportedPipelineFields = {
+        name: opts.name,
+        stages,
+        isDefault: false,
+        agencyId,
+        subAccountId: opts.subAccountId,
+        createdByUid: opts.createdByUid,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+        externalSource: "ghl",
+        externalId: opts.ghlId,
+        externalStageIds,
+      };
+      tx.set(ref, doc);
+    } else if (
+      stages.length !== existing.stages.length ||
+      Object.entries(byGhlId).some(([g, s]) => known[g] !== s)
+    ) {
+      tx.update(ref, { stages, externalStageIds, updatedAt: FieldValue.serverTimestamp() });
+    }
+    return { ok: true, value: { id: ref.id, ...merged.value } };
+  });
 }
 
 export async function recreateGhlPipelines(
@@ -96,49 +192,47 @@ export async function recreateGhlPipelines(
       );
       continue;
     }
-    const ghlStages = (Array.isArray(p.stages) ? p.stages : []).filter(
-      (s): s is { id: string; name: string } =>
+    const ghlStages = (Array.isArray(p.stages) ? p.stages.slice(0, MAX_GHL_STAGES) : []).filter(
+      (s): s is GhlStage =>
         typeof s === "object" &&
         s !== null &&
         isDocId((s as Record<string, unknown>).id) &&
         typeof (s as Record<string, unknown>).name === "string",
     );
-    const built = importedStages(ghlStages.map((s) => s.name));
-    if (!built.ok) {
-      out.warnings.push(
-        `Pipeline "${name.value}" wasn't recreated (${built.error}) — its deals import onto the default pipeline instead.`,
-      );
-      continue;
-    }
-    const { stages, ids } = built.value;
-    let id: string | null;
+    let result: Awaited<ReturnType<typeof upsertGhlPipeline>>;
     try {
-      id = await createPipeline({ subAccountId, createdByUid, name: name.value, stages });
+      result = await upsertGhlPipeline({
+        subAccountId,
+        createdByUid,
+        ghlId,
+        name: name.value,
+        ghlStages,
+      });
     } catch (err) {
       console.error(
-        `[import/ghl] pipeline create failed sa=${subAccountId}: ${err instanceof Error ? err.message : String(err)}`,
+        `[import/ghl] pipeline upsert failed sa=${subAccountId}: ${err instanceof Error ? err.message : String(err)}`,
       );
-      id = null;
+      result = null;
     }
-    if (!id) {
+    if (!result || !result.ok) {
       out.warnings.push(
-        `Pipeline "${name.value}" wasn't recreated (creation failed) — its deals import onto the default pipeline instead.`,
+        `Pipeline "${name.value}" wasn't recreated (${result ? result.error : "creation failed"}) — its deals import onto the default pipeline instead.`,
       );
       continue;
     }
-    const pipelineId = id;
+    const { id: pipelineId, stages, byGhlId, dropped } = result.value;
     out.pipelineMap[ghlId] = {
       id: pipelineId,
-      firstId: stages[0].id,
+      firstId: (stages.find((s) => !s.terminal) ?? stages[0]).id,
       wonId: stages.find((s) => s.terminal === "won")!.id,
       lostId: stages.find((s) => s.terminal === "lost")!.id,
     };
-    ghlStages.forEach((s, i) => {
-      if (ids[i]) out.pipelineStageMap[s.id] = { pipelineId, stageId: ids[i] };
-    });
-    if (ids.some((x) => x === undefined)) {
+    for (const [ghlStageId, stageId] of Object.entries(byGhlId)) {
+      out.pipelineStageMap[ghlStageId] = { pipelineId, stageId };
+    }
+    if (dropped > 0) {
       out.warnings.push(
-        `Pipeline "${name.value}" keeps its first ${KEPT_STAGES} named stages — deals in any other stage land on its first stage.`,
+        `Pipeline "${name.value}": ${dropped} GoHighLevel stage${dropped === 1 ? "" : "s"} couldn't be added (blank, or over ${MAX_STAGES} stages) — deals in ${dropped === 1 ? "it" : "them"} land on its first stage.`,
       );
     }
   }

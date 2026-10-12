@@ -297,8 +297,8 @@ export function GhlImportWizard() {
                   >
                     <span className="font-medium">{p.name}</span>
                     <span className="text-xs text-muted-foreground">
-                      {(p.stages ?? []).length} stages + Won/Lost — will be
-                      created
+                      {(p.stages ?? []).length} stages + Won/Lost — created,
+                      or reused if imported before
                     </span>
                   </div>
                 ))}
