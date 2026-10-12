@@ -229,8 +229,14 @@ describe("enrichBusinesses — bounded deadline", () => {
     // Reviewer's repro: a 40-site search occupies every process-wide slot
     // continuously; a 1-site search that starts after it must not be
     // queued indefinitely behind it — its own deadline bounds the wait.
+    // The big search's fetches stay open until released (5 s at the latest),
+    // so a waiter that ignores its deadline takes 5 s, not ~60 ms: the 2 s
+    // budget holds on a loaded runner and still fails that.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const safety = setTimeout(release, 5_000);
     publicFetch.mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 100));
+      await gate;
       return html(`<a href="mailto:hi@big.example">x</a>`);
     });
     const bigSearch = enrichBusinesses(
@@ -248,9 +254,11 @@ describe("enrichBusinesses — bounded deadline", () => {
     );
     const elapsed = performance.now() - t0;
 
-    expect(elapsed).toBeLessThan(deadlineMs + 150);
+    expect(elapsed).toBeLessThan(2_000);
     expect(small!.email).toBeNull();
 
+    release();
+    clearTimeout(safety);
     await bigSearch; // drain so it doesn't leak into later tests
   });
 
@@ -290,7 +298,12 @@ describe("enrichBusinesses — bounded deadline", () => {
   it("an aborted caller signal stops the call promptly, well inside the default deadline", async () => {
     expect(ENRICH_DEADLINE_MS).toBe(30_000);
 
-    publicFetch.mockResolvedValue(html(`<a href="mailto:hi@ok.example">x</a>`));
+    // A fetch that did start would take 5 s; the 2 s budget holds on a loaded
+    // runner and still fails a call that ignores the caller's abort.
+    publicFetch.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5_000));
+      return html(`<a href="mailto:hi@ok.example">x</a>`);
+    });
     const controller = new AbortController();
     controller.abort();
 
@@ -298,7 +311,7 @@ describe("enrichBusinesses — bounded deadline", () => {
     const [b] = await enrichBusinesses([biz(1, "https://slow.example")], controller.signal);
     const elapsed = performance.now() - t0;
 
-    expect(elapsed).toBeLessThan(200);
+    expect(elapsed).toBeLessThan(2_000);
     expect(b!.email).toBeNull();
     expect(publicFetch).not.toHaveBeenCalled();
   });
