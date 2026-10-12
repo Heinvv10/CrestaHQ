@@ -98,13 +98,17 @@ describe("PUT — record a custom domain", () => {
     expect(allowed(OTHER_CHAT)).toEqual(["other.example"]);
   });
 
-  it("adds www to an apex, and nothing but the host itself for any other subdomain", async () => {
-    await put("acme.com");
-    expect(allowed()).toEqual(["acme.gitlab.io", "acme.com", "www.acme.com"]);
-    seedSite(SITE);
+  it.each([
+    ["a two-label apex", "acme.com", ["acme.com", "www.acme.com"]],
+    ["an apex under a multi-label suffix", "peakyoga.co.za", ["peakyoga.co.za", "www.peakyoga.co.za"]],
+    ["www under a multi-label suffix", "www.peakyoga.co.za", ["www.peakyoga.co.za", "peakyoga.co.za"]],
+    ["a subdomain", "shop.acme.com", ["shop.acme.com"]],
+    ["a subdomain under a multi-label suffix", "shop.peakyoga.co.za", ["shop.peakyoga.co.za"]],
+    ["www on a subdomain", "www.shop.peakyoga.co.za", ["www.shop.peakyoga.co.za"]],
+  ])("allow-lists %s with exactly its www/apex twin, if it has one", async (_label, domain, hosts) => {
     seedChat(CHAT, []);
-    await put("shop.acme.com");
-    expect(allowed()).toEqual(["shop.acme.com"]);
+    expect((await put(domain)).status).toBe(200);
+    expect(allowed()).toEqual(hosts);
   });
 
   it("stores the bare hostname whatever was pasted", async () => {
@@ -118,6 +122,8 @@ describe("PUT — record a custom domain", () => {
     ["a wildcard", "*.acme.com"],
     ["an IP address", "203.0.113.7"],
     ["a single label", "localhost"],
+    ["a bare public suffix", "co.za"],
+    ["the gitlab.io suffix itself", "gitlab.io"],
     ["a path-only value", "/acme"],
     ["this app's own host", "app.test"],
     ["this app's host with www", "www.app.test"],

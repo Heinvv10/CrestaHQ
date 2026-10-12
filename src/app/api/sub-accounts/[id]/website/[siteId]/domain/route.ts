@@ -10,6 +10,7 @@ import {
   upsertAgentProfile,
   upsertChannelConfig,
 } from "@/lib/comms/ai/agent";
+import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   requireWebsiteEnabledSub,
@@ -36,8 +37,10 @@ export const dynamic = "force-dynamic";
  *  - only the sub-account in the path, which must own the site (the site doc
  *    is read under that sub-account and must carry its id) — a domain is
  *    never written into another tenant's allow-list;
- *  - only exact hostnames: the domain, plus its www/apex twin. No wildcard,
- *    no IP, no port, no gitlab.io/github.io host, and never this app's own
+ *  - only exact hostnames: the domain, plus its www/apex twin (the apex is
+ *    the registrable domain from the Public Suffix List, so `acme.co.za`
+ *    pairs with `www.acme.co.za`). No wildcard, no IP, no port, no bare
+ *    public suffix, no gitlab.io/github.io host, and never this app's own
  *    host or a host under it (Labs funnel subdomains are other tenants'
  *    pages). The web-chat origin check is an exact hostname match.
  *
@@ -74,6 +77,8 @@ function normaliseDomain(raw: unknown): DomainCheck {
   d = d.replace(/^[a-z]+:\/\//, "").split(/[/?#]/)[0].replace(/:\d+$/, "").replace(/\.$/, "");
   if (!HOST_RE.test(d)) return invalid;
   if (/\.(gitlab|github)\.io$/.test(d)) return invalid;
+  // A bare public suffix ("co.za", "github.io") is nobody's site.
+  if (!registrableDomain(d)) return invalid;
   // Unknown app host = cannot tell a platform host from a customer's: refuse.
   const root = appRootHost();
   if (!root) return { error: "This deployment's app URL is not configured, so a custom domain can't be checked." };
@@ -83,10 +88,15 @@ function normaliseDomain(raw: unknown): DomainCheck {
   return { domain: d };
 }
 
-/** The domain plus its www/apex twin — visitors may arrive on either. */
+/**
+ * The domain plus its www/apex twin — visitors may arrive on either. Only an
+ * apex or `www.` + apex has a twin; any other subdomain is just itself.
+ */
 function variants(domain: string): string[] {
-  if (domain.startsWith("www.")) return [domain, domain.slice(4)];
-  return domain.split(".").length === 2 ? [domain, `www.${domain}`] : [domain];
+  const apex = registrableDomain(domain);
+  if (domain === apex) return [domain, `www.${domain}`];
+  if (apex && domain === `www.${apex}`) return [domain, apex];
+  return [domain];
 }
 
 async function loadSite(subAccountId: string, siteId: string) {
