@@ -48,12 +48,34 @@ function errorMessage(body: unknown, status: number): string {
   return `ElevenLabs returned HTTP ${status}.`;
 }
 
+/**
+ * ElevenLabs' error text reaches the member-readable `webVoiceMeta.lastError`
+ * and the route's responses, and it may echo what we sent (an agent body
+ * carries the custom-LLM URL with the endpoint secret in it). The ONE place
+ * every error message from this client is built: the key and any secret the
+ * caller names are cut out first.
+ */
+function redact(text: string, secrets: string[]): string {
+  return secrets.filter(Boolean).reduce((out, secret) => out.split(secret).join("[redacted]"), text);
+}
+
+/** Ids we put in a path (agent, conversation). Anything else — "..", a
+ *  slash, a query — could address a different endpoint. */
+const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+function idSegment(id: string): string {
+  if (!ID_RE.test(id)) throw new ElevenLabsError("That ElevenLabs id isn't valid.", 400);
+  return id;
+}
+
 async function call<T>(
   apiKey: string,
   method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   body?: unknown,
+  secrets: string[] = [],
 ): Promise<T> {
+  const scrub = (text: string) => redact(text, [apiKey, ...secrets]);
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {
@@ -68,7 +90,7 @@ async function call<T>(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "network error";
-    throw new ElevenLabsError(`Couldn't reach ElevenLabs (${msg}).`, 502);
+    throw new ElevenLabsError(scrub(`Couldn't reach ElevenLabs (${msg}).`), 502);
   }
   const text = await res.text();
   let json: unknown = null;
@@ -78,7 +100,7 @@ async function call<T>(
     json = null;
   }
   if (!res.ok) {
-    throw new ElevenLabsError(errorMessage(json, res.status), res.status);
+    throw new ElevenLabsError(scrub(errorMessage(json, res.status)), res.status);
   }
   return json as T;
 }
@@ -138,6 +160,8 @@ export interface AgentSpec {
   name: string;
   /** Full custom-LLM URL (LeadStack reply endpoint, secret in the path). */
   llmUrl: string;
+  /** The path secret inside `llmUrl` — redacted from any error text. */
+  endpointSecret: string;
   voiceId: string;
   language: string;
   greeting: string;
@@ -188,8 +212,10 @@ export async function createAgent(apiKey: string, spec: AgentSpec): Promise<stri
     "POST",
     "/v1/convai/agents/create",
     agentBody(spec),
+    [spec.endpointSecret],
   );
-  if (!data.agent_id) {
+  // Stored, then put in later request paths.
+  if (!data.agent_id || !ID_RE.test(data.agent_id)) {
     throw new ElevenLabsError("ElevenLabs didn't return an agent id.", 502);
   }
   return data.agent_id;
@@ -200,11 +226,13 @@ export async function updateAgent(
   agentId: string,
   spec: AgentSpec,
 ): Promise<void> {
-  await call(apiKey, "PATCH", `/v1/convai/agents/${encodeURIComponent(agentId)}`, agentBody(spec));
+  await call(apiKey, "PATCH", `/v1/convai/agents/${idSegment(agentId)}`, agentBody(spec), [
+    spec.endpointSecret,
+  ]);
 }
 
 export async function deleteAgent(apiKey: string, agentId: string): Promise<void> {
-  await call(apiKey, "DELETE", `/v1/convai/agents/${encodeURIComponent(agentId)}`);
+  await call(apiKey, "DELETE", `/v1/convai/agents/${idSegment(agentId)}`);
 }
 
 /** 15-minute signed WebSocket URL for one private-agent conversation. */
@@ -212,7 +240,7 @@ export async function getSignedUrl(apiKey: string, agentId: string): Promise<str
   const data = await call<{ signed_url?: string }>(
     apiKey,
     "GET",
-    `/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(agentId)}`,
+    `/v1/convai/conversation/get-signed-url?agent_id=${idSegment(agentId)}`,
   );
   if (!data.signed_url) {
     throw new ElevenLabsError("ElevenLabs didn't return a signed URL.", 502);
@@ -234,7 +262,7 @@ export async function getConversation(
     agent_id?: string;
     status?: string;
     metadata?: { call_duration_secs?: number };
-  }>(apiKey, "GET", `/v1/convai/conversations/${encodeURIComponent(conversationId)}`);
+  }>(apiKey, "GET", `/v1/convai/conversations/${idSegment(conversationId)}`);
   const secs = data.metadata?.call_duration_secs;
   return {
     agentId: data.agent_id ?? null,

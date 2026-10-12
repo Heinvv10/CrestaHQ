@@ -40,7 +40,19 @@ import type { SubAccountDoc } from "@/types";
  * transaction that applies only if the secret doc is still the revision the
  * caller read before talking to ElevenLabs. Remote clean-up of an agent we
  * no longer point at happens after that commit, never before it.
+ *
+ * Dark until WV-2: the agent's custom-LLM URL points at the reply webhook
+ * WV-2 adds, so no connection is reported `ready` before then (see
+ * `WEB_VOICE_CALL_PATH_PENDING`).
  */
+
+/**
+ * Until WV-2 ships `/api/webhooks/elevenlabs/llm/...`, a provisioned agent
+ * would call a URL that answers 404, so the meta stays `ready: false` with
+ * this as `lastError`. WV-2 removes it and lets a clean sync report ready.
+ */
+export const WEB_VOICE_CALL_PATH_PENDING =
+  "Voice replies aren't available on this deployment yet, so the mic stays hidden.";
 
 export class WebVoiceError extends Error {
   constructor(
@@ -50,6 +62,26 @@ export class WebVoiceError extends Error {
     super(message);
     this.name = "WebVoiceError";
   }
+}
+
+/** `webVoiceMeta` as a response carries it: `connectedAt` as an ISO string
+ *  (Firestore hands back a Timestamp, which serialises as an object). */
+export type WebVoiceMetaView = Omit<WebVoiceMeta, "connectedAt"> & { connectedAt: string | null };
+
+function isoOf(value: unknown): string | null {
+  const date =
+    value instanceof Date
+      ? value
+      : typeof (value as { toDate?: unknown } | null)?.toDate === "function"
+        ? (value as { toDate: () => Date }).toDate()
+        : typeof value === "string"
+          ? new Date(value)
+          : null;
+  return date && !Number.isNaN(date.getTime()) ? date.toISOString() : null;
+}
+
+export function webVoiceMetaView(meta: WebVoiceMeta | null | undefined): WebVoiceMetaView | null {
+  return meta ? { ...meta, connectedAt: isoOf(meta.connectedAt) } : null;
 }
 
 /** The only form of a caught error this module logs: never the object. */
@@ -243,6 +275,7 @@ async function agentSpecFor(
   return {
     name: `${businessName} — website voice`.slice(0, 120),
     llmUrl: await llmUrlFor(subAccountId, conn.endpointSecret),
+    endpointSecret: conn.endpointSecret,
     voiceId: conn.voiceId,
     language: conn.language,
     greeting: conn.greeting,
@@ -251,30 +284,71 @@ async function agentSpecFor(
   };
 }
 
-/** Best-effort removal of an agent we no longer point at; logged, never thrown. */
-async function dropAgent(subAccountId: string, apiKey: string, agentId: string): Promise<void> {
-  await deleteAgent(apiKey, agentId).catch((err: unknown) => {
+/** Best-effort removal of an agent we no longer point at; logged, never
+ *  thrown. True when it is gone (a 404 means it already was). */
+async function dropAgent(subAccountId: string, apiKey: string, agentId: string): Promise<boolean> {
+  try {
+    await deleteAgent(apiKey, agentId);
+    return true;
+  } catch (err) {
+    if (err instanceof ElevenLabsError && err.status === 404) return true;
     console.warn(`[web-voice] agent delete failed sa=${subAccountId}`, errText(err));
-  });
+    return false;
+  }
+}
+
+/**
+ * A save that lost the commit race (409) had already PATCHed the live agent
+ * with its own settings, so ElevenLabs no longer runs what the winner
+ * stored. Re-PATCH it with the committed settings. Nothing to do when the
+ * committed connection points at a different agent (re-keyed, re-created or
+ * disconnected since). A failure is logged and recorded on the meta through
+ * the same transactional writer; never thrown — the caller still answers 409.
+ */
+async function restoreCommittedAgent(subAccountId: string, apiKey: string, agentId: string): Promise<void> {
+  const { conn: winner, rev } = await readState(subAccountId);
+  if (!winner || winner.agentId !== agentId || winner.apiKey !== apiKey) return;
+  try {
+    await updateAgent(apiKey, agentId, await agentSpecFor(subAccountId, winner));
+  } catch (err) {
+    console.warn(`[web-voice] agent restore failed sa=${subAccountId}`, errText(err));
+    const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
+    const prev = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
+    await commitWebVoiceState(subAccountId, rev, {
+      conn: winner,
+      meta: {
+        ...settingsOf(winner),
+        ready: false,
+        keyLast4: winner.apiKey.slice(-4),
+        lastError: "The voice agent on ElevenLabs may not match these settings. Save again to re-sync.",
+        connectedAt: prev?.connectedAt ?? null,
+      },
+    }).catch((commitErr: unknown) => {
+      console.warn(`[web-voice] agent restore not recorded sa=${subAccountId}`, errText(commitErr));
+    });
+  }
 }
 
 /**
  * Create or update the ElevenLabs agent, then commit the result onto the
  * secret (agentId) + display meta (ready / lastError) through
  * `commitWebVoiceState`. An ElevenLabs failure is never thrown — it is
- * recorded on the meta so the card can show it. A conflicting commit (409)
- * IS thrown, after deleting any agent this call created, so a lost race
- * leaves no orphan on the client's ElevenLabs account.
+ * recorded on the meta so the card can show it — and when `lastGood` is
+ * given (a settings save) the stored settings stay the ones the live agent
+ * still runs. A failed commit IS thrown, after deleting any agent this call
+ * created (so a lost race leaves no orphan on the client's account) or, on
+ * a 409 after PATCHing the live agent, re-syncing it to the winner.
  */
 async function syncAgent(
   subAccountId: string,
   expectRev: string | null,
   conn: WebVoiceConnectionSecret,
   connectedAt: Date | null,
+  lastGood: WebVoiceConnectionSecret | null,
 ): Promise<WebVoiceMeta> {
   let agentId = conn.agentId;
   let created = false;
-  let lastError: string | null = null;
+  let syncError: string | null = null;
   try {
     const spec = await agentSpecFor(subAccountId, conn);
     if (agentId) {
@@ -293,7 +367,7 @@ async function syncAgent(
       created = true;
     }
   } catch (err) {
-    lastError =
+    syncError =
       err instanceof ElevenLabsError || err instanceof WebVoiceError
         ? err.message.slice(0, 300)
         : "Couldn't set up the voice agent. Try saving again.";
@@ -302,20 +376,24 @@ async function syncAgent(
     }
   }
 
+  const stored: WebVoiceConnectionSecret =
+    syncError && lastGood ? lastGood : { ...conn, agentId: agentId ?? null };
   const meta: WebVoiceMeta = {
-    ...settingsOf(conn),
-    ready: !!agentId && !lastError,
-    keyLast4: conn.apiKey.slice(-4),
-    lastError,
+    ...settingsOf(stored),
+    // Never ready before WV-2 ships the reply webhook the agent calls.
+    ready: false,
+    keyLast4: stored.apiKey.slice(-4),
+    lastError: syncError ?? WEB_VOICE_CALL_PATH_PENDING,
     connectedAt,
   };
   try {
-    await commitWebVoiceState(subAccountId, expectRev, {
-      conn: { ...conn, agentId: agentId ?? null },
-      meta,
-    });
+    await commitWebVoiceState(subAccountId, expectRev, { conn: stored, meta });
   } catch (err) {
-    if (created && agentId) await dropAgent(subAccountId, conn.apiKey, agentId);
+    if (created && agentId) {
+      await dropAgent(subAccountId, conn.apiKey, agentId);
+    } else if (agentId && !syncError && err instanceof WebVoiceError && err.status === 409) {
+      await restoreCommittedAgent(subAccountId, conn.apiKey, agentId);
+    }
     throw err;
   }
   return meta;
@@ -385,9 +463,11 @@ export async function connectWebVoice(input: {
     ...base,
     apiKey,
     agentId: keepAgent,
-    endpointSecret: existing?.endpointSecret ?? randomBytes(24).toString("base64url"),
+    // A new key gets a new endpoint secret: if the old agent's delete fails,
+    // that agent must not still be able to reach our reply endpoint.
+    endpointSecret: sameKey ? existing.endpointSecret : randomBytes(24).toString("base64url"),
   };
-  const meta = await syncAgent(input.subAccountId, rev, conn, new Date());
+  const meta = await syncAgent(input.subAccountId, rev, conn, new Date(), null);
   if (existing?.agentId && !sameKey) {
     await dropAgent(input.subAccountId, existing.apiKey, existing.agentId);
   }
@@ -404,7 +484,7 @@ export async function updateWebVoiceSettings(input: {
   const next = sanitizeSettings(input.patch, settingsOf(conn));
   const subSnap = await getAdminDb().doc(`subAccounts/${input.subAccountId}`).get();
   const prevMeta = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
-  return syncAgent(input.subAccountId, rev, { ...conn, ...next }, prevMeta?.connectedAt ?? null);
+  return syncAgent(input.subAccountId, rev, { ...conn, ...next }, prevMeta?.connectedAt ?? null, conn);
 }
 
 /** Live voice list for the picker (needs the stored key). */
@@ -419,10 +499,18 @@ export async function listWebVoiceVoices(subAccountId: string): Promise<ElevenLa
   }
 }
 
-/** Disconnect: delete the secret and usage docs and clear the display meta,
- *  then delete the agent on ElevenLabs (best-effort). */
-export async function disconnectWebVoice(subAccountId: string): Promise<void> {
-  const { conn, rev } = await readState(subAccountId);
-  await commitWebVoiceState(subAccountId, rev, null);
-  if (conn?.agentId) await dropAgent(subAccountId, conn.apiKey, conn.agentId);
+/**
+ * Disconnect: delete the secret and usage docs and clear the display meta,
+ * then delete the agent on ElevenLabs (best-effort). The key and agent id are
+ * read raw, so a doc too damaged to parse still has its agent cleaned up.
+ * `agentRemoved` is false when an agent was there and the delete failed —
+ * the client has to remove it on ElevenLabs themselves.
+ */
+export async function disconnectWebVoice(subAccountId: string): Promise<{ agentRemoved: boolean }> {
+  const snap = await getAdminDb().doc(webVoiceConnectionPath(subAccountId)).get();
+  const raw = snap.data();
+  const apiKey = typeof raw?.apiKey === "string" ? raw.apiKey : "";
+  const agentId = typeof raw?.agentId === "string" ? raw.agentId : "";
+  await commitWebVoiceState(subAccountId, revOf(snap), null);
+  return { agentRemoved: apiKey && agentId ? await dropAgent(subAccountId, apiKey, agentId) : true };
 }

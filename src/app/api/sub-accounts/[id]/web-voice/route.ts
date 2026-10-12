@@ -10,6 +10,7 @@ import {
   disconnectWebVoice,
   listWebVoiceVoices,
   updateWebVoiceSettings,
+  webVoiceMetaView,
 } from "@/lib/server/web-voice-service";
 import type { SubAccountDoc } from "@/types";
 import type { WebVoiceSettings } from "@/types/web-voice";
@@ -30,7 +31,8 @@ export const dynamic = "force-dynamic";
  *          a client can always remove their key.
  *
  * POST and PATCH answer 403 `gate_off` while `webVoiceEnabledByAgency` is
- * off. The key is never returned — only `keyLast4` on the display meta.
+ * off. The key is never returned — only `keyLast4` on the display meta,
+ * whose `connectedAt` every response carries as an ISO string.
  */
 
 async function loadSub(subAccountId: string): Promise<SubAccountDoc | null> {
@@ -74,7 +76,7 @@ export async function GET(
   if (!sub) return notFound();
 
   const gateOn = sub.webVoiceEnabledByAgency === true;
-  const meta = sub.webVoiceMeta ?? null;
+  const meta = webVoiceMetaView(sub.webVoiceMeta);
   const wantVoices = new URL(request.url).searchParams.get("voices") === "1";
 
   let voices: Awaited<ReturnType<typeof listWebVoiceVoices>> = [];
@@ -121,7 +123,7 @@ export async function POST(
 
   try {
     const { meta, voices } = await connectWebVoice({ subAccountId, apiKey: body.apiKey });
-    return NextResponse.json({ ok: true, meta, voices });
+    return NextResponse.json({ ok: true, meta: webVoiceMetaView(meta), voices });
   } catch (err) {
     return errorResponse(err, "Couldn't connect ElevenLabs.");
   }
@@ -146,7 +148,7 @@ export async function PATCH(
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  if (!body || typeof body !== "object") {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
@@ -161,7 +163,7 @@ export async function PATCH(
 
   try {
     const meta = await updateWebVoiceSettings({ subAccountId, patch });
-    return NextResponse.json({ ok: true, meta });
+    return NextResponse.json({ ok: true, meta: webVoiceMetaView(meta) });
   } catch (err) {
     return errorResponse(err, "Couldn't save voice settings.");
   }
@@ -177,8 +179,16 @@ export async function DELETE(
   if (access instanceof NextResponse) return access;
 
   try {
-    await disconnectWebVoice(subAccountId);
-    return NextResponse.json({ ok: true });
+    const { agentRemoved } = await disconnectWebVoice(subAccountId);
+    return NextResponse.json(
+      agentRemoved
+        ? { ok: true }
+        : {
+            ok: true,
+            warning:
+              "Disconnected, but the voice agent could not be removed from your ElevenLabs account. Delete it there.",
+          },
+    );
   } catch (err) {
     return errorResponse(err, "Couldn't disconnect ElevenLabs.");
   }

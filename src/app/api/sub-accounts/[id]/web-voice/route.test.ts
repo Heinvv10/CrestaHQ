@@ -12,6 +12,8 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 const { mem, claims, storeDb } = await import("@/test/gbp-sync-store");
 const { GET, POST, PATCH, DELETE } = await import("./route");
+const { WEB_VOICE_CALL_PATH_PENDING } = await import("@/lib/server/web-voice-service");
+const { Timestamp } = await import("firebase-admin/firestore");
 
 // Built at runtime: a long key literal reads as a credential to the secret scan.
 const KEY = `el_test_${"a".repeat(24)}`;
@@ -216,9 +218,15 @@ describe("POST — connect", () => {
 
     const sub = mem.read("subAccounts/sa1")!;
     noLeak(sub);
-    expect(sub.webVoiceMeta).toMatchObject({ ready: true, keyLast4: "aaaa", lastError: null, voiceId: "premade001" });
+    // Provisioned, but never ready until WV-2 ships the reply webhook the agent calls.
+    expect(sub.webVoiceMeta).toMatchObject({
+      ready: false,
+      keyLast4: "aaaa",
+      lastError: WEB_VOICE_CALL_PATH_PENDING,
+      voiceId: "premade001",
+    });
     expect(Object.keys(sub.webVoiceMeta as object)).not.toEqual(expect.arrayContaining(["apiKey", "endpointSecret", "agentId"]));
-    expect((out.meta as Record<string, unknown>).ready).toBe(true);
+    expect(out.meta).toMatchObject({ ready: false, connectedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
   });
 
   it("returns voices with only public https preview URLs", async () => {
@@ -261,11 +269,13 @@ describe("POST — connect", () => {
 
   it("ElevenLabs unreachable is 502 and stores nothing", async () => {
     fetchMock.mockImplementation(async (input) => {
-      if (String(input).startsWith(EL)) throw new Error("connect ETIMEDOUT");
+      // A transport error that echoes the request header must not reach the response.
+      if (String(input).startsWith(EL)) throw new Error(`connect ETIMEDOUT (xi-api-key: ${KEY})`);
       return new Response("", { status: 200 });
     });
     const res = await connect();
     expect(res.status).toBe(502);
+    expect((await body(res)).error).toContain("[redacted]");
     expect(mem.read(SECRET)).toBeUndefined();
   });
 
@@ -277,7 +287,29 @@ describe("POST — connect", () => {
     expect(mem.read(SECRET)).toMatchObject({ apiKey: KEY, agentId: null });
   });
 
-  it("re-keying keeps settings and the endpoint secret, provisions on the new account, then deletes the old agent with the OLD key", async () => {
+  it("an agent-create error echoing the agent body is redacted before it reaches the meta", async () => {
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "POST") {
+        const b = JSON.parse(String(init.body)) as AgentBody;
+        return json(422, { detail: `bad url ${b.conversation_config.agent.prompt.custom_llm.url}` });
+      }
+      return fakeFetch(input, init);
+    });
+    const out = await body(await connect());
+    noLeak(mem.read("subAccounts/sa1"));
+    expect(out.meta).toMatchObject({ lastError: expect.stringContaining("[redacted]") });
+  });
+
+  it("an agent id ElevenLabs returns that is not a plain id is never stored", async () => {
+    fetchMock.mockImplementation(async (input, init) =>
+      init?.method === "POST" ? json(200, { agent_id: "../voices" }) : fakeFetch(input, init),
+    );
+    const out = await body(await connect());
+    expect(out.meta).toMatchObject({ lastError: "ElevenLabs didn't return an agent id." });
+    expect(mem.read(SECRET)?.agentId).toBeNull();
+  });
+
+  it("re-keying keeps settings, mints a NEW endpoint secret, provisions on the new account, then deletes the old agent with the OLD key", async () => {
     await connect();
     const first = mem.read(SECRET)!;
     calls = [];
@@ -286,14 +318,21 @@ describe("POST — connect", () => {
 
     expect((await connect(KEY2)).status).toBe(200);
     const second = mem.read(SECRET)!;
-    expect(second).toMatchObject({ apiKey: KEY2, agentId: "agent2", greeting: "Howzit", endpointSecret: first.endpointSecret });
+    expect(second).toMatchObject({ apiKey: KEY2, agentId: "agent2", greeting: "Howzit" });
+    // An old agent that survives its delete must not still reach our endpoint.
+    expect(second.endpointSecret).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(second.endpointSecret).not.toBe(first.endpointSecret);
+    const created = elCalls("POST", "/v1/convai/agents/create")[0].body as AgentBody;
+    expect(created.conversation_config.agent.prompt.custom_llm.url).toBe(
+      `${APP}/api/webhooks/elevenlabs/llm/sa1/${second.endpointSecret}`,
+    );
     expect(second.rev).not.toBe(first.rev);
     const del = elCalls("DELETE", "/v1/convai/agents/agent1");
     expect(del).toHaveLength(1);
     expect(del[0].key).toBe(KEY);
     // The old agent goes only after the new connection is committed.
     expect(calls.indexOf(del[0])).toBeGreaterThan(calls.indexOf(elCalls("POST", "/v1/convai/agents/create")[0]));
-    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({ keyLast4: "bbbb", ready: true });
+    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({ keyLast4: "bbbb" });
   });
 
   it("a rival write committed mid-provisioning wins: 409, nothing overwritten, our new agent deleted", async () => {
@@ -357,7 +396,7 @@ describe("PATCH — settings", () => {
       await PATCH(req("PATCH", { greeting: "Hello there", maxCallSeconds: 99999, dailyMinuteCap: 1, language: "es" }), ctx()),
     );
     expect(elCalls("PATCH", "/v1/convai/agents/agent1")).toHaveLength(1);
-    expect(out.meta).toMatchObject({ greeting: "Hello there", maxCallSeconds: 1800, dailyMinuteCap: 5, language: "es", ready: true });
+    expect(out.meta).toMatchObject({ greeting: "Hello there", maxCallSeconds: 1800, dailyMinuteCap: 5, language: "es", ready: false });
     expect(mem.read(SECRET)).toMatchObject({ greeting: "Hello there", maxCallSeconds: 1800, agentId: "agent1" });
     const agent = elCalls("PATCH", "/v1/convai/agents/agent1")[0].body as AgentBody;
     expect(agent.conversation_config.tts.model_id).toBe("eleven_flash_v2_5");
@@ -368,16 +407,127 @@ describe("PATCH — settings", () => {
     agents.delete("agent1");
     await PATCH(req("PATCH", { greeting: "Again" }), ctx());
     expect(mem.read(SECRET)?.agentId).toBe("agent2");
-    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({ ready: true, lastError: null });
+    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({ lastError: WEB_VOICE_CALL_PATH_PENDING });
   });
 
-  it("an ElevenLabs failure is recorded on the meta, not thrown", async () => {
+  it("an ElevenLabs failure is recorded on the meta, not thrown, and the last good settings stay stored", async () => {
     await connect();
+    const before = mem.read(SECRET)!;
     fetchMock.mockImplementation(async (input, init) =>
       init?.method === "PATCH" ? json(422, { detail: [{ msg: "voice not allowed" }] }) : fakeFetch(input, init),
     );
-    const out = await body(await PATCH(req("PATCH", { greeting: "Again" }), ctx()));
-    expect(out.meta).toMatchObject({ ready: false, lastError: "voice not allowed" });
+    const out = await body(await PATCH(req("PATCH", { greeting: "Again", voiceId: "cloned0001" }), ctx()));
+    expect(out.meta).toMatchObject({ ready: false, lastError: "voice not allowed", greeting: before.greeting, voiceId: "premade001" });
+    // The live agent still runs the old settings, so the stored ones match it.
+    expect(mem.read(SECRET)).toMatchObject({ greeting: before.greeting, voiceId: "premade001", agentId: "agent1" });
+  });
+
+  it("returns connectedAt as an ISO string after a save over a stored Timestamp", async () => {
+    await connect();
+    const sub = mem.read("subAccounts/sa1")!;
+    const connectedAt = Timestamp.fromDate(new Date("2026-10-01T08:00:00Z"));
+    mem.seed("subAccounts/sa1", { ...sub, webVoiceMeta: { ...(sub.webVoiceMeta as object), connectedAt } });
+    const out = await body(await PATCH(req("PATCH", { greeting: "Hi" }), ctx()));
+    expect((out.meta as Record<string, unknown>).connectedAt).toBe("2026-10-01T08:00:00.000Z");
+  });
+
+  it("an array body on a CONNECTED account is a 400 and syncs nothing", async () => {
+    await connect();
+    calls = [];
+    const res = await PATCH(new Request(`${APP}/x`, { method: "PATCH", headers: { "x-user-uid": "admin1" }, body: "[]" }), ctx());
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a stored agent id that is not a plain id never reaches a request path", async () => {
+    await connect();
+    mem.seed(SECRET, { ...mem.read(SECRET)!, agentId: ".." });
+    calls = [];
+    const out = await body(await PATCH(req("PATCH", { greeting: "Hi" }), ctx()));
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+    expect(out.meta).toMatchObject({ lastError: "That ElevenLabs id isn't valid." });
+  });
+
+  it("A1: of two racing saves, the loser re-syncs the live agent to the winner's settings", async () => {
+    expect((await connect()).status).toBe(200);
+    // Both saves read the same rev; A's PATCH reaches ElevenLabs only after B committed.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let patches = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH" && ++patches === 1) await held;
+      return fakeFetch(input, init);
+    });
+    const a = PATCH(req("PATCH", { greeting: "AAA" }), ctx());
+    await new Promise((r) => setTimeout(r, 50));
+    const rb = await PATCH(req("PATCH", { greeting: "BBB" }), ctx());
+    release();
+    const ra = await a;
+    expect([ra.status, rb.status]).toEqual([409, 200]);
+    expect(mem.read(SECRET)?.greeting).toBe("BBB");
+    const last = calls.filter((c) => c.method === "PATCH").at(-1)!.body as {
+      conversation_config: { agent: { first_message: string } };
+    };
+    expect(last.conversation_config.agent.first_message).toBe("BBB");
+  });
+
+  it("A1: a loser whose rival moved to a different agent leaves that agent alone", async () => {
+    expect((await connect()).status).toBe(200);
+    const rival = { ...mem.read(SECRET)!, apiKey: KEY2, agentId: "agentRival", rev: "rival" };
+    agents.set("agentRival", KEY2);
+    let seeded = false;
+    fetchMock.mockImplementation(async (input, init) => {
+      const res = await fakeFetch(input, init);
+      if (init?.method === "PATCH" && !seeded) {
+        seeded = true;
+        mem.seed(SECRET, rival);
+      }
+      return res;
+    });
+    expect((await PATCH(req("PATCH", { greeting: "AAA" }), ctx())).status).toBe(409);
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.url)).toEqual([`${EL}/v1/convai/agents/agent1`]);
+    expect(mem.read(SECRET)).toEqual(rival);
+  });
+
+  it("A1: a failed re-sync after a lost race is logged and recorded on the meta", async () => {
+    expect((await connect()).status).toBe(200);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let patches = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH") {
+        const n = ++patches;
+        if (n === 1) await held;
+        if (n === 3) throw new Error("socket hang up");
+      }
+      return fakeFetch(input, init);
+    });
+    const a = PATCH(req("PATCH", { greeting: "AAA" }), ctx());
+    await new Promise((r) => setTimeout(r, 50));
+    await PATCH(req("PATCH", { greeting: "BBB" }), ctx());
+    release();
+    expect((await a).status).toBe(409);
+    expect(mem.read(SECRET)?.greeting).toBe("BBB");
+    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({ greeting: "BBB", lastError: expect.stringMatching(/may not match/) });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("agent restore failed"))).toBe(true);
+  });
+
+  it("A2: ElevenLabs error text echoing the endpoint secret or the key is redacted before it is stored or returned", async () => {
+    expect((await connect()).status).toBe(200);
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH") {
+        const b = JSON.parse(String(init.body)) as AgentBody;
+        const key = (init.headers as Record<string, string>)["xi-api-key"];
+        return json(422, { detail: `Custom LLM URL ${b.conversation_config.agent.prompt.custom_llm.url} unreachable for ${key}` });
+      }
+      return fakeFetch(input, init);
+    });
+    const res = await PATCH(req("PATCH", { greeting: "Hello" }), ctx());
+    expect(res.status).toBe(200);
+    const out = await body(res);
+    const meta = mem.read("subAccounts/sa1")?.webVoiceMeta;
+    noLeak(meta);
+    expect(String((out.meta as Record<string, unknown>).lastError)).toContain("[redacted]");
   });
 });
 
@@ -388,6 +538,15 @@ describe("GET", () => {
     expect(out).toMatchObject({ gateOn: true, webChatGateOn: true, voicesError: null });
     expect((out.meta as Record<string, unknown>).keyLast4).toBe("aaaa");
     expect((out.voices as unknown[]).length).toBe(5);
+  });
+
+  it.each([
+    ["a Firestore Timestamp", Timestamp.fromDate(new Date("2026-10-01T08:00:00Z"))],
+    ["a Date", new Date("2026-10-01T08:00:00Z")],
+  ])("returns connectedAt stored as %s as an ISO string", async (_n, connectedAt) => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", webVoiceEnabledByAgency: true, webVoiceMeta: { ready: false, connectedAt } });
+    const out = await body(await GET(req("GET"), ctx()));
+    expect((out.meta as Record<string, unknown>).connectedAt).toBe("2026-10-01T08:00:00.000Z");
   });
 });
 
@@ -403,6 +562,28 @@ describe("DELETE — disconnect", () => {
     expect(elCalls("DELETE", "/v1/convai/agents/agent1").map((c) => c.key)).toEqual([KEY]);
   });
 
+  it("a secret doc too damaged to parse still has its agent deleted", async () => {
+    mem.seed(SECRET, { apiKey: KEY, agentId: "agent7", rev: "r1" }); // no endpointSecret
+    agents.set("agent7", KEY);
+    const res = await DELETE(req("DELETE"), ctx());
+    expect(await body(res)).toEqual({ ok: true });
+    expect(agents.has("agent7")).toBe(false);
+    expect(mem.read(SECRET)).toBeUndefined();
+  });
+
+  it("an agent already gone on ElevenLabs (404) counts as removed", async () => {
+    await connect();
+    agents.delete("agent1");
+    expect(await body(await DELETE(req("DELETE"), ctx()))).toEqual({ ok: true });
+  });
+
+  it("a stored agent id that is not a plain id is never put in a DELETE path", async () => {
+    mem.seed(SECRET, { apiKey: KEY, agentId: "../voices", endpointSecret: "s".repeat(32), rev: "r1" });
+    const out = await body(await DELETE(req("DELETE"), ctx()));
+    expect(out.warning).toBeDefined();
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+  });
+
   it("a failed remote delete never blocks disconnect and logs only a message", async () => {
     await connect();
     const leaky = Object.assign(new Error("boom"), { config: { headers: { "xi-api-key": KEY } } });
@@ -410,7 +591,9 @@ describe("DELETE — disconnect", () => {
       if (init?.method === "DELETE") throw leaky;
       return fakeFetch(input, init);
     });
-    expect((await DELETE(req("DELETE"), ctx())).status).toBe(200);
+    const res = await DELETE(req("DELETE"), ctx());
+    expect(res.status).toBe(200);
+    expect((await body(res)).warning).toMatch(/could not be removed from your ElevenLabs account/);
     expect(mem.read(SECRET)).toBeUndefined();
     expect(warn).toHaveBeenCalled();
     for (const args of warn.mock.calls) {
@@ -427,6 +610,9 @@ describe("logging", () => {
     );
     const res = await connect();
     expect(res.status).toBe(500);
+    // The agent this request created is not left on the client's account.
+    expect(elCalls("POST", "/v1/convai/agents/create")).toHaveLength(1);
+    expect(agents.has("agent1")).toBe(false);
     expect(error).toHaveBeenCalled();
     for (const args of error.mock.calls) for (const a of args) expect(typeof a).toBe("string");
   });
