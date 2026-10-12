@@ -205,6 +205,27 @@ describe("Email AI drafts", () => {
     expect(llm.calls).toHaveLength(0);
   });
 
+  it("no draft and no model call without OPENROUTER_API_KEY, or for a sub-account doc with no agencyId", async () => {
+    seed();
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    await maybeDraftEmailReply(EMAIL);
+    expect(draft()).toBeNull();
+    vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+    // The contact matches the blank agency too, so only the sub-account guard can refuse.
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), agencyId: "" });
+    mem.seed("contacts/c1", { ...mem.read("contacts/c1"), agencyId: "" });
+    await maybeDraftEmailReply(EMAIL);
+    expect(draft()).toBeNull();
+    expect(llm.calls).toHaveLength(0);
+  });
+
+  it("no draft for a contact of another agency", async () => {
+    seed({ contact: { agencyId: "ag2" } });
+    await maybeDraftEmailReply(EMAIL);
+    expect(draft()).toBeNull();
+    expect(llm.calls).toHaveLength(0);
+  });
+
   it("no draft for a contact of another sub-account, or one that is not the sender", async () => {
     seed({ contact: { subAccountId: "sa2" } });
     await maybeDraftEmailReply(EMAIL);
