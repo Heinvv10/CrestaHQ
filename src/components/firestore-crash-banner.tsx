@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { onLog } from "firebase/app";
 import { Button } from "@/components/ui/button";
 import { firestoreCrashMessage } from "@/lib/firebase/crash-signal";
@@ -13,10 +13,12 @@ import { firestoreCrashMessage } from "@/lib/firebase/crash-signal";
  * updates again until the reload.
  *
  * The crash reaches the page as an uncaught error, an unhandled rejection or
- * a line in the SDK's own logger; any one of them raises the banner.
+ * a line in the SDK's own logger; any one of them raises the banner, which
+ * takes focus so the reload is one keypress away.
  */
 export function FirestoreCrashBanner() {
   const [crashed, setCrashed] = useState(false);
+  const reload = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let seen = false;
@@ -39,6 +41,10 @@ export function FirestoreCrashBanner() {
     };
   }, []);
 
+  useEffect(() => {
+    if (crashed) reload.current?.focus();
+  }, [crashed]);
+
   if (!crashed) return null;
   return (
     <div
@@ -47,7 +53,7 @@ export function FirestoreCrashBanner() {
       className="fixed inset-x-0 top-0 z-[100] flex flex-wrap items-center justify-center gap-3 bg-rose-600 px-4 py-2 text-sm text-white shadow"
     >
       <span>Connection to the server was lost. Reload to continue.</span>
-      <Button type="button" size="sm" variant="secondary" onClick={() => window.location.reload()}>
+      <Button ref={reload} type="button" size="sm" variant="secondary" onClick={() => window.location.reload()}>
         Reload
       </Button>
     </div>

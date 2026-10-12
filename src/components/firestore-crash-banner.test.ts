@@ -18,10 +18,14 @@ const CA9 = 'FIRESTORE (12.19.0) INTERNAL ASSERTION FAILED: Unexpected state (ID
 let container: HTMLDivElement;
 let root: Root;
 let consoleError: ReturnType<typeof vi.spyOn>;
+// jsdom's location.reload cannot be spied on in place; the whole location can be stubbed.
+const reload = vi.fn();
 
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  reload.mockClear();
+  vi.stubGlobal("location", { ...window.location, reload });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -64,6 +68,19 @@ describe("FirestoreCrashBanner", () => {
     expect(banner()?.textContent).toContain("Connection to the server was lost. Reload to continue.");
     const buttons = Array.from(banner()!.querySelectorAll("button")).map((b) => b.textContent);
     expect(buttons).toEqual(["Reload"]);
+  });
+
+  it("never reloads by itself, reloads once on a click, and takes focus so a keypress does it", async () => {
+    const elsewhere = document.createElement("input");
+    document.body.append(elsewhere);
+    elsewhere.focus();
+    await uncaught(new Error(CA9));
+    expect(reload).not.toHaveBeenCalled();
+    const button = banner()!.querySelector("button")!;
+    expect(document.activeElement).toBe(button);
+    await act(async () => button.click());
+    expect(reload).toHaveBeenCalledTimes(1);
+    elsewhere.remove();
   });
 
   it("logs the message once — a string, never the error object — however many follow", async () => {
