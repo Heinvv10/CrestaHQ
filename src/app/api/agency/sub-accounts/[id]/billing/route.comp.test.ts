@@ -51,6 +51,17 @@ describe("PATCH comp", () => {
     expect(JSON.stringify(mem.all())).toBe(before);
   });
 
+  it("a plan switch holding its mark: 409, nothing cancelled, nothing changed", async () => {
+    const spies = spyBillingProvider("paystack");
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...(mem.read("subAccounts/sa1")!.billing as object), retiringSubscriptionId: "SUB_1", retiringSince: new Date() } });
+    const before = JSON.stringify(mem.all());
+    const res = await comp();
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("A plan change is in progress");
+    expect(spies.cancelSubscription).not.toHaveBeenCalled();
+    expect(JSON.stringify(mem.all())).toBe(before);
+  });
+
   it("the provider cancels: comped, the subscription cleared, the event recorded", async () => {
     const spies = spyBillingProvider("paystack");
     const res = await comp();

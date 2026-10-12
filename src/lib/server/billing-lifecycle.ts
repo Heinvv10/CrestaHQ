@@ -52,6 +52,7 @@ export function recordBillingEvent(entry: {
   event:
     | "plan.assigned"
     | "plan.switched"
+    | "plan.switch_abandoned"
     | "comped"
     | "activated"
     | "status.changed"
