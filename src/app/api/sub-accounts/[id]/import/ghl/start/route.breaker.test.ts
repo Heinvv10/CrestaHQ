@@ -212,3 +212,152 @@ describe("GHL pipeline import — breaker cases", () => {
     expect(pipelines()).toEqual([]);
   });
 });
+
+describe("GHL pipeline import — breaker round 2", () => {
+  const opp = (id: string, pipelineId: string, pipelineStageId: string, status = "open") => ({
+    id, name: id, contactId: "C1", pipelineId, pipelineStageId, status,
+  });
+  const deals = () => mem.list("deals").map((d) => [d.title, d.pipelineId, d.stageId]);
+  const moveRows = () => mem.list("dealStageHistory").filter((r) => r.fromStageId !== null);
+  const run = async (pl: unknown, extra: Record<string, unknown> = {}) => {
+    const res = await startImport({ createPipelines: true, ghlPipelines: pl, ...extra });
+    const j = (await res.json()) as StartBody;
+    expect(res.status).toBe(200);
+    await drain(j.jobId);
+    return j;
+  };
+  const SALES = "subAccounts/sa1/pipelines/ghl_pl_sales";
+
+  it("N2: a stage the operator deleted is not re-added by a re-import; its deals land on the first stage", async () => {
+    ghl.opps = [opp("O1", "pl_sales", "s_proposal")];
+    await run(SAMPLE_PIPELINES);
+    const p = mem.read(SALES)!;
+    mem.seed(SALES, { ...p, stages: (p.stages as Stage[]).filter((s) => s.id !== "contacted") });
+    ghl.opps = [opp("O1", "pl_sales", "s_proposal"), opp("O2", "pl_sales", "s_contacted")];
+    const j = await run(SAMPLE_PIPELINES);
+    expect((mem.read(SALES)!.stages as Stage[]).map((s) => s.id)).not.toContain("contacted");
+    expect(deals()).toEqual(expect.arrayContaining([["O2", "ghl_pl_sales", "new_lead"]]));
+    expect(j.pipelineWarnings).toEqual([expect.stringContaining("1 GoHighLevel stage couldn't be added")]);
+  });
+
+  describe("N3: a re-import that can't update an imported pipeline leaves its deals where they are", () => {
+    const firstRun = async () => {
+      ghl.opps = [opp("O1", "pl_sales", "s_proposal")];
+      await run(SAMPLE_PIPELINES);
+      expect(deals()).toEqual([["O1", "ghl_pl_sales", "proposal_sent"]]);
+    };
+    const unchanged = (j: StartBody) => {
+      expect(deals()).toEqual([["O1", "ghl_pl_sales", "proposal_sent"]]);
+      expect(moveRows()).toEqual([]);
+      expect(j.pipelineWarnings).toEqual(
+        expect.arrayContaining([expect.stringContaining("couldn't be updated")]),
+      );
+    };
+
+    it("no room for the stages it needs (20 stages, Won removed)", async () => {
+      await firstRun();
+      const p = mem.read(SALES)!;
+      const open = (p.stages as Stage[]).filter((s) => !s.terminal && s.id !== "contacted");
+      const filler = Array.from({ length: 19 - open.length }, (_, i) => ({ id: `extra_${i}`, label: `Extra ${i}`, tone: "" }));
+      mem.seed(SALES, { ...p, stages: [...open, ...filler, (p.stages as Stage[]).find((s) => s.terminal === "lost")] });
+      unchanged(await run(SAMPLE_PIPELINES));
+      expect(mem.read(SALES)!.stages).toHaveLength(20);
+    });
+
+    it("the GHL pipeline's name is now blank", async () => {
+      await firstRun();
+      unchanged(await run([{ ...SAMPLE_PIPELINES[0], name: "   " }]));
+    });
+
+    it(`it shifted past the ${25}-pipeline cap`, async () => {
+      await firstRun();
+      const others = Array.from({ length: 25 }, (_, i) => ({ id: `other${i}`, name: `Other ${i}`, stages: [] }));
+      unchanged(await run([...others, SAMPLE_PIPELINES[0]]));
+    });
+
+    it("the update transaction fails", async () => {
+      await firstRun();
+      const realTx = mem.db.runTransaction;
+      mem.db.runTransaction = (async () => {
+        throw new Error("10 ABORTED: contention");
+      }) as unknown as typeof realTx;
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let j: StartBody;
+      try {
+        const res = await startImport({ createPipelines: true, ghlPipelines: SAMPLE_PIPELINES });
+        j = (await res.json()) as StartBody;
+      } finally {
+        mem.db.runTransaction = realTx;
+      }
+      await drain(j.jobId);
+      unchanged(j);
+    });
+
+    it("but with no earlier import, a pipeline that can't be created still falls back to the default", async () => {
+      ghl.opps = [opp("O1", "pl_sales", "s_proposal")];
+      const j = await run([{ ...SAMPLE_PIPELINES[0], name: "   " }]);
+      expect(deals()).toEqual([["O1", "default", "new"]]);
+      expect(j.pipelineWarnings).toEqual([expect.stringContaining("onto the default pipeline")]);
+    });
+  });
+
+  it("N5: GHL ids containing ':' don't collide", async () => {
+    const pl = [
+      { id: "a:b", name: "AB", stages: [{ id: "first", name: "First" }, { id: "c", name: "Target C" }] },
+      { id: "a", name: "A", stages: [{ id: "first2", name: "First" }, { id: "b:c", name: "Target BC" }] },
+    ];
+    ghl.opps = [opp("O1", "a:b", "c"), opp("O2", "a", "b:c")];
+    await run(pl);
+    expect(deals()).toEqual(
+      expect.arrayContaining([
+        ["O1", "ghl_a:b", "target_c"],
+        ["O2", "ghl_a", "target_bc"],
+      ]),
+    );
+  });
+
+  it("N8: legacy path on a customised default pipeline uses its own stages and terminals", async () => {
+    mem.seed("subAccounts/sa1/pipelines/default", {
+      name: "Default", isDefault: true, subAccountId: "sa1", agencyId: "ag1",
+      stages: [
+        { id: "site_survey", label: "Site survey", tone: "" },
+        { id: "install", label: "Install", tone: "" },
+        { id: "signed", label: "Signed", tone: "", terminal: "won" },
+        { id: "dead", label: "Dead", tone: "", terminal: "lost" },
+      ],
+    });
+    ghl.opps = [opp("O1", "pl_sales", "s_contacted"), opp("O2", "pl_sales", "s_new", "won"), opp("O3", "pl_sales", "s_new", "lost")];
+    const res = await startImport({
+      createPipelines: false,
+      mapping: { stageMap: {}, defaultStage: "install", defaultCurrency: "ZAR", customFields: {} },
+    });
+    const j = (await res.json()) as StartBody;
+    await drain(j.jobId);
+    expect(deals()).toEqual([
+      ["O1", "default", "install"],
+      ["O2", "default", "signed"],
+      ["O3", "default", "dead"],
+    ]);
+
+    // A default stage that isn't on the default pipeline falls back to its first open stage.
+    const res2 = await startImport({
+      createPipelines: false,
+      mapping: { stageMap: {}, defaultStage: "new", defaultCurrency: "ZAR", customFields: {} },
+    });
+    const j2 = (await res2.json()) as StartBody;
+    expect(mem.read(`importJobs/${j2.jobId}`)?.ghlMapping).toMatchObject({
+      defaultStage: "site_survey",
+      defaultWonId: "signed",
+      defaultLostId: "dead",
+    });
+  });
+
+  it("N9: a GHL id that fits a doc id but not with the ghl_ prefix is refused, not thrown", async () => {
+    const id = "x".repeat(1498);
+    ghl.opps = [opp("O1", id, "s1")];
+    const j = await run([{ id, name: "Long", stages: [{ id: "s1", name: "S" }] }]);
+    expect(pipelines()).toEqual([]);
+    expect(j.pipelineWarnings).toEqual([expect.stringContaining("invalid or duplicate id")]);
+    expect(deals()).toEqual([["O1", "default", "new"]]);
+  });
+});

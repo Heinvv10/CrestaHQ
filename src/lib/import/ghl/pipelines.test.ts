@@ -53,15 +53,20 @@ describe("recreateGhlPipelines", () => {
       ["lost", "Lost", "lost"],
     ]);
     expect(r.pipelineMap).toEqual({
-      pl_sales: { id: doc.id, firstId: "new_lead", wonId: "won", lostId: "lost" },
-    });
-    expect(r.pipelineStageMap).toEqual({
-      "pl_sales:s_new": { pipelineId: doc.id, stageId: "new_lead" },
-      "pl_sales:s_contacted": { pipelineId: doc.id, stageId: "contacted" },
-      "pl_sales:s_proposal": { pipelineId: doc.id, stageId: "proposal_sent" },
-      // "Closed Won" / "Closed Lost" are outcomes: they land on the terminals.
-      "pl_sales:s_won": { pipelineId: doc.id, stageId: "won" },
-      "pl_sales:s_lost": { pipelineId: doc.id, stageId: "lost" },
+      pl_sales: {
+        id: doc.id,
+        firstId: "new_lead",
+        wonId: "won",
+        lostId: "lost",
+        stageIds: {
+          s_new: "new_lead",
+          s_contacted: "contacted",
+          s_proposal: "proposal_sent",
+          // "Closed Won" / "Closed Lost" are outcomes: they land on the terminals.
+          s_won: "won",
+          s_lost: "lost",
+        },
+      },
     });
   });
 
@@ -82,7 +87,7 @@ describe("recreateGhlPipelines", () => {
   it("creates nothing when the body carries no list", async () => {
     for (const body of [undefined, null, "x", { id: "p" }]) {
       const r = await recreateGhlPipelines("sa1", "u1", body);
-      expect(r).toEqual({ pipelineMap: {}, pipelineStageMap: {}, warnings: [] });
+      expect(r).toEqual({ pipelineMap: {}, warnings: [] });
     }
     expect(pipelineDocs()).toEqual([]);
   });
@@ -96,7 +101,9 @@ describe("recreateGhlPipelines", () => {
     const r = await recreateGhlPipelines("sa1", "u1", many);
     expect(pipelineDocs()).toHaveLength(MAX_IMPORTED_PIPELINES);
     expect(r.warnings).toEqual([
-      expect.stringContaining(`first ${MAX_IMPORTED_PIPELINES} pipelines`),
+      expect.stringContaining(`over the ${MAX_IMPORTED_PIPELINES}-pipeline limit`),
+      expect.stringContaining(`over the ${MAX_IMPORTED_PIPELINES}-pipeline limit`),
+      expect.stringContaining(`over the ${MAX_IMPORTED_PIPELINES}-pipeline limit`),
     ]);
   });
 
@@ -105,13 +112,13 @@ describe("recreateGhlPipelines", () => {
       { id: "p1", name: "P", stages: [{ id: "x/y", name: "Bad" }, { id: "s1", name: "Good" }] },
     ]);
     expect(pipelineDocs()[0].stages.map((s) => s.label)).toEqual(["Good", "Won", "Lost"]);
-    expect(Object.keys(r.pipelineStageMap)).toEqual(["p1:s1"]);
+    expect(r.pipelineMap.p1.stageIds).toEqual({ s1: "good" });
   });
 
   it("reads at most 200 GHL stages of a pipeline", async () => {
     const stages = Array.from({ length: 300 }, (_, i) => ({ id: i < 200 ? "bad/id" : `s${i}`, name: `S${i}` }));
     const r = await recreateGhlPipelines("sa1", "u1", [{ id: "p1", name: "P", stages }]);
-    expect(r.pipelineStageMap).toEqual({});
+    expect(r.pipelineMap.p1.stageIds).toEqual({});
     expect(pipelineDocs()[0].stages.map((s) => s.id)).toEqual(["new", "won", "lost"]);
   });
 
@@ -163,8 +170,7 @@ describe("recreateGhlPipelines", () => {
       ["won", "Won"],
       ["lost", "Lost"],
     ]);
-    expect(r.pipelineStageMap["pl_sales:s_nurture"]).toEqual({ pipelineId: "ghl_pl_sales", stageId: "nurture" });
-    expect(r.pipelineStageMap["pl_sales:s_contacted"]).toEqual({ pipelineId: "ghl_pl_sales", stageId: "contacted" });
+    expect(r.pipelineMap.pl_sales.stageIds).toMatchObject({ s_nurture: "nurture", s_contacted: "contacted" });
   });
 
   it("a pipeline the operator deleted is created again under the same id", async () => {
@@ -304,9 +310,11 @@ describe("mergeImportedStages — an existing pipeline", () => {
     expect(r.value.byGhlId).toEqual({ g0: "a", g1: "b", g2: "c" });
   });
 
-  it("a known stage the operator deleted is added again; nothing is matched by position", () => {
+  it("a known stage the operator deleted stays deleted (dropped); a new GHL stage is added, not matched by position", () => {
     const r = mergeImportedStages(current, { g0: "gone" }, [{ id: "g0", name: "A" }, { id: "g9", name: "B" }]);
-    expect(r.ok && r.value.stages.map((s) => s.id)).toEqual(["a", "b", "a_2", "b_2", "won", "lost"]);
+    expect(r.ok && r.value.stages.map((s) => s.id)).toEqual(["a", "b", "b_2", "won", "lost"]);
+    expect(r.ok && r.value.byGhlId).toEqual({ g9: "b_2" });
+    expect(r.ok && r.value.dropped).toBe(1);
   });
 
   it("appends Won/Lost the operator removed, and drops GHL stages with no room left", () => {

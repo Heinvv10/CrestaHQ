@@ -5,7 +5,8 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
-import { PIPELINE_STAGES, type PipelineStageId } from "@/types/deals";
+import type { PipelineStageId } from "@/types/deals";
+import { readPipelineStages } from "@/lib/pipelines/server";
 import { type ImportJob } from "@/types/import";
 import type { GhlPhase } from "@/lib/import/ghl/transform";
 import { recreateGhlPipelines } from "@/lib/import/ghl/pipelines";
@@ -22,7 +23,6 @@ import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
  * contacts → opportunities → notes.
  */
 
-const CANONICAL_IDS = new Set<string>(PIPELINE_STAGES.map((s) => s.id));
 /** Fixed dependency order — children resolve their parent contact's mapping. */
 const ENTITY_ORDER: GhlPhase[] = ["contacts", "opportunities", "notes"];
 
@@ -73,12 +73,16 @@ export async function POST(
 
   // Normalise the operator-confirmed mapping (defensive — the drain re-reads it).
   const rawMapping = (b.mapping ?? {}) as Record<string, unknown>;
+  // Legacy (squash-onto-default) landing spots come from the default
+  // pipeline's OWN stages — a customised default may have no "new", "won"
+  // or "lost".
+  const defaultStages = (await readPipelineStages(subAccountId)) ?? [];
   const defaultStageRaw = rawMapping.defaultStage;
-  const defaultStage: PipelineStageId = CANONICAL_IDS.has(
-    defaultStageRaw as string,
-  )
+  const defaultStage: PipelineStageId = defaultStages.some((s) => s.id === defaultStageRaw)
     ? (defaultStageRaw as PipelineStageId)
-    : "new";
+    : (defaultStages.find((s) => !s.terminal)?.id ?? "new");
+  const defaultWonId = defaultStages.find((s) => s.terminal === "won")?.id;
+  const defaultLostId = defaultStages.find((s) => s.terminal === "lost")?.id;
   const defaultCurrency =
     typeof rawMapping.defaultCurrency === "string" &&
     rawMapping.defaultCurrency.length === 3
@@ -117,9 +121,9 @@ export async function POST(
       rawMapping.customFields !== null
         ? rawMapping.customFields
         : {},
-    ...(Object.keys(pipelineMap).length > 0
-      ? { pipelineMap, pipelineStageMap: recreated!.pipelineStageMap }
-      : {}),
+    ...(defaultWonId ? { defaultWonId } : {}),
+    ...(defaultLostId ? { defaultLostId } : {}),
+    ...(Object.keys(pipelineMap).length > 0 ? { pipelineMap } : {}),
   };
 
   // Create the job (carries the mapping + entity list for the drain).

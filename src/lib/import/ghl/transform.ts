@@ -110,6 +110,8 @@ export interface GhlPipelineTarget {
   firstId: string;
   wonId: string;
   lostId: string;
+  /** GHL stage id (of THIS GHL pipeline) → the stage it landed on. */
+  stageIds: Record<string, string>;
 }
 
 export interface GhlImportMapping {
@@ -125,8 +127,12 @@ export interface GhlImportMapping {
    * it. Absent = legacy squash-onto-default behavior.
    */
   pipelineMap?: Record<string, GhlPipelineTarget>;
-  /** `${ghlPipelineId}:${ghlStageId}` → its landing spot in a recreated pipeline. */
-  pipelineStageMap?: Record<string, { pipelineId: string; stageId: string }>;
+  /**
+   * The default pipeline's Won / Lost stage ids for the legacy path (a
+   * customised default may not call them "won" / "lost"). Absent = those.
+   */
+  defaultWonId?: string;
+  defaultLostId?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -231,8 +237,8 @@ export function resolveOpportunityStage(
   o: GhlOpportunity,
   mapping: GhlImportMapping,
 ): PipelineStageId {
-  if (o.status === "won") return "won";
-  if (o.status === "lost" || o.status === "abandoned") return "lost";
+  if (o.status === "won") return mapping.defaultWonId ?? "won";
+  if (o.status === "lost" || o.status === "abandoned") return mapping.defaultLostId ?? "lost";
   const mapped =
     o.pipelineStageId && Object.hasOwn(mapping.stageMap, o.pipelineStageId)
       ? mapping.stageMap[o.pipelineStageId]
@@ -263,15 +269,8 @@ export function resolveOpportunityPlacement(
     if (o.status === "lost" || o.status === "abandoned") {
       return { pipelineId: target.id, stage: target.lostId };
     }
-    const key = `${o.pipelineId}:${o.pipelineStageId}`;
-    const mapped =
-      o.pipelineStageId &&
-      mapping.pipelineStageMap &&
-      Object.hasOwn(mapping.pipelineStageMap, key)
-        ? mapping.pipelineStageMap[key]
-        : undefined;
-    if (mapped && mapped.pipelineId === target.id) {
-      return { pipelineId: target.id, stage: mapped.stageId };
+    if (o.pipelineStageId && Object.hasOwn(target.stageIds, o.pipelineStageId)) {
+      return { pipelineId: target.id, stage: target.stageIds[o.pipelineStageId] };
     }
     return { pipelineId: target.id, stage: target.firstId };
   }

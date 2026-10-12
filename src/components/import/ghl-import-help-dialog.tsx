@@ -62,7 +62,7 @@ export function GhlImportHelpDialog({
                 ],
                 [
                   "Opportunities",
-                  "Deals — title, value, and stage. With \"Recreate my GoHighLevel pipelines\" ticked, each GHL pipeline becomes a pipeline here with its own stages plus Won / Lost (a re-import reuses it and adds only new stages). Unticked, each GHL stage maps to one of your default pipeline's stages. Won / Lost are honoured either way.",
+                  "Deals — title, value, and stage. With \"Recreate my GoHighLevel pipelines\" ticked, each GHL pipeline becomes a pipeline here with its own stages plus Won / Lost (a re-import reuses it and adds only new stages). Unticked, each GHL stage maps to one of your default pipeline's stages — and on a re-import, deals already imported into recreated pipelines move back to the default pipeline. Won / Lost are honoured either way.",
                 ],
                 [
                   "Notes",

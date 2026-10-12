@@ -61,12 +61,14 @@ describe("resolveOpportunityPlacement (pipeline import)", () => {
     defaultCurrency: "ZAR",
     customFields: {},
     pipelineMap: {
-      pl_sales: { id: "P1", firstId: "new_lead", wonId: "won", lostId: "lost" },
-    },
-    pipelineStageMap: {
-      "pl_sales:s_proposal": { pipelineId: "P1", stageId: "proposal_sent" },
-      "pl_sales:s_other": { pipelineId: "P2", stageId: "elsewhere" },
-      "pl_b:s_shared": { pipelineId: "P9", stageId: "b_stage" },
+      pl_sales: {
+        id: "P1",
+        firstId: "new_lead",
+        wonId: "won",
+        lostId: "lost",
+        stageIds: { s_proposal: "proposal_sent" },
+      },
+      pl_b: { id: "P9", firstId: "b_first", wonId: "won", lostId: "lost", stageIds: { s_shared: "b_stage" } },
     },
   };
   const opp = (o: Partial<GhlOpportunity>): GhlOpportunity => ({
@@ -94,12 +96,8 @@ describe("resolveOpportunityPlacement (pipeline import)", () => {
     expect(resolveOpportunityPlacement(opp({ status: "abandoned" }), mapping).stage).toBe("lost");
   });
 
-  it("an unmapped stage, or one mapped into ANOTHER pipeline, lands on the first stage", () => {
+  it("an unmapped stage lands on the first stage", () => {
     expect(resolveOpportunityPlacement(opp({ pipelineStageId: "s_gone" }), mapping)).toEqual({
-      pipelineId: "P1",
-      stage: "new_lead",
-    });
-    expect(resolveOpportunityPlacement(opp({ pipelineStageId: "s_other" }), mapping)).toEqual({
       pipelineId: "P1",
       stage: "new_lead",
     });
@@ -110,7 +108,7 @@ describe("resolveOpportunityPlacement (pipeline import)", () => {
       pipelineId: null,
       stage: "proposal",
     });
-    const { pipelineMap: _p, pipelineStageMap: _s, ...legacy } = mapping;
+    const { pipelineMap: _p, ...legacy } = mapping;
     expect(ghlOpportunityToChunk(opp({}), legacy)).toMatchObject({
       pipeline_id: null,
       stage: "proposal",
@@ -130,5 +128,11 @@ describe("resolveOpportunityPlacement (pipeline import)", () => {
     expect(
       resolveOpportunityPlacement(opp({ pipelineId: "pl_other", pipelineStageId: "constructor" }), mapping),
     ).toEqual({ pipelineId: null, stage: "new" });
+  });
+
+  it("legacy path: won / lost status land on the default pipeline's own terminal ids when given", () => {
+    const legacy = { ...mapping, pipelineMap: undefined, defaultWonId: "signed", defaultLostId: "dead" };
+    expect(resolveOpportunityPlacement(opp({ status: "won" }), legacy).stage).toBe("signed");
+    expect(resolveOpportunityPlacement(opp({ status: "abandoned" }), legacy).stage).toBe("dead");
   });
 });

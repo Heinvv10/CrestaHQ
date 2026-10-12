@@ -283,7 +283,9 @@ export function GhlImportWizard() {
                     Each GHL pipeline becomes a pipeline in this workspace
                     with its own stages (plus Won/Lost), and every deal lands
                     in its real stage. Untick to map everything onto the
-                    default pipeline instead.
+                    default pipeline instead — on a re-import, that moves
+                    deals already imported into recreated pipelines back to
+                    the default pipeline.
                   </span>
                 </span>
               </label>
