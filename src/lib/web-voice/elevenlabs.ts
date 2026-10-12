@@ -48,15 +48,44 @@ function errorMessage(body: unknown, status: number): string {
   return `ElevenLabs returned HTTP ${status}.`;
 }
 
+/** Shortest run of a secret's characters treated as a leak of it. */
+const SECRET_FRAGMENT_MIN = 8;
+
+/** Every run of at least `SECRET_FRAGMENT_MIN` characters of `text` that
+ *  occurs anywhere inside `secret` (a truncated or sliced echo), replaced. */
+function redactFragments(text: string, secret: string): string {
+  if (secret.length < SECRET_FRAGMENT_MIN) return text.split(secret).join("[redacted]");
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    // "Occurs in secret" is closed under prefixes, so the greedy run is the longest.
+    let len = 0;
+    while (i + len < text.length && secret.includes(text.slice(i, i + len + 1))) len++;
+    if (len >= SECRET_FRAGMENT_MIN) {
+      out += "[redacted]";
+      i += len;
+    } else {
+      out += text[i];
+      i++;
+    }
+  }
+  return out;
+}
+
 /**
  * ElevenLabs' error text reaches the member-readable `webVoiceMeta.lastError`
  * and the route's responses, and it may echo what we sent (an agent body
- * carries the custom-LLM URL with the endpoint secret in it). The ONE place
- * every error message from this client is built: the key and any secret the
- * caller names are cut out first.
+ * carries the custom-LLM URL with the endpoint secret in it), whole or
+ * truncated. The ONE place every error message from this client is built:
+ * capped, then every fragment of the key and of any secret the caller names
+ * is cut out. When the request body carried a secret (`secrets` non-empty),
+ * every URL in the text goes too, so a URL echoed with its secret shortened
+ * below the fragment length still does not leak its path.
  */
-function redact(text: string, secrets: string[]): string {
-  return secrets.filter(Boolean).reduce((out, secret) => out.split(secret).join("[redacted]"), text);
+function redact(text: string, apiKey: string, secrets: string[]): string {
+  let out = text.slice(0, 1000);
+  if (secrets.length) out = out.replace(/\bhttps?:\/\/\S+/gi, "[url]");
+  return [apiKey, ...secrets].filter(Boolean).reduce(redactFragments, out);
 }
 
 /** Ids we put in a path (agent, conversation). Anything else — "..", a
@@ -75,7 +104,7 @@ async function call<T>(
   body?: unknown,
   secrets: string[] = [],
 ): Promise<T> {
-  const scrub = (text: string) => redact(text, [apiKey, ...secrets]);
+  const scrub = (text: string) => redact(text, apiKey, secrets);
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, {

@@ -297,36 +297,62 @@ async function dropAgent(subAccountId: string, apiKey: string, agentId: string):
   }
 }
 
+/** Re-sync passes after a lost race before giving up (B1). */
+const RESTORE_ATTEMPTS = 3;
+
+/** Records on the meta that the live agent may not match the stored settings. */
+async function recordRestoreFailure(
+  subAccountId: string,
+  state: { conn: WebVoiceConnectionSecret; rev: string | null },
+): Promise<void> {
+  const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
+  const prev = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
+  await commitWebVoiceState(subAccountId, state.rev, {
+    conn: state.conn,
+    meta: {
+      ...settingsOf(state.conn),
+      ready: false,
+      keyLast4: state.conn.apiKey.slice(-4),
+      lastError: "The voice agent on ElevenLabs may not match these settings. Save again to re-sync.",
+      connectedAt: prev?.connectedAt ?? null,
+    },
+  }).catch((commitErr: unknown) => {
+    console.warn(`[web-voice] agent restore not recorded sa=${subAccountId}`, errText(commitErr));
+  });
+}
+
 /**
  * A save that lost the commit race (409) had already PATCHed the live agent
  * with its own settings, so ElevenLabs no longer runs what the winner
- * stored. Re-PATCH it with the committed settings. Nothing to do when the
- * committed connection points at a different agent (re-keyed, re-created or
- * disconnected since). A failure is logged and recorded on the meta through
- * the same transactional writer; never thrown — the caller still answers 409.
+ * stored. Re-PATCH it with the committed settings, then re-read: a save that
+ * committed while that PATCH was in flight may have been overwritten by it,
+ * so a changed revision on the same agent means PATCH again with the newest
+ * — at most `RESTORE_ATTEMPTS` times. Nothing to do when the committed
+ * connection points at a different agent (re-keyed, re-created or
+ * disconnected since). A failed PATCH, or settings still changing after the
+ * last pass, is logged and recorded on the meta through the same
+ * transactional writer; never thrown — the caller still answers 409.
  */
 async function restoreCommittedAgent(subAccountId: string, apiKey: string, agentId: string): Promise<void> {
-  const { conn: winner, rev } = await readState(subAccountId);
-  if (!winner || winner.agentId !== agentId || winner.apiKey !== apiKey) return;
-  try {
-    await updateAgent(apiKey, agentId, await agentSpecFor(subAccountId, winner));
-  } catch (err) {
-    console.warn(`[web-voice] agent restore failed sa=${subAccountId}`, errText(err));
-    const subSnap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
-    const prev = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
-    await commitWebVoiceState(subAccountId, rev, {
-      conn: winner,
-      meta: {
-        ...settingsOf(winner),
-        ready: false,
-        keyLast4: winner.apiKey.slice(-4),
-        lastError: "The voice agent on ElevenLabs may not match these settings. Save again to re-sync.",
-        connectedAt: prev?.connectedAt ?? null,
-      },
-    }).catch((commitErr: unknown) => {
-      console.warn(`[web-voice] agent restore not recorded sa=${subAccountId}`, errText(commitErr));
-    });
+  const sameAgent = (conn: WebVoiceConnectionSecret | null): conn is WebVoiceConnectionSecret =>
+    !!conn && conn.agentId === agentId && conn.apiKey === apiKey;
+  let state = await readState(subAccountId);
+  for (let attempt = 1; attempt <= RESTORE_ATTEMPTS; attempt++) {
+    const { conn: winner, rev } = state;
+    if (!sameAgent(winner)) return;
+    try {
+      await updateAgent(apiKey, agentId, await agentSpecFor(subAccountId, winner));
+    } catch (err) {
+      console.warn(`[web-voice] agent restore failed sa=${subAccountId}`, errText(err));
+      await recordRestoreFailure(subAccountId, { conn: winner, rev });
+      return;
+    }
+    state = await readState(subAccountId);
+    if (state.rev === rev) return;
   }
+  if (!sameAgent(state.conn)) return;
+  console.warn(`[web-voice] agent restore gave up sa=${subAccountId}: settings kept changing`);
+  await recordRestoreFailure(subAccountId, { conn: state.conn, rev: state.rev });
 }
 
 /**

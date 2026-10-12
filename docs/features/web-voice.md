@@ -75,14 +75,19 @@ gets a 409 and writes nothing, and an agent it had just created is deleted so no
 orphan is left on the client's account. `rev` is a fresh random id on every write, so
 a disconnect followed by a reconnect never matches a stale reader. A losing save may
 already have PATCHed the live agent, so after its 409 it re-reads the committed
-connection and PATCHes the agent back to the winner's settings; if that fails it is
-logged and recorded as `lastError` ("may not match these settings"), never thrown.
+connection and PATCHes the agent back to the winner's settings. It then re-reads: if
+another save committed while that PATCH was in flight (same key and agent, new `rev`),
+it PATCHes again with the newest settings, at most three passes. A failed PATCH, or
+settings still changing after the third pass, is logged and recorded as `lastError`
+("may not match these settings"), never thrown.
 
 Outbound calls go only to the fixed host `https://api.elevenlabs.io` with the
 sub-account's key. An agent or conversation id is put in a request path only if it
-matches `^[A-Za-z0-9_-]{1,128}$`. ElevenLabs' error text can echo what we sent, so the
-client cuts the key and the endpoint secret out of every error message before it is
-stored or returned. Errors are logged as messages, never as objects.
+matches `^[A-Za-z0-9_-]{1,128}$`. ElevenLabs' error text can echo what we sent, whole
+or truncated, so the client caps every error message at 1,000 characters and replaces
+any run of 8 or more characters that occurs inside the key or the endpoint secret
+before it is stored or returned; for a request whose body carried the secret (agent
+create and update) every URL in the text is replaced too. Errors are logged as messages, never as objects.
 
 ## Not yet built
 

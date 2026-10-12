@@ -133,6 +133,8 @@ afterEach(() => {
 });
 
 const connect = async (apiKey = KEY) => POST(req("POST", { apiKey }), ctx());
+const greetingOf = (c: Call) =>
+  (c.body as { conversation_config: { agent: { first_message: string } } }).conversation_config.agent.first_message;
 
 describe("tenancy and ids", () => {
   it.each([
@@ -297,7 +299,7 @@ describe("POST — connect", () => {
     });
     const out = await body(await connect());
     noLeak(mem.read("subAccounts/sa1"));
-    expect(out.meta).toMatchObject({ lastError: expect.stringContaining("[redacted]") });
+    expect(out.meta).toMatchObject({ lastError: "bad url [url]" });
   });
 
   it("an agent id ElevenLabs returns that is not a plain id is never stored", async () => {
@@ -489,6 +491,66 @@ describe("PATCH — settings", () => {
     expect(mem.read(SECRET)).toEqual(rival);
   });
 
+  it("B1: a save committed while the loser's re-sync PATCH is in flight is re-applied — the agent ends on CCC", async () => {
+    expect((await connect()).status).toBe(200);
+    let releaseA!: () => void;
+    const heldA = new Promise<void>((r) => (releaseA = r));
+    let releaseRestore!: () => void;
+    const heldRestore = new Promise<void>((r) => (releaseRestore = r));
+    let restoreStarted!: () => void;
+    const restoreSeen = new Promise<void>((r) => (restoreStarted = r));
+    let patches = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH") {
+        const n = ++patches;
+        if (n === 1) await heldA; // A's own PATCH
+        if (n === 3) {
+          restoreStarted(); // A's re-sync PATCH, carrying B's settings
+          await heldRestore;
+        }
+      }
+      return fakeFetch(input, init);
+    });
+    const a = PATCH(req("PATCH", { greeting: "AAA" }), ctx());
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await PATCH(req("PATCH", { greeting: "BBB" }), ctx())).status).toBe(200);
+    releaseA();
+    await restoreSeen;
+    expect((await PATCH(req("PATCH", { greeting: "CCC" }), ctx())).status).toBe(200);
+    releaseRestore();
+    expect((await a).status).toBe(409);
+    expect(mem.read(SECRET)?.greeting).toBe("CCC");
+    expect(greetingOf(calls.filter((c) => c.method === "PATCH").at(-1)!)).toBe("CCC");
+  });
+
+  it("B1: settings that keep changing under the re-sync stop after 3 passes and are recorded", async () => {
+    expect((await connect()).status).toBe(200);
+    let releaseA!: () => void;
+    const heldA = new Promise<void>((r) => (releaseA = r));
+    let patches = 0;
+    let churn = 0;
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH") {
+        const n = ++patches;
+        if (n === 1) await heldA;
+        // Every re-sync PATCH (n ≥ 3) sees another save commit underneath it.
+        if (n >= 3) mem.seed(SECRET, { ...mem.read(SECRET)!, greeting: `G${++churn}`, rev: `churn${churn}` });
+      }
+      return fakeFetch(input, init);
+    });
+    const a = PATCH(req("PATCH", { greeting: "AAA" }), ctx());
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await PATCH(req("PATCH", { greeting: "BBB" }), ctx())).status).toBe(200);
+    releaseA();
+    expect((await a).status).toBe(409);
+    expect(patches).toBe(2 + 3); // A, B, then exactly three re-sync passes
+    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({
+      greeting: "G3",
+      lastError: expect.stringMatching(/may not match/),
+    });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("agent restore gave up"))).toBe(true);
+  });
+
   it("A1: a failed re-sync after a lost race is logged and recorded on the meta", async () => {
     expect((await connect()).status).toBe(200);
     let release!: () => void;
@@ -528,6 +590,40 @@ describe("PATCH — settings", () => {
     const meta = mem.read("subAccounts/sa1")?.webVoiceMeta;
     noLeak(meta);
     expect(String((out.meta as Record<string, unknown>).lastError)).toContain("[redacted]");
+  });
+
+  it("B2: a truncated (pydantic-style) echo of the URL leaks no run of the endpoint secret", async () => {
+    expect((await connect()).status).toBe(200);
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH") {
+        const url = (JSON.parse(String(init.body)) as AgentBody).conversation_config.agent.prompt.custom_llm.url;
+        // No scheme, so the URL rule cannot catch it: only the fragment rule can.
+        return json(422, {
+          detail: `Invalid custom_llm url '...${url.slice(-26)}' and ${url.slice(-30, -12)}, near ${url.slice(-20, -11)}`,
+        });
+      }
+      return fakeFetch(input, init);
+    });
+    await PATCH(req("PATCH", { greeting: "Hello" }), ctx());
+    const secret = mem.read(SECRET)?.endpointSecret as string;
+    const lastError = String((mem.read("subAccounts/sa1")?.webVoiceMeta as Record<string, unknown>).lastError);
+    // The last run is 9 characters: just over the fragment length.
+    expect(lastError).toBe("Invalid custom_llm url '...[redacted]' and [redacted], near [redacted]");
+    for (let i = 0; i + 8 <= secret.length; i++) expect(lastError).not.toContain(secret.slice(i, i + 8));
+  });
+
+  it("B2: a URL echoed with its secret cut below the fragment length is still removed", async () => {
+    expect((await connect()).status).toBe(200);
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH") {
+        const url = (JSON.parse(String(init.body)) as AgentBody).conversation_config.agent.prompt.custom_llm.url;
+        return json(422, { detail: `Unreachable: ${url.slice(0, url.length - 26)}... (timeout)` });
+      }
+      return fakeFetch(input, init);
+    });
+    await PATCH(req("PATCH", { greeting: "Hello" }), ctx());
+    const lastError = String((mem.read("subAccounts/sa1")?.webVoiceMeta as Record<string, unknown>).lastError);
+    expect(lastError).toBe("Unreachable: [url] (timeout)");
   });
 });
 
