@@ -1,4 +1,5 @@
 import { funnelAccent } from "@/lib/funnels/accent";
+import { withCheckedBackground } from "@/lib/funnels/image-url";
 import type { TypeScale } from "@/lib/funnels/typography";
 import type {
   FunnelSection,
@@ -102,7 +103,9 @@ export function FunnelSections({
   const ctx = { ...given, accent: funnelAccent(given.accent) };
   return (
     <>
-      {sections.map((s, i) => {
+      {sections.map((stored, i) => {
+        // Second layer for the background image, as for the accent.
+        const s = withCheckedBackground(stored);
         // Image-as-background: the photo becomes the band itself under a dark
         // overlay gradient, so text stays readable on ANY image without
         // knowing its luminance. Forces the dark palette for the same reason.
