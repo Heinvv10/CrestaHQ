@@ -9,6 +9,7 @@ import { getFormForSubAccount } from "@/lib/server/forms-service";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, str, WORKFLOW_TEMPLATES } from "./helpers";
 import { oneLine } from "./text-safety";
+import { workflowBuilderUrl } from "./workflow-support";
 
 /** The starters whose trigger is form.submitted: the only ones a formId
  *  can narrow (workflows.forms.test.ts checks this against the seeds). */
@@ -100,7 +101,7 @@ export const WORKFLOW_CAPABILITIES: AiSuiteCapability[] = [
       return {
         resultText: `Created the “${label}” workflow as a draft${
           form ? `, triggered only by the “${oneLine(form.name)}” form` : ""
-        }. Open Workflows to review and publish it.`,
+        }. Review its steps, test it and activate it in the workflow builder: ${workflowBuilderUrl(ctx.subAccountId!, id)}`,
         ref: { kind: "workflow", id },
       };
     },

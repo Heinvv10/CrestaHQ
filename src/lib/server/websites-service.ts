@@ -11,6 +11,7 @@ import { isNicheKey } from "@/lib/website/niches";
 import {
   GitpageError,
   gitpageIsConfigured,
+  safePagesUrl,
   submitBuild,
   type PollBuildResult,
 } from "@/lib/gitpage/client";
@@ -20,6 +21,7 @@ import {
 } from "@/lib/gitpage/heartbeat";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { isDocId } from "@/lib/server/doc-id";
+import { oneLine } from "@/lib/ai-suite/capabilities/text-safety";
 import {
   blankWebsiteConfig,
   effectiveQuality,
@@ -359,6 +361,8 @@ const BUSY_MESSAGE =
 const ALREADY_BUILDING_MESSAGE =
   "This site is building right now — wait for it to finish before starting another build.";
 
+const SITE_NOT_FOUND_MESSAGE = "Website not found in this workspace.";
+
 const GATE_OFF_MESSAGE =
   "The website builder is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.";
 
@@ -533,6 +537,11 @@ export async function submitWebsiteBuildForSubAccount(input: {
   siteId: string;
   config: WebsiteConfig;
   buildByUid: string;
+  /**
+   * For a caller that read the site and means to REBUILD it: a site that is
+   * no longer there is refused (404) instead of being created by this build.
+   */
+  requireExisting?: boolean;
 }): Promise<{ formResponseId: string; estimatedDurationSeconds?: number }> {
   const { subAccountId, siteId, config } = input;
   // Ids, never paths. Both go into Firestore paths below; a site id like
@@ -563,6 +572,9 @@ export async function submitWebsiteBuildForSubAccount(input: {
   const db = getAdminDb();
   const docRef = db.doc(`subAccounts/${subAccountId}/website/${siteId}`);
   const snap = await docRef.get();
+  if (input.requireExisting && !snap.exists) {
+    throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
+  }
   const isFirst = !snap.exists;
   const existingDoc = (snap.data() ?? {}) as Partial<WebsiteDoc>;
 
@@ -929,4 +941,102 @@ export async function settleWebsiteBuild(input: {
     });
   }
   return "ready";
+}
+
+/**
+ * The call-to-action link a rebuild may publish, or null. Held to the rule
+ * for a gitpage live URL (`safePagesUrl`): no whitespace or control
+ * characters, parses, `https:`, no embedded credentials, not localhost or a
+ * non-public IP literal, at most 2,048 characters. The site renders it as a
+ * link on a public page, so `http:`, `javascript:` and `data:` never reach
+ * the stored config. Returned in `URL.href` form.
+ */
+export function safeCtaLink(raw: unknown): string | null {
+  return safePagesUrl(raw);
+}
+
+/**
+ * Point a site's call-to-action at a new URL and rebuild it. This is the one
+ * seam between a gitpage site and the CRM: the site config carries no form
+ * reference, so "link the site to my form" means setting `cta_link` to the
+ * form's (or a booking page's) public URL and resubmitting the build.
+ *
+ * The build goes through `submitWebsiteBuildForSubAccount` and nothing else,
+ * so every guard there applies unchanged: the agency gate, the gitpage key,
+ * config validation, the refusal while a build is in flight, the hourly
+ * build counter and the `transitionWebsite` write. `requireExisting` closes
+ * the one gap of reading the site here first: a site removed in between is
+ * refused, not re-created by the build. (Upstream, 68798611, takes any
+ * http(s) link, reads the site before the gate, and has that gap.)
+ *
+ * The rebuild submits the STORED config, so wizard edits saved since the
+ * last build are published with it.
+ */
+export async function updateWebsiteCtaAndRebuild(input: {
+  subAccountId: string;
+  siteId: string;
+  ctaLink: string;
+  buildByUid: string;
+  /**
+   * The site's name as the confirming person was shown it. The id and the
+   * name both come from the model; a card naming one site while the id is
+   * another's must not rebuild the other.
+   */
+  expectSiteName?: string;
+}): Promise<{
+  formResponseId: string;
+  siteName: string;
+  ctaLink: string;
+  previousCtaLink: string;
+}> {
+  const { subAccountId, siteId } = input;
+  if (!isDocId(subAccountId) || !isDocId(siteId)) {
+    throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
+  }
+  const ctaLink = safeCtaLink(input.ctaLink);
+  if (!ctaLink) {
+    throw new WebsiteServiceError(
+      "The call-to-action link must be a full public https:// URL (at most 2,048 characters).",
+      400,
+    );
+  }
+  // The gate answers first, as for every other website write.
+  await requireWebsiteEnabledSub(subAccountId);
+
+  const snap = await getAdminDb().doc(`subAccounts/${subAccountId}/website/${siteId}`).get();
+  const doc = snap.data() as WebsiteDoc | undefined;
+  if (!doc || doc.subAccountId !== subAccountId) {
+    throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
+  }
+  const config: WebsiteConfig = { ...blankWebsiteConfig(), ...(doc.config ?? {}) };
+  // As the assistant's lookups print it (one line, nothing invisible).
+  const siteName = oneLine(doc.name || config.heading) || "Untitled site";
+  if (
+    input.expectSiteName !== undefined &&
+    oneLine(input.expectSiteName).toLowerCase() !== siteName.toLowerCase()
+  ) {
+    throw new WebsiteServiceError(
+      `That website id belongs to “${siteName}”, not “${oneLine(input.expectSiteName)}” — nothing was changed. Check the site's id and name again.`,
+      409,
+    );
+  }
+  const previousCtaLink = (config.cta_link ?? "").trim();
+  // A live site that already carries the link: a rebuild would spend a build
+  // to publish the same thing. (A failed or unbuilt one may still need it.)
+  if (doc.status === "ready" && previousCtaLink === ctaLink) {
+    throw new WebsiteServiceError(
+      `“${siteName}” is live with that call-to-action link already — nothing to change, so no rebuild was started.`,
+      409,
+    );
+  }
+  config.cta_link = ctaLink;
+
+  const submission = await submitWebsiteBuildForSubAccount({
+    subAccountId,
+    siteId,
+    config,
+    buildByUid: input.buildByUid,
+    requireExisting: true,
+  });
+  return { formResponseId: submission.formResponseId, siteName, ctaLink, previousCtaLink };
 }
