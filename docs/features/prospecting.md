@@ -4,6 +4,8 @@
 
 Status: **PR 3 of 6** — gate, quota, collections, saved lists (PR 1), audit reports with share links (PR 2) and the ApexGEO sections 5/7/8 (PR 3). No message is sent yet.
 
+**REVISED 2026-10-12** — the line above is out of date: PR 4 (workflow trigger, merge tags, approach guard, daily cap) and PR 5 (mystery shop, sections 11 and 12: email, WhatsApp, website form; AI call not live-walked) are LIVE. See [the programme plan](../programme/prospecting-module.md#pr-sequence-each-one-independently-mergeable-each-with-a-blind-review).
+
 ## What exists
 
 - **Gate** `prospectingEnabledByAgency` (off by default, in `PLAN_GATE_KEYS`, hide-override `prospectingHiddenWhenDisabled`) and the monthly `prospectingReportQuota` (0–1000, default 50 via `lib/prospecting/quota.ts`), both set in the agency Manage dialog. See [feature-gates.md](../architecture/feature-gates.md).
