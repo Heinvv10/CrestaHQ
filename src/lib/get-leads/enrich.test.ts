@@ -152,6 +152,10 @@ describe("enrichBusinesses", () => {
 describe("extractContacts — linear time on hostile pages (ReDoS)", () => {
   // A homepage is owner-controlled and up to HOMEPAGE_MAX_BYTES; extraction
   // runs on the event loop, so a pathological page must not stall it.
+  // Linear extraction takes up to ~60 ms per page here and ~240 ms on the
+  // loaded CI runner; the unanchored EMAIL_RE this replaced is quadratic and
+  // took 208 s on 500 KB of 'a'. The budget sits far from both.
+  const BUDGET_MS = 2_000;
   const SIZE = 500 * 1024;
   const fill = (unit: string, size = SIZE) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
   const hostile: [string, string][] = [
@@ -166,11 +170,11 @@ describe("extractContacts — linear time on hostile pages (ReDoS)", () => {
     ["500 KB of instagram links", fill("https://instagram.com/a")],
     ["500 KB of '&#0'", fill("&#0")],
   ];
-  it.each(hostile)("%s completes in < 200 ms", (_name, page) => {
+  it.each(hostile)(`%s completes in < ${BUDGET_MS} ms`, (_name, page) => {
     const t0 = performance.now();
     extractContacts(page, "https://x.example");
     const ms = performance.now() - t0;
-    expect(ms).toBeLessThan(200);
+    expect(ms).toBeLessThan(BUDGET_MS);
   });
 
   it("still finds an email at the end of a long run of local-part characters", () => {
