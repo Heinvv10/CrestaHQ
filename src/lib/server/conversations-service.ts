@@ -388,7 +388,10 @@ export async function setConversationDraft(input: {
             model: input.model,
             tokens: input.tokens,
             createdAt: FieldValue.serverTimestamp(),
-            ...(input.emailReply ? { emailReply: input.emailReply } : {}),
+            // The write merges into any older draft: a field this draft
+            // doesn't carry must be deleted, or an SMS draft inherits the last
+            // email draft's thread headers.
+            emailReply: input.emailReply ?? FieldValue.delete(),
           },
           updatedAt: FieldValue.serverTimestamp(),
         },

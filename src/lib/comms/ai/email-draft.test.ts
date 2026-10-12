@@ -44,6 +44,7 @@ vi.mock("@/lib/comms/ai/openrouter", async (orig) => ({
 const { mem, storeDb } = await import("@/test/gbp-sync-store");
 const { maybeDraftEmailReply } = await import("./email-draft");
 const { recordEmailMessage } = await import("@/lib/server/email-conversations");
+const { setConversationDraft } = await import("@/lib/server/conversations-service");
 const { usageMonthKey } = await import("@/lib/server/usage-meter");
 
 const EMAIL = {
@@ -244,6 +245,18 @@ describe("Email AI drafts", () => {
     });
     expect(seamCalls()).toEqual(NO_SEAMS);
     llm.text = "Hi Ann,\n\nThanks for your email.\n\nBest regards,\nBiz";
+  });
+
+  it("a later non-email draft does not inherit the email draft's thread headers (PR #405 review)", async () => {
+    seed();
+    await maybeDraftEmailReply(EMAIL);
+    expect(draft()?.emailReply).toBeDefined();
+    await setConversationDraft({
+      contactId: "c1", subAccountId: "sa1", agencyId: "ag1", contactName: "Ann", contactPhone: "+27820000000",
+      channel: "sms", body: "SMS draft", model: "m", tokens: 1,
+    });
+    expect(draft()).toMatchObject({ channel: "sms", body: "SMS draft" });
+    expect(draft()).not.toHaveProperty("emailReply");
   });
 
   it("counts the tokens against the sub-account's AI usage, and an over-cap workspace gets no draft", async () => {
