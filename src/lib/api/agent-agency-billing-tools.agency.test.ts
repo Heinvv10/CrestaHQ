@@ -48,6 +48,8 @@ describe("the reads see only what the key reaches", () => {
     expect(r).toMatchObject({ ok: true });
     const text = (r as { resultText: string }).resultText;
     expect(text).toContain("Client One");
+    expect(text).toContain("Client billing of the sub-accounts this key reaches (");
+    expect(text).toContain("MRR of the sub-accounts this key reaches");
     expect(text).not.toContain("Unreached Co");
     expect(text).not.toContain("Other Co");
     expect(text).not.toContain("4,242");
@@ -68,7 +70,10 @@ describe("resend_checkout_link", () => {
     expect(row(id)).toMatchObject({
       subAccountId: null, targetSubAccountId: "sa1", approval: "outbound",
       args: { subAccountId: "sa1" },
-      pinned: { subAccountId: "sa1", planId: "plan_sample", priceCents: 9900, status: "pending" },
+      pinned: {
+        subAccountId: "sa1", planId: "plan_sample", priceCents: 9900, billingInterval: "month", currency: "zar",
+        stripePriceId: "price_m", status: "pending",
+      },
     });
     const preview = row(id).preview as Array<{ label: string; value: string }>;
     expect(preview.map((p) => p.label)).toEqual(["Sub-account", "Plan", "Billing status", "Link"]);
@@ -101,6 +106,19 @@ describe("resend_checkout_link", () => {
     const owner = { uid: "owner1", email: "o@x.io", displayName: "", agencyId: "ag1" };
     const approved = { pinned: { subAccountId: "sa1", planId: "plan_sample", priceCents: 4900, status: "pending" } };
     await expect(getCapability("resend_checkout_link")!.execute({ ...owner, approved }, { subAccountId: "sa1" })).rejects.toThrow("changed since this was reviewed");
+    expect(hash()).toBe("old_hash");
+  });
+
+  it.each([
+    ["the cadence and provider price (monthly R99 → annual R99)", { billingInterval: "year", stripePriceId: "price_y" }],
+    ["the currency at the same cents (zar → usd)", { currency: "usd" }],
+  ])("approved, then %s changed before execute: refused, no link (breaker #413)", async (_label, change) => {
+    const id = proposalId(await dispatchAgentTool(agencyKey, "resend_checkout_link", { subAccountId: "sa1" }));
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const owner = { uid: "owner1", email: "o@x.io", displayName: "", agencyId: "ag1" };
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...PENDING_BILLING, ...change } });
+    const approved = { pinned: row(id).pinned as Record<string, unknown> };
+    await expect(getCapability("resend_checkout_link")!.execute({ ...owner, approved }, { subAccountId: "sa1" })).rejects.toThrow("changed since");
     expect(hash()).toBe("old_hash");
   });
 

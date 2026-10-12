@@ -18,7 +18,7 @@ import { CapabilityUserError, type AiSuiteActionContext, type AiSuiteCapability,
 import { str } from "./helpers";
 import { oneLine } from "./text-safety";
 import { tenantWide, withoutLabels } from "./billing-proposals";
-import { paddedSubAccountId, subAccountInAgency } from "./agency-support";
+import { assertCardNames, paddedSubAccountId, subAccountInAgency } from "./agency-support";
 
 /**
  * Agency billing tools from upstream 1.0.40 (UPSTREAM_PORT_PLAN.md, N2b),
@@ -87,7 +87,12 @@ async function linkPlan(ctx: AiSuiteActionContext, subAccountId: unknown) {
       value: "A new checkout link for this plan; every earlier link stops working. It is shown on approval, nothing is sent to the client.",
     },
   ];
-  return { sub, rows, pinned: { subAccountId: sub.id, planId: billing.planId, priceCents: billing.priceCents, status: billing.status } };
+  // Everything the link would charge: the plan, its price, cadence, currency and provider price.
+  const pinned = {
+    subAccountId: sub.id, planId: billing.planId, priceCents: billing.priceCents, billingInterval: billing.billingInterval,
+    currency: billing.currency, stripePriceId: billing.stripePriceId, status: billing.status,
+  };
+  return { sub, rows, pinned };
 }
 
 export const AGENCY_BILLING_CAPABILITIES: AiSuiteCapability[] = [
@@ -125,7 +130,7 @@ export const AGENCY_BILLING_CAPABILITIES: AiSuiteCapability[] = [
         const graceMs = billingDateToMillis(billing?.graceUntil ?? null);
         return {
           id: d.id,
-          name: (data.name as string) || "(unnamed)",
+          name: oneLine(data.name) || "(unnamed)",
           number: typeof data.accountNumber === "number" ? ` #${data.accountNumber}` : "",
           state: effectiveBillingState(billing),
           billing,
@@ -133,6 +138,8 @@ export const AGENCY_BILLING_CAPABILITIES: AiSuiteCapability[] = [
         };
       });
       // As the agency billing page rolls it up, so the two never disagree.
+      // An agent key's totals cover only what it reaches: said so, never passed off as the agency's.
+      const scope = ctx.apiKey ? " of the sub-accounts this key reaches" : "";
       const mrr = new Map<string, number>();
       for (const r of rows) {
         const b = r.billing;
@@ -140,16 +147,16 @@ export const AGENCY_BILLING_CAPABILITIES: AiSuiteCapability[] = [
         mrr.set(b.currency, (mrr.get(b.currency) ?? 0) + monthlyEquivalentCents(b.priceCents, b.billingInterval));
       }
       const mrrLine = mrr.size
-        ? `MRR (active + grace, annual ÷ 12): ${[...mrr].map(([c, cents]) => formatBillingPrice(Math.round(cents), c)).join(" + ")}.`
-        : "MRR: none yet (no paying subscriptions).";
+        ? `MRR${scope} (active + grace, annual ÷ 12): ${[...mrr].map(([c, cents]) => formatBillingPrice(Math.round(cents), c)).join(" + ")}.`
+        : `MRR${scope}: none yet (no paying subscriptions).`;
       const wanted = rows.filter((r) =>
         args.filter === "all" ? true : args.filter === "needs-attention" ? ATTENTION.includes(r.state) : r.state === args.filter
       );
-      if (wanted.length === 0) return { resultText: `No sub-accounts match “${args.filter}”. ${mrrLine}` };
+      if (wanted.length === 0) return { resultText: `No sub-accounts${ctx.apiKey ? " this key reaches" : ""} match “${args.filter}”. ${mrrLine}` };
       wanted.sort((a, b) => ORDER[a.state] - ORDER[b.state]);
       const lines = wanted.slice(0, SHOWN).map((r) => {
         const b = r.billing;
-        const plan = r.state !== "comped" && b?.planName ? `, ${b.planName}` : "";
+        const plan = r.state !== "comped" && b?.planName ? `, ${oneLine(b.planName)}` : "";
         const price = r.state !== "comped" && typeof b?.priceCents === "number"
           ? ` ${formatBillingPriceWithInterval(b.priceCents, b.currency, b.billingInterval)}`
           : "";
@@ -161,7 +168,7 @@ export const AGENCY_BILLING_CAPABILITIES: AiSuiteCapability[] = [
         .join(", ");
       const more = wanted.length > SHOWN ? `\n(+${wanted.length - SHOWN} more — see Agency → Client billing)` : "";
       return {
-        resultText: `Client billing (${counts}):\n${lines.join("\n")}${more}\n${mrrLine}`,
+        resultText: `Client billing${scope} (${counts}):\n${lines.join("\n")}${more}\n${mrrLine}`,
         ...(more ? { truncated: true as const } : {}),
       };
     },
@@ -181,19 +188,27 @@ export const AGENCY_BILLING_CAPABILITIES: AiSuiteCapability[] = [
       required: ["subAccountId", "subAccountName"],
       additionalProperties: false,
     },
-    validate: validateSubAccount,
+    validate: (raw) => {
+      const v = validateSubAccount(raw);
+      // The card names the client by this; execute checks it is the real one.
+      return v.ok && !v.args.subAccountName ? { ok: false, error: "the sub-account's name is required, exactly as list_sub_accounts shows it" } : v;
+    },
     summarize: (args) =>
       `Comp “${args.subAccountName || args.subAccountId}” — stop billing them and cancel any active subscription.`,
     execute: async (ctx, args) => {
       const sub = await subAccountInAgency(ctx.agencyId, args.subAccountId);
+      assertCardNames(sub, args.subAccountName);
+      let comp;
       try {
-        await compSubAccount({ agencyId: ctx.agencyId, subAccountId: sub.id });
+        comp = await compSubAccount({ agencyId: ctx.agencyId, subAccountId: sub.id });
       } catch (err) {
         if (err instanceof BillingError) throw new CapabilityUserError(err.message);
         throw err;
       }
+      if (comp.subscription === "failed") throw new CapabilityUserError(comp.message);
+      const cancelled = comp.subscription === "cancelled" ? "their subscription was cancelled" : "they had no live subscription to cancel";
       return {
-        resultText: `“${(sub.data()?.name as string) || sub.id}” is now comped — no further charges, any subscription cancelled, and the workspace won't be paywalled. Their feature gates are unchanged.`,
+        resultText: `“${oneLine(sub.data()?.name) || sub.id}” is now comped — no further charges (${cancelled}), and the workspace won't be paywalled. Their feature gates are unchanged.`,
         ref: { kind: "subAccount", id: sub.id },
       };
     },

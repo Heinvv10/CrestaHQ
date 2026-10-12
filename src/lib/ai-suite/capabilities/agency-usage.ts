@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { formatBillingPrice } from "@/lib/billing/status";
+import { usageCurrency } from "@/lib/billing/currency";
 import {
   computeOverage,
   getEffectiveQuotas,
@@ -13,8 +14,7 @@ import {
 import type { UsageMonthDoc, UsageQuotas } from "@/types/usage";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
-import { defaultBillingCurrency } from "./billing-currency";
-import { paddedSubAccountId, subAccountInAgency } from "./agency-support";
+import { assertCardNames, paddedSubAccountId, subAccountInAgency } from "./agency-support";
 
 /**
  * Usage tools from upstream 1.0.40 (UPSTREAM_PORT_PLAN.md, N2b), over the
@@ -30,6 +30,14 @@ const LIMIT_KEYS = [
   "aiTokensPerMonth",
   "voiceMinutesPerMonth",
 ] as const;
+/** The ledger field each limit caps, and how many ledger units one limit unit is. */
+const LEDGER: Record<(typeof LIMIT_KEYS)[number], [keyof UsageMonthDoc, number]> = {
+  emailsPerMonth: ["emailsSent", 1],
+  smsSegmentsPerMonth: ["smsSegments", 1],
+  whatsappPerMonth: ["whatsappMessages", 1],
+  aiTokensPerMonth: ["aiTokens", 1],
+  voiceMinutesPerMonth: ["voiceSeconds", 60],
+};
 const LIMIT_UNITS: Record<(typeof LIMIT_KEYS)[number], string> = {
   emailsPerMonth: "emails",
   smsSegmentsPerMonth: "SMS segments",
@@ -103,8 +111,8 @@ export const AGENCY_USAGE_CAPABILITIES: AiSuiteCapability[] = [
         : sub.billing?.planId && quotas
           ? `plan “${sub.billing.planName ?? sub.billing.planId}”`
           : "none set (unlimited)";
-      // The plan's own currency; a client with none bills in the provider's (zar on Paystack).
-      const currency = (sub.billing?.currency as string | null) ?? defaultBillingCurrency();
+      // As the Manage dialog's usage section shows it (the usage route).
+      const currency = usageCurrency(sub.billing);
       const overLine =
         overage.totalCents > 0
           ? `Accrued overage this month: ${formatBillingPrice(overage.totalCents, currency)} — invoice it with a one-time charge.`
@@ -122,7 +130,7 @@ export const AGENCY_USAGE_CAPABILITIES: AiSuiteCapability[] = [
     surfaces: ["chat"],
     menuLabel: "Set (or clear) a sub-account's monthly usage limits",
     description:
-      "Set per-workspace monthly usage limits that OVERRIDE the plan's included allowances for one sub-account: emails, SMS segments, WhatsApp messages, AI tokens, voice minutes. Only the fields given are set — omit a unit to leave it unlimited (the plan's limit for it no longer applies); pass clear=true to remove the override entirely (the plan's limits, if any, apply again). Resolve the sub-account's id with list_sub_accounts first — never guess ids. Limits take effect within a few minutes; when hit, that channel pauses for the workspace until the month resets.",
+      "Set per-workspace monthly usage limits that OVERRIDE the plan's included allowances for one sub-account: emails, SMS segments, WhatsApp messages, AI tokens, voice minutes. Only the fields given are set — omit a unit to leave it unlimited (the plan's limit for it no longer applies); pass clear=true to remove the override entirely (the plan's limits, if any, apply again). Resolve the sub-account's id with list_sub_accounts first — never guess ids, and pass its name exactly as listed. Before proposing, run sub_account_usage and tell the user this month's usage against the new limits: a limit already reached pauses that channel at once. Limits take effect within a few minutes; when hit, that channel pauses for the workspace until the month resets.",
     parameters: {
       type: "object",
       properties: {
@@ -137,6 +145,8 @@ export const AGENCY_USAGE_CAPABILITIES: AiSuiteCapability[] = [
     validate: (raw) => {
       const t = validateTarget(raw);
       if (!t.ok) return t;
+      // The card names the client by this; execute checks it is the real one.
+      if (!t.subAccountName) return { ok: false, error: "the sub-account's name is required, exactly as list_sub_accounts shows it" };
       const r = (raw ?? {}) as Record<string, unknown>;
       const clear = r.clear === true;
       const limits: UsageQuotas = {};
@@ -167,14 +177,23 @@ export const AGENCY_USAGE_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const snap = await subAccountInAgency(ctx.agencyId, args.subAccountId);
+      assertCardNames(snap, args.subAccountName);
       const quotas = args.clear === true ? null : sanitizeUsageQuotas(args.limits);
       // Nothing valid to set is never read as "clear".
       if (args.clear !== true && !quotas) throw new CapabilityUserError("give at least one limit, or clear=true to remove the override");
       await snap.ref.update({ usageQuotas: quotas, updatedAt: FieldValue.serverTimestamp() });
       const name = (snap.data()?.name as string) || snap.id;
+      // This month so far against each new limit: one already reached pauses that channel now.
+      const month = usageMonthKey();
+      const usage = quotas ? (((await getAdminDb().doc(`subAccounts/${snap.id}/usage/${month}`).get()).data() ?? {}) as UsageMonthDoc) : {};
+      const against = LIMIT_KEYS.filter((k) => typeof quotas?.[k] === "number").map((k) => {
+        const [field, per] = LEDGER[k];
+        const used = Math.round(((usage[field] as number | undefined) ?? 0) / per);
+        return `- ${LIMIT_UNITS[k]}: ${n(used)} used of ${n(quotas![k]!)}${used >= quotas![k]! ? " — already reached: paused now until the month resets" : ""}`;
+      });
       return {
         resultText: quotas
-          ? `Limits saved for “${name}”. They apply within a few minutes; the agency owner is emailed at 80% and 100% of any limit, and a capped channel pauses until the month resets.`
+          ? `Limits saved for “${name}”. Used so far in ${month}:\n${against.join("\n")}\nThey apply within a few minutes; the agency owner is emailed at 80% and 100% of any limit, and a capped channel pauses until the month resets.`
           : `Removed the usage-limit override on “${name}” — the plan's included allowances (if any) apply again.`,
         ref: { kind: "subAccount", id: snap.id },
       };

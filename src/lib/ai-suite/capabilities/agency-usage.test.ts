@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { askAgency, confirmAgency, lookupResult, mem, seedTenants } from "@/test/chat-route-harness";
 import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/billing-provider-spies";
 import { usageMonthKey } from "@/lib/server/usage-meter";
+import { formatBillingPrice } from "@/lib/billing/status";
 
 /**
  * N2b's usage tools through the real Agency Assistant chat and confirm
@@ -13,7 +14,11 @@ import { usageMonthKey } from "@/lib/server/usage-meter";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/chat-route-harness")).adminMock());
-vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/chat-route-harness")).tenancyMock());
+vi.mock("@/lib/auth/require-tenancy", async () => ({
+  ...(await import("@/test/chat-route-harness")).tenancyMock(),
+  // The Manage dialog's usage route, read beside the tool.
+  requireAgencyOwner: async () => ({ uid: "owner1", email: "o@example.com", agencyId: "ag1" }),
+}));
 vi.mock("@/lib/ai-suite/model", async () => (await import("@/test/chat-route-harness")).modelMock());
 vi.mock("@/lib/ai-suite/usage", () => ({ recordAiSuiteUsage: async () => undefined }));
 vi.mock("@/lib/ai-suite/audit", () => ({ recordAiSuiteAction: async () => undefined }));
@@ -50,6 +55,20 @@ describe("sub_account_usage", () => {
     expect(out).toMatch(/Accrued overage this month: R\s10\.00/);
   });
 
+  it.each(["paystack", "stripe"] as const)("on %s the tool and the Manage dialog's usage section show the same overage (breaker #413)", async (kind) => {
+    spyBillingProvider(kind);
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageQuotas: { smsSegmentsPerMonth: 100 }, usageRates: { smsSegmentCents: 50 } });
+    mem.seed(`subAccounts/sa1/usage/${month}`, { smsSegments: 120 });
+    await askAgency("sub_account_usage", { subAccountId: "sa1" });
+    const route = await import("@/app/api/agency/sub-accounts/[id]/usage/route");
+    const page = (await (await route.GET(new Request("http://localhost/x"), { params: Promise.resolve({ id: "sa1" }) })).json()) as {
+      currency: string; overage: { totalCents: number };
+    };
+    expect(page.currency).toBe(kind === "paystack" ? "zar" : "usd");
+    // sub-account-usage-section.tsx renders formatBillingPrice(totalCents, currency).
+    expect(lookupResult()).toContain(`Accrued overage this month: ${formatBillingPrice(page.overage.totalCents, page.currency)} `);
+  });
+
   it("limits from the assigned plan when there is no override", async () => {
     mem.seed("agencies/ag1/plans/plan_1", { name: "Growth", quotas: { whatsappPerMonth: 50 } });
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { planId: "plan_1", planName: "Growth", currency: "zar" } });
@@ -84,6 +103,26 @@ describe("set_usage_limits", () => {
     expect(mem.read("subAccounts/sa2")!.usageQuotas).toBeUndefined();
   });
 
+  it("a card naming another client is refused at confirm: nothing written", async () => {
+    const before = JSON.stringify(mem.all());
+    const res = await confirmAgency("set_usage_limits", { subAccountId: "sa1", subAccountName: "Other", emailsPerMonth: 1 });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("it is “W”");
+    expect(JSON.stringify(mem.all())).toBe(before);
+  });
+
+  it("no name on the card is not a card", () => {
+    expect(getCapability("set_usage_limits")!.validate({ subAccountId: "sa1", emailsPerMonth: 5 })).toMatchObject({ ok: false });
+  });
+
+  it("the reply shows this month's usage against each new limit, flagging one already reached", async () => {
+    mem.seed(`subAccounts/sa1/usage/${month}`, { smsSegments: 120, voiceSeconds: 600 });
+    const res = await confirmAgency("set_usage_limits", { subAccountId: "sa1", subAccountName: "W", smsSegmentsPerMonth: 100, voiceMinutesPerMonth: 30 });
+    const text = (await res.json()).resultText as string;
+    expect(text).toContain("- SMS segments: 120 used of 100 — already reached: paused now until the month resets");
+    expect(text).toContain("- voice minutes: 10 used of 30\n");
+  });
+
   it("clear=true removes the override", async () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageQuotas: { emailsPerMonth: 5 } });
     const res = await confirmAgency("set_usage_limits", { subAccountId: "sa1", subAccountName: "W", clear: true });
@@ -98,6 +137,12 @@ describe("set_usage_limits", () => {
     [{ subAccountId: "sa1", subAccountName: "W", emailsPerMonth: 2.5 }],
     [{ subAccountId: "sa1", subAccountName: "W", emailsPerMonth: "5" }],
     [{ subAccountId: " sa1", subAccountName: "W", emailsPerMonth: 5 }],
+    [{ subAccountId: "sa1", emailsPerMonth: 5 }],
+    [{ subAccountId: "sa1", subAccountName: "W", emailsPerMonth: -1 }],
+    [{ subAccountId: "sa1", subAccountName: "W", emailsPerMonth: NaN }],
+    [{ subAccountId: "sa1", subAccountName: "W", emailsPerMonth: 1e300 }],
+    [{ subAccountId: "sa1", subAccountName: "W", emailsPerMonth: Infinity }],
+    [{ subAccountId: "sa1", subAccountName: "W", clear: "true" }],
   ])("%j is not a valid call: confirm refuses, nothing written", async (args) => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageQuotas: { emailsPerMonth: 5 } });
     const before = JSON.stringify(mem.all());
@@ -105,10 +150,19 @@ describe("set_usage_limits", () => {
     expect(JSON.stringify(mem.all())).toBe(before);
   });
 
+  it.each([[{ emailsPerMonth: 0.5 }], [{ emailsPerMonth: -3 }], [{ emailsPerMonth: "9" }]])(
+    "a hand-posted confirm carrying validated-looking limits %j writes nothing (breaker #413)",
+    async (limits) => {
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageQuotas: { emailsPerMonth: 5 } });
+      await confirmAgency("set_usage_limits", { subAccountId: "sa1", subAccountName: "W", clear: false, limits });
+      expect(mem.read("subAccounts/sa1")!.usageQuotas).toEqual({ emailsPerMonth: 5 });
+    }
+  );
+
   it("execute never reads a set without a valid limit as clear", async () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageQuotas: { emailsPerMonth: 5 } });
     const owner = { uid: "owner1", email: "o@example.com", displayName: "", agencyId: "ag1" };
-    await expect(getCapability("set_usage_limits")!.execute(owner, { subAccountId: "sa1", clear: false, limits: {} })).rejects.toThrow("give at least one limit");
+    await expect(getCapability("set_usage_limits")!.execute(owner, { subAccountId: "sa1", subAccountName: "W", clear: false, limits: {} })).rejects.toThrow("give at least one limit");
     expect(mem.read("subAccounts/sa1")!.usageQuotas).toEqual({ emailsPerMonth: 5 });
   });
 

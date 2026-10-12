@@ -4,6 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { isReachable } from "@/lib/api/agent-reach";
 import { isDocId } from "@/lib/server/doc-id";
 import { CapabilityUserError, type AiSuiteActionContext } from "./types";
+import { oneLine } from "./text-safety";
 
 /** Shared by the agency-level capabilities (agency.ts). */
 
@@ -44,4 +45,14 @@ export async function subAccountInAgency(agencyId: string, id: unknown): Promise
     throw new CapabilityUserError("That sub-account wasn't found in this agency.");
   }
   return snap;
+}
+
+/** A confirm card names the sub-account by the label the model passed:
+ *  refuse unless it is the stored name of the one being changed, so what
+ *  the owner confirmed is the client that changes. */
+export function assertCardNames(sub: FirebaseFirestore.DocumentSnapshot, label: unknown): void {
+  const real = oneLine(sub.data()?.name) || sub.id;
+  if (oneLine(label) !== real) {
+    throw new CapabilityUserError(`The card didn't name this sub-account (it is “${real}”): nothing was changed. Propose it again with that name.`);
+  }
 }

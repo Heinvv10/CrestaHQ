@@ -43,7 +43,7 @@ async function anySubAccountSendsViaSmtp(agencyId: string): Promise<boolean> {
       .get();
     return snap.docs.some((d) => emailIsConfigured(d.data() as EmailAccount));
   } catch (e) {
-    console.warn("[setup-summary] SMTP sub-account lookup failed", e);
+    console.warn("[setup-summary] SMTP sub-account lookup failed", e instanceof Error ? e.message : String(e));
     return false;
   }
 }
