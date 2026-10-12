@@ -10,12 +10,14 @@ import {
   readPaystackManageLink,
   readPaystackPlanAmount,
   readPaystackSubscription,
+  type PaystackSubscription,
 } from "@/lib/paystack/billing-api";
 import { paystackIsConfigured } from "@/lib/paystack/client";
 import { BillingError } from "./errors";
 import { switchPaystackSubscriptionPlan } from "./paystack-plan-switch";
 import type {
   BillingProvider,
+  CancelOutcome,
   CheckoutResult,
   CreatePlanInput,
   CreatePlanResult,
@@ -27,6 +29,9 @@ import type {
   SubscriptionCheckoutInput,
   SwitchSubscriptionInput,
 } from "./provider";
+
+/** Paystack subscription statuses that still charge (attention = a failed renewal it retries). */
+const PAYSTACK_LIVE_SUBSCRIPTION = new Set(["active", "attention"]);
 
 /**
  * Client Billing on the deployment's own Paystack account — the rail South
@@ -201,10 +206,23 @@ export class PaystackBillingProvider implements BillingProvider {
     return switchPaystackSubscriptionPlan(input);
   }
 
-  async cancelSubscription(subscriptionId: string): Promise<void> {
-    await disablePaystackSubscription(
-      await readPaystackSubscription(subscriptionId),
-    );
+  /**
+   * Paystack refuses to disable a subscription that is no longer live, so
+   * one it has already ended (non-renewing, completed, cancelled) or no
+   * longer knows (404) is reported as such instead of failing. A status it
+   * does not report is treated as live: disabled, or the failure thrown.
+   */
+  async cancelSubscription(subscriptionId: string): Promise<CancelOutcome> {
+    let sub: PaystackSubscription;
+    try {
+      sub = await readPaystackSubscription(subscriptionId);
+    } catch (err) {
+      if (err instanceof BillingError && err.providerStatus === 404) return "already_cancelled";
+      throw err;
+    }
+    if (sub.status && !PAYSTACK_LIVE_SUBSCRIPTION.has(sub.status)) return "already_cancelled";
+    await disablePaystackSubscription(sub);
+    return "cancelled";
   }
 
   /**

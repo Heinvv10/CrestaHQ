@@ -413,8 +413,28 @@ describe("switchSubscriptionPlan", () => {
 describe("cancelSubscription / createManagementLink", () => {
   it("cancels immediately", async () => {
     stripeMock.subscriptions.cancel.mockResolvedValue({ id: "sub_1" });
-    await provider.cancelSubscription("sub_1");
+    expect(await provider.cancelSubscription("sub_1")).toBe("cancelled");
     expect(stripeMock.subscriptions.cancel).toHaveBeenCalledWith("sub_1");
+  });
+
+  it("a subscription Stripe no longer has (resource_missing) has already ended", async () => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(Object.assign(new Error("No such subscription"), { code: "resource_missing" }));
+    expect(await provider.cancelSubscription("sub_1")).toBe("already_cancelled");
+  });
+
+  it.each(["canceled", "incomplete_expired"])("a refused cancel on a %s subscription has already ended", async (status) => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(new Error("invalid_request"));
+    stripeMock.subscriptions.retrieve.mockResolvedValueOnce({ id: "sub_1", status });
+    expect(await provider.cancelSubscription("sub_1")).toBe("already_cancelled");
+  });
+
+  it("a refused cancel on a live subscription (or one it can't read) still throws", async () => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(new Error("rate limited"));
+    stripeMock.subscriptions.retrieve.mockResolvedValueOnce({ id: "sub_1", status: "active" });
+    await expect(provider.cancelSubscription("sub_1")).rejects.toThrow("rate limited");
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(new Error("down"));
+    stripeMock.subscriptions.retrieve.mockRejectedValueOnce(new Error("down"));
+    await expect(provider.cancelSubscription("sub_1")).rejects.toThrow("down");
   });
 
   it("opens a billing portal session pointed back at the given URL", async () => {

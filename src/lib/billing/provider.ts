@@ -106,8 +106,12 @@ export interface BillingProvider {
     input: SwitchSubscriptionInput
   ): Promise<{ subscriptionId: string }>;
 
-  /** Cancel a subscription immediately. */
-  cancelSubscription(subscriptionId: string): Promise<void>;
+  /**
+   * Cancel a subscription immediately. `already_cancelled`: the provider had
+   * already ended it (or no longer has it), so nothing is charging. Any
+   * other failure throws: the caller cannot know it stopped.
+   */
+  cancelSubscription(subscriptionId: string): Promise<CancelOutcome>;
 
   /**
    * A hosted page where the payer manages their own billing (card, invoices).
@@ -115,6 +119,8 @@ export interface BillingProvider {
    */
   createManagementLink(input: ManagementLinkInput): Promise<{ url: string }>;
 }
+
+export type CancelOutcome = "cancelled" | "already_cancelled";
 
 /** How a mid-cycle plan switch should be charged. */
 export type PlanSwitchTiming =

@@ -6,6 +6,7 @@ import { BillingError } from "./errors";
 import { SUB_ACCOUNT_PLAN_KIND } from "./kinds";
 import type {
   BillingProvider,
+  CancelOutcome,
   CheckoutResult,
   CreatePlanInput,
   CreatePlanResult,
@@ -181,8 +182,18 @@ export class StripeBillingProvider implements BillingProvider {
     return { subscriptionId: sub.id };
   }
 
-  async cancelSubscription(subscriptionId: string): Promise<void> {
-    await this.stripe.subscriptions.cancel(subscriptionId);
+  /** A subscription Stripe no longer has, or has already ended, is
+   *  `already_cancelled`; any other failure throws. */
+  async cancelSubscription(subscriptionId: string): Promise<CancelOutcome> {
+    try {
+      await this.stripe.subscriptions.cancel(subscriptionId);
+      return "cancelled";
+    } catch (err) {
+      if ((err as { code?: unknown }).code === "resource_missing") return "already_cancelled";
+      const sub = await this.stripe.subscriptions.retrieve(subscriptionId).catch(() => null);
+      if (sub?.status === "canceled" || sub?.status === "incomplete_expired") return "already_cancelled";
+      throw err;
+    }
   }
 
   async createManagementLink(

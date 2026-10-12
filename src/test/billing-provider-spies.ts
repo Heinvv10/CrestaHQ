@@ -24,6 +24,7 @@ const RESULTS: Partial<Record<(typeof METHODS)[number], unknown>> = {
   createPlan: { productId: "prod_spy", monthlyPriceId: "price_spy", annualPriceId: null },
   createPrice: { priceId: "price_special_spy" },
   switchSubscriptionPlan: { subscriptionId: "sub_after_switch" },
+  cancelSubscription: "cancelled",
 };
 
 export type ProviderSpies = Record<(typeof METHODS)[number], ReturnType<typeof vi.fn>> & {

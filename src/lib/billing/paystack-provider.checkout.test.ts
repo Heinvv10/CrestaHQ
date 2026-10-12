@@ -184,12 +184,38 @@ describe("cancelSubscription", () => {
       })
       .mockResolvedValueOnce({});
 
-    await provider.cancelSubscription("SUB_1");
+    expect(await provider.cancelSubscription("SUB_1")).toBe("cancelled");
 
     expect(call(1)).toMatchObject({
       path: "/subscription/disable",
       body: { code: "SUB_1", token: "tok_1" },
     });
+  });
+
+  const sub = (status?: string) => ({ subscription_code: "SUB_1", email_token: "tok_1", next_payment_date: null, ...(status ? { status } : {}) });
+
+  it.each(["active", "attention"])("a %s subscription still charges: it is disabled", async (status) => {
+    paystackRequest.mockResolvedValueOnce(sub(status)).mockResolvedValueOnce({});
+    expect(await provider.cancelSubscription("SUB_1")).toBe("cancelled");
+    expect(call(1).path).toBe("/subscription/disable");
+  });
+
+  it.each(["non-renewing", "completed", "cancelled"])("a %s subscription has already ended: no disable, not a failure", async (status) => {
+    paystackRequest.mockResolvedValueOnce(sub(status));
+    expect(await provider.cancelSubscription("SUB_1")).toBe("already_cancelled");
+    expect(paystackRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("one Paystack no longer has (404 on the read) has already ended", async () => {
+    paystackRequest.mockRejectedValueOnce(new BillingError("Paystack: Subscription not found", 400, 404));
+    expect(await provider.cancelSubscription("SUB_1")).toBe("already_cancelled");
+  });
+
+  it("any other read failure, or a refused disable, still throws (fail closed)", async () => {
+    paystackRequest.mockRejectedValueOnce(new BillingError("Paystack returned 500.", 502, 500));
+    await expect(provider.cancelSubscription("SUB_1")).rejects.toThrow("Paystack returned 500.");
+    paystackRequest.mockResolvedValueOnce(sub("active")).mockRejectedValueOnce(new BillingError("Paystack: refused", 400, 400));
+    await expect(provider.cancelSubscription("SUB_1")).rejects.toThrow("refused");
   });
 });
 
