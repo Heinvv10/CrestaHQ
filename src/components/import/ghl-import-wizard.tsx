@@ -67,6 +67,9 @@ export function GhlImportWizard() {
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [stageMap, setStageMap] = useState<GhlStageMap>({});
   const [defaultStage, setDefaultStage] = useState<PipelineStageId>("new");
+  // Recreate GHL pipelines as real LeadStack pipelines (default ON — the
+  // faithful migration). Off = the legacy squash-onto-default mapping.
+  const [createPipelines, setCreatePipelines] = useState(true);
   const [defaultCurrency, setDefaultCurrency] = useState("USD");
   const [cfChoices, setCfChoices] = useState<CfChoice[]>([]);
 
@@ -188,17 +191,24 @@ export function GhlImportWizard() {
         body: JSON.stringify({
           mapping: { stageMap, defaultStage, defaultCurrency, customFields },
           entities: ["contacts", "opportunities", "notes"],
+          // Pipeline import: recreate the GHL pipelines here and land deals
+          // in their real stages. When off, everything squashes onto the
+          // default pipeline via stageMap.
+          createPipelines,
+          ...(createPipelines ? { ghlPipelines: preview?.pipelines ?? [] } : {}),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         jobId?: string;
         error?: string;
+        pipelineWarnings?: string[];
       };
       if (!res.ok || !data.ok || !data.jobId) {
         toast.error(data.error ?? "Couldn't start the import.");
         return;
       }
+      for (const w of data.pipelineWarnings ?? []) toast.warning(w);
       setJobId(data.jobId);
       setJob(null);
       setStep("run");
@@ -255,9 +265,48 @@ export function GhlImportWizard() {
           {/* Stage mapping */}
           <section className="space-y-2">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Pipeline stages → your stages
+              Pipelines &amp; stages
             </h3>
-            {(preview.pipelines ?? []).map((p) => (
+            {(preview.pipelines ?? []).length > 0 && (
+              <label className="flex cursor-pointer items-start gap-2 rounded-lg border bg-muted/20 p-3">
+                <input
+                  type="checkbox"
+                  checked={createPipelines}
+                  onChange={(e) => setCreatePipelines(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 cursor-pointer"
+                />
+                <span className="text-sm">
+                  <span className="font-medium">
+                    Recreate my GoHighLevel pipelines here
+                  </span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    Each GHL pipeline becomes a pipeline in this workspace
+                    with its own stages (plus Won/Lost), and every deal lands
+                    in its real stage. Untick to map everything onto the
+                    default pipeline instead — on a re-import, that moves
+                    deals already imported into recreated pipelines back to
+                    the default pipeline.
+                  </span>
+                </span>
+              </label>
+            )}
+            {createPipelines ? (
+              <div className="space-y-1.5">
+                {(preview.pipelines ?? []).map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center justify-between rounded-lg border p-3 text-sm"
+                  >
+                    <span className="font-medium">{p.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {(p.stages ?? []).length} stages + Won/Lost — created,
+                      or reused if imported before
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+            (preview.pipelines ?? []).map((p) => (
               <div key={p.id} className="rounded-lg border p-3">
                 <p className="mb-2 text-sm font-medium">{p.name}</p>
                 <div className="space-y-1.5">
@@ -280,7 +329,8 @@ export function GhlImportWizard() {
                   ))}
                 </div>
               </div>
-            ))}
+            ))
+            )}
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <Label className="text-xs">Default for unmapped:</Label>
               <select
