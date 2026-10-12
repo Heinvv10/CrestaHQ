@@ -3,6 +3,7 @@ import {
   type CheckoutPage,
   type CheckoutThemeId,
 } from "@/types/checkout-pages";
+import { isHexColor } from "@/lib/hex-color";
 
 /**
  * Checkout page preset themes.
@@ -261,14 +262,9 @@ export function isCheckoutThemeId(v: unknown): v is CheckoutThemeId {
 }
 
 // HARDENING (ours, not upstream): the one test a stored custom colour must
-// pass before it may reach a style attribute. `allowShort` also admits #RGB,
-// which the booking-page validator accepts and stores.
-export function isHexColor(v: unknown, allowShort = false): v is string {
-  return (
-    typeof v === "string" &&
-    (/^#[0-9a-f]{6}$/i.test(v) || (allowShort && /^#[0-9a-f]{3}$/i.test(v)))
-  );
-}
+// pass before it may reach a style attribute, re-exported for this file's
+// existing importers.
+export { isHexColor };
 
 /**
  * Resolve the theme for a page, including legacy docs saved before presets

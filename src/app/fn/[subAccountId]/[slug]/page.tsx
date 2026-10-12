@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { funnelAccent } from "@/lib/funnels/accent";
+import { withCheckedBackground } from "@/lib/funnels/image-url";
 import { FunnelSections } from "@/components/funnels/funnel-sections";
 import { sectionsFromLegacyLanding } from "@/lib/funnels/sections";
 import { fontPreset, typeScale } from "@/lib/funnels/typography";
@@ -158,9 +159,11 @@ async function load(
     "comparison",
     "pricing",
   ]);
-  const sections = raw.filter(
-    (s) => !REPEATERS.has(s.type) || s.items.length > 0,
-  );
+  // A background image is written into CSS url(…): checked here, before
+  // anything is sent, and again in FunnelSections.
+  const sections = raw
+    .filter((s) => !REPEATERS.has(s.type) || s.items.length > 0)
+    .map(withCheckedBackground);
 
   return { funnel, checkoutSlug, sections, business };
 }
