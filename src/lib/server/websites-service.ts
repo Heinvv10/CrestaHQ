@@ -19,12 +19,25 @@ import {
   markGitpageKeyInvalid,
 } from "@/lib/gitpage/heartbeat";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
+import { runAfterResponse } from "@/lib/server/after-response";
+import { resolvedAppUrl } from "@/lib/server/app-url";
 import { isDocId } from "@/lib/server/doc-id";
+import {
+  blankProvisioning,
+  buildSettledCallbackUrl,
+  ensureWebsiteContactForm,
+  leadstackWiringFor,
+  provisionWebsiteHandoff,
+  resolveLiveUrl,
+  type HandoffInput,
+} from "@/lib/server/website-handoff-service";
 import {
   blankWebsiteConfig,
   effectiveQuality,
+  wantsLeadForm,
   type WebsiteConfig,
   type WebsiteDoc,
+  type WebsiteProvisioning,
   type WebsiteStatus,
 } from "@/types/website";
 
@@ -597,18 +610,35 @@ export async function submitWebsiteBuildForSubAccount(input: {
     );
   }
 
-  // WS-3 SEAM — LeadStack wiring baked into a premium site. Upstream
-  // (68798611, website-handoff-service.ts) does three things here before the
-  // submit; the hand-off service is not ported yet, so until WS-3:
-  //   - `ensureWebsiteContactForm` is not called: `formId` stays whatever the
-  //     doc already holds (null today), so no form is created.
-  //   - `leadstackWiringFor(...)` is not sent: the site carries no form /
-  //     chat-widget wiring.
-  //   - the callback URL comes from NEXT_PUBLIC_APP_URL as written; WS-3
-  //     replaces `settledCallbackUrl()` with upstream's
-  //     `buildSettledCallbackUrl(await resolvedAppUrl())` (apex → www).
-  const formId: string | null = existingDoc.formId ?? null;
-  const callbackUrl = settledCallbackUrl() ?? undefined;
+  // Premium: make sure the sub-account's "Website contact" form exists BEFORE
+  // the request, because gitpage bakes its submit URL into the site. Reused
+  // across rebuilds (and across sites in the workspace).
+  let formId: string | null = null;
+  if (wantsLeadForm(config)) {
+    try {
+      formId = await ensureWebsiteContactForm({
+        subAccountId,
+        createdByUid: input.buildByUid,
+        existingFormId: existingDoc.formId ?? null,
+      });
+    } catch (err) {
+      throw new WebsiteServiceError(
+        `Could not prepare the website contact form: ${err instanceof Error ? err.message : String(err)}`,
+        500,
+      );
+    }
+  }
+  const publicAppUrl = await resolvedAppUrl();
+  const leadstack =
+    config.quality === "premium"
+      ? leadstackWiringFor({ subAccountId, formId, config, appUrl: publicAppUrl }) ?? undefined
+      : undefined;
+  if (config.quality === "premium" && !leadstack) {
+    console.warn(
+      "[website/build] NEXT_PUBLIC_APP_URL is not a public https URL — the premium site will carry no LeadStack form/widget wiring",
+    );
+  }
+  const callbackUrl = buildSettledCallbackUrl(publicAppUrl) ?? undefined;
 
   // The builder gets editor access to the new gitpage site (so they can
   // edit it with the GitPage MCP). Best-effort: no email → no invite.
@@ -632,6 +662,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
       config,
       subAccountId,
       subAccountName,
+      leadstack,
       callbackUrl,
       editorEmail,
     });
@@ -773,34 +804,41 @@ export async function submitWebsiteBuildForSubAccount(input: {
 }
 
 /**
- * The absolute `build.settled` callback URL, or null when the deployment is
- * not publicly reachable over https (gitpage then only gets polled).
- * WS-3 SEAM: stands in for upstream's `buildSettledCallbackUrl` in
- * website-handoff-service.ts until that file is ported.
+ * The premium publish hand-off, for the ONE caller that won the settle
+ * claim. Never allowed to fail the publish: it runs after the site is
+ * `ready`, a throw is recorded on `provisioning` instead of surfacing, and
+ * the only thing it writes to the site doc is `provisioning` — through
+ * `transitionWebsite`, for this job, while the site is still `ready`. So it
+ * cannot un-settle or re-settle a site, and a summary for a build that has
+ * since been reset or replaced is dropped rather than written onto its
+ * successor.
+ *
+ * A gated-off workspace (`websiteEnabledByAgency`) gets no hand-off: the
+ * service returns null and `provisioning` is left as it is.
  */
-function settledCallbackUrl(): string | null {
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
-  if (!/^https:\/\/[^\s/]+$/i.test(appUrl)) return null;
-  return `${appUrl}/api/webhooks/gitpage/build-settled`;
+async function runWebsiteHandoff(input: HandoffInput & { jobId: string }): Promise<void> {
+  const { subAccountId, siteId, site, jobId } = input;
+  let provisioning: WebsiteProvisioning | null;
+  try {
+    provisioning = await provisionWebsiteHandoff(input);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[website/settle] hand-off threw sa=${subAccountId} site=${siteId}: ${message}`);
+    provisioning = blankProvisioning(site.formId ?? null, [message]);
+  }
+  if (!provisioning) return;
+  try {
+    await transitionWebsite(
+      getAdminDb().doc(`subAccounts/${subAccountId}/website/${siteId}`),
+      { expectJobId: jobId, fromStatuses: ["ready"] },
+      { provisioning, updatedAt: FieldValue.serverTimestamp() },
+    );
+  } catch (err) {
+    console.error(
+      `[website/settle] hand-off summary not recorded sa=${subAccountId} site=${siteId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
-
-/**
- * WS-3 SEAM — the premium publish hand-off. Upstream calls
- * `provisionWebsiteHandoff` (website-handoff-service.ts, not ported yet)
- * here and stores its result on `WebsiteDoc.provisioning`, inside a
- * try/catch that records a thrown error there instead of failing the
- * publish (68798611, websites-service.ts `settleWebsiteBuild`). WS-3 fills
- * this body; until then a published premium site gets no chat allowlist,
- * KB seed, workflow or push, and `provisioning` stays null.
- */
-async function runWebsiteHandoff(_input: {
-  subAccountId: string;
-  siteId: string;
-  site: WebsiteDoc;
-  config: WebsiteConfig;
-  liveUrl: string;
-  result: PollBuildResult;
-}): Promise<void> {}
 
 /**
  * Settle a build that gitpage reports as terminal — shared by the QStash
@@ -838,9 +876,13 @@ async function runWebsiteHandoff(_input: {
  * "building" forever, with a live site the card cannot show, and docs/
  * architecture/feature-gates.md promises the published site is preserved
  * when the gate goes off. So settling only makes the doc truthful.
- * WS-3: the hand-off does new work in the workspace (chat allowlist, a
- * workflow that messages leads) — decide there whether a gated-off
- * workspace gets it.
+ * The hand-off is different — it does new work in the workspace (the chat
+ * allowlist, a workflow) — and does check the gate: a gated-off workspace's
+ * site is settled and nothing more (`provisionWebsiteHandoff`).
+ *
+ * The hand-off runs after the response (`runAfterResponse`), registered
+ * here while the caller's request is still open — every caller is a request
+ * handler: the QStash tick, Re-check now, the callback.
  */
 export async function settleWebsiteBuild(input: {
   subAccountId: string;
@@ -865,11 +907,10 @@ export async function settleWebsiteBuild(input: {
   }
   const delivery = { jobId, status: published ? ("Published" as const) : ("failed" as const) };
 
-  // WS-3 SEAM: upstream stores `await resolveLiveUrl(result.pagesUrl)` — the
-  // URL after GitLab's 308 to the project's unique domain. That fetches a
-  // gitpage-reported URL, so it lands with WS-3 behind the SSRF guard
-  // (UPSTREAM_PORT_PLAN.md, problem 7). Until then: the reported URL.
-  const liveUrl = published ? result.pagesUrl : null;
+  // GitLab path URLs 308 to the project's unique domain — store and wire the
+  // URL visitors actually land on. Resolved before the claim so the site is
+  // never `ready` at one address and then moved to another.
+  const liveUrl = published && result.pagesUrl ? await resolveLiveUrl(result.pagesUrl) : null;
 
   const settled = await transitionWebsite(
     docRef,
@@ -916,17 +957,21 @@ export async function settleWebsiteBuild(input: {
   // and its public middleware pattern are WS-4; scheduling it now would
   // only queue retries against a route that does not exist.
 
-  // Premium hand-off (the WS-3 seam above), for the caller that claimed.
+  // Premium hand-off, for the caller that claimed — and only that caller: a
+  // "noop" above has already returned.
   const quality = site.quality ?? effectiveQuality(site.config);
   if (quality === "premium" && liveUrl) {
-    await runWebsiteHandoff({
-      subAccountId,
-      siteId,
-      site,
-      config: { ...blankWebsiteConfig(), ...(site.config ?? {}) },
-      liveUrl,
-      result,
-    });
+    runAfterResponse(() =>
+      runWebsiteHandoff({
+        subAccountId,
+        siteId,
+        site,
+        config: { ...blankWebsiteConfig(), ...(site.config ?? {}) },
+        liveUrl,
+        result,
+        jobId,
+      }),
+    );
   }
   return "ready";
 }

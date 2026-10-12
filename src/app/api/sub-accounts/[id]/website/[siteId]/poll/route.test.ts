@@ -28,6 +28,11 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
   markGitpageBuildSucceeded: async () => {},
   markGitpageKeyInvalid: async () => {},
 }));
+// settleWebsiteBuild resolves the reported live URL through publicFetch: no
+// test here may reach the network. Every probe answers "no redirect".
+vi.mock("@/lib/webhooks/public-fetch", () => ({
+  publicFetch: async () => new Response(null, { status: 200 }),
+}));
 
 const { POST: poll } = await import("./route");
 const { POST: pollNow } = await import("../poll-now/route");
