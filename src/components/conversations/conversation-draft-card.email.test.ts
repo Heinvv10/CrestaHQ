@@ -72,6 +72,11 @@ it("sends through /api/comms/email/send on the draft's own thread, then clears t
   expect(discard).toHaveBeenCalledWith("c1");
 });
 
+it("shows the escalation keyword an email draft carries", async () => {
+  await approve({ ...EMAIL_DRAFT, escalationKeyword: "refund" });
+  expect(el.textContent).toContain("Escalation keyword: “refund”");
+});
+
 it("keeps the draft when the send fails", async () => {
   fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: "Email is not configured" }), { status: 503 }));
   await approve(EMAIL_DRAFT);

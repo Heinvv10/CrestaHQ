@@ -359,6 +359,7 @@ export async function setConversationDraft(input: {
   model: string;
   tokens: number;
   emailReply?: ConversationDraft["emailReply"];
+  escalationKeyword?: string;
 }): Promise<void> {
   try {
     const docId = input.conversationKey ?? input.contactId;
@@ -392,6 +393,7 @@ export async function setConversationDraft(input: {
             // doesn't carry must be deleted, or an SMS draft inherits the last
             // email draft's thread headers.
             emailReply: input.emailReply ?? FieldValue.delete(),
+            escalationKeyword: input.escalationKeyword ?? FieldValue.delete(),
           },
           updatedAt: FieldValue.serverTimestamp(),
         },

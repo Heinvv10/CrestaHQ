@@ -523,7 +523,21 @@ export async function maybeRespondWithAi(
     incomingMessage,
     eff.escalationKeywords,
   );
-  if (triggered) {
+  // Email never sends an escalation email: it can land back in the connected
+  // mailbox, be imported as a new inbound, escalate again — one email per
+  // sync pass, forever. The keyword is flagged on the draft for the person
+  // who reviews it instead, and the draft is still written.
+  const draftEscalation = triggered && channelId === "email" ? triggered : null;
+  if (draftEscalation) {
+    await logActivity({
+      contactId: contact.id,
+      agencyId: subAccount.agencyId,
+      subAccountId,
+      type: "ai_escalated",
+      content: `Escalation keyword "${draftEscalation}" in an inbound email — flagged on the AI draft for review (no notification email).`,
+      meta: { reason: "escalation_keyword", keyword: draftEscalation, channel: channelId },
+    });
+  } else if (triggered) {
     if (eff.escalationNotifyEmail) {
       const appUrl =
         process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
@@ -705,6 +719,7 @@ export async function maybeRespondWithAi(
       model: completion.model,
       tokens: completion.totalTokens,
       ...(channelId === "email" && emailReply ? { emailReply } : {}),
+      ...(draftEscalation ? { escalationKeyword: draftEscalation } : {}),
     });
     runAfterResponse(() => incrementChannelTokens(subAccountId, channelId, completion.totalTokens));
     return {

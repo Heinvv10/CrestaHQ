@@ -91,6 +91,9 @@ export interface ConversationDraft {
     inReplyTo?: string;
     references: string[];
   };
+  /** Email drafts only: the escalation keyword the inbound email matched.
+   *  Email never sends an escalation notification; the draft carries it. */
+  escalationKeyword?: string;
 }
 
 export interface ConversationDoc {

@@ -13,7 +13,7 @@ import { recordEmailMessage } from "@/lib/server/email-conversations";
 import { matchOrSkip } from "@/lib/server/mailbox-match";
 import { runAfterResponse } from "@/lib/server/after-response";
 import {
-  isAutomatedEmail,
+  isDraftableEmail,
   maybeDraftEmailReply,
   type InboundEmailForDraft,
 } from "@/lib/comms/ai/email-draft";
@@ -275,7 +275,7 @@ export async function syncMailbox(subAccountId: string) {
               result.inserted &&
               direction === "inbound" &&
               !historical &&
-              !isAutomatedEmail({ ...signals, from: input.from, subject: input.subject })
+              isDraftableEmail({ ...signals, from: input.from, subject: input.subject })
             ) {
               const prior = drafts.get(result.contactId);
               if (!prior || prior.occurredAtMs <= occurredAt.getTime())

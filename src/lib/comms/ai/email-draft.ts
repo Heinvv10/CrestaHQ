@@ -5,7 +5,7 @@ import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { resolveAgent } from "@/lib/comms/ai/agent";
 import { emailTurnText, maybeRespondWithAi } from "@/lib/comms/ai/respond";
-import { emailIsConfigured } from "@/lib/comms/resend";
+import { emailIsConfigured, tenantFrom } from "@/lib/comms/resend";
 import { emailReplyFields } from "@/components/conversations/email-reply";
 import {
   isAutoReply,
@@ -27,11 +27,37 @@ export interface InboundEmailForDraft {
   references: string[];
 }
 
-/** Bounces, auto-replies and list mail: nobody to answer, so no draft. */
-export function isAutomatedEmail(
+/** Bounces, auto-replies and list mail have nobody to answer: no draft. */
+export function isDraftableEmail(
   m: Pick<InboundEmail, "autoReply" | "dsn" | "from" | "subject">,
 ): boolean {
-  return isAutoReply(m) || isDeliveryReport(m);
+  return !isAutoReply(m) && !isDeliveryReport(m);
+}
+
+/** The bare address of `Name <a@b>` or `a@b`, lower-cased. */
+function addressOf(value: string | null | undefined): string {
+  const v = (value ?? "").trim();
+  return (/<([^<>]+)>\s*$/.exec(v)?.[1] ?? v).trim().toLowerCase();
+}
+
+/**
+ * Addresses this workspace sends from or notifies: mail FROM one of them is
+ * our own (a notification, a copy of our send) and must never be drafted — or
+ * its reply could feed back into the mailbox. The mailbox's own addresses are
+ * already skipped by the sync before anything is recorded.
+ */
+function ownSendingAddresses(sub: SubAccountDoc, escalationNotifyEmail: string | null): Set<string> {
+  return new Set(
+    [
+      process.env.EMAIL_FROM,
+      sub.smtpConfig?.fromEmail,
+      tenantFrom(sub),
+      sub.replyToEmail,
+      escalationNotifyEmail,
+    ]
+      .map(addressOf)
+      .filter(Boolean),
+  );
 }
 
 /**
@@ -42,8 +68,9 @@ export function isAutomatedEmail(
  * approves it.
  *
  * Fails closed: nothing is drafted unless the agency gate is on, the
- * sub-account can send email, the channel is enabled, and the contact belongs
- * to this sub-account and is the email's sender. The draft can only answer
+ * sub-account can send email, the channel is enabled, the sender is not one of
+ * our own sending addresses, and the contact belongs to this sub-account and
+ * is the email's sender. The draft can only answer
  * that contact: its subject and thread headers come from the inbound email,
  * and approval sends to the contact's own address. Never throws, and never
  * logs the email or a raw error.
@@ -60,6 +87,7 @@ export async function maybeDraftEmailReply(m: InboundEmailForDraft): Promise<voi
 
     const agent = await resolveAgent(m.subAccountId, "email");
     if (!agent?.effective.enabled) return;
+    if (ownSendingAddresses(sub, agent.effective.escalationNotifyEmail).has(addressOf(m.from))) return;
 
     const contactSnap = await db.doc(`contacts/${m.contactId}`).get();
     if (!contactSnap.exists) return;

@@ -111,6 +111,11 @@ export function ConversationDraftCard({
         <Sparkles className="h-3.5 w-3.5" />
         AI suggested reply · {LABEL[draft.channel]} · edit before sending
       </div>
+      {draft.escalationKeyword && (
+        <p className="mb-1.5 text-xs font-medium text-red-600 dark:text-red-400">
+          Escalation keyword: &ldquo;{draft.escalationKeyword}&rdquo; — check before replying.
+        </p>
+      )}
       {draft.emailReply && (
         <p className="mb-1.5 truncate text-xs text-muted-foreground">
           Subject: {draft.emailReply.subject}

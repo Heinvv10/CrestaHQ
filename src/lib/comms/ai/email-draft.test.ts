@@ -42,7 +42,8 @@ vi.mock("@/lib/comms/ai/openrouter", async (orig) => ({
 }));
 
 const { mem, storeDb } = await import("@/test/gbp-sync-store");
-const { maybeDraftEmailReply } = await import("./email-draft");
+const { maybeDraftEmailReply, isDraftableEmail } = await import("./email-draft");
+const addressOnly = (v: string) => (/<([^<>]+)>/.exec(v)?.[1] ?? v).toLowerCase();
 const { recordEmailMessage } = await import("@/lib/server/email-conversations");
 const { setConversationDraft } = await import("@/lib/server/conversations-service");
 const { usageMonthKey } = await import("@/lib/server/usage-meter");
@@ -257,6 +258,74 @@ describe("Email AI drafts", () => {
     });
     expect(draft()).toMatchObject({ channel: "sms", body: "SMS draft" });
     expect(draft()).not.toHaveProperty("emailReply");
+  });
+
+  // PR #405 review A2 (breaker repro): an escalation notification emailed to the
+  // connected mailbox was imported as a new inbound, escalated again, and looped
+  // one email per sync pass. Email now never sends one; the draft carries the flag.
+  it("an escalation keyword in an email sends nothing — no loop — and flags the draft", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_FROM", "noreply@platform.test");
+    const sent: Array<Record<string, unknown>> = [];
+    spies.sendEmail.mockImplementation((async (args: Record<string, unknown>) => {
+      sent.push(args);
+      return { id: "x", saved: true };
+    }) as never);
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Biz", emailAiDraftsEnabledByAgency: true });
+    mem.seed("subAccounts/sa1/aiAgent/profile", {
+      systemPrompt: "You are Biz's assistant.", businessName: "Biz", hoursStart: 0, hoursEnd: 24,
+      timezone: "Africa/Johannesburg", escalationKeywords: ["refund"], escalationNotifyEmail: "hello@biz.test",
+    });
+    mem.seed("subAccounts/sa1/aiAgent/email", {
+      enabled: true, contextMessageCount: 10, modelOverride: null,
+      escalationKeywordsOverride: null, escalationNotifyEmailOverride: null,
+    });
+    const { parseMailboxMessage } = await import("@/lib/comms/imap");
+    const ownAddresses = new Set(["hello@biz.test"]);
+    // One mailbox-sync pass for one raw message, mirroring mailbox-sync.ts's inbound branch.
+    async function syncOne(raw: string) {
+      const parsed = await parseMailboxMessage(Buffer.from(raw));
+      if (ownAddresses.has(parsed.from)) return "own";
+      const { date: _d, archive: _a, signals, ...input } = parsed;
+      if (!isDraftableEmail({ ...signals, from: input.from, subject: input.subject })) return "skipped";
+      const res = await recordEmailMessage({ ...input, to: ["hello@biz.test"], subAccountId: "sa1", direction: "inbound", occurredAt: new Date(), historical: false });
+      if (!res.inserted) return "dup";
+      await maybeDraftEmailReply({ subAccountId: "sa1", contactId: res.contactId, from: input.from, subject: input.subject, body: input.body,
+        messageId: input.messageId, inReplyTo: input.inReplyTo ?? null, references: input.references ?? [] });
+      await flushAfterResponse();
+      return res.contactId;
+    }
+    const contactId = await syncOne("From: ann@example.com\r\nTo: hello@biz.test\r\nSubject: Cancel\r\nMessage-ID: <a1@example.com>\r\n\r\nI want a refund please.");
+    for (let i = 0; i < 3; i++) await syncOne(`From: ann@example.com\r\nTo: hello@biz.test\r\nSubject: Cancel ${i}\r\nMessage-ID: <a${i + 2}@example.com>\r\n\r\nStill want my refund.`);
+    expect(sent).toHaveLength(0);
+    expect(seamCalls()).toEqual(NO_SEAMS);
+    expect(mem.read(`conversations/${contactId}`)?.pendingDraft).toMatchObject({ channel: "email", escalationKeyword: "refund" });
+    expect(mem.list(`contacts/${contactId}/activities`)).toContainEqual(
+      expect.objectContaining({ type: "ai_escalated", meta: expect.objectContaining({ keyword: "refund", channel: "email" }) }),
+    );
+  });
+
+  it.each([
+    ["the SMTP from address", "hello@biz.test"],
+    ["EMAIL_FROM (display-name form)", "Platform <noreply@platform.test>"],
+    ["the escalation notify address", "Ops@Biz.test"],
+    ["the reply-to address", "inbox@biz.test"],
+    ["the verified sending-domain address", "mail@send.biz.test"],
+  ])("never drafts mail from our own sending address: %s", async (_label, from) => {
+    vi.stubEnv("EMAIL_FROM", "Platform <noreply@platform.test>");
+    seed({
+      sub: {
+        replyToEmail: "inbox@biz.test", emailDomainEnabledByAgency: true,
+        resendConfig: { status: "verified", emailFrom: "Biz <mail@send.biz.test>" },
+      },
+      contact: { email: addressOnly(from) },
+    });
+    mem.seed("subAccounts/sa1/aiAgent/profile", {
+      ...mem.read("subAccounts/sa1/aiAgent/profile"), escalationNotifyEmail: "ops@biz.test",
+    });
+    await maybeDraftEmailReply({ ...EMAIL, from: addressOnly(from) });
+    expect(draft()).toBeNull();
+    expect(llm.calls).toHaveLength(0);
   });
 
   it("counts the tokens against the sub-account's AI usage, and an over-cap workspace gets no draft", async () => {
