@@ -787,12 +787,6 @@
         "reason": "Records the custom domain a live site is served on and allow-lists it for Web Chat, after the operator has set it up in GitLab or GitHub (the custom-domain dialog). Widens where the chat widget may run, so it stays with a person. The website tools are chat-only."
       }
     },
-    "api/sub-accounts/[id]/website/[siteId]/pagespeed:POST": {
-      "exclude": {
-        "category": "internal",
-        "reason": "QStash-signed post-publish PageSpeed check, scheduled by the build settle; no caller but the queue."
-      }
-    },
     "api/sub-accounts/[id]/website/concepts:GET": {
       "exclude": {
         "category": "human-only",

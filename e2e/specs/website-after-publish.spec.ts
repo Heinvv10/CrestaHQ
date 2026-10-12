@@ -2,27 +2,18 @@ import { expect, test } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { blankWebsiteConfig } from "../../src/types/website";
 import { adminDb } from "../lib/admin";
-import { appUrl, FIXTURE_PRIMARY_NAME, FIXTURE_SECONDARY_NAME, readEnv } from "../lib/env";
+import { FIXTURE_PRIMARY_NAME, FIXTURE_SECONDARY_NAME, readEnv } from "../lib/env";
 import { pageFetch } from "../lib/gbp";
-import { assertFixtureSubAccount, deleteScoped, fixtureSubAccountIds } from "../lib/guard";
-import { signQStashBody } from "../lib/qstash";
+import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
 import { runId } from "../lib/run-id";
 
 /**
- * Website Build v2, after publish (WS-4) — through the real server.
- *
- *  1. The PageSpeed check (`POST …/website/[siteId]/pagespeed`) is a public
- *     path whose only credential is QStash's signature, bound to that URL.
- *     With no session: an unsigned call and one signed for another route are
- *     answered 401 by the ROUTE (proving middleware lets the path through
- *     rather than bouncing it to /login); a correctly signed one for a site
- *     that is not live is acknowledged and does nothing. Google is never
- *     called: no request here reaches a live site.
- *  2. The custom-domain route (`PUT/DELETE …/website/[siteId]/domain`) as the
- *     signed-in owner: a gitpage host is refused; a domain on a live site is
- *     recorded and its www/apex pair lands in THIS sub-account's Web Chat
- *     allow-list and in no other; DELETE takes the pair back off. The other
- *     fixture tenant has no such site, so a call against it is 404.
+ * Website Build v2, after publish (WS-4) — the custom-domain route
+ * (`PUT/DELETE …/website/[siteId]/domain`) through the real server, as the
+ * signed-in owner: a gitpage host is refused; a domain on a live site is
+ * recorded and its www/apex pair lands in THIS sub-account's Web Chat
+ * allow-list and in no other; DELETE takes the pair back off. The other
+ * fixture tenant has no such site, so a call against it is 404.
  *
  * Fixture tenants only. Site ids, job ids and domains are scoped to this run;
  * the sites are deleted through the fixture guard; the allow-list loses only
@@ -31,7 +22,7 @@ import { runId } from "../lib/run-id";
 
 test.skip(
   !!process.env.PLAYWRIGHT_BASE_URL,
-  "signs QStash deliveries with the E2E job's own signing key, which a deployed target does not hold",
+  "writes the fixture tenant's website gate and Web Chat allow-list, which only the PR's own build may do",
 );
 test.describe.configure({ mode: "serial" });
 
@@ -58,21 +49,7 @@ const guard = async () => {
 let priorGate: unknown;
 const chatExisted: Record<string, boolean> = {};
 
-const pagespeedPath = (sa: string, site: string) => `/api/sub-accounts/${sa}/website/${site}/pagespeed`;
 const domainPath = (sa: string) => `/api/sub-accounts/${sa}/website/${SITE_ID}/domain`;
-
-/** A QStash delivery to the PageSpeed route, signed for `signedFor`. Fixture tenants only. */
-function delivery(sa: string, site: string, signedFor = appUrl(pagespeedPath(sa, site))) {
-  if (!fixtureSubAccountIds().includes(sa)) {
-    throw new Error(`refusing to sign a delivery for non-fixture sub-account ${sa}`);
-  }
-  const data = JSON.stringify({ subAccountId: sa, siteId: site });
-  return {
-    headers: { "content-type": "application/json", "upstash-signature": signQStashBody(signedFor, data) },
-    data,
-    maxRedirects: 0,
-  };
-}
 
 test.beforeAll(async () => {
   await guard();
@@ -84,9 +61,9 @@ test.beforeAll(async () => {
     agencyId: readEnv().E2E_AGENCY_ID,
     subAccountId: primaryId(),
     name: `E2E after-publish ${runId()}`,
-    status: "draft",
-    gitpageJobId: null,
-    liveUrl: null,
+    status: "ready",
+    gitpageJobId: JOB_ID,
+    liveUrl: LIVE_URL,
     customDomain: null,
     errorMessage: null,
     partialErrors: null,
@@ -117,37 +94,7 @@ test.afterAll(async () => {
   }
 });
 
-test.describe("the PageSpeed check, with no session", () => {
-  test.use({ storageState: { cookies: [], origins: [] } });
-
-  test("an unsigned delivery, or one signed for another route, is refused by the route", async ({ request }) => {
-    const unsigned = await request.post(pagespeedPath(primaryId(), SITE_ID), {
-      headers: { "content-type": "application/json" },
-      data: JSON.stringify({ subAccountId: primaryId(), siteId: SITE_ID }),
-      maxRedirects: 0,
-    });
-    expect(unsigned.status()).toBe(401);
-
-    const poll = appUrl(`/api/sub-accounts/${primaryId()}/website/${SITE_ID}/poll`);
-    const misbound = await request.post(pagespeedPath(primaryId(), SITE_ID), delivery(primaryId(), SITE_ID, poll));
-    expect(misbound.status()).toBe(401);
-    expect((await siteRef().get()).data()?.pagespeed).toBeUndefined();
-  });
-
-  test("a signed delivery for a site that is not live is acknowledged and does nothing", async ({ request }) => {
-    const res = await request.post(pagespeedPath(primaryId(), SITE_ID), delivery(primaryId(), SITE_ID));
-    expect(res.status()).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, ignored: "site-not-live" });
-    expect((await siteRef().get()).data()?.pagespeed).toBeUndefined();
-  });
-});
-
 test.describe("the custom domain, as the owner", () => {
-  test.beforeAll(async () => {
-    await guard();
-    await siteRef().update({ status: "ready", gitpageJobId: JOB_ID, liveUrl: LIVE_URL });
-  });
-
   test("records the domain, allow-lists exactly its www/apex pair for this tenant only, and DELETE takes it back", async ({ page }) => {
     const before = await allowList(primaryId());
     const otherBefore = await allowList(secondaryId());

@@ -785,14 +785,6 @@ function settledCallbackUrl(): string | null {
 }
 
 /**
- * Where the post-publish PageSpeed check is delivered. The one definition:
- * the settle publishes to it and the route binds the QStash signature to it.
- */
-export function websitePageSpeedPath(subAccountId: string, siteId: string): string {
-  return `/api/sub-accounts/${subAccountId}/website/${siteId}/pagespeed`;
-}
-
-/**
  * WS-3 SEAM — the premium publish hand-off. Upstream calls
  * `provisionWebsiteHandoff` (website-handoff-service.ts, not ported yet)
  * here and stores its result on `WebsiteDoc.provisioning`, inside a
@@ -919,17 +911,10 @@ export async function settleWebsiteBuild(input: {
   if (!settled.applied) return "noop";
   if (!published) return "failed";
 
-  // Score the live site with Google PageSpeed once Pages has warmed up. One
-  // per published job (dedup id); the route checks the signature (bound to
-  // this path) and the agency gate when it lands.
-  if (liveUrl && qstashIsConfigured()) {
-    await publishCallback({
-      pathname: websitePageSpeedPath(subAccountId, siteId),
-      body: { subAccountId, siteId },
-      delaySeconds: 120,
-      deduplicationId: `pagespeed_${subAccountId}_${siteId}_${jobId}`,
-    });
-  }
+  // Not ported (WS-4 review): upstream schedules a post-publish PageSpeed
+  // check here (a QStash call to a public `…/website/[siteId]/pagespeed`
+  // route). It only stores scores that nothing displays, upstream included,
+  // so it would spend a QStash message per publish for nothing.
 
   // Premium hand-off (the WS-3 seam above), for the caller that claimed.
   const quality = site.quality ?? effectiveQuality(site.config);

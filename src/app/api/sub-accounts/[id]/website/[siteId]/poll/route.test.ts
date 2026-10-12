@@ -24,9 +24,6 @@ vi.mock("@/lib/automations/qstash", () => ({
   verifyQStashSignature: async () => qstash.valid,
   publishCallback: qstash.publishCallback,
 }));
-/** Poll-chain publishes only: a publish also queues the PageSpeed check. */
-const pollsQueued = () =>
-  qstash.publishCallback.mock.calls.filter(([input]) => String(input.pathname).endsWith("/poll"));
 vi.mock("@/lib/gitpage/heartbeat", () => ({
   markGitpageBuildSucceeded: async () => {},
   markGitpageKeyInvalid: async () => {},
@@ -161,9 +158,7 @@ describe("POST …/website/[siteId]/poll — the QStash tick", () => {
       gitpagePageId: "page_42",
       pollAttempts: 4,
     });
-    expect(pollsQueued()).toEqual([]);
-    // The settle queues the post-publish PageSpeed check instead (WS-4).
-    expect(qstash.publishCallback.mock.calls.map(([i]) => i.pathname)).toEqual(["/api/sub-accounts/sa1/website/site1/pagespeed"]);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
   });
 
   it("still polls a build to its end after the workspace's website gate is switched off", async () => {
@@ -255,7 +250,7 @@ describe("poll tick and build.settled callback for the same job", () => {
     expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
     expect(mem.read(SITE)).toEqual(settled);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(pollsQueued()).toEqual([]);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
   });
 
   it("tick first: the site settles once and the late callback is acknowledged, not applied", async () => {
@@ -350,7 +345,7 @@ describe("something else reaches the site while a poll tick is talking to gitpag
     expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
     expect(mem.read(SITE)).toMatchObject(READY);
     // The stale tick must not keep the chain alive.
-    expect(pollsQueued()).toEqual([]);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
 
     const settled = mem.read(SITE);
     gitpageSays(PUBLISHED);
@@ -370,7 +365,7 @@ describe("something else reaches the site while a poll tick is talking to gitpag
     expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
     warn.mockRestore();
     expect(mem.read(SITE)).toMatchObject(READY);
-    expect(pollsQueued()).toEqual([]);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
   });
 
   it("a callback that settles just as the next poll cannot be scheduled leaves the site ready", async () => {
@@ -530,7 +525,7 @@ describe("R10: the manual re-check never multiplies poll chains", () => {
       liveUrl: "https://acme.gitlab.io/site",
     });
     expect(mem.read(SITE)).toMatchObject(READY);
-    expect(pollsQueued()).toEqual([]);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
   });
 
   it("a callback that settles during a re-check gitpage answers 4xx leaves the site ready", async () => {
@@ -771,7 +766,7 @@ describe("a poll chain that died while the site still says building", () => {
       settled: "ready",
       liveUrl: "https://acme.gitlab.io/site",
     });
-    expect(pollsQueued()).toEqual([]);
+    expect(qstash.publishCallback).not.toHaveBeenCalled();
     const settled = mem.read(SITE);
     expect(settled).toMatchObject(READY);
 

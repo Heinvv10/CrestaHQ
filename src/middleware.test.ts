@@ -203,19 +203,6 @@ describe("isPublicPath — the gitpage build-settled callback", () => {
   });
 });
 
-describe("isPublicPath — the post-publish PageSpeed check", () => {
-  it("lets QStash reach the check without a session (the signature is its auth)", () => {
-    expect(isPublicPath("/api/sub-accounts/sa1/website/site1/pagespeed")).toBe(true);
-  });
-
-  it("opens exactly that path — nothing under or beside it", () => {
-    expect(isPublicPath("/api/sub-accounts/sa1/website/site1/pagespeed/extra")).toBe(false);
-    expect(isPublicPath("/api/sub-accounts/sa1/website/site1/pagespeeds")).toBe(false);
-    expect(isPublicPath("/api/sub-accounts/sa1/website/a/b/pagespeed")).toBe(false);
-    expect(isPublicPath("/api/sub-accounts/sa1/pagespeed")).toBe(false);
-  });
-});
-
 describe("isPublicPath — snapshot share links", () => {
   it("keeps the import page and its API behind a session (the token alone is not a login)", () => {
     expect(isPublicPath("/agency/snapshots/import")).toBe(false);
