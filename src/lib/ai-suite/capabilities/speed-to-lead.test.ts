@@ -321,6 +321,25 @@ describe("queue, team contact, push and usage", () => {
     expect(await line("SMS")).toContain("SMS: READY");
   });
 
+  it("shows usage counts and caps only to an admin or the agency owner; a member learns only that a channel is capped", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_x");
+    vi.stubEnv("EMAIL_FROM", "CRM <crm@platform.test>");
+    sub({ usageQuotas: { emailsPerMonth: 100 } });
+    mem.seed(`subAccounts/sa1/usage/${usageMonthKey()}`, { emailsSent: 100, smsSegments: 5 });
+    for (const role of ["collaborator", "member", undefined]) {
+      const r = await report(ctx({ subAccountRole: role }));
+      expect(r).not.toContain("USAGE THIS MONTH");
+      expect(r).not.toContain("100/100");
+      expect(r).toContain("EMAIL: NOT READY");
+      expect(r).toContain("this month's email cap is used up: those steps are skipped");
+    }
+    for (const role of ["admin", "agencyOwner"]) {
+      const r = await report(ctx({ subAccountRole: role }));
+      expect(r).toContain("USAGE THIS MONTH: emails 100/100");
+      expect(r).toContain("cap is used up (100/100)");
+    }
+  });
+
   it("takes the cap from the workspace's billing plan when it has no override", async () => {
     sub({ twilioConfig: TWILIO, billing: { planId: "plan1" } });
     mem.seed("agencies/ag1/plans/plan1", { quotas: { smsSegmentsPerMonth: 10 } });
@@ -368,6 +387,37 @@ describe("forms, workflows and websites", () => {
     expect(r).toContain("“Acme site” — ready, live at https://acme.gitpage.test/; call-to-action: https://crm.example.test/f/f1 (already points at a form ✓); id: site1");
     expect(r).toContain("“Promo” — draft; call-to-action: https://sbc.com (does NOT point at a form");
     expect(r).not.toContain("Their site");
+  });
+
+  it("counts a link as pointing at a form only when it is the form's own page, and a booking page here as fine", async () => {
+    mem.seed("subAccounts/sa1/bookingPages/consult", { subAccountId: "sa1", agencyId: "ag1", title: "Consult" });
+    const cta = async (link: string) => {
+      mem.seed("subAccounts/sa1/website/site2", { subAccountId: "sa1", name: "Promo", status: "ready", config: { cta_link: link } });
+      return (await report()).split("\n").find((l) => l.includes("“Promo”"))!;
+    };
+    expect(await cta("https://evil.test/f/f1")).toContain("does NOT point at a form");
+    expect(await cta("https://crm.example.test.evil.test/f/f1")).toContain("does NOT point at a form");
+    expect(await cta("https://crm.example.test/x/f/f1")).toContain("does NOT point at a form");
+    expect(await cta("https://crm.example.test/f/f_theirs")).toContain("does NOT point at a form");
+    expect(await cta("https://CRM.example.test/f/f1/?utm_source=site")).toContain("already points at a form ✓");
+    expect(await cta("https://crm.example.test/b/sa1/consult")).toContain("points at a booking page ✓");
+    expect(await cta("https://crm.example.test/b/sa2/consult")).toContain("does NOT point at a form");
+    expect(await cta("https://crm.example.test/b/sa1/nope")).toContain("does NOT point at a form");
+  });
+
+  it("does not offer to re-point a failed site whose last build can still finish", async () => {
+    mem.seed("subAccounts/sa1/website/site2", { subAccountId: "sa1", name: "Promo", status: "failed", gitpageJobId: "job_old", config: { cta_link: "https://sbc.com" } });
+    const promo = (await report()).split("\n").find((l) => l.includes("“Promo”"))!;
+    expect(promo).toContain("can't be re-pointed until someone uses Re-check now, or resets it");
+    expect(promo).not.toContain("update_website_cta");
+  });
+
+  it("names sites as check_website_status and update_website_cta do", async () => {
+    mem.seed("subAccounts/sa1/website/site2", { subAccountId: "sa1", name: "Pro\uE000mo", status: "draft", config: { cta_link: "" } });
+    mem.seed("subAccounts/sa1/website/site3", { subAccountId: "sa1", name: "", status: "draft", config: { heading: "  " } });
+    const r = await report();
+    expect(r).toContain("“Promo” — draft");
+    expect(r).toContain("“Untitled site” — draft");
   });
 
   it("prints stored names on one line, so a name cannot add lines to the report", async () => {

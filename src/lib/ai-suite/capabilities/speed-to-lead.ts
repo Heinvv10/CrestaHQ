@@ -10,6 +10,7 @@ import { isTemplateApprovedFor } from "@/lib/comms/whatsapp/template-registratio
 import { pushIsConfigured } from "@/lib/push/config";
 import { formPublicUrl, listFormsForSubAccount } from "@/lib/server/forms-service";
 import { getEffectiveQuotas, usageMonthKey } from "@/lib/server/usage-meter";
+import { hasUnsettledFailure, siteDisplayName } from "@/lib/server/websites-service";
 import { listWorkflows } from "@/lib/server/workflows-service";
 import type { AgencyDoc, SubAccountDoc, WhatsappTemplateDoc } from "@/types";
 import type { UsageMonthDoc } from "@/types/usage";
@@ -43,14 +44,24 @@ const SETTINGS = "Settings Sub-Account → Messaging tab";
 const RAIL_LABEL = { twilio: "Twilio", cloud: "Meta Cloud API", bridge: "your own number (linked device)" } as const;
 
 /** One channel's use this month against its cap, as `checkQuota` reads it. */
-function usageOf(used: number | undefined, limit: number | null | undefined) {
+function usageOf(used: number | undefined, limit: number | null | undefined, counts: boolean) {
   const cap = typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : null;
   const n = used ?? 0;
-  return { used: n, cap, capped: cap !== null && n >= cap };
+  return { used: n, cap, capped: cap !== null && n >= cap, counts };
 }
 type Usage = ReturnType<typeof usageOf>;
 const cappedNote = (u: Usage, what: string) =>
-  u.capped ? ` But this month's ${what} cap is used up (${u.used}/${u.cap}): those steps are skipped until the month resets or the agency raises the cap.` : "";
+  u.capped ? ` But this month's ${what} cap is used up${u.counts ? ` (${u.used}/${u.cap})` : ""}: those steps are skipped until the month resets or the agency raises the cap.` : "";
+
+/** A link's page: origin + path, no trailing slash, query and hash dropped. */
+function pageOf(raw: string): string | null {
+  try {
+    const u = new URL(raw);
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
+}
 
 function emailLine(sub: SubAccountDoc, usage: Usage): { ready: boolean; line: string } {
   const configured = emailIsConfigured(sub);
@@ -172,7 +183,7 @@ export const SPEED_TO_LEAD_CAPABILITIES: AiSuiteCapability[] = [
     menuLabel:
       "Check whether this workspace is ready for speed-to-lead (email, SMS, WhatsApp, forms, workflows, website)",
     description:
-      "Readiness report for an instant-lead-response (speed-to-lead) setup in this workspace: whether email, SMS, and WhatsApp can actually send (and which WhatsApp step type and approved templates to use), whether delayed steps can run, who gets team notifications, which forms and form-triggered workflows already exist (with each workflow's builder link), which websites exist and what their call-to-action points at, and this month's usage against any caps. ALWAYS run this first when the user asks to set up speed-to-lead, an instant reply to new leads, or a form auto-response — and before proposing any SMS/WhatsApp step, so you never build a step that can't send.",
+      "Readiness report for an instant-lead-response (speed-to-lead) setup in this workspace: whether email, SMS, and WhatsApp can actually send (and which WhatsApp step type and approved templates to use), whether delayed steps can run, who gets team notifications, which forms and form-triggered workflows already exist (with each workflow's builder link), which websites exist and what their call-to-action points at, and (for an admin) this month's usage against any caps. ALWAYS run this first when the user asks to set up speed-to-lead, an instant reply to new leads, or a form auto-response — and before proposing any SMS/WhatsApp step, so you never build a step that can't send.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     validate: () => ({ ok: true, args: {} }),
     summarize: () => "Check speed-to-lead readiness.",
@@ -185,20 +196,24 @@ export const SPEED_TO_LEAD_CAPABILITIES: AiSuiteCapability[] = [
       }
       const sub = subSnap.data() as SubAccountDoc;
       const agencyId = sub.agencyId || ctx.agencyId;
-      const [agencySnap, forms, workflows, siteSnap, usageSnap, quotas] = await Promise.all([
+      const [agencySnap, forms, workflows, siteSnap, bookingSnap, usageSnap, quotas] = await Promise.all([
         db.doc(`agencies/${agencyId}`).get(),
         listFormsForSubAccount(subAccountId),
         listWorkflows(subAccountId),
         db.collection(`subAccounts/${subAccountId}/website`).get(),
+        db.collection(`subAccounts/${subAccountId}/bookingPages`).get(),
         db.doc(`subAccounts/${subAccountId}/usage/${usageMonthKey()}`).get(),
         getEffectiveQuotas(subAccountId, sub),
       ]);
       const agency = (agencySnap.data() ?? {}) as Partial<AgencyDoc>;
       const used = (usageSnap.data() ?? {}) as UsageMonthDoc;
+      // Usage counts and plan caps are billing detail: shown to the people
+      // who manage the workspace, not to every member.
+      const seesUsage = ctx.subAccountRole === "admin" || ctx.subAccountRole === "agencyOwner";
       const usage = {
-        email: usageOf(used.emailsSent, quotas?.emailsPerMonth),
-        sms: usageOf(used.smsSegments, quotas?.smsSegmentsPerMonth),
-        whatsapp: usageOf(used.whatsappMessages, quotas?.whatsappPerMonth),
+        email: usageOf(used.emailsSent, quotas?.emailsPerMonth, seesUsage),
+        sms: usageOf(used.smsSegments, quotas?.smsSegmentsPerMonth, seesUsage),
+        whatsapp: usageOf(used.whatsappMessages, quotas?.whatsappPerMonth, seesUsage),
       };
       const lines: string[] = [];
 
@@ -277,14 +292,27 @@ export const SPEED_TO_LEAD_CAPABILITIES: AiSuiteCapability[] = [
           "WEBSITE: none built here. If the client's site lives elsewhere, give them the form's embed snippet or public URL to link from the site."
         );
       } else {
+        // This workspace's own pages, matched by origin + path: a link that
+        // merely contains "/f/<id>" on another host is not one of them.
+        const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
+        const formPages = new Set(forms.map((f) => pageOf(formPublicUrl(f.id))));
+        const bookingPages = new Set(bookingSnap.docs.map((b) => pageOf(`${appUrl}/b/${subAccountId}/${b.id}`)));
         lines.push(
           `WEBSITES (${siteSnap.size}):\n${siteSnap.docs
             .map((d) => {
               const w = d.data() as Partial<WebsiteDoc>;
-              const name = oneLine(w.name || w.config?.heading) || "Untitled site";
               const cta = oneLine(w.config?.cta_link).slice(0, 300);
-              const pointsAtForm = !!cta && forms.some((f) => cta.includes(`/f/${f.id}`));
-              return `  - “${name}” — ${w.status}${w.liveUrl ? `, live at ${oneLine(w.liveUrl)}` : ""}; call-to-action: ${cta || "none"}${pointsAtForm ? " (already points at a form ✓)" : cta ? " (does NOT point at a form — update_website_cta can re-point it, which rebuilds the site)" : ""}; id: ${d.id}`;
+              const page = cta ? pageOf(cta) : null;
+              const note = hasUnsettledFailure(w)
+                ? " (its last build can still finish — it can't be re-pointed until someone uses Re-check now, or resets it, on the Website page)"
+                : page && formPages.has(page)
+                  ? " (already points at a form ✓)"
+                  : page && bookingPages.has(page)
+                    ? " (points at a booking page ✓)"
+                    : cta
+                      ? " (does NOT point at a form — update_website_cta can re-point it, which rebuilds the site)"
+                      : "";
+              return `  - “${siteDisplayName(w)}” — ${w.status}${w.liveUrl ? `, live at ${oneLine(w.liveUrl)}` : ""}; call-to-action: ${cta || "none"}${note}; id: ${d.id}`;
             })
             .join("\n")}`
         );
@@ -295,13 +323,15 @@ export const SPEED_TO_LEAD_CAPABILITIES: AiSuiteCapability[] = [
         u.cap !== null
           ? `${label} ${u.used}/${u.cap}${u.capped ? " — CAPPED, that channel is paused until the month resets" : ""}`
           : `${label} ${u.used} (no cap)`;
-      lines.push(
-        `USAGE THIS MONTH: ${[
-          capLine("emails", usage.email),
-          capLine("SMS", usage.sms),
-          capLine("WhatsApp", usage.whatsapp),
-        ].join("; ")}.`
-      );
+      if (seesUsage) {
+        lines.push(
+          `USAGE THIS MONTH: ${[
+            capLine("emails", usage.email),
+            capLine("SMS", usage.sms),
+            capLine("WhatsApp", usage.whatsapp),
+          ].join("; ")}.`
+        );
+      }
 
       return {
         resultText: `Speed-to-lead readiness for this workspace:\n${lines.join("\n")}\nRecommended order: fix or accept the channel status above → pick or create the form → create the workflow pinned to that form (a draft) → set its steps, using only channels marked READY → send the user to the workflow's builder link to check the steps, press Test and then Activate (you can do neither) → then point the website's call-to-action at the form (or share the embed snippet) → make sure the team's new-lead push alerts are on.`,
