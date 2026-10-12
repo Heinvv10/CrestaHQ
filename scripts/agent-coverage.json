@@ -775,6 +775,24 @@
         "reason": "The website wizard's per-step draft save (the config and the step to resume on): form state for a person filling it in. The website tools are chat-only, and create_website builds in one call."
       }
     },
+    "api/sub-accounts/[id]/website/[siteId]/domain:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Takes a live site's custom domain back off the Web Chat allow-list: the other half of the custom-domain dialog, a step in the operator's own DNS setup at GitLab or GitHub. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/[siteId]/domain:PUT": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Records the custom domain a live site is served on and allow-lists it for Web Chat, after the operator has set it up in GitLab or GitHub (the custom-domain dialog). Widens where the chat widget may run, so it stays with a person. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/[siteId]/pagespeed:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed post-publish PageSpeed check, scheduled by the build settle; no caller but the queue."
+      }
+    },
     "api/sub-accounts/[id]/website/concepts:GET": {
       "exclude": {
         "category": "human-only",

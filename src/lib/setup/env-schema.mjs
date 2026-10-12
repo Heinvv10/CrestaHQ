@@ -303,6 +303,7 @@ export const GROUPS = [
     vars: [
       ["GITPAGE_API_KEY", "req", startsWith("gp_")],
       ["GITPAGE_API_URL", "opt", isUrl],
+      ["PAGESPEED_API_KEY", "opt"],
     ],
   },
   {

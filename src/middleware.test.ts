@@ -199,6 +199,20 @@ describe("isPublicPath — the gitpage build-settled callback", () => {
     expect(isPublicPath("/api/sub-accounts/sa1/website/concepts")).toBe(false);
     expect(isPublicPath("/api/sub-accounts/sa1/website/site1")).toBe(false);
     expect(isPublicPath("/api/sub-accounts/sa1/website/site1/poll-now")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/website/site1/domain")).toBe(false);
+  });
+});
+
+describe("isPublicPath — the post-publish PageSpeed check", () => {
+  it("lets QStash reach the check without a session (the signature is its auth)", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/website/site1/pagespeed")).toBe(true);
+  });
+
+  it("opens exactly that path — nothing under or beside it", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/website/site1/pagespeed/extra")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/website/site1/pagespeeds")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/website/a/b/pagespeed")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/pagespeed")).toBe(false);
   });
 });
 

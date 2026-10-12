@@ -149,6 +149,7 @@ Without these, `/api/automations/step` and the website-builder poll route return
 |---|---|
 | `GITPAGE_API_KEY` | gitpage.site dashboard — agency-level key, format `gp_…`. Shared across all sub-accounts in this deployment. |
 | `GITPAGE_API_URL` | Optional. Defaults to `https://www.gitpage.site`. Override only when mocking locally. |
+| `PAGESPEED_API_KEY` | Optional. Google Cloud Console → enable "PageSpeed Insights API" → Credentials → Create API key (restrict it to that API). Used by the post-publish PageSpeed check (`POST /api/sub-accounts/[id]/website/[siteId]/pagespeed`, QStash-delivered ~2 min after a site publishes). Without it the check uses Google's shared keyless quota, which is often used up; the failure is stored on the site doc as `pagespeed.error`. |
 
 Without `GITPAGE_API_KEY`, `/api/sub-accounts/[id]/website/[siteId]/build` returns 503 and the **Build site** button surfaces a friendly error. The rest of the Website page (adding sites, form editing) still loads. The same key verifies gitpage's `build.settled` callback (`POST /api/webhooks/gitpage/build-settled`, HMAC-SHA256 of the raw body); that route also answers 503 without it.
 
