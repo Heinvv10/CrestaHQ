@@ -29,7 +29,10 @@ test.describe.configure({ mode: "serial" });
 const SITE_ID = `e2e-ws4-${runId()}`;
 const JOB_ID = `build_e2e_ws4_${runId()}`;
 const LIVE_URL = `https://e2e-ws4-${runId()}.example.test/site`;
-const DOMAIN = `www.e2e-ws4-${runId()}.example.test`;
+// A single label under `.test`, which is not on the Public Suffix List, so
+// the registrable domain is `e2e-ws4-<id>.test` and the www/apex pair holds.
+// (Under `example.test` the apex would be `example.test` and no twin added.)
+const DOMAIN = `www.e2e-ws4-${runId()}.test`;
 const APEX = DOMAIN.slice(4);
 
 const primaryId = () => readEnv().E2E_SUBACCOUNT_ID;
