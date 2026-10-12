@@ -5,10 +5,10 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import {
+  editWebChatAllowedDomains,
   getAgentProfile,
   getChannelConfig,
   upsertAgentProfile,
-  upsertChannelConfig,
 } from "@/lib/comms/ai/agent";
 import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import { isDocId } from "@/lib/server/doc-id";
@@ -17,7 +17,6 @@ import {
   transitionWebsite,
   WebsiteServiceError,
 } from "@/lib/server/websites-service";
-import { DEFAULT_WEB_CHAT_CONFIG } from "@/types/ai";
 import type { WebsiteDoc, WebsiteStatus } from "@/types/website";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +27,8 @@ export const dynamic = "force-dynamic";
  *                    www/apex twin) for the Web Chat widget, and point the
  *                    chat bot's website URL at it when the bot was seeded
  *                    from this site.
- * DELETE           — clear it (removes the domain(s) this route added).
+ * DELETE           — clear it (removes the host(s) this route added,
+ *                    recorded on the site as `customDomainChatHosts`).
  *
  * The domain itself is configured in GitLab/GitHub by the operator; this
  * only keeps LeadStack's side (chat allow-list, KB source, card URL) in sync.
@@ -107,14 +107,10 @@ async function loadSite(subAccountId: string, siteId: string) {
   return { ref, site };
 }
 
-/** The sub-account's web-chat allow-list with `remove` taken out and `add` put in. */
-async function nextAllowList(subAccountId: string, add: string[], remove: string[]) {
+/** The sub-account's web-chat allow-list as it stands. */
+async function listedHosts(subAccountId: string): Promise<string[]> {
   const existing = await getChannelConfig(subAccountId, "web-chat");
-  const webChat = { ...DEFAULT_WEB_CHAT_CONFIG, ...(existing?.webChat ?? {}) };
-  const set = new Set(webChat.allowedDomains.map((d) => d.toLowerCase()));
-  for (const d of remove) set.delete(d);
-  for (const d of add) set.add(d);
-  return { webChat, allowedDomains: [...set] };
+  return (existing?.webChat?.allowedDomains ?? []).map((d) => d.toLowerCase());
 }
 
 const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -155,9 +151,19 @@ export async function PUT(
   }
 
   const previous = site.customDomain ?? null;
-  const removed = previous && previous !== domain ? variants(previous) : [];
-  const chat = await nextAllowList(subAccountId, variants(domain), removed);
-  if (chat.allowedDomains.length > MAX_ALLOWED_DOMAINS) {
+  const recorded = site.customDomainChatHosts ?? [];
+  // A new domain takes off the hosts the old one added; a re-save keeps them.
+  const removed = previous && previous !== domain ? recorded : [];
+  const kept = previous === domain ? recorded : [];
+  const hosts = variants(domain);
+  const after = new Set(await listedHosts(subAccountId));
+  for (const h of removed) after.delete(h);
+  // What this save adds: the hosts not listed once the old domain's are off.
+  const added = hosts.filter((h) => !after.has(h));
+  for (const h of hosts) after.add(h);
+  // A fast refusal with nothing written; the allow-list write re-checks the
+  // cap in its own transaction.
+  if (after.size > MAX_ALLOWED_DOMAINS) {
     return NextResponse.json(
       {
         error: `The chat widget's allowed domains list is full (${MAX_ALLOWED_DOMAINS}). Remove one in the Web Chat settings, then save the domain again.`,
@@ -167,7 +173,8 @@ export async function PUT(
   }
 
   // Recorded only on the live build that was read, and only if nobody
-  // changed the domain in between.
+  // changed the domain in between — and BEFORE the allow-list is widened,
+  // so no host is ever allowed without a record of why it is there.
   const saved = await transitionWebsite(
     ref,
     {
@@ -175,7 +182,11 @@ export async function PUT(
       fromStatuses: ["ready"],
       when: (fresh) => (fresh.customDomain ?? null) === previous,
     },
-    { customDomain: domain, updatedAt: FieldValue.serverTimestamp() },
+    {
+      customDomain: domain,
+      customDomainChatHosts: [...new Set([...kept, ...added])],
+      updatedAt: FieldValue.serverTimestamp(),
+    },
   );
   if (!saved.applied) {
     if (saved.reason === "missing") return siteNotFound();
@@ -187,9 +198,16 @@ export async function PUT(
 
   const warnings: string[] = [];
   try {
-    await upsertChannelConfig(subAccountId, "web-chat", {
-      webChat: { ...chat.webChat, allowedDomains: chat.allowedDomains },
+    const listed = await editWebChatAllowedDomains(subAccountId, {
+      add: hosts,
+      remove: removed,
+      max: MAX_ALLOWED_DOMAINS,
     });
+    if (listed === "full") {
+      warnings.push(
+        `The chat widget's allowed domains list filled up (${MAX_ALLOWED_DOMAINS}) before the domain could be added — remove one in the Web Chat settings, then remove and save the domain again.`,
+      );
+    }
   } catch (err) {
     console.error(`[website/domain] chat allow-list update failed sa=${subAccountId} site=${siteId}`, reason(err));
     warnings.push("The chat widget's allowed domains were not updated — add the domain in the Web Chat settings.");
@@ -233,11 +251,10 @@ export async function DELETE(
   // The allow-list first: if it cannot be updated the domain stays recorded,
   // so the operator can retry — never an allowed origin with no record of
   // why it is there.
+  // Only the hosts the save added: any the operator listed by hand stay.
   try {
-    const chat = await nextAllowList(subAccountId, [], variants(previous));
-    await upsertChannelConfig(subAccountId, "web-chat", {
-      webChat: { ...chat.webChat, allowedDomains: chat.allowedDomains },
-    });
+    const recorded = site.customDomainChatHosts ?? [];
+    if (recorded.length) await editWebChatAllowedDomains(subAccountId, { add: [], remove: recorded });
   } catch (err) {
     console.error(`[website/domain] chat allow-list removal failed sa=${subAccountId} site=${siteId}`, reason(err));
     return NextResponse.json(
@@ -260,7 +277,7 @@ export async function DELETE(
   const cleared = await transitionWebsite(
     ref,
     { fromStatuses: ALL_STATUSES, when: (fresh) => (fresh.customDomain ?? null) === previous },
-    { customDomain: null, updatedAt: FieldValue.serverTimestamp() },
+    { customDomain: null, customDomainChatHosts: null, updatedAt: FieldValue.serverTimestamp() },
   );
   if (!cleared.applied) {
     if (cleared.reason === "missing") return siteNotFound();

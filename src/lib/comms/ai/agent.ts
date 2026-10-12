@@ -181,6 +181,39 @@ export async function upsertChannelConfig(
   );
 }
 
+/**
+ * Edit the web-chat allow-list in one transaction: `remove` comes out, then
+ * `add` goes in, against the list as the transaction reads it. With `max`,
+ * refused ("full", nothing written) when the result would hold more than
+ * `max` entries, so concurrent edits cannot pass the cap together.
+ */
+export async function editWebChatAllowedDomains(
+  subAccountId: string,
+  edit: { add: string[]; remove: string[]; max?: number },
+): Promise<"ok" | "full"> {
+  await maybeMigrateLegacy(subAccountId);
+  const db = getAdminDb();
+  const ref = db.doc(channelPath(subAccountId, "web-chat"));
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existing = snap.exists ? (snap.data() as AiChannelConfig) : null;
+    const webChat = { ...DEFAULT_WEB_CHAT_CONFIG, ...(existing?.webChat ?? {}) };
+    const set = new Set(webChat.allowedDomains.map((d) => d.toLowerCase()));
+    for (const d of edit.remove) set.delete(d);
+    for (const d of edit.add) set.add(d);
+    if (edit.max !== undefined && set.size > edit.max) return "full" as const;
+    const seed = snap.exists
+      ? {}
+      : { ...defaultsForChannel("web-chat"), createdAt: FieldValue.serverTimestamp() };
+    tx.set(
+      ref,
+      { ...seed, webChat: { ...webChat, allowedDomains: [...set] }, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    );
+    return "ok" as const;
+  });
+}
+
 export async function incrementChannelTokens(
   subAccountId: string,
   channelId: ConfiguredChannelId,

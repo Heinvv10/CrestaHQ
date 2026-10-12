@@ -65,6 +65,20 @@ const seedChat = (path: string, allowedDomains: string[]) =>
     enabled: true,
     webChat: { allowedDomains, welcomeMessage: "Hi", accentColor: "#123456", position: "left" },
   });
+/**
+ * Run `before` (or throw) when the n-th transaction of this request starts.
+ * PUT runs two: the site write, then the allow-list edit; DELETE runs the
+ * allow-list edit first, then the site write.
+ */
+function onTransaction(n: number, before: () => void) {
+  const runTransaction = mem.db.runTransaction;
+  let seen = 0;
+  return vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) => {
+    seen += 1;
+    if (seen === n) before();
+    return runTransaction(fn);
+  });
+}
 const allowed = (path = CHAT) =>
   (mem.read(path) as { webChat?: { allowedDomains?: string[] } } | undefined)?.webChat?.allowedDomains;
 
@@ -89,7 +103,11 @@ describe("PUT — record a custom domain", () => {
     const res = await put("www.acme.com");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, customDomain: "www.acme.com", warnings: [] });
-    expect(mem.read(SITE)).toMatchObject({ customDomain: "www.acme.com", status: "ready" });
+    expect(mem.read(SITE)).toMatchObject({
+      customDomain: "www.acme.com",
+      customDomainChatHosts: ["www.acme.com", "acme.com"],
+      status: "ready",
+    });
     expect(allowed()).toEqual(["acme.gitlab.io", "www.acme.com", "acme.com"]);
     // The rest of the chat config is untouched.
     expect(mem.read(CHAT)).toMatchObject({ enabled: true, webChat: { welcomeMessage: "Hi", position: "left" } });
@@ -192,13 +210,74 @@ describe("PUT — record a custom domain", () => {
     expect(allowed()).toEqual(["acme.gitlab.io"]);
   });
 
-  it("replacing a domain takes the old one's hosts off and leaves entries it did not add", async () => {
-    seedSite(SITE, { customDomain: "www.old.com" });
-    seedChat(CHAT, ["acme.gitlab.io", "www.old.com", "old.com", "partner.example"]);
+  it("replacing a domain takes off only the hosts the old one added, and leaves entries it did not add", async () => {
+    // old.com was listed by hand before www.old.com was saved.
+    seedSite(SITE, { customDomain: "www.old.com", customDomainChatHosts: ["www.old.com"] });
+    seedChat(CHAT, ["acme.gitlab.io", "old.com", "www.old.com", "partner.example"]);
     mem.seed(PROFILE, { websiteUrl: "https://www.old.com/" });
     expect((await put("www.new.com")).status).toBe(200);
-    expect(allowed()).toEqual(["acme.gitlab.io", "partner.example", "www.new.com", "new.com"]);
+    expect(allowed()).toEqual(["acme.gitlab.io", "old.com", "partner.example", "www.new.com", "new.com"]);
+    expect(mem.read(SITE)?.customDomainChatHosts).toEqual(["www.new.com", "new.com"]);
     expect(mem.read(PROFILE)).toMatchObject({ websiteUrl: "https://www.new.com/" });
+  });
+
+  it("records only the hosts it added: one listed by hand is not claimed, and survives a later DELETE", async () => {
+    seedChat(CHAT, ["acme.gitlab.io", "acme.com"]);
+    expect((await put("www.acme.com")).status).toBe(200);
+    expect(mem.read(SITE)?.customDomainChatHosts).toEqual(["www.acme.com"]);
+    expect((await del()).status).toBe(200);
+    expect(allowed()).toEqual(["acme.gitlab.io", "acme.com"]);
+  });
+
+  it("swapping www for its apex records both hosts again, so a DELETE then takes both off", async () => {
+    expect((await put("www.acme.com")).status).toBe(200);
+    expect((await put("acme.com")).status).toBe(200);
+    expect([...(mem.read(SITE)?.customDomainChatHosts as string[])].sort()).toEqual(["acme.com", "www.acme.com"]);
+    expect((await del()).status).toBe(200);
+    expect(allowed()).toEqual(["acme.gitlab.io"]);
+  });
+
+  it("a re-save of the same domain keeps what it recorded", async () => {
+    expect((await put("www.acme.com")).status).toBe(200);
+    expect((await put("www.acme.com")).status).toBe(200);
+    expect(mem.read(SITE)?.customDomainChatHosts).toEqual(["www.acme.com", "acme.com"]);
+    expect((await del()).status).toBe(200);
+    expect(allowed()).toEqual(["acme.gitlab.io"]);
+  });
+
+  it("records the domain and warns when the allow-list write fails", async () => {
+    const spy = onTransaction(2, () => {
+      throw new Error("deadline exceeded");
+    });
+    let res: Response;
+    try {
+      res = await put("www.acme.com");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { warnings: string[] };
+    expect(body.warnings).toEqual([
+      "The chat widget's allowed domains were not updated — add the domain in the Web Chat settings.",
+    ]);
+    expect(mem.read(SITE)).toMatchObject({ customDomain: "www.acme.com", customDomainChatHosts: ["www.acme.com", "acme.com"] });
+    expect(allowed()).toEqual(["acme.gitlab.io"]);
+  });
+
+  it("re-checks the 25-entry cap inside the allow-list transaction: a list filled meanwhile is not overflowed", async () => {
+    const full = Array.from({ length: 25 }, (_, i) => `site${i}.example`);
+    const spy = onTransaction(2, () => seedChat(CHAT, full));
+    let res: Response;
+    try {
+      res = await put("www.acme.com");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { warnings: string[] };
+    expect(body.warnings).toHaveLength(1);
+    expect(body.warnings[0]).toMatch(/filled up \(25\)/);
+    expect(allowed()).toEqual(full);
   });
 
   it("leaves a chat bot that points somewhere else alone", async () => {
@@ -259,7 +338,7 @@ describe("PUT — record a custom domain", () => {
 
 describe("DELETE — clear the custom domain", () => {
   beforeEach(() => {
-    seedSite(SITE, { customDomain: "www.acme.com" });
+    seedSite(SITE, { customDomain: "www.acme.com", customDomainChatHosts: ["www.acme.com", "acme.com"] });
     seedChat(CHAT, ["acme.gitlab.io", "www.acme.com", "acme.com", "partner.example"]);
     mem.seed(PROFILE, { websiteUrl: "https://www.acme.com/" });
   });
@@ -267,7 +346,7 @@ describe("DELETE — clear the custom domain", () => {
   it("takes the domain's hosts off the allow-list, keeps the rest, and points the chat bot back at the live URL", async () => {
     const res = await del();
     expect(res.status).toBe(200);
-    expect(mem.read(SITE)?.customDomain).toBeNull();
+    expect(mem.read(SITE)).toMatchObject({ customDomain: null, customDomainChatHosts: null });
     expect(allowed()).toEqual(["acme.gitlab.io", "partner.example"]);
     expect(mem.read(PROFILE)).toMatchObject({ websiteUrl: LIVE });
   });
@@ -313,11 +392,8 @@ describe("DELETE — clear the custom domain", () => {
   });
 
   it("keeps the domain recorded when the allow-list cannot be updated, so the removal can be retried", async () => {
-    const original = mem.db.doc.bind(mem.db);
-    const spy = vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
-      const ref = original(path);
-      if (path !== CHAT) return ref;
-      return { ...ref, set: async () => { throw new Error("deadline exceeded"); } } as typeof ref;
+    const spy = onTransaction(1, () => {
+      throw new Error("deadline exceeded");
     });
     let res: Response;
     try {
@@ -331,7 +407,13 @@ describe("DELETE — clear the custom domain", () => {
   });
 
   it("clears a domain on a site that is no longer live (a reset keeps it)", async () => {
-    seedSite(SITE, { status: "draft", gitpageJobId: null, liveUrl: null, customDomain: "www.acme.com" });
+    seedSite(SITE, {
+      status: "draft",
+      gitpageJobId: null,
+      liveUrl: null,
+      customDomain: "www.acme.com",
+      customDomainChatHosts: ["www.acme.com", "acme.com"],
+    });
     expect((await del()).status).toBe(200);
     expect(mem.read(SITE)?.customDomain).toBeNull();
     expect(allowed()).toEqual(["acme.gitlab.io", "partner.example"]);
