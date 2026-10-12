@@ -11,6 +11,8 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 import { SA, claims, mem, resetSync } from "@/test/gbp-sync-harness";
 import { PLAN_GATE_KEYS, PLAN_GATE_LABELS } from "@/types/billing";
+// At module load, not inside the test: the registry is slow to import on a loaded box.
+import { getCapability } from "@/lib/ai-suite/capabilities";
 import { PATCH } from "./route";
 
 async function patch(body: Record<string, unknown>, uid = "uid_owner") {
@@ -58,7 +60,6 @@ describe("prospectingEnabled", () => {
   });
 
   it("the Workspace Assistant can flip it by name", async () => {
-    const { getCapability } = await import("@/lib/ai-suite/capabilities");
     const cap = getCapability("set_feature_gate")!;
     const ctx = { uid: "uid_owner", email: "", displayName: "Owner", agencyId: "ag_1" };
     await cap.execute(ctx, { subAccountId: SA, subAccountName: "Fixture", gate: "prospecting", enabled: true });
