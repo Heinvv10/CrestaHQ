@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Globe, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { widgetDisplay, type OriginReason } from "@/lib/gbp/feed/origins";
+import type { PublicWidget } from "@/lib/gbp/feed/widget-store";
 import type { GbpWidgetLayout, GbpWidgetMeta, GbpWidgetTheme } from "@/types/google";
 import { InlineConfirm } from "./inline-confirm";
 import { WidgetPreview } from "./widget-preview";
@@ -36,6 +37,9 @@ const REASONS: Record<OriginReason, string> = {
 const LAYOUTS: Array<[GbpWidgetLayout, string]> = [["carousel", "Carousel"], ["grid", "Grid"], ["list", "List"], ["badge", "Badge"]];
 const THEMES: Array<[GbpWidgetTheme, string]> = [["light", "Light"], ["dark", "Dark"]];
 const field = "h-9 rounded-md border bg-background px-2 text-sm";
+
+/** The live doc's meta, or a route's answer (its updatedAt is an ISO string). */
+type ShownWidget = Omit<GbpWidgetMeta, "updatedAt">;
 
 type Refusal = { error?: string; code?: string; details?: Array<{ value: string; reason: OriginReason }> };
 
@@ -67,17 +71,17 @@ function snippetFor(publicId: string, mapsUri: string | null | undefined): strin
 }
 
 /** The saved settings that change what the preview draws. */
-function previewVersion(meta: GbpWidgetMeta): string {
+function previewVersion(meta: ShownWidget): string {
   const { layout, theme } = widgetDisplay(meta);
   return [meta.enabled, meta.maxReviews, layout, theme].join("|");
 }
 
-async function call(url: string, method: string, body?: unknown): Promise<{ ok: boolean; data: Refusal & { widget?: GbpWidgetMeta } }> {
+async function call(url: string, method: string, body?: unknown): Promise<{ ok: boolean; data: Refusal & { widget?: PublicWidget } }> {
   const res = await fetch(url, {
     method,
     ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
   }).catch(() => null);
-  const data = ((await res?.json().catch(() => null)) ?? {}) as Refusal & { widget?: GbpWidgetMeta };
+  const data = ((await res?.json().catch(() => null)) ?? {}) as Refusal & { widget?: PublicWidget };
   return { ok: !!res?.ok, data };
 }
 
@@ -103,12 +107,17 @@ function Card({ children }: { children: React.ReactNode }) {
 
 export function WidgetSection() {
   const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
-  // The last call's answer, pinned to the snapshot on screen when it was
-  // made: any newer snapshot of the doc wins over it.
-  const [answered, setAnswered] = useState<{ meta: GbpWidgetMeta | null; doc: unknown } | null>(null);
+  // The last call's answer, pinned to the latest snapshot when it landed (one
+  // that arrived mid-request may predate the write): any newer snapshot of
+  // the doc wins over it.
+  const [answered, setAnswered] = useState<{ meta: ShownWidget | null; doc: unknown } | null>(null);
+  const latestDoc = useRef(subAccount);
+  useEffect(() => {
+    latestDoc.current = subAccount;
+  }, [subAccount]);
   if (loading || !isAdmin || !subAccount) return null;
   const meta = answered && answered.doc === subAccount ? answered.meta : (subAccount.gbpWidgetMeta ?? null);
-  const settle = (next: GbpWidgetMeta | null) => setAnswered({ meta: next, doc: subAccount });
+  const settle = (next: ShownWidget | null) => setAnswered({ meta: next, doc: latestDoc.current });
   const api = `/api/sub-accounts/${subAccountId}/gbp/widget`;
   const revoke = (
     <InlineConfirm
@@ -143,7 +152,7 @@ export function WidgetSection() {
   );
 }
 
-function WidgetForm({ api, meta, mapsUri, onSettled }: { api: string; meta: GbpWidgetMeta | null; mapsUri: string | null | undefined; onSettled: (meta: GbpWidgetMeta) => void }) {
+function WidgetForm({ api, meta, mapsUri, onSettled }: { api: string; meta: ShownWidget | null; mapsUri: string | null | undefined; onSettled: (meta: ShownWidget) => void }) {
   const [enabled, setEnabled] = useState(meta?.enabled ?? true);
   const [origins, setOrigins] = useState((meta?.allowedOrigins ?? []).join("\n"));
   const [maxReviews, setMaxReviews] = useState(String(meta?.maxReviews ?? 12));

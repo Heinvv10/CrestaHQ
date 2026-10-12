@@ -286,6 +286,19 @@ describe("without waiting for the live doc", () => {
     }
   });
 
+  it("a snapshot that lands while the save is in flight does not hide the answer", async () => {
+    let answer!: () => void;
+    const put = routes[`PUT ${API}`];
+    routes[`PUT ${API}`] = (init) => new Promise((resolve) => (answer = () => resolve(put(init))));
+    await render();
+    await click(byId("gbp-widget-save"));
+    // An unrelated write to the doc, from before the save committed.
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: null };
+    await render();
+    await act(async () => answer());
+    expect(byId("gbp-widget-snippet")?.textContent).toContain(`data-crestahq-reviews="${ID}"`);
+  });
+
   it("the next snapshot of the doc wins over the answer", async () => {
     await render();
     await click(byId("gbp-widget-save"));
