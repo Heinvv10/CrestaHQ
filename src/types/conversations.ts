@@ -79,6 +79,8 @@ export type ConversationBotMode = "off" | "suggest" | "auto";
  * approved (a human send clears it server-side) or discarded.
  */
 export interface ConversationDraft {
+  /** Set on every draft written since PR #405; absent on older drafts. */
+  id?: string;
   body: string;
   channel: ConversationChannel;
   model: string;

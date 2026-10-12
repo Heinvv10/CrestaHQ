@@ -309,7 +309,7 @@ Historical imports preserve newer conversation previews and do not increment
 unread counts. Imported mail does not enroll workflows or send automated replies.
 With Email AI drafts on (`emailAiDraftsEnabledByAgency` + `aiAgent/email`), a new
 live inbound email gets a suggested reply in `conversations/{contactId}.pendingDraft`
-(`channel: "email"`, plus `emailReply: { subject, inReplyTo?, references }` taken
+(`id`, `channel: "email"`, `escalationKeyword?`, and `emailReply: { subject, inReplyTo?, references }` taken
 from the inbound email) after the sync pass — a draft only, never a send. A
 conversation an email starts then opens with `botMode: "suggest"` instead of `"off"`.
 

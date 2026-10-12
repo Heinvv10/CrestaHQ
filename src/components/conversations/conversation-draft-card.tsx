@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { createElement, useState } from "react";
 import { toast } from "sonner";
 import { Check, Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -25,22 +25,36 @@ const LABEL: Record<ConversationChannel, string> = {
  * Channel-agnostic: contact-keyed channels send by `contactId`; web chat sends
  * by `{subAccountId, sessionId}` (delivered to the visitor's widget via poll).
  * `conversationId` is the doc id the discard writes to.
+ *
+ * Keyed by the draft's identity, so a newer draft arriving while the card is
+ * open replaces the text being edited instead of inheriting it. An email
+ * approve names the draft (`draftId`): the route claims it server-side and
+ * refuses with 409 if it was replaced or already sent.
  */
-export function ConversationDraftCard({
-  conversationId,
-  contactId,
-  subAccountId,
-  sessionId = null,
-  draft,
-}: {
+type DraftCardProps = {
   conversationId: string;
   contactId: string | null;
   subAccountId: string;
   sessionId?: string | null;
   draft: ConversationDraft;
-}) {
+};
+
+export function ConversationDraftCard(props: DraftCardProps) {
+  return createElement(DraftCardBody, { ...props, key: props.draft.id ?? props.draft.body });
+}
+
+function DraftCardBody({
+  conversationId,
+  contactId,
+  subAccountId,
+  sessionId = null,
+  draft,
+}: DraftCardProps) {
   const [body, setBody] = useState(draft.body);
   const [busy, setBusy] = useState<null | "approve" | "discard">(null);
+  // Sent: hidden until the conversation listener drops the draft, so a
+  // second click can't send it again.
+  const [sent, setSent] = useState(false);
   const isWebChat = draft.channel === "web-chat";
   const isMeta =
     draft.channel === "messenger" || draft.channel === "instagram";
@@ -57,7 +71,7 @@ export function ConversationDraftCard({
   async function approve() {
     const trimmed = body.trim();
     if (!trimmed) return;
-    if (draft.channel === "email" && !draft.emailReply) {
+    if (draft.channel === "email" && (!draft.emailReply || !draft.id)) {
       toast.error("This draft has no email to reply to. Reply from the composer instead.");
       return;
     }
@@ -72,8 +86,9 @@ export function ConversationDraftCard({
             // routes ignore the extra field.
             ...(isMeta ? { channel: draft.channel } : {}),
             // An email draft answers the email it was written for: same
-            // thread, "Re:" subject — set server-side when it was drafted.
-            ...(draft.channel === "email" ? draft.emailReply : {}),
+            // thread, "Re:" subject — set server-side when it was drafted;
+            // the route sends with the stored ones of the draft it claims.
+            ...(draft.channel === "email" ? { ...draft.emailReply, draftId: draft.id } : {}),
           };
       const res = await fetch(endpoint, {
         method: "POST",
@@ -85,10 +100,9 @@ export function ConversationDraftCard({
         error?: string;
       };
       if (!res.ok || !data.ok) throw new Error(data.error ?? "Couldn't send.");
-      // The send route's human-reply upsert clears pendingDraft server-side —
-      // except email's, which leaves the conversation's AI state alone, so
-      // the sent draft is cleared here (or Approve could send it twice).
-      if (draft.channel === "email") await discardConversationDraft(conversationId);
+      // Every send route clears pendingDraft server-side (email's claims it
+      // before sending).
+      setSent(true);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't send.");
     } finally {
@@ -104,6 +118,8 @@ export function ConversationDraftCard({
       setBusy(null);
     }
   }
+
+  if (sent) return null;
 
   return (
     <div className="border-t border-amber-500/30 bg-amber-500/5 px-4 py-3">

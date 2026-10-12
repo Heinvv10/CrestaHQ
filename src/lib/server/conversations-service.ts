@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { FieldValue } from "firebase-admin/firestore";
@@ -384,6 +385,9 @@ export async function setConversationDraft(input: {
             ? { visitorLabel: input.visitorLabel }
             : {}),
           pendingDraft: {
+            // Identity: an approve names the draft it was looking at, and
+            // the email send route refuses it if a newer draft replaced it.
+            id: randomUUID(),
             body: input.body,
             channel: input.channel,
             model: input.model,

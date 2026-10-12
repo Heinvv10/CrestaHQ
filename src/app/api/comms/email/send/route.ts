@@ -6,11 +6,23 @@ import {
 } from "@/lib/server/conversation-send/email";
 import { sendOutcomeResponse } from "@/lib/server/conversation-send/http";
 import { askOutcomeOf, logInboxReviewAsk } from "@/lib/reviews/review-ask";
+import type { ConversationDraft } from "@/types/conversations";
+import {
+  claimConversationDraft,
+  clearConversationDraft,
+  restoreConversationDraft,
+} from "@/lib/server/conversation-draft-claim";
 
 /**
  * Manual email send. Auth + request parsing only — every send-time check and
  * the send itself live in the conversation send service, which the
  * scheduled-message worker shares.
+ *
+ * Approving an AI email draft names it (`draftId`): the draft is claimed in a
+ * transaction first, so a draft replaced by a newer one, or approved twice,
+ * is 409 and nothing is sent; it goes out with the subject and thread headers
+ * stored on the draft, and is put back if the send is refused before reaching
+ * the provider. Any successful send clears a pending draft.
  */
 export async function POST(request: Request) {
   const auth = requireUid(request);
@@ -40,18 +52,45 @@ export async function POST(request: Request) {
     );
   }
 
+  const draftId = (payload as { draftId?: unknown }).draftId;
+  if (draftId !== undefined && (typeof draftId !== "string" || !/^[\w-]{1,100}$/.test(draftId))) {
+    return NextResponse.json({ error: "Invalid draftId." }, { status: 400 });
+  }
+
   const contact = await requireContactAccessible(auth.uid, contactId);
   if (contact instanceof NextResponse) return contact;
+
+  let claimed: ConversationDraft | null = null;
+  if (draftId !== undefined) {
+    claimed = await claimConversationDraft(contactId, draftId);
+    if (!claimed || claimed.channel !== "email" || !claimed.emailReply) {
+      if (claimed) await restoreConversationDraft(contactId, claimed);
+      return NextResponse.json(
+        { error: "This draft was already sent or replaced by a newer one. Reload the conversation.", code: "draft_changed" },
+        { status: 409 }
+      );
+    }
+  }
+  const thread = claimed?.emailReply ?? {
+    subject,
+    inReplyTo: payload.inReplyTo,
+    references: payload.references,
+  };
 
   const outcome = await sendConversationEmail({
     contactId,
     contact,
-    subject,
+    subject: thread.subject,
     body,
-    inReplyTo: payload.inReplyTo,
-    references: payload.references,
+    inReplyTo: thread.inReplyTo,
+    references: thread.references,
     actor: auth,
   });
-  await logInboxReviewAsk({ contact, channel: "email", parts: [subject, body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
+  if (outcome.ok) {
+    if (!claimed) await clearConversationDraft(contactId);
+  } else if (claimed && !outcome.attempted) {
+    await restoreConversationDraft(contactId, claimed);
+  }
+  await logInboxReviewAsk({ contact, channel: "email", parts: [thread.subject, body], actorUid: auth.uid, outcome: askOutcomeOf(outcome) });
   return sendOutcomeResponse(outcome);
 }
