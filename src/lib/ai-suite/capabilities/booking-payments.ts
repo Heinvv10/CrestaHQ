@@ -119,7 +119,9 @@ export const BOOKING_PAYMENT_CAPABILITIES: AiSuiteCapability[] = [
       const tz = await subAccountTimezone(ctx.subAccountId!);
       const scope = await territoryScopeFor(ctx);
       // Soonest first in the query (the events(subAccountId, status, startAt)
-      // index), territory-filtered before the cap.
+      // index), territory-filtered before the cap. orderBy skips a doc
+      // without startAt; a held booking always has one (only the booking
+      // route creates them, with the slot's times, and no write unsets it).
       const { docs, scanCapped } = await collectVisible(
         scope,
         getAdminDb()

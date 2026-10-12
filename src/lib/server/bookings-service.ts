@@ -220,6 +220,8 @@ async function runMarkPaidSideEffects(args: {
 
   // With `expect`: the address the confirmation would go to now, against
   // the one the approver reviewed. Changed: no confirmation and no reminders.
+  // Reminders are email-only (events/reminder/step sends to the contact's
+  // email), so the email address is the one recipient to pin.
   const sendableTo = contact && sub && emailIsConfigured(sub) && contact.email && !contact.emailOptedOut ? contact.email : null;
   const withheld = !!expect && sendableTo !== expect.emailTo;
   if (withheld) {
