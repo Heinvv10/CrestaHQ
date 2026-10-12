@@ -109,4 +109,4 @@ hours (08:00–17:00 SAST, Mon–Fri); `--force` overrides **the time window onl
 never the gates. The deploy dir is a target, not a workspace — the script
 refuses to run against a dirty checkout. Deploys are zero-downtime blue/green
 and `--rollback` switches back to the previous release; layout and the one-time
-migration are in [RUNBOOK.md](RUNBOOK.md#zero-downtime-deploys-velo-server-only).
+migration are in [RUNBOOK.md](../RUNBOOK.md#zero-downtime-deploys-velo-server-only).

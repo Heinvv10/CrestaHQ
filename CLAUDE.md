@@ -94,6 +94,8 @@ string from it. Edit it before any buyer deploy.
 
 ---
 
+Stack facts the code doesn't make obvious: QStash runs all scheduled work; Paystack handles ZAR Client Billing (Stripe otherwise); voice is Vapi; the OpenRouter default model is `anthropic/claude-haiku-4-5`.
+
 ## Architecture
 
 Read the relevant file before changing that subsystem — these carry the invariants
@@ -136,4 +138,3 @@ for in-flight work live in the `*_V1_PLAN.md` files at the repo root.
 - **[docs/onboarding-buyer.md](docs/onboarding-buyer.md)** — the Claude-driven
   version of that walkthrough, plus the troubleshooting catalog.
 - **[RUNBOOK.md](RUNBOOK.md)** — operating the deployed app.
-
