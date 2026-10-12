@@ -100,7 +100,7 @@ describe("AiAgentsOverviewPage channel status", () => {
 });
 
 describe("AiAgentsOverviewPage Web Chat status", () => {
-  const configured = { enabled: true, webChat: { allowedDomains: [] } };
+  const configured = { enabled: true, webChat: { allowedDomains: ["example.com"] } };
   afterEach(() => {
     webChatConfig = null;
   });
@@ -128,6 +128,13 @@ describe("AiAgentsOverviewPage Web Chat status", () => {
 
   it("shows Web Chat not configured when the widget block is missing", async () => {
     webChatConfig = { enabled: true };
+    setCtx({}, false);
+    await render();
+    expect(status("web-chat")).toBe("Not configured");
+  });
+
+  it("shows Web Chat not configured while no site is allowed to embed it", async () => {
+    webChatConfig = { enabled: true, webChat: { allowedDomains: [] } };
     setCtx({}, false);
     await render();
     expect(status("web-chat")).toBe("Not configured");

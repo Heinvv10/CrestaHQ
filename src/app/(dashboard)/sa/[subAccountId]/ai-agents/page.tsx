@@ -97,10 +97,12 @@ export default function AiAgentsOverviewPage() {
     !!voiceConfig?.enabled &&
     voiceNumberReady &&
     subAccount?.inboundVoiceEnabledByAgency !== false;
-  // Same three checks the widget config endpoint makes before it serves.
+  // The checks the widget config endpoint makes before it serves. With no
+  // allowed domains it serves only localhost and this app (test mode), so
+  // it isn't live on any customer site yet.
   const webChatEnabled =
     !!webChatConfig?.enabled &&
-    !!webChatConfig.webChat &&
+    (webChatConfig.webChat?.allowedDomains?.length ?? 0) > 0 &&
     subAccount?.webChatEnabledByAgency !== false;
   const senderConfigured = whatsappSenderConfigured(subAccount);
   const whatsappEnabled =
