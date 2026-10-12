@@ -1,5 +1,8 @@
 import type { Page } from "@playwright/test";
 
+/** Every request of Firestore's Listen (snapshot) channel. */
+export const FIRESTORE_LISTEN = /firestore\.googleapis\.com\/google\.firestore\.v1\.Firestore\/Listen\/channel/;
+
 /**
  * Firestore's Listen stream can sit silent for ~30 s after a write, so a UI
  * must show a write from the route's response, not wait for the snapshot.
@@ -11,10 +14,7 @@ import type { Page } from "@playwright/test";
  * never sees.
  */
 export async function stallFirestoreListen(page: Page) {
-  await page.route(
-    /firestore\.googleapis\.com\/google\.firestore\.v1\.Firestore\/Listen\/channel/,
-    () => new Promise(() => {}),
-  );
+  await page.route(FIRESTORE_LISTEN, () => new Promise(() => {}));
   await page.context().setOffline(true);
   await page.context().setOffline(false);
 }
