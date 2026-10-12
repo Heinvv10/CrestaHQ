@@ -85,7 +85,7 @@ const { AGENCY_AGENT_CALLABLE, dispatchAgentTool } = await import("./agent-dispa
 const { TRIGGER_LABELS } = await import("@/lib/workflows/catalog");
 const { AI_SUITE_CAPABILITIES, availableOn } = await import("@/lib/ai-suite/capabilities");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 // An ACTIVE workflow for EVERY trigger type (TRIGGER_LABELS is exhaustive over
 // WorkflowTriggerType), with no narrowing config, so any trigger matches.

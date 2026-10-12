@@ -26,7 +26,7 @@ vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async ()
 const { dispatchAgentTool } = await import("./agent-dispatch");
 const { normalizePlanGates } = await import("@/lib/server/billing-lifecycle");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 restoreBillingProviderAfterEach();
 
 const PLAN = {

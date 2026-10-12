@@ -17,7 +17,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const quiet = () => vi.spyOn(console, "error").mockImplementation(() => undefined);
 const flush = async (until: () => boolean) => {
   for (let i = 0; i < 500 && !until(); i++) await new Promise((r) => setImmediate(r));

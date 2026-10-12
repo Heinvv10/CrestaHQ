@@ -22,7 +22,7 @@ vi.mock("@/lib/automations/qstash", async () => (await import("@/test/held-enrol
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 const { agentHold } = await import("./agent-hold");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 const createContact = () => dispatchAgentTool(auth, "create_contact", { name: "Ann Agent", email: "ann@x.io" });
 

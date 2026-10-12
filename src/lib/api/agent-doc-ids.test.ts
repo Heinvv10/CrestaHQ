@@ -18,7 +18,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const { dispatchAgentTool, agentCallable } = await import("@/lib/api/agent-dispatch");
 const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
 

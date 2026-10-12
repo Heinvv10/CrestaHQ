@@ -17,7 +17,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
 
 const { dispatchAgentTool } = await import("./agent-dispatch");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 describe("agent.write audit rows", () => {
   it("a direct write records the key, capability, target and redacted arg names", async () => {

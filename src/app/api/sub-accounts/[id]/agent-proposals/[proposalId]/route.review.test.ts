@@ -17,7 +17,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 describe("general review — PR #259", () => {
   it("M2 + L4: a scoped collaborator cannot approve or reject a proposal targeting another territory's contact", async () => {

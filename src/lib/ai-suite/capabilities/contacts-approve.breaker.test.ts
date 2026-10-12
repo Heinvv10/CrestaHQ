@@ -60,7 +60,7 @@ const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 const { TRIGGER_LABELS } = await import("@/lib/workflows/catalog");
 const { AI_SUITE_CAPABILITIES, availableOn } = await import("@/lib/ai-suite/capabilities");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 const { decide, row } = await import("@/test/agent-proposals-harness");
 const TRIGGERS = Object.keys(TRIGGER_LABELS);
