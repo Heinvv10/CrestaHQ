@@ -104,6 +104,15 @@ describe("configure_watchdog", () => {
     expect(config()).toMatchObject({ enabled: false });
   });
 
+  it("the Labs gate off: turning it off together with other changes is refused, nothing written", async () => {
+    const before = { subAccountId: "sa1", agencyId: "ag1", enabled: true, thresholdHours: 4, instructions: null, quietHours: null };
+    mem.seed(CONFIG, before);
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, labsEnabledByAgency: false });
+    const res = await doConfirm("configure_watchdog", { enabled: false, instructions: "Flag refunds", thresholdHours: 2 });
+    expect((await res.json()).error).toContain("Labs isn't enabled");
+    expect(config()).toEqual(before);
+  });
+
   it.each([
     ["nothing to change", {}],
     ["a threshold of 0", { thresholdHours: 0 }],
