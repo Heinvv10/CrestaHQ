@@ -148,6 +148,14 @@ describe("GET /api/sub-accounts/[id]/website/concepts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("answers a sub-account with no agencyId as 500 internal, without calling gitpage", async () => {
+    mem.seed("subAccounts/sa1", { name: "Acme", websiteEnabledByAgency: true });
+    const res = await get();
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({ code: "internal" });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("answers 503 when the deployment has no gitpage key", async () => {
     delete process.env.GITPAGE_API_KEY;
     const res = await get();

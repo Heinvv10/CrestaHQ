@@ -596,6 +596,7 @@ function configToGitpagePayload(input: SubmitBuildInput) {
       ...(c.concept && { concept: c.concept }),
       mode: premiumModeFor(c),
       ...(c.hero_motion && { heroMotion: c.hero_motion }),
+      // HARDENING: pass the niche so fields the form hides for it are not sent.
       ...premiumDetailsPayload(c.premium_details, c.niche ?? null),
     };
     const notes = c.premium_details?.reference_notes?.trim();

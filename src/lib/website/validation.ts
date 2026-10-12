@@ -68,6 +68,7 @@ export function validateWebsiteConfig(config: WebsiteConfig): ValidationErrors {
     errors.hero_motion = "Must be still, loop or atmosphere.";
   }
   if (config.premium_details) {
+    // HARDENING: pass the niche so fields the form hides for it are not validated.
     for (const [field, message] of Object.entries(validatePremiumDetails(config.premium_details, config.niche ?? null))) {
       errors[`premium_details.${field}`] = message;
     }

@@ -23,6 +23,7 @@ export type ConceptsErrorCode =
   | "gate_off"
   | "not_configured"
   | "bad_niche"
+  | "internal"
   | "upstream";
 
 function fail(code: ConceptsErrorCode, error: string, status: number) {
@@ -57,19 +58,16 @@ export async function GET(
     // The tenancy helper's own answers keep their status and gain a code.
     const body = (await access.json().catch(() => ({}))) as { error?: unknown };
     const error = typeof body.error === "string" ? body.error : "Not allowed.";
-    const code = TENANCY_CODES[access.status];
-    return code ? fail(code, error, access.status) : NextResponse.json({ error }, { status: access.status });
+    return fail(TENANCY_CODES[access.status] ?? "forbidden", error, access.status);
   }
 
   try {
     await requireWebsiteEnabledSub(subAccountId);
   } catch (err) {
     if (err instanceof WebsiteServiceError) {
-      const code: ConceptsErrorCode | undefined =
-        err.status === 403 ? "gate_off" : err.status === 404 ? "not_found" : undefined;
-      return code
-        ? fail(code, err.message, err.status)
-        : NextResponse.json({ error: err.message }, { status: err.status });
+      const code: ConceptsErrorCode =
+        err.status === 403 ? "gate_off" : err.status === 404 ? "not_found" : "internal";
+      return fail(code, err.message, err.status);
     }
     throw err;
   }
@@ -91,11 +89,12 @@ export async function GET(
       { concepts },
       { headers: { "Cache-Control": "private, max-age=300" } },
     );
-  } catch {
+  } catch (err) {
     // HARDENING: any gitpage failure (4xx included: a revoked key is 401
     // there, a quota is 429) is OUR 502 with fixed text. Its status and
     // message are never forwarded; they describe the agency's key, not the
     // caller's session.
+    console.error("[website/concepts] gitpage failed", err instanceof Error ? err.message : String(err));
     return fail("upstream", "The design service is unavailable right now.", 502);
   }
 }
