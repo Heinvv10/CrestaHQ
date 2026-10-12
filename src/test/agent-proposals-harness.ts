@@ -171,10 +171,14 @@ export function hangNextExecute(): { finish: () => void; fail: (err: Error) => v
 
 /** Approve with a hanging execute, then let the sweep flip the claim to unsettled. */
 export async function approveHangingThenUnsettle(id: string) {
+  // The route's cold import must not count against the waitFor below. That
+  // waits for execute to START; the approve itself hangs inside it until
+  // finish()/fail(), so neither it nor flushAfterResponse can be awaited.
+  await decideRoute();
   const ctl = hangNextExecute();
   const calls = execute.mock.calls.length;
   const approving = decide(id, "approve");
-  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(calls + 1));
+  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(calls + 1), { timeout: 10_000 });
   const { STALE_CLAIM_MS } = await lib();
   await sweep(later(STALE_CLAIM_MS + 60_000));
   expect(row(id).status).toBe("unsettled");
