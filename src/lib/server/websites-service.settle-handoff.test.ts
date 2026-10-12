@@ -26,9 +26,13 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
 }));
 // GitLab's path URL 308s to the project's unique domain, as in production.
 const UNIQUE = "https://acme-site-1a2b3c.gitlab.io/";
+/** Extra answers a test can add: URL → [status, Location]. */
+const routes = vi.hoisted(() => new Map<string, [number, string | null]>());
 vi.mock("@/lib/webhooks/public-fetch", () => ({
   publicFetch: async (url: string) =>
-    url === "https://acme.gitlab.io/site"
+    routes.has(url)
+      ? new Response(null, { status: routes.get(url)![0], headers: routes.get(url)![1] ? { location: routes.get(url)![1]! } : {} })
+      : url === "https://acme.gitlab.io/site"
       ? new Response(null, { status: 308, headers: { location: "https://acme-site-1a2b3c.gitlab.io/" } })
       : url === "https://acme-root.gitlab.io/"
         ? new Response(null, { status: 308 }) // a redirect with no Location: unresolved
@@ -118,6 +122,7 @@ const provisioning = () => mem.read(SITE)?.provisioning as Record<string, unknow
 
 beforeEach(async () => {
   mem.clear();
+  routes.clear();
   spy().mockReset().mockImplementation(real.provisionWebsiteHandoff);
   mem.seed("subAccounts/sa1", {
     agencyId: "ag1",
@@ -280,5 +285,43 @@ describe("the site moving on between the settle and the hand-off (breaker, PR #4
     await flushAfterResponse();
     expect(outs.filter((o) => o === "ready")).toHaveLength(1);
     expect(spy()).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("which host a published site gets allow-listed, end to end (breaker round 2, PR #400)", () => {
+  const NS = "https://gitpage-ns.gitlab.io/acme-site";
+  const allowedAfter = async (pagesUrl: string) => {
+    expect(await settleAndFlush(seedSite(), { ...published, pagesUrl })).toBe("ready");
+    return (mem.read("subAccounts/sa1/aiAgent/web-chat")?.webChat as { allowedDomains: string[] }).allowedDomains;
+  };
+
+  it("N1: a trailing-dot report cannot widen to the whole TLD", async () => {
+    routes.set("https://acme.com./", [308, "https://attacker.com./"]);
+    expect(await allowedAfter("https://acme.com./")).not.toContain("attacker.com");
+  });
+
+  it("N2: acme.co.za cannot redirect to another .co.za site", async () => {
+    routes.set("https://acme.co.za/", [308, "https://evil.co.za/"]);
+    expect(await allowedAfter("https://acme.co.za/")).not.toContain("evil.co.za");
+  });
+
+  it("N4a: the namespace root reported as-is is not allow-listed", async () => {
+    expect(await allowedAfter("https://gitpage-ns.gitlab.io/")).toEqual([]);
+  });
+
+  it("N4b: a path URL redirecting to the namespace root is not allow-listed", async () => {
+    routes.set(NS, [308, "/"]);
+    expect(await allowedAfter(NS)).toEqual([]);
+  });
+
+  it("N6: the unique domain landed on under a path is allow-listed", async () => {
+    routes.set(NS, [308, "https://acme-site-1a2b3c.gitlab.io/index.html"]);
+    expect(await allowedAfter(NS)).toEqual(["acme-site-1a2b3c.gitlab.io"]);
+    expect(mem.read(SITE)?.liveUrl).toBe("https://acme-site-1a2b3c.gitlab.io/index.html");
+  });
+
+  it("a www custom domain that redirects to its apex resolves and is allow-listed", async () => {
+    routes.set("https://www.acme.co.za/", [301, "https://acme.co.za/"]);
+    expect(await allowedAfter("https://www.acme.co.za/")).toEqual(["acme.co.za"]);
   });
 });

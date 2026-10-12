@@ -212,11 +212,11 @@ describe("provisionWebsiteHandoff — what a publish sets up", () => {
       websiteSeeded: {
         systemPrompt: "You are Acme Plumbing's assistant.\nBe brief.",
         businessName: "Acme Plumbing",
-        welcomeMessage: "Hi, need a plumber?",
-        accentColor: "#b13f2b",
         websiteUrl: LIVE,
       },
     });
+    // The widget's seeds are recorded beside the widget values, in the same write.
+    expect(mem.read(CHAT)?.websiteSeeded).toEqual({ welcomeMessage: "Hi, need a plumber?", accentColor: "#b13f2b" });
     expect(workflows()).toHaveLength(1);
     expect(workflows()[0]).toMatchObject({
       id: out!.workflowId,
@@ -545,7 +545,7 @@ describe("what gitpage sends is outside data", () => {
     const out = await handoff({ result: result({ theme: { primaryColor: primaryColor as string } }) });
     expect(out!.errors).toEqual([]);
     expect(webChat()?.accentColor).toBe("#7c3aed");
-    expect((mem.read(PROFILE)?.websiteSeeded as Record<string, unknown>).accentColor).toBeUndefined();
+    expect((mem.read(CHAT)?.websiteSeeded as Record<string, unknown>).accentColor).toBeUndefined();
   });
 
   it("a valid accent is stored lower-cased", async () => {
@@ -662,6 +662,33 @@ describe("the operator's own wording", () => {
     expect((mem.read(PROFILE)?.websiteSeeded as Record<string, unknown>).websiteUrl).toBeUndefined();
   });
 
+  it("a seeded websiteUrl follows the next published site; one the operator edited after seeding is kept", async () => {
+    await handoff();
+    expect(mem.read(PROFILE)?.websiteUrl).toBe(LIVE);
+    const next = "https://acme-next-4d5e6f.gitlab.io/";
+    await handoff({ liveUrl: next });
+    expect(mem.read(PROFILE)).toMatchObject({ websiteUrl: next, websiteSeeded: { websiteUrl: next } });
+
+    await mem.db.doc(PROFILE).update({ websiteUrl: "https://www.acme-own.example/" });
+    await handoff({ liveUrl: "https://acme-third-7g8h9i.gitlab.io/" });
+    expect(mem.read(PROFILE)?.websiteUrl).toBe("https://www.acme-own.example/");
+  });
+
+  it("widget seeds are recorded with the widget write: a failed profile write does not freeze them", async () => {
+    fail.profile = true;
+    const first = await handoff();
+    expect(first!.errors).toEqual(["agent profile: profile store down"]);
+    expect(webChat()).toMatchObject({ welcomeMessage: "Hi, need a plumber?", accentColor: "#b13f2b" });
+    fail.profile = false;
+    const next = result({
+      agentPersona: { ...result().premium!.agentPersona!, welcomeMessage: "Hello from the new site" },
+      theme: { primaryColor: "#00AA55" },
+    });
+    await handoff({ result: next });
+    // Still the hand-off's own values, so the newer site replaces them.
+    expect(webChat()).toMatchObject({ welcomeMessage: "Hello from the new site", accentColor: "#00aa55" });
+  });
+
   it("values the hand-off seeded follow the next published site; one the operator has since edited does not", async () => {
     await handoff();
     await mem.db.doc(PROFILE).update({ systemPrompt: "Edited by the operator." });
@@ -707,7 +734,37 @@ describe("which host the chat allowlist gets (breaker, PR #400)", () => {
   it("a site that resolved but is served under a path shares its host with other sites: nothing is allow-listed", async () => {
     const out = await handoff({ liveUrl: NAMESPACE, result: result({}, NAMESPACE) });
     expect(allowed()).toEqual([]);
-    expect(out!.chatSkippedReason).toContain("served under a path");
+    expect(out!.chatSkippedReason).toContain("a host other sites share");
+  });
+
+  it("the namespace ROOT reported as-is (no redirect) is the shared host: nothing is allow-listed", async () => {
+    const root = "https://gitpage-ns.gitlab.io/";
+    const out = await handoff({ liveUrl: root, result: result({}, root) });
+    expect(allowed()).toEqual([]);
+    expect(out!.chatSkippedReason).toContain("a host other sites share");
+  });
+
+  it("a path URL that redirects back to the namespace root is still the shared host: nothing is allow-listed", async () => {
+    const out = await handoff({ liveUrl: "https://gitpage-ns.gitlab.io/", result: result({}, NAMESPACE) });
+    expect(allowed()).toEqual([]);
+    expect(out!.chatSkippedReason).toContain("a host other sites share");
+  });
+
+  it.each([
+    ["/index.html", "https://acme-site-1a2b3c.gitlab.io/index.html"],
+    ["/en/", "https://acme-site-1a2b3c.gitlab.io/en/"],
+  ])("a unique domain the walk landed on under a path (%s) is the site's own host: allow-listed", async (_label, live) => {
+    const out = await handoff({ liveUrl: live, result: result({}, NAMESPACE) });
+    expect(allowed()).toEqual(["acme-site-1a2b3c.gitlab.io"]);
+    expect(out!.chatAllowlisted).toBe(true);
+  });
+
+  it("a custom domain reported at its root and landed on as-is is allow-listed; one reported under a path is not", async () => {
+    await handoff({ liveUrl: "https://acme.co.za/", result: result({}, "https://acme.co.za/") });
+    expect(allowed()).toEqual(["acme.co.za"]);
+    const out = await handoff({ siteId: "site2", liveUrl: "https://shared.example/acme/", result: result({}, "https://shared.example/acme/") });
+    expect(allowed()).toEqual(["acme.co.za"]);
+    expect(out!.chatSkippedReason).toContain("a host other sites share");
   });
 
   it.each([

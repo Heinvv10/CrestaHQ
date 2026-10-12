@@ -163,6 +163,33 @@ describe("resolveLiveUrl", () => {
     expect(await resolveLiveUrl(reported)).toEqual({ url: "https://www.acme.example/", resolved: true });
   });
 
+  it.each([
+    ["a public-suffix sibling (acme.co.za → evil.co.za)", "https://acme.co.za/", "https://evil.co.za/"],
+    ["a trailing-dot two-label host (acme.com. → attacker.com.)", "https://acme.com./", "https://attacker.com./"],
+    ["a trailing-dot report to a sibling without the dot", "https://acme.com./", "https://attacker.com/"],
+    ["a custom domain's registrable sibling under the same suffix", "https://www.acme.co.za/", "https://www.evil.co.za/"],
+  ])("refuses %s before it is requested", async (_label, reported, location) => {
+    serve({ [reported]: () => redirect(location) });
+    expect(await resolveLiveUrl(reported)).toEqual({ url: reported, resolved: false });
+    expect(fetched()).toEqual([reported]);
+  });
+
+  it.each([
+    ["apex → www on a .co.za domain", "https://acme.co.za/", "https://www.acme.co.za/"],
+    ["www → apex on a .co.za domain", "https://www.acme.co.za/", "https://acme.co.za/"],
+    ["www → apex on a .com domain", "https://www.acme.com/", "https://acme.com/"],
+    ["a trailing-dot report to its own www", "https://acme.com./", "https://www.acme.com/"],
+    ["a GitHub Pages path URL to another *.github.io host", "https://gitpage-ns.github.io/acme", "https://acme-site.github.io/"],
+  ])("follows %s and lands there", async (_label, reported, location) => {
+    serve({ [reported]: () => redirect(location), [location]: () => page() });
+    expect(await resolveLiveUrl(reported)).toEqual({ url: location, resolved: true });
+  });
+
+  it("www → apex is a twin only: a different subdomain of the apex is not reachable from www", async () => {
+    serve({ ["https://www.acme.co.za/"]: () => redirect("https://shop.acme.co.za/") });
+    expect(await resolveLiveUrl("https://www.acme.co.za/")).toEqual({ url: "https://www.acme.co.za/", resolved: false });
+  });
+
   it("returns the reported URL for a redirect with no Location", async () => {
     serve({ [REPORTED]: () => redirect(null) });
     expect(await resolve(REPORTED)).toBe(REPORTED);

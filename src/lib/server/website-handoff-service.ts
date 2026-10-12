@@ -3,7 +3,7 @@ import "server-only";
 import { isIP } from "node:net";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { getAgentProfile, transactAiAgentDoc } from "@/lib/comms/ai/agent";
+import { transactAiAgentDoc } from "@/lib/comms/ai/agent";
 import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { emailIsConfigured } from "@/lib/comms/resend";
@@ -13,6 +13,7 @@ import {
 } from "@/lib/comms/twilio";
 import { sendPushForEvent } from "@/lib/push/send";
 import { isDocId } from "@/lib/server/doc-id";
+import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import {
   createWorkflowServerSide,
   deleteWorkflowServerSide,
@@ -22,6 +23,7 @@ import { publicFetch } from "@/lib/webhooks/public-fetch";
 import {
   DEFAULT_WEB_CHAT_CONFIG,
   type AiAgentProfile,
+  type AiChannelConfig,
 } from "@/types/ai";
 import type { AgencyDoc, SubAccountDoc } from "@/types/tenancy";
 import type { WorkflowDoc, WorkflowNode } from "@/types/workflows";
@@ -54,10 +56,11 @@ import { cleanText, safePagesUrl, type PollBuildResult } from "@/lib/gitpage/cli
  *   1. Chat allowlist — append the live hostname to `webChat.allowedDomains`
  *      (cap and append in one transaction), and take the persona's welcome
  *      message + the site's accent colour where the operator has not set
- *      their own. Only the host the redirect walk landed on, and only when
- *      the site is served at its root — never gitpage's reported path-URL
- *      host, which GitLab shares across a namespace's projects. The channel's
- *      `enabled` flag is never touched (see below).
+ *      their own (recorded in the same write). Only the host the redirect
+ *      walk landed on — never gitpage's reported host when it is shared (a
+ *      path URL, or a Pages host reported as-is), which GitLab serves for
+ *      every project in a namespace. The channel's `enabled` flag is never
+ *      touched (see below).
  *   2. KB + persona — seed `aiAgent/profile` with gitpage's kbText (replaces
  *      the Firecrawl snapshot; `websiteKbSource: "gitpage-build"`) and fill
  *      persona fields ONLY where blank. ONE profile write.
@@ -75,7 +78,8 @@ import { cleanText, safePagesUrl, type PollBuildResult } from "@/lib/gitpage/cli
  *   - Every value gitpage supplies is treated as outside data: the accent
  *     must be a #RRGGBB hex, text is control-character-stripped and capped,
  *     hostnames come only from a URL that passes `safePagesUrl` and are never
- *     IP literals; a redirect may only land on the reported host's domain.
+ *     IP literals; a redirect may only land in the reported host's family
+ *     (`inReportedFamily`).
  *   - Upstream allow-lists the reported host too; here it is never added,
  *     and an address the walk could not resolve adds nothing at all.
  *   - The bot's `websiteUrl` follows the published site only while the
@@ -300,16 +304,36 @@ const RESOLVE_TIMEOUT_MS = 3000;
 const PROBE_MAX_BYTES = 64 * 1024;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+/** Pages hosts where every project gets its own subdomain of one shared
+ *  parent, and the reported path URL redirects to it. */
+const PAGES_PARENTS = ["gitlab.io", "github.io"];
+
+const bareHost = (host: string) => host.toLowerCase().replace(/\.$/, "");
+
+/** The Pages parent a host sits under (`acme.gitlab.io` → `gitlab.io`), or null. */
+function pagesParentOf(host: string): string | null {
+  const h = bareHost(host);
+  return PAGES_PARENTS.find((p) => h === p || h.endsWith(`.${p}`)) ?? null;
+}
+
 /**
- * The hosts a reported site address may redirect to: itself, or a host under
- * its parent domain (acme.gitlab.io → *.gitlab.io, where GitLab serves the
- * project's unique domain). A two-label host's family is itself and its own
- * subdomains — never a whole top-level domain.
+ * The hosts a reported site address may redirect to. A GitLab/GitHub Pages
+ * report may land anywhere under its Pages parent (`*.gitlab.io` — where the
+ * project's unique domain lives). Any other host: itself, its subdomains, and
+ * its www/apex twin, decided on the registrable domain from the Public Suffix
+ * List, so `acme.co.za` never reaches `evil.co.za`. A trailing dot is
+ * stripped from both first, so `acme.com.` does not widen to all of `.com`.
  */
 function inReportedFamily(reportedHost: string, host: string): boolean {
-  const labels = reportedHost.split(".");
-  const parent = labels.length > 2 ? labels.slice(1).join(".") : reportedHost;
-  return host === reportedHost || host.endsWith(`.${parent}`);
+  const reported = bareHost(reportedHost);
+  const landing = bareHost(host);
+  if (landing === reported) return true;
+  const parent = pagesParentOf(reported);
+  if (parent) return landing.endsWith(`.${parent}`);
+  if (landing.endsWith(`.${reported}`)) return true;
+  const apex = registrableDomain(reported);
+  if (!apex) return false;
+  return (reported === apex && landing === `www.${apex}`) || (reported === `www.${apex}` && landing === apex);
 }
 
 /**
@@ -441,16 +465,26 @@ export async function provisionWebsiteHandoff(
   // Only the host visitors load is allow-listed — never gitpage's reported
   // path-URL host: GitLab serves every project of a namespace from that one
   // origin (namespace.gitlab.io/<project>), other tenants' sites included.
-  // So it is the address the walk landed on, and only when the site is
-  // served at that host's root.
+  // So it is the host the walk landed on, and never the reported host when
+  // that host is shared: a report under a path, or a Pages host reported
+  // as-is (the namespace root, or a redirect back to it). A different host
+  // the walk landed on is the site's own, whatever path it ended on.
   const candidateHost = safeHostnameOf(liveUrl);
+  let reported: URL | null = null;
+  try {
+    reported = new URL(result.pagesUrl ?? "");
+  } catch {
+    reported = null;
+  }
+  const reportedHost = reported ? bareHost(reported.hostname) : null;
+  const reportedUnderPath = !!reported && reported.pathname.replace(/\/+$/, "") !== "";
   let allowlistRefusal: string | null = null;
   if (!candidateHost) {
     errors.push("live URL: not a public https address — its host was not added to the chat allowlist");
   } else if (!liveUrlResolved) {
     allowlistRefusal = `gitpage's address (${liveUrl}) did not lead to the site's own host, so nothing was added to the chat allowlist — add the site's domain in AI Agents → Web Chat.`;
-  } else if (new URL(liveUrl).pathname.replace(/\/+$/, "") !== "") {
-    allowlistRefusal = `The site is served under a path (${liveUrl}) on a host other sites share, so it was not added to the chat allowlist — add the site's own domain in AI Agents → Web Chat.`;
+  } else if (candidateHost === reportedHost && (reportedUnderPath || pagesParentOf(reportedHost))) {
+    allowlistRefusal = `The site is served from gitpage's address on a host other sites share (${liveUrl}), so it was not added to the chat allowlist — add the site's own domain in AI Agents → Web Chat.`;
   }
   const hostname = allowlistRefusal ? null : candidateHost;
   // Seeded as the bot's website only when its host is one we allow-list.
@@ -476,11 +510,7 @@ export async function provisionWebsiteHandoff(
     return (current: string | null | undefined, seededValue: string | null | undefined, stock?: string) =>
       !current?.trim() || (stock !== undefined && current === stock) || (!!seededValue && current === seededValue) || legacyAuto;
   };
-  const profileBefore = await getAgentProfile(subAccountId).catch(() => null);
-  const seededBefore = profileBefore?.websiteSeeded ?? null;
-  const isAutoBefore = autoTest(profileBefore);
-  /** What the chat step filled in automatically; recorded by the profile step. */
-  const chatSeeded: NonNullable<AiAgentProfile["websiteSeeded"]> = {};
+  type ChatSeeded = NonNullable<AiChannelConfig["websiteSeeded"]>;
 
   // 1. Chat: allowlist the hostname. The bot is NOT switched on here. The
   // cap check and the append are one transaction, so two sites publishing
@@ -491,7 +521,7 @@ export async function provisionWebsiteHandoff(
       const accent = hexColor(premium?.theme?.primaryColor);
       type ChatStep =
         | { refused: string }
-        | { refused: null; full: boolean; seeded: typeof chatSeeded; allowlisted: boolean; enabled: boolean };
+        | { refused: null; full: boolean; allowlisted: boolean; enabled: boolean };
       const chat = await transactAiAgentDoc<ChatStep>(subAccountId, "web-chat", async (tx, existing) => {
         const refused = await blocked(tx);
         if (refused) return { patch: null, result: { refused } };
@@ -504,28 +534,35 @@ export async function provisionWebsiteHandoff(
         const adding = !!hostname && !have.has(hostname);
         const full = adding && current.allowedDomains.length >= MAX_ALLOWED_DOMAINS;
         if (adding && !full) webChat.allowedDomains = [...current.allowedDomains, hostname];
-        const seeded: typeof chatSeeded = {};
-        if (welcome && isAutoBefore(current.welcomeMessage, seededBefore?.welcomeMessage, DEFAULT_WEB_CHAT_CONFIG.welcomeMessage)) {
+        // What the hand-off filled in last time is recorded on this doc and
+        // read and written in this same transaction, so the record can
+        // never disagree with the values it describes.
+        const seededNow = (existing?.websiteSeeded ?? null) as ChatSeeded | null;
+        const isAuto = (value: string, seededValue: string | null | undefined, stock: string) =>
+          !value.trim() || value === stock || (!!seededValue && value === seededValue);
+        const seeded: ChatSeeded = {};
+        if (welcome && isAuto(current.welcomeMessage, seededNow?.welcomeMessage, DEFAULT_WEB_CHAT_CONFIG.welcomeMessage)) {
           webChat.welcomeMessage = welcome;
           seeded.welcomeMessage = welcome;
         }
-        if (accent && isAutoBefore(current.accentColor, seededBefore?.accentColor, DEFAULT_WEB_CHAT_CONFIG.accentColor)) {
+        if (accent && isAuto(current.accentColor, seededNow?.accentColor, DEFAULT_WEB_CHAT_CONFIG.accentColor)) {
           webChat.accentColor = accent;
           seeded.accentColor = accent;
         }
+        const patch: Record<string, unknown> = {};
+        if (Object.keys(webChat).length > 0) patch.webChat = webChat;
+        if (Object.keys(seeded).length > 0) patch.websiteSeeded = { ...(seededNow ?? {}), ...seeded };
         return {
-          patch: Object.keys(webChat).length > 0 ? { webChat } : null,
+          patch: Object.keys(patch).length > 0 ? patch : null,
           result: {
             refused: null,
             full,
-            seeded,
             allowlisted: !!hostname && (have.has(hostname) || (adding && !full)),
             enabled: existing?.enabled === true,
           },
         };
       });
       if (chat.refused !== null) return stop(chat.refused);
-      Object.assign(chatSeeded, chat.seeded);
       if (chat.full) {
         errors.push(`web-chat: the allowed-domains list is full (${MAX_ALLOWED_DOMAINS}) — add ${hostname} by hand`);
       }
@@ -567,7 +604,7 @@ export async function provisionWebsiteHandoff(
       const now = current as Partial<AiAgentProfile> | null;
       const isAuto = autoTest(now);
       const seededNow = now?.websiteSeeded ?? null;
-      const seededNext: NonNullable<AiAgentProfile["websiteSeeded"]> = { ...(seededNow ?? {}), ...chatSeeded };
+      const seededNext: NonNullable<AiAgentProfile["websiteSeeded"]> = { ...(seededNow ?? {}) };
       const patch: Partial<AiAgentProfile> = {};
       if (safeLiveUrl && isAuto(now?.websiteUrl, seededNow?.websiteUrl)) {
         patch.websiteUrl = safeLiveUrl;
