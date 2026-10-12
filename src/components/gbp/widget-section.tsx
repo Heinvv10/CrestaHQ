@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 import { Globe, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -101,6 +101,14 @@ function Card({ children }: { children: React.ReactNode }) {
 
 export function WidgetSection() {
   const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
+  // The newest widget id this page knows: the live doc's, or this page's own
+  // create / rotate / revoke answer, which the snapshot can trail by ~30 s.
+  // A Save names it, so saving again before the snapshot is not a false 409.
+  const liveId = subAccount?.gbpWidgetMeta?.publicId ?? null;
+  const knownId = useRef<string | null>(liveId);
+  useEffect(() => {
+    knownId.current = liveId;
+  }, [liveId]);
   if (loading || !isAdmin || !subAccount) return null;
   const meta = subAccount.gbpWidgetMeta ?? null;
   const api = `/api/sub-accounts/${subAccountId}/gbp/widget`;
@@ -111,8 +119,10 @@ export function WidgetSection() {
       prompt="Delete this widget? Sites using it fall back to their static content."
       onConfirm={async () => {
         const { ok, data } = await call(api, "DELETE");
-        if (ok) toast.success("Widget revoked.");
-        else toast.error(data.error ?? "That didn't work. Please try again.");
+        if (ok) {
+          knownId.current = null;
+          toast.success("Widget revoked.");
+        } else toast.error(data.error ?? "That didn't work. Please try again.");
       }}
       testId="gbp-widget-revoke"
     />
@@ -129,13 +139,13 @@ export function WidgetSection() {
   }
   return (
     <Card>
-      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} />
+      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} knownId={knownId} />
       {meta && <div className="mt-3 flex flex-wrap gap-2">{revoke}</div>}
     </Card>
   );
 }
 
-function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta | null; mapsUri: string | null | undefined }) {
+function WidgetForm({ api, meta, mapsUri, knownId }: { api: string; meta: GbpWidgetMeta | null; mapsUri: string | null | undefined; knownId: RefObject<string | null> }) {
   const [enabled, setEnabled] = useState(meta?.enabled ?? true);
   const [origins, setOrigins] = useState((meta?.allowedOrigins ?? []).join("\n"));
   const [maxReviews, setMaxReviews] = useState(String(meta?.maxReviews ?? 12));
@@ -147,11 +157,12 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
   const save = async () => {
     setBusy(true);
     const allowedOrigins = origins.split("\n").map((o) => o.trim()).filter(Boolean);
-    // The widget this form was opened on: a stale form must not overwrite a newer one.
-    const expectedPublicId = meta?.publicId ?? null;
+    // The newest widget this page knows of: a stale form must not overwrite a newer one.
+    const expectedPublicId = knownId.current;
     const { ok, data } = await call(api, "PUT", { enabled, allowedOrigins, maxReviews: Number(maxReviews), layout, theme, expectedPublicId });
     setBusy(false);
     if (ok && data.widget) {
+      knownId.current = data.widget.publicId;
       setOrigins(data.widget.allowedOrigins.join("\n"));
       setErrors([]);
       toast.success("Widget saved.");
@@ -216,8 +227,10 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
             prompt="Issue a new id? The current snippet stops working until the site is updated."
             onConfirm={async () => {
               const { ok, data } = await call(`${api}/rotate`, "POST");
-              if (ok) toast.success("New widget id issued — update the snippet on your site.");
-              else toast.error(data.error ?? "That didn't work. Please try again.");
+              if (ok) {
+                if (data.widget) knownId.current = data.widget.publicId;
+                toast.success("New widget id issued — update the snippet on your site.");
+              } else toast.error(data.error ?? "That didn't work. Please try again.");
             }}
             testId="gbp-widget-rotate"
           />
