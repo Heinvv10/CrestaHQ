@@ -47,12 +47,20 @@ export function dialerTwilioConfigured(
 }
 
 /**
- * The server dials only a number stored in "+…" international form (it parses
- * with no default region). This is the UI's hint for the Call button, not the
- * validity check: the TwiML webhook still parses and refuses.
+ * "+", then only digits and the separators people type (space ( ) - . /),
+ * at most 32 characters in all. Nothing else: no "tel:", no label, no letters,
+ * no second "+", no invisible or full-width characters.
  */
-export function storedInInternationalForm(
-  phone: string | null | undefined,
-): boolean {
-  return typeof phone === "string" && phone.trim().startsWith("+");
+const DIALABLE_FORM = /^\+[0-9 ()./-]{1,31}$/;
+
+/**
+ * The stored phone, trimmed, is written in strict "+…" international form.
+ * The dialer's ONE rule for which stored strings may be dialled: the TwiML
+ * webhook refuses anything else before it parses the number (libphonenumber
+ * would otherwise pull "+27…" out of "tel:+27…" or "Mobile: +27…"), and the
+ * Call button is disabled for anything else. Validity is still decided by the
+ * webhook's parse.
+ */
+export function storedInInternationalForm(phone: unknown): boolean {
+  return typeof phone === "string" && DIALABLE_FORM.test(phone.trim());
 }

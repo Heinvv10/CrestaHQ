@@ -46,6 +46,18 @@ const HOSTILE = [
   `x${REC}`,
   `${REC}${"A".repeat(200_000)}`,
   "",
+  // Breaker variants from the PR #399 review.
+  REC.replace("/Recordings/", "%2FRecordings/"),
+  REC.replace("api.twilio.com", "api.twilio.com:443"),
+  REC.replace("api.twilio.com", "API.TWILIO.COM"),
+  REC.replace("api.twilio.com", "api.twilio.com."),
+  REC.replace("api.", "\u0430pi."), // Cyrillic a
+  REC.replace("https://", "https:\\\\"),
+  REC.replace(/RE[0-9a-f]{32}$/, `RE${"A1".repeat(16)}`),
+  REC.replace("/Recordings", "\t/Recordings"),
+  `${REC}\u2028`,
+  `${REC}\r`,
+  `javascript:alert(1)\n${REC}`,
 ];
 
 describe("ownRecordingUrl — what the webhook may store and the timeline may link", () => {
@@ -68,7 +80,7 @@ describe("ownRecordingUrl — what the webhook may store and the timeline may li
   });
 
   it("gives nothing for a missing or mis-shaped account SID", () => {
-    for (const sid of [undefined, null, "", "AC_sa1", ".*", "AC[0-9a-f]{32}", `AC${"g".repeat(32)}`, `${SID}0`, SID.toUpperCase()]) {
+    for (const sid of [undefined, null, "", "AC_sa1", ".*", `${SID}\n`, { toString: () => SID }, "AC[0-9a-f]{32}", `AC${"g".repeat(32)}`, `${SID}0`, SID.toUpperCase()]) {
       expect(ownRecordingUrl(REC, sid), String(sid)).toBeNull();
       const named = `https://api.twilio.com/2010-04-01/Accounts/${String(sid)}/Recordings/RE${"a1".repeat(16)}`;
       expect(ownRecordingUrl(named, sid), String(sid)).toBeNull();
@@ -107,13 +119,36 @@ describe("dialerTwilioConfigured", () => {
   });
 });
 
+/** Strings libphonenumber pulls a "+…" number out of, which the dialer must not dial. */
+const NOT_DIALABLE_FORM = [
+  "tel:+27821234567",
+  "Mobile: +27821234567",
+  "x+27821234567",
+  "\u200B+27821234567", // zero-width space (not trimmed)
+  "\u202E+27821234567", // right-to-left override
+  "+\u200B27821234567",
+  "\uFF0B27821234567", // full-width plus
+  "+\uFF12\uFF17\uFF18\uFF12\uFF11\uFF12\uFF13\uFF14\uFF15\uFF16\uFF17", // full-width digits
+  "++27821234567",
+  "082 123 4567 / +442079460958",
+  "+27821234567 / +442079460958",
+  "+27 82 123 4567 ext. 99",
+  "+27821234567x99",
+  "+1 800 FLOWERS",
+  "+27821234567\n+442079460958",
+  `+${"1".repeat(32)}`,
+];
+
 describe("storedInInternationalForm", () => {
-  it("is true only for a number written with a leading +", () => {
-    for (const phone of ["+27821234567", " +27 82 123 4567", "+1 (501) 712-2661"]) {
+  it("accepts a + number with the separators people type", () => {
+    for (const phone of ["+27821234567", " +27 82 123 4567 ", "+1 (501) 712-2661", "+27.82.123.4567", "+44 20 7946 0958/1234", "+(27) 821234567", "+ 27821234567", `+${"1".repeat(31)}`]) {
       expect(storedInInternationalForm(phone), phone).toBe(true);
     }
-    for (const phone of ["082 123 4567", "0027821234567", "27821234567", "(501) 712-2661", "tel:+27821234567", "", null, undefined]) {
-      expect(storedInInternationalForm(phone), String(phone)).toBe(false);
+  });
+
+  it("refuses everything else", () => {
+    for (const phone of [...NOT_DIALABLE_FORM, "082 123 4567", "0027821234567", "27821234567", "(501) 712-2661", "+", "", null, undefined, 27821234567, ["+27821234567"]]) {
+      expect(storedInInternationalForm(phone), JSON.stringify(phone)).toBe(false);
     }
   });
 });
