@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ListingPicker, type SavedExtra } from "./listing-picker";
 
+/** Which listings, in which order — what a snapshot and an answer are compared by. */
+const keysOf = (list: SavedExtra[] | undefined) => (list ?? []).map((l) => `${l.accountName}|${l.locationName}`).join(",");
+
 /**
  * "Additional listings" on the Google Business page: the listings this
  * sub-account manages beside its main one, and — for admins — the multi-select
@@ -24,14 +27,22 @@ export function ExtraListings({
   canEdit: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  // The last save's answer, pinned to the live extras when it landed: any
-  // newer snapshot of them wins over it.
-  const [answered, setAnswered] = useState<{ listings: SavedExtra[]; live: SavedExtra[] | undefined } | null>(null);
+  // The last save's answer, held while the live extras are still what they
+  // were when it landed (`pinned`). Dropped — for good — once they equal the
+  // answer (the snapshot caught up) or differ from both (someone else
+  // changed them). Compared by content: a snapshot of an unrelated write
+  // still brings a new array.
+  const [answered, setAnswered] = useState<{ listings: SavedExtra[]; pinned: string } | null>(null);
   const latest = useRef(extras);
   useEffect(() => {
     latest.current = extras;
   }, [extras]);
-  const current = answered && answered.live === extras ? answered.listings : (extras ?? []);
+  const live = keysOf(extras);
+  const holding = answered !== null && live === answered.pinned && live !== keysOf(answered.listings);
+  useEffect(() => {
+    if (answered && !holding) setAnswered(null);
+  }, [answered, holding]);
+  const current = holding ? answered.listings : (extras ?? []);
   const shown = current.filter((l) => l.locationName !== main);
   return (
     <div className="mt-4 border-t pt-4" data-testid="gbp-extra-listings">
@@ -58,7 +69,7 @@ export function ExtraListings({
               mode="multi"
               main={main}
               selected={shown}
-              onSaved={(listings) => setAnswered({ listings, live: latest.current })}
+              onSaved={(listings) => setAnswered({ listings, pinned: keysOf(latest.current) })}
               onClose={() => setEditing(false)}
             />
           </div>

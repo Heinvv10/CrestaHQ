@@ -77,6 +77,42 @@ it("the doc's next snapshot wins over the answer", async () => {
   expect(shown()).toEqual(["B Fibre (renamed)1 B Road"]);
 });
 
+it("a stale snapshot from before the save, delivered after the 200, does not hide the answer", async () => {
+  await render(undefined);
+  await tickBAndSave();
+  await act(async () => answerPut!());
+  await render([]); // a new array, but still the pre-save extras
+  expect(shown()).toEqual(["B Fibre1 B Road"]);
+});
+
+it("someone else's change wins over the answer", async () => {
+  const C = { accountName: "accounts/a1", locationName: "locations/c", title: "C Fibre", address: "3 C Road" };
+  await render(undefined);
+  await tickBAndSave();
+  await act(async () => answerPut!());
+  await render([C]);
+  expect(shown()).toEqual(["C Fibre3 C Road"]);
+});
+
+it("once the snapshot caught up, the answer is gone for good — a later removal shows", async () => {
+  await render(undefined);
+  await tickBAndSave();
+  await act(async () => answerPut!());
+  await render([B]);
+  await render([]); // B removed elsewhere: back to the pre-save content
+  expect(shown()).toEqual([]);
+});
+
+it("a save that changed nothing does not mask a later snapshot of the same listings", async () => {
+  putBody = { ok: true, added: [], removed: [], listings: [B] };
+  await render([B]);
+  await act(async () => byTestId("gbp-manage-extra-listings").click());
+  await act(async () => byTestId("gbp-save-extra-listings").click());
+  await act(async () => answerPut!());
+  await render([{ ...B, title: "B Fibre (renamed)" }]);
+  expect(shown()).toEqual(["B Fibre (renamed)1 B Road"]);
+});
+
 it("a refused save shows nothing new", async () => {
   // Even a refusal that carried listings must not be shown.
   putBody = { ok: false, code: "listing_shared", error: "Another workspace already manages that listing.", listings: [B] };
