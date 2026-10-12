@@ -8,6 +8,7 @@ import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { PIPELINE_STAGES, type PipelineStageId } from "@/types/deals";
 import { type ImportJob } from "@/types/import";
 import type { GhlPhase } from "@/lib/import/ghl/transform";
+import { recreateGhlPipelines } from "@/lib/import/ghl/pipelines";
 import type { GhlImportConfig } from "@/types";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
@@ -83,6 +84,18 @@ export async function POST(
     rawMapping.defaultCurrency.length === 3
       ? (rawMapping.defaultCurrency as string).toUpperCase()
       : "USD";
+  // Pipeline import: when the wizard opted in, recreate each GHL pipeline
+  // as a LeadStack pipeline BEFORE the drain starts, and hand the drain a
+  // ghl-id → leadstack-id map. A pipeline that can't be recreated is
+  // skipped with a warning — its opportunities fall back to the legacy
+  // squash-onto-default mapping, and the response says so.
+  const recreated =
+    b.createPipelines === true
+      ? await recreateGhlPipelines(subAccountId, access.uid, b.ghlPipelines)
+      : null;
+  const pipelineMap = recreated?.pipelineMap ?? {};
+  const pipelineWarnings = recreated?.warnings ?? [];
+
   const mapping = {
     stageMap:
       typeof rawMapping.stageMap === "object" && rawMapping.stageMap !== null
@@ -95,6 +108,9 @@ export async function POST(
       rawMapping.customFields !== null
         ? rawMapping.customFields
         : {},
+    ...(Object.keys(pipelineMap).length > 0
+      ? { pipelineMap, pipelineStageMap: recreated!.pipelineStageMap }
+      : {}),
   };
 
   // Which entities to pull (always include contacts when anything else is on,
@@ -147,5 +163,10 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ ok: true, jobId: ref.id });
+  return NextResponse.json({
+    ok: true,
+    jobId: ref.id,
+    pipelinesCreated: Object.keys(pipelineMap).length,
+    ...(pipelineWarnings.length > 0 ? { pipelineWarnings } : {}),
+  });
 }

@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   ghlContactToChunk,
+  ghlOpportunityToChunk,
+  resolveOpportunityPlacement,
   suggestCustomFields,
   type GhlImportMapping,
+  type GhlOpportunity,
 } from "@/lib/import/ghl/transform";
 
 describe("GHL import transforms", () => {
@@ -48,5 +51,75 @@ describe("GHL import transforms", () => {
     );
     expect(field.label).toHaveLength(60);
     expect(field.ghlName).toContain("encouraging them to reschedule");
+  });
+});
+
+describe("resolveOpportunityPlacement (pipeline import)", () => {
+  const mapping: GhlImportMapping = {
+    stageMap: { s_proposal: "proposal" },
+    defaultStage: "new",
+    defaultCurrency: "ZAR",
+    customFields: {},
+    pipelineMap: {
+      pl_sales: { id: "P1", firstId: "new_lead", wonId: "won", lostId: "lost" },
+    },
+    pipelineStageMap: {
+      s_proposal: { pipelineId: "P1", stageId: "proposal_sent" },
+      s_other: { pipelineId: "P2", stageId: "elsewhere" },
+    },
+  };
+  const opp = (o: Partial<GhlOpportunity>): GhlOpportunity => ({
+    id: "O1",
+    pipelineId: "pl_sales",
+    pipelineStageId: "s_proposal",
+    status: "open",
+    ...o,
+  });
+
+  it("lands an open deal of a recreated pipeline on its mapped stage", () => {
+    expect(resolveOpportunityPlacement(opp({}), mapping)).toEqual({
+      pipelineId: "P1",
+      stage: "proposal_sent",
+    });
+    expect(ghlOpportunityToChunk(opp({}), mapping)).toMatchObject({
+      pipeline_id: "P1",
+      stage: "proposal_sent",
+    });
+  });
+
+  it("terminal status wins: won → the pipeline's Won, lost/abandoned → its Lost", () => {
+    expect(resolveOpportunityPlacement(opp({ status: "won" }), mapping).stage).toBe("won");
+    expect(resolveOpportunityPlacement(opp({ status: "lost" }), mapping).stage).toBe("lost");
+    expect(resolveOpportunityPlacement(opp({ status: "abandoned" }), mapping).stage).toBe("lost");
+  });
+
+  it("an unmapped stage, or one mapped into ANOTHER pipeline, lands on the first stage", () => {
+    expect(resolveOpportunityPlacement(opp({ pipelineStageId: "s_gone" }), mapping)).toEqual({
+      pipelineId: "P1",
+      stage: "new_lead",
+    });
+    expect(resolveOpportunityPlacement(opp({ pipelineStageId: "s_other" }), mapping)).toEqual({
+      pipelineId: "P1",
+      stage: "new_lead",
+    });
+  });
+
+  it("a pipeline not recreated takes the legacy squash-onto-default path", () => {
+    expect(resolveOpportunityPlacement(opp({ pipelineId: "pl_other" }), mapping)).toEqual({
+      pipelineId: null,
+      stage: "proposal",
+    });
+    const { pipelineMap: _p, pipelineStageMap: _s, ...legacy } = mapping;
+    expect(ghlOpportunityToChunk(opp({}), legacy)).toMatchObject({
+      pipeline_id: null,
+      stage: "proposal",
+    });
+  });
+
+  it("a GHL id naming an Object.prototype key is not a recreated pipeline", () => {
+    expect(resolveOpportunityPlacement(opp({ pipelineId: "constructor" }), mapping).pipelineId).toBeNull();
+    expect(
+      resolveOpportunityPlacement(opp({ pipelineStageId: "toString" }), mapping),
+    ).toEqual({ pipelineId: "P1", stage: "new_lead" });
   });
 });

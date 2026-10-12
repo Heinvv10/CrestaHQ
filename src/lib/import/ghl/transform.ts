@@ -102,6 +102,16 @@ export interface GhlCustomFieldMapEntry {
   leadstackType?: CustomFieldType;
 }
 
+/** A recreated LeadStack pipeline for one GHL pipeline (pipeline import). */
+export interface GhlPipelineTarget {
+  /** The LeadStack pipeline id created for this GHL pipeline. */
+  id: string;
+  /** First stage — fallback for unmapped/unknown GHL stages. */
+  firstId: string;
+  wonId: string;
+  lostId: string;
+}
+
 export interface GhlImportMapping {
   stageMap: GhlStageMap;
   /** Fallback for GHL stages with no explicit mapping. */
@@ -110,6 +120,13 @@ export interface GhlImportMapping {
   defaultCurrency: string;
   /** GHL custom field id → mapping entry (contact + deal share one map; keyed by ghlId). */
   customFields: Record<string, GhlCustomFieldMapEntry>;
+  /**
+   * Pipeline import: GHL pipeline id → the LeadStack pipeline recreated for
+   * it. Absent = legacy squash-onto-default behavior.
+   */
+  pipelineMap?: Record<string, GhlPipelineTarget>;
+  /** GHL stage id → its landing spot in a recreated pipeline. */
+  pipelineStageMap?: Record<string, { pipelineId: string; stageId: string }>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -199,6 +216,8 @@ export interface DealChunkRecord {
   title: string;
   value: number;
   currency: string;
+  /** Null = default pipeline (legacy squash path). */
+  pipeline_id: string | null;
   stage: PipelineStageId;
   custom_fields: Record<string, unknown>;
 }
@@ -220,10 +239,48 @@ export function resolveOpportunityStage(
   return mapped ?? mapping.defaultStage;
 }
 
+/**
+ * Where an opportunity lands. When the operator chose pipeline import AND
+ * this opportunity's GHL pipeline was recreated, it lands in that pipeline:
+ * terminal status → the pipeline's Won/Lost, otherwise the mapped stage,
+ * else the pipeline's first stage. Any other opportunity takes the legacy
+ * squash-onto-default path.
+ */
+export function resolveOpportunityPlacement(
+  o: GhlOpportunity,
+  mapping: GhlImportMapping,
+): { pipelineId: string | null; stage: PipelineStageId } {
+  // Own keys only: the maps are plain objects keyed by GHL ids.
+  const target =
+    o.pipelineId && mapping.pipelineMap && Object.hasOwn(mapping.pipelineMap, o.pipelineId)
+      ? mapping.pipelineMap[o.pipelineId]
+      : undefined;
+  if (target) {
+    if (o.status === "won") {
+      return { pipelineId: target.id, stage: target.wonId };
+    }
+    if (o.status === "lost" || o.status === "abandoned") {
+      return { pipelineId: target.id, stage: target.lostId };
+    }
+    const mapped =
+      o.pipelineStageId &&
+      mapping.pipelineStageMap &&
+      Object.hasOwn(mapping.pipelineStageMap, o.pipelineStageId)
+        ? mapping.pipelineStageMap[o.pipelineStageId]
+        : undefined;
+    if (mapped && mapped.pipelineId === target.id) {
+      return { pipelineId: target.id, stage: mapped.stageId };
+    }
+    return { pipelineId: target.id, stage: target.firstId };
+  }
+  return { pipelineId: null, stage: resolveOpportunityStage(o, mapping) };
+}
+
 export function ghlOpportunityToChunk(
   o: GhlOpportunity,
   mapping: GhlImportMapping,
 ): DealChunkRecord {
+  const placement = resolveOpportunityPlacement(o, mapping);
   return {
     external_id: o.id,
     contact_external_id: o.contactId ?? "",
@@ -233,7 +290,8 @@ export function ghlOpportunityToChunk(
         ? o.monetaryValue
         : 0,
     currency: mapping.defaultCurrency || "USD",
-    stage: resolveOpportunityStage(o, mapping),
+    pipeline_id: placement.pipelineId,
+    stage: placement.stage,
     custom_fields: mapCustomFields(o.customFields, mapping.customFields),
   };
 }
