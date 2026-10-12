@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { funnelAccent } from "@/lib/funnels/accent";
+import { funnelRedirectUrl } from "@/lib/funnels/redirect-url";
 import type { Funnel } from "@/types/funnels";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +55,8 @@ export default async function FunnelThanksPage({
   // A stored accent reaches these styles only if it is a plain hex.
   const accent = funnelAccent(funnel.appearance?.accent);
   const dark = funnel.appearance?.theme === "dark";
+  // Written into a meta refresh and a link: checked on read, else no redirect.
+  const redirectUrl = funnelRedirectUrl(t.redirectUrl);
 
   return (
     <main
@@ -102,7 +105,7 @@ export default async function FunnelThanksPage({
             {t.body}
           </p>
         )}
-        {t.redirectUrl && (
+        {redirectUrl && (
           <>
             <p
               style={{
@@ -113,14 +116,13 @@ export default async function FunnelThanksPage({
             >
               Taking you onward…{" "}
               <a
-                href={t.redirectUrl}
+                href={redirectUrl}
                 style={{ color: accent, textDecoration: "underline" }}
               >
                 go now
               </a>
             </p>
-            {/* Validated https-only at save time (lib/funnels/sanitize.ts). */}
-            <meta httpEquiv="refresh" content={`5;url=${t.redirectUrl}`} />
+            <meta httpEquiv="refresh" content={`5;url=${redirectUrl}`} />
           </>
         )}
       </div>

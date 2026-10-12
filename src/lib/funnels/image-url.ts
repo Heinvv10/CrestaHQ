@@ -1,19 +1,16 @@
 import { isBlockedHostname } from "@/lib/webhooks/validate-url";
 import type { FunnelSection } from "@/types/funnels";
 
-/** The longest media URL the save route stores (sanitize.ts slices at 500). */
+/** The longest URL the save route stores (sanitize.ts slices at 500). */
 const MAX_LENGTH = 500;
 
 /**
- * A stored funnel image URL as it may be written into CSS `url(…)`: https,
- * a public host, no longer than the save route stores, and none of the
- * characters that could end the `url(…)` token or the declaration around
- * it (quotes, parentheses, backslash, whitespace, control characters).
- * Anything else is null.
+ * A stored funnel URL, if it is https on a public host, no longer than the
+ * save route stores, and free of every character in `forbidden`. Else null.
  */
-export function funnelCssImageUrl(v: unknown): string | null {
+export function publicHttpsUrl(v: unknown, forbidden: RegExp): string | null {
   if (typeof v !== "string" || v.length === 0 || v.length > MAX_LENGTH) return null;
-  if (/["'()\\\s\u0000-\u001f\u007f]/.test(v)) return null;
+  if (forbidden.test(v)) return null;
   let url: URL;
   try {
     url = new URL(v);
@@ -21,6 +18,16 @@ export function funnelCssImageUrl(v: unknown): string | null {
     return null;
   }
   return url.protocol === "https:" && !isBlockedHostname(url.hostname) ? v : null;
+}
+
+/**
+ * A stored funnel image URL as it may be written into CSS `url(…)`: none of
+ * the characters that could end the `url(…)` token or the declaration
+ * around it (quotes, parentheses, backslash, whitespace, control
+ * characters).
+ */
+export function funnelCssImageUrl(v: unknown): string | null {
+  return publicHttpsUrl(v, /["'()\\\s\u0000-\u001f\u007f]/);
 }
 
 /**
