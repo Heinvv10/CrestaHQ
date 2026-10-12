@@ -118,12 +118,21 @@ describe("the mystery-shop hold on Email AI drafts", () => {
     expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop" });
   });
 
-  it("holds a draft for a business we form-shopped, by its senders' addresses or domains", async () => {
-    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", contactId: "cProspect", senders: { addresses: [FROM], domains: [] } });
+  // The shape store.ts writes: matchAddresses / matchDomains / matchNumbers. Nothing stores a `senders` field
+  // (the reply matcher derives it in memory), so a hold reading `senders` never fired (PR #405 review A5).
+  it("holds a draft for a business we form-shopped, by its stored matchAddresses or matchDomains", async () => {
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", contactId: "cProspect", matchAddresses: [FROM], matchDomains: [], matchNumbers: [] });
     expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop" });
     mem.clear();
-    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", contactId: "cProspect", senders: { addresses: [], domains: ["acme.co.za"] } });
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", contactId: "cProspect", matchAddresses: [], matchDomains: ["acme.co.za"], matchNumbers: [] });
     expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    mem.clear();
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", contactId: "cProspect", matchAddresses: [FROM], matchDomains: ["acme.co.za"], matchNumbers: [] });
+    expect(await maybeRespondWithAi({ subAccountId: "sa1", subAccount: SUB, agent, channelId: "email", contact: contact("cAutoCreated"),
+      incomingMessage: "Thanks for your enquiry", replyTo: FROM })).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    mem.clear();
+    shop("f1", { channel: "form", target: "https://www.other.co.za/contact", contactId: "cProspect", matchAddresses: ["x@other.co.za"], matchDomains: ["other.co.za"], matchNumbers: [] });
+    expect(await draft()).toEqual({ kind: "skipped", reason: "no_prompt" });
   });
 
   it("lets it through for an untrusted-domain colleague, an old shop, a WhatsApp shop, another sub-account's shop, or Prospecting off", async () => {
