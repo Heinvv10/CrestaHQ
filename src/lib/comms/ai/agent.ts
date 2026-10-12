@@ -31,7 +31,11 @@ export type ConfiguredChannelId =
    *  both platforms, because they ride one Meta connection and the reply
    *  always mirrors the platform the DM arrived on. No nested block —
    *  the shared AiChannelConfig fields are everything it needs. */
-  | "meta";
+  | "meta"
+  /** Email (replies arriving through the connected mailbox) — DRAFT-ONLY by
+   *  design: an inbound email produces a pendingDraft for human approval; the
+   *  bot never sends an email, even when the conversation is in "auto" mode. */
+  | "email";
 
 /**
  * Channel-specific default seed for a freshly-created config doc.

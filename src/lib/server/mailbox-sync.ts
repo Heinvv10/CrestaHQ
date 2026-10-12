@@ -11,6 +11,12 @@ import {
 } from "@/lib/comms/imap";
 import { recordEmailMessage } from "@/lib/server/email-conversations";
 import { matchOrSkip } from "@/lib/server/mailbox-match";
+import { runAfterResponse } from "@/lib/server/after-response";
+import {
+  isAutomatedEmail,
+  maybeDraftEmailReply,
+  type InboundEmailForDraft,
+} from "@/lib/comms/ai/email-draft";
 import type { MailboxConnection, MailboxCursor } from "@/types/mailbox";
 export function cursorWindow(
   cursor: MailboxCursor | undefined,
@@ -40,6 +46,10 @@ export async function syncMailbox(subAccountId: string) {
     return c;
   });
   const summary = { imported: 0, skipped: 0, hasMore: false };
+  // Email AI drafts: the newest new live inbound per contact this pass. Queued
+  // after the pass (in `finally`, so mail imported before an error still gets
+  // one), never inside it — the LLM call must not eat the sync's lease.
+  const drafts = new Map<string, InboundEmailForDraft & { occurredAtMs: number }>();
   // Set when this pass reads the INBOX to its end: the mystery-shop missed verdict waits for it.
   let inboxCaughtUp = false;
   const checkpoint = async (
@@ -248,19 +258,39 @@ export async function syncMailbox(subAccountId: string) {
                 : date instanceof Date && !Number.isNaN(date.getTime())
                   ? date
                   : new Date();
+            const historical =
+              occurredAt.getTime() <= new Date(connection.verifiedAt).getTime();
             const result = await recordEmailMessage({
               ...input,
               to,
               subAccountId,
               direction,
               occurredAt,
-              historical:
-                occurredAt.getTime() <=
-                new Date(connection.verifiedAt).getTime(),
+              historical,
               mailboxFence: { version: connection.version, leaseToken: token },
             });
             if (result.inserted) summary.imported++;
             else summary.skipped++;
+            if (
+              result.inserted &&
+              direction === "inbound" &&
+              !historical &&
+              !isAutomatedEmail({ ...signals, from: input.from, subject: input.subject })
+            ) {
+              const prior = drafts.get(result.contactId);
+              if (!prior || prior.occurredAtMs <= occurredAt.getTime())
+                drafts.set(result.contactId, {
+                  subAccountId,
+                  contactId: result.contactId,
+                  from: input.from,
+                  subject: input.subject,
+                  body: input.body,
+                  messageId: input.messageId,
+                  inReplyTo: input.inReplyTo ?? null,
+                  references: input.references ?? [],
+                  occurredAtMs: occurredAt.getTime(),
+                });
+            }
             if (direction === "inbound") {
               const message = { ...input, ...signals, occurredAtMs: occurredAt.getTime() };
               await matchOrSkip(subAccountId, connection, { folder, uidValidity: validity, uid }, message);
@@ -292,6 +322,8 @@ export async function syncMailbox(subAccountId: string) {
   } finally {
     clearTimeout(timer);
     client?.close();
+    for (const draft of drafts.values())
+      runAfterResponse(() => maybeDraftEmailReply(draft));
   }
 }
 /** A paged sweep isolates failures and uses a stable document cursor for continuation. */

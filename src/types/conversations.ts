@@ -84,6 +84,13 @@ export interface ConversationDraft {
   model: string;
   tokens: number;
   createdAt: Timestamp | FieldValue | null;
+  /** Email drafts only: the subject and thread headers the approved reply is
+   *  sent with — taken from the inbound email it answers, never the model. */
+  emailReply?: {
+    subject: string;
+    inReplyTo?: string;
+    references: string[];
+  };
 }
 
 export interface ConversationDoc {

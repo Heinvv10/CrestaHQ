@@ -48,13 +48,19 @@ export function ConversationDraftCard({
     ? "/api/comms/web-chat/send"
     : isMeta
       ? "/api/comms/meta/send"
-      : draft.channel === "sms"
-        ? "/api/comms/sms/send"
-        : "/api/comms/whatsapp/send";
+      : draft.channel === "email"
+        ? "/api/comms/email/send"
+        : draft.channel === "sms"
+          ? "/api/comms/sms/send"
+          : "/api/comms/whatsapp/send";
 
   async function approve() {
     const trimmed = body.trim();
     if (!trimmed) return;
+    if (draft.channel === "email" && !draft.emailReply) {
+      toast.error("This draft has no email to reply to. Reply from the composer instead.");
+      return;
+    }
     setBusy("approve");
     try {
       const payload = isWebChat
@@ -65,6 +71,9 @@ export function ConversationDraftCard({
             // The meta send route needs the platform to reply on; SMS/WhatsApp
             // routes ignore the extra field.
             ...(isMeta ? { channel: draft.channel } : {}),
+            // An email draft answers the email it was written for: same
+            // thread, "Re:" subject — set server-side when it was drafted.
+            ...(draft.channel === "email" ? draft.emailReply : {}),
           };
       const res = await fetch(endpoint, {
         method: "POST",
@@ -76,7 +85,10 @@ export function ConversationDraftCard({
         error?: string;
       };
       if (!res.ok || !data.ok) throw new Error(data.error ?? "Couldn't send.");
-      // The send route's human-reply upsert clears pendingDraft server-side.
+      // The send route's human-reply upsert clears pendingDraft server-side —
+      // except email's, which leaves the conversation's AI state alone, so
+      // the sent draft is cleared here (or Approve could send it twice).
+      if (draft.channel === "email") await discardConversationDraft(conversationId);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't send.");
     } finally {
@@ -99,10 +111,15 @@ export function ConversationDraftCard({
         <Sparkles className="h-3.5 w-3.5" />
         AI suggested reply · {LABEL[draft.channel]} · edit before sending
       </div>
+      {draft.emailReply && (
+        <p className="mb-1.5 truncate text-xs text-muted-foreground">
+          Subject: {draft.emailReply.subject}
+        </p>
+      )}
       <Textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        rows={3}
+        rows={draft.channel === "email" ? 8 : 3}
         className="resize-none bg-background text-sm"
       />
       <div className="mt-2 flex items-center justify-end gap-2">

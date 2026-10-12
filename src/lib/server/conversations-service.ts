@@ -15,6 +15,7 @@ import {
 import type {
   ConversationBotMode,
   ConversationChannel,
+  ConversationDraft,
 } from "@/types/conversations";
 import { runAfterResponse } from "@/lib/server/after-response";
 
@@ -357,6 +358,7 @@ export async function setConversationDraft(input: {
   body: string;
   model: string;
   tokens: number;
+  emailReply?: ConversationDraft["emailReply"];
 }): Promise<void> {
   try {
     const docId = input.conversationKey ?? input.contactId;
@@ -386,6 +388,7 @@ export async function setConversationDraft(input: {
             model: input.model,
             tokens: input.tokens,
             createdAt: FieldValue.serverTimestamp(),
+            ...(input.emailReply ? { emailReply: input.emailReply } : {}),
           },
           updatedAt: FieldValue.serverTimestamp(),
         },

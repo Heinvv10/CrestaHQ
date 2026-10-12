@@ -33,7 +33,7 @@ import { runAfterResponse } from "@/lib/server/after-response";
  */
 
 /** Channel docs under `subAccounts/{id}/aiAgent/` that carry a modelOverride. */
-export const MODEL_CHANNEL_DOCS = ["sms", "web-chat", "voice", "whatsapp", "meta"];
+export const MODEL_CHANNEL_DOCS = ["sms", "web-chat", "voice", "whatsapp", "meta", "email"];
 
 export type ModelRejection = "retired" | "not_allowed" | "over_price";
 export type ModelVerdict = { ok: true } | { ok: false; reason: ModelRejection };

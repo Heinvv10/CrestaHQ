@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Both sub-account creation sites write `webVoiceEnabledByAgency: false` and
- * `dialerEnabledByAgency: false` explicitly (feature-gates.md step 2).
+ * Both sub-account creation sites write `webVoiceEnabledByAgency: false`,
+ * `dialerEnabledByAgency: false` and `emailAiDraftsEnabledByAgency: false`
+ * explicitly (feature-gates.md step 2).
  * Real creation code over the in-memory Firestore; Firebase Auth recorded.
  */
 
@@ -34,7 +35,7 @@ beforeEach(() => {
   delete process.env.BOOTSTRAP_ADMIN_EMAIL;
 });
 
-describe("a new sub-account ships with Web Voice and the dialer off", () => {
+describe("a new sub-account ships with Web Voice, the dialer and Email AI drafts off", () => {
   it("via the agency create path", async () => {
     const { subAccountId } = await createSubAccountForAgency({
       agencyId: "ag_1", uid: "uid_owner", email: "owner@example.com", displayName: "Owner",
@@ -43,6 +44,7 @@ describe("a new sub-account ships with Web Voice and the dialer off", () => {
     const doc = mem.read(`subAccounts/${subAccountId}`)!;
     expect(doc.webVoiceEnabledByAgency).toBe(false);
     expect(doc.dialerEnabledByAgency).toBe(false);
+    expect(doc.emailAiDraftsEnabledByAgency).toBe(false);
   });
 
   it("via the first signup (agency owner bootstrap)", async () => {
@@ -59,5 +61,6 @@ describe("a new sub-account ships with Web Voice and the dialer off", () => {
     expect(docs).toHaveLength(1);
     expect(docs[0].webVoiceEnabledByAgency).toBe(false);
     expect(docs[0].dialerEnabledByAgency).toBe(false);
+    expect(docs[0].emailAiDraftsEnabledByAgency).toBe(false);
   });
 });

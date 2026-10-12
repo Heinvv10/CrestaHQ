@@ -98,3 +98,52 @@ describe("the mystery-shop hold on the WhatsApp AI", () => {
     expect(console.error).toHaveBeenCalled();
   });
 });
+
+describe("the mystery-shop hold on Email AI drafts", () => {
+  const FROM = "info@acme.co.za";
+  const draft = (over: Record<string, unknown> = {}) =>
+    respond({ channelId: "email", replyTo: FROM, inboundProvider: undefined, ...over });
+
+  it("holds a draft for a business we email-shopped: by the contact, the target address, or a colleague on a trusted domain", async () => {
+    shop("e1", { channel: "email", target: FROM, contactId: "cProspect" });
+    expect(await draft({ contact: contact("cAutoCreated") })).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    expect(mem.list("contacts/cAutoCreated/activities")[0]).toMatchObject({
+      content: "AI reply skipped — this address is being mystery-shopped (Prospecting).",
+    });
+    mem.clear();
+    shop("e1", { channel: "email", target: "sales@other.co.za" });
+    expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    mem.clear();
+    shop("e1", { channel: "email", target: "sales@acme.co.za", targetDomainTrusted: true, contactId: "cProspect" });
+    expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop" });
+  });
+
+  it("holds a draft for a business we form-shopped, by its senders' addresses or domains", async () => {
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", contactId: "cProspect", senders: { addresses: [FROM], domains: [] } });
+    expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop" });
+    mem.clear();
+    shop("f1", { channel: "form", target: "https://www.acme.co.za/contact", contactId: "cProspect", senders: { addresses: [], domains: ["acme.co.za"] } });
+    expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop" });
+  });
+
+  it("lets it through for an untrusted-domain colleague, an old shop, a WhatsApp shop, another sub-account's shop, or Prospecting off", async () => {
+    const old = new Date(Date.now() - LATE_REPLY_HORIZON_MS - 60_000);
+    shop("colleague", { channel: "email", target: "sales@acme.co.za", targetDomainTrusted: false, contactId: "cProspect" });
+    shop("old", { channel: "email", target: FROM, sentAt: old, createdAt: old });
+    shop("wa", { channel: "whatsapp", target: PHONE, contactId: "cProspect" });
+    shop("theirs", { channel: "email", target: FROM, subAccountId: "sa2" });
+    expect(await draft()).toEqual({ kind: "skipped", reason: "no_prompt" });
+    mem.clear();
+    shop("e1", { channel: "email", target: FROM });
+    expect(await draft({ subAccount: { ...SUB, prospectingEnabledByAgency: false } })).toEqual({ kind: "skipped", reason: "no_prompt" });
+  });
+
+  it("fails closed: if the shops can't be read, no draft", async () => {
+    const real = storeDb.collection.bind(storeDb);
+    vi.spyOn(storeDb, "collection").mockImplementation((path: string) => {
+      if (path === "mysteryShops") throw new Error("firestore down");
+      return real(path);
+    });
+    expect(await draft()).toEqual({ kind: "skipped", reason: "mystery_shop_check_failed" });
+  });
+});
