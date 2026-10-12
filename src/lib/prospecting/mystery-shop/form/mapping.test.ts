@@ -63,6 +63,27 @@ describe("roleOf", () => {
     expect(r("town or suburb | where | address-level2", "example: edenvale")).toBe("town");
   });
 
+  it("a business/company ADDRESS field has no role: the business name is never typed into an address (a required one refuses)", () => {
+    for (const hint of [
+      "business address", "company address", "physical business address", "organisation address", "organization address",
+      "besigheidsadres", "business_address",
+    ]) {
+      expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBeNull();
+      expect(plan([field(hint, { required: true }), field("m", { tag: "textarea" })])).toEqual({
+        ok: false, code: "unmapped_required", reason: `Required fields it can't fill: ${hint}.`,
+      });
+    }
+    // A placeholder that mentions an address does not strip a name field of its role.
+    expect(roleOf({ tag: "input", type: "text", hint: "business name | e.g. 1 main address", named: "business name" })).toBe("company");
+  });
+
+  it.each([
+    ["business name", "company"], ["company", "company"], ["company name", "company"],
+    ["business email", "email"], ["business phone", "phone"],
+  ])("keeps %s → %s", (hint, role) => {
+    expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBe(role);
+  });
+
   it("a field that says both business and town is ambiguous: no role (a required one refuses)", () => {
     for (const hint of ["business city", "company town", "business_city", "organisation | address-level2"]) {
       expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBeNull();

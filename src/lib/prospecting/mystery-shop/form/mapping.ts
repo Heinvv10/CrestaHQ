@@ -83,6 +83,8 @@ export function roleOf(f: Pick<FormField, "tag" | "type" | "hint" | "named">): F
   // The town is read from what the field IS, never its placeholder. A town field that mentions a business
   // anywhere ("business city", or "City" with "e.g. near the business park") is ambiguous: no role.
   if (TOWN.test(f.named) && COMPANY.test(h)) return null;
+  // A business/company ADDRESS is not the business name: no role, so a required one refuses (never invent an address).
+  if (COMPANY.test(f.named) && /address|adres/.test(f.named)) return null;
   if (COMPANY.test(h)) return "company";
   if (/subject|topic|onderwerp/.test(h)) return "subject";
   if (f.tag === "input" && TOWN.test(f.named) && !NOT_TOWN.test(f.named)) return "town";
