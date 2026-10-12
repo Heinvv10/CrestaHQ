@@ -51,6 +51,26 @@ describe("Field", () => {
     expect(byLabel(host, "Email").getAttribute("aria-describedby")).toBeNull();
   });
 
+  it("adds its note to a description the control already has, rather than replacing it", async () => {
+    await render(
+      createElement("div", null,
+        createElement("p", { id: "extra-help" }, "Shown on the live site."),
+        field({ label: "Heading", hint: "Max 80 characters." }, createElement(Input, { "aria-describedby": "extra-help" })),
+      ),
+    );
+    const input = byLabel(host, "Heading");
+    expect(input.getAttribute("aria-describedby")?.split(" ")).toHaveLength(2);
+    expect(description(host, input)).toBe("Shown on the live site. Max 80 characters.");
+  });
+
+  it("puts no id or aria on a wrapper that is not a control", async () => {
+    await render(field({ label: "Pages", hint: "Pick any." }, createElement("div", { "data-testid": "wrap" }, createElement(Input))));
+    const wrap = host.querySelector('[data-testid="wrap"]') as HTMLElement;
+    expect(wrap.id).toBe("");
+    expect(wrap.getAttribute("aria-describedby")).toBeNull();
+    expect(host.querySelector("label")?.htmlFor).toBe("");
+  });
+
   it("labels and describes the native Select", async () => {
     const onChange = vi.fn();
     await render(

@@ -3,7 +3,9 @@
 import { cloneElement, isValidElement, useId } from "react";
 import { LayoutGrid, PlayCircle, Sparkles } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { NICHE_KEYS, NICHE_META } from "@/lib/website/niches";
 import type { BuildType, Niche } from "@/types/website";
 
@@ -41,6 +43,11 @@ export function Section({
   );
 }
 
+type ControlProps = { id?: string; "aria-invalid"?: boolean; "aria-describedby"?: string };
+
+/** Elements <Field> may label: a wrapper div must not receive the control's id. */
+const FIELD_CONTROLS = new Set<unknown>(["input", "select", "textarea", Input, Textarea, Select]);
+
 export function Field({
   label,
   hint,
@@ -57,10 +64,10 @@ export function Field({
   const id = useId();
   const noteId = `${id}-note`;
   const note = error ?? hint;
-  const child = isValidElement<{ id?: string; "aria-invalid"?: boolean; "aria-describedby"?: string }>(children)
-    ? children
-    : null;
+  const child = isValidElement<ControlProps>(children) && FIELD_CONTROLS.has(children.type) ? children : null;
   const controlId = child ? (child.props.id ?? id) : undefined;
+  // Keep any description the control already points at.
+  const describedBy = [child?.props["aria-describedby"], note ? noteId : null].filter(Boolean).join(" ");
   return (
     <div className="space-y-1.5">
       <Label htmlFor={controlId}>{label}</Label>
@@ -68,7 +75,7 @@ export function Field({
         ? cloneElement(child, {
             id: controlId,
             ...(error ? { "aria-invalid": true } : {}),
-            ...(note ? { "aria-describedby": noteId } : {}),
+            ...(describedBy ? { "aria-describedby": describedBy } : {}),
           })
         : children}
       {note ? (

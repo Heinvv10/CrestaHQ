@@ -12,6 +12,7 @@ import {
   type WebsiteProvisioning,
 } from "@/types/website";
 import {
+  conceptAccent,
   HeroMotionSelect,
   LeadCaptureToggles,
   PremiumDetailsFields,
@@ -125,6 +126,20 @@ describe("LeadCaptureToggles", () => {
     expect(host.textContent).not.toMatch(/voice/i);
   });
 
+  it("toggles when the operator clicks the title or the explanation, not only the box", async () => {
+    const onChange = vi.fn();
+    await render(createElement(LeadCaptureToggles, { includeForm: false, includeChat: true, onChange }));
+    const titleOf = (box: HTMLElement) =>
+      Array.from(host.querySelectorAll("[id]")).find((e) => e.id === box.getAttribute("aria-labelledby")) as HTMLElement;
+    const descOf = (box: HTMLElement) =>
+      Array.from(host.querySelectorAll("[id]")).find((e) => e.id === box.getAttribute("aria-describedby")) as HTMLElement;
+    await act(async () => titleOf(byLabel(host, FORM)).click());
+    expect(onChange).toHaveBeenLastCalledWith({ include_form: true });
+    await act(async () => descOf(byLabel(host, CHAT)).click());
+    expect(onChange).toHaveBeenLastCalledWith({ include_chat: false });
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
   it("names each checkbox by its title alone and describes it with the explanation", async () => {
     await render(createElement(LeadCaptureToggles, { includeForm: false, includeChat: false, onChange: () => {} }));
     expect(description(host, byLabel(host, FORM))).toMatch(/^The site's contact form posts straight into Contacts/);
@@ -194,6 +209,21 @@ describe("HeroMotionSelect", () => {
   it("states no duration or price that contradicts the 10-20 minute build", async () => {
     await render(createElement(HeroMotionSelect, { value: "still", onChange: () => {} }));
     expect(host.textContent).not.toMatch(/\d\s*min|\$\d/);
+  });
+});
+
+describe("conceptAccent", () => {
+  it("uses the mode's accent, then the default mode's", () => {
+    expect(conceptAccent({ light: "#111111", dark: "#222222" }, "dark", "light")).toBe("#222222");
+    expect(conceptAccent({ light: "#111111" }, "dark", "light")).toBe("#111111");
+    expect(conceptAccent({}, "dark", "light")).toBeUndefined();
+  });
+
+  it("reads only the card's own keys, never Object.prototype's", () => {
+    for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(conceptAccent({}, key, key)).toBeUndefined();
+      expect(conceptAccent({ light: "#111111" }, key, "light")).toBe("#111111");
+    }
   });
 });
 

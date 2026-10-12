@@ -190,6 +190,20 @@ type PickerCard = {
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
+/**
+ * The swatch colour for a card: the mode's accent, else the card's default
+ * mode's. Both keys come from gitpage, so only the card's OWN entries count
+ * (a `defaultMode` of "constructor" must not find Object.prototype's).
+ */
+export function conceptAccent(
+  accents: Record<string, string>,
+  mode: string,
+  defaultMode: string,
+): string | undefined {
+  const own = (k: string) => (Object.hasOwn(accents, k) ? accents[k] : undefined);
+  return own(mode) ?? own(defaultMode);
+}
+
 function toPickerCard(raw: unknown): PickerCard | null {
   if (!raw || typeof raw !== "object") return null;
   const c = raw as Record<string, unknown>;
@@ -310,14 +324,14 @@ export function ConceptPicker({
           " flex flex-col items-start gap-1 rounded-xl border border-dashed p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60"
         }
       >
-        <p className="text-sm font-medium">Let the studio choose</p>
-        <p className="text-[11px] text-muted-foreground">
+        <span className="block text-sm font-medium">Let the studio choose</span>
+        <span className="block text-[11px] text-muted-foreground">
           gitpage picks the direction that fits this niche best.
-        </p>
+        </span>
       </button>
       {cards.map((c) => {
         const selected = value === c.id;
-        const accent = c.accents[mode] ?? c.accents[c.defaultMode];
+        const accent = conceptAccent(c.accents, mode, c.defaultMode);
         return (
           <button
             key={c.id}
@@ -339,16 +353,16 @@ export function ConceptPicker({
               />
               <span className="text-sm font-medium">{c.name}</span>
             </span>
-            <p className="text-[11px] leading-snug text-muted-foreground">{c.pitch}</p>
+            <span className="block text-[11px] leading-snug text-muted-foreground">{c.pitch}</span>
             {c.fit && (
-              <p className="text-[10px] text-muted-foreground/80">
+              <span className="block text-[10px] text-muted-foreground/80">
                 <span className="font-medium">Fits:</span> {c.fit}
-              </p>
+              </span>
             )}
             {(c.archetype || c.typeSystem) && (
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+              <span className="block text-[10px] uppercase tracking-wide text-muted-foreground/70">
                 {[c.archetype, c.typeSystem.replace(/_/g, " ")].filter(Boolean).join(" · ")}
-              </p>
+              </span>
             )}
           </button>
         );
