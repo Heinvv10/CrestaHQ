@@ -10,6 +10,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import type { Note, ActivityType } from "@/types/contacts";
 import type { ActivityDoc } from "@/types/activities";
 import { activityVisuals } from "@/components/contacts/activity-visuals";
+import { isTwilioRecordingUrl } from "@/lib/comms/dialer-shared";
 import {
   ACTIVITY_FILTERS,
   matchesActivityFilter,
@@ -203,6 +204,14 @@ function ActivityRow({
       label: "View run →",
     });
   }
+  // A dialer call's recording. `meta` is UNTRUSTED — members can write
+  // activity rows directly — so it becomes a link only when it is exactly a
+  // Twilio recording URL (the rule the status webhook stores it under). A
+  // plain link in a new tab: never embedded, never auto-played.
+  const recordingUrl =
+    item.type === "call_placed" && isTwilioRecordingUrl(meta?.recordingUrl)
+      ? meta.recordingUrl
+      : null;
   return (
     <TimelineRow
       icon={visuals.icon}
@@ -210,7 +219,7 @@ function ActivityRow({
       when={item.createdAt}
     >
       <p className="text-sm leading-relaxed">{item.content}</p>
-      {links.length > 0 && (
+      {(links.length > 0 || recordingUrl) && (
         <span className="mt-1 flex flex-wrap gap-x-3">
           {links.map((l) => (
             <Link
@@ -221,6 +230,16 @@ function ActivityRow({
               {l.label}
             </Link>
           ))}
+          {recordingUrl && (
+            <a
+              href={recordingUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary inline-block text-xs hover:underline"
+            >
+              Open recording →
+            </a>
+          )}
         </span>
       )}
     </TimelineRow>
