@@ -264,6 +264,18 @@ describe("sendWhatsappCloud", () => {
       expect(fetchMock).toHaveBeenCalledTimes(3);
     });
 
+    it.each(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT"])("retries %s", async (code) => {
+      fetchMock.mockRejectedValueOnce(fetchFailed(code)).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.R" }] }));
+      expect((await sendThroughBackoff()).ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"])("never retries %s — Linux raises it on an established socket too", async (code) => {
+      fetchMock.mockRejectedValueOnce(fetchFailed(code)).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.DUP" }] }));
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it("tolerates the code on the error itself rather than on cause", async () => {
       fetchMock.mockRejectedValue(Object.assign(new Error("connect"), { code: "ECONNREFUSED" }));
       expect((await sendThroughBackoff()).providerOutcome).toBe("DEFINITELY_REJECTED");

@@ -211,15 +211,14 @@ function cloudFilename(raw: string): string {
  * Undici error codes (on `cause`) that mean the connection was never
  * established, so the request body cannot have reached Meta and a retry cannot
  * double-message. Everything else — a reset, a socket error, a timeout after
- * connecting — may have been delivered and stays AMBIGUOUS. ETIMEDOUT is left
- * out on purpose: it is also raised on an established socket.
+ * connecting — may have been delivered and stays AMBIGUOUS. ETIMEDOUT,
+ * EHOSTUNREACH and ENETUNREACH are left out on purpose: Linux also raises them
+ * on an established socket.
  */
 const PRE_CONNECT_CODES = new Set([
   "ENOTFOUND",
   "EAI_AGAIN",
   "ECONNREFUSED",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
   "UND_ERR_CONNECT_TIMEOUT",
 ]);
 
