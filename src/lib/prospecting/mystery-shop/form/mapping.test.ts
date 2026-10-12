@@ -73,6 +73,14 @@ describe("roleOf", () => {
         ok: false, code: "unmapped_required", reason: `Required fields it can't fill: ${hint}.`,
       });
     }
+    // The address word in the label with the business word only in the placeholder, or a word that also reads as a surname.
+    for (const [hint, named] of [
+      ["address | your business address", "address"], ["adres van besigheid", "adres van besigheid"],
+      ["street address of business", "street address of business"], ["company | street-address", "company | street-address"],
+    ]) {
+      expect(roleOf({ tag: "input", type: "text", hint, named })).toBeNull();
+    }
+    expect(roleOf({ tag: "input", type: "text", hint: "business email address", named: "business email address" })).toBe("email");
     // A placeholder that mentions an address does not strip a name field of its role.
     expect(roleOf({ tag: "input", type: "text", hint: "business name | e.g. 1 main address", named: "business name" })).toBe("company");
   });
