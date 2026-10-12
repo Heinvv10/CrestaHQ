@@ -42,7 +42,7 @@
     "@upstash/qstash": "^2.10.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "firebase": "^12.10.0",
+    "firebase": "^12.19.0",
     "firebase-admin": "^13.7.0",
     "imapflow": "^1.7.8",
     "ipaddr.js": "^2.5.0",
