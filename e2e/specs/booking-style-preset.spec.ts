@@ -1,3 +1,4 @@
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
@@ -15,7 +16,7 @@ import { runId } from "../lib/run-id";
  * that is not a hex colour is ignored.
  *
  * Pages are this run's own, under a run-scoped slug prefix on the fixture
- * PRIMARY; nothing is booked. The visitor's colour scheme is pinned to light
+ * PRIMARY; nothing is booked (the one event, for /e, is written directly). The visitor's colour scheme is pinned to light
  * so "standard look" means one thing.
  */
 
@@ -65,9 +66,44 @@ async function seedPage(slug: string, over: Record<string, unknown> = {}) {
   });
 }
 
-/** This run's pages, plus any an earlier crashed run left behind (by age, so
- *  a concurrent run's live pages are never touched). */
+/**
+ * An event on `slug` and its /e manage token, written directly so nothing is
+ * booked. The token is signed as src/lib/booking/event-token.ts signs it
+ * (that module is server-only), with the secret the app under test reads.
+ */
+async function seedEvent(slug: string, over: Record<string, unknown>): Promise<string> {
+  const secret = process.env.AUTOMATIONS_TOKEN_SECRET;
+  if (!secret) throw new Error("AUTOMATIONS_TOKEN_SECRET must be set to sign an /e token");
+  const id = `${PREFIX}ev-${stamp}`;
+  const payload = `${id}.${randomBytes(16).toString("hex")}`;
+  const token = `${payload}.${createHmac("sha256", secret).update(payload).digest("hex")}`;
+  const start = new Date(Date.now() + 7 * 86_400_000);
+  await adminDb().doc(`events/${id}`).set({
+    title: `E2E Style event ${stamp}`,
+    status: "scheduled",
+    source: "booking_page",
+    bookingPageSlug: slug,
+    publicTokenHash: createHash("sha256").update(token).digest("hex"),
+    startAt: Timestamp.fromDate(start),
+    endAt: Timestamp.fromDate(new Date(start.getTime() + 30 * 60_000)),
+    agencyId: env.E2E_AGENCY_ID,
+    subAccountId: sa,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    ...over,
+  });
+  return token;
+}
+
+/** This run's pages and events, plus any an earlier crashed run left behind
+ *  (by age, so a concurrent run's live docs are never touched). */
 async function purge() {
+  const events = await adminDb().collection("events").where("subAccountId", "==", sa).get();
+  for (const d of events.docs) {
+    const createdAt = d.data().createdAt;
+    const stale = createdAt instanceof Timestamp && Date.now() - createdAt.toMillis() > STALE_MS;
+    if (d.id.startsWith(PREFIX) || (d.id.startsWith(BASE_PREFIX) && stale)) await deleteScoped(d.ref);
+  }
   const pages = await adminDb().collection(`subAccounts/${sa}/bookingPages`).get();
   for (const d of pages.docs) {
     const createdAt = d.data().createdAt;
@@ -190,9 +226,12 @@ test("the served page carries none of the stored doc's private fields", async ({
     confirmationMessage: `sentinel-message-${stamp}`,
     redirectUrl: `https://example.com/sentinel-thanks-${stamp}`,
   });
+  // /e reads the event as well as the page: the event carries its own copy of
+  // the meeting link and a creator.
+  const token = await seedEvent(slug, { meetingUrl, createdByUid: creator });
   await visit(browser, slug, async (page) => {
     // The raw responses: what Next inlines for hydration is in here, rendered or not.
-    for (const path of [`/b/${sa}/${slug}`, `/embed/booking/${sa}/${slug}`]) {
+    for (const path of [`/b/${sa}/${slug}`, `/embed/booking/${sa}/${slug}`, `/e/${token}`]) {
       const res = await page.request.get(path);
       expect(res.status(), path).toBe(200);
       const body = await res.text();
