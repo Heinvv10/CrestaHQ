@@ -125,7 +125,8 @@ export const WATCHDOG_CAPABILITIES: AiSuiteCapability[] = [
       return `Follow-up Watchdog: ${parts.join(", ")}.`;
     },
     execute: async (ctx, args) => {
-      const sub = await assertLabsOn(ctx.subAccountId!);
+      // Turning it off always works, even after the Labs gate went off.
+      const sub = args.enabled === false ? {} : await assertLabsOn(ctx.subAccountId!);
       if (args.enabled === true && sub.aiSuiteEnabledByAgency !== true) {
         throw new CapabilityUserError(
           "Turning the watchdog on needs the Workspace Assistant (AI Suite) gate on for this workspace, because its judgments spend AI credits — ask the agency owner to enable it."
