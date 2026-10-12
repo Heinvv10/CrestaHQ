@@ -590,8 +590,13 @@ export async function assignPlanToSubAccount(input: {
     // switches at once (a double-click, two admins, a retry after a timeout)
     // would each open a replacement, and one of them would bill untracked.
     const replaces = provider.id === "paystack";
-    // Stripe has no claim below; its update would land on a subscription a comp is cancelling.
-    if (!replaces && isComping(billing)) {
+    // Stripe has no claim below; its update would land on a subscription a
+    // comp is cancelling. Re-read right before the provider call (the read
+    // above predates resolveStripePrice). A comp claiming after this read is
+    // harmless: Stripe keeps the subscription id, so the comp's cancel ends
+    // it either way, the update on a cancelled subscription fails without a
+    // write, and the final write below never lands on a comped client.
+    if (!replaces && isComping(readBilling(((await ref.get()).data() ?? {}) as Record<string, unknown>))) {
       throw new BillingError("This client is being comped right now — check their billing before changing the plan.", 409);
     }
     if (replaces) {
