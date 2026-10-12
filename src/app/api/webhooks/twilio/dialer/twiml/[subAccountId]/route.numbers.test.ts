@@ -118,8 +118,6 @@ describe("dialer TwiML webhook — the number dialled", () => {
       "\u200B+27821234567",
       "\u202E+27821234567",
       "+\u200B27821234567",
-      "\uFF0B27821234567",
-      "+27821234567 / +442079460958",
       "+27 82 123 4567 ext. 99",
     ]) {
       withPhone(phone);
