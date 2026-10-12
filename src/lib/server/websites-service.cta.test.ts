@@ -256,6 +256,17 @@ describe("updateWebsiteCtaAndRebuild", () => {
     await expect(rebuild()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("already") });
     untouched(before);
 
+    // The same link stored as typed: an upper-case host, a bare origin with no trailing slash.
+    for (const [stored, asked] of [
+      ["HTTPS://CRM.Example.TEST/f/form1", FORM_URL],
+      ["https://crm.example.test", "https://crm.example.test/"],
+    ]) {
+      mem.seed(SITE, site({ config: { ...sampleWebsiteConfig(), cta_link: stored } }));
+      const unchanged = mem.read(SITE);
+      await expect(rebuild({ ctaLink: asked })).rejects.toMatchObject({ status: 409, message: expect.stringContaining("already") });
+      untouched(unchanged);
+    }
+
     mem.seed(SITE, site({ status: "failed", config: { ...sampleWebsiteConfig(), cta_link: FORM_URL } }));
     await rebuild();
     expect(fetchMock).toHaveBeenCalledTimes(1);

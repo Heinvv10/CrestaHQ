@@ -1023,7 +1023,9 @@ export async function updateWebsiteCtaAndRebuild(input: {
   const previousCtaLink = (config.cta_link ?? "").trim();
   // A live site that already carries the link: a rebuild would spend a build
   // to publish the same thing. (A failed or unbuilt one may still need it.)
-  if (doc.status === "ready" && previousCtaLink === ctaLink) {
+  // Compared as `URL.href` (as `ctaLink` is): a stored link typed without
+  // the trailing slash or with an upper-case host is the same link.
+  if (doc.status === "ready" && (safeCtaLink(previousCtaLink) ?? previousCtaLink) === ctaLink) {
     throw new WebsiteServiceError(
       `“${siteName}” is live with that call-to-action link already — nothing to change, so no rebuild was started.`,
       409,
