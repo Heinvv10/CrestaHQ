@@ -116,6 +116,13 @@ export interface BillingProvider {
   cancelSubscription(subscriptionId: string, customerId: string | null): Promise<CancelOutcome>;
 
   /**
+   * Whether the provider reports this subscription ended (a read, never a
+   * write): after a cancel that failed or timed out, the cancel may still
+   * have landed. False when it is live, unknown, or can't be read.
+   */
+  subscriptionEnded(subscriptionId: string): Promise<boolean>;
+
+  /**
    * A hosted page where the payer manages their own billing (card, invoices).
    * A provider with no such surface throws a `BillingError` instead.
    */

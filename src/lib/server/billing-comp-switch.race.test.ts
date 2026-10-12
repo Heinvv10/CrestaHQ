@@ -75,25 +75,37 @@ describe("comp during a Paystack plan switch", () => {
     expect(billing().status).toBe("comped");
   });
 
-  it("comp holds the shared lock across the provider call: a switch started mid-comp is refused and never reaches the provider", async () => {
+  it("comp holds its lock across the provider call: a switch started mid-comp is refused and never reaches the provider", async () => {
     let switchError: unknown;
     cancelSubscription.mockImplementationOnce(async () => {
-      expect(billing()).toMatchObject({ retiringSubscriptionId: "SUB_1" });
+      expect(billing()).toMatchObject({ compingSubscriptionId: "SUB_1" });
+      expect(billing().retiringSubscriptionId).toBeUndefined();
       switchError = await assign().catch((e: unknown) => e);
       return "cancelled";
     });
     expect(await comp()).toEqual({ subscription: "cancelled" });
-    expect(switchError).toMatchObject({ status: 409, message: expect.stringContaining("plan switch for this workspace is already in progress") });
+    expect(switchError).toMatchObject({ status: 409, message: expect.stringContaining("being comped right now") });
     expect(switchSubscriptionPlan).not.toHaveBeenCalled();
     expect(billing()).toMatchObject({ status: "comped", stripeSubscriptionId: null });
-    expect(billing().retiringSubscriptionId).toBeUndefined();
+    expect(billing().compingSubscriptionId).toBeUndefined();
   });
 
-  it("the subscription's own disable webhook landing mid-comp is muted by the lock; the client ends comped", async () => {
+  it("a second comp while one holds the lock is refused before the provider", async () => {
+    let second: unknown;
+    cancelSubscription.mockImplementationOnce(async () => {
+      second = await comp();
+      return "cancelled";
+    });
+    expect(await comp()).toEqual({ subscription: "cancelled" });
+    expect(second).toMatchObject({ subscription: "failed", httpStatus: 409, message: expect.stringContaining("already being comped") });
+    expect(cancelSubscription).toHaveBeenCalledTimes(1);
+  });
+
+  it("the subscription's own disable webhook landing mid-comp still applies (canceled); the client ends comped", async () => {
     const { handlePaystackEvent } = await import("@/lib/paystack/webhooks");
     cancelSubscription.mockImplementationOnce(async () => {
       await handlePaystackEvent({ event: "subscription.disable", data: { subscription_code: "SUB_1", customer: { customer_code: "CUS_1" } } });
-      expect(billing().status).toBe("active");
+      expect(billing().status).toBe("canceled");
       return "cancelled";
     });
     expect(await comp()).toEqual({ subscription: "cancelled" });
@@ -104,19 +116,19 @@ describe("comp during a Paystack plan switch", () => {
     cancelSubscription.mockRejectedValueOnce(new Error("Paystack: down"));
     const before = JSON.stringify(billing());
     expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 502, cancelledSubscription: null, message: expect.stringContaining("nothing changed") });
-    expect(billing()).toMatchObject({ retiringSubscriptionId: null, retiringSince: null });
-    const { retiringSubscriptionId: _r, retiringSince: _s, ...rest } = billing();
+    expect(billing()).toMatchObject({ compingSubscriptionId: null, compingSince: null });
+    const { compingSubscriptionId: _r, compingSince: _s, ...rest } = billing();
     expect(JSON.stringify(rest)).toBe(JSON.stringify(JSON.parse(before)));
   });
 
-  it("the provider refuses after another claim took the mark: comp's release leaves that mark alone", async () => {
+  it("the provider refuses after another comp's claim took the lock: comp's release leaves that lock alone", async () => {
     const theirs = new Date(Date.now() + 5_000);
     cancelSubscription.mockImplementationOnce(async () => {
-      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: "SUB_1", retiringSince: theirs } });
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), compingSubscriptionId: "SUB_1", compingSince: theirs } });
       throw new Error("Paystack: down");
     });
     expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 502 });
-    expect(billing()).toMatchObject({ retiringSubscriptionId: "SUB_1", retiringSince: theirs });
+    expect(billing()).toMatchObject({ compingSubscriptionId: "SUB_1", compingSince: theirs });
   });
 
   it("nothing live to cancel, but a payment activated the client between comp's read and its write: refused, never comped over it", async () => {
@@ -137,7 +149,7 @@ describe("comp during a Paystack plan switch", () => {
 
   it("a subscription replaced after comp cancelled (its mark expired mid-cancel): not comped, and the result says SUB_1 WAS cancelled", async () => {
     cancelSubscription.mockImplementationOnce(async () => {
-      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), stripeSubscriptionId: "SUB_2", retiringSubscriptionId: null, retiringSince: null } });
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), stripeSubscriptionId: "SUB_2", compingSubscriptionId: null, compingSince: null } });
       return "cancelled";
     });
     const r = await comp();
@@ -166,13 +178,13 @@ describe("comp during a Paystack plan switch", () => {
     } finally {
       vi.mocked(mem.db.runTransaction).mockRestore();
     }
-    expect(billing()).toMatchObject({ status: "active", retiringSubscriptionId: null, retiringSince: null });
+    expect(billing()).toMatchObject({ status: "active", compingSubscriptionId: null, compingSince: null });
     await flushAfterResponse();
     expect(mem.list("billingEvents")).toEqual([expect.objectContaining({ event: "comp.interrupted" })]);
   });
 
-  it("a crashed comp's lock expires like a switch's: 11 minutes on, comp and switch both proceed", async () => {
-    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: "SUB_1", retiringSince: new Date(Date.now() - 11 * 60_000) } });
+  it("a crashed comp's lock expires like a switch's mark: 11 minutes on, switch and comp both proceed", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), compingSubscriptionId: "SUB_1", compingSince: new Date(Date.now() - 11 * 60_000) } });
     switchSubscriptionPlan.mockResolvedValueOnce({ subscriptionId: "SUB_2" });
     await assign();
     expect(billing()).toMatchObject({ planId: "plan2", stripeSubscriptionId: "SUB_2" });

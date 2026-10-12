@@ -203,13 +203,19 @@ export class StripeBillingProvider implements BillingProvider {
     }
   }
 
+  /** Canceled or incomplete_expired on this account; any read failure is false. */
+  async subscriptionEnded(subscriptionId: string): Promise<boolean> {
+    const sub = await this.stripe.subscriptions.retrieve(subscriptionId).catch(() => null);
+    return sub?.status === "canceled" || sub?.status === "incomplete_expired";
+  }
+
   /** True only when this account has the customer and none of their subscriptions charges. */
   private async customerHasNothingLive(customerId: string): Promise<boolean> {
     const customer = await this.stripe.customers.retrieve(customerId).catch(() => null);
     if (!customer || ("deleted" in customer && customer.deleted)) return false;
     const subs = await this.stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
     if (subs.has_more) return false;
-    return !subs.data.some((s) => ["active", "trialing", "past_due", "unpaid"].includes(s.status));
+    return !subs.data.some((s) => ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"].includes(s.status));
   }
 
   async createManagementLink(

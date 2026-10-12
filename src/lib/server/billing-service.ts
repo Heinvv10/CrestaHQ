@@ -25,6 +25,7 @@ import {
 import { BillingError } from "@/lib/billing/errors";
 import {
   chargesCollection,
+  isComping,
   isRetiring,
   readBilling,
   recordBillingEvent,
@@ -589,9 +590,17 @@ export async function assignPlanToSubAccount(input: {
     // switches at once (a double-click, two admins, a retry after a timeout)
     // would each open a replacement, and one of them would bill untracked.
     const replaces = provider.id === "paystack";
+    // Stripe has no claim below; its update would land on a subscription a comp is cancelling.
+    if (!replaces && isComping(billing)) {
+      throw new BillingError("This client is being comped right now — check their billing before changing the plan.", 409);
+    }
     if (replaces) {
       await getAdminDb().runTransaction(async (tx) => {
         const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
+        // A comp cancelling this subscription holds its own lock.
+        if (isComping(fresh)) {
+          throw new BillingError("This client is being comped right now — check their billing before changing the plan.", 409);
+        }
         if (
           fresh?.stripeSubscriptionId !== billing.stripeSubscriptionId ||
           (fresh?.retiringSubscriptionId &&

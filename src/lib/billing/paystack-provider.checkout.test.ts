@@ -247,6 +247,20 @@ describe("cancelSubscription", () => {
     });
   });
 
+  it.each([["cancelled", true], ["completed", true], ["non-renewing", true], ["active", false], ["attention", false], [undefined, false]] as const)(
+    "subscriptionEnded reads %s as ended=%s",
+    async (status, ended) => {
+      paystackRequest.mockResolvedValueOnce(sub(status));
+      expect(await provider.subscriptionEnded("SUB_1")).toBe(ended);
+      expect(paystackRequest).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("subscriptionEnded is false when the subscription can't be read (a 404 proves nothing)", async () => {
+    paystackRequest.mockRejectedValueOnce(notFound());
+    expect(await provider.subscriptionEnded("SUB_1")).toBe(false);
+  });
+
   it("any other read failure, or a refused disable, still throws (fail closed)", async () => {
     paystackRequest.mockRejectedValueOnce(new BillingError("Paystack returned 500.", 502, 500));
     await expect(provider.cancelSubscription("SUB_1", "CUS_1")).rejects.toThrow("Paystack returned 500.");

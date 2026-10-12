@@ -427,11 +427,11 @@ describe("cancelSubscription / createManagementLink", () => {
     expect(stripeMock.subscriptions.list).toHaveBeenCalledWith({ customer: "cus_1", status: "all", limit: 100 });
   });
 
-  it.each([
-    ["the customer still has a live subscription", () => {
+  it.each<[string, () => void]>([
+    ...["active", "trialing", "past_due", "unpaid", "incomplete", "paused"].map((status): [string, () => void] => [`the customer still has a ${status} subscription`, () => {
       stripeMock.customers.retrieve.mockResolvedValueOnce({ id: "cus_1" });
-      stripeMock.subscriptions.list.mockResolvedValueOnce({ data: [{ id: "sub_2", status: "past_due" }], has_more: false });
-    }],
+      stripeMock.subscriptions.list.mockResolvedValueOnce({ data: [{ id: "sub_0", status: "canceled" }, { id: "sub_2", status }], has_more: false });
+    }]),
     ["the customer isn't on this account (a wrong key, test vs live)", () => {
       stripeMock.customers.retrieve.mockRejectedValueOnce(Object.assign(new Error("No such customer"), { code: "resource_missing" }));
     }],
@@ -453,6 +453,19 @@ describe("cancelSubscription / createManagementLink", () => {
   it("one Stripe doesn't have, with no customer on record, fails closed", async () => {
     stripeMock.subscriptions.cancel.mockRejectedValueOnce(missing());
     await expect(provider.cancelSubscription("sub_1", null)).rejects.toMatchObject({ name: "SubscriptionNotOnAccount" });
+  });
+
+  it.each([["canceled", true], ["incomplete_expired", true], ["active", false], ["past_due", false], ["paused", false]] as const)(
+    "subscriptionEnded reads %s as ended=%s",
+    async (status, ended) => {
+      stripeMock.subscriptions.retrieve.mockResolvedValueOnce({ id: "sub_1", status });
+      expect(await provider.subscriptionEnded("sub_1")).toBe(ended);
+    },
+  );
+
+  it("subscriptionEnded is false when the subscription can't be read", async () => {
+    stripeMock.subscriptions.retrieve.mockRejectedValueOnce(Object.assign(new Error("No such subscription"), { code: "resource_missing" }));
+    expect(await provider.subscriptionEnded("sub_1")).toBe(false);
   });
 
   it.each(["canceled", "incomplete_expired"])("a refused cancel on a %s subscription has already ended", async (status) => {

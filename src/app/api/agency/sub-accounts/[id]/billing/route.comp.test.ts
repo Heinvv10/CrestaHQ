@@ -19,8 +19,8 @@ const { PATCH } = await import("./route");
 
 restoreBillingProviderAfterEach();
 
-/** The store, with a released comp lock (two nulls: no mark) read as no lock. */
-const settled = () => JSON.stringify(mem.all()).replace(/,"retiringSubscriptionId":null,"retiringSince":null/g, "");
+/** The store, with a released comp lock (two nulls: no lock) read as no lock. */
+const settled = () => JSON.stringify(mem.all()).replace(/,"compingSubscriptionId":null,"compingSince":null/g, "");
 
 const comp = () =>
   PATCH(new Request("http://localhost/x", { method: "PATCH", body: JSON.stringify({ action: "comp" }) }), {

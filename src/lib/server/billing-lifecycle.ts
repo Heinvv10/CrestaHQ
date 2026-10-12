@@ -574,10 +574,20 @@ async function updateUnlessComped(
   });
 }
 
-/** When the mark was claimed (Timestamp or Date), or null. Comp tells its own mark by it. */
-export function retiringSinceMs(billing: SubAccountBilling): number | null {
-  const since = billing.retiringSince as { toMillis?: () => number } | Date | null | undefined;
-  return since instanceof Date ? since.getTime() : typeof since?.toMillis === "function" ? since.toMillis() : null;
+/** A Timestamp or Date as epoch millis, or null. */
+export function billingMarkMs(since: unknown): number | null {
+  const v = since as { toMillis?: () => number } | Date | null | undefined;
+  return v instanceof Date ? v.getTime() : typeof v?.toMillis === "function" ? v.toMillis() : null;
+}
+
+/**
+ * Whether a comp holds its lock (`compingSubscriptionId`, see
+ * billing-comp.ts) — refused by a plan switch, ignored by every webhook.
+ * Bounded like the switch's mark, so a crashed comp can't wedge a client.
+ */
+export function isComping(billing: SubAccountBilling | null | undefined): boolean {
+  const sinceMs = billingMarkMs(billing?.compingSince);
+  return !!billing?.compingSubscriptionId && sinceMs !== null && Date.now() - sinceMs < RETIRING_TTL_MS;
 }
 
 /** How long a plan switch's mark on the subscription it replaces is honoured. */
@@ -590,7 +600,7 @@ const RETIRING_TTL_MS = 10 * 60 * 1000;
  * subscription's events, or block the next switch, forever.
  */
 export function isRetiring(billing: SubAccountBilling, subscriptionId: string): boolean {
-  const sinceMs = retiringSinceMs(billing);
+  const sinceMs = billingMarkMs(billing.retiringSince);
   return (
     billing.retiringSubscriptionId === subscriptionId &&
     sinceMs !== null &&

@@ -235,6 +235,12 @@ export class PaystackBillingProvider implements BillingProvider {
     return "cancelled";
   }
 
+  /** A status Paystack reports and that no longer charges; any read failure is false. */
+  async subscriptionEnded(subscriptionId: string): Promise<boolean> {
+    const sub = await readPaystackSubscription(subscriptionId).catch(() => null);
+    return !!sub?.status && !PAYSTACK_LIVE_SUBSCRIPTION.has(sub.status);
+  }
+
   /**
    * Paystack has no customer-level portal, so the customer's live subscription
    * is resolved first and its manage page returned. `returnUrl` has no

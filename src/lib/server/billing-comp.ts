@@ -4,7 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getBillingProvider } from "@/lib/billing/provider";
 import { BillingError, SubscriptionNotOnAccount } from "@/lib/billing/errors";
-import { isRetiring, readBilling, recordBillingEvent, retiringSinceMs } from "@/lib/server/billing-lifecycle";
+import { billingMarkMs, isComping, isRetiring, readBilling, recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import type { SubAccountBilling, SubAccountBillingStatus } from "@/types/billing";
 
 /**
@@ -12,15 +12,20 @@ import type { SubAccountBilling, SubAccountBillingStatus } from "@/types/billing
  * cancel any live subscription on the payment provider, then mark the
  * client comped (no billing, never paywalled, gates manual).
  *
- * ONE lock covers the provider call: the plan switch's mark
- * (`billing.retiringSubscriptionId` + `retiringSince`, see
- * `assignPlanToSubAccount`). Comp claims it in a transaction before it
- * calls the provider, so a switch can't start mid-comp and a comp can't
- * start mid-switch (each refuses while the other's mark holds), and the
- * subscription's own webhooks are muted while it is being retired. The
- * mark expires after 10 minutes like a switch's, so a crash can't wedge a
- * client. After a successful cancel the outcome always says the
- * subscription WAS cancelled, whatever happens to the write.
+ * Comp holds its OWN lock across the provider call
+ * (`billing.compingSubscriptionId` + `compingSince`), claimed in a
+ * transaction before the provider is touched: a plan switch refuses to
+ * start while it holds, and comp refuses while a switch's mark
+ * (`retiringSubscriptionId`) holds. Unlike the switch's mark it mutes no
+ * webhook — the subscription's own disable or payment_failed keeps
+ * applying, so if comp then fails nothing the provider said is lost. It
+ * lapses after 10 minutes like the switch's, so a crash can't wedge a client.
+ *
+ * Comped is written only while the stored subscription is the one comp
+ * cancelled (whatever status its webhooks wrote meanwhile), or was cleared
+ * because the provider ended it. A cancel call that failed is checked
+ * against the provider: if the subscription reads ended, it WAS cancelled
+ * and comp finishes. After a cancel, the outcome always says so.
  */
 
 /** What comping did. `failed`: the client was NOT comped; `cancelledSubscription`
@@ -32,6 +37,8 @@ export type CompResult =
 const changing = (message: string): CompResult => ({ subscription: "failed", message, httpStatus: 409, cancelledSubscription: null });
 const PLAN_CHANGE = changing("A plan change is in progress for this client — nothing changed; try again in a moment.");
 const BILLING_CHANGED = changing("This client's billing changed while comping — nothing changed; try again.");
+const ANOTHER_COMP = changing("This client is already being comped — nothing changed; check their billing in a moment.");
+const UNLOCK = { "billing.compingSubscriptionId": null, "billing.compingSince": null };
 
 const switchMarked = (b: SubAccountBilling | null) =>
   !!b?.retiringSubscriptionId && isRetiring(b, b.retiringSubscriptionId);
@@ -80,6 +87,7 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
     const outcome = await db.runTransaction(async (tx) => {
       const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
       if (switchMarked(fresh)) return PLAN_CHANGE;
+      if (isComping(fresh)) return ANOTHER_COMP;
       if ((fresh?.stripeSubscriptionId ?? null) !== subscriptionId || (fresh?.status ?? null) !== (billing?.status ?? null)) {
         return BILLING_CHANGED;
       }
@@ -94,24 +102,26 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
   const claim = await db.runTransaction(async (tx) => {
     const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
     if (switchMarked(fresh)) return PLAN_CHANGE;
+    if (isComping(fresh)) return ANOTHER_COMP;
     if (fresh?.stripeSubscriptionId !== subscriptionId) return BILLING_CHANGED;
     tx.update(ref, {
-      "billing.retiringSubscriptionId": subscriptionId,
-      "billing.retiringSince": new Date(claimMs),
+      "billing.compingSubscriptionId": subscriptionId,
+      "billing.compingSince": new Date(claimMs),
     });
     return null;
   });
   if (claim) return claim;
   /** Ours when it still names this subscription and this claim's instant. */
   const ours = (b: SubAccountBilling | null) =>
-    b?.retiringSubscriptionId === subscriptionId && retiringSinceMs(b) === claimMs;
+    b?.compingSubscriptionId === subscriptionId && billingMarkMs(b.compingSince) === claimMs;
   const release = () =>
     db.runTransaction(async (tx) => {
       const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
-      if (ours(fresh)) tx.update(ref, { "billing.retiringSubscriptionId": null, "billing.retiringSince": null });
+      if (ours(fresh)) tx.update(ref, UNLOCK);
     });
 
-  // 2. Cancel. Any failure: the lock is released and nothing else changed.
+  // 2. Cancel. A failure the provider's own record doesn't contradict: the
+  //    lock is released and nothing else changed.
   const provider = getBillingProvider();
   const name = provider.id === "paystack" ? "Paystack" : "Stripe";
   const notCancelled = (message: string): CompResult => ({ subscription: "failed", message, httpStatus: 502, cancelledSubscription: null });
@@ -123,12 +133,18 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
     await provider.cancelSubscription(subscriptionId, billing?.stripeCustomerId ?? null);
   } catch (err) {
     console.warn("[billing] cancel-on-comp failed", err instanceof Error ? err.message : String(err));
-    await release();
-    return notCancelled(
+    // A timeout can hide a cancel that landed: the provider's record decides.
+    const ended = await Promise.resolve()
+      .then(() => provider.subscriptionEnded(subscriptionId))
+      .catch(() => false);
+    if (!ended) {
+      await release();
+      return notCancelled(
       err instanceof SubscriptionNotOnAccount
         ? err.message
         : `Couldn't cancel the subscription with ${name} — nothing changed; try again or cancel it in the ${name} dashboard.`,
-    );
+      );
+    }
   }
 
   // 3. Cancelled: comp + release in one transaction. From here the result
@@ -147,9 +163,14 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
     current = await db.runTransaction(async (tx) => {
       const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
       const now = fresh?.stripeSubscriptionId ?? null;
-      // Still the subscription just cancelled: the client is not billed, so it is comped.
-      if (now === subscriptionId) tx.update(ref, { billing: compedBilling(fresh), updatedAt: FieldValue.serverTimestamp() });
-      else if (ours(fresh)) tx.update(ref, { "billing.retiringSubscriptionId": null, "billing.retiringSince": null });
+      // Still the subscription just cancelled (whatever status its webhooks
+      // wrote), or cleared because the provider ended it: nothing bills, so
+      // it is comped.
+      if (now === subscriptionId || (now === null && fresh?.status === "canceled")) {
+        tx.update(ref, { billing: compedBilling(fresh), updatedAt: FieldValue.serverTimestamp() });
+        return subscriptionId;
+      }
+      if (ours(fresh)) tx.update(ref, UNLOCK);
       return now;
     });
   } catch (err) {

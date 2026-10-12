@@ -17,7 +17,7 @@ const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 const METHODS = [
   "createPlan", "createPrice", "deactivatePrice", "updateProduct", "ensureCustomer",
   "createSubscriptionCheckout", "createOneTimeCheckout", "switchSubscriptionPlan",
-  "cancelSubscription", "createManagementLink",
+  "cancelSubscription", "subscriptionEnded", "createManagementLink",
 ] as const;
 
 const RESULTS: Partial<Record<(typeof METHODS)[number], unknown>> = {
@@ -25,6 +25,7 @@ const RESULTS: Partial<Record<(typeof METHODS)[number], unknown>> = {
   createPrice: { priceId: "price_special_spy" },
   switchSubscriptionPlan: { subscriptionId: "sub_after_switch" },
   cancelSubscription: "cancelled",
+  subscriptionEnded: false,
 };
 
 export type ProviderSpies = Record<(typeof METHODS)[number], ReturnType<typeof vi.fn>> & {

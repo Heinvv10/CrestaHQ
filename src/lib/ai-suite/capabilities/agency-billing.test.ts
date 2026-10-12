@@ -24,8 +24,8 @@ const { availableOn, getCapability, toolsForLevel } = await import("@/lib/ai-sui
 restoreBillingProviderAfterEach();
 
 const DAY = 86_400_000;
-/** The store, with a released comp lock (two nulls: no mark) read as no lock. */
-const settled = () => JSON.stringify(mem.all()).replace(/,"retiringSubscriptionId":null,"retiringSince":null/g, "");
+/** The store, with a released comp lock (two nulls: no lock) read as no lock. */
+const settled = () => JSON.stringify(mem.all()).replace(/,"compingSubscriptionId":null,"compingSince":null/g, "");
 const stored = (id = "sa1") => mem.read(`subAccounts/${id}`)!.billing as Record<string, unknown>;
 const billing = (over: Record<string, unknown>) => ({ ...PENDING_BILLING, checkoutTokenHash: null, ...over });
 
