@@ -182,7 +182,8 @@ export async function saveExtraListings(
     for (const loc of added) {
       if (await heldByAnotherSubAccount(db, tx, loc, subAccountId)) return { ok: false, code: "listing_shared" };
     }
-    if (added.length === 0 && removed.length === 0) return { ok: true, added, removed, listings: next };
+    // Nothing added or removed (a reorder only): nothing is written, so answer with what is stored.
+    if (added.length === 0 && removed.length === 0) return { ok: true, added, removed, listings: current };
     const changes = [
       ...removed.map(() => ({ type: "extra_listing_removed" as const, reason: "admin_removed" as const })),
       ...added.map(() => ({ type: "extra_listing_added" as const })),

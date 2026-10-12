@@ -104,6 +104,15 @@ describe("adding", () => {
     expect(res.body).toEqual({ ok: true, added: [], removed: [], listings: expect.any(Array) });
     expect(state.writes).toEqual([]);
   });
+
+  it("a reorder only writes nothing and answers with the STORED order", async () => {
+    await putExtras({ listings: [pair(LOC_C), pair(LOC_NORTH)] });
+    state.writes = [];
+    const res = await putExtras({ listings: [pair(LOC_NORTH), pair(LOC_C)] });
+    expect(state.writes).toEqual([]);
+    expect((res.body.listings as Array<{ locationName: string }>).map((l) => l.locationName)).toEqual([LOC_C, LOC_NORTH]);
+    expect(extras().map((l) => l.locationName)).toEqual([LOC_C, LOC_NORTH]);
+  });
 });
 
 describe("a legacy doc (no googleLocationNames, no googleExtraListings)", () => {
