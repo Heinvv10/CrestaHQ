@@ -14,6 +14,17 @@ vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/chat-rou
 vi.mock("@/lib/ai-suite/model", async () => (await import("@/test/chat-route-harness")).modelMock());
 vi.mock("@/lib/ai-suite/usage", () => ({ recordAiSuiteUsage: async () => undefined }));
 vi.mock("@/lib/ai-suite/audit", () => ({ recordAiSuiteAction: async () => undefined }));
+const lessonWrite = vi.hoisted(() => ({ fail: false }));
+vi.mock("@/lib/server/community-classroom-service", async (orig) => {
+  const real = (await orig()) as typeof import("@/lib/server/community-classroom-service");
+  return {
+    ...real,
+    createLessonServerSide: async (opts: Parameters<typeof real.createLessonServerSide>[0]) => {
+      if (lessonWrite.fail) throw new Error("lesson write failed");
+      return real.createLessonServerSide(opts);
+    },
+  };
+});
 
 const { availableOn, getCapability, toolsForLevel } = await import("@/lib/ai-suite/capabilities");
 
@@ -28,6 +39,7 @@ const lessons = () => mem.list(`${G1}/courses/co1/lessons`);
 
 beforeEach(() => {
   seedTenants({ communityEnabledByAgency: true });
+  lessonWrite.fail = false;
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.example.test");
   mem.seed(G1, { name: "Fibre Club", slug: "fibre-club", status: "published", subAccountId: "sa1", agencyId: "ag1" });
   mem.seed(`${G1}/courses/co1`, COURSE);
@@ -45,6 +57,14 @@ describe("list_communities", () => {
     expect(text).toContain("    • Basics — course id: co1");
     expect(text).not.toContain("Their");
     expect(availableOn(getCapability("list_communities")!, "agent")).toBe(true);
+  });
+
+  it("a group at the course cap marks the answer truncated", async () => {
+    const ctx = { uid: "u1", email: "", displayName: "", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin" };
+    const list = getCapability("list_communities")!;
+    expect((await list.execute(ctx, {})).truncated).toBeUndefined();
+    for (let i = 1; i < 30; i++) mem.seed(`${G1}/courses/co_${i}`, { ...COURSE, title: `C${i}`, order: i });
+    expect((await list.execute(ctx, {})).truncated).toBe(true);
   });
 
   it("is refused with the Community gate off", async () => {
@@ -66,6 +86,18 @@ describe("add_course", () => {
     expect(courses().find((c) => c.title === "Install 101")).toMatchObject({ published: true, access: "open", subAccountId: "sa1", agencyId: "ag1" });
   });
 
+  it("the card quotes the description and lists every link in it; the stored description is the one shown", async () => {
+    const description = `Start here.\n\nLog in at https://evil.example/login before the ${"x".repeat(300)} end, or www.other.example`;
+    // Stored as shown: a no-break space and trailing line spaces are normalised first.
+    const sent = description.replace("Start here.", "Start\u00a0here.  ");
+    const body = await (await ask("add_course", { ...COURSE_ARGS, description: sent })).json();
+    const summary = body.proposal.summary as string;
+    expect(summary).toContain(`Description (${description.length} characters): “Start here. Log in at https://evil.example/login`);
+    expect(summary).toContain("…”. Links in it: https://evil.example/login, www.other.example.");
+    expect((await doConfirm("add_course", body.proposal.args)).status).toBe(200);
+    expect(courses().find((c) => c.title === "Install 101")!.description).toBe(description);
+  });
+
   it.each([
     ["another workspace's group id", { ...COURSE_ARGS, groupId: "gB", groupName: "Their Club" }, "wasn't found in this workspace"],
     ["a card naming another group than the id", { ...COURSE_ARGS, groupName: "Gym Club" }, "That group id is “Fibre Club”, not “Gym Club”"],
@@ -82,6 +114,9 @@ describe("add_course", () => {
     ["no group name", { ...COURSE_ARGS, groupName: "" }],
     ["a hidden character in the title", { ...COURSE_ARGS, title: "Install‮101" }],
     ["an oversized title", { ...COURSE_ARGS, title: "x".repeat(201) }],
+    ["a bidi override in the description", { ...COURSE_ARGS, description: "Pay at evil.example\u202Etxt.exe" }],
+    ["an invisible character in the description", { ...COURSE_ARGS, description: "Free\u200b course" }],
+    ["an oversized description", { ...COURSE_ARGS, description: "x".repeat(2001) }],
   ])("%s: invalid, nothing written", async (_what, args) => {
     const before = JSON.stringify(mem.all());
     const res = await doConfirm("add_course", args);
@@ -118,7 +153,7 @@ describe("add_lesson", () => {
   it("creates a published lesson with the video and escaped text, in a new section, on confirm", async () => {
     const args = { ...LESSON_ARGS, sectionTitle: "Start here", videoUrl: VIDEO, text: "Hi <b>there</b>\n\nSecond" };
     const body = await (await ask("add_lesson", args)).json();
-    expect(body.proposal.summary).toBe(`Add the lesson “Welcome” (section “Start here”) with the video ${VIDEO} to the course “Basics” (id co1) — published.`);
+    expect(body.proposal.summary).toBe(`Add the lesson “Welcome” (section “Start here”, created if missing) with the video ${VIDEO} to the course “Basics” (id co1) — published. Text (23 characters): “Hi <b>there</b> Second”.`);
     expect(lessons()).toHaveLength(0);
     expect((await doConfirm("add_lesson", body.proposal.args)).status).toBe(200);
     const [lesson] = lessons();
@@ -129,6 +164,41 @@ describe("add_lesson", () => {
     const [section] = mem.list(`${G1}/courses/co1/sections`);
     expect(section).toMatchObject({ title: "Start here" });
     expect(lesson!.sectionId).toBe(section!.id);
+  });
+
+  it("the card quotes the lesson text with its links, and says where a lesson with no section goes; it lands in the only section", async () => {
+    mem.seed(`${G1}/courses/co1/sections/s1`, { title: "Intro", order: 0 });
+    const text = "Read https://evil.example/a first.";
+    const body = await (await ask("add_lesson", { ...LESSON_ARGS, text })).json();
+    expect(body.proposal.summary).toBe(
+      "Add the lesson “Welcome” (no section given: into the course's section if it has exactly one, otherwise unsectioned) to the course “Basics” (id co1) — published." +
+        ` Text (${text.length} characters): “${text}”. Links in it: https://evil.example/a.`
+    );
+    const res = await doConfirm("add_lesson", body.proposal.args);
+    expect((await res.json()).resultText).toContain("(in its section “Intro”)");
+    expect(lessons()[0]).toMatchObject({ sectionId: "s1", bodyHtml: "<p>Read https://evil.example/a first.</p>" });
+  });
+
+  it.each([
+    ["a bidi override", "Click here\u202Eexe.pdf"],
+    ["an invisible character", "Join\u2060 now"],
+    ["oversized text", "x".repeat(20001)],
+  ])("lesson text with %s: invalid, nothing written", async (_what, text) => {
+    const before = JSON.stringify(mem.all());
+    const res = await doConfirm("add_lesson", { ...LESSON_ARGS, text });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/^Can't run that action: the lesson text /);
+    expect(JSON.stringify(mem.all())).toBe(before);
+  });
+
+  it("the lesson write fails: no lesson, and the section made for it is removed", async () => {
+    lessonWrite.fail = true;
+    const before = JSON.stringify(mem.all());
+    const res = await doConfirm("add_lesson", { ...LESSON_ARGS, sectionTitle: "New one" });
+    expect(res.status).not.toBe(200);
+    expect(lessons()).toHaveLength(0);
+    expect(mem.list(`${G1}/courses/co1/sections`)).toHaveLength(0);
+    expect(JSON.stringify(mem.all())).toBe(before);
   });
 
   it.each([

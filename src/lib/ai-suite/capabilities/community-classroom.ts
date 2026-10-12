@@ -7,14 +7,14 @@ import {
   createCourseServerSide,
   createLessonServerSide,
   createSectionServerSide,
+  deleteSectionServerSide,
   getCourseTree,
-  updateLessonServerSide,
 } from "@/lib/server/community-classroom-service";
-import { parseVideoUrl } from "@/lib/community/video-embed";
 import type { CommunityGroup } from "@/types/community";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, textToBodyHtml } from "./helpers";
-import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { oneLine } from "./text-safety";
+import { bodyOnCard, bodyText, safeVideoUrl, titleProblem } from "./community-classroom-text";
 
 /**
  * Community classroom tools (UPSTREAM_PORT_PLAN.md, N2a). list_communities
@@ -27,9 +27,8 @@ import { hasUnsafeText, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 
 const GROUPS_CAP = 20;
 const COURSES_CAP = 30;
-const TITLE_MAX = 200;
-/** The hosts the classroom's player embeds (lib/community/video-embed.ts). */
-const VIDEO_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com", "player.vimeo.com"]);
+const DESCRIPTION_MAX = 2000;
+const TEXT_MAX = 20000;
 
 async function assertCommunityOn(subAccountId: string): Promise<void> {
   const sub = (await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data();
@@ -48,26 +47,6 @@ async function namedGroup(subAccountId: string, groupId: string, groupName: stri
     throw new CapabilityUserError(`That group id is “${oneLine(group.name)}”, not “${groupName}”; nothing was changed. Check list_communities.`);
   }
   return group;
-}
-
-/** A required, card-visible title: present, capped, nothing hidden. */
-function titleProblem(label: string, value: string): string | null {
-  if (!value) return `${label} is required`;
-  if (value.length > TITLE_MAX) return `${label} is too long (${TITLE_MAX} characters max)`;
-  return hasUnsafeText(value) ? `${label} ${UNSAFE_TEXT_MESSAGE}` : null;
-}
-
-/** A YouTube / Vimeo https link the player can embed, or null. */
-function safeVideoUrl(raw: string): string | null {
-  if (!raw || raw.length > 2048) return null;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" || url.username || url.password || !VIDEO_HOSTS.has(url.hostname.toLowerCase())) return null;
-  return parseVideoUrl(url.href) ? url.href : null;
 }
 
 const optionalBool = (raw: unknown, key: string): boolean | null => {
@@ -94,12 +73,14 @@ export const COMMUNITY_CLASSROOM_CAPABILITIES: AiSuiteCapability[] = [
       const groupsSnap = await db.collection(`subAccounts/${ctx.subAccountId!}/communityGroups`).limit(GROUPS_CAP).get();
       if (groupsSnap.empty) return { resultText: "No community groups yet. Create one under Sidebar → Community." };
       const blocks: string[] = [];
+      let coursesCapped = false;
       for (const g of groupsSnap.docs) {
         const data = g.data();
         const coursesSnap = await db
           .collection(`subAccounts/${ctx.subAccountId!}/communityGroups/${g.id}/courses`)
           .limit(COURSES_CAP)
           .get();
+        if (coursesSnap.size >= COURSES_CAP) coursesCapped = true;
         const courses = coursesSnap.docs
           .map((c) => ({
             id: c.id,
@@ -117,7 +98,7 @@ export const COMMUNITY_CLASSROOM_CAPABILITIES: AiSuiteCapability[] = [
       }
       return {
         resultText: `Communities (${groupsSnap.size}):\n${blocks.join("\n")}`,
-        ...(groupsSnap.size >= GROUPS_CAP ? { truncated: true as const } : {}),
+        ...(groupsSnap.size >= GROUPS_CAP || coursesCapped ? { truncated: true as const } : {}),
       };
     },
   },
@@ -148,15 +129,17 @@ export const COMMUNITY_CLASSROOM_CAPABILITIES: AiSuiteCapability[] = [
       const title = str(raw, "title");
       const bad = titleProblem("the group's name", groupName) ?? titleProblem("a course title", title);
       if (bad) return { ok: false, error: bad };
+      const description = bodyText(raw, "description", "the description", DESCRIPTION_MAX);
+      if ("error" in description) return { ok: false, error: description.error };
       return {
         ok: true,
-        args: { groupId, groupName, title, description: str(raw, "description").slice(0, 2000), published: optionalBool(raw, "published") ?? true },
+        args: { groupId, groupName, title, description: description.text, published: optionalBool(raw, "published") ?? true },
       };
     },
     summarize: (args) =>
       `Add the course “${args.title}” to the community “${args.groupName}” (id ${args.groupId})${
         args.published ? " — published, open to all its members." : " as an unpublished draft."
-      }`,
+      }${bodyOnCard("Description", args.description as string)}`,
     execute: async (ctx, args) => {
       await assertCommunityOn(ctx.subAccountId!);
       const group = await namedGroup(ctx.subAccountId!, args.groupId as string, args.groupName as string);
@@ -217,6 +200,8 @@ export const COMMUNITY_CLASSROOM_CAPABILITIES: AiSuiteCapability[] = [
       const rawVideo = str(raw, "videoUrl");
       const videoUrl = rawVideo ? safeVideoUrl(rawVideo) : "";
       if (videoUrl === null) return { ok: false, error: "the video must be a YouTube or Vimeo https:// link" };
+      const text = bodyText(raw, "text", "the lesson text", TEXT_MAX);
+      if ("error" in text) return { ok: false, error: text.error };
       return {
         ok: true,
         args: {
@@ -226,15 +211,17 @@ export const COMMUNITY_CLASSROOM_CAPABILITIES: AiSuiteCapability[] = [
           title,
           sectionTitle: sectionTitle.slice(0, 80),
           videoUrl,
-          text: str(raw, "text").slice(0, 20000),
+          text: text.text,
           published: optionalBool(raw, "published") ?? true,
         },
       };
     },
     summarize: (args) =>
-      `Add the lesson “${args.title}”${args.sectionTitle ? ` (section “${args.sectionTitle}”)` : ""}${
-        args.videoUrl ? ` with the video ${args.videoUrl}` : ""
-      } to the course “${args.courseTitle}” (id ${args.courseId})${args.published ? " — published." : " as a draft."}`,
+      `Add the lesson “${args.title}”${
+        args.sectionTitle ? ` (section “${args.sectionTitle}”, created if missing)` : " (no section given: into the course's section if it has exactly one, otherwise unsectioned)"
+      }${args.videoUrl ? ` with the video ${args.videoUrl}` : ""} to the course “${args.courseTitle}” (id ${args.courseId})${
+        args.published ? " — published." : " as a draft."
+      }${bodyOnCard("Text", args.text as string)}`,
     execute: async (ctx, args) => {
       await assertCommunityOn(ctx.subAccountId!);
       const group = await getGroupById(ctx.subAccountId!, args.groupId as string);
@@ -250,6 +237,7 @@ export const COMMUNITY_CLASSROOM_CAPABILITIES: AiSuiteCapability[] = [
         throw new CapabilityUserError(`That course id is “${oneLine(tree.course.title)}”, not “${args.courseTitle}”; nothing was changed. Check list_communities.`);
       }
       let sectionId: string | null = null;
+      let createdSectionId: string | null = null;
       let sectionNote = "";
       const wantSection = args.sectionTitle as string;
       if (wantSection) {
@@ -263,36 +251,40 @@ export const COMMUNITY_CLASSROOM_CAPABILITIES: AiSuiteCapability[] = [
             courseId: tree.course.id,
             title: wantSection,
           });
-          sectionId = created.id;
+          sectionId = createdSectionId = created.id;
           sectionNote = ` (new section “${created.title}” created)`;
         }
       } else if (tree.sections.length === 1) {
         sectionId = tree.sections[0]!.id;
+        sectionNote = ` (in its section “${oneLine(tree.sections[0]!.title)}”)`;
       }
-      const lesson = await createLessonServerSide({
-        subAccountId: ctx.subAccountId!,
-        groupId: group.id,
-        courseId: tree.course.id,
-        sectionId,
-        title: args.title as string,
-      });
-      const { videoError } = await updateLessonServerSide({
-        subAccountId: ctx.subAccountId!,
-        groupId: group.id,
-        courseId: tree.course.id,
-        lessonId: lesson.id,
-        patch: {
+      // One write: the lesson never exists half-made.
+      let lesson;
+      try {
+        lesson = await createLessonServerSide({
+          subAccountId: ctx.subAccountId!,
+          groupId: group.id,
+          courseId: tree.course.id,
+          sectionId,
+          title: args.title as string,
           published: args.published as boolean,
           videoUrl: (args.videoUrl as string) || null,
           bodyHtml: args.text ? textToBodyHtml(args.text as string) : "",
-        },
-      });
+        });
+      } catch (err) {
+        // Don't leave behind an empty section this call made for it.
+        if (createdSectionId) {
+          await deleteSectionServerSide({ subAccountId: ctx.subAccountId!, groupId: group.id, courseId: tree.course.id, sectionId: createdSectionId }).catch(
+            (cleanupErr: unknown) => console.warn(`[ai-suite/add_lesson] empty section ${createdSectionId} left behind: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`)
+          );
+        }
+        throw err;
+      }
       const base = process.env.NEXT_PUBLIC_APP_URL ?? "";
-      const videoNote = videoError ? " The video link wasn't recognised — add it in the classroom editor." : "";
       return {
         resultText: `Added the lesson “${oneLine(lesson.title)}” to “${oneLine(tree.course.title)}”${sectionNote}${
           args.published ? "" : " as an unpublished draft"
-        }.${videoNote} ${base}/c/${ctx.subAccountId}/${group.slug}/classroom/${tree.course.id}/${lesson.id}`,
+        }. ${base}/c/${ctx.subAccountId}/${group.slug}/classroom/${tree.course.id}/${lesson.id}`,
         ref: { kind: "lesson", id: lesson.id },
       };
     },

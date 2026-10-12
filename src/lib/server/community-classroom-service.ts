@@ -207,18 +207,24 @@ export async function createLessonServerSide(opts: {
   courseId: string;
   sectionId: string | null;
   title: string;
+  /** Set at creation, in the same write (default: an empty draft). An
+   *  unrecognised video link is stored as no video. */
+  published?: boolean;
+  videoUrl?: string | null;
+  bodyHtml?: string;
 }): Promise<Lesson> {
   const col = lessonsCol(opts.subAccountId, opts.groupId, opts.courseId);
   const count = (await col.count().get()).data().count;
+  const video = opts.videoUrl ? parseVideoUrl(opts.videoUrl) : null;
   const doc = {
     sectionId: opts.sectionId,
     title: opts.title.trim() || "Untitled lesson",
     order: count,
-    published: false,
-    videoUrl: null,
-    videoProvider: null,
-    videoId: null,
-    bodyHtml: "",
+    published: opts.published ?? false,
+    videoUrl: video ? opts.videoUrl!.trim() : null,
+    videoProvider: video?.provider ?? null,
+    videoId: video?.id ?? null,
+    bodyHtml: opts.bodyHtml ?? "",
     resourceLinks: [] as ResourceLink[],
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
