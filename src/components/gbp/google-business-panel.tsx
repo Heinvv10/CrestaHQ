@@ -235,7 +235,7 @@ export function GoogleBusinessPanel() {
         <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" /> Managing this listing
       </p>
       <ListingSummary listing={listing} />
-      <ExtraListings subAccountId={subAccountId} main={listing.locationName} extras={subAccount.googleExtraListings ?? []} canEdit />
+      <ExtraListings subAccountId={subAccountId} main={listing.locationName} extras={subAccount.googleExtraListings} canEdit />
       <ReviewUrlCard />
       {allListings(subAccount).filter((l) => l.locationName !== listing.locationName).map((l) => (
         <ReviewUrlCard key={l.locationName} locationName={l.locationName} />

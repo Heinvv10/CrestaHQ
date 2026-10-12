@@ -148,7 +148,7 @@ describe("single listing: unchanged", () => {
   it("an empty set on a sub-account without extras writes nothing and calls no one", async () => {
     setScenario((s) => (s.failNext = { op: "listAccounts", kind: "transient" }));
     const res = await putExtras({ listings: [] });
-    expect(res).toEqual({ status: 200, body: { ok: true, added: [], removed: [] } });
+    expect(res).toEqual({ status: 200, body: { ok: true, added: [], removed: [], listings: expect.any(Array) } });
     expect(state.writes).toEqual([]);
   });
 });
