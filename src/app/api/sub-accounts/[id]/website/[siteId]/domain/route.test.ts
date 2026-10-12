@@ -555,6 +555,8 @@ describe("DELETE — clear the custom domain", () => {
     expect((await removeWholeSite()).status).toBe(200);
     expect(mem.read(SITE)).toBeUndefined();
     expect(allowed()).toEqual(["acme.gitlab.io", "partner.example"]);
+    // The chat bot was on the domain: it goes back to the live URL with it.
+    expect(mem.read(PROFILE)).toMatchObject({ websiteUrl: LIVE });
     // So another site saving the same domain records the hosts again, and
     // its DELETE takes them off.
     seedSite(SITE2, { id: "site2" });
@@ -562,6 +564,19 @@ describe("DELETE — clear the custom domain", () => {
     expect(mem.read(SITE2)?.customDomainChatHosts).toEqual(["www.acme.com", "acme.com"]);
     expect((await del({ siteId: "site2" })).status).toBe(200);
     expect(allowed()).toEqual(["acme.gitlab.io", "partner.example"]);
+  });
+
+  it("removing the whole site leaves a chat bot that points somewhere else alone", async () => {
+    mem.seed(PROFILE, { websiteUrl: "https://elsewhere.example/" });
+    expect((await removeWholeSite()).status).toBe(200);
+    expect(mem.read(PROFILE)).toMatchObject({ websiteUrl: "https://elsewhere.example/" });
+  });
+
+  it("removing a domain whose hosts are gone leaves a mixed-case list exactly as it was", async () => {
+    seedChat(CHAT, ["Acme.GitLab.io", "Partner.Example"]);
+    const chat = mem.read(CHAT);
+    expect((await del()).status).toBe(200);
+    expect(mem.read(CHAT)).toEqual(chat);
   });
 
   it.each([

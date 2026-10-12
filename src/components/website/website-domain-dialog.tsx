@@ -66,10 +66,9 @@ export function WebsiteDomainDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ domain: value }),
       });
-      const payload = (await res.json().catch(() => ({}))) as { error?: string; warnings?: string[] };
+      const payload = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(payload.error ?? "Couldn't save the domain.");
-      if (payload.warnings?.length) toast.warning(payload.warnings.join(" "));
-      else toast.success("Domain saved — the chat bubble will now show on it.");
+      toast.success("Domain saved — the chat bubble will now show on it.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't save the domain.");
     } finally {

@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { prepareAiAgentDocs, webChatAllowListInTx } from "@/lib/comms/ai/agent";
+import { agentProfileInTx, prepareAiAgentDocs, webChatAllowListInTx } from "@/lib/comms/ai/agent";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   requireWebsiteEnabledSub,
@@ -119,7 +119,9 @@ export async function PATCH(
  *               previously-published repo (if any) likewise stays live. The
  *               Web Chat hosts its custom domain added
  *               (`customDomainChatHosts`) come off the allow-list in the same
- *               transaction: once the doc is gone nothing records them.
+ *               transaction: once the doc is gone nothing records them. A
+ *               chat bot pointed at that domain goes back to the live URL,
+ *               as when the domain alone is removed.
  */
 export async function DELETE(
   request: Request,
@@ -164,14 +166,18 @@ export async function DELETE(
     return NextResponse.json({ ok: true, reset: true });
   }
 
-  if ((snap.data() as WebsiteDoc).customDomainChatHosts?.length) await prepareAiAgentDocs(subAccountId);
+  if ((snap.data() as WebsiteDoc).customDomain) await prepareAiAgentDocs(subAccountId);
   await db.runTransaction(async (tx) => {
-    const fresh = await tx.get(docRef);
-    const recorded = new Set((fresh.data() as WebsiteDoc | undefined)?.customDomainChatHosts ?? []);
-    if (recorded.size) {
+    const fresh = (await tx.get(docRef)).data() as WebsiteDoc | undefined;
+    if (fresh?.customDomain) {
       const list = await webChatAllowListInTx(tx, subAccountId);
+      const agent = await agentProfileInTx(tx, subAccountId);
+      const recorded = new Set(fresh.customDomainChatHosts ?? []);
       const left = list.hosts.filter((h) => !recorded.has(h));
       if (left.length !== list.hosts.length) list.save(left);
+      if (fresh.liveUrl && agent.profile?.websiteUrl === `https://${fresh.customDomain}/`) {
+        agent.save({ websiteUrl: fresh.liveUrl });
+      }
     }
     tx.delete(docRef);
   });
