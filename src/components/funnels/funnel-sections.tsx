@@ -1,3 +1,4 @@
+import { funnelAccent } from "@/lib/funnels/accent";
 import type { TypeScale } from "@/lib/funnels/typography";
 import type {
   FunnelSection,
@@ -91,11 +92,14 @@ function band(
 
 export function FunnelSections({
   sections,
-  ctx,
+  ctx: given,
 }: {
   sections: FunnelSection[];
   ctx: Ctx;
 }) {
+  // Every style below interpolates the accent. The pages check it before it
+  // gets here; this is the second layer for a caller that did not.
+  const ctx = { ...given, accent: funnelAccent(given.accent) };
   return (
     <>
       {sections.map((s, i) => {

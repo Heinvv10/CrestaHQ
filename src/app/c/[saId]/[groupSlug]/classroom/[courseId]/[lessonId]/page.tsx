@@ -11,7 +11,7 @@ import { embedUrlFor } from "@/lib/community/video-embed";
 import { renderLessonBodyHtml } from "@/lib/community/lesson-html";
 import {
   CommunityShell,
-  COMMUNITY_DEFAULT_BRAND,
+  communityBrand,
 } from "@/components/community/community-shell";
 import {
   LessonPlayer,
@@ -65,7 +65,7 @@ export default async function LessonPlayerPage({
 
   const enrollment = await getEnrollment(saId, group.id, courseId, member.id);
 
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
   const viewer: AuthorView = {
     memberId: member.id,
     displayName:

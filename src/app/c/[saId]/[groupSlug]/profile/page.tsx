@@ -1,6 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { requireGroupPageAccess } from "@/lib/community/member-context";
-import { COMMUNITY_BG, COMMUNITY_DEFAULT_BRAND } from "@/components/community/community-shell";
+import { COMMUNITY_BG, communityBrand } from "@/components/community/community-shell";
 import { ProfileEditor } from "@/components/community/profile-editor";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ export default async function ProfilePage({
   if (access.kind === "redirect") redirect(access.to);
 
   const { group, member } = access;
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: COMMUNITY_BG }}>
