@@ -8,8 +8,8 @@ import {
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str, fmtMoney } from "./helpers";
 import { chargePreview, NEEDS_APPROVAL, tenantWide, withoutLabels } from "./billing-proposals";
-import { currencyRefusal, defaultBillingCurrency } from "./billing-currency";
-import { paddedSubAccountId } from "./agency-support";
+import { chargeCurrencyFor, currencyRefusal, defaultBillingCurrency } from "./billing-currency";
+import { paddedSubAccountId, subAccountInAgency } from "./agency-support";
 import { UNSAFE_TEXT_MESSAGE, UNSAFE_TEXT_RE } from "./text-safety";
 import { ASSIGN_BILLING_PLAN } from "./billing-assign";
 
@@ -94,7 +94,10 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       if (amountCents < 100) {
         return { ok: false, error: "the amount must be at least 1.00" };
       }
-      const currency = (str(raw, "currency") || defaultBillingCurrency()).toLowerCase();
+      const named = str(raw, "currency");
+      // Omitted (or omitted when first validated: a stored proposal re-validates its own args).
+      const currencyDefaulted = !named || r.currencyDefaulted === true;
+      const currency = (named || defaultBillingCurrency()).toLowerCase();
       if (!/^[a-z]{3}$/.test(currency)) {
         return {
           ok: false,
@@ -113,6 +116,7 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
           amount,
           amountCents,
           currency,
+          currencyDefaulted,
         },
       };
     },
@@ -124,6 +128,8 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
       if (ctx.apiKey && !ctx.approved) throw new CapabilityUserError(NEEDS_APPROVAL);
       // Approved: exactly the charge the owner reviewed (chargePreview).
       if (ctx.approved) args = { ...args, ...ctx.approved.pinned };
+      const sub = await subAccountInAgency(ctx.agencyId, args.subAccountId);
+      const currency = chargeCurrencyFor(args, sub.data()?.billing);
       // Duplicate guard: an identical PENDING charge (same description +
       // amount) almost certainly means "re-send the link", not "bill twice".
       const existing = await listChargesForSubAccount(
@@ -154,7 +160,7 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
           createdByUid: ctx.uid,
           description: args.description as string,
           amountCents: args.amountCents as number,
-          currency: args.currency as string,
+          currency,
         });
       } catch (err) {
         if (err instanceof BillingError)
@@ -165,7 +171,7 @@ export const BILLING_CHARGE_CAPABILITIES: AiSuiteCapability[] = [
         (args.subAccountName as string) || (args.subAccountId as string);
       const amt = fmtMoney(
         (args.amountCents as number) / 100,
-        (args.currency as string).toUpperCase()
+        currency.toUpperCase()
       );
       return {
         resultText: `Created a one-time charge for “${who}”: ${args.description} — ${amt}. Payment link to send the client:\n${result.checkoutUrl}\n\nIt marks itself paid automatically when the client completes checkout.`,
