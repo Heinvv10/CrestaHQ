@@ -38,11 +38,15 @@ function setCtx(subAccount: Record<string, unknown> | null, loading: boolean) {
   ctx.value = { ...ctx.value, subAccount, loading };
 }
 
-/** The status pill on the SMS channel card. */
-function smsStatus(): string | null {
-  const card = container.querySelector('a[href*="/ai-agents/sms"]');
+/** The status pill on a channel card. */
+function status(slug: string): string | null {
+  const card = container.querySelector(`a[href*="/ai-agents/${slug}"]`);
   return card ? (card.querySelector("span.rounded-full")?.textContent ?? null) : null;
 }
+const smsStatus = () => status("sms");
+
+/** Web Chat channel config the fetch returns. */
+let webChatConfig: Record<string, unknown> | null = null;
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -51,7 +55,13 @@ beforeEach(() => {
     "fetch",
     vi.fn(async (url: string) => ({
       ok: true,
-      json: async () => ({ config: url.endsWith("/sms") ? { enabled: true } : null }),
+      json: async () => ({
+        config: url.endsWith("/sms")
+          ? { enabled: true }
+          : url.endsWith("/web-chat")
+            ? webChatConfig
+            : null,
+      }),
     })),
   );
   container = document.createElement("div");
@@ -86,5 +96,40 @@ describe("AiAgentsOverviewPage channel status", () => {
     await render();
     expect(smsStatus()).toBe("Active");
     expect(container.textContent).not.toContain("See warning");
+  });
+});
+
+describe("AiAgentsOverviewPage Web Chat status", () => {
+  const configured = { enabled: true, webChat: { allowedDomains: [] } };
+  afterEach(() => {
+    webChatConfig = null;
+  });
+
+  it("shows Web Chat active when the channel is on and the agency allows it", async () => {
+    webChatConfig = configured;
+    setCtx({}, false);
+    await render();
+    expect(status("web-chat")).toBe("Active");
+  });
+
+  it("shows Web Chat not configured when the agency has locked it", async () => {
+    webChatConfig = configured;
+    setCtx({ webChatEnabledByAgency: false }, false);
+    await render();
+    expect(status("web-chat")).toBe("Not configured");
+  });
+
+  it("shows Web Chat not configured when the channel is off", async () => {
+    webChatConfig = { ...configured, enabled: false };
+    setCtx({}, false);
+    await render();
+    expect(status("web-chat")).toBe("Not configured");
+  });
+
+  it("shows Web Chat not configured when the widget block is missing", async () => {
+    webChatConfig = { enabled: true };
+    setCtx({}, false);
+    await render();
+    expect(status("web-chat")).toBe("Not configured");
   });
 });

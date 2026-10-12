@@ -25,6 +25,9 @@ export default function AiAgentsOverviewPage() {
     null,
   );
   const [metaConfig, setMetaConfig] = useState<AiChannelConfig | null>(null);
+  const [webChatConfig, setWebChatConfig] = useState<AiChannelConfig | null>(
+    null,
+  );
   const [loaded, setLoaded] = useState(false);
   const [warningOpen, setWarningOpen] = useState(false);
 
@@ -32,12 +35,14 @@ export default function AiAgentsOverviewPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [smsRes, voiceRes, whatsappRes, metaRes] = await Promise.all([
-          fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/sms`),
-          fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/voice`),
-          fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/whatsapp`),
-          fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/meta`),
-        ]);
+        const [smsRes, voiceRes, whatsappRes, metaRes, webChatRes] =
+          await Promise.all([
+            fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/sms`),
+            fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/voice`),
+            fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/whatsapp`),
+            fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/meta`),
+            fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/web-chat`),
+          ]);
         const smsData = smsRes.ok
           ? ((await smsRes.json()) as { config: AiChannelConfig | null })
           : { config: null };
@@ -50,11 +55,15 @@ export default function AiAgentsOverviewPage() {
         const metaData = metaRes.ok
           ? ((await metaRes.json()) as { config: AiChannelConfig | null })
           : { config: null };
+        const webChatData = webChatRes.ok
+          ? ((await webChatRes.json()) as { config: AiChannelConfig | null })
+          : { config: null };
         if (!cancelled) {
           setSmsConfig(smsData.config);
           setVoiceConfig(voiceData.config);
           setWhatsappConfig(whatsappData.config);
           setMetaConfig(metaData.config);
+          setWebChatConfig(webChatData.config);
           setLoaded(true);
         }
       } catch {
@@ -88,6 +97,11 @@ export default function AiAgentsOverviewPage() {
     !!voiceConfig?.enabled &&
     voiceNumberReady &&
     subAccount?.inboundVoiceEnabledByAgency !== false;
+  // Same three checks the widget config endpoint makes before it serves.
+  const webChatEnabled =
+    !!webChatConfig?.enabled &&
+    !!webChatConfig.webChat &&
+    subAccount?.webChatEnabledByAgency !== false;
   const senderConfigured = whatsappSenderConfigured(subAccount);
   const whatsappEnabled =
     !!whatsappConfig?.enabled &&
@@ -196,7 +210,9 @@ export default function AiAgentsOverviewPage() {
                           ? metaEnabled
                           : channel.id === "google-business"
                             ? googleBusinessEnabled
-                            : undefined
+                            : channel.id === "web-chat"
+                              ? webChatEnabled
+                              : undefined
                 }
               />
             ))}
