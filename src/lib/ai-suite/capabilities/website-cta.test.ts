@@ -97,7 +97,7 @@ describe("update_website_cta — an admin in chat", () => {
     const body = await (await ask("update_website_cta", ARGS)).json();
     expect(body).toMatchObject({ type: "proposal", proposal: { capability: "update_website_cta" } });
     expect(body.proposal.summary).toBe(
-      "Point the call-to-action of the website “Acme Coffee” (id site1) at https://crm.example.test/f/form1 and rebuild it from its saved settings. This republishes the live site (about 10–20 minutes) and uses one of this workspace's 10 builds per hour."
+      "Point the call-to-action of the website “Acme Coffee” (id site1) at https://crm.example.test/f/form1 and build it from its saved settings. This publishes the site — replacing the live version if it is already live — in about 10–20 minutes, and uses one of this workspace's 10 builds per hour."
     );
     expect(fetchMock).not.toHaveBeenCalled();
     expect(JSON.stringify(mem.all())).toBe(before);

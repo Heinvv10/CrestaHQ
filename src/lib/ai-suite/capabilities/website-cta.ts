@@ -29,7 +29,7 @@ export const WEBSITE_CTA_CAPABILITIES: AiSuiteCapability[] = [
     surfaces: ["chat"],
     menuLabel: "Point a built website's call-to-action at a form or booking page (rebuilds the site)",
     description:
-      `Set a website's call-to-action link (the button/link the site's CTA sections use) to a URL — typically the public URL of a form (from list_forms) or the workspace's booking page — and rebuild the site so it goes live. This is how the website feeds leads into the CRM. It REBUILDS AND REPUBLISHES the public site (about 10–20 minutes) and uses one of the workspace's ${WEBSITE_BUILDS_PER_HOUR} builds per hour, so say that to the user and get a yes before calling it. Refused while the site is building. Resolve the site id and name with check_website_status first; use an https URL you retrieved from a lookup, never one you guessed.`,
+      `Set a website's call-to-action link (the button/link the site's CTA sections use) to a URL — typically the public URL of a form (from list_forms) or the workspace's booking page — and rebuild the site so it goes live. This is how the website feeds leads into the CRM. It BUILDS AND PUBLISHES the public site — a site that is already live is republished, a draft goes live for the first time — (about 10–20 minutes) and uses one of the workspace's ${WEBSITE_BUILDS_PER_HOUR} builds per hour, so say that to the user and get a yes before calling it. Refused while the site is building. Resolve the site id and name with check_website_status first; use an https URL you retrieved from a lookup, never one you guessed.`,
     parameters: {
       type: "object",
       properties: {
@@ -52,8 +52,10 @@ export const WEBSITE_CTA_CAPABILITIES: AiSuiteCapability[] = [
       if (!ctaLink) return { ok: false, error: "ctaLink must be a full public https:// URL (at most 2,048 characters)" };
       return { ok: true, args: { siteId, siteName, ctaLink } };
     },
+    // The card is built from the args alone (no read), and a draft site is
+    // accepted as by the Build button, so it can't say which of the two this is.
     summarize: (args) =>
-      `Point the call-to-action of the website “${args.siteName}” (id ${args.siteId}) at ${args.ctaLink} and rebuild it from its saved settings. This republishes the live site (about 10–20 minutes) and uses one of this workspace's ${WEBSITE_BUILDS_PER_HOUR} builds per hour.`,
+      `Point the call-to-action of the website “${args.siteName}” (id ${args.siteId}) at ${args.ctaLink} and build it from its saved settings. This publishes the site — replacing the live version if it is already live — in about 10–20 minutes, and uses one of this workspace's ${WEBSITE_BUILDS_PER_HOUR} builds per hour.`,
     execute: async (ctx, args) => {
       try {
         const res = await updateWebsiteCtaAndRebuild({
