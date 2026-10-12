@@ -24,6 +24,8 @@ import { validatePremiumDetails } from "@/lib/website/premium";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const URL_RE = /^https?:\/\/.+/i;
+// HARDENING: gitpage concept ids are slugs; anything else is not forwarded.
+const CONCEPT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const HEX_TRIPLE_RE = /^#?[0-9a-f]{6}\s*,\s*#?[0-9a-f]{6}\s*,\s*#?[0-9a-f]{6}$/i;
 
 export type ValidationErrors = Record<string, string>;
@@ -67,7 +69,14 @@ export function validateWebsiteConfig(config: WebsiteConfig): ValidationErrors {
   if (config.hero_motion != null && !["still", "loop", "atmosphere"].includes(config.hero_motion)) {
     errors.hero_motion = "Must be still, loop or atmosphere.";
   }
-  if (config.premium_details) {
+  // HARDENING: a concept id is gitpage's slug, sent on in the build request.
+  if (config.concept != null && (typeof config.concept !== "string" || !CONCEPT_ID_RE.test(config.concept))) {
+    errors.concept = "Must be a design direction id (letters, digits, - or _).";
+  }
+  // HARDENING: untrusted JSON — anything but a plain object is refused before its fields are read.
+  if (config.premium_details != null && (typeof config.premium_details !== "object" || Array.isArray(config.premium_details))) {
+    errors.premium_details = "Must be an object.";
+  } else if (config.premium_details) {
     // HARDENING: pass the niche so fields the form hides for it are not validated.
     for (const [field, message] of Object.entries(validatePremiumDetails(config.premium_details, config.niche ?? null))) {
       errors[`premium_details.${field}`] = message;
