@@ -125,7 +125,7 @@ export interface GhlImportMapping {
    * it. Absent = legacy squash-onto-default behavior.
    */
   pipelineMap?: Record<string, GhlPipelineTarget>;
-  /** GHL stage id → its landing spot in a recreated pipeline. */
+  /** `${ghlPipelineId}:${ghlStageId}` → its landing spot in a recreated pipeline. */
   pipelineStageMap?: Record<string, { pipelineId: string; stageId: string }>;
 }
 
@@ -233,9 +233,10 @@ export function resolveOpportunityStage(
 ): PipelineStageId {
   if (o.status === "won") return "won";
   if (o.status === "lost" || o.status === "abandoned") return "lost";
-  const mapped = o.pipelineStageId
-    ? mapping.stageMap[o.pipelineStageId]
-    : undefined;
+  const mapped =
+    o.pipelineStageId && Object.hasOwn(mapping.stageMap, o.pipelineStageId)
+      ? mapping.stageMap[o.pipelineStageId]
+      : undefined;
   return mapped ?? mapping.defaultStage;
 }
 
@@ -262,11 +263,12 @@ export function resolveOpportunityPlacement(
     if (o.status === "lost" || o.status === "abandoned") {
       return { pipelineId: target.id, stage: target.lostId };
     }
+    const key = `${o.pipelineId}:${o.pipelineStageId}`;
     const mapped =
       o.pipelineStageId &&
       mapping.pipelineStageMap &&
-      Object.hasOwn(mapping.pipelineStageMap, o.pipelineStageId)
-        ? mapping.pipelineStageMap[o.pipelineStageId]
+      Object.hasOwn(mapping.pipelineStageMap, key)
+        ? mapping.pipelineStageMap[key]
         : undefined;
     if (mapped && mapped.pipelineId === target.id) {
       return { pipelineId: target.id, stage: mapped.stageId };

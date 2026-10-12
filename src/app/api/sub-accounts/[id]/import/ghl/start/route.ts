@@ -84,13 +84,22 @@ export async function POST(
     rawMapping.defaultCurrency.length === 3
       ? (rawMapping.defaultCurrency as string).toUpperCase()
       : "USD";
+  // Which entities to pull (always include contacts when anything else is on,
+  // since children resolve through contact mappings).
+  const requested = Array.isArray(b.entities)
+    ? ENTITY_ORDER.filter((e) => (b.entities as unknown[]).includes(e))
+    : ENTITY_ORDER;
+  const entities = requested.length > 0 ? requested : ENTITY_ORDER;
+  if (!entities.includes("contacts")) entities.unshift("contacts");
+
   // Pipeline import: when the wizard opted in, recreate each GHL pipeline
   // as a LeadStack pipeline BEFORE the drain starts, and hand the drain a
   // ghl-id → leadstack-id map. A pipeline that can't be recreated is
   // skipped with a warning — its opportunities fall back to the legacy
-  // squash-onto-default mapping, and the response says so.
+  // squash-onto-default mapping, and the response says so. Nothing is
+  // created for an import that doesn't pull opportunities.
   const recreated =
-    b.createPipelines === true
+    b.createPipelines === true && entities.includes("opportunities")
       ? await recreateGhlPipelines(subAccountId, access.uid, b.ghlPipelines)
       : null;
   const pipelineMap = recreated?.pipelineMap ?? {};
@@ -112,14 +121,6 @@ export async function POST(
       ? { pipelineMap, pipelineStageMap: recreated!.pipelineStageMap }
       : {}),
   };
-
-  // Which entities to pull (always include contacts when anything else is on,
-  // since children resolve through contact mappings).
-  const requested = Array.isArray(b.entities)
-    ? ENTITY_ORDER.filter((e) => (b.entities as unknown[]).includes(e))
-    : ENTITY_ORDER;
-  const entities = requested.length > 0 ? requested : ENTITY_ORDER;
-  if (!entities.includes("contacts")) entities.unshift("contacts");
 
   // Create the job (carries the mapping + entity list for the drain).
   const ref = db.collection("importJobs").doc();

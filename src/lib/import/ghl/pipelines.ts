@@ -37,12 +37,27 @@ const MAX_GHL_STAGES = 200;
 
 export interface RecreatedGhlPipelines {
   pipelineMap: Record<string, GhlPipelineTarget>;
-  /** GHL stage id → its landing spot in a recreated pipeline. */
+  /** `${ghlPipelineId}:${ghlStageId}` → its landing spot in a recreated pipeline. */
   pipelineStageMap: Record<string, { pipelineId: string; stageId: string }>;
   warnings: string[];
 }
 
 type GhlStage = { id: string; name: string };
+
+/** GHL stage names (as slugs) that mean an outcome: they map onto Won/Lost. */
+const TERMINAL_SLUGS = new Map<string, "won" | "lost">([
+  ["won", "won"],
+  ["closed_won", "won"],
+  ["lost", "lost"],
+  ["closed_lost", "lost"],
+]);
+
+/** Trim + cut to `max` UTF-16 units without splitting a code point. */
+function clip(s: string, max: number): string {
+  const cps = Array.from(s.trim()).slice(0, max);
+  while (cps.join("").length > max) cps.pop();
+  return cps.join("").trim();
+}
 
 /** The GHL bookkeeping on an imported pipeline doc. */
 interface ImportedPipelineFields {
@@ -57,8 +72,10 @@ interface ImportedPipelineFields {
  * A GHL stage already mapped (`known`) to a stage still on the pipeline
  * keeps it; any other becomes a new open stage, inserted before the first
  * terminal. Won/Lost are appended if missing (GHL tracks outcomes as
- * status, not stages). `dropped` counts GHL stages left unmapped — blank,
- * or no room under `MAX_STAGES`.
+ * status, not stages); a GHL stage named Won / Closed Won (Lost / Closed
+ * Lost) maps onto them rather than becoming a second, open "Won" column.
+ * `dropped` counts GHL stages left unmapped — blank, or no room under
+ * `MAX_STAGES`.
  */
 export function mergeImportedStages(
   current: PipelineStage[],
@@ -72,8 +89,15 @@ export function mergeImportedStages(
     used.add(id);
     return id;
   };
-  const hasWon = current.some((s) => s.terminal === "won");
-  const hasLost = current.some((s) => s.terminal === "lost");
+  const won = current.find((s) => s.terminal === "won");
+  const lost = current.find((s) => s.terminal === "lost");
+  const hasWon = !!won;
+  const hasLost = !!lost;
+  // Reserved first, so no open stage can take the ids "won" / "lost".
+  const terminalId = {
+    won: won?.id ?? unique("won"),
+    lost: lost?.id ?? unique("lost"),
+  };
   // Room for open stages once Won and Lost are both present.
   const room = MAX_STAGES - current.length - (hasWon ? 0 : 1) - (hasLost ? 0 : 1);
   const added: { id: string; label: string }[] = [];
@@ -85,7 +109,12 @@ export function mergeImportedStages(
       byGhlId[g.id] = mapped;
       continue;
     }
-    const label = g.name.trim().slice(0, STAGE_LABEL_MAX).trim();
+    const outcome = TERMINAL_SLUGS.get(slugifyStageId(g.name));
+    if (outcome) {
+      byGhlId[g.id] = terminalId[outcome];
+      continue;
+    }
+    const label = clip(g.name, STAGE_LABEL_MAX);
     if (!label || added.length >= room) {
       dropped++;
       continue;
@@ -104,8 +133,8 @@ export function mergeImportedStages(
     ...added,
     ...current.slice(at),
   ];
-  if (!hasWon) raw.push({ id: unique("won"), label: "Won", terminal: "won" });
-  if (!hasLost) raw.push({ id: unique("lost"), label: "Lost", terminal: "lost" });
+  if (!hasWon) raw.push({ id: terminalId.won, label: "Won", terminal: "won" });
+  if (!hasLost) raw.push({ id: terminalId.lost, label: "Lost", terminal: "lost" });
   const valid = validateStages(raw);
   return valid.ok ? { ok: true, value: { stages: valid.value, byGhlId, dropped } } : valid;
 }
@@ -185,10 +214,10 @@ export async function recreateGhlPipelines(
     const p = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
     const ghlId = p.id;
     const rawName = typeof p.name === "string" ? p.name : "";
-    const name = validatePipelineName(rawName.trim().slice(0, PIPELINE_NAME_MAX));
+    const name = validatePipelineName(clip(rawName, PIPELINE_NAME_MAX));
     if (!isDocId(ghlId) || !name.ok || Object.hasOwn(out.pipelineMap, ghlId)) {
       out.warnings.push(
-        `A pipeline${rawName ? ` ("${rawName.slice(0, PIPELINE_NAME_MAX)}")` : ""} wasn't recreated (invalid or duplicate) — its deals import onto the default pipeline instead.`,
+        `A pipeline${rawName ? ` ("${clip(rawName, PIPELINE_NAME_MAX)}")` : ""} wasn't recreated (invalid or duplicate) — its deals import onto the default pipeline instead.`,
       );
       continue;
     }
@@ -228,7 +257,7 @@ export async function recreateGhlPipelines(
       lostId: stages.find((s) => s.terminal === "lost")!.id,
     };
     for (const [ghlStageId, stageId] of Object.entries(byGhlId)) {
-      out.pipelineStageMap[ghlStageId] = { pipelineId, stageId };
+      out.pipelineStageMap[`${ghlId}:${ghlStageId}`] = { pipelineId, stageId };
     }
     if (dropped > 0) {
       out.warnings.push(

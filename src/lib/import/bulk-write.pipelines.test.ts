@@ -112,3 +112,36 @@ it("a pipeline_id that is a path fails only its own record; the rest of the chun
     mem.db.doc = realDoc;
   }
 });
+
+it("the stage is checked on the DEFAULT pipeline too, from its doc when it exists", async () => {
+  mem.seed("subAccounts/sa1/pipelines/default", { name: "Default", isDefault: true, stages: [{ id: "new", label: "New", tone: "" }] });
+  const r = await importDeals([
+    deal({ external_id: "a", pipeline_id: "default", stage: "nonexistent_stage" }),
+    deal({ external_id: "b", stage: "proposal" }),
+    deal({ external_id: "c", stage: "new" }),
+  ]);
+  expect(r.errors.map((e) => [e.externalId, e.error])).toEqual([
+    ["a", 'deal: stage "nonexistent_stage" is not on pipeline "default"'],
+    ["b", 'deal: stage "proposal" is not on pipeline "default"'],
+  ]);
+  expect(r.created).toBe(1);
+});
+
+it("without a default pipeline doc, the stages it would be seeded with apply", async () => {
+  const r = await importDeals([
+    deal({ external_id: "a", stage: "proposal" }),
+    deal({ external_id: "b", stage: "also_bogus" }),
+  ]);
+  expect(r.created).toBe(1);
+  expect(r.errors.map((e) => e.externalId)).toEqual(["b"]);
+});
+
+it("a pipeline doc with non-array stages fails only that record", async () => {
+  mem.seed("subAccounts/sa1/pipelines/Pbad", { name: "Corrupt", stages: "not-an-array" });
+  const r = await importDeals([
+    deal({ external_id: "a", pipeline_id: "Pbad", stage: "x" }),
+    deal({ external_id: "b" }),
+  ]);
+  expect(r.errors.map((e) => [e.externalId, e.error])).toEqual([["a", 'deal: stage "x" is not on pipeline "Pbad"']]);
+  expect(r.created).toBe(1);
+});

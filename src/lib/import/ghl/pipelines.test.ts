@@ -49,8 +49,6 @@ describe("recreateGhlPipelines", () => {
       ["new_lead", "New Lead", undefined],
       ["contacted", "Contacted", undefined],
       ["proposal_sent", "Proposal Sent", undefined],
-      ["closed_won", "Closed Won", undefined],
-      ["closed_lost", "Closed Lost", undefined],
       ["won", "Won", "won"],
       ["lost", "Lost", "lost"],
     ]);
@@ -58,11 +56,12 @@ describe("recreateGhlPipelines", () => {
       pl_sales: { id: doc.id, firstId: "new_lead", wonId: "won", lostId: "lost" },
     });
     expect(r.pipelineStageMap).toEqual({
-      s_new: { pipelineId: doc.id, stageId: "new_lead" },
-      s_contacted: { pipelineId: doc.id, stageId: "contacted" },
-      s_proposal: { pipelineId: doc.id, stageId: "proposal_sent" },
-      s_won: { pipelineId: doc.id, stageId: "closed_won" },
-      s_lost: { pipelineId: doc.id, stageId: "closed_lost" },
+      "pl_sales:s_new": { pipelineId: doc.id, stageId: "new_lead" },
+      "pl_sales:s_contacted": { pipelineId: doc.id, stageId: "contacted" },
+      "pl_sales:s_proposal": { pipelineId: doc.id, stageId: "proposal_sent" },
+      // "Closed Won" / "Closed Lost" are outcomes: they land on the terminals.
+      "pl_sales:s_won": { pipelineId: doc.id, stageId: "won" },
+      "pl_sales:s_lost": { pipelineId: doc.id, stageId: "lost" },
     });
   });
 
@@ -106,7 +105,7 @@ describe("recreateGhlPipelines", () => {
       { id: "p1", name: "P", stages: [{ id: "x/y", name: "Bad" }, { id: "s1", name: "Good" }] },
     ]);
     expect(pipelineDocs()[0].stages.map((s) => s.label)).toEqual(["Good", "Won", "Lost"]);
-    expect(Object.keys(r.pipelineStageMap)).toEqual(["s1"]);
+    expect(Object.keys(r.pipelineStageMap)).toEqual(["p1:s1"]);
   });
 
   it("reads at most 200 GHL stages of a pipeline", async () => {
@@ -125,8 +124,8 @@ describe("recreateGhlPipelines", () => {
         s_new: "new_lead",
         s_contacted: "contacted",
         s_proposal: "proposal_sent",
-        s_won: "closed_won",
-        s_lost: "closed_lost",
+        s_won: "won",
+        s_lost: "lost",
       },
     });
   });
@@ -160,14 +159,12 @@ describe("recreateGhlPipelines", () => {
       ["new_lead", "New Lead"],
       ["contacted", "Spoke to them"],
       ["proposal_sent", "Proposal Sent"],
-      ["closed_won", "Closed Won"],
-      ["closed_lost", "Closed Lost"],
       ["nurture", "Nurture"],
       ["won", "Won"],
       ["lost", "Lost"],
     ]);
-    expect(r.pipelineStageMap.s_nurture).toEqual({ pipelineId: "ghl_pl_sales", stageId: "nurture" });
-    expect(r.pipelineStageMap.s_contacted).toEqual({ pipelineId: "ghl_pl_sales", stageId: "contacted" });
+    expect(r.pipelineStageMap["pl_sales:s_nurture"]).toEqual({ pipelineId: "ghl_pl_sales", stageId: "nurture" });
+    expect(r.pipelineStageMap["pl_sales:s_contacted"]).toEqual({ pipelineId: "ghl_pl_sales", stageId: "contacted" });
   });
 
   it("a pipeline the operator deleted is created again under the same id", async () => {
@@ -213,19 +210,50 @@ describe("recreateGhlPipelines", () => {
 const named = (...names: string[]) => names.map((name, i) => ({ id: `g${i}`, name }));
 
 describe("mergeImportedStages — a new pipeline", () => {
-  it("keeps ids unique when a GHL stage is itself called Won / Lost or names repeat", () => {
-    const r = mergeImportedStages([], {}, named("Won", "Lost", "Follow up", "Follow up"));
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    expect(r.value.stages.map((s) => [s.id, s.terminal])).toEqual([
-      ["won", undefined],
-      ["lost", undefined],
+  it("keeps ids unique when names repeat", () => {
+    const r = mergeImportedStages([], {}, named("Follow up", "Follow up"));
+    expect(r.ok && r.value.stages.map((s) => [s.id, s.terminal])).toEqual([
       ["follow_up", undefined],
       ["follow_up_2", undefined],
-      ["won_2", "won"],
-      ["lost_2", "lost"],
+      ["won", "won"],
+      ["lost", "lost"],
     ]);
-    expect(r.value.byGhlId).toEqual({ g0: "won", g1: "lost", g2: "follow_up", g3: "follow_up_2" });
+  });
+
+  it("GHL stages named Won / Lost / Closed Won / Closed Lost map onto the terminals, not new open columns", () => {
+    const r = mergeImportedStages([], {}, named("New", " WON ", "Lost", "Closed Won", "closed-lost"));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.stages.map((s) => [s.id, s.label, s.terminal])).toEqual([
+      ["new", "New", undefined],
+      ["won", "Won", "won"],
+      ["lost", "Lost", "lost"],
+    ]);
+    expect(r.value.byGhlId).toEqual({ g0: "new", g1: "won", g2: "lost", g3: "won", g4: "lost" });
+    expect(r.value.dropped).toBe(0);
+  });
+
+  it("a Won-named GHL stage maps onto an existing pipeline's own Won, whatever its id", () => {
+    const r = mergeImportedStages(
+      [
+        { id: "a", label: "A", tone: "" },
+        { id: "signed", label: "Signed", tone: "", terminal: "won" },
+        { id: "dead", label: "Dead", tone: "", terminal: "lost" },
+      ],
+      {},
+      named("Won", "Lost"),
+    );
+    expect(r.ok && r.value.byGhlId).toEqual({ g0: "signed", g1: "dead" });
+    expect(r.ok && r.value.stages.map((s) => s.id)).toEqual(["a", "signed", "dead"]);
+  });
+
+  it("cuts a long label on a code point, never inside an emoji", () => {
+    const r = mergeImportedStages([], {}, named(`${"a".repeat(39)}😀`));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const label = r.value.stages[0].label;
+    expect(label).toBe("a".repeat(39));
+    expect(label.isWellFormed()).toBe(true);
   });
 
   it("gives a name with no latin characters a positional id", () => {

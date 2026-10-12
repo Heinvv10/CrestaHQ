@@ -64,8 +64,9 @@ describe("resolveOpportunityPlacement (pipeline import)", () => {
       pl_sales: { id: "P1", firstId: "new_lead", wonId: "won", lostId: "lost" },
     },
     pipelineStageMap: {
-      s_proposal: { pipelineId: "P1", stageId: "proposal_sent" },
-      s_other: { pipelineId: "P2", stageId: "elsewhere" },
+      "pl_sales:s_proposal": { pipelineId: "P1", stageId: "proposal_sent" },
+      "pl_sales:s_other": { pipelineId: "P2", stageId: "elsewhere" },
+      "pl_b:s_shared": { pipelineId: "P9", stageId: "b_stage" },
     },
   };
   const opp = (o: Partial<GhlOpportunity>): GhlOpportunity => ({
@@ -116,10 +117,18 @@ describe("resolveOpportunityPlacement (pipeline import)", () => {
     });
   });
 
-  it("a GHL id naming an Object.prototype key is not a recreated pipeline", () => {
+  it("a stage map entry is per GHL pipeline: another pipeline's same stage id never applies", () => {
+    expect(resolveOpportunityPlacement(opp({ pipelineStageId: "s_shared" }), mapping)).toEqual({
+      pipelineId: "P1",
+      stage: "new_lead",
+    });
+  });
+
+  it("a GHL id naming an Object.prototype key matches no map entry", () => {
     expect(resolveOpportunityPlacement(opp({ pipelineId: "constructor" }), mapping).pipelineId).toBeNull();
+    // Legacy path: stageMap is a plain object too.
     expect(
-      resolveOpportunityPlacement(opp({ pipelineStageId: "toString" }), mapping),
-    ).toEqual({ pipelineId: "P1", stage: "new_lead" });
+      resolveOpportunityPlacement(opp({ pipelineId: "pl_other", pipelineStageId: "constructor" }), mapping),
+    ).toEqual({ pipelineId: null, stage: "new" });
   });
 });

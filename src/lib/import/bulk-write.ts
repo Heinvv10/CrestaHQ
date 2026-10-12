@@ -12,6 +12,7 @@ import { validateCustomFieldValues } from "@/lib/custom-fields/validation";
 import type { CustomFieldDef } from "@/types/custom-fields";
 import { appendStageEntry } from "@/lib/server/deal-stage-history";
 import { dealPipelineId } from "@/lib/pipelines/stages";
+import { readPipelineStages } from "@/lib/pipelines/server";
 import { isDocId } from "@/lib/server/doc-id";
 import { DEFAULT_PIPELINE_ID, type PipelineStage } from "@/types/deals";
 import {
@@ -135,16 +136,21 @@ export async function writeImportChunk(
     const pid = str(r.pipeline_id);
     if (entity === "deals" && isDocId(pid) && pid !== DEFAULT_PIPELINE_ID) pipelineIds.add(pid);
   }
-  // A non-default `pipeline_id` must name a pipeline of THIS sub-account (the
-  // path is scoped) and its `stage` must be on it, else the deal is stranded
-  // on a board that never renders it.
+  // A deal's `stage` must be on its pipeline — the default one included —
+  // and a non-default `pipeline_id` must name a pipeline of THIS sub-account
+  // (the path is scoped), else the deal is stranded on a board that never
+  // renders it.
   const pipelineStages = new Map<string, PipelineStage[]>();
+  if (entity === "deals") {
+    pipelineStages.set(DEFAULT_PIPELINE_ID, (await readPipelineStages(subAccountId)) ?? []);
+  }
   if (pipelineIds.size > 0) {
     const pRefs = [...pipelineIds].map((id) =>
       db.doc(`subAccounts/${subAccountId}/pipelines/${id}`),
     );
     for (const s of await db.getAll(...pRefs)) {
-      if (s.exists) pipelineStages.set(s.id, (s.data()?.stages ?? []) as PipelineStage[]);
+      const stages = s.data()?.stages;
+      if (s.exists) pipelineStages.set(s.id, Array.isArray(stages) ? (stages as PipelineStage[]) : []);
     }
   }
   // An explicit `contact_id` must name a contact in THIS sub-account — the
@@ -341,7 +347,7 @@ interface BuildArgs {
   subAccountId: string;
   createdByUid: string;
   existing?: ImportMappingDoc;
-  /** Deals: stages of each non-default pipeline the chunk names that exists. */
+  /** Deals: stages of the default pipeline and of each other pipeline the chunk names that exists. */
   pipelineStages: Map<string, PipelineStage[]>;
 }
 
@@ -423,14 +429,12 @@ function buildWrite(db: FirebaseFirestore.Firestore, a: BuildArgs): Built {
       if (!parsed.ok) return { ok: false, error: parsed.error ?? "invalid deal" };
       const v = parsed.value!;
       const pipelineId = v.pipelineId ?? DEFAULT_PIPELINE_ID;
-      if (pipelineId !== DEFAULT_PIPELINE_ID) {
-        const stages = a.pipelineStages.get(pipelineId);
-        if (!stages) {
-          return { ok: false, error: "deal: pipeline_id is not a pipeline in this sub-account" };
-        }
-        if (!stages.some((s) => s.id === v.stage)) {
-          return { ok: false, error: `deal: stage "${v.stage}" is not on pipeline "${pipelineId}"` };
-        }
+      const stages = a.pipelineStages.get(pipelineId);
+      if (!stages) {
+        return { ok: false, error: "deal: pipeline_id is not a pipeline in this sub-account" };
+      }
+      if (!stages.some((s) => s?.id === v.stage)) {
+        return { ok: false, error: `deal: stage "${v.stage}" is not on pipeline "${pipelineId}"` };
       }
       const cf = validateCustomFieldValues(a.raw.custom_fields, a.defs);
       if (!cf.ok) return { ok: false, error: cf.error ?? "invalid custom fields" };

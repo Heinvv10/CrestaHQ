@@ -96,7 +96,7 @@ describe("GHL import with createPipelines", () => {
     const salesId = pipelines[0].id;
     expect(mem.read(`importJobs/${body.jobId}`)?.ghlMapping).toMatchObject({
       pipelineMap: { pl_sales: { id: salesId } },
-      pipelineStageMap: { s_proposal: { pipelineId: salesId, stageId: "proposal_sent" } },
+      pipelineStageMap: { "pl_sales:s_proposal": { pipelineId: salesId, stageId: "proposal_sent" } },
     });
 
     await drain(body.jobId);
