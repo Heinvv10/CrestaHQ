@@ -124,6 +124,50 @@ describe("comp closes the open checkout link while it runs", () => {
   });
 });
 
+describe("BRK r6: the checkout link isn't revived once comp is past a plain failure", () => {
+  const payMidComp = (reference: string) =>
+    cancelSubscription.mockImplementationOnce(async () => {
+      await handlePaystackEvent(DISABLE);
+      await pay(reference);
+      return "cancelled";
+    });
+
+  it("a payment interrupted the comp (it consumed the link): the old link stays dead", async () => {
+    payMidComp("ref_new2");
+    expect(await comp()).toMatchObject({ subscription: "failed", cancelledSubscription: "SUB_1" });
+    expect(billing().status).toBe("active");
+    expect(billing().checkoutTokenHash ?? null).toBeNull();
+  });
+
+  it("the subscription moved on after the cancel: the old link stays dead", async () => {
+    cancelSubscription.mockImplementationOnce(async () => {
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), stripeSubscriptionId: "SUB_2" } });
+      return "cancelled";
+    });
+    expect(await comp()).toMatchObject({ subscription: "failed", cancelledSubscription: "SUB_1" });
+    expect(billing().checkoutTokenHash ?? null).toBeNull();
+  });
+
+  it("the cancel failed but a payment landed meanwhile: the link it consumed stays dead", async () => {
+    cancelSubscription.mockImplementationOnce(async () => {
+      await pay("ref_new4");
+      throw new Error("Paystack returned 500.");
+    });
+    expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 502 });
+    expect(billing().checkoutTokenHash ?? null).toBeNull();
+  });
+
+  it("BRK r6b: comping again as advised cancels the new subscription before comping", async () => {
+    payMidComp("ref_new3");
+    await comp();
+    await handlePaystackEvent({ event: "subscription.create", data: { subscription_code: "SUB_NEW", customer: { customer_code: "CUS_1" }, plan: { plan_code: "PLN_1" } } } as Parameters<typeof handlePaystackEvent>[0]);
+    expect(billing()).toMatchObject({ status: "active", stripeSubscriptionId: "SUB_NEW" });
+    expect(await comp()).toEqual({ subscription: "cancelled" });
+    expect(cancelSubscription).toHaveBeenLastCalledWith("SUB_NEW", "CUS_1");
+    expect(billing().status).toBe("comped");
+  });
+});
+
 it("a payment outside any comp activates as before", async () => {
   mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Client", billing: { status: "pending", planId: "plan1", stripeCustomerId: "CUS_1", stripeSubscriptionId: null } });
   await pay("ref_plain");

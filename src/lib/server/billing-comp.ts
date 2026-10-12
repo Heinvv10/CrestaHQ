@@ -122,18 +122,22 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
     return null;
   });
   if (claim) return claim;
-  /** Drop the lock; reopen the checkout link it closed unless one was minted since. */
-  const unlock = (fresh: SubAccountBilling | null) => ({
+  /** Drop the lock. `reopen`: also reopen the checkout link the claim
+   *  closed (unless one was minted since) — only when the cancel itself
+   *  failed and nothing else moved; never after a payment re-activated the
+   *  client (it consumed that link) or the subscription moved on. */
+  const unlock = (fresh: SubAccountBilling | null, reopen: boolean) => ({
     ...UNLOCK,
-    ...(tokenHash && !fresh?.checkoutTokenHash ? { "billing.checkoutTokenHash": tokenHash } : {}),
+    ...(reopen && tokenHash && !fresh?.checkoutTokenHash ? { "billing.checkoutTokenHash": tokenHash } : {}),
   });
   /** Ours when it still names this subscription and this claim's instant. */
   const ours = (b: SubAccountBilling | null) =>
     b?.compingSubscriptionId === subscriptionId && billingMarkMs(b.compingSince) === claimMs;
-  const release = () =>
+  const release = (reopen: boolean) =>
     db.runTransaction(async (tx) => {
       const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
-      if (ours(fresh)) tx.update(ref, unlock(fresh));
+      // A payment since the claim consumed the link: never revive it.
+      if (ours(fresh)) tx.update(ref, unlock(fresh, reopen && billingMarkMs(fresh?.activatedAt) === activatedMs));
     });
 
   // 2. Cancel. A failure the provider's own record doesn't contradict: the
@@ -143,7 +147,7 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
   const notCancelled = (message: string): CompResult => ({ subscription: "failed", message, httpStatus: 502, cancelledSubscription: null });
   try {
     if (!provider.isConfigured()) {
-      await release();
+      await release(true);
       return notCancelled("No payment provider is configured, so the client's subscription couldn't be cancelled — nothing changed.");
     }
     await provider.cancelSubscription(subscriptionId, billing?.stripeCustomerId ?? null);
@@ -154,7 +158,7 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
       .then(() => provider.subscriptionEnded(subscriptionId))
       .catch(() => false);
     if (!ended) {
-      await release();
+      await release(true);
       return notCancelled(
       err instanceof SubscriptionNotOnAccount
         ? err.message
@@ -181,7 +185,7 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
       const now = fresh?.stripeSubscriptionId ?? null;
       // A payment activated the client since the claim: never comp over it.
       if (billingMarkMs(fresh?.activatedAt) !== activatedMs) {
-        if (ours(fresh)) tx.update(ref, unlock(fresh));
+        if (ours(fresh)) tx.update(ref, unlock(fresh, false));
         return REACTIVATED;
       }
       // Still the subscription just cancelled (whatever status its webhooks
@@ -191,12 +195,12 @@ export async function compSubAccount(input: { agencyId: string; subAccountId: st
         tx.update(ref, { billing: compedBilling(fresh), updatedAt: FieldValue.serverTimestamp() });
         return subscriptionId;
       }
-      if (ours(fresh)) tx.update(ref, unlock(fresh));
+      if (ours(fresh)) tx.update(ref, unlock(fresh, false));
       return now;
     });
   } catch (err) {
     console.error("[billing] comp write after cancel failed", err instanceof Error ? err.message : String(err));
-    await release().catch(() => undefined);
+    await release(false).catch(() => undefined);
     return interrupted(
       `Cancelled subscription ${subscriptionId} with ${name}, but the comp couldn't be saved — comp again to finish (it will find the subscription already ended).`,
       subscriptionId,
