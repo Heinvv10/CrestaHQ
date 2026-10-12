@@ -72,6 +72,7 @@ export interface AiAgentProfile {
     businessName?: string | null;
     welcomeMessage?: string | null;
     accentColor?: string | null;
+    websiteUrl?: string | null;
   } | null;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;

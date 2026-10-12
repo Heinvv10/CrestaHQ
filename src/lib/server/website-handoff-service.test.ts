@@ -31,10 +31,11 @@ vi.mock("@/lib/comms/ai/agent", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/lib/comms/ai/agent")>();
   return {
     ...real,
-    upsertChannelConfig: (...args: Parameters<typeof real.upsertChannelConfig>) =>
-      fail.chat ? Promise.reject(new Error("chat store down")) : real.upsertChannelConfig(...args),
-    upsertAgentProfile: (...args: Parameters<typeof real.upsertAgentProfile>) =>
-      fail.profile ? Promise.reject(new Error("profile store down")) : real.upsertAgentProfile(...args),
+    transactAiAgentDoc: ((...args: Parameters<typeof real.transactAiAgentDoc>) => {
+      if (fail.chat && args[1] === "web-chat") return Promise.reject(new Error("chat store down"));
+      if (fail.profile && args[1] === "profile") return Promise.reject(new Error("profile store down"));
+      return real.transactAiAgentDoc(...args);
+    }) as typeof real.transactAiAgentDoc,
   };
 });
 vi.mock("@/lib/server/workflows-service", async (importOriginal) => {
@@ -53,6 +54,7 @@ const {
   WEBSITE_WORKFLOW_SOURCE,
 } = await import("./website-handoff-service");
 const { fireWorkflowTrigger } = await import("@/lib/workflows/engine");
+const { checkOriginAllowed } = await import("@/lib/comms/web-chat/origin");
 
 const SUB = "subAccounts/sa1";
 const CHAT = "subAccounts/sa1/aiAgent/web-chat";
@@ -117,21 +119,34 @@ const site = (patch: Partial<WebsiteDoc> = {}): WebsiteDoc =>
     ...patch,
   }) as WebsiteDoc;
 
+/** The site as settle leaves it: live, for the job the hand-off runs for. */
+const seedLiveSite = (siteId: string, patch: Partial<WebsiteDoc> = {}) => {
+  const doc = site({ id: siteId, ...patch });
+  mem.seed(`subAccounts/sa1/website/${siteId}`, doc as unknown as Record<string, unknown>);
+  return doc;
+};
+
 const handoff = (opts: {
   siteId?: string;
   site?: Partial<WebsiteDoc>;
   config?: Partial<WebsiteConfig>;
   liveUrl?: string;
+  liveUrlResolved?: boolean;
   result?: PollBuildResult;
-} = {}) =>
-  provisionWebsiteHandoff({
+} = {}) => {
+  const siteId = opts.siteId ?? "site1";
+  const path = `subAccounts/sa1/website/${siteId}`;
+  const doc = mem.read(path) ? site({ id: siteId, ...opts.site }) : seedLiveSite(siteId, opts.site);
+  return provisionWebsiteHandoff({
     subAccountId: "sa1",
-    siteId: opts.siteId ?? "site1",
-    site: site({ id: opts.siteId ?? "site1", ...opts.site }),
+    siteId,
+    site: doc,
     config: config(opts.config),
     liveUrl: opts.liveUrl ?? LIVE,
+    liveUrlResolved: opts.liveUrlResolved ?? true,
     result: opts.result ?? result(),
   });
+};
 
 const seedSub = (patch: Record<string, unknown> = {}) =>
   mem.seed(SUB, {
@@ -144,6 +159,7 @@ const seedSub = (patch: Record<string, unknown> = {}) =>
 
 const workflows = () => mem.list("workflows");
 const webChat = () => mem.read(CHAT)?.webChat as Record<string, unknown> | undefined;
+const allowedOf = () => (webChat()?.allowedDomains as string[] | undefined) ?? [];
 
 beforeEach(async () => {
   mem.clear();
@@ -158,13 +174,14 @@ beforeEach(async () => {
   seedSub();
   mem.seed("agencies/ag1", { ownerUid: "u_owner" });
   formId = await ensureWebsiteContactForm({ subAccountId: "sa1", createdByUid: "u1" });
+  seedLiveSite("site1");
 });
 afterEach(() => {
   vi.unstubAllEnvs();
 });
 
 describe("provisionWebsiteHandoff — what a publish sets up", () => {
-  it("allow-lists the live host and the reported host, seeds the agent, drafts the workflow and tells the team", async () => {
+  it("allow-lists the live host (only), seeds the agent, drafts the workflow and tells the team", async () => {
     const out = await handoff();
     expect(out).toMatchObject({
       hostname: "acme-site-1a2b3c.gitlab.io",
@@ -178,7 +195,7 @@ describe("provisionWebsiteHandoff — what a publish sets up", () => {
       errors: [],
     });
     expect(webChat()).toMatchObject({
-      allowedDomains: ["acme-site-1a2b3c.gitlab.io", "acme.gitlab.io"],
+      allowedDomains: ["acme-site-1a2b3c.gitlab.io"],
       welcomeMessage: "Hi, need a plumber?",
       accentColor: "#b13f2b",
       position: "right",
@@ -197,6 +214,7 @@ describe("provisionWebsiteHandoff — what a publish sets up", () => {
         businessName: "Acme Plumbing",
         welcomeMessage: "Hi, need a plumber?",
         accentColor: "#b13f2b",
+        websiteUrl: LIVE,
       },
     });
     expect(workflows()).toHaveLength(1);
@@ -397,14 +415,14 @@ describe("idempotence", () => {
     expect(mem.list("forms")).toHaveLength(1);
     expect(workflows()).toHaveLength(1);
     expect(second!.workflowId).toBe(first!.workflowId);
-    expect(webChat()?.allowedDomains).toEqual(["acme-site-1a2b3c.gitlab.io", "acme.gitlab.io"]);
+    expect(webChat()?.allowedDomains).toEqual(["acme-site-1a2b3c.gitlab.io"]);
     expect(second).toMatchObject({ chatAllowlisted: true, workflowStatus: "draft", errors: [] });
   });
 
   it("does not add a host the operator already listed in another case", async () => {
     mem.seed(CHAT, { enabled: false, webChat: { allowedDomains: ["Acme-Site-1a2b3c.GitLab.io"], welcomeMessage: "x", accentColor: "#000000", position: "right" } });
     expect(await handoff()).toMatchObject({ chatAllowlisted: true });
-    expect(webChat()?.allowedDomains).toEqual(["Acme-Site-1a2b3c.GitLab.io", "acme.gitlab.io"]);
+    expect(webChat()?.allowedDomains).toEqual(["Acme-Site-1a2b3c.GitLab.io"]);
   });
 
   it("two sites of one workspace publishing at the same moment share ONE workflow, and neither host is lost", async () => {
@@ -419,7 +437,6 @@ describe("idempotence", () => {
     expect([...(webChat()?.allowedDomains as string[])].sort()).toEqual([
       "acme-site-1a2b3c.gitlab.io",
       "acme-two-9z8y7x.gitlab.io",
-      "acme.gitlab.io",
     ]);
   });
 
@@ -630,7 +647,7 @@ describe("the operator's own wording", () => {
     });
     await handoff();
     expect(webChat()).toMatchObject({
-      allowedDomains: ["shop.acme.test", "acme-site-1a2b3c.gitlab.io", "acme.gitlab.io"],
+      allowedDomains: ["shop.acme.test", "acme-site-1a2b3c.gitlab.io"],
       welcomeMessage: "Welcome to Acme!",
       accentColor: "#112233",
       position: "left",
@@ -640,7 +657,9 @@ describe("the operator's own wording", () => {
       businessName: "Acme Plumbing",
       escalationKeywords: ["urgent"],
       escalationNotifyEmail: "ops@acme.test",
+      websiteUrl: "https://old.acme.test/",
     });
+    expect((mem.read(PROFILE)?.websiteSeeded as Record<string, unknown>).websiteUrl).toBeUndefined();
   });
 
   it("values the hand-off seeded follow the next published site; one the operator has since edited does not", async () => {
@@ -661,8 +680,160 @@ describe("the operator's own wording", () => {
     const out = await handoff();
     expect(out!.chatAllowlisted).toBe(false);
     expect(out!.errors).toEqual([
-      "web-chat: the allowed-domains list is full (25) — add acme-site-1a2b3c.gitlab.io, acme.gitlab.io by hand",
+      "web-chat: the allowed-domains list is full (25) — add acme-site-1a2b3c.gitlab.io by hand",
     ]);
     expect(webChat()?.allowedDomains).toEqual(full);
+  });
+});
+
+describe("which host the chat allowlist gets (breaker, PR #400)", () => {
+  const allowed = () => (webChat()?.allowedDomains as string[] | undefined) ?? [];
+  const NAMESPACE = "https://gitpage-ns.gitlab.io/acme-site";
+
+  it("never gitpage's reported path-URL host: a page on that shared namespace origin fails the widget's origin check", async () => {
+    await handoff({ liveUrl: "https://acme-site-1a2b3c.gitlab.io/", result: result({}, NAMESPACE) });
+    expect(allowed()).toEqual(["acme-site-1a2b3c.gitlab.io"]);
+    expect(checkOriginAllowed("https://gitpage-ns.gitlab.io", allowed()).allowed).toBe(false);
+  });
+
+  it("a walk that did not resolve allow-lists nothing — not the reported host either — and the card says why", async () => {
+    const out = await handoff({ liveUrl: NAMESPACE, liveUrlResolved: false, result: result({}, NAMESPACE) });
+    expect(allowed()).toEqual([]);
+    expect(out).toMatchObject({ hostname: null, chatAllowlisted: false });
+    expect(out!.chatSkippedReason).toContain("did not lead to the site's own host");
+    expect(mem.read(PROFILE)?.websiteUrl ?? null).toBeNull();
+  });
+
+  it("a site that resolved but is served under a path shares its host with other sites: nothing is allow-listed", async () => {
+    const out = await handoff({ liveUrl: NAMESPACE, result: result({}, NAMESPACE) });
+    expect(allowed()).toEqual([]);
+    expect(out!.chatSkippedReason).toContain("served under a path");
+  });
+
+  it.each([
+    ["a public IPv4 literal", "https://8.8.8.8/"],
+    ["an IPv6 literal", "https://[2606:4700::1]/"],
+    ["a single-label host", "https://intranet/"],
+    ["a wildcard", "https://*.evil.example/"],
+    ["credentials", "https://a@b.example/"],
+  ])("%s never reaches the allowlist", async (_label, url) => {
+    await handoff({ liveUrl: url, result: result({}, url) });
+    expect(allowed()).toEqual([]);
+  });
+
+  it("a trailing-dot host is stored without the dot", async () => {
+    await handoff({ liveUrl: "https://acme.example./", result: result({}, "https://acme.example./") });
+    expect(allowed()).toEqual(["acme.example"]);
+  });
+
+  it("two hand-offs racing at 24 entries take the list to 25, never 26", async () => {
+    const base = Array.from({ length: 24 }, (_, i) => `d${i}.example`);
+    mem.seed(CHAT, { enabled: false, webChat: { allowedDomains: base, welcomeMessage: "x", accentColor: "#000000", position: "right" } });
+    const outs = await Promise.all([
+      handoff({ siteId: "siteA", liveUrl: "https://one.example/", result: result({}, "https://one.example/") }),
+      handoff({ siteId: "siteB", liveUrl: "https://two.example/", result: result({}, "https://two.example/") }),
+    ]);
+    expect(allowed()).toHaveLength(25);
+    expect(outs.filter((o) => o!.chatAllowlisted)).toHaveLength(1);
+    expect(outs.flatMap((o) => o!.errors).filter((e) => e.includes("allowed-domains list is full"))).toHaveLength(1);
+  });
+});
+
+describe("the hand-off stops when the site moves on under it (breaker, PR #400)", () => {
+  const SITE = "subAccounts/sa1/website/site1";
+  const moves: Array<[string, () => Promise<unknown>, string]> = [
+    ["removed", () => mem.db.doc(SITE).delete(), "the site was removed"],
+    ["rebuilt", () => mem.db.doc(SITE).update({ status: "queued", gitpageJobId: "build_new" }), "the site was rebuilt"],
+    ["reset to a draft", () => mem.db.doc(SITE).update({ status: "draft" }), "the site is no longer live"],
+    ["gated off", () => mem.db.doc(SUB).update({ websiteEnabledByAgency: false }), "the website builder was switched off for this workspace"],
+  ];
+
+  it.each(moves)("site %s before the first write: nothing is written, and the summary says why", async (_label, move, reason) => {
+    await move();
+    // The gate is read once up front; put it back so the hand-off starts and
+    // meets the move at its first write instead.
+    if (reason.includes("switched off")) {
+      seedSub();
+      await mem.db.doc(SUB).update({ websiteEnabledByAgency: false });
+    }
+    const out = await provisionWebsiteHandoff({
+      subAccountId: "sa1", siteId: "site1", site: site(), config: config(),
+      liveUrl: LIVE, liveUrlResolved: true, result: result(),
+    });
+    if (reason.includes("switched off")) {
+      expect(out).toBeNull();
+    } else {
+      expect(out!.errors).toEqual([`hand-off stopped: ${reason}`]);
+    }
+    expect(mem.read(CHAT)).toBeUndefined();
+    expect(mem.read(PROFILE)).toBeUndefined();
+    expect(workflows()).toEqual([]);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it.each(moves)("site %s after the chat step: the profile, workflow and push do not happen", async (_label, move, reason) => {
+    fail.chat = false;
+    const real = await vi.importActual<typeof import("@/lib/comms/ai/agent")>("@/lib/comms/ai/agent");
+    const agent = await import("@/lib/comms/ai/agent");
+    const spy = vi.spyOn(agent, "transactAiAgentDoc").mockImplementation((async (...args: Parameters<typeof real.transactAiAgentDoc>) => {
+      const out = await real.transactAiAgentDoc(...args);
+      if (args[1] === "web-chat") await move();
+      return out;
+    }) as typeof real.transactAiAgentDoc);
+    const out = await handoff();
+    spy.mockRestore();
+    expect(out!.errors).toEqual([`hand-off stopped: ${reason}`]);
+    expect(allowedOf()).toEqual(["acme-site-1a2b3c.gitlab.io"]);
+    expect(mem.read(PROFILE)).toBeUndefined();
+    expect(workflows()).toEqual([]);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it.each(moves)("site %s after the last write: the team is not told it is live", async (_label, move, reason) => {
+    const real = await vi.importActual<typeof import("@/lib/comms/ai/agent")>("@/lib/comms/ai/agent");
+    const agent = await import("@/lib/comms/ai/agent");
+    const spy = vi.spyOn(agent, "transactAiAgentDoc").mockImplementation((async (...args: Parameters<typeof real.transactAiAgentDoc>) => {
+      const out = await real.transactAiAgentDoc(...args);
+      if (args[1] === "profile") await move();
+      return out;
+    }) as typeof real.transactAiAgentDoc);
+    // No lead form: the push is the only step after the profile.
+    const out = await handoff({ config: { include_form: false } });
+    spy.mockRestore();
+    expect(out!.errors).toEqual([`hand-off stopped: ${reason}`]);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it.each(moves)("site %s while the workflow is created: the claim is refused and the draft deleted", async (_label, move, reason) => {
+    const real = await vi.importActual<typeof import("@/lib/server/workflows-service")>("@/lib/server/workflows-service");
+    const svc = await import("@/lib/server/workflows-service");
+    const spy = vi.spyOn(svc, "createWorkflowServerSide").mockImplementation(async (...args) => {
+      const id = await real.createWorkflowServerSide(...args);
+      await move();
+      return id;
+    });
+    const out = await handoff();
+    spy.mockRestore();
+    expect(out!.errors).toEqual([`hand-off stopped: ${reason}`]);
+    expect(workflows()).toEqual([]);
+    expect(mem.read(websiteHandoffStatePath("sa1"))?.workflowId).toBeUndefined();
+    expect(push).not.toHaveBeenCalled();
+  });
+});
+
+describe("what \"nothing talks to leads\" does NOT cover (documented, breaker PR #400)", () => {
+  it("an operator's own ACTIVE form.submitted workflow with no formId enrols website-form leads — pre-existing engine behaviour", async () => {
+    mem.seed("workflows/wf_any", {
+      subAccountId: "sa1", agencyId: "ag1", name: "Any form", status: "active",
+      trigger: { type: "form.submitted" },
+      nodes: { n1: { id: "n1", type: "notify", config: { body: "hi" }, next: null } }, startNodeId: "n1",
+    });
+    mem.seed("contacts/c1", { subAccountId: "sa1", agencyId: "ag1", mode: "live", name: "Lead", tags: [], customFields: {} });
+    await handoff();
+    const outcome = await fireWorkflowTrigger({
+      subAccountId: "sa1", agencyId: "ag1", type: "form.submitted", contactId: "c1", context: { formId },
+    });
+    // Only the operator's workflow: the provisioned one is a draft.
+    expect(outcome.enrolled.map((e: { workflowId: string }) => e.workflowId)).toEqual(["wf_any"]);
   });
 });

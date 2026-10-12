@@ -34,6 +34,8 @@ function serve(routes: Record<string, () => Response>) {
   });
 }
 const fetched = () => publicFetch.mock.calls.map((c) => c[0] as string);
+/** Where the walk ended; `resolveLiveUrl(...).resolved` is asserted separately. */
+const resolve = async (url: string) => (await resolveLiveUrl(url)).url;
 
 beforeEach(() => {
   // A block, not an expression: mockReset returns the mock, and a function
@@ -47,18 +49,18 @@ afterEach(() => {
 describe("resolveLiveUrl", () => {
   it("returns the reported URL when it does not redirect", async () => {
     serve({ [REPORTED]: () => page() });
-    expect(await resolveLiveUrl(REPORTED)).toBe(REPORTED);
+    expect(await resolve(REPORTED)).toBe(REPORTED);
     expect(fetched()).toEqual([REPORTED]);
   });
 
   it("follows a chain of redirects to where the site really lives, one guarded request per hop", async () => {
     serve({
       [REPORTED]: () => redirect("https://acme-site-1a2b3c.gitlab.io/"),
-      "https://acme-site-1a2b3c.gitlab.io/": () => redirect("https://www.acme.example/", 301),
-      "https://www.acme.example/": () => page(),
+      "https://acme-site-1a2b3c.gitlab.io/": () => redirect("https://www.acme-site-1a2b3c.gitlab.io/", 301),
+      "https://www.acme-site-1a2b3c.gitlab.io/": () => page(),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe("https://www.acme.example/");
-    expect(fetched()).toEqual([REPORTED, "https://acme-site-1a2b3c.gitlab.io/", "https://www.acme.example/"]);
+    expect(await resolve(REPORTED)).toBe("https://www.acme-site-1a2b3c.gitlab.io/");
+    expect(fetched()).toEqual([REPORTED, "https://acme-site-1a2b3c.gitlab.io/", "https://www.acme-site-1a2b3c.gitlab.io/"]);
     // Nothing is left to follow a redirect by itself, and no body is wanted.
     for (const [, init] of publicFetch.mock.calls as Array<[string, PublicFetchInit]>) {
       expect(init.method).toBe("HEAD");
@@ -72,7 +74,7 @@ describe("resolveLiveUrl", () => {
       [REPORTED]: () => redirect("https://acme-site-1a2b3c.gitlab.io/", status),
       "https://acme-site-1a2b3c.gitlab.io/": () => page(),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe("https://acme-site-1a2b3c.gitlab.io/");
+    expect(await resolve(REPORTED)).toBe("https://acme-site-1a2b3c.gitlab.io/");
   });
 
   it("resolves a relative Location against the hop it came from, not the first URL", async () => {
@@ -81,7 +83,7 @@ describe("resolveLiveUrl", () => {
       "https://acme-site-1a2b3c.gitlab.io/a/b": () => redirect("../home/"),
       "https://acme-site-1a2b3c.gitlab.io/home/": () => page(),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe("https://acme-site-1a2b3c.gitlab.io/home/");
+    expect(await resolve(REPORTED)).toBe("https://acme-site-1a2b3c.gitlab.io/home/");
   });
 
   it("where the walk lands is the answer whatever that page's status", async () => {
@@ -89,20 +91,20 @@ describe("resolveLiveUrl", () => {
       [REPORTED]: () => redirect("https://acme-site-1a2b3c.gitlab.io/"),
       "https://acme-site-1a2b3c.gitlab.io/": () => page(404),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe("https://acme-site-1a2b3c.gitlab.io/");
+    expect(await resolve(REPORTED)).toBe("https://acme-site-1a2b3c.gitlab.io/");
   });
 
   it("gives up on a redirect loop and returns the reported URL", async () => {
     serve({
-      [REPORTED]: () => redirect("https://b.example/"),
-      "https://b.example/": () => redirect(REPORTED),
+      [REPORTED]: () => redirect("https://b.gitlab.io/"),
+      "https://b.gitlab.io/": () => redirect(REPORTED),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe(REPORTED);
+    expect(await resolve(REPORTED)).toBe(REPORTED);
     expect(publicFetch).toHaveBeenCalledTimes(5);
   });
 
   it("makes at most five requests: a fifth redirect is not followed", async () => {
-    const hop = (n: number) => `https://hop${n}.example/`;
+    const hop = (n: number) => `https://hop${n}.gitlab.io/`;
     serve({
       [REPORTED]: () => redirect(hop(1)),
       [hop(1)]: () => redirect(hop(2)),
@@ -111,12 +113,12 @@ describe("resolveLiveUrl", () => {
       [hop(4)]: () => redirect(hop(5)),
       [hop(5)]: () => page(),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe(REPORTED);
+    expect(await resolve(REPORTED)).toBe(REPORTED);
     expect(fetched()).toEqual([REPORTED, hop(1), hop(2), hop(3), hop(4)]);
   });
 
   it("follows four redirects, the most the cap allows", async () => {
-    const hop = (n: number) => `https://hop${n}.example/`;
+    const hop = (n: number) => `https://hop${n}.gitlab.io/`;
     serve({
       [REPORTED]: () => redirect(hop(1)),
       [hop(1)]: () => redirect(hop(2)),
@@ -124,12 +126,46 @@ describe("resolveLiveUrl", () => {
       [hop(3)]: () => redirect(hop(4)),
       [hop(4)]: () => page(),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe(hop(4));
+    expect(await resolve(REPORTED)).toBe(hop(4));
+  });
+
+  it("says whether it landed: resolved on an answer that is not a redirect, unresolved on giving up", async () => {
+    serve({
+      [REPORTED]: () => redirect("https://acme-site-1a2b3c.gitlab.io/"),
+      "https://acme-site-1a2b3c.gitlab.io/": () => page(),
+    });
+    expect(await resolveLiveUrl(REPORTED)).toEqual({ url: "https://acme-site-1a2b3c.gitlab.io/", resolved: true });
+    serve({ [REPORTED]: () => page() });
+    expect(await resolveLiveUrl(REPORTED)).toEqual({ url: REPORTED, resolved: true });
+    serve({ [REPORTED]: () => redirect(null) });
+    expect(await resolveLiveUrl(REPORTED)).toEqual({ url: REPORTED, resolved: false });
+  });
+
+  it.each([
+    ["a third-party host", "https://attacker.example/"],
+    ["a public IP literal", "https://8.8.8.8/"],
+    ["a look-alike that only ends in the parent's name", "https://evilgitlab.io/"],
+    ["the parent domain's own sibling TLD trick", "https://gitlab.io.attacker.example/"],
+  ])("a hop to %s, outside the reported host's domain, is refused before it is requested", async (_label, location) => {
+    serve({ [REPORTED]: () => redirect(location) });
+    expect(await resolveLiveUrl(REPORTED)).toEqual({ url: REPORTED, resolved: false });
+    expect(fetched()).toEqual([REPORTED]);
+  });
+
+  it("a two-label reported host keeps its family to itself and its subdomains, never the whole TLD", async () => {
+    const reported = "https://acme.example/site";
+    serve({ [reported]: () => redirect("https://other.example/") });
+    expect(await resolveLiveUrl(reported)).toEqual({ url: reported, resolved: false });
+    serve({
+      [reported]: () => redirect("https://www.acme.example/"),
+      "https://www.acme.example/": () => page(),
+    });
+    expect(await resolveLiveUrl(reported)).toEqual({ url: "https://www.acme.example/", resolved: true });
   });
 
   it("returns the reported URL for a redirect with no Location", async () => {
     serve({ [REPORTED]: () => redirect(null) });
-    expect(await resolveLiveUrl(REPORTED)).toBe(REPORTED);
+    expect(await resolve(REPORTED)).toBe(REPORTED);
     expect(publicFetch).toHaveBeenCalledTimes(1);
   });
 
@@ -151,30 +187,30 @@ describe("resolveLiveUrl", () => {
     ["something that is not a URL", "https://exa mple.com:99999/"],
   ])("a hop to %s is refused BEFORE it is requested: the reported URL comes back", async (_label, location) => {
     serve({ [REPORTED]: () => redirect(location) });
-    expect(await resolveLiveUrl(REPORTED)).toBe(REPORTED);
+    expect(await resolve(REPORTED)).toBe(REPORTED);
     // Only the first request went out; the hostile hop was never fetched.
     expect(fetched()).toEqual([REPORTED]);
   });
 
   it("a later hop whose NAME resolves to a private address is refused by the guarded fetch", async () => {
     publicFetch.mockImplementation(async (url: string) => {
-      if (url === REPORTED) return redirect("https://rebind.example/");
-      throw new NonPublicUrlError("rebind.example");
+      if (url === REPORTED) return redirect("https://rebind.gitlab.io/");
+      throw new NonPublicUrlError("rebind.gitlab.io");
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe(REPORTED);
+    expect(await resolve(REPORTED)).toBe(REPORTED);
     // It went through publicFetch — the only thing that can refuse it.
-    expect(fetched()).toEqual([REPORTED, "https://rebind.example/"]);
+    expect(fetched()).toEqual([REPORTED, "https://rebind.gitlab.io/"]);
   });
 
   it("shares ONE 3s deadline across every hop", async () => {
     const deadline = new AbortController();
     const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
     serve({
-      [REPORTED]: () => redirect("https://hop1.example/"),
-      "https://hop1.example/": () => redirect("https://hop2.example/"),
-      "https://hop2.example/": () => page(),
+      [REPORTED]: () => redirect("https://hop1.gitlab.io/"),
+      "https://hop1.gitlab.io/": () => redirect("https://hop2.gitlab.io/"),
+      "https://hop2.gitlab.io/": () => page(),
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe("https://hop2.example/");
+    expect(await resolve(REPORTED)).toBe("https://hop2.gitlab.io/");
     expect(timeout).toHaveBeenCalledTimes(1);
     expect(timeout).toHaveBeenCalledWith(3000);
     expect(publicFetch).toHaveBeenCalledTimes(3);
@@ -187,15 +223,15 @@ describe("resolveLiveUrl", () => {
     const deadline = new AbortController();
     vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
     publicFetch.mockImplementation(async (url: string, init: PublicFetchInit) => {
-      if (url === REPORTED) return redirect("https://slow.example/");
+      if (url === REPORTED) return redirect("https://slow.gitlab.io/");
       // The second hop hangs until the shared deadline fires.
       return new Promise<Response>((_resolve, reject) => {
         init.signal!.addEventListener("abort", () => reject(init.signal!.reason));
         deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
       });
     });
-    expect(await resolveLiveUrl(REPORTED)).toBe(REPORTED);
-    expect(fetched()).toEqual([REPORTED, "https://slow.example/"]);
+    expect(await resolve(REPORTED)).toBe(REPORTED);
+    expect(fetched()).toEqual([REPORTED, "https://slow.gitlab.io/"]);
   });
 
   it.each([
@@ -204,7 +240,7 @@ describe("resolveLiveUrl", () => {
     ["a non-Error throw", "boom"],
   ])("never throws: %s on the first request returns the reported URL", async (_label, thrown) => {
     publicFetch.mockRejectedValue(thrown);
-    await expect(resolveLiveUrl(REPORTED)).resolves.toBe(REPORTED);
+    await expect(resolveLiveUrl(REPORTED)).resolves.toEqual({ url: REPORTED, resolved: false });
   });
 
   it.each([
@@ -213,7 +249,7 @@ describe("resolveLiveUrl", () => {
     ["not a URL", "not a url"],
   ])("does not request a reported URL that is %s, and returns it unchanged", async (_label, url) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(await resolveLiveUrl(url)).toBe(url);
+    expect(await resolve(url)).toBe(url);
     expect(publicFetch).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledTimes(1);
   });
@@ -222,7 +258,7 @@ describe("resolveLiveUrl", () => {
 describe("isPlausibleSiteUrl", () => {
   it("accepts an https site address", () => {
     expect(isPlausibleSiteUrl("https://acme-site-1a2b3c.gitlab.io/")).toBe(true);
-    expect(isPlausibleSiteUrl("https://www.acme.example/users/sign_in_help")).toBe(true);
+    expect(isPlausibleSiteUrl("https://www.acme-site-1a2b3c.gitlab.io/users/sign_in_help")).toBe(true);
   });
 
   it("refuses git hosts' own pages, sign-in pages and anything not https", () => {

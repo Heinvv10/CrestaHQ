@@ -910,7 +910,8 @@ export async function settleWebsiteBuild(input: {
   // GitLab path URLs 308 to the project's unique domain — store and wire the
   // URL visitors actually land on. Resolved before the claim so the site is
   // never `ready` at one address and then moved to another.
-  const liveUrl = published && result.pagesUrl ? await resolveLiveUrl(result.pagesUrl) : null;
+  const live = published && result.pagesUrl ? await resolveLiveUrl(result.pagesUrl) : null;
+  const liveUrl = live?.url ?? null;
 
   const settled = await transitionWebsite(
     docRef,
@@ -968,6 +969,7 @@ export async function settleWebsiteBuild(input: {
         site,
         config: { ...blankWebsiteConfig(), ...(site.config ?? {}) },
         liveUrl,
+        liveUrlResolved: live?.resolved ?? false,
         result,
         jobId,
       }),

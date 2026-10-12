@@ -181,6 +181,43 @@ export async function upsertChannelConfig(
   );
 }
 
+/**
+ * A read-decide-write of the profile or one channel doc in ONE transaction,
+ * for a writer whose patch depends on the doc as it is now (or on other docs
+ * it reads through `tx` — all reads before the write). `decide` gets the doc's
+ * current data (null when it does not exist) and returns the patch to merge,
+ * or null to write nothing. A doc created here gets the same seed as the
+ * upserts above.
+ */
+export async function transactAiAgentDoc<T>(
+  subAccountId: string,
+  docId: typeof PROFILE_DOC | ConfiguredChannelId,
+  decide: (
+    tx: FirebaseFirestore.Transaction,
+    current: Record<string, unknown> | null,
+  ) => Promise<{ patch: Record<string, unknown> | null; result: T }>,
+): Promise<T> {
+  await maybeMigrateLegacy(subAccountId);
+  const db = getAdminDb();
+  const ref = db.doc(
+    docId === PROFILE_DOC ? profilePath(subAccountId) : channelPath(subAccountId, docId),
+  );
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const { patch, result } = await decide(tx, snap.exists ? (snap.data() ?? {}) : null);
+    if (patch) {
+      const seed = snap.exists
+        ? {}
+        : {
+            ...(docId === PROFILE_DOC ? DEFAULT_AI_AGENT_PROFILE : defaultsForChannel(docId)),
+            createdAt: FieldValue.serverTimestamp(),
+          };
+      tx.set(ref, { ...seed, ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    }
+    return result;
+  });
+}
+
 export async function incrementChannelTokens(
   subAccountId: string,
   channelId: ConfiguredChannelId,

@@ -24,8 +24,15 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
   markGitpageBuildSucceeded: async () => {},
   markGitpageKeyInvalid: async () => {},
 }));
+// GitLab's path URL 308s to the project's unique domain, as in production.
+const UNIQUE = "https://acme-site-1a2b3c.gitlab.io/";
 vi.mock("@/lib/webhooks/public-fetch", () => ({
-  publicFetch: async () => new Response(null, { status: 200 }),
+  publicFetch: async (url: string) =>
+    url === "https://acme.gitlab.io/site"
+      ? new Response(null, { status: 308, headers: { location: "https://acme-site-1a2b3c.gitlab.io/" } })
+      : url === "https://acme-root.gitlab.io/"
+        ? new Response(null, { status: 308 }) // a redirect with no Location: unresolved
+        : new Response(null, { status: 200 }),
 }));
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: async () => undefined }));
 
@@ -126,9 +133,9 @@ describe("the hand-off runs once, for the caller that settled the site", () => {
   it("a premium publish runs it and records what it did — the speed-to-lead workflow as a draft", async () => {
     expect(await settleAndFlush(seedSite())).toBe("ready");
     expect(spy()).toHaveBeenCalledTimes(1);
-    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: "https://acme.gitlab.io/site" });
+    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: UNIQUE });
     expect(provisioning()).toMatchObject({
-      hostname: "acme.gitlab.io",
+      hostname: "acme-site-1a2b3c.gitlab.io",
       formId,
       chatAllowlisted: true,
       chatEnabled: false,
@@ -172,11 +179,22 @@ describe("the hand-off runs once, for the caller that settled the site", () => {
   });
 });
 
+describe("an address the walk could not resolve", () => {
+  it("is stored as reported, and its host is NOT allow-listed — the summary says why", async () => {
+    const unresolved = { ...published, pagesUrl: "https://acme-root.gitlab.io/" };
+    expect(await settleAndFlush(seedSite(), unresolved)).toBe("ready");
+    expect(mem.read(SITE)).toMatchObject({ liveUrl: "https://acme-root.gitlab.io/" });
+    expect(provisioning()).toMatchObject({ hostname: null, chatAllowlisted: false });
+    expect(provisioning()?.chatSkippedReason).toContain("did not lead to the site's own host");
+    expect(mem.read("subAccounts/sa1/aiAgent/web-chat")?.webChat).toMatchObject({ allowedDomains: [] });
+  });
+});
+
 describe("a workspace whose website gate is off", () => {
   it("gets its site settled and nothing more: no summary, no chat, no profile, no workflow", async () => {
     mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: false });
     expect(await settleAndFlush(seedSite())).toBe("ready");
-    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: "https://acme.gitlab.io/site" });
+    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: UNIQUE });
     expect(provisioning() ?? null).toBeNull();
     expect(mem.read("subAccounts/sa1/aiAgent/web-chat")).toBeUndefined();
     expect(mem.read("subAccounts/sa1/aiAgent/profile")).toBeUndefined();
@@ -188,7 +206,7 @@ describe("the hand-off can never move the site's build state", () => {
   it("a hand-off that throws is recorded on the summary; the site stays ready", async () => {
     spy().mockRejectedValueOnce(new Error("chat store down"));
     expect(await settleAndFlush(seedSite())).toBe("ready");
-    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: "https://acme.gitlab.io/site" });
+    expect(mem.read(SITE)).toMatchObject({ status: "ready", liveUrl: UNIQUE });
     expect(provisioning()).toMatchObject({ formId, errors: ["chat store down"], workflowId: null });
   });
 
@@ -225,5 +243,42 @@ describe("the hand-off can never move the site's build state", () => {
     expect(before).toBeNull();
     expect(written).not.toBeNull();
     expect(rest).toEqual(restBefore);
+  });
+});
+
+describe("the site moving on between the settle and the hand-off (breaker, PR #400)", () => {
+  const CHAT = "subAccounts/sa1/aiAgent/web-chat";
+  const PROFILE = "subAccounts/sa1/aiAgent/profile";
+
+  it.each([
+    ["removed", () => mem.db.doc(SITE).delete()],
+    ["rebuilt as a new job", () => mem.db.doc(SITE).update({ status: "queued", gitpageJobId: "build_NEW", liveUrl: null })],
+    ["gated off", () => mem.db.doc("subAccounts/sa1").update({ websiteEnabledByAgency: false })],
+  ])("site %s right after the settle: the hand-off writes nothing for it", async (_label, move) => {
+    expect(await settle(seedSite())).toBe("ready");
+    await move();
+    await flushAfterResponse();
+    expect(spy()).toHaveBeenCalledTimes(1);
+    expect(mem.read(CHAT)).toBeUndefined();
+    expect(mem.read(PROFILE)).toBeUndefined();
+    expect(mem.list("workflows")).toEqual([]);
+  });
+
+  it("a refused-address failure, then a good Published, then repeats of both: ONE hand-off", async () => {
+    const site = seedSite();
+    expect(await settleAndFlush(site, { ...published, pagesUrl: null, pagesUrlRefused: "http://x" })).toBe("failed");
+    const failedSite = mem.read(SITE) as unknown as WebsiteDoc;
+    expect(await settleAndFlush(failedSite)).toBe("ready");
+    expect(await settleAndFlush(mem.read(SITE) as unknown as WebsiteDoc)).toBe("noop");
+    expect(await settleAndFlush(failedSite)).toBe("noop");
+    expect(spy()).toHaveBeenCalledTimes(1);
+  });
+
+  it("three settles at once (tick, callback, re-check) on one read: ONE hand-off", async () => {
+    const site = seedSite();
+    const outs = await Promise.all([settle(site), settle(site), settle(site, published, 9)]);
+    await flushAfterResponse();
+    expect(outs.filter((o) => o === "ready")).toHaveLength(1);
+    expect(spy()).toHaveBeenCalledTimes(1);
   });
 });

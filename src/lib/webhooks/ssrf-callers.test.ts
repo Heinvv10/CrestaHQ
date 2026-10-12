@@ -158,13 +158,13 @@ describe("tenant-URL fetchers refuse internal addresses", () => {
     });
 
     it("never connects to an internal address, and returns it unresolved", async () => {
-      expect(await resolveLiveUrl(siteUrl)).toBe(siteUrl);
+      expect(await resolveLiveUrl(siteUrl)).toEqual({ url: siteUrl, resolved: false });
       expect(connections).toBe(0);
     });
 
     it("control: outside production it DOES connect (the test can see an attempt)", async () => {
       vi.stubEnv("NODE_ENV", "development");
-      expect(await resolveLiveUrl(siteUrl)).toBe(siteUrl);
+      expect(await resolveLiveUrl(siteUrl)).toEqual({ url: siteUrl, resolved: false });
       expect(connections).toBe(1);
     });
   });

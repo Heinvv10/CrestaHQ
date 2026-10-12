@@ -12,8 +12,10 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
+const ADMIN = { uid: "u_admin", subAccountId: "sa1", subAccountRole: "admin" };
+const auth = vi.hoisted(() => ({ impl: null as null | (() => unknown) }));
 vi.mock("@/lib/auth/require-tenancy", () => ({
-  requireSubAccountAdmin: async () => ({ uid: "u_admin", subAccountId: "sa1", subAccountRole: "admin" }),
+  requireSubAccountAdmin: async () => (auth.impl ? auth.impl() : ADMIN),
 }));
 const scrape = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/firecrawl/client", async (importOriginal) => {
@@ -52,6 +54,7 @@ const seedSite = (patch: Record<string, unknown> = {}) =>
   });
 
 beforeEach(() => {
+  auth.impl = null;
   mem.clear();
   seedSub();
   seedSite();
@@ -76,6 +79,7 @@ describe("refresh-kb from a built site ({ siteId })", () => {
   it.each([
     ["switched off", { websiteEnabledByAgency: false }],
     ["absent", { websiteEnabledByAgency: undefined }],
+    ["truthy but not literally true", { websiteEnabledByAgency: "true" }],
   ])("is refused with 403 when the workspace's website gate is %s, and scrapes nothing", async (_label, patch) => {
     seedSub(patch);
     const res = await refresh({ siteId: "site1" });
@@ -87,6 +91,10 @@ describe("refresh-kb from a built site ({ siteId })", () => {
   it.each([
     ["a path", "x/y/z"],
     ["a dot segment", ".."],
+    ["a single dot", "."],
+    ["a climb into another tenant", "../../sa2/website/site9"],
+    ["a reserved name", "__x__"],
+    ["over-long", "a".repeat(2000)],
   ])("answers 404 for a site id that is %s, before any read", async (_label, siteId) => {
     const get = vi.spyOn(mem.db, "doc");
     const res = await refresh({ siteId });
@@ -123,5 +131,30 @@ describe("refresh-kb from a built site ({ siteId })", () => {
     const res = await refresh();
     expect(res.status).toBe(200);
     expect(scrape.mock.calls.map((c) => c[0])).toEqual(["https://acme.example/"]);
+  });
+});
+
+describe("refresh-kb { siteId } against another tenant or a non-admin (breaker, PR #400)", () => {
+  beforeEach(() => {
+    mem.seed("subAccounts/sa2/website/site9", { subAccountId: "sa2", status: "ready", liveUrl: "https://victim.example/" });
+  });
+
+  it("a site id that exists only under another sub-account is 404, and its site is never scraped", async () => {
+    expect((await refresh({ siteId: "site9" })).status).toBe(404);
+    expect(scrape).not.toHaveBeenCalled();
+  });
+
+  it("a caller the admin check refuses gets its answer and nothing is scraped", async () => {
+    const { NextResponse } = await import("next/server");
+    auth.impl = () => NextResponse.json({ error: "forbidden" }, { status: 403 });
+    expect((await refresh({ siteId: "site1" })).status).toBe(403);
+    expect(scrape).not.toHaveBeenCalled();
+  });
+
+  it("a siteId that is not a string falls back to the profile's URL, never a site path", async () => {
+    mem.seed(PROFILE, { websiteUrl: "https://acme.example/" });
+    await refresh({ siteId: { toString: "x" } });
+    await refresh({ siteId: 123 });
+    expect(scrape.mock.calls.map((c) => c[0])).toEqual(["https://acme.example/", "https://acme.example/"]);
   });
 });
