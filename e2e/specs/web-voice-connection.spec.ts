@@ -31,16 +31,21 @@ const restoreValue = (v: unknown) => (v === undefined ? FieldValue.delete() : v)
 const FAKE_KEY = `e2e_not_a_key_${"x".repeat(20)}`;
 
 let prior: Record<string, unknown> = {};
+// Playwright runs afterAll even when beforeAll throws: restore only what was
+// actually captured, never `undefined` over the fixture's real values.
+let captured = false;
 
 test.beforeAll(async () => {
   await guard();
-  // A real connection on the fixture would be removed by the DELETE below.
-  expect((await secretRef().get()).exists, "fixture PRIMARY must have no Web Voice connection").toBe(false);
   const data = (await primaryRef().get()).data() ?? {};
   prior = { webVoiceEnabledByAgency: data.webVoiceEnabledByAgency, webVoiceMeta: data.webVoiceMeta };
+  captured = true;
+  // A real connection on the fixture would be removed by the DELETE below.
+  expect((await secretRef().get()).exists, "fixture PRIMARY must have no Web Voice connection").toBe(false);
 });
 
 test.afterAll(async () => {
+  if (!captured) return;
   await guard();
   await primaryRef().update({
     webVoiceEnabledByAgency: restoreValue(prior.webVoiceEnabledByAgency),
