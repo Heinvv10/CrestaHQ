@@ -29,10 +29,10 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       }
       const lines = snap.docs.map((d) => {
         const w = d.data() as Record<string, unknown>;
+        // The rule update_website_cta checks a confirmed name against.
         const name =
-          (w.name as string) ||
-          ((w.config as { heading?: string } | undefined)?.heading ??
-            "Untitled site");
+          oneLine((w.name as string) || (w.config as { heading?: string } | undefined)?.heading) ||
+          "Untitled site";
         const status = w.status as string;
         const detail =
           status === "ready" && w.liveUrl
@@ -45,7 +45,7 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
         // Stored free text (the wizard saves a draft's config as typed).
         const cta = oneLine((w.config as { cta_link?: unknown } | undefined)?.cta_link).slice(0, 300);
         // The name on one line: update_website_cta checks it against the id.
-        return `- “${oneLine(name)}”: ${detail}; call-to-action link: ${cta || "none set"}; id: ${d.id}`;
+        return `- “${name}”: ${detail}; call-to-action link: ${cta || "none set"}; id: ${d.id}`;
       });
       return {
         resultText: `Websites in this workspace:\n${lines.join("\n")}\n(To point a site's call-to-action at a form or booking page, use update_website_cta — it rebuilds and republishes the site.)`,
