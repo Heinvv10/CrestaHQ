@@ -1,5 +1,6 @@
 import "server-only";
 
+import { domainToUnicode } from "node:url";
 import { parseVideoUrl } from "@/lib/community/video-embed";
 import { str } from "./helpers";
 import { hasUnsafeText, lookAlikeProblem, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
@@ -44,11 +45,25 @@ export function bodyText(raw: unknown, key: string, label: string, max: number):
   return { text };
 }
 
-/** A link as the card lists it, flagged when its host could pass for another (look-alike letters, punycode). */
+/**
+ * A link as the card lists it, with a CAUTION note when it doesn't go where
+ * it reads: userinfo before an "@" (https://apple.com@evil.example goes to
+ * evil.example), or a host with look-alike / non-Latin letters (punycode is
+ * decoded first). The host is the one the browser would use (new URL).
+ */
 function linkOnCard(link: string): string {
-  const host = link.replace(/^https?:\/\//i, "").split(/[/?#:]/)[0] ?? "";
-  const why = /^[\x00-\x7f]*$/.test(host) ? (/(^|\.)xn--/i.test(host) ? "is punycode for a non-Latin address" : null) : (lookAlikeProblem(host, []) ?? "has non-Latin letters");
-  return why ? `${link} (CAUTION: its address ${why})` : link;
+  let url: URL;
+  try {
+    url = new URL(/^https?:\/\//i.test(link) ? link : `https://${link}`);
+  } catch {
+    return `${link} (CAUTION: it can't be read as a web address)`;
+  }
+  const notes: string[] = [];
+  const host = domainToUnicode(url.hostname) || url.hostname;
+  const authority = link.replace(/^https?:\/\//i, "").split(/[/?#]/)[0] ?? "";
+  if (authority.includes("@")) notes.push(`it goes to ${host}, not to the part before the "@"`);
+  if (!/^[\x00-\x7f]*$/.test(host)) notes.push(`its address (${host}) ${lookAlikeProblem(host, []) ?? "has non-Latin letters"}`);
+  return notes.length ? `${link} (CAUTION: ${notes.join("; ")})` : link;
 }
 
 /** How the card shows text members will read: all of it (on one line), its length, and every link in it. */

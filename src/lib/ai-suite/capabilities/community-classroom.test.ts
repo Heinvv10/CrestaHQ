@@ -106,12 +106,17 @@ describe("add_course", () => {
     expect(body.proposal.summary).toContain(`Description (${description.length} characters): “${description}”.`);
   });
 
-  it("a link whose host uses look-alike letters or punycode is flagged on the card; a plain one is not", async () => {
-    const description = "Pay at https://p\u0430ypal.example/x or https://xn--pypal-4ve.example or https://pay-pal.example/ok";
+  it("a link whose host uses look-alike letters (as written or as punycode) or hides behind an \"@\" is flagged on the card; a plain one is not", async () => {
+    const description =
+      "Pay at https://p\u0430ypal.example/x or https://xn--pypal-4ve.example or https://apple.com@evil.example/x or www.apple.com:443@evil.example or https://pay-pal.example/ok or https://[evil";
     const body = await (await ask("add_course", { ...COURSE_ARGS, description })).json();
+    const mixed = "(p\u0430ypal.example) mixes Latin with Cyrillic or Greek letters in one word";
     expect(body.proposal.summary).toContain(
-      "Links in it: https://p\u0430ypal.example/x (CAUTION: its address mixes Latin with Cyrillic or Greek letters in one word), " +
-        "https://xn--pypal-4ve.example (CAUTION: its address is punycode for a non-Latin address), https://pay-pal.example/ok."
+      `Links in it: https://p\u0430ypal.example/x (CAUTION: its address ${mixed}), ` +
+        `https://xn--pypal-4ve.example (CAUTION: its address ${mixed}), ` +
+        'https://apple.com@evil.example/x (CAUTION: it goes to evil.example, not to the part before the "@"), ' +
+        'www.apple.com:443@evil.example (CAUTION: it goes to evil.example, not to the part before the "@"), ' +
+        "https://pay-pal.example/ok, https://[evil (CAUTION: it can't be read as a web address)."
     );
   });
 
