@@ -181,6 +181,34 @@ test("a stored accent that is not a hex colour never reaches the page", async ({
   });
 });
 
+test("the thank-you page drops a hostile stored accent and follows the page's preset", async ({ browser }) => {
+  const hostile = await seedPage("thanks-accent", {
+    appearance: { theme: "light", accent: "red;position:fixed;inset:0;background:url(https://evil.example/x)", hideChrome: false, hideTitle: false },
+  });
+  const noir = await seedPage("thanks-noir", { themePreset: "noir-lime" });
+  const context = await browser.newContext({ storageState: { cookies: [], origins: [] }, colorScheme: "light" });
+  try {
+    const page = await context.newPage();
+
+    // The raw response, where a value written into a style attribute would be.
+    const raw = await page.request.get(`/co/${sa}/${hostile.slug}/thanks`);
+    expect(raw.status()).toBe(200);
+    expect(await raw.text()).not.toContain("evil.example");
+    await page.goto(`/co/${sa}/${hostile.slug}/thanks`);
+    await expect(page.getByRole("heading", { level: 1, name: "Payment received" })).toBeVisible({ timeout: 30_000 });
+    expect(await page.content()).not.toContain("evil.example");
+    await expect(page.locator("main")).toHaveCSS("background-color", "rgb(250, 250, 250)");
+    await expect(page.locator("main")).toHaveCSS("position", "static");
+
+    await page.goto(`/co/${sa}/${noir.slug}/thanks`);
+    await expect(page.getByRole("heading", { level: 1, name: "Payment received" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("main")).toHaveCSS("background-color", "rgb(5, 5, 5)");
+    await expect(page.locator("main")).toHaveCSS("color", "rgb(245, 245, 244)");
+  } finally {
+    await context.close();
+  }
+});
+
 test("the editor opens an old page on Clean and saves the preset that is picked", async ({ page, browser }) => {
   const p = await seedPage("edit");
   const stored = async () => (await pages().doc(p.id).get()).data() ?? {};
