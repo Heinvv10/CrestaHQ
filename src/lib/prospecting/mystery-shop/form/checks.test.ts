@@ -144,3 +144,46 @@ describe("the last look before the answer", () => {
     expect(await waitForSignal(stubPage({ captcha: null, thanks: 0 }), state, 0, 1_000)).toBeNull();
   });
 });
+
+describe("a refusal is held until the message goes quiet", () => {
+  const refused = (): GuardState => ({ ...taken(), messagesOut: 1, messagesAnswered: 1, rejected: "spam" });
+
+  it("one request carried the message: rejected once RENDER_MS passed with no other", async () => {
+    expect(await waitForSignal(stubPage({ captcha: null, thanks: 0 }), refused(), 0, 10_000)).toEqual({ rejected: "spam" });
+    expect(Date.now()).toBe(1_500);
+  });
+
+  it("the enquiry goes out while the refusal is held (thank-you text showing): no signal, not rejected", async () => {
+    const state = refused();
+    const stub: Stub = { captcha: null, thanks: 1 };
+    stub.onWait = () => {
+      if (Date.now() === 1_000) state.messagesOut++;
+    };
+    expect(await waitForSignal(stubPage(stub), state, 0, 10_000)).toBeNull();
+  });
+
+  it("the window closes while it is held: rejected", async () => {
+    expect(await waitForSignal(stubPage({ captcha: null, thanks: 0 }), refused(), 0, 1_000)).toEqual({ rejected: "spam" });
+  });
+});
+
+describe("a request carrying the message still unanswered", () => {
+  it("holds the bare 2xx until it is answered, then the 2xx stands", async () => {
+    const state = { ...taken(), messagesOut: 2, messagesAnswered: 1 };
+    const stub: Stub = { captcha: null, thanks: 0 };
+    stub.onWait = () => {
+      if (Date.now() >= 3_000) state.messagesAnswered = 2;
+    };
+    expect(await waitForSignal(stubPage(stub), state, 0, 10_000)).toEqual(BARE);
+    expect(Date.now()).toBeGreaterThanOrEqual(3_000);
+  });
+
+  it("one that goes out after the 2xx and is still unanswered as the window closes: no signal, not post_2xx", async () => {
+    const state = { ...taken(), messagesOut: 1, messagesAnswered: 1 };
+    const stub: Stub = { captcha: null, thanks: 0 };
+    stub.onWait = () => {
+      if (Date.now() === 250) state.messagesOut++;
+    };
+    expect(await waitForSignal(stubPage(stub), state, 0, 1_000)).toBeNull();
+  });
+});

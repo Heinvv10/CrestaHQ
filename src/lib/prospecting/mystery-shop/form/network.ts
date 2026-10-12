@@ -76,6 +76,8 @@ export interface GuardState {
   carrierOk: string | null;
   /** After the click: requests carrying the message that were sent (or tried). With several, a refusal is never `rejected`. */
   messagesOut: number;
+  /** How many of those have been answered (or failed): while any is pending, nothing confirms (checks.ts). */
+  messagesAnswered: number;
   /** After the click: a request carrying the message ended any way but a 2xx — then no signal confirms it (checks.ts). */
   carrierFailed: string | null;
   /** After the click: a 2xx answer to the enquiry (a request carrying the message) that says the site refused it. */
@@ -96,7 +98,7 @@ export function newGuardState(): GuardState {
   return {
     blocked: null, fetchError: null, mainDocuments: 0, tooManyRedirects: false, redirect: null, captcha: null,
     clickedAt: null, postsOut: 0, prgPage: null, postOk: null, carrierOk: null, rejected: null, refusedLate: null, requests: 0, bytes: 0,
-    tooHeavy: false, navigatedTo: null, formUrl: null, messagesOut: 0, carrierFailed: null,
+    tooHeavy: false, navigatedTo: null, formUrl: null, messagesOut: 0, messagesAnswered: 0, carrierFailed: null,
   };
 }
 
@@ -289,6 +291,7 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
         if (!signal.aborted) console.error("[mystery-shop/form] route abort failed", e);
       });
     } finally {
+      if (enquiry) state.messagesAnswered++;
       release();
     }
   });

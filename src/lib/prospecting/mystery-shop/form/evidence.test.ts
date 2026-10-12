@@ -40,6 +40,15 @@ describe("carriesMessage", () => {
     expect(carriesMessage("message=Do+you+do+plumber+in%0D%0AGqeberha%3F", markers)).toBe(false);
   });
 
+  it("matches a line hard-wrapped inside its words (a narrow textarea)", () => {
+    expect(carriesMessage("message=Do+you%0D%0Ado+plu%0D%0Amber+in+Gqe%0D%0Aberha%3F+What%27s+your+earliest+availa%0D%0Ability%3F", markers)).toBe(true);
+  });
+
+  it("a page holding the message's words in another order is not the message", () => {
+    expect(carriesMessage("What's your earliest availability? Do you do plumber in Gqeberha?", markers)).toBe(false);
+    expect(carriesMessage("q=Gqeberha+plumber+availability+earliest+your+What%27s+in+do+you+Do", markers)).toBe(false);
+  });
+
   it("a message line with runs of spaces or tabs matches as the browser sends it", () => {
     const spaced = enquiryMarkers({ email: "info@crestahq.com", message: "Do you  do plumber\tin Gqeberha?" });
     expect(carriesMessage("m=Do+you++do+plumber%09in+Gqeberha%3F", spaced)).toBe(true);

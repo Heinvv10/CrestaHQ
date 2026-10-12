@@ -7,8 +7,9 @@ import { runFormFill, type FormRunInput } from "./engine";
 /**
  * The requests carrying the message, against fixture sites in the real
  * headless Chromium (PR 404 breaker round): one that ends any way but a 2xx
- * keeps every other answer from confirming the enquiry, a refusal is never
- * `rejected` while the message went out more than once, and a textarea that
+ * keeps every other answer from confirming the enquiry — and so does one
+ * still unanswered; a refusal is held until the message goes quiet and is
+ * never `rejected` while it went out more than once; and a textarea that
  * hard-wraps the message as it submits still counts as carrying it.
  */
 
@@ -22,6 +23,9 @@ async function run(routes: Record<string, Handler>, limits: FormRunInput["limits
 }
 const ok: Handler = (_q, res) => html(res, "{}", 200);
 const script = (js: string) => `<script>document.querySelector("form").addEventListener("submit", (e) => { ${js} });</script>`;
+/** The message to /api/log, then — once that was answered — to /api/enquiry. */
+const LOG_THEN_ENQUIRY = `e.preventDefault(); const body = new URLSearchParams(new FormData(e.target));
+  fetch("/api/log", { method: "POST", body }).then(() => fetch("/api/enquiry", { method: "POST", body }));`;
 /** A copy of the message to /api/log as the native POST goes out (kept alive across the navigation). */
 const KEEPALIVE_LOG = `fetch("/api/log", { method: "POST", body: new URLSearchParams(new FormData(e.target)), keepalive: true });`;
 
@@ -77,7 +81,51 @@ describe.skipIf(skipBrowser)("a request carrying the message that ends any way b
   });
 });
 
+describe.skipIf(skipBrowser)("a request carrying the message still unanswered", () => {
+  it("/api/log 2xx, the enquiry still in flight when a bare 2xx would count (500 after 3 s): uncertain, not sent", async () => {
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + script(LOG_THEN_ENQUIRY)),
+      "/api/log": ok, "/api/enquiry": (_q, res) => void setTimeout(() => html(res, "", 500), 3_000),
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/log", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("/api/log 2xx, the enquiry never answered inside the window: uncertain, not sent", async () => {
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + script(LOG_THEN_ENQUIRY)),
+      "/api/log": ok, "/api/enquiry": () => undefined,
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/log", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("one fetch of the enquiry, the page navigates to /thanks before its 2xx lands: sent once it lands", async () => {
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + script(`e.preventDefault();
+        fetch("/api/enquiry", { method: "POST", body: new URLSearchParams(new FormData(e.target)) });
+        setTimeout(() => { location.href = "/thanks"; }, 50);`)),
+      "/api/enquiry": (_q, res) => void setTimeout(() => html(res, "{}", 200), 400),
+      "/thanks": (_q, res) => html(res, "<h1>Thank you for your message</h1>"),
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "sent" });
+  });
+});
+
 describe.skipIf(skipBrowser)("a refusal while the message went out more than once", () => {
+  it("a copy refused (success:false), the enquiry 400 ms after that answer: uncertain, never rejected", async () => {
+    const json = { "content-type": "application/json" };
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + script(`e.preventDefault(); const body = new URLSearchParams(new FormData(e.target));
+        fetch("/api/subscribe", { method: "POST", body }).then(() => new Promise((r) => setTimeout(r, 400)))
+          .then(() => fetch("/api/enquiry", { method: "POST", body }));`)),
+      "/api/subscribe": (_q, res) => html(res, '{"success":false}', 200, json), "/api/enquiry": ok,
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/subscribe", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
   it("a same-site copy says success:false before the enquiry's 2xx lands: uncertain, never rejected", async () => {
     const json = { "content-type": "application/json" };
     const out = await run({
@@ -102,6 +150,17 @@ describe.skipIf(skipBrowser)("a message the browser hard-wraps as it submits", (
     });
     expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
     expect(site.posts[0].body).toContain("%0D%0A");
+    expect(out).toMatchObject({ kind: "sent" });
+  });
+
+  it('a textarea with wrap="hard" cols=5 (breaks inside words), one native POST answered by a thank-you page: sent', async () => {
+    const fields = SIMPLE_FIELDS.replace("<textarea ", '<textarea wrap="hard" cols="5" ');
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(fields)),
+      "/send": (_q, res) => html(res, "<h1>Thank you for your message</h1>"),
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
+    expect(site.posts[0].body).toMatch(/[a-z]%0D%0A[a-z]/i);
     expect(out).toMatchObject({ kind: "sent" });
   });
 });

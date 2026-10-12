@@ -94,37 +94,47 @@ export type Outcome =
  * (`post_2xx`) only once RENDER_MS has passed without either, or the window
  * closes — never later than `confirmMs`. No signal confirms once a request
  * carrying the message was answered 4xx/5xx (`carrierFailed`): the enquiry's
- * own endpoint may have been the one that failed (null → uncertain). A refusal
- * is `rejected` only when the message went out once: with several requests
- * carrying it, the refused one may not have been the enquiry (null).
+ * own endpoint may have been the one that failed (null → uncertain), nor
+ * while one is still unanswered (it may yet fail; at the window's end, null).
+ * A refusal is held for RENDER_MS (or until the window closes) — the page may
+ * still send the enquiry — and is `rejected` only when the message went out
+ * once: with several, the refused one may not have been the enquiry.
  */
 export async function waitForSignal(page: Page, state: GuardState, thanksBefore: number, confirmMs: number): Promise<Outcome> {
   const until = Date.now() + confirmMs;
   const formUrl = state.formUrl ?? "";
   const captchaNow = async () => (await captchaMarker(page, state)).marker;
   const refusal = (reason: string): Outcome => (state.messagesOut > 1 ? null : { rejected: reason });
+  const pending = () => state.messagesAnswered < state.messagesOut;
   const settled = async (seen: NonNullable<Outcome>): Promise<Outcome> => {
     const late = await captchaNow();
     if (late) return { captcha: late };
     if (state.rejected) return refusal(state.rejected);
-    if (state.carrierFailed) return null;
+    if (state.carrierFailed || pending()) return null;
     return state.refusedLate ? { refusedLate: state.refusedLate } : seen;
   };
   /** When a bare 2xx was first all there was to go on. */
   let postSeenAt: number | null = null;
+  /** When a refusal was first seen. */
+  let refusedSeenAt: number | null = null;
   while (Date.now() < until) {
     // The submit went to a refused address and nothing else was posted: nothing was sent.
     if (state.blocked && state.postsOut === 0) throw refuse("ssrf_blocked", `The form submits to a non-public address: ${state.blocked}`);
     const marker = await captchaNow();
     if (marker) return { captcha: marker };
-    if (state.rejected) return refusal(state.rejected);
+    if (state.rejected) {
+      refusedSeenAt ??= Date.now();
+      if (Date.now() - refusedSeenAt >= RENDER_MS) return refusal(state.rejected);
+    }
     if (state.refusedLate) return { refusedLate: state.refusedLate };
     if (state.tooHeavy) return null;
-    if (state.prgPage) {
+    // A refusal being held, or a request carrying the message not yet answered: nothing confirms yet.
+    const waiting = state.rejected !== null || pending();
+    if (state.prgPage && !waiting) {
       const n = await bounded(page.evaluate(PRG_CONFIRM_SCRIPT).catch(() => -1));
       if (!timedOut(n) && (n as number) > 0) return settled({ signal: "navigation", finalUrl: state.prgPage });
     }
-    if (state.carrierOk) {
+    if (state.carrierOk && !waiting) {
       const now = page.url();
       const seen =
         state.navigatedTo !== null
@@ -142,6 +152,7 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
     }
     await page.waitForTimeout(POLL_MS);
   }
+  if (state.rejected) return refusal(state.rejected);
   // The window closed while the page still had time to say more: the 2xx stands.
   if (postSeenAt !== null && !state.tooHeavy) return settled({ signal: "post_2xx", finalUrl: page.url() });
   return null;

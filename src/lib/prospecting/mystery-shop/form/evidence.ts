@@ -31,14 +31,14 @@ export interface EnquiryMarkers {
   message: string[];
 }
 
-/** Any run of whitespace as one space: a textarea with wrap="hard" breaks long lines (CR LF) as it submits. */
-const squash = (s: string) => s.replace(/\s+/g, " ");
+/** Whitespace removed: a textarea with wrap="hard" breaks long lines (CR LF) as it submits, inside a word if it must. */
+const squash = (s: string) => s.replace(/\s+/g, "");
 
 /** Our email address and the message's longest line — the two things only our submission contains. */
 export function enquiryMarkers(id: { email: string; message: string }): EnquiryMarkers {
-  const line = squash(id.message.split(/\r?\n/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), ""));
+  const line = id.message.split(/\r?\n/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), "");
   const email = id.email.toLowerCase();
-  const ours = line.length >= 12 ? [line.toLowerCase()] : [];
+  const ours = line.length >= 12 ? [squash(line.toLowerCase())] : [];
   return { needles: [email, ...ours], message: ours.length ? ours : [email] };
 }
 
