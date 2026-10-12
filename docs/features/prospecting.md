@@ -63,4 +63,6 @@ Sections 5 (website performance), 7 (AI-agent readiness) and 8 (AI answer-engine
 
 ## Not yet
 
+**REVISED 2026-10-12** — the mystery shop (PR 5) and the ApexSignal push (PR 6) are live; only the sentence about `POST /api/v1/contacts` below still applies. The next sentence is the original text, kept for history.
+
 Mystery shop, ApexSignal push — each its own PR in the plan. (The workflow trigger, merge tags, approach guard and daily cap are PR 4: see [PR 4 decisions](../programme/prospecting-module.md#pr-4-decisions-2026-09-27-recorded-from-the-build).) `POST /api/v1/contacts` ignores a `prospecting` field (like any unknown top-level field) and `POST /api/v1/contacts/upsert` refuses it with a 400 — ApexSignal's push (PR 6) either PATCHes after create or extends one of them.
