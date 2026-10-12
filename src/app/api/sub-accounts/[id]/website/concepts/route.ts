@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { fetchConcepts, gitpageIsConfigured } from "@/lib/gitpage/client";
+import { isDocId } from "@/lib/server/doc-id";
 import { isNicheKey } from "@/lib/website/niches";
 import {
   requireWebsiteEnabledSub,
@@ -53,6 +54,8 @@ export async function GET(
   ctx: { params: Promise<{ id: string }> },
 ) {
   const { id: subAccountId } = await ctx.params;
+  // HARDENING: the id becomes a Firestore path; a non-id is "not found" before any read.
+  if (!isDocId(subAccountId)) return fail("not_found", "Sub-account not found", 404);
   const access = await requireSubAccountMember(request, subAccountId);
   if (access instanceof NextResponse) {
     // The tenancy helper's own answers keep their status and gain a code.

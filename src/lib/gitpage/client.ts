@@ -466,6 +466,9 @@ export interface GitpageConceptCard {
  * GET /api/v1/concepts?niche=… — read-only, cached by gitpage for 5 min.
  * Pass the niche key, or null for the generic (no-niche) concepts.
  */
+/** HARDENING: how long the concepts proxy waits for gitpage. */
+export const CONCEPTS_TIMEOUT_MS = 8000;
+
 export async function fetchConcepts(
   niche: string | null,
 ): Promise<GitpageConceptCard[]> {
@@ -473,6 +476,8 @@ export async function fetchConcepts(
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${getApiKey()}` },
     next: { revalidate: 300 },
+    // HARDENING: a hung gitpage must not hold the picker's request open; the timeout rejects and the route answers 502.
+    signal: AbortSignal.timeout(CONCEPTS_TIMEOUT_MS),
   } as RequestInit);
   let body: Record<string, unknown> = {};
   try {

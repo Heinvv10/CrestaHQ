@@ -189,6 +189,39 @@ describe("GET /api/sub-accounts/[id]/website/concepts", () => {
     expect(res.headers.get("cache-control")).toBeNull();
   });
 
+  it("refuses a sub-account id that is a path, before any read or gitpage call", async () => {
+    for (const id of ["sa1/subAccountMembers/u_member", "..", "__x__"]) {
+      const res = await GET(
+        new Request("https://app.test/api/sub-accounts/x/website/concepts", { headers: { "x-user-uid": "u_member" } }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ code: "not_found" });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("gives gitpage 8 seconds, then answers the 502", async () => {
+    const timeout = new AbortController();
+    const spy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+    try {
+      fetchMock.mockImplementationOnce((_url: string, init: RequestInit) =>
+        init.signal === timeout.signal
+          ? new Promise((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)))
+          : Promise.resolve(Response.json({ concepts: [CARD] })),
+      );
+      const pending = get();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      timeout.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      const res = await pending;
+      expect(spy).toHaveBeenCalledWith(8000);
+      expect(res.status).toBe(502);
+      expect(await res.json()).toMatchObject({ code: "upstream" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("reports a gitpage network failure as the same 502", async () => {
     fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED 10.0.0.1"));
     const res = await get();
