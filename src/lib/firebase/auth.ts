@@ -94,6 +94,9 @@ export async function sendPasswordReset(email: string): Promise<void> {
   };
   if (!res.ok) throw new Error(body.error ?? "Could not send reset.");
   // No platform mailbox on this deployment: Firebase sends its own mail.
+  // Only this leg retries a network blip: the POST above is rate-limited per
+  // address, so a retry would spend the caller's allowance. A blip after
+  // Firebase accepted the request can send a second reset mail; accepted.
   if (body.fallback) {
     await retryOnNetworkFailure(() => sendPasswordResetEmail(getFirebaseAuth(), email));
   }
