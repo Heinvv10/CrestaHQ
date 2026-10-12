@@ -363,6 +363,10 @@ const ALREADY_BUILDING_MESSAGE =
 
 const SITE_NOT_FOUND_MESSAGE = "Website not found in this workspace.";
 
+/** As the wizard's draft save words it (website/[siteId] PATCH). */
+const UNSETTLED_FAILURE_MESSAGE =
+  "This site's last build can still finish — use Re-check now, or reset it, before changing it.";
+
 const GATE_OFF_MESSAGE =
   "The website builder is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.";
 
@@ -542,6 +546,14 @@ export async function submitWebsiteBuildForSubAccount(input: {
    * no longer there is refused (404) instead of being created by this build.
    */
   requireExisting?: boolean;
+  /**
+   * A call-to-action re-point: the build is submitted with `config`, but
+   * only its `cta_link` is written back, so a wizard save that lands while
+   * gitpage is being called is kept. And, as the wizard's draft save does,
+   * a failed site whose last build can still finish (it has a job) is
+   * refused, here and again inside the write.
+   */
+  ctaOnly?: boolean;
 }): Promise<{ formResponseId: string; estimatedDurationSeconds?: number }> {
   const { subAccountId, siteId, config } = input;
   // Ids, never paths. Both go into Firestore paths below; a site id like
@@ -583,6 +595,9 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // (The write below re-checks this atomically; this is the cheap early no.)
   if (existingDoc.status === "queued" || existingDoc.status === "building") {
     throw new WebsiteServiceError(ALREADY_BUILDING_MESSAGE, 409);
+  }
+  if (input.ctaOnly && hasUnsettledFailure(existingDoc)) {
+    throw new WebsiteServiceError(UNSETTLED_FAILURE_MESSAGE, 409);
   }
   // A build on an id that has no doc creates one, so it counts against the
   // per-sub-account cap exactly as `createWebsiteForSubAccount` does. This
@@ -674,11 +689,12 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // heartbeat; clear any stale `agency: false` cache.
   await markGitpageBuildSucceeded();
 
-  const update: Partial<WebsiteDoc> & {
-    config: WebsiteConfig;
+  const update: Partial<Omit<WebsiteDoc, "config">> & {
+    config: WebsiteConfig | Pick<WebsiteConfig, "cta_link">;
     updatedAt: FieldValue;
   } = {
-    config,
+    // Set-merge: a map here is merged field by field into the stored one.
+    config: input.ctaOnly ? { cta_link: config.cta_link } : config,
     status: "queued",
     gitpageJobId: submission.formResponseId,
     liveUrl: null,
@@ -725,7 +741,12 @@ export async function submitWebsiteBuildForSubAccount(input: {
   try {
     taken = await transitionWebsite(
       docRef,
-      { fromStatuses: ["draft", "ready", "failed"], orMissing: isFirst, merge: true },
+      {
+        fromStatuses: ["draft", "ready", "failed"],
+        orMissing: isFirst,
+        merge: true,
+        ...(input.ctaOnly ? { when: (fresh: WebsiteDoc) => !hasUnsettledFailure(fresh) } : {}),
+      },
       update,
     );
   } catch (err) {
@@ -740,7 +761,9 @@ export async function submitWebsiteBuildForSubAccount(input: {
         ? "This site was removed while its build was being submitted."
         : taken.reason === "cap"
           ? SITE_CAP_MESSAGE
-          : ALREADY_BUILDING_MESSAGE,
+          : taken.reason === "condition"
+            ? UNSETTLED_FAILURE_MESSAGE
+            : ALREADY_BUILDING_MESSAGE,
       409,
     );
   }
@@ -955,6 +978,28 @@ export function safeCtaLink(raw: unknown): string | null {
   return safePagesUrl(raw);
 }
 
+/** A failed build that still has a job: gitpage may yet finish it. */
+export function hasUnsettledFailure(doc: Partial<WebsiteDoc>): boolean {
+  return doc.status === "failed" && !!doc.gitpageJobId;
+}
+
+/** Private-use, unassigned and lone-surrogate code points: `oneLine` keeps
+ *  them, `hasUnsafeText` refuses them. */
+const UNPRINTABLE_RE = /[\p{Co}\p{Cn}\p{Cs}]/gu;
+
+/**
+ * A site's name as every assistant lookup prints it and as
+ * `updateWebsiteCtaAndRebuild` checks a confirmed name against: the name,
+ * else the heading, else "Untitled site" — on one line, with nothing the
+ * assistant's own input check (`hasUnsafeText`) would refuse, so any name
+ * a lookup prints can be sent back.
+ */
+export function siteDisplayName(site: { name?: unknown; config?: unknown }): string {
+  const clean = (v: unknown) => oneLine(String(v ?? "").replace(UNPRINTABLE_RE, ""));
+  const heading = (site.config as { heading?: unknown } | null | undefined)?.heading;
+  return clean(site.name) || clean(heading) || "Untitled site";
+}
+
 /**
  * Point a site's call-to-action at a new URL and rebuild it. This is the one
  * seam between a gitpage site and the CRM: the site config carries no form
@@ -1009,8 +1054,7 @@ export async function updateWebsiteCtaAndRebuild(input: {
     throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
   }
   const config: WebsiteConfig = { ...blankWebsiteConfig(), ...(doc.config ?? {}) };
-  // As the assistant's lookups print it (one line, nothing invisible).
-  const siteName = oneLine(doc.name || config.heading) || "Untitled site";
+  const siteName = siteDisplayName(doc);
   if (
     input.expectSiteName !== undefined &&
     oneLine(input.expectSiteName).toLowerCase() !== siteName.toLowerCase()
@@ -1039,6 +1083,7 @@ export async function updateWebsiteCtaAndRebuild(input: {
     config,
     buildByUid: input.buildByUid,
     requireExisting: true,
+    ctaOnly: true,
   });
   return { formResponseId: submission.formResponseId, siteName, ctaLink, previousCtaLink };
 }

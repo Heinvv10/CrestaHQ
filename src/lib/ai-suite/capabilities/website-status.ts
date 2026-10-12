@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { siteDisplayName } from "@/lib/server/websites-service";
 import { type AiSuiteCapability } from "./types";
 import { oneLine } from "./text-safety";
 
@@ -29,10 +30,8 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       }
       const lines = snap.docs.map((d) => {
         const w = d.data() as Record<string, unknown>;
-        // The rule update_website_cta checks a confirmed name against.
-        const name =
-          oneLine((w.name as string) || (w.config as { heading?: string } | undefined)?.heading) ||
-          "Untitled site";
+        // The name update_website_cta checks a confirmed name against.
+        const name = siteDisplayName(w);
         const status = w.status as string;
         const detail =
           status === "ready" && w.liveUrl
@@ -44,7 +43,6 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
                 : "draft (not built yet)";
         // Stored free text (the wizard saves a draft's config as typed).
         const cta = oneLine((w.config as { cta_link?: unknown } | undefined)?.cta_link).slice(0, 300);
-        // The name on one line: update_website_cta checks it against the id.
         return `- “${name}”: ${detail}; call-to-action link: ${cta || "none set"}; id: ${d.id}`;
       });
       return {

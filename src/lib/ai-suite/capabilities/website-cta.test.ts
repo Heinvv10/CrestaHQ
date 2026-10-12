@@ -243,12 +243,16 @@ describe("check_website_status", () => {
   it("names a site as update_website_cta does: the name, else the heading, else “Untitled site”", async () => {
     mem.seed("subAccounts/sa1/website/site2", site({ id: "site2", name: "", config: { ...sampleWebsiteConfig(), heading: "" } }));
     mem.seed("subAccounts/sa1/website/site3", site({ id: "site3", name: "", config: { ...sampleWebsiteConfig(), heading: "  Joe's  Gym " } }));
+    mem.seed("subAccounts/sa1/website/site4", site({ id: "site4", name: "Acme\uE000Coffee" }));
     const r = await getCapability("check_website_status")!.execute(
       { uid: "u1", email: "a@example.com", displayName: "", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin" },
       {},
     );
     expect(r.resultText).toContain("- “Untitled site”: live at https://acme.gitpage.test/; call-to-action link: https://sbc.com; id: site2");
     expect(r.resultText).toContain("- “Joe's Gym”: live at");
+    // What the assistant's own input check would refuse is not printed, so the name can be sent back.
+    expect(r.resultText).toContain("- “AcmeCoffee”: live at");
+    expect(getCapability("update_website_cta")!.validate({ siteId: "site4", siteName: "AcmeCoffee", ctaLink: FORM_URL }).ok).toBe(true);
   });
 
   it("prints a stored name and link on one line each", async () => {

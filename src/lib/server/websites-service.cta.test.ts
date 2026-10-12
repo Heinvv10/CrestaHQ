@@ -34,6 +34,7 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
 
 const {
   safeCtaLink,
+  siteDisplayName,
   submitWebsiteBuildForSubAccount,
   updateWebsiteCtaAndRebuild,
   websiteLimitsPath,
@@ -267,9 +268,48 @@ describe("updateWebsiteCtaAndRebuild", () => {
       untouched(unchanged);
     }
 
-    mem.seed(SITE, site({ status: "failed", config: { ...sampleWebsiteConfig(), cta_link: FORM_URL } }));
+    // A failed build that has settled (no job left to finish).
+    mem.seed(SITE, site({ status: "failed", gitpageJobId: null, config: { ...sampleWebsiteConfig(), cta_link: FORM_URL } }));
     await rebuild();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a failed site whose last build can still finish", () => {
+    const unsettled = () =>
+      site({ status: "failed", gitpageJobId: "job_old", errorMessage: "Couldn't schedule the next poll. Try Re-check now or Rebuild." });
+
+    it("is refused, as the wizard's draft save refuses it, and nothing is spent", async () => {
+      mem.seed(SITE, unsettled());
+      const before = mem.read(SITE);
+      await expect(rebuild()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("use Re-check now, or reset it") });
+      untouched(before);
+    });
+
+    it("is refused at the write too, when the site turns into one while gitpage is called", async () => {
+      fetchMock.mockImplementationOnce(async () => {
+        await mem.db.doc(SITE).update(unsettled());
+        return Response.json({ formResponseId: "job_new_1", pollUrl: "https://gitpage.test/s/job_new_1" }, { status: 202 });
+      });
+      await expect(rebuild()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("use Re-check now, or reset it") });
+      expect(mem.read(SITE)).toMatchObject({ status: "failed", gitpageJobId: "job_old", config: { cta_link: "https://sbc.com" } });
+      expect(publishCallback).not.toHaveBeenCalled();
+    });
+  });
+
+  it("writes back only the call-to-action: a wizard save that lands meanwhile is kept", async () => {
+    // The gate is read twice: here, then inside the build. Save over the site on the second.
+    let gateReads = 0;
+    hooks.beforeGet = async (path) => {
+      if (path === "subAccounts/sa1" && ++gateReads === 2) {
+        await mem.db.doc(SITE).set({ config: { hero_statement: "EDITED BY WIZARD" } }, { merge: true });
+      }
+    };
+    await rebuild();
+    expect(gateReads).toBe(2);
+    expect(mem.read(SITE)).toMatchObject({
+      status: "queued",
+      config: { cta_link: FORM_URL, hero_statement: "EDITED BY WIZARD", heading: "Starbucks Coffee Chadstone" },
+    });
   });
 });
 
@@ -281,5 +321,24 @@ describe("submitWebsiteBuildForSubAccount — requireExisting", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mem.read(websiteLimitsPath("sa1"))).toBeUndefined();
     expect(mem.read("subAccounts/sa1/website/ghost")).toBeUndefined();
+  });
+});
+
+describe("siteDisplayName", () => {
+  it("is the name, else the heading, else “Untitled site” — on one line, with nothing the assistant's input check refuses", async () => {
+    const { hasUnsafeText } = await import("@/lib/ai-suite/capabilities/text-safety");
+    expect(siteDisplayName({ name: "Acme\uE000Coffee" })).toBe("AcmeCoffee");
+    expect(siteDisplayName({ name: "Acme \u{10FFFF}\u0378 Coffee\n" })).toBe("Acme Coffee");
+    expect(siteDisplayName({ name: "", config: { heading: "   " } })).toBe("Untitled site");
+    expect(siteDisplayName({ name: " \t", config: { heading: " Joe's  Gym " } })).toBe("Joe's Gym");
+    expect(siteDisplayName({ name: "\uE000", config: null })).toBe("Untitled site");
+    for (const raw of ["A\uE000B", "A\u200BB", "A\u202EB", "A\uD800B", "A\u0378B", "A\u2800B", "A\u0007B"]) {
+      expect(hasUnsafeText(siteDisplayName({ name: raw }))).toBe(false);
+    }
+  });
+
+  it("a site named with a private-use character can be re-pointed by the name the lookup prints", async () => {
+    mem.seed(SITE, site({ name: "Acme\uE000Coffee" }));
+    await expect(rebuild({ expectSiteName: "AcmeCoffee" })).resolves.toMatchObject({ siteName: "AcmeCoffee" });
   });
 });
