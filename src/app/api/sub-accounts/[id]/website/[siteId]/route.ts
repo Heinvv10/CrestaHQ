@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { prepareAiAgentDocs, webChatAllowListInTx } from "@/lib/comms/ai/agent";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   requireWebsiteEnabledSub,
@@ -115,7 +116,10 @@ export async function PATCH(
  *
  *   (no flag) → permanently remove the website doc, freeing one of the
  *               sub-account's slots so a different site can be created. The
- *               previously-published repo (if any) likewise stays live.
+ *               previously-published repo (if any) likewise stays live. The
+ *               Web Chat hosts its custom domain added
+ *               (`customDomainChatHosts`) come off the allow-list in the same
+ *               transaction: once the doc is gone nothing records them.
  */
 export async function DELETE(
   request: Request,
@@ -160,6 +164,16 @@ export async function DELETE(
     return NextResponse.json({ ok: true, reset: true });
   }
 
-  await docRef.delete();
+  if ((snap.data() as WebsiteDoc).customDomainChatHosts?.length) await prepareAiAgentDocs(subAccountId);
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(docRef);
+    const recorded = new Set((fresh.data() as WebsiteDoc | undefined)?.customDomainChatHosts ?? []);
+    if (recorded.size) {
+      const list = await webChatAllowListInTx(tx, subAccountId);
+      const left = list.hosts.filter((h) => !recorded.has(h));
+      if (left.length !== list.hosts.length) list.save(left);
+    }
+    tx.delete(docRef);
+  });
   return NextResponse.json({ ok: true, removed: true });
 }

@@ -4,12 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import {
-  getAgentProfile,
-  prepareAiAgentDocs,
-  upsertAgentProfile,
-  webChatAllowListInTx,
-} from "@/lib/comms/ai/agent";
+import { agentProfileInTx, prepareAiAgentDocs, webChatAllowListInTx } from "@/lib/comms/ai/agent";
 import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import { isDocId } from "@/lib/server/doc-id";
 import {
@@ -47,11 +42,13 @@ export const dynamic = "force-dynamic";
  *    sub-account already holds is refused (409), so removing one site's
  *    domain can never take hosts off that another still relies on.
  *
- * The site doc and the allow-list are written in ONE transaction (through
- * `transitionWebsite`), with the 25-entry cap counted inside it: a domain
- * is never allowed without being recorded, nor recorded without being
- * allowed, whatever runs alongside (a DELETE, another site's save, the Web
- * Chat settings form). The site records the hosts the save actually added
+ * The site doc, the allow-list and the chat bot's website address are
+ * written in ONE transaction (through `transitionWebsite`), with the
+ * 25-entry cap counted inside it: a domain is never allowed without being
+ * recorded, nor recorded without being allowed, and the bot never names a
+ * domain that is gone, whatever runs alongside (a DELETE, another site's
+ * save, the Web Chat settings form). Removing the whole site takes its
+ * recorded hosts off too (`../route.ts`). The site records the hosts the save actually added
  * (`customDomainChatHosts`, the pair minus any already listed); replacing
  * or removing the domain takes off those and nothing else, so hosts the
  * operator listed by hand stay.
@@ -126,8 +123,6 @@ async function loadSite(subAccountId: string, siteId: string) {
   return { ref, site };
 }
 
-const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
-
 export async function PUT(
   request: Request,
   ctx: { params: Promise<{ id: string; siteId: string }> },
@@ -165,8 +160,8 @@ export async function PUT(
 
   await prepareAiAgentDocs(subAccountId);
   const hosts = variants(domain);
-  // What the transaction saw, for the answer and the profile step below.
-  const seen: { refusal?: "in-use" | "full"; previous?: string | null } = {};
+  // Why the transaction refused, for the answer.
+  const seen: { refusal?: "in-use" | "full" } = {};
   const saved = await transitionWebsite(
     ref,
     {
@@ -175,6 +170,7 @@ export async function PUT(
         delete seen.refusal;
         const sites = await tx.get(getAdminDb().collection(`subAccounts/${subAccountId}/website`));
         const list = await webChatAllowListInTx(tx, subAccountId);
+        const agent = await agentProfileInTx(tx, subAccountId);
         const held = sites.docs
           .filter((d) => d.id !== siteId)
           .flatMap((d) => hostsHeldBy(d.data() as WebsiteDoc));
@@ -183,7 +179,6 @@ export async function PUT(
           return false;
         }
         const previous = fresh.customDomain ?? null;
-        seen.previous = previous;
         const recorded = fresh.customDomainChatHosts ?? [];
         // A new domain takes off the hosts the old one added; a re-save keeps them.
         const removed = previous && previous !== domain ? recorded : [];
@@ -198,6 +193,18 @@ export async function PUT(
           return false;
         }
         list.save([...next]);
+        // Point the chat bot's source URL at the domain when it was seeded
+        // from this site (or points at this site's live URL or old domain) —
+        // in the same transaction, so it never names a domain that is gone.
+        const profile = agent.profile;
+        // `websiteKbSiteId` is written by the publish hand-off (WS-3); read
+        // narrowly so this compiles before that field is on the type.
+        const seededFrom = (profile as { websiteKbSiteId?: unknown } | null)?.websiteKbSiteId;
+        const pointsHere =
+          seededFrom === siteId ||
+          (!!fresh.liveUrl && profile?.websiteUrl === fresh.liveUrl) ||
+          (!!previous && profile?.websiteUrl === `https://${previous}/`);
+        if (profile && pointsHere) agent.save({ websiteUrl: `https://${domain}/` });
         return { customDomainChatHosts: [...new Set([...kept, ...added])] };
       },
     },
@@ -214,26 +221,7 @@ export async function PUT(
     return NextResponse.json({ error }, { status: 409 });
   }
 
-  // Point the chat bot's source URL at the custom domain when it was seeded
-  // from this site (or currently points at this site's gitlab/github URL).
-  const previous = seen.previous ?? null;
-  const warnings: string[] = [];
-  try {
-    const profile = await getAgentProfile(subAccountId);
-    // `websiteKbSiteId` is written by the publish hand-off (WS-3); read
-    // narrowly so this compiles before that field is on the type.
-    const seededFrom = (profile as { websiteKbSiteId?: unknown } | null)?.websiteKbSiteId;
-    const pointsHere =
-      seededFrom === siteId ||
-      (!!site.liveUrl && profile?.websiteUrl === site.liveUrl) ||
-      (!!previous && profile?.websiteUrl === `https://${previous}/`);
-    if (pointsHere) await upsertAgentProfile(subAccountId, { websiteUrl: `https://${domain}/` });
-  } catch (err) {
-    console.error(`[website/domain] chat bot website update failed sa=${subAccountId} site=${siteId}`, reason(err));
-    warnings.push("The chat bot's website address was not updated.");
-  }
-
-  return NextResponse.json({ ok: true, customDomain: domain, warnings });
+  return NextResponse.json({ ok: true, customDomain: domain });
 }
 
 export async function DELETE(
@@ -251,33 +239,27 @@ export async function DELETE(
   if (!site.customDomain) return NextResponse.json({ ok: true });
 
   await prepareAiAgentDocs(subAccountId);
-  const seen: { previous?: string | null } = {};
-  // The record and the hosts it added go together, or not at all.
+  // The record, the hosts it added and the chat bot's address change
+  // together, or not at all.
   const cleared = await transitionWebsite(
     ref,
     {
       fromStatuses: ALL_STATUSES,
       inTransaction: async (tx, fresh) => {
         const list = await webChatAllowListInTx(tx, subAccountId);
+        const agent = await agentProfileInTx(tx, subAccountId);
         const recorded = new Set(fresh.customDomainChatHosts ?? []);
-        list.save(list.hosts.filter((h) => !recorded.has(h)));
-        seen.previous = fresh.customDomain ?? null;
+        const left = list.hosts.filter((h) => !recorded.has(h));
+        if (left.length !== list.hosts.length) list.save(left);
+        const previous = fresh.customDomain;
+        if (previous && fresh.liveUrl && agent.profile?.websiteUrl === `https://${previous}/`) {
+          agent.save({ websiteUrl: fresh.liveUrl });
+        }
         return {};
       },
     },
     { customDomain: null, customDomainChatHosts: null, updatedAt: FieldValue.serverTimestamp() },
   );
   if (!cleared.applied) return siteNotFound();
-
-  const warnings: string[] = [];
-  try {
-    const profile = await getAgentProfile(subAccountId);
-    if (seen.previous && profile?.websiteUrl === `https://${seen.previous}/` && site.liveUrl) {
-      await upsertAgentProfile(subAccountId, { websiteUrl: site.liveUrl });
-    }
-  } catch (err) {
-    console.error(`[website/domain] chat bot website reset failed sa=${subAccountId} site=${siteId}`, reason(err));
-    warnings.push("The chat bot's website address was not changed back.");
-  }
-  return NextResponse.json({ ok: true, warnings });
+  return NextResponse.json({ ok: true });
 }

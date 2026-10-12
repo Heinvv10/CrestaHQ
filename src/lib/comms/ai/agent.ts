@@ -181,19 +181,27 @@ export async function upsertChannelConfig(
   );
 }
 
-/**
- * Run the lazy legacy-config migration now: it has its own transaction, so
- * it must not run inside another. Call before `webChatAllowListInTx`.
- */
+/** Run the lazy legacy migration (its own transaction) before the `…InTx` readers. */
 export async function prepareAiAgentDocs(subAccountId: string): Promise<void> {
   await maybeMigrateLegacy(subAccountId);
 }
 
+/** The agent profile, read inside the caller's transaction, and a `save` for a patch in it. */
+export async function agentProfileInTx(tx: FirebaseFirestore.Transaction, subAccountId: string) {
+  const ref = getAdminDb().doc(profilePath(subAccountId));
+  const snap = await tx.get(ref);
+  return {
+    profile: snap.exists ? (snap.data() as AiAgentProfile) : null,
+    save: (patch: Partial<AiAgentProfile>) => {
+      tx.set(ref, { ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    },
+  };
+}
+
 /**
- * The web-chat allow-list, read inside the caller's transaction, and a
- * `save` that writes a new list in the same transaction (seeding the channel
- * doc with its defaults when there is none). The rest of the channel config
- * is left as it is. Read before any write of the transaction.
+ * The web-chat allow-list, read inside the caller's transaction, and a `save`
+ * that writes a new list in it (seeding the channel doc's defaults if there
+ * is none; the rest of the channel config is kept). Read before any write.
  */
 export async function webChatAllowListInTx(
   tx: FirebaseFirestore.Transaction,
