@@ -255,7 +255,8 @@ export async function dispatchWhatsappSend(
       provider,
       now,
     });
-    return { ...r, provider, sentAs: interactive ? "interactive" : decision.mode, attempted: true };
+    // A send that never connected says so with `attempted: false`.
+    return { attempted: true, ...r, provider, sentAs: interactive ? "interactive" : decision.mode };
   }
 
   if (provider === "bridge") {
