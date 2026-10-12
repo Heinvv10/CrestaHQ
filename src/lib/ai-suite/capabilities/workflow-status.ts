@@ -10,7 +10,7 @@ import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
 import { oneLine } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
-import { tenantWorkflow, workflowFingerprint, workflowIdParam, workflowReviewRows, workflowRows } from "./workflow-support";
+import { tenantWorkflow, workflowBuilderUrl, workflowFingerprint, workflowIdParam, workflowReviewRows, workflowRows } from "./workflow-support";
 
 /**
  * set_workflow_status and delete_workflow for API agents (PR9). Pausing or
@@ -26,8 +26,7 @@ const STATUSES: readonly WorkflowStatus[] = ["draft", "paused", "active"];
  *  trigger and steps (the agent path's pinned preview and fingerprint
  *  check), which a chat card doesn't show. Sent to the builder instead. */
 function activationRefusal(subAccountId: string, workflowId: string): string {
-  const page = `${(process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")}/sa/${subAccountId}/workflows/${workflowId}`;
-  return `Activating a workflow needs a person to review its exact trigger and steps, so I can't do it from here. Open the workflow and activate it there: ${page}`;
+  return `Activating a workflow needs a person to review its exact trigger and steps, so I can't do it from here. Open the workflow and activate it there: ${workflowBuilderUrl(subAccountId, workflowId)}`;
 }
 
 /** Workflows carry no territory: their approvals are tenant-wide. */
