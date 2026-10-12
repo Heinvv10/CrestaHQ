@@ -24,6 +24,8 @@ const { availableOn, getCapability, toolsForLevel } = await import("@/lib/ai-sui
 restoreBillingProviderAfterEach();
 
 const DAY = 86_400_000;
+/** The store, with a released comp lock (two nulls: no mark) read as no lock. */
+const settled = () => JSON.stringify(mem.all()).replace(/,"retiringSubscriptionId":null,"retiringSince":null/g, "");
 const stored = (id = "sa1") => mem.read(`subAccounts/${id}`)!.billing as Record<string, unknown>;
 const billing = (over: Record<string, unknown>) => ({ ...PENDING_BILLING, checkoutTokenHash: null, ...over });
 
@@ -103,7 +105,7 @@ describe("comp_client", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).resultText).toContain("“Active Co” is now comped — no further charges (their subscription was cancelled)");
     expect(stored()).toMatchObject({ status: "comped", planId: null, stripeSubscriptionId: null });
-    expect(spies.cancelSubscription).toHaveBeenCalledWith("SUB_1");
+    expect(spies.cancelSubscription).toHaveBeenCalledWith("SUB_1", null);
     await flushAfterResponse();
     expect(mem.list("billingEvents")).toEqual([expect.objectContaining({ subAccountId: "sa1", event: "comped" })]);
   });
@@ -131,14 +133,14 @@ describe("comp_client", () => {
     const spies = spyBillingProvider("paystack");
     // A real refusal (an ended or unknown subscription comes back as already_cancelled, below).
     spies.cancelSubscription.mockRejectedValueOnce(new Error("Paystack: provider down"));
-    const before = JSON.stringify(mem.all());
+    const before = settled();
     const res = await confirmAgency("comp_client", { subAccountId: "sa1", subAccountName: "Active Co" });
     expect(res.status).toBe(400);
     const { error } = await res.json();
     expect(error).toBe("Couldn't cancel the subscription with Paystack — nothing changed; try again or cancel it in the Paystack dashboard.");
     expect(error).not.toContain("comped");
     await flushAfterResponse();
-    expect(JSON.stringify(mem.all())).toBe(before);
+    expect(settled()).toBe(before);
   });
 
   it("the provider had already ended the subscription: comped (no dead end)", async () => {
@@ -148,7 +150,7 @@ describe("comp_client", () => {
     spies.cancelSubscription.mockResolvedValueOnce("already_cancelled");
     const res = await confirmAgency("comp_client", { subAccountId: "sa3", subAccountName: "Lapsed Co" });
     expect(res.status).toBe(200);
-    expect(spies.cancelSubscription).toHaveBeenCalledWith("SUB_3");
+    expect(spies.cancelSubscription).toHaveBeenCalledWith("SUB_3", null);
     expect(stored("sa3")).toMatchObject({ status: "comped", stripeSubscriptionId: null });
   });
 

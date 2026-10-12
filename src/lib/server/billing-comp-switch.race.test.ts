@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mem } from "@/test/paystack-links-harness";
 
 /**
@@ -17,7 +17,7 @@ vi.mock("@/lib/server/feature-gates-service", () => ({ applyFeatureGates: vi.fn(
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async () => {}) }));
 
 const switchSubscriptionPlan = vi.hoisted(() => vi.fn());
-const cancelSubscription = vi.hoisted(() => vi.fn(async (_id: string) => "cancelled"));
+const cancelSubscription = vi.hoisted(() => vi.fn(async (_id: string, _customer: string | null) => "cancelled"));
 vi.mock("@/lib/billing/provider", () => ({
   getBillingProvider: () => ({ id: "paystack", planSwitchTiming: "period_end", isConfigured: () => true, switchSubscriptionPlan, cancelSubscription }),
 }));
@@ -33,6 +33,9 @@ const COMPED = {
   status: "comped", planId: null, planName: null, priceCents: null, billingInterval: null, currency: null, specialPriceCents: null,
   stripePriceId: null, stripeCustomerId: "CUS_1", stripeSubscriptionId: null, checkoutTokenHash: null, graceUntil: null,
 };
+
+// A billing event is written after the response: never into the next test.
+afterEach(() => flushAfterResponse());
 
 beforeEach(() => {
   mem.clear();
@@ -58,23 +61,123 @@ describe("comp during a Paystack plan switch", () => {
     expect(billing()).toMatchObject({ status: "active", planId: "plan2", stripeSubscriptionId: "SUB_2", retiringSubscriptionId: null });
   });
 
-  it("a switch that marks after comp cancelled: comp writes nothing (the subscription on record was never cancelled)", async () => {
-    cancelSubscription.mockImplementation(async () => {
-      // The switch claims its mark while Paystack is cancelling SUB_1 for the comp.
-      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: "SUB_1", retiringSince: new Date() } });
+  it("a mark written over comp's mid-cancel (BRK r3): the subscription WAS cancelled, so the client is comped, not left active", async () => {
+    cancelSubscription.mockImplementationOnce(async () => {
+      // Another claim's instant, not comp's.
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: "SUB_1", retiringSince: new Date(Date.now() + 5_000) } });
       return "cancelled";
     });
-    expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 409 });
-    expect(billing().status).toBe("active");
+    const r = await comp();
+    // The switch then fails (SUB_1 is gone at Paystack) and clears its mark.
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: null, retiringSince: null } });
+    expect(r).toEqual({ subscription: "cancelled" });
+    expect(cancelSubscription).toHaveBeenCalledTimes(1);
+    expect(billing().status).toBe("comped");
   });
 
-  it("a switch that replaced the subscription after comp cancelled: comp writes nothing", async () => {
-    cancelSubscription.mockImplementation(async () => {
-      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), stripeSubscriptionId: "SUB_2" } });
+  it("comp holds the shared lock across the provider call: a switch started mid-comp is refused and never reaches the provider", async () => {
+    let switchError: unknown;
+    cancelSubscription.mockImplementationOnce(async () => {
+      expect(billing()).toMatchObject({ retiringSubscriptionId: "SUB_1" });
+      switchError = await assign().catch((e: unknown) => e);
       return "cancelled";
     });
-    expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 409 });
+    expect(await comp()).toEqual({ subscription: "cancelled" });
+    expect(switchError).toMatchObject({ status: 409, message: expect.stringContaining("plan switch for this workspace is already in progress") });
+    expect(switchSubscriptionPlan).not.toHaveBeenCalled();
+    expect(billing()).toMatchObject({ status: "comped", stripeSubscriptionId: null });
+    expect(billing().retiringSubscriptionId).toBeUndefined();
+  });
+
+  it("the subscription's own disable webhook landing mid-comp is muted by the lock; the client ends comped", async () => {
+    const { handlePaystackEvent } = await import("@/lib/paystack/webhooks");
+    cancelSubscription.mockImplementationOnce(async () => {
+      await handlePaystackEvent({ event: "subscription.disable", data: { subscription_code: "SUB_1", customer: { customer_code: "CUS_1" } } });
+      expect(billing().status).toBe("active");
+      return "cancelled";
+    });
+    expect(await comp()).toEqual({ subscription: "cancelled" });
+    expect(billing().status).toBe("comped");
+  });
+
+  it("the provider refuses: the lock is released and nothing else changed", async () => {
+    cancelSubscription.mockRejectedValueOnce(new Error("Paystack: down"));
+    const before = JSON.stringify(billing());
+    expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 502, cancelledSubscription: null, message: expect.stringContaining("nothing changed") });
+    expect(billing()).toMatchObject({ retiringSubscriptionId: null, retiringSince: null });
+    const { retiringSubscriptionId: _r, retiringSince: _s, ...rest } = billing();
+    expect(JSON.stringify(rest)).toBe(JSON.stringify(JSON.parse(before)));
+  });
+
+  it("the provider refuses after another claim took the mark: comp's release leaves that mark alone", async () => {
+    const theirs = new Date(Date.now() + 5_000);
+    cancelSubscription.mockImplementationOnce(async () => {
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: "SUB_1", retiringSince: theirs } });
+      throw new Error("Paystack: down");
+    });
+    expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 502 });
+    expect(billing()).toMatchObject({ retiringSubscriptionId: "SUB_1", retiringSince: theirs });
+  });
+
+  it("nothing live to cancel, but a payment activated the client between comp's read and its write: refused, never comped over it", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Client", billing: { status: "pending", planId: "plan1", stripeCustomerId: "CUS_1", stripeSubscriptionId: null } });
+    const original = mem.db.runTransaction.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) => {
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), status: "active", stripeSubscriptionId: "SUB_9" } });
+      return original(fn as Parameters<typeof original>[0]);
+    });
+    try {
+      expect(await comp()).toMatchObject({ subscription: "failed", httpStatus: 409, message: expect.stringContaining("billing changed") });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(billing()).toMatchObject({ status: "active", stripeSubscriptionId: "SUB_9" });
+    expect(cancelSubscription).not.toHaveBeenCalled();
+  });
+
+  it("a subscription replaced after comp cancelled (its mark expired mid-cancel): not comped, and the result says SUB_1 WAS cancelled", async () => {
+    cancelSubscription.mockImplementationOnce(async () => {
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), stripeSubscriptionId: "SUB_2", retiringSubscriptionId: null, retiringSince: null } });
+      return "cancelled";
+    });
+    const r = await comp();
+    expect(r).toMatchObject({ subscription: "failed", httpStatus: 409, cancelledSubscription: "SUB_1" });
+    expect((r as { message: string }).message).toBe(
+      "Cancelled subscription SUB_1 with Paystack, but the client moved to SUB_2 meanwhile, so they were NOT comped and SUB_2 still bills. Comp again to finish.",
+    );
     expect(billing()).toMatchObject({ status: "active", stripeSubscriptionId: "SUB_2" });
+    await flushAfterResponse();
+    expect(mem.list("billingEvents")).toEqual([
+      expect.objectContaining({ event: "comp.interrupted", detail: { canceledSubscription: "SUB_1", currentSubscription: "SUB_2" } }),
+    ]);
+  });
+
+  it("the comp write fails after the cancel: the result says SUB_1 WAS cancelled, the lock is released, and it is recorded", async () => {
+    const original = mem.db.runTransaction.bind(mem.db);
+    let n = 0;
+    vi.spyOn(mem.db, "runTransaction").mockImplementation(async (fn) => {
+      n += 1;
+      if (n === 2) throw new Error("ABORTED: contention");
+      return original(fn as Parameters<typeof original>[0]);
+    });
+    try {
+      const r = await comp();
+      expect(r).toMatchObject({ subscription: "failed", cancelledSubscription: "SUB_1", message: expect.stringContaining("Cancelled subscription SUB_1 with Paystack, but the comp couldn't be saved") });
+    } finally {
+      vi.mocked(mem.db.runTransaction).mockRestore();
+    }
+    expect(billing()).toMatchObject({ status: "active", retiringSubscriptionId: null, retiringSince: null });
+    await flushAfterResponse();
+    expect(mem.list("billingEvents")).toEqual([expect.objectContaining({ event: "comp.interrupted" })]);
+  });
+
+  it("a crashed comp's lock expires like a switch's: 11 minutes on, comp and switch both proceed", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: "SUB_1", retiringSince: new Date(Date.now() - 11 * 60_000) } });
+    switchSubscriptionPlan.mockResolvedValueOnce({ subscriptionId: "SUB_2" });
+    await assign();
+    expect(billing()).toMatchObject({ planId: "plan2", stripeSubscriptionId: "SUB_2" });
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { ...billing(), retiringSubscriptionId: "SUB_2", retiringSince: new Date(Date.now() - 11 * 60_000) } });
+    expect(await comp()).toEqual({ subscription: "cancelled" });
   });
 
   it("comped while the provider switched: the switch writes nothing over it, cancels its new SUB_2 and records why", async () => {
@@ -84,7 +187,7 @@ describe("comp during a Paystack plan switch", () => {
     });
     await expect(assign()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("plan change was undone") });
     await flushAfterResponse();
-    expect(cancelSubscription).toHaveBeenCalledWith("SUB_2");
+    expect(cancelSubscription).toHaveBeenCalledWith("SUB_2", "CUS_1");
     expect(billing()).toMatchObject({ status: "comped", stripeSubscriptionId: null, planId: null, retiringSubscriptionId: null });
     expect(mem.list("billingEvents")).toEqual([
       expect.objectContaining({ event: "plan.switch_abandoned", detail: expect.objectContaining({ newSubscription: "SUB_2", newSubscriptionCancelled: true }) }),

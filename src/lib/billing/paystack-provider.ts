@@ -6,6 +6,7 @@ import {
   disablePaystackSubscription,
   findLivePaystackSubscription,
   initializePaystackTransaction,
+  paystackCustomerBilling,
   readPaystackCustomerEmail,
   readPaystackManageLink,
   readPaystackPlanAmount,
@@ -13,7 +14,7 @@ import {
   type PaystackSubscription,
 } from "@/lib/paystack/billing-api";
 import { paystackIsConfigured } from "@/lib/paystack/client";
-import { BillingError } from "./errors";
+import { BillingError, SubscriptionNotOnAccount } from "./errors";
 import { switchPaystackSubscriptionPlan } from "./paystack-plan-switch";
 import type {
   BillingProvider,
@@ -208,17 +209,26 @@ export class PaystackBillingProvider implements BillingProvider {
 
   /**
    * Paystack refuses to disable a subscription that is no longer live, so
-   * one it has already ended (non-renewing, completed, cancelled) or no
-   * longer knows (404) is reported as such instead of failing. A status it
-   * does not report is treated as live: disabled, or the failure thrown.
+   * one it reports ended (non-renewing, completed, cancelled) is
+   * `already_cancelled`. One it doesn't know (404) proves nothing on its own
+   * — a wrong key, test vs live, another account — so it is
+   * `already_cancelled` only when this account has the customer and nothing
+   * of theirs still charges; otherwise it fails closed. A status it does not
+   * report is treated as live: disabled, or the failure thrown.
    */
-  async cancelSubscription(subscriptionId: string): Promise<CancelOutcome> {
+  async cancelSubscription(subscriptionId: string, customerId: string | null): Promise<CancelOutcome> {
     let sub: PaystackSubscription;
     try {
       sub = await readPaystackSubscription(subscriptionId);
     } catch (err) {
-      if (err instanceof BillingError && err.providerStatus === 404) return "already_cancelled";
-      throw err;
+      if (!(err instanceof BillingError && err.providerStatus === 404)) throw err;
+      const customer = customerId ? await paystackCustomerBilling(customerId) : "unknown_customer";
+      if (customer === "none") return "already_cancelled";
+      throw new SubscriptionNotOnAccount(
+        customer === "live"
+          ? "Subscription not found on this Paystack account, but the customer still has a live subscription there — check the dashboard; nothing changed."
+          : "Subscription not found on this Paystack account — check the dashboard and the configured key; nothing changed.",
+      );
     }
     if (sub.status && !PAYSTACK_LIVE_SUBSCRIPTION.has(sub.status)) return "already_cancelled";
     await disablePaystackSubscription(sub);

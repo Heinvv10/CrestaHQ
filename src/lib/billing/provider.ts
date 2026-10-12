@@ -108,10 +108,12 @@ export interface BillingProvider {
 
   /**
    * Cancel a subscription immediately. `already_cancelled`: the provider had
-   * already ended it (or no longer has it), so nothing is charging. Any
-   * other failure throws: the caller cannot know it stopped.
+   * already ended it, or no longer has it AND has the customer
+   * (`customerId`, on this account) with nothing live. Not found with no
+   * such proof throws `SubscriptionNotOnAccount`; any other failure throws:
+   * the caller cannot know it stopped.
    */
-  cancelSubscription(subscriptionId: string): Promise<CancelOutcome>;
+  cancelSubscription(subscriptionId: string, customerId: string | null): Promise<CancelOutcome>;
 
   /**
    * A hosted page where the payer manages their own billing (card, invoices).

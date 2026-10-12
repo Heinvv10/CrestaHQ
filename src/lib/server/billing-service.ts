@@ -20,7 +20,6 @@ import {
   type BillingPlanDoc,
   type BillingPlanResponse,
   type PlanGates,
-  type SubAccountBilling,
   type SubAccountBillingStatus,
 } from "@/types/billing";
 import { BillingError } from "@/lib/billing/errors";
@@ -662,7 +661,7 @@ export async function assignPlanToSubAccount(input: {
       // Paystack opened a new subscription for the switch: it must not keep charging a comped client.
       let stranded = false;
       if (subscriptionId !== billing.stripeSubscriptionId) {
-        stranded = await provider.cancelSubscription(subscriptionId).then(
+        stranded = await provider.cancelSubscription(subscriptionId, billing.stripeCustomerId ?? null).then(
           () => false,
           (err) => {
             console.error(
@@ -765,106 +764,7 @@ export async function assignPlanToSubAccount(input: {
   return { status: "pending", checkoutUrl: buildCheckoutUrl(token) };
 }
 
-/** What comping did to the client's subscription. `failed`: a live one
- *  could not be cancelled, or a plan change was under way, so nothing was
- *  changed; `httpStatus` is what a route answers with. */
-export type CompResult =
-  | { subscription: "cancelled" | "none" }
-  | { subscription: "failed"; message: string; httpStatus: 409 | 502 };
-
-const PLAN_CHANGE_IN_PROGRESS: CompResult = {
-  subscription: "failed",
-  message: "A plan change is in progress for this client — nothing changed; try again in a moment.",
-  httpStatus: 409,
-};
-
-/**
- * Mark a sub-account comped: cancel any live subscription on the payment
- * provider and return gate control to manual. Data + gates untouched.
- * Fails closed: when the provider won't cancel a live subscription the
- * client stays exactly as it was (still billed, still on record), never
- * comped while the provider keeps charging them. A subscription the
- * provider had already ended counts as cancelled.
- *
- * Against a plan switch (which on Paystack opens a NEW subscription): comp
- * refuses while the switch holds its mark, and writes comped only if the
- * subscription it cancelled is still the one on record, in a transaction;
- * the switch in turn never writes over a comped client.
- */
-export async function compSubAccount(input: {
-  agencyId: string;
-  subAccountId: string;
-}): Promise<CompResult> {
-  const { ref, data } = await getSubInAgencyOrThrow(
-    input.agencyId,
-    input.subAccountId,
-  );
-  const billing = readBilling(data);
-  const switching = (b: SubAccountBilling | null) =>
-    !!b?.retiringSubscriptionId && isRetiring(b, b.retiringSubscriptionId);
-  if (switching(billing)) return PLAN_CHANGE_IN_PROGRESS;
-
-  // A cancelled subscription keeps its id on record (Paystack's disable
-  // webhook leaves it there); it has nothing left to cancel.
-  const subscriptionId = billing?.stripeSubscriptionId ?? null;
-  const live = !!subscriptionId && billing?.status !== "canceled";
-  if (live) {
-    const provider = getBillingProvider();
-    const name = provider.id === "paystack" ? "Paystack" : "Stripe";
-    const failed: CompResult = {
-      subscription: "failed",
-      message: `Couldn't cancel the subscription with ${name} — nothing changed; try again or cancel it in the ${name} dashboard.`,
-      httpStatus: 502,
-    };
-    if (!billingStripeIsConfigured()) return failed;
-    try {
-      await provider.cancelSubscription(subscriptionId);
-    } catch (err) {
-      console.warn("[billing] cancel-on-comp failed", err instanceof Error ? err.message : String(err));
-      return failed;
-    }
-  }
-
-  const written = await getAdminDb().runTransaction(async (tx) => {
-    const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
-    // A switch replaced (or is replacing) the subscription meanwhile: the
-    // one now on record was never cancelled, so this is not a comp.
-    if ((fresh?.stripeSubscriptionId ?? null) !== subscriptionId || switching(fresh)) return false;
-    tx.update(ref, {
-      billing: {
-        status: "comped" satisfies SubAccountBillingStatus,
-        planId: null,
-        planName: null,
-        priceCents: null,
-        billingInterval: null,
-        currency: null,
-        specialPriceCents: null,
-        stripePriceId: null,
-        stripeCustomerId: fresh?.stripeCustomerId ?? null,
-        stripeSubscriptionId: null,
-        checkoutTokenHash: null,
-        graceUntil: null,
-        assignedAt: fresh?.assignedAt ?? null,
-        activatedAt: fresh?.activatedAt ?? null,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-    return true;
-  });
-  if (!written) return PLAN_CHANGE_IN_PROGRESS;
-
-  recordBillingEvent({
-    agencyId: input.agencyId,
-    subAccountId: input.subAccountId,
-    event: "comped",
-    detail: {
-      previousStatus: billing?.status ?? null,
-      canceledSubscription: live ? subscriptionId : null,
-    },
-  });
-  return { subscription: live ? "cancelled" : "none" };
-}
+export { compSubAccount, type CompResult } from "@/lib/server/billing-comp";
 
 /** Rotate the checkout token and return a fresh /pay URL. */
 export async function mintCheckoutLink(input: {

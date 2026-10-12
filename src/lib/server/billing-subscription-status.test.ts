@@ -10,14 +10,18 @@ const updates: Record<string, unknown>[] = [];
 let subDoc: Record<string, unknown> | null;
 let queried: { field: string; value: string }[] = [];
 
+const subRef = {
+  get: async () => ({ exists: !!subDoc, data: () => subDoc }),
+  update: async (patch: Record<string, unknown>) => {
+    updates.push(patch);
+  },
+};
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => ({
-    doc: () => ({
-      get: async () => ({ exists: !!subDoc, data: () => subDoc }),
-      update: async (patch: Record<string, unknown>) => {
-        updates.push(patch);
-      },
-    }),
+    doc: () => subRef,
+    // The write re-reads in a transaction (a comped client takes no event).
+    runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) =>
+      fn({ get: (ref: typeof subRef) => ref.get(), update: (ref: typeof subRef, patch: Record<string, unknown>) => void ref.update(patch) }),
     collection: (name: string) => ({
       where: (field: string, _op: string, value: string) => {
         if (name === "subAccounts") queried.push({ field, value });

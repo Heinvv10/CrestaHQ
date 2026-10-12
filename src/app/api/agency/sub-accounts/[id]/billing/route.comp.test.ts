@@ -19,6 +19,9 @@ const { PATCH } = await import("./route");
 
 restoreBillingProviderAfterEach();
 
+/** The store, with a released comp lock (two nulls: no mark) read as no lock. */
+const settled = () => JSON.stringify(mem.all()).replace(/,"retiringSubscriptionId":null,"retiringSince":null/g, "");
+
 const comp = () =>
   PATCH(new Request("http://localhost/x", { method: "PATCH", body: JSON.stringify({ action: "comp" }) }), {
     params: Promise.resolve({ id: "sa1" }),
@@ -35,20 +38,20 @@ describe("PATCH comp", () => {
   it.each(["paystack", "stripe"] as const)("%s refuses to cancel: 502 naming it, nothing changed, no billing event", async (kind) => {
     const spies = spyBillingProvider(kind);
     spies.cancelSubscription.mockRejectedValueOnce(new Error("provider down"));
-    const before = JSON.stringify(mem.all());
+    const before = settled();
     const res = await comp();
     expect(res.status).toBe(502);
     const name = kind === "paystack" ? "Paystack" : "Stripe";
     expect((await res.json()).error).toBe(`Couldn't cancel the subscription with ${name} — nothing changed; try again or cancel it in the ${name} dashboard.`);
     await flushAfterResponse();
-    expect(JSON.stringify(mem.all())).toBe(before);
+    expect(settled()).toBe(before);
   });
 
   it("no payment provider configured with a live subscription on record: refused, nothing changed", async () => {
     spyBillingProvider("none");
-    const before = JSON.stringify(mem.all());
+    const before = settled();
     expect((await comp()).status).toBe(502);
-    expect(JSON.stringify(mem.all())).toBe(before);
+    expect(settled()).toBe(before);
   });
 
   it("a plan switch holding its mark: 409, nothing cancelled, nothing changed", async () => {
@@ -66,7 +69,7 @@ describe("PATCH comp", () => {
     const spies = spyBillingProvider("paystack");
     const res = await comp();
     expect(res.status).toBe(200);
-    expect(spies.cancelSubscription).toHaveBeenCalledWith("SUB_1");
+    expect(spies.cancelSubscription).toHaveBeenCalledWith("SUB_1", null);
     expect(mem.read("subAccounts/sa1")!.billing).toMatchObject({ status: "comped", stripeSubscriptionId: null });
     await flushAfterResponse();
     expect(mem.list("billingEvents")).toEqual([

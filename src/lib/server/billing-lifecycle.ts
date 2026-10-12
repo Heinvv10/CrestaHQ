@@ -53,6 +53,7 @@ export function recordBillingEvent(entry: {
     | "plan.assigned"
     | "plan.switched"
     | "plan.switch_abandoned"
+    | "comp.interrupted"
     | "comped"
     | "activated"
     | "status.changed"
@@ -420,7 +421,9 @@ export async function applySubAccountSubscriptionStatus(input: {
     updates["billing.graceUntil"] = null;
   }
 
-  await ref.update(updates);
+  // Re-read in the write: a client comped since the read above holds no
+  // subscription, so no subscription event may change it any more.
+  if (!(await updateUnlessComped(ref, updates))) return;
 
   if (nextStatus !== billing.status) {
     recordBillingEvent({
@@ -549,11 +552,32 @@ export async function recordSubAccountSubscriptionId(input: {
     return;
   }
   const ref = candidates[0].ref;
-  await ref.update({
+  // Comped since it was chosen: a comped workspace is not billed at all.
+  await updateUnlessComped(ref, {
     "billing.stripeSubscriptionId": input.subscriptionId,
     "billing.updatedAt": FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
+}
+
+/** Apply a subscription event's write in a transaction that re-reads the
+ *  workspace and writes nothing once it is comped (or gone). */
+async function updateUnlessComped(
+  ref: FirebaseFirestore.DocumentReference,
+  updates: Record<string, unknown>,
+): Promise<boolean> {
+  return getAdminDb().runTransaction(async (tx) => {
+    const now = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
+    if (!now || now.status === "comped") return false;
+    tx.update(ref, updates);
+    return true;
+  });
+}
+
+/** When the mark was claimed (Timestamp or Date), or null. Comp tells its own mark by it. */
+export function retiringSinceMs(billing: SubAccountBilling): number | null {
+  const since = billing.retiringSince as { toMillis?: () => number } | Date | null | undefined;
+  return since instanceof Date ? since.getTime() : typeof since?.toMillis === "function" ? since.toMillis() : null;
 }
 
 /** How long a plan switch's mark on the subscription it replaces is honoured. */
@@ -566,9 +590,7 @@ const RETIRING_TTL_MS = 10 * 60 * 1000;
  * subscription's events, or block the next switch, forever.
  */
 export function isRetiring(billing: SubAccountBilling, subscriptionId: string): boolean {
-  const since = billing.retiringSince as { toMillis?: () => number } | Date | null | undefined;
-  const sinceMs =
-    since instanceof Date ? since.getTime() : typeof since?.toMillis === "function" ? since.toMillis() : null;
+  const sinceMs = retiringSinceMs(billing);
   return (
     billing.retiringSubscriptionId === subscriptionId &&
     sinceMs !== null &&
