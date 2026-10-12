@@ -12,8 +12,8 @@ import {
 } from "firebase/auth";
 import { getFirebaseAuth } from "./client";
 
-const SIGN_IN_RETRY_DELAYS_MS = [1_000, 2_000];
-const SIGN_IN_MAX_ATTEMPTS = SIGN_IN_RETRY_DELAYS_MS.length + 1;
+const NETWORK_RETRY_DELAYS_MS = [1_000, 2_000];
+const NETWORK_MAX_ATTEMPTS = NETWORK_RETRY_DELAYS_MS.length + 1;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -21,9 +21,9 @@ function delay(ms: number): Promise<void> {
 
 /**
  * CI's self-hosted E2E runner shares a box with heavy Docker veth churn;
- * Chrome aborts in-flight requests on a network interface change, so
- * signInWithEmailAndPassword can fail with `auth/network-request-failed`
- * even though the credentials are correct. Retry only that code — any other
+ * Chrome aborts in-flight requests on a network interface change, so a
+ * Firebase Auth call can fail with `auth/network-request-failed` even
+ * though the request itself is fine. Retry only that code — any other
  * failure (wrong password, too-many-requests, disabled user) is final and
  * must not be retried.
  */
@@ -31,26 +31,32 @@ function isNetworkRequestFailed(err: unknown): boolean {
   return (err as { code?: unknown } | null)?.code === "auth/network-request-failed";
 }
 
-export async function signInWithEmail(email: string, password: string) {
+async function retryOnNetworkFailure<T>(fn: () => Promise<T>): Promise<T> {
   let lastError: unknown;
-  for (let attempt = 1; attempt <= SIGN_IN_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= NETWORK_MAX_ATTEMPTS; attempt++) {
     try {
-      const credential = await signInWithEmailAndPassword(
-        getFirebaseAuth(),
-        email,
-        password,
-      );
-      await createSessionCookie(credential.user);
-      return credential;
+      return await fn();
     } catch (err) {
       lastError = err;
-      if (!isNetworkRequestFailed(err) || attempt === SIGN_IN_MAX_ATTEMPTS) {
+      if (!isNetworkRequestFailed(err) || attempt === NETWORK_MAX_ATTEMPTS) {
         throw err;
       }
-      await delay(SIGN_IN_RETRY_DELAYS_MS[attempt - 1]);
+      await delay(NETWORK_RETRY_DELAYS_MS[attempt - 1]);
     }
   }
   throw lastError;
+}
+
+export async function signInWithEmail(email: string, password: string) {
+  return retryOnNetworkFailure(async () => {
+    const credential = await signInWithEmailAndPassword(
+      getFirebaseAuth(),
+      email,
+      password,
+    );
+    await createSessionCookie(credential.user);
+    return credential;
+  });
 }
 
 export async function signUpWithEmail(email: string, password: string) {
@@ -88,7 +94,9 @@ export async function sendPasswordReset(email: string): Promise<void> {
   };
   if (!res.ok) throw new Error(body.error ?? "Could not send reset.");
   // No platform mailbox on this deployment: Firebase sends its own mail.
-  if (body.fallback) await sendPasswordResetEmail(getFirebaseAuth(), email);
+  if (body.fallback) {
+    await retryOnNetworkFailure(() => sendPasswordResetEmail(getFirebaseAuth(), email));
+  }
 }
 
 /**
