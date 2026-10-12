@@ -330,9 +330,11 @@ function inReportedFamily(reportedHost: string, host: string): boolean {
   if (landing === reported) return true;
   const parent = pagesParentOf(reported);
   if (parent) return landing.endsWith(`.${parent}`);
-  if (landing.endsWith(`.${reported}`)) return true;
+  // A reported host that is itself a public suffix (`co.za`, `netlify.app`)
+  // has no family: its "subdomains" are everyone's sites.
   const apex = registrableDomain(reported);
   if (!apex) return false;
+  if (landing.endsWith(`.${reported}`)) return true;
   return (reported === apex && landing === `www.${apex}`) || (reported === `www.${apex}` && landing === apex);
 }
 
@@ -483,7 +485,10 @@ export async function provisionWebsiteHandoff(
     errors.push("live URL: not a public https address — its host was not added to the chat allowlist");
   } else if (!liveUrlResolved) {
     allowlistRefusal = `gitpage's address (${liveUrl}) did not lead to the site's own host, so nothing was added to the chat allowlist — add the site's domain in AI Agents → Web Chat.`;
-  } else if (candidateHost === reportedHost && (reportedUnderPath || pagesParentOf(reportedHost))) {
+  } else if (
+    candidateHost === reportedHost &&
+    (reportedUnderPath || pagesParentOf(reportedHost) || !registrableDomain(reportedHost))
+  ) {
     allowlistRefusal = `The site is served from gitpage's address on a host other sites share (${liveUrl}), so it was not added to the chat allowlist — add the site's own domain in AI Agents → Web Chat.`;
   }
   const hostname = allowlistRefusal ? null : candidateHost;

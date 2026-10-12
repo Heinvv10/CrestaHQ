@@ -759,6 +759,22 @@ describe("which host the chat allowlist gets (breaker, PR #400)", () => {
     expect(out!.chatAllowlisted).toBe(true);
   });
 
+  it.each([
+    ["a public suffix", "https://co.za/"],
+    ["a private suffix", "https://netlify.app/"],
+  ])("a reported host that is %s, landed on as-is, is not allow-listed", async (_label, url) => {
+    const out = await handoff({ liveUrl: url, result: result({}, url) });
+    expect(allowed()).toEqual([]);
+    expect(out!.chatSkippedReason).toContain("a host other sites share");
+  });
+
+  it("the unique *.gitlab.io domain reported directly (no redirect) fails closed: nothing is allow-listed, and the card says why", async () => {
+    const unique = "https://acme-site-1a2b3c.gitlab.io/";
+    const out = await handoff({ liveUrl: unique, result: result({}, unique) });
+    expect(allowed()).toEqual([]);
+    expect(out!.chatSkippedReason).toContain("a host other sites share");
+  });
+
   it("a custom domain reported at its root and landed on as-is is allow-listed; one reported under a path is not", async () => {
     await handoff({ liveUrl: "https://acme.co.za/", result: result({}, "https://acme.co.za/") });
     expect(allowed()).toEqual(["acme.co.za"]);

@@ -168,6 +168,8 @@ describe("resolveLiveUrl", () => {
     ["a trailing-dot two-label host (acme.com. → attacker.com.)", "https://acme.com./", "https://attacker.com./"],
     ["a trailing-dot report to a sibling without the dot", "https://acme.com./", "https://attacker.com/"],
     ["a custom domain's registrable sibling under the same suffix", "https://www.acme.co.za/", "https://www.evil.co.za/"],
+    ["a bare public suffix reported (co.za → evil.co.za)", "https://co.za/", "https://evil.co.za/"],
+    ["a bare private suffix reported (netlify.app → evil.netlify.app)", "https://netlify.app/", "https://evil.netlify.app/"],
   ])("refuses %s before it is requested", async (_label, reported, location) => {
     serve({ [reported]: () => redirect(location) });
     expect(await resolveLiveUrl(reported)).toEqual({ url: reported, resolved: false });
