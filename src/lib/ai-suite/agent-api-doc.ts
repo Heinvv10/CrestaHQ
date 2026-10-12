@@ -51,6 +51,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   apply_snapshot: "the sub-account, the snapshot (captured in this agency, or imported), what it creates and what it skips as already there, workflows arriving as drafts, which forms accept submissions at once, the AI persona written (with its hours) or kept; the snapshot's payload hash is pinned",
   assign_billing_plan: "the sub-account, the plan and price (a special price only if proposed), every feature switching on and off, monthly quotas and overage rates, when features change (now, or when the client pays) and what billing does; price and gates are pinned",
   create_one_time_charge: "the sub-account, the charge description and amount as the client sees them, and that it is one payment link, nothing charged until paid (pinned)",
+  resend_checkout_link: "the sub-account, its plan and price, its billing status, and that every earlier link stops working; the plan, price and status are pinned",
   invite_member: "the email, the role (admin's powers named), what happens: a new invite, added at once with nothing to accept, a member's role old -> new, or that approving will refuse (a disabled or another agency's account); territories kept or cleared; whether an email goes out. The proposing agent is shown only the sub-account, email and role",
 };
 

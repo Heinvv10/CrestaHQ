@@ -7,6 +7,7 @@ import { agencyKey } from "@/test/agency-approvals-harness";
 import { seedSnapshots } from "@/test/snapshot-fixtures";
 import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/billing-provider-spies";
 import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
+import { PENDING_BILLING } from "@/test/preview-samples";
 import { seedPr13 } from "@/test/pr13-fixtures";
 
 /**
@@ -227,6 +228,8 @@ describe("an agency key can never send on its own either", () => {
       stripeProductId: "prod_1", stripePriceId: "price_m", gates: { broadcastsEnabledByAgency: true },
     });
     seedSnapshots(mem);
+    // resend_checkout_link's target: a plan assigned, not yet paid.
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: PENDING_BILLING });
   });
 
   it("every agency-callable tool has a fixture", () => {

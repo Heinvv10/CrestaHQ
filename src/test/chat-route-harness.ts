@@ -43,6 +43,14 @@ export async function ask(name: string, args: Record<string, unknown>) {
   return chat.POST(post({ level: "sub-account", subAccountId: "sa1", messages: [{ role: "user", content: "go" }] }));
 }
 
+/** As `ask`, in the Agency Assistant (owner1 of ag1). */
+export async function askAgency(name: string, args: Record<string, unknown>) {
+  runAiSuiteTurn.mockResolvedValueOnce({ text: "", toolCall: { id: "call_1", name, args } });
+  runAiSuiteTurn.mockResolvedValueOnce({ text: "done", toolCall: null });
+  const chat = await import("@/app/api/ai-suite/chat/route");
+  return chat.POST(post({ level: "agency", messages: [{ role: "user", content: "go" }] }));
+}
+
 /** What the chat route fed back to the model for the lookup `ask` ran. */
 export function lookupResult(): string {
   const second = runAiSuiteTurn.mock.calls[1]?.[0] as { messages: Array<{ role: string; content: string }> } | undefined;
@@ -53,6 +61,12 @@ export function lookupResult(): string {
 export async function doConfirm(capability: string, args: Record<string, unknown>) {
   const confirm = await import("@/app/api/ai-suite/confirm/route");
   return confirm.POST(post({ level: "sub-account", subAccountId: "sa1", capability, args }));
+}
+
+/** The confirm card's POST, for an agency capability. */
+export async function confirmAgency(capability: string, args: Record<string, unknown>) {
+  const confirm = await import("@/app/api/ai-suite/confirm/route");
+  return confirm.POST(post({ level: "agency", capability, args }));
 }
 
 /** Gates and tenancy docs every test starts from: two sub-accounts in ag1. */
