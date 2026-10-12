@@ -60,6 +60,18 @@ describe("find_awaiting_payment_bookings", () => {
     expect(text).not.toContain("South");
   });
 
+  it("more than 20 held: the soonest 20 by start, whatever the ids, and the answer is marked truncated", async () => {
+    // Ids sort opposite to start times, so an unordered read would keep the latest.
+    for (let i = 0; i < 25; i++) mem.seed(`events/ev_z${String(99 - i).padStart(2, "0")}`, held({ title: `Held ${i}`, startAt: at(i), endAt: at(i + 1) }));
+    const ctx = { uid: "u1", email: "", displayName: "", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin" };
+    const out = await getCapability("find_awaiting_payment_bookings")!.execute(ctx, {});
+    expect(out.truncated).toBe(true);
+    expect(out.resultText).toContain("Bookings awaiting payment (the soonest 20, times in UTC):");
+    expect(out.resultText).toContain("- Held 0 —");
+    expect(out.resultText).not.toContain("- Held 19 —");
+    expect(out.resultText).toContain("(More are waiting — see the Calendar.)");
+  });
+
   it("nothing held: says so", async () => {
     for (const id of ["ev_later", "ev_soon", "ev_north", "ev_south"]) mem.seed(`events/${id}`, held({ status: "scheduled" }));
     await ask("find_awaiting_payment_bookings", {});

@@ -6,7 +6,7 @@ import { emailIsConfigured } from "@/lib/comms/resend";
 import { loadEventContact } from "@/lib/server/tenant-ref";
 import { markBookingPaidServerSide } from "@/lib/server/bookings-service";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
-import { scopedDocs, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
+import { collectVisible, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
 import { eventStatus, type CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types/tenancy";
@@ -30,7 +30,9 @@ import { tenantEvent } from "./event-status";
  * pinned workflows.
  */
 
-const AWAITING_CAP = 100;
+/** Bookings listed, soonest first; held bookings read at most. */
+const SHOWN = 20;
+const MAX_SCAN = 1000;
 
 /** Chat has no approval queue: the person marks it paid on the calendar. */
 const CHAT_REFUSAL =
@@ -116,16 +118,25 @@ export const BOOKING_PAYMENT_CAPABILITIES: AiSuiteCapability[] = [
     execute: async (ctx) => {
       const tz = await subAccountTimezone(ctx.subAccountId!);
       const scope = await territoryScopeFor(ctx);
-      const docs = await scopedDocs(
+      // Soonest first in the query (the events(subAccountId, status, startAt)
+      // index), territory-filtered before the cap.
+      const { docs, scanCapped } = await collectVisible(
         scope,
         getAdminDb()
           .collection("events")
           .where("subAccountId", "==", ctx.subAccountId!)
           .where("status", "==", "awaiting_payment")
-          .limit(AWAITING_CAP)
+          .orderBy("startAt", "asc"),
+        { want: SHOWN + 1, maxScan: MAX_SCAN }
       );
-      if (docs.length === 0) return { resultText: "No bookings are waiting on a deposit." };
-      const rows = docs
+      if (docs.length === 0) {
+        return scanCapped
+          ? { resultText: `None of the first ${MAX_SCAN} bookings awaiting payment are in your territories — see the Calendar.`, truncated: true as const }
+          : { resultText: "No bookings are waiting on a deposit." };
+      }
+      const more = docs.length > SHOWN;
+      const shown = docs
+        .slice(0, SHOWN)
         .map((d) => {
           const e = d.data() as CalendarEvent;
           return {
@@ -135,9 +146,7 @@ export const BOOKING_PAYMENT_CAPABILITIES: AiSuiteCapability[] = [
             contactId: typeof e.contactId === "string" ? e.contactId : null,
             page: e.bookingPageSlug ?? null,
           };
-        })
-        .sort((a, b) => (a.start?.getTime() ?? 0) - (b.start?.getTime() ?? 0));
-      const shown = rows.slice(0, 20);
+        });
       const names = await contactNamesById(ctx.subAccountId!, shown.map((r) => r.contactId), scope);
       const lines = shown.map(
         (r) =>
@@ -145,10 +154,11 @@ export const BOOKING_PAYMENT_CAPABILITIES: AiSuiteCapability[] = [
             r.contactId ? `, ${names.get(r.contactId) ?? r.contactId}` : ""
           }${r.page ? `, page: ${r.page}` : ""}, id: ${r.id}`
       );
-      const more = rows.length > shown.length ? `\n(+${rows.length - shown.length} more — see the Calendar)` : "";
+      const head = more ? `the soonest ${SHOWN}` : `${shown.length}`;
+      const tail = more ? "\n(More are waiting — see the Calendar.)" : scanCapped ? `\n(Only the first ${MAX_SCAN} bookings awaiting payment were checked — see the Calendar.)` : "";
       return {
-        resultText: `Bookings awaiting payment (${rows.length}, times in ${tz}):\n${lines.join("\n")}${more}`,
-        ...(docs.length >= AWAITING_CAP ? { truncated: true as const } : {}),
+        resultText: `Bookings awaiting payment (${head}, times in ${tz}):\n${lines.join("\n")}${tail}`,
+        ...(more || scanCapped ? { truncated: true as const } : {}),
       };
     },
   },
