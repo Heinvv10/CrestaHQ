@@ -62,7 +62,10 @@ export const voiceSdk = {
   devices: [] as FakeDevice[],
   /** What `device.connect()` does; replace per test (pending, rejecting…). */
   connect: (device: FakeDevice): Promise<FakeCall> => Promise.resolve(device.call),
+  /** Clears state, `loads` included. Pair it with `vi.doMock` of the SDK in
+   *  the same beforeEach, so the next import() loads the module again. */
   reset() {
+    this.loads = 0;
     this.devices = [];
     this.connect = (device) => Promise.resolve(device.call);
   },

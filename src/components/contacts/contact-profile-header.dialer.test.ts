@@ -70,6 +70,9 @@ async function until(cond: () => boolean, label: string) {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   voiceSdk.reset();
+  // Re-register the mock, so this test's first import() of the SDK loads it
+  // afresh and the lazy-load assertions do not depend on test order.
+  vi.doMock("@twilio/voice-sdk", async () => (await import("@/test/fake-voice-sdk")).fakeVoiceSdkModule());
   subAccount = { ...READY };
   fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, token: TOKEN, ttlSeconds: 3600 }), { status: 200 }));
   vi.stubGlobal("fetch", fetchMock);
@@ -122,6 +125,7 @@ describe("contact profile — the browser Call button", () => {
     ["opted out of calls", { voiceOptedOut: true }, "This contact opted out of calls"],
     ["a locally formatted number", { phone: "082 123 4567" }, "Save the number in international format, e.g. +27…"],
     ["digits with a country code but no +", { phone: "27821234567" }, "Save the number in international format, e.g. +27…"],
+    ["a +… number inside other text", { phone: "Mobile: +27821234567" }, "Save the number in international format, e.g. +27…"],
     ["opted out AND locally formatted", { phone: "082 123 4567", voiceOptedOut: true }, "This contact opted out of calls"],
   ])("is disabled with the reason for a contact with %s", async (_name, contact, reason) => {
     await render(contact as Partial<Contact>);

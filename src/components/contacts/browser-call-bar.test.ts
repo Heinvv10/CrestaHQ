@@ -74,6 +74,9 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   voiceSdk.reset();
+  // Re-register the mock, so this test's first import() of the SDK loads it
+  // afresh and the load count does not depend on test order.
+  vi.doMock("@twilio/voice-sdk", async () => (await import("@/test/fake-voice-sdk")).fakeVoiceSdkModule());
   onClose = vi.fn<() => void>();
   fetchMock = vi.fn(async () => tokenOk());
   vi.stubGlobal("fetch", fetchMock);
@@ -348,5 +351,109 @@ describe("BrowserCallBar — hanging up and unmounting", () => {
     releaseToken();
     for (let i = 0; i < 20; i++) await tick();
     expect(voiceSdk.devices).toHaveLength(0);
+  });
+});
+
+describe("BrowserCallBar — leaving the page while a call is live", () => {
+  /** True when the page would ask before unloading. */
+  function unloadPrompts() {
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  }
+
+  it("asks while ringing and in a call, and not before or after", async () => {
+    let releaseToken!: () => void;
+    fetchMock.mockImplementation(() => new Promise((resolve) => (releaseToken = () => resolve(tokenOk()))));
+    await mount();
+    expect(phase()).toBe("connecting");
+    expect(unloadPrompts()).toBe(false);
+
+    releaseToken();
+    await until(() => phase() === "ringing", "ringing");
+    await act(async () => tick());
+    expect(unloadPrompts()).toBe(true);
+
+    const device = voiceSdk.device;
+    await emit(device.call, "accept");
+    expect(unloadPrompts()).toBe(true);
+
+    await emit(device.call, "disconnect");
+    expect(phase()).toBe("ended");
+    expect(unloadPrompts()).toBe(false);
+  });
+
+  it("stops asking after an error", async () => {
+    const device = await mountToInCall();
+    await emit(device.call, "error", { message: "ConnectionError (31005)" });
+    expect(phase()).toBe("error");
+    expect(unloadPrompts()).toBe(false);
+  });
+
+  it("stops asking once the bar unmounts mid-call", async () => {
+    await mountToInCall();
+    expect(unloadPrompts()).toBe(true);
+    await unmount();
+    expect(unloadPrompts()).toBe(false);
+  });
+});
+
+describe("BrowserCallBar — an SDK that misbehaves", () => {
+  it("a second accept does not start a second clock, and no interval outlives the bar", async () => {
+    const device = await mountToRinging();
+    await emit(device.call, "accept");
+    await emit(device.call, "accept");
+    await act(async () => vi.advanceTimersByTime(3_000));
+    expect(status()).toBe("0:03");
+    await unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("call.disconnect() throwing on Hang up still ends the call and destroys the device", async () => {
+    const warned: unknown[][] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => void warned.push(args));
+    const device = await mountToInCall();
+    const thrown = new Error("socket closed");
+    device.call.disconnect = () => {
+      throw thrown;
+    };
+    await click(button("Hang up"));
+    expect(phase()).toBe("ended");
+    expect(device.destroyCalls).toBe(1);
+    // The message is logged, never the error object. (The fake's destroy()
+    // disconnects its call again, so destroy reports the same throw.)
+    expect(warned[0]).toEqual(["[dialer] call.disconnect failed:", "socket closed"]);
+    expect(warned.flat().every((arg) => typeof arg === "string")).toBe(true);
+  });
+
+  it("device.destroy() throwing on an error still shows the error", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const device = await mountToRinging();
+    device.destroy = () => {
+      throw new Error("already destroyed");
+    };
+    await emit(device, "error", { message: "AccessTokenInvalid (20101)" });
+    expect(phase()).toBe("error");
+    expect(status()).toBe("AccessTokenInvalid (20101)");
+    expect(device.call.disconnectCalls).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("BrowserCallBar — accessibility", () => {
+  it("announces the status, and the toggles say what they are and whether they are on", async () => {
+    const device = await mountToInCall();
+    const line = container.querySelector('[data-testid="browser-call-status"]')!;
+    expect(line.getAttribute("role")).toBe("status");
+    expect(line.getAttribute("aria-live")).toBe("polite");
+
+    const mute = container.querySelector<HTMLButtonElement>('button[aria-label="Mute"]')!;
+    const keypad = container.querySelector<HTMLButtonElement>('button[aria-label="Keypad"]')!;
+    expect(mute.getAttribute("aria-pressed")).toBe("false");
+    expect(keypad.getAttribute("aria-expanded")).toBe("false");
+    await click(mute);
+    expect(device.call.muted).toBe(true);
+    expect(mute.getAttribute("aria-pressed")).toBe("true");
+    await click(keypad);
+    expect(keypad.getAttribute("aria-expanded")).toBe("true");
   });
 });

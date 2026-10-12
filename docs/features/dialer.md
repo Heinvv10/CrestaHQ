@@ -42,6 +42,12 @@ touched.
      scope.
    - It checks that the contact is in this sub-account (the `contactId` must be a plain
      document id; `requireContactAccessible` refuses anything containing `/`).
+   - It refuses a stored phone that is not, once trimmed, in strict `+…` form: `+`,
+     then only digits and space `( ) - . /`, at most 32 characters
+     (`storedInInternationalForm` in `dialer-shared.ts`, the rule that also disables
+     the Call button). This runs BEFORE parsing: libphonenumber would otherwise pull
+     `+27…` out of `tel:+27…`, `Mobile: +27…`, or a number behind a zero-width or
+     right-to-left character, and the server would dial what the UI refused.
    - It applies the two number checks the AI outbound path uses
      (`validDialNumber` / `countryBlocked` in `outbound-compliance.ts`), parsed the
      same way: the phone must be a valid number to libphonenumber **with no default
@@ -114,10 +120,10 @@ agency gate and reads only `dialerConfig.enabled`.
   tooltip (`title`, like the Email and SMS buttons beside it), when the contact:
   - has no phone;
   - is `voiceOptedOut`;
-  - has a phone not stored in "+…" form ("Save the number in international format,
-    e.g. +27…"). This is a leading-`+` hint only. The TwiML webhook still parses the
-    number and is the authority; a `+…` number that is not valid is refused there,
-    with the spoken message.
+  - has a phone not stored in strict "+…" form ("Save the number in international
+    format, e.g. +27…"). The TwiML webhook applies the same function before it parses
+    the number, and stays the authority on validity: a strict-form number that is not
+    a valid number is refused there, with the spoken message.
 
   The button does not look at the dedicated-Twilio switch. If dedicated Twilio is off,
   the token route's 403 shows in the call bar.
@@ -134,11 +140,20 @@ agency gate and reads only `dialerConfig.enabled`.
     call error, the call ending, Hang up, and unmount. The first outcome wins, so the
     `disconnect` the SDK emits when the Device is destroyed does not replace a shown
     error. Hang up during a call ends it at once and does not wait for an SDK event.
+    A teardown step that throws is logged (its message only) and the next step still
+    runs, so the bar always reaches "ended" or the error.
   - The token is held in memory only. Nothing logs it or stores it.
   - The bar is tied to the contact it was started for. If the header shows another
     contact while a call is open, the bar unmounts and the call ends; the new contact
     is never dialled without a click. A call already open continues if the gate is
     switched off (the server lets it finish too).
+  - **The bar lives in the contact header, so leaving the contact page ends the
+    call.** Navigating anywhere else inside the app unmounts the header, and with it
+    the bar, which disconnects the call without asking. Reloading or closing the tab
+    while the call is ringing or answered shows the browser's "leave this page?"
+    prompt (`beforeunload`); in-app navigation does not fire that prompt.
+    **Follow-up:** move the bar into a provider in the sub-account layout, so a call
+    survives navigation inside the app.
 - **Settings card** (Settings → Messaging → Phone dialer,
   `sub-account-dialer-section.tsx`), sub-account admins only.
   - Gate off: "Locked by your agency", no Enable and no recording toggle.
@@ -223,7 +238,8 @@ The remote clean-up is **best-effort**:
 - `src/app/api/comms/dialer/token/route.ts`
 - `src/app/api/webhooks/twilio/dialer/{twiml,status}/[subAccountId]/route.ts`
 - `src/lib/comms/dialer-shared.ts`: the rules the server and the browser both apply
-  (the recording URL rule, dedicated-Twilio readiness, the "+…" hint). Client-safe.
+  (the recording URL rule, dedicated-Twilio readiness, the strict "+…" phone form).
+  Client-safe.
 - `src/components/contacts/browser-call-bar.tsx`, and the Call button in
   `contact-profile-header.tsx`
 - `src/components/settings/sub-account-dialer-section.tsx`

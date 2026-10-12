@@ -46,6 +46,15 @@ interface VoiceDevice {
 
 const KEYPAD = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "*", "0", "#"];
 
+/** A teardown step that threw. Never the raw object: SDK errors can carry
+ *  connection details. */
+function warnTeardown(step: string, err: unknown) {
+  console.warn(
+    `[dialer] ${step} failed:`,
+    err instanceof Error ? err.message : String(err),
+  );
+}
+
 function sdkErrorMessage(e: unknown): string {
   return e && typeof e === "object" && "message" in e
     ? String((e as { message: unknown }).message)
@@ -109,7 +118,11 @@ export function BrowserCallBar({
   // emit "disconnect", which must not turn a shown error into "Call ended".
   const settledRef = useRef(false);
 
-  /** Disconnect the call and destroy the Device. Safe to call twice. */
+  /**
+   * Disconnect the call and destroy the Device. Safe to call twice, and never
+   * throws: a step that throws is logged and the next still runs, so the
+   * caller always reaches its state change.
+   */
   function teardown() {
     if (timerRef.current) clearInterval(timerRef.current);
     timerRef.current = null;
@@ -119,8 +132,13 @@ export function BrowserCallBar({
     deviceRef.current = null;
     try {
       call?.disconnect();
-    } finally {
+    } catch (err) {
+      warnTeardown("call.disconnect", err);
+    }
+    try {
       device?.destroy();
+    } catch (err) {
+      warnTeardown("device.destroy", err);
     }
   }
 
@@ -168,7 +186,8 @@ export function BrowserCallBar({
         }
         callRef.current = call;
         call.on("accept", () => {
-          if (cancelled || settledRef.current) return;
+          // A repeated "accept" must not start a second clock.
+          if (cancelled || settledRef.current || timerRef.current) return;
           setPhase("in-call");
           timerRef.current = setInterval(
             () => setSeconds((s) => s + 1),
@@ -194,6 +213,20 @@ export function BrowserCallBar({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contact.id, subAccountId]);
+
+  // Leaving or reloading the page drops the call: ask first while one is live.
+  // Navigating inside the app does not fire this, and unmounts the bar, which
+  // ends the call (docs/features/dialer.md).
+  const live = phase === "ringing" || phase === "in-call";
+  useEffect(() => {
+    if (!live) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [live]);
 
   function toggleMute() {
     const call = callRef.current;
@@ -245,6 +278,8 @@ export function BrowserCallBar({
                   : "text-muted-foreground",
             )}
             data-testid="browser-call-status"
+            role="status"
+            aria-live="polite"
           >
             {statusLine}
           </p>
@@ -277,6 +312,8 @@ export function BrowserCallBar({
           onClick={toggleMute}
           disabled={phase !== "in-call"}
           title={muted ? "Unmute" : "Mute"}
+          aria-label="Mute"
+          aria-pressed={muted}
         >
           {muted ? (
             <MicOff className="h-3.5 w-3.5" />
@@ -291,6 +328,8 @@ export function BrowserCallBar({
           onClick={() => setShowKeypad((v) => !v)}
           disabled={phase !== "in-call"}
           title="Keypad"
+          aria-label="Keypad"
+          aria-expanded={showKeypad}
         >
           <Grip className="h-3.5 w-3.5" />
         </Button>

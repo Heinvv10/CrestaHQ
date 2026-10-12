@@ -11,20 +11,20 @@ import type { Contact } from "@/types/contacts";
  * both, nothing may be constructed afterwards — a Device built after the bar
  * is gone would never be destroyed, and would place a call nobody can see.
  *
- * The SDK module is loaded once per test file, so the mock holds its load
- * behind a gate and the two cases run in this order.
+ * The mock holds the SDK's load behind a gate. Each test re-registers it with
+ * a fresh gate, so each test's first import() loads it afresh.
  */
 
-const sdk = vi.hoisted(() => {
-  let open!: () => void;
-  const gate = new Promise<void>((resolve) => (open = resolve));
-  return { requested: 0, gate, open };
-});
-vi.mock("@twilio/voice-sdk", async () => {
-  sdk.requested++;
-  await sdk.gate;
-  return (await import("@/test/fake-voice-sdk")).fakeVoiceSdkModule();
-});
+const sdk = { requested: 0, gate: Promise.resolve(), open: () => {} };
+function gatedSdkMock() {
+  sdk.requested = 0;
+  sdk.gate = new Promise<void>((resolve) => (sdk.open = resolve));
+  vi.doMock("@twilio/voice-sdk", async () => {
+    sdk.requested++;
+    await sdk.gate;
+    return (await import("@/test/fake-voice-sdk")).fakeVoiceSdkModule();
+  });
+}
 
 const { BrowserCallBar } = await import("./browser-call-bar");
 
@@ -48,6 +48,7 @@ async function settle() {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   voiceSdk.reset();
+  gatedSdkMock();
   fetchMock = vi.fn(async () => tokenOk());
   vi.stubGlobal("fetch", fetchMock);
   container = document.createElement("div");
