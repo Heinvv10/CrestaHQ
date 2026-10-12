@@ -107,6 +107,18 @@ it.each([
   expect(await queued()).toEqual([]);
 });
 
+it("queues nothing for a spoofed sender the receiving host's checks failed", async () => {
+  setup([live({ headers: "Authentication-Results: mx.biz.test; spf=fail smtp.mailfrom=example.com; dmarc=fail header.from=example.com\r\n" })]);
+  await syncMailbox("a");
+  expect(await queued()).toEqual([]);
+});
+
+it("still queues a draft when the checks are only soft (softfail / dmarc=none)", async () => {
+  setup([live({ headers: "Authentication-Results: mx.biz.test; spf=softfail smtp.mailfrom=example.com; dmarc=none header.from=example.com\r\n" })]);
+  await syncMailbox("a");
+  expect(await queued()).toHaveLength(1);
+});
+
 it("queues nothing for a bounce", async () => {
   setup([live({ from: "mailer-daemon@example.com", subject: "Undeliverable: Quote" })]);
   await syncMailbox("a");

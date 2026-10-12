@@ -10,6 +10,7 @@ import { emailReplyFields } from "@/components/conversations/email-reply";
 import {
   isAutoReply,
   isDeliveryReport,
+  senderAuthenticated,
   type InboundEmail,
 } from "@/lib/prospecting/mystery-shop/email-match";
 import type { SubAccountDoc } from "@/types";
@@ -27,11 +28,16 @@ export interface InboundEmailForDraft {
   references: string[];
 }
 
-/** Bounces, auto-replies and list mail have nobody to answer: no draft. */
+/**
+ * Bounces, auto-replies and list mail have nobody to answer, and mail whose
+ * sender the receiving host's checks definitely FAILED (a spoofed From) must
+ * not get a reply drafted to that address: no draft for any of them.
+ */
 export function isDraftableEmail(
-  m: Pick<InboundEmail, "autoReply" | "dsn" | "from" | "subject">,
+  m: Pick<InboundEmail, "autoReply" | "dsn" | "from" | "subject" | "authResults">,
 ): boolean {
-  return !isAutoReply(m) && !isDeliveryReport(m);
+  const domain = m.from.slice(m.from.lastIndexOf("@") + 1);
+  return !isAutoReply(m) && !isDeliveryReport(m) && senderAuthenticated(m.authResults, domain) !== "fail";
 }
 
 /** The bare address of `Name <a@b>` or `a@b`, lower-cased. */
