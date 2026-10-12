@@ -2,9 +2,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitpageConceptCard } from "@/lib/gitpage/client";
 import { validateWebsiteConfig } from "@/lib/website/validation";
-import { createMemoryFirestore } from "@/test/memory-firestore";
+import { byLabel, description } from "@/test/dom-queries";
 import {
   blankPremiumDetails,
   sampleGymFitnessLocalConfig,
@@ -13,7 +12,6 @@ import {
   type WebsiteProvisioning,
 } from "@/types/website";
 import {
-  ConceptPicker,
   HeroMotionSelect,
   LeadCaptureToggles,
   PremiumDetailsFields,
@@ -21,22 +19,11 @@ import {
   ProvisioningSummary,
 } from "./website-premium-sections";
 
-// The concepts route's REAL answers (see routeAnswer below) feed the picker
-// tests, so a change to the route's bodies breaks these tests.
-const mem = createMemoryFirestore();
-const claims: Record<string, Record<string, unknown>> = {
-  u_member: { status: "active", agencyId: "ag1" },
-};
-vi.mock("@/lib/firebase/admin", () => ({
-  getAdminDb: () => mem.db,
-  getAdminAuth: () => ({ getUser: async (uid: string) => ({ customClaims: claims[uid] ?? {} }) }),
-}));
-const { GET: conceptsRoute } = await import("@/app/api/sub-accounts/[id]/website/concepts/route");
+// The concept picker's tests are in website-concept-picker.test.ts.
 
 let host: HTMLDivElement;
 let root: Root;
 const render = (el: React.ReactElement) => act(async () => root.render(el));
-const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -52,29 +39,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** getByLabelText: a <label for>, or an aria-labelledby, resolving to the control. */
-function byLabel(text: string): HTMLElement {
-  for (const l of Array.from(host.querySelectorAll("label"))) {
-    if (l.textContent === text && l.htmlFor) {
-      const el = host.querySelector(`[id="${l.htmlFor}"]`);
-      if (el) return el as HTMLElement;
-    }
-  }
-  for (const el of Array.from(host.querySelectorAll("[aria-labelledby]"))) {
-    const named = host.querySelector(`[id="${el.getAttribute("aria-labelledby")}"]`);
-    if (named?.textContent === text) return el as HTMLElement;
-  }
-  throw new Error(`no control labelled "${text}"`);
-}
-/** The text of the element(s) a control points at with aria-describedby. */
-function description(el: HTMLElement): string {
-  return (el.getAttribute("aria-describedby") ?? "")
-    .split(" ")
-    .map((id) => host.querySelector(`[id="${id}"]`)?.textContent ?? "")
-    .join(" ")
-    .trim();
-}
-
 describe("PremiumDetailsFields", () => {
   const noop = () => {};
 
@@ -87,26 +51,25 @@ describe("PremiumDetailsFields", () => {
     expect(host.textContent).not.toContain("Tools & platforms");
   });
 
-  it("renders sample premium details into the right fields", async () => {
+  it("renders sample premium details into the fields their labels name", async () => {
     const sample = sampleGymFitnessLocalConfig().premium_details as WebsitePremiumDetails;
     expect(sample.tagline).not.toBe("");
     await render(createElement(PremiumDetailsFields, { value: sample, errors: {}, onChange: noop }));
-    const tagline = fieldBlock("Tagline").querySelector("input") as HTMLInputElement;
-    const team = fieldBlock("Team").querySelector("textarea") as HTMLTextAreaElement;
-    expect(tagline.value).toBe(sample.tagline);
-    expect(team.value).toBe(sample.team);
+    expect((byLabel(host, "Tagline") as HTMLInputElement).value).toBe(sample.tagline);
+    expect((byLabel(host, "Team") as HTMLTextAreaElement).value).toBe(sample.team);
+    expect(description(host, byLabel(host, "Founded"))).toBe("Four-digit year.");
   });
 
   it("shows AI-niche fields only for those niches", async () => {
     await render(createElement(PremiumDetailsFields, { value: null, errors: {}, onChange: noop, niche: "ai_automation" }));
-    expect(host.textContent).toContain("Case studies");
-    expect(host.textContent).toContain("Tools & platforms");
+    expect(byLabel(host, "Case studies")).toBeTruthy();
+    expect(byLabel(host, "Tools & platforms you work with")).toBeTruthy();
     await render(createElement(PremiumDetailsFields, { value: null, errors: {}, onChange: noop, niche: "agency_consulting" }));
-    expect(host.textContent).toContain("Case studies");
+    expect(byLabel(host, "Case studies")).toBeTruthy();
     expect(host.textContent).not.toContain("Tools & platforms");
   });
 
-  it("puts each real validateWebsiteConfig premium error beside its own field", async () => {
+  it("ties each real validateWebsiteConfig premium error to its own field", async () => {
     const config: WebsiteConfig = {
       ...sampleGymFitnessLocalConfig(),
       premium_details: {
@@ -121,19 +84,21 @@ describe("PremiumDetailsFields", () => {
       expect.arrayContaining(["premium_details.tagline", "premium_details.founded_year", "premium_details.social_links"]),
     );
     await render(createElement(PremiumDetailsFields, { value: config.premium_details!, errors, onChange: noop }));
-    expect(fieldBlock("Tagline").textContent).toContain(errors["premium_details.tagline"]);
-    expect(fieldBlock("Founded").textContent).toContain(errors["premium_details.founded_year"]);
-    expect(fieldBlock("Social links").textContent).toContain(errors["premium_details.social_links"]);
-    // An unrelated field shows its hint, not someone else's error.
-    expect(fieldBlock("Team").textContent).not.toContain(errors["premium_details.tagline"]);
-    expect(fieldBlock("Team").querySelector(".text-destructive")).toBeNull();
-    expect(fieldBlock("Tagline").querySelector(".text-destructive")).not.toBeNull();
+    for (const [label, key] of [["Tagline", "tagline"], ["Founded", "founded_year"], ["Social links", "social_links"]]) {
+      const control = byLabel(host, label);
+      expect(control.getAttribute("aria-invalid")).toBe("true");
+      expect(description(host, control)).toBe(errors[`premium_details.${key}`]);
+    }
+    // An unrelated field is not invalid and describes itself with its hint.
+    const team = byLabel(host, "Team");
+    expect(team.getAttribute("aria-invalid")).toBeNull();
+    expect(description(host, team)).toMatch(/^One per line: "Name \| Role/);
   });
 
   it("writes an edit back as a full details object with only that key changed", async () => {
     const onChange = vi.fn();
     await render(createElement(PremiumDetailsFields, { value: null, errors: {}, onChange }));
-    const input = fieldBlock("Tagline").querySelector("input") as HTMLInputElement;
+    const input = byLabel(host, "Tagline") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
       setter.call(input, "Hello");
@@ -144,32 +109,86 @@ describe("PremiumDetailsFields", () => {
 });
 
 describe("LeadCaptureToggles", () => {
-  const boxes = () => Array.from(host.querySelectorAll('[role="checkbox"]')) as HTMLElement[];
+  const FORM = "Contact form feeds this workspace";
+  const CHAT = "AI chat widget on every page";
 
   it("writes include_form and include_chat independently, and offers no voice toggle", async () => {
     const onChange = vi.fn();
     await render(createElement(LeadCaptureToggles, { includeForm: true, includeChat: false, onChange }));
-    expect(boxes()).toHaveLength(2);
-    expect(boxes()[0].getAttribute("aria-checked")).toBe("true");
-    expect(boxes()[1].getAttribute("aria-checked")).toBe("false");
-    await act(async () => boxes()[0].click());
+    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(2);
+    expect(byLabel(host, FORM).getAttribute("aria-checked")).toBe("true");
+    expect(byLabel(host, CHAT).getAttribute("aria-checked")).toBe("false");
+    await act(async () => byLabel(host, FORM).click());
     expect(onChange).toHaveBeenLastCalledWith({ include_form: false });
-    await act(async () => boxes()[1].click());
+    await act(async () => byLabel(host, CHAT).click());
     expect(onChange).toHaveBeenLastCalledWith({ include_chat: true });
     expect(host.textContent).not.toMatch(/voice/i);
+  });
+
+  it("names each checkbox by its title alone and describes it with the explanation", async () => {
+    await render(createElement(LeadCaptureToggles, { includeForm: false, includeChat: false, onChange: () => {} }));
+    expect(description(host, byLabel(host, FORM))).toMatch(/^The site's contact form posts straight into Contacts/);
+    expect(description(host, byLabel(host, CHAT))).toMatch(/knowledge base is seeded/);
+    // Only phrasing content inside a <label>.
+    expect(host.querySelectorAll("label div, label p")).toHaveLength(0);
+  });
+
+  it("does nothing when disabled", async () => {
+    const onChange = vi.fn();
+    await render(createElement(LeadCaptureToggles, { includeForm: false, includeChat: false, onChange, disabled: true }));
+    await act(async () => byLabel(host, FORM).click());
+    await act(async () => byLabel(host, CHAT).click());
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 
 describe("HeroMotionSelect", () => {
-  it("defaults null to still and writes the chosen motion", async () => {
+  const OPTIONS = ["Concept default", "Photo", "Video loop", "Animated background"];
+  const pressed = () => {
+    const btns = Array.from(host.querySelectorAll("button"));
+    expect(btns).toHaveLength(OPTIONS.length);
+    return OPTIONS.map((label, i) => {
+      expect(btns[i].textContent).toMatch(new RegExp(`^${label}`));
+      return [label, btns[i].getAttribute("aria-pressed")];
+    });
+  };
+  const button = (label: string) => {
+    const b = Array.from(host.querySelectorAll("button")).find((x) => x.textContent?.startsWith(label));
+    if (!b) throw new Error(`no ${label} option`);
+    return b;
+  };
+
+  it("shows null as the selected 'Concept default', and writes every option including null", async () => {
     const onChange = vi.fn();
     await render(createElement(HeroMotionSelect, { value: null, onChange }));
-    const btns = Array.from(host.querySelectorAll("button"));
-    expect(btns.map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]);
-    await act(async () => btns[1].click());
+    expect(pressed()).toEqual([
+      ["Concept default", "true"],
+      ["Photo", "false"],
+      ["Video loop", "false"],
+      ["Animated background", "false"],
+    ]);
+    await act(async () => button("Photo").click());
+    expect(onChange).toHaveBeenLastCalledWith("still");
+    await act(async () => button("Video loop").click());
     expect(onChange).toHaveBeenLastCalledWith("loop");
-    await act(async () => btns[2].click());
+    await act(async () => button("Animated background").click());
     expect(onChange).toHaveBeenLastCalledWith("atmosphere");
+
+    await render(createElement(HeroMotionSelect, { value: "still", onChange }));
+    expect(button("Photo").getAttribute("aria-pressed")).toBe("true");
+    expect(button("Concept default").getAttribute("aria-pressed")).toBe("false");
+    await act(async () => button("Concept default").click());
+    expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("does nothing when disabled", async () => {
+    const onChange = vi.fn();
+    await render(createElement(HeroMotionSelect, { value: null, onChange, disabled: true }));
+    for (const b of Array.from(host.querySelectorAll("button"))) {
+      expect(b.disabled).toBe(true);
+      await act(async () => b.click());
+    }
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("states no duration or price that contradicts the 10-20 minute build", async () => {
@@ -202,104 +221,5 @@ describe("build phase + provisioning summary", () => {
     expect(host.textContent).toContain("No contact form on this build.");
     expect(host.textContent).toContain("Chat not included.");
     expect(host.textContent).toContain("Some steps need attention: kb failed");
-  });
-});
-
-describe("ConceptPicker", () => {
-  const card = (id: string, name: string): GitpageConceptCard => ({
-    id, niche: "gym_fitness", name, pitch: `${name} pitch`, fit: "Boutique gyms", archetype: "editorial",
-    typeSystem: "serif_sans", defaultMode: "dark", modes: ["light", "dark"],
-    accents: { light: "#111111", dark: "#222222" }, heroMotion: "still",
-  });
-  const respond = (status: number, body: unknown) =>
-    ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
-  const mountPicker = (props: { value?: string | null; onChange?: (id: string | null) => void; niche?: string | null } = {}) =>
-    render(createElement(ConceptPicker, {
-      subAccountId: "sa1", niche: props.niche === undefined ? "gym_fitness" : props.niche, mode: "dark",
-      value: props.value ?? null, onChange: props.onChange ?? (() => {}),
-    }));
-  const unhandled: unknown[] = [];
-  const onUnhandled = (e: unknown) => unhandled.push(e);
-  beforeEach(() => { unhandled.length = 0; process.on("unhandledRejection", onUnhandled); });
-  afterEach(() => { process.off("unhandledRejection", onUnhandled); });
-
-  it("shows loading until the fetch settles, and calls the concepts route with the niche", async () => {
-    let release!: (r: Response) => void;
-    const fetchMock = vi.fn(() => new Promise<Response>((r) => { release = r; }));
-    vi.stubGlobal("fetch", fetchMock);
-    await mountPicker();
-    expect(host.textContent).toContain("Loading design directions");
-    expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/website/concepts?niche=gym_fitness");
-    await act(async () => release(respond(200, { concepts: [card("c1", "Iron")] })));
-    expect(host.textContent).not.toContain("Loading design directions");
-    expect(host.textContent).toContain("Iron");
-  });
-
-  it("omits the niche query when there is none", async () => {
-    const fetchMock = vi.fn(async () => respond(200, { concepts: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await mountPicker({ niche: null });
-    expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/website/concepts");
-  });
-
-  it("renders loaded cards with the selected one pressed, and reports picks", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => respond(200, { concepts: [card("c1", "Iron"), card("c2", "Pulse")] })));
-    const onChange = vi.fn();
-    await mountPicker({ value: "c2", onChange });
-    const btns = Array.from(host.querySelectorAll("button"));
-    expect(btns.map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false", "true"]);
-    expect(btns[1].textContent).toContain("Iron pitch");
-    await act(async () => btns[1].click());
-    expect(onChange).toHaveBeenLastCalledWith("c1");
-    await act(async () => btns[0].click());
-    expect(onChange).toHaveBeenLastCalledWith(null);
-  });
-
-  it("clears a stale selection that is not in the loaded list", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => respond(200, { concepts: [card("c1", "Iron")] })));
-    const onChange = vi.fn();
-    await mountPicker({ value: "gone", onChange });
-    expect(onChange).toHaveBeenCalledWith(null);
-  });
-
-  it("treats a 200 with a malformed body as an empty list, not a crash", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => respond(200, { concepts: { not: "an array" } })));
-    await mountPicker();
-    expect(host.textContent).toContain("Let the studio choose");
-  });
-
-  const failures: Array<[string, () => Response | Promise<Response>, RegExp, boolean]> = [
-    ["401", () => respond(401, { error: "Unauthorized" }), /session has expired/, false],
-    ["403 gate off", () => respond(403, { error: "Website builder is not enabled for this agency." }), /not enabled for this agency/, false],
-    ["404", () => respond(404, { error: "Not found" }), /not available here/, true],
-    ["429", () => respond(429, {}), /Too many requests/, true],
-    ["500", () => respond(500, { error: "boom stack trace" }), /unavailable right now/, true],
-    ["502 with non-JSON body", () => ({ ok: false, status: 502, json: async () => { throw new SyntaxError("bad json"); } }) as unknown as Response, /unavailable right now/, true],
-    ["network error", () => { throw new TypeError("Failed to fetch"); }, /Could not reach the server/, true],
-  ];
-  it.each(failures)("%s ends the spinner and shows a message", async (_n, make, text, fallback) => {
-    vi.stubGlobal("fetch", vi.fn(async () => make()));
-    const onChange = vi.fn();
-    await mountPicker({ value: "c1", onChange });
-    await flush();
-    expect(host.textContent).not.toContain("Loading design directions");
-    const alert = host.querySelector('[role="alert"]');
-    expect(alert?.textContent).toMatch(text);
-    expect(alert?.textContent?.includes("default direction")).toBe(fallback);
-    expect(alert?.textContent).not.toContain("boom stack trace");
-    expect(host.querySelectorAll("button")).toHaveLength(0);
-    // The picked concept cannot be honoured, so it is cleared.
-    expect(onChange).toHaveBeenCalledWith(null);
-    expect(unhandled).toEqual([]);
-  });
-
-  it("ignores a response that lands after unmount", async () => {
-    let release!: (r: Response) => void;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((r) => { release = r; })));
-    await mountPicker();
-    await act(async () => root.unmount());
-    root = createRoot(host);
-    await act(async () => release(respond(500, {})));
-    expect(unhandled).toEqual([]);
   });
 });

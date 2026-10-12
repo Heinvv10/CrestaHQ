@@ -19,6 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { isHexColor } from "@/lib/hex-color";
 import { PREMIUM_LIMITS, premiumDetailAppliesToNiche } from "@/lib/website/premium";
 import { TILE_OFF, TILE_ON } from "@/components/website/website-form-parts";
 import {
@@ -31,10 +32,9 @@ import {
 /**
  * Website Build v2 — the premium-only sections of the website builder
  * (lead-capture + chat toggles, concept pitch cards, hero motion, premium
- * details, build-phase label, hand-off summary). There is no quality picker:
- * every build is premium. Kept out of `website-builder.tsx` so the long form
- * stays readable; every piece is a plain controlled component — the builder
- * owns the config state.
+ * details, build-phase label, hand-off summary). Kept out of
+ * `website-builder.tsx` so the long form stays readable; every piece is a
+ * plain controlled component — the builder owns the config state.
  */
 
 // ---------------------------------------------------------------------------
@@ -167,6 +167,8 @@ function describeConceptsFailure(status: number, code: unknown, routeError: unkn
       return { message: "That industry template has no design directions.", fallback: true };
     case "upstream":
       return { message: UNAVAILABLE, fallback: true };
+    case "internal":
+      return { message: "Could not load design directions.", fallback: true };
   }
   if (status === 429) return { message: "Too many requests — wait a moment, then reopen this step.", fallback: true };
   if (status >= 500) return { message: UNAVAILABLE, fallback: true };
@@ -186,7 +188,6 @@ type PickerCard = {
   defaultMode: string;
 };
 
-const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 function toPickerCard(raw: unknown): PickerCard | null {
@@ -196,7 +197,7 @@ function toPickerCard(raw: unknown): PickerCard | null {
   const rawAccents = c.accents && typeof c.accents === "object" ? (c.accents as Record<string, unknown>) : {};
   const accents: Record<string, string> = {};
   for (const [k, v] of Object.entries(rawAccents)) {
-    if (typeof v === "string" && HEX_COLOR.test(v)) accents[k] = v;
+    if (isHexColor(v, true)) accents[k] = v;
   }
   return {
     id: c.id,

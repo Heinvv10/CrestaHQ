@@ -57,18 +57,20 @@ export function Field({
   const id = useId();
   const noteId = `${id}-note`;
   const note = error ?? hint;
-  const control = isValidElement<{ id?: string; "aria-invalid"?: boolean; "aria-describedby"?: string }>(children)
-    ? cloneElement(children, {
-        id: children.props.id ?? id,
-        ...(error ? { "aria-invalid": true } : {}),
-        ...(note ? { "aria-describedby": noteId } : {}),
-      })
-    : children;
-  const controlId = isValidElement<{ id?: string }>(children) ? (children.props.id ?? id) : undefined;
+  const child = isValidElement<{ id?: string; "aria-invalid"?: boolean; "aria-describedby"?: string }>(children)
+    ? children
+    : null;
+  const controlId = child ? (child.props.id ?? id) : undefined;
   return (
     <div className="space-y-1.5">
       <Label htmlFor={controlId}>{label}</Label>
-      {control}
+      {child
+        ? cloneElement(child, {
+            id: controlId,
+            ...(error ? { "aria-invalid": true } : {}),
+            ...(note ? { "aria-describedby": noteId } : {}),
+          })
+        : children}
       {note ? (
         <p id={noteId} className={error ? "text-[11px] text-destructive" : "text-[11px] text-muted-foreground"}>
           {note}
@@ -261,7 +263,9 @@ export function PageRow({
   onChange?: (v: boolean) => void;
 }) {
   const domId = `page-${formId}-${id}`;
-  const hintId = `${domId}-hint`; // HARDENING: hint is the checkbox's description
+  // HARDENING: the checkbox is named by the label and described by the hint.
+  const labelId = `${domId}-label`;
+  const hintId = `${domId}-hint`;
   return (
     <label
       htmlFor={domId}
@@ -273,13 +277,14 @@ export function PageRow({
     >
       <Checkbox
         id={domId}
+        aria-labelledby={labelId}
         aria-describedby={hint ? hintId : undefined}
         disabled={disabled}
         checked={checked}
         onCheckedChange={(c) => onChange?.(c === true)}
       />
       <span className="block flex-1">
-        <span className="block text-sm font-medium">{label}</span>
+        <span id={labelId} className="block text-sm font-medium">{label}</span>
         {hint && (
           <span id={hintId} className="block text-[11px] text-muted-foreground">
             {hint}
