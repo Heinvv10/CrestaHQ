@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { siteDisplayName } from "@/lib/server/websites-service";
+import { hasUnsettledFailure, siteDisplayName } from "@/lib/server/websites-service";
 import { type AiSuiteCapability } from "./types";
 import { oneLine } from "./text-safety";
 
@@ -37,7 +37,11 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
           status === "ready" && w.liveUrl
             ? `live at ${w.liveUrl}`
             : status === "failed"
-              ? `failed${w.errorMessage ? ` — ${w.errorMessage}` : ""}`
+              ? `failed${w.errorMessage ? ` — ${w.errorMessage}` : ""}${
+                  hasUnsettledFailure(w)
+                    ? "; its last build can still finish, so it can't be re-pointed until someone uses Re-check now, or resets it, on the Website page"
+                    : ""
+                }`
               : status === "queued" || status === "building"
                 ? "building now (premium — usually 10–20 minutes)"
                 : "draft (not built yet)";

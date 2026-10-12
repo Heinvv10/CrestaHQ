@@ -295,8 +295,18 @@ export const SPEED_TO_LEAD_CAPABILITIES: AiSuiteCapability[] = [
         // This workspace's own pages, matched by origin + path: a link that
         // merely contains "/f/<id>" on another host is not one of them.
         const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
-        const formPages = new Set(forms.map((f) => pageOf(formPublicUrl(f.id))));
-        const bookingPages = new Set(bookingSnap.docs.map((b) => pageOf(`${appUrl}/b/${subAccountId}/${b.id}`)));
+        // Live means reachable: a disabled form and an unpublished booking
+        // page both answer visitors with nothing to fill in.
+        const formUrl = (f: (typeof forms)[number]) => pageOf(formPublicUrl(f.id));
+        const bookingUrl = (slug: string) => pageOf(`${appUrl}/b/${subAccountId}/${slug}`);
+        const formPages = new Set(forms.filter((f) => f.enabled).map(formUrl));
+        const bookingPages = new Set(
+          bookingSnap.docs.filter((b) => b.data().status === "published").map((b) => bookingUrl(b.id))
+        );
+        const offlinePages = new Set([
+          ...forms.filter((f) => !f.enabled).map(formUrl),
+          ...bookingSnap.docs.filter((b) => b.data().status !== "published").map((b) => bookingUrl(b.id)),
+        ]);
         lines.push(
           `WEBSITES (${siteSnap.size}):\n${siteSnap.docs
             .map((d) => {
@@ -309,6 +319,8 @@ export const SPEED_TO_LEAD_CAPABILITIES: AiSuiteCapability[] = [
                   ? " (already points at a form ✓)"
                   : page && bookingPages.has(page)
                     ? " (points at a booking page ✓)"
+                    : page && offlinePages.has(page)
+                      ? " (points at a form that is disabled or a booking page that isn't published — visitors get nothing to fill in; enable or publish it, or re-point it with update_website_cta)"
                     : cta
                       ? " (does NOT point at a form — update_website_cta can re-point it, which rebuilds the site)"
                       : "";

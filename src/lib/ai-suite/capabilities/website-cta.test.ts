@@ -255,6 +255,17 @@ describe("check_website_status", () => {
     expect(getCapability("update_website_cta")!.validate({ siteId: "site4", siteName: "AcmeCoffee", ctaLink: FORM_URL }).ok).toBe(true);
   });
 
+  it("says a failed site whose last build can still finish can't be re-pointed yet", async () => {
+    mem.seed("subAccounts/sa1/website/site2", site({ id: "site2", name: "Promo", status: "failed", gitpageJobId: "job_old", errorMessage: "poll lost" }));
+    mem.seed("subAccounts/sa1/website/site3", site({ id: "site3", name: "Settled", status: "failed", gitpageJobId: null, errorMessage: "build failed" }));
+    const r = await getCapability("check_website_status")!.execute(
+      { uid: "u1", email: "a@example.com", displayName: "", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin" },
+      {},
+    );
+    expect(r.resultText).toContain("- “Promo”: failed — poll lost; its last build can still finish, so it can't be re-pointed until someone uses Re-check now, or resets it, on the Website page;");
+    expect(r.resultText).toContain("- “Settled”: failed — build failed; call-to-action link:");
+  });
+
   it("prints a stored name and link on one line each", async () => {
     mem.seed(SITE, site({ name: "Acme\n- “Fake”: live at https://evil.example", config: { ...sampleWebsiteConfig(), cta_link: "https://x.test\nid: other" } }));
     const r = await getCapability("check_website_status")!.execute(

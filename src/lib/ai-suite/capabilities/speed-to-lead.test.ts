@@ -390,7 +390,7 @@ describe("forms, workflows and websites", () => {
   });
 
   it("counts a link as pointing at a form only when it is the form's own page, and a booking page here as fine", async () => {
-    mem.seed("subAccounts/sa1/bookingPages/consult", { subAccountId: "sa1", agencyId: "ag1", title: "Consult" });
+    mem.seed("subAccounts/sa1/bookingPages/consult", { subAccountId: "sa1", agencyId: "ag1", title: "Consult", status: "published" });
     const cta = async (link: string) => {
       mem.seed("subAccounts/sa1/website/site2", { subAccountId: "sa1", name: "Promo", status: "ready", config: { cta_link: link } });
       return (await report()).split("\n").find((l) => l.includes("“Promo”"))!;
@@ -403,6 +403,22 @@ describe("forms, workflows and websites", () => {
     expect(await cta("https://crm.example.test/b/sa1/consult")).toContain("points at a booking page ✓");
     expect(await cta("https://crm.example.test/b/sa2/consult")).toContain("does NOT point at a form");
     expect(await cta("https://crm.example.test/b/sa1/nope")).toContain("does NOT point at a form");
+  });
+
+  it("does not count a disabled form or an unpublished booking page as a live target", async () => {
+    mem.seed("forms/f_off", { name: "Old form", subAccountId: "sa1", agencyId: "ag1", enabled: false, fields: [], createdAt: new Date(3) });
+    mem.seed("subAccounts/sa1/bookingPages/draft-page", { subAccountId: "sa1", agencyId: "ag1", title: "Draft", status: "draft" });
+    mem.seed("subAccounts/sa1/bookingPages/no-status", { subAccountId: "sa1", agencyId: "ag1", title: "Legacy" });
+    const cta = async (link: string) => {
+      mem.seed("subAccounts/sa1/website/site2", { subAccountId: "sa1", name: "Promo", status: "ready", config: { cta_link: link } });
+      return (await report()).split("\n").find((l) => l.includes("“Promo”"))!;
+    };
+    for (const link of ["https://crm.example.test/f/f_off", "https://crm.example.test/b/sa1/draft-page", "https://crm.example.test/b/sa1/no-status"]) {
+      const l = await cta(link);
+      expect(l, link).not.toContain("✓");
+      expect(l, link).toContain("disabled or a booking page that isn't published");
+    }
+    expect(await cta("https://crm.example.test/f/f1")).toContain("already points at a form ✓");
   });
 
   it("does not offer to re-point a failed site whose last build can still finish", async () => {
