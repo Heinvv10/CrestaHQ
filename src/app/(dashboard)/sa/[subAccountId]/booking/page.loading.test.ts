@@ -72,6 +72,16 @@ describe("Booking list admin gate", () => {
     expect(text()).toContain("Loading…");
   });
 
+  it("holds admin buttons back while loading even if isAdmin is already true", async () => {
+    ctx.value = { ...ctx.value, loading: true, isAdmin: true };
+    ctx.pages = [PAGE];
+    await render();
+    for (const s of [LOCK, NEW, "Edit", "Duplicate", CARD]) {
+      expect(text()).not.toContain(s);
+    }
+    expect(text()).toContain("Loading…");
+  });
+
   it("shows the Admin-only badge and no admin buttons for a loaded non-admin", async () => {
     ctx.value = { ...ctx.value, loading: false, isAdmin: false };
     ctx.pages = [PAGE];
