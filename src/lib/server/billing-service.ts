@@ -727,27 +727,46 @@ export async function assignPlanToSubAccount(input: {
   return { status: "pending", checkoutUrl: buildCheckoutUrl(token) };
 }
 
+/** What comping did to the client's subscription. `failed`: a live one
+ *  could not be cancelled, so nothing was changed. */
+export type CompResult =
+  | { subscription: "cancelled" | "none" }
+  | { subscription: "failed"; message: string };
+
 /**
- * Mark a sub-account comped: cancel any live Stripe subscription
- * immediately and return gate control to manual. Data + gates untouched.
+ * Mark a sub-account comped: cancel any live subscription on the payment
+ * provider and return gate control to manual. Data + gates untouched.
+ * Fails closed: when the provider won't cancel a live subscription the
+ * client stays exactly as it was (still billed, still on record), never
+ * comped while the provider keeps charging them.
  */
 export async function compSubAccount(input: {
   agencyId: string;
   subAccountId: string;
-}): Promise<void> {
+}): Promise<CompResult> {
   const { ref, data } = await getSubInAgencyOrThrow(
     input.agencyId,
     input.subAccountId,
   );
   const billing = readBilling(data);
 
-  if (billing?.stripeSubscriptionId && billingStripeIsConfigured()) {
-    await getBillingProvider()
-      .cancelSubscription(billing.stripeSubscriptionId)
-      .catch((err) => {
-        // Already-canceled/missing subscriptions shouldn't block the comp.
-        console.warn("[billing] cancel-on-comp failed (continuing)", err);
-      });
+  // A cancelled subscription keeps its id on record (Paystack's disable
+  // webhook leaves it there); it has nothing left to cancel.
+  const live = !!billing?.stripeSubscriptionId && billing.status !== "canceled";
+  if (live) {
+    const provider = getBillingProvider();
+    const name = provider.id === "paystack" ? "Paystack" : "Stripe";
+    const failed = (): CompResult => ({
+      subscription: "failed",
+      message: `Couldn't cancel the subscription with ${name} — nothing changed; try again or cancel it in the ${name} dashboard.`,
+    });
+    if (!billingStripeIsConfigured()) return failed();
+    try {
+      await provider.cancelSubscription(billing!.stripeSubscriptionId!);
+    } catch (err) {
+      console.warn("[billing] cancel-on-comp failed", err instanceof Error ? err.message : String(err));
+      return failed();
+    }
   }
 
   await ref.update({
@@ -777,9 +796,10 @@ export async function compSubAccount(input: {
     event: "comped",
     detail: {
       previousStatus: billing?.status ?? null,
-      canceledSubscription: billing?.stripeSubscriptionId ?? null,
+      canceledSubscription: live ? billing!.stripeSubscriptionId : null,
     },
   });
+  return { subscription: live ? "cancelled" : "none" };
 }
 
 /** Rotate the checkout token and return a fresh /pay URL. */
