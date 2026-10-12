@@ -270,16 +270,22 @@ describe("Email AI drafts", () => {
     llm.text = "Hi Ann,\n\nThanks for your email.\n\nBest regards,\nBiz";
   });
 
-  it("a later non-email draft does not inherit the email draft's thread headers (PR #405 review)", async () => {
+  it("a later non-email draft does not inherit the email draft's thread headers or escalation flag (PR #405 review)", async () => {
     seed();
+    mem.seed("subAccounts/sa1/aiAgent/email", { ...mem.read("subAccounts/sa1/aiAgent/email"), escalationKeywordsOverride: ["install"] });
     await maybeDraftEmailReply(EMAIL);
-    expect(draft()?.emailReply).toBeDefined();
+    expect(draft()).toMatchObject({ emailReply: expect.any(Object), escalationKeyword: "install" });
     await setConversationDraft({
       contactId: "c1", subAccountId: "sa1", agencyId: "ag1", contactName: "Ann", contactPhone: "+27820000000",
       channel: "sms", body: "SMS draft", model: "m", tokens: 1,
     });
     expect(draft()).toMatchObject({ channel: "sms", body: "SMS draft" });
     expect(draft()).not.toHaveProperty("emailReply");
+    expect(draft()).not.toHaveProperty("escalationKeyword");
+    // The draft written over a null slot (the conversation exists, no draft) too.
+    mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: null });
+    await maybeDraftEmailReply(EMAIL);
+    expect(draft()).toMatchObject({ channel: "email", escalationKeyword: "install" });
   });
 
   // PR #405 review A2 (breaker repro): an escalation notification emailed to the
