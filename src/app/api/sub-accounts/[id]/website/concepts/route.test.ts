@@ -97,19 +97,25 @@ describe("GET /api/sub-accounts/[id]/website/concepts", () => {
   });
 
   it("refuses a request with no session before calling gitpage", async () => {
-    expect((await get({ uid: undefined })).status).toBe(401);
+    const res = await get({ uid: undefined });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ code: "unauthorized" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("is scoped to the sub-account in the path: a member of sa1 cannot use sa2", async () => {
-    expect((await get({ subAccountId: "sa2" })).status).toBe(403);
+    const res = await get({ subAccountId: "sa2" });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "forbidden" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("refuses another agency's owner, an inactive account and an unknown sub-account", async () => {
     expect((await get({ uid: "u_other_owner" })).status).toBe(403);
     expect((await get({ uid: "u_suspended" })).status).toBe(403);
-    expect((await get({ subAccountId: "nope" })).status).toBe(404);
+    const unknown = await get({ subAccountId: "nope" });
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ code: "not_found" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -121,7 +127,10 @@ describe("GET /api/sub-accounts/[id]/website/concepts", () => {
     for (const uid of ["u_member", "u_owner"]) {
       const res = await get({ uid, niche: "gym_fitness" });
       expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: expect.stringContaining("website builder is disabled") });
+      expect(await res.json()).toEqual({
+        error: expect.stringContaining("website builder is disabled"),
+        code: "gate_off",
+      });
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -133,27 +142,38 @@ describe("GET /api/sub-accounts/[id]/website/concepts", () => {
   });
 
   it("refuses an unknown niche rather than forwarding it", async () => {
-    expect((await get({ niche: "../../v1/keys" })).status).toBe(400);
+    const bad = await get({ niche: "../../v1/keys" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toMatchObject({ code: "bad_niche" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("answers 503 when the deployment has no gitpage key", async () => {
     delete process.env.GITPAGE_API_KEY;
-    expect((await get()).status).toBe(503);
+    const res = await get();
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ code: "not_configured" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("passes gitpage's 4xx through and reports its 5xx and network failures as 502", async () => {
-    fetchMock.mockResolvedValueOnce(Response.json({ message: "Rate limited." }, { status: 429 }));
-    const limited = await get();
-    expect(limited.status).toBe(429);
-    expect(await limited.json()).toEqual({ error: "Rate limited." });
+  it.each([
+    ["401 (revoked key)", () => Response.json({ error: "Invalid API key" }, { status: 401 })],
+    ["403", () => Response.json({ message: "Key lacks scope" }, { status: 403 })],
+    ["404", () => Response.json({ error: "no such route" }, { status: 404 })],
+    ["429", () => Response.json({ message: "Rate limited." }, { status: 429 })],
+    ["503", () => Response.json({ error: "down" }, { status: 503 })],
+  ])("reports gitpage %s as our 502 with a fixed message and never forwards its text", async (_l, make) => {
+    fetchMock.mockResolvedValueOnce(make());
+    const res = await get();
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "The design service is unavailable right now.", code: "upstream" });
+  });
 
-    fetchMock.mockResolvedValueOnce(Response.json({ error: "down" }, { status: 503 }));
-    expect((await get()).status).toBe(502);
-
-    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED"));
-    expect((await get()).status).toBe(502);
+  it("reports a gitpage network failure as the same 502", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED 10.0.0.1"));
+    const res = await get();
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "The design service is unavailable right now.", code: "upstream" });
   });
 
   it("drops malformed cards instead of passing them to the picker", async () => {

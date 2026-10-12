@@ -1,5 +1,6 @@
 "use client";
 
+import { cloneElement, isValidElement, useId } from "react";
 import { LayoutGrid, PlayCircle, Sparkles } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -51,14 +52,27 @@ export function Field({
   error?: string;
   children: React.ReactNode;
 }) {
+  // HARDENING (not upstream): tie the label to its control and the hint/error
+  // to it, so the control has an accessible name and announces its error.
+  const id = useId();
+  const noteId = `${id}-note`;
+  const note = error ?? hint;
+  const control = isValidElement<{ id?: string; "aria-invalid"?: boolean; "aria-describedby"?: string }>(children)
+    ? cloneElement(children, {
+        id: children.props.id ?? id,
+        ...(error ? { "aria-invalid": true } : {}),
+        ...(note ? { "aria-describedby": noteId } : {}),
+      })
+    : children;
+  const controlId = isValidElement<{ id?: string }>(children) ? (children.props.id ?? id) : undefined;
   return (
     <div className="space-y-1.5">
-      <Label>{label}</Label>
-      {children}
-      {error ? (
-        <p className="text-[11px] text-destructive">{error}</p>
-      ) : hint ? (
-        <p className="text-[11px] text-muted-foreground">{hint}</p>
+      <Label htmlFor={controlId}>{label}</Label>
+      {control}
+      {note ? (
+        <p id={noteId} className={error ? "text-[11px] text-destructive" : "text-[11px] text-muted-foreground"}>
+          {note}
+        </p>
       ) : null}
     </div>
   );
@@ -68,13 +82,23 @@ export function Select({
   value,
   onChange,
   options,
+  id,
+  "aria-invalid": ariaInvalid,
+  "aria-describedby": ariaDescribedBy,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: ReadonlyArray<string>;
+  // HARDENING: id and aria-* so <Field> can label and describe the select.
+  id?: string;
+  "aria-invalid"?: boolean;
+  "aria-describedby"?: string;
 }) {
   return (
     <select
+      id={id}
+      aria-invalid={ariaInvalid}
+      aria-describedby={ariaDescribedBy}
       className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm [&_option]:bg-background [&_option]:text-foreground"
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -237,6 +261,7 @@ export function PageRow({
   onChange?: (v: boolean) => void;
 }) {
   const domId = `page-${formId}-${id}`;
+  const hintId = `${domId}-hint`; // HARDENING: hint is the checkbox's description
   return (
     <label
       htmlFor={domId}
@@ -248,14 +273,19 @@ export function PageRow({
     >
       <Checkbox
         id={domId}
+        aria-describedby={hint ? hintId : undefined}
         disabled={disabled}
         checked={checked}
         onCheckedChange={(c) => onChange?.(c === true)}
       />
-      <div className="flex-1">
-        <p className="text-sm font-medium">{label}</p>
-        {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
-      </div>
+      <span className="block flex-1">
+        <span className="block text-sm font-medium">{label}</span>
+        {hint && (
+          <span id={hintId} className="block text-[11px] text-muted-foreground">
+            {hint}
+          </span>
+        )}
+      </span>
     </label>
   );
 }

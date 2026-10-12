@@ -137,12 +137,33 @@ export function parseBrandVoice(text: string): string[] {
 }
 
 /**
+ * HARDENING (not upstream): fields the form only shows for some niches. A
+ * value typed under one niche stays in the config when the operator switches
+ * to another, so validation and the payload must ignore it the same way the
+ * form hides it; otherwise it can fail with an error no field displays, or
+ * ship to gitpage unseen. A missing niche (generic build) shows none of them.
+ */
+export const NICHE_ONLY_DETAIL_FIELDS = {
+  tools: ["ai_consulting", "ai_automation"],
+  case_studies: ["ai_consulting", "ai_automation", "agency_consulting"],
+} as const satisfies Partial<Record<keyof WebsitePremiumDetails, readonly string[]>>;
+
+export function premiumDetailAppliesToNiche(
+  field: keyof WebsitePremiumDetails,
+  niche: string | null | undefined,
+): boolean {
+  const only = (NICHE_ONLY_DETAIL_FIELDS as Record<string, readonly string[] | undefined>)[field];
+  return !only || (!!niche && only.includes(niche));
+}
+
+/**
  * Validate the operator's premium details. Returns `{ field: message }` keyed
  * by the WebsitePremiumDetails field name (empty = valid). Blank fields are
  * always valid — everything here is optional.
  */
 export function validatePremiumDetails(
   d: WebsitePremiumDetails,
+  niche: string | null = null, // HARDENING: niche-only fields are skipped off-niche
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const L = PREMIUM_LIMITS;
@@ -226,11 +247,11 @@ export function validatePremiumDetails(
   if (d.reference_notes.length > L.referenceNotes)
     errors.reference_notes = `Keep it under ${L.referenceNotes} characters.`;
 
-  const tools = parseTools(d.tools);
+  const tools = premiumDetailAppliesToNiche("tools", niche) ? parseTools(d.tools) : [];
   if (tools.length > L.tools) errors.tools = `Up to ${L.tools} tools, comma-separated.`;
   else if (tools.some((t) => t.length > L.toolName)) errors.tools = `Each tool name under ${L.toolName} characters.`;
 
-  const cases = parseCaseStudies(d.case_studies);
+  const cases = premiumDetailAppliesToNiche("case_studies", niche) ? parseCaseStudies(d.case_studies) : [];
   if (cases.length > L.caseStudies) errors.case_studies = `Up to ${L.caseStudies} case studies (one per line).`;
   else if (
     cases.some(
@@ -250,6 +271,7 @@ export function validatePremiumDetails(
  */
 export function premiumDetailsPayload(
   d: WebsitePremiumDetails | null | undefined,
+  niche: string | null = null, // HARDENING: niche-only fields are omitted off-niche
 ): PremiumDetailsPayload {
   if (!d) return {};
   const out: PremiumDetailsPayload = {};
@@ -275,9 +297,11 @@ export function premiumDetailsPayload(
   if (d.gallery_notes.trim()) out.galleryNotes = d.gallery_notes.trim();
   const socials = parseSocialLinks(d.social_links).filter((s) => s.label && s.url);
   if (socials.length) out.socialLinks = socials;
-  const tools = parseTools(d.tools);
+  const tools = premiumDetailAppliesToNiche("tools", niche) ? parseTools(d.tools) : [];
   if (tools.length) out.tools = tools;
-  const cases = parseCaseStudies(d.case_studies).filter((c) => c.client && c.result);
+  const cases = premiumDetailAppliesToNiche("case_studies", niche)
+    ? parseCaseStudies(d.case_studies).filter((c) => c.client && c.result)
+    : [];
   if (cases.length) out.caseStudies = cases;
   return out;
 }

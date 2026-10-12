@@ -596,7 +596,7 @@ function configToGitpagePayload(input: SubmitBuildInput) {
       ...(c.concept && { concept: c.concept }),
       mode: premiumModeFor(c),
       ...(c.hero_motion && { heroMotion: c.hero_motion }),
-      ...premiumDetailsPayload(c.premium_details),
+      ...premiumDetailsPayload(c.premium_details, c.niche ?? null),
     };
     const notes = c.premium_details?.reference_notes?.trim();
     if (notes) payload.referenceNotes = notes;

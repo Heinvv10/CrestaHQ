@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitpageConceptCard } from "@/lib/gitpage/client";
 import { validateWebsiteConfig } from "@/lib/website/validation";
+import { createMemoryFirestore } from "@/test/memory-firestore";
 import {
   blankPremiumDetails,
   sampleGymFitnessLocalConfig,
@@ -19,6 +20,18 @@ import {
   premiumPhaseLabel,
   ProvisioningSummary,
 } from "./website-premium-sections";
+
+// The concepts route's REAL answers (see routeAnswer below) feed the picker
+// tests, so a change to the route's bodies breaks these tests.
+const mem = createMemoryFirestore();
+const claims: Record<string, Record<string, unknown>> = {
+  u_member: { status: "active", agencyId: "ag1" },
+};
+vi.mock("@/lib/firebase/admin", () => ({
+  getAdminDb: () => mem.db,
+  getAdminAuth: () => ({ getUser: async (uid: string) => ({ customClaims: claims[uid] ?? {} }) }),
+}));
+const { GET: conceptsRoute } = await import("@/app/api/sub-accounts/[id]/website/concepts/route");
 
 let host: HTMLDivElement;
 let root: Root;
@@ -39,10 +52,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function fieldBlock(label: string): HTMLElement {
-  const l = Array.from(host.querySelectorAll("label")).find((n) => n.textContent === label);
-  if (!l) throw new Error(`no field labelled ${label}`);
-  return l.parentElement as HTMLElement;
+/** getByLabelText: a <label for>, or an aria-labelledby, resolving to the control. */
+function byLabel(text: string): HTMLElement {
+  for (const l of Array.from(host.querySelectorAll("label"))) {
+    if (l.textContent === text && l.htmlFor) {
+      const el = host.querySelector(`[id="${l.htmlFor}"]`);
+      if (el) return el as HTMLElement;
+    }
+  }
+  for (const el of Array.from(host.querySelectorAll("[aria-labelledby]"))) {
+    const named = host.querySelector(`[id="${el.getAttribute("aria-labelledby")}"]`);
+    if (named?.textContent === text) return el as HTMLElement;
+  }
+  throw new Error(`no control labelled "${text}"`);
+}
+/** The text of the element(s) a control points at with aria-describedby. */
+function description(el: HTMLElement): string {
+  return (el.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .map((id) => host.querySelector(`[id="${id}"]`)?.textContent ?? "")
+    .join(" ")
+    .trim();
 }
 
 describe("PremiumDetailsFields", () => {

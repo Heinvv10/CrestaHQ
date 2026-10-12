@@ -88,9 +88,24 @@ describe("validatePremiumDetails", () => {
 
   it("validates the AI-niche tools and case studies", () => {
     const tooMany = Array.from({ length: PREMIUM_LIMITS.tools + 1 }, (_, i) => `t${i}`).join(",");
-    expect(validatePremiumDetails(details({ tools: tooMany })).tools).toBeDefined();
-    expect(validatePremiumDetails(details({ case_studies: "Acme" })).case_studies).toBeDefined();
-    expect(validatePremiumDetails(details({ case_studies: "Acme | Won" }))).toEqual({});
+    expect(validatePremiumDetails(details({ tools: tooMany }), "ai_automation").tools).toBeDefined();
+    expect(validatePremiumDetails(details({ case_studies: "Acme" }), "ai_consulting").case_studies).toBeDefined();
+    expect(validatePremiumDetails(details({ case_studies: "Acme | Won" }), "ai_consulting")).toEqual({});
+  });
+
+  it("ignores niche-only fields off-niche, so a hidden field cannot fail validation", () => {
+    const tooMany = Array.from({ length: PREMIUM_LIMITS.tools + 1 }, (_, i) => `t${i}`).join(",");
+    const bad = details({ tools: tooMany, case_studies: "Acme" });
+    for (const niche of [null, "gym_fitness", "home_services"]) {
+      expect(validatePremiumDetails(bad, niche)).toEqual({});
+    }
+    expect(validatePremiumDetails(bad)).toEqual({});
+    // case studies also apply to agency_consulting; tools do not.
+    const agency = validatePremiumDetails(bad, "agency_consulting");
+    expect(agency.case_studies).toBeDefined();
+    expect(agency.tools).toBeUndefined();
+    // General fields still validate off-niche.
+    expect(validatePremiumDetails(details({ founded_year: "1500" }), "gym_fitness").founded_year).toBeDefined();
   });
 });
 
@@ -115,6 +130,7 @@ describe("premiumDetailsPayload", () => {
         tools: "n8n",
         case_studies: "Acme | Won",
       }),
+      "ai_automation",
     );
     expect(p).toEqual({
       tagline: "Stronger",
@@ -126,6 +142,18 @@ describe("premiumDetailsPayload", () => {
       offer: { headline: "Free week", bullets: ["One", "Two"] },
       socialLinks: [{ label: "IG", url: "https://x.com" }],
       tools: ["n8n"],
+      caseStudies: [{ client: "Acme", result: "Won" }],
+    });
+  });
+
+  it("omits niche-only fields off-niche and keeps case studies for agency_consulting", () => {
+    const d = details({ tagline: "T", tools: "n8n", case_studies: "Acme | Won" });
+    for (const niche of [null, "gym_fitness"]) {
+      expect(premiumDetailsPayload(d, niche)).toEqual({ tagline: "T" });
+    }
+    expect(premiumDetailsPayload(d)).toEqual({ tagline: "T" });
+    expect(premiumDetailsPayload(d, "agency_consulting")).toEqual({
+      tagline: "T",
       caseStudies: [{ client: "Acme", result: "Won" }],
     });
   });
