@@ -16,7 +16,9 @@ import { WidgetPreview } from "./widget-preview";
 /**
  * The public reviews widget card on the Google Business page (admins only).
  * State is the live `gbpWidgetMeta` on the sub-account doc; every change is a
- * call to /api/sub-accounts/[id]/gbp/widget. With the agency gate off only
+ * call to /api/sub-accounts/[id]/gbp/widget, whose answer is shown at once and
+ * held until the doc's next snapshot (Firestore's Listen stream can sit silent
+ * for ~30 s after a write). With the agency gate off only
  * Revoke remains (the API allows DELETE ungated). There is deliberately no
  * rating filter. No confirm()/alert(): inline confirms only.
  */
@@ -101,8 +103,12 @@ function Card({ children }: { children: React.ReactNode }) {
 
 export function WidgetSection() {
   const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
+  // The last call's answer, pinned to the snapshot on screen when it was
+  // made: any newer snapshot of the doc wins over it.
+  const [answered, setAnswered] = useState<{ meta: GbpWidgetMeta | null; doc: unknown } | null>(null);
   if (loading || !isAdmin || !subAccount) return null;
-  const meta = subAccount.gbpWidgetMeta ?? null;
+  const meta = answered && answered.doc === subAccount ? answered.meta : (subAccount.gbpWidgetMeta ?? null);
+  const settle = (next: GbpWidgetMeta | null) => setAnswered({ meta: next, doc: subAccount });
   const api = `/api/sub-accounts/${subAccountId}/gbp/widget`;
   const revoke = (
     <InlineConfirm
@@ -111,8 +117,10 @@ export function WidgetSection() {
       prompt="Delete this widget? Sites using it fall back to their static content."
       onConfirm={async () => {
         const { ok, data } = await call(api, "DELETE");
-        if (ok) toast.success("Widget revoked.");
-        else toast.error(data.error ?? "That didn't work. Please try again.");
+        if (ok) {
+          settle(null);
+          toast.success("Widget revoked.");
+        } else toast.error(data.error ?? "That didn't work. Please try again.");
       }}
       testId="gbp-widget-revoke"
     />
@@ -129,13 +137,13 @@ export function WidgetSection() {
   }
   return (
     <Card>
-      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} />
+      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} onSettled={settle} />
       {meta && <div className="mt-3 flex flex-wrap gap-2">{revoke}</div>}
     </Card>
   );
 }
 
-function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta | null; mapsUri: string | null | undefined }) {
+function WidgetForm({ api, meta, mapsUri, onSettled }: { api: string; meta: GbpWidgetMeta | null; mapsUri: string | null | undefined; onSettled: (meta: GbpWidgetMeta) => void }) {
   const [enabled, setEnabled] = useState(meta?.enabled ?? true);
   const [origins, setOrigins] = useState((meta?.allowedOrigins ?? []).join("\n"));
   const [maxReviews, setMaxReviews] = useState(String(meta?.maxReviews ?? 12));
@@ -152,6 +160,7 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
     if (ok && data.widget) {
       setOrigins(data.widget.allowedOrigins.join("\n"));
       setErrors([]);
+      onSettled(data.widget);
       toast.success("Widget saved.");
       return;
     }
@@ -210,8 +219,10 @@ function WidgetForm({ api, meta, mapsUri }: { api: string; meta: GbpWidgetMeta |
             prompt="Issue a new id? The current snippet stops working until the site is updated."
             onConfirm={async () => {
               const { ok, data } = await call(`${api}/rotate`, "POST");
-              if (ok) toast.success("New widget id issued — update the snippet on your site.");
-              else toast.error(data.error ?? "That didn't work. Please try again.");
+              if (ok) {
+                if (data.widget) onSettled(data.widget);
+                toast.success("New widget id issued — update the snippet on your site.");
+              } else toast.error(data.error ?? "That didn't work. Please try again.");
             }}
             testId="gbp-widget-rotate"
           />

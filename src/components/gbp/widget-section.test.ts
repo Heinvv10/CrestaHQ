@@ -246,3 +246,53 @@ describe("an existing widget", () => {
     expect(calls("DELETE", API)).toHaveLength(1);
   });
 });
+
+// Firestore's Listen stream can sit silent for ~30 s after a write: every
+// change shows from the route's 200, and the next snapshot takes over.
+describe("without waiting for the live doc", () => {
+  it("a created widget shows its snippet from the 200", async () => {
+    await render();
+    await type(byId("gbp-widget-origins") as HTMLTextAreaElement, "https://www.velocityfibre.co.za");
+    await click(byId("gbp-widget-save"));
+    expect(byId("gbp-widget-state-none")).toBeNull();
+    expect(byId("gbp-widget-snippet")?.textContent).toContain(`data-crestahq-reviews="${ID}"`);
+    expect((byId("gbp-widget-origins") as HTMLTextAreaElement).value).toBe("https://www.velocityfibre.co.za");
+  });
+
+  it("switching a widget off reads as off from the 200", async () => {
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: META };
+    await render();
+    await click(byId("gbp-widget-enable"));
+    await click(byId("gbp-widget-save"));
+    expect(byId("gbp-widget-state-disabled")).not.toBeNull();
+  });
+
+  it("a rotated id replaces the snippet from the 200", async () => {
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: META };
+    await render();
+    await click(byId("gbp-widget-rotate"));
+    await clickText("Yes, rotate");
+    expect(byId("gbp-widget-snippet")?.textContent).toContain(`data-crestahq-reviews="${"Z".repeat(32)}"`);
+  });
+
+  it("a revoked widget is gone from the 200, with the gate on or off", async () => {
+    for (const googleEnabledByAgency of [true, false]) {
+      ctx.subAccount = { googleEnabledByAgency, gbpWidgetMeta: META };
+      await render();
+      await click(byId("gbp-widget-revoke"));
+      await clickText("Yes, revoke");
+      expect(byId("gbp-widget-snippet")).toBeNull();
+      expect(byId("gbp-widget-revoke")).toBeNull();
+    }
+  });
+
+  it("the next snapshot of the doc wins over the answer", async () => {
+    await render();
+    await click(byId("gbp-widget-save"));
+    expect(byId("gbp-widget-snippet")?.textContent).toContain(ID);
+    const later = "Y".repeat(32);
+    ctx.subAccount = { googleEnabledByAgency: true, gbpWidgetMeta: { ...META, publicId: later } };
+    await render();
+    expect(byId("gbp-widget-snippet")?.textContent).toContain(`data-crestahq-reviews="${later}"`);
+  });
+});
