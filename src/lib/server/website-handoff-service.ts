@@ -375,8 +375,9 @@ export async function provisionWebsiteHandoff(
   // liveUrl is already redirect-resolved by settleWebsiteBuild; also keep
   // gitpage's reported host so both entry points load the widget. Both are
   // re-checked here, where they are used.
-  const safeLiveUrl = safePagesUrl(liveUrl);
   const hostname = safeHostnameOf(liveUrl);
+  // Seeded as the bot's website only when its host is one we would allow-list.
+  const safeLiveUrl = hostname ? safePagesUrl(liveUrl) : null;
   const reportedHost = safeHostnameOf(result.pagesUrl);
   const premium = result.premium;
   if (!hostname) errors.push("live URL: not a public https address — its host was not added to the chat allowlist");
