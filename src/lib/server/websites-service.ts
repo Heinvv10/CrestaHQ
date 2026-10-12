@@ -551,7 +551,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
    * only its `cta_link` is written back, so a wizard save that lands while
    * gitpage is being called is kept. And, as the wizard's draft save does,
    * a failed site whose last build can still finish (it has a job) is
-   * refused, here and again inside the write.
+   * refused, here and again inside the write. Implies `requireExisting`.
    */
   ctaOnly?: boolean;
 }): Promise<{ formResponseId: string; estimatedDurationSeconds?: number }> {
@@ -584,7 +584,8 @@ export async function submitWebsiteBuildForSubAccount(input: {
   const db = getAdminDb();
   const docRef = db.doc(`subAccounts/${subAccountId}/website/${siteId}`);
   const snap = await docRef.get();
-  if (input.requireExisting && !snap.exists) {
+  // A CTA re-point is a rebuild by definition: it never creates a site.
+  if ((input.requireExisting || input.ctaOnly) && !snap.exists) {
     throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
   }
   const isFirst = !snap.exists;
@@ -987,6 +988,9 @@ export function hasUnsettledFailure(doc: Partial<WebsiteDoc>): boolean {
  *  them, `hasUnsafeText` refuses them. */
 const UNPRINTABLE_RE = /[\p{Co}\p{Cn}\p{Cs}]/gu;
 
+/** The longest site name update_website_cta's card takes (UTF-16 units). */
+export const SITE_NAME_MAX = 200;
+
 /**
  * A site's name as every assistant lookup prints it and as
  * `updateWebsiteCtaAndRebuild` checks a confirmed name against: the name,
@@ -995,7 +999,21 @@ const UNPRINTABLE_RE = /[\p{Co}\p{Cn}\p{Cs}]/gu;
  * a lookup prints can be sent back.
  */
 export function siteDisplayName(site: { name?: unknown; config?: unknown }): string {
-  const clean = (v: unknown) => oneLine(String(v ?? "").replace(UNPRINTABLE_RE, ""));
+  const clean = (v: unknown) => {
+    // oneLine collapses whitespace before it strips invisibles, so "a <ZWSP> b"
+    // comes out with two spaces; collapse again, so oneLine of the result
+    // is the result (the card's name is compared through oneLine).
+    const line = oneLine(String(v ?? "").replace(UNPRINTABLE_RE, "")).replace(/ {2,}/g, " ");
+    // At most SITE_NAME_MAX UTF-16 units (the card's limit), never splitting
+    // a surrogate pair. oneLine again: a cut between a keycap's U+FE0F and
+    // its U+20E3 leaves a selector that is no longer a presentation one.
+    let out = "";
+    for (const ch of line) {
+      if (out.length + ch.length > SITE_NAME_MAX) break;
+      out += ch;
+    }
+    return out.length < line.length ? oneLine(out) : line;
+  };
   const heading = (site.config as { heading?: unknown } | null | undefined)?.heading;
   return clean(site.name) || clean(heading) || "Untitled site";
 }

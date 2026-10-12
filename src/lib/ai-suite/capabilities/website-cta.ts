@@ -3,6 +3,7 @@ import "server-only";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   safeCtaLink,
+  SITE_NAME_MAX,
   updateWebsiteCtaAndRebuild,
   WEBSITE_BUILDS_PER_HOUR,
   WebsiteServiceError,
@@ -46,7 +47,7 @@ export const WEBSITE_CTA_CAPABILITIES: AiSuiteCapability[] = [
       // The card names the site, so the name is required and must be readable.
       const siteName = str(raw, "siteName");
       if (!siteName) return { ok: false, error: "the website's name is required — check_website_status shows it" };
-      if (siteName.length > 200) return { ok: false, error: "the website's name is too long (200 chars max)" };
+      if (siteName.length > SITE_NAME_MAX) return { ok: false, error: `the website's name is too long (${SITE_NAME_MAX} chars max)` };
       if (hasUnsafeText(siteName)) return { ok: false, error: `the website's name ${UNSAFE_TEXT_MESSAGE}` };
       const ctaLink = safeCtaLink(str(raw, "ctaLink"));
       if (!ctaLink) return { ok: false, error: "ctaLink must be a full public https:// URL (at most 2,048 characters)" };

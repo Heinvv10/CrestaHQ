@@ -34,12 +34,16 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
 
 const {
   safeCtaLink,
+  SITE_NAME_MAX,
   siteDisplayName,
   submitWebsiteBuildForSubAccount,
   updateWebsiteCtaAndRebuild,
   websiteLimitsPath,
   WEBSITE_BUILDS_PER_HOUR,
 } = await import("./websites-service");
+// At module load, not inside a test: the registry is slow to import on a loaded box.
+const { getCapability } = await import("@/lib/ai-suite/capabilities");
+const { hasUnsafeText } = await import("@/lib/ai-suite/capabilities/text-safety");
 
 const SITE = "subAccounts/sa1/website/site1";
 const FORM_URL = "https://crm.example.test/f/form1";
@@ -313,6 +317,17 @@ describe("updateWebsiteCtaAndRebuild", () => {
   });
 });
 
+describe("submitWebsiteBuildForSubAccount — ctaOnly", () => {
+  it("implies requireExisting: a re-point on an id with no doc is refused, and nothing is created or counted", async () => {
+    await expect(
+      submitWebsiteBuildForSubAccount({ subAccountId: "sa1", siteId: "ghost", config: sampleWebsiteConfig(), buildByUid: "u1", ctaOnly: true }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mem.read(websiteLimitsPath("sa1"))).toBeUndefined();
+    expect(mem.read("subAccounts/sa1/website/ghost")).toBeUndefined();
+  });
+});
+
 describe("submitWebsiteBuildForSubAccount — requireExisting", () => {
   it("refuses a build on an id with no doc, before gitpage is called or a build is counted", async () => {
     await expect(
@@ -326,7 +341,6 @@ describe("submitWebsiteBuildForSubAccount — requireExisting", () => {
 
 describe("siteDisplayName", () => {
   it("is the name, else the heading, else “Untitled site” — on one line, with nothing the assistant's input check refuses", async () => {
-    const { hasUnsafeText } = await import("@/lib/ai-suite/capabilities/text-safety");
     expect(siteDisplayName({ name: "Acme\uE000Coffee" })).toBe("AcmeCoffee");
     expect(siteDisplayName({ name: "Acme \u{10FFFF}\u0378 Coffee\n" })).toBe("Acme Coffee");
     expect(siteDisplayName({ name: "", config: { heading: "   " } })).toBe("Untitled site");
@@ -335,6 +349,66 @@ describe("siteDisplayName", () => {
     for (const raw of ["A\uE000B", "A\u200BB", "A\u202EB", "A\uD800B", "A\u0378B", "A\u2800B", "A\u0007B"]) {
       expect(hasUnsafeText(siteDisplayName({ name: raw }))).toBe(false);
     }
+  });
+
+  it("prints a name an invisible character sat between spaces in with one space, and that name re-points the site", async () => {
+    mem.seed(SITE, site({ name: "Acme \u200B Coffee" }));
+    const shown = siteDisplayName(mem.read(SITE)!);
+    expect(shown).toBe("Acme Coffee");
+    await expect(rebuild({ expectSiteName: shown })).resolves.toMatchObject({ siteName: "Acme Coffee" });
+  });
+
+  it(`is at most ${SITE_NAME_MAX} UTF-16 units, never splits a surrogate pair or keeps a cut keycap's selector, and a long name re-points the site`, async () => {
+    expect(siteDisplayName({ name: "x".repeat(300) })).toBe("x".repeat(SITE_NAME_MAX));
+    expect(siteDisplayName({ name: `${"a".repeat(199)}\u{1F600}b` })).toBe("a".repeat(199));
+    expect(siteDisplayName({ name: `${"a".repeat(198)}1\uFE0F\u20E3` })).toBe(`${"a".repeat(198)}1`);
+    expect(siteDisplayName({ name: `${"a".repeat(199)} b` })).toBe("a".repeat(199));
+    const long = `Acme ${"Coffee ".repeat(60)}`;
+    mem.seed(SITE, site({ name: long }));
+    const shown = siteDisplayName(mem.read(SITE)!);
+    expect(shown.length).toBeLessThanOrEqual(SITE_NAME_MAX);
+    expect(getCapability("update_website_cta")!.validate({ siteId: "site1", siteName: shown, ctaLink: FORM_URL }).ok).toBe(true);
+    await expect(rebuild({ expectSiteName: shown })).resolves.toMatchObject({ siteName: shown });
+  });
+
+  it("is a fixed point that always validates and re-points the site, for fuzzed names", async () => {
+    const validate = getCapability("update_website_cta")!.validate;
+    // Letters, spaces, and the characters oneLine treats specially.
+    const ALPHABET = [
+      "a", "B", "é", " ", " ", "\t", "\n", "\u00A0", "\u200B", "\u034F", "\u2028", "\u2029", "\u200D", "\u202E",
+      "\uE000", "\u0378", "\uD800", "\u2800", "\u0007", "\uFE0F", "\u{1F600}", "\u{1F600}\uFE0F", "1\uFE0F\u20E3", "\u20E3",
+    ];
+    // mulberry32: seeded, so a failure reproduces.
+    let seed = 42;
+    const rand = (n: number) => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (((t ^ (t >>> 14)) >>> 0) % n);
+    };
+    let reTargeted = 0;
+    let spacedInvisibles = 0;
+    for (let i = 0; i < 400; i++) {
+      const len = i % 50 === 0 ? 150 + rand(150) : 1 + rand(12);
+      const raw = Array.from({ length: len }, () => ALPHABET[rand(ALPHABET.length)]).join("");
+      if (/\s[\u200B\u034F\u200D\u202E\u2800\uFE0F]+\s/u.test(raw)) spacedInvisibles++;
+      const shown = siteDisplayName({ name: raw });
+      expect(siteDisplayName({ name: shown }), JSON.stringify(raw)).toBe(shown);
+      expect(hasUnsafeText(shown), JSON.stringify(raw)).toBe(false);
+      expect(shown.length).toBeLessThanOrEqual(SITE_NAME_MAX);
+      expect(validate({ siteId: "site1", siteName: shown, ctaLink: FORM_URL }).ok, JSON.stringify(raw)).toBe(true);
+      // Through the service, for a sample (each one spends a build).
+      if (i % 50 === 0) {
+        mem.clear();
+        mem.seed("subAccounts/sa1", { agencyId: "ag1", websiteEnabledByAgency: true, name: "Acme" });
+        mem.seed(SITE, site({ name: raw }));
+        await expect(rebuild({ expectSiteName: shown }), JSON.stringify(raw)).resolves.toMatchObject({ siteName: shown });
+        reTargeted++;
+      }
+    }
+    expect(reTargeted).toBe(8);
+    // The generator reaches the case that broke the fixed point.
+    expect(spacedInvisibles).toBeGreaterThan(20);
   });
 
   it("a site named with a private-use character can be re-pointed by the name the lookup prints", async () => {
