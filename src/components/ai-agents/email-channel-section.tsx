@@ -118,7 +118,7 @@ export function EmailChannelSection() {
       if (data.config) setConfig(data.config);
       toast.success(
         next
-          ? "Email AI on — inbound emails now get a suggested reply for approval."
+          ? "Email AI on — new emails get a suggested reply for approval, except in conversations whose AI is set to Off."
           : "Email AI off.",
       );
     } catch (err) {
@@ -174,9 +174,10 @@ export function EmailChannelSection() {
           )}
           <p className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
             Each conversation&apos;s AI controls apply: Auto and Suggest both
-            get a draft, Off gets none. A conversation that starts with an
-            email begins with its AI off — set it to Suggest to get drafts on
-            it. Auto-replies, bounces and mailing-list mail never get a draft.
+            get a draft, Off gets none. While this is on, a conversation that
+            starts with an email opens in Suggest (drafts, never sends);
+            existing conversations keep their setting. Auto-replies, bounces
+            and mailing-list mail never get a draft.
           </p>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

@@ -310,7 +310,8 @@ unread counts. Imported mail does not enroll workflows or send automated replies
 With Email AI drafts on (`emailAiDraftsEnabledByAgency` + `aiAgent/email`), a new
 live inbound email gets a suggested reply in `conversations/{contactId}.pendingDraft`
 (`channel: "email"`, plus `emailReply: { subject, inReplyTo?, references }` taken
-from the inbound email) after the sync pass — a draft only, never a send.
+from the inbound email) after the sync pass — a draft only, never a send. A
+conversation an email starts then opens with `botMode: "suggest"` instead of `"off"`.
 
 The QStash `leadstack-email-sync` schedule runs every five minutes and fans out
 bounded work across connected sub-accounts. Disconnecting a mailbox removes its

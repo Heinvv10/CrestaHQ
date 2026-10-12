@@ -43,6 +43,7 @@ vi.mock("@/lib/comms/ai/openrouter", async (orig) => ({
 
 const { mem, storeDb } = await import("@/test/gbp-sync-store");
 const { maybeDraftEmailReply } = await import("./email-draft");
+const { recordEmailMessage } = await import("@/lib/server/email-conversations");
 const { usageMonthKey } = await import("@/lib/server/usage-meter");
 
 const EMAIL = {
@@ -117,6 +118,55 @@ describe("Email AI drafts", () => {
     });
     expect(mem.list("contacts/c1/emailMessages")).toHaveLength(1);
     expect(mem.list("contacts/c1/activities").map((a) => a.type)).not.toContain("ai_reply_sent");
+  });
+
+  describe("a conversation the email itself starts (real mailbox import, PR #405 review A1)", () => {
+    const NEW = {
+      subAccountId: "sa1", direction: "inbound" as const, from: "new@example.com", to: ["hello@biz.test"],
+      subject: "Quote", body: "How soon can you install?", messageId: "<n1@example.com>",
+      inReplyTo: null, references: [], occurredAt: new Date(), historical: false,
+    };
+    async function importAndDraft() {
+      const res = await recordEmailMessage(NEW);
+      expect(res.inserted).toBe(true);
+      await maybeDraftEmailReply({ ...EMAIL, contactId: res.contactId, from: NEW.from });
+      await flushAfterResponse();
+      return mem.read(`conversations/${res.contactId}`);
+    }
+    // Workspace + persona + channel only: no contact, no conversation — the import creates both, as in prod.
+    function seedWorkspace(over: { sub?: Record<string, unknown>; channel?: Record<string, unknown> } = {}) {
+      seed(over);
+      for (const path of ["contacts/c1", "contacts/c1/emailMessages/e1", "conversations/c1"]) storeDb.doc(path).delete();
+    }
+
+    it("opens in suggest and gets a draft when Email AI drafts are on", async () => {
+      seedWorkspace();
+      const conv = await importAndDraft();
+      expect(conv?.botMode).toBe("suggest");
+      expect(conv?.pendingDraft).toMatchObject({ channel: "email", body: llm.text });
+      expect(seamCalls()).toEqual(NO_SEAMS);
+    });
+
+    it.each([
+      ["the agency gate is off", { sub: { emailAiDraftsEnabledByAgency: false } }],
+      ["the agency gate is unset", { sub: { emailAiDraftsEnabledByAgency: undefined } }],
+      ["the channel is disabled", { channel: { enabled: false } }],
+    ])("opens with its AI off, and no draft, when %s", async (_label, over) => {
+      seedWorkspace(over);
+      const conv = await importAndDraft();
+      expect(conv?.botMode).toBe("off");
+      expect(conv?.pendingDraft ?? null).toBeNull();
+      expect(llm.calls).toHaveLength(0);
+    });
+
+    it("never changes an existing conversation's mode", async () => {
+      seedWorkspace();
+      mem.seed("contacts/c9", { agencyId: "ag1", subAccountId: "sa1", name: "New", email: "new@example.com", territoryId: "global" });
+      mem.seed("conversations/c9", { agencyId: "ag1", subAccountId: "sa1", contactId: "c9", botMode: "off", pendingDraft: null });
+      const conv = await importAndDraft();
+      expect(conv?.botMode).toBe("off");
+      expect(conv?.pendingDraft).toBeNull();
+    });
   });
 
   it("drafts in suggest mode too, and writes nothing in off mode", async () => {

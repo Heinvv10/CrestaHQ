@@ -1050,8 +1050,9 @@ function ManageDialogBody({
           >
             When enabled, this sub-account can turn on the AI agent for its
             connected mailbox: each new inbound email gets a suggested reply in
-            Conversations that a team member edits and approves. It never sends
-            an email by itself. Each draft spends your agency&apos;s shared
+            Conversations that a team member edits and approves (none in a
+            conversation whose AI is set to Off; a conversation an email starts
+            opens in Suggest). It never sends an email by itself. Each draft spends your agency&apos;s shared
             OpenRouter credits. Disabling stops new drafts; the channel
             settings are preserved.
           </GateToggle>
