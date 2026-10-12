@@ -44,6 +44,12 @@ describe("carriesMessage", () => {
     expect(carriesMessage("message=Do+you%0D%0Ado+plu%0D%0Amber+in+Gqe%0D%0Aberha%3F+What%27s+your+earliest+availa%0D%0Ability%3F", markers)).toBe(true);
   });
 
+  it("a short line padded with spaces is short once they are removed: our email stands for it, not a phone number", () => {
+    const spaced = enquiryMarkers({ email: "info@crestahq.com", message: "1 2 3 4 5 6 7" });
+    expect(carriesMessage("phone=%2B27831234567", spaced)).toBe(false);
+    expect(carriesMessage("email=info%40crestahq.com", spaced)).toBe(true);
+  });
+
   it("a page holding the message's words in another order is not the message", () => {
     expect(carriesMessage("What's your earliest availability? Do you do plumber in Gqeberha?", markers)).toBe(false);
     expect(carriesMessage("q=Gqeberha+plumber+availability+earliest+your+What%27s+in+do+you+Do", markers)).toBe(false);

@@ -38,7 +38,8 @@ const squash = (s: string) => s.replace(/\s+/g, "");
 export function enquiryMarkers(id: { email: string; message: string }): EnquiryMarkers {
   const line = id.message.split(/\r?\n/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), "");
   const email = id.email.toLowerCase();
-  const ours = line.length >= 12 ? [squash(line.toLowerCase())] : [];
+  const squashed = squash(line.toLowerCase());
+  const ours = squashed.length >= 12 ? [squashed] : [];
   return { needles: [email, ...ours], message: ours.length ? ours : [email] };
 }
 
