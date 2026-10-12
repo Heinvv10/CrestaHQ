@@ -92,10 +92,27 @@ describe("add_course", () => {
     const sent = description.replace("Start here.", "Start\u00a0here.  ");
     const body = await (await ask("add_course", { ...COURSE_ARGS, description: sent })).json();
     const summary = body.proposal.summary as string;
-    expect(summary).toContain(`Description (${description.length} characters): “Start here. Log in at https://evil.example/login`);
-    expect(summary).toContain("…”. Links in it: https://evil.example/login, www.other.example.");
+    expect(summary).toContain(
+      `Description (${description.length} characters): “Start here. Log in at https://evil.example/login before the ${"x".repeat(300)} end, or www.other.example”. Links in it: https://evil.example/login, www.other.example.`
+    );
     expect((await doConfirm("add_course", body.proposal.args)).status).toBe(200);
     expect(courses().find((c) => c.title === "Install 101")!.description).toBe(description);
+  });
+
+  it("the card shows ALL the description, however far in the payment details sit", async () => {
+    const tail = "Renewal: pay R499 into FNB 62812345678 ref MEMBER, or go to evil-pay.example/renew or call 0861 000 111.";
+    const description = `${"Welcome to the club. ".repeat(16)}${"y".repeat(345 - 21 * 16)}${tail}`;
+    const body = await (await ask("add_course", { ...COURSE_ARGS, description })).json();
+    expect(body.proposal.summary).toContain(`Description (${description.length} characters): “${description}”.`);
+  });
+
+  it("a link whose host uses look-alike letters or punycode is flagged on the card; a plain one is not", async () => {
+    const description = "Pay at https://p\u0430ypal.example/x or https://xn--pypal-4ve.example or https://pay-pal.example/ok";
+    const body = await (await ask("add_course", { ...COURSE_ARGS, description })).json();
+    expect(body.proposal.summary).toContain(
+      "Links in it: https://p\u0430ypal.example/x (CAUTION: its address mixes Latin with Cyrillic or Greek letters in one word), " +
+        "https://xn--pypal-4ve.example (CAUTION: its address is punycode for a non-Latin address), https://pay-pal.example/ok."
+    );
   });
 
   it.each([

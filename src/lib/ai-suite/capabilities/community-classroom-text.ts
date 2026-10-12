@@ -2,7 +2,7 @@ import "server-only";
 
 import { parseVideoUrl } from "@/lib/community/video-embed";
 import { str } from "./helpers";
-import { hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
+import { hasUnsafeText, lookAlikeProblem, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
 
 /**
  * What add_course / add_lesson accept from the model and how their confirm
@@ -11,8 +11,6 @@ import { hasUnsafeText, messageBody, oneLine, UNSAFE_TEXT_MESSAGE } from "./text
  */
 
 const TITLE_MAX = 200;
-/** How much of a description / lesson text the card quotes (every link is listed in full). */
-const EXCERPT = 280;
 /** The hosts the classroom's player embeds (lib/community/video-embed.ts). */
 const VIDEO_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "vimeo.com", "www.vimeo.com", "player.vimeo.com"]);
 
@@ -46,11 +44,16 @@ export function bodyText(raw: unknown, key: string, label: string, max: number):
   return { text };
 }
 
-/** How the card shows text members will read: its length, an excerpt and every link in it. */
+/** A link as the card lists it, flagged when its host could pass for another (look-alike letters, punycode). */
+function linkOnCard(link: string): string {
+  const host = link.replace(/^https?:\/\//i, "").split(/[/?#:]/)[0] ?? "";
+  const why = /^[\x00-\x7f]*$/.test(host) ? (/(^|\.)xn--/i.test(host) ? "is punycode for a non-Latin address" : null) : (lookAlikeProblem(host, []) ?? "has non-Latin letters");
+  return why ? `${link} (CAUTION: its address ${why})` : link;
+}
+
+/** How the card shows text members will read: all of it (on one line), its length, and every link in it. */
 export function bodyOnCard(label: string, text: string): string {
   if (!text) return "";
-  const flat = oneLine(text);
-  const excerpt = flat.length > EXCERPT ? `${flat.slice(0, EXCERPT)}…` : flat;
-  const links = [...new Set(text.match(/\b(?:https?:\/\/|www\.)[^\s<>"]+/gi) ?? [])];
-  return ` ${label} (${text.length.toLocaleString("en-US")} characters): “${excerpt}”.${links.length ? ` Links in it: ${links.join(", ")}.` : ""}`;
+  const links = [...new Set(text.match(/\b(?:https?:\/\/|www\.)[^\s<>"]+/giu) ?? [])];
+  return ` ${label} (${text.length.toLocaleString("en-US")} characters): “${oneLine(text)}”.${links.length ? ` Links in it: ${links.map(linkOnCard).join(", ")}.` : ""}`;
 }
