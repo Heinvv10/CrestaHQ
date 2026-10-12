@@ -453,6 +453,11 @@
         "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
       }
     },
+    "api/events/by-id/[id]/mark-paid:POST": {
+      "tools": [
+        "mark_booking_paid"
+      ]
+    },
     "api/events/by-id/[id]/mark-status:POST": {
       "tools": [
         "set_event_status"
@@ -517,6 +522,11 @@
         "category": "queue-itself",
         "reason": "The approvals queue itself: agents create proposals through tools, only a person lists and decides them."
       }
+    },
+    "api/sub-accounts/[id]/agents/watchdog:GET": {
+      "tools": [
+        "watchdog_status"
+      ]
     },
     "api/sub-accounts/[id]/api-keys:GET": {
       "exclude": {

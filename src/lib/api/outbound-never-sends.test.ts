@@ -138,6 +138,8 @@ beforeEach(() => {
   mem.seed("recurringInvoices/rs1", SCHEDULE);
   mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, name: "Paused retainer", status: "paused" });
   mem.seed("events/ev_past", pastEvent());
+  mem.seed("events/ev_awaiting", pastEvent({ status: "awaiting_payment" }));
+  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, communityEnabledByAgency: true, labsEnabledByAgency: true });
   seedPr13(mem);
   mem.seed("subAccounts/sa1/bookingPages/bp1", PAGE);
   mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", name: "Live consult", status: "published" });

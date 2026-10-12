@@ -33,7 +33,7 @@ const WHY_NONE: Partial<Record<EventNotifySkipReason, string>> = {
   bad_timestamps: "the appointment's times can't be read.",
 };
 
-async function tenantEvent(subAccountId: string, eventId: unknown): Promise<CalendarEvent> {
+export async function tenantEvent(subAccountId: string, eventId: unknown): Promise<CalendarEvent> {
   const snap = isDocId(eventId) ? await getAdminDb().doc(`events/${eventId}`).get() : null;
   const data = snap?.data();
   if (!data || data.subAccountId !== subAccountId) throw new CapabilityUserError("That appointment isn't in this workspace.");

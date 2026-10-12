@@ -24,9 +24,11 @@ import { WEBHOOK_CAPABILITIES } from "./capabilities/webhooks";
 import { WEBHOOK_TEST_CAPABILITIES } from "./capabilities/webhook-test";
 import { WEBHOOK_URL_CAPABILITIES } from "./capabilities/webhook-url";
 import { COMMUNITY_CAPABILITIES } from "./capabilities/community";
+import { COMMUNITY_CLASSROOM_CAPABILITIES } from "./capabilities/community-classroom";
 import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
 import { WORKFLOW_EDIT_CAPABILITIES } from "./capabilities/workflow-edit";
 import { WORKFLOW_STATUS_CAPABILITIES } from "./capabilities/workflow-status";
+import { WORKFLOW_PAUSE_CAPABILITIES } from "./capabilities/workflow-pause";
 import { SPEED_TO_LEAD_CAPABILITIES } from "./capabilities/speed-to-lead";
 import { FORM_CAPABILITIES } from "./capabilities/forms";
 import { DEAL_EDIT_CAPABILITIES } from "./capabilities/deal-edit";
@@ -60,6 +62,7 @@ import { EVENT_CAPABILITIES } from "./capabilities/events";
 import { EVENT_STATUS_CAPABILITIES } from "./capabilities/event-status";
 import { BOOKING_PAGE_CAPABILITIES } from "./capabilities/booking-pages";
 import { BOOKING_PAGE_EDIT_CAPABILITIES } from "./capabilities/booking-page-edit";
+import { BOOKING_PAYMENT_CAPABILITIES } from "./capabilities/booking-payments";
 import { MEMBER_CAPABILITIES } from "./capabilities/members";
 import { WEBSITE_RESEARCH_CAPABILITIES } from "./capabilities/website-research";
 import { WEBSITE_CREATE_CAPABILITIES } from "./capabilities/website-create";
@@ -70,6 +73,7 @@ import { SOCIAL_SCHEDULE_CAPABILITIES } from "./capabilities/social-schedule";
 import { REPUTATION_CAPABILITIES } from "./capabilities/reputation";
 import { BROADCAST_CAPABILITIES } from "./capabilities/broadcasts";
 import { VOICE_CAPABILITIES } from "./capabilities/voice";
+import { WATCHDOG_CAPABILITIES } from "./capabilities/watchdog";
 
 export { CapabilityNotFound, CapabilityOutcomeUnknown, CapabilityUserError, CapabilityWriteRefused } from "./capabilities/types";
 export type {
@@ -132,9 +136,11 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...WEBHOOK_TEST_CAPABILITIES,
   ...WEBHOOK_URL_CAPABILITIES,
   ...COMMUNITY_CAPABILITIES,
+  ...COMMUNITY_CLASSROOM_CAPABILITIES,
   ...WORKFLOW_CAPABILITIES,
   ...WORKFLOW_EDIT_CAPABILITIES,
   ...WORKFLOW_STATUS_CAPABILITIES,
+  ...WORKFLOW_PAUSE_CAPABILITIES,
   ...SPEED_TO_LEAD_CAPABILITIES,
   ...FORM_CAPABILITIES,
   ...CONTACT_CAPABILITIES,
@@ -155,6 +161,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...EVENT_STATUS_CAPABILITIES,
   ...BOOKING_PAGE_CAPABILITIES,
   ...BOOKING_PAGE_EDIT_CAPABILITIES,
+  ...BOOKING_PAYMENT_CAPABILITIES,
   ...MEMBER_CAPABILITIES,
   ...WEBSITE_RESEARCH_CAPABILITIES,
   ...WEBSITE_CREATE_CAPABILITIES,
@@ -165,6 +172,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...REPUTATION_CAPABILITIES,
   ...BROADCAST_CAPABILITIES,
   ...VOICE_CAPABILITIES,
+  ...WATCHDOG_CAPABILITIES,
 ];
 
 /**
