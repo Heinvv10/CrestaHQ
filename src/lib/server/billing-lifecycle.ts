@@ -147,11 +147,7 @@ export async function activateSubAccountPlan(input: {
     const reason =
       !billing || billing.status === "comped"
         ? "workspace is comped"
-        : // Its subscription is being cancelled for a comp: a payment now is
-          // refunded, never an activation the comp would then write over.
-          isComping(billing)
-          ? "workspace is being comped"
-          : billing.planId !== planId
+        : billing.planId !== planId
           ? `plan=${planId} assigned=${billing.planId ?? null}`
           : billing.status === "active"
             ? "plan already active — paid twice"

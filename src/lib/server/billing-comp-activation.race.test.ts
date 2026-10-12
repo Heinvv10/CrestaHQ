@@ -3,10 +3,12 @@ import { mem } from "@/test/paystack-links-harness";
 
 /**
  * A payment landing while comp cancels the subscription (PR #413 round 5
- * breaker), three layers deep: a payment mid-comp is flagged for a refund,
- * never applied; comp's claim closes the open checkout link (reopened if
- * the comp doesn't happen); and comp's final write refuses if the client
- * was activated since the claim anyway. Real comp, lifecycle and Paystack
+ * breaker). The payment applies as any payment does (refusing it would leave
+ * the subscription Paystack opened for it billing a comped client, with
+ * nothing tracking it); comp's final write then refuses because the client
+ * was activated since its claim, so the client ends active and tracked on
+ * the new subscription. Comp's claim also closes the open checkout link
+ * (reopened if the comp doesn't happen), so no new checkout starts mid-comp. Real comp, lifecycle and Paystack
  * webhook router over the in-memory Firestore; the provider and the flag
  * notifier stand in.
  */
@@ -51,22 +53,29 @@ beforeEach(() => {
 });
 
 describe("BRK r5: a new payment between comp's cancel and its final write", () => {
-  it("the payment is flagged for a refund, never applied, and the comp completes over a client nobody re-activated", async () => {
+  it("the payment re-activates the client, comp refuses as interrupted (SUB_1 reported cancelled), and the new subscription is tracked", async () => {
     let afterPayment: unknown;
     cancelSubscription.mockImplementationOnce(async () => {
       await handlePaystackEvent(DISABLE);
       await pay();
-      // Not re-activated: the payment is refused while comp holds its lock.
       afterPayment = billing().status;
       return "cancelled";
     });
-    expect(await comp()).toEqual({ subscription: "cancelled" });
-    expect(afterPayment).toBe("canceled");
-    expect(billing().status).toBe("comped");
+    const r = await comp();
+    expect(afterPayment).toBe("active");
+    expect(r).toMatchObject({
+      subscription: "failed", httpStatus: 409, cancelledSubscription: "SUB_1",
+      message: expect.stringContaining("Cancelled subscription SUB_1 with Paystack, but the client paid a new checkout meanwhile"),
+    });
+    expect(billing()).toMatchObject({ status: "active", compingSubscriptionId: null });
     await flushAfterResponse();
-    expect(mem.list("billingEvents")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ event: "payment.flagged", detail: expect.objectContaining({ reason: "workspace is being comped", reference: "ref_new" }) }),
-    ]));
+    const events = mem.list("billingEvents").map((e) => e.event);
+    expect(events).toContain("comp.interrupted");
+    expect(events).not.toContain("payment.flagged");
+    expect(events).not.toContain("comped");
+    // Paystack's subscription.create for the checkout lands on the active client: tracked, cancellable.
+    await handlePaystackEvent({ event: "subscription.create", data: { subscription_code: "SUB_NEW", customer: { customer_code: "CUS_1" }, plan: { plan_code: "PLN_1" } } } as Parameters<typeof handlePaystackEvent>[0]);
+    expect(billing()).toMatchObject({ status: "active", stripeSubscriptionId: "SUB_NEW" });
   });
 
   it("an activation that lands anyway (activatedAt moved since the claim): not comped over it, and SUB_1 is reported cancelled", async () => {
@@ -115,7 +124,7 @@ describe("comp closes the open checkout link while it runs", () => {
   });
 });
 
-it("a payment outside any comp still activates (the comping check is the only new refusal)", async () => {
+it("a payment outside any comp activates as before", async () => {
   mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Client", billing: { status: "pending", planId: "plan1", stripeCustomerId: "CUS_1", stripeSubscriptionId: null } });
   await pay("ref_plain");
   expect(billing().status).toBe("active");
