@@ -551,6 +551,39 @@ describe("PATCH — settings", () => {
     expect(warn.mock.calls.some((c) => String(c[0]).includes("agent restore gave up"))).toBe(true);
   });
 
+  it("a non-409 commit failure after PATCHing the live agent puts the agent back to the stored settings", async () => {
+    expect((await connect()).status).toBe(200);
+    const stored = mem.read(SECRET)!.greeting;
+    calls = [];
+    vi.spyOn(storeDb, "runTransaction").mockRejectedValueOnce(new Error("firestore unavailable"));
+    expect((await PATCH(req("PATCH", { greeting: "New" }), ctx())).status).toBe(500);
+    const patches = calls.filter((c) => c.method === "PATCH");
+    expect(patches.map(greetingOf)).toEqual(["New", stored]);
+    expect(mem.read(SECRET)?.greeting).toBe(stored);
+  });
+
+  it("a restore that itself cannot read Firestore never replaces the commit's error", async () => {
+    expect((await connect()).status).toBe(200);
+    vi.spyOn(storeDb, "runTransaction").mockRejectedValueOnce(new Error("firestore unavailable"));
+    const doc = storeDb.doc;
+    let failReads = false;
+    vi.spyOn(storeDb, "doc").mockImplementation((path: string) => {
+      const ref = doc(path);
+      if (failReads && path.endsWith("/private/webVoiceConnection")) {
+        return { ...ref, get: () => Promise.reject(new Error("read failed")) } as typeof ref;
+      }
+      return ref;
+    });
+    fetchMock.mockImplementation(async (input, init) => {
+      if (init?.method === "PATCH") failReads = true;
+      return fakeFetch(input, init);
+    });
+    const res = await PATCH(req("PATCH", { greeting: "New" }), ctx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toBe("Couldn't save voice settings.");
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("agent restore failed"))).toBe(true);
+  });
+
   it("A1: a failed re-sync after a lost race is logged and recorded on the meta", async () => {
     expect((await connect()).status).toBe(200);
     let release!: () => void;
@@ -665,6 +698,20 @@ describe("DELETE — disconnect", () => {
     expect(await body(res)).toEqual({ ok: true });
     expect(agents.has("agent7")).toBe(false);
     expect(mem.read(SECRET)).toBeUndefined();
+  });
+
+  it("an agent id stored without a key cannot be deleted, so the response warns", async () => {
+    mem.seed(SECRET, { agentId: "agent7", rev: "r1" });
+    agents.set("agent7", KEY);
+    const out = await body(await DELETE(req("DELETE"), ctx()));
+    expect(out.warning).toMatch(/could not be removed/);
+    expect(mem.read(SECRET)).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  it("no agent stored at all is a clean disconnect", async () => {
+    mem.seed(SECRET, { apiKey: KEY, rev: "r1" });
+    expect(await body(await DELETE(req("DELETE"), ctx()))).toEqual({ ok: true });
   });
 
   it("an agent already gone on ElevenLabs (404) counts as removed", async () => {

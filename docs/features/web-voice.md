@@ -43,8 +43,9 @@ spends the agency's OpenRouter tokens, which is why the feature is agency-gated.
   it is a public https address.
 - **DELETE** disconnects. It deletes the secret and usage docs, clears the meta, then
   deletes the agent on ElevenLabs (best-effort, logged; the key and agent id are read
-  raw, so a damaged doc still gets its agent removed). When that remote delete fails
-  the response carries a `warning` telling the client to delete the agent on
+  raw, so a damaged doc still gets its agent removed). When that remote delete fails,
+  or cannot be tried because an agent id is stored without a key, the response
+  carries a `warning` telling the client to delete the agent on
   ElevenLabs. It is **ungated**, so a client can always remove their key.
 
 POST and PATCH answer 403 `{ code: "gate_off" }` while `webVoiceEnabledByAgency` is
@@ -74,8 +75,8 @@ ElevenLabs. If another connect, save or disconnect committed in between, the req
 gets a 409 and writes nothing, and an agent it had just created is deleted so no
 orphan is left on the client's account. `rev` is a fresh random id on every write, so
 a disconnect followed by a reconnect never matches a stale reader. A losing save may
-already have PATCHed the live agent, so after its 409 it re-reads the committed
-connection and PATCHes the agent back to the winner's settings. It then re-reads: if
+already have PATCHed the live agent, so after its 409 (or any other failed commit) it
+re-reads the committed connection and PATCHes the agent back to the winner's settings. It then re-reads: if
 another save committed while that PATCH was in flight (same key and agent, new `rev`),
 it PATCHes again with the newest settings, at most three passes. A failed PATCH, or
 settings still changing after the third pass, is logged and recorded as `lastError`

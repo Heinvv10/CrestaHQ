@@ -322,16 +322,17 @@ async function recordRestoreFailure(
 }
 
 /**
- * A save that lost the commit race (409) had already PATCHed the live agent
- * with its own settings, so ElevenLabs no longer runs what the winner
- * stored. Re-PATCH it with the committed settings, then re-read: a save that
+ * A save whose commit failed (a lost race, or any other error) had already
+ * PATCHed the live agent with its own settings, so ElevenLabs no longer
+ * runs what is stored. Re-PATCH it with the committed settings, then re-read: a save that
  * committed while that PATCH was in flight may have been overwritten by it,
  * so a changed revision on the same agent means PATCH again with the newest
  * — at most `RESTORE_ATTEMPTS` times. Nothing to do when the committed
  * connection points at a different agent (re-keyed, re-created or
  * disconnected since). A failed PATCH, or settings still changing after the
  * last pass, is logged and recorded on the meta through the same
- * transactional writer; never thrown — the caller still answers 409.
+ * transactional writer; never thrown — the caller still answers with the
+ * commit's own error.
  */
 async function restoreCommittedAgent(subAccountId: string, apiKey: string, agentId: string): Promise<void> {
   const sameAgent = (conn: WebVoiceConnectionSecret | null): conn is WebVoiceConnectionSecret =>
@@ -362,8 +363,8 @@ async function restoreCommittedAgent(subAccountId: string, apiKey: string, agent
  * recorded on the meta so the card can show it — and when `lastGood` is
  * given (a settings save) the stored settings stay the ones the live agent
  * still runs. A failed commit IS thrown, after deleting any agent this call
- * created (so a lost race leaves no orphan on the client's account) or, on
- * a 409 after PATCHing the live agent, re-syncing it to the winner.
+ * created (so a lost race leaves no orphan on the client's account) or,
+ * after PATCHing the live agent, re-syncing it to what is committed.
  */
 async function syncAgent(
   subAccountId: string,
@@ -417,8 +418,13 @@ async function syncAgent(
   } catch (err) {
     if (created && agentId) {
       await dropAgent(subAccountId, conn.apiKey, agentId);
-    } else if (agentId && !syncError && err instanceof WebVoiceError && err.status === 409) {
-      await restoreCommittedAgent(subAccountId, conn.apiKey, agentId);
+    } else if (agentId && !syncError) {
+      // The live agent was PATCHed but this write did not land (a lost race,
+      // or any other commit failure): put it back to what is stored. Best
+      // effort — the caller still gets the commit's own error.
+      await restoreCommittedAgent(subAccountId, conn.apiKey, agentId).catch((restoreErr: unknown) => {
+        console.warn(`[web-voice] agent restore failed sa=${subAccountId}`, errText(restoreErr));
+      });
     }
     throw err;
   }
@@ -529,8 +535,9 @@ export async function listWebVoiceVoices(subAccountId: string): Promise<ElevenLa
  * Disconnect: delete the secret and usage docs and clear the display meta,
  * then delete the agent on ElevenLabs (best-effort). The key and agent id are
  * read raw, so a doc too damaged to parse still has its agent cleaned up.
- * `agentRemoved` is false when an agent was there and the delete failed —
- * the client has to remove it on ElevenLabs themselves.
+ * `agentRemoved` is false when an agent was there and the delete failed, or
+ * could not be attempted because no key is stored — the client has to
+ * remove it on ElevenLabs themselves.
  */
 export async function disconnectWebVoice(subAccountId: string): Promise<{ agentRemoved: boolean }> {
   const snap = await getAdminDb().doc(webVoiceConnectionPath(subAccountId)).get();
@@ -538,5 +545,6 @@ export async function disconnectWebVoice(subAccountId: string): Promise<{ agentR
   const apiKey = typeof raw?.apiKey === "string" ? raw.apiKey : "";
   const agentId = typeof raw?.agentId === "string" ? raw.agentId : "";
   await commitWebVoiceState(subAccountId, revOf(snap), null);
-  return { agentRemoved: apiKey && agentId ? await dropAgent(subAccountId, apiKey, agentId) : true };
+  if (!agentId) return { agentRemoved: true };
+  return { agentRemoved: apiKey ? await dropAgent(subAccountId, apiKey, agentId) : false };
 }
