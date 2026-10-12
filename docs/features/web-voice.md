@@ -82,6 +82,12 @@ it PATCHes again with the newest settings, at most three passes. A failed PATCH,
 settings still changing after the third pass, is logged and recorded as `lastError`
 ("may not match these settings"), never thrown.
 
+One race remains: a rival save that has PATCHed the agent but not yet committed when
+the restore re-reads is invisible to it. The restore's PATCH can land after the
+rival's, and the rival then commits normally, so the live agent keeps the restore's
+(older) settings while Firestore shows the rival's, with no `lastError`, until the
+next save re-syncs it. Closing this would need a lock held across the ElevenLabs call.
+
 Outbound calls go only to the fixed host `https://api.elevenlabs.io` with the
 sub-account's key. An agent or conversation id is put in a request path only if it
 matches `^[A-Za-z0-9_-]{1,128}$`. ElevenLabs' error text can echo what we sent, whole
