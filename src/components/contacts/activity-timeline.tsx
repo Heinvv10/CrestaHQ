@@ -10,7 +10,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import type { Note, ActivityType } from "@/types/contacts";
 import type { ActivityDoc } from "@/types/activities";
 import { activityVisuals } from "@/components/contacts/activity-visuals";
-import { isTwilioRecordingUrl } from "@/lib/comms/dialer-shared";
+import { ownRecordingUrl } from "@/lib/comms/dialer-shared";
 import {
   ACTIVITY_FILTERS,
   matchesActivityFilter,
@@ -168,7 +168,7 @@ function ActivityRow({
 }: {
   item: Extract<TimelineItem, { kind: "activity" }>;
 }) {
-  const { saPath } = useSubAccount();
+  const { saPath, subAccount } = useSubAccount();
   const visuals = activityVisuals(item.type);
   // The meta ids below were always being stored by the writers (quote
   // lifecycle, booking lifecycle, broadcasts, capture tasks) — render
@@ -206,11 +206,12 @@ function ActivityRow({
   }
   // A dialer call's recording. `meta` is UNTRUSTED — members can write
   // activity rows directly — so it becomes a link only when it is exactly a
-  // Twilio recording URL (the rule the status webhook stores it under). A
-  // plain link in a new tab: never embedded, never auto-played.
+  // recording on this sub-account's own Twilio account (the rule the status
+  // webhook stores it under). A plain link in a new tab: never embedded,
+  // never auto-played.
   const recordingUrl =
-    item.type === "call_placed" && isTwilioRecordingUrl(meta?.recordingUrl)
-      ? meta.recordingUrl
+    item.type === "call_placed"
+      ? ownRecordingUrl(meta?.recordingUrl, subAccount?.twilioConfig?.accountSid)
       : null;
   return (
     <TimelineRow

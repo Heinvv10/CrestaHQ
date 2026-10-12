@@ -6,15 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * A dialer call's row in the Activity timeline. `meta.recordingUrl` is
  * untrusted (members can write activity rows directly): it becomes a link
- * only when it is exactly a Twilio recording URL, opens in a new tab with
+ * only when it is exactly a recording on the sub-account's OWN Twilio account,
+ * opens in a new tab with
  * rel="noopener noreferrer", and is never embedded or auto-played.
  */
 
 type Row = { id: string; type: string; content: string; createdBy: string; createdAt: Date; meta: unknown };
 let rows: Row[];
+let subAccount: Record<string, unknown> | null;
 
 vi.mock("@/context/sub-account-context", () => ({
-  useSubAccount: () => ({ saPath: (p: string) => `/sa/sa1${p}` }),
+  useSubAccount: () => ({ subAccount, saPath: (p: string) => `/sa/sa1${p}` }),
 }));
 vi.mock("@/lib/firestore/contacts", () => ({
   subscribeToNotes: (_id: string, cb: (list: unknown[]) => void) => {
@@ -32,6 +34,7 @@ vi.mock("@/lib/firestore/activities", () => ({
 const { ActivityTimeline } = await import("./activity-timeline");
 
 const SID = `AC${"0a".repeat(16)}`;
+const OTHER_SID = `AC${"1b".repeat(16)}`;
 const REC = `https://api.twilio.com/2010-04-01/Accounts/${SID}/Recordings/RE${"a1".repeat(16)}`;
 const call = (meta: unknown, type = "call_placed"): Row => ({
   id: "dialer_CA1",
@@ -54,6 +57,7 @@ async function render(list: Row[]) {
 const anchors = () => [...container.querySelectorAll("a")];
 
 beforeEach(() => {
+  subAccount = { twilioConfig: { enabled: true, accountSid: SID } };
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -117,6 +121,24 @@ describe("Activity timeline — a dialer call", () => {
     expect(container.textContent).toContain("Phone call — 42s");
     expect(anchors()).toHaveLength(0);
     expect(container.innerHTML).not.toContain("Open recording");
+  });
+
+  it("renders no link for a recording on another Twilio account", async () => {
+    await render([call({ callSid: "CA1", recordingUrl: REC.replace(SID, OTHER_SID) })]);
+    expect(container.textContent).toContain("Phone call — 42s");
+    expect(anchors()).toHaveLength(0);
+  });
+
+  it.each([
+    ["no workspace doc yet", null],
+    ["no Twilio config", {}],
+    ["no account SID", { twilioConfig: { enabled: true } }],
+    ["a mis-shaped account SID", { twilioConfig: { enabled: true, accountSid: "AC.*" } }],
+  ])("renders no link with %s", async (_name, sub) => {
+    subAccount = sub;
+    await render([call({ callSid: "CA1", recordingUrl: REC })]);
+    expect(container.textContent).toContain("Phone call — 42s");
+    expect(anchors()).toHaveLength(0);
   });
 
   it("renders no recording link on a row that is not a dialer call", async () => {

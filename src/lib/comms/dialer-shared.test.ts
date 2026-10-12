@@ -6,7 +6,6 @@ import { subAccountTwilioIsConfigured } from "@/lib/comms/twilio";
 import type { TwilioConfig } from "@/types";
 import {
   dialerTwilioConfigured,
-  isTwilioRecordingUrl,
   ownRecordingUrl,
   storedInInternationalForm,
 } from "./dialer-shared";
@@ -49,41 +48,26 @@ const HOSTILE = [
   "",
 ];
 
-describe("isTwilioRecordingUrl — what the timeline may turn into a link", () => {
-  it("accepts an exact recording URL on any account, with and without .mp3 / .wav", () => {
-    for (const url of [REC, `${REC}.mp3`, `${REC}.wav`, REC.replace(SID, OTHER_SID)]) {
-      expect(isTwilioRecordingUrl(url), url).toBe(true);
-    }
+describe("ownRecordingUrl — what the webhook may store and the timeline may link", () => {
+  it("accepts an exact recording URL on the sub-account's own account, with and without .mp3 / .wav", () => {
+    for (const url of [REC, `${REC}.mp3`, `${REC}.wav`]) expect(ownRecordingUrl(url, SID), url).toBe(url);
+  });
+
+  it("refuses a recording on another account", () => {
+    expect(ownRecordingUrl(REC.replace(SID, OTHER_SID), SID)).toBeNull();
   });
 
   it("refuses every hostile variant", () => {
-    for (const url of HOSTILE) {
-      expect(isTwilioRecordingUrl(url), JSON.stringify(url.slice(0, 140))).toBe(false);
-    }
+    for (const url of HOSTILE) expect(ownRecordingUrl(url, SID), JSON.stringify(url.slice(0, 140))).toBeNull();
   });
 
   it("refuses anything that is not a string", () => {
     for (const raw of [undefined, null, 0, true, {}, [REC], { toString: () => REC }, new String(REC)]) {
-      expect(isTwilioRecordingUrl(raw), String(raw)).toBe(false);
-    }
-  });
-});
-
-describe("ownRecordingUrl — what the status webhook may store", () => {
-  it("is the same shape, pinned to the sub-account's own account", () => {
-    for (const url of [REC, `${REC}.mp3`, `${REC}.wav`]) expect(ownRecordingUrl(url, SID), url).toBe(url);
-    expect(ownRecordingUrl(REC.replace(SID, OTHER_SID), SID)).toBeNull();
-    for (const url of HOSTILE) expect(ownRecordingUrl(url, SID), JSON.stringify(url.slice(0, 140))).toBeNull();
-  });
-
-  it("never accepts what the render rule refuses", () => {
-    // The stored set is a subset of the linkable set: one shape, two pins.
-    for (const url of [REC, `${REC}.mp3`, REC.replace(SID, OTHER_SID), ...HOSTILE]) {
-      if (ownRecordingUrl(url, SID) !== null) expect(isTwilioRecordingUrl(url), url).toBe(true);
+      expect(ownRecordingUrl(raw, SID), String(raw)).toBeNull();
     }
   });
 
-  it("stores nothing for a missing or mis-shaped account SID", () => {
+  it("gives nothing for a missing or mis-shaped account SID", () => {
     for (const sid of [undefined, null, "", "AC_sa1", ".*", "AC[0-9a-f]{32}", `AC${"g".repeat(32)}`, `${SID}0`, SID.toUpperCase()]) {
       expect(ownRecordingUrl(REC, sid), String(sid)).toBeNull();
       const named = `https://api.twilio.com/2010-04-01/Accounts/${String(sid)}/Recordings/RE${"a1".repeat(16)}`;

@@ -157,15 +157,14 @@ agency gate and reads only `dialerConfig.enabled`.
 - **Timeline** (`activity-timeline.tsx`, `activity-visuals.tsx`). A `call_placed` row
   reads "Phone call". Upstream stores `meta.recordingUrl` but never renders it; ours
   renders an "Open recording" link, and only when the row is `call_placed` and the
-  value is exactly `https://api.twilio.com/2010-04-01/Accounts/AC<32 hex>/Recordings/RE<32 hex>`,
-  optionally ending `.mp3` or `.wav` (`isTwilioRecordingUrl`). `meta` is untrusted:
-  members can write activity rows directly. The link opens in a new tab with
-  `rel="noopener noreferrer"`. A recording is never embedded or auto-played.
-  - The render rule accepts any Twilio account; the storing rule (`ownRecordingUrl`)
-    pins the sub-account's own. Both are built from one pattern in
-    `src/lib/comms/dialer-shared.ts`, so the host, path and anchoring cannot drift
-    apart. The render rule is not pinned to the current account so that links stored
-    before a sub-account changed Twilio accounts still open.
+  value is exactly `https://api.twilio.com/2010-04-01/Accounts/<this sub-account's
+  AC sid>/Recordings/RE<32 hex>`, optionally ending `.mp3` or `.wav`. `meta` is
+  untrusted: members can write activity rows directly. The link opens in a new tab
+  with `rel="noopener noreferrer"`. A recording is never embedded or auto-played.
+  - The timeline and the status webhook apply the same function,
+    `ownRecordingUrl` in `src/lib/comms/dialer-shared.ts`, pinned to the
+    sub-account's current `twilioConfig.accountSid`. A recording stored before a
+    sub-account changed Twilio accounts therefore shows no link (fail closed).
 
 ## Safety
 
@@ -224,7 +223,7 @@ The remote clean-up is **best-effort**:
 - `src/app/api/comms/dialer/token/route.ts`
 - `src/app/api/webhooks/twilio/dialer/{twiml,status}/[subAccountId]/route.ts`
 - `src/lib/comms/dialer-shared.ts`: the rules the server and the browser both apply
-  (recording URL shape, dedicated-Twilio readiness, the "+…" hint). Client-safe.
+  (the recording URL rule, dedicated-Twilio readiness, the "+…" hint). Client-safe.
 - `src/components/contacts/browser-call-bar.tsx`, and the Call button in
   `contact-profile-header.tsx`
 - `src/components/settings/sub-account-dialer-section.tsx`
