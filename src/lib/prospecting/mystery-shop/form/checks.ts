@@ -92,7 +92,9 @@ export type Outcome =
  * (`refusedLate`): never `rejected`, which would invite a second enquiry.
  * A navigation or thank-you text is reported as soon as it is seen; a bare 2xx
  * (`post_2xx`) only once RENDER_MS has passed without either, or the window
- * closes — never later than `confirmMs`.
+ * closes — never later than `confirmMs` — and never when another request
+ * carrying the message was answered 4xx/5xx (`carrierFailed`): the 2xx may not
+ * have been the enquiry's endpoint (null → uncertain).
  */
 export async function waitForSignal(page: Page, state: GuardState, thanksBefore: number, confirmMs: number): Promise<Outcome> {
   const until = Date.now() + confirmMs;
@@ -103,6 +105,10 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
     if (late) return { captcha: late };
     if (state.rejected) return { rejected: state.rejected };
     return state.refusedLate ? { refusedLate: state.refusedLate } : seen;
+  };
+  const bare = async (finalUrl: string): Promise<Outcome> => {
+    const out = await settled({ signal: "post_2xx", finalUrl });
+    return state.carrierFailed && out && "signal" in out ? null : out;
   };
   /** When a bare 2xx was first all there was to go on. */
   let postSeenAt: number | null = null;
@@ -134,12 +140,12 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
       if (seen) return settled(seen);
       if (state.postOk) {
         postSeenAt ??= Date.now();
-        if (Date.now() - postSeenAt >= RENDER_MS) return settled({ signal: "post_2xx", finalUrl: now });
+        if (Date.now() - postSeenAt >= RENDER_MS) return bare(now);
       }
     }
     await page.waitForTimeout(POLL_MS);
   }
   // The window closed while the page still had time to say more: the 2xx stands.
-  if (postSeenAt !== null && !state.tooHeavy) return settled({ signal: "post_2xx", finalUrl: page.url() });
+  if (postSeenAt !== null && !state.tooHeavy) return bare(page.url());
   return null;
 }

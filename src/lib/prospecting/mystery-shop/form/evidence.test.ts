@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { carriesEnquiry, enquiryMarkers, rejectionOf } from "./evidence";
+import { carriesEnquiry, carriesMessage, enquiryMarkers, rejectionOf } from "./evidence";
 
 /** What proves a request carried OUR enquiry, and a 2xx that says the site refused it (fix round 1, V1). */
 
@@ -26,6 +26,19 @@ describe("carriesEnquiry", () => {
       expect(carriesEnquiry(text, markers)).toBe(false);
     },
   );
+});
+
+describe("carriesMessage", () => {
+  it("needs the message's longest line: our email alone is not the enquiry", () => {
+    expect(carriesMessage("email=info%40crestahq.com", markers)).toBe(false);
+    expect(carriesMessage("email=info%40crestahq.com&m=Do+you+do+plumber+in+Gqeberha%3F+What%27s+your+earliest+availability%3F", markers)).toBe(true);
+  });
+
+  it("falls back to our email when no line of the message is long enough to be ours alone", () => {
+    const short = enquiryMarkers({ email: "info@crestahq.com", message: "Hi,\nQuote?" });
+    expect(carriesMessage("email=info%40crestahq.com", short)).toBe(true);
+    expect(carriesMessage("m=Hi%2C+Quote%3F", short)).toBe(false);
+  });
 });
 
 describe("rejectionOf", () => {

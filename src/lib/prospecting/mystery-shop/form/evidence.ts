@@ -7,16 +7,25 @@
  * And a 2xx JSON answer that says the site refused it (Contact Form 7's
  * `"status":"validation_failed" | "spam" | "mail_failed" | "aborted"`,
  * `"success":false`, `"ok":false`) is a rejection, not a submission.
+ *
+ * Our email alone is enough to keep a request from leaving before the click,
+ * but not to stand for the enquiry after it: a newsletter or email-check call
+ * carries the address too, and its 2xx says nothing about the enquiry. What
+ * the signals hang on must carry the message (`carriesMessage`).
  */
 
 export interface EnquiryMarkers {
   needles: string[];
+  /** The message's longest line; our email only when the message has no line long enough to be ours alone. */
+  message: string[];
 }
 
 /** Our email address and the message's longest line — the two things only our submission contains. */
 export function enquiryMarkers(id: { email: string; message: string }): EnquiryMarkers {
   const line = id.message.split(/\r?\n/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), "");
-  return { needles: [id.email.toLowerCase(), ...(line.length >= 12 ? [line.toLowerCase()] : [])] };
+  const email = id.email.toLowerCase();
+  const ours = line.length >= 12 ? [line.toLowerCase()] : [];
+  return { needles: [email, ...ours], message: ours.length ? ours : [email] };
 }
 
 const decode = (s: string) => {
@@ -28,11 +37,16 @@ const decode = (s: string) => {
   }
 };
 
-export function carriesEnquiry(text: string, markers: EnquiryMarkers): boolean {
+function holds(text: string, needles: string[]): boolean {
   if (!text) return false;
   const forms = [text, decode(text), text.replace(/\\"/g, '"').replace(/\\u0027/g, "'")].map((s) => s.toLowerCase());
-  return markers.needles.some((n) => forms.some((f) => f.includes(n)));
+  return needles.some((n) => forms.some((f) => f.includes(n)));
 }
+
+export const carriesEnquiry = (text: string, markers: EnquiryMarkers) => holds(text, markers.needles);
+
+/** Stricter: the request carries the message itself (its longest line), not just our email. */
+export const carriesMessage = (text: string, markers: EnquiryMarkers) => holds(text, markers.message);
 
 const REJECTED_STATUS = /^(validation_failed|spam|mail_failed|aborted|invalid)$/i;
 

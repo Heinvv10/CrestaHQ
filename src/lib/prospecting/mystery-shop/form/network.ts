@@ -5,7 +5,7 @@ import { publicFetch, type PublicFetchInit } from "@/lib/webhooks/public-fetch";
 import { NonPublicUrlError } from "@/lib/webhooks/validate-url";
 import { sameSite } from "@/lib/prospecting/registrable-domain";
 import { CAPTCHA_URL } from "./page-scan";
-import { carriesEnquiry, rejectionOf, type EnquiryMarkers } from "./evidence";
+import { carriesEnquiry, carriesMessage, rejectionOf, type EnquiryMarkers } from "./evidence";
 import { postRedirectGet, repostable, samePage } from "./redirects";
 
 /**
@@ -80,10 +80,12 @@ export interface GuardState {
   postsOut: number;
   /** After the click: the page a post-redirect-get loaded (2xx HTML, not the form page) — confirmed by its text. */
   prgPage: string | null;
-  /** After the click: a 2xx to a request carrying the enquiry, same site or a known backend. */
+  /** After the click: a 2xx to a request carrying the message, same site or a known backend. */
   postOk: string | null;
-  /** After the click: a request carrying the enquiry was answered 2xx/3xx (its URL). */
+  /** After the click: a request carrying the message was answered 2xx/3xx (its URL). */
   carrierOk: string | null;
+  /** After the click: a request carrying the message was answered 4xx/5xx — a bare 2xx elsewhere is then no proof (checks.ts). */
+  carrierFailed: string | null;
   /** After the click: a 2xx answer to the enquiry that says the site refused it. */
   rejected: string | null;
   /** After the click: such a refusal, but answered after `postOk` — the enquiry had already been taken (checks.ts). */
@@ -102,7 +104,7 @@ export function newGuardState(): GuardState {
   return {
     blocked: null, fetchError: null, mainDocuments: 0, tooManyRedirects: false, redirect: null, captcha: null,
     clickedAt: null, postsOut: 0, prgPage: null, postOk: null, carrierOk: null, rejected: null, refusedLate: null, requests: 0, bytes: 0,
-    tooHeavy: false, navigatedTo: null, formUrl: null,
+    tooHeavy: false, navigatedTo: null, formUrl: null, carrierFailed: null,
   };
 }
 
@@ -242,11 +244,14 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
       return route.abort("blockedbyclient");
     }
     const afterClick = state.clickedAt !== null;
-    const carries = carriesEnquiry(`${req.url()}\n${req.postDataBuffer()?.toString("utf8") ?? ""}`, opts.markers);
+    const text = `${req.url()}\n${req.postDataBuffer()?.toString("utf8") ?? ""}`;
+    const carries = carriesEnquiry(text, opts.markers);
     // Before the click nothing of the enquiry may leave (a page capturing fields as they are typed —
     // a partial lead, even when the form is then refused); after it, that request IS the enquiry.
     if (carries && !afterClick) return route.abort("blockedbyclient");
     const carrier = carries && afterClick;
+    // Only a carrier holding the message is the enquiry's answer: a newsletter / email check carries just our address.
+    const enquiry = carrier && carriesMessage(text, opts.markers);
     await acquire();
     try {
       if (signal.aborted) throw new Error("aborted");
@@ -266,11 +271,12 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
       }
       // Only a 2xx to the enquiry (after at most one re-POST) counts; a 3xx never does.
       if (carrier && res.status >= 200 && res.status < 300) {
-        state.carrierOk ??= finalUrl;
+        if (enquiry) state.carrierOk ??= finalUrl;
         // A refusal after the site took the enquiry (its own retry, a second endpoint) is never `rejected`: that invites a second one.
         state[state.postOk ? "refusedLate" : "rejected"] ??= rejectionOf(body.subarray(0, 64 * 1024).toString("utf8"));
-        if (known) state.postOk ??= finalUrl;
+        if (enquiry && known) state.postOk ??= finalUrl;
       }
+      if (enquiry && res.status >= 400) state.carrierFailed ??= `${res.status} ${finalUrl}`;
       if (main && res.status >= 300 && res.status <= 399) {
         const location = res.headers.get("location");
         const next = location ? new URL(location, finalUrl) : null;

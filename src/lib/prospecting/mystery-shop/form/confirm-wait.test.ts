@@ -14,10 +14,10 @@ import { runFormFill, type FormRunInput } from "./engine";
  */
 
 let site: Fixture;
-async function run(routes: Record<string, Handler>, limits: FormRunInput["limits"] = {}) {
+async function run(routes: Record<string, Handler>, limits: FormRunInput["limits"] = {}, identity = IDENTITY) {
   site = await serve(routes);
   return runFormFill({
-    url: `${site.origin}/contact`, identity: IDENTITY, fetchImpl: loopbackFetch(site.origin, otherSite(site.origin)),
+    url: `${site.origin}/contact`, identity, fetchImpl: loopbackFetch(site.origin, otherSite(site.origin)),
     allowPorts: ports(site.origin), limits: { settleMs: 100, confirmMs: 4_000, ...limits },
   });
 }
@@ -110,5 +110,50 @@ describe.skipIf(skipBrowser)("a taken enquiry is sent or uncertain, never reject
     }, { confirmMs: 15_000, totalMs });
     expect(site.posts).toHaveLength(1);
     expect(out).toMatchObject({ kind: "uncertain", code: "timeout" });
+  });
+});
+
+/** A form whose submit POSTs `first` (built from the form's data `body`), then the enquiry once that was answered. */
+const twoPosts = (path: string, first: string): Handler => (_q, res) =>
+  html(res, form(SIMPLE_FIELDS) + `<script>document.querySelector("form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const body = new URLSearchParams(new FormData(e.target));
+    fetch("${path}", { method: "POST", body: ${first} }).then(() => fetch("/api/enquiry", { method: "POST", body }));
+  });</script>`);
+const failed: Handler = (_q, res) => html(res, "", 500);
+
+describe.skipIf(skipBrowser)("only a request carrying the message stands for the enquiry", () => {
+  it("a same-site call with only our email answered 2xx, the enquiry 500: uncertain, not sent", async () => {
+    const out = await run({
+      "/contact": twoPosts("/api/newsletter", `new URLSearchParams({ email: body.get("email") })`),
+      "/api/newsletter": ok, "/api/enquiry": failed,
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/newsletter", "/api/enquiry"]);
+    expect(site.posts[0].body).toBe("email=info%40crestahq.com");
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("a same-site call with only our email answered 2xx, the enquiry's connection dropped: uncertain, not sent", async () => {
+    const out = await run({
+      "/contact": twoPosts("/api/newsletter", `new URLSearchParams({ email: body.get("email") })`),
+      "/api/newsletter": ok, "/api/enquiry": (_q, res) => void res.destroy(),
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/newsletter", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("the message answered 2xx at one endpoint and 422 at the enquiry's: uncertain, not post_2xx", async () => {
+    const out = await run({
+      "/contact": twoPosts("/api/log", "body"),
+      "/api/log": ok, "/api/enquiry": (_q, res) => html(res, "", 422),
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/log", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("a message too short to be ours alone: the email stands for it, and a 2xx is sent", async () => {
+    const out = await run({ "/contact": contact(), "/api/enquiry": ok }, {}, { ...IDENTITY, message: "Hi, quote?" });
+    expect(site.posts).toHaveLength(1);
+    expect(out).toMatchObject({ kind: "sent", trace: { signal: "post_2xx" } });
   });
 });
