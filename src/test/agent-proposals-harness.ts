@@ -156,14 +156,23 @@ export function beforeNextTransaction(during: () => Promise<unknown>) {
   });
 }
 
-/** Hang the next execute until the returned function is called (or failed). */
-export function hangNextExecute(): { finish: () => void; fail: (err: Error) => void } {
-  const ctl = { finish: () => {}, fail: (_e: Error) => {} };
+/**
+ * Hang the next execute until `finish` / `fail` is called. `started` resolves
+ * the moment execute is actually entered, so a test can await that signal
+ * instead of polling a wall-clock window.
+ */
+export function hangNextExecute(): { finish: () => void; fail: (err: Error) => void; started: Promise<void> } {
+  let markStarted = () => {};
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const ctl = { finish: () => {}, fail: (_e: Error) => {}, started };
   execute.mockImplementationOnce(
     () =>
       new Promise((resolve, reject) => {
         ctl.finish = () => resolve(sent());
         ctl.fail = reject;
+        markStarted();
       })
   );
   return ctl;
@@ -172,9 +181,11 @@ export function hangNextExecute(): { finish: () => void; fail: (err: Error) => v
 /** Approve with a hanging execute, then let the sweep flip the claim to unsettled. */
 export async function approveHangingThenUnsettle(id: string) {
   const ctl = hangNextExecute();
-  const calls = execute.mock.calls.length;
+  const { started } = ctl;
   const approving = decide(id, "approve");
-  await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(calls + 1));
+  // Wait for execute to be entered; if the approve settles first, execute never ran.
+  const outcome = await Promise.race([started.then(() => "started" as const), approving.then(() => "settled" as const)]);
+  if (outcome === "settled") throw new Error("approve settled without entering execute");
   const { STALE_CLAIM_MS } = await lib();
   await sweep(later(STALE_CLAIM_MS + 60_000));
   expect(row(id).status).toBe("unsettled");
