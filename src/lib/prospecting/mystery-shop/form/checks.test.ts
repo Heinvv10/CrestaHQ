@@ -119,6 +119,11 @@ describe("the last look before the answer", () => {
     expect(await waitForSignal(stubPage({ captcha: null, thanks: 0 }), state, 0, 10_000)).toBeNull();
   });
 
+  it("such a 4xx/5xx stops a post-redirect-get page from confirming it", async () => {
+    const state = { ...taken(), carrierFailed: `500 ${ENQUIRY}`, prgPage: "https://www.acme.co.za/thanks" };
+    expect(await waitForSignal(stubPage({ captcha: null, thanks: 1 }), state, 0, 10_000)).toBeNull();
+  });
+
   it("such a 4xx/5xx with the window closing first: no signal, not post_2xx", async () => {
     const state = { ...taken(), carrierFailed: `500 ${ENQUIRY}` };
     expect(await waitForSignal(stubPage({ captcha: null, thanks: 0 }), state, 0, 1_000)).toBeNull();

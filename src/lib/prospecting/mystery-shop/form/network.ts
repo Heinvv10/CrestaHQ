@@ -3,9 +3,8 @@ import "server-only";
 import type { BrowserContext, Page, Request, Route } from "playwright-core";
 import { publicFetch, type PublicFetchInit } from "@/lib/webhooks/public-fetch";
 import { NonPublicUrlError } from "@/lib/webhooks/validate-url";
-import { sameSite } from "@/lib/prospecting/registrable-domain";
 import { CAPTCHA_URL } from "./page-scan";
-import { carriesEnquiry, carriesMessage, rejectionOf, type EnquiryMarkers } from "./evidence";
+import { carriesEnquiry, carriesMessage, knownHost, rejectionOf, type EnquiryMarkers } from "./evidence";
 import { postRedirectGet, repostable, samePage } from "./redirects";
 
 /**
@@ -53,15 +52,6 @@ const DROP_REQUEST = new Set([
   "upgrade", "host", "content-length", "accept-encoding",
 ]);
 const DROP_RESPONSE = new Set(["connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length", "set-cookie"]);
-/** Third-party form backends whose 2xx to a POST counts as a submission. */
-const FORM_BACKENDS =
-  /(^|\.)(formspree\.io|getform\.io|hsforms\.com|jotform\.com|typeform\.com|formsubmit\.co|web3forms\.com|usebasin\.com|formcarry\.com|wufoo\.com|zohopublic\.com)$/i;
-
-/** The form's own site, or a third-party form backend: where an answer to the enquiry may come from. */
-function knownHost(host: string, formUrl: string | null): boolean {
-  return formUrl !== null && (sameSite(host, new URL(formUrl).hostname) || FORM_BACKENDS.test(host));
-}
-
 export interface GuardState {
   /** Set when a main-frame document was refused (not a public address / not http(s)). */
   blocked: string | null;
@@ -84,9 +74,9 @@ export interface GuardState {
   postOk: string | null;
   /** After the click: a request carrying the message was answered 2xx/3xx (its URL). */
   carrierOk: string | null;
-  /** After the click: a request carrying the message was answered 4xx/5xx — a bare 2xx elsewhere is then no proof (checks.ts). */
+  /** After the click: a request carrying the message was answered 4xx/5xx — then no signal confirms it (checks.ts). */
   carrierFailed: string | null;
-  /** After the click: a 2xx answer to the enquiry that says the site refused it. */
+  /** After the click: a 2xx answer to the enquiry (a request carrying the message) that says the site refused it. */
   rejected: string | null;
   /** After the click: such a refusal, but answered after `postOk` — the enquiry had already been taken (checks.ts). */
   refusedLate: string | null;
@@ -249,19 +239,18 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
     // Before the click nothing of the enquiry may leave (a page capturing fields as they are typed —
     // a partial lead, even when the form is then refused); after it, that request IS the enquiry.
     if (carries && !afterClick) return route.abort("blockedbyclient");
-    const carrier = carries && afterClick;
-    // Only a carrier holding the message is the enquiry's answer: a newsletter / email check carries just our address.
-    const enquiry = carrier && carriesMessage(text, opts.markers);
+    // Only a request holding the message is the enquiry: a newsletter / email check carries just our address.
+    const enquiry = afterClick && carriesMessage(text, opts.markers);
     await acquire();
     try {
       if (signal.aborted) throw new Error("aborted");
-      const { res, url: finalUrl, body, followedGet } = await fetchHops(req, opts, carrier ? "enquiry" : main ? "none" : "follow");
+      const { res, url: finalUrl, body, followedGet } = await fetchHops(req, opts, carries && afterClick ? "enquiry" : main ? "none" : "follow");
       if (main && res.headers.get("cf-mitigated")) state.captcha ??= "Cloudflare challenge response";
       const host = new URL(finalUrl).hostname;
       const known = knownHost(host, state.formUrl);
       // Post-redirect-get: only a 2xx HTML page that isn't the form page is a candidate, and it confirms
       // only if its VISIBLE text says thank you once loaded (checks.ts). Never a carrierOk on its own.
-      if (carrier && followedGet) {
+      if (enquiry && followedGet) {
         const htmlPage = res.status >= 200 && res.status < 300 && /text\/html/i.test(res.headers.get("content-type") ?? "");
         if (main && htmlPage && !samePage(finalUrl, state.formUrl)) {
           state.prgPage ??= finalUrl;
@@ -270,11 +259,11 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
         return main ? await route.fulfill({ status: 204, body: "" }) : await fulfill(route, res, body);
       }
       // Only a 2xx to the enquiry (after at most one re-POST) counts; a 3xx never does.
-      if (carrier && res.status >= 200 && res.status < 300) {
-        if (enquiry) state.carrierOk ??= finalUrl;
+      if (enquiry && res.status >= 200 && res.status < 300) {
+        state.carrierOk ??= finalUrl;
         // A refusal after the site took the enquiry (its own retry, a second endpoint) is never `rejected`: that invites a second one.
         state[state.postOk ? "refusedLate" : "rejected"] ??= rejectionOf(body.subarray(0, 64 * 1024).toString("utf8"));
-        if (enquiry && known) state.postOk ??= finalUrl;
+        if (known) state.postOk ??= finalUrl;
       }
       if (enquiry && res.status >= 400) state.carrierFailed ??= `${res.status} ${finalUrl}`;
       if (main && res.status >= 300 && res.status <= 399) {

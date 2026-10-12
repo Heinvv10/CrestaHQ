@@ -1,3 +1,5 @@
+import { sameSite } from "@/lib/prospecting/registrable-domain";
+
 /**
  * Evidence that the ENQUIRY went out (fix round 1, V1). Pure.
  *
@@ -13,6 +15,15 @@
  * carries the address too, and its 2xx says nothing about the enquiry. What
  * the signals hang on must carry the message (`carriesMessage`).
  */
+
+/** Third-party form backends whose 2xx to a POST counts as a submission. */
+const FORM_BACKENDS =
+  /(^|\.)(formspree\.io|getform\.io|hsforms\.com|jotform\.com|typeform\.com|formsubmit\.co|web3forms\.com|usebasin\.com|formcarry\.com|wufoo\.com|zohopublic\.com)$/i;
+
+/** The form's own site, or a third-party form backend: where an answer to the enquiry may come from. */
+export function knownHost(host: string, formUrl: string | null): boolean {
+  return formUrl !== null && (sameSite(host, new URL(formUrl).hostname) || FORM_BACKENDS.test(host));
+}
 
 export interface EnquiryMarkers {
   needles: string[];

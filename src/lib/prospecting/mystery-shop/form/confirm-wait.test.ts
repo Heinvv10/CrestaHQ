@@ -151,6 +151,44 @@ describe.skipIf(skipBrowser)("only a request carrying the message stands for the
     expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
   });
 
+  it("a same-site call with only our email says ok:false, the enquiry 2xx: sent, not rejected", async () => {
+    const json = { "content-type": "application/json" };
+    const out = await run({
+      "/contact": twoPosts("/api/newsletter", `new URLSearchParams({ email: body.get("email") })`),
+      "/api/newsletter": (_q, res) => html(res, '{"ok":false}', 200, json), "/api/enquiry": ok,
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/newsletter", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "sent", trace: { signal: "post_2xx" } });
+  });
+
+  it("a post-redirect-get to a thank-you page for a POST with only our email (the message dropped): uncertain", async () => {
+    const out = await run({
+      // The page drops the message field's name as it submits: the browser posts everything else.
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<script>document.querySelector("form").addEventListener("submit", (e) => {
+        e.target.querySelector("textarea").removeAttribute("name");
+      });</script>`),
+      "/send": (_q, res) => html(res, "", 303, { location: "/thank-you" }),
+      "/thank-you": (_q, res) => html(res, "<h1>Thank you for your message</h1>"),
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/send"]);
+    expect(site.posts[0].body).toContain("email=info%40crestahq.com");
+    expect(site.posts[0].body).not.toContain("message=");
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
+  it("the message answered 2xx at one endpoint and 500 at the enquiry's, and the page says thanks: uncertain", async () => {
+    const out = await run({
+      "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<script>document.querySelector("form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const body = new URLSearchParams(new FormData(e.target));
+        fetch("/api/log", { method: "POST", body }).then(() => fetch("/api/enquiry", { method: "POST", body })).then(() => { ${THANKS} });
+      });</script>`),
+      "/api/log": ok, "/api/enquiry": failed,
+    });
+    expect(site.posts.map((p) => p.path)).toEqual(["/api/log", "/api/enquiry"]);
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
+  });
+
   it("a message too short to be ours alone: the email stands for it, and a 2xx is sent", async () => {
     const out = await run({ "/contact": contact(), "/api/enquiry": ok }, {}, { ...IDENTITY, message: "Hi, quote?" });
     expect(site.posts).toHaveLength(1);
