@@ -5,10 +5,10 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import {
-  editWebChatAllowedDomains,
   getAgentProfile,
-  getChannelConfig,
+  prepareAiAgentDocs,
   upsertAgentProfile,
+  webChatAllowListInTx,
 } from "@/lib/comms/ai/agent";
 import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import { isDocId } from "@/lib/server/doc-id";
@@ -27,8 +27,7 @@ export const dynamic = "force-dynamic";
  *                    www/apex twin) for the Web Chat widget, and point the
  *                    chat bot's website URL at it when the bot was seeded
  *                    from this site.
- * DELETE           — clear it (removes the host(s) this route added,
- *                    recorded on the site as `customDomainChatHosts`).
+ * DELETE           — clear it (removes the host(s) this route added).
  *
  * The domain itself is configured in GitLab/GitHub by the operator; this
  * only keeps LeadStack's side (chat allow-list, KB source, card URL) in sync.
@@ -40,9 +39,22 @@ export const dynamic = "force-dynamic";
  *  - only exact hostnames: the domain, plus its www/apex twin (the apex is
  *    the registrable domain from the Public Suffix List, so `acme.co.za`
  *    pairs with `www.acme.co.za`). No wildcard, no IP, no port, no bare
- *    public suffix, no gitlab.io/github.io host, and never this app's own
- *    host or a host under it (Labs funnel subdomains are other tenants'
- *    pages). The web-chat origin check is an exact hostname match.
+ *    public suffix, no localhost or *.localhost, no gitlab.io/github.io
+ *    host, and never this app's own host or a host under it (Labs funnel
+ *    subdomains are other tenants' pages). The web-chat origin check is an
+ *    exact hostname match;
+ *  - a host only one site holds: a domain whose hosts another site of this
+ *    sub-account already holds is refused (409), so removing one site's
+ *    domain can never take hosts off that another still relies on.
+ *
+ * The site doc and the allow-list are written in ONE transaction (through
+ * `transitionWebsite`), with the 25-entry cap counted inside it: a domain
+ * is never allowed without being recorded, nor recorded without being
+ * allowed, whatever runs alongside (a DELETE, another site's save, the Web
+ * Chat settings form). The site records the hosts the save actually added
+ * (`customDomainChatHosts`, the pair minus any already listed); replacing
+ * or removing the domain takes off those and nothing else, so hosts the
+ * operator listed by hand stay.
  *
  * PUT is gated on `websiteEnabledByAgency` like the draft save. DELETE is
  * not, like removing a site: a gated-off workspace can always take a domain
@@ -77,6 +89,8 @@ function normaliseDomain(raw: unknown): DomainCheck {
   d = d.replace(/^[a-z]+:\/\//, "").split(/[/?#]/)[0].replace(/:\d+$/, "").replace(/\.$/, "");
   if (!HOST_RE.test(d)) return invalid;
   if (/\.(gitlab|github)\.io$/.test(d)) return invalid;
+  // Loopback names resolve to the visitor's own machine, never a website.
+  if (d.endsWith(".localhost")) return invalid;
   // A bare public suffix ("co.za", "github.io") is nobody's site.
   if (!registrableDomain(d)) return invalid;
   // Unknown app host = cannot tell a platform host from a customer's: refuse.
@@ -99,18 +113,17 @@ function variants(domain: string): string[] {
   return [domain];
 }
 
+/** Every host a site's custom domain holds (what it recorded is a subset). */
+function hostsHeldBy(site: WebsiteDoc): string[] {
+  return site.customDomain ? variants(site.customDomain) : [];
+}
+
 async function loadSite(subAccountId: string, siteId: string) {
   const ref = getAdminDb().doc(`subAccounts/${subAccountId}/website/${siteId}`);
   const snap = await ref.get();
   const site = snap.data() as WebsiteDoc | undefined;
   if (!snap.exists || !site || site.subAccountId !== subAccountId) return null;
   return { ref, site };
-}
-
-/** The sub-account's web-chat allow-list as it stands. */
-async function listedHosts(subAccountId: string): Promise<string[]> {
-  const existing = await getChannelConfig(subAccountId, "web-chat");
-  return (existing?.webChat?.allowedDomains ?? []).map((d) => d.toLowerCase());
 }
 
 const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -120,7 +133,7 @@ export async function PUT(
   ctx: { params: Promise<{ id: string; siteId: string }> },
 ) {
   const { id: subAccountId, siteId } = await ctx.params;
-  if (!isDocId(siteId)) return siteNotFound();
+  if (!isDocId(subAccountId) || !isDocId(siteId)) return siteNotFound();
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
@@ -150,71 +163,61 @@ export async function PUT(
     return NextResponse.json({ error: "Add a custom domain once the site is live." }, { status: 409 });
   }
 
-  const previous = site.customDomain ?? null;
-  const recorded = site.customDomainChatHosts ?? [];
-  // A new domain takes off the hosts the old one added; a re-save keeps them.
-  const removed = previous && previous !== domain ? recorded : [];
-  const kept = previous === domain ? recorded : [];
+  await prepareAiAgentDocs(subAccountId);
   const hosts = variants(domain);
-  const after = new Set(await listedHosts(subAccountId));
-  for (const h of removed) after.delete(h);
-  // What this save adds: the hosts not listed once the old domain's are off.
-  const added = hosts.filter((h) => !after.has(h));
-  for (const h of hosts) after.add(h);
-  // A fast refusal with nothing written; the allow-list write re-checks the
-  // cap in its own transaction.
-  if (after.size > MAX_ALLOWED_DOMAINS) {
-    return NextResponse.json(
-      {
-        error: `The chat widget's allowed domains list is full (${MAX_ALLOWED_DOMAINS}). Remove one in the Web Chat settings, then save the domain again.`,
-      },
-      { status: 409 },
-    );
-  }
-
-  // Recorded only on the live build that was read, and only if nobody
-  // changed the domain in between — and BEFORE the allow-list is widened,
-  // so no host is ever allowed without a record of why it is there.
+  // What the transaction saw, for the answer and the profile step below.
+  const seen: { refusal?: "in-use" | "full"; previous?: string | null } = {};
   const saved = await transitionWebsite(
     ref,
     {
-      expectJobId: site.gitpageJobId ?? null,
       fromStatuses: ["ready"],
-      when: (fresh) => (fresh.customDomain ?? null) === previous,
+      inTransaction: async (tx, fresh) => {
+        delete seen.refusal;
+        const sites = await tx.get(getAdminDb().collection(`subAccounts/${subAccountId}/website`));
+        const list = await webChatAllowListInTx(tx, subAccountId);
+        const held = sites.docs
+          .filter((d) => d.id !== siteId)
+          .flatMap((d) => hostsHeldBy(d.data() as WebsiteDoc));
+        if (hosts.some((h) => held.includes(h))) {
+          seen.refusal = "in-use";
+          return false;
+        }
+        const previous = fresh.customDomain ?? null;
+        seen.previous = previous;
+        const recorded = fresh.customDomainChatHosts ?? [];
+        // A new domain takes off the hosts the old one added; a re-save keeps them.
+        const removed = previous && previous !== domain ? recorded : [];
+        const kept = previous === domain ? recorded : [];
+        const next = new Set(list.hosts);
+        for (const h of removed) next.delete(h);
+        // What this save adds: the hosts not listed once the old domain's are off.
+        const added = hosts.filter((h) => !next.has(h));
+        for (const h of hosts) next.add(h);
+        if (next.size > MAX_ALLOWED_DOMAINS) {
+          seen.refusal = "full";
+          return false;
+        }
+        list.save([...next]);
+        return { customDomainChatHosts: [...new Set([...kept, ...added])] };
+      },
     },
-    {
-      customDomain: domain,
-      customDomainChatHosts: [...new Set([...kept, ...added])],
-      updatedAt: FieldValue.serverTimestamp(),
-    },
+    { customDomain: domain, updatedAt: FieldValue.serverTimestamp() },
   );
   if (!saved.applied) {
     if (saved.reason === "missing") return siteNotFound();
-    return NextResponse.json(
-      { error: "This site changed while the domain was being saved. Reload and try again." },
-      { status: 409 },
-    );
-  }
-
-  const warnings: string[] = [];
-  try {
-    const listed = await editWebChatAllowedDomains(subAccountId, {
-      add: hosts,
-      remove: removed,
-      max: MAX_ALLOWED_DOMAINS,
-    });
-    if (listed === "full") {
-      warnings.push(
-        `The chat widget's allowed domains list filled up (${MAX_ALLOWED_DOMAINS}) before the domain could be added — remove one in the Web Chat settings, then remove and save the domain again.`,
-      );
-    }
-  } catch (err) {
-    console.error(`[website/domain] chat allow-list update failed sa=${subAccountId} site=${siteId}`, reason(err));
-    warnings.push("The chat widget's allowed domains were not updated — add the domain in the Web Chat settings.");
+    const error =
+      seen.refusal === "in-use"
+        ? "Another website in this workspace already uses that domain. Remove it there first."
+        : seen.refusal === "full"
+          ? `The chat widget's allowed domains list is full (${MAX_ALLOWED_DOMAINS}). Remove one in the Web Chat settings, then save the domain again.`
+          : "This site is no longer live. Reload and try again.";
+    return NextResponse.json({ error }, { status: 409 });
   }
 
   // Point the chat bot's source URL at the custom domain when it was seeded
   // from this site (or currently points at this site's gitlab/github URL).
+  const previous = seen.previous ?? null;
+  const warnings: string[] = [];
   try {
     const profile = await getAgentProfile(subAccountId);
     // `websiteKbSiteId` is written by the publish hand-off (WS-3); read
@@ -238,53 +241,43 @@ export async function DELETE(
   ctx: { params: Promise<{ id: string; siteId: string }> },
 ) {
   const { id: subAccountId, siteId } = await ctx.params;
-  if (!isDocId(siteId)) return siteNotFound();
+  if (!isDocId(subAccountId) || !isDocId(siteId)) return siteNotFound();
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
   const found = await loadSite(subAccountId, siteId);
   if (!found) return siteNotFound();
   const { ref, site } = found;
-  const previous = site.customDomain ?? null;
-  if (!previous) return NextResponse.json({ ok: true });
+  if (!site.customDomain) return NextResponse.json({ ok: true });
 
-  // The allow-list first: if it cannot be updated the domain stays recorded,
-  // so the operator can retry — never an allowed origin with no record of
-  // why it is there.
-  // Only the hosts the save added: any the operator listed by hand stay.
-  try {
-    const recorded = site.customDomainChatHosts ?? [];
-    if (recorded.length) await editWebChatAllowedDomains(subAccountId, { add: [], remove: recorded });
-  } catch (err) {
-    console.error(`[website/domain] chat allow-list removal failed sa=${subAccountId} site=${siteId}`, reason(err));
-    return NextResponse.json(
-      { error: "Couldn't take the domain off the chat widget's allowed list. Try again." },
-      { status: 502 },
-    );
-  }
+  await prepareAiAgentDocs(subAccountId);
+  const seen: { previous?: string | null } = {};
+  // The record and the hosts it added go together, or not at all.
+  const cleared = await transitionWebsite(
+    ref,
+    {
+      fromStatuses: ALL_STATUSES,
+      inTransaction: async (tx, fresh) => {
+        const list = await webChatAllowListInTx(tx, subAccountId);
+        const recorded = new Set(fresh.customDomainChatHosts ?? []);
+        list.save(list.hosts.filter((h) => !recorded.has(h)));
+        seen.previous = fresh.customDomain ?? null;
+        return {};
+      },
+    },
+    { customDomain: null, customDomainChatHosts: null, updatedAt: FieldValue.serverTimestamp() },
+  );
+  if (!cleared.applied) return siteNotFound();
 
   const warnings: string[] = [];
   try {
     const profile = await getAgentProfile(subAccountId);
-    if (profile?.websiteUrl === `https://${previous}/` && site.liveUrl) {
+    if (seen.previous && profile?.websiteUrl === `https://${seen.previous}/` && site.liveUrl) {
       await upsertAgentProfile(subAccountId, { websiteUrl: site.liveUrl });
     }
   } catch (err) {
     console.error(`[website/domain] chat bot website reset failed sa=${subAccountId} site=${siteId}`, reason(err));
     warnings.push("The chat bot's website address was not changed back.");
-  }
-
-  const cleared = await transitionWebsite(
-    ref,
-    { fromStatuses: ALL_STATUSES, when: (fresh) => (fresh.customDomain ?? null) === previous },
-    { customDomain: null, customDomainChatHosts: null, updatedAt: FieldValue.serverTimestamp() },
-  );
-  if (!cleared.applied) {
-    if (cleared.reason === "missing") return siteNotFound();
-    return NextResponse.json(
-      { error: "This site's domain changed while it was being removed. Reload and try again." },
-      { status: 409 },
-    );
   }
   return NextResponse.json({ ok: true, warnings });
 }

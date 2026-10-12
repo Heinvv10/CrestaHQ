@@ -182,36 +182,40 @@ export async function upsertChannelConfig(
 }
 
 /**
- * Edit the web-chat allow-list in one transaction: `remove` comes out, then
- * `add` goes in, against the list as the transaction reads it. With `max`,
- * refused ("full", nothing written) when the result would hold more than
- * `max` entries, so concurrent edits cannot pass the cap together.
+ * Run the lazy legacy-config migration now: it has its own transaction, so
+ * it must not run inside another. Call before `webChatAllowListInTx`.
  */
-export async function editWebChatAllowedDomains(
-  subAccountId: string,
-  edit: { add: string[]; remove: string[]; max?: number },
-): Promise<"ok" | "full"> {
+export async function prepareAiAgentDocs(subAccountId: string): Promise<void> {
   await maybeMigrateLegacy(subAccountId);
-  const db = getAdminDb();
-  const ref = db.doc(channelPath(subAccountId, "web-chat"));
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const existing = snap.exists ? (snap.data() as AiChannelConfig) : null;
-    const webChat = { ...DEFAULT_WEB_CHAT_CONFIG, ...(existing?.webChat ?? {}) };
-    const set = new Set(webChat.allowedDomains.map((d) => d.toLowerCase()));
-    for (const d of edit.remove) set.delete(d);
-    for (const d of edit.add) set.add(d);
-    if (edit.max !== undefined && set.size > edit.max) return "full" as const;
-    const seed = snap.exists
-      ? {}
-      : { ...defaultsForChannel("web-chat"), createdAt: FieldValue.serverTimestamp() };
-    tx.set(
-      ref,
-      { ...seed, webChat: { ...webChat, allowedDomains: [...set] }, updatedAt: FieldValue.serverTimestamp() },
-      { merge: true },
-    );
-    return "ok" as const;
-  });
+}
+
+/**
+ * The web-chat allow-list, read inside the caller's transaction, and a
+ * `save` that writes a new list in the same transaction (seeding the channel
+ * doc with its defaults when there is none). The rest of the channel config
+ * is left as it is. Read before any write of the transaction.
+ */
+export async function webChatAllowListInTx(
+  tx: FirebaseFirestore.Transaction,
+  subAccountId: string,
+): Promise<{ hosts: string[]; save: (hosts: string[]) => void }> {
+  const ref = getAdminDb().doc(channelPath(subAccountId, "web-chat"));
+  const snap = await tx.get(ref);
+  const existing = snap.exists ? (snap.data() as AiChannelConfig) : null;
+  const webChat = { ...DEFAULT_WEB_CHAT_CONFIG, ...(existing?.webChat ?? {}) };
+  return {
+    hosts: webChat.allowedDomains.map((d) => d.toLowerCase()),
+    save: (hosts) => {
+      const seed = snap.exists
+        ? {}
+        : { ...defaultsForChannel("web-chat"), createdAt: FieldValue.serverTimestamp() };
+      tx.set(
+        ref,
+        { ...seed, webChat: { ...webChat, allowedDomains: hosts }, updatedAt: FieldValue.serverTimestamp() },
+        { merge: true },
+      );
+    },
+  };
 }
 
 export async function incrementChannelTokens(

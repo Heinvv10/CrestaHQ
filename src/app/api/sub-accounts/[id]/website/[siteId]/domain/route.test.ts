@@ -16,6 +16,7 @@ const claims: Record<string, Record<string, unknown>> = {
   u_admin: { status: "active", agencyId: "ag1" },
   u_member: { status: "active", agencyId: "ag1" },
   u_admin2: { status: "active", agencyId: "ag1" },
+  u_owner: { status: "active", agencyId: "ag1", agencyRole: "owner" },
 };
 vi.mock("@/lib/firebase/admin", () => ({
   getAdminDb: () => mem.db,
@@ -25,6 +26,7 @@ vi.mock("@/lib/firebase/admin", () => ({
 const { PUT, DELETE } = await import("./route");
 
 const SITE = "subAccounts/sa1/website/site1";
+const SITE2 = "subAccounts/sa1/website/site2";
 const CHAT = "subAccounts/sa1/aiAgent/web-chat";
 const PROFILE = "subAccounts/sa1/aiAgent/profile";
 const OTHER_CHAT = "subAccounts/sa2/aiAgent/web-chat";
@@ -66,18 +68,30 @@ const seedChat = (path: string, allowedDomains: string[]) =>
     webChat: { allowedDomains, welcomeMessage: "Hi", accentColor: "#123456", position: "left" },
   });
 /**
- * Run `before` (or throw) when the n-th transaction of this request starts.
- * PUT runs two: the site write, then the allow-list edit; DELETE runs the
- * allow-list edit first, then the site write.
+ * Let the request's transaction make its reads, then run `meanwhile` (once)
+ * before it commits — another writer landing in the gap. The in-memory
+ * Firestore, like Firestore, then re-runs the transaction on fresh reads.
  */
-function onTransaction(n: number, before: () => void) {
+function duringTransaction(meanwhile: () => unknown) {
   const runTransaction = mem.db.runTransaction;
-  let seen = 0;
-  return vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) => {
-    seen += 1;
-    if (seen === n) before();
-    return runTransaction(fn);
-  });
+  let done = false;
+  return vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) =>
+    runTransaction(async (tx) => {
+      const out = await fn(tx);
+      if (!done) {
+        done = true;
+        await meanwhile();
+      }
+      return out;
+    }),
+  );
+}
+/** The domain's hosts are allowed exactly when the site records them. */
+function expectConsistent(path = SITE) {
+  const site = mem.read(path) as { customDomain?: string | null; customDomainChatHosts?: string[] | null };
+  const list = allowed() ?? [];
+  for (const h of site.customDomainChatHosts ?? []) expect(list).toContain(h);
+  if (!site.customDomain) expect(site.customDomainChatHosts ?? null).toBeNull();
 }
 const allowed = (path = CHAT) =>
   (mem.read(path) as { webChat?: { allowedDomains?: string[] } } | undefined)?.webChat?.allowedDomains;
@@ -140,6 +154,14 @@ describe("PUT — record a custom domain", () => {
     ["a wildcard", "*.acme.com"],
     ["an IP address", "203.0.113.7"],
     ["a single label", "localhost"],
+    ["a *.localhost host", "promo.localhost"],
+    ["www on localhost (whose twin would be bare localhost)", "www.localhost"],
+    ["this app's host with a trailing dot", "app.test."],
+    ["this app's host, upper case with a trailing dot", "WWW.APP.TEST."],
+    ["this app's host with a port", "app.test:8443"],
+    ["userinfo before this app's host", "evil@app.test"],
+    ["this app's host as userinfo", "https://app.test@evil.com"],
+    ["a host with two trailing dots", "promo.app.test.."],
     ["a bare public suffix", "co.za"],
     ["the gitlab.io suffix itself", "gitlab.io"],
     ["a path-only value", "/acme"],
@@ -245,9 +267,23 @@ describe("PUT — record a custom domain", () => {
     expect(allowed()).toEqual(["acme.gitlab.io"]);
   });
 
-  it("records the domain and warns when the allow-list write fails", async () => {
-    const spy = onTransaction(2, () => {
-      throw new Error("deadline exceeded");
+  it("one transaction: if it fails, neither the record nor the allow-list changes", async () => {
+    const spy = vi.spyOn(mem.db, "runTransaction").mockRejectedValueOnce(new Error("deadline exceeded"));
+    try {
+      await expect(put("www.acme.com")).rejects.toThrow("deadline exceeded");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mem.read(SITE)?.customDomain).toBeNull();
+    expect(allowed()).toEqual(["acme.gitlab.io"]);
+  });
+
+  it("warns, with the domain saved, when the chat bot's address cannot be moved", async () => {
+    const original = mem.db.doc.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      const ref = original(path);
+      if (path !== PROFILE) return ref;
+      return { ...ref, set: async () => { throw new Error("deadline exceeded"); } } as typeof ref;
     });
     let res: Response;
     try {
@@ -256,28 +292,38 @@ describe("PUT — record a custom domain", () => {
       spy.mockRestore();
     }
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { warnings: string[] };
-    expect(body.warnings).toEqual([
-      "The chat widget's allowed domains were not updated — add the domain in the Web Chat settings.",
-    ]);
-    expect(mem.read(SITE)).toMatchObject({ customDomain: "www.acme.com", customDomainChatHosts: ["www.acme.com", "acme.com"] });
-    expect(allowed()).toEqual(["acme.gitlab.io"]);
+    expect(await res.json()).toEqual({
+      ok: true,
+      customDomain: "www.acme.com",
+      warnings: ["The chat bot's website address was not updated."],
+    });
+    expect(allowed()).toEqual(["acme.gitlab.io", "www.acme.com", "acme.com"]);
+    expectConsistent();
   });
 
-  it("re-checks the 25-entry cap inside the allow-list transaction: a list filled meanwhile is not overflowed", async () => {
+  it("counts the 25-entry cap inside the transaction: a list filled meanwhile refuses the save (409), writing nothing", async () => {
     const full = Array.from({ length: 25 }, (_, i) => `site${i}.example`);
-    const spy = onTransaction(2, () => seedChat(CHAT, full));
+    const spy = duringTransaction(() => seedChat(CHAT, full));
     let res: Response;
     try {
       res = await put("www.acme.com");
     } finally {
       spy.mockRestore();
     }
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { warnings: string[] };
-    expect(body.warnings).toHaveLength(1);
-    expect(body.warnings[0]).toMatch(/filled up \(25\)/);
+    expect(res.status).toBe(409);
+    expect(mem.read(SITE)?.customDomain).toBeNull();
     expect(allowed()).toEqual(full);
+  });
+
+  it("keeps a Web Chat settings save that lands in the gap (the transaction re-reads the list)", async () => {
+    const spy = duringTransaction(() => seedChat(CHAT, ["acme.gitlab.io", "partner.example"]));
+    try {
+      expect((await put("www.acme.com")).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(allowed()).toEqual(["acme.gitlab.io", "partner.example", "www.acme.com", "acme.com"]);
+    expectConsistent();
   });
 
   it("leaves a chat bot that points somewhere else alone", async () => {
@@ -294,44 +340,123 @@ describe("PUT — record a custom domain", () => {
     expect(allowed()).toEqual(full);
   });
 
-  it.each([
-    ["rebuilt", { status: "queued", gitpageJobId: "build_new" }],
-    ["rebuilt and live again", { gitpageJobId: "build_new" }],
-    ["no longer live", { status: "failed" }],
-  ])("writes nothing when the site was %s between its read and its write", async (_label, change) => {
-    const runTransaction = mem.db.runTransaction;
-    let raced = false;
-    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) => {
-      if (!raced) {
-        raced = true;
-        mem.seed(SITE, { ...mem.read(SITE), ...change });
-      }
-      return runTransaction(fn);
-    });
-    const res = await put("www.acme.com");
-    spy.mockRestore();
-    expect(raced).toBe(true);
+  it("gives no domain to a site that stops being live while the save runs", async () => {
+    const spy = duringTransaction(() => mem.seed(SITE, { ...mem.read(SITE), status: "queued", gitpageJobId: "build_new" }));
+    let res: Response;
+    try {
+      res = await put("www.acme.com");
+    } finally {
+      spy.mockRestore();
+    }
     expect(res.status).toBe(409);
     expect(mem.read(SITE)?.customDomain).toBeNull();
     expect(allowed()).toEqual(["acme.gitlab.io"]);
   });
 
-  it("writes nothing when the domain changed between its read and its write", async () => {
-    // Let the request read the site, then land another save before it commits.
-    const runTransaction = mem.db.runTransaction;
-    let raced = false;
-    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) => {
-      if (!raced) {
-        raced = true;
-        mem.seed(SITE, { ...mem.read(SITE), customDomain: "www.racer.com" });
-      }
-      return runTransaction(fn);
+  it("replaces a domain another request saved meanwhile, taking that one's hosts off", async () => {
+    const spy = duringTransaction(() => {
+      mem.seed(SITE, { ...mem.read(SITE), customDomain: "www.racer.com", customDomainChatHosts: ["www.racer.com", "racer.com"] });
+      seedChat(CHAT, ["acme.gitlab.io", "www.racer.com", "racer.com"]);
     });
-    const res = await put("www.acme.com");
-    spy.mockRestore();
-    expect(raced).toBe(true);
+    try {
+      expect((await put("www.acme.com")).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mem.read(SITE)?.customDomain).toBe("www.acme.com");
+    expect(allowed()).toEqual(["acme.gitlab.io", "www.acme.com", "acme.com"]);
+    expectConsistent();
+  });
+
+  it("a DELETE landing while a PUT runs never leaves an allowed host without a record", async () => {
+    seedSite(SITE, { customDomain: "www.old.com", customDomainChatHosts: ["www.old.com", "old.com"] });
+    seedChat(CHAT, ["acme.gitlab.io", "www.old.com", "old.com"]);
+    const spy = duringTransaction(() => del());
+    try {
+      expect((await put("www.new.com")).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mem.read(SITE)?.customDomain).toBe("www.new.com");
+    expect(allowed()).toEqual(["acme.gitlab.io", "www.new.com", "new.com"]);
+    expectConsistent();
+  });
+
+  it("a PUT landing while a DELETE runs never leaves an allowed host without a record", async () => {
+    seedSite(SITE, { customDomain: "www.old.com", customDomainChatHosts: ["www.old.com", "old.com"] });
+    seedChat(CHAT, ["acme.gitlab.io", "www.old.com", "old.com"]);
+    const spy = duringTransaction(() => put("www.new.com"));
+    try {
+      expect((await del()).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(mem.read(SITE)?.customDomain).toBeNull();
+    expect(allowed()).toEqual(["acme.gitlab.io"]);
+    expectConsistent();
+  });
+
+  it("two sites saving at once both end up allowed and recorded", async () => {
+    seedSite(SITE2, { id: "site2" });
+    const [a, b] = await Promise.all([put("www.one.com"), put("www.two.com", { siteId: "site2" })]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(allowed()).toEqual(expect.arrayContaining(["www.one.com", "one.com", "www.two.com", "two.com"]));
+    expectConsistent(SITE);
+    expectConsistent(SITE2);
+  });
+
+  it("two sites saving at once cannot pass the 25-entry cap together", async () => {
+    const base = Array.from({ length: 22 }, (_, i) => `h${i}.example`);
+    seedChat(CHAT, base);
+    seedSite(SITE2, { id: "site2" });
+    const statuses = (await Promise.all([put("www.one.com"), put("www.two.com", { siteId: "site2" })])).map((r) => r.status);
+    expect(statuses.sort()).toEqual([200, 409]);
+    expect(allowed()).toHaveLength(24);
+    expectConsistent(SITE);
+    expectConsistent(SITE2);
+  });
+
+  it.each([
+    ["the same domain", "www.acme.com"],
+    ["its www/apex twin", "acme.com"],
+  ])("refuses (409) %s while another site of the sub-account holds it", async (_label, domain) => {
+    seedSite(SITE2, { id: "site2" });
+    expect((await put("www.acme.com")).status).toBe(200);
+    const res = await put(domain, { siteId: "site2" });
     expect(res.status).toBe(409);
-    expect(mem.read(SITE)?.customDomain).toBe("www.racer.com");
+    expect(await res.json()).toEqual({ error: "Another website in this workspace already uses that domain. Remove it there first." });
+    expect(mem.read(SITE2)?.customDomain).toBeNull();
+    // Removing it from the site that holds it frees it for the other.
+    expect((await del()).status).toBe(200);
+    expect((await put(domain, { siteId: "site2" })).status).toBe(200);
+    expectConsistent(SITE2);
+  });
+
+  it("two sites saving the same domain at once: exactly one gets it", async () => {
+    seedSite(SITE2, { id: "site2" });
+    const statuses = (await Promise.all([put("www.acme.com"), put("acme.com", { siteId: "site2" })])).map((r) => r.status);
+    expect(statuses.sort()).toEqual([200, 409]);
+    const holders = [mem.read(SITE)?.customDomain, mem.read(SITE2)?.customDomain].filter(Boolean);
+    expect(holders).toHaveLength(1);
+  });
+
+  it("lets two sites of a sub-account hold different subdomains of one domain", async () => {
+    seedSite(SITE2, { id: "site2" });
+    expect((await put("www.acme.com")).status).toBe(200);
+    expect((await put("shop.acme.com", { siteId: "site2" })).status).toBe(200);
+    expect((await del({ siteId: "site2" })).status).toBe(200);
+    expect(allowed()).toEqual(["acme.gitlab.io", "www.acme.com", "acme.com"]);
+  });
+
+  it("answers 404 for a sub-account id that is a path, even to the agency owner", async () => {
+    const site = mem.read(SITE);
+    for (const res of [
+      await put("www.acme.com", { uid: "u_owner", sub: "sa1/website/site1" }),
+      await del({ uid: "u_owner", sub: "sa1/website/site1" }),
+    ]) {
+      expect(res.status).toBe(404);
+    }
+    expect(mem.read(SITE)).toEqual(site);
     expect(allowed()).toEqual(["acme.gitlab.io"]);
   });
 });
@@ -357,25 +482,16 @@ describe("DELETE — clear the custom domain", () => {
     expect(mem.read(PROFILE)).toMatchObject({ websiteUrl: "https://elsewhere.example/" });
   });
 
-  it("does not clear a domain that another save replaced while it was being removed", async () => {
-    const runTransaction = mem.db.runTransaction;
-    let raced = false;
-    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) => {
-      if (!raced) {
-        raced = true;
-        mem.seed(SITE, { ...mem.read(SITE), customDomain: "www.racer.com" });
-      }
-      return runTransaction(fn);
+  it("a DELETE that finds the domain already cleared changes nothing more", async () => {
+    const spy = duringTransaction(() => {
+      mem.seed(SITE, { ...mem.read(SITE), customDomain: null, customDomainChatHosts: null });
     });
-    let res: Response;
     try {
-      res = await del();
+      expect((await del()).status).toBe(200);
     } finally {
       spy.mockRestore();
     }
-    expect(raced).toBe(true);
-    expect(res.status).toBe(409);
-    expect(mem.read(SITE)?.customDomain).toBe("www.racer.com");
+    expect(allowed()).toEqual(["acme.gitlab.io", "www.acme.com", "acme.com", "partner.example"]);
   });
 
   it("still works with the website gate off — a domain can always be taken back", async () => {
@@ -391,17 +507,13 @@ describe("DELETE — clear the custom domain", () => {
     expect(allowed()).toEqual(["acme.gitlab.io", "www.acme.com", "acme.com", "partner.example"]);
   });
 
-  it("keeps the domain recorded when the allow-list cannot be updated, so the removal can be retried", async () => {
-    const spy = onTransaction(1, () => {
-      throw new Error("deadline exceeded");
-    });
-    let res: Response;
+  it("one transaction: if it fails, the domain stays recorded and its hosts stay listed", async () => {
+    const spy = vi.spyOn(mem.db, "runTransaction").mockRejectedValueOnce(new Error("deadline exceeded"));
     try {
-      res = await del();
+      await expect(del()).rejects.toThrow("deadline exceeded");
     } finally {
       spy.mockRestore();
     }
-    expect(res.status).toBe(502);
     expect(mem.read(SITE)?.customDomain).toBe("www.acme.com");
     expect(allowed()).toEqual(["acme.gitlab.io", "www.acme.com", "acme.com", "partner.example"]);
   });

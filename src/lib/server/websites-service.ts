@@ -225,6 +225,18 @@ export interface WebsiteTransitionGuard {
   orMissing?: boolean;
   /** Write with set-merge instead of update (the build submit, as before). */
   merge?: boolean;
+  /**
+   * More of the same transaction, run once the guard has passed and before
+   * the site doc is written: for a write that must land together with one
+   * on another doc (the custom domain and the Web Chat allow-list). Returns
+   * fields to add to the patch, or false to apply nothing (reason
+   * "condition"). All its reads come before its writes, and it writes only
+   * when it returns fields. Not run for a doc this call creates.
+   */
+  inTransaction?: (
+    tx: FirebaseFirestore.Transaction,
+    fresh: WebsiteDoc,
+  ) => Promise<Record<string, unknown> | false>;
 }
 
 export type WebsiteTransitionResult =
@@ -290,8 +302,11 @@ export async function transitionWebsite(
     if (guard.when && !guard.when(fresh)) {
       return { applied: false, reason: "condition" } as const;
     }
-    if (guard.merge) tx.set(docRef, patch, { merge: true });
-    else tx.update(docRef, patch);
+    const more = guard.inTransaction ? await guard.inTransaction(tx, fresh) : {};
+    if (more === false) return { applied: false, reason: "condition" } as const;
+    const write = { ...patch, ...more };
+    if (guard.merge) tx.set(docRef, write, { merge: true });
+    else tx.update(docRef, write);
     return { applied: true } as const;
   });
 }
