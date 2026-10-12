@@ -34,6 +34,17 @@ describe("carriesMessage", () => {
     expect(carriesMessage("email=info%40crestahq.com&m=Do+you+do+plumber+in+Gqeberha%3F+What%27s+your+earliest+availability%3F", markers)).toBe(true);
   });
 
+  it("matches a line the browser hard-wrapped as it submitted (CR LF where a space was), encoded or JSON-escaped", () => {
+    expect(carriesMessage("message=Do+you+do+plumber+in%0D%0AGqeberha%3F+What%27s+your%0D%0Aearliest+availability%3F", markers)).toBe(true);
+    expect(carriesMessage('{"m":"Do you do plumber in\\r\\nGqeberha? What\'s your earliest availability?"}', markers)).toBe(true);
+    expect(carriesMessage("message=Do+you+do+plumber+in%0D%0AGqeberha%3F", markers)).toBe(false);
+  });
+
+  it("a message line with runs of spaces or tabs matches as the browser sends it", () => {
+    const spaced = enquiryMarkers({ email: "info@crestahq.com", message: "Do you  do plumber\tin Gqeberha?" });
+    expect(carriesMessage("m=Do+you++do+plumber%09in+Gqeberha%3F", spaced)).toBe(true);
+  });
+
   it("falls back to our email when no line of the message is long enough to be ours alone", () => {
     const short = enquiryMarkers({ email: "info@crestahq.com", message: "Hi,\nQuote?" });
     expect(carriesMessage("email=info%40crestahq.com", short)).toBe(true);

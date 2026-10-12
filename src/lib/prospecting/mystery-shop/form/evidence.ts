@@ -31,9 +31,12 @@ export interface EnquiryMarkers {
   message: string[];
 }
 
+/** Any run of whitespace as one space: a textarea with wrap="hard" breaks long lines (CR LF) as it submits. */
+const squash = (s: string) => s.replace(/\s+/g, " ");
+
 /** Our email address and the message's longest line — the two things only our submission contains. */
 export function enquiryMarkers(id: { email: string; message: string }): EnquiryMarkers {
-  const line = id.message.split(/\r?\n/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), "");
+  const line = squash(id.message.split(/\r?\n/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), ""));
   const email = id.email.toLowerCase();
   const ours = line.length >= 12 ? [line.toLowerCase()] : [];
   return { needles: [email, ...ours], message: ours.length ? ours : [email] };
@@ -50,7 +53,8 @@ const decode = (s: string) => {
 
 function holds(text: string, needles: string[]): boolean {
   if (!text) return false;
-  const forms = [text, decode(text), text.replace(/\\"/g, '"').replace(/\\u0027/g, "'")].map((s) => s.toLowerCase());
+  const json = text.replace(/\\"/g, '"').replace(/\\u0027/g, "'").replace(/\\[rnt]/g, " ");
+  const forms = [text, decode(text), json].map((s) => squash(s.toLowerCase()));
   return needles.some((n) => forms.some((f) => f.includes(n)));
 }
 

@@ -83,6 +83,21 @@ describe("the last look before the answer", () => {
     expect(await waitForSignal(stubPage(stub), state, 0, 10_000)).toEqual({ rejected: "spam" });
   });
 
+  it("a refusal while the message went out twice: no signal, not rejected", async () => {
+    const state = { ...taken(), postOk: null, messagesOut: 2, rejected: "success:false" };
+    expect(await waitForSignal(stubPage({ captcha: null, thanks: 0 }), state, 0, 10_000)).toBeNull();
+  });
+
+  it("such a refusal as thank-you text shows (the message went out twice): no signal, not rejected", async () => {
+    const state = { ...taken(), postOk: null, messagesOut: 2 };
+    const stub: Stub = { captcha: null, thanks: 0 };
+    stub.onRead = () => {
+      stub.thanks = 1;
+      state.rejected = "spam";
+    };
+    expect(await waitForSignal(stubPage(stub), state, 0, 10_000)).toBeNull();
+  });
+
   it("the site refuses a later request as the page is read for the deciding time: refusedLate, not post_2xx", async () => {
     const state = taken();
     const stub: Stub = { captcha: null, thanks: 0 };

@@ -78,7 +78,7 @@ describe.skipIf(skipBrowser)("a taken enquiry is sent or uncertain, never reject
     expect((out as { reason: string }).reason).toBe("The website took the enquiry, then refused a later request (ok:false); it may have gone through.");
   });
 
-  it("only another website had answered 2xx when the form's own site refuses: still rejected (it was never taken)", async () => {
+  it("only another website had answered 2xx when the form's own site refuses: uncertain (the message went out twice), never sent", async () => {
     const out = await run({
       "/contact": (_q, res) => html(res, form(SIMPLE_FIELDS) + `<script>document.querySelector("form").addEventListener("submit", (e) => {
         e.preventDefault();
@@ -90,7 +90,7 @@ describe.skipIf(skipBrowser)("a taken enquiry is sent or uncertain, never reject
       "/api/enquiry": (_q, res) => html(res, '{"ok":false}', 200, { "content-type": "application/json" }),
     });
     expect(site.posts.map((p) => p.path)).toEqual(["/collect", "/api/enquiry"]);
-    expect(out).toMatchObject({ kind: "rejected", code: "form_rejected" });
+    expect(out).toMatchObject({ kind: "uncertain", code: "no_signal" });
   });
 
   it("a CAPTCHA appearing 500 ms later: uncertain/captcha_after_submit", async () => {

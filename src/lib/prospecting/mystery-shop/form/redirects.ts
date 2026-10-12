@@ -5,6 +5,11 @@ import { sameSite } from "@/lib/prospecting/registrable-domain";
  * and what counts as the form page itself. Pure.
  */
 
+export const httpish = (u: URL) => u.protocol === "http:" || u.protocol === "https:";
+
+/** A refused port, like a refused address: never connected to. */
+export const portOk = (u: URL, allow: string[] | undefined) => u.port === "" || (allow ?? []).includes(u.port);
+
 /**
  * The form page itself, whatever its query or fragment: going back to it
  * (`/contact?error=1`) is the classic validation-error redirect, never a

@@ -94,16 +94,19 @@ export type Outcome =
  * (`post_2xx`) only once RENDER_MS has passed without either, or the window
  * closes — never later than `confirmMs`. No signal confirms once a request
  * carrying the message was answered 4xx/5xx (`carrierFailed`): the enquiry's
- * own endpoint may have been the one that failed (null → uncertain).
+ * own endpoint may have been the one that failed (null → uncertain). A refusal
+ * is `rejected` only when the message went out once: with several requests
+ * carrying it, the refused one may not have been the enquiry (null).
  */
 export async function waitForSignal(page: Page, state: GuardState, thanksBefore: number, confirmMs: number): Promise<Outcome> {
   const until = Date.now() + confirmMs;
   const formUrl = state.formUrl ?? "";
   const captchaNow = async () => (await captchaMarker(page, state)).marker;
+  const refusal = (reason: string): Outcome => (state.messagesOut > 1 ? null : { rejected: reason });
   const settled = async (seen: NonNullable<Outcome>): Promise<Outcome> => {
     const late = await captchaNow();
     if (late) return { captcha: late };
-    if (state.rejected) return { rejected: state.rejected };
+    if (state.rejected) return refusal(state.rejected);
     if (state.carrierFailed) return null;
     return state.refusedLate ? { refusedLate: state.refusedLate } : seen;
   };
@@ -114,7 +117,7 @@ export async function waitForSignal(page: Page, state: GuardState, thanksBefore:
     if (state.blocked && state.postsOut === 0) throw refuse("ssrf_blocked", `The form submits to a non-public address: ${state.blocked}`);
     const marker = await captchaNow();
     if (marker) return { captcha: marker };
-    if (state.rejected) return { rejected: state.rejected };
+    if (state.rejected) return refusal(state.rejected);
     if (state.refusedLate) return { refusedLate: state.refusedLate };
     if (state.tooHeavy) return null;
     if (state.prgPage) {
