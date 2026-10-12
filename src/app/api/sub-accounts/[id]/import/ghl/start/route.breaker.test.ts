@@ -361,3 +361,73 @@ describe("GHL pipeline import — breaker round 2", () => {
     expect(deals()).toEqual([["O1", "default", "new"]]);
   });
 });
+
+describe("GHL pipeline import — breaker round 3", () => {
+  const opp = (id: string, pipelineId: string, pipelineStageId: string, status = "open") => ({
+    id, name: id, contactId: "C1", pipelineId, pipelineStageId, status,
+  });
+  const deals = () => mem.list("deals").map((d) => [d.title, d.pipelineId, d.stageId]);
+  const jobErrors = (jobId: string) =>
+    ((mem.read(`importJobs/${jobId}`)?.errors ?? []) as Array<{ externalId: string; error: string }>).map((e) => [e.externalId, e.error]);
+  const SALES = "subAccounts/sa1/pipelines/ghl_pl_sales";
+  const start2 = async (pl: unknown) => {
+    const res = await startImport({ createPipelines: true, ghlPipelines: pl });
+    expect(res.status).toBe(200);
+    const j = (await res.json()) as StartBody;
+    await drain(j.jobId);
+    return j;
+  };
+
+  it("R1: falling back onto a pipeline with no Won, a GHL-won deal fails naming Won — it never lands on an open stage", async () => {
+    ghl.opps = [opp("O1", "pl_sales", "s_proposal")];
+    await start2(SAMPLE_PIPELINES);
+    const p = mem.read(SALES)!;
+    const open = (p.stages as Stage[]).filter((s) => !s.terminal);
+    const filler = Array.from({ length: 19 - open.length }, (_, i) => ({ id: `extra_${i}`, label: `Extra ${i}`, tone: "" }));
+    mem.seed(SALES, { ...p, stages: [...open, ...filler, (p.stages as Stage[]).find((s) => s.terminal === "lost")] });
+    ghl.opps = [opp("O1", "pl_sales", "s_proposal", "won")];
+    const j = await start2([{ ...SAMPLE_PIPELINES[0], stages: [...SAMPLE_PIPELINES[0].stages, { id: "s_new2", name: "Brand new" }] }]);
+    expect(j.pipelineWarnings).toEqual([expect.stringContaining("It has no Won stage")]);
+    expect(jobErrors(j.jobId)).toEqual([["O1", 'deal: stage "(pipeline has no Won stage)" is not on pipeline "ghl_pl_sales"']]);
+    expect(deals()).toEqual([["O1", "ghl_pl_sales", "proposal_sent"]]);
+  });
+
+  it("R5: a pipeline left with only Lost: won and open deals fail naming what's missing, none land on Lost", async () => {
+    ghl.opps = [opp("O1", "pl_sales", "s_proposal")];
+    await start2(SAMPLE_PIPELINES);
+    const p = mem.read(SALES)!;
+    for (const d of mem.list("deals")) await mem.db.doc(`deals/${d.id}`).delete();
+    for (const m of mem.list("subAccounts/sa1/importMappings")) {
+      if (m.entity === "deals") await mem.db.doc(`subAccounts/sa1/importMappings/${m.id}`).delete();
+    }
+    mem.seed(SALES, { ...p, stages: [(p.stages as Stage[]).find((s) => s.terminal === "lost")] });
+    ghl.opps = [opp("W", "pl_sales", "s_proposal", "won"), opp("O", "pl_sales", "s_proposal"), opp("L", "pl_sales", "s_proposal", "lost")];
+    const j = await start2([{ ...SAMPLE_PIPELINES[0], name: "  " }]);
+    expect(j.pipelineWarnings).toEqual([expect.stringContaining("It has no open / Won stage")]);
+    expect(jobErrors(j.jobId)).toEqual([
+      ["W", 'deal: stage "(pipeline has no Won stage)" is not on pipeline "ghl_pl_sales"'],
+      ["O", 'deal: stage "(pipeline has no open stage)" is not on pipeline "ghl_pl_sales"'],
+    ]);
+    expect(deals()).toEqual([["L", "ghl_pl_sales", "lost"]]);
+  });
+
+  it("R3: a job written before stageIds existed still drains", async () => {
+    ghl.opps = [opp("O1", "pl_sales", "s_proposal")];
+    const res = await startImport({ createPipelines: true, ghlPipelines: SAMPLE_PIPELINES });
+    const j = (await res.json()) as StartBody;
+    const job = mem.read(`importJobs/${j.jobId}`)!;
+    const mapping = job.ghlMapping as { pipelineMap: Record<string, Record<string, unknown>> };
+    const { stageIds: _s, ...oldTarget } = mapping.pipelineMap.pl_sales;
+    mem.seed(`importJobs/${j.jobId}`, { ...job, ghlMapping: { ...mapping, pipelineMap: { pl_sales: oldTarget } } });
+    await drain(j.jobId);
+    expect(deals()).toEqual([["O1", "ghl_pl_sales", "new_lead"]]);
+  });
+
+  it("R4: invalid entries don't count toward the 25-pipeline cap", async () => {
+    const junk = Array.from({ length: 25 }, (_, i) => ({ id: `bad/${i}`, name: `Bad ${i}`, stages: [] }));
+    ghl.opps = [opp("O1", "pl_sales", "s_proposal")];
+    const j = await start2([...junk, SAMPLE_PIPELINES[0]]);
+    expect(j.pipelinesCreated).toBe(1);
+    expect(deals()).toEqual([["O1", "ghl_pl_sales", "proposal_sent"]]);
+  });
+});

@@ -165,19 +165,32 @@ export function mapOntoStages(
   return { byGhlId, dropped };
 }
 
+/**
+ * Where a pipeline's deals land. A missing first-open / Won / Lost stage is
+ * left out (never substituted by a stage with another outcome): the deals
+ * that need it then fail to import, naming it. Keys are omitted, not set
+ * to undefined — this is written to the job doc.
+ */
 function targetFor(
   id: string,
   stages: PipelineStage[],
   stageIds: Record<string, string>,
 ): GhlPipelineTarget {
-  const firstId = (stages.find((s) => !s.terminal) ?? stages[0]).id;
+  const firstId = stages.find((s) => !s.terminal)?.id;
+  const wonId = stages.find((s) => s.terminal === "won")?.id;
+  const lostId = stages.find((s) => s.terminal === "lost")?.id;
   return {
     id,
-    firstId,
-    wonId: stages.find((s) => s.terminal === "won")?.id ?? firstId,
-    lostId: stages.find((s) => s.terminal === "lost")?.id ?? firstId,
+    ...(firstId ? { firstId } : {}),
+    ...(wonId ? { wonId } : {}),
+    ...(lostId ? { lostId } : {}),
     stageIds,
   };
+}
+
+/** "Won / open" — the landing stages a pipeline lacks. */
+function missingStages(t: GhlPipelineTarget): string {
+  return [!t.firstId && "open", !t.wonId && "Won", !t.lostId && "Lost"].filter(Boolean).join(" / ");
 }
 
 type ImportedPipelineDoc = Omit<PipelineDoc, "id"> & Partial<ImportedPipelineFields>;
@@ -248,7 +261,9 @@ export async function recreateGhlPipelines(
     );
   }
   const pipelinesCol = getAdminDb().collection(`subAccounts/${subAccountId}/pipelines`);
-  for (const [index, item] of list.slice(0, MAX_GHL_PIPELINES).entries()) {
+  // Only valid, distinct entries count toward the creation cap.
+  let counted = 0;
+  for (const item of list.slice(0, MAX_GHL_PIPELINES)) {
     const p = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
     const ghlId = p.id;
     const rawName = typeof p.name === "string" ? p.name : "";
@@ -269,7 +284,7 @@ export async function recreateGhlPipelines(
     );
     const name = validatePipelineName(shown);
     let reason: string;
-    if (index >= MAX_IMPORTED_PIPELINES) {
+    if (++counted > MAX_IMPORTED_PIPELINES) {
       reason = `over the ${MAX_IMPORTED_PIPELINES}-pipeline limit per import`;
     } else if (!name.ok) {
       reason = name.error;
@@ -307,9 +322,11 @@ export async function recreateGhlPipelines(
     const stages = Array.isArray(doc?.stages) ? doc.stages : [];
     if (stages.length > 0) {
       const { byGhlId } = mapOntoStages(stages, doc?.externalStageIds ?? {}, ghlStages);
-      out.pipelineMap[ghlId] = targetFor(snap.id, stages, byGhlId);
+      const target = targetFor(snap.id, stages, byGhlId);
+      out.pipelineMap[ghlId] = target;
+      const missing = missingStages(target);
       out.warnings.push(
-        `${label} couldn't be updated (${reason}) — its deals use the stages it already has; any new GoHighLevel stages land on its first stage.`,
+        `${label} couldn't be updated (${reason}) — its deals use the stages it already has; any new GoHighLevel stages land on its first stage.${missing ? ` It has no ${missing} stage, so deals needing one will fail to import.` : ""}`,
       );
     } else {
       out.warnings.push(

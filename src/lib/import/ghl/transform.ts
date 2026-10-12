@@ -106,10 +106,14 @@ export interface GhlCustomFieldMapEntry {
 export interface GhlPipelineTarget {
   /** The LeadStack pipeline id created for this GHL pipeline. */
   id: string;
-  /** First stage — fallback for unmapped/unknown GHL stages. */
-  firstId: string;
-  wonId: string;
-  lostId: string;
+  /**
+   * First OPEN stage — fallback for unmapped/unknown GHL stages — and the
+   * Won / Lost terminals. Absent when the pipeline has none: the deals that
+   * need it fail to import rather than land on a stage of another outcome.
+   */
+  firstId?: string;
+  wonId?: string;
+  lostId?: string;
   /** GHL stage id (of THIS GHL pipeline) → the stage it landed on. */
   stageIds: Record<string, string>;
 }
@@ -247,6 +251,14 @@ export function resolveOpportunityStage(
 }
 
 /**
+ * A stage value that can never be a stage id (ids are `[a-z0-9_]` slugs), so
+ * the bulk write fails the deal with an error naming what is missing.
+ */
+function noStage(what: "Won" | "Lost" | "open"): PipelineStageId {
+  return `(pipeline has no ${what} stage)`;
+}
+
+/**
  * Where an opportunity lands. When the operator chose pipeline import AND
  * this opportunity's GHL pipeline was recreated, it lands in that pipeline:
  * terminal status → the pipeline's Won/Lost, otherwise the mapped stage,
@@ -264,15 +276,16 @@ export function resolveOpportunityPlacement(
       : undefined;
   if (target) {
     if (o.status === "won") {
-      return { pipelineId: target.id, stage: target.wonId };
+      return { pipelineId: target.id, stage: target.wonId ?? noStage("Won") };
     }
     if (o.status === "lost" || o.status === "abandoned") {
-      return { pipelineId: target.id, stage: target.lostId };
+      return { pipelineId: target.id, stage: target.lostId ?? noStage("Lost") };
     }
-    if (o.pipelineStageId && Object.hasOwn(target.stageIds, o.pipelineStageId)) {
+    // `stageIds &&`: a job written before stageIds existed must still drain.
+    if (o.pipelineStageId && target.stageIds && Object.hasOwn(target.stageIds, o.pipelineStageId)) {
       return { pipelineId: target.id, stage: target.stageIds[o.pipelineStageId] };
     }
-    return { pipelineId: target.id, stage: target.firstId };
+    return { pipelineId: target.id, stage: target.firstId ?? noStage("open") };
   }
   return { pipelineId: null, stage: resolveOpportunityStage(o, mapping) };
 }
