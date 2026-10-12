@@ -10,8 +10,10 @@ import type { ConversationDraft } from "@/types/conversations";
 import {
   claimConversationDraft,
   clearConversationDraft,
+  peekConversationDraft,
   restoreConversationDraft,
 } from "@/lib/server/conversation-draft-claim";
+import { providerAttempted } from "@/lib/comms/provider-attempt";
 
 /**
  * Manual email send. Auth + request parsing only — every send-time check and
@@ -21,8 +23,10 @@ import {
  * Approving an AI email draft names it (`draftId`): the draft is claimed in a
  * transaction first, so a draft replaced by a newer one, or approved twice,
  * is 409 and nothing is sent; it goes out with the subject and thread headers
- * stored on the draft, and is put back if the send is refused before reaching
- * the provider. Any successful send clears a pending draft.
+ * stored on the draft (validated like a client's — a member can write
+ * pendingDraft), and is put back if the send is refused or throws before
+ * reaching the provider. A manual send clears the draft that was pending when
+ * it started, never a newer one.
  */
 export async function POST(request: Request) {
   const auth = requireUid(request);
@@ -76,18 +80,36 @@ export async function POST(request: Request) {
     inReplyTo: payload.inReplyTo,
     references: payload.references,
   };
+  if (
+    claimed &&
+    (!isValidEmailSendPayload({ contactId, body, ...thread }) ||
+      !String(thread.subject).trim())
+  ) {
+    await restoreConversationDraft(contactId, claimed);
+    return NextResponse.json(
+      { error: "This draft's email headers are invalid. Reply from the composer instead.", code: "draft_invalid" },
+      { status: 409 }
+    );
+  }
+  const seen = claimed ? null : await peekConversationDraft(contactId);
 
-  const outcome = await sendConversationEmail({
-    contactId,
-    contact,
-    subject: thread.subject,
-    body,
-    inReplyTo: thread.inReplyTo,
-    references: thread.references,
-    actor: auth,
-  });
+  let outcome;
+  try {
+    outcome = await sendConversationEmail({
+      contactId,
+      contact,
+      subject: thread.subject,
+      body,
+      inReplyTo: thread.inReplyTo,
+      references: thread.references,
+      actor: auth,
+    });
+  } catch (err) {
+    if (claimed && !providerAttempted(err)) await restoreConversationDraft(contactId, claimed);
+    throw err;
+  }
   if (outcome.ok) {
-    if (!claimed) await clearConversationDraft(contactId);
+    if (seen) await clearConversationDraft(contactId, seen);
   } else if (claimed && !outcome.attempted) {
     await restoreConversationDraft(contactId, claimed);
   }

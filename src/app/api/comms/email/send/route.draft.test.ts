@@ -24,7 +24,8 @@ vi.mock("@/lib/server/conversation-send/email", async (orig) => ({
 }));
 vi.mock("@/lib/reviews/review-ask", () => ({ askOutcomeOf: () => "sent", logInboxReviewAsk: async () => {} }));
 
-const { mem } = await import("@/test/gbp-sync-store");
+const { mem, storeDb } = await import("@/test/gbp-sync-store");
+const { markProviderAttempted } = await import("@/lib/comms/provider-attempt");
 const { POST } = await import("./route");
 const { setConversationDraft } = await import("@/lib/server/conversations-service");
 
@@ -40,6 +41,7 @@ const approve = (draftId: string, over: Record<string, unknown> = {}) =>
   post({ contactId: "c1", body: "Hi Ann, edited", subject: "Re: Quote", inReplyTo: "<m2@example.com>", references: ["<m2@example.com>"], draftId, ...over });
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   mem.clear();
   m.send.mockReset().mockResolvedValue({ ok: true, messageId: "<out@biz.test>", response: { ok: true } });
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -89,6 +91,30 @@ describe("approving an email draft", () => {
     expect(pending()?.id).toBe("d2");
   });
 
+  it("a send that THROWS before the provider puts the draft back; one the provider attempted does not (round 2)", async () => {
+    m.send.mockRejectedValueOnce(new Error("Firestore unavailable"));
+    await expect(approve("d1")).rejects.toThrow("Firestore unavailable");
+    expect(pending()?.id).toBe("d1");
+    m.send.mockRejectedValueOnce(markProviderAttempted(new Error("SMTP socket closed")));
+    await expect(approve("d1")).rejects.toThrow("SMTP socket closed");
+    expect(pending()).toBeNull();
+  });
+
+  // Round 2 breaker N2: pendingDraft is client-writable in firestore.rules, so the
+  // stored headers get the same validation as a client's.
+  it("a claimed draft with invalid stored headers is 409 draft_invalid: nothing sent, the draft kept", async () => {
+    const forged = { subject: "Re: " + "x".repeat(2000), inReplyTo: "not-a-message-id", references: Array.from({ length: 150 }, (_, i) => `bad${i}`) };
+    mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: { ...draftDoc("d1"), emailReply: forged } });
+    expect(await approve("d1")).toBe(409);
+    expect(m.send).not.toHaveBeenCalled();
+    expect(pending()?.id).toBe("d1");
+    for (const bad of [{ ...STORED, subject: "Re: x\r\nBcc: evil@x.test" }, { ...STORED, subject: "   " }, { ...STORED, inReplyTo: "nope" }]) {
+      mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: { ...draftDoc("d1"), emailReply: bad } });
+      expect(await approve("d1")).toBe(409);
+    }
+    expect(m.send).not.toHaveBeenCalled();
+  });
+
   it("a draftId naming a non-email draft is 409: nothing sent, the draft kept", async () => {
     mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: { ...draftDoc("d1"), channel: "sms", emailReply: undefined } });
     expect(await approve("d1")).toBe(409);
@@ -108,6 +134,42 @@ describe("a manual email send (no draftId)", () => {
   it("clears a pending draft once it is sent", async () => {
     expect(await manual()).toBe(200);
     expect(pending()).toBeNull();
+  });
+
+  // Round 2 breaker N1.
+  it("clears only the draft it saw, not a newer one written while it was sending", async () => {
+    m.send.mockImplementationOnce(async () => {
+      mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: draftDoc("d2") });
+      return { ok: true, messageId: "<out@biz.test>", response: { ok: true } };
+    });
+    expect(await manual()).toBe(200);
+    expect(pending()?.id).toBe("d2");
+  });
+
+  it("a sent email stays a 200 when clearing the draft afterwards fails", async () => {
+    m.send.mockImplementationOnce(async () => {
+      const real = storeDb.doc.bind(storeDb);
+      vi.spyOn(storeDb, "doc").mockImplementation((path: string) => {
+        if (path.startsWith("conversations/")) throw new Error("firestore down");
+        return real(path);
+      });
+      return { ok: true, messageId: "<out@biz.test>", response: { ok: true } };
+    });
+    expect(await manual()).toBe(200);
+  });
+
+  it("a draft from before draft ids (no id) is matched by its text: cleared when it is the one seen, kept when a newer one replaced it", async () => {
+    const legacy = (body: string) => ({ body, channel: "email", model: "m", tokens: 1, createdAt: null, emailReply: STORED });
+    mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: legacy("old") });
+    expect(await manual()).toBe(200);
+    expect(pending()).toBeNull();
+    mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: legacy("old") });
+    m.send.mockImplementationOnce(async () => {
+      mem.seed("conversations/c1", { ...mem.read("conversations/c1"), pendingDraft: legacy("newer") });
+      return { ok: true, messageId: "<out@biz.test>", response: { ok: true } };
+    });
+    expect(await manual()).toBe(200);
+    expect(pending()).toMatchObject({ body: "newer" });
   });
 
   it("keeps it when the send fails", async () => {
