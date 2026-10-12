@@ -48,7 +48,7 @@ export type MarkBookingPaidOutcome =
       ok: true;
       status: "scheduled";
       publicEventUrl: string;
-      /** With `expect`: the confirmation was not sent, its recipient changed. */
+      /** With `expect`: the confirmation and reminders were not sent, their recipient changed. */
       emailWithheld?: true;
     }
   | {
@@ -179,7 +179,7 @@ export async function markBookingPaidServerSide(input: {
   };
 }
 
-/** True when `expect` withheld the confirmation (its recipient changed). */
+/** True when `expect` withheld the confirmation and reminders (their recipient changed). */
 async function runMarkPaidSideEffects(args: {
   event: CalendarEvent;
   rawToken: string;
@@ -218,9 +218,17 @@ async function runMarkPaidSideEffects(args: {
     console.warn("[events/mark-paid] tenancy read failed", err);
   }
 
+  // With `expect`: the address the confirmation would go to now, against
+  // the one the approver reviewed. Changed: no confirmation and no reminders.
+  const sendableTo = contact && sub && emailIsConfigured(sub) && contact.email && !contact.emailOptedOut ? contact.email : null;
+  const withheld = !!expect && sendableTo !== expect.emailTo;
+  if (withheld) {
+    console.warn(`[events/mark-paid] confirmation and reminders withheld for event=${event.id}: not the recipient the approver reviewed`);
+  }
+
   // Reminder pipeline + automation activity/trigger run regardless of
   // email send success.
-  if (page?.remindersEnabled) {
+  if (page?.remindersEnabled && !withheld) {
     await scheduleEventReminders({
       eventId: event.id,
       startAt,
@@ -258,12 +266,9 @@ async function runMarkPaidSideEffects(args: {
     expect?.stepsFingerprints,
   );
 
+  if (withheld) return true;
   if (!contact || !sub || !emailIsConfigured(sub)) return false;
   if (!contact.email || contact.emailOptedOut) return false;
-  if (expect && contact.email !== expect.emailTo) {
-    console.warn(`[events/mark-paid] confirmation withheld for event=${event.id}: not the recipient the approver reviewed`);
-    return true;
-  }
 
   const publicEventUrl = buildEventPublicUrl(rawToken);
   const rendered = renderBookingConfirmationEmail({

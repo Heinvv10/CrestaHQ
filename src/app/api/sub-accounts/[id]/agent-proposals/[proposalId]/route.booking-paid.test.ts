@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAfterResponse } from "@/lib/server/after-response";
-import { auth, beforeNextTransaction, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
+import { Timestamp } from "firebase-admin/firestore";
+import { auth, beforeNextTransaction, caller, decide, mem, row, setupAgentProposalTests } from "@/test/agent-proposals-harness";
 import { SMTP } from "@/test/quote-fixtures";
 import { PAGE, pastEvent } from "@/test/booking-fixtures";
 
@@ -16,8 +17,9 @@ const sendEmail = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => ({ id: "e1"
 vi.mock("@/lib/comms/resend", async (orig) => ({ ...((await orig()) as object), sendEmail }));
 const google = vi.hoisted(() => ({ during: null as null | (() => unknown) }));
 vi.mock("@/lib/google-calendar/push", () => ({ pushBookingToGoogle: vi.fn(async () => { await google.during?.(); }) }));
+const publish = vi.hoisted(() => vi.fn(async (_a: { pathname: string }) => ({ messageId: "q1" })));
 vi.mock("@/lib/automations/qstash", async (orig) => ({
-  ...((await orig()) as object), qstashIsConfigured: () => true, publishCallback: async () => ({ messageId: "q1" }),
+  ...((await orig()) as object), qstashIsConfigured: () => true, publishCallback: publish,
 }));
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-proposals-harness")).adminMock());
 vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/agent-proposals-harness")).tenancyMock());
@@ -45,11 +47,15 @@ const workflow = (id = "wf_paid", patch: Record<string, unknown> = {}) =>
     ...patch,
   });
 const status = () => mem.read("events/ev1")!.status;
+const reminders = () => publish.mock.calls.filter(([a]) => a.pathname === "/api/events/reminder/step");
+/** Tomorrow, so its 60-minute reminder is still ahead. */
+const upcoming = () => held({ startAt: Timestamp.fromMillis(Date.now() + 86_400_000), endAt: Timestamp.fromMillis(Date.now() + 88_200_000) });
 
 beforeEach(() => {
   // Confirming rotates the booking's signed link.
   vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", "booking-paid-test-secret-0123456789");
   sendEmail.mockClear();
+  publish.mockClear();
   google.during = null;
   mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, name: "Acme", ...SMTP });
   mem.seed("subAccounts/sa1/bookingPages/bp1", { ...PAGE, remindersEnabled: true, reminderOffsetsMinutes: [60] });
@@ -117,6 +123,46 @@ describe("mark_booking_paid", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("NOT sent") });
     expect(status()).toBe("scheduled");
+    await flushAfterResponse();
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("an upcoming booking: approve queues the reviewed reminder; its recipient changed inside the confirm's transaction -> no reminder and no email", async () => {
+    mem.seed("events/ev1", upcoming());
+    expect((await decide(await propose(), "approve")).status).toBe(200);
+    expect(reminders()).toHaveLength(1);
+
+    publish.mockClear();
+    sendEmail.mockClear();
+    mem.seed("events/ev1", upcoming());
+    const id = await propose();
+    beforeNextTransaction(async () => beforeNextTransaction(async () => mem.seed("contacts/c1", { ...ANN, email: "other@x.io" })));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await decide(id, "approve");
+    warn.mockRestore();
+    expect(await res.json()).toMatchObject({ resultText: expect.stringContaining("its reminders were NOT sent") });
+    expect(status()).toBe("scheduled");
+    await flushAfterResponse();
+    expect(reminders()).toEqual([]);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("the booking page's reminder offsets changed after the proposal -> preview_changed, not marked paid", async () => {
+    const id = await propose();
+    mem.seed("subAccounts/sa1/bookingPages/bp1", { ...mem.read("subAccounts/sa1/bookingPages/bp1")!, reminderOffsetsMinutes: [1440] });
+    expect(await (await decide(id, "approve")).json()).toMatchObject({ error: "preview_changed" });
+    expect(status()).toBe("awaiting_payment");
+  });
+
+  it("a territory-scoped approver cannot approve a booking in another territory", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, territoryScopingEnabled: true });
+    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "collaborator", assignedTerritoryIds: ["north"] });
+    mem.seed("events/ev1", held({ territoryId: "south" }));
+    const id = await propose();
+    caller.role = "collaborator";
+    expect((await decide(id, "approve")).status).toBe(403);
+    expect(status()).toBe("awaiting_payment");
+    expect(row(id).status).toBe("pending");
     await flushAfterResponse();
     expect(sendEmail).not.toHaveBeenCalled();
   });

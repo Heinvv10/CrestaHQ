@@ -206,7 +206,7 @@ export const BOOKING_PAYMENT_CAPABILITIES: AiSuiteCapability[] = [
         throw new CapabilityUserError(why[out.code] ?? "The booking couldn't be marked paid.");
       }
       const email = out.emailWithheld
-        ? " The confirmation email was NOT sent: its recipient changed after approval."
+        ? " The confirmation email and its reminders were NOT sent: the recipient changed after approval."
         : pinned.emailTo
           ? " Its confirmation email goes only to the reviewed address."
           : "";
