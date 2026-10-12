@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { eventStatusLabel, type EventStatus } from "@/types/events";
 import { isHexColor } from "@/lib/checkout/themes";
+import type { PublicBookingBranding } from "@/lib/booking/public-page";
 
 /**
  * Public-facing event-management surface. Shows the attendee a summary
@@ -19,12 +20,6 @@ import { isHexColor } from "@/lib/checkout/themes";
  */
 
 type SlotISO = { startAt: string; endAt: string };
-
-interface Branding {
-  name: string;
-  logoUrl: string | null;
-  accentColor: string | null;
-}
 
 interface Props {
   token: string;
@@ -48,7 +43,7 @@ interface Props {
   cardPayEnabled?: boolean;
   paymentAmount: number | null;
   paymentCurrency: string | null;
-  branding: Branding;
+  branding: PublicBookingBranding;
 }
 
 function detectBrowserTz(): string {

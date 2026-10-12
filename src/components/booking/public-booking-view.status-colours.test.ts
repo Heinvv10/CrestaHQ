@@ -6,6 +6,7 @@ import { PublicBookingView } from "./public-booking-view";
 import { CHECKOUT_THEMES } from "@/lib/checkout/themes";
 import { contrast, hexToRgb, over, tailwindColor } from "@/test/contrast";
 import { seedPage } from "@/test/booking-harness";
+import { publicBookingPage } from "@/lib/booking/public-page";
 import type { CheckoutThemeId } from "@/types/checkout-pages";
 
 /**
@@ -28,7 +29,7 @@ const PAYMENT = { amount: 50, currency: "USD", description: "Deposit", holdHours
 const PRESETS = Object.keys(CHECKOUT_THEMES) as CheckoutThemeId[];
 
 async function render(over: Record<string, unknown>) {
-  const page = { ...seedPage("p", over as never), createdAt: null, updatedAt: null };
+  const page = publicBookingPage(seedPage("p", over as never));
   await act(async () =>
     root.render(createElement(PublicBookingView, { subAccountId: "sa1", page, branding: { name: "Fixture", logoUrl: null, accentColor: null } })),
   );

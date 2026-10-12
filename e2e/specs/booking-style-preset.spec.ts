@@ -180,6 +180,31 @@ test("a stored accent that is not a hex colour never reaches the page", async ({
   });
 });
 
+test("the served page carries none of the stored doc's private fields", async ({ browser }) => {
+  const slug = `${PREFIX}private-${stamp}`;
+  const meetingUrl = `https://meet.example/sentinel-room-${stamp}`;
+  const creator = `uid-sentinel-${stamp}`;
+  await seedPage(slug, {
+    meetingUrl,
+    createdByUid: creator,
+    confirmationMessage: `sentinel-message-${stamp}`,
+    redirectUrl: `https://example.com/sentinel-thanks-${stamp}`,
+  });
+  await visit(browser, slug, async (page) => {
+    // The raw responses: what Next inlines for hydration is in here, rendered or not.
+    for (const path of [`/b/${sa}/${slug}`, `/embed/booking/${sa}/${slug}`]) {
+      const res = await page.request.get(path);
+      expect(res.status(), path).toBe(200);
+      const body = await res.text();
+      for (const secret of [meetingUrl, creator, `sentinel-message-${stamp}`, `sentinel-thanks-${stamp}`, env.E2E_AGENCY_ID, "meetingUrl", "createdByUid"]) {
+        expect(body, `${path} must not contain ${secret}`).not.toContain(secret);
+      }
+      // It is the page we think it is.
+      expect(body, path).toContain(`E2E Style ${slug}`);
+    }
+  });
+});
+
 test("the editor's Style picker saves the preset, and Brand default clears it", async ({ page, browser }) => {
   const slug = `${PREFIX}edit-${stamp}`;
   await seedPage(slug);

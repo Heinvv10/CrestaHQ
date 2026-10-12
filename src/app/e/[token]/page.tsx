@@ -7,7 +7,7 @@ import {
 } from "@/lib/booking/event-token";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { PublicEventView } from "@/components/booking/public-event-view";
-import { publicBookingStyle } from "@/lib/booking/public-style";
+import { publicBookingBranding } from "@/lib/booking/public-page";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -80,12 +80,8 @@ export default async function PublicEventPage({ params }: PageProps) {
   // A service booking shows its service and its own length.
   const booked = bookedEventLabel(page, event, startAt, endAt);
 
-  const branding = {
-    name: sub.name ?? "Booking",
-    logoUrl: page?.logoUrl ?? sub.logoUrl ?? null,
-    // Checked before it is sent to the client.
-    accentColor: publicBookingStyle(page).accentColor,
-  };
+  // Only what this builder picks is sent to the client.
+  const branding = publicBookingBranding(sub, page, "Booking");
 
   return (
     <PublicEventView
