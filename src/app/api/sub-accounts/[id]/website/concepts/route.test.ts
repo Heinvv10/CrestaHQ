@@ -177,6 +177,18 @@ describe("GET /api/sub-accounts/[id]/website/concepts", () => {
     expect(await res.json()).toEqual({ error: "The design service is unavailable right now.", code: "upstream" });
   });
 
+  it.each([
+    ["non-JSON (a maintenance page)", () => new Response("<html>Back soon</html>", { status: 200 })],
+    ["JSON without a concepts array", () => Response.json({})],
+    ["concepts that is not an array", () => Response.json({ concepts: { atelier: CARD } })],
+  ])("reports a gitpage 200 that is %s as an uncached 502, not an empty list", async (_l, make) => {
+    fetchMock.mockResolvedValueOnce(make());
+    const res = await get();
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "The design service is unavailable right now.", code: "upstream" });
+    expect(res.headers.get("cache-control")).toBeNull();
+  });
+
   it("reports a gitpage network failure as the same 502", async () => {
     fetchMock.mockRejectedValueOnce(new Error("ECONNREFUSED 10.0.0.1"));
     const res = await get();

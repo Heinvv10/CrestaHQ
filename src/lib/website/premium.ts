@@ -163,7 +163,7 @@ export function premiumDetailAppliesToNiche(
  */
 export function validatePremiumDetails(
   d: WebsitePremiumDetails,
-  niche: string | null = null, // HARDENING: niche-only fields are skipped off-niche
+  niche: string | null, // HARDENING: required; niche-only fields are skipped off-niche
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const L = PREMIUM_LIMITS;
@@ -271,7 +271,7 @@ export function validatePremiumDetails(
  */
 export function premiumDetailsPayload(
   d: WebsitePremiumDetails | null | undefined,
-  niche: string | null = null, // HARDENING: niche-only fields are omitted off-niche
+  niche: string | null, // HARDENING: required; niche-only fields are omitted off-niche
 ): PremiumDetailsPayload {
   if (!d) return {};
   const out: PremiumDetailsPayload = {};

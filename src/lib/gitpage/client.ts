@@ -489,8 +489,11 @@ export async function fetchConcepts(
           : `gitpage GET failed: ${res.status}`;
     throw new GitpageError(message, res.status, body);
   }
-  const list = Array.isArray(body.concepts) ? body.concepts : [];
-  return list
+  // HARDENING: an ok answer without a concepts array (a 200 maintenance page, a reshaped body) is a failure, not "no concepts".
+  if (!Array.isArray(body.concepts)) {
+    throw new GitpageError("gitpage concepts answer has no concepts array", 502, body);
+  }
+  return body.concepts
     .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
     .filter((c) => typeof c.id === "string" && typeof c.name === "string")
     .map((c) => ({

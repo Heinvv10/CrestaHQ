@@ -51,39 +51,40 @@ describe("parsers", () => {
 
 describe("validatePremiumDetails", () => {
   it("accepts blank details", () => {
-    expect(validatePremiumDetails(details())).toEqual({});
+    expect(validatePremiumDetails(details(), null)).toEqual({});
   });
 
   it("flags over-length tagline and bad founded year", () => {
     const e = validatePremiumDetails(
       details({ tagline: "x".repeat(PREMIUM_LIMITS.tagline + 1), founded_year: "1799" }),
+      null,
     );
     expect(e.tagline).toBeDefined();
     expect(e.founded_year).toBeDefined();
-    expect(validatePremiumDetails(details({ founded_year: "2010" }))).toEqual({});
-    expect(validatePremiumDetails(details({ founded_year: "20.5" })).founded_year).toBeDefined();
+    expect(validatePremiumDetails(details({ founded_year: "2010" }), null)).toEqual({});
+    expect(validatePremiumDetails(details({ founded_year: "20.5" }), null).founded_year).toBeDefined();
   });
 
   it("limits brand voice to 5 words", () => {
-    expect(validatePremiumDetails(details({ brand_voice: "a,b,c,d,e" }))).toEqual({});
-    expect(validatePremiumDetails(details({ brand_voice: "a,b,c,d,e,f" })).brand_voice).toBeDefined();
+    expect(validatePremiumDetails(details({ brand_voice: "a,b,c,d,e" }), null)).toEqual({});
+    expect(validatePremiumDetails(details({ brand_voice: "a,b,c,d,e,f" }), null).brand_voice).toBeDefined();
   });
 
   it("requires label and value on metrics, and caps the count", () => {
-    expect(validatePremiumDetails(details({ metrics: "Members" })).metrics).toBeDefined();
+    expect(validatePremiumDetails(details({ metrics: "Members" }), null).metrics).toBeDefined();
     const five = Array.from({ length: PREMIUM_LIMITS.metrics + 1 }, (_, i) => `L${i}: ${i}`).join("\n");
-    expect(validatePremiumDetails(details({ metrics: five })).metrics).toBeDefined();
-    expect(validatePremiumDetails(details({ metrics: "Members: 10" }))).toEqual({});
+    expect(validatePremiumDetails(details({ metrics: five }), null).metrics).toBeDefined();
+    expect(validatePremiumDetails(details({ metrics: "Members: 10" }), null)).toEqual({});
   });
 
   it("requires quote and name on testimonials", () => {
-    expect(validatePremiumDetails(details({ testimonials: "Great" })).testimonials).toBeDefined();
-    expect(validatePremiumDetails(details({ testimonials: "Great | Ann" }))).toEqual({});
+    expect(validatePremiumDetails(details({ testimonials: "Great" }), null).testimonials).toBeDefined();
+    expect(validatePremiumDetails(details({ testimonials: "Great | Ann" }), null)).toEqual({});
   });
 
   it("requires https on social links", () => {
-    expect(validatePremiumDetails(details({ social_links: "IG | http://x.com" })).social_links).toBeDefined();
-    expect(validatePremiumDetails(details({ social_links: "IG | https://x.com" }))).toEqual({});
+    expect(validatePremiumDetails(details({ social_links: "IG | http://x.com" }), null).social_links).toBeDefined();
+    expect(validatePremiumDetails(details({ social_links: "IG | https://x.com" }), null)).toEqual({});
   });
 
   it("validates the AI-niche tools and case studies", () => {
@@ -99,7 +100,6 @@ describe("validatePremiumDetails", () => {
     for (const niche of [null, "gym_fitness", "home_services"]) {
       expect(validatePremiumDetails(bad, niche)).toEqual({});
     }
-    expect(validatePremiumDetails(bad)).toEqual({});
     // case studies also apply to agency_consulting; tools do not.
     const agency = validatePremiumDetails(bad, "agency_consulting");
     expect(agency.case_studies).toBeDefined();
@@ -109,10 +109,20 @@ describe("validatePremiumDetails", () => {
   });
 });
 
+describe("the niche argument", () => {
+  it("is required, so a caller cannot forget it and silently drop niche-only fields", () => {
+    // Type-level guard: `pnpm exec tsc --noEmit` fails if either directive becomes unused.
+    // @ts-expect-error niche is required
+    expect(validatePremiumDetails(details())).toEqual({});
+    // @ts-expect-error niche is required
+    expect(premiumDetailsPayload(details())).toEqual({});
+  });
+});
+
 describe("premiumDetailsPayload", () => {
   it("returns {} for null and omits blank fields", () => {
-    expect(premiumDetailsPayload(null)).toEqual({});
-    expect(premiumDetailsPayload(details())).toEqual({});
+    expect(premiumDetailsPayload(null, null)).toEqual({});
+    expect(premiumDetailsPayload(details(), null)).toEqual({});
   });
 
   it("builds the typed block, dropping incomplete rows", () => {
@@ -151,7 +161,6 @@ describe("premiumDetailsPayload", () => {
     for (const niche of [null, "gym_fitness"]) {
       expect(premiumDetailsPayload(d, niche)).toEqual({ tagline: "T" });
     }
-    expect(premiumDetailsPayload(d)).toEqual({ tagline: "T" });
     expect(premiumDetailsPayload(d, "agency_consulting")).toEqual({
       tagline: "T",
       caseStudies: [{ client: "Acme", result: "Won" }],
