@@ -110,6 +110,14 @@ export async function maybeDraftEmailReply(m: InboundEmailForDraft): Promise<voi
       return;
     }
 
+    // The send route refuses a subject with CR/LF/NUL or over 998 chars; a
+    // draft built from such a subject could never be approved.
+    const reply = emailReplyFields({
+      subject: m.subject.replace(/[\r\n\x00]+/g, " ").trim(),
+      messageId: m.messageId,
+      inReplyTo: m.inReplyTo,
+      references: m.references,
+    });
     await maybeRespondWithAi({
       subAccountId: m.subAccountId,
       subAccount: sub,
@@ -118,12 +126,7 @@ export async function maybeDraftEmailReply(m: InboundEmailForDraft): Promise<voi
       contact,
       incomingMessage: emailTurnText(m.subject, m.body),
       replyTo: from,
-      emailReply: emailReplyFields({
-        subject: m.subject,
-        messageId: m.messageId,
-        inReplyTo: m.inReplyTo,
-        references: m.references,
-      }),
+      emailReply: { ...reply, subject: reply.subject.slice(0, 998) },
     });
   } catch (err) {
     console.error(

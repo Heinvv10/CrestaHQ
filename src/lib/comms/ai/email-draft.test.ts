@@ -46,6 +46,7 @@ const { maybeDraftEmailReply, isDraftableEmail } = await import("./email-draft")
 const addressOnly = (v: string) => (/<([^<>]+)>/.exec(v)?.[1] ?? v).toLowerCase();
 const { recordEmailMessage } = await import("@/lib/server/email-conversations");
 const { setConversationDraft } = await import("@/lib/server/conversations-service");
+const { isValidEmailSendPayload } = await import("@/lib/server/conversation-send/email");
 const { usageMonthKey } = await import("@/lib/server/usage-meter");
 
 const EMAIL = {
@@ -342,6 +343,14 @@ describe("Email AI drafts", () => {
     await maybeDraftEmailReply(EMAIL);
     expect(draft()).toBeNull();
     expect(llm.calls).toHaveLength(0);
+  });
+
+  it("builds a subject the send route accepts from a hostile one (CR/LF/NUL, over 998 chars)", async () => {
+    seed();
+    await maybeDraftEmailReply({ ...EMAIL, subject: `Quote\r\nBcc: evil@example.com\x00 ${"x".repeat(2000)}` });
+    const reply = draft()?.emailReply as { subject: string; inReplyTo?: string; references: string[] };
+    expect(reply.subject.startsWith("Re: Quote Bcc: evil@example.com")).toBe(true);
+    expect(isValidEmailSendPayload({ contactId: "c1", body: "hi", ...reply })).toBe(true);
   });
 
   it("caps a huge email before the model sees it", async () => {
