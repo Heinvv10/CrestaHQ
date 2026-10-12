@@ -72,9 +72,15 @@ test("layouts and theme: carousel by default, then grid, badge and dark from the
   await expect(s.widget.locator(".chq-reviews--dark")).toHaveCount(0);
   await s.close();
 
-  // --- Grid, chosen on the dashboard card.
+  // --- Grid, chosen on the dashboard card. The widget above was written past
+  // the page, so the card learns of it only from a snapshot, which can lag
+  // ~30 s; until then it is the empty "create" form, whose save would send
+  // no origins. Reload, so the first snapshot carries the widget, and edit
+  // only once the form shows it.
+  await page.reload();
+  await expect(page.getByTestId("gbp-widget-origins")).toHaveValue(EXAMPLE, { timeout: 30_000 });
   const layout = page.getByTestId("gbp-widget-layout");
-  await expect(layout).toHaveValue("carousel", { timeout: 30_000 });
+  await expect(layout).toHaveValue("carousel");
   await layout.selectOption("grid");
   // The preview's feed request after the save: same-origin, so the browser sends no Origin header.
   const previewRequest = page.waitForRequest((r) => r.url().endsWith(feedPath(publicId)));
