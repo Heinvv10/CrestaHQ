@@ -914,6 +914,30 @@
         "category": "human-only",
         "reason": "Provisions the browser dialer on the client's own Twilio account (mints an API key and TwiML App, toggles call recording, tears them down); a sub-account admin's act in Settings. Agent access is a separate decision."
       }
+    },
+    "api/sub-accounts/[id]/web-voice:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/web-voice:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/web-voice:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/web-voice:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
     }
   }
 }

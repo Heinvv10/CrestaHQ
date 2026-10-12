@@ -1,4 +1,5 @@
 import type { StripeConnectionMeta } from "@/types/payments";
+import type { WebVoiceMeta } from "@/types/web-voice";
 import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
 import type { GbpSummary } from "@/lib/gbp/sync/types";
 import type { PaystackConnectionMeta } from "@/types/paystack-connection";
@@ -588,6 +589,12 @@ export interface SubAccountDoc {
    * agent are preserved. Layered on `webChatEnabledByAgency`.
    */
   webVoiceEnabledByAgency?: boolean;
+  /**
+   * Non-secret display metadata for the Web Voice connection. The API key
+   * lives at `subAccounts/{id}/private/webVoiceConnection`. Never add a
+   * credential to this object. Null/absent = not connected.
+   */
+  webVoiceMeta?: WebVoiceMeta | null;
   /**
    * Agency-controlled gate for the browser phone dialer (softphone) that
    * places calls through the sub-account's own Twilio account. Opt-in:
