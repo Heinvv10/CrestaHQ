@@ -124,6 +124,10 @@ agency gate and reads only `dialerConfig.enabled`.
     format, e.g. +27…"). The TwiML webhook applies the same function before it parses
     the number, and stays the authority on validity: a strict-form number that is not
     a valid number is refused there, with the spoken message.
+    **Known fail-closed limit:** a number pasted with a non-breaking space inside it
+    (U+00A0, common in copies from WhatsApp or a web page) does not match, so the
+    button is disabled with that reason, and the webhook refuses it. Re-typing the
+    spaces in the contact's phone fixes it.
 
   The button does not look at the dedicated-Twilio switch. If dedicated Twilio is off,
   the token route's 403 shows in the call bar.

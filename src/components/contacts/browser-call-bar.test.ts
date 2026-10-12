@@ -30,6 +30,7 @@ let mounted = false;
 const bar = () => container.querySelector<HTMLElement>('[data-testid="browser-call-bar"]');
 const phase = () => bar()?.dataset.phase;
 const status = () => container.querySelector('[data-testid="browser-call-status"]')?.textContent;
+const clock = () => container.querySelector('[data-testid="browser-call-clock"]')?.textContent ?? null;
 const button = (name: string) =>
   [...container.querySelectorAll("button")].find((b) => b.textContent?.trim() === name || b.title === name) ?? null;
 
@@ -116,13 +117,15 @@ describe("BrowserCallBar — a call that goes through", () => {
 
     await emit(device.call, "accept");
     expect(phase()).toBe("in-call");
-    expect(status()).toBe("0:00");
+    expect(status()).toBe("In call");
+    expect(clock()).toBe(" · 0:00");
     await act(async () => vi.advanceTimersByTime(65_000));
-    expect(status()).toBe("1:05");
+    expect(clock()).toBe(" · 1:05");
 
     await emit(device.call, "disconnect");
     expect(phase()).toBe("ended");
     expect(status()).toBe("Call ended");
+    expect(clock()).toBeNull();
     expect(device.destroyCalls).toBe(1);
     // The clock stops with the call.
     await act(async () => vi.advanceTimersByTime(2_000));
@@ -157,7 +160,7 @@ describe("BrowserCallBar — a call that goes through", () => {
     const device = await mountToInCall();
     await click(button("Mute"));
     expect(device.call.muted).toBe(true);
-    await click(button("Unmute"));
+    await click(button("Mute"));
     expect(device.call.muted).toBe(false);
     await click(button("Keypad"));
     await click(button("5"));
@@ -404,7 +407,7 @@ describe("BrowserCallBar — an SDK that misbehaves", () => {
     await emit(device.call, "accept");
     await emit(device.call, "accept");
     await act(async () => vi.advanceTimersByTime(3_000));
-    expect(status()).toBe("0:03");
+    expect(clock()).toBe(" · 0:03");
     await unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -453,7 +456,21 @@ describe("BrowserCallBar — accessibility", () => {
     await click(mute);
     expect(device.call.muted).toBe(true);
     expect(mute.getAttribute("aria-pressed")).toBe("true");
+    // One name whichever state it is in; the state is aria-pressed.
+    expect(mute.title).toBe("Mute");
+    expect(mute.getAttribute("aria-label")).toBe("Mute");
     await click(keypad);
     expect(keypad.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("the live region holds the phase, not the clock: it does not change as the call runs", async () => {
+    await mountToInCall();
+    const live = container.querySelector('[aria-live="polite"]')!;
+    expect(container.querySelectorAll("[aria-live]")).toHaveLength(1);
+    expect(live.textContent).toBe("In call");
+    await act(async () => vi.advanceTimersByTime(5_000));
+    expect(clock()).toBe(" · 0:05");
+    expect(live.textContent).toBe("In call");
+    expect(live.contains(container.querySelector('[data-testid="browser-call-clock"]'))).toBe(false);
   });
 });

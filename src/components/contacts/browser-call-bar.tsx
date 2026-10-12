@@ -246,13 +246,15 @@ export function BrowserCallBar({
 
   const mm = Math.floor(seconds / 60);
   const ss = String(seconds % 60).padStart(2, "0");
+  // Announced to screen readers on each change, so it holds the phase only:
+  // the per-second clock sits beside it, outside the live region.
   const statusLine =
     phase === "connecting"
       ? "Connecting…"
       : phase === "ringing"
         ? "Ringing…"
         : phase === "in-call"
-          ? `${mm}:${ss}`
+          ? "In call"
           : phase === "ended"
             ? "Call ended"
             : (error ?? "Call failed");
@@ -277,11 +279,20 @@ export function BrowserCallBar({
                   ? "text-emerald-600 dark:text-emerald-400"
                   : "text-muted-foreground",
             )}
-            data-testid="browser-call-status"
-            role="status"
-            aria-live="polite"
           >
-            {statusLine}
+            <span
+              data-testid="browser-call-status"
+              role="status"
+              aria-live="polite"
+            >
+              {statusLine}
+            </span>
+            {phase === "in-call" && (
+              <span data-testid="browser-call-clock">
+                {" · "}
+                {mm}:{ss}
+              </span>
+            )}
           </p>
         </div>
         {(phase === "connecting" || phase === "ringing") && (
@@ -311,7 +322,7 @@ export function BrowserCallBar({
           size="sm"
           onClick={toggleMute}
           disabled={phase !== "in-call"}
-          title={muted ? "Unmute" : "Mute"}
+          title="Mute"
           aria-label="Mute"
           aria-pressed={muted}
         >

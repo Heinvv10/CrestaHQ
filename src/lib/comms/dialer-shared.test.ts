@@ -137,6 +137,7 @@ const NOT_DIALABLE_FORM = [
   "+1 800 FLOWERS",
   "+27821234567\n+442079460958",
   `+${"1".repeat(32)}`,
+  "+27\u00A082 123 4567", // interior non-breaking space: a documented fail-closed limit
 ];
 
 describe("storedInInternationalForm", () => {
