@@ -71,6 +71,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["update_task", { taskId: "t1/sub/y", title: "X" }],
   ["delete_task", { taskId: "t1/sub/y" }],
   ["set_event_status", { eventId: "ev1/sub/y", status: "completed" }],
+  ["mark_booking_paid", { eventId: "ev1/sub/y" }],
   ["schedule_social_post", { postId: "sp1/sub/y", scheduledAt: "2030-01-10T08:00:00.000Z" }],
   ["delete_social_post", { postId: "sp1/sub/y" }],
   ["send_review_request", { contactId: "c1/sub/y" }],

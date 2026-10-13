@@ -56,6 +56,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `resume_recurring_schedule` | `spend` | admin | Resume a paused recurring schedule: it bills again from the next cycle due today or later (cycles missed while paused are not billed). | the schedule old -> new and the card outcome |
 | `cancel_recurring_schedule` | `spend` | admin | Cancel a recurring schedule for good (it can't be resumed). | the schedule old -> new and the card outcome |
 | `list_webhooks` | read | admin | List this sub-account's outbound webhook subscriptions (id, URL, events, status, last delivery). |  |
+| `list_communities` | read | member | List this workspace's community groups (name, status, mode, slug, group id) and the courses inside each (title, published or not, course id). |  |
 | `create_workflow` | write | admin | Create a new automation workflow (as a draft) from a starter template in this sub-account. |  |
 | `list_workflows` | read | admin | List the sub-account's automation workflows: name, id, status and trigger. |  |
 | `get_workflow` | read | admin | Read one workflow: status, trigger, re-entry, start step and every step (as JSON). |  |
@@ -98,6 +99,8 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `create_booking_page` | write; `public_change` when status=published | admin | Create a booking page with the booking editor's fields (slug, name, workingHours, timezone... | every field of the page to be published |
 | `delete_booking_page` | `hard_delete` | admin | Delete a booking page permanently. | the page and that its link stops working; refused while bookings are upcoming |
 | `update_booking_page` | write; `public_change` when the page is published, the edit publishes it, or bookings on it are upcoming | admin | Change a booking page's fields (as get_booking_page shows them; the slug can't change). | changed fields old -> new (the whole page when it goes public or has upcoming bookings) |
+| `find_awaiting_payment_bookings` | read | member | List this workspace's booking-page appointments that are 'awaiting payment' (a deposit was required and hasn't been confirmed), soonest first, with each one's event id. |  |
+| `mark_booking_paid` | `outbound` | member | Mark an 'awaiting payment' booking as paid, as the calendar's Mark paid button does: the booking is confirmed, the customer is emailed their confirmation, its reminders are scheduled and the booking.confirmed workflows start, so it is queued for a person to approve. | the booking and its deposit, who the confirmation email goes to or why none, the reminders, the booking.confirmed workflows that start (their steps pinned) |
 | `list_members` | read | admin | List this sub-account's members (name, email, role, status) and any pending invites. |  |
 | `invite_member` | `outbound` | admin | Add someone (by email) to this sub-account as 'admin' (manages members + settings) or 'collaborator' (works the data, no member management). | the email, the role (admin's powers named), what happens: a new invite, added at once with nothing to accept, a member's role old -> new, or that approving will refuse (a disabled or another agency's account); territories kept or cleared; whether an email goes out. The proposing agent is shown only the sub-account, email and role |
 | `list_social_posts` | read | member | List the Social Planner's posts: id, status, platforms, when scheduled, and the start of each caption. |  |
@@ -110,6 +113,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `list_broadcasts` | read | member | List the sub-account's email broadcasts, newest first: template, audience, status and totals. |  |
 | `create_broadcast` | `outbound` | admin | Send an email template to every contact matching an audience (all; a tag; or a pipeline stage), skipping opted-out contacts. | channel, audience and matched count, exact subject and message, merge tags, what is checked at send |
 | `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time |
+| `watchdog_status` | read | admin | Show the Labs Inbox Follow-up Watchdog's settings (on/off, waiting threshold, quiet hours, extra criteria) and its recent runs: how many conversations it scanned, which contacts it flagged and why. |  |
 
 ## Agency-key tools
 

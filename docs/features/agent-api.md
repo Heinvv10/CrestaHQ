@@ -186,7 +186,7 @@ and on no other route: every other `/api/v1` route refuses it with 403
 
 ## Tools
 
-100 tools today; the full table, with each tool's kind, role and what its approval
+104 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
 from the registry and a test fails when it drifts. Its second table lists the
 agency-key tools; their proposals are approved on `/agency/approvals`, not on a
