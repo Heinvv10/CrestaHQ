@@ -349,6 +349,12 @@ export interface WebsiteDoc {
    * liveUrl wherever LeadStack shows or reads the site.
    */
   customDomain?: string | null;
+  /**
+   * The Web Chat allow-list hosts the custom-domain save added (the domain's
+   * www/apex pair, minus any already listed). Removing the domain takes off
+   * these and nothing else, so hosts the operator listed by hand stay.
+   */
+  customDomainChatHosts?: string[] | null;
   /** Latest Google PageSpeed Insights (mobile) scores — set ~2 min after publish. */
   pagespeed?: WebsitePageSpeed | null;
 }
