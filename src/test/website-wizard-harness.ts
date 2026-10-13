@@ -1,6 +1,6 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, vi } from "vitest";
 import { WebsiteWizard, type WizardStepId } from "@/components/website/website-wizard";
 import { byLabel } from "@/test/dom-queries";
 import { createMemoryFirestore } from "@/test/memory-firestore";
@@ -33,6 +33,12 @@ export const gitpageBuilds: Array<Record<string, unknown>> = [];
 /** What gitpage answers a build with; null = an accepted build (202 + job id). */
 export const gitpageAnswer = { build: null as null | (() => Response) };
 
+const ROUTES = {
+  concepts: () => import("@/app/api/sub-accounts/[id]/website/concepts/route"),
+  build: () => import("@/app/api/sub-accounts/[id]/website/[siteId]/build/route"),
+  site: () => import("@/app/api/sub-accounts/[id]/website/[siteId]/route"),
+};
+
 async function callRoute(url: string, init: RequestInit = {}): Promise<Response> {
   const method = init.method ?? "GET";
   const path = url.split("?")[0];
@@ -43,14 +49,14 @@ async function callRoute(url: string, init: RequestInit = {}): Promise<Response>
     body: init.body ?? undefined,
   });
   if (siteId === "concepts") {
-    const { GET } = await import("@/app/api/sub-accounts/[id]/website/concepts/route");
+    const { GET } = await ROUTES.concepts();
     return GET(request, { params: Promise.resolve({ id }) });
   }
   if (action === "build") {
-    const { POST } = await import("@/app/api/sub-accounts/[id]/website/[siteId]/build/route");
+    const { POST } = await ROUTES.build();
     return POST(request, { params: Promise.resolve({ id, siteId }) });
   }
-  const { PATCH } = await import("@/app/api/sub-accounts/[id]/website/[siteId]/route");
+  const { PATCH } = await ROUTES.site();
   return PATCH(request, { params: Promise.resolve({ id, siteId }) });
 }
 
@@ -67,28 +73,38 @@ export const fetchMock = vi.fn(async (input: string | URL | Request, init?: Requ
   }
   if (url.startsWith(GITPAGE)) return new Response("not stubbed", { status: 500 });
   calls.push(`${init?.method ?? "GET"} ${url.split("?")[0]}`);
-  pending++;
-  try {
+  const answer = (async () => {
     const res = await callRoute(url, init);
-    // Read here, so the wizard's own .json() cannot outlive `pending`.
+    // Read here, so the wizard's own .json() resolves on the next microtask.
     const body = await res.text();
     return new Response(body, { status: res.status, headers: res.headers });
-  } finally {
-    pending--;
-  }
+  })();
+  inFlight.add(answer);
+  const done = () => void inFlight.delete(answer);
+  answer.then(done, done);
+  return answer;
 });
-let pending = 0;
+/** Route calls the wizard has started and not yet had answered. */
+const inFlight = new Set<Promise<Response>>();
 
-export const host = () => document.body;
-export const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-/** Ticks until `cond` holds; throws rather than passing on a timeout. */
-export async function until(cond: () => boolean, what: string, ms = 15_000) {
-  const deadline = Date.now() + ms;
-  while (!cond()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+/**
+ * Waits for every route call the UI has started — and any it starts in
+ * reaction (a step change loads the concepts) — to be answered and
+ * rendered. It awaits the calls themselves, not the wall clock: on a loaded
+ * box a call can take seconds, and the only bound is the test's timeout.
+ */
+export async function settle() {
+  await flush();
+  while (inFlight.size > 0) {
+    await act(async () => {
+      await Promise.allSettled([...inFlight]);
+    });
     await flush();
   }
 }
+
+export const host = () => document.body;
+export const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 export const stepText = () => host().querySelector("[data-slot=dialog-content] p")?.textContent ?? "";
 export const title = () => host().querySelector("[data-slot=dialog-title]")?.textContent ?? "";
@@ -131,13 +147,8 @@ export async function check(label: string) {
 
 /** Clicks and waits for any save or build the click started to finish. */
 export async function click(text: string | RegExp) {
-  const before = calls.length;
   await act(async () => button(text).click());
-  await flush();
-  if (calls.length > before) {
-    await until(() => pending === 0, "the request to settle");
-    await flush();
-  }
+  await settle();
 }
 
 let root: Root;
@@ -162,11 +173,18 @@ export async function openWizard(startAt: WizardStepId | null = null) {
   await act(async () =>
     root.render(createElement(WebsiteWizard, { open: true, onOpenChange, subAccountId: "sa1", doc: site(), startAt })),
   );
-  await flush();
+  // A wizard that opens on Look & feel loads the concepts straight away.
+  await settle();
 }
 
 export function setupWizardTests() {
   const original = { key: process.env.GITPAGE_API_KEY, url: process.env.GITPAGE_API_URL };
+  // Compile the routes up front, under the hook timeout: a cold import of
+  // the build route's module graph takes seconds on a loaded box and is not
+  // what any test is measuring.
+  beforeAll(async () => {
+    await Promise.all(Object.values(ROUTES).map((load) => load()));
+  });
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     // Base UI's checkbox reads PointerEvent, which jsdom does not ship.
@@ -180,7 +198,7 @@ export function setupWizardTests() {
     mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: true });
     mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "admin", status: "active" });
     calls.length = 0;
-    pending = 0;
+    inFlight.clear();
     gitpageBuilds.length = 0;
     gitpageAnswer.build = null;
     fetchMock.mockClear();

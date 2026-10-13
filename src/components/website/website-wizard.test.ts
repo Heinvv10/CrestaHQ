@@ -4,7 +4,7 @@ import { sampleWebsiteConfig, sampleVslConfig } from "@/types/website";
 import { wizardStepsFor, wizardStepTitle } from "./website-wizard";
 import {
   button, calls, check, click, gitpageAnswer, gitpageBuilds, hasButton, onOpenChange, openWizard, patches, seedSite, setupWizardTests, site,
-  stepText, title, type, until,
+  stepText, title, type,
 } from "@/test/website-wizard-harness";
 
 // Real draft-save, concepts and build routes — see src/test/website-wizard-harness.ts.
@@ -70,7 +70,7 @@ describe("WebsiteWizard — each step, saved as it goes", () => {
 
     await click("Next");
     expect(title()).toBe("Look & feel");
-    await until(() => !document.body.textContent?.includes("Loading design directions"), "the concepts to load");
+    expect(document.body.textContent).not.toContain("Loading design directions");
     expect(calls).toContain("GET /api/sub-accounts/sa1/website/concepts");
     await click("Next");
     expect(title()).toBe("Your story");
@@ -132,8 +132,8 @@ describe("WebsiteWizard — each step, saved as it goes", () => {
     await openWizard();
     await type("Heading", "Half done");
     await click("Close");
-    await until(() => patches().length === 1, "the close save");
-    await until(() => site().config.heading === "Half done", "the stored draft");
+    expect(patches()).toHaveLength(1);
+    expect(site().config.heading).toBe("Half done");
     expect(site()).toMatchObject({ wizardStep: "business" });
     expect(onOpenChange).toHaveBeenLastCalledWith(false);
   });
