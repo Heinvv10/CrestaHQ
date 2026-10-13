@@ -33,23 +33,46 @@ const METADATA_TIMEOUT_MS = 3_000;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 
 /**
- * Both calls are idempotent GETs, so a transient failure — a network error,
- * a timeout, a 429 or a 5xx — is retried in place. A single dropped
+ * Both calls are idempotent GETs, so a fast transient failure — a dropped
+ * connection, a 429 or a 5xx — is retried in place. A single dropped
  * connection on 2026-10-13 otherwise lost a customer's photo for good.
+ *
+ * A timeout is NOT retried in place: it has already spent its budget, and
+ * stacking 15 s attempts would outlast Meta's webhook timeout. It is still
+ * transient, so the route has Meta redeliver instead. No retry starts once
+ * RETRY_BUDGET_MS has passed, for the same reason.
  */
 const ATTEMPTS = 3;
 const BACKOFF_MS = [500, 1_500];
+const RETRY_BUDGET_MS = 5_000;
 
 /**
  * `transient` failures are worth Meta redelivering the webhook for; the
- * route answers non-2xx on them. A refusal (4xx, bad digest, foreign host,
- * too large) is final and is not.
+ * route answers non-2xx on them. A refusal (4xx, foreign host, redirect,
+ * malformed metadata, too large) is final and is not.
  */
 type CloudMediaFetch =
   | { ok: true; bytes: Buffer }
   | { ok: false; reason: WhatsappMediaDropped; transient: boolean };
 
 class TransientStatus extends Error {}
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/**
+ * Network-level only: undici puts a string `code` on `cause` for a dropped,
+ * reset or refused connection (ECONNRESET, ETIMEDOUT, UND_ERR_SOCKET…). A
+ * refused redirect is also `TypeError: fetch failed`, but its cause carries
+ * no code — so it, a JSON parse error, and anything else unrecognised is
+ * final, and can never make Meta redeliver forever.
+ */
+function isTransient(err: unknown): boolean {
+  if (err instanceof TransientStatus || isTimeout(err)) return true;
+  const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return typeof code === "string";
+}
 
 /** fetch throws `TypeError("fetch failed")` with the undici code on `cause`. */
 function describeError(err: unknown): string {
@@ -59,9 +82,9 @@ function describeError(err: unknown): string {
 }
 
 /**
- * Runs `call` up to ATTEMPTS times. A thrown error or a 429/5xx is retried;
- * any other response is returned as-is for the caller to judge. After the
- * last attempt the error (or a TransientStatus) is thrown.
+ * Runs `call` up to ATTEMPTS times. A network error or a 429/5xx is retried
+ * while the budget lasts; any other response is returned as-is for the
+ * caller to judge, and any other error is thrown at once.
  */
 async function withRetry(
   label: string,
@@ -69,6 +92,7 @@ async function withRetry(
   token: string,
   call: () => Promise<Response>,
 ): Promise<Response> {
+  const started = Date.now();
   for (let attempt = 1; ; attempt++) {
     let failure: unknown;
     try {
@@ -79,7 +103,14 @@ async function withRetry(
     } catch (err) {
       failure = err;
     }
-    if (attempt >= ATTEMPTS) throw failure;
+    if (
+      attempt >= ATTEMPTS ||
+      !isTransient(failure) ||
+      isTimeout(failure) ||
+      Date.now() - started > RETRY_BUDGET_MS
+    ) {
+      throw failure;
+    }
     console.warn(
       `[whatsapp-cloud-media] ${label} attempt=${attempt}/${ATTEMPTS} failed, retrying (sa=${subAccountId}): ${redact(describeError(failure), token)}`,
     );
@@ -236,17 +267,17 @@ export async function fetchCloudMedia(opts: {
       console.warn(
         `[whatsapp-cloud-media] sha256 mismatch — not storing (sa=${opts.subAccountId})`,
       );
-      return { ok: false, reason: "fetch_failed", transient: false };
+      return { ok: false, reason: "fetch_failed", transient: true };
     }
     return { ok: true, bytes };
   } catch (err) {
     // A message only, and redacted: an error object can carry request detail,
     // and the one thing this line must never print is the bearer token.
-    // Retries are spent by now (or the failure was mid-body / credentials), so
-    // the route asks Meta to redeliver, which re-attempts the attachment.
+    // Retries are spent (or the body was cut mid-read). A transient failure
+    // has the route ask Meta to redeliver, which re-attempts the attachment.
     console.warn(
       `[whatsapp-cloud-media] fetch failed (sa=${opts.subAccountId}): ${redact(describeError(err), token)}`,
     );
-    return { ok: false, reason: "fetch_failed", transient: true };
+    return { ok: false, reason: "fetch_failed", transient: isTransient(err) };
   }
 }

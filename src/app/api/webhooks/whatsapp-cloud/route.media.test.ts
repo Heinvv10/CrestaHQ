@@ -34,6 +34,8 @@ const m = vi.hoisted(() => ({
   rowWriteFailsOnce: false,
   /** Set to make the opt-out batch commit throw, as contention would. */
   commitThrows: false,
+  /** Transactions to fail before they start succeeding, as contention would. */
+  txThrows: 0,
   contactUpdates: [] as Array<Record<string, unknown>>,
 }));
 
@@ -172,13 +174,18 @@ vi.mock("@/lib/firebase/admin", () => ({
         get: (r: ReturnType<typeof docRef>) => ReturnType<ReturnType<typeof docRef>["get"]>;
         set: (r: ReturnType<typeof docRef>, d: Record<string, unknown>, o?: { merge?: boolean }) => void;
       }) => Promise<unknown>,
-    ) =>
-      fn({
+    ) => {
+      if (m.txThrows > 0) {
+        m.txThrows--;
+        throw new Error("transaction contention");
+      }
+      return fn({
         get: (r) => r.get(),
         set: (r, d, o) => {
           void r.set(d, o);
         },
-      }),
+      });
+    },
     // Atomic: nothing buffered is visible until commit succeeds.
     batch: () => {
       const pending: Array<Record<string, unknown>> = [];
@@ -281,6 +288,7 @@ beforeEach(() => {
   m.rowWriteFailsFor.clear();
   m.rowWriteFailsOnce = false;
   m.commitThrows = false;
+  m.txThrows = 0;
   m.contactUpdates.length = 0;
   fetchCalls = [];
   onMeta = async () => metaJson();
@@ -491,7 +499,9 @@ describe("cloud inbound media — never downgrade a row that holds media", () =>
     onMeta = async () => {
       if (calls++ === 0) {
         await gate;
-        return new Response("{}", { status: 500 });
+        // A final refusal: not retried in place, so the drop decision really
+        // is made from the stale snapshot.
+        return new Response("{}", { status: 401 });
       }
       return metaJson();
     };
@@ -635,7 +645,9 @@ describe("cloud inbound media — nothing that doesn't need the file waits for i
     onMeta = async () => {
       if (calls++ === 0) {
         await gate;
-        return new Response("{}", { status: 500 });
+        // A final refusal: not retried in place, so the drop decision really
+        // is made from the stale snapshot.
+        return new Response("{}", { status: 401 });
       }
       return metaJson();
     };
@@ -887,6 +899,68 @@ describe("cloud inbound media — a transient failure never loses the file", () 
 
     expect(res.status).toBe(200);
     expect(fetchCalls).toHaveLength(1);
+    expect(row().mediaDropped).toBe("fetch_failed");
+  });
+
+  it("treats a refused redirect (fetch failed, no network code) as final: no retry, no redelivery", async () => {
+    let downloads = 0;
+    onBytes = async () => {
+      downloads++;
+      const err = new TypeError("fetch failed");
+      (err as { cause?: unknown }).cause = new Error("unexpected redirect");
+      throw err;
+    };
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(downloads).toBe(1);
+    expect(row().mediaDropped).toBe("fetch_failed");
+    expect(row()).not.toHaveProperty("mediaFailedDeliveries");
+  });
+
+  it("does not stack timeouts in place, but has Meta redeliver", async () => {
+    let downloads = 0;
+    onBytes = async () => {
+      downloads++;
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    };
+
+    const res = await post(image());
+
+    expect(res.status).toBe(500);
+    expect(downloads).toBe(1);
+  });
+
+  it("stops asking for redelivery after five failed deliveries of one message", async () => {
+    onBytes = async () => {
+      throw dropped();
+    };
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const pending = post(image("router lights"));
+      await vi.runAllTimersAsync();
+      statuses.push((await pending).status);
+    }
+
+    expect(statuses).toEqual([500, 500, 500, 500, 200]);
+    expect(row()).toMatchObject({ mediaDropped: "fetch_failed", mediaFailedDeliveries: 5 });
+    expect(m.aiCalls).toHaveLength(1);
+  });
+
+  it("a final refusal stays final when recording the drop throws once", async () => {
+    onMeta = async () => new Response('{"error":{"code":190}}', { status: 401 });
+    m.txThrows = 1;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(row().mediaDropped).toBe("fetch_failed");
+    expect(row()).not.toHaveProperty("mediaFailedDeliveries");
   });
 
   it("after three failed attempts answers 500, logs the cause, and Meta's redelivery lands the photo once", async () => {
