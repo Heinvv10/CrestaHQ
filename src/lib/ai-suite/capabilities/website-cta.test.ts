@@ -37,6 +37,10 @@ vi.mock("@/lib/automations/qstash", async (orig) => ({
   publishCallback: async () => ({ messageId: "m1" }),
 }));
 vi.mock("@/lib/gitpage/heartbeat", () => ({ markGitpageBuildSucceeded: async () => {}, markGitpageKeyInvalid: async () => {} }));
+// The apex → www probe (WS-3) is its own fetch with its own tests
+// (app-url.test.ts); null = nothing resolved, so callers use NEXT_PUBLIC_APP_URL
+// and every stubbed fetch here is a gitpage call.
+vi.mock("@/lib/server/app-url", () => ({ resolvedAppUrl: async () => null }));
 
 const { availableOn, getCapability, toolsForLevel } = await import("@/lib/ai-suite/capabilities");
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");

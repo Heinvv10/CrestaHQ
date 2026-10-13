@@ -42,9 +42,20 @@ afterEach(() => {
 describe("adding", () => {
   beforeEach(() => seedMainAndScenario());
 
+  it("answers with the stored extras, in order, as the card shows them — display fields only", async () => {
+    const res = await putExtras({ listings: [pair(LOC_C), pair(LOC_NORTH)] });
+    expect(res.body.listings).toEqual([
+      { accountName: DEFAULT_ACCOUNT, locationName: LOC_C, title: "Velo Test Fibre — Third", address: expect.any(String) },
+      { accountName: DEFAULT_ACCOUNT, locationName: LOC_NORTH, title: "Velo Test Fibre — Gqeberha North", address: "9 Fixture Avenue, Gqeberha North, 6100" },
+    ]);
+    // Removing one answers with what is left.
+    const left = await putExtras({ listings: [pair(LOC_NORTH)], expected: [pair(LOC_C), pair(LOC_NORTH)] });
+    expect(left.body.listings).toEqual([expect.objectContaining({ locationName: LOC_NORTH })]);
+  });
+
   it("stores exactly the server-fetched listings, in the order given, and audits each", async () => {
     const res = await putExtras({ listings: [{ ...pair(LOC_C), title: "Attacker" }, pair(LOC_NORTH)] });
-    expect(res).toEqual({ status: 200, body: { ok: true, added: [LOC_C, LOC_NORTH], removed: [] } });
+    expect(res).toEqual({ status: 200, body: { ok: true, added: [LOC_C, LOC_NORTH], removed: [], listings: expect.any(Array) } });
     expect(extras()).toEqual([
       expect.objectContaining({ locationName: LOC_C, title: "Velo Test Fibre — Third", accountDisplayName: "E2E Fixture Group" }),
       {
@@ -90,8 +101,17 @@ describe("adding", () => {
     await putExtras({ listings: [pair(LOC_NORTH)] });
     state.writes = [];
     const res = await putExtras({ listings: [pair(LOC_NORTH)] });
-    expect(res.body).toEqual({ ok: true, added: [], removed: [] });
+    expect(res.body).toEqual({ ok: true, added: [], removed: [], listings: expect.any(Array) });
     expect(state.writes).toEqual([]);
+  });
+
+  it("a reorder only writes nothing and answers with the STORED order", async () => {
+    await putExtras({ listings: [pair(LOC_C), pair(LOC_NORTH)] });
+    state.writes = [];
+    const res = await putExtras({ listings: [pair(LOC_NORTH), pair(LOC_C)] });
+    expect(state.writes).toEqual([]);
+    expect((res.body.listings as Array<{ locationName: string }>).map((l) => l.locationName)).toEqual([LOC_C, LOC_NORTH]);
+    expect(extras().map((l) => l.locationName)).toEqual([LOC_C, LOC_NORTH]);
   });
 });
 
@@ -119,7 +139,7 @@ describe("add two, then remove one", () => {
   it("drops only the removed listing's cache, summary and sync state", async () => {
     const mainDocs = [...state.docs.entries()].filter(([, d]) => d.locationName === LOC_A);
     const res = await putExtras({ listings: [pair(LOC_NORTH)] });
-    expect(res.body).toEqual({ ok: true, added: [], removed: [LOC_C] });
+    expect(res.body).toEqual({ ok: true, added: [], removed: [LOC_C], listings: expect.any(Array) });
     expect(listingCacheLeft(LOC_C)).toEqual({ reviews: 0, summary: null, syncState: false });
     expect(listingCacheLeft(LOC_NORTH)).toMatchObject({ reviews: 2, syncState: true });
     expect(listingCacheLeft(LOC_A)).toMatchObject({ reviews: 2, syncState: true });
@@ -153,7 +173,7 @@ describe("add two, then remove one", () => {
 
   it("removing needs no Google call", async () => {
     setScenario((s) => (s.failNext = { op: "listAccounts", kind: "transient" }));
-    expect((await putExtras({ listings: [] })).body).toEqual({ ok: true, added: [], removed: [LOC_NORTH, LOC_C] });
+    expect((await putExtras({ listings: [] })).body).toEqual({ ok: true, added: [], removed: [LOC_NORTH, LOC_C], listings: expect.any(Array) });
     expect(subDoc().googleLocationNames).toEqual([LOC_A]);
     expect(listingCacheLeft(LOC_A)).toMatchObject({ reviews: 2, syncState: true });
   });

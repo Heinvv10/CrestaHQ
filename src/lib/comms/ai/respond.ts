@@ -1,7 +1,10 @@
 import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
-import { mysteryShopHoldsAi } from "@/lib/prospecting/mystery-shop/ai-hold";
+import {
+  mysteryShopHoldsAi,
+  mysteryShopHoldsEmailAi,
+} from "@/lib/prospecting/mystery-shop/ai-hold";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { sendSmsForSubAccount } from "@/lib/comms/twilio";
 import { sendWhatsappFreeFormForSubAccount } from "@/lib/comms/whatsapp/send-dispatch";
@@ -38,7 +41,10 @@ import {
   setConversationDraft,
   upsertConversationForMessage,
 } from "@/lib/server/conversations-service";
-import type { ConversationChannel } from "@/types/conversations";
+import type {
+  ConversationChannel,
+  ConversationDraft,
+} from "@/types/conversations";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 import { isQuietHoursDeferred } from "@/lib/comms/quiet-hours";
 import { holdForQuietHours } from "@/lib/comms/quiet-hours-hold";
@@ -51,10 +57,12 @@ interface RespondInput {
    *  the webhook caller via resolveAgent(). */
   agent: ResolvedAiAgent;
   /** Which channel this respond run is for. Supported here: "sms",
-   *  "whatsapp" (both Twilio) and "meta" (Messenger/Instagram DMs over the
-   *  Graph API) — same guards → context → LLM → send → log flow, differing
-   *  only in transport (see getChannelTransport). web-chat + voice have
-   *  their own orchestrators and never call this. */
+   *  "whatsapp" (both Twilio), "meta" (Messenger/Instagram DMs over the
+   *  Graph API) and "email" (mailbox replies — draft-only; suggestOnly is
+   *  forced so the transport's send is never invoked) — same guards →
+   *  context → LLM → send/draft → log flow, differing only in transport
+   *  (see getChannelTransport). web-chat + voice have their own
+   *  orchestrators and never call this. */
   channelId: ConfiguredChannelId;
   contact: Contact;
   /** The just-arrived inbound text. */
@@ -69,6 +77,9 @@ interface RespondInput {
    *  on the same rail (so from the number the customer wrote to), not on the
    *  workspace's default sender. */
   inboundProvider?: WhatsAppProviderId;
+  /** Email only: the thread headers the approved draft is sent with, taken
+   *  from the inbound email (never from the model). */
+  emailReply?: ConversationDraft["emailReply"];
 }
 
 type AiSkipReason =
@@ -108,6 +119,8 @@ interface ChannelTransport {
   historyChannelFilter?: string;
   /** Human label used in activity-log lines ("SMS" / "Instagram" / …). */
   label: string;
+  /** How a thread row reads to the model. Defaults to its `body`. */
+  turnText?: (row: { body?: string; subject?: string }) => string;
   /** Per-channel opt-out flag check. */
   isOptedOut: (contact: Contact) => boolean;
   /** Send the reply; returns the provider message id + the from address. */
@@ -205,6 +218,23 @@ function getChannelTransport(
       outboundRowExtras: (sid) => ({ channel: platform, metaMessageId: sid }),
     };
   }
+  if (channelId === "email") {
+    // DRAFT-ONLY: the orchestrator forces suggestOnly for this channel, so
+    // `send` is never called. An approved draft goes out through
+    // /api/comms/email/send like a manual composer reply.
+    return {
+      messagesCollection: "emailMessages",
+      label: "Email",
+      turnText: (row) => emailTurnText(row.subject ?? "", row.body ?? ""),
+      isOptedOut: (c) => c.emailOptedOut === true,
+      send: async () => {
+        throw new Error(
+          "Email AI is draft-only; approved drafts send via /api/comms/email/send.",
+        );
+      },
+      outboundRowExtras: () => ({}),
+    };
+  }
   // web-chat + voice have dedicated orchestrators; they never reach here.
   throw new Error(
     `maybeRespondWithAi does not support channel "${channelId}".`,
@@ -220,12 +250,23 @@ function getChannelTransport(
 // keeps the existing call sites unchanged.
 const isWithinHours = isWithinBusinessHours;
 
+/** Email bodies can run to megabytes; the model sees at most this much of each. */
+const EMAIL_TURN_MAX_CHARS = 4000;
+
+/** How one email reads to the model: its subject, then its body, capped. */
+export function emailTurnText(subject: string, body: string): string {
+  const text = subject.trim() ? `Subject: ${subject.trim()}\n\n${body}` : body;
+  return text.slice(0, EMAIL_TURN_MAX_CHARS);
+}
+
 async function loadRecentHistory(
   contactId: string,
   limit: number,
   excludeBody: string,
   messagesCollection: string,
   channelFilter?: string,
+  turnText: (row: { body?: string; subject?: string }) => string = (row) =>
+    row.body ?? "",
 ): Promise<AiChatMessage[]> {
   const safeLimit = Math.max(1, Math.min(50, limit));
   // With a channel filter (metaMessages mixes messenger + instagram rows in
@@ -247,16 +288,18 @@ async function loadRecentHistory(
     const data = d.data() as {
       direction?: string;
       body?: string;
+      subject?: string;
       channel?: string;
     };
     if (!data.body) continue;
     if (channelFilter && data.channel !== channelFilter) continue;
-    if (data.direction === "inbound" && data.body.trim() === excludeBody.trim()) {
+    const text = turnText(data);
+    if (data.direction === "inbound" && text.trim() === excludeBody.trim()) {
       continue;
     }
     turns.push({
       role: data.direction === "outbound" ? "assistant" : "user",
-      content: data.body,
+      content: text,
     });
   }
   return turns;
@@ -378,6 +421,7 @@ export async function maybeRespondWithAi(
     replyTo,
     metaChannel,
     inboundProvider,
+    emailReply,
   } = input;
   const eff = agent.effective;
   const transport = getChannelTransport(channelId, metaChannel, inboundProvider);
@@ -386,10 +430,16 @@ export async function maybeRespondWithAi(
   const conversationChannel = (metaChannel ?? channelId) as ConversationChannel;
 
   // Guard: a business we are mystery-shopping (Prospecting) must never get a
-  // bot's answer to our enquiry. First, and fail closed: if the shops can't be
-  // read, stay quiet.
-  if (channelId === "whatsapp") {
-    const held = await mysteryShopHoldsAi(subAccount, subAccountId, contact.id, replyTo).catch((err) => {
+  // bot's answer to our enquiry — on email, not even a draft. First, and fail
+  // closed: if the shops can't be read, stay quiet.
+  const shopHold =
+    channelId === "whatsapp"
+      ? mysteryShopHoldsAi
+      : channelId === "email"
+        ? mysteryShopHoldsEmailAi
+        : null;
+  if (shopHold) {
+    const held = await shopHold(subAccount, subAccountId, contact.id, replyTo).catch((err) => {
       console.error("[ai/respond] mystery-shop check failed — not replying", err);
       return "check_failed" as const;
     });
@@ -403,7 +453,7 @@ export async function maybeRespondWithAi(
         content:
           held === "check_failed"
             ? "AI reply skipped — the mystery-shop check could not run, so the AI stays quiet to be safe."
-            : "AI reply skipped — this number is being mystery-shopped (Prospecting).",
+            : `AI reply skipped — this ${channelId === "email" ? "address" : "number"} is being mystery-shopped (Prospecting).`,
         meta: { reason, channel: channelId },
       });
       return { kind: "skipped", reason };
@@ -473,7 +523,21 @@ export async function maybeRespondWithAi(
     incomingMessage,
     eff.escalationKeywords,
   );
-  if (triggered) {
+  // Email never sends an escalation email: it can land back in the connected
+  // mailbox, be imported as a new inbound, escalate again — one email per
+  // sync pass, forever. The keyword is flagged on the draft for the person
+  // who reviews it instead, and the draft is still written.
+  const draftEscalation = triggered && channelId === "email" ? triggered : null;
+  if (draftEscalation) {
+    await logActivity({
+      contactId: contact.id,
+      agencyId: subAccount.agencyId,
+      subAccountId,
+      type: "ai_escalated",
+      content: `Escalation keyword "${draftEscalation}" in an inbound email — flagged on the AI draft for review (no notification email).`,
+      meta: { reason: "escalation_keyword", keyword: draftEscalation, channel: channelId },
+    });
+  } else if (triggered) {
     if (eff.escalationNotifyEmail) {
       const appUrl =
         process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://leadstack.dev";
@@ -531,7 +595,10 @@ export async function maybeRespondWithAi(
     });
     return { kind: "skipped", reason: "bot_off" };
   }
-  const suggestOnly = controls.botMode === "suggest";
+  // Email is draft-only by design: even a conversation in "auto" mode never
+  // sends an email — the reply always lands as a pendingDraft for a person to
+  // approve. Off still silences (handled above).
+  const suggestOnly = controls.botMode === "suggest" || channelId === "email";
 
   // Guard: bot-to-bot reply loop (see loop-guard.ts). Before the LLM call, so
   // a tripped loop spends nothing. Suggest mode sends nothing, so cannot loop.
@@ -595,6 +662,7 @@ export async function maybeRespondWithAi(
         incomingMessage,
         transport.messagesCollection,
         transport.historyChannelFilter,
+        transport.turnText,
       ),
       buildContactContextBlock(contact).catch((err) => {
         console.warn(
@@ -643,11 +711,15 @@ export async function maybeRespondWithAi(
       subAccountId,
       agencyId: subAccount.agencyId,
       contactName: contact.name ?? "",
-      contactPhone: contact.phone ?? (metaChannel ? "" : replyTo),
+      contactPhone:
+        contact.phone ??
+        (metaChannel || channelId === "email" ? "" : replyTo),
       channel: conversationChannel,
       body: completion.text,
       model: completion.model,
       tokens: completion.totalTokens,
+      ...(channelId === "email" && emailReply ? { emailReply } : {}),
+      ...(draftEscalation ? { escalationKeyword: draftEscalation } : {}),
     });
     runAfterResponse(() => incrementChannelTokens(subAccountId, channelId, completion.totalTokens));
     return {

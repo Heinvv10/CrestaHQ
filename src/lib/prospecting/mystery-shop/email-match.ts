@@ -102,7 +102,7 @@ export function senderMatches(from: string, target: string, domainTrusted: boole
 }
 
 /** The sender is in the shop's target set: its target address (+ its domain if trusted), or a form shop's senders. */
-function senderInTargetSet(from: string, s: EmailShopCandidate): boolean {
+export function senderInTargetSet(from: string, s: EmailShopCandidate): boolean {
   if (!s.senders) return senderMatches(from, s.target, s.targetDomainTrusted === true);
   const f = from.trim().toLowerCase();
   if (!f.includes("@")) return false;

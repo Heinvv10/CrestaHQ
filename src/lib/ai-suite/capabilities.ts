@@ -14,6 +14,9 @@ import { AGENCY_GATE_CAPABILITIES } from "./capabilities/agency-gates";
 import { AGENCY_SNAPSHOT_CAPABILITIES } from "./capabilities/agency-snapshots";
 import { BILLING_PLAN_CAPABILITIES } from "./capabilities/billing-plans";
 import { BILLING_CHARGE_CAPABILITIES } from "./capabilities/billing-charges";
+import { AGENCY_BILLING_CAPABILITIES } from "./capabilities/agency-billing";
+import { AGENCY_USAGE_CAPABILITIES } from "./capabilities/agency-usage";
+import { AGENCY_SETUP_CAPABILITIES } from "./capabilities/agency-setup";
 import { ACCESS_CAPABILITIES } from "./capabilities/access";
 import {
   WORKSPACE_LOOKUP_CAPABILITIES,
@@ -113,6 +116,9 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...AGENCY_SNAPSHOT_CAPABILITIES,
   ...BILLING_PLAN_CAPABILITIES,
   ...BILLING_CHARGE_CAPABILITIES,
+  ...AGENCY_BILLING_CAPABILITIES,
+  ...AGENCY_USAGE_CAPABILITIES,
+  ...AGENCY_SETUP_CAPABILITIES,
 
   // ═══ Sub-account level ═══════════════════════════════════════════════════
   ...ACCESS_CAPABILITIES,

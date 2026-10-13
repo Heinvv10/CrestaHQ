@@ -49,6 +49,8 @@ export function SubAccountBillingSection({ subAccount, disabled }: Props) {
 
   // One-time charges (e.g. "Web design — $500"). Independent of plans.
   const [charges, setCharges] = useState<BillingChargeResponse[] | null>(null);
+  // The server's default for a new charge: the overage currency (provider's own when unbilled).
+  const [chargeDefaultCurrency, setChargeDefaultCurrency] = useState<string | null>(null);
   const [chargeDesc, setChargeDesc] = useState("");
   const [chargeAmount, setChargeAmount] = useState("");
   const [chargeBusy, setChargeBusy] = useState<
@@ -62,8 +64,10 @@ export function SubAccountBillingSection({ subAccount, disabled }: Props) {
       );
       const data = (await res.json().catch(() => ({}))) as {
         charges?: BillingChargeResponse[];
+        currency?: string;
       };
       setCharges(data.charges ?? []);
+      setChargeDefaultCurrency(data.currency ?? null);
     } catch {
       setCharges([]);
     }
@@ -136,10 +140,10 @@ export function SubAccountBillingSection({ subAccount, disabled }: Props) {
   const hasLiveSubscription = state === "active" || state === "grace";
   const anyBusy = busy !== null || disabled;
 
-  // Charge currency: follow the client's existing billing currency, else the
-  // first active plan's, else USD. Shown as a static prefix on the input.
-  const chargeCurrency =
-    billing?.currency ?? activePlans[0]?.currency ?? "usd";
+  // Charge currency: the client's billing currency, else the server's
+  // default (the payment provider's own, as its usage overage is valued).
+  // Unknown until the charges load: the server then decides.
+  const chargeCurrency = billing?.currency || chargeDefaultCurrency;
   const chargeAmountCents = useMemo(() => {
     const parsed = Number.parseFloat(chargeAmount.trim());
     if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -238,7 +242,7 @@ export function SubAccountBillingSection({ subAccount, disabled }: Props) {
           body: JSON.stringify({
             description: chargeDesc.trim(),
             amountCents: chargeAmountCents,
-            currency: chargeCurrency,
+            ...(chargeCurrency ? { currency: chargeCurrency } : {}),
             ...(sendEmail && emailTo.trim() ? { emailTo: emailTo.trim() } : {}),
           }),
         },
@@ -590,7 +594,7 @@ export function SubAccountBillingSection({ subAccount, disabled }: Props) {
                 <Input
                   value={chargeAmount}
                   onChange={(e) => setChargeAmount(e.target.value)}
-                  placeholder={`Amount (${chargeCurrency.toUpperCase()})`}
+                  placeholder={chargeCurrency ? `Amount (${chargeCurrency.toUpperCase()})` : "Amount"}
                   inputMode="decimal"
                   disabled={anyBusy || chargeBusy !== null}
                   className="h-8 text-sm"

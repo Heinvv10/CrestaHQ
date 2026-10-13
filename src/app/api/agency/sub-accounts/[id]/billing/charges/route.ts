@@ -11,6 +11,7 @@ import {
 import { renderSystemEmail } from "@/lib/comms/system-email";
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import { formatBillingPrice } from "@/lib/billing/status";
+import { usageCurrency } from "@/lib/billing/currency";
 import {
   BillingError,
   createOneTimeCharge,
@@ -44,7 +45,10 @@ export async function GET(
       access.agencyId!,
       subAccountId,
     );
-    return NextResponse.json({ charges });
+    // The currency a new charge defaults to: the one its usage overage is
+    // valued in, so invoicing the overage bills what the dialog showed.
+    const sub = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
+    return NextResponse.json({ charges, currency: usageCurrency(sub.data()?.billing) });
   } catch (err) {
     if (err instanceof BillingError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
@@ -81,10 +85,13 @@ export async function POST(
   }
 
   try {
+    // Omitted: the currency the client's usage overage is valued in.
+    const requested =
+      body.currency ?? usageCurrency((await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data()?.billing);
     const { description, amountCents, currency } = validateChargeInput(
       body.description,
       body.amountCents,
-      body.currency ?? "usd",
+      requested,
     );
     const { charge, checkoutUrl } = await createOneTimeCharge({
       agencyId: access.agencyId!,

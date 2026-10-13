@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createMemoryFirestore } from "./memory-firestore";
+import { FieldValue } from "firebase-admin/firestore";
 
 /** The in-memory Firestore's cursor: position-based, and loud when misused. */
 
@@ -91,5 +92,26 @@ describe("recursiveDelete", () => {
     mem.seed("contacts/c10", { n: 3 });
     await mem.db.recursiveDelete(mem.db.doc("contacts/c1"));
     expect(mem.all().map((d) => d.path)).toEqual(["contacts/c10"]);
+  });
+});
+
+describe("set with mergeFields", () => {
+  it("replaces each listed field whole (no deep merge), keeps the rest, and resolves transforms inside", async () => {
+    const { db } = createMemoryFirestore();
+    const ref = db.doc("c/1");
+    await ref.set({ keep: 1, draft: { a: 1, old: true } });
+    await ref.set({ draft: { a: 2, at: FieldValue.serverTimestamp() }, extra: "x" }, { mergeFields: ["draft", "extra"] });
+    const data = (await ref.get()).data()!;
+    expect(data).toMatchObject({ keep: 1, extra: "x", draft: { a: 2 } });
+    expect(data.draft).not.toHaveProperty("old");
+    expect((data.draft as { at: unknown }).at).toBeInstanceOf(Date);
+    await ref.set({ draft: null }, { mergeFields: ["draft"] });
+    expect((await ref.get()).data()).toMatchObject({ keep: 1, draft: null });
+  });
+
+  it("throws for a listed field that is not in the data, as the Admin SDK does", async () => {
+    const { db } = createMemoryFirestore();
+    await expect(db.doc("c/1").set({ a: 1 }, { mergeFields: ["b"] })).rejects.toThrow(/not in the data/);
+    await expect(db.doc("c/1").set({ a: 1, b: undefined }, { mergeFields: ["a", "b"] })).rejects.toThrow(/not in the data/);
   });
 });

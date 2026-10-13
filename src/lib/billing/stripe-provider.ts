@@ -2,10 +2,11 @@ import "server-only";
 
 import type Stripe from "stripe";
 import { getStripeServer } from "@/lib/stripe/server";
-import { BillingError } from "./errors";
+import { BillingError, SubscriptionNotOnAccount } from "./errors";
 import { SUB_ACCOUNT_PLAN_KIND } from "./kinds";
 import type {
   BillingProvider,
+  CancelOutcome,
   CheckoutResult,
   CreatePlanInput,
   CreatePlanResult,
@@ -181,8 +182,40 @@ export class StripeBillingProvider implements BillingProvider {
     return { subscriptionId: sub.id };
   }
 
-  async cancelSubscription(subscriptionId: string): Promise<void> {
-    await this.stripe.subscriptions.cancel(subscriptionId);
+  /** A subscription Stripe reports ended is `already_cancelled`. One it
+   *  doesn't have (resource_missing) is only when this account has the
+   *  customer and nothing of theirs still charges — a wrong key or test vs
+   *  live proves nothing — else it fails closed. Any other failure throws. */
+  async cancelSubscription(subscriptionId: string, customerId: string | null): Promise<CancelOutcome> {
+    try {
+      await this.stripe.subscriptions.cancel(subscriptionId);
+      return "cancelled";
+    } catch (err) {
+      if ((err as { code?: unknown }).code === "resource_missing") {
+        if (customerId && (await this.customerHasNothingLive(customerId))) return "already_cancelled";
+        throw new SubscriptionNotOnAccount(
+          "Subscription not found on this Stripe account — check the dashboard and the configured key; nothing changed.",
+        );
+      }
+      const sub = await this.stripe.subscriptions.retrieve(subscriptionId).catch(() => null);
+      if (sub?.status === "canceled" || sub?.status === "incomplete_expired") return "already_cancelled";
+      throw err;
+    }
+  }
+
+  /** Canceled or incomplete_expired on this account; any read failure is false. */
+  async subscriptionEnded(subscriptionId: string): Promise<boolean> {
+    const sub = await this.stripe.subscriptions.retrieve(subscriptionId).catch(() => null);
+    return sub?.status === "canceled" || sub?.status === "incomplete_expired";
+  }
+
+  /** True only when this account has the customer and none of their subscriptions charges. */
+  private async customerHasNothingLive(customerId: string): Promise<boolean> {
+    const customer = await this.stripe.customers.retrieve(customerId).catch(() => null);
+    if (!customer || ("deleted" in customer && customer.deleted)) return false;
+    const subs = await this.stripe.subscriptions.list({ customer: customerId, status: "all", limit: 100 });
+    if (subs.has_more) return false;
+    return !subs.data.some((s) => ["active", "trialing", "past_due", "unpaid", "incomplete", "paused"].includes(s.status));
   }
 
   async createManagementLink(

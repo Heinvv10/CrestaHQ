@@ -13,9 +13,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const stripeMock = {
   products: { create: vi.fn(), update: vi.fn() },
   prices: { create: vi.fn(), update: vi.fn() },
-  customers: { create: vi.fn() },
+  customers: { create: vi.fn(), retrieve: vi.fn() },
   checkout: { sessions: { create: vi.fn() } },
-  subscriptions: { retrieve: vi.fn(), update: vi.fn(), cancel: vi.fn() },
+  subscriptions: { retrieve: vi.fn(), update: vi.fn(), cancel: vi.fn(), list: vi.fn() },
   billingPortal: { sessions: { create: vi.fn() } },
 };
 
@@ -413,8 +413,74 @@ describe("switchSubscriptionPlan", () => {
 describe("cancelSubscription / createManagementLink", () => {
   it("cancels immediately", async () => {
     stripeMock.subscriptions.cancel.mockResolvedValue({ id: "sub_1" });
-    await provider.cancelSubscription("sub_1");
+    expect(await provider.cancelSubscription("sub_1", "cus_1")).toBe("cancelled");
     expect(stripeMock.subscriptions.cancel).toHaveBeenCalledWith("sub_1");
+  });
+
+  const missing = () => Object.assign(new Error("No such subscription"), { code: "resource_missing" });
+
+  it("one Stripe doesn't have is already ended when this account has the customer and nothing of theirs charges", async () => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(missing());
+    stripeMock.customers.retrieve.mockResolvedValueOnce({ id: "cus_1" });
+    stripeMock.subscriptions.list.mockResolvedValueOnce({ data: [{ id: "sub_0", status: "canceled" }], has_more: false });
+    expect(await provider.cancelSubscription("sub_1", "cus_1")).toBe("already_cancelled");
+    expect(stripeMock.subscriptions.list).toHaveBeenCalledWith({ customer: "cus_1", status: "all", limit: 100 });
+  });
+
+  it.each<[string, () => void]>([
+    ...["active", "trialing", "past_due", "unpaid", "incomplete", "paused"].map((status): [string, () => void] => [`the customer still has a ${status} subscription`, () => {
+      stripeMock.customers.retrieve.mockResolvedValueOnce({ id: "cus_1" });
+      stripeMock.subscriptions.list.mockResolvedValueOnce({ data: [{ id: "sub_0", status: "canceled" }, { id: "sub_2", status }], has_more: false });
+    }]),
+    ["the customer isn't on this account (a wrong key, test vs live)", () => {
+      stripeMock.customers.retrieve.mockRejectedValueOnce(Object.assign(new Error("No such customer"), { code: "resource_missing" }));
+    }],
+    ["the customer was deleted", () => {
+      stripeMock.customers.retrieve.mockResolvedValueOnce({ id: "cus_1", deleted: true });
+    }],
+    ["more subscriptions than one page", () => {
+      stripeMock.customers.retrieve.mockResolvedValueOnce({ id: "cus_1" });
+      stripeMock.subscriptions.list.mockResolvedValueOnce({ data: [], has_more: true });
+    }],
+  ])("one Stripe doesn't have fails closed when %s", async (_label, arrange) => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(missing());
+    arrange();
+    await expect(provider.cancelSubscription("sub_1", "cus_1")).rejects.toMatchObject({
+      name: "SubscriptionNotOnAccount", message: expect.stringContaining("not found on this Stripe account"),
+    });
+  });
+
+  it("one Stripe doesn't have, with no customer on record, fails closed", async () => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(missing());
+    await expect(provider.cancelSubscription("sub_1", null)).rejects.toMatchObject({ name: "SubscriptionNotOnAccount" });
+  });
+
+  it.each([["canceled", true], ["incomplete_expired", true], ["active", false], ["past_due", false], ["paused", false]] as const)(
+    "subscriptionEnded reads %s as ended=%s",
+    async (status, ended) => {
+      stripeMock.subscriptions.retrieve.mockResolvedValueOnce({ id: "sub_1", status });
+      expect(await provider.subscriptionEnded("sub_1")).toBe(ended);
+    },
+  );
+
+  it("subscriptionEnded is false when the subscription can't be read", async () => {
+    stripeMock.subscriptions.retrieve.mockRejectedValueOnce(Object.assign(new Error("No such subscription"), { code: "resource_missing" }));
+    expect(await provider.subscriptionEnded("sub_1")).toBe(false);
+  });
+
+  it.each(["canceled", "incomplete_expired"])("a refused cancel on a %s subscription has already ended", async (status) => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(new Error("invalid_request"));
+    stripeMock.subscriptions.retrieve.mockResolvedValueOnce({ id: "sub_1", status });
+    expect(await provider.cancelSubscription("sub_1", "cus_1")).toBe("already_cancelled");
+  });
+
+  it("a refused cancel on a live subscription (or one it can't read) still throws", async () => {
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(new Error("rate limited"));
+    stripeMock.subscriptions.retrieve.mockResolvedValueOnce({ id: "sub_1", status: "active" });
+    await expect(provider.cancelSubscription("sub_1", "cus_1")).rejects.toThrow("rate limited");
+    stripeMock.subscriptions.cancel.mockRejectedValueOnce(new Error("down"));
+    stripeMock.subscriptions.retrieve.mockRejectedValueOnce(new Error("down"));
+    await expect(provider.cancelSubscription("sub_1", "cus_1")).rejects.toThrow("down");
   });
 
   it("opens a billing portal session pointed back at the given URL", async () => {

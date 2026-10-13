@@ -310,6 +310,7 @@ export async function POST(request: Request) {
         googleCalendarEnabledByAgency: false,
         webVoiceEnabledByAgency: false,
         dialerEnabledByAgency: false,
+        emailAiDraftsEnabledByAgency: false,
         reviewsAiEnabledByAgency: false,
         reviewsAutoReplyEnabledByAgency: false,
         // Agent API ships OFF — an external LLM agent acting as sub-account

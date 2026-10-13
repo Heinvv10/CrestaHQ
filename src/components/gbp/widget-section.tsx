@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 import { Globe, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -107,6 +107,14 @@ function Card({ children }: { children: React.ReactNode }) {
 
 export function WidgetSection() {
   const { subAccountId, subAccount, isAdmin, loading } = useSubAccount();
+  // The newest widget id this page knows: the live doc's, or this page's own
+  // create / rotate / revoke answer, which the snapshot can trail by ~30 s.
+  // A Save names it, so saving again before the snapshot is not a false 409.
+  const liveId = subAccount?.gbpWidgetMeta?.publicId ?? null;
+  const knownId = useRef<string | null>(liveId);
+  useEffect(() => {
+    knownId.current = liveId;
+  }, [liveId]);
   // The last call's answer, pinned to the latest snapshot when it landed (one
   // that arrived mid-request may predate the write): any newer snapshot of
   // the doc wins over it.
@@ -127,6 +135,7 @@ export function WidgetSection() {
       onConfirm={async () => {
         const { ok, data } = await call(api, "DELETE");
         if (ok) {
+          knownId.current = null;
           settle(null);
           toast.success("Widget revoked.");
         } else toast.error(data.error ?? "That didn't work. Please try again.");
@@ -146,13 +155,13 @@ export function WidgetSection() {
   }
   return (
     <Card>
-      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} onSettled={settle} />
+      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} knownId={knownId} onSettled={settle} />
       {meta && <div className="mt-3 flex flex-wrap gap-2">{revoke}</div>}
     </Card>
   );
 }
 
-function WidgetForm({ api, meta, mapsUri, onSettled }: { api: string; meta: ShownWidget | null; mapsUri: string | null | undefined; onSettled: (meta: ShownWidget) => void }) {
+function WidgetForm({ api, meta, mapsUri, knownId, onSettled }: { api: string; meta: ShownWidget | null; mapsUri: string | null | undefined; knownId: RefObject<string | null>; onSettled: (meta: ShownWidget) => void }) {
   const [enabled, setEnabled] = useState(meta?.enabled ?? true);
   const [origins, setOrigins] = useState((meta?.allowedOrigins ?? []).join("\n"));
   const [maxReviews, setMaxReviews] = useState(String(meta?.maxReviews ?? 12));
@@ -164,13 +173,20 @@ function WidgetForm({ api, meta, mapsUri, onSettled }: { api: string; meta: Show
   const save = async () => {
     setBusy(true);
     const allowedOrigins = origins.split("\n").map((o) => o.trim()).filter(Boolean);
-    const { ok, data } = await call(api, "PUT", { enabled, allowedOrigins, maxReviews: Number(maxReviews), layout, theme });
+    // The newest widget this page knows of: a stale form must not overwrite a newer one.
+    const expectedPublicId = knownId.current;
+    const { ok, data } = await call(api, "PUT", { enabled, allowedOrigins, maxReviews: Number(maxReviews), layout, theme, expectedPublicId });
     setBusy(false);
     if (ok && data.widget) {
+      knownId.current = data.widget.publicId;
       setOrigins(data.widget.allowedOrigins.join("\n"));
       setErrors([]);
       onSettled(data.widget);
       toast.success("Widget saved.");
+      return;
+    }
+    if (data.code === "widget_changed") {
+      toast.error(data.error ?? "The widget changed since this page loaded. Reload to see it, then save again.");
       return;
     }
     setErrors(data.details?.length ? data.details.map((d) => `${d.value} — ${REASONS[d.reason] ?? d.reason}`) : [data.error ?? "That didn't work. Please try again."]);
@@ -229,7 +245,10 @@ function WidgetForm({ api, meta, mapsUri, onSettled }: { api: string; meta: Show
             onConfirm={async () => {
               const { ok, data } = await call(`${api}/rotate`, "POST");
               if (ok) {
-                if (data.widget) onSettled(data.widget);
+                if (data.widget) {
+                  knownId.current = data.widget.publicId;
+                  onSettled(data.widget);
+                }
                 toast.success("New widget id issued — update the snippet on your site.");
               } else toast.error(data.error ?? "That didn't work. Please try again.");
             }}
