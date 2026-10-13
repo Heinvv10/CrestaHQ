@@ -106,8 +106,21 @@ export interface BillingProvider {
     input: SwitchSubscriptionInput
   ): Promise<{ subscriptionId: string }>;
 
-  /** Cancel a subscription immediately. */
-  cancelSubscription(subscriptionId: string): Promise<void>;
+  /**
+   * Cancel a subscription immediately. `already_cancelled`: the provider had
+   * already ended it, or no longer has it AND has the customer
+   * (`customerId`, on this account) with nothing live. Not found with no
+   * such proof throws `SubscriptionNotOnAccount`; any other failure throws:
+   * the caller cannot know it stopped.
+   */
+  cancelSubscription(subscriptionId: string, customerId: string | null): Promise<CancelOutcome>;
+
+  /**
+   * Whether the provider reports this subscription ended (a read, never a
+   * write): after a cancel that failed or timed out, the cancel may still
+   * have landed. False when it is live, unknown, or can't be read.
+   */
+  subscriptionEnded(subscriptionId: string): Promise<boolean>;
 
   /**
    * A hosted page where the payer manages their own billing (card, invoices).
@@ -115,6 +128,8 @@ export interface BillingProvider {
    */
   createManagementLink(input: ManagementLinkInput): Promise<{ url: string }>;
 }
+
+export type CancelOutcome = "cancelled" | "already_cancelled";
 
 /** How a mid-cycle plan switch should be charged. */
 export type PlanSwitchTiming =

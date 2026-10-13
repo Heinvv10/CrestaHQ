@@ -144,7 +144,7 @@ export interface MemoryDocRef {
   id: string;
   path: string;
   get: () => Promise<MemoryDocSnapshot>;
-  set: Write<[Data, { merge?: boolean }?]>;
+  set: Write<[Data, { merge?: boolean; mergeFields?: string[] }?]>;
   update: Write<[Data, { lastUpdateTime?: UpdateTime }?]>;
   create: Write<[Data]>;
   delete: Write<[]>;
@@ -179,7 +179,7 @@ export interface MemoryQuery {
   count: () => { get: () => Promise<{ data: () => { count: number } }> };
 }
 
-type TxWrite = (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) => MemoryTx;
+type TxWrite = (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean; mergeFields?: string[] }) => MemoryTx;
 interface MemoryTx extends Record<"set" | "update" | "create", TxWrite> {
   get: (target: MemoryDocRef | MemoryQuery) => Promise<unknown>;
   getAll: (...refs: MemoryDocRef[]) => Promise<MemoryDocSnapshot[]>;
@@ -206,8 +206,23 @@ export function createMemoryFirestore() {
     };
   };
 
-  const writeSet = (path: string, data: Data, merge: boolean) => {
-    const next = merge ? clone(store.get(path) ?? {}) : {};
+  type SetOpts = { merge?: boolean; mergeFields?: string[] };
+  const writeSet = (path: string, data: Data, opts?: SetOpts) => {
+    // mergeFields: each listed top-level field is REPLACED as a whole (a map
+    // is not deep-merged), everything else on the doc is kept — as Firestore.
+    if (opts?.mergeFields) {
+      const next = clone(store.get(path) ?? {});
+      for (const f of opts.mergeFields) {
+        // An undefined value is dropped (ignoreUndefinedProperties), so it is not "in the data" either.
+        if (data[f] === undefined) throw new Error(`memory-firestore: mergeFields "${f}" is not in the data`);
+        delete next[f];
+        mergeInto(next, { [f]: data[f] });
+      }
+      store.set(path, next);
+      bump(path);
+      return;
+    }
+    const next = opts?.merge === true ? clone(store.get(path) ?? {}) : {};
     mergeInto(next, data);
     store.set(path, next);
     bump(path);
@@ -231,7 +246,7 @@ export function createMemoryFirestore() {
 
   const writeCreate = (path: string, data: Data) => {
     if (store.has(path)) throw Object.assign(new Error(`6 ALREADY_EXISTS: ${path}`), { code: 6 });
-    writeSet(path, data, false);
+    writeSet(path, data);
   };
 
   function docRef(path: string): MemoryDocRef {
@@ -239,7 +254,7 @@ export function createMemoryFirestore() {
       id: path.split("/").pop()!,
       path,
       get: () => { const snap = snapshot(path); return tick().then(() => snap); },
-      set: (data, opts) => tick().then(() => writeSet(path, data, opts?.merge === true)),
+      set: (data, opts) => tick().then(() => writeSet(path, data, opts)),
       update: (patch, pre) => tick().then(() => writeUpdate(path, patch, pre)),
       create: (data) => tick().then(() => writeCreate(path, data)),
       delete: () => tick().then(() => remove(path)),
@@ -386,7 +401,7 @@ export function createMemoryFirestore() {
       const queue = (w: () => void) => (writes.push(w), b);
       const b = {
         set: (ref: MemoryDocRef, data: Data, opts?: { merge?: boolean }) =>
-          queue(() => writeSet(ref.path, data, opts?.merge === true)),
+          queue(() => writeSet(ref.path, data, opts)),
         update: (ref: MemoryDocRef, patch: Data) => queue(() => writeUpdate(ref.path, patch)),
         create: (ref: MemoryDocRef, data: Data) => queue(() => writeCreate(ref.path, data)),
         delete: (ref: MemoryDocRef) => queue(() => remove(ref.path)),
@@ -415,7 +430,7 @@ export function createMemoryFirestore() {
             snaps.forEach(note);
             return snaps;
           },
-          set: (ref, data, opts) => queue(() => writeSet(ref.path, data, opts?.merge === true)),
+          set: (ref, data, opts) => queue(() => writeSet(ref.path, data, opts)),
           update: (ref, patch) => queue(() => writeUpdate(ref.path, patch)),
           create: (ref, data) => queue(() => writeCreate(ref.path, data)),
           delete: (ref) => queue(() => remove(ref.path)),

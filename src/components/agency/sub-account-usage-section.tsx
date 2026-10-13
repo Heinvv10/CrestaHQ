@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Gauge } from "lucide-react";
+import { formatBillingPrice } from "@/lib/billing/status";
 import type { UsageQuotas } from "@/types/usage";
 
 /**
@@ -31,7 +32,8 @@ interface UsageResponse {
     >;
     totalCents: number;
   };
-  currency?: string | null;
+  /** The plan's currency, else the payment provider's (the route resolves it). */
+  currency: string;
 }
 
 const UNITS: {
@@ -79,11 +81,6 @@ const UNITS: {
     quotaToLedger: (q) => q * 60,
   },
 ];
-
-function formatCents(cents: number, currency?: string | null): string {
-  const code = (currency ?? "usd").toUpperCase();
-  return `${code} ${(cents / 100).toFixed(2)}`;
-}
 
 export function SubAccountUsageSection({
   subAccountId,
@@ -188,7 +185,7 @@ export function SubAccountUsageSection({
             <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
               <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
                 Overage accruing this month:{" "}
-                {formatCents(data.overage.totalCents, data.currency)}
+                {formatBillingPrice(data.overage.totalCents, data.currency)}
               </p>
               <p className="mt-0.5 text-[11px] text-muted-foreground">
                 Usage beyond the included allowance at your configured rates.

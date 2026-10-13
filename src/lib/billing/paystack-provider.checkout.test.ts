@@ -184,12 +184,88 @@ describe("cancelSubscription", () => {
       })
       .mockResolvedValueOnce({});
 
-    await provider.cancelSubscription("SUB_1");
+    expect(await provider.cancelSubscription("SUB_1", "CUS_1")).toBe("cancelled");
 
     expect(call(1)).toMatchObject({
       path: "/subscription/disable",
       body: { code: "SUB_1", token: "tok_1" },
     });
+  });
+
+  const sub = (status?: string) => ({ subscription_code: "SUB_1", email_token: "tok_1", next_payment_date: null, ...(status ? { status } : {}) });
+  const notFound = () => new BillingError("Paystack: Subscription not found", 400, 404);
+
+  it.each(["active", "attention"])("a %s subscription still charges: it is disabled", async (status) => {
+    paystackRequest.mockResolvedValueOnce(sub(status)).mockResolvedValueOnce({});
+    expect(await provider.cancelSubscription("SUB_1", "CUS_1")).toBe("cancelled");
+    expect(call(1).path).toBe("/subscription/disable");
+  });
+
+  it.each(["non-renewing", "completed", "cancelled"])("a %s subscription has already ended: no disable, not a failure", async (status) => {
+    paystackRequest.mockResolvedValueOnce(sub(status));
+    expect(await provider.cancelSubscription("SUB_1", "CUS_1")).toBe("already_cancelled");
+    expect(paystackRequest).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a subscription this account doesn't know (404)", () => {
+    it("is already ended when this account has the customer and nothing of theirs charges", async () => {
+      paystackRequest
+        .mockRejectedValueOnce(notFound())
+        .mockResolvedValueOnce({ id: 42 })
+        .mockResolvedValueOnce([{ subscription_code: "SUB_0", status: "cancelled" }, { subscription_code: "SUB_9", status: "completed" }]);
+      expect(await provider.cancelSubscription("SUB_1", "CUS_1")).toBe("already_cancelled");
+      expect(call(1).path).toBe("/customer/CUS_1");
+      expect(call(2).path).toBe("/subscription?customer=42&perPage=100&page=1");
+    });
+
+    it.each(["active", "attention"])("fails closed when the customer still has an %s subscription here", async (status) => {
+      paystackRequest
+        .mockRejectedValueOnce(notFound())
+        .mockResolvedValueOnce({ id: 42 })
+        .mockResolvedValueOnce([{ subscription_code: "SUB_2", status }]);
+      await expect(provider.cancelSubscription("SUB_1", "CUS_1")).rejects.toMatchObject({
+        name: "SubscriptionNotOnAccount", message: expect.stringContaining("still has a live subscription"),
+      });
+    });
+
+    it("fails closed when this account doesn't have the customer either (a wrong key, test vs live)", async () => {
+      paystackRequest.mockRejectedValueOnce(notFound()).mockRejectedValueOnce(new BillingError("Paystack: Customer not found", 400, 404));
+      await expect(provider.cancelSubscription("SUB_1", "CUS_1")).rejects.toThrow(
+        "Subscription not found on this Paystack account — check the dashboard and the configured key; nothing changed.",
+      );
+    });
+
+    it("fails closed with no customer on record", async () => {
+      paystackRequest.mockRejectedValueOnce(notFound());
+      await expect(provider.cancelSubscription("SUB_1", null)).rejects.toMatchObject({ name: "SubscriptionNotOnAccount" });
+      expect(paystackRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("a customer lookup that fails otherwise throws", async () => {
+      paystackRequest.mockRejectedValueOnce(notFound()).mockRejectedValueOnce(new BillingError("Paystack returned 500.", 502, 500));
+      await expect(provider.cancelSubscription("SUB_1", "CUS_1")).rejects.toThrow("Paystack returned 500.");
+    });
+  });
+
+  it.each([["cancelled", true], ["completed", true], ["non-renewing", true], ["active", false], ["attention", false], [undefined, false]] as const)(
+    "subscriptionEnded reads %s as ended=%s",
+    async (status, ended) => {
+      paystackRequest.mockResolvedValueOnce(sub(status));
+      expect(await provider.subscriptionEnded("SUB_1")).toBe(ended);
+      expect(paystackRequest).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("subscriptionEnded is false when the subscription can't be read (a 404 proves nothing)", async () => {
+    paystackRequest.mockRejectedValueOnce(notFound());
+    expect(await provider.subscriptionEnded("SUB_1")).toBe(false);
+  });
+
+  it("any other read failure, or a refused disable, still throws (fail closed)", async () => {
+    paystackRequest.mockRejectedValueOnce(new BillingError("Paystack returned 500.", 502, 500));
+    await expect(provider.cancelSubscription("SUB_1", "CUS_1")).rejects.toThrow("Paystack returned 500.");
+    paystackRequest.mockResolvedValueOnce(sub("active")).mockRejectedValueOnce(new BillingError("Paystack: refused", 400, 400));
+    await expect(provider.cancelSubscription("SUB_1", "CUS_1")).rejects.toThrow("refused");
   });
 });
 

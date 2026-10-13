@@ -19,3 +19,15 @@ export class BillingError extends Error {
     this.providerStatus = providerStatus;
   }
 }
+
+/**
+ * The subscription isn't on this deployment's provider account and nothing
+ * proves it ended (a wrong or test/live-mismatched key, another account):
+ * cancelling can't be confirmed, so the caller must fail closed.
+ */
+export class SubscriptionNotOnAccount extends BillingError {
+  constructor(message: string) {
+    super(message, 409);
+    this.name = "SubscriptionNotOnAccount";
+  }
+}

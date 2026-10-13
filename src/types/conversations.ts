@@ -79,11 +79,23 @@ export type ConversationBotMode = "off" | "suggest" | "auto";
  * approved (a human send clears it server-side) or discarded.
  */
 export interface ConversationDraft {
+  /** Set on every draft written since PR #405; absent on older drafts. */
+  id?: string;
   body: string;
   channel: ConversationChannel;
   model: string;
   tokens: number;
   createdAt: Timestamp | FieldValue | null;
+  /** Email drafts only: the subject and thread headers the approved reply is
+   *  sent with — taken from the inbound email it answers, never the model. */
+  emailReply?: {
+    subject: string;
+    inReplyTo?: string;
+    references: string[];
+  };
+  /** Email drafts only: the escalation keyword the inbound email matched.
+   *  Email never sends an escalation notification; the draft carries it. */
+  escalationKeyword?: string;
 }
 
 export interface ConversationDoc {

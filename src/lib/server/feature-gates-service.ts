@@ -66,6 +66,9 @@ export type AgencyGateField =
   // account the client owns, an explicit per-client decision.
   | "webVoiceEnabledByAgency"
   | "dialerEnabledByAgency"
+  // Email AI drafts — standalone: AI-written replies to a client's customers
+  // are an explicit per-client decision, not a plan perk.
+  | "emailAiDraftsEnabledByAgency"
   // Agent API — standalone: external agent access to a client's CRM is an
   // explicit per-client decision, not a plan perk.
   | "agentApiEnabledByAgency"

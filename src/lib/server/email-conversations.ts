@@ -115,6 +115,15 @@ export async function recordEmailMessage(
     tenantAgencyId = agencyId ?? "";
     if (!sub.exists || !agencyId)
       throw new Error("Email tenant does not exist.");
+    // A conversation this email starts opens with its AI off — unless Email AI
+    // drafts are on for the workspace (agency gate AND the channel enabled),
+    // then in "suggest", so the email gets a draft. Suggest never sends, on any
+    // channel. An existing conversation's mode is never touched.
+    const newBotMode =
+      sub.data()?.emailAiDraftsEnabledByAgency === true &&
+      (await tx.get(db.doc(`subAccounts/${input.subAccountId}/aiAgent/email`))).data()?.enabled === true
+        ? "suggest"
+        : "off";
     if (input.mailboxFence) {
       const mailbox = (
         await tx.get(
@@ -336,7 +345,7 @@ export async function recordEmailMessage(
           status: "open",
           // assigneeUid + contactEmail are set by the mirror above on every
           // message — re-stamping null here would undo them on create.
-          botMode: "off",
+          botMode: newBotMode,
           botPausedUntil: null,
           pendingDraft: null,
           unreadCount: 0,

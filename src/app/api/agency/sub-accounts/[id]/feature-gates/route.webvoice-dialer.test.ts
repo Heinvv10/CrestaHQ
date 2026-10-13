@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * PATCH /api/agency/sub-accounts/[id]/feature-gates — the Web Voice and
- * browser dialer gates (`webVoiceEnabled` / `dialerEnabled` → `…EnabledByAgency`).
+ * PATCH /api/agency/sub-accounts/[id]/feature-gates — the Web Voice,
+ * browser dialer and Email AI drafts gates (`webVoiceEnabled` /
+ * `dialerEnabled` / `emailAiDraftsEnabled` → `…EnabledByAgency`).
  * Real tenancy, real gate service, in-memory Firestore.
  */
 
@@ -36,6 +37,7 @@ afterEach(() => vi.restoreAllMocks());
 describe.each([
   ["webVoiceEnabled", "webVoiceEnabledByAgency", "dialerEnabledByAgency"],
   ["dialerEnabled", "dialerEnabledByAgency", "webVoiceEnabledByAgency"],
+  ["emailAiDraftsEnabled", "emailAiDraftsEnabledByAgency", "dialerEnabledByAgency"],
 ] as const)("%s", (key, field, other) => {
   it("only the agency owner may change it", async () => {
     expect(await patch({ [key]: true }, "uid_admin")).toBe(403);
@@ -61,6 +63,7 @@ describe("FEATURE_GATES", () => {
   it.each([
     ["web-voice", "webVoiceEnabledByAgency"],
     ["dialer", "dialerEnabledByAgency"],
+    ["email-ai-drafts", "emailAiDraftsEnabledByAgency"],
   ])("%s maps to %s and the assistant may never enable it", (name, field) => {
     expect(FEATURE_GATES[name]).toMatchObject({ field, assistantMayEnable: false });
   });
