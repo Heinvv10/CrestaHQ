@@ -70,7 +70,45 @@ describe("an extra listing's card", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(ADOPT);
     expect(JSON.parse(String(init.body))).toEqual({ expectedCurrentUrl: B_OLD, locationName: B });
-    expect(byId("gbp-listing-reviewurl-done")?.textContent).toContain("for Fixture North now use");
+    // The doc never updates here (a stalled Listen stream): the card follows the route's 200.
+    expect(byId("gbp-listing-reviewurl-matches")?.textContent).toBe("Review requests for Fixture North use its review link.");
+    expect(byId("gbp-listing-reviewurl-proposal")).toBeNull();
+  });
+
+  it("its configured link moved to something else while the proposal stayed: the doc wins", async () => {
+    seed(B_OLD);
+    await render(B);
+    await act(async () => (byId("gbp-listing-reviewurl-adopt") as HTMLButtonElement).click());
+    seed("https://g.page/r/someone-else/review");
+    await render(B);
+    expect(byId("gbp-listing-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-listing-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
+  });
+
+  it("a link reset to what it was before the adopt is not mistaken for that adopt", async () => {
+    seed(B_OLD);
+    await render(B);
+    await act(async () => (byId("gbp-listing-reviewurl-adopt") as HTMLButtonElement).click());
+    seed(B_PROPOSED); // the snapshot lands: adopted
+    await render(B);
+    expect(byId("gbp-listing-reviewurl-matches")).not.toBeNull();
+    seed(B_OLD); // another admin puts the old link back
+    await render(B);
+    expect(byId("gbp-listing-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-listing-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
+  });
+
+  it("a proposal that changed and changed back is not mistaken for the adopt", async () => {
+    seed(B_OLD);
+    await render(B);
+    await act(async () => (byId("gbp-listing-reviewurl-adopt") as HTMLButtonElement).click());
+    const bumped = ctx.subAccount.googleExtraListings as Array<Record<string, unknown>>;
+    ctx.subAccount = { ...ctx.subAccount, googleExtraListings: [{ ...bumped[0], newReviewUri: "https://review.fixture.example/changed-again" }] };
+    await render(B);
+    ctx.subAccount = { ...ctx.subAccount, googleExtraListings: bumped }; // the proposal is back, the configured link never moved
+    await render(B);
+    expect(byId("gbp-listing-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-listing-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
   });
 
   it("adopted: a quiet confirmation naming the listing", async () => {

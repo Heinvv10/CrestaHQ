@@ -581,6 +581,10 @@ cannot be replayed here) → `lib/gbp/sync/sweep.ts`:
 - **Sync:** `where googleEnabledByAgency == true`, filtered to connected +
   listing, never-run first then oldest `gbpSummary.lastRunAt`, **at most 25
   per call, 3 at a time**; the first `rate_limited` or `access_not_approved` (quota 0 — project-wide and permanent until approval) result stops new tenants.
+- **Fake credentials skipped (Google mode):** a tenant whose stored refresh
+  token is the fake's (`fake-refresh:…`) is never synced — E2E specs leave
+  their fixture tenant gated and connected in this same Firestore, and Google
+  would answer `revoked` and flag it reconnect-required mid-spec.
 - **Retention only:** `where gbpSummary.lastRunAt != null` (single-field
   inequality — no composite index) filtered to sub-accounts that cannot sync.
 - Fake mode: ONE query `where agencyId == GBP_FAKE_AGENCY_ID` feeds both.

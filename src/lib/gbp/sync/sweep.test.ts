@@ -18,6 +18,7 @@ import {
   resetSync,
   reviews,
   runs,
+  SCOPE,
   seedSub,
   setScenario,
 } from "@/test/gbp-sync-harness";
@@ -81,6 +82,105 @@ describe("selection", () => {
     expect(runs("sa_n25")).toHaveLength(0);
     expect(runs("sa_n26")).toHaveLength(0);
     expect(runs("sa_n22")).toHaveLength(1);
+  });
+});
+
+describe("in Google mode", () => {
+  // CI and dev share this Firestore: an E2E spec leaves its fixture tenant gated,
+  // connected and listed. The production sweep must not carry the fake's token to
+  // Google — it answers `revoked` and the fixture is flagged reconnect-required mid-spec.
+  const secretPath = (sa: string) => `subAccounts/${sa}/private/googleConnection`;
+  const realCredentials = (sa: string) =>
+    mem.seed(secretPath(sa), {
+      refreshToken: "1//real-refresh-token", accessToken: "ya29.real", accessTokenExpiresAt: Date.now() + 3_600_000, scopes: [SCOPE],
+    });
+  const googleMode = () => {
+    delete process.env.GBP_PROVIDER;
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetchSpy);
+    return fetchSpy;
+  };
+  /** Make the guard's first read of this tenant's secret reject (later reads, the sync's own, succeed). */
+  const failFirstSecretRead = (sa: string) => {
+    const real = storeDb.doc.bind(storeDb);
+    let failed = false;
+    vi.spyOn(storeDb, "doc").mockImplementation(((path: string) => {
+      const ref = real(path);
+      if (path !== secretPath(sa) || failed) return ref;
+      failed = true;
+      return { ...ref, get: () => Promise.reject(Object.assign(new Error("14 UNAVAILABLE"), { name: "GrpcError" })) };
+    }) as never);
+  };
+
+  it("never takes a tenant holding the fake's credentials to Google, and touches nothing of it", async () => {
+    realCredentials(OTHER_SA);
+    const before = mem.read(`subAccounts/${SA}`);
+    const fetchSpy = googleMode();
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    vi.unstubAllGlobals();
+    expect(result.processed).toBe(1);
+    expect(runs(OTHER_SA)).toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(runs(SA)).toHaveLength(0);
+    expect(mem.read(`subAccounts/${SA}`)).toEqual(before);
+  });
+
+  it("a credential read that fails syncs that tenant anyway — one bad read never stops the sweep", async () => {
+    realCredentials(OTHER_SA);
+    failFirstSecretRead(OTHER_SA);
+    googleMode();
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    vi.unstubAllGlobals();
+    expect(result.processed).toBe(1);
+    expect(runs(OTHER_SA)).toHaveLength(1);
+    expect(runs(SA)).toHaveLength(0);
+    expect(console.error).toHaveBeenCalledWith(`[cron/gbp-sync] credential check failed sa=${OTHER_SA}: GrpcError`);
+  });
+
+  it("a tenant with no secret doc is not mistaken for a fake one", async () => {
+    await storeDb.doc(secretPath(OTHER_SA)).delete();
+    googleMode();
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    vi.unstubAllGlobals();
+    expect(result.processed).toBe(1);
+    expect(runs(OTHER_SA)).toHaveLength(1);
+    expect(runs(SA)).toHaveLength(0);
+  });
+
+  it("reads the secret of only as many tenants as the cap needs", async () => {
+    mem.clear();
+    resetSync();
+    for (let i = 0; i < SWEEP_CAP + 5; i++) {
+      const sa = `sa_n${String(i).padStart(2, "0")}`;
+      seedSub(sa);
+      realCredentials(sa);
+      mem.seed(`subAccounts/${sa}`, { ...mem.read(`subAccounts/${sa}`)!, gbpSummary: { lastRunAt: new Date(Date.UTC(2026, 8, 1, i)) } });
+    }
+    realCredentials(SA);
+    realCredentials(OTHER_SA);
+    const reads: string[] = [];
+    const real = storeDb.doc.bind(storeDb);
+    vi.spyOn(storeDb, "doc").mockImplementation(((path: string) => (reads.push(path), real(path))) as never);
+    googleMode();
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    vi.unstubAllGlobals();
+    expect(result.processed).toBe(SWEEP_CAP);
+    // Never-run SA and OTHER_SA go first; the five most recently run wait their turn, unread.
+    for (let i = SWEEP_CAP - 2; i < SWEEP_CAP + 5; i++) expect(reads).not.toContain(secretPath(`sa_n${String(i).padStart(2, "0")}`));
+  });
+
+  it("the retention sweep never reads credentials — a failing secret read cannot stop the 30-day purge", async () => {
+    await runGbpSyncSweep({ sleep: noSleep }); // caches on SA and OTHER_SA
+    const real = storeDb.doc.bind(storeDb);
+    const reads: string[] = [];
+    vi.spyOn(storeDb, "doc").mockImplementation(((path: string) => {
+      reads.push(path);
+      return path.endsWith("/private/googleConnection") ? { get: () => Promise.reject(new Error("14 UNAVAILABLE")) } : real(path);
+    }) as never);
+    delete process.env.GBP_PROVIDER;
+    const result = await runGbpRetentionSweep();
+    expect(result).toMatchObject({ retained: 2, failed: 0 });
+    expect(reads.filter((p) => p.endsWith("/private/googleConnection"))).toEqual([]);
   });
 });
 
