@@ -133,12 +133,34 @@ describe("counting every call from the list", () => {
     await sweep();
     const mark = doc().reconciledThroughMs as number;
     expect(mark).toBe(Math.floor((t0 + 10 * MIN - 420_000) / 1000) * 1000);
+    el.state.listIgnoresStart = true; // our side bounds the range, whatever the API does
     call("conv_before1", mark - t0 - 1000, 10); // before the mark: a sweep already covered it
     call("conv_atmark1", mark - t0, 20);
     vi.setSystemTime(t0 + REFUNDABLE_MS);
     await sweep();
     await sweep();
     expect(await today()).toBe(20);
+  });
+
+  it("a slow sweep that lost the race never moves the watermark back", async () => {
+    await reserveGrant("sa1", CONN);
+    vi.setSystemTime(t0 + 10 * MIN);
+    // Hold the first sweep's list call until a later sweep has finished.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const real = el.fetchMock.getMockImplementation()!;
+    el.fetchMock.mockImplementationOnce(async (input) => {
+      await held;
+      return real(input);
+    });
+    const slow = sweep();
+    await vi.waitFor(() => expect(el.state.listCalls.length + el.fetchMock.mock.calls.length).toBeGreaterThan(0));
+    vi.setSystemTime(t0 + 20 * MIN);
+    await sweep();
+    const ahead = doc().reconciledThroughMs as number;
+    release();
+    await slow;
+    expect(doc().reconciledThroughMs).toBe(ahead);
   });
 
   it("is not blocked by a call that started after the range (still running)", async () => {

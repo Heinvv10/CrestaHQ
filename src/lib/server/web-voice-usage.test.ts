@@ -183,6 +183,20 @@ describe("markConnected", () => {
     expect(await claim(grantId, "conv_forged1")).toBe(true);
   });
 
+  it("a grant that lapses while its lookup is in flight is not claimed (it was already charged)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const grantId = await reserveGrant("sa1", CONN);
+    vi.setSystemTime(Date.now() + 2 * 60 * 1000 - 500);
+    el.live("conv_000001");
+    const real = el.fetchMock.getMockImplementation()!;
+    el.fetchMock.mockImplementationOnce(async (input) => {
+      vi.setSystemTime(Date.now() + 1000); // the lookup is slow: the grant lapses meanwhile
+      return real(input);
+    });
+    expect(await claim(grantId, "conv_000001")).toBe(false);
+    expect(usage().pending).toEqual({});
+  });
+
   it("one grant claims one conversation, even when two claims race", async () => {
     const grantId = await reserveGrant("sa1", CONN);
     el.live("conv_000001");

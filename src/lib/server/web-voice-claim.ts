@@ -14,6 +14,7 @@ import {
   WEB_VOICE_LIMITS,
   webVoiceUsagePath,
   type WebVoiceConnectionSecret,
+  type WebVoiceGrant,
   type WebVoiceUsageDoc,
 } from "@/types/web-voice";
 
@@ -54,19 +55,25 @@ async function lookupForClaim(input: {
   return null;
 }
 
-/** Pin `conversationId` as the one id this grant may be claimed with. False
- *  when the grant is gone (claimed, lapsed, never issued) or another id was
- *  tried first. */
-async function pinTriedId(ref: FirebaseFirestore.DocumentReference, grantId: string, conversationId: string): Promise<boolean> {
+/** Pin `conversationId` as the one id this grant may be claimed with, and
+ *  return the grant. Null when the grant is gone (claimed, lapsed, never
+ *  issued) or another id was tried first. */
+async function pinTriedId(
+  ref: FirebaseFirestore.DocumentReference,
+  grantId: string,
+  conversationId: string,
+): Promise<WebVoiceGrant | null> {
   const db = getAdminDb();
   return db.runTransaction(async (tx) => {
     const u = normalise((await tx.get(ref)).data() as Partial<WebVoiceUsageDoc> | undefined);
     const grant = own(u.grants, grantId);
-    if (!grant) return false;
-    if (grant.triedConversationId !== undefined) return grant.triedConversationId === conversationId;
+    if (!grant) return null;
+    if (grant.triedConversationId !== undefined) {
+      return grant.triedConversationId === conversationId ? grant : null;
+    }
     u.grants[grantId] = { ...grant, triedConversationId: conversationId };
     tx.set(ref, u);
-    return true;
+    return grant;
   });
 }
 
@@ -89,10 +96,9 @@ export async function markConnected(input: {
   const db = getAdminDb();
   const ref = db.doc(webVoiceUsagePath(input.subAccountId));
   // Written below as a key of `pending`: "__proto__" would set the prototype.
-  if (input.conversationId in Object.prototype) return false;
-  const grant = own((await readUsage(input.subAccountId)).grants, input.grantId);
-  if (!grant || !input.conn.agentId) return false;
-  if (!(await pinTriedId(ref, input.grantId, input.conversationId))) return false;
+  if (input.conversationId in Object.prototype || !input.conn.agentId) return false;
+  const grant = await pinTriedId(ref, input.grantId, input.conversationId);
+  if (!grant) return false;
 
   const conv = await lookupForClaim({
     subAccountId: input.subAccountId,
@@ -116,7 +122,7 @@ export async function markConnected(input: {
     // Only a grant that is still live can be claimed — a replayed token, or
     // one whose grant lapsed (and was charged), registers nothing.
     const live = own(u.grants, input.grantId);
-    if (!live || live.triedConversationId !== input.conversationId) return false;
+    if (!live) return false;
     // The grant already counts, so this only refuses when pending alone is
     // full (the limit was lowered, or the doc was written by older code).
     if (Object.keys(u.pending).length >= WEB_VOICE_LIMITS.concurrency) return false;

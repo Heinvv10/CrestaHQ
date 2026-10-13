@@ -93,11 +93,20 @@ describe("voiceEnabled on the widget config", () => {
       reconciledThroughMs: issuedAtMs - 30_000,
       reconciledAgentId: "agent1",
     });
-    expect(await config()).toMatchObject({ voiceEnabled: false });
+    const seed = mem.read(USAGE)!;
     expect(await config()).toMatchObject({ voiceEnabled: false });
     await flushAfterResponse();
     expect(el.state.listCalls).toHaveLength(1);
     expect(await config()).toMatchObject({ voiceEnabled: true });
+    // Full again within the minute: no second sweep until it has passed.
+    mem.seed(USAGE, seed);
+    expect(await config()).toMatchObject({ voiceEnabled: false });
+    await flushAfterResponse();
+    expect(el.state.listCalls).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 61_000);
+    expect(await config()).toMatchObject({ voiceEnabled: false });
+    await flushAfterResponse();
+    expect(el.state.listCalls).toHaveLength(2);
     vi.useRealTimers();
   });
 });
