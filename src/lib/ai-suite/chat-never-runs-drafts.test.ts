@@ -50,7 +50,7 @@ vi.mock("@/lib/comms/resend", async (orig) => ({ ...((await orig()) as object), 
 vi.mock("@/lib/comms/smtp", async (orig) => ({ ...((await orig()) as object), sendSmtpEmail: seams.sendSmtpEmail }));
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: async () => undefined }));
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 restoreBillingProviderAfterEach();
 const { AI_SUITE_CAPABILITIES, availableOn, getCapability } = await import("@/lib/ai-suite/capabilities");
 const { buildAgentContext } = await import("@/lib/api/agent-context");

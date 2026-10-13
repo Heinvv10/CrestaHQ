@@ -19,7 +19,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 beforeEach(() => {
   seedAgency();
   // The key's minter is not the approver, so `createdByUid` tells the paths apart.

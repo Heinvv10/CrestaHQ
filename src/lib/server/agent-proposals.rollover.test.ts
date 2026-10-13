@@ -19,7 +19,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 beforeEach(seedAgency);
 
 /** The same action from the agency key and from sa1's own key: one id. */

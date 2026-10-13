@@ -1,13 +1,14 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 const signInWithEmailAndPassword = vi.fn();
+const sendPasswordResetEmail = vi.fn();
 
 vi.mock("firebase/auth", () => ({
   signInWithEmailAndPassword: (...args: unknown[]) =>
     signInWithEmailAndPassword(...args),
   createUserWithEmailAndPassword: vi.fn(),
   signOut: vi.fn(),
-  sendPasswordResetEmail: vi.fn(),
+  sendPasswordResetEmail: (...args: unknown[]) => sendPasswordResetEmail(...args),
   EmailAuthProvider: { credential: vi.fn() },
   reauthenticateWithCredential: vi.fn(),
   updatePassword: vi.fn(),
@@ -18,7 +19,7 @@ vi.mock("./client", () => ({
 }));
 
 // Import after mocks are registered.
-import { signInWithEmail } from "./auth";
+import { sendPasswordReset, signInWithEmail } from "./auth";
 
 function networkError() {
   return Object.assign(new Error("network"), {
@@ -85,5 +86,55 @@ describe("signInWithEmail", () => {
     });
 
     expect(signInWithEmailAndPassword).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("sendPasswordReset", () => {
+  const replyWith = (body: unknown) =>
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => body })),
+    );
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    sendPasswordResetEmail.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("retries Firebase's fallback send through a network error", async () => {
+    replyWith({ fallback: true });
+    sendPasswordResetEmail
+      .mockRejectedValueOnce(networkError())
+      .mockResolvedValueOnce(undefined);
+
+    const promise = sendPasswordReset("a@b.com");
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(sendPasswordResetEmail).toHaveBeenCalledTimes(2);
+    expect(sendPasswordResetEmail).toHaveBeenLastCalledWith({}, "a@b.com");
+  });
+
+  it("throws immediately on a non-network Firebase error without retrying", async () => {
+    replyWith({ fallback: true });
+    sendPasswordResetEmail.mockRejectedValue(
+      Object.assign(new Error("bad email"), { code: "auth/invalid-email" }),
+    );
+
+    await expect(sendPasswordReset("a@b.com")).rejects.toMatchObject({
+      code: "auth/invalid-email",
+    });
+    expect(sendPasswordResetEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("never asks Firebase when the server sent the mail", async () => {
+    replyWith({ ok: true });
+    await sendPasswordReset("a@b.com");
+    expect(sendPasswordResetEmail).not.toHaveBeenCalled();
   });
 });

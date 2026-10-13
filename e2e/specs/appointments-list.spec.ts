@@ -2,6 +2,7 @@ import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { expect, test } from "@playwright/test";
 import { adminDb } from "../lib/admin";
 import { readEnv } from "../lib/env";
+import { FIRESTORE_LISTEN, stallFirestoreListen } from "../lib/firestore-listen";
 import { deleteScoped } from "../lib/guard";
 import { ensureBookingStatusSeed } from "../lib/seed";
 import { runId } from "../lib/run-id";
@@ -428,20 +429,7 @@ test("tabs, calendar filter, search, and a row-menu status change all work", asy
 
 // Firestore's Listen stream can sit silent for ~30 s after a write. Rows must
 // show the server-confirmed status from the mark-status response, not wait for
-// the snapshot delta. Holds (never aborts) the Listen channel.
-async function stallFirestoreListen(page: import("@playwright/test").Page) {
-  // The initial snapshot is in. Hold every NEW Listen request (stall, never
-  // abort), then cut the open stream with a brief offline blip so the SDK has
-  // to reconnect into the held requests: nothing more arrives from Firestore.
-  // Routing alone is not enough - the open stream is one long response that a
-  // route installed afterwards never sees.
-  await page.route(
-    /firestore\.googleapis\.com\/google\.firestore\.v1\.Firestore\/Listen\/channel/,
-    () => new Promise(() => {}),
-  );
-  await page.context().setOffline(true);
-  await page.context().setOffline(false);
-}
+// the snapshot delta (stallFirestoreListen).
 
 async function seedStallBooking(label: string, startAt: Date) {
   const { pageXSlug } = await ensureBookingStatusSeed();
@@ -754,11 +742,9 @@ test("a host reassigned from the Edit dialog shows on the row without the Firest
 // below stalls the Listen stream, so what the page shows can only have come
 // from the route's 2xx response.
 
-const LISTEN = /firestore\.googleapis\.com\/google\.firestore\.v1\.Firestore\/Listen\/channel/;
-
 /** Undo stallFirestoreListen: new Listen requests pass, and the SDK reconnects. */
 async function resumeFirestoreListen(page: import("@playwright/test").Page) {
-  await page.unroute(LISTEN);
+  await page.unroute(FIRESTORE_LISTEN);
   await page.context().setOffline(true);
   await page.context().setOffline(false);
 }

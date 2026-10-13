@@ -17,7 +17,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const post = async (id: string, body: Record<string, unknown>) => {
   const { POST } = await import("./route");
   return POST(new Request("http://localhost/x", { method: "POST", body: JSON.stringify(body) }), {
