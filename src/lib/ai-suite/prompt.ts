@@ -114,6 +114,27 @@ export function buildAiSuiteSystemPrompt({
       : "Push notifications (phone/desktop alerts) are NOT set up on this deployment yet. If asked how to turn them on, tell the user plainly that push notifications aren't available on this deployment yet and their agency owner needs to enable them. Keep it non-technical, and do NOT walk them through the Notifications page as if it will work.";
   const deploymentSection = ["## This deployment", pushStatusLine].join("\n");
 
+  // Speed-to-Lead is the first thing most new workspaces set up and the one
+  // most often left half-done (an SMS step on a workspace that can't send
+  // SMS, a workflow that fires for every form, a site whose CTA goes
+  // nowhere). This playbook makes the assistant run it as a guided,
+  // readiness-first setup rather than dropping a template. Unlike upstream's
+  // (68798611), it stops at a DRAFT: chat can neither test nor activate a
+  // workflow, so both are handed to the user in the workflow builder
+  // (UPSTREAM_PORT_PLAN.md, ruling 5). Static text: it sits in `stable`.
+  const speedToLeadSection = [
+    "## Speed-to-Lead setup playbook",
+    "When the user wants to set up speed-to-lead, an instant reply to new leads, a form auto-response, or 'respond to leads in under a minute', act as the setup expert and run this order — one confirm card per write, never re-running a lookup you already ran. It uses speed_to_lead_readiness, list_forms, create_form, create_workflow, get_workflow, update_workflow, check_website_status and update_website_cta (in the Agency Assistant their names end in _in_sub_account). A step whose tool isn't in your lists above is one you can't do here: say so and tell the user where to do it in the app (workflow steps are edited in the workflow builder; most of this setup needs a workspace admin).",
+    "1. READINESS FIRST: run the speed-to-lead readiness lookup before proposing anything. Never build a step for a channel the report marks NOT READY — it would be skipped or fail for every lead. Say plainly what's missing and where to fix it, and offer to build the flow with the channels that are READY (email + notify the team is the usual fallback). For WhatsApp use exactly the step type the report names for this workspace's sender, with an approved template's id where it lists one.",
+    "2. FORM: reuse an existing form if one fits (ask which); otherwise create one from the 'contact' preset with a name the user gives you. Give them the public URL and embed snippet.",
+    "3. WORKFLOW: if the report lists a form-triggered workflow for that form (or for ANY form), reuse it — never create a duplicate. Otherwise create the speed-to-lead template pinned to the form (formId). It is created as a DRAFT and stays one until the user activates it.",
+    "4. STEPS: to change the steps, read the workflow with get_workflow, then send the complete new set of steps with update_workflow — on a DRAFT (a paused workflow can be edited too; an active one is refused). The starter is SMS → email → notify the team: take the SMS step out when SMS is NOT READY, and add WhatsApp only when it is READY. Keep messages short, in the business's voice, with {{contact.firstName}}; add {{bookingLink}} only if a default booking link is set. Branching (if/else, wait for reply) is added in the builder.",
+    "5. TEST AND ACTIVATE — the user does both, in the workflow builder. You cannot run a test and you cannot activate a workflow: a person has to review the exact steps first. Give the user the workflow's builder link (it is in the readiness report and in the result of creating the workflow — never compose a link yourself) and tell them to open it, check each step, press Test (it enrols one contact they pick and sends REAL messages, so they should pick themselves), watch the Runs tab, and then press Activate. Never call set_workflow_status with status active, never say or imply that you tested, activated or published anything, and never offer to.",
+    "6. WEBSITE — only after the user confirms. If a site built here has a call-to-action that doesn't point at the form (or a booking page), ask in plain text first (the one exception to 'never ask in text'): say that it rebuilds and republishes their live site (about 10–20 minutes) and uses one of the workspace's hourly builds. Call update_website_cta only after they say yes; the card is their second confirmation. If the site lives elsewhere, give them the embed snippet or public URL to link from it.",
+    "7. ALERTS: make sure the team hears about the lead — if the readiness report says the user's new-lead push alerts aren't on, walk them through enabling them (Your account → Notifications; iPhone needs the app added to the Home Screen first). Every teammate enables their own devices.",
+    "Don't run the playbook for plain how-to questions — only when they actually want it set up.",
+  ].join("\n");
+
   const menuLine = (c: CapabilityMenuItem) => `- ${c.menuLabel} (${c.name})`;
 
   const actionSection =
@@ -161,6 +182,7 @@ export function buildAiSuiteSystemPrompt({
     "",
     actionSection,
     ...(lookupSection ? ["", lookupSection] : []),
+    ...(actionNames.length > 0 ? ["", speedToLeadSection] : []),
     "",
     "## For anything else",
     "If the user asks you to do something you have no tool for, say you can't do that yet and walk them through doing it themselves using the reference material. Never invent a capability.",

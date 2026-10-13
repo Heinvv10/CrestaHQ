@@ -21,7 +21,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/agent-proposal
 vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/agent-proposals-harness")).tenancyMock());
 vi.mock("@/lib/server/agent-enrolment-replay", async (orig) => (await import("@/test/agent-proposals-harness")).replayMock(orig));
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 
 const twilio = (fromNumber: string) => ({ enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber });

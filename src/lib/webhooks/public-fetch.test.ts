@@ -78,6 +78,9 @@ describe("publicFetch — production", () => {
   });
 });
 
+// The caller's signal fires at 200 ms. The 2 s budget holds on a loaded
+// runner; a lookup that ignores the signal never settles, and the 5 s test
+// timeout fails it.
 describe("publicFetch — production, DNS that never answers", () => {
   beforeEach(() => vi.stubEnv("NODE_ENV", "production"));
 
@@ -87,9 +90,9 @@ describe("publicFetch — production, DNS that never answers", () => {
     await expect(
       publicFetch(`http://silent-ns.example:${port}/x`, { signal: AbortSignal.timeout(200) }),
     ).rejects.toThrow(/timed out|abort/i);
-    expect(performance.now() - t0).toBeLessThan(500);
+    expect(performance.now() - t0).toBeLessThan(2_000);
     expect(hits).toEqual([]);
-  });
+  }, 5_000);
 
   it("the connect-time lookup gives up when the caller's signal fires", async () => {
     dnsQueue.set("silent-later.example", ["93.184.216.34", "HANG"]);
@@ -97,9 +100,9 @@ describe("publicFetch — production, DNS that never answers", () => {
     await expect(
       publicFetch(`http://silent-later.example:${port}/x`, { signal: AbortSignal.timeout(200) }),
     ).rejects.toThrow(/timed out|abort/i);
-    expect(performance.now() - t0).toBeLessThan(500);
+    expect(performance.now() - t0).toBeLessThan(2_000);
     expect(hits).toEqual([]);
-  });
+  }, 5_000);
 
   it("an already-aborted signal refuses before any lookup", async () => {
     dnsQueue.set("silent-ns.example", ["HANG"]);

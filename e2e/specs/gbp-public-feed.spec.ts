@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
 import { DEFAULT_BASE_URL, readEnv } from "../lib/env";
+import { stallFirestoreListen } from "../lib/firestore-listen";
 import {
   feedPath,
   gbpLifecycle,
@@ -59,6 +60,8 @@ test("the public feed serves an allowed site, refuses others, leaks nothing and 
   await page.goto(`/sa/${primaryId()}/ai-agents/google-business`);
   await expect(page.getByTestId("gbp-widget-state-none")).toBeVisible({ timeout: 30_000 });
   await page.getByTestId("gbp-widget-origins").fill(`${VELO}/\n${EXAMPLE}`);
+  // The snippet must come from the save's 200, not the doc's next snapshot.
+  await stallFirestoreListen(page);
   await page.getByTestId("gbp-widget-save").click();
   const snippet = page.getByTestId("gbp-widget-snippet");
   await expect(snippet).toContainText("data-crestahq-reviews=", { timeout: 30_000 });

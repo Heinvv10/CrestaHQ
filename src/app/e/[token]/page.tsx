@@ -7,6 +7,7 @@ import {
 } from "@/lib/booking/event-token";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { PublicEventView } from "@/components/booking/public-event-view";
+import { publicBookingStyle } from "@/lib/booking/public-style";
 import { eventStatus } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
@@ -82,7 +83,8 @@ export default async function PublicEventPage({ params }: PageProps) {
   const branding = {
     name: sub.name ?? "Booking",
     logoUrl: page?.logoUrl ?? sub.logoUrl ?? null,
-    accentColor: page?.accentColor ?? null,
+    // Checked before it is sent to the client.
+    accentColor: publicBookingStyle(page).accentColor,
   };
 
   return (

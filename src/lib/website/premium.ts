@@ -1,7 +1,8 @@
-import type {
-  HeroMotion,
-  WebsiteConfig,
-  WebsitePremiumDetails,
+import {
+  blankPremiumDetails,
+  type HeroMotion,
+  type WebsiteConfig,
+  type WebsitePremiumDetails,
 } from "@/types/website";
 
 /**
@@ -61,7 +62,29 @@ const lines = (v: string | null | undefined): string[] =>
 
 const cols = (line: string): string[] => line.split("|").map((c) => c.trim());
 
-const HTTPS_RE = /^https:\/\/[^\s/]+(\/\S*)?$/i;
+/**
+ * HARDENING (not upstream, which used a loose regex): social links become
+ * hrefs on the customer's public site, so the raw text must be a plain
+ * public https URL — nothing that can break out of an attribute (quotes,
+ * angle brackets, backslash, whitespace, control characters), no userinfo,
+ * no IP literal or localhost, a dotted host, at most 2048 characters.
+ */
+const SOCIAL_URL_MAX = 2048;
+const URL_UNSAFE_CHARS = /["'<>\\`\s\u0000-\u001f\u007f]/;
+export function isSafeSocialUrl(raw: string): boolean {
+  if (!raw || raw.length > SOCIAL_URL_MAX || URL_UNSAFE_CHARS.test(raw)) return false;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return false;
+  const host = url.hostname.replace(/\.$/, "").toLowerCase();
+  if (!host.includes(".") || host.startsWith("[")) return false;
+  if (/^\d+(\.\d+){3}$/.test(host)) return false;
+  return host !== "localhost" && !host.endsWith(".localhost");
+}
 
 export interface PremiumMetric { label: string; value: string }
 export interface PremiumTeamMember { name: string; role?: string; credentials?: string; spec?: string }
@@ -137,15 +160,46 @@ export function parseBrandVoice(text: string): string[] {
 }
 
 /**
+ * HARDENING (not upstream): fields the form only shows for some niches. A
+ * value typed under one niche stays in the config when the operator switches
+ * to another, so validation and the payload must ignore it the same way the
+ * form hides it; otherwise it can fail with an error no field displays, or
+ * ship to gitpage unseen. A missing niche (generic build) shows none of them.
+ */
+export const NICHE_ONLY_DETAIL_FIELDS = {
+  tools: ["ai_consulting", "ai_automation"],
+  case_studies: ["ai_consulting", "ai_automation", "agency_consulting"],
+} as const satisfies Partial<Record<keyof WebsitePremiumDetails, readonly string[]>>;
+
+export function premiumDetailAppliesToNiche(
+  field: keyof WebsitePremiumDetails,
+  niche: string | null | undefined,
+): boolean {
+  const only = (NICHE_ONLY_DETAIL_FIELDS as Record<string, readonly string[] | undefined>)[field];
+  return !only || (!!niche && only.includes(niche));
+}
+
+/**
  * Validate the operator's premium details. Returns `{ field: message }` keyed
  * by the WebsitePremiumDetails field name (empty = valid). Blank fields are
  * always valid — everything here is optional.
  */
 export function validatePremiumDetails(
   d: WebsitePremiumDetails,
+  niche: string | null, // HARDENING: required; niche-only fields are skipped off-niche
 ): Record<string, string> {
   const errors: Record<string, string> = {};
   const L = PREMIUM_LIMITS;
+
+  // HARDENING: the config arrives as untrusted JSON. Every field must be a
+  // string before any trim/length check below, or a number/array/object
+  // passes or throws later (after the hourly build slot is taken).
+  for (const key of Object.keys(blankPremiumDetails()) as Array<keyof WebsitePremiumDetails>) {
+    const v = (d as unknown as Record<string, unknown>)[key];
+    const absentOptional = v == null && (key === "tools" || key === "case_studies"); // optional in the type
+    if (typeof v !== "string" && !absentOptional) errors[key] = "Must be text.";
+  }
+  if (Object.keys(errors).length) return errors;
 
   if (d.tagline && d.tagline.length > L.tagline)
     errors.tagline = `Keep it under ${L.tagline} characters.`;
@@ -219,18 +273,18 @@ export function validatePremiumDetails(
   if (socials.length > L.socialLinks)
     errors.social_links = `Up to ${L.socialLinks} links (one per line).`;
   else if (
-    socials.some((s) => !s.label || s.label.length > L.socialLabel || !HTTPS_RE.test(s.url))
+    socials.some((s) => !s.label || s.label.length > L.socialLabel || !isSafeSocialUrl(s.url))
   )
     errors.social_links = `Each line as "Label | https://…" (label ≤${L.socialLabel}, https URL).`;
 
   if (d.reference_notes.length > L.referenceNotes)
     errors.reference_notes = `Keep it under ${L.referenceNotes} characters.`;
 
-  const tools = parseTools(d.tools);
+  const tools = premiumDetailAppliesToNiche("tools", niche) ? parseTools(d.tools) : [];
   if (tools.length > L.tools) errors.tools = `Up to ${L.tools} tools, comma-separated.`;
   else if (tools.some((t) => t.length > L.toolName)) errors.tools = `Each tool name under ${L.toolName} characters.`;
 
-  const cases = parseCaseStudies(d.case_studies);
+  const cases = premiumDetailAppliesToNiche("case_studies", niche) ? parseCaseStudies(d.case_studies) : [];
   if (cases.length > L.caseStudies) errors.case_studies = `Up to ${L.caseStudies} case studies (one per line).`;
   else if (
     cases.some(
@@ -250,6 +304,7 @@ export function validatePremiumDetails(
  */
 export function premiumDetailsPayload(
   d: WebsitePremiumDetails | null | undefined,
+  niche: string | null, // HARDENING: required; niche-only fields are omitted off-niche
 ): PremiumDetailsPayload {
   if (!d) return {};
   const out: PremiumDetailsPayload = {};
@@ -273,11 +328,14 @@ export function premiumDetailsPayload(
     };
   }
   if (d.gallery_notes.trim()) out.galleryNotes = d.gallery_notes.trim();
-  const socials = parseSocialLinks(d.social_links).filter((s) => s.label && s.url);
+  // HARDENING: an unsafe URL is dropped here too, not only refused by validation.
+  const socials = parseSocialLinks(d.social_links).filter((s) => s.label && isSafeSocialUrl(s.url));
   if (socials.length) out.socialLinks = socials;
-  const tools = parseTools(d.tools);
+  const tools = premiumDetailAppliesToNiche("tools", niche) ? parseTools(d.tools) : [];
   if (tools.length) out.tools = tools;
-  const cases = parseCaseStudies(d.case_studies).filter((c) => c.client && c.result);
+  const cases = premiumDetailAppliesToNiche("case_studies", niche)
+    ? parseCaseStudies(d.case_studies).filter((c) => c.client && c.result)
+    : [];
   if (cases.length) out.caseStudies = cases;
   return out;
 }

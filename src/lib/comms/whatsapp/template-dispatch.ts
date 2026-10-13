@@ -130,7 +130,8 @@ export async function dispatchWhatsappTemplateSend(input: {
       },
       provider,
     });
-    return { ...r, provider, attempted: true };
+    // A send that never connected says so with `attempted: false`.
+    return { attempted: true, ...r, provider };
   }
 
   const contentSid = templateRegistration(input.template, "twilio")?.externalId;

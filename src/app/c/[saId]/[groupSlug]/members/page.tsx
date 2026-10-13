@@ -4,7 +4,7 @@ import { requireGroupPageAccess } from "@/lib/community/member-context";
 import { listMemberDirectory } from "@/lib/server/community-leaderboard-service";
 import {
   CommunityShell,
-  COMMUNITY_DEFAULT_BRAND,
+  communityBrand,
 } from "@/components/community/community-shell";
 import {
   MembersDirectory,
@@ -29,7 +29,7 @@ export default async function MembersPage({
   }
 
   const { group, member, membership } = access;
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
   const viewer: AuthorView = {
     memberId: member.id,
     displayName:

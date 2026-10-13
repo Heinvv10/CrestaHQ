@@ -78,6 +78,9 @@ export function roleOf(f: Pick<FormField, "tag" | "type" | "hint" | "named">): F
   const h = f.hint;
   if (f.type === "email" || /e-?mail/.test(h)) return "email";
   if (f.type === "tel" || /phone|\btel\b|mobile|cell|whatsapp|contact number|nommer|selfoon/.test(h)) return "phone";
+  // A business/company ADDRESS is not the business name (or a person's): no role, so a required one refuses
+  // (never invent an address). After email/phone so "business email address" stays email; before the name lines.
+  if (/address|adres/.test(f.named) && COMPANY.test(h)) return null;
   if (/first.?name|\bfname\b|given.?name|voornaam/.test(h)) return "first";
   if (/last.?name|\blname\b|surname|family.?name|\bvan\b/.test(h)) return "last";
   // The town is read from what the field IS, never its placeholder. A town field that mentions a business

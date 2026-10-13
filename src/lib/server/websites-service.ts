@@ -11,6 +11,7 @@ import { isNicheKey } from "@/lib/website/niches";
 import {
   GitpageError,
   gitpageIsConfigured,
+  safePagesUrl,
   submitBuild,
   type PollBuildResult,
 } from "@/lib/gitpage/client";
@@ -22,6 +23,7 @@ import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { runAfterResponse } from "@/lib/server/after-response";
 import { resolvedAppUrl } from "@/lib/server/app-url";
 import { isDocId } from "@/lib/server/doc-id";
+import { oneLine } from "@/lib/ai-suite/capabilities/text-safety";
 import {
   blankProvisioning,
   buildSettledCallbackUrl,
@@ -238,6 +240,18 @@ export interface WebsiteTransitionGuard {
   orMissing?: boolean;
   /** Write with set-merge instead of update (the build submit, as before). */
   merge?: boolean;
+  /**
+   * More of the same transaction, run once the guard has passed and before
+   * the site doc is written: for a write that must land together with one
+   * on another doc (the custom domain and the Web Chat allow-list). Returns
+   * fields to add to the patch, or false to apply nothing (reason
+   * "condition"). All its reads come before its writes, and it writes only
+   * when it returns fields. Not run for a doc this call creates.
+   */
+  inTransaction?: (
+    tx: FirebaseFirestore.Transaction,
+    fresh: WebsiteDoc,
+  ) => Promise<Record<string, unknown> | false>;
 }
 
 export type WebsiteTransitionResult =
@@ -303,8 +317,11 @@ export async function transitionWebsite(
     if (guard.when && !guard.when(fresh)) {
       return { applied: false, reason: "condition" } as const;
     }
-    if (guard.merge) tx.set(docRef, patch, { merge: true });
-    else tx.update(docRef, patch);
+    const more = guard.inTransaction ? await guard.inTransaction(tx, fresh) : {};
+    if (more === false) return { applied: false, reason: "condition" } as const;
+    const write = { ...patch, ...more };
+    if (guard.merge) tx.set(docRef, write, { merge: true });
+    else tx.update(docRef, write);
     return { applied: true } as const;
   });
 }
@@ -371,6 +388,12 @@ const BUSY_MESSAGE =
 
 const ALREADY_BUILDING_MESSAGE =
   "This site is building right now — wait for it to finish before starting another build.";
+
+const SITE_NOT_FOUND_MESSAGE = "Website not found in this workspace.";
+
+/** As the wizard's draft save words it (website/[siteId] PATCH). */
+const UNSETTLED_FAILURE_MESSAGE =
+  "This site's last build can still finish — use Re-check now, or reset it, before changing it.";
 
 const GATE_OFF_MESSAGE =
   "The website builder is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.";
@@ -546,6 +569,19 @@ export async function submitWebsiteBuildForSubAccount(input: {
   siteId: string;
   config: WebsiteConfig;
   buildByUid: string;
+  /**
+   * For a caller that read the site and means to REBUILD it: a site that is
+   * no longer there is refused (404) instead of being created by this build.
+   */
+  requireExisting?: boolean;
+  /**
+   * A call-to-action re-point: the build is submitted with `config`, but
+   * only its `cta_link` is written back, so a wizard save that lands while
+   * gitpage is being called is kept. And, as the wizard's draft save does,
+   * a failed site whose last build can still finish (it has a job) is
+   * refused, here and again inside the write. Implies `requireExisting`.
+   */
+  ctaOnly?: boolean;
 }): Promise<{ formResponseId: string; estimatedDurationSeconds?: number }> {
   const { subAccountId, siteId, config } = input;
   // Ids, never paths. Both go into Firestore paths below; a site id like
@@ -576,6 +612,10 @@ export async function submitWebsiteBuildForSubAccount(input: {
   const db = getAdminDb();
   const docRef = db.doc(`subAccounts/${subAccountId}/website/${siteId}`);
   const snap = await docRef.get();
+  // A CTA re-point is a rebuild by definition: it never creates a site.
+  if ((input.requireExisting || input.ctaOnly) && !snap.exists) {
+    throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
+  }
   const isFirst = !snap.exists;
   const existingDoc = (snap.data() ?? {}) as Partial<WebsiteDoc>;
 
@@ -584,6 +624,9 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // (The write below re-checks this atomically; this is the cheap early no.)
   if (existingDoc.status === "queued" || existingDoc.status === "building") {
     throw new WebsiteServiceError(ALREADY_BUILDING_MESSAGE, 409);
+  }
+  if (input.ctaOnly && hasUnsettledFailure(existingDoc)) {
+    throw new WebsiteServiceError(UNSETTLED_FAILURE_MESSAGE, 409);
   }
   // A build on an id that has no doc creates one, so it counts against the
   // per-sub-account cap exactly as `createWebsiteForSubAccount` does. This
@@ -693,11 +736,12 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // heartbeat; clear any stale `agency: false` cache.
   await markGitpageBuildSucceeded();
 
-  const update: Partial<WebsiteDoc> & {
-    config: WebsiteConfig;
+  const update: Partial<Omit<WebsiteDoc, "config">> & {
+    config: WebsiteConfig | Pick<WebsiteConfig, "cta_link">;
     updatedAt: FieldValue;
   } = {
-    config,
+    // Set-merge: a map here is merged field by field into the stored one.
+    config: input.ctaOnly ? { cta_link: config.cta_link } : config,
     status: "queued",
     gitpageJobId: submission.formResponseId,
     liveUrl: null,
@@ -744,7 +788,12 @@ export async function submitWebsiteBuildForSubAccount(input: {
   try {
     taken = await transitionWebsite(
       docRef,
-      { fromStatuses: ["draft", "ready", "failed"], orMissing: isFirst, merge: true },
+      {
+        fromStatuses: ["draft", "ready", "failed"],
+        orMissing: isFirst,
+        merge: true,
+        ...(input.ctaOnly ? { when: (fresh: WebsiteDoc) => !hasUnsettledFailure(fresh) } : {}),
+      },
       update,
     );
   } catch (err) {
@@ -759,7 +808,9 @@ export async function submitWebsiteBuildForSubAccount(input: {
         ? "This site was removed while its build was being submitted."
         : taken.reason === "cap"
           ? SITE_CAP_MESSAGE
-          : ALREADY_BUILDING_MESSAGE,
+          : taken.reason === "condition"
+            ? UNSETTLED_FAILURE_MESSAGE
+            : ALREADY_BUILDING_MESSAGE,
       409,
     );
   }
@@ -953,10 +1004,10 @@ export async function settleWebsiteBuild(input: {
   if (!settled.applied) return "noop";
   if (!published) return "failed";
 
-  // WS-4 SEAM: upstream schedules the post-publish PageSpeed check here (a
-  // QStash call, 120 s out, to `…/website/[siteId]/pagespeed`). That route
-  // and its public middleware pattern are WS-4; scheduling it now would
-  // only queue retries against a route that does not exist.
+  // Not ported (WS-4 review): upstream schedules a post-publish PageSpeed
+  // check here (a QStash call to a public `…/website/[siteId]/pagespeed`
+  // route). It only stores scores that nothing displays, upstream included,
+  // so it would spend a QStash message per publish for nothing.
 
   // Premium hand-off, for the caller that claimed — and only that caller: a
   // "noop" above has already returned.
@@ -976,4 +1027,143 @@ export async function settleWebsiteBuild(input: {
     );
   }
   return "ready";
+}
+
+/**
+ * The call-to-action link a rebuild may publish, or null. Held to the rule
+ * for a gitpage live URL (`safePagesUrl`): no whitespace or control
+ * characters, parses, `https:`, no embedded credentials, not localhost or a
+ * non-public IP literal, at most 2,048 characters. The site renders it as a
+ * link on a public page, so `http:`, `javascript:` and `data:` never reach
+ * the stored config. Returned in `URL.href` form.
+ */
+export function safeCtaLink(raw: unknown): string | null {
+  return safePagesUrl(raw);
+}
+
+/** A failed build that still has a job: gitpage may yet finish it. */
+export function hasUnsettledFailure(doc: Partial<WebsiteDoc>): boolean {
+  return doc.status === "failed" && !!doc.gitpageJobId;
+}
+
+/** Private-use, unassigned and lone-surrogate code points: `oneLine` keeps
+ *  them, `hasUnsafeText` refuses them. */
+const UNPRINTABLE_RE = /[\p{Co}\p{Cn}\p{Cs}]/gu;
+
+/** The longest site name update_website_cta's card takes (UTF-16 units). */
+export const SITE_NAME_MAX = 200;
+
+/**
+ * A site's name as every assistant lookup prints it and as
+ * `updateWebsiteCtaAndRebuild` checks a confirmed name against: the name,
+ * else the heading, else "Untitled site" — on one line, with nothing the
+ * assistant's own input check (`hasUnsafeText`) would refuse, so any name
+ * a lookup prints can be sent back.
+ */
+export function siteDisplayName(site: { name?: unknown; config?: unknown }): string {
+  const clean = (v: unknown) => {
+    // oneLine collapses whitespace before it strips invisibles, so "a <ZWSP> b"
+    // comes out with two spaces; collapse again, so oneLine of the result
+    // is the result (the card's name is compared through oneLine).
+    const line = oneLine(String(v ?? "").replace(UNPRINTABLE_RE, "")).replace(/ {2,}/g, " ");
+    // At most SITE_NAME_MAX UTF-16 units (the card's limit), never splitting
+    // a surrogate pair. oneLine again: a cut between a keycap's U+FE0F and
+    // its U+20E3 leaves a selector that is no longer a presentation one.
+    let out = "";
+    for (const ch of line) {
+      if (out.length + ch.length > SITE_NAME_MAX) break;
+      out += ch;
+    }
+    return out.length < line.length ? oneLine(out) : line;
+  };
+  const heading = (site.config as { heading?: unknown } | null | undefined)?.heading;
+  return clean(site.name) || clean(heading) || "Untitled site";
+}
+
+/**
+ * Point a site's call-to-action at a new URL and rebuild it. This is the one
+ * seam between a gitpage site and the CRM: the site config carries no form
+ * reference, so "link the site to my form" means setting `cta_link` to the
+ * form's (or a booking page's) public URL and resubmitting the build.
+ *
+ * The build goes through `submitWebsiteBuildForSubAccount` and nothing else,
+ * so every guard there applies unchanged: the agency gate, the gitpage key,
+ * config validation, the refusal while a build is in flight, the hourly
+ * build counter and the `transitionWebsite` write. `requireExisting` closes
+ * the one gap of reading the site here first: a site removed in between is
+ * refused, not re-created by the build. (Upstream, 68798611, takes any
+ * http(s) link, reads the site before the gate, and has that gap.)
+ *
+ * The rebuild submits the STORED config, so wizard edits saved since the
+ * last build are published with it.
+ */
+export async function updateWebsiteCtaAndRebuild(input: {
+  subAccountId: string;
+  siteId: string;
+  ctaLink: string;
+  buildByUid: string;
+  /**
+   * The site's name as the confirming person was shown it. The id and the
+   * name both come from the model; a card naming one site while the id is
+   * another's must not rebuild the other.
+   */
+  expectSiteName?: string;
+}): Promise<{
+  formResponseId: string;
+  siteName: string;
+  ctaLink: string;
+  previousCtaLink: string;
+}> {
+  const { subAccountId, siteId } = input;
+  if (!isDocId(subAccountId) || !isDocId(siteId)) {
+    throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
+  }
+  const ctaLink = safeCtaLink(input.ctaLink);
+  if (!ctaLink) {
+    throw new WebsiteServiceError(
+      "The call-to-action link must be a full public https:// URL (at most 2,048 characters).",
+      400,
+    );
+  }
+  // The gate answers first, as for every other website write.
+  await requireWebsiteEnabledSub(subAccountId);
+
+  const snap = await getAdminDb().doc(`subAccounts/${subAccountId}/website/${siteId}`).get();
+  const doc = snap.data() as WebsiteDoc | undefined;
+  if (!doc || doc.subAccountId !== subAccountId) {
+    throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
+  }
+  const config: WebsiteConfig = { ...blankWebsiteConfig(), ...(doc.config ?? {}) };
+  const siteName = siteDisplayName(doc);
+  if (
+    input.expectSiteName !== undefined &&
+    oneLine(input.expectSiteName).toLowerCase() !== siteName.toLowerCase()
+  ) {
+    throw new WebsiteServiceError(
+      `That website id belongs to “${siteName}”, not “${oneLine(input.expectSiteName)}” — nothing was changed. Check the site's id and name again.`,
+      409,
+    );
+  }
+  const previousCtaLink = (config.cta_link ?? "").trim();
+  // A live site that already carries the link: a rebuild would spend a build
+  // to publish the same thing. (A failed or unbuilt one may still need it.)
+  // Compared as `URL.href` (as `ctaLink` is): a stored link typed without
+  // the trailing slash or with an upper-case host is the same link.
+  if (doc.status === "ready" && (safeCtaLink(previousCtaLink) ?? previousCtaLink) === ctaLink) {
+    throw new WebsiteServiceError(
+      `“${siteName}” is live with that call-to-action link already — nothing to change, so no rebuild was started.`,
+      409,
+    );
+  }
+  config.cta_link = ctaLink;
+
+  const submission = await submitWebsiteBuildForSubAccount({
+    subAccountId,
+    siteId,
+    config,
+    buildByUid: input.buildByUid,
+    requireExisting: true,
+    ctaOnly: true,
+  });
+  return { formResponseId: submission.formResponseId, siteName, ctaLink, previousCtaLink };
 }

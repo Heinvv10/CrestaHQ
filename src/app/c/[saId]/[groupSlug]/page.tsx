@@ -12,11 +12,10 @@ import {
   type CurriculumCourse,
 } from "@/lib/server/community-classroom-service";
 import { getGroupBySlug, getMembership } from "@/lib/server/community-service";
+import { communityBrand } from "@/components/community/community-shell";
 import { JoinButton } from "./join-button";
 
 export const dynamic = "force-dynamic";
-
-const DEFAULT_BRAND = "#202124";
 
 function formatPrice(cents: number | null, currency: string | null): string {
   if (cents == null) return "";
@@ -59,7 +58,7 @@ export default async function GroupAboutPage({
     else if (membership?.status === "pending") state = "pending";
   }
 
-  const brand = group.brandColor?.trim() || DEFAULT_BRAND;
+  const brand = communityBrand(group);
   const priceLabel =
     group.access === "paid"
       ? formatPrice(group.priceCents, group.currency)

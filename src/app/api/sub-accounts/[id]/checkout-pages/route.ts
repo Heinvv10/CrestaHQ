@@ -13,6 +13,7 @@ import {
   type CheckoutPagePayload,
 } from "@/lib/checkout/sanitize";
 import { slugifyCheckoutSlug } from "@/types/checkout-pages";
+import { DEFAULT_CHECKOUT_THEME_ID } from "@/lib/checkout/themes";
 import { defaultFormAppearance } from "@/types/forms";
 
 /**
@@ -106,6 +107,7 @@ export async function POST(
     autoTags: patch.autoTags ?? [],
     pipelineStageId: patch.pipelineStageId ?? null,
     successUrl: patch.successUrl ?? null,
+    themePreset: patch.themePreset ?? DEFAULT_CHECKOUT_THEME_ID,
     appearance: patch.appearance ?? defaultFormAppearance(),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),

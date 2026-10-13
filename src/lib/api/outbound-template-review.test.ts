@@ -55,7 +55,7 @@ const { dispatchAgentTool } = await import("./agent-dispatch");
 const { POST: poll } = await import("@/app/api/sub-accounts/[id]/whatsapp-templates/poll/route");
 const { TRIGGER_LABELS } = await import("@/lib/workflows/catalog");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 const POLL = "/api/sub-accounts/sa1/whatsapp-templates/poll";
 const TPL = "subAccounts/sa1/whatsappTemplates/wt_draft";

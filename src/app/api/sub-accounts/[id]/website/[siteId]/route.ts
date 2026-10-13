@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { agentProfileInTx, prepareAiAgentDocs, webChatAllowListInTx } from "@/lib/comms/ai/agent";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   requireWebsiteEnabledSub,
@@ -115,7 +116,12 @@ export async function PATCH(
  *
  *   (no flag) → permanently remove the website doc, freeing one of the
  *               sub-account's slots so a different site can be created. The
- *               previously-published repo (if any) likewise stays live.
+ *               previously-published repo (if any) likewise stays live. The
+ *               Web Chat hosts its custom domain added
+ *               (`customDomainChatHosts`) come off the allow-list in the same
+ *               transaction: once the doc is gone nothing records them. A
+ *               chat bot pointed at that domain goes back to the live URL,
+ *               as when the domain alone is removed.
  */
 export async function DELETE(
   request: Request,
@@ -160,6 +166,20 @@ export async function DELETE(
     return NextResponse.json({ ok: true, reset: true });
   }
 
-  await docRef.delete();
+  if ((snap.data() as WebsiteDoc).customDomain) await prepareAiAgentDocs(subAccountId);
+  await db.runTransaction(async (tx) => {
+    const fresh = (await tx.get(docRef)).data() as WebsiteDoc | undefined;
+    if (fresh?.customDomain) {
+      const list = await webChatAllowListInTx(tx, subAccountId);
+      const agent = await agentProfileInTx(tx, subAccountId);
+      const recorded = new Set(fresh.customDomainChatHosts ?? []);
+      const left = list.hosts.filter((h) => !recorded.has(h));
+      if (left.length !== list.hosts.length) list.save(left);
+      if (fresh.liveUrl && agent.profile?.websiteUrl === `https://${fresh.customDomain}/`) {
+        agent.save({ websiteUrl: fresh.liveUrl });
+      }
+    }
+    tx.delete(docRef);
+  });
   return NextResponse.json({ ok: true, removed: true });
 }

@@ -34,7 +34,7 @@ import type { CalendarEvent } from "@/types/events";
 export default function EditBookingPagePage() {
   const params = useParams<{ subAccountId: string; slug: string }>();
   const slug = params.slug;
-  const { subAccountId, saPath, isAdmin } = useSubAccount();
+  const { subAccountId, saPath, isAdmin, loading } = useSubAccount();
   const [page, setPage] = useState<BookingPage | null>(null);
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -187,7 +187,12 @@ export default function EditBookingPagePage() {
         </Button>
       </div>
 
-      {!isAdmin ? (
+      {/* isAdmin reads false until memberships load; don't flash the lock. */}
+      {loading ? (
+        <div className="py-10">
+          <Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : !isAdmin ? (
         <div className="space-y-3">
           <div className="flex items-start gap-2 rounded-2xl border bg-muted/40 p-5 text-sm">
             <Lock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />

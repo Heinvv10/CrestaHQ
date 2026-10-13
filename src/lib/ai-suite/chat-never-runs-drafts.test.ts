@@ -50,7 +50,7 @@ vi.mock("@/lib/comms/resend", async (orig) => ({ ...((await orig()) as object), 
 vi.mock("@/lib/comms/smtp", async (orig) => ({ ...((await orig()) as object), sendSmtpEmail: seams.sendSmtpEmail }));
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: async () => undefined }));
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 restoreBillingProviderAfterEach();
 const { AI_SUITE_CAPABILITIES, availableOn, getCapability } = await import("@/lib/ai-suite/capabilities");
 const { buildAgentContext } = await import("@/lib/api/agent-context");
@@ -68,6 +68,14 @@ const CHAT_ONLY_ARGS: Record<string, Record<string, unknown>> = {
   get_website_prefill: {},
   create_website: { heading: "Acme", hero_statement: "Fast fibre", features: "Fast, Cheap, Local", benefits: "Save, Grow, Win" },
   check_website_status: {},
+  speed_to_lead_readiness: {},
+  update_website_cta: { siteId: "site1", siteName: "Acme", ctaLink: "https://crm.example.test/f/form1" },
+  // Resuming (refused). Pausing could only stop runs, and would switch the
+  // engine off for every capability after it, hiding any run they started.
+  pause_all_workflows: { paused: false },
+  add_course: { groupId: "g1", groupName: "Club", title: "Basics" },
+  add_lesson: { groupId: "g1", courseId: "co1", courseTitle: "Basics", title: "Welcome" },
+  configure_watchdog: { enabled: true, instructions: "Flag refunds" },
 };
 const VARIANT = "_in_sub_account";
 function argsFor(name: string): Record<string, unknown> | undefined {
@@ -164,6 +172,7 @@ describe("chat can never run steps nobody reviewed in the builder", () => {
     expect([...ran]).toEqual(expect.arrayContaining([
       "create_contact", "create_deal", "move_deal_stage", "create_task", "create_event",
       "complete_task", "create_workflow", "update_workflow", "set_workflow_status", "create_form", "create_contact_in_sub_account",
+      "speed_to_lead_readiness", "speed_to_lead_readiness_in_sub_account",
     ]));
     expect(seams.enrollForTest).not.toHaveBeenCalled();
     expect(seams.runStep).not.toHaveBeenCalled();
