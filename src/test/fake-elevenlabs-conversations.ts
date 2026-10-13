@@ -28,6 +28,8 @@ export function fakeElevenLabsConversations() {
     listStatus: null as number | null,
     /** When true, the list endpoint claims more pages and gives no cursor. */
     listTruncated: false,
+    /** When true, the list endpoint ignores `agent_id` (our side must not). */
+    listIgnoresAgent: false,
     lookups: [] as string[],
     listCalls: [] as string[],
   };
@@ -40,7 +42,7 @@ export function fakeElevenLabsConversations() {
       const q = new URL(url).searchParams;
       const after = Number(q.get("call_start_after_unix"));
       const conversations = [...state.listed.entries()]
-        .filter(([, c]) => c.agent_id === q.get("agent_id") && (c.start_time_unix_secs ?? 0) >= after)
+        .filter(([, c]) => (state.listIgnoresAgent || c.agent_id === q.get("agent_id")) && (c.start_time_unix_secs ?? 0) >= after)
         .map(([id, c]) => ({ conversation_id: id, ...c }));
       return Response.json({ conversations, has_more: state.listTruncated, next_cursor: null });
     }

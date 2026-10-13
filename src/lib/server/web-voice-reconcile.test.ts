@@ -111,6 +111,7 @@ describe("reconcileLapsedGrants", () => {
 
   it("ignores other agents' calls and calls outside the grants' signed-URL window", async () => {
     await lapsedGrants(1);
+    el.state.listIgnoresAgent = true; // our side filters, whatever the API does
     call("conv_other01", 30_000, 99, { agent_id: "agent_other" });
     call("conv_late001", 16 * 60 * 1000, 99);
     await sweep();
