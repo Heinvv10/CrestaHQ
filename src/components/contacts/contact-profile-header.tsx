@@ -42,6 +42,8 @@ import { ContactForm } from "@/components/contacts/contact-form";
 import { SendEmailDialog } from "@/components/contacts/send-email-dialog";
 import { SendSmsDialog } from "@/components/contacts/send-sms-dialog";
 import { SendCallDialog } from "@/components/contacts/send-call-dialog";
+import { BrowserCallBar } from "@/components/contacts/browser-call-bar";
+import { storedInInternationalForm } from "@/lib/comms/dialer-shared";
 import { subscribeToTerritories } from "@/lib/firestore/territories";
 import { formatContactDate } from "@/lib/format";
 import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
@@ -70,6 +72,28 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
   // voice. Remaining gates (channel toggle, provisioning, compliance)
   // surface as errors inside the dialog.
   const outboundAvailable = subAccount?.outboundVoiceEnabledByAgency === true;
+  // Softphone v1 — the HUMAN browser call. Shown only while the agency gate
+  // is on AND the dialer is provisioned (Settings → Phone dialer); upstream
+  // has no gate. A contact the server would refuse — opted out of calls, or a
+  // number not stored in "+…" form — gets the button disabled with the
+  // reason. All of it is re-enforced server-side (token route, TwiML webhook).
+  const dialerAvailable =
+    subAccount?.dialerEnabledByAgency === true &&
+    subAccount?.dialerConfig?.enabled === true;
+  const callBlockedReason = !contact.phone
+    ? "No phone on this contact"
+    : contact.voiceOptedOut === true
+      ? "This contact opted out of calls"
+      : !storedInInternationalForm(contact.phone)
+        ? "Save the number in international format, e.g. +27…"
+        : null;
+  // The contact a call was started for, not a bare flag: if this header ever
+  // shows another contact while the bar is open, the bar unmounts (ending the
+  // call) rather than dialling the new contact without a click.
+  const [browserCallContactId, setBrowserCallContactId] = useState<
+    string | null
+  >(null);
+  const browserCallActive = browserCallContactId === contact.id;
   // Manual Google review request — only shown once the sub-account has a
   // review link configured (Settings → Google reviews).
   const reviewConfigured = !!resolveReviewUrl(subAccount).configured;
@@ -288,6 +312,19 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
               <MessageSquare className="mr-1 h-3.5 w-3.5" />
               SMS
             </Button>
+            {dialerAvailable && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setBrowserCallContactId(contact.id)}
+                disabled={callBlockedReason !== null || browserCallActive}
+                title={callBlockedReason ?? "Call from your browser"}
+                data-testid="browser-call-button"
+              >
+                <Phone className="mr-1 h-3.5 w-3.5" />
+                Call
+              </Button>
+            )}
             {outboundAvailable && (
               <Button
                 variant="outline"
@@ -458,6 +495,13 @@ export function ContactProfileHeader({ contact }: { contact: Contact }) {
           contact={contact}
           open={callOpen}
           onOpenChange={setCallOpen}
+        />
+      )}
+      {browserCallActive && subAccountId && (
+        <BrowserCallBar
+          contact={contact}
+          subAccountId={subAccountId}
+          onClose={() => setBrowserCallContactId(null)}
         />
       )}
 

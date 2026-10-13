@@ -22,6 +22,7 @@ import { SubAccountCustomFieldsSection } from "@/components/settings/sub-account
 import { SubAccountPipelineSection } from "@/components/settings/sub-account-pipeline-section";
 import { GhlImportWizard } from "@/components/import/ghl-import-wizard";
 import { SubAccountSmsSection } from "@/components/settings/sub-account-sms-section";
+import { SubAccountDialerSection } from "@/components/settings/sub-account-dialer-section";
 import { SubAccountMetaSection } from "@/components/settings/sub-account-meta-section";
 import { SubAccountGoogleSection } from "@/components/settings/sub-account-google-section";
 import { SubAccountWhatsappCloudSection } from "@/components/settings/sub-account-whatsapp-cloud-section";
@@ -334,6 +335,10 @@ export default function SettingsPage() {
               cards because a sender is added on top of a rail's existing
               connection — it carries no credentials of its own. */}
           <SubAccountWhatsappSendersSection />
+
+          {/* Phone dialer (Softphone v1) — browser calls on the same Twilio as
+              the SMS card. Admin-only; locked while dialerEnabledByAgency is off. */}
+          <SubAccountDialerSection />
 
           {/* Facebook + Instagram inbox (beta) — self-gates: renders only when
               the agency flipped metaInboxEnabledByAgency on for this sub-account. */}

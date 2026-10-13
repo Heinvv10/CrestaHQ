@@ -108,6 +108,33 @@ describe("dialer TwiML webhook — the number dialled", () => {
     expect(activity()).toBeUndefined();
   });
 
+  it("refuses a +… number embedded in anything but the strict form, before it is parsed", async () => {
+    // Each of these parses to a valid number on its own; the strict-form rule
+    // is the only thing that stops them.
+    for (const phone of [
+      "tel:+27821234567",
+      "Mobile: +27821234567",
+      "x+27821234567",
+      "\u200B+27821234567",
+      "\u202E+27821234567",
+      "+\u200B27821234567",
+      "+27 82 123 4567 ext. 99",
+    ]) {
+      withPhone(phone);
+      const body = await (await call(placed())).text();
+      expect(body, JSON.stringify(phone)).not.toContain("<Dial");
+      expect(body).toContain("international format");
+    }
+    expect(activity()).toBeUndefined();
+  });
+
+  it("dials a strict-form number written with separators", async () => {
+    for (const phone of [" +27 82 123 4567 ", "+27.82.123.4567", "+(27) 821234567"]) {
+      withPhone(phone);
+      expect(await (await call(placed())).text(), phone).toContain("<Number>+27821234567</Number>");
+    }
+  });
+
   it("dials the normalised E.164, not the stored string", async () => {
     withPhone("+1 (500) 555-0006");
     expect(await (await call(placed())).text()).toContain(`<Number>${CONTACT_PHONE}</Number>`);

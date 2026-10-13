@@ -6,6 +6,7 @@ import twilio from "twilio";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireContactAccessible } from "@/lib/comms/route-auth";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
+import { storedInInternationalForm } from "@/lib/comms/dialer-shared";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   countryBlocked,
@@ -44,8 +45,11 @@ export const dynamic = "force-dynamic";
  * caller (`From: client:<uid>`, the identity we minted into the token) can
  * still act on the contact (active member or agency owner, territory scope —
  * `requireContactAccessible`, as on every other comms route), the contact
- * belongs to this sub-account, its phone is a valid number parsed with no
- * default region (so stored in "+…" international form) in the Voice
+ * belongs to this sub-account, its stored phone is in strict "+…" form ("+",
+ * then only digits and space ( ) - . / — `storedInInternationalForm`, the
+ * same rule that disables the Call button; checked BEFORE parsing, because
+ * libphonenumber would pull "+27…" out of "tel:+27…" or "Mobile: +27…") and
+ * is a valid number parsed with no default region, in the Voice
  * channel's `allowedCountries` when one is set — the same two checks, parsed
  * the same way, as the AI outbound path (outbound-compliance.ts) — it has a
  * country (dialer-only: non-geographic numbers are never dialled), and the
@@ -117,14 +121,17 @@ export async function POST(
   if (contact instanceof NextResponse || contact.subAccountId !== subAccountId) {
     return rejection("That contact could not be found. Goodbye.");
   }
-  // ONE canonical number. `dialable` is the contact's phone parsed once, with
-  // NO default region — the same parse as the AI voice gate — so it must be
-  // stored in "+…" international form. A locally formatted number is refused
+  // ONE canonical number. The stored phone must first be in strict "+…" form
+  // (the Call button's rule); only then is it parsed, once, with NO default
+  // region — the same parse as the AI voice gate. A locally formatted number,
+  // or "+…" embedded in other text, is refused
   // rather than guessed at: its meaning would change with the workspace's
   // region setting, and a wrong guess dials a stranger. Validity, the
   // no-country rule, the allow-list and the <Dial> below all read `dialable`
   // — never the stored string.
-  const dialable = validDialNumber(contact.phone);
+  const dialable = storedInInternationalForm(contact.phone)
+    ? validDialNumber(contact.phone)
+    : null;
   if (!dialable) {
     return rejection(
       "That contact's phone number is not a valid international number. Save it in international format, starting with a plus and the country code, then try again. Goodbye.",

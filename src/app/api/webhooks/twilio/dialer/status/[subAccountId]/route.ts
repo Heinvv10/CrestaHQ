@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import twilio from "twilio";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isDocId } from "@/lib/server/doc-id";
+import { ownRecordingUrl } from "@/lib/comms/dialer-shared";
 import {
   dialerActivityId,
   dialerAuthToken,
@@ -40,22 +41,6 @@ export const dynamic = "force-dynamic";
 
 /** Twilio's longest call is 24 hours. */
 const MAX_CALL_SECONDS = 86_400;
-const ACCOUNT_SID = /^AC[0-9a-f]{32}$/;
-
-/**
- * The RecordingUrl, only when it is exactly a recording on THIS sub-account's
- * own Twilio account at api.twilio.com: nothing before or after it, no other
- * account's SID, no other host. Regional hosts (api.ie1.twilio.com …) are not
- * accepted. A missing or mis-shaped account SID stores nothing.
- */
-function ownRecordingUrl(raw: string, accountSid: unknown): string | null {
-  if (typeof accountSid !== "string" || !ACCOUNT_SID.test(accountSid)) return null;
-  const sid = accountSid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const exact = new RegExp(
-    `^https://api\\.twilio\\.com/2010-04-01/Accounts/${sid}/Recordings/RE[0-9a-f]{32}(\\.(mp3|wav))?$`,
-  );
-  return exact.test(raw) ? raw : null;
-}
 
 const OUTCOME_LABEL: Record<string, string> = {
   completed: "completed",
