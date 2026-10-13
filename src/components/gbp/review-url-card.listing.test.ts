@@ -98,6 +98,19 @@ describe("an extra listing's card", () => {
     expect(byId("gbp-listing-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
   });
 
+  it("a proposal that changed and changed back is not mistaken for the adopt", async () => {
+    seed(B_OLD);
+    await render(B);
+    await act(async () => (byId("gbp-listing-reviewurl-adopt") as HTMLButtonElement).click());
+    const bumped = ctx.subAccount.googleExtraListings as Array<Record<string, unknown>>;
+    ctx.subAccount = { ...ctx.subAccount, googleExtraListings: [{ ...bumped[0], newReviewUri: "https://review.fixture.example/changed-again" }] };
+    await render(B);
+    ctx.subAccount = { ...ctx.subAccount, googleExtraListings: bumped }; // the proposal is back, the configured link never moved
+    await render(B);
+    expect(byId("gbp-listing-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-listing-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
+  });
+
   it("adopted: a quiet confirmation naming the listing", async () => {
     seed(B_PROPOSED);
     await render(B);

@@ -24,16 +24,16 @@ export function ReviewUrlCard({ locationName }: { locationName?: string }) {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
   const [pending, setPending] = useState(false);
   // What the route said it adopted, and the configured link it replaced: it
-  // holds only while the doc still shows that link (a snapshot has not landed),
-  // and is dropped the moment the doc moves off it — so a link later reset to
-  // that value is not mistaken for this adopt. (Set during render: React
-  // restarts the render before anything is committed.)
+  // holds only while the doc still shows that link and that proposal (a
+  // snapshot has not landed), and is dropped the moment it moves off either —
+  // so a link or proposal later reset to those values is not mistaken for this
+  // adopt. (Set during render: React restarts the render before anything is
+  // committed.)
   const [adopted, setAdopted] = useState<{ from: string | null; url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const live = resolveReviewUrl(subAccount, locationName);
-  if (adopted && live.configured !== adopted.from) setAdopted(null);
-  const { configured, proposed, state } =
-    adopted && live.proposed === adopted.url ? { ...live, configured: adopted.url, state: "matches" as const } : live;
+  if (adopted && (live.configured !== adopted.from || live.proposed !== adopted.url)) setAdopted(null);
+  const { configured, proposed, state } = adopted ? { ...live, configured: adopted.url, state: "matches" as const } : live;
   const tid = locationName ? "gbp-listing-reviewurl" : "gbp-reviewurl";
   const title = locationName && subAccount ? (listingFor(subAccount, locationName)?.title ?? "This listing") : null;
 

@@ -147,6 +147,18 @@ describe("adopting", () => {
     expect(byId("gbp-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
   });
 
+  it("a proposal that changed and changed back is not mistaken for the adopt", async () => {
+    seed(EXISTING, LISTING);
+    await render();
+    await act(async () => (byId("gbp-reviewurl-adopt") as HTMLButtonElement).click());
+    seed(EXISTING, "https://review.fixture.example/changed-again");
+    await render();
+    seed(EXISTING, LISTING); // the proposal is back, the configured link never moved
+    await render();
+    expect(byId("gbp-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
+  });
+
   it("with nothing configured, sends expectedCurrentUrl null", async () => {
     seed(null, LISTING);
     await render();
