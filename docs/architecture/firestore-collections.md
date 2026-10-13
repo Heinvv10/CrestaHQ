@@ -294,6 +294,24 @@ Calls log a `call_placed` activity at `contacts/{id}/activities/dialer_{CallSid}
 written by the dialer TwiML webhook and updated by its status callback. No new
 index. See [dialer.md](../features/dialer.md).
 
+### Web Voice (ElevenLabs)
+`subAccounts/{id}/private/webVoiceConnection` (`WebVoiceConnectionSecret` in
+`src/types/web-voice.ts`) holds the sub-account's own ElevenLabs `apiKey`, the
+`agentId` of the private voice agent provisioned on that account, the
+`endpointSecret` baked into the agent's custom-LLM URL, the operator's voice
+settings, and `rev`, a random id every write replaces. Admin SDK only under the
+`private/{docId}` deny rule; written only by `lib/server/web-voice-service.ts`,
+whose one transactional writer (`commitWebVoiceState`) changes it together with
+the parent's display copy and applies only if `rev` is still what the caller
+read. The key is checked against ElevenLabs before it is ever stored. The parent
+carries only the non-secret `webVoiceMeta` (`WebVoiceMeta`: settings, `ready`,
+`keyLast4`, `lastError`, `connectedAt`; null = not connected; `ready` stays false until
+WV-2 ships the reply webhook), server-written. `webVoiceMeta` (and the dialer's
+`dialerConfig`) are in `CHANNEL_CONNECTION_FIELDS` (`lib/agency/channel-connections.ts`).
+Disconnect deletes the connection doc and `private/webVoiceUsage` (the call
+path's usage counters, written from WV-2). No new index. See
+[web-voice.md](../features/web-voice.md).
+
 ### Workspace mailbox and email conversations
 
 `subAccounts/{id}/private/mailboxConnection` stores verified IMAPS credentials,
