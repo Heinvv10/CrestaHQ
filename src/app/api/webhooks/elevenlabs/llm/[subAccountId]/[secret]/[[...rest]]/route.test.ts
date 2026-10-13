@@ -232,7 +232,12 @@ describe("turns that are not answered", () => {
     expect(openRouter).toEqual([]);
 
     const claimed = await liveToken();
-    await markConnected({ subAccountId: "sa1", grantId: claimed.grantId, conversationId: "conv_000001", sessionId: SESSION_ID });
+    const openRouterFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ agent_id: "agent1", status: "in-progress" })));
+    expect(
+      await markConnected({ subAccountId: "sa1", grantId: claimed.grantId, conversationId: "conv_000001", sessionId: SESSION_ID, conn: CONN }),
+    ).toBe(true);
+    vi.stubGlobal("fetch", openRouterFetch);
     vi.setSystemTime(Date.now() + 10 * 60 * 1000);
     expect(await spoken(await POST(turn(llmBody(claimed.token)), ctx()))).toBe("Yes, we do!");
 

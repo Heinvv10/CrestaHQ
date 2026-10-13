@@ -122,8 +122,12 @@ One conversation, end to end:
    fails is not released; it lapses (fail closed).
 3. **`POST /api/web-chat/voice/event`** `{ token, type, conversationId }` (2 KB cap;
    also accepted as a `text/plain` beacon). `connected` moves the grant to `pending`
-   under the ElevenLabs conversation id, once (a replay, a settled id or an unknown
-   grant claims nothing) and writes the spoken greeting into the transcript.
+   under the ElevenLabs conversation id, once, and only when ElevenLabs reports that
+   conversation as live (`initiated`/`in-progress`) on this sub-account's agent; a
+   replay, a settled, finished, forged or foreign id, an unknown grant or a failed
+   lookup claims nothing. It then writes the spoken greeting into the transcript.
+   `pending` and `grants` are keyed by caller-supplied ids, so they are read only as
+   own properties: an id such as `__proto__` or `constructor` is never a pending call.
    `ended` settles the call. These pings only account for a call `start` allowed,
    so they are not gated: a call that began before the gate went off still settles.
 4. **`POST /api/webhooks/elevenlabs/llm/{sa}/{endpointSecret}[/chat/completions]`**
@@ -163,7 +167,11 @@ tail), passes the extra body through as `elevenlabs_extra_body`, and reports
 the signed URL and never reports the call costs the client up to `maxCallSeconds`
 of ElevenLabs minutes per start (bounded by the per-IP start limit and the agent's
 own concurrency limit on ElevenLabs), but gets AI replies only for the grant's first
-2 minutes, while it is still reserved.
+2 minutes, while it is still reserved. The reply endpoint cannot tie a turn to a
+conversation (it sees the session token, not the conversation id), so a visitor
+running a second, unreported conversation can pass the token of a claimed one and
+get replies while that claim is pending: up to the agent's ElevenLabs concurrency
+limit (3) of conversations on one metered reservation.
 
 ## Not yet built
 

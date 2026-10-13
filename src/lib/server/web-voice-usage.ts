@@ -29,7 +29,14 @@ import {
  * full `maxCallSeconds` until settled, so the daily cap can't be overshot by
  * several visitors talking at once. Days are UTC.
  *
- * Ours differs from upstream in three places, each failing closed:
+ * Ours differs from upstream in these places, each failing closed:
+ *   - `pending` and `grants` are keyed by caller-supplied ids, so they are
+ *     only ever read as OWN properties: "__proto__" or "constructor" must
+ *     not look like a pending call (it settled a phantom reservation into
+ *     the counters on every ping);
+ *   - a grant is claimed only by a conversation ElevenLabs reports as live
+ *     on THIS agent, so a forged id or an old, finished conversation cannot
+ *     stand in for the call actually being made;
  *   - the reply endpoint answers a session token only while its grant is
  *     live or claimed (`voiceTurnAllowed`), so a conversation the widget
  *     never reported gets no AI replies once its reservation lapses;
@@ -99,6 +106,12 @@ function normalise(raw: Partial<WebVoiceUsageDoc> | undefined): WebVoiceUsageDoc
     if (now - at > GRANT_MAX_MS) delete u.grants[id];
   }
   return u;
+}
+
+/** `rec[key]` only when it is the record's own entry — never an inherited
+ *  `Object.prototype` member named by a caller-supplied id. */
+function own<T>(rec: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(rec, key) ? rec[key] : undefined;
 }
 
 function liveGrantCount(u: WebVoiceUsageDoc): number {
@@ -172,22 +185,44 @@ export async function reserveGrant(
   return grantId;
 }
 
-/** The visitor connected: move the grant to pending under the conversation id. */
+/**
+ * The visitor connected: move the grant to pending under the conversation
+ * id. The id comes from the browser, so it is claimed only when ElevenLabs
+ * reports that conversation as live on this sub-account's agent; anything
+ * else (unknown, finished, another agent's, or a failed lookup) claims
+ * nothing, and the grant lapses on its own.
+ */
 export async function markConnected(input: {
   subAccountId: string;
   grantId: string;
   conversationId: string;
   sessionId: string;
+  conn: Pick<WebVoiceConnectionSecret, "apiKey" | "agentId">;
 }): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(webVoiceUsagePath(input.subAccountId));
+  // Written below as a key of `pending`: "__proto__" would set the prototype.
+  if (input.conversationId in Object.prototype) return false;
+  const before = await readUsage(input.subAccountId);
+  if (!Object.hasOwn(before.grants, input.grantId)) return false;
+  try {
+    const conv = await getConversation(input.conn.apiKey, input.conversationId);
+    const live = conv.status === "initiated" || conv.status === "in-progress";
+    if (!input.conn.agentId || conv.agentId !== input.conn.agentId || !live) return false;
+  } catch (err) {
+    console.warn(
+      `[web-voice] connect lookup failed sa=${input.subAccountId} conv=${input.conversationId}`,
+      errText(err),
+    );
+    return false;
+  }
   return db.runTransaction(async (tx) => {
     const u = normalise((await tx.get(ref)).data() as Partial<WebVoiceUsageDoc> | undefined);
     if (u.settled.includes(input.conversationId)) return false;
-    if (u.pending[input.conversationId]) return false;
+    if (own(u.pending, input.conversationId)) return false;
     // Only an outstanding grant can be claimed — stops a replayed token from
     // registering extra conversations.
-    if (!(input.grantId in u.grants)) return false;
+    if (!Object.hasOwn(u.grants, input.grantId)) return false;
     delete u.grants[input.grantId];
     u.pending[input.conversationId] = {
       sessionId: input.sessionId,
@@ -212,7 +247,7 @@ export async function voiceTurnAllowed(input: {
   grantId: string;
 }): Promise<boolean> {
   const u = await readUsage(input.subAccountId);
-  const issuedAt = u.grants[input.grantId];
+  const issuedAt = own(u.grants, input.grantId);
   if (typeof issuedAt === "number" && Date.now() - issuedAt <= GRANT_LIVE_MS) return true;
   return Object.values(u.pending).some(
     (p) => p.grantId === input.grantId && p.sessionId === input.sessionId,
@@ -235,7 +270,7 @@ export async function settleConversation(input: {
   const db = getAdminDb();
   const ref = db.doc(webVoiceUsagePath(input.subAccountId));
   const before = await readUsage(input.subAccountId);
-  const pending = before.pending[input.conversationId];
+  const pending = own(before.pending, input.conversationId);
   if (!pending) return;
   const fullReservation = input.maxCallSeconds ?? 0;
 
@@ -287,7 +322,7 @@ export async function settleConversation(input: {
   await db.runTransaction(async (tx) => {
     const [usageSnap, sessionSnap] = await Promise.all([tx.get(ref), tx.get(sessionRef)]);
     const u = normalise(usageSnap.data() as Partial<WebVoiceUsageDoc> | undefined);
-    if (!u.pending[input.conversationId]) return;
+    if (!own(u.pending, input.conversationId)) return;
     delete u.pending[input.conversationId];
     u.secondsToday += counted;
     u.secondsThisMonth += counted;

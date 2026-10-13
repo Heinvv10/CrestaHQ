@@ -63,9 +63,14 @@ const done = (secs: number, agentId = "agent1"): Conv => ({
   body: { agent_id: agentId, status: "done", metadata: { call_duration_secs: secs } },
 });
 
+const live = (agentId = "agent1", status = "in-progress"): Conv => ({ status: 200, body: { agent_id: agentId, status } });
+
+/** A call ElevenLabs reports live on our agent, claimed by a fresh grant. */
 async function connected(conversationId: string) {
   const grantId = await reserveGrant("sa1", CONN);
-  expect(await markConnected({ subAccountId: "sa1", grantId, conversationId, sessionId: SESSION_ID })).toBe(true);
+  conversations.set(conversationId, live());
+  expect(await markConnected({ subAccountId: "sa1", grantId, conversationId, sessionId: SESSION_ID, conn: CONN })).toBe(true);
+  conversations.delete(conversationId);
   return grantId;
 }
 
@@ -93,6 +98,13 @@ describe("reserveGrant", () => {
     expect(mem.read(USAGE)).toMatchObject({ secondsToday: 0, secondsThisMonth: 0 });
   });
 
+  it("a new day in the same month keeps the month's total", async () => {
+    const month = new Date().toISOString().slice(0, 7);
+    mem.seed(USAGE, { day: `${month}-00`, secondsToday: 500, month, secondsThisMonth: 900 });
+    await reserveGrant("sa1", CONN);
+    expect(mem.read(USAGE)).toMatchObject({ secondsToday: 0, secondsThisMonth: 900 });
+  });
+
   it("frees the concurrency slot of a grant nobody claimed after two minutes", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     for (let i = 0; i < 3; i++) await reserveGrant("sa1", CONN);
@@ -103,17 +115,50 @@ describe("reserveGrant", () => {
 });
 
 describe("markConnected", () => {
+  const claim = (grantId: string, conversationId: string) =>
+    markConnected({ subAccountId: "sa1", grantId, conversationId, sessionId: SESSION_ID, conn: CONN });
+
   it("claims a grant once; a replay or an unknown grant claims nothing", async () => {
     const grantId = await reserveGrant("sa1", CONN);
-    const claim = (conversationId: string, g = grantId) =>
-      markConnected({ subAccountId: "sa1", grantId: g, conversationId, sessionId: SESSION_ID });
-    expect(await claim("conv_000001")).toBe(true);
-    expect(await claim("conv_000002")).toBe(false);
-    expect(await claim("conv_000003", "never_issued")).toBe(false);
+    for (const id of ["conv_000001", "conv_000002", "conv_000003"]) conversations.set(id, live());
+    expect(await claim(grantId, "conv_000001")).toBe(true);
+    expect(await claim(grantId, "conv_000002")).toBe(false);
+    lookups = [];
+    expect(await claim("never_issued", "conv_000003")).toBe(false);
+    expect(lookups).toEqual([]); // an unknown grant never costs an ElevenLabs lookup
     expect(mem.read(USAGE)?.pending).toEqual({
       conv_000001: { sessionId: SESSION_ID, grantId, startedAtMs: expect.any(Number) },
     });
     expect(mem.read(USAGE)?.grants).toEqual({});
+  });
+
+  it.each<[string, Conv | undefined]>([
+    ["ElevenLabs does not know (a forged id)", undefined],
+    ["it is finished (an old conversation re-used)", done(5)],
+    ["it failed", { status: 200, body: { agent_id: "agent1", status: "failed" } }],
+    ["it belongs to another agent", live("agent_other")],
+    ["the lookup fails", { status: 500, body: { detail: "boom" } }],
+  ])("claims nothing when the conversation is not live on this agent: %s", async (_label, conv) => {
+    const grantId = await reserveGrant("sa1", CONN);
+    if (conv) conversations.set("conv_000001", conv);
+    expect(await claim(grantId, "conv_000001")).toBe(false);
+    expect(mem.read(USAGE)?.pending).toEqual({});
+    expect(Object.keys(mem.read(USAGE)?.grants as object)).toEqual([grantId]);
+  });
+
+  it("one grant claims one conversation, even when two claims race", async () => {
+    const grantId = await reserveGrant("sa1", CONN);
+    conversations.set("conv_000001", live());
+    conversations.set("conv_000002", live());
+    const results = await Promise.all([claim(grantId, "conv_000001"), claim(grantId, "conv_000002")]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(Object.keys(mem.read(USAGE)?.pending as object)).toHaveLength(1);
+  });
+
+  it("an initiated conversation counts as live", async () => {
+    const grantId = await reserveGrant("sa1", CONN);
+    conversations.set("conv_000001", live("agent1", "initiated"));
+    expect(await claim(grantId, "conv_000001")).toBe(true);
   });
 });
 
@@ -171,6 +216,14 @@ describe("settleConversation", () => {
     expect(mem.read(USAGE)).toMatchObject({ secondsToday: 300, pending: {} });
   });
 
+  it("a negative duration from ElevenLabs never lowers the counters", async () => {
+    mem.seed(USAGE, { day: new Date().toISOString().slice(0, 10), secondsToday: 100, pending: {}, grants: {}, settled: [] });
+    await connected("conv_000001");
+    conversations.set("conv_000001", done(-100));
+    await settle();
+    expect(mem.read(USAGE)?.secondsToday).toBeGreaterThanOrEqual(100);
+  });
+
   it("keeps the call pending on a transient lookup failure and logs only the message", async () => {
     await connected("conv_000001");
     conversations.set("conv_000001", { status: 500, body: { detail: "boom" } });
@@ -194,6 +247,7 @@ describe("sweepStalePending and the widget cap", () => {
     await connected("conv_new0001");
     conversations.set("conv_old0001", done(60));
     conversations.set("conv_new0001", done(5));
+    lookups = [];
     await sweepStalePending({ subAccountId: "sa1", conn: CONN });
     expect(lookups).toEqual(["conv_old0001"]);
     expect(Object.keys(mem.read(USAGE)?.pending as object)).toEqual(["conv_new0001"]);
@@ -203,5 +257,19 @@ describe("sweepStalePending and the widget cap", () => {
     expect(await webVoiceCapReached("sa1", CONN)).toBe(false);
     mem.seed(USAGE, { day: new Date().toISOString().slice(0, 10), secondsToday: 56 * 60 });
     expect(await webVoiceCapReached("sa1", CONN)).toBe(true);
+  });
+});
+
+describe("conversation ids that name Object.prototype members", () => {
+  it.each(["__proto__", "constructor", "hasOwnProperty"])("%s can neither be claimed nor settled into the counters", async (id) => {
+    const grantId = await reserveGrant("sa1", CONN);
+    conversations.set(id, live());
+    expect(await markConnected({ subAccountId: "sa1", grantId, conversationId: id, sessionId: SESSION_ID, conn: CONN })).toBe(false);
+    lookups = [];
+    for (let i = 0; i < 3; i++) {
+      await settleConversation({ subAccountId: "sa1", conversationId: id, conn: CONN, maxCallSeconds: 300 });
+    }
+    expect(mem.read(USAGE)?.secondsToday).toBe(0);
+    expect(lookups).toEqual([]);
   });
 });

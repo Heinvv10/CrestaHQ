@@ -14,7 +14,8 @@ export const dynamic = "force-dynamic";
  * (ElevenLabs Web Voice v1). Body `{ token, type, conversationId }`:
  *
  *  - `connected` — ElevenLabs assigned a conversation id: claim the grant
- *    reserved at /start (once), and write the spoken greeting into the
+ *    reserved at /start (once, and only for a conversation ElevenLabs
+ *    reports live on this agent), and write the spoken greeting into the
  *    transcript so the inbox reads naturally.
  *  - `ended` — settle the conversation's minutes. Also sent via
  *    `navigator.sendBeacon` on page hide, so the body may arrive as
@@ -72,19 +73,20 @@ export async function POST(request: Request) {
 
   try {
     if (body.type === "connected") {
-      const fresh = await markConnected({
-        subAccountId: claims.subAccountId,
-        grantId: claims.grantId,
-        conversationId,
-        sessionId: claims.sessionId,
-      });
-      if (fresh) {
-        const [conn, saSnap] = await Promise.all([
-          readWebVoiceConnection(claims.subAccountId),
-          getAdminDb().doc(`subAccounts/${claims.subAccountId}`).get(),
-        ]);
+      const conn = await readWebVoiceConnection(claims.subAccountId);
+      const fresh =
+        !!conn &&
+        (await markConnected({
+          subAccountId: claims.subAccountId,
+          grantId: claims.grantId,
+          conversationId,
+          sessionId: claims.sessionId,
+          conn,
+        }));
+      if (fresh && conn) {
+        const saSnap = await getAdminDb().doc(`subAccounts/${claims.subAccountId}`).get();
         const sub = saSnap.data() as SubAccountDoc | undefined;
-        if (conn?.greeting && sub?.agencyId) {
+        if (conn.greeting && sub?.agencyId) {
           await appendMessage({
             subAccountId: claims.subAccountId,
             agencyId: sub.agencyId,

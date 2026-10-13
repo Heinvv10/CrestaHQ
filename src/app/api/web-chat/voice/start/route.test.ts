@@ -41,6 +41,8 @@ const CONN = {
 
 let elCalls: string[];
 let durations: Map<string, number>;
+/** Conversations ElevenLabs reports live on agent1 (until a duration is set). */
+let liveConvs: Set<string>;
 
 const post = (handler: (r: Request) => Promise<Response>, body: unknown, ip = "203.0.113.1") =>
   handler(new Request("https://app.test/api/web-chat/voice/x", {
@@ -63,6 +65,7 @@ beforeEach(() => {
   Object.assign(state, { channelEnabled: true, withinHours: true, botMode: "auto", quotaAllowed: true });
   elCalls = [];
   durations = new Map();
+  liveConvs = new Set(["conv_000001"]);
   vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", "test-secret-at-least-16-chars");
   vi.stubGlobal(
     "fetch",
@@ -77,6 +80,7 @@ beforeEach(() => {
       if (m && durations.has(m[1])) {
         return Response.json({ agent_id: "agent1", status: "done", metadata: { call_duration_secs: durations.get(m[1]) } });
       }
+      if (m && liveConvs.has(m[1])) return Response.json({ agent_id: "agent1", status: "in-progress" });
       return Response.json({ detail: "not found" }, { status: 404 });
     }),
   );
@@ -189,6 +193,23 @@ describe("/voice/event", () => {
     expect(msgs.map((m) => [m.direction, m.body, m.via, m.aiGenerated])).toEqual([
       ["outbound", CONN.greeting, "voice", true],
     ]);
+  });
+
+  it("connected with a conversation ElevenLabs does not report live on this agent claims nothing and writes no greeting", async () => {
+    const token = await started();
+    for (const conversationId of ["conv_forged1", "__proto__", "constructor"]) {
+      expect((await post(event, { token, type: "connected", conversationId })).status).toBe(200);
+    }
+    expect(mem.read(USAGE)?.pending).toEqual({});
+    expect(mem.list(`${SESSION}/messages`)).toEqual([]);
+  });
+
+  it("an ended ping for an id that is not pending, or names an Object.prototype member, counts nothing", async () => {
+    const token = await started();
+    for (const conversationId of ["__proto__", "constructor", "hasOwnProperty", "conv_never01"]) {
+      for (let i = 0; i < 2; i++) await post(event, { token, type: "ended", conversationId });
+    }
+    expect(mem.read(USAGE)?.secondsToday).toBe(0);
   });
 
   it("ended (sent as a text/plain beacon) settles the duration ElevenLabs reports, once", async () => {
