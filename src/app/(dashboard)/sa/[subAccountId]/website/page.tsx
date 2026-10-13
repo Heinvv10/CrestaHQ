@@ -199,6 +199,7 @@ export default function WebsitePage() {
               doc={site}
               gateBlocked={gateBlocked}
               autoOpen={site.id === newSiteId}
+              onAutoOpened={() => setNewSiteId(null)}
               chatSource={site.id === chatSource.siteId ? { accent: chatSource.accent } : null}
             />
           ))}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -44,6 +44,7 @@ export function WebsiteBuilder({
   doc,
   gateBlocked,
   autoOpen = false,
+  onAutoOpened,
   chatSource = null,
 }: {
   subAccountId: string;
@@ -52,6 +53,8 @@ export function WebsiteBuilder({
   gateBlocked: boolean;
   /** Open the wizard straight away (a freshly added site). */
   autoOpen?: boolean;
+  /** Told once the auto-open has happened, so the parent can clear it. */
+  onAutoOpened?: () => void;
   /** Set when the shared chat bot's knowledge comes from THIS site. */
   chatSource?: { accent: string | null } | null;
 }) {
@@ -68,7 +71,9 @@ export function WebsiteBuilder({
     if (autoOpen && !gateBlocked) {
       setWizardStart("start");
       setWizardOpen(true);
+      onAutoOpened?.();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a new callback identity is not a new request to open
   }, [autoOpen, gateBlocked]);
 
   const status = doc.status;
@@ -78,7 +83,8 @@ export function WebsiteBuilder({
   const buildingCopy = docIsPremium
     ? `Building your premium site… (10–20 min)${phaseLabel ? ` · ${phaseLabel}` : ""}`
     : "Building your site… (1–3 min)";
-  const steps = wizardStepsFor({ ...doc.config });
+  // The wizard builds every site as premium, so count its steps that way.
+  const steps = wizardStepsFor({ ...doc.config, quality: "premium" });
   const savedStep = doc.wizardStep && steps.includes(doc.wizardStep as WizardStepId) ? doc.wizardStep : null;
   const startedSetup = !!savedStep;
   const title = doc.config.heading?.trim() || doc.name || "Untitled site";
@@ -204,6 +210,15 @@ export function WebsiteBuilder({
               </button>
             </div>
           )}
+          {status === "ready" && !liveUrl && (
+            <p className="mt-1 flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400">
+              <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+              <span>
+                Marked live, but this site has no usable https address to link to. Build it again with Try again, or
+                remove it.
+              </span>
+            </p>
+          )}
           {status === "failed" && (
             <p className="mt-1 flex items-start gap-1.5 text-xs text-rose-700 dark:text-rose-400">
               <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
@@ -239,8 +254,9 @@ export function WebsiteBuilder({
           )}
           {/* No Rebuild on live sites (edit them in Claude, or delete and build
               a new one). A FAILED build published nothing, so retrying it from
-              the saved answers is safe. */}
-          {!gateBlocked && status === "failed" && (
+              the saved answers is safe — as is a "ready" site with no usable
+              address, which nobody can be sent to. */}
+          {!gateBlocked && (status === "failed" || (status === "ready" && !liveUrl)) && (
             <Button type="button" size="sm" variant="outline" onClick={() => openWizard("review")}>
               <RotateCcw className="mr-1 h-3.5 w-3.5" />
               Try again
@@ -314,27 +330,40 @@ function httpsOnly(url: string | null): string | null {
 }
 
 /**
- * Marks the site the sub-account's single chat bot learned from. Hover (or
- * keyboard focus) explains what that means and how to switch it.
+ * Marks the site the sub-account's single chat bot learned from. Hover,
+ * keyboard focus or a tap (touch has no hover) explains what that means and
+ * how to switch it; the explanation is the badge's description for screen
+ * readers either way.
  */
 function ChatSourceBadge({ accent }: { accent: string | null }) {
+  const tipId = useId();
+  const [shown, setShown] = useState(false);
   // HARDENING: a stored colour reaches a style attribute only as #RRGGBB
   // (the alpha suffixes below need the six-digit form).
   const color = isHexColor(accent) ? accent : "#7c3aed";
   return (
     <span className="group relative inline-flex shrink-0">
-      <span
-        tabIndex={0}
+      <button
+        type="button"
         aria-label="Chat bot source"
+        aria-describedby={tipId}
+        onClick={() => setShown((v) => !v)}
+        onBlur={() => setShown(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setShown(false);
+        }}
         className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40"
         style={{ borderColor: `${color}66`, backgroundColor: `${color}1a`, color }}
       >
         <Bot className="h-3 w-3" />
         Chat bot
-      </span>
+      </button>
       <span
+        id={tipId}
         role="tooltip"
-        className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-72 rounded-lg border bg-popover p-3 text-[11px] leading-relaxed text-popover-foreground opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+        className={`pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-72 max-w-[80vw] rounded-lg border bg-popover p-3 text-[11px] leading-relaxed text-popover-foreground shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 ${
+          shown ? "opacity-100" : "opacity-0"
+        }`}
       >
         <span className="mb-1 flex items-center gap-1.5 font-medium">
           <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />

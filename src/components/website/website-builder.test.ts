@@ -99,12 +99,34 @@ describe("WebsiteBuilder — actions per status", () => {
     await render(site({ wizardStep: "nonsense" }));
     expect(container.textContent).toContain("Draft — not set up yet");
   });
+
+  it("counts the steps as the wizard does, premium, even for an old standard draft", async () => {
+    await render(site({ wizardStep: "story", config: { ...blankWebsiteConfig(), quality: "standard" } }));
+    expect(container.textContent).toContain("Draft — saved at step 5 of 6: Your story");
+  });
+
+  it("a live site with no usable address offers nothing that needs one while the key is missing", async () => {
+    await render(site({ status: "ready", gitpageJobId: "b1", liveUrl: null }), { gateBlocked: true });
+    expect(labels()).toEqual(["Remove website"]);
+  });
 });
 
 describe("WebsiteBuilder — what it opens", () => {
-  it("opens a freshly added site's wizard on Start", async () => {
-    await render(site(), { autoOpen: true });
+  it("opens a freshly added site's wizard on Start, and says so once so the page can clear it", async () => {
+    const onAutoOpened = vi.fn();
+    await render(site(), { autoOpen: true, onAutoOpened });
     expect(dialogTitle()).toBe("Start");
+    expect(onAutoOpened).toHaveBeenCalledTimes(1);
+    // The page answers by clearing autoOpen; a later re-render opens nothing new.
+    await render(site(), { autoOpen: false, onAutoOpened });
+    expect(onAutoOpened).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open the wizard while the key is missing, nor report it as opened", async () => {
+    const onAutoOpened = vi.fn();
+    await render(site(), { autoOpen: true, gateBlocked: true, onAutoOpened });
+    expect(dialogTitle()).toBeNull();
+    expect(onAutoOpened).not.toHaveBeenCalled();
   });
 
   it("Try again opens the wizard on Review", async () => {
@@ -139,9 +161,13 @@ describe("WebsiteBuilder — what it opens", () => {
 describe("WebsiteBuilder — stored values at the sinks", () => {
   it("links only an https address", async () => {
     await render(site({ status: "ready", gitpageJobId: "b1", liveUrl: "javascript:alert(1)" }));
-    // No address at all: nothing links to it, and nothing that needs one shows.
+    // No usable address: nothing links to it, nothing that needs one shows,
+    // and the card says why and offers a way out rather than a dead end.
     expect(container.querySelectorAll("a")).toHaveLength(0);
-    expect(labels()).toEqual(["Remove website"]);
+    expect(labels()).toEqual(["Try again", "Remove website"]);
+    expect(container.textContent).toContain("Marked live, but this site has no usable https address");
+    await act(async () => button("Try again").click());
+    expect(dialogTitle()).toBe("Review & build");
     await render(site({ status: "ready", gitpageJobId: "b1", liveUrl: LIVE, customDomain: "www.acme.test" }));
     const hrefs = Array.from(container.querySelectorAll("a")).map((a) => a.getAttribute("href"));
     expect(hrefs).toEqual(["https://www.acme.test/", "https://www.acme.test/", "https://search.google.com/search-console"]);
@@ -158,6 +184,19 @@ describe("WebsiteBuilder — stored values at the sinks", () => {
     const badge = container.querySelector<HTMLElement>('[aria-label="Chat bot source"]');
     expect(badge?.style.color).toBe(color);
     expect(badge?.style.backgroundImage).toBe("");
+  });
+
+  it("describes the badge for screen readers and shows the explanation on a tap", async () => {
+    await render(site(), { chatSource: { accent: "#00ff00" } });
+    const badge = container.querySelector<HTMLButtonElement>('button[aria-label="Chat bot source"]')!;
+    const tip = Array.from(container.querySelectorAll('[role="tooltip"]')).find((t) => t.id === badge.getAttribute("aria-describedby"));
+    expect(tip?.textContent).toContain("The chat bot is based on this site");
+    expect(tip?.className).toMatch(/(^|\s)opacity-0(\s|$)/);
+    await act(async () => badge.click());
+    expect(tip?.className).toMatch(/(^|\s)opacity-100(\s|$)/);
+    expect(tip?.className).not.toMatch(/(^|\s)opacity-0(\s|$)/);
+    await act(async () => badge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(tip?.className).toMatch(/(^|\s)opacity-0(\s|$)/);
   });
 
   it("shows no badge on a site the chat bot did not learn from", async () => {
