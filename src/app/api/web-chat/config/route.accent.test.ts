@@ -46,7 +46,7 @@ beforeEach(() => {
 
 describe("the web-chat accent leaving the server", () => {
   it("sends a real accent to the widget and to the chat page", async () => {
-    expect(await config()).toEqual({ enabled: true, welcomeMessage: "Hello", accentColor: "#0ea5e9", position: "left" });
+    expect(await config()).toEqual({ enabled: true, voiceEnabled: false, welcomeMessage: "Hello", accentColor: "#0ea5e9", position: "left" });
     const el = (await page()) as ReactElement<{ accentColor: string }>;
     expect(el.props.accentColor).toBe("#0ea5e9");
   });

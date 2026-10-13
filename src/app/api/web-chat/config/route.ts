@@ -4,6 +4,12 @@ import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { checkOriginAllowed } from "@/lib/comms/web-chat/origin";
 import { isHexColor } from "@/lib/checkout/themes";
+import {
+  readWebVoiceConnection,
+  webVoiceAvailable,
+} from "@/lib/server/web-voice-service";
+import { webVoiceCapReached } from "@/lib/server/web-voice-usage";
+import { issueWidgetToken } from "@/lib/web-voice/tokens";
 import { DEFAULT_WEB_CHAT_CONFIG } from "@/types/ai";
 import type { SubAccountDoc } from "@/types";
 import { isDocId } from "@/lib/server/doc-id";
@@ -77,11 +83,31 @@ export async function GET(request: Request) {
     );
   }
 
+  // Web Voice (ElevenLabs Web Voice v1): this is the origin-checked request,
+  // so it's where the widget gets the token /voice/start requires. Hidden
+  // once today's minute cap is reached. Any failure just hides the mic.
+  let voice: { voiceEnabled: boolean; voiceToken?: string } = { voiceEnabled: false };
+  if (webVoiceAvailable(sa)) {
+    try {
+      const conn = await readWebVoiceConnection(subAccountId);
+      if (conn?.agentId && !(await webVoiceCapReached(subAccountId, conn))) {
+        const voiceToken = issueWidgetToken(subAccountId);
+        if (voiceToken) voice = { voiceEnabled: true, voiceToken };
+      }
+    } catch (err) {
+      console.warn(
+        `[web-chat/config] voice check failed sa=${subAccountId}`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   // Backward-safe: if any of the web-chat fields are missing on the doc
   // (older docs created before defaults shipped), fall back to defaults.
   return NextResponse.json(
     {
       enabled: true,
+      ...voice,
       welcomeMessage:
         config.webChat.welcomeMessage || DEFAULT_WEB_CHAT_CONFIG.welcomeMessage,
       // widget.js writes this into a style on the embedding site: a plain hex only.

@@ -40,19 +40,7 @@ import type { SubAccountDoc } from "@/types";
  * transaction that applies only if the secret doc is still the revision the
  * caller read before talking to ElevenLabs. Remote clean-up of an agent we
  * no longer point at happens after that commit, never before it.
- *
- * Dark until WV-2: the agent's custom-LLM URL points at the reply webhook
- * WV-2 adds, so no connection is reported `ready` before then (see
- * `WEB_VOICE_CALL_PATH_PENDING`).
  */
-
-/**
- * Until WV-2 ships `/api/webhooks/elevenlabs/llm/...`, a provisioned agent
- * would call a URL that answers 404, so the meta stays `ready: false` with
- * this as `lastError`. WV-2 removes it and lets a clean sync report ready.
- */
-export const WEB_VOICE_CALL_PATH_PENDING =
-  "Voice replies aren't available on this deployment yet, so the mic stays hidden.";
 
 export class WebVoiceError extends Error {
   constructor(
@@ -407,10 +395,9 @@ async function syncAgent(
     syncError && lastGood ? lastGood : { ...conn, agentId: agentId ?? null };
   const meta: WebVoiceMeta = {
     ...settingsOf(stored),
-    // Never ready before WV-2 ships the reply webhook the agent calls.
-    ready: false,
+    ready: !!stored.agentId && !syncError,
     keyLast4: stored.apiKey.slice(-4),
-    lastError: syncError ?? WEB_VOICE_CALL_PATH_PENDING,
+    lastError: syncError,
     connectedAt,
   };
   try {

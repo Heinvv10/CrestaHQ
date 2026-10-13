@@ -66,6 +66,9 @@ export interface WebChatSession {
    *  for anonymous sessions and pre-Phase-2B sessions. The console reads
    *  the linked Task to show pending-follow-up status. */
   pendingFollowUpTaskId: string | null;
+  /** Total Web Voice seconds on this session (ElevenLabs-reported, settled
+   *  per conversation). Absent when the visitor never used voice. */
+  voiceSeconds?: number;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
   lastMessageAt: Timestamp | FieldValue | null;
@@ -85,5 +88,8 @@ export interface WebChatMessage {
    *  inbound. */
   tokens: number | null;
   aiGenerated: boolean;
+  /** "voice" when the turn was spoken through Web Voice (ElevenLabs). Absent
+   *  on typed messages — no migration, absent reads as text. */
+  via?: "voice";
   createdAt: Timestamp | FieldValue | null;
 }

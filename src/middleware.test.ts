@@ -203,6 +203,28 @@ describe("isPublicPath — the gitpage build-settled callback", () => {
   });
 });
 
+describe("isPublicPath — the ElevenLabs custom-LLM endpoint", () => {
+  it("lets ElevenLabs reach the reply endpoint without a session (path secret + token are its auth)", () => {
+    expect(isPublicPath("/api/webhooks/elevenlabs/llm/sa1/s3cr3t")).toBe(true);
+    expect(isPublicPath("/api/webhooks/elevenlabs/llm/sa1/s3cr3t/chat/completions")).toBe(true);
+  });
+
+  it("opens exactly those two shapes — nothing under or beside them", () => {
+    expect(isPublicPath("/api/webhooks/elevenlabs")).toBe(false);
+    expect(isPublicPath("/api/webhooks/elevenlabs/llm")).toBe(false);
+    expect(isPublicPath("/api/webhooks/elevenlabs/llm/sa1")).toBe(false);
+    expect(isPublicPath("/api/webhooks/elevenlabs/llm/sa1/s3cr3t/other")).toBe(false);
+    expect(isPublicPath("/api/webhooks/elevenlabs/llm/sa1/s3cr3t/chat/completions/x")).toBe(false);
+    expect(isPublicPath("/api/webhooks/elevenlabs/other/sa1/s3cr3t")).toBe(false);
+  });
+
+  it("keeps the connection route behind a session; the widget's voice calls ride /api/web-chat", () => {
+    expect(isPublicPath("/api/sub-accounts/sa1/web-voice")).toBe(false);
+    expect(isPublicPath("/api/web-chat/voice/start")).toBe(true);
+    expect(isPublicPath("/api/web-chat/voice/event")).toBe(true);
+  });
+});
+
 describe("isPublicPath — snapshot share links", () => {
   it("keeps the import page and its API behind a session (the token alone is not a login)", () => {
     expect(isPublicPath("/agency/snapshots/import")).toBe(false);

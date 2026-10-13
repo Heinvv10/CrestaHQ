@@ -101,6 +101,9 @@ export interface WebVoiceMeta extends WebVoiceSettings {
 /** One in-flight conversation, keyed by ElevenLabs conversation id. */
 export interface WebVoicePending {
   sessionId: string;
+  /** The grant this conversation claimed — the reply endpoint answers a
+   *  session token only while its grant is live or claimed here. */
+  grantId: string;
   startedAtMs: number;
 }
 

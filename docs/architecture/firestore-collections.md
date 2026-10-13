@@ -72,8 +72,8 @@
 | `subAccounts/{id}/aiAgent/profile` | sub-account read; server-only write | Shared AI Agent identity. `systemPrompt`, `businessName`, `hoursStart/End`, `timezone`, `escalationKeywords`, `escalationNotifyEmail`, plus optional `websiteUrl` + `websiteKb` (Firecrawl snapshot or a premium website build's KB, ≤6000 chars) + `websiteKbFetchedAt`, `websiteKbSource` (`firecrawl` / `gitpage-build`), `websiteKbSiteId`, and `websiteSeeded` (the values the website hand-off last filled in, so it can tell them from the operator's own). One per sub-account. |
 | `subAccounts/{id}/aiAgent/{channelId}` | sub-account read; server-only write | Per-channel operational config. Channels today: `sms`, `web-chat`, `whatsapp`, `voice`, `meta`, `email` (Email AI drafts — the shared fields only, no nested block). Carries `enabled`, `contextMessageCount`, `modelOverride`, `escalationKeywordsOverride`, `escalationNotifyEmailOverride`, `totalTokensUsed`. The `web-chat` doc nests a `webChat` block (`allowedDomains`, `welcomeMessage`, `accentColor`, `position`); the `whatsapp` doc nests `whatsapp` (`sessionWindowHours`); the `voice` doc nests `voice` (Vapi linkage + render prefs + the **Outbound** block: `outboundEnabled`, `outboundFirstMessage`, `outboundSystemPrompt`, `outboundWindow`, the per-minute/daily/per-number caps, `allowedCountries`). Outbound has no separate channel doc — it rides the `voice` doc. |
 | `subAccounts/{id}/aiConfig/main` | sub-account read; server-only write | **Legacy.** Pre-refactor combined config. Kept readable so `lib/comms/ai/agent.ts::maybeMigrateLegacy()` can lazily split it into the new `aiAgent/profile` + `aiAgent/sms` shape on first read. Safe to remove after every sub-account has been migrated. |
-| `subAccounts/{id}/webChatSessions/{sessionId}` | sub-account read; server-only write | One row per Web Chat thread. Anonymous-first — `contactId: null` until the bot captures identity. Carries `pageUrl`, `referrer`, `origin`, `visitorIp`, `visitorUserAgent`, `status` (active/closed/escalated), `messageCount`, `tokensUsed`, `capturedName/Email/Phone`, `capturePromptShownAt`, `captureSkipped`, `pendingFollowUpTaskId`. Session id = a UUID generated client-side and stored in localStorage. |
-| `subAccounts/{id}/webChatSessions/{id}/messages/{id}` | sub-account read; server-only write | Per-turn transcript. `direction` inbound/outbound, `body`, `tokens`, `aiGenerated`. Visitor sees the body with any `[[capture …]]` / `[[form …]]` markers stripped. |
+| `subAccounts/{id}/webChatSessions/{sessionId}` | sub-account read; server-only write | One row per Web Chat thread. Anonymous-first — `contactId: null` until the bot captures identity. Carries `pageUrl`, `referrer`, `origin`, `visitorIp`, `visitorUserAgent`, `status` (active/closed/escalated), `messageCount`, `tokensUsed`, `capturedName/Email/Phone`, `capturePromptShownAt`, `captureSkipped`, `pendingFollowUpTaskId`, and `voiceSeconds` once a Web Voice call on it has been settled. Session id = a UUID generated client-side and stored in localStorage. |
+| `subAccounts/{id}/webChatSessions/{id}/messages/{id}` | sub-account read; server-only write | Per-turn transcript. `direction` inbound/outbound, `body`, `tokens`, `aiGenerated`, and `via: "voice"` on a turn spoken through Web Voice (absent on typed turns). Visitor sees the body with any `[[capture …]]` / `[[form …]]` markers stripped. |
 | `subAccounts/{id}/voiceCalls/{callId}` | sub-account read; server-only write | One summary doc per voice call (doc id = Vapi `call.id` for retry-dedup). Carries `direction` (`inbound` \| `outbound`), `callerPhone`, `toPhone`, `durationSec`, `summary`, `endedReason`, `contactId`, captured fields, `callbackRequested`, `taskId`, inline `transcript[]`, and live-status fields. Written by the Vapi end-of-call + status webhooks. |
 | `voiceCampaigns/{campaignId}` | sub-account read; server-only write | Bulk Outbound Voice campaign (top-level, like `quotes`). Carries tenancy, `code` (`VC-YYYY-NNNN`), `name`, `audienceFilter` (reuses `BroadcastAudienceFilter`), `suppression`, `consentAck`, `status` (queued → calling → completed/cancelled/failed), and `totals` (audienceSize/queued/called/skipped/failed/interested). |
 | `voiceCampaigns/{campaignId}/recipients/{contactId}` | sub-account read; server-only write | Per-recipient row — the QStash fan-out unit. Doc id = contactId. Carries `toPhone`/`toName` snapshot, `status` (queued/called/skipped/failed), `skippedReason`, `callId`, `callControlUrl` (for the stop-all kill switch), `outcome`, `callDurationSec`, `endedReason`, `callSummary`, `taskId`, `attempts`. Mirrors the bulk-email `broadcasts/{id}/sends` model. |
@@ -305,11 +305,17 @@ whose one transactional writer (`commitWebVoiceState`) changes it together with
 the parent's display copy and applies only if `rev` is still what the caller
 read. The key is checked against ElevenLabs before it is ever stored. The parent
 carries only the non-secret `webVoiceMeta` (`WebVoiceMeta`: settings, `ready`,
-`keyLast4`, `lastError`, `connectedAt`; null = not connected; `ready` stays false until
-WV-2 ships the reply webhook), server-written. `webVoiceMeta` (and the dialer's
+`keyLast4`, `lastError`, `connectedAt`; null = not connected; `ready` = the agent
+exists and the last sync succeeded), server-written. `webVoiceMeta` (and the dialer's
 `dialerConfig`) are in `CHANNEL_CONNECTION_FIELDS` (`lib/agency/channel-connections.ts`).
-Disconnect deletes the connection doc and `private/webVoiceUsage` (the call
-path's usage counters, written from WV-2). No new index. See
+
+`subAccounts/{id}/private/webVoiceUsage` (`WebVoiceUsageDoc`) holds the call
+path's counters: `day`/`secondsToday` and `month`/`secondsThisMonth` (UTC), the
+outstanding signed-URL `grants` (grant id → issued-at ms), the `pending`
+conversations (ElevenLabs conversation id → `{sessionId, grantId, startedAtMs}`)
+and a ring of the last 200 `settled` ids. Admin SDK only; written only by
+`lib/server/web-voice-usage.ts`, every change in a transaction. Disconnect deletes
+it with the connection doc. No new index. See
 [web-voice.md](../features/web-voice.md).
 
 ### Workspace mailbox and email conversations
