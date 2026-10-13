@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { stallFirestoreListen } from "../lib/firestore-listen";
 import { LOC_A, LOC_B, gbpLifecycle, primaryId, primaryRef, reviewDocs, setScenario, twoListingScenario } from "../lib/gbp";
 
 /**
@@ -22,6 +23,8 @@ test("an extra listing is connected from the Google Business page and synced bes
   // The main listing is not offered; the second one is.
   await expect(block.getByRole("checkbox")).toHaveCount(1, { timeout: 30_000 });
   await block.getByRole("checkbox", { name: /Gqeberha North/ }).check();
+  // The card must show the save from its 200, not the doc's next snapshot.
+  await stallFirestoreListen(page);
   const saved = page.waitForResponse((r) => r.request().method() === "PUT" && r.url().endsWith("/google/extra-listings"));
   await block.getByTestId("gbp-save-extra-listings").click();
   expect((await saved).status()).toBe(200);

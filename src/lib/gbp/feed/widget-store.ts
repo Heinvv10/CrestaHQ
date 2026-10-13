@@ -58,12 +58,23 @@ export async function readWidgetMeta(subAccountId: string): Promise<GbpWidgetMet
   return ((await subRef(subAccountId).get()).data()?.gbpWidgetMeta as GbpWidgetMeta | undefined) ?? null;
 }
 
-/** Create the widget, or update the existing one in place (same publicId). */
-export async function saveWidget(subAccountId: string, byUid: string, config: WidgetConfig): Promise<GbpWidgetMeta> {
+/**
+ * Create the widget, or update the existing one in place (same publicId).
+ * `expectedPublicId` is the widget the caller saw (null: none): when given
+ * and it is not the stored one, nothing is written and the answer is
+ * "changed" — a form opened before another save never overwrites it.
+ */
+export async function saveWidget(
+  subAccountId: string,
+  byUid: string,
+  config: WidgetConfig,
+  expectedPublicId?: string | null,
+): Promise<GbpWidgetMeta | "changed"> {
   const db = getAdminDb();
   return db.runTransaction(async (tx) => {
     const sub = (await tx.get(subRef(subAccountId))).data() ?? {};
     const current = (sub.gbpWidgetMeta as GbpWidgetMeta | null | undefined)?.publicId ?? null;
+    if (expectedPublicId !== undefined && expectedPublicId !== current) return "changed";
     const publicId = current ?? newPublicId();
     const ref = db.doc(widgetPath(publicId));
     const existing = current ? ((await tx.get(ref)).data() as GbpWidgetDoc | undefined) : undefined;

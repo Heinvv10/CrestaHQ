@@ -32,7 +32,8 @@ import type { GoogleListing } from "@/types/google";
  * concurrent save; nothing written). Removing a listing drops only that
  * listing's synced data, after the commit; if that clear fails the save
  * still stands: 200 with `cachePending: true` (retention / the orphan sweep
- * purge it later).
+ * purge it later). A 200 carries `listings` — the stored extras, in order,
+ * as the card shows them — so the page need not wait for its snapshot.
  *
  * Sharing: `listing_shared` is refused when adding an EXTRA. The main listing
  * PUT keeps its rule (a main shared with another sub-account may be
@@ -117,5 +118,6 @@ export async function PUT(request: Request, ctx: { params: Promise<{ id: string 
   const result = await saveExtraListings(id, access.uid, pairs, parsed.expected, fetched);
   if (!result.ok) return gbpRefusal(TEXT[result.code][0], result.code, TEXT[result.code][1]);
   const { added, removed, cachePending } = result;
-  return NextResponse.json({ ok: true, added, removed, ...(cachePending ? { cachePending } : {}) });
+  const listings = result.listings.map(({ accountName, locationName, title, address }) => ({ accountName, locationName, title, address }));
+  return NextResponse.json({ ok: true, added, removed, listings, ...(cachePending ? { cachePending } : {}) });
 }

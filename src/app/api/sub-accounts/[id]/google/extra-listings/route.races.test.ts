@@ -96,7 +96,7 @@ describe("expected: a stale or concurrent save is refused", () => {
   it("happy path: expected matches the stored set (any order) → saved", async () => {
     expect((await putExtras({ listings: [pair(LOC_NORTH), pair(LOC_C)], expected: [] })).status).toBe(200);
     const res = await putExtras({ listings: [pair(LOC_C)], expected: [pair(LOC_C), pair(LOC_NORTH)] });
-    expect(res).toEqual({ status: 200, body: { ok: true, added: [], removed: [LOC_NORTH] } });
+    expect(res).toEqual({ status: 200, body: { ok: true, added: [], removed: [LOC_NORTH], listings: expect.any(Array) } });
     expect(extrasNow()).toEqual([LOC_C]);
   });
 });
@@ -149,7 +149,7 @@ describe("a clear that fails after the save committed", () => {
       if (w.path === NORTH_STATE) throw new Error("firestore unavailable");
     };
     const res = await putExtras({ listings: [] });
-    expect(res).toEqual({ status: 200, body: { ok: true, added: [], removed: [LOC_NORTH, LOC_C], cachePending: true } });
+    expect(res).toEqual({ status: 200, body: { ok: true, added: [], removed: [LOC_NORTH, LOC_C], listings: expect.any(Array), cachePending: true } });
     expect(subDoc().googleLocationNames).toEqual([LOC_A]);
     expect(errors).toHaveBeenCalledWith(expect.stringMatching(/^\[gbp\/extra-listings\] .*sa=sa_1/));
     // The clear goes on with the next removed listing.

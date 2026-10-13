@@ -245,6 +245,21 @@ describe("additional listings", () => {
     expect(calls("GET", "/api/sub-accounts/sa1/google/locations")).toHaveLength(1);
   });
 
+  it("a saved extra shows from the 200 and survives the page re-rendering before its snapshot", async () => {
+    ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: CONNECTED, googleListing: LISTING };
+    const loc = (l: typeof LISTING) => ({ name: l.locationName, title: l.title, address: l.address, websiteUri: null, placeId: null, mapsUri: null });
+    routes["GET /api/sub-accounts/sa1/google/locations"] = () =>
+      json({ accounts: [{ name: "accounts/a1", accountName: "Fixture Group", locations: [loc(LISTING), loc(EXTRA)] }], truncated: false });
+    routes["PUT /api/sub-accounts/sa1/google/extra-listings"] = () =>
+      json({ ok: true, added: ["locations/l2"], removed: [], listings: [{ accountName: "accounts/a1", locationName: "locations/l2", title: EXTRA.title, address: EXTRA.address }] });
+    await render();
+    await click("Manage additional listings");
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="accounts/a1|locations/l2"]')!.click());
+    await click("Save additional listings");
+    await render(); // the doc has not changed: no snapshot yet
+    expect(byId("gbp-extra-listings")?.textContent).toContain("Fixture Fibre — South");
+  });
+
   it("shows members the extras read-only", async () => {
     ctx.isAdmin = false;
     ctx.subAccount = { googleEnabledByAgency: true, googleConnectionMeta: CONNECTED, googleListing: LISTING, googleExtraListings: [EXTRA] };
