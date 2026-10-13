@@ -3,7 +3,7 @@ import "server-only";
 import { isIP } from "node:net";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { transactAiAgentDoc } from "@/lib/comms/ai/agent";
+import { MAX_ALLOWED_DOMAINS, transactAiAgentDoc } from "@/lib/comms/ai/agent";
 import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { aiIsConfigured } from "@/lib/comms/ai/openrouter";
 import { emailIsConfigured } from "@/lib/comms/resend";
@@ -96,7 +96,6 @@ const BUSINESS_NAME_MAX_CHARS = 200;
 const WELCOME_MAX_CHARS = 400;
 const MAX_ESCALATION_KEYWORDS = 25;
 const KEYWORD_MAX_CHARS = 100;
-const MAX_ALLOWED_DOMAINS = 25;
 const WEBSITE_FORM_NAME = "Website contact";
 
 /** Marker fields stamped on the provisioned workflow for idempotency. */

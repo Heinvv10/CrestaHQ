@@ -4,7 +4,12 @@ import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import { agentProfileInTx, prepareAiAgentDocs, webChatAllowListInTx } from "@/lib/comms/ai/agent";
+import {
+  agentProfileInTx,
+  MAX_ALLOWED_DOMAINS,
+  prepareAiAgentDocs,
+  webChatAllowListInTx,
+} from "@/lib/comms/ai/agent";
 import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import { isDocId } from "@/lib/server/doc-id";
 import {
@@ -59,9 +64,6 @@ export const dynamic = "force-dynamic";
  */
 
 const HOST_RE = /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-
-/** Same cap as the Web Chat settings form (`allowedDomains`, 25 entries). */
-const MAX_ALLOWED_DOMAINS = 25;
 
 const ALL_STATUSES: readonly WebsiteStatus[] = ["draft", "queued", "building", "ready", "failed"];
 
@@ -197,9 +199,7 @@ export async function PUT(
         // from this site (or points at this site's live URL or old domain) —
         // in the same transaction, so it never names a domain that is gone.
         const profile = agent.profile;
-        // `websiteKbSiteId` is written by the publish hand-off (WS-3); read
-        // narrowly so this compiles before that field is on the type.
-        const seededFrom = (profile as { websiteKbSiteId?: unknown } | null)?.websiteKbSiteId;
+        const seededFrom = profile?.websiteKbSiteId;
         const pointsHere =
           seededFrom === siteId ||
           (!!fresh.liveUrl && profile?.websiteUrl === fresh.liveUrl) ||
