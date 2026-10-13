@@ -157,6 +157,10 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
  *
  * Never throws: any failure becomes `mediaDropped` on the row, and the text
  * the customer sent is never lost to a file we could not keep.
+ *
+ * Returns true when the failure was transient (network, Graph 5xx, Storage),
+ * so the caller can answer non-2xx and Meta's redelivery re-attempts the file.
+ * Without that, one dropped connection lost a customer's photo for good.
  */
 async function attachInboundMedia(opts: {
   db: Firestore;
@@ -166,7 +170,7 @@ async function attachInboundMedia(opts: {
   contactDocs: DocumentSnapshot[];
   seen: DocumentSnapshot[];
   rowWritten: ReadonlySet<string>;
-}): Promise<void> {
+}): Promise<boolean> {
   const rowRef = (d: DocumentSnapshot) =>
     d.ref.collection("whatsappMessages").doc(opts.messageId);
 
@@ -183,7 +187,7 @@ async function attachInboundMedia(opts: {
       (opts.rowWritten.has(d.id) || opts.seen[i]?.exists === true) &&
       !parseWhatsappMedia(opts.seen[i]?.data()?.media),
   );
-  if (pending.length === 0) return;
+  if (pending.length === 0) return false;
 
   // In a transaction, because `seen` predates the download: a concurrent
   // retry may have landed the file since, and a drop decided from the stale
@@ -199,10 +203,11 @@ async function attachInboundMedia(opts: {
       ),
     );
 
+  let storeRefused = false;
   try {
     if (!isAllowedWhatsappMediaMime(opts.ref.mimeType)) {
       await drop("unsupported_type");
-      return;
+      return false;
     }
     const fetched = await fetchCloudMedia({
       subAccountId: opts.route.subAccountId,
@@ -210,7 +215,7 @@ async function attachInboundMedia(opts: {
     });
     if (!fetched.ok) {
       await drop(fetched.reason);
-      return;
+      return fetched.transient;
     }
     for (const d of pending) {
       const storagePath = whatsappMediaPath({
@@ -230,7 +235,13 @@ async function attachInboundMedia(opts: {
         STORE_TIMEOUT_MS,
         "media store",
       );
-      if (!put.ok) throw new Error(`media store failed: ${put.reason}`);
+      if (!put.ok) {
+        // A refusal (e.g. no bucket configured) is config, not a blip: a
+        // redelivery would meet it again, and endless non-2xx gets the
+        // webhook subscription disabled.
+        storeRefused = true;
+        throw new Error(`media store failed: ${put.reason}`);
+      }
       const media: WhatsappMedia = {
         kind: opts.ref.kind,
         mimeType: opts.ref.mimeType,
@@ -252,7 +263,9 @@ async function attachInboundMedia(opts: {
     await drop("fetch_failed").catch((dropErr: unknown) =>
       console.warn("[whatsapp-cloud] could not record mediaDropped", dropErr),
     );
+    return !storeRefused;
   }
+  return false;
 }
 
 /**
@@ -736,7 +749,7 @@ async function handleInbound(
   // done, a death here strands only the attachment, which that same retry
   // re-attempts: this step is not gated on redelivery.
   if (inbound.media) {
-    await attachInboundMedia({
+    const retry = await attachInboundMedia({
       db,
       route,
       messageId: inbound.providerMessageId,
@@ -745,6 +758,12 @@ async function handleInbound(
       seen,
       rowWritten,
     });
+    if (retry) {
+      return NextResponse.json(
+        { ok: false, error: "media_failed" },
+        { status: 500 },
+      );
+    }
   }
 
   return ok(
