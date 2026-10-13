@@ -127,16 +127,20 @@ One conversation, end to end:
    under the ElevenLabs conversation id, once, and only when the grant is still live
    and ElevenLabs reports that conversation as live (`initiated`/`in-progress`) on
    this sub-account's agent, with a `start_time_unix_secs` no earlier than the grant's
-   issue time (30 s skew allowed). The lookup is retried up to 3 times, 1 s apart, on
-   404 or 5xx (ElevenLabs may not have indexed a brand-new conversation); after that
-   the claim fails closed. A replay, a lapsed grant, or a settled, finished, older,
+   issue time (30 s skew allowed). A grant takes ONE conversation id: the first id
+   tried is pinned on it in a transaction, and any other id is refused without a
+   lookup. The lookup is retried up to 3 times, 1 s apart, on a 5xx only; a 404 is
+   final (so the widget must not report `connected` before ElevenLabs has the
+   conversation — see *WV-4 requirements*). A replay, a lapsed grant, or a settled, finished, older,
    forged or foreign id claims nothing, and so does a claim when pending calls
    alone already fill the concurrency limit (re-checked in the claim's
    transaction). It then writes the spoken greeting into the transcript.
    Ids that name an `Object.prototype` member (`__proto__`, `constructor`, …) are
    refused (400), and every map in the usage doc is read only as own properties.
    `ended` settles the call, only when the token's session is the one that claimed
-   it. These pings only account for a call `start` allowed,
+   it. The route allows 6 events per grant and 120 per IP per hour (in memory,
+   best-effort), since each `connected` costs the client's key a lookup. These
+   pings only account for a call `start` allowed,
    so they are not gated: a call that began before the gate went off still settles.
 4. **`POST /api/webhooks/elevenlabs/llm/{sa}/{endpointSecret}[/chat/completions]`**
    on every spoken turn, from ElevenLabs. The path secret is compared with the stored
@@ -167,27 +171,43 @@ Tokens are HMACs under `AUTOMATIONS_TOKEN_SECRET` (at least 16 characters, else 
 token is minted and the mic stays hidden), compared in constant time, with an expiry.
 Every id in a token must be a Firestore doc id.
 
-**Unreported calls.** The browser reports `connected` and `ended`, so the cap does
-not depend on it doing so. A grant nobody claims within its 2 live minutes is
-charged its full reservation to today's counters (in whichever transaction next
-reads the usage doc; read-only paths compute the same charge) and kept under
-`lapsed`. Each `/voice/start` sweep then reconciles the lapsed grants that are
-*ripe*, i.e. older than the signed-URL lifetime + `maxCallSeconds` + 2 min, so every
-call they could have started has ended. It does this against ElevenLabs' own list
-of the agent's conversations (`GET /v1/convai/conversations?agent_id=…&
-call_start_after_unix=…`):
-- each conversation in the grants' window that no claim or earlier reconciliation
-  counted is matched to a ripe grant whose signed URL could have started it,
-  earliest first, and that grant's charge becomes the call's real duration;
-- a ripe grant with no conversation for it is refunded;
-- a conversation no grant can absorb (one run alongside a claimed call, on that
-  call's token) is counted at its real duration.
+**ElevenLabs' list is the source of truth for minutes.** The browser reports
+`connected` and `ended`; the cap does not depend on it doing so.
+- A grant nobody claims within its 2 live minutes is **charged its full
+  reservation** (its own stored `seconds`) in whichever transaction next reads the
+  usage doc (read-only paths compute the same charge), and kept under `lapsed`.
+  This provisional charge holds the cap until the list has spoken.
+- The usage doc keeps a **watermark**, `reconciledThroughMs` for
+  `reconciledAgentId`: every conversation of that agent that started before it has
+  been counted. It starts 30 s before the agent's first grant (a private agent has
+  no conversation before a signed URL we mint).
+- Every sweep (each `/voice/start`, and `web-chat/config` when the cap looks
+  reached, see below) lists ALL the agent's conversations that started in
+  [watermark, now − (`maxCallSeconds` + 2 min)), so every one in range has ended.
+  It counts each one that no claim covers (not pending, not in `settled`) at its
+  real duration: an unreported call, a call started on another grant's URL, or a
+  second call run on a claimed call's token are all counted. Then it refunds every
+  lapsed grant of this agent whose signed URL expired before the new watermark
+  (any call it started has been counted in its own right), and advances the
+  watermark. All in one transaction that applies only if no other sweep moved the
+  watermark first, so racing sweeps count a call once.
+- Any doubt and the sweep does NOTHING and logs how many items and why: the list
+  cannot be read in full (10 pages of 100), has no `conversations` array, or an
+  item that is or may be in range has no id, agent id, start time or duration, or
+  is still running and not pending. Pending and settled ids are excluded before
+  that check.
+- A refund only comes off the day and month the charge went into.
+- A re-keyed connection (a new agent) starts its own watermark at its first grant.
+  The old agent's calls are not on the new list, so its lapsed charges are never
+  refunded and its pending calls settle at the full reservation (the new key
+  cannot read them).
 
-Nothing changes, and every charge stays, if the list cannot be read in full (5
-pages of 100), or a conversation in the window is still running or has no duration
-yet; the next sweep retries. A refund only comes off the day and month the charge
-went into. So until reconciliation, a visitor who taps the mic and never connects
-costs the cap a full call for ~22 minutes.
+A visitor who taps the mic and never connects costs the cap a full call until the
+sweep after the grant's signed URL expires behind the watermark (about 22 minutes
+with 5-minute calls). **The config route sweeps too:** when it finds the cap
+reached it runs the sweep after the response (`runAfterResponse`), at most once a
+minute per sub-account per instance, so a cap filled by abandoned starts recovers
+without a visitor reaching `/voice/start` (which the hidden mic would prevent).
 
 **Per-IP limit.** `clientIpFrom` (`lib/checkout/rate-limit.ts`) keys on
 `cf-connecting-ip` when `TRUST_CF_CONNECTING_IP=1`, which `deploy-velo.sh` requires
@@ -209,20 +229,31 @@ tail), passes the extra body through as `elevenlabs_extra_body`, reports
 conversation, and lists an agent's conversations with the filters, fields
 (`conversation_id`, `agent_id`, `status`, `start_time_unix_secs`,
 `call_duration_secs`) and paging (`has_more`, `next_cursor`) `listConversations`
-expects. If the start time is missing, every claim fails closed and every call is
-charged in full until reconciliation.
+expects. `src/lib/web-voice/elevenlabs.contract.test.ts` pins our reading of both
+response shapes, written from the API reference (ASSUMED, not recorded): replace
+them with recorded responses on the first live walk. If the start time is missing,
+every claim fails closed and every list sweep does nothing, so every grant stays
+charged in full.
 
 **No end-to-end call yet.** Nothing in the widget calls this path until WV-4 wires
 the mic into the chat window (and the embed iframe gets `allow="microphone"`).
 
+**WV-4 requirements.** The widget must call `getUserMedia` (and have the
+microphone granted) BEFORE `POST /voice/start`, and start the ElevenLabs session
+immediately with the signed URL it gets back. A start whose call never connects
+costs the cap a full call until the next sweep refunds it, and a grant can be
+claimed only in its first 2 minutes. It must report `connected` once, with the
+conversation id ElevenLabs gives it (a different id is refused), and `ended` once
+(a beacon on page hide is fine).
+
 **Residual risk.** A visitor who never reports a call still spends the client's
 ElevenLabs minutes, up to `maxCallSeconds` per start (bounded by the per-IP start
-limit and the agent's concurrency limit on ElevenLabs), and the cap counts it only
-once reconciliation runs. The reply endpoint cannot tie a turn to a conversation
-(it sees the session token, not the conversation id), so a second, unreported
+limit and the agent's concurrency limit on ElevenLabs); the cap counts it, but only
+from the next sweep. The reply endpoint cannot tie a turn to a conversation (it
+sees the session token, not the conversation id), so a second, unreported
 conversation can use a claimed call's token for AI replies while that claim is
-pending (up to the agent's concurrency limit of 3 on ElevenLabs). Reconciliation
-then counts its minutes.
+pending (up to the agent's concurrency limit of 3 on ElevenLabs); its minutes are
+counted by the sweep, its AI tokens by the workspace quota.
 
 ## Not yet built
 

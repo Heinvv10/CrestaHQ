@@ -307,16 +307,18 @@ export async function getConversation(
 }
 
 export interface ConversationListItem extends ConversationSummary {
-  conversationId: string;
+  /** Null when the item's id is missing or not a safe id. */
+  conversationId: string | null;
 }
 
 /**
  * One page of an agent's conversations that started at or after
- * `afterUnixSecs`, for reconciling calls nobody reported. ASSUMED shape (not
- * runtime-verified): `?agent_id&call_start_after_unix&page_size&cursor` →
- * `{conversations: [{conversation_id, agent_id, status, start_time_unix_secs,
- * call_duration_secs}], has_more, next_cursor}`. An item whose id is not a
- * safe id is dropped.
+ * `afterUnixSecs` — the source of truth for Web Voice minutes. ASSUMED shape
+ * (not runtime-verified): `?agent_id&call_start_after_unix&page_size&cursor`
+ * → `{conversations: [{conversation_id, agent_id, status,
+ * start_time_unix_secs, call_duration_secs, …}], has_more, next_cursor}`.
+ * A body without a `conversations` array throws; a malformed item comes back
+ * with nulls so the caller can refuse to act on it.
  */
 export async function listConversations(
   apiKey: string,
@@ -330,26 +332,25 @@ export async function listConversations(
     page_size: "100",
   });
   if (cursor) q.set("cursor", cursor);
-  const data = await call<{
-    conversations?: Array<{
-      conversation_id?: string;
-      agent_id?: string;
-      status?: string;
-      start_time_unix_secs?: number;
-      call_duration_secs?: number;
-    }>;
-    has_more?: boolean;
-    next_cursor?: string | null;
-  }>(apiKey, "GET", `/v1/convai/conversations?${q}`);
-  const conversations = (data.conversations ?? [])
-    .filter((c) => typeof c.conversation_id === "string" && ID_RE.test(c.conversation_id))
-    .map((c) => ({
-      conversationId: c.conversation_id as string,
-      agentId: c.agent_id ?? null,
-      status: c.status ?? null,
+  const data = await call<{ conversations?: unknown; has_more?: unknown; next_cursor?: unknown } | null>(
+    apiKey,
+    "GET",
+    `/v1/convai/conversations?${q}`,
+  );
+  if (!Array.isArray(data?.conversations)) {
+    throw new ElevenLabsError("ElevenLabs' conversation list had no conversations array.", 502);
+  }
+  const conversations = data.conversations.map((raw): ConversationListItem => {
+    const c = (raw ?? {}) as Record<string, unknown>;
+    const id = c.conversation_id;
+    return {
+      conversationId: typeof id === "string" && ID_RE.test(id) ? id : null,
+      agentId: typeof c.agent_id === "string" ? c.agent_id : null,
+      status: typeof c.status === "string" ? c.status : null,
       durationSeconds: secsOf(c.call_duration_secs),
       startTimeUnixSecs: secsOf(c.start_time_unix_secs),
-    }));
+    };
+  });
   const nextCursor = typeof data.next_cursor === "string" && data.next_cursor ? data.next_cursor : null;
   return { conversations, hasMore: data.has_more === true, nextCursor };
 }

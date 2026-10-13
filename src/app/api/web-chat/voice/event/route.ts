@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { appendMessage } from "@/lib/comms/web-chat/session";
+import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 import { readWebVoiceConnection } from "@/lib/server/web-voice-service";
 import { markConnected, settleConversation } from "@/lib/server/web-voice-usage";
+import { checkVoiceEvent } from "@/lib/web-voice/rate-limit";
 import { verifySessionToken } from "@/lib/web-voice/tokens";
 import type { SubAccountDoc } from "@/types";
 
@@ -23,7 +25,8 @@ export const dynamic = "force-dynamic";
  *    if ElevenLabs hasn't finalised it yet, the next /start sweeps it.
  *
  * The session token (minted by /start) is the credential — it pins the
- * sub-account, chat session and grant. Not gated on Web Voice: these pings
+ * sub-account, chat session and grant. Limited per grant and per IP
+ * (`checkVoiceEvent`). Not gated on Web Voice: these pings
  * only account for a call /start already allowed, and a call that began
  * before the gate went off must still be settled.
  */
@@ -72,6 +75,10 @@ export async function POST(request: Request) {
   }
   if (body.type !== "connected" && body.type !== "ended") {
     return NextResponse.json({ error: "Unknown event" }, { status: 400, headers });
+  }
+  // Each `connected` costs the client's ElevenLabs key a lookup.
+  if (!checkVoiceEvent(clientIpFrom(request), claims.grantId)) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429, headers });
   }
 
   try {

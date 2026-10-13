@@ -8,7 +8,9 @@ import {
   readWebVoiceConnection,
   webVoiceAvailable,
 } from "@/lib/server/web-voice-service";
-import { webVoiceCapReached } from "@/lib/server/web-voice-usage";
+import { runAfterResponse } from "@/lib/server/after-response";
+import { sweepStalePending, webVoiceCapReached } from "@/lib/server/web-voice-usage";
+import { claimConfigSweep } from "@/lib/web-voice/rate-limit";
 import { issueWidgetToken } from "@/lib/web-voice/tokens";
 import { DEFAULT_WEB_CHAT_CONFIG } from "@/types/ai";
 import type { SubAccountDoc } from "@/types";
@@ -90,9 +92,22 @@ export async function GET(request: Request) {
   if (webVoiceAvailable(sa)) {
     try {
       const conn = await readWebVoiceConnection(subAccountId);
-      if (conn?.agentId && !(await webVoiceCapReached(subAccountId, conn))) {
+      const capReached = !!conn?.agentId && (await webVoiceCapReached(subAccountId, conn));
+      if (conn?.agentId && !capReached) {
         const voiceToken = issueWidgetToken(subAccountId);
         if (voiceToken) voice = { voiceEnabled: true, voiceToken };
+      } else if (conn && capReached && claimConfigSweep(subAccountId)) {
+        // A cap filled by provisional charges (abandoned starts) recovers
+        // without waiting for a visitor to reach /voice/start, which the
+        // hidden mic would never let happen.
+        runAfterResponse(() =>
+          sweepStalePending({ subAccountId, conn }).catch((err: unknown) => {
+            console.warn(
+              `[web-chat/config] voice usage sweep failed sa=${subAccountId}`,
+              err instanceof Error ? err.message : String(err),
+            );
+          }),
+        );
       }
     } catch (err) {
       console.warn(

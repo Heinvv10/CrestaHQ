@@ -153,16 +153,34 @@ describe("markConnected", () => {
     expect(Object.keys(usage().grants as object)).toEqual([grantId]);
   });
 
-  it("retries a conversation ElevenLabs has not indexed yet, three lookups at most", async () => {
+  it("retries a lookup on a 5xx, three lookups at most; a 404 is final", async () => {
     const grantId = await reserveGrant("sa1", CONN);
-    el.fetchMock.mockImplementationOnce(async () => Response.json({ detail: "not found" }, { status: 404 }));
+    el.fetchMock.mockImplementationOnce(async () => Response.json({ detail: "busy" }, { status: 503 }));
     el.live("conv_000001");
     expect(await claim(grantId, "conv_000001")).toBe(true);
 
-    const other = await reserveGrant("sa1", CONN);
+    const flaky = await reserveGrant("sa1", CONN);
+    el.state.byId.set("conv_000002", { status: 500 });
     el.state.lookups = [];
-    expect(await claim(other, "conv_000002")).toBe(false);
+    expect(await claim(flaky, "conv_000002")).toBe(false);
     expect(el.state.lookups).toEqual(["conv_000002", "conv_000002", "conv_000002"]);
+
+    const unknown = await reserveGrant("sa1", CONN);
+    el.state.lookups = [];
+    expect(await claim(unknown, "conv_000003")).toBe(false);
+    expect(el.state.lookups).toEqual(["conv_000003"]);
+  });
+
+  it("takes one conversation id per grant: a second id is refused without a lookup", async () => {
+    const grantId = await reserveGrant("sa1", CONN);
+    expect(await claim(grantId, "conv_forged1")).toBe(false); // 404
+    el.live("conv_000001");
+    el.state.lookups = [];
+    expect(await claim(grantId, "conv_000001")).toBe(false);
+    expect(el.state.lookups).toEqual([]);
+    // The same id again may be resent (the event route limits how often).
+    el.live("conv_forged1");
+    expect(await claim(grantId, "conv_forged1")).toBe(true);
   });
 
   it("one grant claims one conversation, even when two claims race", async () => {

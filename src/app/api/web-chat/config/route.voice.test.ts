@@ -15,6 +15,8 @@ vi.mock("@/lib/comms/ai/agent", () => ({
 }));
 
 const { mem } = await import("@/test/gbp-sync-store");
+const { flushAfterResponse } = await import("@/lib/server/after-response");
+const { fakeElevenLabsConversations } = await import("@/test/fake-elevenlabs-conversations");
 const { GET } = await import("./route");
 const { verifyWidgetToken } = await import("@/lib/web-voice/tokens");
 
@@ -36,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -71,5 +74,30 @@ describe("voiceEnabled on the widget config", () => {
     expect(await config("https://evil.example")).toEqual({ enabled: false, reason: expect.any(String) });
     mem.seed("subAccounts/sa1", { ...SUB, webChatEnabledByAgency: false });
     expect(await config()).toEqual({ enabled: false });
+  });
+
+  it("when the cap looks reached, sweeps usage after the response (once a minute), so abandoned starts' charges come back", async () => {
+    // An earlier test here already used this minute's sweep for sa1.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 61_000);
+    const el = fakeElevenLabsConversations();
+    vi.stubGlobal("fetch", el.fetchMock);
+    const issuedAtMs = Date.now() - 25 * 60 * 1000;
+    const day = new Date().toISOString().slice(0, 10);
+    mem.seed(USAGE, {
+      day,
+      month: day.slice(0, 7),
+      secondsToday: 3360,
+      secondsThisMonth: 3360,
+      lapsed: { g1: { issuedAtMs, day, month: day.slice(0, 7), chargedSeconds: 3360, agentId: "agent1" } },
+      reconciledThroughMs: issuedAtMs - 30_000,
+      reconciledAgentId: "agent1",
+    });
+    expect(await config()).toMatchObject({ voiceEnabled: false });
+    expect(await config()).toMatchObject({ voiceEnabled: false });
+    await flushAfterResponse();
+    expect(el.state.listCalls).toHaveLength(1);
+    expect(await config()).toMatchObject({ voiceEnabled: true });
+    vi.useRealTimers();
   });
 });

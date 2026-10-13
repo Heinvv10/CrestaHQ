@@ -28,7 +28,7 @@ vi.mock("@/lib/server/usage-meter", () => ({ checkQuota: async () => ({ allowed:
 const { mem } = await import("@/test/gbp-sync-store");
 const { POST: start } = await import("./route");
 const { POST: event } = await import("../event/route");
-const { issueWidgetToken, verifySessionToken } = await import("@/lib/web-voice/tokens");
+const { issueSessionToken, issueWidgetToken, verifySessionToken } = await import("@/lib/web-voice/tokens");
 
 const SESSION_ID = "sess_aaaaaaaaaaaaaaaa";
 const SESSION = `subAccounts/sa1/webChatSessions/${SESSION_ID}`;
@@ -202,7 +202,7 @@ describe("/voice/event", () => {
 
   it("connected with a conversation ElevenLabs does not report live on this agent claims nothing and writes no greeting", async () => {
     const token = await started();
-    // Not found on any of the three lookups (1 s apart), so this takes ~2 s.
+    // ElevenLabs answers 404: one lookup, no retry.
     expect((await post(event, { token, type: "connected", conversationId: "conv_forged1" })).status).toBe(200);
     for (const conversationId of ["__proto__", "constructor"]) {
       expect((await post(event, { token, type: "connected", conversationId })).status).toBe(400);
@@ -228,6 +228,25 @@ describe("/voice/event", () => {
       for (let i = 0; i < 2; i++) await post(event, { token, type: "ended", conversationId });
     }
     expect(mem.read(USAGE)?.secondsToday).toBe(0);
+  });
+
+  it("limits events per grant: a token's call gets a handful, then 429", async () => {
+    const token = await started();
+    const statuses: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      statuses.push((await post(event, { token, type: "ended", conversationId: "conv_none01" }, "198.18.0.1")).status);
+    }
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 200, 429]);
+  });
+
+  it("limits events per IP across grants", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 121; i++) {
+      const token = issueSessionToken({ subAccountId: "sa1", sessionId: SESSION_ID, grantId: `grant_ip_${i}` });
+      statuses.push((await post(event, { token, type: "ended", conversationId: "conv_none01" }, "198.18.0.2")).status);
+    }
+    expect(statuses.slice(0, 120).every((s) => s === 200)).toBe(true);
+    expect(statuses[120]).toBe(429);
   });
 
   it("ended (sent as a text/plain beacon) settles the duration ElevenLabs reports, once", async () => {

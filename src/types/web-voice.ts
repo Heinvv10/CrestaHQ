@@ -104,6 +104,11 @@ export interface WebVoiceGrant {
   /** The reservation it holds (the connection's `maxCallSeconds` when it
    *  was issued) — charged in full if it lapses unclaimed. */
   seconds: number;
+  /** The ElevenLabs agent its signed URL was minted for. */
+  agentId: string;
+  /** The one conversation id a `connected` ping tried to claim it with; any
+   *  other id is refused, so a grant costs at most one lookup per id. */
+  triedConversationId?: string;
 }
 
 /** One in-flight conversation, keyed by ElevenLabs conversation id. */
@@ -126,6 +131,7 @@ export interface WebVoiceLapsedGrant {
   day: string;
   month: string;
   chargedSeconds: number;
+  agentId: string;
 }
 
 /** SERVER ONLY — `subAccounts/{id}/private/webVoiceUsage`. */
@@ -143,6 +149,11 @@ export interface WebVoiceUsageDoc {
   grants: Record<string, WebVoiceGrant>;
   /** Grants that lapsed unclaimed, already charged (see WebVoiceLapsedGrant). */
   lapsed: Record<string, WebVoiceLapsedGrant>;
+  /** Every conversation of `reconciledAgentId` that started before this
+   *  instant has been counted (by a settle or by reconciliation against
+   *  ElevenLabs' list). Null until the first grant for that agent. */
+  reconciledThroughMs: number | null;
+  reconciledAgentId: string | null;
   /** Conversation ids already counted (bounded ring) — dedupe for /end and
    *  for reconciliation. */
   settled: string[];

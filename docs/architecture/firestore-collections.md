@@ -311,13 +311,14 @@ exists and the last sync succeeded), server-written. `webVoiceMeta` (and the dia
 
 `subAccounts/{id}/private/webVoiceUsage` (`WebVoiceUsageDoc`) holds the call
 path's counters: `day`/`secondsToday` and `month`/`secondsThisMonth` (UTC), the
-live signed-URL `grants` (grant id → `{issuedAtMs, seconds}`), the `lapsed` grants
-already charged and awaiting reconciliation (grant id → `{issuedAtMs, day, month,
-chargedSeconds}`), the `pending` conversations (ElevenLabs conversation id →
-`{sessionId, grantId, grantIssuedAtMs, startedAtMs}`) and a ring of the last 500
-counted (`settled`) conversation ids. Admin SDK only; written only by
-`lib/server/web-voice-usage.ts` and `web-voice-reconcile.ts`, every change in a
-transaction. Disconnect deletes
+live signed-URL `grants` (grant id → `{issuedAtMs, seconds, agentId,
+triedConversationId?}`), the `lapsed` grants already charged and awaiting refund
+(grant id → `{issuedAtMs, day, month, chargedSeconds, agentId}`), the `pending`
+conversations (ElevenLabs conversation id → `{sessionId, grantId, grantIssuedAtMs,
+startedAtMs}`), a ring of the last 500 counted (`settled`) conversation ids, and the
+reconciliation watermark `reconciledThroughMs` for `reconciledAgentId`. Admin SDK only; written only by
+the `lib/server/web-voice-{usage,claim,settle,reconcile}.ts` modules, every change
+in a transaction. Disconnect deletes
 it with the connection doc. No new index. See
 [web-voice.md](../features/web-voice.md).
 

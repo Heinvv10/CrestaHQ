@@ -5,9 +5,8 @@ import { webVoiceUsagePath, type WebVoiceUsageDoc } from "@/types/web-voice";
 
 /**
  * The `private/webVoiceUsage` doc's shape rules, shared by the accounting
- * (`web-voice-usage.ts`) and the reconciliation against ElevenLabs
- * (`web-voice-reconcile.ts`). Every writer reads the doc through
- * `normalise`, inside its transaction.
+ * modules (`web-voice-usage.ts`, `-claim.ts`, `-settle.ts`, `-reconcile.ts`).
+ * Every writer reads the doc through `normalise`, inside its transaction.
  */
 
 /** A grant is claimable — and counts against concurrency and the cap as a
@@ -19,6 +18,9 @@ export const SIGNED_URL_MS = 15 * 60 * 1000;
 export const START_SKEW_MS = 30 * 1000;
 /** Counted-conversation ring size (dedupe for /end and reconciliation). */
 const SETTLED_RING = 500;
+
+export const isLiveStatus = (status: string | null) =>
+  status === "initiated" || status === "in-progress";
 
 /** The only form of a caught error this feature logs: never the object. */
 export function errText(err: unknown): string {
@@ -78,6 +80,8 @@ export function normalise(raw: Partial<WebVoiceUsageDoc> | undefined): WebVoiceU
     grants: { ...(raw?.grants ?? {}) },
     lapsed: { ...(raw?.lapsed ?? {}) },
     settled: Array.isArray(raw?.settled) ? [...raw.settled] : [],
+    reconciledThroughMs: typeof raw?.reconciledThroughMs === "number" ? raw.reconciledThroughMs : null,
+    reconciledAgentId: typeof raw?.reconciledAgentId === "string" ? raw.reconciledAgentId : null,
   };
   u.secondsToday = nonNegative(u.secondsToday);
   u.secondsThisMonth = nonNegative(u.secondsThisMonth);
@@ -96,7 +100,7 @@ export function normalise(raw: Partial<WebVoiceUsageDoc> | undefined): WebVoiceU
     const chargedSeconds = nonNegative(grant?.seconds);
     delete u.grants[id];
     addSeconds(u, chargedSeconds);
-    u.lapsed[id] = { issuedAtMs, day, month, chargedSeconds };
+    u.lapsed[id] = { issuedAtMs, day, month, chargedSeconds, agentId: String(grant?.agentId ?? "") };
   }
   return u;
 }
