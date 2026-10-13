@@ -98,7 +98,7 @@ export async function PATCH(
     {
       error:
         saved.reason === "condition"
-          ? "This site's last build can still finish — use Re-check now, or reset it, before editing."
+          ? "This site's last build can still finish — use Re-check now, or Try again, before editing."
           : "This site is building right now — wait for it to finish before editing.",
     },
     { status: 409 },

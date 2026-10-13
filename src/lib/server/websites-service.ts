@@ -393,7 +393,7 @@ const SITE_NOT_FOUND_MESSAGE = "Website not found in this workspace.";
 
 /** As the wizard's draft save words it (website/[siteId] PATCH). */
 const UNSETTLED_FAILURE_MESSAGE =
-  "This site's last build can still finish — use Re-check now, or reset it, before changing it.";
+  "This site's last build can still finish — use Re-check now, or Try again, before changing it.";
 
 const GITPAGE_NO_BUILD_MESSAGE =
   "The website builder did not start the build. Nothing was built — try again in a few minutes.";
@@ -850,7 +850,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
         { expectJobId: submission.formResponseId, fromStatuses: ["queued"] },
         {
           status: "failed",
-          errorMessage: "Couldn't schedule the next poll. Try Re-check now or Rebuild.",
+          errorMessage: "Couldn't schedule the next poll. Use Re-check now, or Try again.",
           updatedAt: FieldValue.serverTimestamp(),
         },
       );
