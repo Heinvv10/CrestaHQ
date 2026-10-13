@@ -124,6 +124,29 @@ describe("adopting", () => {
     expect(byId("gbp-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
   });
 
+  it("the configured link moved to something else while the proposal stayed: the doc wins", async () => {
+    seed(EXISTING, LISTING);
+    await render();
+    await act(async () => (byId("gbp-reviewurl-adopt") as HTMLButtonElement).click());
+    seed("https://g.page/r/someone-else/review", LISTING);
+    await render();
+    expect(byId("gbp-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
+  });
+
+  it("a link reset to what it was before the adopt is not mistaken for that adopt", async () => {
+    seed(EXISTING, LISTING);
+    await render();
+    await act(async () => (byId("gbp-reviewurl-adopt") as HTMLButtonElement).click());
+    seed(LISTING, LISTING); // the snapshot lands: adopted
+    await render();
+    expect(byId("gbp-reviewurl-matches")).not.toBeNull();
+    seed(EXISTING, LISTING); // another admin puts the old link back
+    await render();
+    expect(byId("gbp-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
+  });
+
   it("with nothing configured, sends expectedCurrentUrl null", async () => {
     seed(null, LISTING);
     await render();

@@ -67,15 +67,29 @@ const hasCache = (sub: Sub) => toMillis(sub.gbpSummary?.lastRunAt) !== null;
  * would take that tenant to Google with the fake's refresh token, get
  * `revoked`, and flag the fixture reconnect-required mid-spec — so it skips
  * any tenant holding a credential only the fake mints (never a real one).
+ * A read that fails syncs the tenant as before: this guard never costs a sync.
  */
-async function withoutFakeCredentials(list: Candidate[]): Promise<Candidate[]> {
-  const fakes = await Promise.all(
-    list.map(async ({ id }) => isFakeRefreshToken((await getAdminDb().doc(googleConnectionSecretPath(id)).get()).data()?.refreshToken)),
-  );
-  return list.filter((_, i) => !fakes[i]);
+async function holdsFakeCredentials(id: string): Promise<boolean> {
+  try {
+    return isFakeRefreshToken((await getAdminDb().doc(googleConnectionSecretPath(id)).get()).data()?.refreshToken);
+  } catch (err) {
+    console.error(`[cron/gbp-sync] credential check failed sa=${id}: ${err instanceof Error ? err.name : typeof err}`);
+    return false;
+  }
 }
 
-async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[] }> {
+/** The first {@link SWEEP_CAP} of `list`, in order; in Google mode, skipping fake-credentialed tenants (read one at a time, only as far as needed). */
+async function takeForSync(list: Candidate[], fake: boolean): Promise<Candidate[]> {
+  if (fake) return list.slice(0, SWEEP_CAP);
+  const taken: Candidate[] = [];
+  for (const c of list) {
+    if (taken.length >= SWEEP_CAP) break;
+    if (!(await holdsFakeCredentials(c.id))) taken.push(c);
+  }
+  return taken;
+}
+
+async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[]; fake: boolean }> {
   // Throws GbpFakeRefusedError on a misconfigured fake: the sweep cannot
   // start, the route answers 500, QStash retries — loudly.
   const fake = gbpProviderMode() === "fake";
@@ -88,11 +102,10 @@ async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[] }>
         docs(subs.where("googleEnabledByAgency", "==", true)),
         docs(subs.where("gbpSummary.lastRunAt", "!=", null)),
       ]);
-  const eligibleGated = gated.filter(({ sub }) => eligible(sub));
-  const sync = (fake ? eligibleGated : await withoutFakeCredentials(eligibleGated))
-    .sort((a, b) => (toMillis(a.sub.gbpSummary?.lastRunAt) ?? -1) - (toMillis(b.sub.gbpSummary?.lastRunAt) ?? -1))
-    .slice(0, SWEEP_CAP);
-  return { sync, cached: cached.filter(({ sub }) => hasCache(sub)) };
+  const sync = gated
+    .filter(({ sub }) => eligible(sub))
+    .sort((a, b) => (toMillis(a.sub.gbpSummary?.lastRunAt) ?? -1) - (toMillis(b.sub.gbpSummary?.lastRunAt) ?? -1));
+  return { sync, cached: cached.filter(({ sub }) => hasCache(sub)), fake };
 }
 
 async function pool(items: Candidate[], work: (c: Candidate) => Promise<void>, stop: () => boolean) {
@@ -149,7 +162,8 @@ export async function runGbpSyncSweep(
     onRun?: (run: SyncedRun) => void;
   } = {},
 ): Promise<SweepResult> {
-  const { sync, cached } = await candidates();
+  const { sync: queue, cached, fake } = await candidates();
+  const sync = await takeForSync(queue, fake);
   const byStatus: Record<string, number> = {};
   const count = (k: string) => (byStatus[k] = (byStatus[k] ?? 0) + 1);
   let processed = 0;
