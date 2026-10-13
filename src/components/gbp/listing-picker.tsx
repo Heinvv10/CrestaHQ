@@ -17,7 +17,8 @@ import type { GoogleListing } from "@/types/google";
  * listing left out, "Save additional listings" sending the whole set plus
  * `expected` — the extras it was seeded with. A connected extra this Google
  * connection no longer shows is still listed (so it can be removed). On 409
- * listings_changed it re-seeds from the live extras.
+ * listings_changed it re-seeds from the live extras. A save hands the stored
+ * extras from its 200 to `onSaved`.
  */
 
 interface PickerLocation {
@@ -36,6 +37,7 @@ interface PickerAccount {
 }
 
 type Extra = Pick<GoogleListing, "accountName" | "locationName" | "title">;
+export type SavedExtra = Pick<GoogleListing, "accountName" | "locationName" | "title" | "address">;
 const keyOf = (l: Pick<Extra, "accountName" | "locationName">) => `${l.accountName}|${l.locationName}`;
 
 type Load =
@@ -73,6 +75,7 @@ export function ListingPicker({
   mode = "single",
   main,
   selected = [],
+  onSaved,
 }: {
   subAccountId: string;
   /** Present when a listing is already selected (the "Change listing" path). */
@@ -82,6 +85,8 @@ export function ListingPicker({
   main?: string;
   /** multi: the connected extras (live). */
   selected?: Extra[];
+  /** multi: the extras the save stored, from its 200. */
+  onSaved?: (listings: SavedExtra[]) => void;
 }) {
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   const [choice, setChoice] = useState<string | null>(null);
@@ -124,7 +129,7 @@ export function ListingPicker({
           multi ? { listings: picked.map(pairOf), expected: seed.map((l) => pairOf(keyOf(l))) } : pairOf(choice!),
         ),
       });
-      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; code?: string; error?: string };
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; code?: string; error?: string; listings?: SavedExtra[] };
       if (multi && data.code === "listings_changed") {
         toast.error("Listings changed — reopened with the latest");
         setSeed(selected);
@@ -136,6 +141,7 @@ export function ListingPicker({
         toast.error(ERROR_TEXT[data.code ?? ""] ?? data.error ?? "Couldn't save the listing.");
         return;
       }
+      if (multi && data.listings) onSaved?.(data.listings);
       toast.success(multi ? "Additional listings saved." : "Listing selected.");
       onClose?.();
     } catch {

@@ -239,6 +239,9 @@ export async function agentProfileInTx(tx: FirebaseFirestore.Transaction, subAcc
   };
 }
 
+/** The most hosts the web-chat allow-list may hold. */
+export const MAX_ALLOWED_DOMAINS = 25;
+
 /**
  * The web-chat allow-list, read inside the caller's transaction, and a `save`
  * that writes a new list in it (seeding the channel doc's defaults if there

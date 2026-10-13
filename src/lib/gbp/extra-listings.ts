@@ -135,7 +135,7 @@ const sameSet = (a: ListingPair[], b: ListingPair[]) => {
 };
 
 export type SaveResult =
-  | { ok: true; added: string[]; removed: string[]; cachePending?: true }
+  | { ok: true; added: string[]; removed: string[]; listings: GoogleListing[]; cachePending?: true }
   | { ok: false; code: "no_listing" | "is_main" | "listing_shared" | "listings_changed" | "account_changed" };
 
 /**
@@ -182,13 +182,14 @@ export async function saveExtraListings(
     for (const loc of added) {
       if (await heldByAnotherSubAccount(db, tx, loc, subAccountId)) return { ok: false, code: "listing_shared" };
     }
-    if (added.length === 0 && removed.length === 0) return { ok: true, added, removed };
+    // Nothing added or removed (a reorder only): nothing is written, so answer with what is stored.
+    if (added.length === 0 && removed.length === 0) return { ok: true, added, removed, listings: current };
     const changes = [
       ...removed.map(() => ({ type: "extra_listing_removed" as const, reason: "admin_removed" as const })),
       ...added.map(() => ({ type: "extra_listing_added" as const })),
     ];
     switchedOff = writeExtras(tx, subAccountId, sub, next, changes, [...removed, ...added], byUid);
-    return { ok: true, added, removed };
+    return { ok: true, added, removed, listings: next };
   });
   if (switchedOff) await sendAutoReplyAlert(subAccountId, { kind: "listing_changed" });
   // A location removed and re-added under another Google account starts empty.

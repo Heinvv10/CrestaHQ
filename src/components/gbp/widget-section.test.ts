@@ -134,6 +134,7 @@ describe("creating a widget", () => {
       maxReviews: 12,
       layout: "carousel",
       theme: "light",
+      expectedPublicId: null,
     });
     // No rating filter is offered, anywhere.
     expect(container.textContent?.toLowerCase()).not.toMatch(/min(imum)? rating|only show|positive/);
