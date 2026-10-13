@@ -226,7 +226,7 @@ export interface WebsiteTransitionGuard {
   /**
    * The job the caller is acting for. When given, the doc must still carry
    * exactly this `gitpageJobId` (null = no job). Omit only for a write that
-   * is not about a job (the draft save, a reset, a new submit).
+   * is not about a job (the draft save, a new submit).
    */
   expectJobId?: string | null;
   /** A further condition on the doc as the transaction reads it. */
@@ -263,11 +263,10 @@ export type WebsiteTransitionResult =
  *
  * Five writers race on a site doc: the QStash poll tick, the manual
  * re-check, gitpage's callback, the operator's draft save, and a build
- * submit or reset. Each reads the doc, does something slow (a call to
+ * submit. Each reads the doc, does something slow (a call to
  * gitpage, a queue publish), then writes — and a plain `update` after that
  * gap writes over whatever landed in between: `building` over a site the
- * callback just made `ready`, a timeout from an old job over a new one,
- * `building` with no job after a reset.
+ * callback just made `ready`, a timeout from an old job over a new one.
  *
  * So every such write re-reads the doc inside a transaction and applies
  * only if the doc is still what the writer acted on: the same job, and a
@@ -642,8 +641,8 @@ export async function submitWebsiteBuildForSubAccount(input: {
     }
   }
   // The real bound on calls to gitpage. The 409 above stops a second build
-  // of a site that is building, but a reset clears that state and two
-  // submits in the same instant both pass it; this counter is what neither
+  // of a site that is building, but two submits in the same instant both
+  // pass it; this counter is what neither
   // can get round.
   const rate = await reserveBuildSubmit(subAccountId);
   if (!rate.ok) {
@@ -874,7 +873,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
  * the only thing it writes to the site doc is `provisioning` — through
  * `transitionWebsite`, for this job, while the site is still `ready`. So it
  * cannot un-settle or re-settle a site, and a summary for a build that has
- * since been reset or replaced is dropped rather than written onto its
+ * since been replaced or removed is dropped rather than written onto its
  * successor.
  *
  * A gated-off workspace (`websiteEnabledByAgency`) gets no hand-off: the

@@ -106,22 +106,19 @@ export async function PATCH(
 }
 
 /**
- * DELETE a website.
+ * DELETE a website: permanently remove the website doc, freeing one of the
+ * sub-account's slots so a different site can be created. The
+ * previously-published repo (if any) stays live until deleted on gitpage's
+ * side. The Web Chat hosts its custom domain added (`customDomainChatHosts`)
+ * come off the allow-list in the same transaction: once the doc is gone
+ * nothing records them. A chat bot pointed at that domain goes back to the
+ * live URL, as when the domain alone is removed.
  *
- *   ?reset=1  → reset the doc to draft (the "Rebuild" action). Clears
- *               gitpageJobId / liveUrl / status / errors so the operator can
- *               edit the form and submit a new build. The previously-published
- *               GitHub repo stays live until manually deleted on gitpage's
- *               side — v1 doesn't tear down on rebuild. Config is preserved.
- *
- *   (no flag) → permanently remove the website doc, freeing one of the
- *               sub-account's slots so a different site can be created. The
- *               previously-published repo (if any) likewise stays live. The
- *               Web Chat hosts its custom domain added
- *               (`customDomainChatHosts`) come off the allow-list in the same
- *               transaction: once the doc is gone nothing records them. A
- *               chat bot pointed at that domain goes back to the live URL,
- *               as when the domain alone is removed.
+ * Upstream also resets a site to draft on `?reset=1` (its old Rebuild
+ * button); ours has no such branch, since nothing calls it any more. A
+ * request that still asks for a reset — a page loaded before the WS-6
+ * deploy shows the old button — is refused, so it can never remove the
+ * site instead.
  */
 export async function DELETE(
   request: Request,
@@ -131,39 +128,18 @@ export async function DELETE(
   if (!isDocId(siteId)) return siteNotFound();
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
-
-  const reset = new URL(request.url).searchParams.get("reset") === "1";
+  if (new URL(request.url).searchParams.has("reset")) {
+    return NextResponse.json(
+      { error: "Resetting a site is no longer available — reload the page to see its current actions." },
+      { status: 400 },
+    );
+  }
 
   const db = getAdminDb();
   const docRef = db.doc(`subAccounts/${subAccountId}/website/${siteId}`);
   const snap = await docRef.get();
   if (!snap.exists) {
     return NextResponse.json({ error: "No website to remove." }, { status: 404 });
-  }
-
-  if (reset) {
-    // From any status, and it clears the job id: a poll tick or callback
-    // still in flight for the old job then finds no job to write for
-    // (`transitionWebsite` in each of them) and stops.
-    const done = await transitionWebsite(
-      docRef,
-      { fromStatuses: ["draft", "queued", "building", "ready", "failed"] },
-      {
-        status: "draft",
-        gitpageJobId: null,
-        liveUrl: null,
-        errorMessage: null,
-        partialErrors: null,
-        pollAttempts: 0,
-        statusPhase: null,
-        settledDelivery: null,
-        updatedAt: FieldValue.serverTimestamp(),
-      },
-    );
-    if (!done.applied) {
-      return NextResponse.json({ error: "No website to remove." }, { status: 404 });
-    }
-    return NextResponse.json({ ok: true, reset: true });
   }
 
   if ((snap.data() as WebsiteDoc).customDomain) await prepareAiAgentDocs(subAccountId);

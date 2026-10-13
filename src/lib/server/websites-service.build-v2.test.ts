@@ -481,8 +481,8 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       expect(fetchMock).toHaveBeenCalledTimes(10);
     });
 
-    it("the reset route is no way round it: reset-and-rebuild is still 10 an hour", async () => {
-      // A reset clears the in-flight state, so the 409 does not apply — only the counter does.
+    it("clearing the in-flight state is no way round it: back-to-draft-and-build is still 10 an hour", async () => {
+      // A site with no job in flight is not refused with 409 — only the counter applies.
       const resetAndBuild = async () => {
         await mem.db.doc(SITE).update({ status: "draft", gitpageJobId: null });
         return build();
