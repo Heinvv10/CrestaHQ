@@ -202,3 +202,26 @@ test("storage.rules: a SECONDARY member reads SECONDARY's object, not PRIMARY's;
     }
   }
 });
+
+// CI once caught the Firestore SDK failing its own assertion (ID ca9) on this
+// page: every listener died and the library sat on its placeholder. The page
+// cannot recover by itself, so the app must say so and offer a reload. The
+// crash is injected as the SDK raises it — an uncaught Error with its message.
+test("a Firestore client crash raises the reload banner, and Reload clears it", async ({ page }) => {
+  const sa = readEnv().E2E_SUBACCOUNT_ID;
+  await page.goto(`/sa/${sa}/media`);
+  await expect(page.getByTestId("media-breadcrumb")).toBeVisible({ timeout: 30_000 });
+  const banner = page.getByTestId("firestore-crash-banner");
+  await expect(banner).toHaveCount(0);
+
+  await page.evaluate(
+    (m) => setTimeout(() => { throw new Error(m); }),
+    'FIRESTORE (12.19.0) INTERNAL ASSERTION FAILED: Unexpected state (ID: ca9) CONTEXT: {"ve":-1}',
+  );
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("Connection to the server was lost. Reload to continue.");
+
+  await banner.getByRole("button", { name: "Reload" }).click();
+  await expect(page.getByTestId("media-breadcrumb")).toBeVisible({ timeout: 30_000 });
+  await expect(banner).toHaveCount(0);
+});
