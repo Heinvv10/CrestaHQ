@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: Commit production is serving (defaults to the branch head)
+        description: Commit production is serving (blank = branch head; after a rollback, give the release's commit)
         required: false
 
 jobs:
