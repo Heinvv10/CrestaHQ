@@ -1,3 +1,5 @@
+import { sameSite } from "@/lib/prospecting/registrable-domain";
+
 /**
  * Evidence that the ENQUIRY went out (fix round 1, V1). Pure.
  *
@@ -7,16 +9,38 @@
  * And a 2xx JSON answer that says the site refused it (Contact Form 7's
  * `"status":"validation_failed" | "spam" | "mail_failed" | "aborted"`,
  * `"success":false`, `"ok":false`) is a rejection, not a submission.
+ *
+ * Our email alone is enough to keep a request from leaving before the click,
+ * but not to stand for the enquiry after it: a newsletter or email-check call
+ * carries the address too, and its 2xx says nothing about the enquiry. What
+ * the signals hang on must carry the message (`carriesMessage`).
  */
+
+/** Third-party form backends whose 2xx to a POST counts as a submission. */
+const FORM_BACKENDS =
+  /(^|\.)(formspree\.io|getform\.io|hsforms\.com|jotform\.com|typeform\.com|formsubmit\.co|web3forms\.com|usebasin\.com|formcarry\.com|wufoo\.com|zohopublic\.com)$/i;
+
+/** The form's own site, or a third-party form backend: where an answer to the enquiry may come from. */
+export function knownHost(host: string, formUrl: string | null): boolean {
+  return formUrl !== null && (sameSite(host, new URL(formUrl).hostname) || FORM_BACKENDS.test(host));
+}
 
 export interface EnquiryMarkers {
   needles: string[];
+  /** The message's longest line; our email only when the message has no line long enough to be ours alone. */
+  message: string[];
 }
+
+/** Whitespace removed: a textarea with wrap="hard" breaks long lines (CR LF) as it submits, inside a word if it must. */
+const squash = (s: string) => s.replace(/\s+/g, "");
 
 /** Our email address and the message's longest line — the two things only our submission contains. */
 export function enquiryMarkers(id: { email: string; message: string }): EnquiryMarkers {
   const line = id.message.split(/\r?\n/).reduce((a, b) => (b.trim().length > a.length ? b.trim() : a), "");
-  return { needles: [id.email.toLowerCase(), ...(line.length >= 12 ? [line.toLowerCase()] : [])] };
+  const email = id.email.toLowerCase();
+  const squashed = squash(line.toLowerCase());
+  const ours = squashed.length >= 12 ? [squashed] : [];
+  return { needles: [email, ...ours], message: ours.length ? ours : [email] };
 }
 
 const decode = (s: string) => {
@@ -28,11 +52,17 @@ const decode = (s: string) => {
   }
 };
 
-export function carriesEnquiry(text: string, markers: EnquiryMarkers): boolean {
+function holds(text: string, needles: string[]): boolean {
   if (!text) return false;
-  const forms = [text, decode(text), text.replace(/\\"/g, '"').replace(/\\u0027/g, "'")].map((s) => s.toLowerCase());
-  return markers.needles.some((n) => forms.some((f) => f.includes(n)));
+  const json = text.replace(/\\"/g, '"').replace(/\\u0027/g, "'").replace(/\\[rnt]/g, " ");
+  const forms = [text, decode(text), json].map((s) => squash(s.toLowerCase()));
+  return needles.some((n) => forms.some((f) => f.includes(n)));
 }
+
+export const carriesEnquiry = (text: string, markers: EnquiryMarkers) => holds(text, markers.needles);
+
+/** Stricter: the request carries the message itself (its longest line), not just our email. */
+export const carriesMessage = (text: string, markers: EnquiryMarkers) => holds(text, markers.message);
 
 const REJECTED_STATUS = /^(validation_failed|spam|mail_failed|aborted|invalid)$/i;
 
