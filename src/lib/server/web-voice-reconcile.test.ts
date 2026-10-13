@@ -201,8 +201,9 @@ describe("any doubt about the list changes nothing", () => {
     ["no conversations array", { has_more: false }],
     ["an item with no start time", { conversations: [{ conversation_id: "conv_nostart", agent_id: "agent1", status: "done", call_duration_secs: 9 }] }],
     ["an item with no agent id", { conversations: [{ conversation_id: "conv_noagent", status: "done", start_time_unix_secs: 0, call_duration_secs: 9 }] }],
-    ["an item with no usable id", { conversations: [{ conversation_id: "../x", agent_id: "agent1", status: "done", call_duration_secs: 9 }] }],
-  ])("the list has %s", async (_label, body) => {
+    ["an item with no usable id", { conversations: [{ conversation_id: "conv:x.1", agent_id: "agent1", status: "done", start_time_unix_secs: 0, call_duration_secs: 9 }] }],
+  ])("the list has %s (a complete, last page otherwise)", async (_label, page) => {
+    const body: Record<string, unknown> = { has_more: false, next_cursor: null, ...page };
     await reserveGrant("sa1", CONN);
     vi.setSystemTime(t0 + REFUNDABLE_MS);
     const items = (body.conversations as Array<Record<string, unknown>> | undefined)?.map((c) =>
@@ -226,5 +227,13 @@ describe("a re-keyed connection (new agent)", () => {
     await sweep(next);
     expect(await today()).toBe(300); // agent1's charge stands; agent2's grant refunded
     expect(doc().lapsed).toEqual({});
+  });
+
+  it("a sweep for an agent the watermark is not for (re-keyed, no new grant yet) lists nothing and keeps every charge", async () => {
+    await reserveGrant("sa1", CONN);
+    vi.setSystemTime(t0 + REFUNDABLE_MS);
+    await sweep({ ...CONN, agentId: "agent2" });
+    expect(el.state.listCalls).toEqual([]);
+    expect(await today()).toBe(300);
   });
 });
