@@ -97,6 +97,16 @@ describe("submitBuild — premium request", () => {
     expect(body.referenceNotes).toBe("Family-run since 2011.");
   });
 
+  it("sends niche-only details for their niche and omits them after the niche changes", async () => {
+    const premium_details = { ...blankPremiumDetails(), tools: "n8n", case_studies: "Acme | Won" };
+    const on = await submitted(premiumConfig({ niche: "ai_automation", premium_details }));
+    expect(on.premium).toMatchObject({ tools: ["n8n"], caseStudies: [{ client: "Acme", result: "Won" }] });
+    fetchMock.mockClear();
+    const off = await submitted(premiumConfig({ niche: "gym_fitness", premium_details }));
+    expect(off.premium).not.toHaveProperty("tools");
+    expect(off.premium).not.toHaveProperty("caseStudies");
+  });
+
   it("leaves the concept and hero motion out when the operator picked none", async () => {
     const body = await submitted(premiumConfig({ concept: null, hero_motion: null, premium_details: null }));
     expect(body.premium).toEqual({ mode: "light" });

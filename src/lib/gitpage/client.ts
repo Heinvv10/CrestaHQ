@@ -466,6 +466,9 @@ export interface GitpageConceptCard {
  * GET /api/v1/concepts?niche=… — read-only, cached by gitpage for 5 min.
  * Pass the niche key, or null for the generic (no-niche) concepts.
  */
+/** HARDENING: how long the concepts proxy waits for gitpage. */
+export const CONCEPTS_TIMEOUT_MS = 8000;
+
 export async function fetchConcepts(
   niche: string | null,
 ): Promise<GitpageConceptCard[]> {
@@ -473,6 +476,8 @@ export async function fetchConcepts(
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${getApiKey()}` },
     next: { revalidate: 300 },
+    // HARDENING: a hung gitpage must not hold the picker's request open; the timeout rejects and the route answers 502.
+    signal: AbortSignal.timeout(CONCEPTS_TIMEOUT_MS),
   } as RequestInit);
   let body: Record<string, unknown> = {};
   try {
@@ -489,8 +494,11 @@ export async function fetchConcepts(
           : `gitpage GET failed: ${res.status}`;
     throw new GitpageError(message, res.status, body);
   }
-  const list = Array.isArray(body.concepts) ? body.concepts : [];
-  return list
+  // HARDENING: an ok answer without a concepts array (a 200 maintenance page, a reshaped body) is a failure, not "no concepts".
+  if (!Array.isArray(body.concepts)) {
+    throw new GitpageError("gitpage concepts answer has no concepts array", 502, body);
+  }
+  return body.concepts
     .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
     .filter((c) => typeof c.id === "string" && typeof c.name === "string")
     .map((c) => ({
@@ -596,7 +604,8 @@ function configToGitpagePayload(input: SubmitBuildInput) {
       ...(c.concept && { concept: c.concept }),
       mode: premiumModeFor(c),
       ...(c.hero_motion && { heroMotion: c.hero_motion }),
-      ...premiumDetailsPayload(c.premium_details),
+      // HARDENING: pass the niche so fields the form hides for it are not sent.
+      ...premiumDetailsPayload(c.premium_details, c.niche ?? null),
     };
     const notes = c.premium_details?.reference_notes?.trim();
     if (notes) payload.referenceNotes = notes;
