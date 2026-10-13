@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
+import { FIRESTORE_LISTEN, stallFirestoreListen } from "../lib/firestore-listen";
 import { LOC_B, gbpLifecycle, primaryId, primaryRef, seedConnectedListing } from "../lib/gbp";
 import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
 import { FAKE_ACCOUNT_SID, FAKE_AUTH_TOKEN, FAKE_CALLER_NUMBER, FAKE_FROM_NUMBER } from "../lib/missed-call";
@@ -111,10 +112,13 @@ test("an extra listing's adopted link is the one its review request sends", asyn
   await expect(card).toHaveAttribute("data-location", LOC_B, { timeout: 30_000 });
   await expect(card).toHaveAttribute("data-state", "proposal_available");
   await expect(card).toContainText(B_URL);
+  // The card must show the adopt from the route's 200, not the doc's next snapshot.
+  await stallFirestoreListen(page);
   await card.getByTestId("gbp-listing-reviewurl-adopt").click();
   await expect.poll(async () => (await reviewConfig())?.listingUrls, { timeout: 30_000 }).toEqual({ [B_KEY]: B_URL });
   await expect(page.getByTestId("gbp-listing-reviewurl-matches")).toBeVisible({ timeout: 30_000 });
   expect((await reviewConfig())?.reviewUrl).toBe(MAIN_URL);
+  await page.unroute(FIRESTORE_LISTEN);
 
   // --- Send with LOC_B selected, through the real picker and route.
   await page.goto(`/sa/${primaryId()}/reputation/requests`);

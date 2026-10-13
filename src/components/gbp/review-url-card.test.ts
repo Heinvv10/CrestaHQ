@@ -108,7 +108,20 @@ describe("adopting", () => {
     await render();
     await act(async () => (byId("gbp-reviewurl-adopt") as HTMLButtonElement).click());
     expect(adoptPosts()).toEqual([{ expectedCurrentUrl: EXISTING }]);
-    expect(byId("gbp-reviewurl-done")?.textContent).toContain("now use");
+    // The doc never updates here (a stalled Listen stream): the card follows the route's 200.
+    expect(byId("gbp-reviewurl-matches")?.textContent).toContain("listing's review link");
+    expect(byId("gbp-reviewurl-proposal")).toBeNull();
+    expect(byId("gbp-reviewurl-adopt")).toBeNull();
+  });
+
+  it("a snapshot that lands after the adopt takes over from the route's answer", async () => {
+    seed(EXISTING, LISTING);
+    await render();
+    await act(async () => (byId("gbp-reviewurl-adopt") as HTMLButtonElement).click());
+    seed(EXISTING, "https://review.fixture.example/changed-again");
+    await render();
+    expect(byId("gbp-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-reviewurl-proposal")?.getAttribute("data-state")).toBe("differs");
   });
 
   it("with nothing configured, sends expectedCurrentUrl null", async () => {
@@ -126,7 +139,8 @@ describe("adopting", () => {
     const error = byId("gbp-reviewurl-error")?.textContent ?? "";
     expect(error).toContain("changed");
     expect(error).toContain("https://g.page/r/someone-else/review");
-    expect(byId("gbp-reviewurl-done")).toBeNull();
+    expect(byId("gbp-reviewurl-matches")).toBeNull();
+    expect(byId("gbp-reviewurl-proposal")).not.toBeNull();
   });
 });
 

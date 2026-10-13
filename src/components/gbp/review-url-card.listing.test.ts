@@ -70,7 +70,9 @@ describe("an extra listing's card", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(ADOPT);
     expect(JSON.parse(String(init.body))).toEqual({ expectedCurrentUrl: B_OLD, locationName: B });
-    expect(byId("gbp-listing-reviewurl-done")?.textContent).toContain("for Fixture North now use");
+    // The doc never updates here (a stalled Listen stream): the card follows the route's 200.
+    expect(byId("gbp-listing-reviewurl-matches")?.textContent).toBe("Review requests for Fixture North use its review link.");
+    expect(byId("gbp-listing-reviewurl-proposal")).toBeNull();
   });
 
   it("adopted: a quiet confirmation naming the listing", async () => {

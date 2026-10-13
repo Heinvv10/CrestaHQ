@@ -12,7 +12,9 @@ import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
  * review link is only ever PROPOSED: the configured link — the one review
  * requests send — changes only when the admin clicks, as a compare-and-set on
  * the link shown here (POST …/google-review/adopt-listing-url). Reads the live
- * sub-account doc, so the card updates itself once adopted. No confirm().
+ * sub-account doc, but once adopted it shows the result from the route's 200,
+ * not the doc's next snapshot (Firestore's Listen stream can sit silent ~30 s
+ * after a write, leaving "no link yet" beside a successful adopt). No confirm().
  *
  * With `locationName` (an EXTRA listing, MULTI_LISTING_V1_PLAN.md PR 5) the
  * card is that listing's: its own link, adopted into its own key, test ids
@@ -21,9 +23,15 @@ import { resolveReviewUrl } from "@/lib/reviews/canonical-url";
 export function ReviewUrlCard({ locationName }: { locationName?: string }) {
   const { subAccountId, subAccount, isAdmin } = useSubAccount();
   const [pending, setPending] = useState(false);
-  const [done, setDone] = useState(false);
+  // What the route said it adopted, and the configured link it replaced: it
+  // holds only while the doc still shows that link (a snapshot has not landed).
+  const [adopted, setAdopted] = useState<{ from: string | null; url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { configured, proposed, state } = resolveReviewUrl(subAccount, locationName);
+  const live = resolveReviewUrl(subAccount, locationName);
+  const { configured, proposed, state } =
+    adopted && live.configured === adopted.from && live.proposed === adopted.url
+      ? { ...live, configured: adopted.url, state: "matches" as const }
+      : live;
   const tid = locationName ? "gbp-listing-reviewurl" : "gbp-reviewurl";
   const title = locationName && subAccount ? (listingFor(subAccount, locationName)?.title ?? "This listing") : null;
 
@@ -46,8 +54,8 @@ export function ReviewUrlCard({ locationName }: { locationName?: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(locationName ? { expectedCurrentUrl: configured, locationName } : { expectedCurrentUrl: configured }),
       });
-      const data = (await res.json().catch(() => null)) as { code?: string; currentUrl?: string | null; error?: string } | null;
-      if (res.ok) setDone(true);
+      const data = (await res.json().catch(() => null)) as { code?: string; currentUrl?: string | null; error?: string; reviewUrl?: string } | null;
+      if (res.ok && data?.reviewUrl) setAdopted({ from: configured, url: data.reviewUrl });
       else if (data?.code === "changed") {
         setError(`The review link changed since you looked — it is now ${data.currentUrl ?? "empty"}. Check it and try again.`);
       } else setError(data?.error ?? "That didn't work. Please try again.");
@@ -84,16 +92,10 @@ export function ReviewUrlCard({ locationName }: { locationName?: string }) {
           requests have no link yet.
         </p>
       )}
-      {done ? (
-        <p className="text-xs text-emerald-700 dark:text-emerald-400" role="status" data-testid={`${tid}-done`}>
-          Review requests {title ? `for ${title} ` : ""}now use the listing&apos;s link.
-        </p>
-      ) : (
-        <Button type="button" size="sm" variant="outline" onClick={adopt} disabled={pending} data-testid={`${tid}-adopt`}>
-          {pending && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
-          {state === "differs" ? "Replace with listing link" : "Use it"}
-        </Button>
-      )}
+      <Button type="button" size="sm" variant="outline" onClick={adopt} disabled={pending} data-testid={`${tid}-adopt`}>
+        {pending && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+        {state === "differs" ? "Replace with listing link" : "Use it"}
+      </Button>
       {error && (
         <p className="text-xs text-red-600" role="alert" data-testid={`${tid}-error`}>{error}</p>
       )}

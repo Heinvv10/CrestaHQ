@@ -18,6 +18,7 @@ import {
   resetSync,
   reviews,
   runs,
+  SCOPE,
   seedSub,
   setScenario,
 } from "@/test/gbp-sync-harness";
@@ -81,6 +82,28 @@ describe("selection", () => {
     expect(runs("sa_n25")).toHaveLength(0);
     expect(runs("sa_n26")).toHaveLength(0);
     expect(runs("sa_n22")).toHaveLength(1);
+  });
+});
+
+describe("in Google mode", () => {
+  // CI and dev share this Firestore: an E2E spec leaves its fixture tenant gated,
+  // connected and listed. The production sweep must not carry the fake's token to
+  // Google — it answers `revoked` and the fixture is flagged reconnect-required mid-spec.
+  it("never takes a tenant holding the fake's credentials to Google, and touches nothing of it", async () => {
+    mem.seed(`subAccounts/${OTHER_SA}/private/googleConnection`, {
+      refreshToken: "1//real-refresh-token", accessToken: "ya29.real", accessTokenExpiresAt: Date.now() + 3_600_000, scopes: [SCOPE],
+    });
+    const before = mem.read(`subAccounts/${SA}`);
+    delete process.env.GBP_PROVIDER;
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("offline"));
+    vi.stubGlobal("fetch", fetchSpy);
+    const result = await runGbpSyncSweep({ sleep: noSleep });
+    vi.unstubAllGlobals();
+    expect(result.processed).toBe(1);
+    expect(runs(OTHER_SA)).toHaveLength(1);
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(runs(SA)).toHaveLength(0);
+    expect(mem.read(`subAccounts/${SA}`)).toEqual(before);
   });
 });
 

@@ -3,6 +3,8 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { SubAccountDoc } from "@/types";
 import type { SyncedRun } from "@/lib/reputation/sentiment-after";
+import { googleConnectionSecretPath } from "@/types/google";
+import { isFakeRefreshToken } from "../provider/fake";
 import { GbpFakeRefusedError, gbpProviderMode } from "../provider/select";
 import { recordFailedRun } from "./record";
 import type { Sleep } from "./retry";
@@ -59,6 +61,20 @@ const eligible = (sub: Sub) => {
 };
 const hasCache = (sub: Sub) => toMillis(sub.gbpSummary?.lastRunAt) !== null;
 
+/**
+ * Local dev and CI run against this same Firestore, and an E2E spec leaves its
+ * fixture tenant gated, connected and listed while it runs. The real sweep
+ * would take that tenant to Google with the fake's refresh token, get
+ * `revoked`, and flag the fixture reconnect-required mid-spec — so it skips
+ * any tenant holding a credential only the fake mints (never a real one).
+ */
+async function withoutFakeCredentials(list: Candidate[]): Promise<Candidate[]> {
+  const fakes = await Promise.all(
+    list.map(async ({ id }) => isFakeRefreshToken((await getAdminDb().doc(googleConnectionSecretPath(id)).get()).data()?.refreshToken)),
+  );
+  return list.filter((_, i) => !fakes[i]);
+}
+
 async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[] }> {
   // Throws GbpFakeRefusedError on a misconfigured fake: the sweep cannot
   // start, the route answers 500, QStash retries — loudly.
@@ -72,8 +88,8 @@ async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[] }>
         docs(subs.where("googleEnabledByAgency", "==", true)),
         docs(subs.where("gbpSummary.lastRunAt", "!=", null)),
       ]);
-  const sync = gated
-    .filter(({ sub }) => eligible(sub))
+  const eligibleGated = gated.filter(({ sub }) => eligible(sub));
+  const sync = (fake ? eligibleGated : await withoutFakeCredentials(eligibleGated))
     .sort((a, b) => (toMillis(a.sub.gbpSummary?.lastRunAt) ?? -1) - (toMillis(b.sub.gbpSummary?.lastRunAt) ?? -1))
     .slice(0, SWEEP_CAP);
   return { sync, cached: cached.filter(({ sub }) => hasCache(sub)) };

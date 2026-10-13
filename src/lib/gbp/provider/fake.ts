@@ -31,6 +31,9 @@ const ACCESS_RE = /^fake-access:(.+):(\d+)$/;
 const REFRESH_RE = /^fake-refresh:(.+):(\d+)$/;
 const CODE_RE = /^fake-code:(.+)$/;
 
+/** A refresh token only the fake mints — never a real Google credential. */
+export const isFakeRefreshToken = (token: unknown): boolean => typeof token === "string" && REFRESH_RE.test(token);
+
 function page<T>(items: T[], pageToken?: string): { slice: T[]; next: string | null } {
   const start = pageToken ? Number(pageToken) : 0;
   if (!Number.isInteger(start) || start < 0 || start > items.length) {
