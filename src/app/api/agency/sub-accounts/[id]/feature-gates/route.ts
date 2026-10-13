@@ -79,6 +79,7 @@ interface PatchBody {
   googleCalendarEnabled?: boolean;
   webVoiceEnabled?: boolean;
   dialerEnabled?: boolean;
+  emailAiDraftsEnabled?: boolean;
   reviewsAiEnabled?: boolean;
   reviewsAutoReplyEnabled?: boolean;
   agentApiEnabled?: boolean;
@@ -207,6 +208,7 @@ export async function PATCH(
   const wantsGoogleCalendar = typeof body.googleCalendarEnabled === "boolean";
   const wantsWebVoice = typeof body.webVoiceEnabled === "boolean";
   const wantsDialer = typeof body.dialerEnabled === "boolean";
+  const wantsEmailAiDrafts = typeof body.emailAiDraftsEnabled === "boolean";
   const wantsReviewsAi = typeof body.reviewsAiEnabled === "boolean";
   const wantsReviewsAutoReply =
     typeof body.reviewsAutoReplyEnabled === "boolean";
@@ -265,6 +267,7 @@ export async function PATCH(
     !wantsGoogleCalendar &&
     !wantsWebVoice &&
     !wantsDialer &&
+    !wantsEmailAiDrafts &&
     !wantsReviewsAi &&
     !wantsReviewsAutoReply &&
     !wantsAgentApi &&
@@ -392,6 +395,9 @@ export async function PATCH(
   }
   if (typeof body.dialerEnabled === "boolean") {
     gates.dialerEnabledByAgency = body.dialerEnabled;
+  }
+  if (typeof body.emailAiDraftsEnabled === "boolean") {
+    gates.emailAiDraftsEnabledByAgency = body.emailAiDraftsEnabled;
   }
   if (typeof body.reviewsAiEnabled === "boolean") {
     gates.reviewsAiEnabledByAgency = body.reviewsAiEnabled;
@@ -523,6 +529,9 @@ export async function PATCH(
       : {}),
     ...(wantsWebVoice ? { webVoiceEnabled: body.webVoiceEnabled } : {}),
     ...(wantsDialer ? { dialerEnabled: body.dialerEnabled } : {}),
+    ...(wantsEmailAiDrafts
+      ? { emailAiDraftsEnabled: body.emailAiDraftsEnabled }
+      : {}),
     ...(wantsReviewsAi ? { reviewsAiEnabled: body.reviewsAiEnabled } : {}),
     ...(wantsReviewsAutoReply
       ? { reviewsAutoReplyEnabled: body.reviewsAutoReplyEnabled }

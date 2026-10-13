@@ -19,10 +19,11 @@ const { AGENCY_AGENT_CALLABLE, agencyAgentCallable, agentCallable, isAgentReadTo
 const { agentToolsFor } = await import("./agent-tools-listing");
 
 const EXPECTED_AGENCY_CALLABLE = [
-  "apply_snapshot", "assign_billing_plan", "create_billing_plan", "create_one_time_charge", "create_sub_account",
-  "list_billing_plans", "list_snapshots", "list_sub_accounts", "set_sub_account_gate", "sub_account_stats",
+  "apply_snapshot", "assign_billing_plan", "billing_overview", "create_billing_plan", "create_one_time_charge", "create_sub_account",
+  "list_billing_plans", "list_snapshots", "list_sub_accounts", "resend_checkout_link", "set_sub_account_gate", "sub_account_stats",
+  "sub_account_usage",
 ];
-const AGENCY_READS = ["list_billing_plans", "list_snapshots", "list_sub_accounts", "sub_account_stats"];
+const AGENCY_READS = ["billing_overview", "list_billing_plans", "list_snapshots", "list_sub_accounts", "sub_account_stats", "sub_account_usage"];
 
 const fields = {
   agencyId: "ag1", keyId: "k1", keyPrefix: "abcd1234", keyName: "k", mode: "live" as const,

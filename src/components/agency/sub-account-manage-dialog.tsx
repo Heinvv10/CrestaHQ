@@ -134,6 +134,8 @@ function ManageDialogBody({
     subAccount.googleCalendarEnabledByAgency === true;
   const initialWebVoice = subAccount.webVoiceEnabledByAgency === true;
   const initialDialer = subAccount.dialerEnabledByAgency === true;
+  const initialEmailAiDrafts =
+    subAccount.emailAiDraftsEnabledByAgency === true;
   const initialReviewsAi = subAccount.reviewsAiEnabledByAgency === true;
   const initialReviewsAutoReply =
     subAccount.reviewsAutoReplyEnabledByAgency === true;
@@ -203,6 +205,9 @@ function ManageDialogBody({
   );
   const [webVoiceEnabled, setWebVoiceEnabled] = useState(initialWebVoice);
   const [dialerEnabled, setDialerEnabled] = useState(initialDialer);
+  const [emailAiDraftsEnabled, setEmailAiDraftsEnabled] = useState(
+    initialEmailAiDrafts
+  );
   const [missedCallEnabled, setMissedCallEnabled] = useState(initialMissedCall);
   const [aiSuiteEnabled, setAiSuiteEnabled] = useState(initialAiSuite);
   const [aiSuiteModel, setAiSuiteModel] = useState<"opus" | "sonnet">(
@@ -280,6 +285,7 @@ function ManageDialogBody({
   const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
   const webVoiceDirty = webVoiceEnabled !== initialWebVoice;
   const dialerDirty = dialerEnabled !== initialDialer;
+  const emailAiDraftsDirty = emailAiDraftsEnabled !== initialEmailAiDrafts;
   const reviewsAiDirty = reviewsAiEnabled !== initialReviewsAi;
   const reviewsAutoReplyDirty =
     reviewsAutoReplyEnabled !== initialReviewsAutoReply;
@@ -325,6 +331,7 @@ function ManageDialogBody({
     googleCalendarDirty ||
     webVoiceDirty ||
     dialerDirty ||
+    emailAiDraftsDirty ||
     reviewsAiDirty ||
     reviewsAutoReplyDirty ||
     agentApiDirty ||
@@ -395,6 +402,7 @@ function ManageDialogBody({
         googleCalendarEnabled?: boolean;
         webVoiceEnabled?: boolean;
         dialerEnabled?: boolean;
+        emailAiDraftsEnabled?: boolean;
         reviewsAiEnabled?: boolean;
         reviewsAutoReplyEnabled?: boolean;
         agentApiEnabled?: boolean;
@@ -446,6 +454,9 @@ function ManageDialogBody({
       }
       if (dialerDirty) {
         payload.dialerEnabled = dialerEnabled;
+      }
+      if (emailAiDraftsDirty) {
+        payload.emailAiDraftsEnabled = emailAiDraftsEnabled;
       }
       if (reviewsAiDirty) payload.reviewsAiEnabled = reviewsAiEnabled;
       if (reviewsAutoReplyDirty) {
@@ -631,6 +642,13 @@ function ManageDialogBody({
           dialerEnabled
             ? "Phone dialer enabled."
             : "Phone dialer disabled. The stored dialer setup is preserved; re-enabling resumes instantly."
+        );
+      }
+      if (emailAiDraftsDirty) {
+        parts.push(
+          emailAiDraftsEnabled
+            ? "Email AI drafts enabled."
+            : "Email AI drafts disabled. No new drafts are written; the channel settings are preserved."
         );
       }
       if (reviewsAiDirty) {
@@ -1019,6 +1037,24 @@ function ManageDialogBody({
                 <code>META_APP_SECRET</code> on the deployment to enable.
               </span>
             )}
+          </GateToggle>
+
+          <GateToggle
+            checked={emailAiDraftsEnabled}
+            onChange={setEmailAiDraftsEnabled}
+            disabled={saving}
+            icon={
+              <Mail className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+            }
+            title="Email AI drafts"
+          >
+            When enabled, this sub-account can turn on the AI agent for its
+            connected mailbox: each new inbound email gets a suggested reply in
+            Conversations that a team member edits and approves (none in a
+            conversation whose AI is set to Off; a conversation an email starts
+            opens in Suggest). It never sends an email by itself. Each draft spends your agency&apos;s shared
+            OpenRouter credits. Disabling stops new drafts; the channel
+            settings are preserved.
           </GateToggle>
 
           <GateToggle

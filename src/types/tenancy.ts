@@ -603,6 +603,14 @@ export interface SubAccountDoc {
    */
   dialerEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for Email AI drafts: the shared AI agent drafts a
+   * reply to each new inbound mailbox email for a person to approve in
+   * Conversations. DRAFT-ONLY — nothing is ever sent without that approval.
+   * Opt-in: `false` at creation, read `=== true`. Standalone (NOT in
+   * `PLAN_GATE_KEYS`). No tear-down: the `aiAgent/email` config is preserved.
+   */
+  emailAiDraftsEnabledByAgency?: boolean;
+  /**
    * Agency-controlled gate for Reviews AI (SP5): AI sentiment on synced Google
    * reviews and AI reply drafts (SP5 c — they only fill the reply box). Spends the agency's OpenRouter
    * credits. Opt-in: `false` at creation, read `=== true`. Plan-managed

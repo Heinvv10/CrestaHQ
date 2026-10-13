@@ -36,6 +36,9 @@ const CHANNEL_GATE: Record<
   // precedent). NB: the effective bot ALSO needs metaInboxEnabledByAgency
   // (the DMs must exist at all) — that's enforced where this gate is read.
   meta: { field: "metaAgentEnabledByAgency", defaultOn: false },
+  // Email AI (draft-only) — its own opt-in gate, never the email-domain gate:
+  // our inbound mail comes through the connected mailbox, not a Resend domain.
+  email: { field: "emailAiDraftsEnabledByAgency", defaultOn: false },
 };
 
 /** Gate fields whose missing value reads as ON (the opt-OUT channels above). */
@@ -59,6 +62,7 @@ export function aiChannelGateOn(
     | "inboundVoiceEnabledByAgency"
     | "whatsappEnabledByAgency"
     | "metaAgentEnabledByAgency"
+    | "emailAiDraftsEnabledByAgency"
   >,
   channelId: ConfiguredChannelId,
 ): boolean {
@@ -85,6 +89,7 @@ export function anyAiChannelGateOn(
     | "inboundVoiceEnabledByAgency"
     | "whatsappEnabledByAgency"
     | "metaAgentEnabledByAgency"
+    | "emailAiDraftsEnabledByAgency"
     | "outboundVoiceEnabledByAgency"
   >,
 ): boolean {
@@ -96,6 +101,7 @@ export function anyAiChannelGateOn(
     aiChannelGateOn(sub, "voice") ||
     aiChannelGateOn(sub, "whatsapp") ||
     aiChannelGateOn(sub, "meta") ||
+    aiChannelGateOn(sub, "email") ||
     sub.outboundVoiceEnabledByAgency === true
   );
 }

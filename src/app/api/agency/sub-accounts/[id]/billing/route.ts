@@ -105,7 +105,10 @@ export async function PATCH(
 
   try {
     if (body.action === "comp") {
-      await compSubAccount({ agencyId: access.agencyId!, subAccountId });
+      const comp = await compSubAccount({ agencyId: access.agencyId!, subAccountId });
+      if (comp.subscription === "failed") {
+        return NextResponse.json({ error: comp.message }, { status: comp.httpStatus });
+      }
       return NextResponse.json({ ok: true, status: "comped" });
     }
 

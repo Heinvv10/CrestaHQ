@@ -2,11 +2,12 @@ import "server-only";
 
 import { getBillingProvider } from "@/lib/billing/provider";
 import { BillingError } from "@/lib/billing/errors";
+import { CapabilityUserError } from "./types";
 import { assertSupportedCurrency } from "@/lib/paystack/billing-api";
+import { usageCurrency } from "@/lib/billing/currency";
 import { isZeroDecimalCurrency, stripeCanChargeCurrency } from "@/lib/stripe/amount";
 
-/** The currency an omitted one means: the provider's own (Paystack's here is ZAR). */
-export const defaultBillingCurrency = (): string => (getBillingProvider().id === "paystack" ? "zar" : "usd");
+export { defaultBillingCurrency } from "@/lib/billing/currency";
 
 /**
  * Why the configured Client Billing provider can't take `currency`, or null.
@@ -33,4 +34,22 @@ export function currencyRefusal(currency: string): string | null {
   return stripeCanChargeCurrency(currency) && !isZeroDecimalCurrency(currency)
     ? null
     : `Client Billing can't charge in ${currency.toUpperCase()}: use a currency with cents, such as zar or usd.`;
+}
+
+/**
+ * The currency a one-time charge bills in. Named by the caller: that one.
+ * Omitted (`currencyDefaulted`): the client's overage currency
+ * (`usageCurrency`), so invoicing overage bills what the usage section
+ * showed — but only when that is the currency the card already showed (the
+ * provider's default); a client billed in another one is refused, never
+ * charged in a currency nobody confirmed.
+ */
+export function chargeCurrencyFor(args: Record<string, unknown>, billing: { currency?: string | null } | null | undefined): string {
+  const shown = args.currency as string;
+  if (args.currencyDefaulted !== true) return shown;
+  const actual = usageCurrency(billing);
+  if (actual !== shown) {
+    throw new CapabilityUserError(`This client is billed in ${actual.toUpperCase()}, not ${shown.toUpperCase()}: ask again naming the currency to charge in.`);
+  }
+  return actual;
 }

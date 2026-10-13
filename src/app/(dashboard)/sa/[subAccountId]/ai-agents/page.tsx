@@ -28,6 +28,7 @@ export default function AiAgentsOverviewPage() {
   const [webChatConfig, setWebChatConfig] = useState<AiChannelConfig | null>(
     null,
   );
+  const [emailConfig, setEmailConfig] = useState<AiChannelConfig | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [warningOpen, setWarningOpen] = useState(false);
 
@@ -35,13 +36,14 @@ export default function AiAgentsOverviewPage() {
     let cancelled = false;
     (async () => {
       try {
-        const [smsRes, voiceRes, whatsappRes, metaRes, webChatRes] =
+        const [smsRes, voiceRes, whatsappRes, metaRes, webChatRes, emailRes] =
           await Promise.all([
             fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/sms`),
             fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/voice`),
             fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/whatsapp`),
             fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/meta`),
             fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/web-chat`),
+            fetch(`/api/sub-accounts/${subAccountId}/ai-agent/channels/email`),
           ]);
         const smsData = smsRes.ok
           ? ((await smsRes.json()) as { config: AiChannelConfig | null })
@@ -58,12 +60,16 @@ export default function AiAgentsOverviewPage() {
         const webChatData = webChatRes.ok
           ? ((await webChatRes.json()) as { config: AiChannelConfig | null })
           : { config: null };
+        const emailData = emailRes.ok
+          ? ((await emailRes.json()) as { config: AiChannelConfig | null })
+          : { config: null };
         if (!cancelled) {
           setSmsConfig(smsData.config);
           setVoiceConfig(voiceData.config);
           setWhatsappConfig(whatsappData.config);
           setMetaConfig(metaData.config);
           setWebChatConfig(webChatData.config);
+          setEmailConfig(emailData.config);
           setLoaded(true);
         }
       } catch {
@@ -116,6 +122,11 @@ export default function AiAgentsOverviewPage() {
     !!subAccount?.metaConfig?.connected &&
     subAccount?.metaInboxEnabledByAgency === true &&
     subAccount?.metaAgentEnabledByAgency === true;
+  // Email AI drafts — opt-in agency gate and a connected mailbox.
+  const emailEnabled =
+    !!emailConfig?.enabled &&
+    !!subAccount?.mailboxConfig?.enabled &&
+    subAccount?.emailAiDraftsEnabledByAgency === true;
   // Google Business — agency-gated, connected (and not needing a reconnect),
   // with a listing chosen.
   const googleBusinessEnabled =
@@ -214,7 +225,9 @@ export default function AiAgentsOverviewPage() {
                             ? googleBusinessEnabled
                             : channel.id === "web-chat"
                               ? webChatEnabled
-                              : undefined
+                              : channel.id === "email"
+                                ? emailEnabled
+                                : undefined
                 }
               />
             ))}

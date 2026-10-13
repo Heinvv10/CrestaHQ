@@ -10,6 +10,12 @@ import type { createMemoryFirestore } from "@/test/memory-firestore";
 
 type Mem = ReturnType<typeof createMemoryFirestore>;
 
+/** A sub-account's billing with a plan assigned and checkout not completed. */
+export const PENDING_BILLING = {
+  status: "pending", planId: "plan_sample", planName: "Sample plan", priceCents: 9900, billingInterval: "month", currency: "zar",
+  specialPriceCents: null, stripePriceId: "price_m", stripeCustomerId: null, stripeSubscriptionId: null, checkoutTokenHash: "old_hash",
+};
+
 // Every approval capability adds sample args here; a missing entry fails
 // the test. They target the contact seeded below.
 export const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {
@@ -55,6 +61,7 @@ export const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {
   invite_member: { email: "new@example.com", role: "admin" },
   assign_billing_plan: { subAccountId: "sa1", subAccountName: "", planId: "plan_sample", planName: "", interval: "month", specialPriceCents: null },
   create_one_time_charge: { subAccountId: "sa1", subAccountName: "", description: "Setup", amount: 50, amountCents: 5000, currency: "zar" },
+  resend_checkout_link: { subAccountId: "sa1" },
 };
 
 /** Seeds what PREVIEW_SAMPLE_ARGS targets in sub-account sa1 of agency ag1
@@ -96,6 +103,8 @@ export function seedPreviewSamples(mem: Mem) {
   mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", status: "published" });
   seedPr13(mem);
   seedSnapshots(mem);
+  // A plan assigned and not yet paid: what resend_checkout_link mints a link for.
+  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), billing: PENDING_BILLING });
   mem.seed("agencies/ag1/plans/plan_sample", {
     name: "Sample plan", status: "active", currency: "zar", priceMonthlyCents: 9900, priceAnnualCents: null, gates: { broadcastsEnabledByAgency: true },
   });
