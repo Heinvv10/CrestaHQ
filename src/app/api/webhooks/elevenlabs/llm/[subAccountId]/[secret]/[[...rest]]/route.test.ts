@@ -39,8 +39,10 @@ const { issueSessionToken } = await import("@/lib/web-voice/tokens");
 const { markConnected, reserveGrant, settleConversation } = await import("@/lib/server/web-voice-usage");
 const { flushAfterResponse } = await import("@/lib/server/after-response");
 
-const SECRET = "Q2xhdWRlLXRlc3Qtc2VjcmV0LTAwMDAwMDAw"; // 36 base64url chars, as WV-1 mints
-const SECRET2 = "b3RoZXItc3ViLWFjY291bnQtc2VjcmV0LTAw";
+// 36 base64url chars, the length WV-1 mints. Low-entropy on purpose: the
+// secret scan reads a random-looking literal as a credential.
+const SECRET = "a".repeat(36);
+const SECRET2 = "b".repeat(36);
 const SESSION_ID = "sess_aaaaaaaaaaaaaaaa";
 const SESSION = `subAccounts/sa1/webChatSessions/${SESSION_ID}`;
 const DEFAULT_MODEL = "anthropic/claude-haiku-4-5";
@@ -160,7 +162,7 @@ describe("a reserved call's turn", () => {
 
 describe("the path secret", () => {
   it.each([
-    ["a wrong secret of the same shape", "sa1", "Q2xhdWRlLXRlc3Qtc2VjcmV0LTAwMDAwMDAx"],
+    ["a wrong secret of the same shape", "sa1", `${"a".repeat(35)}b`],
     ["another sub-account's secret", "sa1", SECRET2],
     ["this secret on another sub-account's path", "sa2", SECRET],
     ["a prefix of the secret", "sa1", SECRET.slice(0, 20)],

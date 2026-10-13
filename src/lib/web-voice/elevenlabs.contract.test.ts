@@ -15,9 +15,15 @@ vi.mock("server-only", () => ({}));
 
 const { getConversation, listConversations } = await import("./elevenlabs");
 
+// Id shapes as ElevenLabs documents them, built low-entropy at runtime: the
+// secret scan reads a random-looking id literal as a credential.
+const AGENT = `agent_${"a".repeat(26)}`;
+const CONV_DONE = `conv_${"b".repeat(26)}`;
+const CONV_LIVE = `conv_${"c".repeat(26)}`;
+
 const CONVERSATION_DETAIL = {
-  agent_id: "agent_7101k5abcdefghijklmnopqrst",
-  conversation_id: "conv_8401k5abcdefghijklmnopqrst",
+  agent_id: AGENT,
+  conversation_id: CONV_DONE,
   status: "done",
   user_id: null,
   transcript: [{ role: "agent", message: "Hi there!", time_in_call_secs: 0 }],
@@ -41,9 +47,9 @@ const CONVERSATION_DETAIL = {
 const CONVERSATION_LIST = {
   conversations: [
     {
-      agent_id: "agent_7101k5abcdefghijklmnopqrst",
+      agent_id: AGENT,
       agent_name: "Acme — website voice",
-      conversation_id: "conv_8401k5abcdefghijklmnopqrst",
+      conversation_id: CONV_DONE,
       start_time_unix_secs: 1760342400,
       call_duration_secs: 187,
       message_count: 14,
@@ -54,9 +60,9 @@ const CONVERSATION_LIST = {
       direction: "inbound",
     },
     {
-      agent_id: "agent_7101k5abcdefghijklmnopqrst",
+      agent_id: AGENT,
       agent_name: "Acme — website voice",
-      conversation_id: "conv_8401k5zyxwvutsrqponmlkjih",
+      conversation_id: CONV_LIVE,
       start_time_unix_secs: 1760342990,
       call_duration_secs: 0,
       message_count: 0,
@@ -82,8 +88,8 @@ function answer(body: unknown) {
 describe("ElevenLabs conversation reads (ASSUMED shapes)", () => {
   it("reads agent, status, duration and start time from a conversation", async () => {
     answer(CONVERSATION_DETAIL);
-    expect(await getConversation("key", "conv_8401k5abcdefghijklmnopqrst")).toEqual({
-      agentId: "agent_7101k5abcdefghijklmnopqrst",
+    expect(await getConversation("key", CONV_DONE)).toEqual({
+      agentId: AGENT,
       status: "done",
       durationSeconds: 187,
       startTimeUnixSecs: 1760342400,
@@ -92,11 +98,11 @@ describe("ElevenLabs conversation reads (ASSUMED shapes)", () => {
 
   it("lists an agent's conversations with the filters and paging metering expects", async () => {
     const fetchMock = answer(CONVERSATION_LIST);
-    const page = await listConversations("key", "agent_7101k5abcdefghijklmnopqrst", 1760342000.9, "eyJwYWdlIjoxfQ");
+    const page = await listConversations("key", AGENT, 1760342000.9, "eyJwYWdlIjoxfQ");
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
     expect(url.pathname).toBe("/v1/convai/conversations");
     expect(Object.fromEntries(url.searchParams)).toEqual({
-      agent_id: "agent_7101k5abcdefghijklmnopqrst",
+      agent_id: AGENT,
       call_start_after_unix: "1760342000",
       page_size: "100",
       cursor: "eyJwYWdlIjoxfQ",
@@ -106,15 +112,15 @@ describe("ElevenLabs conversation reads (ASSUMED shapes)", () => {
       nextCursor: "eyJwYWdlIjoyfQ",
       conversations: [
         {
-          conversationId: "conv_8401k5abcdefghijklmnopqrst",
-          agentId: "agent_7101k5abcdefghijklmnopqrst",
+          conversationId: CONV_DONE,
+          agentId: AGENT,
           status: "done",
           durationSeconds: 187,
           startTimeUnixSecs: 1760342400,
         },
         {
-          conversationId: "conv_8401k5zyxwvutsrqponmlkjih",
-          agentId: "agent_7101k5abcdefghijklmnopqrst",
+          conversationId: CONV_LIVE,
+          agentId: AGENT,
           status: "in-progress",
           durationSeconds: 0,
           startTimeUnixSecs: 1760342990,
