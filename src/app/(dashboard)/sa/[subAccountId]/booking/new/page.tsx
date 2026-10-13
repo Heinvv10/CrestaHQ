@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { BookingPageEditor } from "@/components/booking/booking-page-editor";
 import { CalendarTypePicker } from "@/components/booking/calendar-type-picker";
@@ -18,7 +18,7 @@ import type { CalendarType } from "@/types/booking";
  * First step is the calendar-type picker; the editor opens preset to it.
  */
 export default function NewBookingPagePage() {
-  const { saPath, isAdmin } = useSubAccount();
+  const { saPath, isAdmin, loading } = useSubAccount();
   const [type, setType] = useState<CalendarType | null>(null);
 
   return (
@@ -40,7 +40,12 @@ export default function NewBookingPagePage() {
         </p>
       </header>
 
-      {!isAdmin ? (
+      {/* isAdmin reads false until memberships load; don't flash the lock. */}
+      {loading ? (
+        <div className="py-10">
+          <Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : !isAdmin ? (
         <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5 text-sm text-amber-700 dark:text-amber-400">
           Booking pages are sub-account admin only. Ask an admin to create
           one for you.

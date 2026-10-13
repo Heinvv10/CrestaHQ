@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { PublicBookingView } from "@/components/booking/public-booking-view";
+import { publicBookingStyle } from "@/lib/booking/public-style";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 
@@ -40,13 +41,16 @@ export default async function PublicBookingPage({ params }: PageProps) {
 
   const sub = subSnap.data() as SubAccountDoc;
 
+  // The stored style fields, checked before anything is sent to the client.
+  const style = publicBookingStyle(page);
+
   // Pick branding: per-page overrides win, sub-account defaults next,
   // hardcoded fallback last. Keep it serialisable — server-to-client
   // boundary requires plain JSON.
   const branding = {
     name: sub.name ?? "Schedule a meeting",
     logoUrl: page.logoUrl ?? sub.logoUrl ?? null,
-    accentColor: page.accentColor ?? null,
+    accentColor: style.accentColor,
   };
 
   // Strip the Firestore Timestamp fields from the page before handing
@@ -57,6 +61,7 @@ export default async function PublicBookingPage({ params }: PageProps) {
     updatedAt: null;
   } = {
     ...page,
+    ...style,
     createdAt: null,
     updatedAt: null,
   };

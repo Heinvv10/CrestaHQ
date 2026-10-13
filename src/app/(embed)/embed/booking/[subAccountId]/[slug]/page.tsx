@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { PublicBookingView } from "@/components/booking/public-booking-view";
+import { publicBookingStyle } from "@/lib/booking/public-style";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 
@@ -34,10 +35,13 @@ export default async function EmbedBookingPage({ params }: PageProps) {
 
   const sub = subSnap.data() as SubAccountDoc;
 
+  // The stored style fields, checked before anything is sent to the client.
+  const style = publicBookingStyle(page);
+
   const branding = {
     name: sub.name ?? "Schedule a meeting",
     logoUrl: page.logoUrl ?? sub.logoUrl ?? null,
-    accentColor: page.accentColor ?? null,
+    accentColor: style.accentColor,
   };
 
   const pageForClient: Omit<BookingPage, "createdAt" | "updatedAt"> & {
@@ -45,6 +49,7 @@ export default async function EmbedBookingPage({ params }: PageProps) {
     updatedAt: null;
   } = {
     ...page,
+    ...style,
     createdAt: null,
     updatedAt: null,
   };

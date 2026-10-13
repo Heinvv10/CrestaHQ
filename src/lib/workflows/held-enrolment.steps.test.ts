@@ -20,7 +20,7 @@ vi.mock("@/lib/automations/qstash", async () => (await import("@/test/held-enrol
 
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 setupHeldEnrolmentTests();
 
 const hold = async () => {

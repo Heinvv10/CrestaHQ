@@ -16,7 +16,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 const { POST: restCall } = await import("@/app/api/v1/tools/[name]/route");
 const { POST: mcp } = await import("@/app/api/mcp/route");

@@ -5,9 +5,11 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
-import { PIPELINE_STAGES, type PipelineStageId } from "@/types/deals";
+import type { PipelineStageId } from "@/types/deals";
+import { readPipelineStages } from "@/lib/pipelines/server";
 import { type ImportJob } from "@/types/import";
 import type { GhlPhase } from "@/lib/import/ghl/transform";
+import { recreateGhlPipelines } from "@/lib/import/ghl/pipelines";
 import type { GhlImportConfig } from "@/types";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
 
@@ -21,7 +23,6 @@ import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
  * contacts → opportunities → notes.
  */
 
-const CANONICAL_IDS = new Set<string>(PIPELINE_STAGES.map((s) => s.id));
 /** Fixed dependency order — children resolve their parent contact's mapping. */
 const ENTITY_ORDER: GhlPhase[] = ["contacts", "opportunities", "notes"];
 
@@ -72,17 +73,42 @@ export async function POST(
 
   // Normalise the operator-confirmed mapping (defensive — the drain re-reads it).
   const rawMapping = (b.mapping ?? {}) as Record<string, unknown>;
+  // Legacy (squash-onto-default) landing spots come from the default
+  // pipeline's OWN stages — a customised default may have no "new", "won"
+  // or "lost".
+  const defaultStages = (await readPipelineStages(subAccountId)) ?? [];
   const defaultStageRaw = rawMapping.defaultStage;
-  const defaultStage: PipelineStageId = CANONICAL_IDS.has(
-    defaultStageRaw as string,
-  )
+  const defaultStage: PipelineStageId = defaultStages.some((s) => s.id === defaultStageRaw)
     ? (defaultStageRaw as PipelineStageId)
-    : "new";
+    : (defaultStages.find((s) => !s.terminal)?.id ?? "new");
+  const defaultWonId = defaultStages.find((s) => s.terminal === "won")?.id;
+  const defaultLostId = defaultStages.find((s) => s.terminal === "lost")?.id;
   const defaultCurrency =
     typeof rawMapping.defaultCurrency === "string" &&
     rawMapping.defaultCurrency.length === 3
       ? (rawMapping.defaultCurrency as string).toUpperCase()
       : "USD";
+  // Which entities to pull (always include contacts when anything else is on,
+  // since children resolve through contact mappings).
+  const requested = Array.isArray(b.entities)
+    ? ENTITY_ORDER.filter((e) => (b.entities as unknown[]).includes(e))
+    : ENTITY_ORDER;
+  const entities = requested.length > 0 ? requested : ENTITY_ORDER;
+  if (!entities.includes("contacts")) entities.unshift("contacts");
+
+  // Pipeline import: when the wizard opted in, recreate each GHL pipeline
+  // as a LeadStack pipeline BEFORE the drain starts, and hand the drain a
+  // ghl-id → leadstack-id map. A pipeline that can't be recreated is
+  // skipped with a warning — its opportunities fall back to the legacy
+  // squash-onto-default mapping, and the response says so. Nothing is
+  // created for an import that doesn't pull opportunities.
+  const recreated =
+    b.createPipelines === true && entities.includes("opportunities")
+      ? await recreateGhlPipelines(subAccountId, access.uid, b.ghlPipelines)
+      : null;
+  const pipelineMap = recreated?.pipelineMap ?? {};
+  const pipelineWarnings = recreated?.warnings ?? [];
+
   const mapping = {
     stageMap:
       typeof rawMapping.stageMap === "object" && rawMapping.stageMap !== null
@@ -95,15 +121,10 @@ export async function POST(
       rawMapping.customFields !== null
         ? rawMapping.customFields
         : {},
+    ...(defaultWonId ? { defaultWonId } : {}),
+    ...(defaultLostId ? { defaultLostId } : {}),
+    ...(Object.keys(pipelineMap).length > 0 ? { pipelineMap } : {}),
   };
-
-  // Which entities to pull (always include contacts when anything else is on,
-  // since children resolve through contact mappings).
-  const requested = Array.isArray(b.entities)
-    ? ENTITY_ORDER.filter((e) => (b.entities as unknown[]).includes(e))
-    : ENTITY_ORDER;
-  const entities = requested.length > 0 ? requested : ENTITY_ORDER;
-  if (!entities.includes("contacts")) entities.unshift("contacts");
 
   // Create the job (carries the mapping + entity list for the drain).
   const ref = db.collection("importJobs").doc();
@@ -147,5 +168,10 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ ok: true, jobId: ref.id });
+  return NextResponse.json({
+    ok: true,
+    jobId: ref.id,
+    pipelinesCreated: Object.keys(pipelineMap).length,
+    ...(pipelineWarnings.length > 0 ? { pipelineWarnings } : {}),
+  });
 }

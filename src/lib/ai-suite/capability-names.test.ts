@@ -13,6 +13,15 @@ vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
 const { AI_SUITE_CAPABILITIES } = await import("./capabilities");
 
 // [name, level, requiredRole, readonly, surfaces (null = every surface)]
+//
+// N2a (UPSTREAM_PORT_PLAN.md): upstream offered update_contact, list_pipelines,
+// create_pipeline, list_quotes, mark_quote_paid and list_snapshots in chat;
+// they stay ["agent"] here on purpose (not widened by N2a). New in N2a:
+// list_communities, find_awaiting_payment_bookings and watchdog_status are
+// reads on both surfaces; pause_all_workflows (pause only), add_course,
+// add_lesson and configure_watchdog are chat-only confirm-gated admin
+// writes; mark_booking_paid emails the customer, so it is agent-only behind
+// the outbound approval and refused in chat.
 const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["list_sub_accounts",                         "agency",      "agencyOwner",      true, null],
   ["sub_account_stats",                         "agency",      "agencyOwner",      true, null],
@@ -77,6 +86,9 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["send_webhook_test",                         "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["update_webhook_url",                        "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["create_community",                          "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["list_communities",                          "sub-account", "subAccountMember", true, ["chat", "agent"]],
+  ["add_course",                                "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["add_lesson",                                "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["create_workflow",                           "sub-account", "subAccountAdmin",  false, null],
   ["list_workflows",                            "sub-account", "subAccountAdmin",  true, ["chat", "agent"]],
   ["get_workflow",                              "sub-account", "subAccountAdmin",  true, ["chat", "agent"]],
@@ -84,6 +96,8 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["update_workflow",                           "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
   ["set_workflow_status",                       "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
   ["delete_workflow",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["pause_all_workflows",                       "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["speed_to_lead_readiness",                   "sub-account", "subAccountMember", true, ["chat"]],
   ["list_forms",                                "sub-account", "subAccountMember", true, null],
   ["create_form",                               "sub-account", "subAccountAdmin",  false, null],
   ["create_contact",                            "sub-account", "subAccountMember", false, null],
@@ -119,12 +133,15 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["create_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
   ["delete_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
   ["update_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["find_awaiting_payment_bookings",             "sub-account", "subAccountMember",true, ["chat", "agent"]],
+  ["mark_booking_paid",                          "sub-account", "subAccountMember",false, ["agent"]],
   ["list_members",                              "sub-account", "subAccountAdmin",  true, null],
   ["invite_member",                             "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
   ["research_website_reference",                "sub-account", "subAccountAdmin",  true, ["chat"]],
   ["get_website_prefill",                       "sub-account", "subAccountAdmin",  true, ["chat"]],
   ["create_website",                            "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["check_website_status",                      "sub-account", "subAccountMember", true, ["chat"]],
+  ["update_website_cta",                        "sub-account", "subAccountAdmin",  false, ["chat"]],
   ["list_social_posts",                          "sub-account", "subAccountMember",true, ["agent"]],
   ["create_social_post",                         "sub-account", "subAccountAdmin", false, ["agent"]],
   ["delete_social_post",                         "sub-account", "subAccountAdmin", false, ["agent"]],
@@ -135,6 +152,8 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["list_broadcasts",                            "sub-account", "subAccountMember",true, ["agent"]],
   ["create_broadcast",                           "sub-account", "subAccountAdmin", false, ["agent"]],
   ["start_voice_call",                           "sub-account", "subAccountMember",false, ["agent"]],
+  ["watchdog_status",                            "sub-account", "subAccountAdmin", true, ["chat", "agent"]],
+  ["configure_watchdog",                         "sub-account", "subAccountAdmin", false, ["chat"]],
   ["find_contacts_in_sub_account",              "agency",      "agencyOwner",      true, ["chat"]],
   ["find_deals_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
   ["find_tasks_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
@@ -158,8 +177,10 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["research_website_reference_in_sub_account", "agency",      "agencyOwner",      true, ["chat"]],
   ["create_website_in_sub_account",             "agency",      "agencyOwner",      false, ["chat"]],
   ["check_website_status_in_sub_account",       "agency",      "agencyOwner",      true, ["chat"]],
+  ["speed_to_lead_readiness_in_sub_account",    "agency",      "agencyOwner",      true, ["chat"]],
   ["list_forms_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
   ["create_form_in_sub_account",                "agency",      "agencyOwner",      false, ["chat"]],
+  ["update_website_cta_in_sub_account",         "agency",      "agencyOwner",      false, ["chat"]],
 ];
 
 describe("AI Suite capability registry", () => {

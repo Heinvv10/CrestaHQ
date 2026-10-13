@@ -19,7 +19,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 beforeEach(seedAgency);
 
 const NOT_FOUND = { error: "Proposal not found" };

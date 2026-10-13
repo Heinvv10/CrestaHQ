@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { ChatWindow } from "@/components/web-chat/chat-window";
+import { isHexColor } from "@/lib/checkout/themes";
 import { DEFAULT_WEB_CHAT_CONFIG } from "@/types/ai";
 
 export const dynamic = "force-dynamic";
@@ -31,8 +32,10 @@ export default async function EmbedChatPage({
 
   const welcomeMessage =
     config.webChat.welcomeMessage || DEFAULT_WEB_CHAT_CONFIG.welcomeMessage;
-  const accentColor =
-    config.webChat.accentColor || DEFAULT_WEB_CHAT_CONFIG.accentColor;
+  // Sent to the client and written into the widget's CSS: a plain hex only.
+  const accentColor = isHexColor(config.webChat.accentColor)
+    ? config.webChat.accentColor
+    : DEFAULT_WEB_CHAT_CONFIG.accentColor;
 
   return (
     <ChatWindow

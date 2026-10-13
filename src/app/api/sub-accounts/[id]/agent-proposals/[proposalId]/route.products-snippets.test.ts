@@ -14,7 +14,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 
 const PRODUCT = { subAccountId: "sa1", agencyId: "ag1", name: "Fibre 100", description: "", unitPriceCents: 49900, currency: "ZAR", active: true };

@@ -22,7 +22,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 const { sendQuoteServerSide } = await import("@/lib/server/quote-send-service");
 const { QUOTE_LINK_SHOWN, PAY_LINK_SHOWN } = await import("@/lib/quotes/send-preview");

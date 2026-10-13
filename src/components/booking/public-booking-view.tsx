@@ -13,6 +13,12 @@ import {
 import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { PublicServicePicker } from "@/components/booking/public-service-picker";
 import type { BookingPage, IntakeField } from "@/types/booking";
+import {
+  CHECKOUT_THEMES,
+  checkoutThemeCssVars,
+  isCheckoutThemeId,
+  isHexColor,
+} from "@/lib/checkout/themes";
 import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 
 /**
@@ -62,6 +68,34 @@ interface Props {
  * sync by hand if this string ever changes.
  */
 const RESIZE_MESSAGE_SOURCE = "leadstack-booking-embed";
+
+/**
+ * Status text colours. `auto` is a page with no preset: the light colour
+ * plus a `dark:` variant, following the visitor's theme like the rest of the
+ * app. Under a preset the card's lightness is the preset's, whatever the
+ * visitor's theme, so the colour is picked from the preset and carries no
+ * `dark:` variant — on a light preset that variant would still fire for a
+ * dark-mode visitor (<html class="dark">) and wash the text out. Spelled as
+ * full class names so Tailwind generates them.
+ */
+export const STATUS_TEXT = {
+  emerald: {
+    auto: "text-emerald-700 dark:text-emerald-400",
+    light: "text-emerald-700",
+    dark: "text-emerald-400",
+  },
+  amber: {
+    auto: "text-amber-700 dark:text-amber-400",
+    light: "text-amber-700",
+    dark: "text-amber-400",
+  },
+  rose: {
+    auto: "text-rose-700 dark:text-rose-400",
+    light: "text-rose-700",
+    dark: "text-rose-400",
+  },
+} as const;
+type Tone = keyof (typeof STATUS_TEXT)["emerald"];
 
 function detectBrowserTz(): string {
   try {
@@ -255,22 +289,60 @@ export function PublicBookingView({
     setSelectedSlot(null);
   }
 
-  // Accent style — applied to primary buttons + selected slot ring.
-  const accent = branding.accentColor;
-  const accentStyle: React.CSSProperties = accent
-    ? { backgroundColor: accent, borderColor: accent }
-    : {};
+  // Optional style preset (shared with checkout pages). Applied by
+  // overriding the shadcn CSS variables on <main> — inline style beats both
+  // :root and .dark, so the visitor's OS theme can't fight the preset. The
+  // `dark` / `light` class rides along so the tokens the preset does NOT
+  // override (e.g. --destructive) take that scheme's values rather than the
+  // visitor's; status colours are picked per preset via `tone`. Only a known
+  // preset id is looked up: null, absent or an unrecognised stored value all
+  // mean no preset, and then nothing below adds a style or class.
+  const theme = isCheckoutThemeId(page.themePreset)
+    ? CHECKOUT_THEMES[page.themePreset]
+    : null;
+  const tone: Tone = theme ? (theme.isDark ? "dark" : "light") : "auto";
+  const themeStyle = theme
+    ? ({
+        ...checkoutThemeCssVars(theme),
+        background: theme.pageBg,
+      } as React.CSSProperties)
+    : undefined;
+
+  // Accent style — applied to primary buttons + selected slot ring. A
+  // per-page accent color wins over the preset's accent. The stored colour
+  // is used only if it is a plain hex (#RGB or #RRGGBB, what the validator
+  // stores): anything else would be written into the style attribute as-is.
+  const ownAccent = isHexColor(branding.accentColor, true)
+    ? branding.accentColor
+    : null;
+  const accent = ownAccent ?? theme?.accent ?? null;
+  const accentStyle: React.CSSProperties = ownAccent
+    ? {
+        backgroundColor: ownAccent,
+        borderColor: ownAccent,
+      }
+    : theme
+      ? {
+          backgroundColor: theme.buttonBg,
+          borderColor: theme.buttonBg,
+          color: theme.buttonText,
+        }
+      : {};
 
   return (
     <main
       ref={rootRef}
-      className={
+      className={`${
         embedded
           ? "bg-muted/30 px-3 py-4 text-foreground"
           : "min-h-screen bg-muted/30 px-4 py-10 text-foreground sm:py-16"
-      }
+      }${theme ? (theme.isDark ? " dark" : " light") : ""}`}
+      style={themeStyle}
     >
-      <article className="mx-auto max-w-3xl space-y-8 rounded-3xl border bg-card p-6 shadow-sm sm:p-10">
+      <article
+        className="mx-auto max-w-3xl space-y-8 rounded-3xl border bg-card p-6 shadow-sm sm:p-10"
+        style={theme ? { borderRadius: theme.cardRadius } : undefined}
+      >
         {/* ── Hero ──────────────────────────────────────────── */}
         <header className="space-y-3 text-center">
           {branding.logoUrl ? (
@@ -284,12 +356,26 @@ export function PublicBookingView({
           ) : (
             <span
               className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl text-white"
-              style={{ backgroundColor: accent ?? "#0F766E" }}
+              style={{
+                backgroundColor: accent ?? "#0F766E",
+                color: theme && !ownAccent ? theme.buttonText : undefined,
+              }}
             >
               <CalendarClock className="h-6 w-6" />
             </span>
           )}
-          <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          <h1
+            className="text-2xl font-bold tracking-tight sm:text-3xl"
+            style={
+              theme
+                ? {
+                    textTransform: theme.headingTransform,
+                    letterSpacing: theme.headingSpacing,
+                    fontWeight: theme.headingWeight,
+                  }
+                : undefined
+            }
+          >
             {page.name}
           </h1>
           {page.description && (
@@ -303,7 +389,9 @@ export function PublicBookingView({
             {page.payment && (
               <>
                 <span className="mx-1">·</span>
-                <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+                <span
+                  className={`rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium ${STATUS_TEXT.emerald[tone]}`}
+                >
                   {page.payment.currency} {page.payment.amount} deposit
                 </span>
               </>
@@ -321,7 +409,7 @@ export function PublicBookingView({
               setActiveDay(null);
               setSelectedSlot(null);
             }}
-            className="rounded-md border border-input bg-background px-2 py-1 text-xs focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            className="rounded-md border border-input bg-background px-2 py-1 text-xs focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_option]:bg-background [&_option]:text-foreground"
           >
             <option value={viewerTz}>{viewerTz}</option>
             {pageTz !== viewerTz && <option value={pageTz}>{pageTz}</option>}
@@ -375,7 +463,9 @@ export function PublicBookingView({
               times…
             </div>
           ) : loadError ? (
-            <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-5 text-sm text-rose-700 dark:text-rose-400">
+            <div
+              className={`rounded-2xl border border-rose-500/30 bg-rose-500/5 p-5 text-sm ${STATUS_TEXT.rose[tone]}`}
+            >
               {loadError}
             </div>
           ) : slotsByDay.length === 0 ? (
@@ -481,6 +571,7 @@ export function PublicBookingView({
             viewerTz={viewerTz}
             page={page}
             accentStyle={accentStyle}
+            tone={tone}
             onConfirmed={(c) => setConfirmation(c)}
           />
         )}
@@ -490,6 +581,7 @@ export function PublicBookingView({
             confirmation={confirmation}
             page={page}
             embedded={!!embedded}
+            tone={tone}
           />
         )}
 
@@ -511,6 +603,7 @@ function IntakeFormSection({
   viewerTz,
   page,
   accentStyle,
+  tone,
   onConfirmed,
 }: {
   subAccountId: string;
@@ -524,6 +617,7 @@ function IntakeFormSection({
   viewerTz: string;
   page: Props["page"];
   accentStyle: React.CSSProperties;
+  tone: Tone;
   onConfirmed: (next: {
     status: "scheduled" | "awaiting_payment";
     paymentUrl: string | null;
@@ -662,7 +756,9 @@ function IntakeFormSection({
       )}
 
       {page.payment && (
-        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400">
+        <div
+          className={`flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs ${STATUS_TEXT.amber[tone]}`}
+        >
           <Info className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
             A {page.payment.currency} {page.payment.amount}
@@ -674,7 +770,9 @@ function IntakeFormSection({
       )}
 
       {error && (
-        <p className="rounded-lg border border-rose-500/30 bg-rose-500/5 p-2.5 text-xs text-rose-700 dark:text-rose-400">
+        <p
+          className={`rounded-lg border border-rose-500/30 bg-rose-500/5 p-2.5 text-xs ${STATUS_TEXT.rose[tone]}`}
+        >
           {error}
         </p>
       )}
@@ -728,6 +826,7 @@ function ConfirmationPanel({
   confirmation,
   page,
   embedded,
+  tone,
 }: {
   confirmation: {
     status: "scheduled" | "awaiting_payment";
@@ -747,6 +846,7 @@ function ConfirmationPanel({
    * redirect there is unaffected and stays automatic.
    */
   embedded: boolean;
+  tone: Tone;
 }) {
   const pending = confirmation.status === "awaiting_payment";
 
@@ -779,8 +879,8 @@ function ConfirmationPanel({
     <section
       className={`space-y-3 rounded-2xl border p-5 text-center text-sm ${
         pending
-          ? "border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400"
-          : "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+          ? `border-amber-500/30 bg-amber-500/5 ${STATUS_TEXT.amber[tone]}`
+          : `border-emerald-500/30 bg-emerald-500/5 ${STATUS_TEXT.emerald[tone]}`
       }`}
     >
       <CheckCircle2 className="mx-auto h-6 w-6" />
@@ -869,7 +969,7 @@ function ExtraField({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           required={field.required}
-          className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 [&_option]:bg-background [&_option]:text-foreground"
         >
           <option value="" disabled>
             Pick one…

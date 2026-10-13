@@ -38,6 +38,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   send_whatsapp_template: "to, from (the sending number), template, language, the filled text and buttons, when",
   delete_task: "the task: due, done, assignee, what it links to, notes",
   set_event_status: "cancelling: the appointment, the timeline reason, the exact notice or why none, the workflows that start (their steps pinned)",
+  mark_booking_paid: "the booking and its deposit, who the confirmation email goes to or why none, the reminders, the booking.confirmed workflows that start (their steps pinned)",
   create_booking_page: "every field of the page to be published",
   delete_booking_page: "the page and that its link stops working; refused while bookings are upcoming",
   update_booking_page: "changed fields old -> new (the whole page when it goes public or has upcoming bookings)",

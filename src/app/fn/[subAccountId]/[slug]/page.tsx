@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { funnelAccent } from "@/lib/funnels/accent";
+import { withCheckedBackground } from "@/lib/funnels/image-url";
 import { FunnelSections } from "@/components/funnels/funnel-sections";
 import { sectionsFromLegacyLanding } from "@/lib/funnels/sections";
 import { fontPreset, typeScale } from "@/lib/funnels/typography";
@@ -157,9 +159,11 @@ async function load(
     "comparison",
     "pricing",
   ]);
-  const sections = raw.filter(
-    (s) => !REPEATERS.has(s.type) || s.items.length > 0,
-  );
+  // A background image is written into CSS url(…): checked here, before
+  // anything is sent, and again in FunnelSections.
+  const sections = raw
+    .filter((s) => !REPEATERS.has(s.type) || s.items.length > 0)
+    .map(withCheckedBackground);
 
   return { funnel, checkoutSlug, sections, business };
 }
@@ -235,7 +239,8 @@ export default async function FunnelLandingPage({
   if (!data) notFound();
 
   const { funnel, checkoutSlug, sections, business } = data;
-  const accent = funnel.appearance?.accent || "#7c3aed";
+  // A stored accent reaches these styles only if it is a plain hex.
+  const accent = funnelAccent(funnel.appearance?.accent);
   const dark = funnel.appearance?.theme === "dark";
   const t = typeScale(funnel.style);
   const preset = fontPreset(funnel.style?.fontPair);

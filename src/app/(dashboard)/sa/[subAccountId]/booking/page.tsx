@@ -36,7 +36,7 @@ import type { BookingPage } from "@/types/booking";
  */
 export default function BookingListPage() {
   const router = useRouter();
-  const { subAccountId, saPath, isAdmin } = useSubAccount();
+  const { subAccountId, saPath, isAdmin, loading } = useSubAccount();
   const [pages, setPages] = useState<BookingPage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -119,7 +119,8 @@ export default function BookingListPage() {
             <HelpCircle className="mr-1 h-3.5 w-3.5" />
             How it works
           </Button>
-          {isAdmin ? (
+          {/* isAdmin reads false until memberships load; don't flash the lock. */}
+          {loading ? null : isAdmin ? (
             <Button render={<Link href={saPath("/booking/new")} />}>
               <Plus className="mr-1 h-4 w-4" />
               New booking page
@@ -135,7 +136,7 @@ export default function BookingListPage() {
 
       <BookingHelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
 
-      {!loaded ? (
+      {!loaded || loading ? (
         <div className="flex items-center gap-2 rounded-2xl border border-dashed py-10 text-center text-sm text-muted-foreground">
           <Loader2 className="ml-auto h-4 w-4 animate-spin" />
           <span>Loading…</span>
@@ -247,7 +248,7 @@ export default function BookingListPage() {
         </ul>
       )}
 
-      {loaded && <DefaultBookingLinkCard pages={pages} />}
+      {loaded && !loading && <DefaultBookingLinkCard pages={pages} />}
     </div>
   );
 }

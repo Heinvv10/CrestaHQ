@@ -14,6 +14,8 @@ import {
   type IntakeField,
   type WorkingHour,
 } from "@/types/booking";
+import type { CheckoutThemeId } from "@/types/checkout-pages";
+import { isCheckoutThemeId } from "@/lib/checkout/themes";
 
 /**
  * Server-side validation + normalisation for the booking-page CRUD
@@ -725,6 +727,18 @@ export function validateAccentColor(input: unknown): Validated<string | null> {
   return { ok: true, value: input.trim().toUpperCase() };
 }
 
+export function validateThemePreset(
+  input: unknown,
+): Validated<CheckoutThemeId | null> {
+  // null/absent = the legacy brand-default look; presets are shared with
+  // checkout pages so the two editors offer the same styles.
+  if (input == null || input === "") return { ok: true, value: null };
+  if (!isCheckoutThemeId(input)) {
+    return { ok: false, error: "Unknown style preset." };
+  }
+  return { ok: true, value: input };
+}
+
 export function validateLogoUrl(input: unknown): Validated<string | null> {
   if (input == null || input === "") return { ok: true, value: null };
   if (typeof input !== "string") {
@@ -904,6 +918,8 @@ export function validateBookingPageFormData(
   if (!logoUrl.ok) return logoUrl;
   const accentColor = validateAccentColor(b.accentColor);
   if (!accentColor.ok) return accentColor;
+  const themePreset = validateThemePreset(b.themePreset);
+  if (!themePreset.ok) return themePreset;
 
   const meetingUrl = validateMeetingUrl(b.meetingUrl);
   if (!meetingUrl.ok) return meetingUrl;
@@ -953,6 +969,7 @@ export function validateBookingPageFormData(
       ...typeFields.value,
       logoUrl: logoUrl.value,
       accentColor: accentColor.value,
+      themePreset: themePreset.value,
       meetingUrl: meetingUrl.value,
       confirmationMessage: confirmationMessage.value,
       redirectUrl: redirectUrl.value,

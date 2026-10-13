@@ -6,6 +6,7 @@ import {
   CheckoutForm,
   type CheckoutBump,
 } from "@/components/checkout/checkout-form";
+import { resolveCheckoutTheme } from "@/lib/checkout/themes";
 import type { CheckoutPage } from "@/types/checkout-pages";
 import type { Product } from "@/types/products";
 
@@ -112,15 +113,14 @@ export default async function PublicCheckoutPage({
   if (!data) notFound();
 
   const { page, main, bumps } = data;
-  const accent = page.appearance?.accent || "#7c3aed";
-  const dark = page.appearance?.theme === "dark";
+  const theme = resolveCheckoutTheme(page);
 
   return (
     <main
       style={{
         minHeight: "100vh",
-        background: dark ? "#18181b" : "#fafafa",
-        color: dark ? "#fafafa" : "#18181b",
+        background: theme.pageBg,
+        color: theme.text,
         fontFamily:
           "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
         padding: "40px 20px",
@@ -129,10 +129,11 @@ export default async function PublicCheckoutPage({
       <div style={{ maxWidth: 560, margin: "0 auto" }}>
         <div
           style={{
-            background: dark ? "#27272a" : "#fff",
-            borderRadius: 16,
+            background: theme.cardBg,
+            border: theme.cardBorder,
+            borderRadius: theme.cardRadius,
             padding: "28px 24px",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+            boxShadow: theme.cardShadow,
           }}
         >
           <h1
@@ -140,7 +141,9 @@ export default async function PublicCheckoutPage({
               margin: 0,
               fontSize: 24,
               lineHeight: 1.25,
-              fontWeight: 700,
+              fontWeight: theme.headingWeight,
+              textTransform: theme.headingTransform,
+              letterSpacing: theme.headingSpacing,
             }}
           >
             {page.headline || page.name}
@@ -151,7 +154,7 @@ export default async function PublicCheckoutPage({
                 margin: "8px 0 0",
                 fontSize: 14.5,
                 lineHeight: 1.6,
-                color: dark ? "#a1a1aa" : "#52525b",
+                color: theme.muted,
               }}
             >
               {page.subheadline}
@@ -167,7 +170,7 @@ export default async function PublicCheckoutPage({
               mainName={main.name}
               mainPriceCents={main.unitPriceCents}
               currency={main.currency || "USD"}
-              accent={accent}
+              theme={theme}
               cancelled={sp.cancelled === "1"}
               funnelSlug={
                 typeof sp.fn === "string" ? sp.fn : null

@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { isHexColor } from "@/lib/checkout/themes";
 import {
   defaultFormAppearance,
   type FormAppearance,
@@ -37,7 +38,12 @@ export function resolveAppearance(
         : themeParam === "light"
           ? "light"
           : fromSettings.theme,
-    accent: normaliseHex(accentParam) ?? fromSettings.accent,
+    // The stored accent goes into the page's CSS variables: a plain hex only.
+    accent:
+      normaliseHex(accentParam) ??
+      (isHexColor(fromSettings.accent, true)
+        ? fromSettings.accent
+        : defaultFormAppearance().accent),
     hideChrome: embed || fromSettings.hideChrome,
     hideTitle:
       titleParam === "0" ? true : titleParam === "1" ? false : fromSettings.hideTitle,
