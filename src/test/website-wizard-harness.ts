@@ -30,6 +30,8 @@ const GITPAGE = "https://gitpage.test";
 export const calls: string[] = [];
 /** Bodies gitpage received for builds. */
 export const gitpageBuilds: Array<Record<string, unknown>> = [];
+/** What gitpage answers a build with; null = an accepted build (202 + job id). */
+export const gitpageAnswer = { build: null as null | (() => Response) };
 
 async function callRoute(url: string, init: RequestInit = {}): Promise<Response> {
   const method = init.method ?? "GET";
@@ -57,6 +59,7 @@ export const fetchMock = vi.fn(async (input: string | URL | Request, init?: Requ
   if (url.startsWith(`${GITPAGE}/api/v1/concepts`)) return Response.json({ concepts: [] });
   if (url.startsWith(`${GITPAGE}/api/v1/generate-site`)) {
     gitpageBuilds.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    if (gitpageAnswer.build) return gitpageAnswer.build();
     return Response.json(
       { formResponseId: "build_new", pollUrl: `${GITPAGE}/s/build_new`, estimatedDurationSeconds: 1200 },
       { status: 202 },
@@ -177,6 +180,7 @@ export function setupWizardTests() {
     calls.length = 0;
     pending = 0;
     gitpageBuilds.length = 0;
+    gitpageAnswer.build = null;
     fetchMock.mockClear();
     onOpenChange.mockReset();
     root = createRoot(document.createElement("div"));
@@ -185,6 +189,7 @@ export function setupWizardTests() {
     act(() => root.unmount());
     document.body.replaceChildren();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
     delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTo;
     for (const [name, value] of [["GITPAGE_API_KEY", original.key], ["GITPAGE_API_URL", original.url]] as const) {
       if (value === undefined) delete process.env[name];

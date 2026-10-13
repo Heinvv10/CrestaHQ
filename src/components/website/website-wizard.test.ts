@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sampleWebsiteConfig, sampleVslConfig } from "@/types/website";
 import { wizardStepsFor, wizardStepTitle } from "./website-wizard";
 import {
-  button, calls, check, click, gitpageBuilds, hasButton, onOpenChange, openWizard, patches, seedSite, setupWizardTests, site,
+  button, calls, check, click, gitpageAnswer, gitpageBuilds, hasButton, onOpenChange, openWizard, patches, seedSite, setupWizardTests, site,
   stepText, title, type, until,
 } from "@/test/website-wizard-harness";
 
@@ -165,6 +165,28 @@ describe("WebsiteWizard — the routes' refusals", () => {
     await openWizard("review");
     await click("Build site");
     expect(site()).toMatchObject({ status: "queued", gitpageJobId: "build_new" });
+  });
+});
+
+describe("WebsiteWizard — a build gitpage did not start", () => {
+  it("says so, keeps the wizard open and the site a draft, and the build still counts against the hour", async () => {
+    const { mem } = await import("@/test/website-wizard-harness");
+    const { websiteLimitsPath } = await import("@/lib/server/websites-service");
+    // 2xx, but no job id: not a build.
+    gitpageAnswer.build = () => Response.json({ ok: true, gitpageNote: "<b>maintenance</b>" }, { status: 202 });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    seedSite({ wizardStep: "review" }, BUSINESS_CONFIG);
+    await openWizard();
+    await click("Build site");
+    expect(gitpageBuilds).toHaveLength(1);
+    expect(toasts.success).not.toHaveBeenCalled();
+    expect(toasts.error).toHaveBeenCalledWith(
+      "The website builder did not start the build. Nothing was built — try again in a few minutes.",
+    );
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(title()).toBe("Review & build");
+    expect(site()).toMatchObject({ status: "draft", gitpageJobId: null });
+    expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ count: 1 });
   });
 });
 

@@ -232,6 +232,26 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     expect(sent().premium).toMatchObject({ mode: "light" });
   });
 
+  it("a 2xx from gitpage without a job is a fixed-text 502: the site stays put and the hour's build is spent", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchMock.mockImplementationOnce(async () => Response.json({ ok: true, note: "<b>not a build</b>" }, { status: 202 }));
+    let error: unknown;
+    await build().catch((err: unknown) => (error = err));
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("gitpage answered 202 without a build"));
+    logged.mockRestore();
+    expect(error).toBeInstanceOf(WebsiteServiceError);
+    expect(error).toMatchObject({
+      status: 502,
+      message: "The website builder did not start the build. Nothing was built — try again in a few minutes.",
+      gitpageStatus: undefined,
+      gitpageBody: undefined,
+    });
+    expect(mem.read(SITE)).toMatchObject({ status: "draft" });
+    expect(mem.read(SITE)?.gitpageJobId).toBeUndefined();
+    expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ count: 1 });
+    expect(publishCallback).not.toHaveBeenCalled();
+  });
+
   it("tells gitpage where to call back and whom to invite as editor", async () => {
     await build();
     expect(sent()).toMatchObject({

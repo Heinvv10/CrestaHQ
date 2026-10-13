@@ -395,6 +395,9 @@ const SITE_NOT_FOUND_MESSAGE = "Website not found in this workspace.";
 const UNSETTLED_FAILURE_MESSAGE =
   "This site's last build can still finish — use Re-check now, or reset it, before changing it.";
 
+const GITPAGE_NO_BUILD_MESSAGE =
+  "The website builder did not start the build. Nothing was built — try again in a few minutes.";
+
 const GATE_OFF_MESSAGE =
   "The website builder is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.";
 
@@ -715,6 +718,16 @@ export async function submitWebsiteBuildForSubAccount(input: {
     // was not reached (a timeout, an answer lost after the request was
     // sent), so giving the reservation back would let a caller who can make
     // requests fail that way start builds without limit.
+    // HARDENING: gitpage answered 2xx but the answer was not a build (no job
+    // id / poll URL). Forwarding its status would make the caller's reply a
+    // success while nothing was recorded, so it is an upstream failure with
+    // fixed text; gitpage's body stays in the log, not the reply.
+    if (err instanceof GitpageError && err.status < 400) {
+      console.error(
+        `[website/build] gitpage answered ${err.status} without a build sa=${subAccountId} site=${siteId}: ${err.message}`,
+      );
+      throw new WebsiteServiceError(GITPAGE_NO_BUILD_MESSAGE, 502);
+    }
     if (err instanceof GitpageError) {
       // 401 means the API key is invalid (rotated upstream, never set,
       // typo'd). Flip the cached status so the UI surfaces the correct CTA.
