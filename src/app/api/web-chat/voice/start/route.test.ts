@@ -77,10 +77,15 @@ beforeEach(() => {
         return Response.json({ signed_url: "wss://api.elevenlabs.io/v1/convai/conversation?token=signed" });
       }
       const m = /\/v1\/convai\/conversations\/([^/?]+)$/.exec(url);
+      const start_time_unix_secs = Math.floor(Date.now() / 1000);
       if (m && durations.has(m[1])) {
-        return Response.json({ agent_id: "agent1", status: "done", metadata: { call_duration_secs: durations.get(m[1]) } });
+        return Response.json({
+          agent_id: "agent1", status: "done", metadata: { call_duration_secs: durations.get(m[1]), start_time_unix_secs },
+        });
       }
-      if (m && liveConvs.has(m[1])) return Response.json({ agent_id: "agent1", status: "in-progress" });
+      if (m && liveConvs.has(m[1])) {
+        return Response.json({ agent_id: "agent1", status: "in-progress", metadata: { start_time_unix_secs } });
+      }
       return Response.json({ detail: "not found" }, { status: 404 });
     }),
   );
@@ -197,11 +202,24 @@ describe("/voice/event", () => {
 
   it("connected with a conversation ElevenLabs does not report live on this agent claims nothing and writes no greeting", async () => {
     const token = await started();
-    for (const conversationId of ["conv_forged1", "__proto__", "constructor"]) {
-      expect((await post(event, { token, type: "connected", conversationId })).status).toBe(200);
+    // Not found on any of the three lookups (1 s apart), so this takes ~2 s.
+    expect((await post(event, { token, type: "connected", conversationId: "conv_forged1" })).status).toBe(200);
+    for (const conversationId of ["__proto__", "constructor"]) {
+      expect((await post(event, { token, type: "connected", conversationId })).status).toBe(400);
     }
     expect(mem.read(USAGE)?.pending).toEqual({});
     expect(mem.list(`${SESSION}/messages`)).toEqual([]);
+  });
+
+  it("ended from another session's token settles nothing", async () => {
+    const token = await started();
+    await post(event, { token, type: "connected", conversationId: "conv_000001" });
+    durations.set("conv_000001", 95);
+    const other = await tryStart({ sessionId: "sess_bbbbbbbbbbbbbbbb" });
+    await post(event, { token: other.body.token, type: "ended", conversationId: "conv_000001" });
+    expect(Object.keys(mem.read(USAGE)?.pending as object)).toEqual(["conv_000001"]);
+    await post(event, { token, type: "ended", conversationId: "conv_000001" });
+    expect(mem.read(USAGE)?.pending).toEqual({});
   });
 
   it("an ended ping for an id that is not pending, or names an Object.prototype member, counts nothing", async () => {

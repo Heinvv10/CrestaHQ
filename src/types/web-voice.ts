@@ -98,13 +98,34 @@ export interface WebVoiceMeta extends WebVoiceSettings {
   connectedAt: Date | null;
 }
 
+/** A signed-URL grant not yet matched to a conversation id. */
+export interface WebVoiceGrant {
+  issuedAtMs: number;
+  /** The reservation it holds (the connection's `maxCallSeconds` when it
+   *  was issued) — charged in full if it lapses unclaimed. */
+  seconds: number;
+}
+
 /** One in-flight conversation, keyed by ElevenLabs conversation id. */
 export interface WebVoicePending {
   sessionId: string;
   /** The grant this conversation claimed — the reply endpoint answers a
    *  session token only while its grant is live or claimed here. */
   grantId: string;
+  /** When that grant was issued: the conversation must have started after
+   *  it, or it is not this grant's call. */
+  grantIssuedAtMs: number;
   startedAtMs: number;
+}
+
+/** A grant that lapsed unclaimed and was charged its full reservation,
+ *  awaiting reconciliation against ElevenLabs' own conversation list. */
+export interface WebVoiceLapsedGrant {
+  issuedAtMs: number;
+  /** UTC day and month whose counters the charge went into. */
+  day: string;
+  month: string;
+  chargedSeconds: number;
 }
 
 /** SERVER ONLY — `subAccounts/{id}/private/webVoiceUsage`. */
@@ -117,11 +138,13 @@ export interface WebVoiceUsageDoc {
   secondsThisMonth: number;
   /** Conversations started but not yet settled (duration unknown). */
   pending: Record<string, WebVoicePending>;
-  /** Signed-URL grants not yet matched to a conversation id (the visitor
-   *  hasn't connected yet). Keyed by grant id → issued-at ms. Counted
-   *  against concurrency so a burst of starts can't bypass the cap. */
-  grants: Record<string, number>;
-  /** Conversation ids already counted (bounded ring) — dedupe for /end. */
+  /** Signed-URL grants not yet claimed and still claimable. Counted against
+   *  concurrency and the cap for exactly as long as they can be claimed. */
+  grants: Record<string, WebVoiceGrant>;
+  /** Grants that lapsed unclaimed, already charged (see WebVoiceLapsedGrant). */
+  lapsed: Record<string, WebVoiceLapsedGrant>;
+  /** Conversation ids already counted (bounded ring) — dedupe for /end and
+   *  for reconciliation. */
   settled: string[];
 }
 

@@ -233,15 +233,19 @@ describe("turns that are not answered", () => {
 
     const claimed = await liveToken();
     const openRouterFetch = globalThis.fetch;
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ agent_id: "agent1", status: "in-progress" })));
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      Response.json({ agent_id: "agent1", status: "in-progress", metadata: { start_time_unix_secs: Math.floor(Date.now() / 1000) } }),
+    ));
     expect(
-      await markConnected({ subAccountId: "sa1", grantId: claimed.grantId, conversationId: "conv_000001", sessionId: SESSION_ID, conn: CONN }),
+      await markConnected({ subAccountId: "sa1", grantId: claimed.grantId, conversationId: "conv_000001", sessionId: SESSION_ID, conn: CONN, retryDelayMs: 0 }),
     ).toBe(true);
     vi.stubGlobal("fetch", openRouterFetch);
     vi.setSystemTime(Date.now() + 10 * 60 * 1000);
     expect(await spoken(await POST(turn(llmBody(claimed.token)), ctx()))).toBe("Yes, we do!");
 
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ agent_id: "agent1", status: "done", metadata: { call_duration_secs: 30 } })));
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      Response.json({ agent_id: "agent1", status: "done", metadata: { call_duration_secs: 30, start_time_unix_secs: Math.floor(Date.now() / 1000) } }),
+    ));
     await settleConversation({ subAccountId: "sa1", conversationId: "conv_000001", conn: CONN, maxCallSeconds: 300 });
     expect(await spoken(await POST(turn(llmBody(claimed.token)), ctx()))).toMatch(UNAVAILABLE);
   });

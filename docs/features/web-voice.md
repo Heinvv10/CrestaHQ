@@ -104,31 +104,39 @@ One conversation, end to end:
 1. **`GET /api/web-chat/config`** (the widget loader, origin-checked against the
    channel's allowed domains) answers `voiceEnabled: true` and a 12-hour **widget
    token** (`w1.…`) only while `webVoiceAvailable` holds, an agent is provisioned and
-   today's SETTLED seconds leave room for one more full-length call. Anything else,
+   today's COUNTED seconds (settled calls and charged lapsed grants) leave room for one more full-length call. Anything else,
    including any error, is `voiceEnabled: false` with no token.
 2. **`POST /api/web-chat/voice/start`** `{ sa, sessionId, voiceToken, pageUrl?,
    referrer? }` (body capped at 8 KB). In order: the widget token for this
-   sub-account → 12 starts per IP per hour → gates and a ready connection (403
+   sub-account → 12 starts per IP per hour (see *Per-IP limit* below) → gates and a ready connection (403
    `voiceEnabled: false`) → the Web Chat channel on → inside business hours and the
    thread not held by a human (409, mic kept) → the workspace's monthly AI-token quota
    (429 `voiceEnabled: false`) → a sweep that settles finished calls → a **grant**
    reserved in ONE transaction on `private/webVoiceUsage` against the concurrency
    limit (3 per sub-account) and the daily cap, where every pending call and every
-   grant younger than 2 minutes counts as a full `maxCallSeconds` (429; `busy` keeps
-   the mic, `daily_cap` hides it). Then the chat session is created, and the answer
+   live grant counts as a full `maxCallSeconds` (429; `busy` keeps the mic,
+   `daily_cap` hides it). A grant is live for 2 minutes: exactly the window in which
+   it counts as a grant AND can be claimed. After that it **lapses and is charged**
+   its full reservation (see *Unreported calls* below). Then the chat session is created, and the answer
    is a 15-minute signed URL minted with the client's own key plus a 1-hour
    **session token** (`s1.{sa}.{session}.{grant}.{exp}.{sig}`) for the browser to pass
    to ElevenLabs as the custom-LLM extra body. A grant reserved before a later step
    fails is not released; it lapses (fail closed).
 3. **`POST /api/web-chat/voice/event`** `{ token, type, conversationId }` (2 KB cap;
    also accepted as a `text/plain` beacon). `connected` moves the grant to `pending`
-   under the ElevenLabs conversation id, once, and only when ElevenLabs reports that
-   conversation as live (`initiated`/`in-progress`) on this sub-account's agent; a
-   replay, a settled, finished, forged or foreign id, an unknown grant or a failed
-   lookup claims nothing. It then writes the spoken greeting into the transcript.
-   `pending` and `grants` are keyed by caller-supplied ids, so they are read only as
-   own properties: an id such as `__proto__` or `constructor` is never a pending call.
-   `ended` settles the call. These pings only account for a call `start` allowed,
+   under the ElevenLabs conversation id, once, and only when the grant is still live
+   and ElevenLabs reports that conversation as live (`initiated`/`in-progress`) on
+   this sub-account's agent, with a `start_time_unix_secs` no earlier than the grant's
+   issue time (30 s skew allowed). The lookup is retried up to 3 times, 1 s apart, on
+   404 or 5xx (ElevenLabs may not have indexed a brand-new conversation); after that
+   the claim fails closed. A replay, a lapsed grant, or a settled, finished, older,
+   forged or foreign id claims nothing, and so does a claim when pending calls
+   alone already fill the concurrency limit (re-checked in the claim's
+   transaction). It then writes the spoken greeting into the transcript.
+   Ids that name an `Object.prototype` member (`__proto__`, `constructor`, …) are
+   refused (400), and every map in the usage doc is read only as own properties.
+   `ended` settles the call, only when the token's session is the one that claimed
+   it. These pings only account for a call `start` allowed,
    so they are not gated: a call that began before the gate went off still settles.
 4. **`POST /api/webhooks/elevenlabs/llm/{sa}/{endpointSecret}[/chat/completions]`**
    on every spoken turn, from ElevenLabs. The path secret is compared with the stored
@@ -147,8 +155,9 @@ One conversation, end to end:
 
 **Settling.** The duration always comes from ElevenLabs (`GET
 /v1/convai/conversations/{id}`), never from the browser. A live call stays pending.
-A call ElevenLabs does not know (404) or attributes to another agent is counted at
-the full reservation; so is one past `maxCallSeconds + 2 min` with no duration, or
+A call ElevenLabs does not know (404), attributes to another agent, or reports as
+started before its grant was issued (or with no start time) is counted at the full
+reservation; so is one past `maxCallSeconds + 2 min` with no duration, or
 one whose lookups have failed for 30 minutes. One transaction removes the pending
 entry, adds the seconds to today's and this month's counters and to the session's
 `voiceSeconds`, so racing settles count a call once. Usage and grants are counted
@@ -158,20 +167,62 @@ Tokens are HMACs under `AUTOMATIONS_TOKEN_SECRET` (at least 16 characters, else 
 token is minted and the mic stays hidden), compared in constant time, with an expiry.
 Every id in a token must be a Firestore doc id.
 
-**Not runtime-verified, and assumed from upstream:** that ElevenLabs appends exactly
-`/chat/completions` to a custom-LLM URL (middleware opens only the bare URL and that
-tail), passes the extra body through as `elevenlabs_extra_body`, and reports
-`agent_id` and `metadata.call_duration_secs` on a conversation.
+**Unreported calls.** The browser reports `connected` and `ended`, so the cap does
+not depend on it doing so. A grant nobody claims within its 2 live minutes is
+charged its full reservation to today's counters (in whichever transaction next
+reads the usage doc; read-only paths compute the same charge) and kept under
+`lapsed`. Each `/voice/start` sweep then reconciles the lapsed grants that are
+*ripe*, i.e. older than the signed-URL lifetime + `maxCallSeconds` + 2 min, so every
+call they could have started has ended. It does this against ElevenLabs' own list
+of the agent's conversations (`GET /v1/convai/conversations?agent_id=…&
+call_start_after_unix=…`):
+- each conversation in the grants' window that no claim or earlier reconciliation
+  counted is matched to a ripe grant whose signed URL could have started it,
+  earliest first, and that grant's charge becomes the call's real duration;
+- a ripe grant with no conversation for it is refunded;
+- a conversation no grant can absorb (one run alongside a claimed call, on that
+  call's token) is counted at its real duration.
 
-**Residual risk.** The browser reports `connected` and `ended`. A visitor who uses
-the signed URL and never reports the call costs the client up to `maxCallSeconds`
-of ElevenLabs minutes per start (bounded by the per-IP start limit and the agent's
-own concurrency limit on ElevenLabs), but gets AI replies only for the grant's first
-2 minutes, while it is still reserved. The reply endpoint cannot tie a turn to a
-conversation (it sees the session token, not the conversation id), so a visitor
-running a second, unreported conversation can pass the token of a claimed one and
-get replies while that claim is pending: up to the agent's ElevenLabs concurrency
-limit (3) of conversations on one metered reservation.
+Nothing changes, and every charge stays, if the list cannot be read in full (5
+pages of 100), or a conversation in the window is still running or has no duration
+yet; the next sweep retries. A refund only comes off the day and month the charge
+went into. So until reconciliation, a visitor who taps the mic and never connects
+costs the cap a full call for ~22 minutes.
+
+**Per-IP limit.** `clientIpFrom` (`lib/checkout/rate-limit.ts`) keys on
+`cf-connecting-ip` when `TRUST_CF_CONNECTING_IP=1`, which `deploy-velo.sh` requires
+in production. On velo the app binds 127.0.0.1 and is reached only through the
+Cloudflare tunnel, and `crestahq-proxy` passes the headers through untouched
+(`deploy/velo/crestahq-proxy.nginx.conf`). So the bucket is per visitor, keyed on
+the IP Cloudflare saw (the start call comes from the visitor's own browser). Buyer
+copies on Vercel leave it unset and key on the right-most `X-Forwarded-For` hop.
+
+**Storage.** The usage doc is under `subAccounts/{id}/private/`, which
+`firestore.rules` (`match /private/{docId} { allow read, write: if false; }`
+inside `match /subAccounts/{subAccountId}`) closes to every client; only the Admin
+SDK reads or writes it.
+
+**Not runtime-verified, and assumed:** that ElevenLabs appends exactly
+`/chat/completions` to a custom-LLM URL (middleware opens only the bare URL and that
+tail), passes the extra body through as `elevenlabs_extra_body`, reports
+`agent_id`, `metadata.call_duration_secs` and `metadata.start_time_unix_secs` on a
+conversation, and lists an agent's conversations with the filters, fields
+(`conversation_id`, `agent_id`, `status`, `start_time_unix_secs`,
+`call_duration_secs`) and paging (`has_more`, `next_cursor`) `listConversations`
+expects. If the start time is missing, every claim fails closed and every call is
+charged in full until reconciliation.
+
+**No end-to-end call yet.** Nothing in the widget calls this path until WV-4 wires
+the mic into the chat window (and the embed iframe gets `allow="microphone"`).
+
+**Residual risk.** A visitor who never reports a call still spends the client's
+ElevenLabs minutes, up to `maxCallSeconds` per start (bounded by the per-IP start
+limit and the agent's concurrency limit on ElevenLabs), and the cap counts it only
+once reconciliation runs. The reply endpoint cannot tie a turn to a conversation
+(it sees the session token, not the conversation id), so a second, unreported
+conversation can use a claimed call's token for AI replies while that claim is
+pending (up to the agent's concurrency limit of 3 on ElevenLabs). Reconciliation
+then counts its minutes.
 
 ## Not yet built
 

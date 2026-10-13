@@ -14,6 +14,7 @@ import { isBlockedHostname } from "@/lib/webhooks/validate-url";
  *   DELETE /v1/convai/agents/{id}                      disconnect
  *   GET    /v1/convai/conversation/get-signed-url      private-agent session
  *   GET    /v1/convai/conversations/{id}               duration for metering
+ *   GET    /v1/convai/conversations?agent_id=…         reconcile unreported calls
  */
 
 const BASE = "https://api.elevenlabs.io";
@@ -281,7 +282,12 @@ export interface ConversationSummary {
   agentId: string | null;
   status: string | null;
   durationSeconds: number | null;
+  /** When the conversation started (ElevenLabs' clock), or null. */
+  startTimeUnixSecs: number | null;
 }
+
+const secsOf = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 
 export async function getConversation(
   apiKey: string,
@@ -290,12 +296,60 @@ export async function getConversation(
   const data = await call<{
     agent_id?: string;
     status?: string;
-    metadata?: { call_duration_secs?: number };
+    metadata?: { call_duration_secs?: number; start_time_unix_secs?: number };
   }>(apiKey, "GET", `/v1/convai/conversations/${idSegment(conversationId)}`);
-  const secs = data.metadata?.call_duration_secs;
   return {
     agentId: data.agent_id ?? null,
     status: data.status ?? null,
-    durationSeconds: typeof secs === "number" && secs >= 0 ? secs : null,
+    durationSeconds: secsOf(data.metadata?.call_duration_secs),
+    startTimeUnixSecs: secsOf(data.metadata?.start_time_unix_secs),
   };
+}
+
+export interface ConversationListItem extends ConversationSummary {
+  conversationId: string;
+}
+
+/**
+ * One page of an agent's conversations that started at or after
+ * `afterUnixSecs`, for reconciling calls nobody reported. ASSUMED shape (not
+ * runtime-verified): `?agent_id&call_start_after_unix&page_size&cursor` →
+ * `{conversations: [{conversation_id, agent_id, status, start_time_unix_secs,
+ * call_duration_secs}], has_more, next_cursor}`. An item whose id is not a
+ * safe id is dropped.
+ */
+export async function listConversations(
+  apiKey: string,
+  agentId: string,
+  afterUnixSecs: number,
+  cursor: string | null,
+): Promise<{ conversations: ConversationListItem[]; hasMore: boolean; nextCursor: string | null }> {
+  const q = new URLSearchParams({
+    agent_id: idSegment(agentId),
+    call_start_after_unix: String(Math.max(0, Math.floor(afterUnixSecs))),
+    page_size: "100",
+  });
+  if (cursor) q.set("cursor", cursor);
+  const data = await call<{
+    conversations?: Array<{
+      conversation_id?: string;
+      agent_id?: string;
+      status?: string;
+      start_time_unix_secs?: number;
+      call_duration_secs?: number;
+    }>;
+    has_more?: boolean;
+    next_cursor?: string | null;
+  }>(apiKey, "GET", `/v1/convai/conversations?${q}`);
+  const conversations = (data.conversations ?? [])
+    .filter((c) => typeof c.conversation_id === "string" && ID_RE.test(c.conversation_id))
+    .map((c) => ({
+      conversationId: c.conversation_id as string,
+      agentId: c.agent_id ?? null,
+      status: c.status ?? null,
+      durationSeconds: secsOf(c.call_duration_secs),
+      startTimeUnixSecs: secsOf(c.start_time_unix_secs),
+    }));
+  const nextCursor = typeof data.next_cursor === "string" && data.next_cursor ? data.next_cursor : null;
+  return { conversations, hasMore: data.has_more === true, nextCursor };
 }

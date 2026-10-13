@@ -29,6 +29,9 @@ export const dynamic = "force-dynamic";
  */
 
 const CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{6,128}$/;
+/** Ids that name an Object.prototype member ("__proto__", "constructor", …)
+ *  are refused here too; the usage module also reads its maps as own keys. */
+const isConversationId = (id: string) => CONVERSATION_ID_RE.test(id) && !(id in Object.prototype);
 /** A token, a type and a conversation id: 2 KB. */
 const MAX_BODY_BYTES = 2 * 1024;
 
@@ -64,7 +67,7 @@ export async function POST(request: Request) {
   const claims = verifySessionToken(body.token);
   const conversationId =
     typeof body.conversationId === "string" ? body.conversationId : "";
-  if (!claims || !CONVERSATION_ID_RE.test(conversationId)) {
+  if (!claims || !isConversationId(conversationId)) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400, headers });
   }
   if (body.type !== "connected" && body.type !== "ended") {
@@ -107,6 +110,8 @@ export async function POST(request: Request) {
           conversationId,
           conn,
           maxCallSeconds: conn.maxCallSeconds,
+          // A token settles only its own session's calls.
+          sessionId: claims.sessionId,
         });
       }
     }
