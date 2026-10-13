@@ -275,6 +275,68 @@ describe("a doubtful item cannot stall metering forever", () => {
   });
 });
 
+describe("a forced item with no usable id (round 4)", () => {
+  it("is charged once, however many later sweeps re-read the overlap", async () => {
+    await reserveGrant("sa1", CONN);
+    el.state.listIgnoresStart = true; // every sweep sees it, whatever the API filters
+    call("conv:bad.id", 30_000, 120); // malformed id: no settled entry possible
+    for (let i = 0; i < 8; i++) {
+      vi.setSystemTime(t0 + 30_000 + 7 * MIN + 60 * MIN + 1000 + i * 4 * MIN);
+      await sweep();
+    }
+    expect(await today()).toBe(300); // the bad item once at maxCallSeconds; the grant refunded
+  });
+
+  it("is charged once even when it is first seen inside the overlap of a long-stalled watermark", async () => {
+    await reserveGrant("sa1", CONN);
+    el.state.listIgnoresStart = true;
+    // Stall the watermark with an item that has no start time, for 3 hours.
+    el.state.listed.set("conv_nostart", { agent_id: "agent1", status: "done", call_duration_secs: 9 });
+    vi.setSystemTime(t0 + 3 * 60 * MIN);
+    await sweep();
+    el.state.listed.delete("conv_nostart");
+    // A malformed item listed late, just behind the stalled watermark (in the overlap).
+    call("conv:late.1", -5 * MIN, 120);
+    for (let i = 0; i < 6; i++) {
+      vi.setSystemTime(t0 + 3 * 60 * MIN + 1000 + i * 4 * MIN);
+      await sweep();
+    }
+    expect(await today()).toBe(300);
+  });
+});
+
+describe("the limit a forced item is charged at (round 4)", () => {
+  it("is the highest limit in force when the call could have run, not a later, lower one", async () => {
+    const before = { ...CONN, maxCallSeconds: 1800, dailyMinuteCap: 1440 };
+    await reserveGrant("sa1", before); // issued under an 1800 s limit
+    call("conv_stuck01", 10_000, 0, { status: "initiated", call_duration_secs: undefined });
+    // The operator lowers the limit to 300 s; the stuck item is given up on later.
+    vi.setSystemTime(t0 + 10_000 + 7 * MIN + 60 * MIN + 2000);
+    await sweep({ ...CONN, dailyMinuteCap: 1440 });
+    expect(await today()).toBe(1800); // the item at 1800; the lapsed 1800 refunded
+  });
+
+  it("counts a limit set long before the window that was still in force", async () => {
+    const before = { ...CONN, maxCallSeconds: 1800, dailyMinuteCap: 1440 };
+    await reserveGrant("sa1", before); // limit 1800 recorded at t0
+    vi.setSystemTime(t0 + 2 * 60 * MIN);
+    await sweep(before); // the watermark moves on; the first grant is refunded
+    await reserveGrant("sa1", before); // same limit: nothing new recorded
+    call("conv_stuck02", 2 * 60 * MIN + 10_000, 0, { status: "initiated", call_duration_secs: undefined });
+    vi.setSystemTime(t0 + 2 * 60 * MIN + 10_000 + 7 * MIN + 60 * MIN + 2000);
+    await sweep({ ...CONN, dailyMinuteCap: 1440 }); // lowered to 300 since
+    expect(await today()).toBe(1800);
+  });
+
+  it("is today's limit when that is the highest", async () => {
+    await reserveGrant("sa1", CONN); // 300 s
+    call("conv_stuck01", 10_000, 0, { status: "initiated", call_duration_secs: undefined });
+    vi.setSystemTime(t0 + 10_000 + 12 * MIN + 60 * MIN + 2000); // ripe is now 600 s + 2 min
+    await sweep({ ...CONN, maxCallSeconds: 600 });
+    expect(await today()).toBe(600);
+  });
+});
+
 describe("a re-keyed connection (new agent)", () => {
   it("never refunds the old agent's lapsed grants, and starts the new agent's watermark at its first grant", async () => {
     await reserveGrant("sa1", CONN);

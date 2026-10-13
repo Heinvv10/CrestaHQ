@@ -6,6 +6,7 @@ import {
   START_SKEW_MS,
   addSeconds,
   errText,
+  highestLimit,
   markSettled,
   normalise,
   own,
@@ -47,8 +48,10 @@ import {
  * duration, or is still running without being pending. One exception keeps a
  * single bad item from stalling metering forever: an item that is doubtful
  * for any reason but its start time, and started more than an hour before
- * the range ends, is counted at the full `maxCallSeconds` (fail closed on
- * money) and the sweep proceeds. While a sweep is blocked the doc records
+ * the range ends, is counted at the highest call limit in force in the
+ * window (`limitLog`, never below today's `maxCallSeconds`; fail closed on
+ * money) and the sweep proceeds. A forced item without a usable id is
+ * remembered under a synthetic key, so it is charged once. While a sweep is blocked the doc records
  * since when (`reconcileStalledSinceMs`) and how many sweeps it has blocked;
  * past 2 hours it logs an error on every blocked sweep.
  *
@@ -101,6 +104,13 @@ async function listSince(
   return null;
 }
 
+/** The id a counted item is remembered by in `settled`. An item with no
+ *  usable id (only ever counted by giving up on it) gets a synthetic key, so
+ *  it is charged once even if a later sweep's range still covers it. */
+function dedupeKey(c: ConversationListItem, agentId: string): string {
+  return c.conversationId ?? `nil:${(c.startTimeUnixSecs ?? 0) * 1000}:${agentId}`;
+}
+
 /** What is wrong with an in-range item, or null when it can be counted. */
 function problemWith(c: ConversationListItem): string | null {
   if (c.conversationId === null) return "no conversation id";
@@ -131,7 +141,7 @@ function callsToCount(
     }
     const startMs = c.startTimeUnixSecs * 1000;
     if (startMs < range.lowMs || startMs >= range.toMs) continue;
-    if (c.conversationId !== null && counted.has(c.conversationId)) continue;
+    if (counted.has(dedupeKey(c, agentId))) continue;
     const problem = problemWith(c);
     if (problem === null) calls.push(c);
     else if (startMs < range.giveUpBeforeMs) forced.push(c);
@@ -193,16 +203,15 @@ export async function reconcileUsage(input: {
       return;
     }
     for (const c of result.calls) addSeconds(u, secondsOf(c));
-    addSeconds(u, result.forced.length * conn.maxCallSeconds);
     if (result.forced.length > 0) {
+      // Never less than the limit the calls could have run under.
+      const limit = highestLimit(u, range.lowMs - SIGNED_URL_MS, range.toMs, conn.maxCallSeconds);
+      addSeconds(u, result.forced.length * limit);
       console.warn(
-        `[web-voice] reconcile: ${result.forced.length} conversation(s) still doubtful after an hour sa=${subAccountId}; counted at maxCallSeconds`,
+        `[web-voice] reconcile: ${result.forced.length} conversation(s) still doubtful after an hour sa=${subAccountId}; counted at ${limit} s each`,
       );
     }
-    markSettled(
-      u,
-      [...result.calls, ...result.forced].flatMap((c) => (c.conversationId === null ? [] : [c.conversationId])),
-    );
+    markSettled(u, [...result.calls, ...result.forced].map((c) => dedupeKey(c, agentId)));
     for (const [id, charge] of Object.entries(u.lapsed)) {
       const expiredBy = charge.issuedAtMs + SIGNED_URL_MS + START_SKEW_MS;
       if (expiredBy > toMs) continue;

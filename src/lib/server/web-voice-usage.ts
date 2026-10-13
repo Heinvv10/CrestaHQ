@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { reconcileUsage } from "@/lib/server/web-voice-reconcile";
 import { settleConversation } from "@/lib/server/web-voice-settle";
-import { START_SKEW_MS, normalise, own, readUsage } from "@/lib/server/web-voice-usage-doc";
+import { START_SKEW_MS, normalise, own, readUsage, recordLimit } from "@/lib/server/web-voice-usage-doc";
 import {
   WEB_VOICE_LIMITS,
   webVoiceUsagePath,
@@ -129,6 +129,7 @@ export async function reserveGrant(
     // a re-key back to an earlier agent resumes that agent's own watermark.
     if (own(u.watermarks, agentId) === undefined) u.watermarks[agentId] = now - START_SKEW_MS;
     u.grants[grantId] = { issuedAtMs: now, seconds: conn.maxCallSeconds, agentId };
+    recordLimit(u, now, conn.maxCallSeconds);
     tx.set(ref, u);
   });
   return grantId;

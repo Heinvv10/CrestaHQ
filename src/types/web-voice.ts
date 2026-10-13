@@ -158,6 +158,10 @@ export interface WebVoiceUsageDoc {
    *  (null = not blocked), and how many sweeps it has blocked since. */
   reconcileStalledSinceMs: number | null;
   reconcileStalledSweeps: number;
+  /** `maxCallSeconds` as each grant saw it, recorded on change (last 50):
+   *  a call reconciliation has to count in full is counted at the highest
+   *  limit in force around when it ran, never a later, lower one. */
+  limitLog: Array<{ atMs: number; seconds: number }>;
   /** Conversation ids already counted (bounded ring) — dedupe for /end and
    *  for reconciliation. */
   settled: string[];

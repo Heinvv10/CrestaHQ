@@ -83,6 +83,7 @@ export function normalise(raw: Partial<WebVoiceUsageDoc> | undefined): WebVoiceU
     watermarks: { ...(raw?.watermarks ?? {}) },
     reconcileStalledSinceMs: typeof raw?.reconcileStalledSinceMs === "number" ? raw.reconcileStalledSinceMs : null,
     reconcileStalledSweeps: nonNegative(raw?.reconcileStalledSweeps),
+    limitLog: Array.isArray(raw?.limitLog) ? [...raw.limitLog] : [],
   };
   u.secondsToday = nonNegative(u.secondsToday);
   u.secondsThisMonth = nonNegative(u.secondsThisMonth);
@@ -104,6 +105,26 @@ export function normalise(raw: Partial<WebVoiceUsageDoc> | undefined): WebVoiceU
     u.lapsed[id] = { issuedAtMs, day, month, chargedSeconds, agentId: String(grant?.agentId ?? "") };
   }
   return u;
+}
+
+const LIMIT_LOG_SIZE = 50;
+
+/** Record the call limit a new grant runs under, when it changed. */
+export function recordLimit(u: WebVoiceUsageDoc, atMs: number, seconds: number): void {
+  if (u.limitLog.at(-1)?.seconds === seconds) return;
+  u.limitLog = [...u.limitLog, { atMs, seconds }].slice(-LIMIT_LOG_SIZE);
+}
+
+/** The highest call limit in force at any point in [fromMs, toMs), and never
+ *  below `current`: the entry in force at `fromMs` plus every change since. */
+export function highestLimit(u: WebVoiceUsageDoc, fromMs: number, toMs: number, current: number): number {
+  let inForce = 0;
+  let max = current;
+  for (const e of u.limitLog) {
+    if (e.atMs <= fromMs) inForce = e.seconds;
+    else if (e.atMs < toMs) max = Math.max(max, e.seconds);
+  }
+  return Math.max(max, inForce);
 }
 
 export async function readUsage(subAccountId: string): Promise<WebVoiceUsageDoc> {

@@ -206,8 +206,11 @@ Every id in a token must be a Firestore doc id.
   excluded before that check.
 - One doubtful item cannot stall metering forever: an item doubtful for any reason
   except a missing start time that started more than an hour before the range's
-  end is counted at the full `maxCallSeconds` (fail closed on money), and the sweep
-  proceeds. A blocked sweep records `reconcileStalledSinceMs` and
+  end is counted in full, at the highest call limit in force around then (the
+  doc's `limitLog` of `maxCallSeconds` as grants saw it, never below today's), and
+  the sweep proceeds. An item counted this way without a usable id is remembered in
+  `settled` under a synthetic key (`nil:{startMs}:{agentId}`), so it is charged
+  once. A blocked sweep records `reconcileStalledSinceMs` and
   `reconcileStalledSweeps` on the usage doc and logs a warning, or an error once
   blocked for more than 2 hours; a sweep that goes through clears both. An item
   with no start time can only block (its age is unknown) — that is what the stall
@@ -251,6 +254,22 @@ response shapes, written from the API reference (ASSUMED, not recorded): replace
 them with recorded responses on the first live walk. If the start time is missing,
 every claim fails closed and every list sweep does nothing, so every grant stays
 charged in full.
+
+**Live-walk checklist (ElevenLabs list API).** Each of these is an assumption the
+metering fails closed on: if it is wrong, voice gets charged too much or the
+watermark stalls (a cap denial of service, never free minutes), and the stall is
+recorded on the usage doc and logged as an error after 2 hours. Check each
+against a real account and replace the contract-test fixtures with the recorded
+responses:
+- the last page of `GET /v1/convai/conversations` has `next_cursor: null` (or
+  `has_more: false` and no cursor); a cursor on the last page makes every sweep
+  read 10 pages and give up;
+- whether `call_start_after_unix` is inclusive or exclusive (the 10-minute overlap
+  covers either);
+- how long a finished call takes to appear in the list: it must be under 10
+  minutes, or a call indexed later is never counted;
+- every listed conversation carries `start_time_unix_secs` (and `agent_id`,
+  `call_duration_secs`); one without a start time blocks reconciliation for good.
 
 **No end-to-end call yet.** Nothing in the widget calls this path until WV-4 wires
 the mic into the chat window (and the embed iframe gets `allow="microphone"`).
