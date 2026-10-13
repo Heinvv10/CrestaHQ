@@ -138,6 +138,18 @@ export async function markConnected(input: {
   });
 }
 
+/** Is this conversation pending under this grant and session? Lets a
+ *  resent `connected` learn that an earlier one already claimed it. */
+export async function claimHeld(input: {
+  subAccountId: string;
+  conversationId: string;
+  grantId: string;
+  sessionId: string;
+}): Promise<boolean> {
+  const p = own((await readUsage(input.subAccountId)).pending, input.conversationId);
+  return !!p && p.grantId === input.grantId && p.sessionId === input.sessionId;
+}
+
 /**
  * May the reply endpoint answer a turn carrying this session token? Only
  * while its grant still holds a reservation: live (claimable), or claimed by

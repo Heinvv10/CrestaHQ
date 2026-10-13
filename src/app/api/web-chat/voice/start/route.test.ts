@@ -192,6 +192,8 @@ describe("/voice/event", () => {
     for (let i = 0; i < 2; i++) {
       const res = await post(event, { token, type: "connected", conversationId: "conv_000001" });
       expect(res.status).toBe(200);
+      // A resend after the claim is told it holds (the widget stops resending).
+      expect(await res.json()).toEqual({ ok: true, claimed: true });
     }
     expect(Object.keys(mem.read(USAGE)?.pending as object)).toEqual(["conv_000001"]);
     const msgs = mem.list(`${SESSION}/messages`);
@@ -203,12 +205,20 @@ describe("/voice/event", () => {
   it("connected with a conversation ElevenLabs does not report live on this agent claims nothing and writes no greeting", async () => {
     const token = await started();
     // ElevenLabs answers 404: one lookup, no retry.
-    expect((await post(event, { token, type: "connected", conversationId: "conv_forged1" })).status).toBe(200);
+    const forged = await post(event, { token, type: "connected", conversationId: "conv_forged1" });
+    expect([forged.status, await forged.json()]).toEqual([200, { ok: true, claimed: false }]);
+    // Another session's token never learns that someone else's call is claimed.
+    const owner = await tryStart();
+    const owned = await post(event, { token: owner.body.token, type: "connected", conversationId: "conv_000001" });
+    expect(await owned.json()).toEqual({ ok: true, claimed: true });
+    const other = await tryStart({ sessionId: "sess_cccccccccccccccc" });
+    const peek = await post(event, { token: other.body.token, type: "connected", conversationId: "conv_000001" });
+    expect(await peek.json()).toEqual({ ok: true, claimed: false });
     for (const conversationId of ["__proto__", "constructor"]) {
       expect((await post(event, { token, type: "connected", conversationId })).status).toBe(400);
     }
-    expect(mem.read(USAGE)?.pending).toEqual({});
-    expect(mem.list(`${SESSION}/messages`)).toEqual([]);
+    expect(Object.keys(mem.read(USAGE)?.pending as object)).toEqual(["conv_000001"]); // the owner's only
+    expect(mem.list(`${SESSION}/messages`)).toHaveLength(1); // the owner's greeting only
   });
 
   it("ended from another session's token settles nothing", async () => {

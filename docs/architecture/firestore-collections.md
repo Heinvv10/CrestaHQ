@@ -315,8 +315,9 @@ live signed-URL `grants` (grant id → `{issuedAtMs, seconds, agentId,
 triedConversationId?}`), the `lapsed` grants already charged and awaiting refund
 (grant id → `{issuedAtMs, day, month, chargedSeconds, agentId}`), the `pending`
 conversations (ElevenLabs conversation id → `{sessionId, grantId, grantIssuedAtMs,
-startedAtMs}`), a ring of the last 500 counted (`settled`) conversation ids, and the
-reconciliation watermark `reconciledThroughMs` for `reconciledAgentId`. Admin SDK only; written only by
+startedAtMs}`), a ring of the last 500 counted (`settled`) conversation ids, the
+reconciliation `watermarks` (agent id → ms), and `reconcileStalledSinceMs` /
+`reconcileStalledSweeps` while a doubtful list item blocks reconciliation. Admin SDK only; written only by
 the `lib/server/web-voice-{usage,claim,settle,reconcile}.ts` modules, every change
 in a transaction. Disconnect deletes
 it with the connection doc. No new index. See

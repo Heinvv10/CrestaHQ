@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { reconcileUsage } from "@/lib/server/web-voice-reconcile";
 import { settleConversation } from "@/lib/server/web-voice-settle";
-import { START_SKEW_MS, normalise, readUsage } from "@/lib/server/web-voice-usage-doc";
+import { START_SKEW_MS, normalise, own, readUsage } from "@/lib/server/web-voice-usage-doc";
 import {
   WEB_VOICE_LIMITS,
   webVoiceUsagePath,
@@ -124,13 +124,10 @@ export async function reserveGrant(
       );
     }
     const now = Date.now();
-    // Start the watermark at this agent's first grant: its private agent can
-    // have no conversation before a signed URL we minted. A new agent (re-key)
-    // starts afresh; the old agent's charges stand (see web-voice-reconcile).
-    if (u.reconciledAgentId !== agentId || u.reconciledThroughMs === null) {
-      u.reconciledAgentId = agentId;
-      u.reconciledThroughMs = now - START_SKEW_MS;
-    }
+    // Start this agent's watermark at its first grant: a private agent can
+    // have no conversation before a signed URL we minted. Kept per agent, so
+    // a re-key back to an earlier agent resumes that agent's own watermark.
+    if (own(u.watermarks, agentId) === undefined) u.watermarks[agentId] = now - START_SKEW_MS;
     u.grants[grantId] = { issuedAtMs: now, seconds: conn.maxCallSeconds, agentId };
     tx.set(ref, u);
   });
@@ -170,5 +167,5 @@ export async function sweepStalePending(input: {
   await reconcileUsage(input);
 }
 
-export { markConnected, voiceTurnAllowed } from "@/lib/server/web-voice-claim";
+export { claimHeld, markConnected, voiceTurnAllowed } from "@/lib/server/web-voice-claim";
 export { settleConversation } from "@/lib/server/web-voice-settle";

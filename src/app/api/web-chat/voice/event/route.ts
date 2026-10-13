@@ -4,7 +4,7 @@ import { appendMessage } from "@/lib/comms/web-chat/session";
 import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 import { readWebVoiceConnection } from "@/lib/server/web-voice-service";
-import { markConnected, settleConversation } from "@/lib/server/web-voice-usage";
+import { claimHeld, markConnected, settleConversation } from "@/lib/server/web-voice-usage";
 import { checkVoiceEvent } from "@/lib/web-voice/rate-limit";
 import { verifySessionToken } from "@/lib/web-voice/tokens";
 import type { SubAccountDoc } from "@/types";
@@ -81,6 +81,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429, headers });
   }
 
+  // For `connected`: whether this conversation is now claimed by this token's
+  // grant — the widget resends until it is (see web-voice.md, WV-4).
+  let claimed: boolean | undefined;
   try {
     if (body.type === "connected") {
       const conn = await readWebVoiceConnection(claims.subAccountId);
@@ -109,6 +112,14 @@ export async function POST(request: Request) {
           });
         }
       }
+      claimed =
+        fresh ||
+        (await claimHeld({
+          subAccountId: claims.subAccountId,
+          conversationId,
+          grantId: claims.grantId,
+          sessionId: claims.sessionId,
+        }));
     } else {
       const conn = await readWebVoiceConnection(claims.subAccountId);
       if (conn) {
@@ -128,5 +139,8 @@ export async function POST(request: Request) {
       err instanceof Error ? err.message : String(err),
     );
   }
-  return NextResponse.json({ ok: true }, { status: 200, headers });
+  return NextResponse.json(
+    claimed === undefined ? { ok: true } : { ok: true, claimed },
+    { status: 200, headers },
+  );
 }

@@ -123,15 +123,21 @@ describe("ElevenLabs conversation reads (ASSUMED shapes)", () => {
     });
   });
 
-  it.each<[string, Record<string, unknown>, boolean]>([
-    ["has_more false", { has_more: false, next_cursor: "c2" }, false],
-    ["has_more true", { has_more: true, next_cursor: "c2" }, true],
+  it.each<[string, Record<string, unknown>, boolean | "throws"]>([
+    ["a next_cursor, even with has_more false", { has_more: false, next_cursor: "c2" }, true],
+    ["has_more true and a next_cursor", { has_more: true, next_cursor: "c2" }, true],
+    ["has_more false, next_cursor null", { has_more: false, next_cursor: null }, false],
+    ["has_more true, next_cursor null (more, but no way to it)", { has_more: true, next_cursor: null }, true],
+    ["has_more false, no next_cursor", { has_more: false }, false],
     ["no has_more, next_cursor null", { next_cursor: null }, false],
     ["no has_more, a next_cursor", { next_cursor: "c2" }, true],
-    ["neither field", {}, true],
+    ["neither field", {}, "throws"],
+    ["has_more not a boolean, no next_cursor", { has_more: "no" }, "throws"],
   ])("reads paging fail-closed: %s", async (_label, paging, hasMore) => {
     answer({ conversations: [], ...paging });
-    expect((await listConversations("key", "agent_1", 0, null)).hasMore).toBe(hasMore);
+    const read = listConversations("key", "agent_1", 0, null);
+    if (hasMore === "throws") await expect(read).rejects.toThrow(/no paging information/);
+    else expect((await read).hasMore).toBe(hasMore);
   });
 
   it("throws on a list body without a conversations array, and nulls a malformed item", async () => {

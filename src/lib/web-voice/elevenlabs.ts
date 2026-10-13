@@ -319,8 +319,8 @@ export interface ConversationListItem extends ConversationSummary {
  * start_time_unix_secs, call_duration_secs, …}], has_more, next_cursor}`.
  * A body without a `conversations` array throws; no item is dropped — a
  * malformed one comes back with nulls so the caller can refuse to act on it.
- * A page without a boolean `has_more` counts as having more unless its
- * `next_cursor` is explicitly null.
+ * A non-empty `next_cursor` means more pages; without one, a page without a
+ * boolean `has_more` throws unless its `next_cursor` is explicitly null.
  */
 export async function listConversations(
   apiKey: string,
@@ -353,9 +353,15 @@ export async function listConversations(
       startTimeUnixSecs: secsOf(c.start_time_unix_secs),
     };
   });
+  // Paging, fail-closed: a non-empty `next_cursor` always means more pages.
+  // Otherwise `has_more` decides, and without a boolean `has_more` only an
+  // explicit `next_cursor: null` says this is the last page — anything else
+  // is a shape we do not understand.
   const nextCursor = typeof data.next_cursor === "string" && data.next_cursor ? data.next_cursor : null;
-  // Without a boolean `has_more`, only an explicit `next_cursor: null` says
-  // this is the last page; anything else is treated as more to come.
-  const hasMore = typeof data.has_more === "boolean" ? data.has_more : data.next_cursor !== null;
+  let hasMore: boolean;
+  if (nextCursor) hasMore = true;
+  else if (typeof data.has_more === "boolean") hasMore = data.has_more;
+  else if (data.next_cursor === null) hasMore = false;
+  else throw new ElevenLabsError("ElevenLabs' conversation list had no paging information.", 502);
   return { conversations, hasMore, nextCursor };
 }

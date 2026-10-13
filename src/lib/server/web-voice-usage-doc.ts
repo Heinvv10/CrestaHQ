@@ -80,8 +80,9 @@ export function normalise(raw: Partial<WebVoiceUsageDoc> | undefined): WebVoiceU
     grants: { ...(raw?.grants ?? {}) },
     lapsed: { ...(raw?.lapsed ?? {}) },
     settled: Array.isArray(raw?.settled) ? [...raw.settled] : [],
-    reconciledThroughMs: typeof raw?.reconciledThroughMs === "number" ? raw.reconciledThroughMs : null,
-    reconciledAgentId: typeof raw?.reconciledAgentId === "string" ? raw.reconciledAgentId : null,
+    watermarks: { ...(raw?.watermarks ?? {}) },
+    reconcileStalledSinceMs: typeof raw?.reconcileStalledSinceMs === "number" ? raw.reconcileStalledSinceMs : null,
+    reconcileStalledSweeps: nonNegative(raw?.reconcileStalledSweeps),
   };
   u.secondsToday = nonNegative(u.secondsToday);
   u.secondsThisMonth = nonNegative(u.secondsThisMonth);

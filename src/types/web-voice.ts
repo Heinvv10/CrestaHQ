@@ -149,11 +149,15 @@ export interface WebVoiceUsageDoc {
   grants: Record<string, WebVoiceGrant>;
   /** Grants that lapsed unclaimed, already charged (see WebVoiceLapsedGrant). */
   lapsed: Record<string, WebVoiceLapsedGrant>;
-  /** Every conversation of `reconciledAgentId` that started before this
-   *  instant has been counted (by a settle or by reconciliation against
-   *  ElevenLabs' list). Null until the first grant for that agent. */
-  reconciledThroughMs: number | null;
-  reconciledAgentId: string | null;
+  /** Per ElevenLabs agent id: every conversation of that agent that started
+   *  before this instant has been counted (by a settle or by reconciliation
+   *  against ElevenLabs' list). Set at the agent's first grant; kept per
+   *  agent so a re-key back to an earlier agent resumes where it stopped. */
+  watermarks: Record<string, number>;
+  /** When reconciliation last started being blocked by a doubtful list item
+   *  (null = not blocked), and how many sweeps it has blocked since. */
+  reconcileStalledSinceMs: number | null;
+  reconcileStalledSweeps: number;
   /** Conversation ids already counted (bounded ring) — dedupe for /end and
    *  for reconciliation. */
   settled: string[];

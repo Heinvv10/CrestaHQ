@@ -31,6 +31,7 @@ const secs = (ms: number) => Math.floor(ms / 1000);
 const sweep = (conn = CONN) => sweepStalePending({ subAccountId: "sa1", conn });
 const today = async () => (await getWebVoiceUsage("sa1")).secondsToday;
 const doc = () => mem.read(USAGE) as Record<string, unknown>;
+const mark = (agentId = "agent1") => (doc().watermarks as Record<string, number>)[agentId];
 /** A finished call on our agent, started `offsetMs` after t0. */
 const call = (id: string, offsetMs: number, duration: number, over: Record<string, unknown> = {}) =>
   el.state.listed.set(id, { agent_id: "agent1", status: "done", start_time_unix_secs: secs(t0 + offsetMs), call_duration_secs: duration, ...over });
@@ -114,7 +115,7 @@ describe("counting every call from the list", () => {
     el.state.byId.delete("conv_pending1"); // settle's lookup fails: stays pending
     el.state.byId.set("conv_pending1", { status: 500 });
     await sweep();
-    expect(doc().reconciledThroughMs).toBeGreaterThan(t0);
+    expect(mark()).toBeGreaterThan(t0);
     expect(await today()).toBe(0);
   });
 
@@ -127,19 +128,42 @@ describe("counting every call from the list", () => {
     expect(await today()).toBe(0);
   });
 
-  it("advances the watermark so a call is counted by exactly one sweep", async () => {
+  it("advances the watermark, and re-reads only the 10-minute overlap behind it", async () => {
     await reserveGrant("sa1", CONN);
-    vi.setSystemTime(t0 + 10 * MIN);
+    vi.setSystemTime(t0 + 30 * MIN);
     await sweep();
-    const mark = doc().reconciledThroughMs as number;
-    expect(mark).toBe(Math.floor((t0 + 10 * MIN - 420_000) / 1000) * 1000);
+    const m = mark();
+    expect(m).toBe(Math.floor((t0 + 30 * MIN - 420_000) / 1000) * 1000);
     el.state.listIgnoresStart = true; // our side bounds the range, whatever the API does
-    call("conv_before1", mark - t0 - 1000, 10); // before the mark: a sweep already covered it
-    call("conv_atmark1", mark - t0, 20);
-    vi.setSystemTime(t0 + REFUNDABLE_MS);
+    call("conv_tooold1", m - t0 - 10 * MIN - 1000, 10); // behind the overlap: never re-read
+    call("conv_overlap", m - t0 - 10 * MIN, 20); // listed late, inside the overlap
+    call("conv_atmark1", m - t0, 40);
+    vi.setSystemTime(t0 + 40 * MIN);
     await sweep();
+    expect(await today()).toBe(60);
+    expect(el.state.listCalls.at(-1)).toContain(`call_start_after_unix=${(m - 10 * MIN) / 1000}`);
+  });
+
+  it("the overlap never counts a call twice", async () => {
+    await reserveGrant("sa1", CONN);
+    call("conv_once001", REFUNDABLE_MS - 10 * MIN, 42); // re-read by every later sweep's overlap
+    for (let i = 0; i < 6; i++) {
+      vi.setSystemTime(t0 + REFUNDABLE_MS + i * 2 * MIN);
+      await sweep();
+    }
+    expect(await today()).toBe(42);
+  });
+
+  it("counts a call on the watermark's boundary second, even if the API reads 'after' as strictly after", async () => {
+    await reserveGrant("sa1", CONN);
+    const ySecs = secs(t0 + 14 * MIN);
+    call("conv_bound01", ySecs * 1000 - t0, 300);
+    vi.setSystemTime(ySecs * 1000 + 420_000);
     await sweep();
-    expect(await today()).toBe(20);
+    expect(mark()).toBe(ySecs * 1000);
+    vi.setSystemTime(t0 + 60 * MIN);
+    await sweep();
+    expect(await today()).toBe(300);
   });
 
   it("a slow sweep that lost the race never moves the watermark back", async () => {
@@ -157,10 +181,10 @@ describe("counting every call from the list", () => {
     await vi.waitFor(() => expect(el.state.listCalls.length + el.fetchMock.mock.calls.length).toBeGreaterThan(0));
     vi.setSystemTime(t0 + 20 * MIN);
     await sweep();
-    const ahead = doc().reconciledThroughMs as number;
+    const ahead = mark();
     release();
     await slow;
-    expect(doc().reconciledThroughMs).toBe(ahead);
+    expect(mark()).toBe(ahead);
   });
 
   it("is not blocked by a call that started after the range (still running)", async () => {
@@ -194,7 +218,7 @@ describe("any doubt about the list changes nothing", () => {
     vi.setSystemTime(t0 + REFUNDABLE_MS);
     await sweep();
     expect(await today()).toBe(300);
-    expect(doc().reconciledThroughMs).toBe(t0 - 30_000);
+    expect(mark()).toBe(t0 - 30_000);
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -212,7 +236,42 @@ describe("any doubt about the list changes nothing", () => {
     el.fetchMock.mockImplementation(async () => Response.json(items ? { ...body, conversations: items } : body));
     await sweep();
     expect(await today()).toBe(300);
-    expect(doc().reconciledThroughMs).toBe(t0 - 30_000);
+    expect(mark()).toBe(t0 - 30_000);
+  });
+});
+
+describe("a doubtful item cannot stall metering forever", () => {
+  it("records the stall, and logs an error on every blocked sweep past 2 hours", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await reserveGrant("sa1", CONN);
+    el.state.listIgnoresStart = true; // the API returns an item with no start time
+    el.state.listed.set("conv_nostart", { agent_id: "agent1", status: "done", call_duration_secs: 9 });
+    vi.setSystemTime(t0 + 30 * MIN);
+    await sweep();
+    expect(doc()).toMatchObject({ reconcileStalledSinceMs: t0 + 30 * MIN, reconcileStalledSweeps: 1 });
+    expect(error).not.toHaveBeenCalled();
+    vi.setSystemTime(t0 + 30 * MIN + 2 * 60 * MIN + 1000);
+    await sweep();
+    expect(doc()).toMatchObject({ reconcileStalledSinceMs: t0 + 30 * MIN, reconcileStalledSweeps: 2 });
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("blocked 2 sweep(s)"));
+    expect(mark()).toBe(t0 - 30_000); // no start time: never forced
+  });
+
+  it("counts an item doubtful for over an hour at maxCallSeconds, proceeds, and clears the stall", async () => {
+    await reserveGrant("sa1", CONN);
+    call("conv_stuck01", 10_000, 0, { status: "initiated", call_duration_secs: undefined });
+    call("conv_real001", 20_000, 42);
+    vi.setSystemTime(t0 + 30 * MIN);
+    await sweep();
+    expect(doc()).toMatchObject({ reconcileStalledSweeps: 1 });
+    // The stuck item started over an hour before the range's end: give up on it.
+    vi.setSystemTime(t0 + 10_000 + 7 * MIN + 60 * MIN + 2000);
+    await sweep();
+    expect(await today()).toBe(300 + 42); // stuck in full, the real call at its duration; grant refunded
+    expect(doc()).toMatchObject({ reconcileStalledSinceMs: null, reconcileStalledSweeps: 0 });
+    vi.setSystemTime(t0 + 2 * 60 * MIN);
+    await sweep();
+    expect(await today()).toBe(342);
   });
 });
 
@@ -222,11 +281,25 @@ describe("a re-keyed connection (new agent)", () => {
     vi.setSystemTime(t0 + 5 * MIN);
     const next = { ...CONN, agentId: "agent2" };
     await reserveGrant("sa1", next);
-    expect(doc()).toMatchObject({ reconciledAgentId: "agent2", reconciledThroughMs: t0 + 5 * MIN - 30_000 });
+    expect(doc().watermarks).toEqual({ agent1: t0 - 30_000, agent2: t0 + 5 * MIN - 30_000 });
     vi.setSystemTime(t0 + 5 * MIN + REFUNDABLE_MS);
     await sweep(next);
     expect(await today()).toBe(300); // agent1's charge stands; agent2's grant refunded
     expect(doc().lapsed).toEqual({});
+  });
+
+  it("A→B→A keeps A's own watermark, so A's calls during B are still counted", async () => {
+    await reserveGrant("sa1", CONN);
+    vi.setSystemTime(t0 + 5 * MIN);
+    await reserveGrant("sa1", { ...CONN, agentId: "agent2" });
+    call("conv_a_tail1", 8 * MIN, 120); // a call on agent1 after the switch
+    vi.setSystemTime(t0 + 10 * MIN);
+    await reserveGrant("sa1", CONN); // back to agent1
+    expect(mark("agent1")).toBe(t0 - 30_000);
+    vi.setSystemTime(t0 + 10 * MIN + REFUNDABLE_MS);
+    await sweep();
+    expect(el.state.listCalls[0]).toContain("agent_id=agent1");
+    expect(await today()).toBe(300 + 120); // agent2's lapsed charge stands; agent1's grants refunded, its tail counted
   });
 
   it("a sweep for an agent the watermark is not for (re-keyed, no new grant yet) lists nothing and keeps every charge", async () => {

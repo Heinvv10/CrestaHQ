@@ -8,6 +8,7 @@ import {
   errText,
   markSettled,
   normalise,
+  own,
   readUsage,
 } from "@/lib/server/web-voice-usage-doc";
 import { listConversations, type ConversationListItem } from "@/lib/web-voice/elevenlabs";
@@ -20,13 +21,17 @@ import {
 
 /**
  * ElevenLabs' conversation list is the source of truth for Web Voice
- * minutes. The usage doc carries a WATERMARK, `reconciledThroughMs` for
- * `reconciledAgentId`: every conversation of that agent that started before
- * it has been counted. Each sweep:
+ * minutes. The usage doc carries a WATERMARK per agent id (`watermarks`):
+ * every conversation of that agent that started before it has been counted.
+ * Each sweep:
  *
  *   1. lists ALL the agent's conversations that started in
- *      [watermark, now − ripe), where ripe = `maxCallSeconds` + 2 min, so
- *      every call in range has ended;
+ *      [watermark − OVERLAP, now − ripe), where ripe = `maxCallSeconds` +
+ *      2 min, so every call in range has ended. The overlap re-reads the
+ *      last 10 minutes behind the watermark: a call ElevenLabs lists late, or
+ *      one on the boundary second of an exclusive `call_start_after_unix`,
+ *      is still seen. Calls counted before are in `settled` (or pending), so
+ *      re-reading them never counts them twice;
  *   2. counts each one that no claim covers (not pending, not settled) at
  *      its real duration — a call the browser never reported, or one run on
  *      another call's signed URL or token, is counted all the same;
@@ -39,8 +44,13 @@ import {
  * Any doubt about the list and the sweep does NOTHING (charges stay, the
  * watermark stays) and logs why: the list cannot be read in full, is not an
  * array, or an item in or possibly in range has no id, agent, start time or
- * duration, or is still running without being pending. Lapsed grants of an
- * earlier agent (re-key) are never refunded: their charges stand.
+ * duration, or is still running without being pending. One exception keeps a
+ * single bad item from stalling metering forever: an item that is doubtful
+ * for any reason but its start time, and started more than an hour before
+ * the range ends, is counted at the full `maxCallSeconds` (fail closed on
+ * money) and the sweep proceeds. While a sweep is blocked the doc records
+ * since when (`reconcileStalledSinceMs`) and how many sweeps it has blocked;
+ * past 2 hours it logs an error on every blocked sweep.
  *
  * A refund needs positive evidence: a complete list, every item in range
  * well-formed. Lapsed grants of an agent other than the watermark's (a
@@ -57,6 +67,13 @@ const MAX_PAGES = 10;
 const OPEN_STATUSES = new Set(["initiated", "in-progress", "processing"]);
 
 type Doubt = { reason: string; count: number };
+
+/** Re-read this far behind the watermark on every sweep (late indexing). */
+const OVERLAP_MS = 10 * 60 * 1000;
+/** A doubtful item older than this behind the range's end is counted in full. */
+const DOUBT_GIVE_UP_MS = 60 * 60 * 1000;
+/** Blocked longer than this, every blocked sweep logs an error. */
+const STALL_ALARM_MS = 2 * 60 * 60 * 1000;
 
 /** Read every conversation of the agent started at or after `fromMs`, or
  *  null when the list cannot be read in full. */
@@ -84,38 +101,47 @@ async function listSince(
   return null;
 }
 
-/** The calls in [fromMs, toMs) to count, or a doubt. `counted` = ids a
- *  claim already covers (pending or settled). */
+/** What is wrong with an in-range item, or null when it can be counted. */
+function problemWith(c: ConversationListItem): string | null {
+  if (c.conversationId === null) return "no conversation id";
+  if (c.agentId === null) return "no agent id";
+  if (c.status !== null && OPEN_STATUSES.has(c.status)) return "still running";
+  if (c.status !== "failed" && c.durationSeconds === null) return "no duration";
+  return null;
+}
+
+/** The calls in [lowMs, toMs) to count at their duration, those to count in
+ *  full (doubtful but older than `giveUpBeforeMs`), or a doubt. `counted` =
+ *  ids a claim or an earlier sweep already covers (pending or settled). */
 function callsToCount(
   listed: ConversationListItem[],
   agentId: string,
-  fromMs: number,
-  toMs: number,
+  range: { lowMs: number; toMs: number; giveUpBeforeMs: number },
   counted: Set<string>,
-): { calls: ConversationListItem[] } | { doubt: Doubt } {
+): { calls: ConversationListItem[]; forced: ConversationListItem[] } | { doubt: Doubt } {
   const doubts = new Map<string, number>();
   const doubt = (reason: string) => doubts.set(reason, (doubts.get(reason) ?? 0) + 1);
   const calls: ConversationListItem[] = [];
+  const forced: ConversationListItem[] = [];
   for (const c of listed) {
     if (c.agentId !== null && c.agentId !== agentId) continue; // another agent's: not ours
     if (c.startTimeUnixSecs === null) {
-      doubt("no start time");
+      doubt("no start time"); // cannot even tell whether it is in range
       continue;
     }
     const startMs = c.startTimeUnixSecs * 1000;
-    if (startMs < fromMs || startMs >= toMs) continue;
-    if (c.conversationId === null) doubt("no conversation id");
-    else if (c.agentId === null) doubt("no agent id");
-    else if (counted.has(c.conversationId)) continue;
-    else if (c.status !== null && OPEN_STATUSES.has(c.status)) doubt("still running");
-    else if (c.status !== "failed" && c.durationSeconds === null) doubt("no duration");
-    else calls.push(c);
+    if (startMs < range.lowMs || startMs >= range.toMs) continue;
+    if (c.conversationId !== null && counted.has(c.conversationId)) continue;
+    const problem = problemWith(c);
+    if (problem === null) calls.push(c);
+    else if (startMs < range.giveUpBeforeMs) forced.push(c);
+    else doubt(problem);
   }
   if (doubts.size > 0) {
     const reason = [...doubts].map(([r, n]) => `${n} ${r}`).join(", ");
     return { doubt: { reason, count: [...doubts.values()].reduce((a, b) => a + b, 0) } };
   }
-  return { calls };
+  return { calls, forced };
 }
 
 /** A call's real duration — a failed call too, when ElevenLabs reports one
@@ -136,31 +162,47 @@ export async function reconcileUsage(input: {
   const agentId = conn.agentId;
   if (!agentId) return;
   const before = await readUsage(subAccountId);
-  const fromMs = before.reconciledThroughMs;
+  const fromMs = own(before.watermarks, agentId);
   // No grant has been minted for this agent yet: there is nothing to count.
-  if (fromMs === null || before.reconciledAgentId !== agentId) return;
+  if (fromMs === undefined) return;
+  const now = Date.now();
   const ripeMs = conn.maxCallSeconds * 1000 + 2 * 60 * 1000;
-  const toMs = Math.floor((Date.now() - ripeMs) / 1000) * 1000;
+  const toMs = Math.floor((now - ripeMs) / 1000) * 1000;
   if (toMs <= fromMs) return;
+  const range = { lowMs: fromMs - OVERLAP_MS, toMs, giveUpBeforeMs: toMs - DOUBT_GIVE_UP_MS };
 
-  const listed = await listSince(subAccountId, conn.apiKey, agentId, fromMs);
+  const listed = await listSince(subAccountId, conn.apiKey, agentId, range.lowMs);
   if (!listed) return;
 
   const db = getAdminDb();
   const ref = db.doc(webVoiceUsagePath(subAccountId));
   await db.runTransaction(async (tx) => {
     const u = normalise((await tx.get(ref)).data() as Partial<WebVoiceUsageDoc> | undefined);
-    if (u.reconciledThroughMs !== fromMs || u.reconciledAgentId !== agentId) return; // another sweep won
+    if (own(u.watermarks, agentId) !== fromMs) return; // another sweep won
     const counted = new Set([...Object.keys(u.pending), ...u.settled]);
-    const result = callsToCount(listed, agentId, fromMs, toMs, counted);
+    const result = callsToCount(listed, agentId, range, counted);
     if ("doubt" in result) {
-      console.warn(
-        `[web-voice] reconcile: ${result.doubt.count} doubtful conversation(s) sa=${subAccountId} (${result.doubt.reason}); nothing changed`,
-      );
+      // Nothing about money changes; only the stall is recorded.
+      const since = u.reconcileStalledSinceMs ?? now;
+      u.reconcileStalledSinceMs = since;
+      u.reconcileStalledSweeps += 1;
+      tx.set(ref, u);
+      const message = `[web-voice] reconcile: ${result.doubt.count} doubtful conversation(s) sa=${subAccountId} (${result.doubt.reason}); nothing changed, blocked ${u.reconcileStalledSweeps} sweep(s) since ${new Date(since).toISOString()}`;
+      if (now - since > STALL_ALARM_MS) console.error(message);
+      else console.warn(message);
       return;
     }
     for (const c of result.calls) addSeconds(u, secondsOf(c));
-    markSettled(u, result.calls.map((c) => c.conversationId as string));
+    addSeconds(u, result.forced.length * conn.maxCallSeconds);
+    if (result.forced.length > 0) {
+      console.warn(
+        `[web-voice] reconcile: ${result.forced.length} conversation(s) still doubtful after an hour sa=${subAccountId}; counted at maxCallSeconds`,
+      );
+    }
+    markSettled(
+      u,
+      [...result.calls, ...result.forced].flatMap((c) => (c.conversationId === null ? [] : [c.conversationId])),
+    );
     for (const [id, charge] of Object.entries(u.lapsed)) {
       const expiredBy = charge.issuedAtMs + SIGNED_URL_MS + START_SKEW_MS;
       if (expiredBy > toMs) continue;
@@ -169,7 +211,9 @@ export async function reconcileUsage(input: {
       if (charge.agentId === agentId) refund(u, charge);
       delete u.lapsed[id];
     }
-    u.reconciledThroughMs = toMs;
+    u.watermarks[agentId] = toMs;
+    u.reconcileStalledSinceMs = null;
+    u.reconcileStalledSweeps = 0;
     tx.set(ref, u);
   });
 }

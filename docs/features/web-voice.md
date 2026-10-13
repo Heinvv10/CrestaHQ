@@ -177,30 +177,47 @@ Every id in a token must be a Firestore doc id.
   reservation** (its own stored `seconds`) in whichever transaction next reads the
   usage doc (read-only paths compute the same charge), and kept under `lapsed`.
   This provisional charge holds the cap until the list has spoken.
-- The usage doc keeps a **watermark**, `reconciledThroughMs` for
-  `reconciledAgentId`: every conversation of that agent that started before it has
-  been counted. It starts 30 s before the agent's first grant (a private agent has
-  no conversation before a signed URL we mint).
+- The usage doc keeps a **watermark per agent id** (`watermarks`): every
+  conversation of that agent that started before it has been counted. It starts
+  30 s before the agent's first grant (a private agent has no conversation before a
+  signed URL we mint), and is kept per agent so a re-key back to an earlier agent
+  resumes that agent's own watermark.
 - Every sweep (each `/voice/start`, and `web-chat/config` when the cap looks
   reached, see below) lists ALL the agent's conversations that started in
-  [watermark, now − (`maxCallSeconds` + 2 min)), so every one in range has ended.
-  It counts each one that no claim covers (not pending, not in `settled`) at its
-  real duration: an unreported call, a call started on another grant's URL, or a
+  [watermark − 10 min, now − (`maxCallSeconds` + 2 min)), so every one in range has
+  ended. The 10-minute **overlap** re-reads the tail behind the watermark, so a call
+  ElevenLabs lists late, or one on the boundary second of an exclusive
+  `call_start_after_unix`, is still seen; a call indexed more than 10 minutes late
+  would be missed. Calls already counted are in `settled` (or pending), so the
+  overlap never counts one twice. The sweep counts each call that no claim covers
+  (not pending, not in `settled`) at its real duration (a failed call too, when it
+  has one): an unreported call, a call started on another grant's URL, or a
   second call run on a claimed call's token are all counted. Then it refunds every
   lapsed grant of this agent whose signed URL expired before the new watermark
   (any call it started has been counted in its own right), and advances the
   watermark. All in one transaction that applies only if no other sweep moved the
   watermark first, so racing sweeps count a call once.
-- Any doubt and the sweep does NOTHING and logs how many items and why: the list
-  cannot be read in full (10 pages of 100), has no `conversations` array, or an
-  item that is or may be in range has no id, agent id, start time or duration, or
-  is still running and not pending. Pending and settled ids are excluded before
-  that check.
+- Any doubt and the sweep does NOTHING to the counters and logs how many items and
+  why: the list cannot be read in full (10 pages of 100), has no `conversations`
+  array or no paging it can read (a non-empty `next_cursor` always means more
+  pages; without one, `has_more` must be a boolean or `next_cursor` explicitly
+  null), or an item that is or may be in range has no id, agent id, start time or
+  duration, or is still running and not pending. Pending and settled ids are
+  excluded before that check.
+- One doubtful item cannot stall metering forever: an item doubtful for any reason
+  except a missing start time that started more than an hour before the range's
+  end is counted at the full `maxCallSeconds` (fail closed on money), and the sweep
+  proceeds. A blocked sweep records `reconcileStalledSinceMs` and
+  `reconcileStalledSweeps` on the usage doc and logs a warning, or an error once
+  blocked for more than 2 hours; a sweep that goes through clears both. An item
+  with no start time can only block (its age is unknown) — that is what the stall
+  record and the error are for.
 - A refund only comes off the day and month the charge went into.
 - A re-keyed connection (a new agent) starts its own watermark at its first grant.
-  The old agent's calls are not on the new list, so its lapsed charges are never
+  A sweep lists only the current agent: the old agent's lapsed charges are never
   refunded and its pending calls settle at the full reservation (the new key
-  cannot read them).
+  cannot read them). Switching back to the old agent resumes its own watermark, so
+  its calls in between are counted then.
 
 A visitor who taps the mic and never connects costs the cap a full call until the
 sweep after the grant's signed URL expires behind the watermark (about 22 minutes
@@ -242,9 +259,14 @@ the mic into the chat window (and the embed iframe gets `allow="microphone"`).
 microphone granted) BEFORE `POST /voice/start`, and start the ElevenLabs session
 immediately with the signed URL it gets back. A start whose call never connects
 costs the cap a full call until the next sweep refunds it, and a grant can be
-claimed only in its first 2 minutes. It must report `connected` once, with the
-conversation id ElevenLabs gives it (a different id is refused), and `ended` once
-(a beacon on page hide is fine).
+claimed only in its first 2 minutes. It reports `connected` with the conversation
+id ElevenLabs gives it (a different id is refused) and must **resend it a few times
+over about 30 seconds until the response says it was claimed**: ElevenLabs may not
+list a brand-new conversation yet, and a 404 is not retried on the server. Stay
+within the event limit of 6 per grant (e.g. 4 `connected` tries, then one `ended`;
+a beacon on page hide is fine). The response to `connected` is
+`{ ok: true, claimed }`: `claimed` is true once this token's grant holds that
+conversation (also on a resend after an earlier ping already claimed it).
 
 **Residual risk.** A visitor who never reports a call still spends the client's
 ElevenLabs minutes, up to `maxCallSeconds` per start (bounded by the per-IP start

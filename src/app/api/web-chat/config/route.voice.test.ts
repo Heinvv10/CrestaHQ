@@ -90,8 +90,7 @@ describe("voiceEnabled on the widget config", () => {
       secondsToday: 3360,
       secondsThisMonth: 3360,
       lapsed: { g1: { issuedAtMs, day, month: day.slice(0, 7), chargedSeconds: 3360, agentId: "agent1" } },
-      reconciledThroughMs: issuedAtMs - 30_000,
-      reconciledAgentId: "agent1",
+      watermarks: { agent1: issuedAtMs - 30_000 },
     });
     const seed = mem.read(USAGE)!;
     expect(await config()).toMatchObject({ voiceEnabled: false });
