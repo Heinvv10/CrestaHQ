@@ -274,3 +274,12 @@ echo "staged $release"
 activate_idle "$release"
 rm -f "$ROLLED_BACK_FROM"
 say "Deployed $after to $SERVICE@$idle behind $PROXY_SERVICE on port $PORT"
+
+# Smoke-test what is now live. The smoke workflow runs only when dispatched,
+# pinned to this commit, so it tests the release production is serving. On
+# push it ran main against an older deploy and went red on features not yet
+# live. A failed dispatch only warns: the deploy itself succeeded.
+gh api -X POST "repos/{owner}/{repo}/actions/workflows/e2e-smoke.yml/dispatches" \
+  -f ref=main -f "inputs[sha]=$(git rev-parse HEAD)" >/dev/null \
+  && echo "dispatched E2E smoke for $after" \
+  || printf '\033[33mWARN: could not dispatch the E2E smoke run; start it by hand (Actions > E2E smoke)\033[0m\n' >&2
