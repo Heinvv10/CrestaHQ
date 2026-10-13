@@ -128,4 +128,7 @@ export const AGENCY_FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   create_billing_plan: { name: "Agent plan", priceMonthly: 99, currency: "zar" },
   assign_billing_plan: { subAccountId: "sa1", planId: "plan_1" },
   create_one_time_charge: { subAccountId: "sa1", description: "Setup", amount: 50, currency: "zar" },
+  billing_overview: {},
+  sub_account_usage: { subAccountId: "sa1", subAccountName: "W" },
+  resend_checkout_link: { subAccountId: "sa1" },
 };

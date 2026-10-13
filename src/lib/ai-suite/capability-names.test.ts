@@ -22,6 +22,14 @@ const { AI_SUITE_CAPABILITIES } = await import("./capabilities");
 // add_lesson and configure_watchdog are chat-only confirm-gated admin
 // writes; mark_booking_paid emails the customer, so it is agent-only behind
 // the outbound approval and refused in chat.
+//
+// N2b (agency tools): billing_overview and sub_account_usage are reads on
+// both surfaces (an agent key sees only what it reaches);
+// deployment_setup_status is a chat-only read (it describes the deployment,
+// not the key's agency). comp_client (cancels a subscription) and
+// set_usage_limits are chat-only confirm-gated owner writes.
+// resend_checkout_link hands a payable link out and kills the old ones, so it
+// is agent-only behind the outbound approval and refused in chat.
 const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["list_sub_accounts",                         "agency",      "agencyOwner",      true, null],
   ["sub_account_stats",                         "agency",      "agencyOwner",      true, null],
@@ -34,6 +42,12 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["create_billing_plan",                       "agency",      "agencyOwner",      false, ["chat", "agent"]],
   ["assign_billing_plan",                       "agency",      "agencyOwner",      false, ["chat", "agent"]],
   ["create_one_time_charge",                    "agency",      "agencyOwner",      false, ["chat", "agent"]],
+  ["billing_overview",                          "agency",      "agencyOwner",      true, ["chat", "agent"]],
+  ["comp_client",                               "agency",      "agencyOwner",      false, ["chat"]],
+  ["resend_checkout_link",                      "agency",      "agencyOwner",      false, ["agent"]],
+  ["sub_account_usage",                         "agency",      "agencyOwner",      true, ["chat", "agent"]],
+  ["set_usage_limits",                          "agency",      "agencyOwner",      false, ["chat"]],
+  ["deployment_setup_status",                   "agency",      "agencyOwner",      true, ["chat"]],
   ["my_access",                                 "sub-account", "subAccountMember", true, ["chat"]],
   ["open_workspace",                            "sub-account", "subAccountMember", true, ["chat"]],
   ["find_contacts",                             "sub-account", "subAccountMember", true, null],

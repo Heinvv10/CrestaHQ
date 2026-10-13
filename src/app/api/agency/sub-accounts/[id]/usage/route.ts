@@ -9,6 +9,7 @@ import {
   getEffectiveRates,
   usageMonthKey,
 } from "@/lib/server/usage-meter";
+import { usageCurrency } from "@/lib/billing/currency";
 import type { UsageMonthDoc, UsageQuotas } from "@/types/usage";
 import type { SubAccountDoc } from "@/types";
 
@@ -71,7 +72,7 @@ export async function GET(
     quotas,
     rates,
     overage,
-    currency: (sub.billing?.currency as string | null) ?? "usd",
+    currency: usageCurrency(sub.billing),
     quotaSource: sub.usageQuotas
       ? "workspace"
       : sub.billing?.planId && quotas
