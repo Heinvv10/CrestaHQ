@@ -32,9 +32,91 @@ const METADATA_TIMEOUT_MS = 3_000;
  */
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 
+/**
+ * Both calls are idempotent GETs, so a fast transient failure — a dropped
+ * connection, a 429 or a 5xx — is retried in place. A single dropped
+ * connection on 2026-10-13 otherwise lost a customer's photo for good.
+ *
+ * A timeout is NOT retried in place: it has already spent its budget, and
+ * stacking 15 s attempts would outlast Meta's webhook timeout. It is still
+ * transient, so the route has Meta redeliver instead. No retry starts once
+ * RETRY_BUDGET_MS has passed, for the same reason.
+ */
+const ATTEMPTS = 3;
+const BACKOFF_MS = [500, 1_500];
+const RETRY_BUDGET_MS = 5_000;
+
+/**
+ * `transient` failures are worth Meta redelivering the webhook for; the
+ * route answers non-2xx on them. A refusal (4xx, foreign host, redirect,
+ * malformed metadata, too large) is final and is not.
+ */
 type CloudMediaFetch =
   | { ok: true; bytes: Buffer }
-  | { ok: false; reason: WhatsappMediaDropped };
+  | { ok: false; reason: WhatsappMediaDropped; transient: boolean };
+
+class TransientStatus extends Error {}
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+/**
+ * Network-level only: undici puts a string `code` on `cause` for a dropped,
+ * reset or refused connection (ECONNRESET, ETIMEDOUT, UND_ERR_SOCKET…). A
+ * refused redirect is also `TypeError: fetch failed`, but its cause carries
+ * no code — so it, a JSON parse error, and anything else unrecognised is
+ * final, and can never make Meta redeliver forever.
+ */
+function isTransient(err: unknown): boolean {
+  if (err instanceof TransientStatus || isTimeout(err)) return true;
+  const code = (err as { cause?: { code?: unknown } } | null)?.cause?.code;
+  return typeof code === "string";
+}
+
+/** fetch throws `TypeError("fetch failed")` with the undici code on `cause`. */
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const code = (err as { cause?: { code?: unknown } }).cause?.code;
+  return `${err.name}: ${err.message}${typeof code === "string" ? ` (${code})` : ""}`;
+}
+
+/**
+ * Runs `call` up to ATTEMPTS times. A network error or a 429/5xx is retried
+ * while the budget lasts; any other response is returned as-is for the
+ * caller to judge, and any other error is thrown at once.
+ */
+async function withRetry(
+  label: string,
+  subAccountId: string,
+  token: string,
+  call: () => Promise<Response>,
+): Promise<Response> {
+  const started = Date.now();
+  for (let attempt = 1; ; attempt++) {
+    let failure: unknown;
+    try {
+      const res = await call();
+      if (res.status !== 429 && res.status < 500) return res;
+      await res.body?.cancel().catch(() => undefined);
+      failure = new TransientStatus(`${label} ${res.status}`);
+    } catch (err) {
+      failure = err;
+    }
+    if (
+      attempt >= ATTEMPTS ||
+      !isTransient(failure) ||
+      isTimeout(failure) ||
+      Date.now() - started > RETRY_BUDGET_MS
+    ) {
+      throw failure;
+    }
+    console.warn(
+      `[whatsapp-cloud-media] ${label} attempt=${attempt}/${ATTEMPTS} failed, retrying (sa=${subAccountId}): ${redact(describeError(failure), token)}`,
+    );
+    await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]));
+  }
+}
 
 /**
  * Hosts the bearer token may be sent to. The token is a long-lived WABA
@@ -117,19 +199,29 @@ export async function fetchCloudMedia(opts: {
 }): Promise<CloudMediaFetch> {
   let token = "";
   try {
-    const creds = await getWabaCreds(opts.subAccountId);
-    token = creds.accessToken;
+    token = (await getWabaCreds(opts.subAccountId)).accessToken;
+  } catch (err) {
+    // No usable connection is config, not a blip — Meta redelivering the
+    // webhook would meet it again.
+    console.warn(
+      `[whatsapp-cloud-media] no WABA credentials (sa=${opts.subAccountId}): ${describeError(err)}`,
+    );
+    return { ok: false, reason: "fetch_failed", transient: false };
+  }
+  try {
     const auth = { Authorization: `Bearer ${token}` };
 
-    const metaRes = await fetch(
-      `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(opts.mediaId)}`,
-      { headers: auth, signal: AbortSignal.timeout(METADATA_TIMEOUT_MS) },
+    const metaRes = await withRetry("metadata", opts.subAccountId, token, () =>
+      fetch(
+        `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(opts.mediaId)}`,
+        { headers: auth, signal: AbortSignal.timeout(METADATA_TIMEOUT_MS) },
+      ),
     );
     if (!metaRes.ok) {
       console.warn(
         `[whatsapp-cloud-media] metadata ${metaRes.status} (sa=${opts.subAccountId})`,
       );
-      return { ok: false, reason: "fetch_failed" };
+      return { ok: false, reason: "fetch_failed", transient: false };
     }
     const meta = (await metaRes.json()) as Record<string, unknown>;
     const url = typeof meta.url === "string" ? meta.url : "";
@@ -138,7 +230,7 @@ export async function fetchCloudMedia(opts: {
       console.warn(
         `[whatsapp-cloud-media] metadata missing url or sha256 (sa=${opts.subAccountId})`,
       );
-      return { ok: false, reason: "fetch_failed" };
+      return { ok: false, reason: "fetch_failed", transient: false };
     }
     const target = isMetaMediaUrl(url);
     if (!target.ok) {
@@ -147,42 +239,45 @@ export async function fetchCloudMedia(opts: {
       console.warn(
         `[whatsapp-cloud-media] REFUSING media download from non-Meta host "${target.host}" — token withheld (sa=${opts.subAccountId})`,
       );
-      return { ok: false, reason: "fetch_failed" };
+      return { ok: false, reason: "fetch_failed", transient: false };
     }
     const size = declaredSize(meta.file_size);
     if (size !== null && size > MAX_CLOUD_MEDIA_BYTES) {
-      return { ok: false, reason: "too_large" };
+      return { ok: false, reason: "too_large", transient: false };
     }
 
-    const bytesRes = await fetch(url, {
-      headers: auth,
-      // A redirect would carry the bearer token to wherever it points.
-      redirect: "error",
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
-    });
+    const bytesRes = await withRetry("download", opts.subAccountId, token, () =>
+      fetch(url, {
+        headers: auth,
+        // A redirect would carry the bearer token to wherever it points.
+        redirect: "error",
+        signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+      }),
+    );
     if (!bytesRes.ok) {
       console.warn(
         `[whatsapp-cloud-media] download ${bytesRes.status} (sa=${opts.subAccountId})`,
       );
-      return { ok: false, reason: "fetch_failed" };
+      return { ok: false, reason: "fetch_failed", transient: false };
     }
     const bytes = await readCapped(bytesRes, MAX_CLOUD_MEDIA_BYTES);
-    if (bytes === "too_large") return { ok: false, reason: "too_large" };
+    if (bytes === "too_large") return { ok: false, reason: "too_large", transient: false };
 
     if (!digestMatches(bytes, sha256)) {
       console.warn(
         `[whatsapp-cloud-media] sha256 mismatch — not storing (sa=${opts.subAccountId})`,
       );
-      return { ok: false, reason: "fetch_failed" };
+      return { ok: false, reason: "fetch_failed", transient: true };
     }
     return { ok: true, bytes };
   } catch (err) {
     // A message only, and redacted: an error object can carry request detail,
     // and the one thing this line must never print is the bearer token.
-    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    // Retries are spent (or the body was cut mid-read). A transient failure
+    // has the route ask Meta to redeliver, which re-attempts the attachment.
     console.warn(
-      `[whatsapp-cloud-media] fetch failed (sa=${opts.subAccountId}): ${redact(message, token)}`,
+      `[whatsapp-cloud-media] fetch failed (sa=${opts.subAccountId}): ${redact(describeError(err), token)}`,
     );
-    return { ok: false, reason: "fetch_failed" };
+    return { ok: false, reason: "fetch_failed", transient: isTransient(err) };
   }
 }
