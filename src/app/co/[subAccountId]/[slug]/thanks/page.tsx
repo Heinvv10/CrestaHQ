@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { CHECKOUT_THEMES, resolveCheckoutTheme } from "@/lib/checkout/themes";
 import type { CheckoutPage } from "@/types/checkout-pages";
 
 export const dynamic = "force-dynamic";
@@ -28,9 +29,10 @@ export default async function CheckoutThanksPage({
   const { subAccountId, slug } = await params;
 
   // Best-effort theming so the thank-you doesn't jar against the page the
-  // buyer just came from. Failure here is cosmetic only.
-  let accent = "#7c3aed";
-  let dark = false;
+  // buyer just came from: the same resolved theme as the checkout page, so
+  // it follows the page's preset and a stored accent reaches these styles
+  // only if it is a plain hex. Failure here is cosmetic only.
+  let theme = CHECKOUT_THEMES.clean;
   try {
     const snap = await getAdminDb()
       .collection(`subAccounts/${subAccountId}/checkoutPages`)
@@ -38,9 +40,7 @@ export default async function CheckoutThanksPage({
       .limit(1)
       .get();
     if (!snap.empty) {
-      const page = snap.docs[0].data() as CheckoutPage;
-      accent = page.appearance?.accent || accent;
-      dark = page.appearance?.theme === "dark";
+      theme = resolveCheckoutTheme(snap.docs[0].data() as CheckoutPage);
     }
   } catch {
     // Ignore — render the default look.
@@ -53,8 +53,8 @@ export default async function CheckoutThanksPage({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: dark ? "#18181b" : "#fafafa",
-        color: dark ? "#fafafa" : "#18181b",
+        background: theme.pageBg,
+        color: theme.text,
         fontFamily: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
         padding: 24,
       }}
@@ -66,8 +66,8 @@ export default async function CheckoutThanksPage({
             height: 52,
             margin: "0 auto 18px",
             borderRadius: "50%",
-            background: `${accent}1a`,
-            color: accent,
+            background: theme.accentSoft,
+            color: theme.accent,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -85,7 +85,7 @@ export default async function CheckoutThanksPage({
             margin: "10px 0 0",
             fontSize: 14.5,
             lineHeight: 1.6,
-            color: dark ? "#a1a1aa" : "#52525b",
+            color: theme.muted,
           }}
         >
           Thanks — your payment went through. A receipt is on its way to your

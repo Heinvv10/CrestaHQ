@@ -8,7 +8,7 @@ import {
 } from "@/lib/server/community-leaderboard-service";
 import {
   CommunityShell,
-  COMMUNITY_DEFAULT_BRAND,
+  communityBrand,
 } from "@/components/community/community-shell";
 import { MemberAvatar } from "@/components/community/member-avatar";
 import { cn } from "@/lib/utils";
@@ -43,7 +43,7 @@ export default async function LeaderboardsPage({
     sp.window === "30d" || sp.window === "all" ? sp.window : "7d";
 
   const { group, member, membership } = access;
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
   const viewer: AuthorView = {
     memberId: member.id,
     displayName:

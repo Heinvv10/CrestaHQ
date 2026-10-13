@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isCheckoutThemeId } from "@/lib/checkout/themes";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { prepareBookingPage, upcomingBookingCount } from "@/lib/server/booking-page-write";
@@ -30,7 +31,11 @@ const EDIT_KEYS = FORM_KEYS.filter((k) => k !== "slug");
 async function plan(ctx: AiSuiteActionContext, args: Record<string, unknown>) {
   const { slug, ...fields } = args;
   const page = await tenantPage(ctx.subAccountId!, slug);
-  const prepared = await prepareBookingPage(ctx.subAccountId!, { ...formOf(page), ...fields, slug: page.id }, { storedType: page.calendarType });
+  const stored = formOf(page);
+  // A stored preset this build doesn't know (a retired id) is dropped, as the editor and the
+  // duplicate route do: sent back through the validator it would refuse every edit of the page.
+  if (!isCheckoutThemeId(stored.themePreset)) delete stored.themePreset;
+  const prepared = await prepareBookingPage(ctx.subAccountId!, { ...stored, ...fields, slug: page.id }, { storedType: page.calendarType });
   if (!prepared.ok) throw new CapabilityUserError(prepared.error);
   if (typeof fields.name === "string") await assertPageName(ctx.subAccountId!, prepared.data.name, page.id);
   if (fields.defaultTerritoryId !== undefined) await assertPageTerritory(ctx.subAccountId!, prepared.data.defaultTerritoryId);

@@ -11,6 +11,7 @@ import {
   validateSlug,
 } from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
+import { isCheckoutThemeId } from "@/lib/checkout/themes";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage, BookingPageFormData } from "@/types/booking";
 
@@ -136,6 +137,11 @@ export async function POST(
     services: source.services ?? null,
     logoUrl: source.logoUrl ?? null,
     accentColor: source.accentColor ?? null,
+    // An unrecognised stored id is dropped, not copied — it would fail the
+    // validator below and block the duplicate.
+    themePreset: isCheckoutThemeId(source.themePreset)
+      ? source.themePreset
+      : null,
     meetingUrl: source.meetingUrl ?? null,
     confirmationMessage: source.confirmationMessage ?? "",
     redirectUrl: source.redirectUrl ?? null,

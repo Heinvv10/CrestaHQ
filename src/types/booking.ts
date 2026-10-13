@@ -1,4 +1,5 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
+import type { CheckoutThemeId } from "@/types/checkout-pages";
 
 /**
  * Native booking pages — sub-account-level config docs that power the
@@ -209,6 +210,14 @@ export interface BookingPage {
   logoUrl: string | null;
   /** Hex string. Overrides brand on the public page. */
   accentColor: string | null;
+  /**
+   * Style preset shared with checkout pages (Clean / Midnight / Noir Lime /
+   * Sunset / Ocean — see `lib/checkout/themes.ts`). `null`/absent = the
+   * legacy brand-default look (app tokens + optional accentColor), so
+   * pre-preset pages render unchanged. When set, `accentColor` still wins
+   * over the preset's accent for buttons/selected slots.
+   */
+  themePreset?: CheckoutThemeId | null;
 
   // ── Meeting link ──────────────────────────────────────────────
   /**
@@ -323,6 +332,7 @@ export type BookingPageFormData = Pick<
   | "services"
   | "logoUrl"
   | "accentColor"
+  | "themePreset"
   | "meetingUrl"
   | "confirmationMessage"
   | "redirectUrl"

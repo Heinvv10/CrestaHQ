@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { isHexColor } from "@/lib/checkout/themes";
 import { communityFeaturesOn } from "@/lib/community/group-mode";
 import type { AuthorView, CommunityGroup } from "@/types/community";
 import { MemberAvatar } from "./member-avatar";
@@ -8,6 +9,17 @@ import { DmLauncher } from "./dm/dm-launcher";
 
 export const COMMUNITY_BG = "#F8F7F5";
 export const COMMUNITY_DEFAULT_BRAND = "#202124";
+
+/**
+ * The group's brand colour as it may be written into a style: a plain hex
+ * (#RGB or #RRGGBB), else the default. The save route stores whatever was
+ * typed, and these pages are public.
+ */
+export function communityBrand(group: { brandColor?: unknown }): string {
+  const stored =
+    typeof group.brandColor === "string" ? group.brandColor.trim() : null;
+  return isHexColor(stored, true) ? stored : COMMUNITY_DEFAULT_BRAND;
+}
 
 export type CommunityTab =
   | "community"
@@ -37,7 +49,7 @@ export function CommunityShell({
   children: ReactNode;
   rightRail?: ReactNode;
 }) {
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
   const base = `/c/${saId}/${group.slug}`;
   // Courses-only groups present as a standalone course — no feed, members
   // directory, or leaderboards in the tab row.

@@ -17,7 +17,12 @@ import {
   MAX_BUMPS_PER_CHECKOUT_PAGE,
   slugifyCheckoutSlug,
 } from "@/types/checkout-pages";
-import type { CheckoutPage } from "@/types/checkout-pages";
+import type { CheckoutPage, CheckoutThemeId } from "@/types/checkout-pages";
+import {
+  DEFAULT_CHECKOUT_THEME_ID,
+  resolveCheckoutTheme,
+} from "@/lib/checkout/themes";
+import { ThemePresetPicker } from "@/components/checkout/theme-preset-picker";
 import type { Product } from "@/types/products";
 
 /**
@@ -262,6 +267,13 @@ function CheckoutPageEditor({
   const [headline, setHeadline] = useState(page?.headline ?? "");
   const [subheadline, setSubheadline] = useState(page?.subheadline ?? "");
   const [successUrl, setSuccessUrl] = useState(page?.successUrl ?? "");
+  // A page with no stored preset opens on the one it resolves to (Clean or
+  // Midnight). Its first save stores that preset, and from then on the
+  // page's own `appearance.accent` (settable only through the API) no longer
+  // applies — so that save does restyle a page that had a custom accent.
+  const [themePreset, setThemePreset] = useState<CheckoutThemeId>(
+    page ? resolveCheckoutTheme(page).id : DEFAULT_CHECKOUT_THEME_ID,
+  );
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -301,6 +313,7 @@ function CheckoutPageEditor({
         headline: headline.trim(),
         subheadline: subheadline.trim(),
         successUrl: successUrl.trim() || null,
+        themePreset,
       };
       if (publish !== undefined) {
         payload.status = publish ? "published" : "draft";
@@ -487,6 +500,14 @@ function CheckoutPageEditor({
             </p>
           </div>
         )}
+      </div>
+
+      <div className="space-y-2">
+        <Label>Style</Label>
+        <ThemePresetPicker
+          value={themePreset}
+          onChange={(next) => setThemePreset(next ?? DEFAULT_CHECKOUT_THEME_ID)}
+        />
       </div>
 
       <div className="space-y-1.5">
