@@ -49,6 +49,11 @@ const OPEN_CORS_ALLOWLIST = new Set([
   // Same widget, no cookie auth — the unguessable session id is the
   // credential (see the route's own comment). Read-only delivery poll.
   "web-chat/poll/route.ts",
+  // Web Voice, from the same widget. No cookie auth: start needs the widget
+  // token /config minted for an allow-listed origin, event needs the HMAC
+  // session token start minted; caps are enforced server-side.
+  "web-chat/voice/start/route.ts",
+  "web-chat/voice/event/route.ts",
 ]);
 
 const CORS_REGEX =

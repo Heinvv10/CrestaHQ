@@ -104,7 +104,29 @@ export interface RespondToWebChatInput {
   origin: string | null;
   visitorIp: string | null;
   visitorUserAgent: string | null;
+  /**
+   * "voice" when the visitor is TALKING through Web Voice (ElevenLabs reads
+   * the reply aloud). Same guards, persona, KB and capture as typed chat,
+   * plus: a spoken-reply prompt addendum, no inline [[form]] (nothing can be
+   * shown mid-call — details are captured by voice via [[capture]]), shorter
+   * completions, and both turns stamped `via: "voice"`. Omitted = "text",
+   * which is byte-for-byte the pre-voice behavior.
+   */
+  mode?: "text" | "voice";
 }
+
+/**
+ * Appended to the system prompt in voice mode. Overrides the web-chat
+ * formatting rails above it (which assume a typed panel).
+ */
+const VOICE_MODE_BLOCK = `--- VOICE MODE ---
+The visitor is now TALKING to you through their microphone on the website, and your reply is read aloud by a text-to-speech voice. This overrides the formatting rules above:
+- Keep every reply short and natural: 1-2 sentences, never more than 3.
+- No markdown, bullet points, emoji, links or URLs — every symbol you write is spoken. Never read out a web address.
+- NEVER emit a [[form]] marker — no form can be shown during a voice conversation.
+- To capture contact details, ask for them one at a time: first their name, then the best phone number or email. Read an email address back in spoken form ("jane at example dot com") so they can confirm it. Once they confirm, add ONE [[capture name="…" email="…" phone="…"]] marker at the very end of your reply (only the fields you actually have, written normally, e.g. jane@example.com). The marker is removed before your reply is spoken.
+- If the visitor would rather type, tell them they can use the chat box at any time.
+--- END VOICE MODE ---`;
 
 /** Polite generic reply used when the bot can't / won't answer. Visible
  *  to the visitor so it must be neutral and brand-safe. */
@@ -201,6 +223,7 @@ export async function respondToWebChat(
   offline?: boolean;
 }> {
   const db = getAdminDb();
+  const isVoice = input.mode === "voice";
 
   // Always get-or-create the session first so even rejected messages
   // have a thread to log against.
@@ -225,6 +248,7 @@ export async function respondToWebChat(
     body: input.incomingMessage,
     tokens: null,
     aiGenerated: false,
+    ...(isVoice ? { via: "voice" as const } : {}),
   });
   // Once the visitor is a contact, their chat is part of that record.
   if (session.contactId) {
@@ -419,6 +443,7 @@ export async function respondToWebChat(
   } else if (session.capturePromptShownAt) {
     systemPrompt += `\n\n--- SESSION STATE ---\nA capture form has already been shown to this visitor${session.captureSkipped ? " and they skipped it" : ""}. Do NOT emit another [[form]] or [[capture]] marker on this session.`;
   }
+  if (isVoice) systemPrompt += `\n\n${VOICE_MODE_BLOCK}`;
 
   const messages: AiChatMessage[] = [
     { role: "system", content: systemPrompt },
@@ -432,6 +457,8 @@ export async function respondToWebChat(
       model: eff.modelOverride ?? undefined,
       messages,
       ...replyModelFallback(input.subAccountId, "web-chat"),
+      // Spoken replies must stay short (same caps as the Vapi voice route).
+      ...(isVoice ? { maxTokens: 220, temperature: 0.5 } : {}),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
@@ -455,9 +482,11 @@ export async function respondToWebChat(
   // Suppress the form request if it was already shown this session, or
   // the visitor has already been linked to a contact. Belt-and-braces
   // since the prompt also tells the bot not to repeat — but bots drift.
+  // Voice can't render a form — drop it (and don't stamp the session as
+  // "form shown", so typed chat can still offer one later).
   const formAlreadyHandled =
     !!session.contactId || !!session.capturePromptShownAt;
-  const formFields = formAlreadyHandled ? null : afterForm.fields;
+  const formFields = formAlreadyHandled || isVoice ? null : afterForm.fields;
 
   let contactId = session.contactId;
 
@@ -563,6 +592,7 @@ async function finalize(
     body,
     tokens,
     aiGenerated,
+    ...(input.mode === "voice" ? { via: "voice" as const } : {}),
   });
 
   // Reflect the outbound (bot reply / holding line) in the unified inbox.

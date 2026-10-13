@@ -12,8 +12,8 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 const { mem, claims, storeDb } = await import("@/test/gbp-sync-store");
 const { GET, POST, PATCH, DELETE } = await import("./route");
-const { WEB_VOICE_CALL_PATH_PENDING } = await import("@/lib/server/web-voice-service");
 const { Timestamp } = await import("firebase-admin/firestore");
+const { verifyWidgetToken } = await import("@/lib/web-voice/tokens");
 
 // Built at runtime: a long key literal reads as a credential to the secret scan.
 const KEY = `el_test_${"a".repeat(24)}`;
@@ -220,15 +220,15 @@ describe("POST — connect", () => {
 
     const sub = mem.read("subAccounts/sa1")!;
     noLeak(sub);
-    // Provisioned, but never ready until WV-2 ships the reply webhook the agent calls.
+    // A clean sync is ready: the reply webhook the agent calls exists (WV-2).
     expect(sub.webVoiceMeta).toMatchObject({
-      ready: false,
+      ready: true,
       keyLast4: "aaaa",
-      lastError: WEB_VOICE_CALL_PATH_PENDING,
+      lastError: null,
       voiceId: "premade001",
     });
     expect(Object.keys(sub.webVoiceMeta as object)).not.toEqual(expect.arrayContaining(["apiKey", "endpointSecret", "agentId"]));
-    expect(out.meta).toMatchObject({ ready: false, connectedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
+    expect(out.meta).toMatchObject({ ready: true, connectedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
   });
 
   it("returns voices with only public https preview URLs", async () => {
@@ -398,7 +398,7 @@ describe("PATCH — settings", () => {
       await PATCH(req("PATCH", { greeting: "Hello there", maxCallSeconds: 99999, dailyMinuteCap: 1, language: "es" }), ctx()),
     );
     expect(elCalls("PATCH", "/v1/convai/agents/agent1")).toHaveLength(1);
-    expect(out.meta).toMatchObject({ greeting: "Hello there", maxCallSeconds: 1800, dailyMinuteCap: 5, language: "es", ready: false });
+    expect(out.meta).toMatchObject({ greeting: "Hello there", maxCallSeconds: 1800, dailyMinuteCap: 5, language: "es", ready: true });
     expect(mem.read(SECRET)).toMatchObject({ greeting: "Hello there", maxCallSeconds: 1800, agentId: "agent1" });
     const agent = elCalls("PATCH", "/v1/convai/agents/agent1")[0].body as AgentBody;
     expect(agent.conversation_config.tts.model_id).toBe("eleven_flash_v2_5");
@@ -409,7 +409,7 @@ describe("PATCH — settings", () => {
     agents.delete("agent1");
     await PATCH(req("PATCH", { greeting: "Again" }), ctx());
     expect(mem.read(SECRET)?.agentId).toBe("agent2");
-    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({ lastError: WEB_VOICE_CALL_PATH_PENDING });
+    expect(mem.read("subAccounts/sa1")?.webVoiceMeta).toMatchObject({ ready: true, lastError: null });
   });
 
   it("an ElevenLabs failure is recorded on the meta, not thrown, and the last good settings stay stored", async () => {
@@ -667,6 +667,29 @@ describe("GET", () => {
     expect(out).toMatchObject({ gateOn: true, webChatGateOn: true, voicesError: null });
     expect((out.meta as Record<string, unknown>).keyLast4).toBe("aaaa");
     expect((out.voices as unknown[]).length).toBe(5);
+  });
+
+  it("returns today's and this month's minutes, and a preview widget token only while visitors could get one", async () => {
+    vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", "test-secret-at-least-16-chars");
+    await connect();
+    mem.seed(USAGE, {
+      day: new Date().toISOString().slice(0, 10),
+      month: new Date().toISOString().slice(0, 7),
+      secondsToday: 90,
+      secondsThisMonth: 600,
+      pending: { conv_000001: { sessionId: "s", grantId: "g", startedAtMs: Date.now() } },
+    });
+    const on = await body(await GET(req("GET"), ctx()));
+    expect(on.usage).toEqual({ secondsToday: 90, secondsThisMonth: 600, activeNow: 1 });
+    expect(verifyWidgetToken(on.previewToken, "sa1")).toBe(true);
+
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), webVoiceEnabledByAgency: false });
+    const off = await body(await GET(req("GET"), ctx()));
+    expect(off.previewToken).toBeNull();
+  });
+
+  it("returns no usage before a key is connected", async () => {
+    expect((await body(await GET(req("GET"), ctx()))).usage).toBeNull();
   });
 
   it.each([

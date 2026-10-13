@@ -10,8 +10,11 @@ import {
   disconnectWebVoice,
   listWebVoiceVoices,
   updateWebVoiceSettings,
+  webVoiceAvailable,
   webVoiceMetaView,
 } from "@/lib/server/web-voice-service";
+import { getWebVoiceUsage } from "@/lib/server/web-voice-usage";
+import { issueWidgetToken } from "@/lib/web-voice/tokens";
 import type { SubAccountDoc } from "@/types";
 import type { WebVoiceSettings } from "@/types/web-voice";
 
@@ -20,10 +23,11 @@ export const dynamic = "force-dynamic";
 /**
  * Web Voice connection (ElevenLabs Web Voice v1) — sub-account admins.
  *
- * GET    — status: gate, display meta, and (with `?voices=1`) the live voice
- *          list from the client's account. Today's/month's minutes and the
- *          settings page's preview widget token arrive with the call path
- *          (WV-2), which owns the usage doc and the token.
+ * GET    — status: gate, display meta, today's/month's minutes, and (with
+ *          `?voices=1`) the live voice list from the client's account. Also a
+ *          widget token so the settings page's "Preview widget" link can test
+ *          voice without going through a client site (only while visitors
+ *          could get one too).
  * POST   — `{ apiKey }` connect or replace the key (probed before storing).
  * PATCH  — `{ enabled?, voiceId?, voiceName?, language?, greeting?,
  *          maxCallSeconds?, dailyMinuteCap? }` save settings + re-sync agent.
@@ -89,12 +93,16 @@ export async function GET(
     }
   }
 
+  const usage = meta ? await getWebVoiceUsage(subAccountId) : null;
+
   return NextResponse.json({
     gateOn,
     webChatGateOn: sub.webChatEnabledByAgency !== false,
     meta,
+    usage,
     voices,
     voicesError,
+    previewToken: webVoiceAvailable(sub) ? issueWidgetToken(subAccountId) : null,
   });
 }
 

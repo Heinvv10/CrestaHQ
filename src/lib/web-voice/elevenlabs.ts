@@ -14,6 +14,7 @@ import { isBlockedHostname } from "@/lib/webhooks/validate-url";
  *   DELETE /v1/convai/agents/{id}                      disconnect
  *   GET    /v1/convai/conversation/get-signed-url      private-agent session
  *   GET    /v1/convai/conversations/{id}               duration for metering
+ *   GET    /v1/convai/conversations?agent_id=…         reconcile unreported calls
  */
 
 const BASE = "https://api.elevenlabs.io";
@@ -281,7 +282,12 @@ export interface ConversationSummary {
   agentId: string | null;
   status: string | null;
   durationSeconds: number | null;
+  /** When the conversation started (ElevenLabs' clock), or null. */
+  startTimeUnixSecs: number | null;
 }
+
+const secsOf = (v: unknown): number | null =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 
 export async function getConversation(
   apiKey: string,
@@ -290,12 +296,72 @@ export async function getConversation(
   const data = await call<{
     agent_id?: string;
     status?: string;
-    metadata?: { call_duration_secs?: number };
+    metadata?: { call_duration_secs?: number; start_time_unix_secs?: number };
   }>(apiKey, "GET", `/v1/convai/conversations/${idSegment(conversationId)}`);
-  const secs = data.metadata?.call_duration_secs;
   return {
     agentId: data.agent_id ?? null,
     status: data.status ?? null,
-    durationSeconds: typeof secs === "number" && secs >= 0 ? secs : null,
+    durationSeconds: secsOf(data.metadata?.call_duration_secs),
+    startTimeUnixSecs: secsOf(data.metadata?.start_time_unix_secs),
   };
+}
+
+export interface ConversationListItem extends ConversationSummary {
+  /** Null when the item's id is missing or not a safe id. */
+  conversationId: string | null;
+}
+
+/**
+ * One page of an agent's conversations that started at or after
+ * `afterUnixSecs` — the source of truth for Web Voice minutes. ASSUMED shape
+ * (not runtime-verified): `?agent_id&call_start_after_unix&page_size&cursor`
+ * → `{conversations: [{conversation_id, agent_id, status,
+ * start_time_unix_secs, call_duration_secs, …}], has_more, next_cursor}`.
+ * A body without a `conversations` array throws; no item is dropped — a
+ * malformed one comes back with nulls so the caller can refuse to act on it.
+ * A non-empty `next_cursor` means more pages; without one, a page without a
+ * boolean `has_more` throws unless its `next_cursor` is explicitly null.
+ */
+export async function listConversations(
+  apiKey: string,
+  agentId: string,
+  afterUnixSecs: number,
+  cursor: string | null,
+): Promise<{ conversations: ConversationListItem[]; hasMore: boolean; nextCursor: string | null }> {
+  const q = new URLSearchParams({
+    agent_id: idSegment(agentId),
+    call_start_after_unix: String(Math.max(0, Math.floor(afterUnixSecs))),
+    page_size: "100",
+  });
+  if (cursor) q.set("cursor", cursor);
+  const data = await call<{ conversations?: unknown; has_more?: unknown; next_cursor?: unknown } | null>(
+    apiKey,
+    "GET",
+    `/v1/convai/conversations?${q}`,
+  );
+  if (!Array.isArray(data?.conversations)) {
+    throw new ElevenLabsError("ElevenLabs' conversation list had no conversations array.", 502);
+  }
+  const conversations = data.conversations.map((raw): ConversationListItem => {
+    const c = (raw ?? {}) as Record<string, unknown>;
+    const id = c.conversation_id;
+    return {
+      conversationId: typeof id === "string" && ID_RE.test(id) ? id : null,
+      agentId: typeof c.agent_id === "string" ? c.agent_id : null,
+      status: typeof c.status === "string" ? c.status : null,
+      durationSeconds: secsOf(c.call_duration_secs),
+      startTimeUnixSecs: secsOf(c.start_time_unix_secs),
+    };
+  });
+  // Paging, fail-closed: a non-empty `next_cursor` always means more pages.
+  // Otherwise `has_more` decides, and without a boolean `has_more` only an
+  // explicit `next_cursor: null` says this is the last page — anything else
+  // is a shape we do not understand.
+  const nextCursor = typeof data.next_cursor === "string" && data.next_cursor ? data.next_cursor : null;
+  let hasMore: boolean;
+  if (nextCursor) hasMore = true;
+  else if (typeof data.has_more === "boolean") hasMore = data.has_more;
+  else if (data.next_cursor === null) hasMore = false;
+  else throw new ElevenLabsError("ElevenLabs' conversation list had no paging information.", 502);
+  return { conversations, hasMore, nextCursor };
 }
