@@ -4,7 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 import { isDocId } from "@/lib/server/doc-id";
 import { callOutcome, callStartedAt, type CallReport } from "./call-match";
-import { decideEmail, senderAuthenticated, type InboundEmail } from "./email-match";
+import { decideEmail, senderAuthenticated, type EmailShopCandidate, type InboundEmail } from "./email-match";
 import {
   closableShops,
   markBounced,
@@ -27,6 +27,21 @@ import { isContentMessage, isWhatsAppAutoReply } from "./whatsapp-match";
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
+/** A stored email or form shop as the matcher reads it: a form shop's senders are its stored matchAddresses + matchDomains. */
+export function emailShopCandidate(id: string, s: FirebaseFirestore.DocumentData): EmailShopCandidate {
+  return {
+    id,
+    target: String(s.target ?? ""),
+    status: s.status,
+    sentAt: s.sentAt,
+    respondedAt: s.respondedAt,
+    autoReplyAt: s.autoReplyAt,
+    providerRef: s.providerRef,
+    targetDomainTrusted: s.targetDomainTrusted,
+    ...(s.channel === "form" ? { senders: { addresses: strings(s.matchAddresses), domains: strings(s.matchDomains) } } : {}),
+  };
+}
+
 /**
  * An inbound email in `subAccountId`'s mailbox, at its own arrival time. A form shop is matched against its senders set.
  * `ownAddresses` (the mailbox's own) mark which Message-IDs are ours: a reply to another of our emails settles nothing.
@@ -36,20 +51,7 @@ export async function matchMysteryShopEmail(subAccountId: string, message: Inbou
   if (!docs.length) return;
   const decisions = decideEmail(
     message,
-    docs.map((d) => {
-      const s = d.data() ?? {};
-      return {
-        id: d.id,
-        target: String(s.target ?? ""),
-        status: s.status,
-        sentAt: s.sentAt,
-        respondedAt: s.respondedAt,
-        autoReplyAt: s.autoReplyAt,
-        providerRef: s.providerRef,
-        targetDomainTrusted: s.targetDomainTrusted,
-        ...(s.channel === "form" ? { senders: { addresses: strings(s.matchAddresses), domains: strings(s.matchDomains) } } : {}),
-      };
-    }),
+    docs.map((d) => emailShopCandidate(d.id, d.data() ?? {})),
     ownAddresses.filter((a) => a.includes("@")).map((a) => a.slice(a.lastIndexOf("@") + 1)),
   );
   // An email sender is never provable (unknown). One the mail host's checks FAILED does not settle

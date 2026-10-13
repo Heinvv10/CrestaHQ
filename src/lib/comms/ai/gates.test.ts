@@ -38,6 +38,7 @@ describe("aiChannelGateOn — explicit true always enables", () => {
     ["voice", "inboundVoiceEnabledByAgency"],
     ["whatsapp", "whatsappEnabledByAgency"],
     ["meta", "metaAgentEnabledByAgency"],
+    ["email", "emailAiDraftsEnabledByAgency"],
   ] as const)("%s is on when %s === true", (channel, field) => {
     expect(aiChannelGateOn(sub({ [field]: true }), channel)).toBe(true);
   });
@@ -52,6 +53,7 @@ describe("aiChannelGateOn — explicit false always locks", () => {
     ["voice", "inboundVoiceEnabledByAgency"],
     ["whatsapp", "whatsappEnabledByAgency"],
     ["meta", "metaAgentEnabledByAgency"],
+    ["email", "emailAiDraftsEnabledByAgency"],
   ] as const)("%s is locked when %s === false", (channel, field) => {
     expect(aiChannelGateOn(sub({ [field]: false }), channel)).toBe(false);
   });
@@ -68,7 +70,7 @@ describe("aiChannelGateOn — per-channel default when the field is undefined", 
   );
 
   // The opt-IN half: these shipped gated-off, so undefined must NOT spend.
-  it.each(["whatsapp", "meta"] as const)(
+  it.each(["whatsapp", "meta", "email"] as const)(
     "%s defaults OFF for a legacy doc (opt-in channel)",
     (channel) => {
       expect(aiChannelGateOn(LEGACY, channel)).toBe(false);
@@ -94,12 +96,18 @@ describe("aiChannelGateOn — channels read their OWN field", () => {
       inboundVoiceEnabledByAgency: false,
       whatsappEnabledByAgency: true,
       metaAgentEnabledByAgency: false,
+      emailAiDraftsEnabledByAgency: false,
     });
     expect(aiChannelGateOn(s, "whatsapp")).toBe(true);
     expect(aiChannelGateOn(s, "sms")).toBe(false);
     expect(aiChannelGateOn(s, "web-chat")).toBe(false);
     expect(aiChannelGateOn(s, "voice")).toBe(false);
     expect(aiChannelGateOn(s, "meta")).toBe(false);
+    expect(aiChannelGateOn(s, "email")).toBe(false);
+  });
+
+  it("Email AI drafts read their own gate, never the email-domain gate", () => {
+    expect(aiChannelGateOn(sub({ emailDomainEnabledByAgency: true }), "email")).toBe(false);
   });
 
   it("the inbound voice gate is NOT the outbound voice gate", () => {
@@ -119,6 +127,7 @@ const ALL_OFF = sub({
   inboundVoiceEnabledByAgency: false,
   whatsappEnabledByAgency: false,
   metaAgentEnabledByAgency: false,
+  emailAiDraftsEnabledByAgency: false,
   outboundVoiceEnabledByAgency: false,
 });
 
@@ -133,6 +142,7 @@ describe("anyAiChannelGateOn", () => {
     "inboundVoiceEnabledByAgency",
     "whatsappEnabledByAgency",
     "metaAgentEnabledByAgency",
+    "emailAiDraftsEnabledByAgency",
   ] as const)("is true when only %s is on", (field) => {
     expect(anyAiChannelGateOn({ ...ALL_OFF, [field]: true })).toBe(true);
   });

@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { FieldValue } from "firebase-admin/firestore";
@@ -15,6 +16,7 @@ import {
 import type {
   ConversationBotMode,
   ConversationChannel,
+  ConversationDraft,
 } from "@/types/conversations";
 import { runAfterResponse } from "@/lib/server/after-response";
 
@@ -357,6 +359,8 @@ export async function setConversationDraft(input: {
   body: string;
   model: string;
   tokens: number;
+  emailReply?: ConversationDraft["emailReply"];
+  escalationKeyword?: string;
 }): Promise<void> {
   try {
     const docId = input.conversationKey ?? input.contactId;
@@ -364,33 +368,45 @@ export async function setConversationDraft(input: {
     const db = getAdminDb();
     await db.runTransaction(async (tx) => {
       const { territoryId, mirror } = await contactDenorm(tx, input);
-      tx.set(
-        db.doc(`conversations/${docId}`),
-        {
-          territoryId,
-          ...(mirror ?? {}),
-          contactId: input.contactId,
-          subAccountId: input.subAccountId,
-          agencyId: input.agencyId,
-          contactName: input.contactName,
-          contactPhone: input.contactPhone,
-          ...(input.sessionId !== undefined
-            ? { sessionId: input.sessionId }
+      const data: Record<string, unknown> = {
+        territoryId,
+        ...(mirror ?? {}),
+        contactId: input.contactId,
+        subAccountId: input.subAccountId,
+        agencyId: input.agencyId,
+        contactName: input.contactName,
+        contactPhone: input.contactPhone,
+        ...(input.sessionId !== undefined
+          ? { sessionId: input.sessionId }
+          : {}),
+        ...(input.visitorLabel !== undefined
+          ? { visitorLabel: input.visitorLabel }
+          : {}),
+        pendingDraft: {
+          // Identity: an approve names the draft it was looking at, and
+          // the email send route refuses it if a newer draft replaced it.
+          id: randomUUID(),
+          body: input.body,
+          channel: input.channel,
+          model: input.model,
+          tokens: input.tokens,
+          createdAt: FieldValue.serverTimestamp(),
+          ...(input.emailReply ? { emailReply: input.emailReply } : {}),
+          ...(input.escalationKeyword
+            ? { escalationKeyword: input.escalationKeyword }
             : {}),
-          ...(input.visitorLabel !== undefined
-            ? { visitorLabel: input.visitorLabel }
-            : {}),
-          pendingDraft: {
-            body: input.body,
-            channel: input.channel,
-            model: input.model,
-            tokens: input.tokens,
-            createdAt: FieldValue.serverTimestamp(),
-          },
-          updatedAt: FieldValue.serverTimestamp(),
         },
-        { merge: true }
-      );
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      // mergeFields, not merge: each written field — pendingDraft included —
+      // is REPLACED whole, so a new draft never inherits an older draft's
+      // fields (an SMS draft keeping the last email draft's thread headers)
+      // and no nested delete is needed. Every value here is defined: the SDK
+      // drops an undefined one, and a listed field missing from the data
+      // fails the write.
+      tx.set(db.doc(`conversations/${docId}`), data, {
+        mergeFields: Object.keys(data),
+      });
     });
   } catch (err) {
     console.warn("[conversations/draft] write failed", err);

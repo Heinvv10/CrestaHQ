@@ -20,6 +20,7 @@ import {
   DEFAULT_WHATSAPP_CONFIG,
 } from "@/types/ai";
 import { metaCanInbox } from "@/lib/comms/meta-capabilities";
+import { emailIsConfigured } from "@/lib/comms/resend";
 import {
   aiChannelGateOn,
   aiChannelLockedMessage,
@@ -47,6 +48,7 @@ const VALID_CHANNELS: ConfiguredChannelId[] = [
   "voice",
   "whatsapp",
   "meta",
+  "email",
 ];
 
 /** Friendly channel labels for the agency-gate 403 message. */
@@ -56,6 +58,7 @@ const CHANNEL_LABEL: Record<ConfiguredChannelId, string> = {
   voice: "Inbound Voice",
   whatsapp: "WhatsApp",
   meta: "Messenger & Instagram AI",
+  email: "Email AI drafts",
 };
 
 function isValidChannel(v: string): v is ConfiguredChannelId {
@@ -531,6 +534,32 @@ export async function PATCH(
         {
           error:
             "Connect a Facebook Page under Settings → Facebook & Instagram before enabling the Messenger & Instagram AI.",
+        },
+        { status: 400 },
+      );
+    }
+  }
+
+  // Email AI (draft-only): the agency gate was checked by the generic block
+  // above. It drafts replies to mail the connected mailbox imports, and a
+  // draft is only useful if the sub-account can send the approved reply.
+  if (channel === "email" && patch.enabled === true) {
+    const saSnap = await getAdminDb().doc(`subAccounts/${id}`).get();
+    const sa = saSnap.exists ? (saSnap.data() as SubAccountDoc) : null;
+    if (!sa?.mailboxConfig?.enabled || !sa.mailboxConfig.verifiedAt) {
+      return NextResponse.json(
+        {
+          error:
+            "Connect a mailbox first (Settings → Messaging → Email conversations) — the AI drafts replies to emails that arrive there.",
+        },
+        { status: 400 },
+      );
+    }
+    if (!emailIsConfigured(sa)) {
+      return NextResponse.json(
+        {
+          error:
+            "Set up email sending first (Settings → Messaging → Email provider) — approved drafts are sent from there.",
         },
         { status: 400 },
       );

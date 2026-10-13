@@ -248,6 +248,13 @@ export const FEATURE_GATES: Record<
     label: "Browser phone dialer (calls via the client's own Twilio)",
     assistantMayEnable: false,
   },
+  // AI-written replies to a client's customers: the assistant can switch it
+  // off, never on.
+  "email-ai-drafts": {
+    field: "emailAiDraftsEnabledByAgency",
+    label: "Email AI drafts (AI drafts replies to inbound email for approval)",
+    assistantMayEnable: false,
+  },
   "reviews-ai": {
     field: "reviewsAiEnabledByAgency",
     label: "Reviews AI (sentiment and reply drafts)",
