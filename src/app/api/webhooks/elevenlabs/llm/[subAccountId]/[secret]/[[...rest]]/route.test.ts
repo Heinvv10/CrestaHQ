@@ -33,7 +33,7 @@ vi.mock("@/lib/server/conversations-service", () => ({
   setConversationDraft: async () => {},
 }));
 
-const { mem } = await import("@/test/gbp-sync-store");
+const { mem, storeDb } = await import("@/test/gbp-sync-store");
 const { POST } = await import("./route");
 const { issueSessionToken } = await import("@/lib/web-voice/tokens");
 const { markConnected, reserveGrant, settleConversation } = await import("@/lib/server/web-voice-usage");
@@ -174,6 +174,12 @@ describe("the path secret", () => {
     expect(req.bodyUsed).toBe(false);
     expect(openRouter).toEqual([]);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET);
+  });
+
+  it("never reads Firestore for a sub-account id that is not a doc id", async () => {
+    const docSpy = vi.spyOn(storeDb, "doc");
+    expect((await POST(turn(llmBody("x")), ctx("__sa1__", SECRET))).status).toBe(401);
+    expect(docSpy.mock.calls.filter(([path]) => String(path).includes("__sa1__"))).toEqual([]);
   });
 
   it("opens only the bare URL and /chat/completions", async () => {
