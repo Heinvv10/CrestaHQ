@@ -118,7 +118,6 @@ export async function POST(request: Request) {
           subAccountId: claims.subAccountId,
           conversationId,
           grantId: claims.grantId,
-          sessionId: claims.sessionId,
         }));
     } else {
       const conn = await readWebVoiceConnection(claims.subAccountId);

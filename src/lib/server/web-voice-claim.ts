@@ -138,16 +138,16 @@ export async function markConnected(input: {
   });
 }
 
-/** Is this conversation pending under this grant and session? Lets a
- *  resent `connected` learn that an earlier one already claimed it. */
+/** Is this conversation pending under this grant? Lets a resent
+ *  `connected` learn that an earlier one already claimed it. (A grant id is
+ *  minted for one start of one session, so it alone identifies the claimer.) */
 export async function claimHeld(input: {
   subAccountId: string;
   conversationId: string;
   grantId: string;
-  sessionId: string;
 }): Promise<boolean> {
   const p = own((await readUsage(input.subAccountId)).pending, input.conversationId);
-  return !!p && p.grantId === input.grantId && p.sessionId === input.sessionId;
+  return !!p && p.grantId === input.grantId;
 }
 
 /**

@@ -214,6 +214,9 @@ describe("/voice/event", () => {
     const other = await tryStart({ sessionId: "sess_cccccccccccccccc" });
     const peek = await post(event, { token: other.body.token, type: "connected", conversationId: "conv_000001" });
     expect(await peek.json()).toEqual({ ok: true, claimed: false });
+    // Nor does another start from the owner's own session (a different grant).
+    const sameSession = await post(event, { token, type: "connected", conversationId: "conv_000001" });
+    expect(await sameSession.json()).toEqual({ ok: true, claimed: false });
     for (const conversationId of ["__proto__", "constructor"]) {
       expect((await post(event, { token, type: "connected", conversationId })).status).toBe(400);
     }
