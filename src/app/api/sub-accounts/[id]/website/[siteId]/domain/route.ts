@@ -65,8 +65,6 @@ export const dynamic = "force-dynamic";
 
 const HOST_RE = /^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
-/** Same cap as the Web Chat settings form (`allowedDomains`, 25 entries). */
-
 const ALL_STATUSES: readonly WebsiteStatus[] = ["draft", "queued", "building", "ready", "failed"];
 
 const siteNotFound = () => NextResponse.json({ error: "Website not found." }, { status: 404 });
