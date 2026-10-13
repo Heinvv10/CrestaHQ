@@ -9,6 +9,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { eventStatusLabel, type EventStatus } from "@/types/events";
+import { isHexColor } from "@/lib/checkout/themes";
 
 /**
  * Public-facing event-management surface. Shows the attendee a summary
@@ -151,7 +152,11 @@ export function PublicEventView(props: Props) {
     if (tz !== props.timezone) setViewerTz(tz);
   }, [props.timezone]);
 
-  const accent = props.branding.accentColor;
+  // Used only if it is a plain hex (#RGB or #RRGGBB, what the validator
+  // stores): anything else would be written into the style attribute as-is.
+  const accent = isHexColor(props.branding.accentColor, true)
+    ? props.branding.accentColor
+    : null;
   const accentStyle: React.CSSProperties = accent
     ? { backgroundColor: accent, borderColor: accent }
     : {};

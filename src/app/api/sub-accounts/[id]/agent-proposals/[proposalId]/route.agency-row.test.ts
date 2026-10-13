@@ -15,7 +15,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 beforeEach(seedAgency);
 
 describe("an agency-level row through its target's sub-account routes", () => {

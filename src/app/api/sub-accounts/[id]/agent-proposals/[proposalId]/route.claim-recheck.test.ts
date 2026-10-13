@@ -19,7 +19,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 const KEY1 = "subAccounts/sa1/apiKeys/key1";
 const revokeKey1 = () => mem.seed(KEY1, { ...mem.read(KEY1)!, revokedAt: new Date() });

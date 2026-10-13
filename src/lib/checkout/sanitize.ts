@@ -7,6 +7,7 @@ import {
   slugifyCheckoutSlug,
   type CheckoutPage,
 } from "@/types/checkout-pages";
+import { isCheckoutThemeId } from "@/lib/checkout/themes";
 import { defaultFormAppearance, type FormField } from "@/types/forms";
 import type { Product } from "@/types/products";
 
@@ -39,6 +40,7 @@ export interface CheckoutPagePayload {
   autoTags?: string[];
   pipelineStageId?: string | null;
   successUrl?: string | null;
+  themePreset?: string | null;
   appearance?: Partial<CheckoutPage["appearance"]>;
 }
 
@@ -112,6 +114,15 @@ export function sanitizeCheckoutPagePayload(
       throw new CheckoutPageError("Success URL must start with https://");
     } else {
       out.successUrl = raw.slice(0, 500);
+    }
+  }
+  if (body.themePreset !== undefined) {
+    if (body.themePreset === null || body.themePreset === "") {
+      out.themePreset = null;
+    } else if (isCheckoutThemeId(body.themePreset)) {
+      out.themePreset = body.themePreset;
+    } else {
+      throw new CheckoutPageError("Unknown style preset.");
     }
   }
   if (body.appearance) {

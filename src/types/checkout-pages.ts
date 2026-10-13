@@ -22,6 +22,21 @@ import type { PipelineStageId } from "@/types/deals";
 
 export const MAX_BUMPS_PER_CHECKOUT_PAGE = 3;
 
+/**
+ * Preset style themes for the public page. Ids are persisted on the doc, so
+ * they're append-only — never rename one (pages referencing a removed id fall
+ * back to the legacy appearance-based look). Token values live in
+ * `lib/checkout/themes.ts`.
+ */
+export const CHECKOUT_THEME_IDS = [
+  "clean",
+  "midnight",
+  "noir-lime",
+  "sunset",
+  "ocean",
+] as const;
+export type CheckoutThemeId = (typeof CHECKOUT_THEME_IDS)[number];
+
 export interface CheckoutPage {
   id: string;
 
@@ -57,6 +72,13 @@ export interface CheckoutPage {
 
   /** Where Stripe returns the buyer. Null = our own thanks page. */
   successUrl: string | null;
+
+  /**
+   * Preset style for the public page. Absent/null on pre-theme docs — those
+   * fall back to the legacy `appearance`-derived look (light/dark + accent),
+   * which "clean"/"midnight" reproduce exactly.
+   */
+  themePreset?: CheckoutThemeId | null;
 
   appearance: FormAppearance;
 

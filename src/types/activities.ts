@@ -51,6 +51,10 @@ export type ActivityMeta = {
   webinarRegistrationId?: string;
   /** `webinar_completed` rows: high-water watch percentage at completion. */
   webinarWatchPercent?: number;
+  /** `call_placed` rows: the Twilio recording of a dialer call, when the
+   *  sub-account records calls. UNTRUSTED like the rest of `meta` — link it
+   *  only through `ownRecordingUrl` (lib/comms/dialer-shared.ts). */
+  recordingUrl?: string;
 } | null;
 
 export interface ActivityDoc {

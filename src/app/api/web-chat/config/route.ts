@@ -3,6 +3,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { getChannelConfig } from "@/lib/comms/ai/agent";
 import { aiChannelGateOn } from "@/lib/comms/ai/gates";
 import { checkOriginAllowed } from "@/lib/comms/web-chat/origin";
+import { isHexColor } from "@/lib/checkout/themes";
 import { DEFAULT_WEB_CHAT_CONFIG } from "@/types/ai";
 import type { SubAccountDoc } from "@/types";
 import { isDocId } from "@/lib/server/doc-id";
@@ -83,8 +84,10 @@ export async function GET(request: Request) {
       enabled: true,
       welcomeMessage:
         config.webChat.welcomeMessage || DEFAULT_WEB_CHAT_CONFIG.welcomeMessage,
-      accentColor:
-        config.webChat.accentColor || DEFAULT_WEB_CHAT_CONFIG.accentColor,
+      // widget.js writes this into a style on the embedding site: a plain hex only.
+      accentColor: isHexColor(config.webChat.accentColor)
+        ? config.webChat.accentColor
+        : DEFAULT_WEB_CHAT_CONFIG.accentColor,
       position: config.webChat.position || DEFAULT_WEB_CHAT_CONFIG.position,
     },
     { status: 200, headers },

@@ -71,4 +71,19 @@ describe("duplicate", () => {
       hosts: [{ uid: "a", name: "Ann", dateOverrides: short }],
     });
   });
+
+  it.each([
+    ["a style preset", "ocean", "ocean"],
+    ["no preset on a page stored before presets", undefined, null],
+    ["no preset when the stored one is unrecognised, instead of failing", "bogus", null],
+  ])("copies %s", async (_label, stored, copied) => {
+    const path = "subAccounts/sa1/bookingPages/src";
+    mem.seed(path, { ...mem.read(path)!, ...(stored === undefined ? {} : { themePreset: stored }) });
+    const res = await POST(new Request("http://x/api", { method: "POST" }), {
+      params: Promise.resolve({ id: "sa1", slug: "src" }),
+    });
+    expect(res.status).toBe(200);
+    const { slug } = (await res.json()) as { slug: string };
+    expect(mem.read(`subAccounts/sa1/bookingPages/${slug}`)!.themePreset).toBe(copied);
+  });
 });

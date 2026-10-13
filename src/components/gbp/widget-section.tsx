@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { widgetDisplay, type OriginReason } from "@/lib/gbp/feed/origins";
+import type { PublicWidget } from "@/lib/gbp/feed/widget-store";
 import type { GbpWidgetLayout, GbpWidgetMeta, GbpWidgetTheme } from "@/types/google";
 import { InlineConfirm } from "./inline-confirm";
 import { WidgetPreview } from "./widget-preview";
@@ -16,7 +17,9 @@ import { WidgetPreview } from "./widget-preview";
 /**
  * The public reviews widget card on the Google Business page (admins only).
  * State is the live `gbpWidgetMeta` on the sub-account doc; every change is a
- * call to /api/sub-accounts/[id]/gbp/widget. With the agency gate off only
+ * call to /api/sub-accounts/[id]/gbp/widget, whose answer is shown at once and
+ * held until the doc's next snapshot (Firestore's Listen stream can sit silent
+ * for ~30 s after a write). With the agency gate off only
  * Revoke remains (the API allows DELETE ungated). There is deliberately no
  * rating filter. No confirm()/alert(): inline confirms only.
  */
@@ -34,6 +37,9 @@ const REASONS: Record<OriginReason, string> = {
 const LAYOUTS: Array<[GbpWidgetLayout, string]> = [["carousel", "Carousel"], ["grid", "Grid"], ["list", "List"], ["badge", "Badge"]];
 const THEMES: Array<[GbpWidgetTheme, string]> = [["light", "Light"], ["dark", "Dark"]];
 const field = "h-9 rounded-md border bg-background px-2 text-sm";
+
+/** The live doc's meta, or a route's answer (its updatedAt is an ISO string). */
+type ShownWidget = Omit<GbpWidgetMeta, "updatedAt">;
 
 type Refusal = { error?: string; code?: string; details?: Array<{ value: string; reason: OriginReason }> };
 
@@ -65,17 +71,17 @@ function snippetFor(publicId: string, mapsUri: string | null | undefined): strin
 }
 
 /** The saved settings that change what the preview draws. */
-function previewVersion(meta: GbpWidgetMeta): string {
+function previewVersion(meta: ShownWidget): string {
   const { layout, theme } = widgetDisplay(meta);
   return [meta.enabled, meta.maxReviews, layout, theme].join("|");
 }
 
-async function call(url: string, method: string, body?: unknown): Promise<{ ok: boolean; data: Refusal & { widget?: GbpWidgetMeta } }> {
+async function call(url: string, method: string, body?: unknown): Promise<{ ok: boolean; data: Refusal & { widget?: PublicWidget } }> {
   const res = await fetch(url, {
     method,
     ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
   }).catch(() => null);
-  const data = ((await res?.json().catch(() => null)) ?? {}) as Refusal & { widget?: GbpWidgetMeta };
+  const data = ((await res?.json().catch(() => null)) ?? {}) as Refusal & { widget?: PublicWidget };
   return { ok: !!res?.ok, data };
 }
 
@@ -109,8 +115,17 @@ export function WidgetSection() {
   useEffect(() => {
     knownId.current = liveId;
   }, [liveId]);
+  // The last call's answer, pinned to the latest snapshot when it landed (one
+  // that arrived mid-request may predate the write): any newer snapshot of
+  // the doc wins over it.
+  const [answered, setAnswered] = useState<{ meta: ShownWidget | null; doc: unknown } | null>(null);
+  const latestDoc = useRef(subAccount);
+  useEffect(() => {
+    latestDoc.current = subAccount;
+  }, [subAccount]);
   if (loading || !isAdmin || !subAccount) return null;
-  const meta = subAccount.gbpWidgetMeta ?? null;
+  const meta = answered && answered.doc === subAccount ? answered.meta : (subAccount.gbpWidgetMeta ?? null);
+  const settle = (next: ShownWidget | null) => setAnswered({ meta: next, doc: latestDoc.current });
   const api = `/api/sub-accounts/${subAccountId}/gbp/widget`;
   const revoke = (
     <InlineConfirm
@@ -121,6 +136,7 @@ export function WidgetSection() {
         const { ok, data } = await call(api, "DELETE");
         if (ok) {
           knownId.current = null;
+          settle(null);
           toast.success("Widget revoked.");
         } else toast.error(data.error ?? "That didn't work. Please try again.");
       }}
@@ -139,13 +155,13 @@ export function WidgetSection() {
   }
   return (
     <Card>
-      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} knownId={knownId} />
+      <WidgetForm key={meta?.publicId ?? "new"} api={api} meta={meta} mapsUri={subAccount.googleListing?.mapsUri} knownId={knownId} onSettled={settle} />
       {meta && <div className="mt-3 flex flex-wrap gap-2">{revoke}</div>}
     </Card>
   );
 }
 
-function WidgetForm({ api, meta, mapsUri, knownId }: { api: string; meta: GbpWidgetMeta | null; mapsUri: string | null | undefined; knownId: RefObject<string | null> }) {
+function WidgetForm({ api, meta, mapsUri, knownId, onSettled }: { api: string; meta: ShownWidget | null; mapsUri: string | null | undefined; knownId: RefObject<string | null>; onSettled: (meta: ShownWidget) => void }) {
   const [enabled, setEnabled] = useState(meta?.enabled ?? true);
   const [origins, setOrigins] = useState((meta?.allowedOrigins ?? []).join("\n"));
   const [maxReviews, setMaxReviews] = useState(String(meta?.maxReviews ?? 12));
@@ -165,6 +181,7 @@ function WidgetForm({ api, meta, mapsUri, knownId }: { api: string; meta: GbpWid
       knownId.current = data.widget.publicId;
       setOrigins(data.widget.allowedOrigins.join("\n"));
       setErrors([]);
+      onSettled(data.widget);
       toast.success("Widget saved.");
       return;
     }
@@ -228,7 +245,10 @@ function WidgetForm({ api, meta, mapsUri, knownId }: { api: string; meta: GbpWid
             onConfirm={async () => {
               const { ok, data } = await call(`${api}/rotate`, "POST");
               if (ok) {
-                if (data.widget) knownId.current = data.widget.publicId;
+                if (data.widget) {
+                  knownId.current = data.widget.publicId;
+                  onSettled(data.widget);
+                }
                 toast.success("New widget id issued — update the snippet on your site.");
               } else toast.error(data.error ?? "That didn't work. Please try again.");
             }}

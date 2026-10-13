@@ -9,7 +9,7 @@ import {
 } from "@/lib/server/community-leaderboard-service";
 import {
   CommunityShell,
-  COMMUNITY_DEFAULT_BRAND,
+  communityBrand,
 } from "@/components/community/community-shell";
 import { FeedView, type ClientPost } from "@/components/community/feed/feed-view";
 import { MemberAvatar } from "@/components/community/member-avatar";
@@ -51,7 +51,7 @@ export default async function CommunityFeedPage({
   }
 
   const { group, member, membership, gate } = access;
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
 
   const viewer: AuthorView = {
     memberId: member.id,

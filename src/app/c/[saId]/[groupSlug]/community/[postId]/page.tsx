@@ -9,7 +9,7 @@ import {
 } from "@/lib/server/community-feed-service";
 import {
   CommunityShell,
-  COMMUNITY_DEFAULT_BRAND,
+  communityBrand,
 } from "@/components/community/community-shell";
 import {
   PostDetailView,
@@ -50,7 +50,7 @@ export default async function PostDetailPage({
   }
 
   const { group, member, membership } = access;
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
 
   const feedPost = await getFeedPost({
     subAccountId: saId,

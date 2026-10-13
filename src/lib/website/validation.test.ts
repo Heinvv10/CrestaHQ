@@ -110,6 +110,18 @@ describe("premium fields", () => {
     expect(e["premium_details.founded_year"]).toBeDefined();
     expect(e["premium_details.metrics"]).toBeDefined();
   });
+
+  it("ignores niche-only premium fields once the niche changes away from them", () => {
+    const c = aiLocal();
+    c.premium_details = { ...blankPremiumDetails(), case_studies: "Acme", tools: "a,b,c,d,e,f,g,h,i,j,k,l,m" };
+    const onNiche = validateWebsiteConfig(c);
+    expect(onNiche["premium_details.case_studies"]).toBeDefined();
+    expect(onNiche["premium_details.tools"]).toBeDefined();
+    c.niche = null;
+    const off = validateWebsiteConfig(c);
+    expect(off["premium_details.case_studies"]).toBeUndefined();
+    expect(off["premium_details.tools"]).toBeUndefined();
+  });
 });
 
 describe("quality helpers", () => {

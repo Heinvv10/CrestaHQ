@@ -5,7 +5,7 @@ import { requireGroupPageAccess } from "@/lib/community/member-context";
 import { listCoursesForMember } from "@/lib/server/community-classroom-service";
 import {
   CommunityShell,
-  COMMUNITY_DEFAULT_BRAND,
+  communityBrand,
 } from "@/components/community/community-shell";
 import { PurchaseButton } from "@/components/community/purchase-button";
 import { CourseThumb } from "@/components/community/classroom/course-thumb";
@@ -24,7 +24,7 @@ export default async function ClassroomCatalogPage({
   if (access.kind === "redirect") redirect(access.to);
 
   const { group, member, membership } = access;
-  const brand = group.brandColor?.trim() || COMMUNITY_DEFAULT_BRAND;
+  const brand = communityBrand(group);
   const viewer: AuthorView = {
     memberId: member.id,
     displayName:

@@ -21,7 +21,7 @@ vi.mock("@/lib/automations/qstash", async () => (await import("@/test/held-enrol
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 const { getCapability } = await import("@/lib/ai-suite/capabilities");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 setupHeldEnrolmentTests();
 
 const agencyKey: AgencyApiAuthContext = { ...auth, level: "agency", subAccountId: null, keyLevel: "agency", keyId: "ak1" };

@@ -107,6 +107,17 @@ it("this page's own create, then a second Save before any snapshot, is not refus
   expect(toasts.success).toHaveBeenCalledTimes(2);
 });
 
+it("this page's own create, then a stale snapshot from before it, then Save, is not refused", async () => {
+  withWidget(null);
+  await render();
+  await save();
+  withWidget(null); // a newer doc object that does not carry the widget yet
+  await render();
+  await save();
+  expect(puts().map((b) => b.expectedPublicId)).toEqual([null, NEW]);
+  expect(toasts.error).not.toHaveBeenCalled();
+});
+
 it("this page's own rotate, then a Save before any snapshot, is not refused", async () => {
   withWidget(META);
   stored = ID;

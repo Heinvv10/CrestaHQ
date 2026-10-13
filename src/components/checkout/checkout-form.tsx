@@ -2,6 +2,7 @@
 
 import { useMemo, useState, type FormEvent } from "react";
 import type { FormField } from "@/types/forms";
+import type { CheckoutTheme } from "@/lib/checkout/themes";
 
 /**
  * Public checkout form + order bumps.
@@ -9,11 +10,17 @@ import type { FormField } from "@/types/forms";
  * Self-contained inline styles (no Tailwind classes that depend on the
  * dashboard theme) for the same reason the web-chat window is: this renders
  * on a public page that an operator may embed or theme, and host CSS bleed
- * would be worse than verbose style objects.
+ * would be worse than verbose style objects. All colors/radii come from the
+ * page's resolved `CheckoutTheme` preset.
  *
  * We own this page purely so bumps can exist — Stripe's hosted Checkout can't
  * express "tick to add". Card fields stay on Stripe; nothing sensitive is
  * typed here.
+ *
+ * Layout order is deliberate: buyer fields → the main product's price line →
+ * the bump offer(s) → ticked bumps + total → pay. The bump sits AFTER the
+ * price the buyer came expecting to pay (the classic order-bump position),
+ * and the total beneath it re-states the sum with the bump included.
  */
 
 export interface CheckoutBump {
@@ -31,7 +38,7 @@ export function CheckoutForm({
   mainName,
   mainPriceCents,
   currency,
-  accent,
+  theme,
   cancelled,
   funnelSlug,
 }: {
@@ -42,7 +49,7 @@ export function CheckoutForm({
   mainName: string;
   mainPriceCents: number;
   currency: string;
-  accent: string;
+  theme: CheckoutTheme;
   cancelled: boolean;
   /** Set when the buyer arrived via a Labs funnel — sent to the session route
    *  so Stripe returns them to that funnel's thank-you step. */
@@ -113,14 +120,21 @@ export function CheckoutForm({
   const inputStyle: React.CSSProperties = {
     width: "100%",
     padding: "10px 12px",
-    borderRadius: 8,
-    border: "1px solid rgba(0,0,0,0.15)",
+    borderRadius: theme.inputRadius,
+    border: theme.inputBorder,
     fontSize: 14,
     fontFamily: "inherit",
-    background: "#fff",
-    color: "#18181b",
+    background: theme.inputBg,
+    color: theme.inputText,
     boxSizing: "border-box",
   };
+
+  const tickedBumps = bumps.filter((b) => ticked.has(b.id));
+
+  // HARDENING (ours, not upstream): status colours follow the preset's lightness. Upstream's fixed
+  // #dc2626 / #b45309 fall to 3.1:1 and 2.6:1 on the dark presets' cards.
+  const dangerText = theme.isDark ? "#f87171" : "#dc2626";
+  const noticeText = theme.isDark ? "#fbbf24" : "#b45309";
 
   return (
     <form onSubmit={handleSubmit} style={{ display: "grid", gap: 20 }}>
@@ -128,11 +142,11 @@ export function CheckoutForm({
         <div
           style={{
             padding: 12,
-            borderRadius: 8,
+            borderRadius: theme.inputRadius,
             background: "rgba(245,158,11,0.08)",
             border: "1px solid rgba(245,158,11,0.3)",
             fontSize: 13,
-            color: "#92400e",
+            color: noticeText,
           }}
         >
           Checkout was cancelled — nothing was charged. You can try again below.
@@ -148,7 +162,7 @@ export function CheckoutForm({
                 style={{ fontSize: 13, fontWeight: 600 }}
               >
                 {f.label}
-                {f.required && <span style={{ color: "#dc2626" }}> *</span>}
+                {f.required && <span style={{ color: dangerText }}> *</span>}
               </label>
               {f.type === "textarea" ? (
                 <textarea
@@ -169,7 +183,7 @@ export function CheckoutForm({
                     alignItems: "flex-start",
                     fontSize: 12,
                     lineHeight: 1.5,
-                    color: "#52525b",
+                    color: theme.muted,
                   }}
                 >
                   <input
@@ -181,7 +195,7 @@ export function CheckoutForm({
                         [f.id]: e.target.checked ? "yes" : "",
                       }))
                     }
-                    style={{ marginTop: 2 }}
+                    style={{ marginTop: 2, accentColor: theme.accent }}
                   />
                   <span>{f.consentText}</span>
                 </label>
@@ -208,8 +222,26 @@ export function CheckoutForm({
         </div>
       )}
 
+      {/* The main offer's price line — what the buyer came expecting to pay. */}
+      <div
+        style={{
+          borderTop: `1px solid ${theme.divider}`,
+          paddingTop: 14,
+          display: "grid",
+          gap: 6,
+          fontSize: 13,
+        }}
+      >
+        <Row
+          label={mainName}
+          value={money.format(mainPriceCents / 100)}
+          muted={theme.muted}
+        />
+      </div>
+
       {/* Order bumps — the reason this page exists rather than linking
-          straight to Stripe. */}
+          straight to Stripe. Rendered BELOW the main price line: the classic
+          bump position is after the expected price, before the total. */}
       {bumps.length > 0 && (
         <div style={{ display: "grid", gap: 8 }}>
           {bumps.map((b) => {
@@ -222,12 +254,10 @@ export function CheckoutForm({
                   gap: 10,
                   alignItems: "flex-start",
                   padding: 14,
-                  borderRadius: 10,
+                  borderRadius: Math.max(theme.inputRadius, 2),
                   cursor: "pointer",
-                  border: on
-                    ? `2px solid ${accent}`
-                    : "2px dashed rgba(0,0,0,0.18)",
-                  background: on ? `${accent}0f` : "rgba(0,0,0,0.015)",
+                  border: on ? `2px solid ${theme.accent}` : theme.bumpBorder,
+                  background: on ? theme.accentSoft : theme.bumpBg,
                 }}
               >
                 <input
@@ -241,7 +271,7 @@ export function CheckoutForm({
                       return next;
                     })
                   }
-                  style={{ marginTop: 3 }}
+                  style={{ marginTop: 3, accentColor: theme.accent }}
                 />
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span
@@ -252,7 +282,7 @@ export function CheckoutForm({
                     }}
                   >
                     {b.name}{" "}
-                    <span style={{ color: accent }}>
+                    <span style={{ color: theme.accent }}>
                       + {money.format(b.unitPriceCents / 100)}
                     </span>
                   </span>
@@ -263,7 +293,7 @@ export function CheckoutForm({
                         marginTop: 3,
                         fontSize: 12.5,
                         lineHeight: 1.5,
-                        color: "#52525b",
+                        color: theme.muted,
                       }}
                     >
                       {b.pitch}
@@ -276,32 +306,31 @@ export function CheckoutForm({
         </div>
       )}
 
+      {/* Ticked bumps as receipt lines + the running total. */}
       <div
         style={{
-          borderTop: "1px solid rgba(0,0,0,0.1)",
+          borderTop: `1px solid ${theme.divider}`,
           paddingTop: 14,
           display: "grid",
           gap: 6,
           fontSize: 13,
         }}
       >
-        <Row label={mainName} value={money.format(mainPriceCents / 100)} />
-        {bumps
-          .filter((b) => ticked.has(b.id))
-          .map((b) => (
-            <Row
-              key={b.id}
-              label={b.name}
-              value={money.format(b.unitPriceCents / 100)}
-            />
-          ))}
+        {tickedBumps.map((b) => (
+          <Row
+            key={b.id}
+            label={b.name}
+            value={money.format(b.unitPriceCents / 100)}
+            muted={theme.muted}
+          />
+        ))}
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
             fontWeight: 700,
             fontSize: 16,
-            marginTop: 6,
+            marginTop: tickedBumps.length ? 6 : 0,
           }}
         >
           <span>Total</span>
@@ -310,7 +339,7 @@ export function CheckoutForm({
       </div>
 
       {error && (
-        <p style={{ fontSize: 13, color: "#dc2626", margin: 0 }}>{error}</p>
+        <p style={{ fontSize: 13, color: dangerText, margin: 0 }}>{error}</p>
       )}
 
       <button
@@ -318,13 +347,18 @@ export function CheckoutForm({
         disabled={submitting}
         style={{
           padding: "13px 18px",
-          borderRadius: 10,
+          borderRadius: theme.buttonRadius,
           border: "none",
-          background: accent,
-          color: "#fff",
+          background: theme.buttonBg,
+          color: theme.buttonText,
           fontSize: 15,
-          fontWeight: 600,
+          fontWeight: 700,
           fontFamily: "inherit",
+          textTransform: theme.headingTransform,
+          letterSpacing:
+            theme.headingTransform === "uppercase"
+              ? theme.headingSpacing
+              : "normal",
           cursor: submitting ? "default" : "pointer",
           opacity: submitting ? 0.7 : 1,
         }}
@@ -338,7 +372,7 @@ export function CheckoutForm({
           margin: 0,
           fontSize: 11.5,
           textAlign: "center",
-          color: "#71717a",
+          color: theme.faint,
         }}
       >
         Secure payment by Stripe. Card details are never handled by this page.
@@ -347,10 +381,18 @@ export function CheckoutForm({
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({
+  label,
+  value,
+  muted,
+}: {
+  label: string;
+  value: string;
+  muted: string;
+}) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-      <span style={{ color: "#52525b", minWidth: 0 }}>{label}</span>
+      <span style={{ color: muted, minWidth: 0 }}>{label}</span>
       <span style={{ whiteSpace: "nowrap" }}>{value}</span>
     </div>
   );

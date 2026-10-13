@@ -192,8 +192,38 @@ export async function approveHangingThenUnsettle(id: string) {
   return { ...ctl, approving };
 }
 
-export function setupAgentProposalTests() {
+/** Rejects with a clear error if `work` has not settled within `ms`. */
+export function settleWithin<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * `await setupAgentProposalTests()` at the top level of the test file. The
+ * replay module pulls in the whole capability registry; its cold import ran
+ * past the 30 s hookTimeout on the loaded CI box when it sat in beforeEach,
+ * and the timed-out hook's import then raced the next hook's (the mocker
+ * cannot tell two in-flight imports apart), handing it the unmocked module.
+ * Awaited at module load it has no vitest timeout, so it gets its own: a
+ * hung import fails the file in 60 s instead of stalling the run.
+ */
+export async function setupAgentProposalTests() {
+  // One at a time: concurrent imports of a mocked module defeat vi.mock.
+  const modules = settleWithin(
+    (async () => {
+      const { replayHeldEnrolment } = await import("@/lib/server/agent-enrolment-replay");
+      const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
+      return { replayHeldEnrolment, AI_SUITE_CAPABILITIES };
+    })(),
+    60_000,
+    "agent-proposals harness: importing the replay module and capability registry",
+  );
+
   beforeEach(async () => {
+    const { replayHeldEnrolment, AI_SUITE_CAPABILITIES } = await modules;
     mem.clear();
     authUsers.clear();
     const gates = { agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true };
@@ -205,7 +235,6 @@ export function setupAgentProposalTests() {
     caller.role = "admin";
     execute.mockReset();
     execute.mockImplementation(async () => sent());
-    const { replayHeldEnrolment } = await import("@/lib/server/agent-enrolment-replay");
     vi.mocked(replayHeldEnrolment).mockClear();
     Object.assign(outbound, {
       requiredRole: "subAccountMember",
@@ -214,14 +243,17 @@ export function setupAgentProposalTests() {
       preview: previewBody,
       approvalTarget: tenantWide,
     });
-    const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
     AI_SUITE_CAPABILITIES.push(outbound);
   });
 
   afterEach(async () => {
-    const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
-    AI_SUITE_CAPABILITIES.splice(AI_SUITE_CAPABILITIES.indexOf(outbound), 1);
+    const { AI_SUITE_CAPABILITIES } = await modules;
+    // A beforeEach that failed before its push must not splice(-1) a real capability.
+    const at = AI_SUITE_CAPABILITIES.indexOf(outbound);
+    if (at !== -1) AI_SUITE_CAPABILITIES.splice(at, 1);
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  await modules;
 }

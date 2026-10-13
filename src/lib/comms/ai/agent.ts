@@ -181,6 +181,51 @@ export async function upsertChannelConfig(
   );
 }
 
+/** Run the lazy legacy migration (its own transaction) before the `…InTx` readers. */
+export async function prepareAiAgentDocs(subAccountId: string): Promise<void> {
+  await maybeMigrateLegacy(subAccountId);
+}
+
+/** The agent profile, read inside the caller's transaction, and a `save` for a patch in it. */
+export async function agentProfileInTx(tx: FirebaseFirestore.Transaction, subAccountId: string) {
+  const ref = getAdminDb().doc(profilePath(subAccountId));
+  const snap = await tx.get(ref);
+  return {
+    profile: snap.exists ? (snap.data() as AiAgentProfile) : null,
+    save: (patch: Partial<AiAgentProfile>) => {
+      tx.set(ref, { ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    },
+  };
+}
+
+/**
+ * The web-chat allow-list, read inside the caller's transaction, and a `save`
+ * that writes a new list in it (seeding the channel doc's defaults if there
+ * is none; the rest of the channel config is kept). Read before any write.
+ */
+export async function webChatAllowListInTx(
+  tx: FirebaseFirestore.Transaction,
+  subAccountId: string,
+): Promise<{ hosts: string[]; save: (hosts: string[]) => void }> {
+  const ref = getAdminDb().doc(channelPath(subAccountId, "web-chat"));
+  const snap = await tx.get(ref);
+  const existing = snap.exists ? (snap.data() as AiChannelConfig) : null;
+  const webChat = { ...DEFAULT_WEB_CHAT_CONFIG, ...(existing?.webChat ?? {}) };
+  return {
+    hosts: webChat.allowedDomains.map((d) => d.toLowerCase()),
+    save: (hosts) => {
+      const seed = snap.exists
+        ? {}
+        : { ...defaultsForChannel("web-chat"), createdAt: FieldValue.serverTimestamp() };
+      tx.set(
+        ref,
+        { ...seed, webChat: { ...webChat, allowedDomains: hosts }, updatedAt: FieldValue.serverTimestamp() },
+        { merge: true },
+      );
+    },
+  };
+}
+
 export async function incrementChannelTokens(
   subAccountId: string,
   channelId: ConfiguredChannelId,
