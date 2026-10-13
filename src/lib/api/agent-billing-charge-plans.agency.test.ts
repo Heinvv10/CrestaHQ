@@ -22,7 +22,7 @@ vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async ()
 
 const { dispatchAgentTool } = await import("./agent-dispatch");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 restoreBillingProviderAfterEach();
 
 const CHARGE = { subAccountId: "sa1", subAccountName: "Client One", description: "Web design", amount: 500, currency: "zar" };

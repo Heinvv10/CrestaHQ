@@ -28,6 +28,8 @@ import { DateOverridesEditor } from "@/components/booking/date-overrides-editor"
 import { IntakeFieldBuilder } from "@/components/booking/intake-field-builder";
 import { BookingHelpDialog } from "@/components/booking/booking-help-dialog";
 import { TeamBookingHelpDialog } from "@/components/booking/team-booking-help-dialog";
+import { ThemePresetPicker } from "@/components/checkout/theme-preset-picker";
+import { isCheckoutThemeId } from "@/lib/checkout/themes";
 import {
   CalendarTypeSection,
   hostRuleHint,
@@ -150,6 +152,11 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         services: initial.services ?? null,
         logoUrl: initial.logoUrl,
         accentColor: initial.accentColor,
+        // An unrecognised stored id opens as "no preset" — sent back as-is
+        // it would fail validation and block every save of this page.
+        themePreset: isCheckoutThemeId(initial.themePreset)
+          ? initial.themePreset
+          : null,
         meetingUrl: initial.meetingUrl ?? null,
         confirmationMessage: initial.confirmationMessage,
         redirectUrl: initial.redirectUrl ?? null,
@@ -1102,6 +1109,19 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         title="Visual"
         description="Override the sub-account's branding for this page. Leave blank to inherit."
       >
+        <div className="space-y-1.5">
+          <span className="text-sm font-medium">Style</span>
+          <ThemePresetPicker
+            value={form.themePreset ?? null}
+            onChange={(next) => set("themePreset", next)}
+            allowNone
+            noneBlurb="The standard booking look, with your accent color below."
+          />
+          <p className="text-xs text-muted-foreground">
+            Same presets as checkout pages. An accent color set below still
+            overrides the preset&apos;s accent.
+          </p>
+        </div>
         <Field
           label="Logo URL"
           htmlFor="logoUrl"

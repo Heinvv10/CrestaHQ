@@ -180,10 +180,12 @@ describe("email", () => {
   });
 
   it("a late-synced in-window reply upgrades a missed shop — clearing a confirmation and a dispute (responded wins)", async () => {
+    // One clock read: two separate Date.now() calls drift apart under load and skew responseMs.
+    const now = Date.now();
     seedShop("s1", {
-      status: "missed", sentAt: new Date(Date.now() - 30 * 3600_000), missedConfirmedAt: new Date(), missedConfirmedByUid: "u1", disputed: true,
+      status: "missed", sentAt: new Date(now - 30 * 3600_000), missedConfirmedAt: new Date(now), missedConfirmedByUid: "u1", disputed: true,
     });
-    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: Date.now() - 20 * 3600_000 }), OWN);
+    await matchMysteryShopEmail("sa1", email(EMAIL, { occurredAtMs: now - 20 * 3600_000 }), OWN);
     expect(shop("s1")).toMatchObject({ status: "responded", responseMs: 10 * 3600_000, missedConfirmedAt: null, missedConfirmedByUid: null, disputed: false });
   });
 

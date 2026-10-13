@@ -17,7 +17,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const quiet = () => vi.spyOn(console, "error").mockImplementation(() => undefined);
 const flush = async (until: () => boolean) => {
   for (let i = 0; i < 500 && !until(); i++) await new Promise((r) => setImmediate(r));
@@ -121,7 +121,8 @@ describe("a late settle after the row moved to a new generation", () => {
     const { id, a } = await reproposedWhileInFlight();
     const b = hangNextExecute();
     const approvingB = decide(id, "approve");
-    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    await b.started;
+    expect(execute).toHaveBeenCalledTimes(2);
     const bClaim = row(id).claimId;
     quiet();
     a.finish();
@@ -154,7 +155,7 @@ describe("F5: an execute that may still be running", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const a = hangNextExecute();
     const approving = decide(id, "approve");
-    await flush(() => execute.mock.calls.length > 0);
+    await a.started;
     const signal = execute.mock.calls[0]![0].signal!;
     expect(signal.aborted).toBe(false);
     vi.advanceTimersByTime(EXECUTE_DEADLINE_MS);
@@ -178,7 +179,7 @@ describe("F5: an execute that may still be running", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const a = hangNextExecute();
     const approving = decide(id, "approve");
-    await flush(() => execute.mock.calls.length > 0);
+    await a.started;
     vi.advanceTimersByTime(EXECUTE_DEADLINE_MS);
     expect((await approving).status).toBe(202);
     vi.useRealTimers();

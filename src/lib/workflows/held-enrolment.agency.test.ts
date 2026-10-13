@@ -24,7 +24,7 @@ const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 const { replayHeldEnrolment } = await import("@/lib/server/agent-enrolment-replay");
 const { enrolmentHourKey } = await import("@/lib/api/enrolment-cap");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 setupHeldEnrolmentTests();
 
 const agencyKey: AgencyApiAuthContext = {

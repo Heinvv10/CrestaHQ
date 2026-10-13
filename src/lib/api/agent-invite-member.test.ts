@@ -35,7 +35,7 @@ const { createInviteServerSide } = await import("@/lib/server/members-service");
 const { getCapability } = await import("@/lib/ai-suite/capabilities");
 const invites = vi.mocked(createInviteServerSide);
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 beforeEach(() => {
   seedAgency();
   invites.mockClear();

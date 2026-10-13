@@ -229,6 +229,99 @@ describe("sendWhatsappCloud", () => {
     expect(r.providerOutcome).toBe("AMBIGUOUS");
   });
 
+  describe("a fetch that throws", () => {
+    // undici's shape: TypeError("fetch failed") with the socket error on cause.
+    const fetchFailed = (code: string) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code }) });
+    let warn: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      warn.mockRestore();
+    });
+
+    async function sendThroughBackoff() {
+      const p = send();
+      await vi.runAllTimersAsync();
+      return p;
+    }
+
+    it("retries a DNS failure — the request never left — and returns the retry's result", async () => {
+      fetchMock.mockRejectedValueOnce(fetchFailed("EAI_AGAIN")).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.R" }] }));
+      expect(await sendThroughBackoff()).toEqual({ ok: true, messageId: "wamid.R" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up after 3 pre-connect failures as DEFINITELY_REJECTED and not attempted", async () => {
+      fetchMock.mockRejectedValue(fetchFailed("ENOTFOUND"));
+      const r = await sendThroughBackoff();
+      expect(r).toMatchObject({ ok: false, providerOutcome: "DEFINITELY_REJECTED", attempted: false });
+      expect(r.error).toBe("fetch failed (ENOTFOUND) after 3 attempts");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it.each(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "UND_ERR_CONNECT_TIMEOUT"])("retries %s", async (code) => {
+      fetchMock.mockRejectedValueOnce(fetchFailed(code)).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.R" }] }));
+      expect((await sendThroughBackoff()).ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"])("never retries %s — Linux raises it on an established socket too", async (code) => {
+      fetchMock.mockRejectedValueOnce(fetchFailed(code)).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.DUP" }] }));
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("tolerates the code on the error itself rather than on cause", async () => {
+      fetchMock.mockRejectedValue(Object.assign(new Error("connect"), { code: "ECONNREFUSED" }));
+      expect((await sendThroughBackoff()).providerOutcome).toBe("DEFINITELY_REJECTED");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("never retries a reset — the request may have reached Meta", async () => {
+      fetchMock.mockRejectedValueOnce(fetchFailed("ECONNRESET")).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.DUP" }] }));
+      const r = await sendThroughBackoff();
+      expect(r).toMatchObject({ ok: false, providerOutcome: "AMBIGUOUS" });
+      expect(r.attempted).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops retrying when a later attempt fails ambiguously", async () => {
+      fetchMock.mockRejectedValueOnce(fetchFailed("EAI_AGAIN")).mockRejectedValueOnce(fetchFailed("UND_ERR_SOCKET"));
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["TimeoutError", "AbortError"])("never retries a %s", async (name) => {
+      fetchMock.mockRejectedValueOnce(new DOMException("aborted", name)).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.DUP" }] }));
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("never retries an HTTP 500", async () => {
+      fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => "oops" });
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs every throw with its code and attempt, never the token or the recipient", async () => {
+      fetchMock.mockRejectedValue(fetchFailed("EAI_AGAIN"));
+      await sendThroughBackoff();
+      expect(warn).toHaveBeenCalledTimes(3);
+      const lines = warn.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(lines[0]).toContain("code=EAI_AGAIN");
+      expect(lines[2]).toContain("attempt=3/3");
+      for (const line of lines) {
+        expect(line).not.toContain("EAAG");
+        expect(line).not.toContain("27784356159");
+      }
+    });
+  });
+
   it("never puts the access token in the returned error string", async () => {
     // Send results are surfaced to operators and written to logs.
     fetchMock.mockResolvedValue({

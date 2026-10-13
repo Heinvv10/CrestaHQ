@@ -26,7 +26,7 @@ vi.mock("@/lib/server/tasks-service", async (orig) => {
 });
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 const { getCapability } = await import("@/lib/ai-suite/capabilities");
 const { POST: humanMentionTasks } = await import(

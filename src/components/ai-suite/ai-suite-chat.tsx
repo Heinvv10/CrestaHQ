@@ -149,7 +149,8 @@ export function AiSuiteChat({
 
   // Restore the saved thread on mount so a refresh doesn't lose the
   // conversation (or a pending proposal — confirming re-validates
-  // everything server-side, so restored proposals stay actionable).
+  // everything server-side, so restored proposals stay actionable; one whose
+  // card was too long to store comes back failed, with no Confirm).
   useEffect(() => {
     let cancelled = false;
     (async () => {

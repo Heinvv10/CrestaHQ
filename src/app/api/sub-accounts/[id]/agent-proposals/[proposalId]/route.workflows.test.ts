@@ -14,7 +14,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 
 const STEPS = { n1: { id: "n1", type: "send_sms", config: { body: "Hi {{contact.firstName}}" }, next: null } };

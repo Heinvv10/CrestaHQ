@@ -106,6 +106,11 @@ export function activityVisuals(type: ActivityType): {
         icon: <PhoneMissed className="h-3 w-3 text-rose-500" />,
         label: "Missed call",
       };
+    case "call_placed":
+      return {
+        icon: <PhoneOutgoing className="h-3 w-3 text-teal-500" />,
+        label: "Phone call",
+      };
     case "quiet_hours_held":
       return {
         icon: <Moon className="h-3 w-3 text-indigo-500" />,

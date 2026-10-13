@@ -152,6 +152,10 @@ describe("enrichBusinesses", () => {
 describe("extractContacts — linear time on hostile pages (ReDoS)", () => {
   // A homepage is owner-controlled and up to HOMEPAGE_MAX_BYTES; extraction
   // runs on the event loop, so a pathological page must not stall it.
+  // Linear extraction takes up to ~60 ms per page here and ~240 ms on the
+  // loaded CI runner; the unanchored EMAIL_RE this replaced is quadratic and
+  // took 208 s on 500 KB of 'a'. The budget sits far from both.
+  const BUDGET_MS = 2_000;
   const SIZE = 500 * 1024;
   const fill = (unit: string, size = SIZE) => unit.repeat(Math.ceil(size / unit.length)).slice(0, size);
   const hostile: [string, string][] = [
@@ -166,11 +170,11 @@ describe("extractContacts — linear time on hostile pages (ReDoS)", () => {
     ["500 KB of instagram links", fill("https://instagram.com/a")],
     ["500 KB of '&#0'", fill("&#0")],
   ];
-  it.each(hostile)("%s completes in < 200 ms", (_name, page) => {
+  it.each(hostile)(`%s completes in < ${BUDGET_MS} ms`, (_name, page) => {
     const t0 = performance.now();
     extractContacts(page, "https://x.example");
     const ms = performance.now() - t0;
-    expect(ms).toBeLessThan(200);
+    expect(ms).toBeLessThan(BUDGET_MS);
   });
 
   it("still finds an email at the end of a long run of local-part characters", () => {
@@ -225,8 +229,14 @@ describe("enrichBusinesses — bounded deadline", () => {
     // Reviewer's repro: a 40-site search occupies every process-wide slot
     // continuously; a 1-site search that starts after it must not be
     // queued indefinitely behind it — its own deadline bounds the wait.
+    // The big search's fetches stay open until released (5 s at the latest),
+    // so a waiter that ignores its deadline takes 5 s, not ~60 ms: the 2 s
+    // budget holds on a loaded runner and still fails that.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const safety = setTimeout(release, 5_000);
     publicFetch.mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 100));
+      await gate;
       return html(`<a href="mailto:hi@big.example">x</a>`);
     });
     const bigSearch = enrichBusinesses(
@@ -244,9 +254,11 @@ describe("enrichBusinesses — bounded deadline", () => {
     );
     const elapsed = performance.now() - t0;
 
-    expect(elapsed).toBeLessThan(deadlineMs + 150);
+    expect(elapsed).toBeLessThan(2_000);
     expect(small!.email).toBeNull();
 
+    release();
+    clearTimeout(safety);
     await bigSearch; // drain so it doesn't leak into later tests
   });
 
@@ -286,7 +298,12 @@ describe("enrichBusinesses — bounded deadline", () => {
   it("an aborted caller signal stops the call promptly, well inside the default deadline", async () => {
     expect(ENRICH_DEADLINE_MS).toBe(30_000);
 
-    publicFetch.mockResolvedValue(html(`<a href="mailto:hi@ok.example">x</a>`));
+    // A fetch that did start would take 5 s; the 2 s budget holds on a loaded
+    // runner and still fails a call that ignores the caller's abort.
+    publicFetch.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5_000));
+      return html(`<a href="mailto:hi@ok.example">x</a>`);
+    });
     const controller = new AbortController();
     controller.abort();
 
@@ -294,7 +311,7 @@ describe("enrichBusinesses — bounded deadline", () => {
     const [b] = await enrichBusinesses([biz(1, "https://slow.example")], controller.signal);
     const elapsed = performance.now() - t0;
 
-    expect(elapsed).toBeLessThan(200);
+    expect(elapsed).toBeLessThan(2_000);
     expect(b!.email).toBeNull();
     expect(publicFetch).not.toHaveBeenCalled();
   });

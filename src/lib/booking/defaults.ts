@@ -46,6 +46,7 @@ export function defaultBookingPageFormData(
     intakeFields: [],
     logoUrl: null,
     accentColor: null,
+    themePreset: null,
     meetingUrl: null,
     confirmationMessage: "",
     redirectUrl: null,

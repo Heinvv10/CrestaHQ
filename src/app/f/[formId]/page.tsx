@@ -45,8 +45,12 @@ export default async function PublicFormPage({
     );
   }
 
+  // PublicForm never reads the appearance, but every prop is written into
+  // the response: the stored one goes out only as checked here.
+  const { embed: _embed, ...checkedAppearance } = resolveAppearance({}, form.settings);
   const safe: LeadForm = {
     ...form,
+    settings: { ...form.settings, appearance: checkedAppearance },
     createdAt: null,
     updatedAt: null,
   };

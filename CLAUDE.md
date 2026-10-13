@@ -53,122 +53,24 @@ think it is.
 
 ## Development workflow — branch, review, merge, deploy
 
-**Never commit to `main`.** First action of any code task is a branch
-(`feat/…`, `fix/…`, `ci/…`, `docs/…`). Everything lands through a PR.
+Full text (gates table, shared-checkout incident notes, CI runner, deploy detail):
+[docs/agent-workflow.md](docs/agent-workflow.md). Read it before your first PR. Rules that always hold:
 
-### The gates
-
-| Gate | Where | Blocks? |
-|---|---|---|
-| `pnpm lint` (tenancy check + ESLint) | CI + `deploy-velo.sh` | yes |
-| `pnpm exec tsc --noEmit` | CI + deploy | yes |
-| `pnpm test` | CI + deploy | yes |
-| `pnpm test:rules` (Firestore rules, via the Rules test API) | CI | yes |
-| `pnpm build` | CI + deploy | yes |
-| gitleaks secret scan | CI | yes |
-| Blind `/review` | you, before merge | yes |
-
-`pnpm ci:check` runs the first five locally — byte-for-byte the same commands
-CI runs, so a green local run means a green pipeline. Keep them identical; a
-`npx` here and a `pnpm exec` there is the first millimetre of the same drift
-that let FibreFlow's baselines diverge across five files.
-
-**Nothing in CI is `continue-on-error`, and nothing should become so.** The
-entire gate takes ~52s, so there is no speed argument for softening a step. If
-a step is too slow or flaky to block, delete it instead — a gate believed to
-run and not running is worse than no gate, because it buys false confidence.
-(FibreFlow's unit tests were `continue-on-error` while a deadlocked suite
-reported green for months.)
-
-**There is no warning cap to drift.** `pnpm lint` runs at `--max-warnings 0`,
-and `eslint.config.mjs` honours the `_`-prefix convention the code already
-uses, so "deliberately unused" is expressed in the code rather than absorbed
-into a budget. A cap is a one-way ratchet: fix one warning and it silently
-grows slack for the next. Zero has no slack.
-
-If a cap ever becomes unavoidable, it lives in exactly ONE place — the `lint`
-script — and is never copied into a workflow, a deploy script or a doc.
-FibreFlow ended up with the same baseline in five files, drifted apart, with the
-CI copy so loose the gate could not fail; they now run a second gate whose only
-job is guarding the first. The way to never need that is to never write the
-number twice.
-
-### Working in a shared checkout
-
-**Several Claude sessions may share `/home/hein/Workspace/CrestaHQ` at once.**
-Assume another session's uncommitted work is sitting in the tree beside yours.
-
-- **Never `git add -A` or `git add .`** — stage explicit paths. On 2026-09-04
-  an `add -A` swept a concurrent session's 490-line snapshot change into a PR
-  about WhatsApp templates. CI was green and the blind review was genuine, but
-  the review had been aimed at templates and never examined the snapshot work
-  — merging would have taken unreviewed code to `main` under a review that did
-  not cover it. Caught only by reading `git log` before the merge.
-- **Check `git log --oneline origin/main..HEAD` before opening a PR.** Every
-  commit on the branch should be one you wrote. A commit you do not recognise
-  belongs to another session.
-- **Use a worktree when you need to switch branches**
-  (`git worktree add ../CrestaHQ-wt-<name> -b <branch> origin/main`). Switching
-  branches in the shared checkout moves it under whoever else is working there.
-- **Never rewrite or force-push a branch carrying someone else's commits.**
-  Cherry-pick your own onto a clean branch and leave theirs alone.
-
-### Review — never review your own code
-
-Always dispatch a blind `/review`: a fresh agent that gets the diff and the
-CLAUDE.md rules, and none of the implementing session's reasoning. Use
-`review-team` for 500+ line diffs. Report findings verbatim; verify each one
-against the actual file before accepting or disputing it.
-
-This is not ceremony. On 2026-09-03 the WhatsApp provider seam passed lint,
-typecheck, 355 tests and a real build — and blind review still found two HIGHs:
-a Twilio-only readiness gate that made the new Cloud rail unreachable, and four
-of five send paths bypassing the seam entirely. CI cannot catch "correctly
-built, wired to the wrong thing." Review can.
-
-### Merging — the Level-3 boundary
-
-With **green CI + an APPROVED blind review**, work may merge without Hein
-reading the diff, provided all of: greenfield or additive, not customer-facing,
-touches no live client data, and objectively verified by tests that fail when
-the code is wrong.
-
-Outside that boundary a human gate stands regardless of how green CI is:
-outbound customer communication, live client data, production deploys, spending
-money, irreversible external actions.
-
-Merge with `gh pr merge <N> --merge --delete-branch` — a real merge commit, so
-the PR's individual commits stay readable in history.
-
-### CI runner
-
-CI runs on a **self-hosted runner** (`velo-crestahq-u`, labels
-`self-hosted, linux, velo, crestahq`) because GitHub-hosted runner billing is
-paused on this account. It runs as its own unix user (`gha-crestahq`) under
-`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, matching the four
-sibling runners on the same box. If PRs sit queued forever, check that service
-first — a stopped runner looks exactly like a slow CI.
-
-### Deploy
-
-`bash scripts/deploy-velo.sh` — run ON velo-server, from the deploy checkout.
-Gates run before the service is touched, so a failed build can never leave a
-half-served app returning 500s. Production deploys are refused inside business
-hours (08:00–17:00 SAST, Mon–Fri); `--force` overrides **the time window only**,
-never the gates. The deploy dir is a target, not a workspace — the script
-refuses to run against a dirty checkout. Deploys are zero-downtime blue/green
-and `--rollback` switches back to the previous release; layout and the one-time
-migration are in [RUNBOOK.md](RUNBOOK.md#zero-downtime-deploys-velo-server-only).
+- **Never commit to `main`.** First action of a code task is a branch (`feat/…`, `fix/…`, `ci/…`, `docs/…`); everything lands via PR.
+- `pnpm ci:check` = the CI gate (lint, `tsc`, test, test:rules, build). Keep local and CI commands byte-identical. **Nothing in CI is `continue-on-error`** — delete a step rather than soften it. **No lint warning cap** (`--max-warnings 0`); if a cap is ever unavoidable it lives only in the `lint` script, never copied elsewhere.
+- **Several sessions share `/home/hein/Workspace/CrestaHQ`.** Never `git add -A` / `git add .` — stage explicit paths. Check `git log --oneline origin/main..HEAD` before a PR (every commit must be yours). Use a worktree (`git worktree add ../CrestaHQ-wt-<name> -b <branch> origin/main`) to switch branches. Never rewrite or force-push a branch carrying someone else's commits.
+- **Never review your own code.** Dispatch a blind `/review` (`review-team` for 500+ line diffs); report findings verbatim and verify each against the file.
+- **Merge:** green CI + APPROVED blind review may merge without Hein reading the diff only if the work is greenfield/additive, not customer-facing, touches no live client data, and is verified by tests that fail when wrong. Outbound customer communication, live client data, production deploys, spending money and irreversible external actions always keep a human gate. Merge with `gh pr merge <N> --merge --delete-branch`.
+- CI runs on self-hosted `velo-crestahq-u`; PRs queued forever means check `actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service` first.
+- **Deploy:** `bash scripts/deploy-velo.sh`, run ON velo-server from the deploy checkout. Production deploys are refused 08:00–17:00 SAST Mon–Fri; `--force` overrides **the time window only**, never the gates. The deploy dir is a target, not a workspace (script refuses a dirty checkout). `--rollback` switches back; layout in [RUNBOOK.md](RUNBOOK.md#zero-downtime-deploys-velo-server-only).
 
 ---
 
 ## Commands
 
-- `pnpm dev` — dev server (Turbopack)
-- `pnpm build` — production build
-- `pnpm start` — production server
+Standard pnpm scripts (`dev`, `build`, `start`, `test`, `format`) are in `package.json`. Non-default:
+
 - `pnpm lint` — tenancy check then ESLint at `--max-warnings 0`
-- `pnpm test` / `pnpm test:watch` — Vitest
 - `pnpm test:rules` — evaluates `firestore.rules` through the Firebase Rules
   test API (no deploy). Needs `FIREBASE_ADMIN_*` in the environment; skips
   without them locally, fails without them in CI.
@@ -183,26 +85,16 @@ migration are in [RUNBOOK.md](RUNBOOK.md#zero-downtime-deploys-velo-server-only)
   making this pass**. `FROZEN` (`scripts/agent-coverage-frozen.json`, routes with
   no tool yet) only shrinks; PR CI fails an added key.
 - `pnpm doctor` — env-var shape check (`--live` also probes Firebase)
-- `pnpm format` — Prettier
 - `firebase deploy --only firestore:rules,firestore:indexes` — **run after any
   collection or index change.** Deploying rules alone silently skips indexes, and
   the missing composite surfaces at runtime as `FAILED_PRECONDITION`.
-
----
-
-## Stack
-
-Next.js 15 (App Router, Turbopack) + TypeScript · Firebase Auth
-(`next-firebase-auth-edge` session cookies + custom claims) · Cloud Firestore
-(tenancy-scoped rules) · Stripe (+ Paystack for ZAR Client Billing) · Resend ·
-Twilio · OpenRouter (default `anthropic/claude-haiku-4-5`) · Vapi (voice) ·
-Firecrawl · QStash (all scheduled work) · Tailwind v4 + shadcn/ui · Mapbox ·
-`@dnd-kit` · `@tanstack/react-table` · pnpm.
 
 `src/config/landing.ts` exports `CUSTOM_BRAND`; the root landing page reads every
 string from it. Edit it before any buyer deploy.
 
 ---
+
+Stack facts the code doesn't make obvious: QStash runs all scheduled work; Paystack handles ZAR Client Billing (Stripe otherwise); voice is Vapi; the OpenRouter default model is `anthropic/claude-haiku-4-5`.
 
 ## Architecture
 
@@ -226,37 +118,15 @@ that are expensive to rediscover:
 - **[Project structure](docs/architecture/project-structure.md)** — the annotated
   `src/` tree.
 
-**Page width:** every dashboard page wraps *all* its top-level returns (including
-loading / locked / empty / not-found states) in a centered container — `/agency/*`
-uses `max-w-5xl`; `/sa/[id]/*` uses `max-w-5xl` for data surfaces and `max-w-3xl` for
-forms, settings, and chat. Pipeline and Conversations are the only full-bleed pages. Don't invent a new
-width — the one carve-out (`max-w-6xl` for an agency page whose tables genuinely need
-the columns) and the full rule are in
+**Page width:** don't invent a new dashboard page width — the rule is in
 [docs/architecture/key-architecture.md](docs/architecture/key-architecture.md).
 
 ---
 
 ## Features
 
-Full index with links: **[docs/features/README.md](docs/features/README.md)**.
-
-Specs: [AI Agents](docs/features/ai-agents.md) ·
-[Snapshots](docs/features/snapshots.md) ·
-[Workflows](docs/features/workflows.md) ·
-[Quotes](docs/features/quotes.md) ·
-[Products + Invoices](docs/features/products-invoices.md) ·
-[Client Billing](docs/features/client-billing.md) ·
-[Booking pages](docs/features/booking-pages.md) ·
-[Public API](docs/features/public-api.md) ·
-[Agent API](docs/features/agent-api.md) ·
-[Broadcasts](docs/features/broadcasts.md) ·
-[Social Planner](docs/features/social-planner.md) ·
-[Website builder](docs/features/website-builder.md) ·
-[Labs watchdog](docs/features/labs-watchdog.md) ·
-[Webinar1](docs/features/webinar1.md) ·
-[Get Leads](docs/features/get-leads.md) *(parked)*.
-
-Locked scopes for in-flight work live in the `*_V1_PLAN.md` files at the repo root.
+Feature specs: **[docs/features/README.md](docs/features/README.md)**. Locked scopes
+for in-flight work live in the `*_V1_PLAN.md` files at the repo root.
 
 ---
 

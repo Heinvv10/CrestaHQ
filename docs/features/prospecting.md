@@ -4,6 +4,8 @@
 
 Status: **PR 3 of 6** — gate, quota, collections, saved lists (PR 1), audit reports with share links (PR 2) and the ApexGEO sections 5/7/8 (PR 3). No message is sent yet.
 
+**REVISED 2026-10-12** — the line above is out of date: PR 4 (workflow trigger, merge tags, approach guard, daily cap) and PR 5 (mystery shop, sections 11 and 12: email, WhatsApp, website form; AI call not live-walked) are LIVE. See [the programme plan](../programme/prospecting-module.md#pr-sequence-each-one-independently-mergeable-each-with-a-blind-review).
+
 ## What exists
 
 - **Gate** `prospectingEnabledByAgency` (off by default, in `PLAN_GATE_KEYS`, hide-override `prospectingHiddenWhenDisabled`) and the monthly `prospectingReportQuota` (0–1000, default 50 via `lib/prospecting/quota.ts`), both set in the agency Manage dialog. See [feature-gates.md](../architecture/feature-gates.md).
@@ -60,5 +62,7 @@ Sections 5 (website performance), 7 (AI-agent readiness) and 8 (AI answer-engine
 **Public page (D6).** Sections left out because of the agency's own setup — no key (`not_connected`) or its ApexGEO account out of credits (`out_of_credits`) — are **hidden on `/report/[token]`**: a prospect should not see those gaps. The member view shows them, with a *Connect ApexGEO* link for `not_connected`. Pending, timed-out, failed and missing-input sections show honestly on both. The public whitelist shows counts, the models asked and competitor names (public business names) — never the answers' text, `cited_url` or a provider error.
 
 ## Not yet
+
+**REVISED 2026-10-12** — the mystery shop (PR 5) and the ApexSignal push (PR 6) are live; only the sentence about `POST /api/v1/contacts` below still applies. The next sentence is the original text, kept for history.
 
 Mystery shop, ApexSignal push — each its own PR in the plan. (The workflow trigger, merge tags, approach guard and daily cap are PR 4: see [PR 4 decisions](../programme/prospecting-module.md#pr-4-decisions-2026-09-27-recorded-from-the-build).) `POST /api/v1/contacts` ignores a `prospecting` field (like any unknown top-level field) and `POST /api/v1/contacts/upsert` refuses it with a 400 — ApexSignal's push (PR 6) either PATCHes after create or extends one of them.

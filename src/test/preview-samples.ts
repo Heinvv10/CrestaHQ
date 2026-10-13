@@ -41,6 +41,7 @@ export const PREVIEW_SAMPLE_ARGS: Record<string, Record<string, unknown>> = {
   cancel_recurring_schedule: { scheduleId: "rs_sample" },
   delete_task: { taskId: "t_sample" },
   set_event_status: { eventId: "ev_sample", status: "cancelled" },
+  mark_booking_paid: { eventId: "ev_awaiting" },
   create_booking_page: pageForm("consult-2", { name: "Second consult", status: "published" }),
   update_booking_page: { slug: "bp-live", durationMinutes: 45 },
   delete_booking_page: { slug: "bp-live" },
@@ -91,6 +92,7 @@ export function seedPreviewSamples(mem: Mem) {
   mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, contactId: "c_sample", status: "paused" });
   mem.seed("tasks/t_sample", { subAccountId: "sa1", agencyId: "ag1", title: "Call", contactId: "c_sample", territoryId: "global" });
   mem.seed("events/ev_sample", pastEvent({ contactId: "c_sample" }));
+  mem.seed("events/ev_awaiting", pastEvent({ contactId: "c_sample", status: "awaiting_payment" }));
   mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", status: "published" });
   seedPr13(mem);
   seedSnapshots(mem);
