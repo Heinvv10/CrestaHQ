@@ -45,9 +45,13 @@ async function unmount() {
   mounted = false;
   await act(async () => root.unmount());
 }
-/** Let pending fetches / the dynamic import / connect resolve, until `cond`. */
+/** Let pending fetches / the dynamic import / connect resolve, until `cond`.
+ *  Bounded by wall clock just inside the suite's testTimeout, not by a tick
+ *  count: a cold import of the SDK under a loaded box takes however long it
+ *  takes, and 200 ticks is only ~250ms. */
 async function until(cond: () => boolean, label: string) {
-  for (let i = 0; i < 200 && !cond(); i++) await act(async () => tick());
+  const deadline = Date.now() + 25_000;
+  while (!cond() && Date.now() < deadline) await act(async () => tick());
   expect(cond(), label).toBe(true);
 }
 async function emit(target: { emit(event: string, ...args: unknown[]): void }, event: string, ...args: unknown[]) {
