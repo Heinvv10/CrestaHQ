@@ -757,10 +757,12 @@ export function WebsiteWizard({
           )}
         </div>
 
-        {/* Narrow screens: Back is icon-only and the dots shrink, so seven
-            steps and Build site fit a 360px-wide phone. */}
-        <div className="flex items-center gap-2 border-t px-4 py-4 sm:gap-3 sm:px-6">
-          <div className="w-10 shrink-0 sm:w-28">
+        {/* Narrow screens: Back is icon-only, Build site reads "Build" (a
+            spinner alone while starting) and the dots' 24px hit areas sit
+            edge to edge, so seven steps fit a 360px-wide phone:
+            36 + 4 + 7×24 + 4 + ~75 ≈ 287px of the 296px the footer has. */}
+        <div className="flex items-center gap-1 border-t px-4 py-4 sm:gap-3 sm:px-6">
+          <div className="w-9 shrink-0 sm:w-28">
             {stepIndex > 0 && (
               <Button type="button" variant="ghost" size="sm" onClick={back} disabled={building} aria-label="Back">
                 <ArrowLeft className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Back</span>
@@ -770,9 +772,22 @@ export function WebsiteWizard({
           <StepDots steps={steps} current={stepIndex} maxReached={maxReached} onJump={goTo} disabled={building} />
           <div className="flex shrink-0 justify-end sm:w-28">
             {isLast ? (
-              <Button type="button" size="sm" onClick={build} disabled={building || saving} className="bg-gradient-to-r from-violet-600 to-indigo-600 text-white hover:from-violet-500 hover:to-indigo-500">
-                {building ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}
-                {building ? "Starting…" : "Build site"}
+              <Button
+                type="button"
+                size="sm"
+                onClick={build}
+                disabled={building || saving}
+                aria-label={building ? "Starting…" : "Build site"}
+                className="bg-gradient-to-r from-violet-600 to-indigo-600 text-white hover:from-violet-500 hover:to-indigo-500"
+              >
+                {building ? <Loader2 className="h-4 w-4 animate-spin sm:mr-1" /> : <Sparkles className="mr-1 h-4 w-4" />}
+                {building ? (
+                  <span className="hidden sm:inline">Starting…</span>
+                ) : (
+                  <>
+                    Build<span className="hidden sm:inline"> site</span>
+                  </>
+                )}
               </Button>
             ) : (
               <Button type="button" size="sm" onClick={next} disabled={saving || building} className="bg-violet-600 text-white hover:bg-violet-500">
@@ -801,12 +816,12 @@ function StepDots({
   disabled?: boolean;
 }) {
   return (
-    <nav aria-label="Build steps" className="flex min-w-0 flex-1 items-center justify-center gap-0.5 sm:gap-1">
+    <nav aria-label="Build steps" className="flex min-w-0 flex-1 items-center justify-center gap-0 sm:gap-1">
       {steps.map((s, i) => {
         const reachable = i <= maxReached && !disabled;
         const isCurrent = i === current;
         const done = i < current || (i <= maxReached && !isCurrent);
-        // The button is the hit area (24px tall, padded); the bar inside it
+        // The button is the hit area (at least 24×24px); the bar inside it
         // is only what the step looks like.
         return (
           <button
@@ -818,7 +833,7 @@ function StepDots({
             aria-label={`Step ${i + 1}: ${STEP_META[s].title}`}
             title={STEP_META[s].title}
             className={
-              "group flex h-6 shrink-0 items-center rounded-full px-0.5 outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60 " +
+              "group flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full px-0.5 outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60 " +
               (reachable ? "cursor-pointer" : "cursor-default")
             }
           >

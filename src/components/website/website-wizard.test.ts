@@ -121,6 +121,8 @@ describe("WebsiteWizard — each step, saved as it goes", () => {
       ["Step 6: Review & build", true],
     ]);
     expect(dots[3].getAttribute("aria-current")).toBe("step");
+    // A 24×24px hit area at every width (the visible bar is smaller).
+    for (const d of dots) expect(d.className.split(/\s+/)).toEqual(expect.arrayContaining(["h-6", "min-w-6"]));
     await click("Step 2: The business");
     expect(title()).toBe("The business");
   });

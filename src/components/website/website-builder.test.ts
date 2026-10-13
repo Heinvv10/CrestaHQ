@@ -197,6 +197,12 @@ describe("WebsiteBuilder — stored values at the sinks", () => {
     expect(tip?.className).not.toMatch(/(^|\s)opacity-0(\s|$)/);
     await act(async () => badge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(tip?.className).toMatch(/(^|\s)opacity-0(\s|$)/);
+    // A second click hides it too; keyboard focus alone never pins it open
+    // (only `shown` and hover decide), so Escape and that click both work.
+    await act(async () => badge.click());
+    await act(async () => badge.click());
+    expect(tip?.className).toMatch(/(^|\s)opacity-0(\s|$)/);
+    expect(tip?.className).not.toContain("focus-within");
   });
 
   it("shows no badge on a site the chat bot did not learn from", async () => {

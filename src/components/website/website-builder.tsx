@@ -330,10 +330,10 @@ function httpsOnly(url: string | null): string | null {
 }
 
 /**
- * Marks the site the sub-account's single chat bot learned from. Hover,
- * keyboard focus or a tap (touch has no hover) explains what that means and
- * how to switch it; the explanation is the badge's description for screen
- * readers either way.
+ * Marks the site the sub-account's single chat bot learned from. Hover, or
+ * a click / tap / Enter (touch has no hover), explains what that means and
+ * how to switch it; a second click, Escape or leaving the badge hides it.
+ * The explanation is the badge's description for screen readers either way.
  */
 function ChatSourceBadge({ accent }: { accent: string | null }) {
   const tipId = useId();
@@ -361,7 +361,7 @@ function ChatSourceBadge({ accent }: { accent: string | null }) {
       <span
         id={tipId}
         role="tooltip"
-        className={`pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-72 max-w-[80vw] rounded-lg border bg-popover p-3 text-[11px] leading-relaxed text-popover-foreground shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 ${
+        className={`pointer-events-none absolute left-0 top-full z-20 mt-1.5 w-72 max-w-[80vw] rounded-lg border bg-popover p-3 text-[11px] leading-relaxed text-popover-foreground shadow-lg transition-opacity group-hover:opacity-100 ${
           shown ? "opacity-100" : "opacity-0"
         }`}
       >
