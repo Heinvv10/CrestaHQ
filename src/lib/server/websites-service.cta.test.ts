@@ -284,12 +284,12 @@ describe("updateWebsiteCtaAndRebuild", () => {
 
   describe("a failed site whose last build can still finish", () => {
     const unsettled = () =>
-      site({ status: "failed", gitpageJobId: "job_old", errorMessage: "Couldn't schedule the next poll. Try Re-check now or Rebuild." });
+      site({ status: "failed", gitpageJobId: "job_old", errorMessage: "Couldn't schedule the next poll. Use Re-check now, or Try again." });
 
     it("is refused, as the wizard's draft save refuses it, and nothing is spent", async () => {
       mem.seed(SITE, unsettled());
       const before = mem.read(SITE);
-      await expect(rebuild()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("use Re-check now, or reset it") });
+      await expect(rebuild()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("use Re-check now, or Try again") });
       untouched(before);
     });
 
@@ -298,7 +298,7 @@ describe("updateWebsiteCtaAndRebuild", () => {
         await mem.db.doc(SITE).update(unsettled());
         return Response.json({ formResponseId: "job_new_1", pollUrl: "https://gitpage.test/s/job_new_1" }, { status: 202 });
       });
-      await expect(rebuild()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("use Re-check now, or reset it") });
+      await expect(rebuild()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("use Re-check now, or Try again") });
       expect(mem.read(SITE)).toMatchObject({ status: "failed", gitpageJobId: "job_old", config: { cta_link: "https://sbc.com" } });
       expect(publishCallback).not.toHaveBeenCalled();
     });

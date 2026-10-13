@@ -24,7 +24,7 @@ const faqs = [
   {
     question: "How fast can I get a website live?",
     answer:
-      "Built-in website builder ships a marketing site or video sales letter in 1–3 minutes. Multi-page or single-page funnel — pick a niche template, fill the form, hit Build, get a live URL.",
+      "Built-in website builder ships a marketing site or video sales letter in 10–20 minutes. Multi-page or single-page funnel — pick a niche template, step through the setup, hit Build, get a live URL.",
   },
   {
     question: "Is my data safe?",

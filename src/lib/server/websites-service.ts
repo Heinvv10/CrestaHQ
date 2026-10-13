@@ -226,7 +226,7 @@ export interface WebsiteTransitionGuard {
   /**
    * The job the caller is acting for. When given, the doc must still carry
    * exactly this `gitpageJobId` (null = no job). Omit only for a write that
-   * is not about a job (the draft save, a reset, a new submit).
+   * is not about a job (the draft save, a new submit).
    */
   expectJobId?: string | null;
   /** A further condition on the doc as the transaction reads it. */
@@ -263,11 +263,10 @@ export type WebsiteTransitionResult =
  *
  * Five writers race on a site doc: the QStash poll tick, the manual
  * re-check, gitpage's callback, the operator's draft save, and a build
- * submit or reset. Each reads the doc, does something slow (a call to
+ * submit. Each reads the doc, does something slow (a call to
  * gitpage, a queue publish), then writes — and a plain `update` after that
  * gap writes over whatever landed in between: `building` over a site the
- * callback just made `ready`, a timeout from an old job over a new one,
- * `building` with no job after a reset.
+ * callback just made `ready`, a timeout from an old job over a new one.
  *
  * So every such write re-reads the doc inside a transaction and applies
  * only if the doc is still what the writer acted on: the same job, and a
@@ -393,7 +392,10 @@ const SITE_NOT_FOUND_MESSAGE = "Website not found in this workspace.";
 
 /** As the wizard's draft save words it (website/[siteId] PATCH). */
 const UNSETTLED_FAILURE_MESSAGE =
-  "This site's last build can still finish — use Re-check now, or reset it, before changing it.";
+  "This site's last build can still finish — use Re-check now, or Try again, before changing it.";
+
+const GITPAGE_NO_BUILD_MESSAGE =
+  "The website builder did not start the build. Nothing was built — try again in a few minutes.";
 
 const GATE_OFF_MESSAGE =
   "The website builder is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.";
@@ -639,8 +641,8 @@ export async function submitWebsiteBuildForSubAccount(input: {
     }
   }
   // The real bound on calls to gitpage. The 409 above stops a second build
-  // of a site that is building, but a reset clears that state and two
-  // submits in the same instant both pass it; this counter is what neither
+  // of a site that is building, but two submits in the same instant both
+  // pass it; this counter is what neither
   // can get round.
   const rate = await reserveBuildSubmit(subAccountId);
   if (!rate.ok) {
@@ -715,6 +717,17 @@ export async function submitWebsiteBuildForSubAccount(input: {
     // was not reached (a timeout, an answer lost after the request was
     // sent), so giving the reservation back would let a caller who can make
     // requests fail that way start builds without limit.
+
+    // HARDENING: gitpage answered 2xx but the answer was not a build (no job
+    // id / poll URL). Forwarding its status would make the caller's reply a
+    // success while nothing was recorded, so it is an upstream failure with
+    // fixed text; gitpage's body stays in the log, not the reply.
+    if (err instanceof GitpageError && err.status < 400) {
+      console.error(
+        `[website/build] gitpage answered ${err.status} without a build sa=${subAccountId} site=${siteId}: ${err.message}`,
+      );
+      throw new WebsiteServiceError(GITPAGE_NO_BUILD_MESSAGE, 502);
+    }
     if (err instanceof GitpageError) {
       // 401 means the API key is invalid (rotated upstream, never set,
       // typo'd). Flip the cached status so the UI surfaces the correct CTA.
@@ -837,7 +850,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
         { expectJobId: submission.formResponseId, fromStatuses: ["queued"] },
         {
           status: "failed",
-          errorMessage: "Couldn't schedule the next poll. Try Re-check now or Rebuild.",
+          errorMessage: "Couldn't schedule the next poll. Use Re-check now, or Try again.",
           updatedAt: FieldValue.serverTimestamp(),
         },
       );
@@ -861,7 +874,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
  * the only thing it writes to the site doc is `provisioning` — through
  * `transitionWebsite`, for this job, while the site is still `ready`. So it
  * cannot un-settle or re-settle a site, and a summary for a build that has
- * since been reset or replaced is dropped rather than written onto its
+ * since been replaced or removed is dropped rather than written onto its
  * successor.
  *
  * A gated-off workspace (`websiteEnabledByAgency`) gets no hand-off: the

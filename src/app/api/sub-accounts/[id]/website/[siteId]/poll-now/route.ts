@@ -43,11 +43,11 @@ export const dynamic = "force-dynamic";
  *     finds the doc stale and only it publishes. The attempt count (the
  *     poll cap) is never reset for a doc in flight. Without the staleness
  *     test every click would add a chain; without the revive a card whose
- *     chain died would spin forever, since in-flight cards offer neither
- *     Rebuild nor Remove.
+ *     chain died would spin forever, since in-flight cards offer only
+ *     Re-check now (no Try again, no Remove).
  *
  * Writes go through `transitionWebsite`, guarded on the job this request
- * read: a `ready` site is never written over, and a site reset or rebuilt
+ * read: a `ready` site is never written over, and a site rebuilt or removed
  * while this request was talking to gitpage is left as it now is.
  *
  * Returns the resolved/intermediate state so the caller can update the UI

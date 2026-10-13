@@ -39,7 +39,7 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
             : status === "failed"
               ? `failed${w.errorMessage ? ` — ${w.errorMessage}` : ""}${
                   hasUnsettledFailure(w)
-                    ? "; its last build can still finish, so it can't be re-pointed until someone uses Re-check now, or resets it, on the Website page"
+                    ? "; its last build can still finish, so it can't be re-pointed until someone uses Re-check now, or Try again, on the Website page"
                     : ""
                 }`
               : status === "queued" || status === "building"

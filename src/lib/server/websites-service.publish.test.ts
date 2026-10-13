@@ -64,7 +64,7 @@ describe("submitWebsiteBuildForSubAccount — first poll not queued", () => {
     await build();
     const site = docs.get(SITE);
     expect(site?.status).toBe("failed");
-    expect(site?.errorMessage).toBe("Couldn't schedule the next poll. Try Re-check now or Rebuild.");
+    expect(site?.errorMessage).toBe("Couldn't schedule the next poll. Use Re-check now, or Try again.");
     expect(site?.gitpageJobId).toBe("fr_1");
     expect(error).toHaveBeenCalledWith("[website/build] first poll not queued sa=sa1 site=site1");
     error.mockRestore();

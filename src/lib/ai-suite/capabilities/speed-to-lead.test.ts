@@ -424,7 +424,7 @@ describe("forms, workflows and websites", () => {
   it("does not offer to re-point a failed site whose last build can still finish", async () => {
     mem.seed("subAccounts/sa1/website/site2", { subAccountId: "sa1", name: "Promo", status: "failed", gitpageJobId: "job_old", config: { cta_link: "https://sbc.com" } });
     const promo = (await report()).split("\n").find((l) => l.includes("“Promo”"))!;
-    expect(promo).toContain("can't be re-pointed until someone uses Re-check now, or resets it");
+    expect(promo).toContain("can't be re-pointed until someone uses Re-check now, or Try again");
     expect(promo).not.toContain("update_website_cta");
   });
 

@@ -36,7 +36,6 @@ vi.mock("@/lib/webhooks/public-fetch", () => ({
 
 const { POST: poll } = await import("./route");
 const { POST: pollNow } = await import("../poll-now/route");
-const { DELETE: removeOrReset } = await import("../route");
 const { POST: buildSettled } = await import("@/app/api/webhooks/gitpage/build-settled/route");
 
 const KEY = "gp_test_key";
@@ -79,15 +78,6 @@ const tick = (formResponseId = JOB) =>
       method: "POST",
       headers: { "upstash-signature": "sig" },
       body: JSON.stringify({ subAccountId: "sa1", siteId: "site1", formResponseId }),
-    }),
-    params,
-  );
-
-const reset = () =>
-  removeOrReset(
-    new Request("https://app.test/api/sub-accounts/sa1/website/site1?reset=1", {
-      method: "DELETE",
-      headers: { "x-user-uid": "u_owner" },
     }),
     params,
   );
@@ -381,19 +371,6 @@ describe("something else reaches the site while a poll tick is talking to gitpag
     });
     expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
     expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null });
-  });
-
-  it("R6: a reset during a tick leaves a draft with no job, and the next tick is stale", async () => {
-    gitpageSaysWhile(async () => {
-      expect((await reset()).status).toBe(200);
-    }, IN_PROGRESS);
-    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
-    expect(mem.read(SITE)).toMatchObject({ status: "draft", gitpageJobId: null, liveUrl: null, pollAttempts: 0 });
-    expect(qstash.publishCallback).not.toHaveBeenCalled();
-
-    gitpageSays(PUBLISHED);
-    expect(await (await tick()).json()).toEqual({ ok: true, ignored: "stale-tick" });
-    expect(mem.read(SITE)).toMatchObject({ status: "draft", gitpageJobId: null, liveUrl: null });
   });
 
   it("a site removed during a tick ends the tick quietly instead of failing it", async () => {

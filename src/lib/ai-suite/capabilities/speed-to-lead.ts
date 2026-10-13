@@ -314,7 +314,7 @@ export const SPEED_TO_LEAD_CAPABILITIES: AiSuiteCapability[] = [
               const cta = oneLine(w.config?.cta_link).slice(0, 300);
               const page = cta ? pageOf(cta) : null;
               const note = hasUnsettledFailure(w)
-                ? " (its last build can still finish — it can't be re-pointed until someone uses Re-check now, or resets it, on the Website page)"
+                ? " (its last build can still finish — it can't be re-pointed until someone uses Re-check now, or Try again, on the Website page)"
                 : page && formPages.has(page)
                   ? " (already points at a form ✓)"
                   : page && bookingPages.has(page)

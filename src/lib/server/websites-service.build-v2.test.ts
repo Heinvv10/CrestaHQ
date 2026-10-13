@@ -232,6 +232,26 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     expect(sent().premium).toMatchObject({ mode: "light" });
   });
 
+  it("a 2xx from gitpage without a job is a fixed-text 502: the site stays put and the hour's build is spent", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchMock.mockImplementationOnce(async () => Response.json({ ok: true, note: "<b>not a build</b>" }, { status: 202 }));
+    let error: unknown;
+    await build().catch((err: unknown) => (error = err));
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("gitpage answered 202 without a build"));
+    logged.mockRestore();
+    expect(error).toBeInstanceOf(WebsiteServiceError);
+    expect(error).toMatchObject({
+      status: 502,
+      message: "The website builder did not start the build. Nothing was built — try again in a few minutes.",
+      gitpageStatus: undefined,
+      gitpageBody: undefined,
+    });
+    expect(mem.read(SITE)).toMatchObject({ status: "draft" });
+    expect(mem.read(SITE)?.gitpageJobId).toBeUndefined();
+    expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ count: 1 });
+    expect(publishCallback).not.toHaveBeenCalled();
+  });
+
   it("tells gitpage where to call back and whom to invite as editor", async () => {
     await build();
     expect(sent()).toMatchObject({
@@ -461,8 +481,8 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       expect(fetchMock).toHaveBeenCalledTimes(10);
     });
 
-    it("the reset route is no way round it: reset-and-rebuild is still 10 an hour", async () => {
-      // A reset clears the in-flight state, so the 409 does not apply — only the counter does.
+    it("clearing the in-flight state is no way round it: back-to-draft-and-build is still 10 an hour", async () => {
+      // A site with no job in flight is not refused with 409 — only the counter applies.
       const resetAndBuild = async () => {
         await mem.db.doc(SITE).update({ status: "draft", gitpageJobId: null });
         return build();

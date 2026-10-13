@@ -165,35 +165,21 @@ describe("PATCH /api/sub-accounts/[id]/website/[siteId] — draft save", () => {
   });
 });
 
-describe("DELETE /api/sub-accounts/[id]/website/[siteId]?reset=1", () => {
-  const reset = (siteId = "site1") =>
-    DELETE(
-      new Request(`https://app.test/api/sub-accounts/sa1/website/${siteId}?reset=1`, {
+describe("DELETE /api/sub-accounts/[id]/website/[siteId]?reset=1 — removed", () => {
+  // A page loaded before WS-6 still shows the old Rebuild button, which
+  // sends this. It must be refused, never treated as a Remove.
+  it.each(["?reset=1", "?reset=0", "?reset"])("%s is refused with 400 and the site is left as it was", async (query) => {
+    seedSite("ready");
+    const before = mem.read(SITE);
+    const res = await DELETE(
+      new Request(`https://app.test/api/sub-accounts/sa1/website/site1${query}`, {
         method: "DELETE",
         headers: { "x-user-uid": "u_admin" },
       }),
-      { params: Promise.resolve({ id: "sa1", siteId }) },
+      { params: Promise.resolve({ id: "sa1", siteId: "site1" }) },
     );
-
-  it.each(["queued", "building", "ready", "failed"])("resets a %s site to a draft with no job, keeping its config", async (status) => {
-    seedSite(status);
-    await mem.db.doc(SITE).update({ settledDelivery: { jobId: "build_abc", status: "failed" }, statusPhase: "images" });
-    expect((await reset()).status).toBe(200);
-    expect(mem.read(SITE)).toMatchObject({
-      status: "draft",
-      gitpageJobId: null,
-      liveUrl: null,
-      errorMessage: null,
-      pollAttempts: 0,
-      statusPhase: null,
-      settledDelivery: null,
-      config: { heading: "Before" },
-    });
-  });
-
-  it("answers 404 for a site that does not exist, creating nothing", async () => {
-    expect((await reset("nope")).status).toBe(404);
-    expect(mem.read("subAccounts/sa1/website/nope")).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(mem.read(SITE)).toEqual(before);
   });
 });
 
@@ -217,7 +203,6 @@ describe("a site id that is not a document id", () => {
 
   it.each([
     ["the draft save", "PATCH", ""],
-    ["a reset", "DELETE", "?reset=1"],
     ["Remove", "DELETE", ""],
   ] as const)("%s answers 404 before anything touches Firestore", async (_label, method, query) => {
     seedSite("draft");
@@ -241,7 +226,6 @@ describe("a site id that is not a document id", () => {
   it("an ordinary id still reaches the doc", async () => {
     seedSite("draft");
     expect((await call("PATCH", "site1")).status).toBe(200);
-    expect((await call("DELETE", "site1", "?reset=1")).status).toBe(200);
     expect((await call("DELETE", "site1")).status).toBe(200);
     expect(mem.read(SITE)).toBeUndefined();
   });

@@ -28,7 +28,7 @@ export const dynamic = "force-dynamic";
  * tick:
  *   1. Verifies the Upstash-Signature header.
  *   2. Reads the website doc; bails if status is no longer in-flight (the
- *      operator may have hit Rebuild, or a previous tick already settled).
+ *      operator may have built again, or a previous tick already settled).
  *   3. Calls gitpage's status endpoint.
  *   4. Updates Firestore: success / failure / still-pending.
  *   5. If still pending and we're under the cap, reschedules itself.
@@ -234,13 +234,13 @@ export async function POST(
   if (!rescheduled) {
     // QStash publish failed — chain is dead. Mark the doc as failed
     // rather than letting it spin in queued/building forever, so the
-    // operator sees a real error and can hit Rebuild (or Re-check now
+    // operator sees a real error and can use Try again (or Re-check now
     // to retry). Without this guard, a transient Upstash blip silently
     // strands the build past the poll cap.
     const stranded = await transitionWebsite(docRef, stillThisJob, {
       status: "failed",
       errorMessage:
-        "Couldn't schedule the next poll. Try Re-check now or Rebuild.",
+        "Couldn't schedule the next poll. Use Re-check now, or Try again.",
       pollAttempts: attempts,
       updatedAt: FieldValue.serverTimestamp(),
     });
