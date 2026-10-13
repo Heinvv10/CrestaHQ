@@ -106,11 +106,23 @@ describe("WebsiteWizard — each step, saved as it goes", () => {
     expect(patches()).toHaveLength(0);
   });
 
-  it("resumes on the saved step", async () => {
+  it("resumes on the saved step, with the steps before it reachable from the dots", async () => {
     seedSite({ wizardStep: "look" }, BUSINESS_CONFIG);
     await openWizard();
     expect(title()).toBe("Look & feel");
     expect(stepText()).toBe("Step 4 of 6");
+    const dots = Array.from(document.body.querySelectorAll<HTMLButtonElement>('nav[aria-label="Build steps"] button'));
+    expect(dots.map((d) => [d.getAttribute("aria-label"), d.disabled])).toEqual([
+      ["Step 1: Start", false],
+      ["Step 2: The business", false],
+      ["Step 3: Pages & services", false],
+      ["Step 4: Look & feel", false],
+      ["Step 5: Your story", true],
+      ["Step 6: Review & build", true],
+    ]);
+    expect(dots[3].getAttribute("aria-current")).toBe("step");
+    await click("Step 2: The business");
+    expect(title()).toBe("The business");
   });
 
   it("saves the step it is on when closed", async () => {
@@ -126,7 +138,7 @@ describe("WebsiteWizard — each step, saved as it goes", () => {
 });
 
 describe("WebsiteWizard — the routes' refusals", () => {
-  it("shows the gate's refusal and stores nothing when the website builder is off", async () => {
+  it("shows the gate's refusal, stores nothing and stays on the step when the website builder is off", async () => {
     const { mem } = await import("@/test/website-wizard-harness");
     mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: false });
     seedSite();
@@ -135,6 +147,9 @@ describe("WebsiteWizard — the routes' refusals", () => {
     expect(patches()).toHaveLength(1);
     expect(toasts.error).toHaveBeenCalledWith(expect.stringMatching(/website builder/i));
     expect(site().wizardStep).toBeNull();
+    // Not advanced past a step that was not saved.
+    expect(title()).toBe("Start");
+    expect(stepText()).toBe("Step 1 of 6");
   });
 
   it("shows the in-flight refusal when a build started after the wizard opened", async () => {
@@ -147,6 +162,16 @@ describe("WebsiteWizard — the routes' refusals", () => {
     await click("Next");
     expect(toasts.error).toHaveBeenCalledWith(expect.stringMatching(/building right now/));
     expect(site()).toMatchObject({ wizardStep: "business", config: { heading: "" } });
+    expect(title()).toBe("The business");
+  });
+
+  it("moves on without saving on a failed site whose build can still finish", async () => {
+    seedSite({ status: "failed", gitpageJobId: "build_old", wizardStep: "business" }, BUSINESS_CONFIG);
+    await openWizard("business");
+    await click("Next");
+    expect(title()).toBe("Pages & services");
+    expect(patches()).toHaveLength(0);
+    expect(toasts.error).not.toHaveBeenCalled();
   });
 
   it("sends no save for a failed site whose build can still finish, and says so on Review", async () => {

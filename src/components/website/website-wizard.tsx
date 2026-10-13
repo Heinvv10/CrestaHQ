@@ -326,7 +326,11 @@ export function WebsiteWizard({
     }
     const target = steps[stepIndex + 1];
     if (!target) return;
-    await saveDraft(target);
+    // Advance only once the step is saved (the refusal is already on
+    // screen), so Review's "every step is saved" holds. A draft the route
+    // would refuse anyway (see `draftSavable`) moves on unsaved, and Review
+    // says so.
+    if (draftSavable && !(await saveDraft(target))) return;
     goTo(stepIndex + 1);
   }
 
@@ -753,16 +757,18 @@ export function WebsiteWizard({
           )}
         </div>
 
-        <div className="flex items-center gap-3 border-t px-6 py-4">
-          <div className="w-28">
+        {/* Narrow screens: Back is icon-only and the dots shrink, so seven
+            steps and Build site fit a 360px-wide phone. */}
+        <div className="flex items-center gap-2 border-t px-4 py-4 sm:gap-3 sm:px-6">
+          <div className="w-10 shrink-0 sm:w-28">
             {stepIndex > 0 && (
-              <Button type="button" variant="ghost" size="sm" onClick={back} disabled={building}>
-                <ArrowLeft className="mr-1 h-4 w-4" /> Back
+              <Button type="button" variant="ghost" size="sm" onClick={back} disabled={building} aria-label="Back">
+                <ArrowLeft className="h-4 w-4 sm:mr-1" /> <span className="hidden sm:inline">Back</span>
               </Button>
             )}
           </div>
           <StepDots steps={steps} current={stepIndex} maxReached={maxReached} onJump={goTo} disabled={building} />
-          <div className="flex w-28 justify-end">
+          <div className="flex shrink-0 justify-end sm:w-28">
             {isLast ? (
               <Button type="button" size="sm" onClick={build} disabled={building || saving} className="bg-gradient-to-r from-violet-600 to-indigo-600 text-white hover:from-violet-500 hover:to-indigo-500">
                 {building ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1 h-4 w-4" />}
@@ -795,11 +801,13 @@ function StepDots({
   disabled?: boolean;
 }) {
   return (
-    <nav aria-label="Build steps" className="flex flex-1 items-center justify-center gap-1.5">
+    <nav aria-label="Build steps" className="flex min-w-0 flex-1 items-center justify-center gap-0.5 sm:gap-1">
       {steps.map((s, i) => {
         const reachable = i <= maxReached && !disabled;
         const isCurrent = i === current;
         const done = i < current || (i <= maxReached && !isCurrent);
+        // The button is the hit area (24px tall, padded); the bar inside it
+        // is only what the step looks like.
         return (
           <button
             key={s}
@@ -810,15 +818,22 @@ function StepDots({
             aria-label={`Step ${i + 1}: ${STEP_META[s].title}`}
             title={STEP_META[s].title}
             className={
-              "h-1.5 rounded-full transition-all " +
-              (isCurrent
-                ? "w-8 bg-gradient-to-r from-violet-500 to-indigo-500"
-                : done
-                  ? "w-4 bg-violet-500/50 hover:bg-violet-500/70"
-                  : "w-4 bg-muted-foreground/20") +
-              (reachable ? " cursor-pointer" : " cursor-default")
+              "group flex h-6 shrink-0 items-center rounded-full px-0.5 outline-none focus-visible:ring-2 focus-visible:ring-violet-500/60 " +
+              (reachable ? "cursor-pointer" : "cursor-default")
             }
-          />
+          >
+            <span
+              aria-hidden
+              className={
+                "block h-1.5 rounded-full transition-all " +
+                (isCurrent
+                  ? "w-5 bg-gradient-to-r from-violet-500 to-indigo-500 sm:w-8"
+                  : done
+                    ? "w-2 bg-violet-500/50 group-hover:bg-violet-500/70 sm:w-4"
+                    : "w-2 bg-muted-foreground/20 sm:w-4")
+              }
+            />
+          </button>
         );
       })}
     </nav>

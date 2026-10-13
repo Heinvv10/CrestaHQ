@@ -92,9 +92,11 @@ export async function until(cond: () => boolean, what: string, ms = 15_000) {
 
 export const stepText = () => host().querySelector("[data-slot=dialog-content] p")?.textContent ?? "";
 export const title = () => host().querySelector("[data-slot=dialog-title]")?.textContent ?? "";
+/** A button by its text, or by its aria-label when it has no text (the step dots). */
 export const button = (text: string | RegExp) => {
+  const name = (b: HTMLButtonElement) => b.textContent?.trim() || b.getAttribute("aria-label") || "";
   const hit = Array.from(host().querySelectorAll("button")).find((b) =>
-    typeof text === "string" ? b.textContent?.trim() === text : text.test(b.textContent?.trim() ?? ""),
+    typeof text === "string" ? name(b) === text : text.test(name(b)),
   );
   if (!hit) throw new Error(`no button "${String(text)}"`);
   return hit;
