@@ -42,6 +42,11 @@ import {
  * duration, or is still running without being pending. Lapsed grants of an
  * earlier agent (re-key) are never refunded: their charges stand.
  *
+ * A refund needs positive evidence: a complete list, every item in range
+ * well-formed. Lapsed grants of an agent other than the watermark's (a
+ * re-key) are never refunded — that agent is not listed, so there is no
+ * evidence either way.
+ *
  * ASSUMED, not runtime-verified: the list endpoint's filters, fields and
  * paging (see `listConversations`); the contract test pins our reading.
  */
@@ -113,8 +118,9 @@ function callsToCount(
   return { calls };
 }
 
-const secondsOf = (c: ConversationListItem) =>
-  c.status === "failed" ? 0 : Math.max(0, Math.round(c.durationSeconds ?? 0));
+/** A call's real duration — a failed call too, when ElevenLabs reports one
+ *  (as settling counts it); 0 only for a failed call with none. */
+const secondsOf = (c: ConversationListItem) => Math.max(0, Math.round(c.durationSeconds ?? 0));
 
 /** Take a lapsed grant's charge back off the counters it went into. */
 function refund(u: WebVoiceUsageDoc, charge: WebVoiceLapsedGrant): void {

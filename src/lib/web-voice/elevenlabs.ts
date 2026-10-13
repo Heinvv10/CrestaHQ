@@ -317,8 +317,10 @@ export interface ConversationListItem extends ConversationSummary {
  * (not runtime-verified): `?agent_id&call_start_after_unix&page_size&cursor`
  * → `{conversations: [{conversation_id, agent_id, status,
  * start_time_unix_secs, call_duration_secs, …}], has_more, next_cursor}`.
- * A body without a `conversations` array throws; a malformed item comes back
- * with nulls so the caller can refuse to act on it.
+ * A body without a `conversations` array throws; no item is dropped — a
+ * malformed one comes back with nulls so the caller can refuse to act on it.
+ * A page without a boolean `has_more` counts as having more unless its
+ * `next_cursor` is explicitly null.
  */
 export async function listConversations(
   apiKey: string,
@@ -352,5 +354,8 @@ export async function listConversations(
     };
   });
   const nextCursor = typeof data.next_cursor === "string" && data.next_cursor ? data.next_cursor : null;
-  return { conversations, hasMore: data.has_more === true, nextCursor };
+  // Without a boolean `has_more`, only an explicit `next_cursor: null` says
+  // this is the last page; anything else is treated as more to come.
+  const hasMore = typeof data.has_more === "boolean" ? data.has_more : data.next_cursor !== null;
+  return { conversations, hasMore, nextCursor };
 }

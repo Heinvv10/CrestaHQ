@@ -123,6 +123,17 @@ describe("ElevenLabs conversation reads (ASSUMED shapes)", () => {
     });
   });
 
+  it.each<[string, Record<string, unknown>, boolean]>([
+    ["has_more false", { has_more: false, next_cursor: "c2" }, false],
+    ["has_more true", { has_more: true, next_cursor: "c2" }, true],
+    ["no has_more, next_cursor null", { next_cursor: null }, false],
+    ["no has_more, a next_cursor", { next_cursor: "c2" }, true],
+    ["neither field", {}, true],
+  ])("reads paging fail-closed: %s", async (_label, paging, hasMore) => {
+    answer({ conversations: [], ...paging });
+    expect((await listConversations("key", "agent_1", 0, null)).hasMore).toBe(hasMore);
+  });
+
   it("throws on a list body without a conversations array, and nulls a malformed item", async () => {
     answer({ items: [], has_more: false });
     await expect(listConversations("key", "agent_1", 0, null)).rejects.toThrow(/no conversations array/);
