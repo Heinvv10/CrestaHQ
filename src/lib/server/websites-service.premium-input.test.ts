@@ -20,6 +20,10 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
   markGitpageBuildSucceeded: async () => {},
   markGitpageKeyInvalid: async () => {},
 }));
+// The apex → www probe (WS-3) is its own fetch with its own tests
+// (app-url.test.ts); null = nothing resolved, so callers use NEXT_PUBLIC_APP_URL
+// and every stubbed fetch here is a gitpage call.
+vi.mock("@/lib/server/app-url", () => ({ resolvedAppUrl: async () => null }));
 
 const { submitWebsiteBuildForSubAccount, websiteLimitsPath } = await import("./websites-service");
 

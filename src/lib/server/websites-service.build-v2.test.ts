@@ -28,6 +28,11 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
   markGitpageBuildSucceeded: async () => {},
   markGitpageKeyInvalid: async () => {},
 }));
+// The apex → www probe has its own tests (app-url.test.ts). Here it answers
+// what the test sets: null means "nothing resolved", and the callers fall
+// back to NEXT_PUBLIC_APP_URL, which they validate themselves.
+const appUrl = vi.hoisted(() => ({ resolved: null as string | null }));
+vi.mock("@/lib/server/app-url", () => ({ resolvedAppUrl: async () => appUrl.resolved }));
 
 const {
   createWebsiteForSubAccount,
@@ -195,6 +200,7 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     mem.seed("subAccounts/sa1", { agencyId: "ag1", websiteEnabledByAgency: true, name: "Acme" });
     mem.seed(SITE, { id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "draft", provisioning: { errors: ["old"] } });
     publishCallback.mockReset().mockResolvedValue({ messageId: "m1" });
+    appUrl.resolved = null;
     // Each accepted submit gets its own job id, as gitpage issues them.
     let jobs = 0;
     fetchMock.mockReset().mockImplementation(async () => {
@@ -265,11 +271,69 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     expect(sent()).not.toHaveProperty("editorEmail");
   });
 
-  it("sends no LeadStack form or widget wiring yet (the WS-3 hand-off is not ported)", async () => {
+  it("creates the Website contact form before the request and bakes its submit URL and the widget into the site", async () => {
     await build();
-    expect(sent()).not.toHaveProperty("leadstack");
-    expect(mem.read(SITE)?.formId).toBeNull();
+    const forms = mem.list("forms");
+    expect(forms).toHaveLength(1);
+    expect(forms[0]).toMatchObject({ name: "Website contact", subAccountId: "sa1", agencyId: "ag1", createdByUid: "u1" });
+    const formId = forms[0].id;
+    expect(sent().leadstack).toEqual({
+      appUrl: "https://crm.example.test",
+      subAccountId: "sa1",
+      formId,
+      formSubmitUrl: `https://crm.example.test/api/forms/${formId}/submit`,
+      widgetScriptUrl: "https://crm.example.test/widget.js",
+    });
+    expect(mem.read(SITE)?.formId).toBe(formId);
+  });
+
+  it("bakes the redirect-resolved app origin (apex → www) into the wiring and the callback URL", async () => {
+    appUrl.resolved = "https://www.crm.example.test";
+    await build();
+    expect(sent()).toMatchObject({
+      callbackUrl: "https://www.crm.example.test/api/webhooks/gitpage/build-settled",
+      leadstack: { appUrl: "https://www.crm.example.test", widgetScriptUrl: "https://www.crm.example.test/widget.js" },
+    });
+  });
+
+  it("reuses the one form on a rebuild and for a second site in the workspace", async () => {
+    await build();
+    const formId = mem.list("forms")[0].id;
+    await mem.db.doc(SITE).update({ status: "ready" });
+    await build();
+    mem.seed("subAccounts/sa1/website/site2", { id: "site2", agencyId: "ag1", subAccountId: "sa1", status: "draft" });
+    await build({ siteId: "site2" });
+    expect(mem.list("forms")).toHaveLength(1);
+    expect(mem.read("subAccounts/sa1/website/site2")?.formId).toBe(formId);
+  });
+
+  it("two sites submitted at the same moment end up sharing ONE form", async () => {
+    mem.seed("subAccounts/sa1/website/site2", { id: "site2", agencyId: "ag1", subAccountId: "sa1", status: "draft" });
+    await Promise.all([build(), build({ siteId: "site2" })]);
+    const forms = mem.list("forms");
+    expect(forms).toHaveLength(1);
+    expect(mem.read(SITE)?.formId).toBe(forms[0].id);
+    expect(mem.read("subAccounts/sa1/website/site2")?.formId).toBe(forms[0].id);
+  });
+
+  it("a build without the lead form creates none and sends only the widget", async () => {
+    await build({ config: { ...sampleWebsiteConfig(), include_form: false } });
     expect(mem.list("forms")).toEqual([]);
+    expect(sent().leadstack).toEqual({
+      appUrl: "https://crm.example.test",
+      subAccountId: "sa1",
+      widgetScriptUrl: "https://crm.example.test/widget.js",
+    });
+    expect(mem.read(SITE)?.formId).toBeNull();
+  });
+
+  it("sends no wiring at all when the app URL is not public https — and says so in the log", async () => {
+    process.env.NEXT_PUBLIC_APP_URL = "http://127.0.0.1:3100";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await build();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("no LeadStack form/widget wiring"))).toBe(true);
+    warn.mockRestore();
+    expect(sent()).not.toHaveProperty("leadstack");
   });
 
   it("records the job's v2 bookkeeping and clears the previous build's", async () => {

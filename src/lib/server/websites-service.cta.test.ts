@@ -31,6 +31,10 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
   markGitpageBuildSucceeded: async () => {},
   markGitpageKeyInvalid: async () => {},
 }));
+// The apex → www probe (WS-3) is its own fetch with its own tests
+// (app-url.test.ts); null = nothing resolved, so callers use NEXT_PUBLIC_APP_URL
+// and every stubbed fetch here is a gitpage call.
+vi.mock("@/lib/server/app-url", () => ({ resolvedAppUrl: async () => null }));
 
 const {
   safeCtaLink,
@@ -301,7 +305,9 @@ describe("updateWebsiteCtaAndRebuild", () => {
   });
 
   it("writes back only the call-to-action: a wizard save that lands meanwhile is kept", async () => {
-    // The gate is read twice: here, then inside the build. Save over the site on the second.
+    // The gate is read here, then inside the build — save over the site on that
+    // second read. A third read is the build creating the "Website contact"
+    // form (WS-3), after the site config was taken.
     let gateReads = 0;
     hooks.beforeGet = async (path) => {
       if (path === "subAccounts/sa1" && ++gateReads === 2) {
@@ -309,7 +315,7 @@ describe("updateWebsiteCtaAndRebuild", () => {
       }
     };
     await rebuild();
-    expect(gateReads).toBe(2);
+    expect(gateReads).toBe(3);
     expect(mem.read(SITE)).toMatchObject({
       status: "queued",
       config: { cta_link: FORM_URL, hero_statement: "EDITED BY WIZARD", heading: "Starbucks Coffee Chadstone" },
