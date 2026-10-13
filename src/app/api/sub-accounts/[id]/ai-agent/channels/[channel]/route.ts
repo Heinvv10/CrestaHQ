@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import {
   getAgentProfile,
   getChannelConfig,
+  MAX_ALLOWED_DOMAINS,
   upsertChannelConfig,
   type ConfiguredChannelId,
 } from "@/lib/comms/ai/agent";
@@ -240,7 +241,7 @@ function sanitiseWebChatBlock(raw: unknown): Partial<WebChatChannelConfig> {
       .filter((v): v is string => typeof v === "string")
       .map(normaliseDomain)
       .filter((s): s is string => !!s)
-      .slice(0, 25);
+      .slice(0, MAX_ALLOWED_DOMAINS);
   }
   if ("welcomeMessage" in r && typeof r.welcomeMessage === "string") {
     out.welcomeMessage = r.welcomeMessage.slice(0, 400);

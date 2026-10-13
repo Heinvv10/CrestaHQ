@@ -17,7 +17,10 @@ import { blankWebsiteConfig, type WebsiteConfig, type WebsiteDoc } from "@/types
  */
 
 const mem = createMemoryFirestore();
-vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
+vi.mock("@/lib/firebase/admin", () => ({
+  getAdminDb: () => mem.db,
+  getAdminAuth: () => ({ getUser: async () => ({ customClaims: { status: "active", agencyId: "ag1" } }) }),
+}));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: async () => undefined }));
 vi.mock("@/lib/automations/qstash", () => ({
   qstashIsConfigured: () => true,
@@ -53,6 +56,7 @@ const {
   websiteHandoffStatePath,
   WEBSITE_WORKFLOW_SOURCE,
 } = await import("./website-handoff-service");
+const { PUT: putCustomDomain } = await import("@/app/api/sub-accounts/[id]/website/[siteId]/domain/route");
 const { fireWorkflowTrigger } = await import("@/lib/workflows/engine");
 const { checkOriginAllowed } = await import("@/lib/comms/web-chat/origin");
 
@@ -474,6 +478,50 @@ describe("idempotence", () => {
     for (const path of ["forms/x/y/z", "a/b", ""]) {
       expect(await ensureWebsiteContactForm({ subAccountId: "sa1", createdByUid: "u1", existingFormId: path })).toBe(formId);
     }
+  });
+});
+
+describe("the hand-off and a custom domain share one allow-list", () => {
+  const savedomain = () =>
+    putCustomDomain(
+      new Request("https://app.test/api/sub-accounts/sa1/website/site2/domain", {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-user-uid": "u_admin" },
+        body: JSON.stringify({ domain: "www.acme.com" }),
+      }),
+      { params: Promise.resolve({ id: "sa1", siteId: "site2" }) },
+    );
+  const seed24 = () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.test");
+    mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "admin", status: "active" });
+    // 23 fillers plus the apex: the domain save adds only its www twin, the hand-off adds its host: one slot each.
+    mem.seed(CHAT, {
+      enabled: false,
+      webChat: { allowedDomains: [...Array.from({ length: 23 }, (_, i) => `h${i}.example`), "acme.com"] },
+    });
+    seedLiveSite("site2", { id: "site2" });
+  };
+
+  it("racing at 24 entries: exactly one fits, the other refuses, the list never passes the cap", async () => {
+    seed24();
+    const [res, out] = await Promise.all([savedomain(), handoff({ siteId: "site1" })]);
+    if (!out) throw new Error("hand-off returned nothing");
+    const putFit = res.status === 200;
+    const handoffFit = out.chatAllowlisted === true;
+    expect([putFit, handoffFit].filter(Boolean)).toHaveLength(1);
+    if (!putFit) expect(res.status).toBe(409);
+    if (!handoffFit) expect(out.errors.join(" ")).toMatch(/allowed-domains list is full/);
+    expect(allowedOf()).toHaveLength(25);
+  });
+
+  it("when the domain save lands first, the hand-off records the skip and the list stays at 25", async () => {
+    seed24();
+    expect((await savedomain()).status).toBe(200);
+    const out = await handoff({ siteId: "site1" });
+    if (!out) throw new Error("hand-off returned nothing");
+    expect(out.chatAllowlisted).toBe(false);
+    expect(out.errors.join(" ")).toMatch(/allowed-domains list is full/);
+    expect(allowedOf()).toHaveLength(25);
   });
 });
 
