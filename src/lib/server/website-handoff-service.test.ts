@@ -30,7 +30,12 @@ const push = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: push }));
 const updateWebVoiceSettings = vi.hoisted(() => vi.fn());
 const readWebVoiceHandoffSnapshot = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/server/web-voice-service", () => ({ updateWebVoiceSettings, readWebVoiceHandoffSnapshot }));
+const validateWebVoiceHandoff = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/server/web-voice-service", () => ({
+  updateWebVoiceSettings,
+  readWebVoiceHandoffSnapshot,
+  validateWebVoiceHandoff,
+}));
 
 const fail = vi.hoisted(() => ({ chat: false, profile: false, workflow: false }));
 vi.mock("@/lib/comms/ai/agent", async (importOriginal) => {
@@ -179,6 +184,9 @@ beforeEach(async () => {
       enabled: meta?.ready === true && meta.enabled !== false,
     };
   });
+  validateWebVoiceHandoff.mockReset().mockImplementation(async (input: {
+    transactionGuard: (tx: FirebaseFirestore.Transaction) => Promise<void>;
+  }) => (mem.db as unknown as FirebaseFirestore.Firestore).runTransaction(input.transactionGuard));
   updateWebVoiceSettings.mockReset().mockImplementation(async (input: {
     transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
   }) => {
@@ -395,6 +403,33 @@ describe("Web Voice hand-off", () => {
     seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: true } });
     enableChat();
     expect(await handoff()).toMatchObject({ voiceEnabled: true, voiceSkippedReason: null });
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(validateWebVoiceHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      subAccountId: "sa1", expectedRevision: "voice-rev-1", transactionGuard: expect.any(Function),
+    }));
+  });
+
+  it.each([
+    ["connection replacement", () => undefined, "connection changed or could not be verified"],
+    ["site change", () => seedLiveSite("site1", { gitpageJobId: "new-build" }), "site was rebuilt"],
+    ["readiness disable", () => seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: false, enabled: false } }), "connection was no longer ready"],
+    ["Web Voice gate change", () => seedSub({ webVoiceEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: true } }), "agency switched off Web Voice"],
+    ["Web Chat gate change", () => seedSub({ webVoiceEnabledByAgency: true, webChatEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: true } }), "agency locked Web Chat"],
+    ["chat disable", () => mem.seed(CHAT, { enabled: false }), "Web Chat AI was switched off"],
+    ["AI configuration loss", () => vi.stubEnv("OPENROUTER_API_KEY", ""), "AI provider is no longer configured"],
+  ])("revalidates an already-enabled snapshot after a %s during prior hand-off work", async (_label, change, reason) => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: true } });
+    enableChat();
+    validateWebVoiceHandoff.mockImplementationOnce(async (input: {
+      transactionGuard: (tx: FirebaseFirestore.Transaction) => Promise<void>;
+    }) => {
+      change();
+      if (_label === "connection replacement") throw new Error("connection changed");
+      await (mem.db as unknown as FirebaseFirestore.Firestore).runTransaction(input.transactionGuard);
+    });
+    const out = await handoff();
+    expect(out!.voiceEnabled).toBe(false);
+    expect(out!.voiceSkippedReason).toContain(reason);
     expect(updateWebVoiceSettings).not.toHaveBeenCalled();
   });
 

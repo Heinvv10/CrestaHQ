@@ -152,6 +152,21 @@ export async function readWebVoiceHandoffSnapshot(
   });
 }
 
+export async function validateWebVoiceHandoff(input: {
+  subAccountId: string;
+  expectedRevision: string;
+  transactionGuard: (tx: FirebaseFirestore.Transaction) => Promise<void>;
+}): Promise<void> {
+  const db = getAdminDb();
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(db.doc(webVoiceConnectionPath(input.subAccountId)));
+    if (revOf(snap) !== input.expectedRevision) {
+      throw new WebVoiceError("Web Voice connection changed before this could be saved.", 409);
+    }
+    await input.transactionGuard(tx);
+  });
+}
+
 /**
  * The ONE writer of Web Voice state. The secret doc and `webVoiceMeta` on the
  * sub-account change together, and only if the secret doc's revision is
@@ -393,10 +408,12 @@ async function syncAgent(
   connectedAt: Date | null,
   lastGood: WebVoiceConnectionSecret | null,
   transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>,
+  preflight?: () => Promise<void>,
 ): Promise<WebVoiceMeta> {
   let agentId = conn.agentId;
   let created = false;
   let syncError: string | null = null;
+  await preflight?.();
   try {
     const spec = await agentSpecFor(subAccountId, conn);
     if (agentId) {
@@ -532,7 +549,7 @@ export async function updateWebVoiceSettings(input: {
   patch: Partial<WebVoiceSettings>;
   /** Refuse before any provider call unless this is still the approved connection. */
   expectedRevision?: string | null;
-  /** Optional caller invariant checked in the same transaction as the state write. */
+  /** Optional caller invariant checked before provider work and again with the state write. */
   transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
 }): Promise<WebVoiceMeta> {
   const { conn, rev } = await readState(input.subAccountId);
@@ -543,13 +560,22 @@ export async function updateWebVoiceSettings(input: {
   const next = sanitizeSettings(input.patch, settingsOf(conn));
   const subSnap = await getAdminDb().doc(`subAccounts/${input.subAccountId}`).get();
   const prevMeta = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
+  const expectedRevision = input.expectedRevision ?? rev;
+  const guard = input.transactionGuard;
   return syncAgent(
     input.subAccountId,
-    input.expectedRevision ?? rev,
+    expectedRevision,
     { ...conn, ...next },
     prevMeta?.connectedAt ?? null,
     conn,
-    input.transactionGuard,
+    guard,
+    guard && expectedRevision !== null
+      ? () => validateWebVoiceHandoff({
+          subAccountId: input.subAccountId,
+          expectedRevision,
+          transactionGuard: guard,
+        })
+      : undefined,
   );
 }
 

@@ -18,6 +18,7 @@ import {
   readWebVoiceHandoffSnapshot,
   type WebVoiceHandoffSnapshot,
   updateWebVoiceSettings,
+  validateWebVoiceHandoff,
 } from "@/lib/server/web-voice-service";
 import {
   createWorkflowServerSide,
@@ -615,6 +616,27 @@ export async function provisionWebsiteHandoff(
 
   // 1b. Web Voice is workspace-wide, so this branch may only turn it on.
   // It never writes `enabled: false`, including when this build opts out.
+  const voiceTransactionGuard = async (tx: FirebaseFirestore.Transaction) => {
+    const refused = await blocked(tx);
+    if (refused) throw new HandoffStopped(refused);
+    const freshSub = (await tx.get(db.doc(`subAccounts/${subAccountId}`))).data() as SubAccountDoc;
+    if (freshSub.webVoiceEnabledByAgency !== true) {
+      throw new HandoffStopped("the agency switched off Web Voice for this workspace");
+    }
+    if (!aiChannelGateOn(freshSub, "web-chat")) {
+      throw new HandoffStopped("the agency locked Web Chat AI for this workspace");
+    }
+    if (!aiIsConfigured()) {
+      throw new HandoffStopped("the AI provider is no longer configured");
+    }
+    if (freshSub.webVoiceMeta?.ready !== true) {
+      throw new HandoffStopped("the ElevenLabs connection was no longer ready");
+    }
+    const chat = await tx.get(db.doc(`subAccounts/${subAccountId}/aiAgent/web-chat`));
+    if (chat.data()?.enabled !== true) {
+      throw new HandoffStopped("Web Chat AI was switched off for this workspace");
+    }
+  };
   if (!wantsWebVoice(config)) {
     out.voiceSkippedReason = wantsChatWidget(config)
       ? "Web Voice was not included in this build; the workspace setting was left unchanged."
@@ -631,48 +653,40 @@ export async function provisionWebsiteHandoff(
     out.voiceSkippedReason = "Connect and finish setting up ElevenLabs in AI Agents → Web Chat → Voice.";
   } else if (!out.chatEnabled) {
     out.voiceSkippedReason = "Web Chat AI is switched off; turn it on before enabling voice.";
+  } else if (!approvedVoice.revision) {
+    out.voiceSkippedReason = "The ready ElevenLabs connection changed or could not be verified; Web Voice was not enabled.";
   } else if (approvedVoice.enabled) {
-    out.voiceEnabled = true;
-    out.voiceSkippedReason = null;
+    try {
+      await validateWebVoiceHandoff({
+        subAccountId,
+        expectedRevision: approvedVoice.revision,
+        transactionGuard: voiceTransactionGuard,
+      });
+      out.voiceEnabled = true;
+      out.voiceSkippedReason = null;
+    } catch (err) {
+      out.voiceSkippedReason = err instanceof HandoffStopped
+        ? `Web Voice was not confirmed: ${err.message}.`
+        : "Web Voice was not confirmed because its connection changed or could not be verified.";
+    }
   } else {
-    if (!approvedVoice.revision) {
-      out.voiceSkippedReason = "The ready ElevenLabs connection changed or could not be verified; Web Voice was not enabled.";
-    } else {
-      try {
-        const meta = await updateWebVoiceSettings({
-          subAccountId,
-          patch: { enabled: true },
-          expectedRevision: approvedVoice.revision,
-          transactionGuard: async (tx) => {
-            const refused = await blocked(tx);
-            if (refused) throw new HandoffStopped(refused);
-            const freshSub = (await tx.get(db.doc(`subAccounts/${subAccountId}`))).data() as SubAccountDoc;
-            if (freshSub.webVoiceEnabledByAgency !== true) {
-              throw new HandoffStopped("the agency switched off Web Voice for this workspace");
-            }
-            if (!aiChannelGateOn(freshSub, "web-chat")) {
-              throw new HandoffStopped("the agency locked Web Chat AI for this workspace");
-            }
-            if (freshSub.webVoiceMeta?.ready !== true) {
-              throw new HandoffStopped("the ElevenLabs connection was no longer ready");
-            }
-            const chat = await tx.get(db.doc(`subAccounts/${subAccountId}/aiAgent/web-chat`));
-            if (chat.data()?.enabled !== true) {
-              throw new HandoffStopped("Web Chat AI was switched off for this workspace");
-            }
-          },
-        });
-        out.voiceEnabled = meta.ready === true && meta.enabled !== false;
-        out.voiceSkippedReason = out.voiceEnabled
-          ? null
-          : "ElevenLabs could not enable Web Voice; check the Voice settings card.";
-      } catch (err) {
-        if (err instanceof HandoffStopped) {
-          out.voiceSkippedReason = `Web Voice was not enabled: ${err.message}.`;
-        } else {
-          errors.push("web-voice: Web Voice could not be enabled; check the Voice settings card");
-          out.voiceSkippedReason = "Web Voice could not be enabled; check the Voice settings card.";
-        }
+    try {
+      const meta = await updateWebVoiceSettings({
+        subAccountId,
+        patch: { enabled: true },
+        expectedRevision: approvedVoice.revision,
+        transactionGuard: voiceTransactionGuard,
+      });
+      out.voiceEnabled = meta.ready === true && meta.enabled !== false;
+      out.voiceSkippedReason = out.voiceEnabled
+        ? null
+        : "ElevenLabs could not enable Web Voice; check the Voice settings card.";
+    } catch (err) {
+      if (err instanceof HandoffStopped) {
+        out.voiceSkippedReason = `Web Voice was not enabled: ${err.message}.`;
+      } else {
+        errors.push("web-voice: Web Voice could not be enabled; check the Voice settings card");
+        out.voiceSkippedReason = "Web Voice could not be enabled; check the Voice settings card.";
       }
     }
   }

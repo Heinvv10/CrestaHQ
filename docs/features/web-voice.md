@@ -314,7 +314,9 @@ gate is on and the workspace has a ready ElevenLabs connection. On publish, the
 hand-off enables voice only when the build requested it, OpenRouter is configured,
 both Web Voice and Web Chat gates remain open, the ElevenLabs connection's readiness
 and revision were approved from one snapshot and remain unchanged, and the Web Chat
-bot is already enabled. The final checks run in the same transaction as the Web Voice state write;
-a replaced connection is refused before any provider call. The hand-off never writes `enabled: false`; opting out leaves the
+bot is already enabled. A read-only transaction repeats every check immediately
+before an ElevenLabs call. Provider work can race only after that preflight succeeds;
+the state-write transaction repeats the same checks and refuses a later change. The
+hand-off never writes `enabled: false`; opting out leaves the
 workspace-wide setting unchanged. Every skip is recorded in the website's
 provisioning summary, and a failure does not stop the other hand-off steps.

@@ -379,14 +379,25 @@ describe("PATCH — settings", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("checks an optional transaction guard before committing settings", async () => {
+  it("checks an optional transaction guard before provider work", async () => {
     await connect();
     const before = mem.read(SECRET);
+    calls = [];
     const guard = vi.fn(async () => { throw new Error("handoff moved on"); });
     await expect(updateWebVoiceSettings({ subAccountId: "sa1", patch: { enabled: false }, transactionGuard: guard }))
       .rejects.toThrow("handoff moved on");
     expect(guard).toHaveBeenCalledOnce();
+    expect(calls).toEqual([]);
     expect(mem.read(SECRET)).toMatchObject({ enabled: before?.enabled, rev: before?.rev });
+  });
+
+  it("rechecks a successful transaction guard with the final state commit", async () => {
+    await connect();
+    calls = [];
+    const guard = vi.fn(async () => undefined);
+    await updateWebVoiceSettings({ subAccountId: "sa1", patch: { enabled: true }, transactionGuard: guard });
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(elCalls("PATCH", "/v1/convai/agents/agent1")).toHaveLength(1);
   });
 
   it("atomically pairs readiness with the connection revision across a replacement", async () => {
@@ -432,6 +443,37 @@ describe("PATCH — settings", () => {
     })).rejects.toThrow("connection changed");
     expect(calls).toEqual([]);
     expect(mem.read(SECRET)?.rev).toBe("replacement-rev");
+  });
+
+  it("rechecks the approved revision immediately before provider work", async () => {
+    await connect();
+    const approved = await readWebVoiceHandoffSnapshot("sa1");
+    const realDoc = storeDb.doc.bind(storeDb);
+    let replaced = false;
+    vi.spyOn(storeDb, "doc").mockImplementation((path) => {
+      const ref = realDoc(path);
+      if (path !== "subAccounts/sa1") return ref;
+      return {
+        ...ref,
+        get: async () => {
+          const snap = await ref.get();
+          if (!replaced) {
+            replaced = true;
+            mem.seed(SECRET, { ...mem.read(SECRET), rev: "replacement-before-provider" });
+          }
+          return snap;
+        },
+      };
+    });
+    calls = [];
+    await expect(updateWebVoiceSettings({
+      subAccountId: "sa1",
+      patch: { enabled: true },
+      expectedRevision: approved.revision,
+      transactionGuard: async () => undefined,
+    })).rejects.toThrow("connection changed");
+    expect(replaced).toBe(true);
+    expect(calls).toEqual([]);
   });
 
   it.each([
