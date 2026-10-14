@@ -90,6 +90,24 @@ export function WebVoiceSection() {
     setDailyCap(meta.dailyMinuteCap);
   }, []);
 
+  const applyMutationMeta = useCallback(
+    (meta: WebVoiceMeta, voices?: VoiceOption[]) => {
+      hydrateForm(meta);
+      setStatus((current) =>
+        current
+          ? {
+              ...current,
+              meta,
+              usage: null,
+              previewToken: null,
+              ...(voices ? { voices, voicesError: null } : {}),
+            }
+          : current,
+      );
+    },
+    [hydrateForm],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -125,15 +143,20 @@ export function WebVoiceSection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ apiKey: apiKey.trim() }),
       });
-      const data = (await res.json()) as { meta?: WebVoiceMeta; error?: string };
+      const data = (await res.json()) as {
+        meta: WebVoiceMeta;
+        voices?: VoiceOption[];
+        error?: string;
+      };
       if (!res.ok) {
         toast.error(data.error ?? "Couldn't connect ElevenLabs");
         return;
       }
       setApiKey("");
       setShowReplaceKey(false);
-      if (data.meta?.ready) toast.success("ElevenLabs connected — voice is ready");
-      else toast.warning(data.meta?.lastError ?? "Connected, but the voice agent isn't ready yet");
+      applyMutationMeta(data.meta, data.voices);
+      if (data.meta.ready) toast.success("ElevenLabs connected — voice is ready");
+      else toast.warning(data.meta.lastError ?? "Connected, but the voice agent isn't ready yet");
       await load();
     } catch {
       toast.error("Network error — try again");
@@ -160,13 +183,14 @@ export function WebVoiceSection() {
           dailyMinuteCap: dailyCap,
         }),
       });
-      const data = (await res.json()) as { meta?: WebVoiceMeta; error?: string };
+      const data = (await res.json()) as { meta: WebVoiceMeta; error?: string };
       if (!res.ok) {
         toast.error(data.error ?? "Couldn't save voice settings");
         return;
       }
-      if (data.meta?.ready) toast.success("Voice settings saved");
-      else toast.warning(data.meta?.lastError ?? "Saved, but the voice agent needs attention");
+      applyMutationMeta(data.meta);
+      if (data.meta.ready) toast.success("Voice settings saved");
+      else toast.warning(data.meta.lastError ?? "Saved, but the voice agent needs attention");
       await load();
     } catch {
       toast.error("Network error — try again");
@@ -186,9 +210,23 @@ export function WebVoiceSection() {
         toast.error(data.error ?? "Couldn't disconnect");
         return;
       }
+      setStatus((current) =>
+        current
+          ? {
+              ...current,
+              meta: null,
+              usage: null,
+              voices: [],
+              voicesError: null,
+              previewToken: null,
+            }
+          : current,
+      );
       toast.success("ElevenLabs disconnected — the mic is gone from the widget");
       setConfirmDisconnect(false);
       await load();
+    } catch {
+      toast.error("Network error — couldn't disconnect. Try again.");
     } finally {
       setDisconnecting(false);
     }
