@@ -190,7 +190,7 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
       name: { nested: "name-SENTINEL" },
       description: { nested: "description-SENTINEL" },
       durationMinutes: Number.NaN,
-      timezone: { nested: "timezone-SENTINEL" },
+      timezone: "timezone-SENTINEL",
       visibleDays: Number.POSITIVE_INFINITY,
       calendarType: "service",
       services: [

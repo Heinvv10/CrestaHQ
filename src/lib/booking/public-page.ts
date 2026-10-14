@@ -189,7 +189,7 @@ export function publicBookingPage(doc: BookingPage, canonicalSlug: string): Publ
     name: typeof doc.name === "string" ? doc.name : "",
     description: typeof doc.description === "string" ? doc.description : "",
     durationMinutes: typeof doc.durationMinutes === "number" && Number.isFinite(doc.durationMinutes) ? doc.durationMinutes : 30,
-    timezone: typeof doc.timezone === "string" ? doc.timezone : "UTC",
+    timezone: publicTimezone(doc.timezone),
     visibleDays: typeof doc.visibleDays === "number" && Number.isFinite(doc.visibleDays) ? doc.visibleDays : 14,
     isServicePage,
     services: isServicePage ? publicServices(doc.services) : [],
