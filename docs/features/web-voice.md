@@ -311,9 +311,10 @@ counted by the sweep, its AI tokens by the workspace quota.
 
 The premium website wizard offers `include_voice` only when the agency Web Voice
 gate is on and the workspace has a ready ElevenLabs connection. On publish, the
-hand-off enables voice only when the build requested it, both Web Voice and Web
-Chat gates remain open, the connection remains ready, and the Web Chat bot is
-already enabled. The final checks run in the same transaction as the Web Voice
-state write. The hand-off never writes `enabled: false`; opting out leaves the
+hand-off enables voice only when the build requested it, OpenRouter is configured,
+both Web Voice and Web Chat gates remain open, the initially approved ElevenLabs
+connection remains ready and at the same revision, and the Web Chat bot is already
+enabled. The final checks run in the same transaction as the Web Voice state write;
+a replaced connection is refused before any provider call. The hand-off never writes `enabled: false`; opting out leaves the
 workspace-wide setting unchanged. Every skip is recorded in the website's
 provisioning summary, and a failure does not stop the other hand-off steps.

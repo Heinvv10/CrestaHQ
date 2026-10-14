@@ -44,6 +44,7 @@ import {
   type WebsiteDoc,
   type WebsiteServicesConfig,
 } from "@/types/website";
+import type { SubAccountDoc } from "@/types/tenancy";
 import { isNicheKey, NICHE_META, nicheSample } from "@/lib/website/niches";
 import { premiumModeFor } from "@/lib/website/premium";
 import {
@@ -137,6 +138,12 @@ function initialConfig(doc: WebsiteDoc): WebsiteConfig {
     build_type: doc.config.build_type ?? "local",
     video_link: doc.config.video_link ?? "",
   };
+}
+
+export function websiteVoiceAvailableForBuild(
+  sub: Pick<SubAccountDoc, "webVoiceEnabledByAgency" | "webChatEnabledByAgency" | "webVoiceMeta"> | null | undefined,
+): boolean {
+  return !!sub && sub.webVoiceEnabledByAgency === true && sub.webChatEnabledByAgency !== false && sub.webVoiceMeta?.ready === true;
 }
 
 export function WebsiteWizard({
@@ -738,10 +745,7 @@ export function WebsiteWizard({
                     includeForm={config.include_form !== false}
                     includeChat={config.include_chat !== false}
                     includeVoice={config.include_voice !== false}
-                    voiceAvailable={
-                      subAccount?.webVoiceEnabledByAgency === true &&
-                      subAccount?.webVoiceMeta?.ready === true
-                    }
+                    voiceAvailable={websiteVoiceAvailableForBuild(subAccount)}
                     onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
                   />
                 </Section>

@@ -14,7 +14,10 @@ import {
 import { sendPushForEvent } from "@/lib/push/send";
 import { isDocId } from "@/lib/server/doc-id";
 import { registrableDomain } from "@/lib/prospecting/registrable-domain";
-import { updateWebVoiceSettings } from "@/lib/server/web-voice-service";
+import {
+  readWebVoiceConnectionRevision,
+  updateWebVoiceSettings,
+} from "@/lib/server/web-voice-service";
 import {
   createWorkflowServerSide,
   deleteWorkflowServerSide,
@@ -521,6 +524,22 @@ export async function provisionWebsiteHandoff(
   };
   type ChatSeeded = NonNullable<AiChannelConfig["websiteSeeded"]>;
 
+  // Bind a later enable to the ready connection approved before any hand-off
+  // writes. A replacement is a different operator decision and is never
+  // provisioned or enabled by this publish.
+  let approvedVoiceRevision: string | null = null;
+  if (
+    wantsWebVoice(config) &&
+    sub.webVoiceMeta?.ready === true &&
+    sub.webVoiceMeta.enabled === false
+  ) {
+    try {
+      approvedVoiceRevision = await readWebVoiceConnectionRevision(subAccountId);
+    } catch {
+      errors.push("web-voice: the ready connection could not be verified");
+    }
+  }
+
   // 1. Chat: allowlist the hostname. The bot is NOT switched on here. The
   // cap check and the append are one transaction, so two sites publishing
   // at once cannot take the list past the cap.
@@ -606,6 +625,8 @@ export async function provisionWebsiteHandoff(
     out.voiceSkippedReason = "The agency has not enabled Web Voice for this workspace.";
   } else if (!aiChannelGateOn(sub, "web-chat")) {
     out.voiceSkippedReason = "The agency has locked Web Chat AI for this workspace.";
+  } else if (!aiIsConfigured()) {
+    out.voiceSkippedReason = "OPENROUTER_API_KEY is not set on this deployment, so Web Voice was not enabled.";
   } else if (sub.webVoiceMeta?.ready !== true) {
     out.voiceSkippedReason = "Connect and finish setting up ElevenLabs in AI Agents → Web Chat → Voice.";
   } else if (!out.chatEnabled) {
@@ -614,36 +635,44 @@ export async function provisionWebsiteHandoff(
     out.voiceEnabled = true;
     out.voiceSkippedReason = null;
   } else {
-    try {
-      const meta = await updateWebVoiceSettings({
-        subAccountId,
-        patch: { enabled: true },
-        transactionGuard: async (tx) => {
-          const refused = await blocked(tx);
-          if (refused) throw new HandoffStopped(refused);
-          const freshSub = (await tx.get(db.doc(`subAccounts/${subAccountId}`))).data() as SubAccountDoc;
-          if (freshSub.webVoiceEnabledByAgency !== true) {
-            throw new HandoffStopped("the agency switched off Web Voice for this workspace");
-          }
-          if (!aiChannelGateOn(freshSub, "web-chat")) {
-            throw new HandoffStopped("the agency locked Web Chat AI for this workspace");
-          }
-          const chat = await tx.get(db.doc(`subAccounts/${subAccountId}/aiAgent/web-chat`));
-          if (chat.data()?.enabled !== true) {
-            throw new HandoffStopped("Web Chat AI was switched off for this workspace");
-          }
-        },
-      });
-      out.voiceEnabled = meta.ready === true && meta.enabled !== false;
-      out.voiceSkippedReason = out.voiceEnabled
-        ? null
-        : "ElevenLabs could not enable Web Voice; check the Voice settings card.";
-    } catch (err) {
-      if (err instanceof HandoffStopped) {
-        out.voiceSkippedReason = `Web Voice was not enabled: ${err.message}.`;
-      } else {
-        errors.push("web-voice: Web Voice could not be enabled; check the Voice settings card");
-        out.voiceSkippedReason = "Web Voice could not be enabled; check the Voice settings card.";
+    if (!approvedVoiceRevision) {
+      out.voiceSkippedReason = "The ready ElevenLabs connection changed or could not be verified; Web Voice was not enabled.";
+    } else {
+      try {
+        const meta = await updateWebVoiceSettings({
+          subAccountId,
+          patch: { enabled: true },
+          expectedRevision: approvedVoiceRevision,
+          transactionGuard: async (tx) => {
+            const refused = await blocked(tx);
+            if (refused) throw new HandoffStopped(refused);
+            const freshSub = (await tx.get(db.doc(`subAccounts/${subAccountId}`))).data() as SubAccountDoc;
+            if (freshSub.webVoiceEnabledByAgency !== true) {
+              throw new HandoffStopped("the agency switched off Web Voice for this workspace");
+            }
+            if (!aiChannelGateOn(freshSub, "web-chat")) {
+              throw new HandoffStopped("the agency locked Web Chat AI for this workspace");
+            }
+            if (freshSub.webVoiceMeta?.ready !== true) {
+              throw new HandoffStopped("the ElevenLabs connection was no longer ready");
+            }
+            const chat = await tx.get(db.doc(`subAccounts/${subAccountId}/aiAgent/web-chat`));
+            if (chat.data()?.enabled !== true) {
+              throw new HandoffStopped("Web Chat AI was switched off for this workspace");
+            }
+          },
+        });
+        out.voiceEnabled = meta.ready === true && meta.enabled !== false;
+        out.voiceSkippedReason = out.voiceEnabled
+          ? null
+          : "ElevenLabs could not enable Web Voice; check the Voice settings card.";
+      } catch (err) {
+        if (err instanceof HandoffStopped) {
+          out.voiceSkippedReason = `Web Voice was not enabled: ${err.message}.`;
+        } else {
+          errors.push("web-voice: Web Voice could not be enabled; check the Voice settings card");
+          out.voiceSkippedReason = "Web Voice could not be enabled; check the Voice settings card.";
+        }
       }
     }
   }

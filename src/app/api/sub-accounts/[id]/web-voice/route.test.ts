@@ -386,6 +386,18 @@ describe("PATCH — settings", () => {
     expect(mem.read(SECRET)).toMatchObject({ enabled: before?.enabled, rev: before?.rev });
   });
 
+  it("refuses a replaced connection revision before calling ElevenLabs", async () => {
+    await connect();
+    const before = mem.read(SECRET)!;
+    calls = [];
+    mem.seed(SECRET, { ...before, rev: "replacement-rev" });
+    await expect(updateWebVoiceSettings({
+      subAccountId: "sa1", patch: { enabled: true }, expectedRevision: before.rev as string,
+    })).rejects.toThrow("connection changed");
+    expect(calls).toEqual([]);
+    expect(mem.read(SECRET)?.rev).toBe("replacement-rev");
+  });
+
   it.each([
     [{ language: "xx" }, /language/],
     [{ voiceId: "../../etc" }, /voice/],

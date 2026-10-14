@@ -29,7 +29,8 @@ vi.mock("@/lib/automations/qstash", () => ({
 const push = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: push }));
 const updateWebVoiceSettings = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/server/web-voice-service", () => ({ updateWebVoiceSettings }));
+const readWebVoiceConnectionRevision = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/server/web-voice-service", () => ({ updateWebVoiceSettings, readWebVoiceConnectionRevision }));
 
 const fail = vi.hoisted(() => ({ chat: false, profile: false, workflow: false }));
 vi.mock("@/lib/comms/ai/agent", async (importOriginal) => {
@@ -170,6 +171,7 @@ const allowedOf = () => (webChat()?.allowedDomains as string[] | undefined) ?? [
 beforeEach(async () => {
   mem.clear();
   push.mockReset().mockResolvedValue(undefined);
+  readWebVoiceConnectionRevision.mockReset().mockResolvedValue("voice-rev-1");
   updateWebVoiceSettings.mockReset().mockImplementation(async (input: {
     transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
   }) => {
@@ -371,13 +373,14 @@ describe("nothing here starts talking to leads", () => {
 
 describe("Web Voice hand-off", () => {
   const enableChat = () => mem.seed(CHAT, { enabled: true, webChat: { allowedDomains: [], welcomeMessage: "Hi! How can I help?", accentColor: "#7c3aed", position: "right" } });
+  beforeEach(() => vi.stubEnv("OPENROUTER_API_KEY", "sk-or-test"));
 
   it("enables a requested, gated, ready connection with an enabled chat bot", async () => {
     seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
     enableChat();
     expect(await handoff()).toMatchObject({ voiceEnabled: true, voiceSkippedReason: null });
     expect(updateWebVoiceSettings).toHaveBeenCalledWith(expect.objectContaining({
-      subAccountId: "sa1", patch: { enabled: true }, transactionGuard: expect.any(Function),
+      subAccountId: "sa1", patch: { enabled: true }, expectedRevision: "voice-rev-1", transactionGuard: expect.any(Function),
     }));
   });
 
@@ -412,6 +415,25 @@ describe("Web Voice hand-off", () => {
     expect(out!.voiceSkippedReason).toContain(reason);
   });
 
+  it("does not enable voice without the configured AI provider", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    const out = await handoff();
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(out!.voiceSkippedReason).toContain("OPENROUTER_API_KEY is not set");
+  });
+
+  it("does not enable when the initially ready connection revision is unavailable", async () => {
+    readWebVoiceConnectionRevision.mockResolvedValue(null);
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    const out = await handoff();
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(out!.voiceSkippedReason).toContain("changed or could not be verified");
+    expect(out).toMatchObject({ kbSeeded: true, workflowStatus: "draft" });
+  });
+
   it("does not enable voice while the chat bot is off", async () => {
     seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
     expect((await handoff())!.voiceSkippedReason).toContain("Web Chat AI is switched off");
@@ -422,6 +444,7 @@ describe("Web Voice hand-off", () => {
     ["website gate", () => seedSub({ websiteEnabledByAgency: false, webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } }), "website builder was switched off", false],
     ["Web Voice gate", () => seedSub({ webVoiceEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: false } }), "agency switched off Web Voice", true],
     ["Web Chat gate", () => seedSub({ webVoiceEnabledByAgency: true, webChatEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: false } }), "agency locked Web Chat", true],
+    ["ready connection", () => seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: false, enabled: false } }), "connection was no longer ready", true],
     ["enabled chat", () => mem.seed(CHAT, { enabled: false }), "Web Chat AI was switched off", true],
   ])("re-checks the %s transactionally before the voice state write", async (_label, change, reason, continues) => {
     seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });

@@ -122,6 +122,11 @@ export async function readWebVoiceConnection(
   return (await readState(subAccountId)).conn;
 }
 
+/** Revision only, for callers that must bind later work to this connection. */
+export async function readWebVoiceConnectionRevision(subAccountId: string): Promise<string | null> {
+  return (await readState(subAccountId)).rev;
+}
+
 /**
  * The ONE writer of Web Voice state. The secret doc and `webVoiceMeta` on the
  * sub-account change together, and only if the secret doc's revision is
@@ -500,15 +505,27 @@ export async function connectWebVoice(input: {
 export async function updateWebVoiceSettings(input: {
   subAccountId: string;
   patch: Partial<WebVoiceSettings>;
+  /** Refuse before any provider call unless this is still the approved connection. */
+  expectedRevision?: string | null;
   /** Optional caller invariant checked in the same transaction as the state write. */
   transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
 }): Promise<WebVoiceMeta> {
   const { conn, rev } = await readState(input.subAccountId);
   if (!conn) throw new WebVoiceError("Connect an ElevenLabs key first.", 400);
+  if (input.expectedRevision !== undefined && rev !== input.expectedRevision) {
+    throw new WebVoiceError("Web Voice connection changed before this could be saved.", 409);
+  }
   const next = sanitizeSettings(input.patch, settingsOf(conn));
   const subSnap = await getAdminDb().doc(`subAccounts/${input.subAccountId}`).get();
   const prevMeta = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
-  return syncAgent(input.subAccountId, rev, { ...conn, ...next }, prevMeta?.connectedAt ?? null, conn, input.transactionGuard);
+  return syncAgent(
+    input.subAccountId,
+    input.expectedRevision ?? rev,
+    { ...conn, ...next },
+    prevMeta?.connectedAt ?? null,
+    conn,
+    input.transactionGuard,
+  );
 }
 
 /** Live voice list for the picker (needs the stored key). */
