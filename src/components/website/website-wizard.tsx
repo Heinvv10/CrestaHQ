@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Loader2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useOptionalSubAccount } from "@/context/sub-account-context";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -153,6 +154,7 @@ export function WebsiteWizard({
   startAt?: WizardStepId | null;
 }) {
   const siteId = doc.id;
+  const subAccount = useOptionalSubAccount()?.subAccount;
   // A failed site that still carries its job can yet go live from that job,
   // so the PATCH route refuses to change its config (409). Don't send saves
   // the route will refuse; Build (which replaces the job) still works.
@@ -731,11 +733,15 @@ export function WebsiteWizard({
             <>
               <ReviewSummary config={config} steps={steps} saved={draftSavable} onEdit={(s) => goTo(steps.indexOf(s))} />
               {isPremium && (
-                <Section title="Wired in on publish" description="Both on by default — the site feeds this workspace from day one.">
-                  {/* The voice tile (include_voice) arrives with WV-5, with the hand-off branch that honours it. */}
+                <Section title="Wired in on publish" description="On by default — the site feeds this workspace from day one.">
                   <LeadCaptureToggles
                     includeForm={config.include_form !== false}
                     includeChat={config.include_chat !== false}
+                    includeVoice={config.include_voice !== false}
+                    voiceAvailable={
+                      subAccount?.webVoiceEnabledByAgency === true &&
+                      subAccount?.webVoiceMeta?.ready === true
+                    }
                     onChange={(patch) => setConfig((prev) => ({ ...prev, ...patch }))}
                   />
                 </Section>

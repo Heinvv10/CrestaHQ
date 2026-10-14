@@ -307,6 +307,13 @@ conversation can use a claimed call's token for AI replies while that claim is
 pending (up to the agent's concurrency limit of 3 on ElevenLabs); its minutes are
 counted by the sweep, its AI tokens by the workspace quota.
 
-## Not yet built
+## Website publish hand-off (WV-5)
 
-- WV-5: the website hand-off's voice step.
+The premium website wizard offers `include_voice` only when the agency Web Voice
+gate is on and the workspace has a ready ElevenLabs connection. On publish, the
+hand-off enables voice only when the build requested it, both Web Voice and Web
+Chat gates remain open, the connection remains ready, and the Web Chat bot is
+already enabled. The final checks run in the same transaction as the Web Voice
+state write. The hand-off never writes `enabled: false`; opting out leaves the
+workspace-wide setting unchanged. Every skip is recorded in the website's
+provisioning summary, and a failure does not stop the other hand-off steps.

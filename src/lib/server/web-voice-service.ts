@@ -135,6 +135,7 @@ async function commitWebVoiceState(
   subAccountId: string,
   expectRev: string | null,
   next: { conn: WebVoiceConnectionSecret; meta: WebVoiceMeta } | null,
+  transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>,
 ): Promise<void> {
   const db = getAdminDb();
   const secretRef = db.doc(webVoiceConnectionPath(subAccountId));
@@ -147,6 +148,7 @@ async function commitWebVoiceState(
         409,
       );
     }
+    await transactionGuard?.(tx);
     if (next) {
       tx.set(secretRef, { ...next.conn, rev: randomBytes(12).toString("base64url") });
     } else {
@@ -360,6 +362,7 @@ async function syncAgent(
   conn: WebVoiceConnectionSecret,
   connectedAt: Date | null,
   lastGood: WebVoiceConnectionSecret | null,
+  transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>,
 ): Promise<WebVoiceMeta> {
   let agentId = conn.agentId;
   let created = false;
@@ -401,7 +404,7 @@ async function syncAgent(
     connectedAt,
   };
   try {
-    await commitWebVoiceState(subAccountId, expectRev, { conn: stored, meta });
+    await commitWebVoiceState(subAccountId, expectRev, { conn: stored, meta }, transactionGuard);
   } catch (err) {
     if (created && agentId) {
       await dropAgent(subAccountId, conn.apiKey, agentId);
@@ -497,13 +500,15 @@ export async function connectWebVoice(input: {
 export async function updateWebVoiceSettings(input: {
   subAccountId: string;
   patch: Partial<WebVoiceSettings>;
+  /** Optional caller invariant checked in the same transaction as the state write. */
+  transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
 }): Promise<WebVoiceMeta> {
   const { conn, rev } = await readState(input.subAccountId);
   if (!conn) throw new WebVoiceError("Connect an ElevenLabs key first.", 400);
   const next = sanitizeSettings(input.patch, settingsOf(conn));
   const subSnap = await getAdminDb().doc(`subAccounts/${input.subAccountId}`).get();
   const prevMeta = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
-  return syncAgent(input.subAccountId, rev, { ...conn, ...next }, prevMeta?.connectedAt ?? null, conn);
+  return syncAgent(input.subAccountId, rev, { ...conn, ...next }, prevMeta?.connectedAt ?? null, conn, input.transactionGuard);
 }
 
 /** Live voice list for the picker (needs the stored key). */

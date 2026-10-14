@@ -12,6 +12,7 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 const { mem, claims, storeDb } = await import("@/test/gbp-sync-store");
 const { GET, POST, PATCH, DELETE } = await import("./route");
+const { updateWebVoiceSettings } = await import("@/lib/server/web-voice-service");
 const { Timestamp } = await import("firebase-admin/firestore");
 const { verifyWidgetToken } = await import("@/lib/web-voice/tokens");
 
@@ -373,6 +374,16 @@ describe("PATCH — settings", () => {
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/Connect an ElevenLabs key first/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("checks an optional transaction guard before committing settings", async () => {
+    await connect();
+    const before = mem.read(SECRET);
+    const guard = vi.fn(async () => { throw new Error("handoff moved on"); });
+    await expect(updateWebVoiceSettings({ subAccountId: "sa1", patch: { enabled: false }, transactionGuard: guard }))
+      .rejects.toThrow("handoff moved on");
+    expect(guard).toHaveBeenCalledOnce();
+    expect(mem.read(SECRET)).toMatchObject({ enabled: before?.enabled, rev: before?.rev });
   });
 
   it.each([
