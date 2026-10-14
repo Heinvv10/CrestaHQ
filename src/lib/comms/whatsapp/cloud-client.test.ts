@@ -276,6 +276,57 @@ describe("sendWhatsappCloud", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    // The two ETIMEDOUT shapes, as Node 22.23.1 produced them in a repro
+    // (2026-10-14). Happy-eyeballs connect: every address failed to connect.
+    const connectAggregate = (...subs: Array<[string, string]>) =>
+      Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(
+          new AggregateError(subs.map(([code, syscall]) => Object.assign(new Error(`${syscall} ${code}`), { code, syscall }))),
+          { code: subs[0]?.[0] },
+        ),
+      });
+    // Established socket: the kernel gave up retransmitting after the body left.
+    const readTimeout = () =>
+      Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "read" }),
+      });
+
+    it("retries an ETIMEDOUT AggregateError where every address failed to connect", async () => {
+      fetchMock
+        .mockRejectedValueOnce(connectAggregate(["ETIMEDOUT", "connect"], ["ENETUNREACH", "connect"]))
+        .mockResolvedValueOnce(ok({ messages: [{ id: "wamid.R" }] }));
+      expect(await sendThroughBackoff()).toEqual({ ok: true, messageId: "wamid.R" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[0][0])).toContain(
+        "code=ETIMEDOUT cause=AggregateError errors=ETIMEDOUT:connect,ENETUNREACH:connect",
+      );
+    });
+
+    it("never retries a read ETIMEDOUT — the body may have reached Meta", async () => {
+      fetchMock.mockRejectedValueOnce(readTimeout()).mockResolvedValueOnce(ok({ messages: [{ id: "wamid.DUP" }] }));
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("code=ETIMEDOUT cause=Error");
+    });
+
+    it("never retries an AggregateError with any non-connect entry, or with none", async () => {
+      fetchMock.mockRejectedValueOnce(connectAggregate(["ETIMEDOUT", "connect"], ["ETIMEDOUT", "read"]));
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      fetchMock.mockRejectedValueOnce(connectAggregate());
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("trusts an errors list only on Node's AggregateError, not on any cause that carries one", async () => {
+      fetchMock.mockRejectedValueOnce(
+        Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("read ETIMEDOUT"), { code: "ETIMEDOUT", errors: [{ code: "ETIMEDOUT", syscall: "connect" }] }),
+        }),
+      );
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it("tolerates the code on the error itself rather than on cause", async () => {
       fetchMock.mockRejectedValue(Object.assign(new Error("connect"), { code: "ECONNREFUSED" }));
       expect((await sendThroughBackoff()).providerOutcome).toBe("DEFINITELY_REJECTED");
@@ -387,6 +438,56 @@ describe("sendWhatsappCloud", () => {
     const r = await send({ media });
     expect(r.ok).toBe(false);
     expect(r.error).not.toContain("EAAG");
+  });
+
+  describe("an upload that throws", () => {
+    const refused = () =>
+      Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED", syscall: "connect" }) });
+    let warn: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      warn.mockRestore();
+    });
+
+    async function sendMediaThroughBackoff() {
+      const p = send({ media });
+      await vi.runAllTimersAsync();
+      return p;
+    }
+
+    it("retries a pre-connect failure and then sends", async () => {
+      fetchMock
+        .mockRejectedValueOnce(refused())
+        .mockResolvedValueOnce(ok({ id: "MEDIA" }))
+        .mockResolvedValueOnce(ok({ messages: [{ id: "wamid.X" }] }));
+      expect(await sendMediaThroughBackoff()).toEqual({ ok: true, messageId: "wamid.X" });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(String(warn.mock.calls[0][0])).toContain("media upload threw (sa=sa_1 attempt=1/3");
+    });
+
+    it("gives up after 3 pre-connect failures without sending", async () => {
+      fetchMock.mockRejectedValue(refused());
+      expect(await sendMediaThroughBackoff()).toMatchObject({ ok: false, providerErrorCode: "media_upload_failed" });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenCalledTimes(3);
+    });
+
+    it("does not retry a post-connect failure, but logs its shape", async () => {
+      fetchMock.mockRejectedValue(
+        Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) }),
+      );
+      expect((await sendMediaThroughBackoff()).ok).toBe(false);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const line = String(warn.mock.calls[0][0]);
+      expect(line).toContain("code=UND_ERR_SOCKET");
+      expect(line).not.toContain("EAAG");
+    });
   });
 
   // The filename cut. The send route refuses a name over 255 bytes, so these
