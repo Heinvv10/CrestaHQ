@@ -149,9 +149,9 @@ export const AI_SUITE_KNOWLEDGE: AiSuiteKnowledgeCard[] = [
     levels: ["sub-account"],
     title: "Quotes & Invoices",
     location: "Sidebar → Quotes",
-    keywords: ["quote", "estimate", "invoice", "line item", "accept", "decline", "paid", "paypal", "stripe", "card", "pay", "send"],
+    keywords: ["quote", "estimate", "invoice", "line item", "accept", "decline", "paid", "paypal", "stripe", "paystack", "payment link", "recurring", "card on file", "card", "pay", "send"],
     body:
-      "Quotes lets you build a line-itemed quote (with discount, tax, terms, validity), send it via a branded email, and the recipient views and accepts or declines on a public page. Accepting can auto-create a Won-stage deal, and you get a push notification when a quote is accepted or declined (if you've enabled notifications). A quote can be converted to an invoice. Invoices need a payment rail connected under Settings → Payments: with Stripe connected (agency-gated) the recipient pays by card on the invoice page and it's marked paid automatically; with a PayPal.me username the invoice shows a PayPal 'Pay' button and you mark it paid manually after the money lands. Email sends through the workspace's verified SMTP provider when selected; otherwise it uses the workspace's verified Resend sending domain when available, then the deployment's shared Resend sender as the fallback.",
+      "Quotes lets you build a line-itemed quote (with discount, tax, terms, validity), send it via a branded email, and the recipient views and accepts or declines on a public page. Accepting can auto-create a Won-stage deal, and you get a push notification when a quote is accepted or declined (if you've enabled notifications). A quote can be converted to an invoice. Invoices support separate workspace-owned payment rails under the agency's Payments gate: Stripe adds card payment to the invoice page and marks it paid automatically; Paystack creates ZAR invoice payment links under Quotes → Payment links, including card-on-file recurring links; PayPal.me shows a manual Pay button that staff mark paid after the money lands. Paystack invoice links do not power Checkout or Quick Funnels, which stay on the workspace's Stripe connection, and they are separate from the deployment's agency Client Billing provider. Email sends through the workspace's verified SMTP provider when selected; otherwise it uses the workspace's verified Resend sending domain when available, then the deployment's shared Resend sender as the fallback.",
   },
   {
     id: "checkout-pages",
@@ -639,11 +639,11 @@ export const AI_SUITE_KNOWLEDGE: AiSuiteKnowledgeCard[] = [
   {
     id: "payments",
     levels: ["sub-account", "agency"],
-    title: "Payments (card payments via your own Stripe)",
+    title: "Payments (your own Stripe or Paystack)",
     location: "Sidebar → Settings Sub-Account → Payments",
-    keywords: ["payments", "stripe", "card", "connect stripe", "restricted key", "take payment", "deposit", "checkout", "pay button", "paypal"],
+    keywords: ["payments", "stripe", "paystack", "payment link", "invoice payment", "recurring invoice", "recurring link", "card on file", "zar", "card", "connect stripe", "connect paystack", "restricted key", "take payment", "deposit", "checkout", "pay button", "paypal"],
     body:
-      "Payments lets a workspace take card payments from ITS OWN customers through its own Stripe account — money lands in the client's Stripe, not the agency's. A workspace admin connects it under Settings → Payments by pasting a restricted Stripe API key (no Stripe Connect involved). Once connected: invoices show a card 'Pay' button and mark themselves paid automatically, booking pages with a price can take the deposit by card, checkout pages can sell offers (with optional order bumps), and paid communities can charge for access. A Payments view under Reports summarizes what's been collected. The feature is agency-gated: if the Settings → Payments card isn't visible, the agency owner must enable Payments for this workspace (Agency → Sub-accounts → Manage). PayPal.me remains available as a simpler alternative for invoices (manual mark-paid).",
+      "Payments lets a workspace charge its own customers through its own provider accounts; customer money does not land in the agency's account. A workspace admin connects Stripe and/or Paystack under Settings → Payments after the agency enables the Payments gate. The workspace's restricted Stripe key adds card payment to invoice pages and also powers paid booking deposits, Checkout pages, Quick Funnels and paid communities. The workspace's Paystack key powers separate ZAR invoice payment links under Quotes → Payment links, including card-on-file recurring links; it does not replace Stripe for Checkout or Quick Funnels. Both tenant rails are separate from the deployment-level Stripe or Paystack account used by the agency to bill workspaces. PayPal.me remains a manual invoice alternative. Reports shows collected payments.",
   },
   {
     id: "usage-limits",
@@ -656,12 +656,12 @@ export const AI_SUITE_KNOWLEDGE: AiSuiteKnowledgeCard[] = [
   },
   {
     id: "workspace-subscription",
-    levels: ["sub-account"],
+    levels: ["sub-account", "agency"],
     title: "Your subscription (workspace billing)",
     location: "Sidebar → Settings → Your subscription",
-    keywords: ["subscription", "billing", "payment", "card", "invoice", "paywall", "paused", "past due", "update card", "manage billing"],
+    keywords: ["subscription", "billing", "payment", "card", "invoice", "paywall", "paused", "past due", "update card", "manage billing", "paystack", "manage link", "cancel subscription", "turn off renewal"],
     body:
-      "If your provider bills this workspace as a subscription, Settings shows a 'Your subscription' card with your plan, monthly price, and status. Workspace admins can click 'Manage billing' to update the card or view invoices on Stripe's secure portal, and 'Complete checkout' if payment is still owed. If a renewal payment fails you'll see a warning banner with time to fix the card; after the grace period the workspace pauses behind a payment screen until it's paid — your data is safe and access restores instantly on payment. Pricing and plan changes are handled by your provider (the agency owner).",
+      "If the agency bills this workspace as a subscription, Settings shows a 'Your subscription' card with its plan, price and status. Workspace admins can click Manage billing; the destination follows the deployment's configured Client Billing provider. Stripe opens its secure billing portal for card changes and invoices. Paystack opens that subscription's own management link for card and renewal controls because Paystack has no general billing portal. Turning off Paystack auto-renewal keeps the workspace active through the paid period; the terminating provider event ends the subscription. An agency comp/cancel also uses the configured provider and changes nothing if provider cancellation cannot be proven. Complete checkout or Pay & restore access appears when payment is owed. After a failed renewal, the normal grace period applies before the workspace paywall; data is retained. Pricing and plan changes are handled by the agency owner.",
   },
   {
     id: "agency-branding",

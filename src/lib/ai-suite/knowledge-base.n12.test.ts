@@ -153,6 +153,40 @@ describe("N12 knowledge cards", () => {
     );
   });
 
+  it.each([
+    [
+      "how do I manage or cancel my paystack workspace subscription",
+      "sub-account",
+    ],
+    [
+      "how does a client manage or cancel paystack workspace subscription",
+      "agency",
+    ],
+  ] as const)(
+    "keeps workspace subscription management provider-aware for: %s",
+    (query, level) => {
+      const results = retrieved(query, level);
+      expect(results.map((result) => result.id)).toContain(
+        "workspace-subscription"
+      );
+      const subscription = results.find(
+        (result) => result.id === "workspace-subscription"
+      )!.body;
+      expect(subscription).toContain("configured Client Billing provider");
+      expect(subscription).toContain("Stripe opens its secure billing portal");
+      expect(subscription).toContain(
+        "Paystack opens that subscription's own management link"
+      );
+      expect(subscription).toContain(
+        "Turning off Paystack auto-renewal keeps the workspace active through the paid period"
+      );
+      expect(subscription).toContain(
+        "changes nothing if provider cancellation cannot be proven"
+      );
+      expect(subscription).not.toContain("on Stripe's secure portal");
+    }
+  );
+
   it("retrieves consistent Twilio, Vapi and WhatsApp number guidance", () => {
     const results = retrieved(
       "set up sms whatsapp and inbound voice phone number",
@@ -187,6 +221,40 @@ describe("N12 knowledge cards", () => {
     );
     expect(card("webinars").body).toContain(
       "already processed video or lets you attach the video later in Webinar1 admin"
+    );
+  });
+
+  it.each([
+    "how do paystack recurring invoices work",
+    "connect paystack for invoice payment links",
+    "paystack card on file recurring link",
+    "stripe vs paystack invoice",
+  ])("grounds tenant Paystack invoice guidance for: %s", (query) => {
+    const results = retrieved(query, "sub-account");
+    expect(results.map((result) => result.id)).toContain("payments");
+    expect(results.map((result) => result.id)).toContain("quotes-invoices");
+    const paymentCard = results.find((result) => result.id === "payments")!;
+    const quoteCard = results.find(
+      (result) => result.id === "quotes-invoices"
+    )!;
+    expect(paymentCard.title).toContain("Stripe or Paystack");
+    expect(paymentCard.keywords).toEqual(
+      expect.arrayContaining([
+        "paystack",
+        "recurring invoice",
+        "recurring link",
+        "card on file",
+      ])
+    );
+    expect(paymentCard.body).toContain("card-on-file recurring links");
+    expect(quoteCard.body).toContain("card-on-file recurring links");
+    const guidance = results.map((result) => result.body).join("\n");
+    expect(guidance).toContain("ZAR invoice payment links");
+    expect(guidance).toContain("card-on-file recurring links");
+    expect(guidance).toContain("does not replace Stripe for Checkout or Quick Funnels");
+    expect(guidance).toContain("separate from the deployment-level");
+    expect(guidance).not.toContain(
+      "Payments lets a workspace take card payments from ITS OWN customers through its own Stripe account"
     );
   });
 
