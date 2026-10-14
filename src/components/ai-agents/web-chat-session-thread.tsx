@@ -12,6 +12,7 @@ import {
   ExternalLink,
   Globe,
   Mail,
+  Mic,
   Phone,
   User,
 } from "lucide-react";
@@ -413,8 +414,18 @@ function TranscriptRow({ message }: { message: WebChatMessage }) {
       </span>
       <div className="flex-1 rounded-xl border bg-background p-3">
         <div className="mb-1 flex items-center justify-between gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             {isOutbound ? "Bot" : isSubmission ? "Form submission" : "Visitor"}
+            {message.via === "voice" && (
+              <span
+                className="inline-flex items-center gap-0.5 normal-case text-indigo-600 dark:text-indigo-400"
+                aria-label="Spoken (voice)"
+                title="Spoken through Web Voice"
+              >
+                <Mic className="h-3 w-3" />
+                voice
+              </span>
+            )}
           </span>
           <span className="text-[10px] text-muted-foreground">
             {formatRelativeTime(message.createdAt)}

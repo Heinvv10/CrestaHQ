@@ -2,11 +2,12 @@
 
 *Part of the [LeadStack CRM](../../CLAUDE.md) docs. Feature index: [README.md](README.md).*
 
-> **Status: connection backend (WV-1), call path (WV-2) and settings card (WV-3).
+> **Status: connection backend (WV-1), call path (WV-2), settings card (WV-3)
+> and widget mic (WV-4).
 > NOT runtime-verified.** It
 > merges dark behind `webVoiceEnabledByAgency` (default off). No real ElevenLabs key
 > has been connected, so no agent has ever been provisioned on a real account and no
-> real call has reached the reply endpoint. The widget mic (WV-4) comes later. The
+> real call has reached the reply endpoint. The
 > first client to switch the gate on triggers a live walk
 > (UPSTREAM_PORT_PLAN.md, Hein's ruling 4).
 
@@ -272,8 +273,9 @@ responses:
 - every listed conversation carries `start_time_unix_secs` (and `agent_id`,
   `call_duration_secs`); one without a start time blocks reconciliation for good.
 
-**No end-to-end call yet.** Nothing in the widget calls this path until WV-4 wires
-the mic into the chat window (and the embed iframe gets `allow="microphone"`).
+**No live end-to-end call yet.** WV-4 wires this path into the chat window and adds
+`allow="microphone"` to the embed iframe, but the gate remains off and the flow has
+not been exercised against a real ElevenLabs account.
 
 **WV-4 requirements.** The widget must call `getUserMedia` (and have the
 microphone granted) BEFORE `POST /voice/start`, and start the ElevenLabs session
@@ -299,4 +301,4 @@ counted by the sweep, its AI tokens by the workspace quota.
 
 ## Not yet built
 
-- WV-4: the widget mic. WV-5: the website hand-off's voice step.
+- WV-5: the website hand-off's voice step.

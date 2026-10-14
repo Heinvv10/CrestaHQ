@@ -13,16 +13,25 @@ const SCRIPT = readFileSync(join(process.cwd(), "public/widget.js"), "utf8");
 async function bubbleColour(accentColor: string): Promise<string> {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({ json: async () => ({ enabled: true, accentColor, position: "right" }) }),
+    vi
+      .fn()
+      .mockResolvedValue({
+        json: async () => ({ enabled: true, accentColor, position: "right" }),
+      })
   );
   const tag = document.createElement("script");
   tag.src = "https://crm.example.test/widget.js";
   tag.setAttribute("data-sa", "sa_1");
   document.body.appendChild(tag);
-  Object.defineProperty(document, "currentScript", { value: tag, configurable: true });
+  Object.defineProperty(document, "currentScript", {
+    value: tag,
+    configurable: true,
+  });
   new Function(SCRIPT)();
   for (let i = 0; i < 10; i++) await Promise.resolve();
-  const bubble = document.querySelector<HTMLButtonElement>('button[aria-label="Open chat"]');
+  const bubble = document.querySelector<HTMLButtonElement>(
+    'button[aria-label="Open chat"]'
+  );
   if (!bubble) throw new Error("bubble not mounted");
   return bubble.style.color;
 }
@@ -36,17 +45,107 @@ const normalised = (c: string) => {
 
 beforeEach(() => {
   document.body.innerHTML = "";
-  delete (window as unknown as Record<string, unknown>).__leadstackWebChatLoaded;
+  delete (window as unknown as Record<string, unknown>)
+    .__leadstackWebChatLoaded;
 });
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("public/widget.js launcher bubble", () => {
-  it.each(["#facc15", "#ffff00", "#fde68a", "#1e3a8a", "#2563eb", "#000", "#fff", "#808080", "#707070", "nonsense"])(
+  it.each([
+    "#facc15",
+    "#ffff00",
+    "#fde68a",
+    "#1e3a8a",
+    "#2563eb",
+    "#000",
+    "#fff",
+    "#808080",
+    "#707070",
+    "nonsense",
+  ])(
     "bubble text colour for %s matches contrast.ts textOnAccent",
     async (accent) => {
       expect(await bubbleColour(accent)).toBe(normalised(textOnAccent(accent)));
-    },
+    }
   );
+
+  it("passes only an enabled voice token and grants the iframe microphone permission", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({
+          enabled: true,
+          accentColor: "#2563eb",
+          position: "right",
+          voiceEnabled: true,
+          voiceToken: "w1.origin-checked",
+        }),
+      })
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    const tag = document.createElement("script");
+    tag.src = "https://crm.example.test/widget.js";
+    tag.setAttribute("data-sa", "sa_1");
+    document.body.appendChild(tag);
+    Object.defineProperty(document, "currentScript", {
+      value: tag,
+      configurable: true,
+    });
+    new Function(SCRIPT)();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Open chat"]')
+      ?.click();
+    const iframe = document.querySelector<HTMLIFrameElement>(
+      'iframe[title="Chat with us"]'
+    );
+    expect(iframe?.allow).toBe("clipboard-write; microphone");
+    expect(
+      new URL(iframe?.src ?? "https://invalid.test").searchParams.get("vt")
+    ).toBe("w1.origin-checked");
+  });
+
+  it("does not pass a token when the config returns the gate-off shape", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({
+          enabled: true,
+          accentColor: "#2563eb",
+          position: "right",
+          voiceEnabled: false,
+        }),
+      })
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    const tag = document.createElement("script");
+    tag.src = "https://crm.example.test/widget.js";
+    tag.setAttribute("data-sa", "sa_1");
+    document.body.appendChild(tag);
+    Object.defineProperty(document, "currentScript", {
+      value: tag,
+      configurable: true,
+    });
+    new Function(SCRIPT)();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Open chat"]')
+      ?.click();
+    const iframe = document.querySelector<HTMLIFrameElement>(
+      'iframe[title="Chat with us"]'
+    );
+    expect(
+      new URL(iframe?.src ?? "https://invalid.test").searchParams.has("vt")
+    ).toBe(false);
+  });
 });

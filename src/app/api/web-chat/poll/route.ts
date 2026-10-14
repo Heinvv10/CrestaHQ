@@ -67,6 +67,7 @@ export async function GET(request: Request) {
       .map((d) => {
         const data = d.data() as {
           direction?: string;
+          via?: string;
           body?: string;
           createdAt?: { toMillis?: () => number };
         };
@@ -74,6 +75,7 @@ export async function GET(request: Request) {
           id: d.id,
           direction: data.direction ?? "outbound",
           body: data.body ?? "",
+          via: data.via === "voice" ? ("voice" as const) : undefined,
           createdAtMs:
             typeof data.createdAt?.toMillis === "function"
               ? data.createdAt.toMillis()
@@ -88,6 +90,7 @@ export async function GET(request: Request) {
         messages: messages.map((m) => ({
           id: m.id,
           body: m.body,
+          ...(m.via ? { via: m.via } : {}),
           createdAtMs: m.createdAtMs,
         })),
         serverNowMs: Date.now(),

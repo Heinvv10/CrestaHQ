@@ -131,10 +131,17 @@
       // logging — not for auth (parent origin is gated at /config).
       var parentUrl = "";
       try { parentUrl = window.location.href; } catch (_e) {}
-      var qs = parentUrl ? "?p=" + encodeURIComponent(parentUrl) : "";
+      var params = [];
+      if (parentUrl) params.push("p=" + encodeURIComponent(parentUrl));
+      // The origin-checked config response is the only source of this token.
+      // Without it the iframe never renders a microphone control.
+      if (config.voiceEnabled === true && typeof config.voiceToken === "string") {
+        params.push("vt=" + encodeURIComponent(config.voiceToken));
+      }
+      var qs = params.length ? "?" + params.join("&") : "";
       iframe.src = BASE + "/embed/chat/" + encodeURIComponent(saId) + qs;
       iframe.title = "Chat with us";
-      iframe.allow = "clipboard-write";
+      iframe.allow = "clipboard-write; microphone";
       iframe.style.cssText =
         "position:fixed;" +
         (config.position === "left" ? "left:20px;" : "right:20px;") +
