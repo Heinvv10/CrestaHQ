@@ -1,4 +1,5 @@
 import { publicBookingStyle } from "@/lib/booking/public-style";
+import { validateDuration, validatePayment, validateTimezone, validateVisibleDays } from "@/lib/booking/validation";
 import type { BookingPage, BookingService, IntakeField } from "@/types/booking";
 import type { CheckoutThemeId } from "@/types/checkout-pages";
 import type { CalendarEvent, EventStatus } from "@/types/events";
@@ -72,7 +73,7 @@ function publicServices(value: unknown): BookingService[] {
       typeof item.id !== "string" ||
       typeof item.name !== "string" ||
       typeof item.durationMinutes !== "number" ||
-      !Number.isFinite(item.durationMinutes) ||
+      !validateDuration(item.durationMinutes).ok ||
       (item.description !== null && item.description !== undefined && typeof item.description !== "string")
     ) {
       return [];
@@ -112,24 +113,8 @@ function publicIntakeFields(value: unknown): IntakeField[] {
 }
 
 function publicPayment(value: unknown): PublicBookingPageData["payment"] {
-  if (
-    !isRecord(value) ||
-    typeof value.amount !== "number" ||
-    !Number.isFinite(value.amount) ||
-    typeof value.currency !== "string" ||
-    (value.description !== null && value.description !== undefined && typeof value.description !== "string") ||
-    (value.holdHours !== undefined && value.holdHours !== null && typeof value.holdHours !== "number")
-  ) {
-    return null;
-  }
-  return {
-    amount: value.amount,
-    currency: value.currency,
-    description: value.description ?? null,
-    holdHours: typeof value.holdHours === "number" && Number.isFinite(value.holdHours) && value.holdHours > 0
-      ? value.holdHours
-      : 24,
-  };
+  const checked = validatePayment(value);
+  return checked.ok ? checked.value : null;
 }
 
 function publicPaymentLinkUrl(value: unknown): string | null {
@@ -145,13 +130,18 @@ function publicPaymentLinkUrl(value: unknown): string | null {
 }
 
 function publicTimezone(value: unknown): string {
-  if (typeof value !== "string" || value.length === 0) return "UTC";
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value });
-    return value;
-  } catch {
-    return "UTC";
-  }
+  const checked = validateTimezone(value);
+  return checked.ok ? checked.value : "UTC";
+}
+
+function publicDuration(value: unknown, fallback: number): number {
+  const checked = validateDuration(value);
+  return checked.ok ? checked.value : fallback;
+}
+
+function publicVisibleDays(value: unknown): number {
+  const checked = validateVisibleDays(value);
+  return checked.ok ? checked.value : 14;
 }
 
 /** Complete stored-data boundary for the interactive /e client payload. */
@@ -164,22 +154,26 @@ export function publicEventData(
   const title = typeof event.title === "string" ? event.title : "Meeting";
   const pageName = typeof page?.name === "string" ? page.name : title;
   const serviceName = typeof event.serviceName === "string" ? event.serviceName : null;
-  const actualDuration = Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000));
-  const pageDuration = typeof page?.durationMinutes === "number" && Number.isFinite(page.durationMinutes)
-    ? page.durationMinutes
-    : actualDuration;
+  const pageDuration = publicDuration(page?.durationMinutes, 30);
+  const actualDuration = publicDuration(Math.round((endAt.getTime() - startAt.getTime()) / 60_000), pageDuration);
   const validStatuses: EventStatus[] = ["scheduled", "awaiting_payment", "completed", "cancelled", "no_show"];
+  const payment = publicPayment({
+    amount: event.paymentAmount,
+    currency: event.paymentCurrency,
+    description: null,
+    holdHours: 24,
+  });
 
   return {
     status: validStatuses.includes(event.status as EventStatus) ? (event.status as EventStatus) : "scheduled",
     title,
     pageName: serviceName ? `${pageName} (${serviceName})` : pageName,
-    bookingPageStatus: page?.status === "draft" ? "draft" : "published",
+    bookingPageStatus: page === null || page.status === "published" ? "published" : "draft",
     timezone: publicTimezone(page?.timezone),
     durationMinutes: serviceName ? actualDuration : pageDuration,
     paymentLinkUrl: publicPaymentLinkUrl(event.paymentLinkUrl),
-    paymentAmount: typeof event.paymentAmount === "number" && Number.isFinite(event.paymentAmount) ? event.paymentAmount : null,
-    paymentCurrency: typeof event.paymentCurrency === "string" ? event.paymentCurrency : null,
+    paymentAmount: payment?.amount ?? null,
+    paymentCurrency: payment?.currency ?? null,
   };
 }
 
@@ -189,9 +183,9 @@ export function publicBookingPage(doc: BookingPage, canonicalSlug: string): Publ
     slug: canonicalSlug,
     name: typeof doc.name === "string" ? doc.name : "",
     description: typeof doc.description === "string" ? doc.description : "",
-    durationMinutes: typeof doc.durationMinutes === "number" && Number.isFinite(doc.durationMinutes) ? doc.durationMinutes : 30,
+    durationMinutes: publicDuration(doc.durationMinutes, 30),
     timezone: publicTimezone(doc.timezone),
-    visibleDays: typeof doc.visibleDays === "number" && Number.isFinite(doc.visibleDays) ? doc.visibleDays : 14,
+    visibleDays: publicVisibleDays(doc.visibleDays),
     isServicePage,
     services: isServicePage ? publicServices(doc.services) : [],
     intakeFields: publicIntakeFields(doc.intakeFields),

@@ -216,6 +216,23 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
     expect(stringsSentToClient(el).filter((s) => s.includes("SENTINEL"))).toEqual([]);
   });
 
+  it("defaults finite stored numbers outside the booking schema", async () => {
+    if (name === "/e") return;
+    const el = await open({
+      durationMinutes: -30,
+      visibleDays: 999,
+      calendarType: "service",
+      services: [{ id: "bad", name: "Bad", durationMinutes: 0, description: null }],
+      payment: { amount: 100_001, currency: "USD", description: "Deposit", holdHours: 24 },
+    });
+    expect(el.props.page).toMatchObject({
+      durationMinutes: 30,
+      visibleDays: 14,
+      services: [],
+      payment: null,
+    });
+  });
+
   it("defaults non-array services and intake fields without throwing", async () => {
     if (name === "/e") return;
     const el = await open({ calendarType: "service", services: { nested: "services-SENTINEL" }, intakeFields: { nested: "fields-SENTINEL" } });
@@ -273,6 +290,26 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
   });
 });
 
+describe("public booking route ids", () => {
+  it.each([
+    ["/b sub-account", () => PublicBookingPage({ params: Promise.resolve({ subAccountId: "bad/id", slug: "p" }) })],
+    ["/b slug", () => PublicBookingPage({ params: Promise.resolve({ subAccountId: SA, slug: "bad?slug" }) })],
+    ["embed sub-account", () => EmbedBookingPage({ params: Promise.resolve({ subAccountId: "bad/id", slug: "p" }) })],
+    ["embed slug", () => EmbedBookingPage({ params: Promise.resolve({ subAccountId: SA, slug: "bad?slug" }) })],
+  ])("rejects an invalid %s before rendering", async (_label, open) => {
+    await expect(open()).rejects.toThrow();
+  });
+
+  it.each([
+    ["sub-account id", { subAccountId: "bad/id", bookingPageSlug: "p" }],
+    ["booking-page slug", { subAccountId: SA, bookingPageSlug: "bad?slug" }],
+  ])("rejects an invalid stored event %s", async (_label, stored) => {
+    const issued = issueEventToken("e1");
+    seedEvent("e1", "10:00", "10:30", { ...stored, publicTokenHash: issued.hash });
+    await expect(PublicEventPage({ params: Promise.resolve({ token: issued.token }) })).rejects.toThrow();
+  });
+});
+
 describe("/e", () => {
   it("sends the manage token it was opened with, and the event's id for its own API calls", async () => {
     const el = await PAGES["/e"](STORED);
@@ -307,7 +344,7 @@ describe("/e", () => {
       title: "Meeting",
       pageName: "Meeting",
       pageSlug: "p",
-      bookingPageStatus: "published",
+      bookingPageStatus: "draft",
       timezone: "UTC",
       durationMinutes: 30,
       paymentLinkUrl: null,
@@ -327,5 +364,48 @@ describe("/e", () => {
     });
     const el = (await PublicEventPage({ params: Promise.resolve({ token: issued.token }) })) as ReactElement<Props>;
     expect(el.props.paymentLinkUrl).toBe("https://paypal.me/acme/50USD");
+  });
+
+  it.each([
+    "http://paypal.me/acme/50USD",
+    "javascript:alert(1)",
+    "https://paypal.me@evil.example/50USD",
+    "https://user@paypal.me/acme/50USD",
+  ])("drops an unsafe stored payment link: %s", async (paymentLinkUrl) => {
+    seedPage("p");
+    const issued = issueEventToken("e1");
+    seedEvent("e1", "10:00", "10:30", { bookingPageSlug: "p", publicTokenHash: issued.hash, paymentLinkUrl });
+    const el = (await PublicEventPage({ params: Promise.resolve({ token: issued.token }) })) as ReactElement<Props>;
+    expect(el.props.paymentLinkUrl).toBeNull();
+  });
+
+  it.each([
+    ["an invalid start", { toDate: () => new Date(Number.NaN) }, { toDate: () => new Date("2026-09-14T10:30:00Z") }],
+    ["an invalid end", { toDate: () => new Date("2026-09-14T10:00:00Z") }, { toDate: () => new Date(Number.NaN) }],
+    ["a reversed interval", { toDate: () => new Date("2026-09-14T10:30:00Z") }, { toDate: () => new Date("2026-09-14T10:00:00Z") }],
+  ])("rejects %s", async (_label, startAt, endAt) => {
+    seedPage("p");
+    const issued = issueEventToken("e1");
+    seedEvent("e1", "10:00", "10:30", { bookingPageSlug: "p", publicTokenHash: issued.hash, startAt, endAt });
+    await expect(PublicEventPage({ params: Promise.resolve({ token: issued.token }) })).rejects.toThrow();
+  });
+
+  it("defaults out-of-range event payment and duration snapshots", async () => {
+    seedPage("p", { name: "Service page", durationMinutes: -30 } as never);
+    const issued = issueEventToken("e1");
+    seedEvent("e1", "10:00", "10:01", {
+      bookingPageSlug: "p",
+      publicTokenHash: issued.hash,
+      serviceName: "Consultation",
+      paymentAmount: -50,
+      paymentCurrency: "ZZZ",
+    });
+    const el = (await PublicEventPage({ params: Promise.resolve({ token: issued.token }) })) as ReactElement<Props>;
+    expect(el.props).toMatchObject({
+      durationMinutes: 30,
+      pageName: "Service page (Consultation)",
+      paymentAmount: null,
+      paymentCurrency: null,
+    });
   });
 });
