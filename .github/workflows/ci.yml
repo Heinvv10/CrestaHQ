@@ -4,6 +4,7 @@ name: CI
 # reaches main another way.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -42,7 +43,10 @@ jobs:
     # Residual risk accepted on that basis. If a collaborator is ever added,
     # this needs revisiting — self-hosted runners execute PR code on a
     # workstation that also hosts four other repos' runners.
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # Draft PRs are still changing rapidly. Run the full gate once they are
+    # marked ready, and on every later update, instead of spending runner time
+    # on work the author has explicitly said is not reviewable yet.
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
       # self-hosted runner an action runs with this machine's filesystem in
@@ -113,7 +117,7 @@ jobs:
     name: Secret scan
     runs-on: [self-hosted, linux, velo, crestahq]
     timeout-minutes: 10
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
       # self-hosted runner an action runs with this machine's filesystem in
@@ -227,13 +231,17 @@ jobs:
   # older pending one, so every PR's E2E but the newest would be cancelled.
   e2e:
     name: E2E (Playwright)
+    # Do not spend ~11 minutes exercising a revision that already failed a
+    # faster blocking gate. The fixture runner remains serialised exactly as
+    # before; this only changes when it enters that queue.
+    needs: [ci, secrets]
     runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
     # ~11 min on a quiet box, but the runner shares velo-server with every
     # other CI and dev session: at load avg 45+ the 93 specs ran past 30 min
     # three times on 2026-09-24/25 with nothing failing (58–76 specs done,
     # all green) — a timeout there is noise, not a verdict.
     timeout-minutes: 45
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     env:
       # The build bakes NEXT_PUBLIC_* in, so they must be present at build
       # time, not just at runtime — hence job-level env rather than step-level.
