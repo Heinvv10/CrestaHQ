@@ -266,8 +266,10 @@ describe("check_website_status", () => {
       { uid: "u1", email: "a@example.com", displayName: "", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin" },
       {},
     );
-    expect(r.resultText).toContain("- “Promo”: failed — poll lost; its last build can still finish, so it can't be re-pointed until someone uses Re-check now, or Try again, on the Website page;");
-    expect(r.resultText).toContain("- “Settled”: failed — build failed; call-to-action link:");
+    expect(r.resultText).toContain("- “Promo”: failed; its last build can still finish, so it can't be re-pointed until someone uses Re-check now, or Try again, on the Website page;");
+    expect(r.resultText).toContain("- “Settled”: failed; call-to-action link:");
+    expect(r.resultText).not.toContain("poll lost");
+    expect(r.resultText).not.toContain("build failed");
   });
 
   it("prints a stored name and link on one line each", async () => {

@@ -226,6 +226,85 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     }
   });
 
+  it.each(["gate", "site", "count", "reservation"] as const)(
+    "classifies an unexpected %s read failure as definitely pre-acceptance",
+    async (failurePoint) => {
+      const originalDoc = mem.db.doc.bind(mem.db);
+      const originalCollection = mem.db.collection.bind(mem.db);
+      const docSpy = vi.spyOn(mem.db, "doc");
+      const collectionSpy = vi.spyOn(mem.db, "collection");
+      const transactionSpy = vi.spyOn(mem.db, "runTransaction");
+
+      if (failurePoint === "gate" || failurePoint === "site") {
+        const failedPath = failurePoint === "gate" ? "subAccounts/sa1" : SITE;
+        docSpy.mockImplementation((path: string) => {
+          const ref = originalDoc(path);
+          return path === failedPath
+            ? { ...ref, get: async () => { throw new Error(`secret ${failurePoint} failure`); } }
+            : ref;
+        });
+      }
+      if (failurePoint === "count") {
+        await originalDoc(SITE).delete();
+        collectionSpy.mockImplementation((path: string) => {
+          const ref = originalCollection(path);
+          return path === "subAccounts/sa1/website"
+            ? { ...ref, get: async () => { throw new Error("secret count failure"); } }
+            : ref;
+        });
+      }
+      if (failurePoint === "reservation") {
+        transactionSpy.mockRejectedValueOnce(new Error("secret reservation failure"));
+      }
+
+      await expect(build()).rejects.toMatchObject({
+        status: 500,
+        message: "Website build preparation failed.",
+        failureSource: "local-preparation",
+        submissionOutcome: "not-accepted",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      docSpy.mockRestore();
+      collectionSpy.mockRestore();
+      transactionSpy.mockRestore();
+    },
+  );
+
+  it.each(["gate-read", "draft-transaction"] as const)(
+    "classifies an unexpected Add website %s failure as local with no provider submission",
+    async (failurePoint) => {
+      const originalDoc = mem.db.doc.bind(mem.db);
+      const docSpy = vi.spyOn(mem.db, "doc");
+      const transactionSpy = vi.spyOn(mem.db, "runTransaction");
+      try {
+        if (failurePoint === "gate-read") {
+          docSpy.mockImplementation((path: string) => {
+            const ref = originalDoc(path);
+            return path === "subAccounts/sa1"
+              ? { ...ref, get: async () => { throw new Error("secret gate read failure"); } }
+              : ref;
+          });
+        } else {
+          transactionSpy.mockRejectedValueOnce(new Error("secret create failure"));
+        }
+
+        await expect(
+          createWebsiteForSubAccount({ subAccountId: "sa1", name: "Acme" }),
+        ).rejects.toMatchObject({
+          status: 500,
+          message: "Could not create the website draft.",
+          failureSource: "local-draft-create",
+          submissionOutcome: "not-accepted",
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        docSpy.mockRestore();
+        transactionSpy.mockRestore();
+      }
+    },
+  );
+
   it("asks gitpage for a premium build on the forced model tier, even from a standard draft", async () => {
     await build();
     expect(sent()).toMatchObject({ quality: "premium", claudeModel: "opus-5.5", subAccountId: "sa1" });
@@ -245,6 +324,7 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       message: "The website builder did not start the build. Nothing was built — try again in a few minutes.",
       gitpageStatus: undefined,
       gitpageBody: undefined,
+      submissionOutcome: "unknown",
     });
     expect(mem.read(SITE)).toMatchObject({ status: "draft" });
     expect(mem.read(SITE)?.gitpageJobId).toBeUndefined();
@@ -512,6 +592,8 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     it.each([
       ["422", 422, { message: "Invalid palette." }],
       ["429", 429, { message: "Hourly cap reached." }],
+      ["408", 408, { message: "Request timed out." }],
+      ["425", 425, { message: "Too early." }],
       ["500", 500, { error: "Internal error." }],
       ["502", 502, { error: "Bad gateway." }],
       ["503 with no JSON body", 503, null],
@@ -519,7 +601,15 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       fetchMock.mockImplementation(async () =>
         body === null ? new Response("<html>down</html>", { status }) : Response.json(body, { status }),
       );
-      for (let i = 0; i < 10; i++) await expect(build()).rejects.toMatchObject({ gitpageStatus: status });
+      for (let i = 0; i < 10; i++) {
+        await expect(build()).rejects.toMatchObject({
+          gitpageStatus: status,
+          submissionOutcome:
+            status < 500 && status !== 408 && status !== 425
+              ? "not-accepted"
+              : "unknown",
+        });
+      }
       expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 10 });
       await expect(build()).rejects.toMatchObject({ status: 429 });
       expect(fetchMock).toHaveBeenCalledTimes(10);
@@ -534,7 +624,10 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
         throw failure();
       });
       for (let i = 0; i < 10; i++) {
-        await expect(build()).rejects.toMatchObject({ status: 502 });
+        await expect(build()).rejects.toMatchObject({
+          status: 502,
+          submissionOutcome: "unknown",
+        });
         expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: i + 1 });
       }
       // The eleventh attempt is refused without a call, outage or not...
@@ -669,7 +762,10 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     it("stays removed: the build is refused with 409, the orphaned job is logged, no poll is scheduled", async () => {
       acceptedAfter(() => mem.db.doc(SITE).delete());
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
-      await expect(build()).rejects.toMatchObject({ status: 409 });
+      await expect(build()).rejects.toMatchObject({
+        status: 409,
+        submissionOutcome: "accepted",
+      });
       expect(error).toHaveBeenCalledTimes(1);
       expect(error.mock.calls[0][0]).toContain("orphanedJob=build_orphan");
       expect(error.mock.calls[0][0]).toContain("(missing)");

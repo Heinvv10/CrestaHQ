@@ -67,6 +67,7 @@ const CHAT_ONLY_ARGS: Record<string, Record<string, unknown>> = {
   research_website_reference: { url: "https://example.com" },
   get_website_prefill: {},
   create_website: { heading: "Acme", hero_statement: "Fast fibre", features: "Fast, Cheap, Local", benefits: "Save, Grow, Win" },
+  list_website_concepts: {},
   check_website_status: {},
   speed_to_lead_readiness: {},
   update_website_cta: { siteId: "site1", siteName: "Acme", ctaLink: "https://crm.example.test/f/form1" },
