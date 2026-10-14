@@ -8,13 +8,39 @@ on:
   push:
     branches: [main]
 
-# A superseded PR run is worthless — cancel it. Main runs are never cancelled:
-# they are the record of what actually landed.
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
+  # A draft transition must still enter each PR concurrency group:
+  # the ordinary jobs skip drafts, so without these no new job would arrive to
+  # cancel work for a PR that is no longer reviewable. These tiny helper jobs
+  # run only for that transition. The E2E helper replaces pending work but,
+  # unlike the fast helpers, never interrupts an active browser teardown.
+  cancel_ci_on_draft:
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
+    runs-on: [self-hosted, linux, velo, crestahq]
+    concurrency:
+      group: ci-fast-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - run: echo "cancelled superseded fast CI for draft PR"
+
+  cancel_secrets_on_draft:
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
+    runs-on: [self-hosted, linux, velo, crestahq]
+    concurrency:
+      group: ci-secrets-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - run: echo "cancelled superseded secret scan for draft PR"
+
+  replace_pending_e2e_on_draft:
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
+    runs-on: [self-hosted, linux, velo, crestahq]
+    concurrency:
+      group: ci-e2e-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - run: echo "replaced pending E2E for draft PR after active teardown"
+
   # ONE job, deliberately.
   #
   # The whole gate runs in ~52s locally (lint 9s, typecheck 4s, tests 1s,
@@ -32,6 +58,9 @@ jobs:
     name: Lint, typecheck, test, build
     runs-on: [self-hosted, linux, velo, crestahq]
     timeout-minutes: 20
+    concurrency:
+      group: ci-fast-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     # Skips a fork's PR. Be clear about what this does and does not buy:
     # `pull_request` evaluates the workflow file from the PR's OWN head, so a
     # PR can rewrite or delete this line, and the rewritten version is what
@@ -117,6 +146,9 @@ jobs:
     name: Secret scan
     runs-on: [self-hosted, linux, velo, crestahq]
     timeout-minutes: 10
+    concurrency:
+      group: ci-secrets-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
@@ -226,9 +258,10 @@ jobs:
   #
   # e2e-smoke.yml's "smoke" job runs on the SAME runner label for the same
   # reason (same fixture tenants, same port 3100). The single labelled runner
-  # is what serialises the two. Do NOT add a shared `concurrency:` group for
-  # this: GitHub keeps at most one pending job per group and cancels the
-  # older pending one, so every PR's E2E but the newest would be cancelled.
+  # is what serialises different PRs. This job's concurrency group is per ref:
+  # it coalesces superseded pending heads of ONE PR, but never cancels an
+  # active browser run — cancellation before `finally` strands shared
+  # Firestore fixtures and makes later, unrelated runs fail.
   e2e:
     name: E2E (Playwright)
     # Do not spend ~11 minutes exercising a revision that already failed a
@@ -236,6 +269,9 @@ jobs:
     # before; this only changes when it enters that queue.
     needs: [ci, secrets]
     runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
+    concurrency:
+      group: ci-e2e-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: false
     # ~11 min on a quiet box, but the runner shares velo-server with every
     # other CI and dev session: at load avg 45+ the 93 specs ran past 30 min
     # three times on 2026-09-24/25 with nothing failing (58–76 specs done,
