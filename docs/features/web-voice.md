@@ -2,11 +2,12 @@
 
 *Part of the [LeadStack CRM](../../CLAUDE.md) docs. Feature index: [README.md](README.md).*
 
-> **Status: connection backend (WV-1) and call path (WV-2). NOT runtime-verified.** It
+> **Status: connection backend (WV-1), call path (WV-2) and settings card (WV-3).
+> NOT runtime-verified.** It
 > merges dark behind `webVoiceEnabledByAgency` (default off). No real ElevenLabs key
 > has been connected, so no agent has ever been provisioned on a real account and no
-> real call has reached the reply endpoint. The settings card (WV-3) and widget mic
-> (WV-4) come later. The first client to switch the gate on triggers a live walk
+> real call has reached the reply endpoint. The widget mic (WV-4) comes later. The
+> first client to switch the gate on triggers a live walk
 > (UPSTREAM_PORT_PLAN.md, Hein's ruling 4).
 
 Ported from upstream LeadStack 1.0.40 (`68798611`). A sub-account connects its OWN
@@ -298,5 +299,4 @@ counted by the sweep, its AI tokens by the workspace quota.
 
 ## Not yet built
 
-- WV-3: the settings card. WV-4: the widget mic. WV-5: the website hand-off's voice
-  step.
+- WV-4: the widget mic. WV-5: the website hand-off's voice step.
