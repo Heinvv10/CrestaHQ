@@ -71,9 +71,7 @@ async function seedPage(slug: string, over: Record<string, unknown> = {}) {
  * booked. The token is signed as src/lib/booking/event-token.ts signs it
  * (that module is server-only), with the secret the app under test reads.
  */
-async function seedEvent(slug: string, over: Record<string, unknown>): Promise<string> {
-  const secret = process.env.AUTOMATIONS_TOKEN_SECRET;
-  if (!secret) throw new Error("AUTOMATIONS_TOKEN_SECRET must be set to sign an /e token");
+async function seedEvent(slug: string, over: Record<string, unknown>, secret: string): Promise<string> {
   const id = `${PREFIX}ev-${stamp}`;
   const payload = `${id}.${randomBytes(16).toString("hex")}`;
   const token = `${payload}.${createHmac("sha256", secret).update(payload).digest("hex")}`;
@@ -226,12 +224,18 @@ test("the served page carries none of the stored doc's private fields", async ({
     confirmationMessage: `sentinel-message-${stamp}`,
     redirectUrl: `https://example.com/sentinel-thanks-${stamp}`,
   });
-  // /e reads the event as well as the page: the event carries its own copy of
-  // the meeting link and a creator.
-  const token = await seedEvent(slug, { meetingUrl, createdByUid: creator });
+  const paths = [`/b/${sa}/${slug}`, `/embed/booking/${sa}/${slug}`];
+  const eventSecret = process.env.AUTOMATIONS_TOKEN_SECRET;
+  if (eventSecret) {
+    // PR CI starts the app with this job's short-lived key, so it can also
+    // prove /e. Production uses a different secret that is deliberately not
+    // copied into Actions; its smoke still proves the two public page shapes.
+    const token = await seedEvent(slug, { meetingUrl, createdByUid: creator }, eventSecret);
+    paths.push(`/e/${token}`);
+  }
   await visit(browser, slug, async (page) => {
     // The raw responses: what Next inlines for hydration is in here, rendered or not.
-    for (const path of [`/b/${sa}/${slug}`, `/embed/booking/${sa}/${slug}`, `/e/${token}`]) {
+    for (const path of paths) {
       const res = await page.request.get(path);
       expect(res.status(), path).toBe(200);
       const body = await res.text();
