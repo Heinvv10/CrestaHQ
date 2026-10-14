@@ -404,6 +404,12 @@ jobs:
           echo "::add-mask::$KEY"
           echo "GITPAGE_API_KEY=$KEY" >> "$GITHUB_ENV"
 
+      - name: Validate approved orphan cleanup
+        run: node scripts/ci/cleanup-orphaned-agency-snapshot-e2e.mjs --run e2e-a4a2-1791963404426-h816
+
+      - name: Delete approved orphan cleanup
+        run: node scripts/ci/cleanup-orphaned-agency-snapshot-e2e.mjs --run e2e-a4a2-1791963404426-h816 --execute
+
       - name: Playwright
         run: pnpm exec playwright test
 
