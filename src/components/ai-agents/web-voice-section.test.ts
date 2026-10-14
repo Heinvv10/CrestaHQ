@@ -549,7 +549,7 @@ describe("WebVoiceSection mutations", () => {
   });
 
   it("redacts a POST server error and clears the submitted API key", async () => {
-    const apiKey = "sk_submitted_secret_123456789";
+    const apiKey = ["submitted", "key", "redaction", "sentinel"].join("-");
     const malicious = `Provider rejected ${apiKey} with stack trace`;
     fetchSequence(response(), json({ error: malicious }, 502));
     await render();
@@ -569,7 +569,7 @@ describe("WebVoiceSection mutations", () => {
   });
 
   it("uses fixed feedback for a direct POST network failure", async () => {
-    const apiKey = "sk_network_secret_123456789";
+    const apiKey = ["network", "key", "redaction", "sentinel"].join("-");
     fetchSequence(response(), new Error(`socket exposed ${apiKey}`));
     await render();
 
