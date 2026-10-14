@@ -29,8 +29,8 @@ vi.mock("@/lib/automations/qstash", () => ({
 const push = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: push }));
 const updateWebVoiceSettings = vi.hoisted(() => vi.fn());
-const readWebVoiceConnectionRevision = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/server/web-voice-service", () => ({ updateWebVoiceSettings, readWebVoiceConnectionRevision }));
+const readWebVoiceHandoffSnapshot = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/server/web-voice-service", () => ({ updateWebVoiceSettings, readWebVoiceHandoffSnapshot }));
 
 const fail = vi.hoisted(() => ({ chat: false, profile: false, workflow: false }));
 vi.mock("@/lib/comms/ai/agent", async (importOriginal) => {
@@ -171,7 +171,14 @@ const allowedOf = () => (webChat()?.allowedDomains as string[] | undefined) ?? [
 beforeEach(async () => {
   mem.clear();
   push.mockReset().mockResolvedValue(undefined);
-  readWebVoiceConnectionRevision.mockReset().mockResolvedValue("voice-rev-1");
+  readWebVoiceHandoffSnapshot.mockReset().mockImplementation(async () => {
+    const meta = mem.read(SUB)?.webVoiceMeta as { ready?: boolean; enabled?: boolean } | undefined;
+    return {
+      revision: meta?.ready === true ? "voice-rev-1" : null,
+      ready: meta?.ready === true,
+      enabled: meta?.ready === true && meta.enabled !== false,
+    };
+  });
   updateWebVoiceSettings.mockReset().mockImplementation(async (input: {
     transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
   }) => {
@@ -425,13 +432,23 @@ describe("Web Voice hand-off", () => {
   });
 
   it("does not enable when the initially ready connection revision is unavailable", async () => {
-    readWebVoiceConnectionRevision.mockResolvedValue(null);
+    readWebVoiceHandoffSnapshot.mockResolvedValue({ revision: null, ready: true, enabled: false });
     seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
     enableChat();
     const out = await handoff();
     expect(updateWebVoiceSettings).not.toHaveBeenCalled();
     expect(out!.voiceSkippedReason).toContain("changed or could not be verified");
     expect(out).toMatchObject({ kbSeeded: true, workflowStatus: "draft" });
+  });
+
+  it("records a clear refusal when the approval snapshot cannot be read", async () => {
+    readWebVoiceHandoffSnapshot.mockRejectedValue(new Error("private store down"));
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    const out = await handoff();
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(out!.voiceSkippedReason).toContain("could not be verified");
+    expect(out!.errors).toContain("web-voice: the ready connection could not be verified");
   });
 
   it("does not enable voice while the chat bot is off", async () => {

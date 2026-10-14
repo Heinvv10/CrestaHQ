@@ -15,7 +15,8 @@ import { sendPushForEvent } from "@/lib/push/send";
 import { isDocId } from "@/lib/server/doc-id";
 import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import {
-  readWebVoiceConnectionRevision,
+  readWebVoiceHandoffSnapshot,
+  type WebVoiceHandoffSnapshot,
   updateWebVoiceSettings,
 } from "@/lib/server/web-voice-service";
 import {
@@ -525,17 +526,14 @@ export async function provisionWebsiteHandoff(
   type ChatSeeded = NonNullable<AiChannelConfig["websiteSeeded"]>;
 
   // Bind a later enable to the ready connection approved before any hand-off
-  // writes. A replacement is a different operator decision and is never
-  // provisioned or enabled by this publish.
-  let approvedVoiceRevision: string | null = null;
-  if (
-    wantsWebVoice(config) &&
-    sub.webVoiceMeta?.ready === true &&
-    sub.webVoiceMeta.enabled === false
-  ) {
+  // writes. A replacement after this snapshot is a different operator decision.
+  let approvedVoice: WebVoiceHandoffSnapshot | null = null;
+  let voiceApprovalFailed = false;
+  if (wantsWebVoice(config)) {
     try {
-      approvedVoiceRevision = await readWebVoiceConnectionRevision(subAccountId);
+      approvedVoice = await readWebVoiceHandoffSnapshot(subAccountId);
     } catch {
+      voiceApprovalFailed = true;
       errors.push("web-voice: the ready connection could not be verified");
     }
   }
@@ -627,22 +625,24 @@ export async function provisionWebsiteHandoff(
     out.voiceSkippedReason = "The agency has locked Web Chat AI for this workspace.";
   } else if (!aiIsConfigured()) {
     out.voiceSkippedReason = "OPENROUTER_API_KEY is not set on this deployment, so Web Voice was not enabled.";
-  } else if (sub.webVoiceMeta?.ready !== true) {
+  } else if (voiceApprovalFailed) {
+    out.voiceSkippedReason = "The ready ElevenLabs connection could not be verified; Web Voice was not enabled.";
+  } else if (approvedVoice?.ready !== true) {
     out.voiceSkippedReason = "Connect and finish setting up ElevenLabs in AI Agents → Web Chat → Voice.";
   } else if (!out.chatEnabled) {
     out.voiceSkippedReason = "Web Chat AI is switched off; turn it on before enabling voice.";
-  } else if (sub.webVoiceMeta.enabled !== false) {
+  } else if (approvedVoice.enabled) {
     out.voiceEnabled = true;
     out.voiceSkippedReason = null;
   } else {
-    if (!approvedVoiceRevision) {
+    if (!approvedVoice.revision) {
       out.voiceSkippedReason = "The ready ElevenLabs connection changed or could not be verified; Web Voice was not enabled.";
     } else {
       try {
         const meta = await updateWebVoiceSettings({
           subAccountId,
           patch: { enabled: true },
-          expectedRevision: approvedVoiceRevision,
+          expectedRevision: approvedVoice.revision,
           transactionGuard: async (tx) => {
             const refused = await blocked(tx);
             if (refused) throw new HandoffStopped(refused);

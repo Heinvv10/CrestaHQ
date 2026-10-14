@@ -122,9 +122,34 @@ export async function readWebVoiceConnection(
   return (await readState(subAccountId)).conn;
 }
 
-/** Revision only, for callers that must bind later work to this connection. */
-export async function readWebVoiceConnectionRevision(subAccountId: string): Promise<string | null> {
-  return (await readState(subAccountId)).rev;
+export type WebVoiceHandoffSnapshot = {
+  revision: string | null;
+  ready: boolean;
+  enabled: boolean;
+};
+
+/** Atomically approve the ready connection a website publish may later enable. */
+export async function readWebVoiceHandoffSnapshot(
+  subAccountId: string,
+): Promise<WebVoiceHandoffSnapshot> {
+  const db = getAdminDb();
+  const subRef = db.doc(`subAccounts/${subAccountId}`);
+  const secretRef = db.doc(webVoiceConnectionPath(subAccountId));
+  return db.runTransaction(async (tx) => {
+    const [subSnap, secretSnap] = await tx.getAll(subRef, secretRef);
+    const meta = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
+    const revision = parseConnection(
+      secretSnap.data() as Partial<WebVoiceConnectionSecret> | undefined,
+    )
+      ? revOf(secretSnap)
+      : null;
+    const ready = meta?.ready === true && revision !== null;
+    return {
+      revision: ready ? revision : null,
+      ready,
+      enabled: ready && meta.enabled !== false,
+    };
+  });
 }
 
 /**

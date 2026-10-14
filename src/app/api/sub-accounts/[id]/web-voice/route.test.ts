@@ -12,7 +12,10 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 const { mem, claims, storeDb } = await import("@/test/gbp-sync-store");
 const { GET, POST, PATCH, DELETE } = await import("./route");
-const { updateWebVoiceSettings } = await import("@/lib/server/web-voice-service");
+const {
+  readWebVoiceHandoffSnapshot,
+  updateWebVoiceSettings,
+} = await import("@/lib/server/web-voice-service");
 const { Timestamp } = await import("firebase-admin/firestore");
 const { verifyWidgetToken } = await import("@/lib/web-voice/tokens");
 
@@ -386,13 +389,46 @@ describe("PATCH — settings", () => {
     expect(mem.read(SECRET)).toMatchObject({ enabled: before?.enabled, rev: before?.rev });
   });
 
-  it("refuses a replaced connection revision before calling ElevenLabs", async () => {
+  it("atomically pairs readiness with the connection revision across a replacement", async () => {
     await connect();
+    const realDoc = storeDb.doc.bind(storeDb);
+    let replaced = false;
+    vi.spyOn(storeDb, "doc").mockImplementation((path) => {
+      const ref = realDoc(path);
+      if (path !== "subAccounts/sa1") return ref;
+      return {
+        ...ref,
+        get: async () => {
+          const snap = await ref.get();
+          if (!replaced) {
+            replaced = true;
+            mem.seed(SECRET, { ...mem.read(SECRET), rev: "replacement-rev" });
+            const sub = mem.read("subAccounts/sa1")!;
+            mem.seed("subAccounts/sa1", {
+              ...sub,
+              webVoiceMeta: { ...(sub.webVoiceMeta as object), ready: false, enabled: false },
+            });
+          }
+          return snap;
+        },
+      };
+    });
+    expect(await readWebVoiceHandoffSnapshot("sa1")).toEqual({
+      revision: null,
+      ready: false,
+      enabled: false,
+    });
+    expect(replaced).toBe(true);
+  });
+
+  it("rejects a replacement after handoff approval before calling ElevenLabs", async () => {
+    await connect();
+    const approved = await readWebVoiceHandoffSnapshot("sa1");
     const before = mem.read(SECRET)!;
     calls = [];
     mem.seed(SECRET, { ...before, rev: "replacement-rev" });
     await expect(updateWebVoiceSettings({
-      subAccountId: "sa1", patch: { enabled: true }, expectedRevision: before.rev as string,
+      subAccountId: "sa1", patch: { enabled: true }, expectedRevision: approved.revision,
     })).rejects.toThrow("connection changed");
     expect(calls).toEqual([]);
     expect(mem.read(SECRET)?.rev).toBe("replacement-rev");
