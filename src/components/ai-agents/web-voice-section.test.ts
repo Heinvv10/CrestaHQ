@@ -196,6 +196,23 @@ describe("WebVoiceSection guards", () => {
     expect(container.textContent).toBe("");
   });
 
+  it("keeps only disconnect available for a connected tenant when Web Chat is locked", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response({ webChatGateOn: false, meta: connectedMeta }))
+    );
+
+    await render();
+
+    expect(container.textContent).toContain("Web Chat is unavailable");
+    expect(button("Disconnect")).toBeTruthy();
+    expect(container.textContent).not.toContain("Save voice settings");
+    expect(container.textContent).not.toContain("Replace key");
+    expect(container.querySelector("#wv-greeting")).toBeNull();
+    expect(container.querySelector("#wv-voice")).toBeNull();
+    expect(container.querySelector("#wv-key")).toBeNull();
+  });
+
   it("shows the locked card when the Web Voice gate is off", async () => {
     vi.stubGlobal(
       "fetch",
@@ -209,6 +226,23 @@ describe("WebVoiceSection guards", () => {
     );
     expect(container.textContent).toContain("enable Web Voice");
     expect(container.textContent).not.toContain("ElevenLabs API key");
+  });
+
+  it("keeps only disconnect available for a connected tenant when Web Voice is locked", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response({ gateOn: false, meta: connectedMeta }))
+    );
+
+    await render();
+
+    expect(container.textContent).toContain("enable Web Voice");
+    expect(button("Disconnect")).toBeTruthy();
+    expect(container.textContent).not.toContain("Save voice settings");
+    expect(container.textContent).not.toContain("Replace key");
+    expect(container.querySelector("#wv-greeting")).toBeNull();
+    expect(container.querySelector("#wv-voice")).toBeNull();
+    expect(container.querySelector("#wv-key")).toBeNull();
   });
 
   it("shows the connection form when both gates are on", async () => {
@@ -297,6 +331,92 @@ describe("WebVoiceSection mutations", () => {
     expect(toast.error).toHaveBeenCalledWith(
       "Couldn't load Web Voice settings. Try again."
     );
+  });
+
+  it("shows fixed cleanup guidance for a DELETE warning without exposing its text", async () => {
+    const malicious = "remote cleanup leaked sk_provider_secret and stack trace";
+    fetchSequence(
+      response({ meta: connectedMeta }),
+      json({ ok: true, warning: malicious }),
+      response()
+    );
+    await render();
+
+    await click(button("Disconnect"));
+    await click(button("Confirm disconnect"));
+
+    expect(toast.warning).toHaveBeenCalledWith(
+      "Disconnected, but the old ElevenLabs voice agent may still exist. Open ElevenLabs and delete it manually."
+    );
+    expect(container.textContent).not.toContain(malicious);
+    expect(toastText()).not.toContain(malicious);
+    expect(toastText()).not.toContain("sk_provider_secret");
+  });
+
+  it("ignores an older same-tenant refresh after a newer disconnect", async () => {
+    const oldRefresh = deferred<Response>();
+    let getCount = 0;
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") {
+        return Promise.resolve(json({ meta: connectedMeta, voices: [] }));
+      }
+      if (method === "DELETE") return Promise.resolve(json({ ok: true }));
+      getCount += 1;
+      if (getCount === 1) return Promise.resolve(response());
+      if (getCount === 2) return oldRefresh.promise;
+      if (getCount === 3) return Promise.resolve(response());
+      throw new Error(`Unexpected GET ${getCount}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await render();
+
+    const input = container.querySelector<HTMLInputElement>("#wv-key")!;
+    await changeValue(input, "sk_same_tenant_secret");
+    await submit(input.form!);
+    expect(container.textContent).toContain("Key ending …abcd");
+
+    await click(button("Disconnect"));
+    await click(button("Confirm disconnect"));
+    expect(container.textContent).toContain("Connect ElevenLabs");
+
+    const staleSignal = (fetchMock.mock.calls[2]?.[1] as RequestInit | undefined)
+      ?.signal;
+    expect(staleSignal?.aborted).toBe(true);
+    await act(async () => {
+      oldRefresh.resolve(response({ meta: connectedMeta }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Connect ElevenLabs");
+    expect(container.textContent).not.toContain("Key ending …abcd");
+  });
+
+  it("serializes same-tenant mutations while a save is unresolved", async () => {
+    const pendingSave = deferred<Response>();
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "GET") return Promise.resolve(response({ meta: connectedMeta }));
+      if (method === "PATCH") return pendingSave.promise;
+      if (method === "DELETE") return Promise.resolve(json({ ok: true }));
+      throw new Error(`Unexpected mutation ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await render();
+
+    await submit(button("Save voice settings").form!);
+    await click(button("Disconnect"));
+    await click(button("Confirm disconnect"));
+
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH"))
+      .toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE"))
+      .toHaveLength(0);
+
+    await act(async () => {
+      pendingSave.resolve(json({ meta: connectedMeta }));
+      await Promise.resolve();
+    });
   });
 
   it("reports a DELETE network failure and retains the connected state", async () => {
