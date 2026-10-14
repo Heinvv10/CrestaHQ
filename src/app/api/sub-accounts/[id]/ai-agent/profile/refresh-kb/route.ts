@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
+import { siteAddress, type WebsiteDoc } from "@/types/website";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { isDocId } from "@/lib/server/doc-id";
 import { getAgentProfile, upsertAgentProfile } from "@/lib/comms/ai/agent";
 import { anyAiChannelGateOn } from "@/lib/comms/ai/gates";
 import {
@@ -61,6 +63,31 @@ export async function POST(
     );
   }
 
+  // Optional { siteId }: refresh from one of THIS sub-account's built
+  // websites — every page it has, not just the homepage (the "Refresh chat
+  // knowledge" button on a site card, used after editing the site).
+  let siteId: string | null = null;
+  try {
+    const body = (await request.json()) as { siteId?: unknown };
+    siteId = typeof body?.siteId === "string" && body.siteId.trim() ? body.siteId.trim() : null;
+  } catch {
+    siteId = null;
+  }
+  if (siteId) {
+    // A website-builder action, so it also answers to the website gate, as
+    // the builder's own routes do (upstream checks only the AI gate above).
+    if (sa.websiteEnabledByAgency !== true) {
+      return NextResponse.json(
+        {
+          error:
+            "The website builder is disabled for this sub-account. Your agency administrator can enable it from Manage in the agency sub-accounts list.",
+        },
+        { status: 403 },
+      );
+    }
+    return refreshFromSite(id, siteId);
+  }
+
   const profile = await getAgentProfile(id);
   const url = profile?.websiteUrl?.trim();
   if (!url) {
@@ -100,5 +127,72 @@ export async function POST(
     profile: updated,
     chars: kb.length,
     truncated: result.markdown.length > MAX_KB_CHARS,
+  });
+}
+
+const SITE_PAGE_ORDER = ["index", "services", "contact"] as const;
+
+/**
+ * Scrape a built website's content pages (home, services, contact — legal
+ * pages carry no facts the bot needs) and store them as the KB, labelled per
+ * page. Tenancy: the site doc is read under this sub-account's path.
+ */
+async function refreshFromSite(subAccountId: string, siteId: string) {
+  // An id, never a path: it goes into the doc path below.
+  if (!isDocId(siteId)) {
+    return NextResponse.json({ error: "Website not found." }, { status: 404 });
+  }
+  const snap = await getAdminDb()
+    .doc(`subAccounts/${subAccountId}/website/${siteId}`)
+    .get();
+  const site = snap.data() as WebsiteDoc | undefined;
+  if (!snap.exists || !site || site.subAccountId !== subAccountId) {
+    return NextResponse.json({ error: "Website not found." }, { status: 404 });
+  }
+  const base = siteAddress(site)?.trim();
+  if (!base || site.status !== "ready") {
+    return NextResponse.json(
+      { error: "That site isn't live yet — build it first." },
+      { status: 400 },
+    );
+  }
+  const sel = site.config?.local_page_selections;
+  const isVsl = site.config?.build_type === "vsl";
+  const pages = SITE_PAGE_ORDER.filter(
+    (p) => p === "index" || (!isVsl && sel?.[p] === true),
+  );
+  const root = base.replace(/\/$/, "");
+  const parts: string[] = [];
+  const failures: string[] = [];
+  for (const p of pages) {
+    const url = p === "index" ? `${root}/` : `${root}/${p}.html`;
+    try {
+      const r = await scrapeUrl(url);
+      parts.push(`## ${p === "index" ? "Home" : p[0].toUpperCase() + p.slice(1)} page\n\n${r.markdown.trim()}`);
+    } catch (err) {
+      failures.push(`${p}: ${err instanceof Error ? err.message : "failed"}`);
+    }
+  }
+  if (!parts.length) {
+    return NextResponse.json(
+      { error: `Couldn't read the site (${failures.join("; ")}). Try again in a minute.` },
+      { status: 502 },
+    );
+  }
+  const joined = parts.join("\n\n");
+  const kb = joined.slice(0, MAX_KB_CHARS);
+  await upsertAgentProfile(subAccountId, {
+    websiteUrl: base,
+    websiteKb: kb,
+    websiteKbFetchedAt: FieldValue.serverTimestamp(),
+    websiteKbSource: "firecrawl",
+    websiteKbSiteId: siteId,
+  });
+  return NextResponse.json({
+    ok: true,
+    pages: pages.length - failures.length,
+    failures,
+    chars: kb.length,
+    truncated: joined.length > MAX_KB_CHARS,
   });
 }

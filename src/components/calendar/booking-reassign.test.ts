@@ -86,3 +86,8 @@ it("reports nothing when the 200 does not name the assignee", async () => {
   await pick("bob", onReassigned);
   expect(onReassigned).not.toHaveBeenCalled();
 });
+
+it("names the select via aria-label", async () => {
+  await act(async () => root.render(createElement(BookingReassign, { event, onReassigned: vi.fn() })));
+  expect(container.querySelector("select")!.getAttribute("aria-label")).toBe("Reassign host");
+});

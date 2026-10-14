@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, doc as docRef, onSnapshot } from "firebase/firestore";
 import { ExternalLink, Globe, Loader2, Lock, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useSubAccount } from "@/context/sub-account-context";
@@ -20,7 +20,7 @@ import type { WebsiteDoc } from "@/types/website";
  * Website builder — a sub-account can hold up to MAX_WEBSITES_PER_SUBACCOUNT
  * sites. This page owns the collection subscription + the "Add website"
  * affordance and the account-wide activation gate; each site card renders via
- * <WebsiteBuilder/>, which holds its own form + build/status logic.
+ * <WebsiteBuilder/> (a status card that opens the stepped build wizard).
  */
 export default function WebsitePage() {
   const { subAccountId, isAdmin, loading: subLoading } = useSubAccount();
@@ -60,6 +60,34 @@ export default function WebsitePage() {
     return () => unsub();
   }, [subAccountId]);
 
+  // Which site the shared chat bot learned from (+ its colour) — shown as a
+  // badge on that site's card. Members can read aiAgent/* (rules).
+  const [chatSource, setChatSource] = useState<{ siteId: string | null; accent: string | null }>({ siteId: null, accent: null });
+  useEffect(() => {
+    if (!subAccountId) return;
+    const db = getFirebaseDb();
+    const unsubProfile = onSnapshot(
+      docRef(db, `subAccounts/${subAccountId}/aiAgent/profile`),
+      (snap) => {
+        const d = snap.data() as { websiteKbSiteId?: string | null } | undefined;
+        setChatSource((prev) => ({ ...prev, siteId: d?.websiteKbSiteId ?? null }));
+      },
+      () => undefined,
+    );
+    const unsubChat = onSnapshot(
+      docRef(db, `subAccounts/${subAccountId}/aiAgent/web-chat`),
+      (snap) => {
+        const d = snap.data() as { webChat?: { accentColor?: string } | null } | undefined;
+        setChatSource((prev) => ({ ...prev, accent: d?.webChat?.accentColor ?? null }));
+      },
+      () => undefined,
+    );
+    return () => {
+      unsubProfile();
+      unsubChat();
+    };
+  }, [subAccountId]);
+
   // Stable order: oldest first. Sorted client-side so a freshly-created doc
   // with a pending serverTimestamp still renders (a `createdAt` orderBy query
   // would briefly drop it).
@@ -74,6 +102,9 @@ export default function WebsitePage() {
   const atCap = orderedSites.length >= MAX_WEBSITES_PER_SUBACCOUNT;
   const gateBlocked = gateState.kind === "subscribe-needed";
 
+  // The site just created from "Add website" — its card opens the wizard.
+  const [newSiteId, setNewSiteId] = useState<string | null>(null);
+
   const handleAdd = useCallback(async () => {
     setCreating(true);
     try {
@@ -82,9 +113,10 @@ export default function WebsitePage() {
       });
       const payload = (await res.json().catch(() => ({}))) as {
         error?: string;
+        siteId?: string;
       };
       if (!res.ok) throw new Error(payload.error ?? "Could not add website.");
-      toast.success("New website draft added — fill it in and build.");
+      if (payload.siteId) setNewSiteId(payload.siteId);
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Could not add website.",
@@ -126,7 +158,7 @@ export default function WebsitePage() {
         <p className="mt-1 text-sm text-muted-foreground">
           Build up to {MAX_WEBSITES_PER_SUBACCOUNT} marketing sites for this
           client via gitpage.site. Add a site, fill in the details, hit Build,
-          and we&apos;ll return a live URL in a minute or two.
+          and we&apos;ll return a live URL in 10–20 minutes.
         </p>
       </header>
 
@@ -166,6 +198,9 @@ export default function WebsitePage() {
               subAccountId={subAccountId}
               doc={site}
               gateBlocked={gateBlocked}
+              autoOpen={site.id === newSiteId}
+              onAutoOpened={() => setNewSiteId(null)}
+              chatSource={site.id === chatSource.siteId ? { accent: chatSource.accent } : null}
             />
           ))}
 

@@ -207,6 +207,31 @@ function cloudFilename(raw: string): string {
   return base.join("") + ext;
 }
 
+/**
+ * Undici error codes (on `cause`) that mean the connection was never
+ * established, so the request body cannot have reached Meta and a retry cannot
+ * double-message. Everything else — a reset, a socket error, a timeout after
+ * connecting — may have been delivered and stays AMBIGUOUS. ETIMEDOUT,
+ * EHOSTUNREACH and ENETUNREACH are left out on purpose: Linux also raises them
+ * on an established socket.
+ */
+const PRE_CONNECT_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/** Backoff before each retry of a pre-connect failure: 3 attempts in all. */
+const PRE_CONNECT_RETRY_DELAYS_MS = [1_000, 3_000];
+
+/** fetch throws `TypeError("fetch failed")` with the code on `cause`. */
+function fetchErrorCode(e: unknown): string | null {
+  const err = e as { code?: unknown; cause?: { code?: unknown } } | null | undefined;
+  const code = err?.cause?.code ?? err?.code;
+  return typeof code === "string" ? code : null;
+}
+
 export async function sendWhatsappCloud(opts: {
   subAccountId: string;
   creds: WhatsappCloudSecret;
@@ -308,17 +333,43 @@ export async function sendWhatsappCloud(opts: {
   );
 
   const url = `https://graph.facebook.com/${graphVersion()}/${opts.creds.phoneNumberId}/messages`;
+  const attempts = PRE_CONNECT_RETRY_DELAYS_MS.length + 1;
 
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.creds.accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: opts.signal ?? AbortSignal.timeout(15_000),
-    });
+    let res: Response;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        res = await fetch(url, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${opts.creds.accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+          signal: opts.signal ?? AbortSignal.timeout(15_000),
+        });
+        break;
+      } catch (e) {
+        const code = fetchErrorCode(e);
+        // Code and attempt only: the token, body and recipient stay out of logs.
+        console.warn(
+          `[whatsapp-cloud] messages POST threw (sa=${opts.subAccountId} attempt=${attempt}/${attempts} ` +
+            `name=${e instanceof Error ? e.name : typeof e} code=${code ?? "none"})`,
+        );
+        if (!code || !PRE_CONNECT_CODES.has(code)) throw e;
+        if (attempt === attempts) {
+          // No connection was ever made, so nothing reached Meta: the caller
+          // may treat this as unsent.
+          return {
+            ok: false,
+            error: `fetch failed (${code}) after ${attempts} attempts`,
+            providerOutcome: "DEFINITELY_REJECTED",
+            attempted: false,
+          };
+        }
+        await new Promise((r) => setTimeout(r, PRE_CONNECT_RETRY_DELAYS_MS[attempt - 1]));
+      }
+    }
 
     if (!res.ok) {
       const text = await res.text().catch(() => "unknown error");

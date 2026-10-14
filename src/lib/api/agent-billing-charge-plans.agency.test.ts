@@ -22,7 +22,7 @@ vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async ()
 
 const { dispatchAgentTool } = await import("./agent-dispatch");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 restoreBillingProviderAfterEach();
 
 const CHARGE = { subAccountId: "sa1", subAccountName: "Client One", description: "Web design", amount: 500, currency: "zar" };
@@ -97,6 +97,51 @@ describe("create_one_time_charge", () => {
     });
     spyBillingProvider("stripe");
     expect(await dispatchAgentTool(agencyKey, "create_one_time_charge", { ...CHARGE, currency: "eur" })).toMatchObject({ ok: true });
+  });
+});
+
+describe("create_one_time_charge with no currency named: the client's overage currency (PR #413 round 3)", () => {
+  const { currency: _c, ...UNNAMED } = CHARGE;
+  const owner = { uid: "owner1", email: "o@x.io", displayName: "", agencyId: "ag1" };
+  const usdPlan = () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { status: "active", planId: "p1", currency: "usd" } });
+  const chat = async (args: Record<string, unknown>) => {
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const cap = getCapability("create_one_time_charge")!;
+    const v = cap.validate(args);
+    if (!v.ok) throw new Error(v.error);
+    return cap.execute(owner, v.args);
+  };
+
+  it("no plan on Paystack: charged in ZAR, the overage currency, from chat and on an approved agent row", async () => {
+    spyBillingProvider("paystack");
+    await chat(UNNAMED);
+    const r = await dispatchAgentTool(agencyKey, "create_one_time_charge", { ...UNNAMED, description: "Overage" });
+    expect(row((r as { proposal: { id: string } }).proposal.id).pinned).toMatchObject({ currency: "zar" });
+    expect(mem.list("billingCharges")).toEqual([expect.objectContaining({ currency: "zar" })]);
+  });
+
+  it("a client billed in USD on Paystack: the card said ZAR, so chat refuses rather than bill in another currency; the agent's propose is refused", async () => {
+    spyBillingProvider("paystack");
+    usdPlan();
+    await expect(chat(UNNAMED)).rejects.toThrow("This client is billed in USD, not ZAR: ask again naming the currency to charge in.");
+    expect(await dispatchAgentTool(agencyKey, "create_one_time_charge", UNNAMED)).toMatchObject({ ok: false, httpStatus: 400, message: expect.stringContaining("billed in USD") });
+    expect(mem.list("billingCharges")).toEqual([]);
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
+  it("naming the currency charges in it, whatever the client is billed in", async () => {
+    spyBillingProvider("paystack");
+    usdPlan();
+    await chat({ ...UNNAMED, currency: "zar" });
+    expect(mem.list("billingCharges")).toEqual([expect.objectContaining({ currency: "zar" })]);
+  });
+
+  it("a stored proposal re-validates to the same args (the omission survives)", async () => {
+    const { getCapability } = await import("@/lib/ai-suite/capabilities");
+    const cap = getCapability("create_one_time_charge")!;
+    const once = cap.validate(UNNAMED);
+    if (!once.ok) throw new Error(once.error);
+    expect(cap.validate(once.args)).toEqual(once);
   });
 });
 

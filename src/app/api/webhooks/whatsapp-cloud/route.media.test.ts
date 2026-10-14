@@ -34,6 +34,8 @@ const m = vi.hoisted(() => ({
   rowWriteFailsOnce: false,
   /** Set to make the opt-out batch commit throw, as contention would. */
   commitThrows: false,
+  /** Transactions to fail before they start succeeding, as contention would. */
+  txThrows: 0,
   contactUpdates: [] as Array<Record<string, unknown>>,
 }));
 
@@ -172,13 +174,18 @@ vi.mock("@/lib/firebase/admin", () => ({
         get: (r: ReturnType<typeof docRef>) => ReturnType<ReturnType<typeof docRef>["get"]>;
         set: (r: ReturnType<typeof docRef>, d: Record<string, unknown>, o?: { merge?: boolean }) => void;
       }) => Promise<unknown>,
-    ) =>
-      fn({
+    ) => {
+      if (m.txThrows > 0) {
+        m.txThrows--;
+        throw new Error("transaction contention");
+      }
+      return fn({
         get: (r) => r.get(),
         set: (r, d, o) => {
           void r.set(d, o);
         },
-      }),
+      });
+    },
     // Atomic: nothing buffered is visible until commit succeeds.
     batch: () => {
       const pending: Array<Record<string, unknown>> = [];
@@ -281,6 +288,7 @@ beforeEach(() => {
   m.rowWriteFailsFor.clear();
   m.rowWriteFailsOnce = false;
   m.commitThrows = false;
+  m.txThrows = 0;
   m.contactUpdates.length = 0;
   fetchCalls = [];
   onMeta = async () => metaJson();
@@ -431,12 +439,12 @@ describe("cloud inbound media — ordering against the redelivery guard", () => 
     expect(parseWhatsappMedia(row().media)).not.toBeNull();
   });
 
-  it("turns a throwing store into fetch_failed and still acks with the row intact", async () => {
+  it("turns a throwing store into fetch_failed, row intact, and asks Meta to redeliver", async () => {
     m.putThrows = true;
 
     const res = await post(image("the text survives"));
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(row()).toMatchObject({ body: "the text survives", mediaDropped: "fetch_failed" });
     expect(row()).not.toHaveProperty("media");
     expect(m.aiCalls).toHaveLength(1);
@@ -491,7 +499,9 @@ describe("cloud inbound media — never downgrade a row that holds media", () =>
     onMeta = async () => {
       if (calls++ === 0) {
         await gate;
-        return new Response("{}", { status: 500 });
+        // A final refusal: not retried in place, so the drop decision really
+        // is made from the stale snapshot.
+        return new Response("{}", { status: 401 });
       }
       return metaJson();
     };
@@ -635,7 +645,9 @@ describe("cloud inbound media — nothing that doesn't need the file waits for i
     onMeta = async () => {
       if (calls++ === 0) {
         await gate;
-        return new Response("{}", { status: 500 });
+        // A final refusal: not retried in place, so the drop decision really
+        // is made from the stale snapshot.
+        return new Response("{}", { status: 401 });
       }
       return metaJson();
     };
@@ -679,7 +691,7 @@ describe("cloud inbound media — nothing that doesn't need the file waits for i
     await vi.advanceTimersByTimeAsync(20_000);
     const res = await pending;
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(row()).toMatchObject({ body: "caption survives", mediaDropped: "fetch_failed" });
     expect(row()).not.toHaveProperty("media");
   });
@@ -844,5 +856,149 @@ describe("cloud inbound media — a retry whose own row merge fails still attach
 
     expect(parseWhatsappMedia(row().media)).not.toBeNull();
     expect(row()).not.toHaveProperty("mediaDropped");
+  });
+});
+
+describe("cloud inbound media — a transient failure never loses the file", () => {
+  const dropped = () => {
+    const err = new TypeError("fetch failed");
+    (err as { cause?: unknown }).cause = { code: "ECONNRESET" };
+    return err;
+  };
+
+  it("retries a dropped download connection in place and stores the photo", async () => {
+    let downloads = 0;
+    onBytes = async () => {
+      if (++downloads === 1) throw dropped();
+      return new Response(BYTES);
+    };
+
+    const res = await post(image("router lights"));
+
+    expect(res.status).toBe(200);
+    expect(downloads).toBe(2);
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+    expect(row()).not.toHaveProperty("mediaDropped");
+  });
+
+  it("retries a Graph 503 on the metadata call", async () => {
+    let metas = 0;
+    onMeta = async () => (++metas === 1 ? new Response("", { status: 503 }) : metaJson());
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(metas).toBe(2);
+    expect(m.puts).toHaveLength(1);
+  });
+
+  it("does not retry a refusal: one metadata call on a 401, and Meta is not asked to redeliver", async () => {
+    onMeta = async () => new Response('{"error":{"code":190}}', { status: 401 });
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(fetchCalls).toHaveLength(1);
+    expect(row().mediaDropped).toBe("fetch_failed");
+  });
+
+  it("treats a refused redirect (fetch failed, no network code) as final: no retry, no redelivery", async () => {
+    let downloads = 0;
+    onBytes = async () => {
+      downloads++;
+      const err = new TypeError("fetch failed");
+      (err as { cause?: unknown }).cause = new Error("unexpected redirect");
+      throw err;
+    };
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(downloads).toBe(1);
+    expect(row().mediaDropped).toBe("fetch_failed");
+    expect(row()).not.toHaveProperty("mediaFailedDeliveries");
+  });
+
+  it("does not stack timeouts in place, but has Meta redeliver", async () => {
+    let downloads = 0;
+    onBytes = async () => {
+      downloads++;
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    };
+
+    const res = await post(image());
+
+    expect(res.status).toBe(500);
+    expect(downloads).toBe(1);
+  });
+
+  it("stops asking for redelivery after five failed deliveries of one message", async () => {
+    onBytes = async () => {
+      throw dropped();
+    };
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const pending = post(image("router lights"));
+      await vi.runAllTimersAsync();
+      statuses.push((await pending).status);
+    }
+
+    expect(statuses).toEqual([500, 500, 500, 500, 200]);
+    expect(row()).toMatchObject({ mediaDropped: "fetch_failed", mediaFailedDeliveries: 5 });
+    expect(m.aiCalls).toHaveLength(1);
+  });
+
+  it("a final refusal stays final when recording the drop throws once", async () => {
+    onMeta = async () => new Response('{"error":{"code":190}}', { status: 401 });
+    m.txThrows = 1;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(row().mediaDropped).toBe("fetch_failed");
+    expect(row()).not.toHaveProperty("mediaFailedDeliveries");
+  });
+
+  it("after three failed attempts answers 500, logs the cause, and Meta's redelivery lands the photo once", async () => {
+    const warned: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => {
+      warned.push(a.map(String).join(" "));
+    });
+    let downloads = 0;
+    onBytes = async () => {
+      downloads++;
+      throw dropped();
+    };
+
+    const first = await post(image("router lights"));
+
+    expect(first.status).toBe(500);
+    expect(downloads).toBe(3);
+    expect(row()).toMatchObject({ body: "router lights", mediaDropped: "fetch_failed" });
+    expect(warned.some((w) => w.includes("ECONNRESET"))).toBe(true);
+    expect(warned.join("\n")).not.toContain(TOKEN);
+    expect(m.aiCalls).toHaveLength(1);
+
+    onBytes = async () => new Response(BYTES);
+    const redelivery = await post(image("router lights"));
+
+    expect(redelivery.status).toBe(200);
+    expect(parseWhatsappMedia(row().media)).not.toBeNull();
+    expect(row()).not.toHaveProperty("mediaDropped");
+    expect(m.aiCalls).toHaveLength(1);
+    expect(m.conversationUpserts).toHaveLength(1);
+  });
+
+  it("a store that refuses (config) is not redelivered forever", async () => {
+    m.putRefuses = true;
+
+    const res = await post(image());
+
+    expect(res.status).toBe(200);
+    expect(row().mediaDropped).toBe("fetch_failed");
   });
 });

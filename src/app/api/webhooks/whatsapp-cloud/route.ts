@@ -157,7 +157,16 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
  *
  * Never throws: any failure becomes `mediaDropped` on the row, and the text
  * the customer sent is never lost to a file we could not keep.
+ *
+ * Returns true when the failure was transient (network, Graph 5xx, Storage)
+ * and the message has redeliveries left, so the caller answers non-2xx and
+ * Meta's redelivery re-attempts the file. Without that, one dropped
+ * connection lost a customer's photo for good.
  */
+/** Meta deliveries of one message that may fail transiently before the
+ *  route stops asking for redelivery and leaves `mediaDropped` in place. */
+const MAX_MEDIA_DELIVERIES = 5;
+
 async function attachInboundMedia(opts: {
   db: Firestore;
   route: ResolvedRoute;
@@ -166,7 +175,7 @@ async function attachInboundMedia(opts: {
   contactDocs: DocumentSnapshot[];
   seen: DocumentSnapshot[];
   rowWritten: ReadonlySet<string>;
-}): Promise<void> {
+}): Promise<boolean> {
   const rowRef = (d: DocumentSnapshot) =>
     d.ref.collection("whatsappMessages").doc(opts.messageId);
 
@@ -183,34 +192,56 @@ async function attachInboundMedia(opts: {
       (opts.rowWritten.has(d.id) || opts.seen[i]?.exists === true) &&
       !parseWhatsappMedia(opts.seen[i]?.data()?.media),
   );
-  if (pending.length === 0) return;
+  if (pending.length === 0) return false;
 
   // In a transaction, because `seen` predates the download: a concurrent
   // retry may have landed the file since, and a drop decided from the stale
   // snapshot would overwrite it.
-  const drop = (reason: WhatsappMediaDropped) =>
-    Promise.all(
+  //
+  // A transient drop also counts the delivery on the row and answers "retry"
+  // only while some row is under MAX_MEDIA_DELIVERIES — so nothing, however
+  // it fails, can keep Meta redelivering (and the subscription at risk)
+  // indefinitely.
+  const drop = async (
+    reason: WhatsappMediaDropped,
+    transient: boolean,
+  ): Promise<boolean> => {
+    const counts = await Promise.all(
       pending.map((d) =>
         opts.db.runTransaction(async (tx) => {
-          const current = await tx.get(rowRef(d));
-          if (parseWhatsappMedia(current.data()?.media)) return;
-          tx.set(rowRef(d), { mediaDropped: reason }, { merge: true });
+          const current = (await tx.get(rowRef(d))).data();
+          if (parseWhatsappMedia(current?.media)) return MAX_MEDIA_DELIVERIES;
+          const prior = current?.mediaFailedDeliveries;
+          const n = (typeof prior === "number" ? prior : 0) + 1;
+          tx.set(
+            rowRef(d),
+            transient
+              ? { mediaDropped: reason, mediaFailedDeliveries: n }
+              : { mediaDropped: reason },
+            { merge: true },
+          );
+          return n;
         }),
       ),
     );
+    return transient && counts.some((n) => n < MAX_MEDIA_DELIVERIES);
+  };
 
+  // What the catch below reports: a throw from the store or its timeout is
+  // a blip; one after a final refusal was decided stays final.
+  let transient = true;
   try {
     if (!isAllowedWhatsappMediaMime(opts.ref.mimeType)) {
-      await drop("unsupported_type");
-      return;
+      transient = false;
+      return await drop("unsupported_type", false);
     }
     const fetched = await fetchCloudMedia({
       subAccountId: opts.route.subAccountId,
       mediaId: opts.ref.id,
     });
     if (!fetched.ok) {
-      await drop(fetched.reason);
-      return;
+      transient = fetched.transient;
+      return await drop(fetched.reason, fetched.transient);
     }
     for (const d of pending) {
       const storagePath = whatsappMediaPath({
@@ -230,7 +261,12 @@ async function attachInboundMedia(opts: {
         STORE_TIMEOUT_MS,
         "media store",
       );
-      if (!put.ok) throw new Error(`media store failed: ${put.reason}`);
+      if (!put.ok) {
+        // A refusal (e.g. no bucket configured) is config, not a blip: a
+        // redelivery would meet it again.
+        transient = false;
+        throw new Error(`media store failed: ${put.reason}`);
+      }
       const media: WhatsappMedia = {
         kind: opts.ref.kind,
         mimeType: opts.ref.mimeType,
@@ -239,7 +275,11 @@ async function attachInboundMedia(opts: {
         storagePath,
       };
       await rowRef(d).set(
-        { media, mediaDropped: FieldValue.delete() },
+        {
+          media,
+          mediaDropped: FieldValue.delete(),
+          mediaFailedDeliveries: FieldValue.delete(),
+        },
         { merge: true },
       );
     }
@@ -249,10 +289,13 @@ async function attachInboundMedia(opts: {
       err,
     );
     // Rows this attempt already gave media keep it: `drop` re-reads each one.
-    await drop("fetch_failed").catch((dropErr: unknown) =>
-      console.warn("[whatsapp-cloud] could not record mediaDropped", dropErr),
-    );
+    // If even that fails, nothing counted the delivery, so no retry is asked.
+    return await drop("fetch_failed", transient).catch((dropErr: unknown) => {
+      console.warn("[whatsapp-cloud] could not record mediaDropped", dropErr);
+      return false;
+    });
   }
+  return false;
 }
 
 /**
@@ -736,7 +779,7 @@ async function handleInbound(
   // done, a death here strands only the attachment, which that same retry
   // re-attempts: this step is not gated on redelivery.
   if (inbound.media) {
-    await attachInboundMedia({
+    const retry = await attachInboundMedia({
       db,
       route,
       messageId: inbound.providerMessageId,
@@ -745,6 +788,12 @@ async function handleInbound(
       seen,
       rowWritten,
     });
+    if (retry) {
+      return NextResponse.json(
+        { ok: false, error: "media_failed" },
+        { status: 500 },
+      );
+    }
   }
 
   return ok(

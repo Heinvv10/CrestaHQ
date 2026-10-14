@@ -7,6 +7,7 @@ import { agencyKey } from "@/test/agency-approvals-harness";
 import { seedSnapshots } from "@/test/snapshot-fixtures";
 import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/billing-provider-spies";
 import { PAGE, pageForm, pastEvent } from "@/test/booking-fixtures";
+import { PENDING_BILLING } from "@/test/preview-samples";
 import { seedPr13 } from "@/test/pr13-fixtures";
 
 /**
@@ -85,7 +86,7 @@ const { AGENCY_AGENT_CALLABLE, dispatchAgentTool } = await import("./agent-dispa
 const { TRIGGER_LABELS } = await import("@/lib/workflows/catalog");
 const { AI_SUITE_CAPABILITIES, availableOn } = await import("@/lib/ai-suite/capabilities");
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 
 // An ACTIVE workflow for EVERY trigger type (TRIGGER_LABELS is exhaustive over
 // WorkflowTriggerType), with no narrowing config, so any trigger matches.
@@ -138,6 +139,8 @@ beforeEach(() => {
   mem.seed("recurringInvoices/rs1", SCHEDULE);
   mem.seed("recurringInvoices/rs_paused", { ...SCHEDULE, name: "Paused retainer", status: "paused" });
   mem.seed("events/ev_past", pastEvent());
+  mem.seed("events/ev_awaiting", pastEvent({ status: "awaiting_payment" }));
+  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, communityEnabledByAgency: true, labsEnabledByAgency: true });
   seedPr13(mem);
   mem.seed("subAccounts/sa1/bookingPages/bp1", PAGE);
   mem.seed("subAccounts/sa1/bookingPages/bp-live", { ...PAGE, id: "bp-live", slug: "bp-live", name: "Live consult", status: "published" });
@@ -225,6 +228,8 @@ describe("an agency key can never send on its own either", () => {
       stripeProductId: "prod_1", stripePriceId: "price_m", gates: { broadcastsEnabledByAgency: true },
     });
     seedSnapshots(mem);
+    // resend_checkout_link's target: a plan assigned, not yet paid.
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: PENDING_BILLING });
   });
 
   it("every agency-callable tool has a fixture", () => {

@@ -38,6 +38,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   send_whatsapp_template: "to, from (the sending number), template, language, the filled text and buttons, when",
   delete_task: "the task: due, done, assignee, what it links to, notes",
   set_event_status: "cancelling: the appointment, the timeline reason, the exact notice or why none, the workflows that start (their steps pinned)",
+  mark_booking_paid: "the booking and its deposit, who the confirmation email goes to or why none, the reminders, the booking.confirmed workflows that start (their steps pinned)",
   create_booking_page: "every field of the page to be published",
   delete_booking_page: "the page and that its link stops working; refused while bookings are upcoming",
   update_booking_page: "changed fields old -> new (the whole page when it goes public or has upcoming bookings)",
@@ -50,6 +51,7 @@ export const PREVIEW_NOTES: Record<string, string> = {
   apply_snapshot: "the sub-account, the snapshot (captured in this agency, or imported), what it creates and what it skips as already there, workflows arriving as drafts, which forms accept submissions at once, the AI persona written (with its hours) or kept; the snapshot's payload hash is pinned",
   assign_billing_plan: "the sub-account, the plan and price (a special price only if proposed), every feature switching on and off, monthly quotas and overage rates, when features change (now, or when the client pays) and what billing does; price and gates are pinned",
   create_one_time_charge: "the sub-account, the charge description and amount as the client sees them, and that it is one payment link, nothing charged until paid (pinned)",
+  resend_checkout_link: "the sub-account, its plan and price, its billing status, and that every earlier link stops working; the plan, price and status are pinned",
   invite_member: "the email, the role (admin's powers named), what happens: a new invite, added at once with nothing to accept, a member's role old -> new, or that approving will refuse (a disabled or another agency's account); territories kept or cleared; whether an email goes out. The proposing agent is shown only the sub-account, email and role",
 };
 

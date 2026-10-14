@@ -81,4 +81,15 @@ regexes = [
   # constant named KEY_PATH, which trips generic-api-key by name. Never a
   # credential; the anchor matches only this exact path.
   '''^agencies/ag1/apiKeys/ak1$''',
+  # Web Voice (WV-2, PR #418) test fixtures that exist only in history:
+  # the custom-LLM path secrets SECRET / SECRET2 in
+  # src/app/api/webhooks/elevenlabs/llm/[subAccountId]/[secret]/[[...rest]]/route.test.ts
+  # lines 42-43 from commit 1e8ea3e3, and a made-up ElevenLabs conversation id
+  # in src/lib/web-voice/elevenlabs.contract.test.ts line 85 from commit
+  # 4fe57597. Never credentials — base64 of English phrases and a lettered id.
+  # Replaced at the tip by low-entropy fixtures; these anchors exist only so
+  # those commits' diffs stop tripping the history scan.
+  '''^Q2xhdWRlLXRlc3Qtc2VjcmV0LTAwMDAwMDAw$''',
+  '''^b3RoZXItc3ViLWFjY291bnQtc2VjcmV0LTAw$''',
+  '''^conv_8401k5abcdefghijklmnopqrst$''',
 ]

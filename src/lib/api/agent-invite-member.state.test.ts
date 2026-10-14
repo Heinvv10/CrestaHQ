@@ -27,7 +27,7 @@ const { dispatchAgentTool } = await import("./agent-dispatch");
 const { createInviteServerSide } = await import("@/lib/server/members-service");
 const invites = vi.mocked(createInviteServerSide);
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 beforeEach(() => {
   seedAgency();
   invites.mockClear();

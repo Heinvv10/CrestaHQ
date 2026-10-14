@@ -10,7 +10,7 @@ import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { str } from "./helpers";
 import { oneLine } from "./text-safety";
 import { recordProvenanceRows } from "./record-provenance";
-import { tenantWorkflow, workflowFingerprint, workflowIdParam, workflowReviewRows, workflowRows } from "./workflow-support";
+import { tenantWorkflow, workflowBuilderUrl, workflowFingerprint, workflowIdParam, workflowReviewRows, workflowRows } from "./workflow-support";
 
 /**
  * set_workflow_status and delete_workflow for API agents (PR9). Pausing or
@@ -21,6 +21,13 @@ import { tenantWorkflow, workflowFingerprint, workflowIdParam, workflowReviewRow
  */
 
 const STATUSES: readonly WorkflowStatus[] = ["draft", "paused", "active"];
+
+/** Chat never activates: activating needs a person to review the exact
+ *  trigger and steps (the agent path's pinned preview and fingerprint
+ *  check), which a chat card doesn't show. Sent to the builder instead. */
+function activationRefusal(subAccountId: string, workflowId: string): string {
+  return `Activating a workflow needs a person to review its exact trigger and steps, so I can't do it from here. Open the workflow and activate it there: ${workflowBuilderUrl(subAccountId, workflowId)}`;
+}
 
 /** Workflows carry no territory: their approvals are tenant-wide. */
 const workflowTarget: NonNullable<AiSuiteCapability["approvalTarget"]> = async (ctx, args) => {
@@ -33,10 +40,10 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     name: "set_workflow_status",
     level: "sub-account",
     requiredRole: "subAccountAdmin",
-    surfaces: ["agent"],
+    surfaces: ["chat", "agent"],
     menuLabel: "Pause, draft or activate a workflow (a person approves activating)",
     description:
-      "Set a workflow's status: `paused` or `draft` stop it at once; `active` is queued for a sub-account admin to approve, showing the exact trigger and steps that will run.",
+      "Set a workflow's status: `paused` or `draft` stop it at once; `active` is queued for a sub-account admin to approve, showing the exact trigger and steps that will run. In the in-app assistant `active` is refused: the admin activates it on the workflow's page.",
     parameters: {
       type: "object",
       properties: { workflowId: workflowIdParam, status: { type: "string", enum: [...STATUSES] } },
@@ -52,6 +59,8 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Set the workflow ${args.workflowId} to ${args.status}.`,
     approvalFor: (args) => (args.status === "active" ? "workflow_activate" : undefined),
+    chatRefusal: (args, ctx) =>
+      args.status === "active" ? activationRefusal(ctx.subAccountId!, args.workflowId as string) : undefined,
     approvalHint: { approval: "workflow_activate", when: "status=active" },
     approvalTarget: workflowTarget,
     preview: async (ctx, args) => {
@@ -67,6 +76,12 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const status = args.status as WorkflowStatus;
+      // Chat (no API key, nothing approved) never activates — refused here
+      // too, for a confirm request that never came from a card.
+      if (status === "active" && !ctx.apiKey && !ctx.approved) {
+        const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
+        throw new CapabilityUserError(activationRefusal(ctx.subAccountId!, wf.id));
+      }
       const done = await updateWorkflowGuarded({
         subAccountId: ctx.subAccountId!,
         workflowId: args.workflowId as string,

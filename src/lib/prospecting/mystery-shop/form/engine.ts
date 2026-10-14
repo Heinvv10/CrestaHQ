@@ -21,8 +21,9 @@ import { MARK_FORM_PAGE, Stop, bounded, captchaCheck, refuse, thanksCount, timed
  * URL, new thank-you text, or a 2xx on the form's site or a known form
  * backend — and only once a request carrying the enquiry was answered 2xx/3xx
  * (checks.ts). A 2xx that says the site refused it is `rejected`. No signal,
- * or a CAPTCHA appearing after the click = uncertain (it may have gone
- * through). Never solves, bypasses or touches a CAPTCHA.
+ * a CAPTCHA appearing after the click, or such a refusal once the site had
+ * already taken the enquiry = uncertain (it may have gone through). Never
+ * solves, bypasses or touches a CAPTCHA.
  *
  * Hard limit TOTAL_MS: past it, before the click = failed (nothing sent);
  * after the click = uncertain. The browser is always closed, and the job gets
@@ -200,6 +201,10 @@ export async function runFormFill(input: FormRunInput): Promise<FormResult> {
       }
       if ("rejected" in seen) {
         return { kind: "rejected", code: "form_rejected", reason: `The website refused the enquiry (${seen.rejected}).`, trace: ended };
+      }
+      if ("refusedLate" in seen) {
+        const reason = `The website took the enquiry, then refused a later request (${seen.refusedLate}); it may have gone through.`;
+        return { kind: "uncertain", code: "no_signal", reason, trace: ended };
       }
       return { kind: "sent", trace: { ...trace, signal: seen.signal, finalUrl: traceUrl(seen.finalUrl) } };
     } catch (err) {

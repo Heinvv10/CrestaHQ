@@ -14,6 +14,9 @@ import { AGENCY_GATE_CAPABILITIES } from "./capabilities/agency-gates";
 import { AGENCY_SNAPSHOT_CAPABILITIES } from "./capabilities/agency-snapshots";
 import { BILLING_PLAN_CAPABILITIES } from "./capabilities/billing-plans";
 import { BILLING_CHARGE_CAPABILITIES } from "./capabilities/billing-charges";
+import { AGENCY_BILLING_CAPABILITIES } from "./capabilities/agency-billing";
+import { AGENCY_USAGE_CAPABILITIES } from "./capabilities/agency-usage";
+import { AGENCY_SETUP_CAPABILITIES } from "./capabilities/agency-setup";
 import { ACCESS_CAPABILITIES } from "./capabilities/access";
 import {
   WORKSPACE_LOOKUP_CAPABILITIES,
@@ -24,9 +27,13 @@ import { WEBHOOK_CAPABILITIES } from "./capabilities/webhooks";
 import { WEBHOOK_TEST_CAPABILITIES } from "./capabilities/webhook-test";
 import { WEBHOOK_URL_CAPABILITIES } from "./capabilities/webhook-url";
 import { COMMUNITY_CAPABILITIES } from "./capabilities/community";
+import { COMMUNITY_CLASSROOM_CAPABILITIES } from "./capabilities/community-classroom";
 import { WORKFLOW_CAPABILITIES } from "./capabilities/workflows";
 import { WORKFLOW_EDIT_CAPABILITIES } from "./capabilities/workflow-edit";
 import { WORKFLOW_STATUS_CAPABILITIES } from "./capabilities/workflow-status";
+import { WORKFLOW_PAUSE_CAPABILITIES } from "./capabilities/workflow-pause";
+import { SPEED_TO_LEAD_CAPABILITIES } from "./capabilities/speed-to-lead";
+import { FORM_CAPABILITIES } from "./capabilities/forms";
 import { DEAL_EDIT_CAPABILITIES } from "./capabilities/deal-edit";
 import { DEAL_COMPLETE_CAPABILITIES } from "./capabilities/deal-complete";
 import { PIPELINE_CAPABILITIES } from "./capabilities/pipelines";
@@ -58,15 +65,18 @@ import { EVENT_CAPABILITIES } from "./capabilities/events";
 import { EVENT_STATUS_CAPABILITIES } from "./capabilities/event-status";
 import { BOOKING_PAGE_CAPABILITIES } from "./capabilities/booking-pages";
 import { BOOKING_PAGE_EDIT_CAPABILITIES } from "./capabilities/booking-page-edit";
+import { BOOKING_PAYMENT_CAPABILITIES } from "./capabilities/booking-payments";
 import { MEMBER_CAPABILITIES } from "./capabilities/members";
 import { WEBSITE_RESEARCH_CAPABILITIES } from "./capabilities/website-research";
 import { WEBSITE_CREATE_CAPABILITIES } from "./capabilities/website-create";
 import { WEBSITE_STATUS_CAPABILITIES } from "./capabilities/website-status";
+import { WEBSITE_CTA_CAPABILITIES } from "./capabilities/website-cta";
 import { SOCIAL_CAPABILITIES } from "./capabilities/social";
 import { SOCIAL_SCHEDULE_CAPABILITIES } from "./capabilities/social-schedule";
 import { REPUTATION_CAPABILITIES } from "./capabilities/reputation";
 import { BROADCAST_CAPABILITIES } from "./capabilities/broadcasts";
 import { VOICE_CAPABILITIES } from "./capabilities/voice";
+import { WATCHDOG_CAPABILITIES } from "./capabilities/watchdog";
 
 export { CapabilityNotFound, CapabilityOutcomeUnknown, CapabilityUserError, CapabilityWriteRefused } from "./capabilities/types";
 export type {
@@ -106,6 +116,9 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...AGENCY_SNAPSHOT_CAPABILITIES,
   ...BILLING_PLAN_CAPABILITIES,
   ...BILLING_CHARGE_CAPABILITIES,
+  ...AGENCY_BILLING_CAPABILITIES,
+  ...AGENCY_USAGE_CAPABILITIES,
+  ...AGENCY_SETUP_CAPABILITIES,
 
   // ═══ Sub-account level ═══════════════════════════════════════════════════
   ...ACCESS_CAPABILITIES,
@@ -129,9 +142,13 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...WEBHOOK_TEST_CAPABILITIES,
   ...WEBHOOK_URL_CAPABILITIES,
   ...COMMUNITY_CAPABILITIES,
+  ...COMMUNITY_CLASSROOM_CAPABILITIES,
   ...WORKFLOW_CAPABILITIES,
   ...WORKFLOW_EDIT_CAPABILITIES,
   ...WORKFLOW_STATUS_CAPABILITIES,
+  ...WORKFLOW_PAUSE_CAPABILITIES,
+  ...SPEED_TO_LEAD_CAPABILITIES,
+  ...FORM_CAPABILITIES,
   ...CONTACT_CAPABILITIES,
   ...CONTACT_EDIT_CAPABILITIES,
   ...CONTACT_TAG_CAPABILITIES,
@@ -150,15 +167,18 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...EVENT_STATUS_CAPABILITIES,
   ...BOOKING_PAGE_CAPABILITIES,
   ...BOOKING_PAGE_EDIT_CAPABILITIES,
+  ...BOOKING_PAYMENT_CAPABILITIES,
   ...MEMBER_CAPABILITIES,
   ...WEBSITE_RESEARCH_CAPABILITIES,
   ...WEBSITE_CREATE_CAPABILITIES,
   ...WEBSITE_STATUS_CAPABILITIES,
+  ...WEBSITE_CTA_CAPABILITIES,
   ...SOCIAL_CAPABILITIES,
   ...SOCIAL_SCHEDULE_CAPABILITIES,
   ...REPUTATION_CAPABILITIES,
   ...BROADCAST_CAPABILITIES,
   ...VOICE_CAPABILITIES,
+  ...WATCHDOG_CAPABILITIES,
 ];
 
 /**
@@ -193,6 +213,13 @@ export function inSubAccount(base: AiSuiteCapability): AiSuiteCapability {
     // `subAccountId` on the base tool instead. approval / agentArgs /
     // preview are deliberately not copied.
     surfaces: (base.surfaces ?? ["chat"]).filter((s) => s === "chat"),
+    // The base's chat refusal, for the named sub-account (as execute gets
+    // it, but unresolved: a refusal reads no data, and the args' id is what
+    // validate returned — a name the model passed stays a name).
+    chatRefusal:
+      base.chatRefusal &&
+      ((args, ctx) =>
+        base.chatRefusal!(args, { ...ctx, subAccountId: args.subAccountId as string, subAccountRole: "agencyOwner" })),
     menuLabel: `${base.menuLabel} — in a sub-account you name`,
     description: `${base.description} AGENCY VARIANT: performs this inside one of your sub-accounts. Resolve the sub-account's id with list_sub_accounts first — never guess ids. Exception: if the user identifies the sub-account by its account number (e.g. '#1011') or you already know its exact name, you may pass that as subAccountId — it's resolved server-side within this agency. If what the user said could match more than one sub-account (e.g. 'rode' when both 'Rode Plumbing' and 'Rode Sound' exist), ask which one BEFORE proposing.`,
     parameters: {
@@ -356,6 +383,12 @@ const AGENCY_DELEGATED = [
   "research_website_reference",
   "create_website",
   "check_website_status",
+  // Speed-to-Lead setup — the owner can check readiness, manage forms and
+  // re-point a built site's call-to-action in a named client workspace.
+  "speed_to_lead_readiness",
+  "list_forms",
+  "create_form",
+  "update_website_cta",
 ];
 for (const name of AGENCY_DELEGATED) {
   const base = AI_SUITE_CAPABILITIES.find((c) => c.name === name);

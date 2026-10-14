@@ -7,7 +7,7 @@ import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
 import { isDocId } from "@/lib/server/doc-id";
 import { PLAN_GATE_KEYS, PLAN_GATE_LABELS, type PlanGateKey } from "@/types/billing";
 import { planAssignRefusal } from "./billing-plan-features";
-import { currencyRefusal } from "./billing-currency";
+import { chargeCurrencyFor, currencyRefusal } from "./billing-currency";
 import { fmtMoney } from "./helpers";
 import { oneLine } from "./text-safety";
 import { CapabilityNotFound, CapabilityUserError, type AiSuiteActionContext, type PreviewRow } from "./types";
@@ -153,7 +153,7 @@ export async function chargePreview(
   }
   const sub = await targetIn(ctx, args.subAccountId as string);
   const amountCents = args.amountCents as number;
-  const currency = args.currency as string;
+  const currency = chargeCurrencyFor(args, sub.data()?.billing);
   return {
     rows: [
       { label: "Sub-account", value: oneLine(sub.data()?.name ?? sub.id) },

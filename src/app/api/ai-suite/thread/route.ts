@@ -36,6 +36,21 @@ const PROPOSAL_STATUSES = new Set([
 
 type StoredMessage = Record<string, unknown>;
 
+const TOO_LONG_TO_RESTORE =
+  "This card was too long to keep across a refresh, so it can't be confirmed from here. Ask again.";
+
+/**
+ * A pending proposal whose card text doesn't fit the stored cap would come
+ * back after a refresh showing only part of what Confirm does. It is kept
+ * as failed, with no args, so it can never be confirmed (fail closed).
+ * Checked on write and on read (threads stored before this was added).
+ */
+function unrestorable(m: StoredMessage): StoredMessage {
+  if (m.kind !== "proposal" || m.status !== "pending") return m;
+  if (typeof m.summary === "string" && m.summary.length < MAX_CONTENT_CHARS) return m;
+  return { ...m, args: {}, status: "failed", resultText: TOO_LONG_TO_RESTORE };
+}
+
 /** Validate + normalize one client-supplied thread message; null = drop it. */
 function sanitizeStoredMessage(raw: unknown): StoredMessage | null {
   if (!raw || typeof raw !== "object") return null;
@@ -82,19 +97,20 @@ function sanitizeStoredMessage(raw: unknown): StoredMessage | null {
     ) {
       return null;
     }
-    return {
+    return unrestorable({
       role: "assistant",
       kind: "proposal",
       id: m.id.slice(0, 128),
       capability: m.capability.slice(0, 64),
       args: m.args,
-      summary: m.summary.slice(0, MAX_CONTENT_CHARS),
+      // A card cut here is never left confirmable (unrestorable).
+      summary: m.summary.length > MAX_CONTENT_CHARS ? m.summary.slice(0, MAX_CONTENT_CHARS) : m.summary,
       status: m.status,
       resultText:
         typeof m.resultText === "string"
           ? m.resultText.slice(0, MAX_CONTENT_CHARS)
           : null,
-    };
+    });
   }
   return null;
 }
@@ -149,7 +165,10 @@ export async function GET(request: Request) {
   if (resolved instanceof NextResponse) return resolved;
 
   const snap = await getAdminDb().doc(resolved.path).get();
-  const messages = snap.exists ? (snap.data()?.messages ?? []) : [];
+  const stored: unknown = snap.exists ? snap.data()?.messages : null;
+  const messages = Array.isArray(stored)
+    ? stored.map((m) => (m && typeof m === "object" ? unrestorable(m as StoredMessage) : m))
+    : [];
   return NextResponse.json({ messages });
 }
 

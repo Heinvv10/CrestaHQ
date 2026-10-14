@@ -38,7 +38,7 @@ import {
   voice,
   type RunOverrides,
 } from "@/test/voice-compliance-harness";
-import { checkOutboundCompliance } from "./outbound-compliance";
+import { checkOutboundCompliance, validDialNumber } from "./outbound-compliance";
 
 function run(over: RunOverrides = {}) {
   return checkOutboundCompliance(gateInput(over));
@@ -236,5 +236,21 @@ describe("check ordering — the first failing check wins", () => {
     await run({ consentAck: false });
     await run({ contact: contact({ phone: "junk" }) });
     expect(scrub).not.toHaveBeenCalled();
+  });
+});
+
+// ---- the dialer's additions leave this gate alone ---------------------
+
+describe("validDialNumber — the AI gate's parse is unchanged", () => {
+  it("a number without \"+\" is invalid — there is no default region", () => {
+    expect(validDialNumber("082 123 4567")).toBeNull();
+    expect(validDialNumber("27821234567")).toBeNull();
+    expect(validDialNumber("+27 82 123 4567")).toEqual({ e164: "+27821234567", country: "ZA" });
+  });
+
+  it("a non-geographic number is still a valid number here (the dialer alone refuses it)", async () => {
+    expect(validDialNumber("+88216000000")).toMatchObject({ e164: "+88216000000", country: null });
+    const res = await run({ contact: contact({ phone: "+88216000000" }) });
+    expect(res.code).not.toBe("no_phone");
   });
 });

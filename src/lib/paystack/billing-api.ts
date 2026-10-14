@@ -235,6 +235,35 @@ async function findLiveSubscription(
   return null;
 }
 
+/**
+ * Whether THIS account (the configured key) knows `customerCode`, and if so
+ * whether any of its subscriptions still charges (active, or attention: a
+ * failed renewal Paystack retries). How a cancel tells "already ended" from
+ * "not on this account" when the subscription itself isn't found.
+ */
+export async function paystackCustomerBilling(
+  customerCode: string,
+): Promise<"unknown_customer" | "live" | "none"> {
+  let customer: { id: number };
+  try {
+    customer = await paystackRequest<{ id: number }>("GET", `/customer/${encodeURIComponent(customerCode)}`);
+  } catch (err) {
+    if (err instanceof BillingError && err.providerStatus === 404) return "unknown_customer";
+    throw err;
+  }
+  const perPage = 100;
+  for (let page = 1; page <= MAX_SUBSCRIPTION_PAGES; page += 1) {
+    const subs = await paystackRequest<PaystackSubscriptionListItem[]>(
+      "GET",
+      `/subscription?customer=${customer.id}&perPage=${perPage}&page=${page}`,
+    );
+    if (subs.some((s) => s.status === "active" || s.status === "attention")) return "live";
+    if (subs.length < perPage) return "none";
+  }
+  // Past the bound: unproven, so treated as live.
+  return "live";
+}
+
 /** 500 subscriptions is far past any real client; a bound beats an open loop. */
 const MAX_SUBSCRIPTION_PAGES = 5;
 

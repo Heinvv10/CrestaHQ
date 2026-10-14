@@ -181,7 +181,7 @@ export function OverviewTab({ agencyName }: { agencyName: string }) {
                 {
                   icon: Sparkles,
                   label: "gitpage builds",
-                  detail: "1–3 minutes",
+                  detail: "10–20 minutes",
                   tone: "violet",
                 },
                 {

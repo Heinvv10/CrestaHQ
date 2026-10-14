@@ -24,18 +24,18 @@ vi.mock("@/lib/gitpage/heartbeat", () => ({
 }));
 vi.mock("@/lib/website/validation", () => ({ validateWebsiteConfig: () => ({}) }));
 
-const docs = new Map<string, Record<string, unknown>>();
-vi.mock("@/lib/firebase/admin", () => ({
-  getAdminDb: () => ({
-    doc: (path: string) => ({
-      get: async () => ({ exists: docs.has(path), data: () => docs.get(path) }),
-      set: async (d: Record<string, unknown>) =>
-        void docs.set(path, { ...(docs.get(path) ?? {}), ...d }),
-      update: async (d: Record<string, unknown>) =>
-        void docs.set(path, { ...(docs.get(path) ?? {}), ...d }),
-    }),
-  }),
-}));
+// The build writes through a transaction, so this needs a Firestore that has
+// them: the shared in-memory one, read back through a Map-shaped view.
+const mem = await vi.hoisted(async () => {
+  const { createMemoryFirestore } = await import("@/test/memory-firestore");
+  return createMemoryFirestore();
+});
+vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
+const docs = {
+  clear: () => mem.clear(),
+  set: (path: string, data: Record<string, unknown>) => mem.seed(path, data),
+  get: (path: string) => mem.read(path),
+};
 
 const { submitWebsiteBuildForSubAccount } = await import("./websites-service");
 const { blankWebsiteConfig } = await import("@/types/website");
@@ -64,7 +64,7 @@ describe("submitWebsiteBuildForSubAccount — first poll not queued", () => {
     await build();
     const site = docs.get(SITE);
     expect(site?.status).toBe("failed");
-    expect(site?.errorMessage).toBe("Couldn't schedule the next poll. Try Re-check now or Rebuild.");
+    expect(site?.errorMessage).toBe("Couldn't schedule the next poll. Use Re-check now, or Try again.");
     expect(site?.gitpageJobId).toBe("fr_1");
     expect(error).toHaveBeenCalledWith("[website/build] first poll not queued sa=sa1 site=site1");
     error.mockRestore();

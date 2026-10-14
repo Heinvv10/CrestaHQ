@@ -22,6 +22,8 @@ export const CHANNEL_CONNECTION_FIELDS = [
   "webinar1ConnectionMeta",
   "apexgeoConnected",
   "ghlImportConfig",
+  "webVoiceMeta",
+  "dialerConfig",
 ] as const;
 
 /** Whether the sub-account has any channel or payment connection: a field

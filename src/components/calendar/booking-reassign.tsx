@@ -118,11 +118,9 @@ export function BookingReassign({
       </p>
       <div className="flex items-center gap-2">
         <Users className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <label htmlFor={`reassign-${event.id}`} className="sr-only">
-          Reassign host
-        </label>
         <select
           id={`reassign-${event.id}`}
+          aria-label="Reassign host"
           value={event.assignedToUid ?? ""}
           disabled={busy}
           onChange={(e) => reassign(e.target.value)}

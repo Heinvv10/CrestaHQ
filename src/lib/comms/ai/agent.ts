@@ -31,7 +31,11 @@ export type ConfiguredChannelId =
    *  both platforms, because they ride one Meta connection and the reply
    *  always mirrors the platform the DM arrived on. No nested block —
    *  the shared AiChannelConfig fields are everything it needs. */
-  | "meta";
+  | "meta"
+  /** Email (replies arriving through the connected mailbox) — DRAFT-ONLY by
+   *  design: an inbound email produces a pendingDraft for human approval; the
+   *  bot never sends an email, even when the conversation is in "auto" mode. */
+  | "email";
 
 /**
  * Channel-specific default seed for a freshly-created config doc.
@@ -179,6 +183,91 @@ export async function upsertChannelConfig(
     { ...seed, ...patch, updatedAt: FieldValue.serverTimestamp() },
     { merge: true },
   );
+}
+
+/**
+ * A read-decide-write of the profile or one channel doc in ONE transaction,
+ * for a writer whose patch depends on the doc as it is now (or on other docs
+ * it reads through `tx` — all reads before the write). `decide` gets the doc's
+ * current data (null when it does not exist) and returns the patch to merge,
+ * or null to write nothing. A doc created here gets the same seed as the
+ * upserts above.
+ */
+export async function transactAiAgentDoc<T>(
+  subAccountId: string,
+  docId: typeof PROFILE_DOC | ConfiguredChannelId,
+  decide: (
+    tx: FirebaseFirestore.Transaction,
+    current: Record<string, unknown> | null,
+  ) => Promise<{ patch: Record<string, unknown> | null; result: T }>,
+): Promise<T> {
+  await maybeMigrateLegacy(subAccountId);
+  const db = getAdminDb();
+  const ref = db.doc(
+    docId === PROFILE_DOC ? profilePath(subAccountId) : channelPath(subAccountId, docId),
+  );
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const { patch, result } = await decide(tx, snap.exists ? (snap.data() ?? {}) : null);
+    if (patch) {
+      const seed = snap.exists
+        ? {}
+        : {
+            ...(docId === PROFILE_DOC ? DEFAULT_AI_AGENT_PROFILE : defaultsForChannel(docId)),
+            createdAt: FieldValue.serverTimestamp(),
+          };
+      tx.set(ref, { ...seed, ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    }
+    return result;
+  });
+}
+
+/** Run the lazy legacy migration (its own transaction) before the `…InTx` readers. */
+export async function prepareAiAgentDocs(subAccountId: string): Promise<void> {
+  await maybeMigrateLegacy(subAccountId);
+}
+
+/** The agent profile, read inside the caller's transaction, and a `save` for a patch in it. */
+export async function agentProfileInTx(tx: FirebaseFirestore.Transaction, subAccountId: string) {
+  const ref = getAdminDb().doc(profilePath(subAccountId));
+  const snap = await tx.get(ref);
+  return {
+    profile: snap.exists ? (snap.data() as AiAgentProfile) : null,
+    save: (patch: Partial<AiAgentProfile>) => {
+      tx.set(ref, { ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    },
+  };
+}
+
+/** The most hosts the web-chat allow-list may hold. */
+export const MAX_ALLOWED_DOMAINS = 25;
+
+/**
+ * The web-chat allow-list, read inside the caller's transaction, and a `save`
+ * that writes a new list in it (seeding the channel doc's defaults if there
+ * is none; the rest of the channel config is kept). Read before any write.
+ */
+export async function webChatAllowListInTx(
+  tx: FirebaseFirestore.Transaction,
+  subAccountId: string,
+): Promise<{ hosts: string[]; save: (hosts: string[]) => void }> {
+  const ref = getAdminDb().doc(channelPath(subAccountId, "web-chat"));
+  const snap = await tx.get(ref);
+  const existing = snap.exists ? (snap.data() as AiChannelConfig) : null;
+  const webChat = { ...DEFAULT_WEB_CHAT_CONFIG, ...(existing?.webChat ?? {}) };
+  return {
+    hosts: webChat.allowedDomains.map((d) => d.toLowerCase()),
+    save: (hosts) => {
+      const seed = snap.exists
+        ? {}
+        : { ...defaultsForChannel("web-chat"), createdAt: FieldValue.serverTimestamp() };
+      tx.set(
+        ref,
+        { ...seed, webChat: { ...webChat, allowedDomains: hosts }, updatedAt: FieldValue.serverTimestamp() },
+        { merge: true },
+      );
+    },
+  };
 }
 
 export async function incrementChannelTokens(

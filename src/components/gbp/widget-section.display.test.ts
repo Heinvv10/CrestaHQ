@@ -112,7 +112,7 @@ describe("Layout and Theme", () => {
     await choose("gbp-widget-theme", "dark");
     await act(async () => byId("gbp-widget-save")!.click());
     const put = fetchMock.mock.calls.find(([u, i]) => u === API && (i as RequestInit).method === "PUT")!;
-    expect(JSON.parse(String((put[1] as RequestInit).body))).toEqual({ enabled: true, allowedOrigins: [], maxReviews: 12, layout: "grid", theme: "dark" });
+    expect(JSON.parse(String((put[1] as RequestInit).body))).toEqual({ enabled: true, allowedOrigins: [], maxReviews: 12, layout: "grid", theme: "dark", expectedPublicId: null });
   });
 
   it("prefill from the saved widget, and read a widget from before layouts as carousel + light", async () => {

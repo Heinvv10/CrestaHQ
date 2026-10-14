@@ -140,7 +140,7 @@ Without these three, `/api/comms/sms/send` returns 503. SMS opt-out (STOP/START)
 | `QSTASH_CURRENT_SIGNING_KEY` | same panel — verifies inbound `Upstash-Signature` headers |
 | `QSTASH_NEXT_SIGNING_KEY` | same panel — used during key rotation |
 | `QSTASH_LEGACY_CURRENT_SIGNING_KEY` / `QSTASH_LEGACY_NEXT_SIGNING_KEY` | Optional. After moving to another QStash account, the OLD account's two signing keys, so its still-queued delayed deliveries keep verifying. Both or neither. Remove once those have drained (max ~7 days). |
-| `AUTOMATIONS_TOKEN_SECRET` | `openssl rand -base64 32`. HMAC-signs unsubscribe links so they can't be forged — and the tracked review links (`/rr/…`) sent while review-request reminders are on. Rotating this invalidates all outstanding unsubscribe and tracked review links. |
+| `AUTOMATIONS_TOKEN_SECRET` | `openssl rand -base64 32`. HMAC-signs unsubscribe links so they can't be forged — and the tracked review links (`/rr/…`) sent while review-request reminders are on, and the Web Voice widget and call tokens (must be at least 16 characters for those, or the mic stays hidden). Rotating this invalidates all outstanding unsubscribe and tracked review links; open widgets hide their mic until the page reloads. |
 
 Without these, `/api/automations/step` and the website-builder poll route return 503. Automation triggers still fire on form submit (the `automation_executions` row gets created) but step 0 never executes — the form submission itself still works.
 
@@ -150,7 +150,7 @@ Without these, `/api/automations/step` and the website-builder poll route return
 | `GITPAGE_API_KEY` | gitpage.site dashboard — agency-level key, format `gp_…`. Shared across all sub-accounts in this deployment. |
 | `GITPAGE_API_URL` | Optional. Defaults to `https://www.gitpage.site`. Override only when mocking locally. |
 
-Without `GITPAGE_API_KEY`, `/api/sub-accounts/[id]/website/[siteId]/build` returns 503 and the **Build site** button surfaces a friendly error. The rest of the Website page (adding sites, form editing) still loads.
+Without `GITPAGE_API_KEY`, `/api/sub-accounts/[id]/website/[siteId]/build` returns 503 and the **Build site** button surfaces a friendly error. The rest of the Website page (adding sites, form editing) still loads. The same key verifies gitpage's `build.settled` callback (`POST /api/webhooks/gitpage/build-settled`, HMAC-SHA256 of the raw body); that route also answers 503 without it.
 
 ## Required for AI Agents (disables cleanly if missing)
 | Var | Source |

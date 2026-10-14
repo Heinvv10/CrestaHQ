@@ -55,6 +55,24 @@ export interface AiAgentProfile {
   /** When the KB snapshot above was last refreshed. UI shows "Last
    *  refreshed 2h ago" so the operator knows whether to re-crawl. */
   websiteKbFetchedAt: Timestamp | FieldValue | null;
+  /** Where the KB snapshot came from: a Firecrawl scrape (the Refresh KB
+   *  button) or the gitpage premium build hand-off. Absent on legacy docs =
+   *  Firecrawl. */
+  websiteKbSource?: "firecrawl" | "gitpage-build" | null;
+  /** The website doc id whose build seeded the KB (gitpage-build only). */
+  websiteKbSiteId?: string | null;
+  /**
+   * The values the website hand-off last filled in automatically. A field
+   * whose current value still equals its seeded value has not been edited by
+   * the operator, so the next published site may replace it; anything the
+   * operator changed is left alone. (The chat widget's welcome message and
+   * accent are recorded on the web-chat channel doc, in the same write.)
+   */
+  websiteSeeded?: {
+    systemPrompt?: string | null;
+    businessName?: string | null;
+    websiteUrl?: string | null;
+  } | null;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
@@ -120,6 +138,13 @@ export interface AiChannelConfig {
    *  sub-account's `twilioConfig` (reused from SMS), so this block only
    *  holds WhatsApp-channel operational preferences. */
   whatsapp: WhatsappChannelConfig | null;
+  /** web-chat only: the widget values the website hand-off last filled in,
+   *  written in the same transaction as the values themselves. A value that
+   *  still equals its record has not been edited by the operator. */
+  websiteSeeded?: {
+    welcomeMessage?: string | null;
+    accentColor?: string | null;
+  } | null;
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }

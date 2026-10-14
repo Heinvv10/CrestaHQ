@@ -74,3 +74,14 @@ describe("requireContactAccessible — territory scoping", () => {
     expect(await statusFor("out")).toBe(200);
   });
 });
+
+describe("requireContactAccessible — contactId must be a document id", () => {
+  it("refuses a multi-segment id that would resolve a subcollection doc", async () => {
+    seedMember("admin", []);
+    mem.seed("contacts/in/notes/n1", { agencyId: "ag1", subAccountId: "sa1", territoryId: "t1" });
+    expect(await statusFor("in/notes/n1")).toBe(404);
+    expect(await statusFor("..")).toBe(404);
+    expect(await statusFor("__x__")).toBe(404);
+    expect(await statusFor("in")).toBe(200);
+  });
+});

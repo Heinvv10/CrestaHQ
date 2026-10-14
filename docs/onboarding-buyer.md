@@ -343,8 +343,8 @@ Then restart `pnpm dev` so the new value is picked up. Now go back to Twilio (Ph
      - Submit the form in an incognito tab using a real phone + email you can check.
      - SMS arrives within ~10s, email within ~30s. The email's "Unsubscribe" link should resolve and flip `contact.emailOptedOut = true`.
    - **Website build** (proves gitpage works — needs the tunnel from Phase 3.5):
-     - Sub-account → Website → click **Sample** to prefill, then **Build site**.
-     - Banner flips queued → building. Within 1–3 min you should see a green "Your site is live" banner with a `gitlab.io` or `github.io` URL.
+     - Sub-account → Website → **Add website** opens the setup wizard → **Load sample data**, step through with **Next**, then **Build site**.
+     - The card flips queued → building. Within 10–20 min it turns green with a **Visit** button and a `gitlab.io` or `github.io` URL behind **Show URL**.
    - **AI Agents → Web Chat** (proves OpenRouter + the widget pipeline work):
      - Sub-account → AI Agents → Overview → save the persona prompt (the default text is fine to start) and the business name. Optional: paste a website URL + click **Refresh KB** to confirm Firecrawl is wired.
      - Switch to the **Web Chat** tab → tick **Enable Web Chat** → set Allowed domains to `localhost` (for this local test) → **Save Web Chat settings**.

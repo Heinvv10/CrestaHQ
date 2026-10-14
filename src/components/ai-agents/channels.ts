@@ -134,11 +134,10 @@ export const AI_CHANNELS: AiChannel[] = [
     id: "email",
     label: "Email",
     blurb:
-      "AI auto-responds to inbound emails using the same brand voice and contact context as SMS.",
+      "AI drafts replies to inbound emails for your approval — same brand voice and contact context as SMS. Draft-only: it never sends an email by itself.",
     icon: Mail,
     group: "inbound",
-    comingSoon: true,
-    hidden: true,
+    comingSoon: false,
     slug: "email",
   },
   {

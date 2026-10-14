@@ -14,10 +14,17 @@ name: E2E smoke (production)
 # 1,000/day limit and silently dropped real scheduled work once it ran out.
 # workflow-enrol was previously expected to fail here (a signed step call
 # 401s against a deployment); it is now excluded instead of run-and-ignored.
+#
+# Dispatched by scripts/deploy-velo.sh once a deploy is live, pinned to the
+# deployed commit. It no longer runs on push: production only takes main at
+# the next deploy, so a push run tested main's specs against an older
+# release and failed on features that were not live yet.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+    inputs:
+      sha:
+        description: Commit production is serving (blank = branch head; after a rollback, give the release's commit)
+        required: false
 
 jobs:
   smoke:
@@ -47,6 +54,8 @@ jobs:
       E2E_SUBACCOUNT_ID_SECONDARY: ${{ secrets.E2E_SUBACCOUNT_ID_SECONDARY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

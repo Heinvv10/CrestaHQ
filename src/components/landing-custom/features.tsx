@@ -51,7 +51,7 @@ const features = [
     icon: Globe,
     title: "Built-in website builder",
     body:
-      "Spin up a marketing site or video sales letter funnel for any client in minutes. Live URL in 1–3 minutes after you hit Build.",
+      "Spin up a marketing site or video sales letter funnel for any client. Live URL in 10–20 minutes after you hit Build.",
   },
   {
     icon: Mail,

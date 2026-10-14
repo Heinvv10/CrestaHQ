@@ -251,6 +251,10 @@ export type ActivityType =
   // An inbound call was forwarded but went unanswered, so Missed Call Text
   // Back auto-texted the caller. Written by /api/webhooks/twilio/voice/status.
   | "missed_call"
+  // A HUMAN browser-dialer call (Softphone v1) — written by the dialer TwiML
+  // webhook when the call starts (doc id dialer_<CallSid>) and updated with
+  // the outcome/duration/recording by the Dial action callback.
+  | "call_placed"
   // An automated SMS/WhatsApp fell in the workspace's quiet hours and was
   // held until they end (or could not be). lib/comms/quiet-hours-hold.ts.
   | "quiet_hours_held"

@@ -223,6 +223,15 @@ export interface SubAccountBilling {
   retiringSubscriptionId?: string | null;
   retiringSince?: Timestamp | FieldValue | Date | null;
   /**
+   * Set while a comp cancels this subscription at the provider (the comp's
+   * lock; see `billing-comp.ts`). Unlike the switch's mark it mutes no
+   * event: the subscription's own webhooks keep applying meanwhile. A plan
+   * switch refuses to start while it holds; it lapses after the same few
+   * minutes as `retiringSince`.
+   */
+  compingSubscriptionId?: string | null;
+  compingSince?: Timestamp | FieldValue | Date | null;
+  /**
    * End of the dunning grace window, stamped when the subscription first
    * goes past_due. Checked at request/render time (no cron): past_due +
    * graceUntil in the past = hard paywall. Cleared on recovery.

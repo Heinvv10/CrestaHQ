@@ -63,6 +63,35 @@ describe("roleOf", () => {
     expect(r("town or suburb | where | address-level2", "example: edenvale")).toBe("town");
   });
 
+  it("a business/company ADDRESS field has no role: the business name is never typed into an address (a required one refuses)", () => {
+    for (const hint of [
+      "business address", "company address", "physical business address", "organisation address", "organization address",
+      "besigheidsadres", "business_address",
+    ]) {
+      expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBeNull();
+      expect(plan([field(hint, { required: true }), field("m", { tag: "textarea" })])).toEqual({
+        ok: false, code: "unmapped_required", reason: `Required fields it can't fill: ${hint}.`,
+      });
+    }
+    // The address word in the label with the business word only in the placeholder, or a word that also reads as a surname.
+    for (const [hint, named] of [
+      ["address | your business address", "address"], ["adres van besigheid", "adres van besigheid"],
+      ["street address of business", "street address of business"], ["company | street-address", "company | street-address"],
+    ]) {
+      expect(roleOf({ tag: "input", type: "text", hint, named })).toBeNull();
+    }
+    expect(roleOf({ tag: "input", type: "text", hint: "business email address", named: "business email address" })).toBe("email");
+    // A placeholder that mentions an address does not strip a name field of its role.
+    expect(roleOf({ tag: "input", type: "text", hint: "business name | e.g. 1 main address", named: "business name" })).toBe("company");
+  });
+
+  it.each([
+    ["business name", "company"], ["company", "company"], ["company name", "company"],
+    ["business email", "email"], ["business phone", "phone"],
+  ])("keeps %s → %s", (hint, role) => {
+    expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBe(role);
+  });
+
   it("a field that says both business and town is ambiguous: no role (a required one refuses)", () => {
     for (const hint of ["business city", "company town", "business_city", "organisation | address-level2"]) {
       expect(roleOf({ tag: "input", type: "text", hint, named: hint })).toBeNull();

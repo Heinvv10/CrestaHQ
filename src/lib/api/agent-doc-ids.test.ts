@@ -18,7 +18,7 @@ vi.mock("@/lib/server/agent-enrolment-replay", async (orig) =>
   (await import("@/test/agent-proposals-harness")).replayMock(orig)
 );
 
-setupAgentProposalTests();
+await setupAgentProposalTests();
 const { dispatchAgentTool, agentCallable } = await import("@/lib/api/agent-dispatch");
 const { AI_SUITE_CAPABILITIES } = await import("@/lib/ai-suite/capabilities");
 
@@ -59,6 +59,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["pause_recurring_schedule", { scheduleId: "rs1/sub/y" }],
   ["resume_recurring_schedule", { scheduleId: "rs1/sub/y" }],
   ["cancel_recurring_schedule", { scheduleId: "rs1/sub/y" }],
+  ["create_workflow", { template: "speed-to-lead", formId: "f1/sub/y" }],
   ["list_workflow_runs", { workflowId: "wf1/sub/y" }],
   ["get_workflow", { workflowId: "wf1/sub/y" }],
   ["update_workflow", { workflowId: "wf1/sub/y", name: "X" }],
@@ -70,6 +71,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
   ["update_task", { taskId: "t1/sub/y", title: "X" }],
   ["delete_task", { taskId: "t1/sub/y" }],
   ["set_event_status", { eventId: "ev1/sub/y", status: "completed" }],
+  ["mark_booking_paid", { eventId: "ev1/sub/y" }],
   ["schedule_social_post", { postId: "sp1/sub/y", scheduledAt: "2030-01-10T08:00:00.000Z" }],
   ["delete_social_post", { postId: "sp1/sub/y" }],
   ["send_review_request", { contactId: "c1/sub/y" }],
@@ -90,7 +92,7 @@ const ID_CASES: Array<[string, Record<string, unknown>]> = [
 ];
 
 beforeEach(() => {
-  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1", "workflows/wf1", "quotes/q1", "recurringInvoices/rs1", "tasks/t1", "events/ev1"]) {
+  for (const parent of ["contacts/c1", "deals/d1", "tasks/t1", "companies/co1", "conversations/cv1", "workflows/wf1", "quotes/q1", "recurringInvoices/rs1", "tasks/t1", "events/ev1", "forms/f1"]) {
     mem.seed(parent, SUB);
     mem.seed(`${parent}/sub/y`, SUB);
     // A real top-level doc named like the path's last segment: a service

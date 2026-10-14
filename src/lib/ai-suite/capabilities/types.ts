@@ -158,6 +158,13 @@ export interface AiSuiteCapability {
     ctx: AiSuiteActionContext,
     args: Record<string, unknown>
   ) => Promise<ExecuteResult>;
+  /** Chat only: why these args can't be offered as a confirm card (an
+   *  approval the chat surface can't give). The chat route answers with it
+   *  instead of proposing; execute must still refuse on its own. */
+  chatRefusal?: (
+    args: Record<string, unknown>,
+    ctx: AiSuiteActionContext
+  ) => string | undefined;
   /** Surfaces that may offer this capability. Undefined = both. */
   surfaces?: CapabilitySurface[];
   /** Set = the agent surface queues it for approval instead of executing. */

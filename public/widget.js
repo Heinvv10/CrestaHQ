@@ -76,6 +76,25 @@
     });
 
   // ---- Step 4: bubble ---------------------------------------------
+  // Dark or white icon, whichever reads better on the accent (light
+  // accents like yellow made the white "×" invisible). WCAG luminance —
+  // mirrors textOnAccent() in src/components/web-chat/contrast.ts.
+  function textOnAccent(hex) {
+    var m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex || "").trim());
+    if (!m) return "#ffffff";
+    var h = m[1];
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    function lin(i) {
+      var c = parseInt(h.slice(i, i + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    }
+    var L = 0.2126 * lin(0) + 0.7152 * lin(2) + 0.0722 * lin(4);
+    var darkL = 0.0089; // #0f172a
+    var vsWhite = 1.05 / (L + 0.05);
+    var vsDark = (L + 0.05) / (darkL + 0.05);
+    return vsDark > vsWhite ? "#0f172a" : "#ffffff";
+  }
+
   function mountBubble() {
     bubble = document.createElement("button");
     bubble.setAttribute("aria-label", "Open chat");
@@ -83,7 +102,7 @@
       "position:fixed;" +
       (config.position === "left" ? "left:20px;" : "right:20px;") +
       "bottom:20px;width:56px;height:56px;border-radius:50%;border:0;cursor:pointer;" +
-      "background:" + config.accentColor + ";color:white;" +
+      "background:" + config.accentColor + ";color:" + textOnAccent(config.accentColor) + ";" +
       "box-shadow:0 8px 24px -4px rgba(15,23,42,0.35);" +
       "display:flex;align-items:center;justify-content:center;" +
       "font-size:24px;line-height:1;z-index:2147483646;" +

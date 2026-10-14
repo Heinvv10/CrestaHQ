@@ -44,10 +44,16 @@ import { pushBookingToGoogle } from "@/lib/google-calendar/push";
  */
 
 export type MarkBookingPaidOutcome =
-  | { ok: true; status: "scheduled"; publicEventUrl: string }
+  | {
+      ok: true;
+      status: "scheduled";
+      publicEventUrl: string;
+      /** With `expect`: the confirmation and reminders were not sent, their recipient changed. */
+      emailWithheld?: true;
+    }
   | {
       ok: false;
-      code: "not_found" | "wrong_tenant" | "bad_status" | "write_failed";
+      code: "not_found" | "wrong_tenant" | "bad_status" | "contact_changed" | "write_failed";
       message: string;
       status?: string;
       /** On `bad_status`: the Stripe order that confirmed it, if one did. */
@@ -55,6 +61,12 @@ export type MarkBookingPaidOutcome =
       /** On `bad_status`: when it was marked paid, if it was. */
       paidAt?: unknown;
     };
+
+export interface BookingPaidExpect {
+  contactId: string | null;
+  emailTo: string | null;
+  stepsFingerprints: Record<string, string>;
+}
 
 export async function markBookingPaidServerSide(input: {
   eventId: string;
@@ -64,6 +76,13 @@ export async function markBookingPaidServerSide(input: {
   paidByUid: string | null;
   /** The Stripe order paying for it, recorded so a redelivery knows its own. */
   paidOrderId?: string;
+  /**
+   * An approved agent mark-paid: what its approver reviewed. Another contact
+   * on the booking refuses in the transaction (nothing changed); the
+   * confirmation goes only to `emailTo` (null: none), and only these
+   * workflows (id -> steps fingerprint), unchanged, start.
+   */
+  expect?: BookingPaidExpect;
 }): Promise<MarkBookingPaidOutcome> {
   const db = getAdminDb();
   const eventRef = db.collection("events").doc(input.eventId);
@@ -102,6 +121,14 @@ export async function markBookingPaidServerSide(input: {
         } as const;
       }
 
+      if (input.expect && (event.contactId ?? null) !== input.expect.contactId) {
+        return {
+          ok: false,
+          code: "contact_changed",
+          message: "The booking's contact changed since this was reviewed.",
+        } as const;
+      }
+
       const { token, hash } = issueEventToken(input.eventId);
       const icsSequence = nextIcsSequence(event);
       txn.update(eventRef, {
@@ -137,21 +164,28 @@ export async function markBookingPaidServerSide(input: {
   if ("ok" in confirmed) return confirmed;
   const { event: updatedEvent, token: newToken } = confirmed;
 
-  await runMarkPaidSideEffects({ event: updatedEvent, rawToken: newToken });
+  const withheld = await runMarkPaidSideEffects({
+    event: updatedEvent,
+    rawToken: newToken,
+    expect: input.expect,
+  });
   await pushBookingToGoogle(input.eventId);
 
   return {
     ok: true,
     status: "scheduled",
     publicEventUrl: buildEventPublicUrl(newToken),
+    ...(withheld ? { emailWithheld: true as const } : {}),
   };
 }
 
+/** True when `expect` withheld the confirmation and reminders (their recipient changed). */
 async function runMarkPaidSideEffects(args: {
   event: CalendarEvent;
   rawToken: string;
-}): Promise<void> {
-  const { event, rawToken } = args;
+  expect?: BookingPaidExpect;
+}): Promise<boolean> {
+  const { event, rawToken, expect } = args;
   const db = getAdminDb();
   const startAt = (
     event.startAt as { toDate?: () => Date } | null
@@ -159,9 +193,9 @@ async function runMarkPaidSideEffects(args: {
   const endAt = (
     event.endAt as { toDate?: () => Date } | null
   )?.toDate?.();
-  if (!(startAt instanceof Date) || !(endAt instanceof Date)) return;
+  if (!(startAt instanceof Date) || !(endAt instanceof Date)) return false;
 
-  if (!event.contactId) return;
+  if (!event.contactId) return false;
   let page: BookingPage | null = null;
   let sub: SubAccountDoc | null = null;
   let contact: Contact | null = null;
@@ -184,9 +218,19 @@ async function runMarkPaidSideEffects(args: {
     console.warn("[events/mark-paid] tenancy read failed", err);
   }
 
+  // With `expect`: the address the confirmation would go to now, against
+  // the one the approver reviewed. Changed: no confirmation and no reminders.
+  // Reminders are email-only (events/reminder/step sends to the contact's
+  // email), so the email address is the one recipient to pin.
+  const sendableTo = contact && sub && emailIsConfigured(sub) && contact.email && !contact.emailOptedOut ? contact.email : null;
+  const withheld = !!expect && sendableTo !== expect.emailTo;
+  if (withheld) {
+    console.warn(`[events/mark-paid] confirmation and reminders withheld for event=${event.id}: not the recipient the approver reviewed`);
+  }
+
   // Reminder pipeline + automation activity/trigger run regardless of
   // email send success.
-  if (page?.remindersEnabled) {
+  if (page?.remindersEnabled && !withheld) {
     await scheduleEventReminders({
       eventId: event.id,
       startAt,
@@ -220,10 +264,13 @@ async function runMarkPaidSideEffects(args: {
       bookingPageSlug: event.bookingPageSlug ?? null,
     },
     "event_paid",
+    undefined,
+    expect?.stepsFingerprints,
   );
 
-  if (!contact || !sub || !emailIsConfigured(sub)) return;
-  if (!contact.email || contact.emailOptedOut) return;
+  if (withheld) return true;
+  if (!contact || !sub || !emailIsConfigured(sub)) return false;
+  if (!contact.email || contact.emailOptedOut) return false;
 
   const publicEventUrl = buildEventPublicUrl(rawToken);
   const rendered = renderBookingConfirmationEmail({
@@ -290,7 +337,7 @@ async function runMarkPaidSideEffects(args: {
         createdBy: "booking",
       })
     ) {
-      return;
+      return false;
     }
     // Fall back to the standard wrapper without ICS so the visitor at
     // least gets the text confirmation.
@@ -310,4 +357,5 @@ async function runMarkPaidSideEffects(args: {
       console.warn("[events/mark-paid] confirmation send failed", err2);
     }
   }
+  return false;
 }

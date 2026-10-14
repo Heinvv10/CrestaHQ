@@ -30,7 +30,15 @@ export async function POST(
     return NextResponse.json({ ok: true, siteId });
   } catch (err) {
     if (err instanceof WebsiteServiceError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+      return NextResponse.json(
+        { error: err.message },
+        {
+          status: err.status,
+          ...(err.retryAfterSec !== undefined
+            ? { headers: { "Retry-After": String(err.retryAfterSec) } }
+            : {}),
+        },
+      );
     }
     console.error("[website/create] failed", err);
     return NextResponse.json(

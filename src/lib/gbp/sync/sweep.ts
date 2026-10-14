@@ -3,6 +3,8 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { SubAccountDoc } from "@/types";
 import type { SyncedRun } from "@/lib/reputation/sentiment-after";
+import { googleConnectionSecretPath } from "@/types/google";
+import { isFakeRefreshToken } from "../provider/fake";
 import { GbpFakeRefusedError, gbpProviderMode } from "../provider/select";
 import { recordFailedRun } from "./record";
 import type { Sleep } from "./retry";
@@ -59,7 +61,35 @@ const eligible = (sub: Sub) => {
 };
 const hasCache = (sub: Sub) => toMillis(sub.gbpSummary?.lastRunAt) !== null;
 
-async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[] }> {
+/**
+ * Local dev and CI run against this same Firestore, and an E2E spec leaves its
+ * fixture tenant gated, connected and listed while it runs. The real sweep
+ * would take that tenant to Google with the fake's refresh token, get
+ * `revoked`, and flag the fixture reconnect-required mid-spec — so it skips
+ * any tenant holding a credential only the fake mints (never a real one).
+ * A read that fails syncs the tenant as before: this guard never costs a sync.
+ */
+async function holdsFakeCredentials(id: string): Promise<boolean> {
+  try {
+    return isFakeRefreshToken((await getAdminDb().doc(googleConnectionSecretPath(id)).get()).data()?.refreshToken);
+  } catch (err) {
+    console.error(`[cron/gbp-sync] credential check failed sa=${id}: ${err instanceof Error ? err.name : typeof err}`);
+    return false;
+  }
+}
+
+/** The first {@link SWEEP_CAP} of `list`, in order; in Google mode, skipping fake-credentialed tenants (read one at a time, only as far as needed). */
+async function takeForSync(list: Candidate[], fake: boolean): Promise<Candidate[]> {
+  if (fake) return list.slice(0, SWEEP_CAP);
+  const taken: Candidate[] = [];
+  for (const c of list) {
+    if (taken.length >= SWEEP_CAP) break;
+    if (!(await holdsFakeCredentials(c.id))) taken.push(c);
+  }
+  return taken;
+}
+
+async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[]; fake: boolean }> {
   // Throws GbpFakeRefusedError on a misconfigured fake: the sweep cannot
   // start, the route answers 500, QStash retries — loudly.
   const fake = gbpProviderMode() === "fake";
@@ -74,9 +104,8 @@ async function candidates(): Promise<{ sync: Candidate[]; cached: Candidate[] }>
       ]);
   const sync = gated
     .filter(({ sub }) => eligible(sub))
-    .sort((a, b) => (toMillis(a.sub.gbpSummary?.lastRunAt) ?? -1) - (toMillis(b.sub.gbpSummary?.lastRunAt) ?? -1))
-    .slice(0, SWEEP_CAP);
-  return { sync, cached: cached.filter(({ sub }) => hasCache(sub)) };
+    .sort((a, b) => (toMillis(a.sub.gbpSummary?.lastRunAt) ?? -1) - (toMillis(b.sub.gbpSummary?.lastRunAt) ?? -1));
+  return { sync, cached: cached.filter(({ sub }) => hasCache(sub)), fake };
 }
 
 async function pool(items: Candidate[], work: (c: Candidate) => Promise<void>, stop: () => boolean) {
@@ -133,7 +162,8 @@ export async function runGbpSyncSweep(
     onRun?: (run: SyncedRun) => void;
   } = {},
 ): Promise<SweepResult> {
-  const { sync, cached } = await candidates();
+  const { sync: queue, cached, fake } = await candidates();
+  const sync = await takeForSync(queue, fake);
   const byStatus: Record<string, number> = {};
   const count = (k: string) => (byStatus[k] = (byStatus[k] ?? 0) + 1);
   let processed = 0;

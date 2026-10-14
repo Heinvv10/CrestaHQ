@@ -56,6 +56,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `resume_recurring_schedule` | `spend` | admin | Resume a paused recurring schedule: it bills again from the next cycle due today or later (cycles missed while paused are not billed). | the schedule old -> new and the card outcome |
 | `cancel_recurring_schedule` | `spend` | admin | Cancel a recurring schedule for good (it can't be resumed). | the schedule old -> new and the card outcome |
 | `list_webhooks` | read | admin | List this sub-account's outbound webhook subscriptions (id, URL, events, status, last delivery). |  |
+| `list_communities` | read | member | List this workspace's community groups (name, status, mode, slug, group id) and the courses inside each (title, published or not, course id). |  |
 | `create_workflow` | write | admin | Create a new automation workflow (as a draft) from a starter template in this sub-account. |  |
 | `list_workflows` | read | admin | List the sub-account's automation workflows: name, id, status and trigger. |  |
 | `get_workflow` | read | admin | Read one workflow: status, trigger, re-entry, start step and every step (as JSON). |  |
@@ -63,6 +64,8 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `update_workflow` | write; `workflow_activate` when the workflow is active, or the edit changes its steps while runs are in progress | admin | Change a workflow's name, trigger, re-entry, steps (`nodes` replaces them all; read get_workflow first) or start step. | which fields change, and that later enrolments and runs in progress take the new steps |
 | `set_workflow_status` | write; `workflow_activate` when status=active | admin | Set a workflow's status: `paused` or `draft` stop it at once; `active` is queued for a sub-account admin to approve, showing the exact trigger and steps that will run. | activating: the exact trigger and steps (pinned) and what runs from approval on |
 | `delete_workflow` | `hard_delete` | admin | Delete a workflow permanently. | the workflow, its id and creation time, its trigger and steps |
+| `list_forms` | read | member | List this workspace's forms with id, name, enabled flag, submission count, public URL, and iframe embed snippet. |  |
+| `create_form` | write | admin | Create a new public lead-capture form in this workspace from a preset. |  |
 | `create_contact` | write | member | Add a new contact to this sub-account. |  |
 | `get_contact` | read | member | Read one contact's details: name, phone, email, company, address, tags, custom fields and messaging opt-outs. |  |
 | `update_contact` | write | member | Edit a contact's name, company, address, custom fields (merged into the existing ones) or tags (replaces the tag list; prefer add_tags / remove_tags). |  |
@@ -96,6 +99,8 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `create_booking_page` | write; `public_change` when status=published | admin | Create a booking page with the booking editor's fields (slug, name, workingHours, timezone... | every field of the page to be published |
 | `delete_booking_page` | `hard_delete` | admin | Delete a booking page permanently. | the page and that its link stops working; refused while bookings are upcoming |
 | `update_booking_page` | write; `public_change` when the page is published, the edit publishes it, or bookings on it are upcoming | admin | Change a booking page's fields (as get_booking_page shows them; the slug can't change). | changed fields old -> new (the whole page when it goes public or has upcoming bookings) |
+| `find_awaiting_payment_bookings` | read | member | List this workspace's booking-page appointments that are 'awaiting payment' (a deposit was required and hasn't been confirmed), soonest first, with each one's event id. |  |
+| `mark_booking_paid` | `outbound` | member | Mark an 'awaiting payment' booking as paid, as the calendar's Mark paid button does: the booking is confirmed, the customer is emailed their confirmation, its reminders are scheduled and the booking.confirmed workflows start, so it is queued for a person to approve. | the booking and its deposit, who the confirmation email goes to or why none, the reminders, the booking.confirmed workflows that start (their steps pinned) |
 | `list_members` | read | admin | List this sub-account's members (name, email, role, status) and any pending invites. |  |
 | `invite_member` | `outbound` | admin | Add someone (by email) to this sub-account as 'admin' (manages members + settings) or 'collaborator' (works the data, no member management). | the email, the role (admin's powers named), what happens: a new invite, added at once with nothing to accept, a member's role old -> new, or that approving will refuse (a disabled or another agency's account); territories kept or cleared; whether an email goes out. The proposing agent is shown only the sub-account, email and role |
 | `list_social_posts` | read | member | List the Social Planner's posts: id, status, platforms, when scheduled, and the start of each caption. |  |
@@ -108,6 +113,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `list_broadcasts` | read | member | List the sub-account's email broadcasts, newest first: template, audience, status and totals. |  |
 | `create_broadcast` | `outbound` | admin | Send an email template to every contact matching an audience (all; a tag; or a pipeline stage), skipping opted-out contacts. | channel, audience and matched count, exact subject and message, merge tags, what is checked at send |
 | `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time |
+| `watchdog_status` | read | admin | Show the Labs Inbox Follow-up Watchdog's settings (on/off, waiting threshold, quiet hours, extra criteria) and its recent runs: how many conversations it scanned, which contacts it flagged and why. |  |
 
 ## Agency-key tools
 
@@ -128,3 +134,6 @@ approval rows are agency-level (`subAccountId: null`): only the agency owner app
 | `create_billing_plan` | write | agency owner | Create a Client-Billing plan (a monthly price + an optional annual price + a bundle of features) that the agency can charge sub-accounts for. |  |
 | `assign_billing_plan` | `spend` | agency owner | Assign a Client-Billing plan to one sub-account and start the checkout/subscription. | the sub-account, the plan and price (a special price only if proposed), every feature switching on and off, monthly quotas and overage rates, when features change (now, or when the client pays) and what billing does; price and gates are pinned |
 | `create_one_time_charge` | `spend` | agency owner | Create a ONE-TIME charge for a sub-account's client (e.g. a web design fee) and get a payment link to send them (on the deployment's own payment provider). | the sub-account, the charge description and amount as the client sees them, and that it is one payment link, nothing charged until paid (pinned) |
+| `billing_overview` | read | agency owner | List this agency's sub-accounts with their Client-billing state: comped (not billed), pending (plan assigned, checkout not completed), active, grace (renewal failed, inside the grace window), or lapsed (paywalled). |  |
+| `resend_checkout_link` | `outbound` | agency owner | Mint a new secure checkout link for a sub-account whose plan is assigned but not paid (pending, or a lapsed renewal), for you to send the client; the agency owner approves it first. | the sub-account, its plan and price, its billing status, and that every earlier link stops working; the plan, price and status are pinned |
+| `sub_account_usage` | read | agency owner | Show one sub-account's current-month usage — emails, SMS segments, WhatsApp messages, AI tokens, voice minutes — against its effective limits (workspace override → plan → unlimited), plus any accrued overage at the plan's rates. |  |

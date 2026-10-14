@@ -105,7 +105,7 @@ and on no other route: every other `/api/v1` route refuses it with 403
   sub-account (`keyLevel: "agency"`): it shows on that sub-account's Approvals
   page **and** on `/agency/approvals`, and either may decide it. An agency tool's
   proposal (`set_sub_account_gate`, `apply_snapshot`, `assign_billing_plan`,
-  `create_one_time_charge`) is an agency-level row (`subAccountId: null`,
+  `create_one_time_charge`, `resend_checkout_link`) is an agency-level row (`subAccountId: null`,
   `targetSubAccountId` naming the client), approved by the agency owner on
   `/agency/approvals` only. Held enrolments are charged to the agency key's
   enrolment cap, counted per sub-account. **"Approve all"** on `/agency/approvals`
@@ -116,8 +116,12 @@ and on no other route: every other `/api/v1` route refuses it with 403
   `workflow_enrolment`) is one click per row (`src/lib/approvals/agency-batch.ts`).
   It loops over the per-row decide route, so every check still runs.
 - **Agency tools** (table: [agent-api-tools.md](agent-api-tools.md#agency-key-tools)).
-  `list_sub_accounts`, `sub_account_stats`, `list_snapshots` and
-  `list_billing_plans` read. `create_sub_account` writes at once: both reach gates
+  `list_sub_accounts`, `sub_account_stats`, `list_snapshots`,
+  `list_billing_plans`, `billing_overview` and `sub_account_usage` read
+  (`billing_overview` lists only the sub-accounts the key reaches).
+  `resend_checkout_link` is always an `outbound` row: the preview pins the
+  plan, price and billing status, and approving mints the link only if they
+  still match. `create_sub_account` writes at once: both reach gates
   on (one `feature_gates.updated` audit event, actor the key), `createdByKeyId`
   stamped, the minting owner as the member (never the key); at most 10 per key a
   UTC day, and the same name again within 10 minutes returns the sub-account
@@ -186,7 +190,7 @@ and on no other route: every other `/api/v1` route refuses it with 403
 
 ## Tools
 
-98 tools today; the full table, with each tool's kind, role and what its approval
+104 tools today; the full table, with each tool's kind, role and what its approval
 preview shows, is **[agent-api-tools.md](agent-api-tools.md)**. It is generated
 from the registry and a test fails when it drifts. Its second table lists the
 agency-key tools; their proposals are approved on `/agency/approvals`, not on a

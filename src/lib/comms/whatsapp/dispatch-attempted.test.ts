@@ -59,6 +59,11 @@ describe("dispatchWhatsappSend", () => {
     expect(r.attempted).toBeUndefined();
   });
 
+  it("a Cloud send that never connected keeps the rail's attempted: false", async () => {
+    sendWhatsappCloud.mockResolvedValue({ ...rejected, attempted: false });
+    expect(await send({ subAccount: sub("cloud") })).toMatchObject({ ok: false, attempted: false });
+  });
+
   it("missing Cloud credentials: not attempted", async () => {
     getWabaCreds.mockRejectedValueOnce(new Error("no creds"));
     expect((await send({ subAccount: sub("cloud") })).attempted).toBeUndefined();
@@ -76,6 +81,14 @@ describe("dispatchWhatsappTemplateSend", () => {
     expect(await dispatchWhatsappTemplateSend({
       subAccountId: "sa_1", subAccount: sub("cloud"), to: "+27821234567", template: cloudTpl, values: [], sendViaTwilio: vi.fn(),
     })).toMatchObject({ ok: false, attempted: true });
+  });
+
+  it("a Cloud template send that never connected keeps the rail's attempted: false", async () => {
+    sendWhatsappCloud.mockResolvedValue({ ...rejected, attempted: false });
+    const cloudTpl = { ...tpl, registrations: { cloud: { externalId: "9", status: "approved", rejectionReason: null } } } as unknown as WhatsappTemplateDoc;
+    expect(await dispatchWhatsappTemplateSend({
+      subAccountId: "sa_1", subAccount: sub("cloud"), to: "+27821234567", template: cloudTpl, values: [], sendViaTwilio: vi.fn(),
+    })).toMatchObject({ ok: false, attempted: false });
   });
 
   it("a template not approved on the rail is refused before sending: not attempted", async () => {

@@ -1,4 +1,5 @@
 import type { StripeConnectionMeta } from "@/types/payments";
+import type { WebVoiceMeta } from "@/types/web-voice";
 import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
 import type { GbpSummary } from "@/lib/gbp/sync/types";
 import type { PaystackConnectionMeta } from "@/types/paystack-connection";
@@ -195,6 +196,16 @@ export interface SubAccountDoc {
   // Reserved for the upcoming Workflow Recipes feature. Populated null/empty in
   // v1; the per-sub-account credential UI lands when Workflows ships.
   twilioConfig: TwilioConfig | null;
+  /**
+   * Softphone v1 — the human browser dialer (outbound-only, Twilio Voice JS
+   * SDK over the sub-account's own Twilio). NON-SECRET flags only, so the
+   * client can gate the Call button + settings card; the provisioned Twilio
+   * API key/secret + TwiML App sid live in `subAccounts/{id}/private/dialer`
+   * (Admin SDK only). Server-written via /api/sub-accounts/[id]/dialer.
+   * Undefined on legacy docs reads as disabled. Usable only while
+   * `dialerEnabledByAgency === true`.
+   */
+  dialerConfig?: DialerConfig | null;
   /**
    * Per-sub-account dedicated email sending domain (platform-managed model).
    * When `status === "verified"`, email sent on behalf of this sub-account
@@ -579,12 +590,26 @@ export interface SubAccountDoc {
    */
   webVoiceEnabledByAgency?: boolean;
   /**
+   * Non-secret display metadata for the Web Voice connection. The API key
+   * lives at `subAccounts/{id}/private/webVoiceConnection`. Never add a
+   * credential to this object. Null/absent = not connected.
+   */
+  webVoiceMeta?: WebVoiceMeta | null;
+  /**
    * Agency-controlled gate for the browser phone dialer (softphone) that
    * places calls through the sub-account's own Twilio account. Opt-in:
    * `false` at creation, read `=== true`. Standalone (NOT in
    * `PLAN_GATE_KEYS`). No tear-down: stored dialer config is preserved.
    */
   dialerEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for Email AI drafts: the shared AI agent drafts a
+   * reply to each new inbound mailbox email for a person to approve in
+   * Conversations. DRAFT-ONLY — nothing is ever sent without that approval.
+   * Opt-in: `false` at creation, read `=== true`. Standalone (NOT in
+   * `PLAN_GATE_KEYS`). No tear-down: the `aiAgent/email` config is preserved.
+   */
+  emailAiDraftsEnabledByAgency?: boolean;
   /**
    * Agency-controlled gate for Reviews AI (SP5): AI sentiment on synced Google
    * reviews and AI reply drafts (SP5 c — they only fill the reply box). Spends the agency's OpenRouter
@@ -1078,6 +1103,37 @@ export interface GoogleReviewConfig {
    */
   reminder?: { everyDays: number | null; maxRetries: number } | null;
   updatedAt: Date;
+}
+
+/**
+ * Softphone v1 (browser dialer) — client-visible flags. The Twilio secrets
+ * this feature provisions (API key sid/secret + TwiML App sid) are NOT here:
+ * sub-account docs are member-readable, so they live in the Admin-SDK-only
+ * `subAccounts/{id}/private/dialer` doc ({@link DialerPrivateDoc}).
+ */
+export interface DialerConfig {
+  /** Master switch — set true by successful provisioning, false on disable. */
+  enabled: boolean;
+  /**
+   * Record outbound dialer calls (dual-channel, from answer). Default false —
+   * recording-consent laws vary by region; the settings card says so.
+   */
+  recordCalls: boolean;
+}
+
+/**
+ * Admin-SDK-only secrets at `subAccounts/{id}/private/dialer` (covered by the
+ * generic `private/{docId}` deny rule — same model as the Webinar1 + Stripe
+ * connections). Written by the dialer provisioning route only.
+ */
+export interface DialerPrivateDoc {
+  /** Twilio API Key SID (SK…) minted on the sub-account's own account. */
+  apiKeySid: string;
+  /** The API key secret — returned once by Twilio at creation. */
+  apiKeySecret: string;
+  /** TwiML App (AP…) whose voice URL is our dialer TwiML webhook. */
+  twimlAppSid: string;
+  createdAt: Date;
 }
 
 export interface ResendConfig {

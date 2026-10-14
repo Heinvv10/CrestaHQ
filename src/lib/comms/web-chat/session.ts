@@ -99,6 +99,8 @@ export async function appendMessage(input: {
   body: string;
   tokens: number | null;
   aiGenerated: boolean;
+  /** Web Voice turns only — typed messages keep their original shape. */
+  via?: "voice";
 }): Promise<string> {
   const db = getAdminDb();
   const sessionRef = db.doc(
@@ -115,6 +117,7 @@ export async function appendMessage(input: {
     body: input.body,
     tokens: input.tokens,
     aiGenerated: input.aiGenerated,
+    ...(input.via ? { via: input.via } : {}),
     createdAt: FieldValue.serverTimestamp(),
   });
   batch.update(sessionRef, {

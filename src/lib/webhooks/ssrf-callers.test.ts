@@ -1,5 +1,5 @@
 import http from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -24,6 +24,7 @@ import { renderQuotePdfStream } from "@/lib/quotes/pdf-render";
 import { runProspectReport } from "@/lib/prospecting/report-runner";
 import { getScan, probeKey, startScan } from "@/lib/prospecting/apexgeo-client";
 import { POST as subscribePush } from "@/app/api/push/subscriptions/route";
+import { resolveLiveUrl } from "@/lib/server/website-handoff-service";
 import type { Quote } from "@/types/quotes";
 
 // 1x1 PNG
@@ -133,6 +134,39 @@ describe("tenant-URL fetchers refuse internal addresses", () => {
       }),
     );
     expect(res.status).toBe(400);
+  });
+
+  describe("website live-URL resolver (gitpage reports the address, over https)", () => {
+    // gitpage's address must be https, which the plain-HTTP server above
+    // cannot answer; a TLS hello never becomes a request it would log. So
+    // this one counts raw TCP connections: any attempt to talk to the
+    // address is one, whatever the protocol.
+    let connections = 0;
+    let tcp: net.Server;
+    let siteUrl = "";
+    beforeAll(async () => {
+      tcp = net.createServer((socket) => {
+        connections++;
+        socket.destroy();
+      });
+      await new Promise<void>((r) => tcp.listen(0, "127.0.0.1", r));
+      siteUrl = `https://127.0.0.1:${(tcp.address() as AddressInfo).port}/site`;
+    });
+    afterAll(() => new Promise<void>((r) => tcp.close(() => r())));
+    beforeEach(() => {
+      connections = 0;
+    });
+
+    it("never connects to an internal address, and returns it unresolved", async () => {
+      expect(await resolveLiveUrl(siteUrl)).toEqual({ url: siteUrl, resolved: false });
+      expect(connections).toBe(0);
+    });
+
+    it("control: outside production it DOES connect (the test can see an attempt)", async () => {
+      vi.stubEnv("NODE_ENV", "development");
+      expect(await resolveLiveUrl(siteUrl)).toEqual({ url: siteUrl, resolved: false });
+      expect(connections).toBe(1);
+    });
   });
 
   it("control: outside production the PDF logo IS fetched (the test can see a hit)", async () => {

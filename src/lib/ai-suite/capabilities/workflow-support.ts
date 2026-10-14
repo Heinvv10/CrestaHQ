@@ -16,6 +16,12 @@ import { oneLine } from "./text-safety";
 
 export const workflowIdParam = { type: "string", description: "The workflow's id (from list_workflows)." };
 
+/** The workflow's builder page: where a person reviews its steps, tests it
+ *  and activates it. Built server-side, never by the model. */
+export function workflowBuilderUrl(subAccountId: string, workflowId: string): string {
+  return `${(process.env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "")}/sa/${subAccountId}/workflows/${workflowId}`;
+}
+
 /** The workflow, re-anchored to the sub-account; refused otherwise. */
 export async function tenantWorkflow(subAccountId: string, workflowId: unknown): Promise<WorkflowDoc> {
   const wf = isDocId(workflowId) ? await getWorkflow(subAccountId, workflowId) : null;

@@ -139,7 +139,7 @@ const FEATURES: Feature[] = [
     tone: "emerald",
     href: "/website",
     description:
-      "Stand up a marketing site for the client via gitpage.site. Sectioned form (Basics / Pages / Services / Business / Design / FAQ), polled async build, live URL in 1–3 minutes. One website per sub-account.",
+      "Stand up a marketing site for the client via gitpage.site. Stepped setup wizard (saved as you go), polled async build. Builds take 10–20 minutes and arrive with the client's contact form + AI chat widget wired in. Up to five websites per sub-account.",
   },
   {
     icon: BarChart3,

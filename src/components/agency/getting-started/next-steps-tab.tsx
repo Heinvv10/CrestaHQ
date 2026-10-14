@@ -82,7 +82,7 @@ const STEPS: NextStep[] = [
   },
   {
     title: "Spin up a client website",
-    why: "Use the Website tab to push a marketing site to gitpage.site. Click Sample to prefill a demo build, or fill in the client's details. Live URL in 1–3 minutes.",
+    why: "Use the Website tab to push a marketing site to gitpage.site. Click Load sample data to prefill a demo build, or fill in the client's details. Builds take 10–20 minutes and publish with the contact form + chat widget already wired.",
     cta: "Open Website",
     href: "/website",
     icon: Globe,

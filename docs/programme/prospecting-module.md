@@ -2,6 +2,8 @@
 
 *Part of the [LeadStack CRM](../../CLAUDE.md) docs. Status: PR 1 merged and live (2026-09-24, #245 + #247); PR 2 built (#288, 2026-09-26); PR 3 live (#302); PR 4 built (2026-09-27, not merged); PR 6 live (ApexSignal); PR 5 not started. Grilled with Hein on 2026-09-24; the rulings under "Settled" are closed and are not to be re-opened by an implementer.*
 
+**REVISED 2026-10-12** — the status line above is out of date: PRs 1–6 are all live. PR 4 merged as #316 (`d6aa4473`) and PR 5 is live at `ff157593` (see "PR 5 live"). PR 6 lives in the ApexSignal repo, so this repo has no merge SHA for it.
+
 ## Why
 
 GoHighLevel's agency Prospecting tool (white-labelled analyzemy.business) was the hook of CrestaHQ's own outreach: a per-business audit report with a share link, and the report's worst finding as the opening line. Since GHL was stopped the ApexSignal pipeline half-died: sourcing still runs (`scripts/prospecting/source_cron.sh`, every 10 min, 5,715 rows in `docs/prospects_all.csv`), but sending tagged GHL contacts to fire GHL workflows and the reply inbox was GHL. Last send 2026-07-26; last "interested" replies 2026-09-08 have no owner.
@@ -33,7 +35,7 @@ Outscraper dropped 2026-09-24 — Hein ruled out paying per search; Get Leads (t
 | 8 | **AI answer-engine presence**: is the business named for "best {niche} in {city}" across Google AI Overview + ChatGPT + Perplexity + Gemini, with share of voice against the top 3 named competitors | ApexGEO brand mentions / share-of-voice | ApexGEO key | no |
 | 9 | **Ads running**: Meta Ad Library + Google Ads Transparency lookups by page/domain | own fetch, public, no key | none | no |
 | 10 | **Lead capture on site**: WhatsApp click-to-chat link, booking widget, form, phone tel: link, chat widget | own check on rendered HTML (Firecrawl scrape already in the repo) | Firecrawl key | no |
-| 11 | **Speed-to-lead mystery shop** (separate action): submit their contact form or place a call from the sub-account's number, time the first response; rand value of a missed lead from an editable per-niche job value | LeadStack's own comms rails | Twilio/Vapi | no |
+| 11 | **Speed-to-lead mystery shop** (separate action): submit their contact form or place a call from the sub-account's number, time the first response; rand value of a missed lead from an editable per-niche job value (REVISED 2026-10-12 — see PR 5 live) | LeadStack's own comms rails | Twilio/Vapi | no |
 | 12 | **WhatsApp responsiveness** (separate action): message the listed number from the sub-account's WhatsApp sender, time the reply | WhatsApp Cloud sender | Meta | no |
 
 Headline of the report = the single worst finding, ranked by a fixed severity table (no site > no HTTPS > not in any AI answer > no GBP claim > slow mobile > no WhatsApp CTA > …). That sentence is what the outreach merge tag uses.
@@ -112,8 +114,8 @@ These replace the "Approach guard" section above where they differ (it named the
 | 1 | **DONE (#245, #247)** — Gate + quota + schema + rules + Manage dialog + `FEATURE_GATES` entry + un-park Get Leads with saved lists and the `prospecting` map on import and on v1 contacts | tests for the gate 403s, rules tests, tenancy check; Level-3 boundary |
 | 2 | **DONE (#288)** — `prospectReports` runner with sections 1, 2, 3, 4, 6, 9, 10 (no external key beyond Google Places/Firecrawl), QStash callback, quota enforcement, share page `/report/[token]` | fixture-driven section tests: each `score()` mutation-tested; runner partial-failure test; share id non-enumeration test; browser screenshot of a real report on #1000 |
 | 3 | **DONE (#302)** — ApexGEO connection + sections 5, 7, 8; "Not connected" state; deployed 7f7b4882, proven on #1000 2026-09-27 ([evidence](../parity/evidence/prospecting-pr3/README.md)) | recorded-response tests against the ApexGEO OpenAPI shapes; live proof on #1000 with a real key |
-| 4 | **BUILT (2026-09-27)** — Workflow trigger + merge tags + approach guard + daily cap ([mutations](../parity/evidence/prospecting-pr4/mutations.md)) | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
-| 5 | Mystery-shop actions (form/call, WhatsApp) with confirm dialog. **5a BUILT (2026-10-08)**: shared model (`mysteryShops`), email + AI call, 24 h QStash timer, section 11/12 rendering, card + dialog, settings card. **5b BUILT (2026-10-09)**: WhatsApp via an approved Cloud template, reply + receipt matching on the Cloud webhook, template status in settings. 5c contact form to follow | **human gate**: sends reach a real business; first live run is to a number Hein owns |
+| 4 | **LIVE** (built 2026-09-27; merged as #316, `d6aa4473`) — Workflow trigger + merge tags + approach guard + daily cap ([mutations](../parity/evidence/prospecting-pr4/mutations.md)) | seam tests: a workflow enrolled on `prospecting.report.ready` receives the headline; guard refuses a second campaign; cap refuses the 21st send |
+| 5 | **LIVE (2026-10-12)** — Mystery-shop actions (form/call, WhatsApp) with confirm dialog. **5a BUILT (2026-10-08)**: shared model (`mysteryShops`), email + AI call, 24 h QStash timer, section 11/12 rendering, card + dialog, settings card. **5b BUILT (2026-10-09)**: WhatsApp via an approved Cloud template, reply + receipt matching on the Cloud webhook, template status in settings. **5c BUILT (2026-10-09)**: contact form. **LIVE 2026-10-12** (5a/5b/5c at `ff157593`; follow-up SHAs under "PR 5 live" below) | **human gate**: sends reach a real business; first live run is to a number Hein owns |
 | 6 | ApexSignal `push_leadstack.py` + cron; warm replies imported | proof: contacts visible in #1000 with tags; Hein's tasks created |
 
 Deploys: after 17:00 SAST, Hein's approval per deploy. `firebase deploy --only firestore:rules,firestore:indexes` after PR 1 (new collections) and again if PR 2 adds a composite index for `prospectReports` by `subAccountId + status`.
@@ -144,6 +146,19 @@ Deploys: after 17:00 SAST, Hein's approval per deploy. `firebase deploy --only f
 - It refuses on any CAPTCHA or bot challenge before typing, and never bypasses one. It also refuses login forms, required uploads, multi-step forms, required consent boxes, honeypots it would have to fill, values the form truncates or would not validate, and required fields it cannot fill truthfully. It fills the sub-account's name, its synced mailbox address and its Cloud WhatsApp number (else Branding's). A confirmation signal counts only once a request carrying the enquiry was answered; a 2xx that says the site refused it is `failed` / `form_rejected` (slot kept, never public). A submit with no confirmation signal is an uncertain send, never a refund.
 - The reply is matched by email, from the form site's domain or the contact's own address, and by a WhatsApp reply from one of the contact's own numbers (through PR 5b's matcher and its automatic-reply rules). A phone call to the number typed into the form is NOT tracked (it is the WhatsApp number, not the AI-call line); the card tells the member to check their phone before confirming a miss.
 - The fill runs in a disposable, locked-down Docker container per job (no secrets, no volumes, read-only root, all capabilities dropped, 1 GB, killed at 60 s); the CRM keeps the lease, the claim and the settle, and trusts nothing the container says unless it validates. Chromium's own sandbox cannot start in the container on velo (AppArmor restricts unprivileged user namespaces), so the container is the isolation. The deploy builds the image (`scripts/form-engine-image.mjs`; see RUNBOOK.md).
+
+**REVISED 2026-10-12 (PR 5 live)** — sections 11 and 12 are deployed and walked on #1000:
+
+- Deploys, all on `crm.crestahq.com` (crestahq@4302 behind the proxy on :4300): 5a/5b/5c at `ff157593`; #368 (an email reply to a different thread of ours is ignored) at `df016c3f`; #370 (the form engine's town role) at `d2639603`; #373 (QStash legacy signing keys) at `4dfb5a8a`, the current prod head.
+- Live walks, to targets the owner controls, all 2026-10-12:
+  - **Email, responded:** the reply was matched and the shop settled `responded` with its response time.
+  - **Email, missed:** after the 24 h timer the shop went `missed`; a member confirmed it; the public report then read "No response within 24 h — an estimated R1,500 lead missed" (the rand figure comes from the editable per-niche job value). The target never appears on the public page.
+  - **WhatsApp:** a reply inside 60 s was classed `autoReply` and the card raised the review flag, rather than counting as a human response (the round 1 rule).
+  - **Website form:** refused on crestahq.com because the form has no message field. This is deliberate: the engine will not submit a form it cannot fill truthfully.
+  - **Reply to another of our emails:** proven ignored (#368).
+- Test data: every shop created for the walks was deleted; #1000 holds 0 mystery shops.
+- **NOT walked:** the AI call. Outbound calling is off on #1000, so the call channel, its answered/voicemail classification and the call-miss path have only fixture-driven test coverage, not a live proof. Treat it as unproven until a call is placed from a sub-account with outbound enabled.
+- **REVISED 2026-10-12** — the Report sections table (rows 11 and 12) says section 11 uses "Twilio/Vapi" and "submit their contact form or place a call". As built, the channels are email, AI call (Vapi) and website form; SMS is not matched and Twilio is not used (see the 2026-10-08 note). Section 12 sends only from a Cloud sender with an approved template.
 
 ## What proves it worked
 

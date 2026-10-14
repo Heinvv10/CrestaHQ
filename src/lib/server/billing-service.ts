@@ -25,6 +25,7 @@ import {
 import { BillingError } from "@/lib/billing/errors";
 import {
   chargesCollection,
+  isComping,
   isRetiring,
   readBilling,
   recordBillingEvent,
@@ -589,9 +590,22 @@ export async function assignPlanToSubAccount(input: {
     // switches at once (a double-click, two admins, a retry after a timeout)
     // would each open a replacement, and one of them would bill untracked.
     const replaces = provider.id === "paystack";
+    // Stripe has no claim below; its update would land on a subscription a
+    // comp is cancelling. Re-read right before the provider call (the read
+    // above predates resolveStripePrice). A comp claiming after this read is
+    // harmless: Stripe keeps the subscription id, so the comp's cancel ends
+    // it either way, the update on a cancelled subscription fails without a
+    // write, and the final write below never lands on a comped client.
+    if (!replaces && isComping(readBilling(((await ref.get()).data() ?? {}) as Record<string, unknown>))) {
+      throw new BillingError("This client is being comped right now — check their billing before changing the plan.", 409);
+    }
     if (replaces) {
       await getAdminDb().runTransaction(async (tx) => {
         const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
+        // A comp cancelling this subscription holds its own lock.
+        if (isComping(fresh)) {
+          throw new BillingError("This client is being comped right now — check their billing before changing the plan.", 409);
+        }
         if (
           fresh?.stripeSubscriptionId !== billing.stripeSubscriptionId ||
           (fresh?.retiringSubscriptionId &&
@@ -629,26 +643,63 @@ export async function assignPlanToSubAccount(input: {
       throw err;
     }
 
-    await ref.update({
-      "billing.planId": plan.id,
-      "billing.planName": plan.name,
-      "billing.priceCents": priceCents,
-      "billing.billingInterval": interval,
-      "billing.currency": plan.currency,
-      "billing.specialPriceCents": input.specialPriceCents,
-      "billing.stripePriceId": stripePriceId,
-      // Unchanged on Stripe; a NEW code on Paystack, which cancels one
-      // subscription and opens another. Storing the stale one would make a
-      // later cancel silently disable a dead subscription while the live one
-      // kept charging the client.
-      "billing.stripeSubscriptionId": subscriptionId,
-      // The old code is superseded now; the stored-id check ignores it.
-      ...(replaces
-        ? { "billing.retiringSubscriptionId": null, "billing.retiringSince": null }
-        : {}),
-      "billing.updatedAt": FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
+    // Comped while the switch ran (comp refuses while the mark holds, but a
+    // comp that cancelled first can land before it): never write a plan and
+    // a live subscription over a comped client.
+    const comped = await getAdminDb().runTransaction(async (tx) => {
+      const fresh = readBilling(((await tx.get(ref)).data() ?? {}) as Record<string, unknown>);
+      if (fresh?.status === "comped") return true;
+      tx.update(ref, {
+        "billing.planId": plan.id,
+        "billing.planName": plan.name,
+        "billing.priceCents": priceCents,
+        "billing.billingInterval": interval,
+        "billing.currency": plan.currency,
+        "billing.specialPriceCents": input.specialPriceCents,
+        "billing.stripePriceId": stripePriceId,
+        // Unchanged on Stripe; a NEW code on Paystack, which cancels one
+        // subscription and opens another. Storing the stale one would make a
+        // later cancel silently disable a dead subscription while the live one
+        // kept charging the client.
+        "billing.stripeSubscriptionId": subscriptionId,
+        // The old code is superseded now; the stored-id check ignores it.
+        ...(replaces
+          ? { "billing.retiringSubscriptionId": null, "billing.retiringSince": null }
+          : {}),
+        "billing.updatedAt": FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return false;
     });
+    if (comped) {
+      // Paystack opened a new subscription for the switch: it must not keep charging a comped client.
+      let stranded = false;
+      if (subscriptionId !== billing.stripeSubscriptionId) {
+        stranded = await provider.cancelSubscription(subscriptionId, billing.stripeCustomerId ?? null).then(
+          () => false,
+          (err) => {
+            console.error(
+              `[billing] plan switch on comped ${input.subAccountId}: new subscription ${subscriptionId} not cancelled`,
+              err instanceof Error ? err.message : String(err),
+            );
+            return true;
+          },
+        );
+      }
+      if (replaces) await ref.update({ "billing.retiringSubscriptionId": null, "billing.retiringSince": null });
+      recordBillingEvent({
+        agencyId: input.agencyId,
+        subAccountId: input.subAccountId,
+        event: "plan.switch_abandoned",
+        detail: { planId: plan.id, reason: "comped", newSubscription: subscriptionId, newSubscriptionCancelled: !stranded },
+      });
+      throw new BillingError(
+        stranded
+          ? `This client was comped while the plan change ran. The new subscription ${subscriptionId} couldn't be cancelled — cancel it in the provider's dashboard.`
+          : "This client was comped while the plan change ran, so the plan change was undone. Nothing is billed.",
+        409,
+      );
+    }
     await applyFeatureGates(input.subAccountId, plan.gates);
 
     recordBillingEvent({
@@ -727,60 +778,7 @@ export async function assignPlanToSubAccount(input: {
   return { status: "pending", checkoutUrl: buildCheckoutUrl(token) };
 }
 
-/**
- * Mark a sub-account comped: cancel any live Stripe subscription
- * immediately and return gate control to manual. Data + gates untouched.
- */
-export async function compSubAccount(input: {
-  agencyId: string;
-  subAccountId: string;
-}): Promise<void> {
-  const { ref, data } = await getSubInAgencyOrThrow(
-    input.agencyId,
-    input.subAccountId,
-  );
-  const billing = readBilling(data);
-
-  if (billing?.stripeSubscriptionId && billingStripeIsConfigured()) {
-    await getBillingProvider()
-      .cancelSubscription(billing.stripeSubscriptionId)
-      .catch((err) => {
-        // Already-canceled/missing subscriptions shouldn't block the comp.
-        console.warn("[billing] cancel-on-comp failed (continuing)", err);
-      });
-  }
-
-  await ref.update({
-    billing: {
-      status: "comped" satisfies SubAccountBillingStatus,
-      planId: null,
-      planName: null,
-      priceCents: null,
-      billingInterval: null,
-      currency: null,
-      specialPriceCents: null,
-      stripePriceId: null,
-      stripeCustomerId: billing?.stripeCustomerId ?? null,
-      stripeSubscriptionId: null,
-      checkoutTokenHash: null,
-      graceUntil: null,
-      assignedAt: billing?.assignedAt ?? null,
-      activatedAt: billing?.activatedAt ?? null,
-      updatedAt: FieldValue.serverTimestamp(),
-    },
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-
-  recordBillingEvent({
-    agencyId: input.agencyId,
-    subAccountId: input.subAccountId,
-    event: "comped",
-    detail: {
-      previousStatus: billing?.status ?? null,
-      canceledSubscription: billing?.stripeSubscriptionId ?? null,
-    },
-  });
-}
+export { compSubAccount, type CompResult } from "@/lib/server/billing-comp";
 
 /** Rotate the checkout token and return a fresh /pay URL. */
 export async function mintCheckoutLink(input: {

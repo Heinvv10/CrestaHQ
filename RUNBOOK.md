@@ -323,7 +323,13 @@ XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user restart crestahq@4301   # th
 With no second colour running, expect a few seconds of errors during the restart.
 
 `scripts/deploy-velo.sh` deploys blue/green, so a deploy no longer refuses
-connections while Next restarts:
+connections while Next restarts. Once the new release is live it dispatches
+the **E2E smoke (production)** workflow pinned to the deployed commit. The
+smoke no longer runs on push, so a failed dispatch shows only as a WARN line
+in the deploy output, and a `--rollback` is not smoke-tested unless you
+dispatch it by hand (Actions > E2E smoke, `sha` = the release's commit).
+
+The blue/green parts:
 
 - **`crestahq-proxy`** — unprivileged nginx on `127.0.0.1:4300`, the port
   cloudflared and the WhatsApp bridge already use. Neither ever changes or

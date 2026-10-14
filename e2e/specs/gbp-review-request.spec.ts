@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { FieldValue } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
+import { stallFirestoreListen } from "../lib/firestore-listen";
 import { gbpLifecycle, pageFetch, primaryId, primaryRef, setListingReviewUri } from "../lib/gbp";
 import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
 
@@ -89,6 +90,8 @@ test("review requests keep their rules; the listing's link is proposed, adopted 
   expect(await configuredUrl()).toBe(EXISTING);
 
   // --- Only the click adopts it.
+  // The card must show the adopt from the route's 200, not the doc's next snapshot.
+  await stallFirestoreListen(page);
   await page.getByTestId("gbp-reviewurl-adopt").click();
   await expect.poll(configuredUrl, { timeout: 30_000 }).toBe(LISTING_URL);
   await expect(page.getByTestId("gbp-reviewurl-matches")).toBeVisible({ timeout: 30_000 });

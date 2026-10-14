@@ -3,10 +3,9 @@ import "server-only";
 import type { BrowserContext, Page, Request, Route } from "playwright-core";
 import { publicFetch, type PublicFetchInit } from "@/lib/webhooks/public-fetch";
 import { NonPublicUrlError } from "@/lib/webhooks/validate-url";
-import { sameSite } from "@/lib/prospecting/registrable-domain";
 import { CAPTCHA_URL } from "./page-scan";
-import { carriesEnquiry, rejectionOf, type EnquiryMarkers } from "./evidence";
-import { postRedirectGet, repostable, samePage } from "./redirects";
+import { carriesEnquiry, carriesMessage, knownHost, rejectionOf, type EnquiryMarkers } from "./evidence";
+import { httpish, portOk, postRedirectGet, repostable, samePage } from "./redirects";
 
 /**
  * The browser never opens a network connection itself. Every http(s) request
@@ -53,15 +52,6 @@ const DROP_REQUEST = new Set([
   "upgrade", "host", "content-length", "accept-encoding",
 ]);
 const DROP_RESPONSE = new Set(["connection", "keep-alive", "transfer-encoding", "content-encoding", "content-length", "set-cookie"]);
-/** Third-party form backends whose 2xx to a POST counts as a submission. */
-const FORM_BACKENDS =
-  /(^|\.)(formspree\.io|getform\.io|hsforms\.com|jotform\.com|typeform\.com|formsubmit\.co|web3forms\.com|usebasin\.com|formcarry\.com|wufoo\.com|zohopublic\.com)$/i;
-
-/** The form's own site, or a third-party form backend: where an answer to the enquiry may come from. */
-function knownHost(host: string, formUrl: string | null): boolean {
-  return formUrl !== null && (sameSite(host, new URL(formUrl).hostname) || FORM_BACKENDS.test(host));
-}
-
 export interface GuardState {
   /** Set when a main-frame document was refused (not a public address / not http(s)). */
   blocked: string | null;
@@ -80,12 +70,20 @@ export interface GuardState {
   postsOut: number;
   /** After the click: the page a post-redirect-get loaded (2xx HTML, not the form page) — confirmed by its text. */
   prgPage: string | null;
-  /** After the click: a 2xx to a request carrying the enquiry, same site or a known backend. */
+  /** After the click: a 2xx to a request carrying the message, same site or a known backend. */
   postOk: string | null;
-  /** After the click: a request carrying the enquiry was answered 2xx/3xx (its URL). */
+  /** After the click: a request carrying the message was answered 2xx/3xx (its URL). */
   carrierOk: string | null;
-  /** After the click: a 2xx answer to the enquiry that says the site refused it. */
+  /** After the click: requests carrying the message that were sent (or tried). With several, a refusal is never `rejected`. */
+  messagesOut: number;
+  /** How many of those have been answered (or failed): while any is pending, nothing confirms (checks.ts). */
+  messagesAnswered: number;
+  /** After the click: a request carrying the message ended any way but a 2xx — then no signal confirms it (checks.ts). */
+  carrierFailed: string | null;
+  /** After the click: a 2xx answer to the enquiry (a request carrying the message) that says the site refused it. */
   rejected: string | null;
+  /** After the click: such a refusal, but answered after `postOk` — the enquiry had already been taken (checks.ts). */
+  refusedLate: string | null;
   /** The job's budget: requests routed, response bytes, and whether a main document hit it. */
   requests: number;
   bytes: number;
@@ -99,12 +97,10 @@ export interface GuardState {
 export function newGuardState(): GuardState {
   return {
     blocked: null, fetchError: null, mainDocuments: 0, tooManyRedirects: false, redirect: null, captcha: null,
-    clickedAt: null, postsOut: 0, prgPage: null, postOk: null, carrierOk: null, rejected: null, requests: 0, bytes: 0, tooHeavy: false,
-    navigatedTo: null, formUrl: null,
+    clickedAt: null, postsOut: 0, prgPage: null, postOk: null, carrierOk: null, rejected: null, refusedLate: null, requests: 0, bytes: 0,
+    tooHeavy: false, navigatedTo: null, formUrl: null, messagesOut: 0, messagesAnswered: 0, carrierFailed: null,
   };
 }
-
-const httpish = (u: URL) => u.protocol === "http:" || u.protocol === "https:";
 
 export interface GuardOptions {
   fetchImpl: FetchImpl;
@@ -117,9 +113,6 @@ export interface GuardOptions {
 }
 
 class OverBudget extends Error {}
-
-/** A refused port, like a refused address: never connected to. */
-const portOk = (u: URL, allow: string[] | undefined) => u.port === "" || (allow ?? []).includes(u.port);
 
 function isMainFrame(page: Page, req: Request): boolean {
   try {
@@ -215,57 +208,66 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
   await context.route("**/*", async (route) => {
     const req = route.request();
     const main = isMainFrame(page, req);
+    const afterClick = state.clickedAt !== null;
+    const text = `${req.url()}\n${req.postDataBuffer()?.toString("utf8") ?? ""}`;
+    // Only a request holding the message is the enquiry: a newsletter / email check carries just our address.
+    const enquiry = afterClick && carriesMessage(text, opts.markers);
+    // The enquiry ending any way but a 2xx (refused here, an error, a 3xx, a bounce to the form page) may not have arrived.
+    const failed = (why: string) => void (enquiry && (state.carrierFailed ??= `${why}: ${req.url()}`));
+    const abort = () => (failed("not sent"), route.abort("blockedbyclient"));
     let url: URL;
     try {
       url = new URL(req.url());
     } catch {
-      return route.abort("blockedbyclient");
+      return abort();
     }
     if (url.protocol === "data:" || url.protocol === "blob:") return route.continue();
     if (!httpish(url)) {
       if (main) state.blocked = `${url.protocol} is not allowed`;
-      return route.abort("blockedbyclient");
+      return abort();
     }
     if (!portOk(url, opts.allowPorts)) {
       if (main) state.blocked = `port ${url.port} is not allowed`;
-      return route.abort("blockedbyclient");
+      return abort();
     }
     if (CAPTCHA_URL.test(url.href)) {
       state.captcha ??= `captcha request: ${url.hostname}`;
-      return route.abort("blockedbyclient");
+      return abort();
     }
-    if (!ALLOWED_TYPES.has(req.resourceType())) return route.abort("blockedbyclient");
+    if (!ALLOWED_TYPES.has(req.resourceType())) return abort();
     if (main && state.clickedAt === null && ++state.mainDocuments > MAX_MAIN_DOCUMENTS) {
       state.tooManyRedirects = true;
       return route.abort("blockedbyclient");
     }
-    const afterClick = state.clickedAt !== null;
-    const carries = carriesEnquiry(`${req.url()}\n${req.postDataBuffer()?.toString("utf8") ?? ""}`, opts.markers);
+    const carries = carriesEnquiry(text, opts.markers);
     // Before the click nothing of the enquiry may leave (a page capturing fields as they are typed —
     // a partial lead, even when the form is then refused); after it, that request IS the enquiry.
     if (carries && !afterClick) return route.abort("blockedbyclient");
-    const carrier = carries && afterClick;
+    if (enquiry) state.messagesOut++;
     await acquire();
     try {
       if (signal.aborted) throw new Error("aborted");
-      const { res, url: finalUrl, body, followedGet } = await fetchHops(req, opts, carrier ? "enquiry" : main ? "none" : "follow");
+      const { res, url: finalUrl, body, followedGet } = await fetchHops(req, opts, carries && afterClick ? "enquiry" : main ? "none" : "follow");
       if (main && res.headers.get("cf-mitigated")) state.captcha ??= "Cloudflare challenge response";
       const host = new URL(finalUrl).hostname;
       const known = knownHost(host, state.formUrl);
+      if (res.status < 200 || res.status > 299) failed(`answered ${res.status}`);
       // Post-redirect-get: only a 2xx HTML page that isn't the form page is a candidate, and it confirms
       // only if its VISIBLE text says thank you once loaded (checks.ts). Never a carrierOk on its own.
-      if (carrier && followedGet) {
+      if (enquiry && followedGet) {
         const htmlPage = res.status >= 200 && res.status < 300 && /text\/html/i.test(res.headers.get("content-type") ?? "");
         if (main && htmlPage && !samePage(finalUrl, state.formUrl)) {
           state.prgPage ??= finalUrl;
           return await fulfill(route, res, body);
         }
+        if (samePage(finalUrl, state.formUrl)) failed("sent back to the form page");
         return main ? await route.fulfill({ status: 204, body: "" }) : await fulfill(route, res, body);
       }
       // Only a 2xx to the enquiry (after at most one re-POST) counts; a 3xx never does.
-      if (carrier && res.status >= 200 && res.status < 300) {
+      if (enquiry && res.status >= 200 && res.status < 300) {
         state.carrierOk ??= finalUrl;
-        state.rejected ??= rejectionOf(body.subarray(0, 64 * 1024).toString("utf8"));
+        // A refusal after the site took the enquiry (its own retry, a second endpoint) is never `rejected`: that invites a second one.
+        state[state.postOk ? "refusedLate" : "rejected"] ??= rejectionOf(body.subarray(0, 64 * 1024).toString("utf8"));
         if (known) state.postOk ??= finalUrl;
       }
       if (main && res.status >= 300 && res.status <= 399) {
@@ -280,6 +282,7 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
       return await fulfill(route, res, body);
     } catch (err) {
       const refused = err instanceof NonPublicUrlError;
+      if (!signal.aborted) failed(err instanceof Error ? err.message : String(err));
       if (err instanceof OverBudget && main) state.tooHeavy = true;
       else if (main && refused) state.blocked = err.message;
       else if (main) state.fetchError ??= err instanceof Error ? err.message : String(err);
@@ -288,6 +291,7 @@ export async function installNetworkGuard(context: BrowserContext, page: Page, o
         if (!signal.aborted) console.error("[mystery-shop/form] route abort failed", e);
       });
     } finally {
+      if (enquiry) state.messagesAnswered++;
       release();
     }
   });
