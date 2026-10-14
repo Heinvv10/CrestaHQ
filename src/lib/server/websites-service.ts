@@ -359,6 +359,14 @@ export class WebsiteServiceError extends Error {
   readonly status: number;
   readonly fieldErrors?: ValidationErrors;
   readonly fieldErrorsSource?: "local-validation";
+  readonly failureSource?:
+    | "local-gate"
+    | "local-config"
+    | "local-state"
+    | "local-rate"
+    | "local-validation"
+    | "local-preparation"
+    | "provider";
   readonly gitpageStatus?: number;
   readonly gitpageBody?: unknown;
   /** Set with a 429 from the hourly build limit. */
@@ -372,6 +380,7 @@ export class WebsiteServiceError extends Error {
     extra?: {
       fieldErrors?: ValidationErrors;
       fieldErrorsSource?: "local-validation";
+      failureSource?: WebsiteServiceError["failureSource"];
       gitpageStatus?: number;
       gitpageBody?: unknown;
       retryAfterSec?: number;
@@ -383,6 +392,7 @@ export class WebsiteServiceError extends Error {
     this.status = status;
     this.fieldErrors = extra?.fieldErrors;
     this.fieldErrorsSource = extra?.fieldErrorsSource;
+    this.failureSource = extra?.failureSource;
     this.gitpageStatus = extra?.gitpageStatus;
     this.gitpageBody = extra?.gitpageBody;
     this.retryAfterSec = extra?.retryAfterSec;
@@ -429,18 +439,21 @@ export async function requireWebsiteEnabledSub(subAccountId: string): Promise<{
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   if (!snap.exists) {
     throw new WebsiteServiceError("Sub-account not found", 404, {
+      failureSource: "local-state",
       submissionOutcome: "not-accepted",
     });
   }
   const data = snap.data() as Record<string, unknown>;
   if (data.websiteEnabledByAgency !== true) {
     throw new WebsiteServiceError(GATE_OFF_MESSAGE, 403, {
+      failureSource: "local-gate",
       submissionOutcome: "not-accepted",
     });
   }
   const agencyId = data.agencyId as string | undefined;
   if (!agencyId) {
     throw new WebsiteServiceError("Sub-account is missing agencyId.", 500, {
+      failureSource: "local-config",
       submissionOutcome: "not-accepted",
     });
   }
@@ -460,7 +473,10 @@ export async function createWebsiteForSubAccount(input: {
   // An id, never a path — as the build checks. Without this only the gate
   // read below stands between a path-shaped value and a nested create.
   if (!isDocId(subAccountId)) {
-    throw new WebsiteServiceError("Sub-account not found", 404);
+    throw new WebsiteServiceError("Sub-account not found", 404, {
+      failureSource: "local-state",
+      submissionOutcome: "not-accepted",
+    });
   }
   const { agencyId } = await requireWebsiteEnabledSub(subAccountId);
 
@@ -502,10 +518,24 @@ export async function createWebsiteForSubAccount(input: {
       return true;
     });
   } catch (err) {
-    if (!isContention(err)) throw err;
-    throw new WebsiteServiceError(BUSY_MESSAGE, 429, { retryAfterSec: BUSY_RETRY_AFTER_SEC });
+    if (!isContention(err)) {
+      throw new WebsiteServiceError("Could not create the website draft.", 500, {
+        failureSource: "local-preparation",
+        submissionOutcome: "not-accepted",
+      });
+    }
+    throw new WebsiteServiceError(BUSY_MESSAGE, 429, {
+      retryAfterSec: BUSY_RETRY_AFTER_SEC,
+      failureSource: "local-rate",
+      submissionOutcome: "not-accepted",
+    });
   }
-  if (!created) throw new WebsiteServiceError(SITE_CAP_MESSAGE, 409);
+  if (!created) {
+    throw new WebsiteServiceError(SITE_CAP_MESSAGE, 409, {
+      failureSource: "local-state",
+      submissionOutcome: "not-accepted",
+    });
+  }
 
   return { siteId: ref.id, agencyId };
 }
@@ -539,7 +569,10 @@ export function normalizeWebsiteConfig(config: WebsiteConfig): void {
     throw new WebsiteServiceError(
       "niche must be one of: home_services, real_estate, gym_fitness, agency_consulting, ai_consulting, ai_automation. Omit for a generic build.",
       400,
-      { submissionOutcome: "not-accepted" },
+      {
+        failureSource: "local-validation",
+        submissionOutcome: "not-accepted",
+      },
     );
   }
   config.niche = isNicheKey(config.niche) ? config.niche : null;
@@ -547,6 +580,7 @@ export function normalizeWebsiteConfig(config: WebsiteConfig): void {
   if (config.build_type === "local") {
     if (!config.local_page_selections) {
       throw new WebsiteServiceError("local_page_selections is required.", 400, {
+        failureSource: "local-validation",
         submissionOutcome: "not-accepted",
       });
     }
@@ -590,7 +624,7 @@ export function normalizeWebsiteConfig(config: WebsiteConfig): void {
  * Validate, submit to gitpage, persist the queued state, and schedule the
  * QStash poll for one site. Mutates `config` via normalization first.
  */
-export async function submitWebsiteBuildForSubAccount(input: {
+async function submitWebsiteBuildForSubAccountImpl(input: {
   subAccountId: string;
   siteId: string;
   config: WebsiteConfig;
@@ -608,13 +642,17 @@ export async function submitWebsiteBuildForSubAccount(input: {
    * refused, here and again inside the write. Implies `requireExisting`.
    */
   ctaOnly?: boolean;
-}): Promise<{ formResponseId: string; estimatedDurationSeconds?: number }> {
+}, state: { providerSubmitStarted: boolean }): Promise<{
+  formResponseId: string;
+  estimatedDurationSeconds?: number;
+}> {
   const { subAccountId, siteId, config } = input;
   // Ids, never paths. Both go into Firestore paths below; a site id like
   // "x/y/z" would address (and, on a first build, create) a doc in a nested
   // collection that the site cap does not count.
   if (!isDocId(subAccountId) || !isDocId(siteId)) {
     throw new WebsiteServiceError("Website not found.", 404, {
+      failureSource: "local-state",
       submissionOutcome: "not-accepted",
     });
   }
@@ -625,7 +663,10 @@ export async function submitWebsiteBuildForSubAccount(input: {
     throw new WebsiteServiceError(
       "gitpage is not configured on this deployment (GITPAGE_API_KEY missing).",
       503,
-      { submissionOutcome: "not-accepted" },
+      {
+        failureSource: "local-config",
+        submissionOutcome: "not-accepted",
+      },
     );
   }
 
@@ -636,6 +677,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
     throw new WebsiteServiceError("Validation failed.", 400, {
       fieldErrors: errors,
       fieldErrorsSource: "local-validation",
+      failureSource: "local-validation",
       submissionOutcome: "not-accepted",
     });
   }
@@ -646,6 +688,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // A CTA re-point is a rebuild by definition: it never creates a site.
   if ((input.requireExisting || input.ctaOnly) && !snap.exists) {
     throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404, {
+      failureSource: "local-state",
       submissionOutcome: "not-accepted",
     });
   }
@@ -657,11 +700,13 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // (The write below re-checks this atomically; this is the cheap early no.)
   if (existingDoc.status === "queued" || existingDoc.status === "building") {
     throw new WebsiteServiceError(ALREADY_BUILDING_MESSAGE, 409, {
+      failureSource: "local-state",
       submissionOutcome: "not-accepted",
     });
   }
   if (input.ctaOnly && hasUnsettledFailure(existingDoc)) {
     throw new WebsiteServiceError(UNSETTLED_FAILURE_MESSAGE, 409, {
+      failureSource: "local-state",
       submissionOutcome: "not-accepted",
     });
   }
@@ -673,6 +718,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
     const existing = await db.collection(`subAccounts/${subAccountId}/website`).get();
     if (existing.size >= MAX_WEBSITES_PER_SUBACCOUNT) {
       throw new WebsiteServiceError(SITE_CAP_MESSAGE, 409, {
+        failureSource: "local-state",
         submissionOutcome: "not-accepted",
       });
     }
@@ -690,6 +736,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
       429,
       {
         retryAfterSec: rate.retryAfterSec,
+        failureSource: "local-rate",
         submissionOutcome: "not-accepted",
       },
     );
@@ -710,7 +757,10 @@ export async function submitWebsiteBuildForSubAccount(input: {
       throw new WebsiteServiceError(
         `Could not prepare the website contact form: ${err instanceof Error ? err.message : String(err)}`,
         500,
-        { submissionOutcome: "not-accepted" },
+        {
+          failureSource: "local-preparation",
+          submissionOutcome: "not-accepted",
+        },
       );
     }
   }
@@ -744,6 +794,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
   // network failure tell the caller we couldn't reach gitpage.
   let submission;
   try {
+    state.providerSubmitStarted = true;
     submission = await submitBuild({
       config,
       subAccountId,
@@ -768,6 +819,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
         `[website/build] gitpage answered ${err.status} without a build sa=${subAccountId} site=${siteId}: ${err.message}`,
       );
       throw new WebsiteServiceError(GITPAGE_NO_BUILD_MESSAGE, 502, {
+        failureSource: "provider",
         submissionOutcome: "unknown",
       });
     }
@@ -780,6 +832,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
       throw new WebsiteServiceError(err.message, err.status, {
         gitpageStatus: err.status,
         gitpageBody: err.body,
+        failureSource: "provider",
         submissionOutcome: rejectedBeforeAcceptance(err.status)
           ? "not-accepted"
           : "unknown",
@@ -788,7 +841,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
     throw new WebsiteServiceError(
       err instanceof Error ? err.message : "Could not reach gitpage.",
       502,
-      { submissionOutcome: "unknown" },
+      { failureSource: "provider", submissionOutcome: "unknown" },
     );
   }
 
@@ -861,6 +914,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
     if (!isContention(err)) throw err;
     throw new WebsiteServiceError(BUSY_MESSAGE, 429, {
       retryAfterSec: BUSY_RETRY_AFTER_SEC,
+      failureSource: "local-state",
       submissionOutcome: "accepted",
     });
   }
@@ -875,7 +929,7 @@ export async function submitWebsiteBuildForSubAccount(input: {
             ? UNSETTLED_FAILURE_MESSAGE
             : ALREADY_BUILDING_MESSAGE,
       409,
-      { submissionOutcome: "accepted" },
+      { failureSource: "local-state", submissionOutcome: "accepted" },
     );
   }
 
@@ -916,6 +970,41 @@ export async function submitWebsiteBuildForSubAccount(input: {
     formResponseId: submission.formResponseId,
     estimatedDurationSeconds: submission.estimatedDurationSeconds,
   };
+}
+
+/** Classify every failure before the provider call as a definite local
+ * refusal. Once submitBuild starts, the implementation's provider/accepted
+ * classification is authoritative and must pass through unchanged. */
+export async function submitWebsiteBuildForSubAccount(
+  input: Parameters<typeof submitWebsiteBuildForSubAccountImpl>[0],
+): Promise<{ formResponseId: string; estimatedDurationSeconds?: number }> {
+  const state = { providerSubmitStarted: false };
+  try {
+    return await submitWebsiteBuildForSubAccountImpl(input, state);
+  } catch (err) {
+    if (state.providerSubmitStarted) throw err;
+    if (
+      err instanceof WebsiteServiceError &&
+      err.submissionOutcome === "not-accepted"
+    ) {
+      throw err;
+    }
+    if (err instanceof WebsiteServiceError) {
+      throw new WebsiteServiceError(err.message, err.status, {
+        fieldErrors: err.fieldErrors,
+        fieldErrorsSource: err.fieldErrorsSource,
+        failureSource: err.failureSource ?? "local-preparation",
+        gitpageStatus: err.gitpageStatus,
+        gitpageBody: err.gitpageBody,
+        retryAfterSec: err.retryAfterSec,
+        submissionOutcome: "not-accepted",
+      });
+    }
+    throw new WebsiteServiceError("Website build preparation failed.", 500, {
+      failureSource: "local-preparation",
+      submissionOutcome: "not-accepted",
+    });
+  }
 }
 
 /**

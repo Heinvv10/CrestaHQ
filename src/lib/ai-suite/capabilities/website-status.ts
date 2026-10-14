@@ -14,6 +14,24 @@ import {
 import { type AiSuiteCapability } from "./types";
 import { oneLine } from "./text-safety";
 
+const BUILD_STAGE_LABELS: Readonly<Record<string, string>> = {
+  brief: "writing the brief",
+  repo: "creating the repository",
+  images: "generating photography",
+  image_generation: "image generation",
+  images_submit: "commissioning photography",
+  images_wait: "generating photography",
+  render: "designing the pages",
+  deploy: "publishing",
+  seo_finalize: "finalising the address for Google",
+  settle: "finishing up",
+  completed: "done",
+};
+
+function buildStageLabel(value: unknown): string | null {
+  return typeof value === "string" ? BUILD_STAGE_LABELS[value] ?? null : null;
+}
+
 export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
   {
     name: "check_website_status",
@@ -46,7 +64,7 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
           const status = w.status as string;
           const config = (w.config ?? {}) as Partial<WebsiteConfig>;
           const premium = (w.quality ?? effectiveQuality(config)) === "premium";
-          const phase = oneLine(w.statusPhase).replace(/_/g, " ").slice(0, 80);
+          const phase = buildStageLabel(w.statusPhase);
           const liveUrl = oneLine(w.liveUrl).slice(0, 500);
           const customDomain = oneLine(w.customDomain).slice(0, 253);
           const detail =

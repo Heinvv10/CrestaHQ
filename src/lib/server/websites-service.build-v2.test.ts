@@ -226,6 +226,51 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     }
   });
 
+  it.each(["gate", "site", "count", "reservation"] as const)(
+    "classifies an unexpected %s read failure as definitely pre-acceptance",
+    async (failurePoint) => {
+      const originalDoc = mem.db.doc.bind(mem.db);
+      const originalCollection = mem.db.collection.bind(mem.db);
+      const docSpy = vi.spyOn(mem.db, "doc");
+      const collectionSpy = vi.spyOn(mem.db, "collection");
+      const transactionSpy = vi.spyOn(mem.db, "runTransaction");
+
+      if (failurePoint === "gate" || failurePoint === "site") {
+        const failedPath = failurePoint === "gate" ? "subAccounts/sa1" : SITE;
+        docSpy.mockImplementation((path: string) => {
+          const ref = originalDoc(path);
+          return path === failedPath
+            ? { ...ref, get: async () => { throw new Error(`secret ${failurePoint} failure`); } }
+            : ref;
+        });
+      }
+      if (failurePoint === "count") {
+        await originalDoc(SITE).delete();
+        collectionSpy.mockImplementation((path: string) => {
+          const ref = originalCollection(path);
+          return path === "subAccounts/sa1/website"
+            ? { ...ref, get: async () => { throw new Error("secret count failure"); } }
+            : ref;
+        });
+      }
+      if (failurePoint === "reservation") {
+        transactionSpy.mockRejectedValueOnce(new Error("secret reservation failure"));
+      }
+
+      await expect(build()).rejects.toMatchObject({
+        status: 500,
+        message: "Website build preparation failed.",
+        failureSource: "local-preparation",
+        submissionOutcome: "not-accepted",
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      docSpy.mockRestore();
+      collectionSpy.mockRestore();
+      transactionSpy.mockRestore();
+    },
+  );
+
   it("asks gitpage for a premium build on the forced model tier, even from a standard draft", async () => {
     await build();
     expect(sent()).toMatchObject({ quality: "premium", claudeModel: "opus-5.5", subAccountId: "sa1" });

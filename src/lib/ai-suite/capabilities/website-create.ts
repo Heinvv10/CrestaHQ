@@ -44,12 +44,17 @@ const CONCEPT_RESULT_MAX = 4000;
 function stableWebsiteError(err: unknown): CapabilityUserError {
   if (!(err instanceof WebsiteServiceError)) {
     return new CapabilityUserError(
-      "The website builder couldn't complete that request. Check the Website page before trying again.",
+      "The website build may already have started. Check the Website page and do not start another build until its status is clear.",
+    );
+  }
+  if (err.submissionOutcome !== "not-accepted") {
+    return new CapabilityUserError(
+      "The website build may already have started. Check the Website page and do not start another build until its status is clear.",
     );
   }
   if (
-    err.submissionOutcome === "not-accepted" &&
     err.fieldErrorsSource === "local-validation" &&
+    err.failureSource === "local-validation" &&
     err.status === 400 &&
     err.fieldErrors
   ) {
@@ -60,28 +65,28 @@ function stableWebsiteError(err: unknown): CapabilityUserError {
       );
     }
   }
-  if (err.status === 403) {
+  if (err.failureSource === "local-gate") {
     return new CapabilityUserError(
       "The website builder is disabled for this workspace — ask the agency owner to enable it.",
     );
   }
-  if (err.status === 429) {
+  if (err.failureSource === "local-rate") {
     return new CapabilityUserError(
       "This workspace can't start another website build right now. Wait and try again from the Website page.",
     );
   }
-  if (err.status === 409) {
+  if (err.failureSource === "local-state") {
     return new CapabilityUserError(
       "The website changed while this build was starting. Check its current state on the Website page before trying again.",
     );
   }
-  if (err.status === 503) {
+  if (err.failureSource === "local-config") {
     return new CapabilityUserError(
       "The website builder isn't configured on this deployment. Ask the agency owner to check the Website setup.",
     );
   }
   return new CapabilityUserError(
-    "The website builder couldn't start or confirm this build. Check the Website page before trying again.",
+    "The website builder rejected the request before accepting a build. Review the Website page before trying again.",
   );
 }
 
@@ -857,7 +862,7 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
         const lines = cards
           .slice(0, 6)
           .map((card) => {
-            const id = conceptText(card.id, 64);
+            const id = typeof card.id === "string" ? card.id : "";
             const name = conceptText(card.name, 120);
             if (!CONCEPT_ID_RE.test(id) || !name) return null;
             const archetype = conceptText(card.archetype, 80) || "custom";
