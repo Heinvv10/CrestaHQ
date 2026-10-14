@@ -116,7 +116,10 @@
       bubble.style.transform = "scale(1)";
     };
     bubble.onclick = function () {
-      if (isOpen) collapseIframe();
+      if (isOpen) {
+        notifyIframe("host-close");
+        collapseIframe();
+      }
       else openIframe();
     };
     document.body.appendChild(bubble);
@@ -131,14 +134,7 @@
       // logging — not for auth (parent origin is gated at /config).
       var parentUrl = "";
       try { parentUrl = window.location.href; } catch (_e) {}
-      var params = [];
-      if (parentUrl) params.push("p=" + encodeURIComponent(parentUrl));
-      // The origin-checked config response is the only source of this token.
-      // Without it the iframe never renders a microphone control.
-      if (config.voiceEnabled === true && typeof config.voiceToken === "string") {
-        params.push("vt=" + encodeURIComponent(config.voiceToken));
-      }
-      var qs = params.length ? "?" + params.join("&") : "";
+      var qs = parentUrl ? "?p=" + encodeURIComponent(parentUrl) : "";
       iframe.src = BASE + "/embed/chat/" + encodeURIComponent(saId) + qs;
       iframe.title = "Chat with us";
       iframe.allow = "clipboard-write; microphone";
@@ -188,12 +184,32 @@
     bubble.innerHTML = "&#128172;";
   }
 
+  function notifyIframe(type, extra) {
+    if (!iframe || !iframe.contentWindow) return;
+    var payload = { source: "leadstack-webchat-host", type: type };
+    if (extra) {
+      for (var key in extra) {
+        if (Object.prototype.hasOwnProperty.call(extra, key)) payload[key] = extra[key];
+      }
+    }
+    iframe.contentWindow.postMessage(payload, BASE);
+  }
+
   // ---- Step 6: postMessage protocol -------------------------------
   function listenForIframeMessages() {
     window.addEventListener("message", function (event) {
+      if (!iframe || event.source !== iframe.contentWindow || event.origin !== BASE) return;
       var data = event.data;
       if (!data || data.source !== "leadstack-webchat") return;
       if (data.type === "close") collapseIframe();
+      if (
+        data.type === "ready" &&
+        config.voiceEnabled === true &&
+        typeof config.voiceToken === "string" &&
+        config.voiceToken
+      ) {
+        notifyIframe("voice-token", { token: config.voiceToken });
+      }
     });
   }
 })();

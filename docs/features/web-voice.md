@@ -44,7 +44,8 @@ spends the agency's OpenRouter tokens, which is why the feature is agency-gated.
 - **GET** returns `gateOn`, `webChatGateOn`, the display meta, `usage`
   (`secondsToday`, `secondsThisMonth`, `activeNow`; null before a key is connected),
   `previewToken` (a widget token for the settings page's preview link, only while
-  `webVoiceAvailable` is true, else null) and, with `?voices=1` and the gate on, the
+  `webVoiceAvailable` is true, else null; carried in a `#vt=` fragment and removed
+  from the address before use) and, with `?voices=1` and the gate on, the
   live voice list. A voice's preview URL is passed on only when it is a public https
   address.
 - **DELETE** disconnects. It deletes the secret and usage docs, clears the meta, then
@@ -107,7 +108,9 @@ One conversation, end to end:
    channel's allowed domains) answers `voiceEnabled: true` and a 12-hour **widget
    token** (`w1.…`) only while `webVoiceAvailable` holds, an agent is provisioned and
    today's COUNTED seconds (settled calls and charged lapsed grants) leave room for one more full-length call. Anything else,
-   including any error, is `voiceEnabled: false` with no token.
+   including any error, is `voiceEnabled: false` with no token. The loader keeps the
+   token in memory and sends it only after an iframe/source/origin-checked
+   `postMessage` handshake; it is never put in the iframe's HTTP URL.
 2. **`POST /api/web-chat/voice/start`** `{ sa, sessionId, voiceToken, pageUrl?,
    referrer? }` (body capped at 8 KB). In order: the widget token for this
    sub-account → 12 starts per IP per hour (see *Per-IP limit* below) → gates and a ready connection (403
@@ -289,6 +292,10 @@ within the event limit of 6 per grant (e.g. 4 `connected` tries, then one `ended
 a beacon on page hide is fine). The response to `connected` is
 `{ ok: true, claimed }`: `claimed` is true once this token's grant holds that
 conversation (also on a resend after an earlier ping already claimed it).
+The ElevenLabs web module is preloaded when the verified widget token arrives, before
+the mic gesture, because its iOS audio-unlock listener is installed at module
+evaluation time. Host/iframe messages require both the expected window and exact
+origin; launcher close ends the active call before the iframe is hidden.
 
 **Residual risk.** A visitor who never reports a call still spends the client's
 ElevenLabs minutes, up to `maxCallSeconds` per start (bounded by the per-IP start
