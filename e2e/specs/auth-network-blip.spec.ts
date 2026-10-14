@@ -30,7 +30,17 @@ test("a dropped connection while the session loads does not strand the owner", a
     return route.abort("connectionreset");
   });
 
-  await page.goto(`/sa/${env.E2E_SUBACCOUNT_ID}/contacts`);
+  const contactsUrl = `/sa/${env.E2E_SUBACCOUNT_ID}/contacts`;
+  try {
+    await page.goto(contactsUrl);
+  } catch (error) {
+    // A self-hosted runner container can replace a veth while Chromium is
+    // starting the top-level navigation. Retry that browser-level transition;
+    // the Firestore channel outage below remains active and is the behavior
+    // this test is meant to exercise.
+    if (!(error instanceof Error) || !error.message.includes("net::ERR_NETWORK_CHANGED")) throw error;
+    await page.goto(contactsUrl);
+  }
   // A two-second outage from the first navigation — about what a container
   // start costs. Without the auth context's retry this lands the page on
   // "Sign in to view your agency", the same snapshot the CI traces show.
