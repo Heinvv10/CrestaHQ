@@ -177,6 +177,45 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
     expect(other.props.page).toMatchObject({ isServicePage: false, services: [] });
   });
 
+  it("drops malformed stored public fields instead of serialising nested values or throwing", async () => {
+    if (name === "/e") return;
+    const el = await open({
+      name: { nested: "name-SENTINEL" },
+      description: { nested: "description-SENTINEL" },
+      durationMinutes: Number.NaN,
+      timezone: { nested: "timezone-SENTINEL" },
+      visibleDays: Number.POSITIVE_INFINITY,
+      calendarType: "service",
+      services: [
+        { id: "valid", name: "Valid", durationMinutes: 45, description: null, nested: "service-SENTINEL" },
+        { id: "invalid", name: { nested: "invalid-service-SENTINEL" }, durationMinutes: 30 },
+      ],
+      intakeFields: [
+        { id: "valid", label: "Choose", type: "select", required: true, options: ["Safe", { nested: "option-SENTINEL" }] },
+        { id: "invalid", label: "Invalid", type: { nested: "type-SENTINEL" }, required: false },
+      ],
+      payment: { amount: { nested: "amount-SENTINEL" }, currency: "USD", description: null, holdHours: 24 },
+    });
+    expect(el.props.page).toMatchObject({
+      name: "",
+      description: "",
+      durationMinutes: 30,
+      timezone: "UTC",
+      visibleDays: 14,
+      services: [{ id: "valid", name: "Valid", durationMinutes: 45, description: null }],
+      intakeFields: [{ id: "valid", label: "Choose", type: "select", required: true, options: ["Safe"] }],
+      payment: null,
+    });
+    expect(stringsSentToClient(el).filter((s) => s.includes("SENTINEL"))).toEqual([]);
+  });
+
+  it("defaults non-array services and intake fields without throwing", async () => {
+    if (name === "/e") return;
+    const el = await open({ calendarType: "service", services: { nested: "services-SENTINEL" }, intakeFields: { nested: "fields-SENTINEL" } });
+    expect(el.props.page).toMatchObject({ services: [], intakeFields: [] });
+    expect(stringsSentToClient(el).filter((s) => s.includes("SENTINEL"))).toEqual([]);
+  });
+
   it.each(HOSTILE)("drops a stored accent that is %s", async (_label, accentColor) => {
     const el = await open({ accentColor });
     expect(stringsSentToClient(el).filter((s) => s.includes("evil.example"))).toEqual([]);

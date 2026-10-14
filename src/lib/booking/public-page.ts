@@ -1,4 +1,3 @@
-import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { publicBookingStyle } from "@/lib/booking/public-style";
 import type { BookingPage, BookingService, IntakeField } from "@/types/booking";
 import type { CheckoutThemeId } from "@/types/checkout-pages";
@@ -48,39 +47,90 @@ export interface PublicBookingBranding {
   accentColor: string | null;
 }
 
-export function publicBookingPage(doc: BookingPage): PublicBookingPageData {
-  const isServicePage = pageCalendarType(doc) === "service";
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function publicServices(value: unknown): BookingService[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== "string" ||
+      typeof item.name !== "string" ||
+      typeof item.durationMinutes !== "number" ||
+      !Number.isFinite(item.durationMinutes) ||
+      (item.description !== null && item.description !== undefined && typeof item.description !== "string")
+    ) {
+      return [];
+    }
+    return [{
+      id: item.id,
+      name: item.name,
+      durationMinutes: item.durationMinutes,
+      description: item.description ?? null,
+    }];
+  });
+}
+
+function publicIntakeFields(value: unknown): IntakeField[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (
+      !isRecord(item) ||
+      typeof item.id !== "string" ||
+      typeof item.label !== "string" ||
+      !["text", "textarea", "select"].includes(String(item.type)) ||
+      typeof item.required !== "boolean"
+    ) {
+      return [];
+    }
+    const options = Array.isArray(item.options)
+      ? item.options.filter((option): option is string => typeof option === "string")
+      : null;
+    return [{
+      id: item.id,
+      label: item.label,
+      type: item.type as IntakeField["type"],
+      required: item.required,
+      options,
+    }];
+  });
+}
+
+function publicPayment(value: unknown): PublicBookingPageData["payment"] {
+  if (
+    !isRecord(value) ||
+    typeof value.amount !== "number" ||
+    !Number.isFinite(value.amount) ||
+    typeof value.currency !== "string" ||
+    (value.description !== null && value.description !== undefined && typeof value.description !== "string") ||
+    typeof value.holdHours !== "number" ||
+    !Number.isFinite(value.holdHours)
+  ) {
+    return null;
+  }
   return {
-    slug: doc.slug,
-    name: doc.name,
-    description: doc.description,
-    durationMinutes: doc.durationMinutes,
-    timezone: doc.timezone,
-    visibleDays: doc.visibleDays,
+    amount: value.amount,
+    currency: value.currency,
+    description: value.description ?? null,
+    holdHours: value.holdHours,
+  };
+}
+
+export function publicBookingPage(doc: BookingPage): PublicBookingPageData {
+  const isServicePage = doc.calendarType === "service";
+  return {
+    slug: typeof doc.slug === "string" ? doc.slug : "",
+    name: typeof doc.name === "string" ? doc.name : "",
+    description: typeof doc.description === "string" ? doc.description : "",
+    durationMinutes: typeof doc.durationMinutes === "number" && Number.isFinite(doc.durationMinutes) ? doc.durationMinutes : 30,
+    timezone: typeof doc.timezone === "string" ? doc.timezone : "UTC",
+    visibleDays: typeof doc.visibleDays === "number" && Number.isFinite(doc.visibleDays) ? doc.visibleDays : 14,
     isServicePage,
-    services: isServicePage
-      ? (doc.services ?? []).map((s) => ({
-          id: s.id,
-          name: s.name,
-          durationMinutes: s.durationMinutes,
-          description: s.description ?? null,
-        }))
-      : [],
-    intakeFields: (doc.intakeFields ?? []).map((f) => ({
-      id: f.id,
-      label: f.label,
-      type: f.type,
-      required: f.required,
-      options: f.options ?? null,
-    })),
-    payment: doc.payment
-      ? {
-          amount: doc.payment.amount,
-          currency: doc.payment.currency,
-          description: doc.payment.description ?? null,
-          holdHours: doc.payment.holdHours,
-        }
-      : null,
+    services: isServicePage ? publicServices(doc.services) : [],
+    intakeFields: publicIntakeFields(doc.intakeFields),
+    payment: publicPayment(doc.payment),
     themePreset: publicBookingStyle(doc).themePreset,
   };
 }
