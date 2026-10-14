@@ -227,7 +227,8 @@ export interface BookingPage {
    * editing the page later doesn't rewrite historical events). Rendered
    * as a "Join the meeting" CTA in the confirmation + reminder emails,
    * stamped as the .ics `LOCATION` (where Calendar apps auto-render a
-   * native "join" button), and shown on the visitor's /e/[token] page.
+   * native "join" button). Never sent to the public pages (/b, the embed,
+   * /e/[token]): see src/lib/booking/public-page.ts.
    * `null` = in-person or "we'll send the link separately".
    *
    * Static — all bookings on this page share one URL. A v1.1 upgrade
