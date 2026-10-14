@@ -203,6 +203,46 @@ describe("N12 knowledge cards", () => {
     expect(guidance).not.toContain("phone calling remain Twilio-only");
   });
 
+  it.each([
+    "can whatsapp ai use meta cloud instead of twilio",
+    "does whatsapp ai work with the linked device bridge",
+  ])("keeps WhatsApp AI provider guidance consistent for: %s", (query) => {
+    const results = retrieved(query, "sub-account");
+    expect(results.map((result) => result.id)).toContain("ai-agents");
+    expect(results.map((result) => result.id)).toContain("sms-whatsapp-setup");
+    const aiAgents = results.find((result) => result.id === "ai-agents")!.body;
+    for (const rail of ["Twilio", "Meta Cloud API", "linked-device bridge"]) {
+      expect(aiAgents).toContain(rail);
+    }
+    expect(aiAgents).toContain("SMS AI needs a dedicated Twilio number");
+    expect(aiAgents).toContain("the bridge has no approved-template flow");
+    const guidance = results.map((result) => result.body).join("\n");
+    expect(guidance).not.toContain(
+      "SMS and WhatsApp (auto-replies on the dedicated Twilio number)"
+    );
+    expect(guidance).not.toContain(
+      "Twilio channels need a dedicated Twilio number"
+    );
+  });
+
+  it("keeps live voice booking compatible with a Vapi-managed number", () => {
+    const results = retrieved(
+      "can live voice booking use a vapi managed number without twilio",
+      "sub-account"
+    );
+    expect(results.map((result) => result.id)).toContain("voice-live-booking");
+    expect(results.map((result) => result.id)).toContain("voice-agent");
+    const liveBooking = results.find(
+      (result) => result.id === "voice-live-booking"
+    )!.body;
+    expect(liveBooking).toContain(
+      "either the workspace's dedicated Twilio number or a Vapi-managed number"
+    );
+    const guidance = results.map((result) => result.body).join("\n");
+    expect(guidance).not.toContain("usual Vapi + Twilio setup");
+    expect(guidance).not.toMatch(/requires? (a )?dedicated Twilio/i);
+  });
+
   it("describes strict and lenient phone parsing without a blanket E.164 guarantee", () => {
     const body = card("phone-region").body;
     expect(body).toContain("Public forms validate strictly");
