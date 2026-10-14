@@ -176,7 +176,7 @@ export function PublicEventView(props: Props) {
     setSlotsLoading(true);
     setError(null);
     fetch(
-      `/api/booking/${props.subAccountId}/${props.pageSlug}/availability?excludeEventId=${encodeURIComponent(props.eventId)}`,
+      `/api/booking/${encodeURIComponent(props.subAccountId)}/${encodeURIComponent(props.pageSlug)}/availability?excludeEventId=${encodeURIComponent(props.eventId)}`,
       { cache: "no-store" },
     )
       .then(async (res) => {

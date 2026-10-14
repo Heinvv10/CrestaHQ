@@ -177,6 +177,13 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
     expect(other.props.page).toMatchObject({ isServicePage: false, services: [] });
   });
 
+  it("uses the canonical route slug instead of a hostile stored slug", async () => {
+    if (name === "/e") return;
+    const el = await open({ slug: "../../events/slug-SENTINEL/cancel?" });
+    expect(el.props.page?.slug).toBe("p");
+    expect(stringsSentToClient(el).filter((s) => s.includes("slug-SENTINEL"))).toEqual([]);
+  });
+
   it("drops malformed stored public fields instead of serialising nested values or throwing", async () => {
     if (name === "/e") return;
     const el = await open({
@@ -266,5 +273,53 @@ describe("/e", () => {
     expect(el.props.token).toBe(eventToken);
     expect(el.props.eventId).toBe("e1");
     expect(el.props.pageSlug).toBe("p");
+  });
+
+  it("normalises every malformed stored event-view value before it reaches the client", async () => {
+    seedPage("p", {
+      name: { nested: "page-name-SENTINEL" },
+      status: { nested: "page-status-SENTINEL" },
+      timezone: "timezone-SENTINEL",
+      durationMinutes: { nested: "duration-SENTINEL" },
+    } as never);
+    const issued = issueEventToken("e1");
+    seedEvent("e1", "10:00", "10:30", {
+      title: { nested: "title-SENTINEL" },
+      status: { nested: "event-status-SENTINEL" },
+      serviceName: { nested: "service-SENTINEL" },
+      bookingPageSlug: "p",
+      publicTokenHash: issued.hash,
+      paymentLinkUrl: "https://evil-SENTINEL.example/pay",
+      paymentAmount: { nested: "amount-SENTINEL" },
+      paymentCurrency: { nested: "currency-SENTINEL" },
+    });
+
+    const el = (await PublicEventPage({ params: Promise.resolve({ token: issued.token }) })) as ReactElement<Props>;
+    expect(el.props).toMatchObject({
+      eventId: "e1",
+      status: "scheduled",
+      title: "Meeting",
+      pageName: "Meeting",
+      pageSlug: "p",
+      bookingPageStatus: "published",
+      timezone: "UTC",
+      durationMinutes: 30,
+      paymentLinkUrl: null,
+      paymentAmount: null,
+      paymentCurrency: null,
+    });
+    expect(stringsSentToClient(el).filter((s) => s.includes("SENTINEL"))).toEqual([]);
+  });
+
+  it("keeps a generated PayPal.me payment URL", async () => {
+    seedPage("p");
+    const issued = issueEventToken("e1");
+    seedEvent("e1", "10:00", "10:30", {
+      bookingPageSlug: "p",
+      publicTokenHash: issued.hash,
+      paymentLinkUrl: "https://paypal.me/acme/50USD",
+    });
+    const el = (await PublicEventPage({ params: Promise.resolve({ token: issued.token }) })) as ReactElement<Props>;
+    expect(el.props.paymentLinkUrl).toBe("https://paypal.me/acme/50USD");
   });
 });

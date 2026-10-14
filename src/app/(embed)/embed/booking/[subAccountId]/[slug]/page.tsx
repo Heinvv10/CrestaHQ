@@ -1,7 +1,12 @@
 import { notFound } from "next/navigation";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { PublicBookingView } from "@/components/booking/public-booking-view";
-import { publicBookingBranding, publicBookingPage } from "@/lib/booking/public-page";
+import {
+  publicBookingBranding,
+  publicBookingPage,
+} from "@/lib/booking/public-page";
+import { validateSlug } from "@/lib/booking/validation";
+import { isDocId } from "@/lib/server/doc-id";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 
@@ -22,6 +27,9 @@ interface PageProps {
 
 export default async function EmbedBookingPage({ params }: PageProps) {
   const { subAccountId, slug } = await params;
+  const slugCheck = validateSlug(slug);
+  if (!isDocId(subAccountId) || !slugCheck.ok || slugCheck.value !== slug)
+    notFound();
   const db = getAdminDb();
 
   const [pageSnap, subSnap] = await Promise.all([
@@ -41,7 +49,7 @@ export default async function EmbedBookingPage({ params }: PageProps) {
   return (
     <PublicBookingView
       subAccountId={subAccountId}
-      page={publicBookingPage(page)}
+      page={publicBookingPage(page, slug)}
       branding={branding}
       embedded
     />

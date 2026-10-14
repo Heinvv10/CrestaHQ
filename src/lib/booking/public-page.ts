@@ -1,6 +1,7 @@
 import { publicBookingStyle } from "@/lib/booking/public-style";
 import type { BookingPage, BookingService, IntakeField } from "@/types/booking";
 import type { CheckoutThemeId } from "@/types/checkout-pages";
+import type { CalendarEvent, EventStatus } from "@/types/events";
 
 /**
  * What the public booking pages (/b, the embed, /e) may send to the browser.
@@ -45,6 +46,18 @@ export interface PublicBookingBranding {
   name: string;
   logoUrl: string | null;
   accentColor: string | null;
+}
+
+export interface PublicEventData {
+  status: EventStatus;
+  title: string;
+  pageName: string;
+  bookingPageStatus: "draft" | "published";
+  timezone: string;
+  durationMinutes: number;
+  paymentLinkUrl: string | null;
+  paymentAmount: number | null;
+  paymentCurrency: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,10 +131,61 @@ function publicPayment(value: unknown): PublicBookingPageData["payment"] {
   };
 }
 
-export function publicBookingPage(doc: BookingPage): PublicBookingPageData {
+function publicPaymentLinkUrl(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_000) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname.toLowerCase() === "paypal.me" && !url.username && !url.password
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function publicTimezone(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return value;
+  } catch {
+    return "UTC";
+  }
+}
+
+/** Complete stored-data boundary for the interactive /e client payload. */
+export function publicEventData(
+  event: CalendarEvent,
+  page: BookingPage | null,
+  startAt: Date,
+  endAt: Date,
+): PublicEventData {
+  const title = typeof event.title === "string" ? event.title : "Meeting";
+  const pageName = typeof page?.name === "string" ? page.name : title;
+  const serviceName = typeof event.serviceName === "string" ? event.serviceName : null;
+  const actualDuration = Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60_000));
+  const pageDuration = typeof page?.durationMinutes === "number" && Number.isFinite(page.durationMinutes)
+    ? page.durationMinutes
+    : actualDuration;
+  const validStatuses: EventStatus[] = ["scheduled", "awaiting_payment", "completed", "cancelled", "no_show"];
+
+  return {
+    status: validStatuses.includes(event.status as EventStatus) ? (event.status as EventStatus) : "scheduled",
+    title,
+    pageName: serviceName ? `${pageName} (${serviceName})` : pageName,
+    bookingPageStatus: page?.status === "draft" ? "draft" : "published",
+    timezone: publicTimezone(page?.timezone),
+    durationMinutes: serviceName ? actualDuration : pageDuration,
+    paymentLinkUrl: publicPaymentLinkUrl(event.paymentLinkUrl),
+    paymentAmount: typeof event.paymentAmount === "number" && Number.isFinite(event.paymentAmount) ? event.paymentAmount : null,
+    paymentCurrency: typeof event.paymentCurrency === "string" ? event.paymentCurrency : null,
+  };
+}
+
+export function publicBookingPage(doc: BookingPage, canonicalSlug: string): PublicBookingPageData {
   const isServicePage = doc.calendarType === "service";
   return {
-    slug: typeof doc.slug === "string" ? doc.slug : "",
+    slug: canonicalSlug,
     name: typeof doc.name === "string" ? doc.name : "",
     description: typeof doc.description === "string" ? doc.description : "",
     durationMinutes: typeof doc.durationMinutes === "number" && Number.isFinite(doc.durationMinutes) ? doc.durationMinutes : 30,

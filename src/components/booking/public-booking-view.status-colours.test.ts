@@ -29,7 +29,7 @@ const PAYMENT = { amount: 50, currency: "USD", description: "Deposit", holdHours
 const PRESETS = Object.keys(CHECKOUT_THEMES) as CheckoutThemeId[];
 
 async function render(over: Record<string, unknown>) {
-  const page = publicBookingPage(seedPage("p", over as never));
+  const page = publicBookingPage(seedPage("p", over as never), "p");
   await act(async () =>
     root.render(createElement(PublicBookingView, { subAccountId: "sa1", page, branding: { name: "Fixture", logoUrl: null, accentColor: null } })),
   );

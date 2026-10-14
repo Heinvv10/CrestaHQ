@@ -210,7 +210,7 @@ export function PublicBookingView({
     if (selectedHostUid) params.set("host", selectedHostUid);
     if (serviceId) params.set("serviceId", serviceId);
     const qs = params.toString() ? `?${params}` : "";
-    fetch(`/api/booking/${subAccountId}/${page.slug}/availability${qs}`, {
+    fetch(`/api/booking/${encodeURIComponent(subAccountId)}/${encodeURIComponent(page.slug)}/availability${qs}`, {
       cache: "no-store",
     })
       .then(async (res) => {
@@ -647,7 +647,7 @@ function IntakeFormSection({
     setSubmitting(true);
     try {
       const res = await fetch(
-        `/api/booking/${subAccountId}/${slug}/book`,
+        `/api/booking/${encodeURIComponent(subAccountId)}/${encodeURIComponent(slug)}/book`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
