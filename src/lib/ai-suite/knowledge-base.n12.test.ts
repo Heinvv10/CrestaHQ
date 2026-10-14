@@ -20,8 +20,12 @@ const IDS = [
   "data-ownership-backups",
 ] as const;
 
-function card(id: (typeof IDS)[number]) {
+function card(id: string) {
   return AI_SUITE_KNOWLEDGE.find((candidate) => candidate.id === id)!;
+}
+
+function retrieved(query: string, level: "sub-account" | "agency") {
+  return retrieveKnowledge(query, level);
 }
 
 describe("N12 knowledge cards", () => {
@@ -102,13 +106,87 @@ describe("N12 knowledge cards", () => {
       "PLATFORM_SMTP_*",
       "mailbox sync",
       "own ElevenLabs key",
-      "ZAR payment links",
+      "ZAR invoice payment links",
       "BILLING_PROVIDER=paystack",
     ])
       expect(body).toContain(fact);
     expect(body).not.toContain("RESEND + EMAIL_FROM — every email");
     expect(body).not.toContain(
       "TWILIO — shared env keys or each workspace's own account: SMS, the WhatsApp sender"
+    );
+  });
+
+  it.each([
+    "send invoice email with smtp",
+    "does invoice sending require resend",
+  ])("keeps invoice email guidance consistent for: %s", (query) => {
+    const results = retrieved(query, "sub-account");
+    expect(results.map((result) => result.id)).toContain("quotes-invoices");
+    const guidance = results.map((result) => result.body).join("\n");
+    expect(guidance).toContain("verified SMTP provider when selected");
+    expect(guidance).toContain("verified Resend sending domain");
+    expect(guidance).toContain("shared Resend sender as the fallback");
+    expect(guidance).not.toMatch(/sending requires Resend/i);
+  });
+
+  it.each([
+    "can client billing use paystack",
+    "set up paystack client billing",
+  ])("keeps Client Billing provider guidance consistent for: %s", (query) => {
+    const results = retrieved(query, "agency");
+    expect(results.map((result) => result.id)).toContain(
+      "agency-client-billing"
+    );
+    const billing = results.find(
+      (result) => result.id === "agency-client-billing"
+    )!.body;
+    expect(billing).toContain("PAYSTACK_SECRET_KEY");
+    expect(billing).toContain("BILLING_PROVIDER=paystack");
+    expect(billing).toContain("ZAR plans");
+    const guidance = results.map((result) => result.body).join("\n");
+    expect(guidance).toContain("PAYSTACK_SECRET_KEY");
+    expect(guidance).toContain("BILLING_PROVIDER=paystack");
+    expect(guidance).toContain("ZAR");
+    expect(guidance).toContain("separate");
+    expect(guidance).not.toMatch(
+      /requires Stripe|through your own Stripe account/i
+    );
+  });
+
+  it("retrieves consistent Twilio, Vapi and WhatsApp number guidance", () => {
+    const results = retrieved(
+      "set up sms whatsapp and inbound voice phone number",
+      "sub-account"
+    );
+    expect(results.map((result) => result.id)).toContain("sms-whatsapp-setup");
+    expect(results.map((result) => result.id)).toContain("voice-agent");
+    expect(card("sms-whatsapp-setup").body).toContain(
+      "Twilio number or a Vapi-managed number"
+    );
+    const guidance = results.map((result) => result.body).join("\n");
+    expect(guidance).toContain("SMS and the browser dialer are Twilio-only");
+    expect(guidance).toContain("Twilio number or a Vapi-managed number");
+    expect(guidance).not.toContain("phone calling remain Twilio-only");
+  });
+
+  it("describes strict and lenient phone parsing without a blanket E.164 guarantee", () => {
+    const body = card("phone-region").body;
+    expect(body).toContain("Public forms validate strictly");
+    expect(body).toContain("otherwise preserve the raw value");
+    expect(body).toContain("cannot guarantee E.164");
+    expect(body).not.toContain("Those numbers are stored in E.164 format");
+  });
+
+  it("keeps tenant payment rails and Webinar1 video timing exact", () => {
+    const keys = card("which-key-powers-what").body;
+    expect(keys).toContain("ZAR invoice payment links");
+    expect(keys).toContain("card-on-file recurring links");
+    expect(keys).toContain("Stripe powers Checkout, Quick Funnels");
+    expect(keys).toContain(
+      "agency Client Billing, separately from both tenant rails"
+    );
+    expect(card("webinars").body).toContain(
+      "already processed video or lets you attach the video later in Webinar1 admin"
     );
   });
 
