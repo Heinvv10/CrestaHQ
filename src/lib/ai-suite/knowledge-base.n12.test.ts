@@ -116,6 +116,22 @@ describe("N12 knowledge cards", () => {
     );
   });
 
+  it("does not send a Paystack-only workspace to the Stripe Payments report", () => {
+    const results = retrieved(
+      "where do I see paystack payment link recurring status",
+      "sub-account"
+    );
+    expect(results.map((result) => result.id)).toContain("payments");
+    const payments = results.find((result) => result.id === "payments")!.body;
+    expect(payments).toContain(
+      "Payments view under Reports summarizes Stripe orders and payments only"
+    );
+    expect(payments).toContain(
+      "Paystack payment-link and recurring status appears under Quotes → Payment links"
+    );
+    expect(payments).not.toMatch(/Reports (shows|includes).*Paystack/i);
+  });
+
   it.each([
     "send invoice email with smtp",
     "does invoice sending require resend",
