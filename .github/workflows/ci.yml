@@ -4,7 +4,7 @@ name: CI
 # reaches main another way.
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
 

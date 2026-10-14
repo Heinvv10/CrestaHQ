@@ -131,6 +131,12 @@ describe("check-agent-coverage-shrink CLI", () => {
     const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
     expect(ci).not.toMatch(/types:.*edited/);
   });
+
+  it("cancels active work when a ready PR returns to draft", () => {
+    const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+    expect(ci).toContain("types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]");
+    expect(ci).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+  });
 });
 
 describe("addedKeys", () => {
