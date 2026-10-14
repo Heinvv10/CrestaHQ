@@ -8,7 +8,11 @@ import {
   useState,
   type FormEvent,
 } from "react";
-import { textOnAccent } from "@/components/web-chat/contrast";
+import { accentOnWhite, textOnAccent } from "@/components/web-chat/contrast";
+import {
+  loadVoiceClient,
+  type VoiceClientModule,
+} from "@/components/web-chat/voice-sdk";
 
 /**
  * Self-contained chat widget rendered inside the /embed/chat/[saId]
@@ -74,10 +78,28 @@ function ensureSessionId(saId: string): string {
   return existing;
 }
 
-function postToParent(message: Record<string, unknown>): void {
+function validatedParentOrigin(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "https:" || parsed.protocol === "http:"
+      ? parsed.origin
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function postToParent(
+  message: Record<string, unknown>,
+  parentOrigin: string | null,
+): void {
   if (typeof window === "undefined") return;
-  if (window.parent === window) return;
-  window.parent.postMessage({ source: "leadstack-webchat", ...message }, "*");
+  if (window.parent === window || !parentOrigin) return;
+  window.parent.postMessage(
+    { source: "leadstack-webchat", ...message },
+    parentOrigin,
+  );
 }
 
 /** How long (ms) to wait for a human reply — on a held message that landed
@@ -91,10 +113,64 @@ const OFFLINE_NOTE =
 /** Shown when no human has replied within WAIT_NOTE_DELAY_MS (within hours). */
 const WAITING_NOTE = "Thanks for waiting — we'll follow up as soon as we can.";
 
+/** Web Voice (ElevenLabs Web Voice v1) states for the mic bar. */
+type VoiceStatus = "idle" | "connecting" | "listening" | "speaking";
+
+/** Minimal surface of the ElevenLabs SDK conversation we use. The SDK is
+ *  loaded with a dynamic import only when the visitor taps the mic, so typed
+ *  chat never downloads it. */
+type VoiceConversation = { endSession: () => Promise<void> };
+
+type ActiveVoiceCall = {
+  id: number;
+  conversation: VoiceConversation | null;
+  sessionToken: string | null;
+  conversationId: string | null;
+  connectedAttempts: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  claimConfirmed: boolean;
+  endedSent: boolean;
+  endedAfterClaimSent: boolean;
+  stopped: boolean;
+  seenMessages: Set<string>;
+  messageSequence: number;
+};
+
+const CONNECTED_RETRY_DELAYS_MS = [5_000, 10_000, 15_000] as const;
+const CONNECTED_ATTEMPT_CAP = 4;
+
+function formatClock(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+function MicIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+      <line x1="12" y1="18" x2="12" y2="22" />
+    </svg>
+  );
+}
+
 export function ChatWindow(props: ChatWindowProps) {
   const { subAccountId, welcomeMessage, accentColor, embedded } = props;
-  // Light accents (yellow, lime, pastels) need dark text, not white.
+  // Light accents (yellow, lime, pastels) need dark text; and the accent
+  // itself is darkened where it's drawn on white (the mic button).
   const onAccent = useMemo(() => textOnAccent(accentColor), [accentColor]);
+  const accentInk = useMemo(() => accentOnWhite(accentColor), [accentColor]);
 
   const [sessionId, setSessionId] = useState<string>("");
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -108,6 +184,7 @@ export function ChatWindow(props: ChatWindowProps) {
   // has replied within WAIT_NOTE_DELAY_MS. Cleared when the operator replies.
   const [handoffNote, setHandoffNote] = useState<string | null>(null);
   const [parentPageUrl, setParentPageUrl] = useState<string | null>(null);
+  const [parentOrigin, setParentOrigin] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Delivery poll bookkeeping: server message ids we've already rendered
   // (so the poll never double-renders a reply we got inline), the createdAt
@@ -120,6 +197,20 @@ export function ChatWindow(props: ChatWindowProps) {
   // landed within hours; fires the softer note unless an operator reply — or a
   // new send — clears it first).
   const waitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Web Voice ─────────────────────────────────────────────────────────
+  // The installed loader delivers this over an origin/source-checked
+  // postMessage handshake. Settings preview uses a scrubbed #vt fragment.
+  const [voiceToken, setVoiceToken] = useState<string | null>(null);
+  const [voiceSdkReady, setVoiceSdkReady] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>("idle");
+  const [voiceNote, setVoiceNote] = useState<string | null>(null);
+  const [voiceElapsed, setVoiceElapsed] = useState(0);
+  const [voiceMaxSeconds, setVoiceMaxSeconds] = useState(0);
+  const activeVoiceCallRef = useRef<ActiveVoiceCall | null>(null);
+  const nextVoiceCallIdRef = useRef(0);
+  const voiceSdkRef = useRef<VoiceClientModule | null>(null);
+  const voiceActive = voiceStatus !== "idle";
 
   const clearWaitTimer = useCallback(() => {
     if (waitTimerRef.current) {
@@ -137,15 +228,54 @@ export function ChatWindow(props: ChatWindowProps) {
     const sid = ensureSessionId(subAccountId);
     setSessionId(sid);
     try {
-      const p = new URLSearchParams(window.location.search).get("p");
-      if (p) setParentPageUrl(p);
+      const qs = new URLSearchParams(window.location.search);
+      const p = qs.get("p");
+      const validatedOrigin = validatedParentOrigin(p);
+      setParentPageUrl(p);
+      setParentOrigin(validatedOrigin);
+
+      const hash = new URLSearchParams(window.location.hash.slice(1));
+      const vt = hash.get("vt");
+      if (vt) {
+        hash.delete("vt");
+        const remainingHash = hash.toString();
+        window.history.replaceState(
+          window.history.state,
+          "",
+          `${window.location.pathname}${window.location.search}${remainingHash ? `#${remainingHash}` : ""}`,
+        );
+        // Do not retain or preload from a preview token unless its bearer
+        // value was first removed from the visible browser location.
+        setVoiceToken(vt);
+      }
     } catch {
       // No-op — parent URL is purely for server-side logging.
     }
-    setMessages([
-      { id: "welcome", role: "assistant", text: welcomeMessage },
-    ]);
+    setMessages([{ id: "welcome", role: "assistant", text: welcomeMessage }]);
   }, [subAccountId, welcomeMessage]);
+
+  // Evaluate the SDK as soon as the verified token arrives. Its web module
+  // installs the iOS audio-unlock click listener; doing this inside the later
+  // async start path is too late for the visitor's initiating gesture.
+  useEffect(() => {
+    voiceSdkRef.current = null;
+    setVoiceSdkReady(false);
+    if (!voiceToken) return;
+    let cancelled = false;
+    void loadVoiceClient()
+      .then((sdk) => {
+        if (cancelled) return;
+        voiceSdkRef.current = sdk;
+        setVoiceSdkReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setVoiceNote("Voice couldn't load. Please keep typing.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [voiceToken]);
 
   // Auto-scroll to bottom on every message change.
   useEffect(() => {
@@ -170,20 +300,28 @@ export function ChatWindow(props: ChatWindowProps) {
       try {
         const res = await fetch(
           `/api/web-chat/poll?sa=${encodeURIComponent(
-            subAccountId,
+            subAccountId
           )}&sessionId=${encodeURIComponent(sessionId)}&after=${cursorRef.current}`,
-          { method: "GET" },
+          { method: "GET" }
         );
         if (!res.ok || cancelled) return;
         const data = (await res.json()) as {
-          messages?: { id: string; body: string; createdAtMs: number }[];
+          messages?: {
+            id: string;
+            body: string;
+            createdAtMs: number;
+            via?: "voice";
+          }[];
           serverNowMs?: number;
         };
         const incoming = data.messages ?? [];
         for (const m of incoming) {
-          if (m.createdAtMs > cursorRef.current) cursorRef.current = m.createdAtMs;
+          if (m.createdAtMs > cursorRef.current)
+            cursorRef.current = m.createdAtMs;
           if (seenIdsRef.current.has(m.id)) continue;
           seenIdsRef.current.add(m.id);
+          // Voice turns were already shown live from the voice SDK.
+          if (m.via === "voice") continue;
           // First pass just primes history; don't replay it into the UI.
           if (!primedRef.current) continue;
           // The operator's reply landed — drop any handoff note + pending
@@ -290,7 +428,8 @@ export function ChatWindow(props: ChatWindowProps) {
             id: `a-${Date.now()}`,
             role: "assistant",
             text: replyText,
-            formFields: formFields && formFields.length > 0 ? formFields : undefined,
+            formFields:
+              formFields && formFields.length > 0 ? formFields : undefined,
           },
         ]);
       } catch {
@@ -300,16 +439,350 @@ export function ChatWindow(props: ChatWindowProps) {
           {
             id: `e-${Date.now()}`,
             role: "assistant",
-            text:
-              "I had trouble reaching the server. Try again in a moment, or refresh the page.",
+            text: "I had trouble reaching the server. Try again in a moment, or refresh the page.",
           },
         ]);
       } finally {
         setSending(false);
       }
     },
-    [subAccountId, sessionId, sending, parentPageUrl, clearWaitTimer],
+    [subAccountId, sessionId, sending, parentPageUrl, clearWaitTimer]
   );
+
+  const isCurrentVoiceCall = useCallback(
+    (call: ActiveVoiceCall) =>
+      activeVoiceCallRef.current === call && !call.stopped,
+    []
+  );
+
+  /** Send the initial `ended`, plus one settlement resend after a late claim. */
+  const sendVoiceEnded = useCallback(
+    (call: ActiveVoiceCall, beacon = false) => {
+      if (
+        (call.claimConfirmed ? call.endedAfterClaimSent : call.endedSent) ||
+        !call.sessionToken ||
+        !call.conversationId
+      )
+        return;
+      const payload = JSON.stringify({
+        token: call.sessionToken,
+        type: "ended",
+        conversationId: call.conversationId,
+      });
+      if (beacon && typeof navigator !== "undefined" && navigator.sendBeacon) {
+        try {
+          if (navigator.sendBeacon("/api/web-chat/voice/event", payload)) {
+            call.endedSent = true;
+            if (call.claimConfirmed) call.endedAfterClaimSent = true;
+            return;
+          }
+        } catch {
+          // Fall through to the keepalive request.
+        }
+      }
+      try {
+        const request = fetch("/api/web-chat/voice/event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          keepalive: true,
+        });
+        // The end is latched only once the browser accepted a beacon or the
+        // keepalive request was dispatched. A synchronous fetch failure may
+        // therefore be retried by a later lifecycle callback.
+        call.endedSent = true;
+        if (call.claimConfirmed) call.endedAfterClaimSent = true;
+        void request.catch(() => {});
+      } catch {
+        // A later lifecycle callback may retry.
+      }
+    },
+    []
+  );
+
+  const finishVoiceCall = useCallback(
+    (
+      call: ActiveVoiceCall,
+      options: { beacon?: boolean; endSdk?: boolean; updateUi?: boolean } = {}
+    ) => {
+      if (call.stopped) {
+        sendVoiceEnded(call, options.beacon);
+        return;
+      }
+      call.stopped = true;
+      // An unclaimed grant keeps its bounded connected retries alive. If an
+      // in-flight/retried claim succeeds after this immediate end report, the
+      // server needs one idempotent follow-up end to settle that claim.
+      if (call.claimConfirmed && call.retryTimer) {
+        clearTimeout(call.retryTimer);
+        call.retryTimer = null;
+      }
+      sendVoiceEnded(call, options.beacon);
+      if (activeVoiceCallRef.current === call) {
+        activeVoiceCallRef.current = null;
+        if (options.updateUi !== false) {
+          setVoiceStatus("idle");
+          setVoiceElapsed(0);
+        }
+      }
+      if (options.endSdk && call.conversation) {
+        void call.conversation.endSession().catch(() => {});
+      }
+    },
+    [sendVoiceEnded]
+  );
+
+  /** ElevenLabs can take time to list a new conversation. Try immediately,
+   *  then at roughly 5, 15 and 30 seconds, stopping as soon as it is claimed. */
+  const reportVoiceConnected = useCallback(
+    (call: ActiveVoiceCall) => {
+      const attempt = async () => {
+        if (
+          (!call.stopped && !isCurrentVoiceCall(call)) ||
+          !call.sessionToken ||
+          !call.conversationId ||
+          call.claimConfirmed ||
+          call.connectedAttempts >= CONNECTED_ATTEMPT_CAP
+        ) {
+          return;
+        }
+        call.connectedAttempts += 1;
+        const delay = CONNECTED_RETRY_DELAYS_MS[call.connectedAttempts - 1];
+        if (
+          delay !== undefined &&
+          call.connectedAttempts < CONNECTED_ATTEMPT_CAP
+        ) {
+          // Schedule before awaiting the request so one hung response cannot
+          // consume the grant's whole claim window without another attempt.
+          call.retryTimer = setTimeout(() => void attempt(), delay);
+        }
+        let claimed = false;
+        try {
+          const response = await fetch("/api/web-chat/voice/event", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              token: call.sessionToken,
+              type: "connected",
+              conversationId: call.conversationId,
+            }),
+            keepalive: true,
+          });
+          if (response.ok) {
+            const data = (await response.json()) as { claimed?: unknown };
+            claimed = data.claimed === true;
+          }
+        } catch {
+          // A later bounded attempt may still claim the call.
+        }
+        if (claimed) {
+          call.claimConfirmed = true;
+          if (call.retryTimer) {
+            clearTimeout(call.retryTimer);
+            call.retryTimer = null;
+          }
+          if (call.stopped) sendVoiceEnded(call);
+        }
+      };
+      void attempt();
+    },
+    [isCurrentVoiceCall, sendVoiceEnded]
+  );
+
+  const startVoice = useCallback(async () => {
+    const voiceSdk = voiceSdkRef.current;
+    if (
+      !voiceToken ||
+      !voiceSdkReady ||
+      !voiceSdk ||
+      !sessionId ||
+      activeVoiceCallRef.current ||
+      sending
+    )
+      return;
+    const call: ActiveVoiceCall = {
+      id: ++nextVoiceCallIdRef.current,
+      conversation: null,
+      sessionToken: null,
+      conversationId: null,
+      connectedAttempts: 0,
+      retryTimer: null,
+      claimConfirmed: false,
+      endedSent: false,
+      endedAfterClaimSent: false,
+      stopped: false,
+      seenMessages: new Set(),
+      messageSequence: 0,
+    };
+    activeVoiceCallRef.current = call;
+    setVoiceNote(null);
+    setVoiceStatus("connecting");
+
+    // Ask for the mic FIRST, inside the click, so the browser prompt is tied
+    // to the visitor's gesture and a refusal costs no voice minutes.
+    try {
+      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+      probe.getTracks().forEach((track) => track.stop());
+    } catch {
+      if (isCurrentVoiceCall(call)) {
+        finishVoiceCall(call);
+        setVoiceNote(
+          "Microphone access was blocked. Allow it in your browser to talk, or keep typing."
+        );
+      }
+      return;
+    }
+
+    if (!isCurrentVoiceCall(call)) return;
+
+    try {
+      const res = await fetch("/api/web-chat/voice/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sa: subAccountId,
+          sessionId,
+          voiceToken,
+          pageUrl: parentPageUrl || document.referrer || null,
+          referrer: document.referrer || null,
+        }),
+      });
+      const data = (await res.json()) as {
+        signedUrl?: string;
+        token?: string;
+        maxCallSeconds?: number;
+        voiceEnabled?: boolean;
+      };
+      if (!res.ok || !data.signedUrl || !data.token) {
+        if (data.voiceEnabled === false) setVoiceToken(null);
+        throw new Error("voice start refused");
+      }
+      if (!isCurrentVoiceCall(call)) return;
+      call.sessionToken = data.token;
+      setVoiceMaxSeconds(data.maxCallSeconds ?? 0);
+
+      if (!isCurrentVoiceCall(call)) return;
+      const conversation = await voiceSdk.Conversation.startSession({
+        signedUrl: data.signedUrl,
+        connectionType: "websocket",
+        // Reaches LeadStack's reply endpoint on every turn, binding the
+        // spoken conversation to this chat session.
+        customLlmExtraBody: { token: data.token },
+        onConnect: ({ conversationId }) => {
+          if (!isCurrentVoiceCall(call) || call.conversationId) return;
+          call.conversationId = conversationId;
+          setVoiceStatus("listening");
+          reportVoiceConnected(call);
+        },
+        onModeChange: ({ mode }) => {
+          if (!isCurrentVoiceCall(call)) return;
+          setVoiceStatus(mode === "speaking" ? "speaking" : "listening");
+        },
+        onMessage: ({ message, role, event_id }) => {
+          if (!isCurrentVoiceCall(call)) return;
+          const text = message?.trim();
+          if (!text) return;
+          const rawEventId: unknown = event_id;
+          const eventKey =
+            typeof rawEventId === "number" && Number.isFinite(rawEventId)
+              ? String(rawEventId)
+              : typeof rawEventId === "string" && rawEventId.trim()
+                ? rawEventId.trim()
+                : null;
+          if (eventKey) {
+            const messageKey = `${role}:${eventKey}`;
+            if (call.seenMessages.has(messageKey)) return;
+            call.seenMessages.add(messageKey);
+          }
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `v-${call.id}-${++call.messageSequence}`,
+              role: role === "user" ? "user" : "assistant",
+              text,
+            },
+          ]);
+        },
+        onDisconnect: () => {
+          finishVoiceCall(call);
+        },
+        onError: () => {
+          if (!isCurrentVoiceCall(call)) return;
+          setVoiceNote("Voice connection problem — you can keep typing.");
+          finishVoiceCall(call, { endSdk: true });
+        },
+      });
+      if (!isCurrentVoiceCall(call)) {
+        void conversation.endSession().catch(() => {});
+        return;
+      }
+      call.conversation = conversation;
+    } catch {
+      if (isCurrentVoiceCall(call)) {
+        finishVoiceCall(call, { endSdk: true });
+        setVoiceNote("Voice couldn't start. Please keep typing.");
+      }
+    }
+  }, [
+    voiceToken,
+    voiceSdkReady,
+    sessionId,
+    sending,
+    subAccountId,
+    parentPageUrl,
+    isCurrentVoiceCall,
+    finishVoiceCall,
+    reportVoiceConnected,
+  ]);
+
+  const stopVoice = useCallback(() => {
+    const call = activeVoiceCallRef.current;
+    if (call) finishVoiceCall(call, { endSdk: true });
+  }, [finishVoiceCall]);
+
+  // The host page may supply the in-memory widget token or ask the exact
+  // iframe to close. Both messages share the verified parent channel.
+  useEffect(() => {
+    if (!parentOrigin || window.parent === window) return;
+    function onHostMessage(event: MessageEvent) {
+      if (event.source !== window.parent || event.origin !== parentOrigin) return;
+      const data = event.data as { source?: unknown; type?: unknown; token?: unknown };
+      if (!data || data.source !== "leadstack-webchat-host") return;
+      if (data.type === "voice-token" && typeof data.token === "string" && data.token) {
+        setVoiceToken(data.token);
+      } else if (data.type === "host-close") {
+        stopVoice();
+      }
+    }
+    window.addEventListener("message", onHostMessage);
+    postToParent({ type: "ready" }, parentOrigin);
+    return () => window.removeEventListener("message", onHostMessage);
+  }, [parentOrigin, stopVoice]);
+
+  // Call timer (display only — ElevenLabs enforces the real limit).
+  useEffect(() => {
+    if (voiceStatus === "idle" || voiceStatus === "connecting") return;
+    const iv = setInterval(() => setVoiceElapsed((s) => s + 1), 1000);
+    return () => clearInterval(iv);
+  }, [voiceStatus]);
+
+  // Tab closed / navigated mid-call: settle the minutes via beacon, and end
+  // the session if the widget unmounts.
+  useEffect(() => {
+    function onHide() {
+      const call = activeVoiceCallRef.current;
+      if (call) {
+        finishVoiceCall(call, { beacon: true, endSdk: true });
+      }
+    }
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      const call = activeVoiceCallRef.current;
+      if (call)
+        finishVoiceCall(call, { beacon: true, endSdk: true, updateUi: false });
+    };
+  }, [finishVoiceCall]);
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -321,15 +794,15 @@ export function ChatWindow(props: ChatWindowProps) {
       messageId: string,
       payload:
         | { skip: true }
-        | { skip?: false; name?: string; email?: string; phone?: string },
+        | { skip?: false; name?: string; email?: string; phone?: string }
     ) => {
       if (!sessionId) return;
       // Strip the form off the originating message immediately so the
       // visitor sees it disappear regardless of network outcome.
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === messageId ? { ...m, formFields: undefined } : m,
-        ),
+          m.id === messageId ? { ...m, formFields: undefined } : m
+        )
       );
       try {
         const res = await fetch("/api/web-chat/capture", {
@@ -374,11 +847,14 @@ export function ChatWindow(props: ChatWindowProps) {
         ]);
       }
     },
-    [subAccountId, sessionId, parentPageUrl],
+    [subAccountId, sessionId, parentPageUrl]
   );
 
   function handleClose() {
-    postToParent({ type: "close" });
+    // Closing the panel hides the iframe but keeps it alive — don't leave a
+    // voice call talking in the background.
+    if (voiceActive) void stopVoice();
+    postToParent({ type: "close" }, parentOrigin);
   }
 
   const containerStyle = useMemo<React.CSSProperties>(
@@ -399,7 +875,7 @@ export function ChatWindow(props: ChatWindowProps) {
       borderRadius: embedded ? "16px" : "0",
       boxShadow: embedded ? "0 16px 48px -12px rgba(15,23,42,0.25)" : "none",
     }),
-    [embedded],
+    [embedded]
   );
 
   return (
@@ -444,6 +920,19 @@ export function ChatWindow(props: ChatWindowProps) {
         }
         .lswc-typing-dot:nth-child(2) { animation-delay: 0.15s; }
         .lswc-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes lswc-voice-pulse {
+          0% { box-shadow: 0 0 0 0 ${accentColor}66; }
+          70% { box-shadow: 0 0 0 8px ${accentColor}00; }
+          100% { box-shadow: 0 0 0 0 ${accentColor}00; }
+        }
+        .lswc-voice-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: ${accentColor};
+          animation: lswc-voice-pulse 1.4s infinite;
+          flex-shrink: 0;
+        }
       `}</style>
 
       {/* Header */}
@@ -464,7 +953,10 @@ export function ChatWindow(props: ChatWindowProps) {
               width: 32,
               height: 32,
               borderRadius: "50%",
-              background: onAccent === "#ffffff" ? "rgba(255,255,255,0.2)" : "rgba(15,23,42,0.08)",
+              background:
+                onAccent === "#ffffff"
+                  ? "rgba(255,255,255,0.2)"
+                  : "rgba(15,23,42,0.08)",
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
@@ -517,7 +1009,9 @@ export function ChatWindow(props: ChatWindowProps) {
         {messages.map((m) => (
           <div key={m.id}>
             <div className={`lswc-row lswc-row-${m.role}`}>
-              <div className={`lswc-bubble lswc-bubble-${m.role}`}>{m.text}</div>
+              <div className={`lswc-bubble lswc-bubble-${m.role}`}>
+                {m.text}
+              </div>
             </div>
             {m.role === "assistant" && m.formFields && (
               <InlineCaptureForm
@@ -556,6 +1050,73 @@ export function ChatWindow(props: ChatWindowProps) {
         )}
       </div>
 
+      {/* Web Voice status bar — only while a voice conversation is live. */}
+      {voiceActive && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "8px 12px",
+            borderTop: "1px solid #e2e8f0",
+            background: "#f8fafc",
+            fontSize: 13,
+            flexShrink: 0,
+          }}
+        >
+          <span className="lswc-voice-dot" aria-hidden />
+          <span style={{ flex: 1, color: "#334155" }}>
+            {voiceStatus === "connecting"
+              ? "Connecting…"
+              : voiceStatus === "speaking"
+                ? "Speaking…"
+                : "Listening — go ahead and talk"}
+          </span>
+          {voiceStatus !== "connecting" && (
+            <span
+              style={{ color: "#94a3b8", fontVariantNumeric: "tabular-nums" }}
+            >
+              {formatClock(voiceElapsed)}
+              {voiceMaxSeconds > 0 ? ` / ${formatClock(voiceMaxSeconds)}` : ""}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => void stopVoice()}
+            aria-label="End voice chat"
+            style={{
+              background: "#ef4444",
+              color: "white",
+              border: 0,
+              borderRadius: 8,
+              padding: "5px 10px",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            End
+          </button>
+        </div>
+      )}
+      {voiceNote && !voiceActive && (
+        <div
+          role="status"
+          style={{
+            fontSize: 11,
+            color: "#64748b",
+            padding: "6px 12px",
+            borderTop: "1px solid #e2e8f0",
+            background: "#f8fafc",
+            flexShrink: 0,
+          }}
+        >
+          {voiceNote}
+        </div>
+      )}
+
       {/* Composer */}
       <form
         onSubmit={handleSubmit}
@@ -572,8 +1133,14 @@ export function ChatWindow(props: ChatWindowProps) {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={sending ? "Waiting for reply…" : "Type a message…"}
-          disabled={sending || !sessionId}
+          placeholder={
+            voiceActive
+              ? "Voice chat in progress…"
+              : sending
+                ? "Waiting for reply…"
+                : "Type a message…"
+          }
+          disabled={sending || !sessionId || voiceActive}
           aria-label="Type a message"
           style={{
             flex: 1,
@@ -586,9 +1153,32 @@ export function ChatWindow(props: ChatWindowProps) {
             color: "#0f172a",
           }}
         />
+        {voiceToken && !voiceActive && (
+          <button
+            type="button"
+            onClick={() => void startVoice()}
+            disabled={sending || !sessionId || !voiceSdkReady}
+            aria-label="Talk to us (voice)"
+            title="Talk instead of typing"
+            style={{
+              background: "white",
+              color: accentInk,
+              border: `1px solid ${accentInk}`,
+              borderRadius: 10,
+              padding: "0 10px",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: sending || !voiceSdkReady ? "not-allowed" : "pointer",
+              opacity: sending || !voiceSdkReady ? 0.5 : 1,
+            }}
+          >
+            <MicIcon />
+          </button>
+        )}
         <button
           type="submit"
-          disabled={sending || !input.trim() || !sessionId}
+          disabled={sending || !input.trim() || !sessionId || voiceActive}
           aria-label="Send"
           style={{
             background: accentColor,
@@ -631,11 +1221,14 @@ export function ChatWindow(props: ChatWindowProps) {
 function InlineCaptureForm(props: {
   fields: CaptureFieldId[];
   accentColor: string;
-  onSubmit: (payload: { name?: string; email?: string; phone?: string }) => void;
+  onSubmit: (payload: {
+    name?: string;
+    email?: string;
+    phone?: string;
+  }) => void;
   onSkip: () => void;
 }) {
   const { fields, accentColor, onSubmit, onSkip } = props;
-  const onAccent = textOnAccent(accentColor);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -671,9 +1264,7 @@ function InlineCaptureForm(props: {
   // requires one of these — name alone isn't enough to follow up).
   const canSubmit =
     !submitting &&
-    (!fields.includes("email") || email.trim().length > 0
-      ? true
-      : false) &&
+    (!fields.includes("email") || email.trim().length > 0 ? true : false) &&
     (!fields.includes("phone") || phone.trim().length > 0 ? true : false) &&
     (email.trim().length > 0 || phone.trim().length > 0);
 
@@ -738,7 +1329,7 @@ function InlineCaptureForm(props: {
           style={{
             flex: 1,
             background: accentColor,
-            color: onAccent,
+            color: textOnAccent(accentColor),
             border: 0,
             borderRadius: 8,
             padding: "9px 12px",

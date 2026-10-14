@@ -210,7 +210,7 @@ export function WebVoiceSection() {
 
   const previewUrl = useMemo(() => {
     if (typeof window === "undefined" || !status?.previewToken) return null;
-    return `${window.location.origin}/embed/chat/${subAccountId}?vt=${encodeURIComponent(status.previewToken)}`;
+    return `${window.location.origin}/embed/chat/${encodeURIComponent(subAccountId)}#vt=${encodeURIComponent(status.previewToken)}`;
   }, [status?.previewToken, subAccountId]);
 
   async function handleConnect(e: FormEvent) {

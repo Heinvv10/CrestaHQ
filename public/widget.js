@@ -116,7 +116,10 @@
       bubble.style.transform = "scale(1)";
     };
     bubble.onclick = function () {
-      if (isOpen) collapseIframe();
+      if (isOpen) {
+        notifyIframe("host-close");
+        collapseIframe();
+      }
       else openIframe();
     };
     document.body.appendChild(bubble);
@@ -134,7 +137,7 @@
       var qs = parentUrl ? "?p=" + encodeURIComponent(parentUrl) : "";
       iframe.src = BASE + "/embed/chat/" + encodeURIComponent(saId) + qs;
       iframe.title = "Chat with us";
-      iframe.allow = "clipboard-write";
+      iframe.allow = "clipboard-write; microphone";
       iframe.style.cssText =
         "position:fixed;" +
         (config.position === "left" ? "left:20px;" : "right:20px;") +
@@ -181,12 +184,32 @@
     bubble.innerHTML = "&#128172;";
   }
 
+  function notifyIframe(type, extra) {
+    if (!iframe || !iframe.contentWindow) return;
+    var payload = { source: "leadstack-webchat-host", type: type };
+    if (extra) {
+      for (var key in extra) {
+        if (Object.prototype.hasOwnProperty.call(extra, key)) payload[key] = extra[key];
+      }
+    }
+    iframe.contentWindow.postMessage(payload, BASE);
+  }
+
   // ---- Step 6: postMessage protocol -------------------------------
   function listenForIframeMessages() {
     window.addEventListener("message", function (event) {
+      if (!iframe || event.source !== iframe.contentWindow || event.origin !== BASE) return;
       var data = event.data;
       if (!data || data.source !== "leadstack-webchat") return;
       if (data.type === "close") collapseIframe();
+      if (
+        data.type === "ready" &&
+        config.voiceEnabled === true &&
+        typeof config.voiceToken === "string" &&
+        config.voiceToken
+      ) {
+        notifyIframe("voice-token", { token: config.voiceToken });
+      }
     });
   }
 })();
