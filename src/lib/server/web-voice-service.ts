@@ -413,24 +413,9 @@ async function syncAgent(
   let agentId = conn.agentId;
   let created = false;
   let syncError: string | null = null;
-  await preflight?.();
+  let spec: AgentSpec | null = null;
   try {
-    const spec = await agentSpecFor(subAccountId, conn);
-    if (agentId) {
-      try {
-        await updateAgent(conn.apiKey, agentId, spec);
-      } catch (err) {
-        if (err instanceof ElevenLabsError && err.status === 404) {
-          agentId = await createAgent(conn.apiKey, spec);
-          created = true;
-        } else {
-          throw err;
-        }
-      }
-    } else {
-      agentId = await createAgent(conn.apiKey, spec);
-      created = true;
-    }
+    spec = await agentSpecFor(subAccountId, conn);
   } catch (err) {
     syncError =
       err instanceof ElevenLabsError || err instanceof WebVoiceError
@@ -438,6 +423,49 @@ async function syncAgent(
         : "Couldn't set up the voice agent. Try saving again.";
     if (!(err instanceof ElevenLabsError || err instanceof WebVoiceError)) {
       console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(err));
+    }
+  }
+  if (spec) {
+    if (agentId) {
+      await preflight?.();
+      try {
+        await updateAgent(conn.apiKey, agentId, spec);
+      } catch (err) {
+        if (err instanceof ElevenLabsError && err.status === 404) {
+          await preflight?.();
+          try {
+            agentId = await createAgent(conn.apiKey, spec);
+            created = true;
+          } catch (createErr) {
+            syncError = createErr instanceof ElevenLabsError
+              ? createErr.message.slice(0, 300)
+              : "Couldn't set up the voice agent. Try saving again.";
+            if (!(createErr instanceof ElevenLabsError)) {
+              console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(createErr));
+            }
+          }
+        } else {
+          syncError = err instanceof ElevenLabsError
+            ? err.message.slice(0, 300)
+            : "Couldn't set up the voice agent. Try saving again.";
+          if (!(err instanceof ElevenLabsError)) {
+            console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(err));
+          }
+        }
+      }
+    } else {
+      await preflight?.();
+      try {
+        agentId = await createAgent(conn.apiKey, spec);
+        created = true;
+      } catch (err) {
+        syncError = err instanceof ElevenLabsError
+          ? err.message.slice(0, 300)
+          : "Couldn't set up the voice agent. Try saving again.";
+        if (!(err instanceof ElevenLabsError)) {
+          console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(err));
+        }
+      }
     }
   }
 
