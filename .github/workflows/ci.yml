@@ -366,7 +366,17 @@ jobs:
           KEY="gp_e2e_$(openssl rand -hex 32)"
           [ "${#KEY}" -eq 71 ] || { echo "gitpage callback key was not generated" >&2; exit 1; }
           echo "::add-mask::$KEY"
-          echo "GITPAGE_API_KEY=$KEY" >> "$GITHUB_ENV"
+           echo "GITPAGE_API_KEY=$KEY" >> "$GITHUB_ENV"
+
+      # One-time recovery for the exact E2E run orphaned when main run
+      # 38518618712 was cancelled during agency-snapshots teardown. The script
+      # first inventories and validates every path, then deletes only records
+      # owned by this marker. Remove these two steps after the cleanup run.
+      - name: Inventory approved orphaned agency-snapshot fixture
+        run: node scripts/ci/cleanup-orphaned-agency-snapshot-e2e.mjs --run e2e-a4a2-1791957041479-jryj
+
+      - name: Remove approved orphaned agency-snapshot fixture
+        run: node scripts/ci/cleanup-orphaned-agency-snapshot-e2e.mjs --run e2e-a4a2-1791957041479-jryj --execute
 
       - name: Playwright
         run: pnpm exec playwright test
