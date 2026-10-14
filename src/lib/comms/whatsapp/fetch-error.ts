@@ -53,7 +53,7 @@ export function classifyFetchError(e: unknown): FetchFailure {
     ? (cause.errors as SubError[])
     : [];
   const allConnectFailures =
-    cause?.name === "AggregateError" &&
+    cause instanceof AggregateError &&
     subErrors.length > 0 &&
     subErrors.every((s) => s?.syscall === "connect");
 

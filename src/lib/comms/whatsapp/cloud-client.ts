@@ -171,8 +171,8 @@ export async function uploadCloudMedia(opts: {
         console.warn(
           `[whatsapp-cloud] media upload threw (sa=${opts.subAccountId} attempt=${attempt}/${attempts} ${detail})`,
         );
-        // Any upload failure is safe to retry (nothing reaches the customer),
-        // but only a pre-connect one is quick to; a timed-out 100 MB upload is not.
+        // Only pre-connect failures are retried. Nothing reaches the customer
+        // either way, but re-sending a timed-out 100 MB upload is not quick.
         if (!preConnect || attempt === attempts) throw e;
         await new Promise((r) => setTimeout(r, PRE_CONNECT_RETRY_DELAYS_MS[attempt - 1]));
       }

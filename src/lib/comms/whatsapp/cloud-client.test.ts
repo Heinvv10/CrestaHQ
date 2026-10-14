@@ -327,6 +327,20 @@ describe("sendWhatsappCloud", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
+    it("does not trust a cause merely named AggregateError", async () => {
+      fetchMock.mockRejectedValueOnce(
+        Object.assign(new TypeError("fetch failed"), {
+          cause: Object.assign(new Error("read ETIMEDOUT"), {
+            name: "AggregateError",
+            code: "ETIMEDOUT",
+            errors: [{ code: "ETIMEDOUT", syscall: "connect" }],
+          }),
+        }),
+      );
+      expect((await sendThroughBackoff()).providerOutcome).toBe("AMBIGUOUS");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it("tolerates the code on the error itself rather than on cause", async () => {
       fetchMock.mockRejectedValue(Object.assign(new Error("connect"), { code: "ECONNREFUSED" }));
       expect((await sendThroughBackoff()).providerOutcome).toBe("DEFINITELY_REJECTED");
