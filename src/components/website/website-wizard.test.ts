@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sampleWebsiteConfig, sampleVslConfig } from "@/types/website";
-import { wizardStepsFor, wizardStepTitle } from "./website-wizard";
+import { websiteVoiceAvailableForBuild, wizardStepsFor, wizardStepTitle } from "./website-wizard";
 import {
   button, calls, check, click, gitpageAnswer, gitpageBuilds, hasButton, onOpenChange, openWizard, patches, seedSite, setupWizardTests, site,
   stepText, title, type,
@@ -45,6 +45,18 @@ describe("wizardStepsFor", () => {
     expect(wizardStepsFor(sampleVslConfig())).toEqual(["start", "business", "video", "look", "story", "review"]);
     expect(wizardStepTitle("look")).toBe("Look & feel");
     expect(wizardStepTitle("nonsense")).toBeNull();
+  });
+});
+
+describe("websiteVoiceAvailableForBuild", () => {
+  const ready = { ready: true } as never;
+
+  it("requires Web Voice and readiness while preserving legacy Web Chat default-on", () => {
+    expect(websiteVoiceAvailableForBuild({ webVoiceEnabledByAgency: true, webVoiceMeta: ready })).toBe(true);
+    expect(websiteVoiceAvailableForBuild({ webVoiceEnabledByAgency: true, webChatEnabledByAgency: true, webVoiceMeta: ready })).toBe(true);
+    expect(websiteVoiceAvailableForBuild({ webVoiceEnabledByAgency: true, webChatEnabledByAgency: false, webVoiceMeta: ready })).toBe(false);
+    expect(websiteVoiceAvailableForBuild({ webVoiceEnabledByAgency: false, webVoiceMeta: ready })).toBe(false);
+    expect(websiteVoiceAvailableForBuild({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: false } as never })).toBe(false);
   });
 });
 

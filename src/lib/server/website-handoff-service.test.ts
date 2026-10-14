@@ -28,6 +28,14 @@ vi.mock("@/lib/automations/qstash", () => ({
 }));
 const push = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/push/send", () => ({ sendPushForEvent: push }));
+const updateWebVoiceSettings = vi.hoisted(() => vi.fn());
+const readWebVoiceHandoffSnapshot = vi.hoisted(() => vi.fn());
+const validateWebVoiceHandoff = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/server/web-voice-service", () => ({
+  updateWebVoiceSettings,
+  readWebVoiceHandoffSnapshot,
+  validateWebVoiceHandoff,
+}));
 
 const fail = vi.hoisted(() => ({ chat: false, profile: false, workflow: false }));
 vi.mock("@/lib/comms/ai/agent", async (importOriginal) => {
@@ -168,6 +176,25 @@ const allowedOf = () => (webChat()?.allowedDomains as string[] | undefined) ?? [
 beforeEach(async () => {
   mem.clear();
   push.mockReset().mockResolvedValue(undefined);
+  readWebVoiceHandoffSnapshot.mockReset().mockImplementation(async () => {
+    const meta = mem.read(SUB)?.webVoiceMeta as { ready?: boolean; enabled?: boolean } | undefined;
+    return {
+      revision: meta?.ready === true ? "voice-rev-1" : null,
+      ready: meta?.ready === true,
+      enabled: meta?.ready === true && meta.enabled !== false,
+    };
+  });
+  validateWebVoiceHandoff.mockReset().mockImplementation(async (input: {
+    transactionGuard: (tx: FirebaseFirestore.Transaction) => Promise<void>;
+  }) => (mem.db as unknown as FirebaseFirestore.Firestore).runTransaction(input.transactionGuard));
+  updateWebVoiceSettings.mockReset().mockImplementation(async (input: {
+    transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
+  }) => {
+    if (input.transactionGuard) {
+      await (mem.db as unknown as FirebaseFirestore.Firestore).runTransaction(input.transactionGuard);
+    }
+    return { ready: true, enabled: true };
+  });
   Object.assign(fail, { chat: false, profile: false, workflow: false });
   for (const name of [
     "OPENROUTER_API_KEY", "RESEND_API_KEY", "EMAIL_FROM",
@@ -356,6 +383,149 @@ describe("nothing here starts talking to leads", () => {
     const out = await handoff();
     expect(out!.chatEnabled).toBe(false);
     expect(out!.chatSkippedReason).toContain(reason);
+  });
+});
+
+describe("Web Voice hand-off", () => {
+  const enableChat = () => mem.seed(CHAT, { enabled: true, webChat: { allowedDomains: [], welcomeMessage: "Hi! How can I help?", accentColor: "#7c3aed", position: "right" } });
+  beforeEach(() => vi.stubEnv("OPENROUTER_API_KEY", "sk-or-test"));
+
+  it("enables a requested, gated, ready connection with an enabled chat bot", async () => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    expect(await handoff()).toMatchObject({ voiceEnabled: true, voiceSkippedReason: null });
+    expect(updateWebVoiceSettings).toHaveBeenCalledWith(expect.objectContaining({
+      subAccountId: "sa1", patch: { enabled: true }, expectedRevision: "voice-rev-1", transactionGuard: expect.any(Function),
+    }));
+  });
+
+  it("is idempotent when voice is already on", async () => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: true } });
+    enableChat();
+    expect(await handoff()).toMatchObject({ voiceEnabled: true, voiceSkippedReason: null });
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(validateWebVoiceHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      subAccountId: "sa1", expectedRevision: "voice-rev-1", transactionGuard: expect.any(Function),
+    }));
+  });
+
+  it.each([
+    ["connection replacement", () => undefined, "connection changed or could not be verified"],
+    ["site change", () => seedLiveSite("site1", { gitpageJobId: "new-build" }), "site was rebuilt"],
+    ["readiness disable", () => seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: false, enabled: false } }), "connection was no longer ready"],
+    ["Web Voice gate change", () => seedSub({ webVoiceEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: true } }), "agency switched off Web Voice"],
+    ["Web Chat gate change", () => seedSub({ webVoiceEnabledByAgency: true, webChatEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: true } }), "agency locked Web Chat"],
+    ["chat disable", () => mem.seed(CHAT, { enabled: false }), "Web Chat AI was switched off"],
+    ["AI configuration loss", () => vi.stubEnv("OPENROUTER_API_KEY", ""), "AI provider is no longer configured"],
+  ])("revalidates an already-enabled snapshot after a %s during prior hand-off work", async (_label, change, reason) => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: true } });
+    enableChat();
+    validateWebVoiceHandoff.mockImplementationOnce(async (input: {
+      transactionGuard: (tx: FirebaseFirestore.Transaction) => Promise<void>;
+    }) => {
+      change();
+      if (_label === "connection replacement") throw new Error("connection changed");
+      await (mem.db as unknown as FirebaseFirestore.Firestore).runTransaction(input.transactionGuard);
+    });
+    const out = await handoff();
+    expect(out!.voiceEnabled).toBe(false);
+    expect(out!.voiceSkippedReason).toContain(reason);
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+  });
+
+  it("an opted-out build never disables existing workspace voice", async () => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: true } });
+    enableChat();
+    const before = mem.read(SUB)?.webVoiceMeta;
+    const out = await handoff({ config: { include_voice: false } });
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(mem.read(SUB)?.webVoiceMeta).toEqual(before);
+    expect(out!.voiceSkippedReason).toContain("left unchanged");
+  });
+
+  it.each([
+    ["Web Voice gate", { webVoiceEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: false } }, {}, "agency has not enabled Web Voice"],
+    ["Web Chat gate", { webVoiceEnabledByAgency: true, webChatEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: false } }, {}, "agency has locked Web Chat"],
+    ["connection readiness", { webVoiceEnabledByAgency: true, webVoiceMeta: { ready: false, enabled: false } }, {}, "Connect and finish setting up ElevenLabs"],
+    ["chat request", { webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } }, { include_chat: false }, "needs the chat widget"],
+  ])("fails closed on the %s guard", async (_label, subPatch, configPatch, reason) => {
+    seedSub(subPatch);
+    enableChat();
+    const out = await handoff({ config: configPatch });
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(out!.voiceEnabled).toBe(false);
+    expect(out!.voiceSkippedReason).toContain(reason);
+  });
+
+  it("does not enable voice without the configured AI provider", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "");
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    const out = await handoff();
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(out!.voiceSkippedReason).toContain("OPENROUTER_API_KEY is not set");
+  });
+
+  it("does not enable when the initially ready connection revision is unavailable", async () => {
+    readWebVoiceHandoffSnapshot.mockResolvedValue({ revision: null, ready: true, enabled: false });
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    const out = await handoff();
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(out!.voiceSkippedReason).toContain("changed or could not be verified");
+    expect(out).toMatchObject({ kbSeeded: true, workflowStatus: "draft" });
+  });
+
+  it("records a clear refusal when the approval snapshot cannot be read", async () => {
+    readWebVoiceHandoffSnapshot.mockRejectedValue(new Error("private store down"));
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    const out = await handoff();
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+    expect(out!.voiceSkippedReason).toContain("could not be verified");
+    expect(out!.errors).toContain("web-voice: the ready connection could not be verified");
+  });
+
+  it("does not enable voice while the chat bot is off", async () => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    expect((await handoff())!.voiceSkippedReason).toContain("Web Chat AI is switched off");
+    expect(updateWebVoiceSettings).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["website gate", () => seedSub({ websiteEnabledByAgency: false, webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } }), "website builder was switched off", false],
+    ["Web Voice gate", () => seedSub({ webVoiceEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: false } }), "agency switched off Web Voice", true],
+    ["Web Chat gate", () => seedSub({ webVoiceEnabledByAgency: true, webChatEnabledByAgency: false, webVoiceMeta: { ready: true, enabled: false } }), "agency locked Web Chat", true],
+    ["ready connection", () => seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: false, enabled: false } }), "connection was no longer ready", true],
+    ["enabled chat", () => mem.seed(CHAT, { enabled: false }), "Web Chat AI was switched off", true],
+  ])("re-checks the %s transactionally before the voice state write", async (_label, change, reason, continues) => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    updateWebVoiceSettings.mockImplementationOnce(async (input: { transactionGuard: (tx: FirebaseFirestore.Transaction) => Promise<void> }) => {
+      change();
+      await (mem.db as unknown as FirebaseFirestore.Firestore).runTransaction(input.transactionGuard);
+      return { ready: true, enabled: true };
+    });
+    const out = await handoff();
+    expect(out!.voiceEnabled).toBe(false);
+    expect(out!.voiceSkippedReason).toContain(reason);
+    if (continues) {
+      expect(out!.errors).toEqual([]);
+      expect(out).toMatchObject({ kbSeeded: true, workflowStatus: "draft" });
+    } else {
+      expect(out!.errors.join(" ")).toContain("hand-off stopped");
+    }
+  });
+
+  it("records a stable error and continues the independent hand-off steps", async () => {
+    seedSub({ webVoiceEnabledByAgency: true, webVoiceMeta: { ready: true, enabled: false } });
+    enableChat();
+    updateWebVoiceSettings.mockRejectedValue(new Error("raw provider secret"));
+    const out = await handoff();
+    expect(out!.errors).toContain("web-voice: Web Voice could not be enabled; check the Voice settings card");
+    expect(out!.errors.join(" ")).not.toContain("raw provider secret");
+    expect(out).toMatchObject({ kbSeeded: true, workflowStatus: "draft" });
+    expect(push).toHaveBeenCalledOnce();
   });
 });
 

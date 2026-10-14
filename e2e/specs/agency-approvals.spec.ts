@@ -108,7 +108,11 @@ test("agency approvals: Approve all takes the activation only; gate and send one
     await expect(card(ids.gate).getByTestId("approval-meta")).toContainText(`key ${prefix}`);
     const all = page.getByTestId("approve-all");
     await expect(all).toHaveText(/Approve all \(1\)/);
-    await expect(page.getByTestId("approve-all-bar")).toContainText("skips 2 that need their own click");
+    // Unrelated agency-wide pending rows may coexist with this run's proposals.
+    await expect.poll(async () => {
+      const text = await page.getByTestId("approve-all-bar").textContent();
+      return Number(text?.match(/skips (\d+)/)?.[1] ?? 0);
+    }).toBeGreaterThanOrEqual(2);
     await page.screenshot({ path: testInfo.outputPath("agency-approvals-before.png"), fullPage: true });
 
     // Approve all: the activation only.

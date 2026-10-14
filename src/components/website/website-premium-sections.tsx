@@ -11,6 +11,7 @@ import {
   FileText,
   Loader2,
   MessageSquare,
+  Mic,
   Sparkles,
   Workflow,
   XCircle,
@@ -92,12 +93,17 @@ function ToggleTile({
 export function LeadCaptureToggles({
   includeForm,
   includeChat,
+  includeVoice = true,
+  voiceAvailable = false,
   onChange,
   disabled,
 }: {
   includeForm: boolean;
   includeChat: boolean;
-  onChange: (patch: { include_form?: boolean; include_chat?: boolean }) => void;
+  includeVoice?: boolean;
+  /** Only offer voice when the agency gate is open and ElevenLabs is ready. */
+  voiceAvailable?: boolean;
+  onChange: (patch: { include_form?: boolean; include_chat?: boolean; include_voice?: boolean }) => void;
   disabled?: boolean;
 }) {
   return (
@@ -124,6 +130,19 @@ export function LeadCaptureToggles({
         is allow-listed, and the bot&apos;s knowledge base is seeded from
         the finished site so it can answer questions on day one.
       </ToggleTile>
+      {voiceAvailable && (
+        <ToggleTile
+          checked={includeChat && includeVoice}
+          disabled={disabled || !includeChat}
+          onCheckedChange={(v) => onChange({ include_voice: v })}
+          icon={<Mic className="h-3.5 w-3.5 text-violet-500 dark:text-violet-300" />}
+          title="Visitors can talk to the chat (voice)"
+        >
+          Adds the mic button using this workspace&apos;s ElevenLabs connection.
+          Voice is shared by every site in the workspace — unticking leaves
+          its current setting alone.{!includeChat ? " Needs the chat widget." : ""}
+        </ToggleTile>
+      )}
     </div>
   );
 }
@@ -569,6 +588,15 @@ export function ProvisioningSummary({
         "Chat not included."
       ),
     },
+    ...(provisioning.voiceEnabled !== undefined || provisioning.voiceSkippedReason !== undefined
+      ? [{
+          ok: provisioning.voiceEnabled ? true : provisioning.voiceSkippedReason ? null : false,
+          icon: <Mic className="h-3.5 w-3.5" />,
+          text: provisioning.voiceEnabled
+            ? "Web Voice is on for this workspace."
+            : provisioning.voiceSkippedReason ?? "Web Voice was not included in this build.",
+        }]
+      : []),
     {
       ok: provisioning.workflowStatus === "active" ? true : provisioning.workflowId ? null : false,
       icon: <Workflow className="h-3.5 w-3.5" />,
