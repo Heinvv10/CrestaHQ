@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { collection, onSnapshot, orderBy, query } from "firebase/firestore";
-import { CheckCheck } from "lucide-react";
+import { CheckCheck, Mic } from "lucide-react";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { subscribeToNotes } from "@/lib/firestore/contacts";
 import { mergeThreadItems, type ThreadItem } from "@/lib/conversations/thread-items";
@@ -25,8 +25,10 @@ import { useScheduledMessages } from "@/hooks/use-scheduled-messages";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 
 type ChannelMessage =
-  | (MessageDoc & { channel: ConversationChannel })
+  | (MessageDoc & { channel: ConversationChannel; via?: "voice" })
   | (EmailMessageDoc & { channel: "email" });
+
+type WebChatTimelineMessage = MessageDoc & { via?: "voice" };
 
 const CHANNEL_LABEL: Record<ConversationChannel, string> = {
   email: "Email",
@@ -95,7 +97,7 @@ export function ConversationThread({
   const [sms, setSms] = useState<MessageDoc[]>([]);
   const [wa, setWa] = useState<MessageDoc[]>([]);
   const [meta, setMeta] = useState<MetaMessageDoc[]>([]);
-  const [web, setWeb] = useState<MessageDoc[]>([]);
+  const [web, setWeb] = useState<WebChatTimelineMessage[]>([]);
   const [smsReady, setSmsReady] = useState(false);
   const [waReady, setWaReady] = useState(false);
   const [metaReady, setMetaReady] = useState(false);
@@ -122,7 +124,9 @@ export function ConversationThread({
         ),
         (snap) => {
           setWeb(
-            snap.docs.map((d) => ({ id: d.id, ...d.data() }) as MessageDoc)
+            snap.docs.map(
+              (d) => ({ id: d.id, ...d.data() }) as WebChatTimelineMessage
+            )
           );
           setWebReady(true);
         },
@@ -470,6 +474,18 @@ function ChannelBubble({
         {"subject" in message && (
           <span>· {isOutbound ? "sent" : "received"}</span>
         )}
+        {message.channel === "web-chat" &&
+          "via" in message &&
+          message.via === "voice" && (
+            <span
+              className="inline-flex items-center gap-0.5 text-indigo-600 dark:text-indigo-400"
+              aria-label="Spoken (voice)"
+              title="Spoken through Web Voice"
+            >
+              <Mic className="h-3 w-3" />
+              voice
+            </span>
+          )}
         {"subject" in message && onEmailReply && (
           <Button
             type="button"

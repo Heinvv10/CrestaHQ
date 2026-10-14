@@ -2,11 +2,12 @@
 
 *Part of the [LeadStack CRM](../../CLAUDE.md) docs. Feature index: [README.md](README.md).*
 
-> **Status: connection backend (WV-1), call path (WV-2) and settings card (WV-3).
+> **Status: connection backend (WV-1), call path (WV-2), settings card (WV-3)
+> and widget mic (WV-4).
 > NOT runtime-verified.** It
 > merges dark behind `webVoiceEnabledByAgency` (default off). No real ElevenLabs key
 > has been connected, so no agent has ever been provisioned on a real account and no
-> real call has reached the reply endpoint. The widget mic (WV-4) comes later. The
+> real call has reached the reply endpoint. The
 > first client to switch the gate on triggers a live walk
 > (UPSTREAM_PORT_PLAN.md, Hein's ruling 4).
 
@@ -43,7 +44,8 @@ spends the agency's OpenRouter tokens, which is why the feature is agency-gated.
 - **GET** returns `gateOn`, `webChatGateOn`, the display meta, `usage`
   (`secondsToday`, `secondsThisMonth`, `activeNow`; null before a key is connected),
   `previewToken` (a widget token for the settings page's preview link, only while
-  `webVoiceAvailable` is true, else null) and, with `?voices=1` and the gate on, the
+  `webVoiceAvailable` is true, else null; carried in a `#vt=` fragment and removed
+  from the address before use) and, with `?voices=1` and the gate on, the
   live voice list. A voice's preview URL is passed on only when it is a public https
   address.
 - **DELETE** disconnects. It deletes the secret and usage docs, clears the meta, then
@@ -106,7 +108,9 @@ One conversation, end to end:
    channel's allowed domains) answers `voiceEnabled: true` and a 12-hour **widget
    token** (`w1.…`) only while `webVoiceAvailable` holds, an agent is provisioned and
    today's COUNTED seconds (settled calls and charged lapsed grants) leave room for one more full-length call. Anything else,
-   including any error, is `voiceEnabled: false` with no token.
+   including any error, is `voiceEnabled: false` with no token. The loader keeps the
+   token in memory and sends it only after an iframe/source/origin-checked
+   `postMessage` handshake; it is never put in the iframe's HTTP URL.
 2. **`POST /api/web-chat/voice/start`** `{ sa, sessionId, voiceToken, pageUrl?,
    referrer? }` (body capped at 8 KB). In order: the widget token for this
    sub-account → 12 starts per IP per hour (see *Per-IP limit* below) → gates and a ready connection (403
@@ -272,8 +276,9 @@ responses:
 - every listed conversation carries `start_time_unix_secs` (and `agent_id`,
   `call_duration_secs`); one without a start time blocks reconciliation for good.
 
-**No end-to-end call yet.** Nothing in the widget calls this path until WV-4 wires
-the mic into the chat window (and the embed iframe gets `allow="microphone"`).
+**No live end-to-end call yet.** WV-4 wires this path into the chat window and adds
+`allow="microphone"` to the embed iframe, but the gate remains off and the flow has
+not been exercised against a real ElevenLabs account.
 
 **WV-4 requirements.** The widget must call `getUserMedia` (and have the
 microphone granted) BEFORE `POST /voice/start`, and start the ElevenLabs session
@@ -283,10 +288,15 @@ claimed only in its first 2 minutes. It reports `connected` with the conversatio
 id ElevenLabs gives it (a different id is refused) and must **resend it a few times
 over about 30 seconds until the response says it was claimed**: ElevenLabs may not
 list a brand-new conversation yet, and a 404 is not retried on the server. Stay
-within the event limit of 6 per grant (e.g. 4 `connected` tries, then one `ended`;
-a beacon on page hide is fine). The response to `connected` is
+within the event limit of 6 per grant (up to 4 `connected` tries and one `ended`;
+if a claim succeeds after that end was sent, one idempotent follow-up `ended`
+settles the late claim; a beacon on page hide is fine). The response to `connected` is
 `{ ok: true, claimed }`: `claimed` is true once this token's grant holds that
 conversation (also on a resend after an earlier ping already claimed it).
+The ElevenLabs web module is preloaded when the verified widget token arrives, before
+the mic gesture, because its iOS audio-unlock listener is installed at module
+evaluation time. Host/iframe messages require both the expected window and exact
+origin; launcher close ends the active call before the iframe is hidden.
 
 **Residual risk.** A visitor who never reports a call still spends the client's
 ElevenLabs minutes, up to `maxCallSeconds` per start (bounded by the per-IP start
@@ -297,6 +307,17 @@ conversation can use a claimed call's token for AI replies while that claim is
 pending (up to the agent's concurrency limit of 3 on ElevenLabs); its minutes are
 counted by the sweep, its AI tokens by the workspace quota.
 
-## Not yet built
+## Website publish hand-off (WV-5)
 
-- WV-4: the widget mic. WV-5: the website hand-off's voice step.
+The premium website wizard offers `include_voice` only when the agency Web Voice
+gate is on and the workspace has a ready ElevenLabs connection. On publish, the
+hand-off enables voice only when the build requested it, OpenRouter is configured,
+both Web Voice and Web Chat gates remain open, the ElevenLabs connection's readiness
+and revision were approved from one snapshot and remain unchanged, and the Web Chat
+bot is already enabled. After resolving the local agent specification, a read-only
+transaction repeats every check immediately before each ElevenLabs mutation, including
+a fallback create after a missing-agent response. Provider work can race only after
+that preflight succeeds; the state-write transaction repeats the same checks and refuses a later change. The
+hand-off never writes `enabled: false`; opting out leaves the
+workspace-wide setting unchanged. Every skip is recorded in the website's
+provisioning summary, and a failure does not stop the other hand-off steps.

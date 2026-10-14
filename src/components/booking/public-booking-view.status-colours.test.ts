@@ -6,6 +6,7 @@ import { PublicBookingView } from "./public-booking-view";
 import { CHECKOUT_THEMES } from "@/lib/checkout/themes";
 import { contrast, hexToRgb, over, tailwindColor } from "@/test/contrast";
 import { seedPage } from "@/test/booking-harness";
+import { publicBookingPage } from "@/lib/booking/public-page";
 import type { CheckoutThemeId } from "@/types/checkout-pages";
 
 /**
@@ -28,7 +29,7 @@ const PAYMENT = { amount: 50, currency: "USD", description: "Deposit", holdHours
 const PRESETS = Object.keys(CHECKOUT_THEMES) as CheckoutThemeId[];
 
 async function render(over: Record<string, unknown>) {
-  const page = { ...seedPage("p", over as never), createdAt: null, updatedAt: null };
+  const page = publicBookingPage(seedPage("p", over as never), "p");
   await act(async () =>
     root.render(createElement(PublicBookingView, { subAccountId: "sa1", page, branding: { name: "Fixture", logoUrl: null, accentColor: null } })),
   );
@@ -109,6 +110,31 @@ afterEach(async () => {
 });
 
 describe("status colours on the public booking page", () => {
+  it("keeps sub-account and slug values inside encoded request path segments", async () => {
+    fetchMock.mockImplementation(async (url) =>
+      url.endsWith("/book")
+        ? Response.json({ ok: true, status: "scheduled" })
+        : Response.json({ slots: [SLOT] }),
+    );
+    const page = publicBookingPage(seedPage("p"), "slug/../target?");
+    await act(async () =>
+      root.render(createElement(PublicBookingView, {
+        subAccountId: "sa/../target?",
+        page,
+        branding: { name: "Fixture", logoUrl: null, accentColor: null },
+      })),
+    );
+    await act(async () => [...container.querySelectorAll("button")].find((b) => /^\d{1,2}:\d{2}/.test(b.textContent ?? ""))!.click());
+    await type("#b-name", "Ann");
+    await type("#b-email", "ann@example.com");
+    await type("#b-phone", "+27600000000");
+    await submit();
+
+    const urls = fetchMock.mock.calls.map(([url]) => url);
+    expect(urls).toContain("/api/booking/sa%2F..%2Ftarget%3F/slug%2F..%2Ftarget%3F/availability");
+    expect(urls).toContain("/api/booking/sa%2F..%2Ftarget%3F/slug%2F..%2Ftarget%3F/book");
+  });
+
   it("with no preset, every state keeps the light colour with its dark: variant", async () => {
     const seen = await walk(null, () => undefined);
     expect([...new Set(seen)].sort()).toEqual([

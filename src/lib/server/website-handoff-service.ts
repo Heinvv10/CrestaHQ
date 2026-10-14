@@ -15,6 +15,12 @@ import { sendPushForEvent } from "@/lib/push/send";
 import { isDocId } from "@/lib/server/doc-id";
 import { registrableDomain } from "@/lib/prospecting/registrable-domain";
 import {
+  readWebVoiceHandoffSnapshot,
+  type WebVoiceHandoffSnapshot,
+  updateWebVoiceSettings,
+  validateWebVoiceHandoff,
+} from "@/lib/server/web-voice-service";
+import {
   createWorkflowServerSide,
   deleteWorkflowServerSide,
   workflowPatchWrite,
@@ -30,6 +36,7 @@ import type { WorkflowDoc, WorkflowNode } from "@/types/workflows";
 import {
   wantsChatWidget,
   wantsLeadForm,
+  wantsWebVoice,
   type WebsiteConfig,
   type WebsiteDoc,
   type WebsiteProvisioning,
@@ -61,6 +68,8 @@ import { cleanText, safePagesUrl, type PollBuildResult } from "@/lib/gitpage/cli
  *      path URL, or a Pages host reported as-is), which GitLab serves for
  *      every project in a namespace. The channel's `enabled` flag is never
  *      touched (see below).
+ *   1b. Web Voice — enable the existing ready connection only when requested;
+ *      never disable it and never switch Web Chat on.
  *   2. KB + persona — seed `aiAgent/profile` with gitpage's kbText (replaces
  *      the Firecrawl snapshot; `websiteKbSource: "gitpage-build"`) and fill
  *      persona fields ONLY where blank. ONE profile write.
@@ -86,7 +95,6 @@ import { cleanText, safePagesUrl, type PollBuildResult } from "@/lib/gitpage/cli
  *     operator has not set their own (upstream overwrites it every publish).
  *   - "One form, one workflow" is enforced by a claim in a transaction
  *     (`claimOnce`), not by a query followed by a create.
- *   - No Web Voice step (unit WV-5).
  */
 
 const KB_MAX_CHARS = 6000;
@@ -433,6 +441,8 @@ export function blankProvisioning(formId: string | null, errors: string[] = []):
     chatAllowlisted: false,
     chatEnabled: false,
     chatSkippedReason: null,
+    voiceEnabled: false,
+    voiceSkippedReason: "Web Voice hand-off did not run.",
     kbSeeded: false,
     personaSeeded: false,
     workflowId: null,
@@ -516,6 +526,19 @@ export async function provisionWebsiteHandoff(
   };
   type ChatSeeded = NonNullable<AiChannelConfig["websiteSeeded"]>;
 
+  // Bind a later enable to the ready connection approved before any hand-off
+  // writes. A replacement after this snapshot is a different operator decision.
+  let approvedVoice: WebVoiceHandoffSnapshot | null = null;
+  let voiceApprovalFailed = false;
+  if (wantsWebVoice(config)) {
+    try {
+      approvedVoice = await readWebVoiceHandoffSnapshot(subAccountId);
+    } catch {
+      voiceApprovalFailed = true;
+      errors.push("web-voice: the ready connection could not be verified");
+    }
+  }
+
   // 1. Chat: allowlist the hostname. The bot is NOT switched on here. The
   // cap check and the append are one transaction, so two sites publishing
   // at once cannot take the list past the cap.
@@ -589,6 +612,83 @@ export async function provisionWebsiteHandoff(
     }
   } else {
     out.chatSkippedReason = "Chat widget not included in this build.";
+  }
+
+  // 1b. Web Voice is workspace-wide, so this branch may only turn it on.
+  // It never writes `enabled: false`, including when this build opts out.
+  const voiceTransactionGuard = async (tx: FirebaseFirestore.Transaction) => {
+    const refused = await blocked(tx);
+    if (refused) throw new HandoffStopped(refused);
+    const freshSub = (await tx.get(db.doc(`subAccounts/${subAccountId}`))).data() as SubAccountDoc;
+    if (freshSub.webVoiceEnabledByAgency !== true) {
+      throw new HandoffStopped("the agency switched off Web Voice for this workspace");
+    }
+    if (!aiChannelGateOn(freshSub, "web-chat")) {
+      throw new HandoffStopped("the agency locked Web Chat AI for this workspace");
+    }
+    if (!aiIsConfigured()) {
+      throw new HandoffStopped("the AI provider is no longer configured");
+    }
+    if (freshSub.webVoiceMeta?.ready !== true) {
+      throw new HandoffStopped("the ElevenLabs connection was no longer ready");
+    }
+    const chat = await tx.get(db.doc(`subAccounts/${subAccountId}/aiAgent/web-chat`));
+    if (chat.data()?.enabled !== true) {
+      throw new HandoffStopped("Web Chat AI was switched off for this workspace");
+    }
+  };
+  if (!wantsWebVoice(config)) {
+    out.voiceSkippedReason = wantsChatWidget(config)
+      ? "Web Voice was not included in this build; the workspace setting was left unchanged."
+      : "Web Voice needs the chat widget; the workspace setting was left unchanged.";
+  } else if (sub.webVoiceEnabledByAgency !== true) {
+    out.voiceSkippedReason = "The agency has not enabled Web Voice for this workspace.";
+  } else if (!aiChannelGateOn(sub, "web-chat")) {
+    out.voiceSkippedReason = "The agency has locked Web Chat AI for this workspace.";
+  } else if (!aiIsConfigured()) {
+    out.voiceSkippedReason = "OPENROUTER_API_KEY is not set on this deployment, so Web Voice was not enabled.";
+  } else if (voiceApprovalFailed) {
+    out.voiceSkippedReason = "The ready ElevenLabs connection could not be verified; Web Voice was not enabled.";
+  } else if (approvedVoice?.ready !== true) {
+    out.voiceSkippedReason = "Connect and finish setting up ElevenLabs in AI Agents → Web Chat → Voice.";
+  } else if (!out.chatEnabled) {
+    out.voiceSkippedReason = "Web Chat AI is switched off; turn it on before enabling voice.";
+  } else if (!approvedVoice.revision) {
+    out.voiceSkippedReason = "The ready ElevenLabs connection changed or could not be verified; Web Voice was not enabled.";
+  } else if (approvedVoice.enabled) {
+    try {
+      await validateWebVoiceHandoff({
+        subAccountId,
+        expectedRevision: approvedVoice.revision,
+        transactionGuard: voiceTransactionGuard,
+      });
+      out.voiceEnabled = true;
+      out.voiceSkippedReason = null;
+    } catch (err) {
+      out.voiceSkippedReason = err instanceof HandoffStopped
+        ? `Web Voice was not confirmed: ${err.message}.`
+        : "Web Voice was not confirmed because its connection changed or could not be verified.";
+    }
+  } else {
+    try {
+      const meta = await updateWebVoiceSettings({
+        subAccountId,
+        patch: { enabled: true },
+        expectedRevision: approvedVoice.revision,
+        transactionGuard: voiceTransactionGuard,
+      });
+      out.voiceEnabled = meta.ready === true && meta.enabled !== false;
+      out.voiceSkippedReason = out.voiceEnabled
+        ? null
+        : "ElevenLabs could not enable Web Voice; check the Voice settings card.";
+    } catch (err) {
+      if (err instanceof HandoffStopped) {
+        out.voiceSkippedReason = `Web Voice was not enabled: ${err.message}.`;
+      } else {
+        errors.push("web-voice: Web Voice could not be enabled; check the Voice settings card");
+        out.voiceSkippedReason = "Web Voice could not be enabled; check the Voice settings card.";
+      }
+    }
   }
 
   // 2. KB + persona (one write, decided on the profile as it is now).

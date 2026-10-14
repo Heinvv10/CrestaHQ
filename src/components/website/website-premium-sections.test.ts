@@ -112,18 +112,30 @@ describe("PremiumDetailsFields", () => {
 describe("LeadCaptureToggles", () => {
   const FORM = "Contact form feeds this workspace";
   const CHAT = "AI chat widget on every page";
+  const VOICE = "Visitors can talk to the chat (voice)";
 
-  it("writes include_form and include_chat independently, and offers no voice toggle", async () => {
+  it("writes all three choices when voice is available", async () => {
     const onChange = vi.fn();
-    await render(createElement(LeadCaptureToggles, { includeForm: true, includeChat: false, onChange }));
-    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(2);
+    await render(createElement(LeadCaptureToggles, { includeForm: true, includeChat: true, includeVoice: false, voiceAvailable: true, onChange }));
+    expect(host.querySelectorAll('[role="checkbox"]')).toHaveLength(3);
     expect(byLabel(host, FORM).getAttribute("aria-checked")).toBe("true");
-    expect(byLabel(host, CHAT).getAttribute("aria-checked")).toBe("false");
+    expect(byLabel(host, CHAT).getAttribute("aria-checked")).toBe("true");
+    expect(byLabel(host, VOICE).getAttribute("aria-checked")).toBe("false");
     await act(async () => byLabel(host, FORM).click());
     expect(onChange).toHaveBeenLastCalledWith({ include_form: false });
     await act(async () => byLabel(host, CHAT).click());
-    expect(onChange).toHaveBeenLastCalledWith({ include_chat: true });
+    expect(onChange).toHaveBeenLastCalledWith({ include_chat: false });
+    await act(async () => byLabel(host, VOICE).click());
+    expect(onChange).toHaveBeenLastCalledWith({ include_voice: true });
+  });
+
+  it("hides voice without readiness and disables it without chat", async () => {
+    const onChange = vi.fn();
+    await render(createElement(LeadCaptureToggles, { includeForm: true, includeChat: true, onChange }));
     expect(host.textContent).not.toMatch(/voice/i);
+    await render(createElement(LeadCaptureToggles, { includeForm: true, includeChat: false, voiceAvailable: true, onChange }));
+    expect(byLabel(host, VOICE).getAttribute("aria-disabled")).toBe("true");
+    expect(description(host, byLabel(host, VOICE))).toContain("Needs the chat widget");
   });
 
   it("toggles when the operator clicks the title or the explanation, not only the box", async () => {
@@ -150,9 +162,10 @@ describe("LeadCaptureToggles", () => {
 
   it("does nothing when disabled", async () => {
     const onChange = vi.fn();
-    await render(createElement(LeadCaptureToggles, { includeForm: false, includeChat: false, onChange, disabled: true }));
+    await render(createElement(LeadCaptureToggles, { includeForm: false, includeChat: true, voiceAvailable: true, onChange, disabled: true }));
     await act(async () => byLabel(host, FORM).click());
     await act(async () => byLabel(host, CHAT).click());
+    await act(async () => byLabel(host, VOICE).click());
     expect(onChange).not.toHaveBeenCalled();
   });
 });
@@ -237,19 +250,21 @@ describe("build phase + provisioning summary", () => {
   it("summarises a fully wired and a bare hand-off", async () => {
     const full: WebsiteProvisioning = {
       at: null, hostname: "x.example.com", formId: "f1", chatAllowlisted: true, chatEnabled: true,
-      chatSkippedReason: null, kbSeeded: true, personaSeeded: true, workflowId: "w1",
+      chatSkippedReason: null, voiceEnabled: true, voiceSkippedReason: null, kbSeeded: true, personaSeeded: true, workflowId: "w1",
       workflowStatus: "active", workflowChannels: ["send_sms", "notify"], errors: [],
     };
     await render(createElement(ProvisioningSummary, { provisioning: full, subAccountId: "sa1" }));
     expect(host.textContent).toContain("instant SMS, team alert");
+    expect(host.textContent).toContain("Web Voice is on");
     expect(host.querySelector('a[href="/sa/sa1/forms/f1"]')).not.toBeNull();
     expect(host.querySelector('a[href="/sa/sa1/workflows/w1"]')).not.toBeNull();
     await render(createElement(ProvisioningSummary, {
-      provisioning: { ...full, formId: null, chatEnabled: false, chatAllowlisted: false, workflowId: null, workflowStatus: null, workflowChannels: [], errors: ["kb failed"] },
+      provisioning: { ...full, formId: null, chatEnabled: false, chatAllowlisted: false, voiceEnabled: false, voiceSkippedReason: "The agency has not enabled Web Voice for this workspace.", workflowId: null, workflowStatus: null, workflowChannels: [], errors: ["kb failed"] },
       subAccountId: "sa1",
     }));
     expect(host.textContent).toContain("No contact form on this build.");
     expect(host.textContent).toContain("Chat not included.");
+    expect(host.textContent).toContain("The agency has not enabled Web Voice");
     expect(host.textContent).toContain("Some steps need attention: kb failed");
   });
 });

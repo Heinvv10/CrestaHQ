@@ -122,6 +122,51 @@ export async function readWebVoiceConnection(
   return (await readState(subAccountId)).conn;
 }
 
+export type WebVoiceHandoffSnapshot = {
+  revision: string | null;
+  ready: boolean;
+  enabled: boolean;
+};
+
+/** Atomically approve the ready connection a website publish may later enable. */
+export async function readWebVoiceHandoffSnapshot(
+  subAccountId: string,
+): Promise<WebVoiceHandoffSnapshot> {
+  const db = getAdminDb();
+  const subRef = db.doc(`subAccounts/${subAccountId}`);
+  const secretRef = db.doc(webVoiceConnectionPath(subAccountId));
+  return db.runTransaction(async (tx) => {
+    const [subSnap, secretSnap] = await tx.getAll(subRef, secretRef);
+    const meta = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
+    const revision = parseConnection(
+      secretSnap.data() as Partial<WebVoiceConnectionSecret> | undefined,
+    )
+      ? revOf(secretSnap)
+      : null;
+    const ready = meta?.ready === true && revision !== null;
+    return {
+      revision: ready ? revision : null,
+      ready,
+      enabled: ready && meta.enabled !== false,
+    };
+  });
+}
+
+export async function validateWebVoiceHandoff(input: {
+  subAccountId: string;
+  expectedRevision: string;
+  transactionGuard: (tx: FirebaseFirestore.Transaction) => Promise<void>;
+}): Promise<void> {
+  const db = getAdminDb();
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(db.doc(webVoiceConnectionPath(input.subAccountId)));
+    if (revOf(snap) !== input.expectedRevision) {
+      throw new WebVoiceError("Web Voice connection changed before this could be saved.", 409);
+    }
+    await input.transactionGuard(tx);
+  });
+}
+
 /**
  * The ONE writer of Web Voice state. The secret doc and `webVoiceMeta` on the
  * sub-account change together, and only if the secret doc's revision is
@@ -135,6 +180,7 @@ async function commitWebVoiceState(
   subAccountId: string,
   expectRev: string | null,
   next: { conn: WebVoiceConnectionSecret; meta: WebVoiceMeta } | null,
+  transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>,
 ): Promise<void> {
   const db = getAdminDb();
   const secretRef = db.doc(webVoiceConnectionPath(subAccountId));
@@ -147,6 +193,7 @@ async function commitWebVoiceState(
         409,
       );
     }
+    await transactionGuard?.(tx);
     if (next) {
       tx.set(secretRef, { ...next.conn, rev: randomBytes(12).toString("base64url") });
     } else {
@@ -360,27 +407,15 @@ async function syncAgent(
   conn: WebVoiceConnectionSecret,
   connectedAt: Date | null,
   lastGood: WebVoiceConnectionSecret | null,
+  transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>,
+  preflight?: () => Promise<void>,
 ): Promise<WebVoiceMeta> {
   let agentId = conn.agentId;
   let created = false;
   let syncError: string | null = null;
+  let spec: AgentSpec | null = null;
   try {
-    const spec = await agentSpecFor(subAccountId, conn);
-    if (agentId) {
-      try {
-        await updateAgent(conn.apiKey, agentId, spec);
-      } catch (err) {
-        if (err instanceof ElevenLabsError && err.status === 404) {
-          agentId = await createAgent(conn.apiKey, spec);
-          created = true;
-        } else {
-          throw err;
-        }
-      }
-    } else {
-      agentId = await createAgent(conn.apiKey, spec);
-      created = true;
-    }
+    spec = await agentSpecFor(subAccountId, conn);
   } catch (err) {
     syncError =
       err instanceof ElevenLabsError || err instanceof WebVoiceError
@@ -388,6 +423,49 @@ async function syncAgent(
         : "Couldn't set up the voice agent. Try saving again.";
     if (!(err instanceof ElevenLabsError || err instanceof WebVoiceError)) {
       console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(err));
+    }
+  }
+  if (spec) {
+    if (agentId) {
+      await preflight?.();
+      try {
+        await updateAgent(conn.apiKey, agentId, spec);
+      } catch (err) {
+        if (err instanceof ElevenLabsError && err.status === 404) {
+          await preflight?.();
+          try {
+            agentId = await createAgent(conn.apiKey, spec);
+            created = true;
+          } catch (createErr) {
+            syncError = createErr instanceof ElevenLabsError
+              ? createErr.message.slice(0, 300)
+              : "Couldn't set up the voice agent. Try saving again.";
+            if (!(createErr instanceof ElevenLabsError)) {
+              console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(createErr));
+            }
+          }
+        } else {
+          syncError = err instanceof ElevenLabsError
+            ? err.message.slice(0, 300)
+            : "Couldn't set up the voice agent. Try saving again.";
+          if (!(err instanceof ElevenLabsError)) {
+            console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(err));
+          }
+        }
+      }
+    } else {
+      await preflight?.();
+      try {
+        agentId = await createAgent(conn.apiKey, spec);
+        created = true;
+      } catch (err) {
+        syncError = err instanceof ElevenLabsError
+          ? err.message.slice(0, 300)
+          : "Couldn't set up the voice agent. Try saving again.";
+        if (!(err instanceof ElevenLabsError)) {
+          console.error(`[web-voice] agent sync failed sa=${subAccountId}`, errText(err));
+        }
+      }
     }
   }
 
@@ -401,7 +479,7 @@ async function syncAgent(
     connectedAt,
   };
   try {
-    await commitWebVoiceState(subAccountId, expectRev, { conn: stored, meta });
+    await commitWebVoiceState(subAccountId, expectRev, { conn: stored, meta }, transactionGuard);
   } catch (err) {
     if (created && agentId) {
       await dropAgent(subAccountId, conn.apiKey, agentId);
@@ -497,13 +575,36 @@ export async function connectWebVoice(input: {
 export async function updateWebVoiceSettings(input: {
   subAccountId: string;
   patch: Partial<WebVoiceSettings>;
+  /** Refuse before any provider call unless this is still the approved connection. */
+  expectedRevision?: string | null;
+  /** Optional caller invariant checked before provider work and again with the state write. */
+  transactionGuard?: (tx: FirebaseFirestore.Transaction) => Promise<void>;
 }): Promise<WebVoiceMeta> {
   const { conn, rev } = await readState(input.subAccountId);
   if (!conn) throw new WebVoiceError("Connect an ElevenLabs key first.", 400);
+  if (input.expectedRevision !== undefined && rev !== input.expectedRevision) {
+    throw new WebVoiceError("Web Voice connection changed before this could be saved.", 409);
+  }
   const next = sanitizeSettings(input.patch, settingsOf(conn));
   const subSnap = await getAdminDb().doc(`subAccounts/${input.subAccountId}`).get();
   const prevMeta = (subSnap.data() as SubAccountDoc | undefined)?.webVoiceMeta;
-  return syncAgent(input.subAccountId, rev, { ...conn, ...next }, prevMeta?.connectedAt ?? null, conn);
+  const expectedRevision = input.expectedRevision ?? rev;
+  const guard = input.transactionGuard;
+  return syncAgent(
+    input.subAccountId,
+    expectedRevision,
+    { ...conn, ...next },
+    prevMeta?.connectedAt ?? null,
+    conn,
+    guard,
+    guard && expectedRevision !== null
+      ? () => validateWebVoiceHandoff({
+          subAccountId: input.subAccountId,
+          expectedRevision,
+          transactionGuard: guard,
+        })
+      : undefined,
+  );
 }
 
 /** Live voice list for the picker (needs the stored key). */

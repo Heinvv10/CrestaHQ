@@ -12,6 +12,10 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store
 
 const { mem, claims, storeDb } = await import("@/test/gbp-sync-store");
 const { GET, POST, PATCH, DELETE } = await import("./route");
+const {
+  readWebVoiceHandoffSnapshot,
+  updateWebVoiceSettings,
+} = await import("@/lib/server/web-voice-service");
 const { Timestamp } = await import("firebase-admin/firestore");
 const { verifyWidgetToken } = await import("@/lib/web-voice/tokens");
 
@@ -42,6 +46,8 @@ let agents: Map<string, string>; // agentId → key that owns it
 let agentSeq = 0;
 /** Runs inside the fake ElevenLabs create call — lets a test commit a rival write mid-flight. */
 let onCreate: (() => void) | null = null;
+let onAppProbe: (() => Promise<void>) | null = null;
+let onPatchMissing: (() => void) | null = null;
 
 const VOICES = [
   { voice_id: "cloned0001", name: "Zed", category: "cloned", labels: {} },
@@ -61,7 +67,10 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 
 async function fakeFetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
   const url = String(input);
-  if (url.startsWith(APP)) return new Response("", { status: 200 }); // resolvedAppUrl's own probe
+  if (url.startsWith(APP)) {
+    await onAppProbe?.();
+    return new Response("", { status: 200 });
+  }
   const headers = (init?.headers ?? {}) as Record<string, string>;
   const key = headers["xi-api-key"] ?? null;
   const method = init?.method ?? "GET";
@@ -78,7 +87,10 @@ async function fakeFetch(input: string | URL | Request, init?: RequestInit): Pro
   }
   const m = /^\/v1\/convai\/agents\/([^/?]+)$/.exec(path);
   if (m && (method === "PATCH" || method === "DELETE")) {
-    if (agents.get(m[1]) !== key) return json(404, { detail: "Agent not found" });
+    if (agents.get(m[1]) !== key) {
+      if (method === "PATCH") onPatchMissing?.();
+      return json(404, { detail: "Agent not found" });
+    }
     if (method === "DELETE") agents.delete(m[1]);
     return json(200, {});
   }
@@ -113,6 +125,8 @@ beforeEach(() => {
   agents = new Map();
   agentSeq = 0;
   onCreate = null;
+  onAppProbe = null;
+  onPatchMissing = null;
   fetchMock.mockClear().mockImplementation(fakeFetch);
   vi.stubGlobal("fetch", fetchMock);
   vi.stubEnv("NEXT_PUBLIC_APP_URL", APP);
@@ -368,11 +382,190 @@ describe("POST — connect", () => {
 });
 
 describe("PATCH — settings", () => {
+  const SITE = "subAccounts/sa1/website/site1";
+  const CHAT = "subAccounts/sa1/aiAgent/web-chat";
+  const seedHandoffReady = () => {
+    mem.seed("subAccounts/sa1", {
+      ...mem.read("subAccounts/sa1"),
+      websiteEnabledByAgency: true,
+      webVoiceEnabledByAgency: true,
+      webChatEnabledByAgency: true,
+      webVoiceMeta: { ...(mem.read("subAccounts/sa1")?.webVoiceMeta as object), ready: true },
+    });
+    mem.seed(SITE, { gitpageJobId: "job1", status: "ready" });
+    mem.seed(CHAT, { enabled: true });
+  };
+  const handoffGuard = async (tx: FirebaseFirestore.Transaction) => {
+    const ref = (path: string) => storeDb.doc(path) as unknown as FirebaseFirestore.DocumentReference;
+    const site = await tx.get(ref(SITE));
+    const sub = await tx.get(ref("subAccounts/sa1"));
+    const chat = await tx.get(ref(CHAT));
+    if (!site.exists || site.data()?.gitpageJobId !== "job1" || site.data()?.status !== "ready") {
+      throw new Error("site changed");
+    }
+    if (sub.data()?.websiteEnabledByAgency !== true) throw new Error("website gate changed");
+    if (sub.data()?.webVoiceEnabledByAgency !== true) throw new Error("voice gate changed");
+    if (sub.data()?.webChatEnabledByAgency !== true) throw new Error("chat gate changed");
+    if (sub.data()?.webVoiceMeta?.ready !== true) throw new Error("readiness changed");
+    if (chat.data()?.enabled !== true) throw new Error("chat changed");
+  };
+
   it("needs a connection first", async () => {
     const res = await PATCH(req("PATCH", { greeting: "Hi" }), ctx());
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/Connect an ElevenLabs key first/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("checks an optional transaction guard before provider work", async () => {
+    await connect();
+    const before = mem.read(SECRET);
+    calls = [];
+    const guard = vi.fn(async () => { throw new Error("handoff moved on"); });
+    await expect(updateWebVoiceSettings({ subAccountId: "sa1", patch: { enabled: false }, transactionGuard: guard }))
+      .rejects.toThrow("handoff moved on");
+    expect(guard).toHaveBeenCalledOnce();
+    expect(calls).toEqual([]);
+    expect(mem.read(SECRET)).toMatchObject({ enabled: before?.enabled, rev: before?.rev });
+  });
+
+  it("rechecks a successful transaction guard with the final state commit", async () => {
+    await connect();
+    calls = [];
+    const guard = vi.fn(async () => undefined);
+    await updateWebVoiceSettings({ subAccountId: "sa1", patch: { enabled: true }, transactionGuard: guard });
+    expect(guard).toHaveBeenCalledTimes(2);
+    expect(elCalls("PATCH", "/v1/convai/agents/agent1")).toHaveLength(1);
+  });
+
+  it("atomically pairs readiness with the connection revision across a replacement", async () => {
+    await connect();
+    const realDoc = storeDb.doc.bind(storeDb);
+    let replaced = false;
+    vi.spyOn(storeDb, "doc").mockImplementation((path) => {
+      const ref = realDoc(path);
+      if (path !== "subAccounts/sa1") return ref;
+      return {
+        ...ref,
+        get: async () => {
+          const snap = await ref.get();
+          if (!replaced) {
+            replaced = true;
+            mem.seed(SECRET, { ...mem.read(SECRET), rev: "replacement-rev" });
+            const sub = mem.read("subAccounts/sa1")!;
+            mem.seed("subAccounts/sa1", {
+              ...sub,
+              webVoiceMeta: { ...(sub.webVoiceMeta as object), ready: false, enabled: false },
+            });
+          }
+          return snap;
+        },
+      };
+    });
+    expect(await readWebVoiceHandoffSnapshot("sa1")).toEqual({
+      revision: null,
+      ready: false,
+      enabled: false,
+    });
+    expect(replaced).toBe(true);
+  });
+
+  it("rejects a replacement after handoff approval before calling ElevenLabs", async () => {
+    await connect();
+    const approved = await readWebVoiceHandoffSnapshot("sa1");
+    const before = mem.read(SECRET)!;
+    calls = [];
+    mem.seed(SECRET, { ...before, rev: "replacement-rev" });
+    await expect(updateWebVoiceSettings({
+      subAccountId: "sa1", patch: { enabled: true }, expectedRevision: approved.revision,
+    })).rejects.toThrow("connection changed");
+    expect(calls).toEqual([]);
+    expect(mem.read(SECRET)?.rev).toBe("replacement-rev");
+  });
+
+  it("rechecks the approved revision immediately before provider work", async () => {
+    await connect();
+    const approved = await readWebVoiceHandoffSnapshot("sa1");
+    const realDoc = storeDb.doc.bind(storeDb);
+    let replaced = false;
+    vi.spyOn(storeDb, "doc").mockImplementation((path) => {
+      const ref = realDoc(path);
+      if (path !== "subAccounts/sa1") return ref;
+      return {
+        ...ref,
+        get: async () => {
+          const snap = await ref.get();
+          if (!replaced) {
+            replaced = true;
+            mem.seed(SECRET, { ...mem.read(SECRET), rev: "replacement-before-provider" });
+          }
+          return snap;
+        },
+      };
+    });
+    calls = [];
+    await expect(updateWebVoiceSettings({
+      subAccountId: "sa1",
+      patch: { enabled: true },
+      expectedRevision: approved.revision,
+      transactionGuard: async () => undefined,
+    })).rejects.toThrow("connection changed");
+    expect(replaced).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    ["site/job", () => mem.seed(SITE, { gitpageJobId: "job2", status: "ready" })],
+    ["Website gate", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), websiteEnabledByAgency: false })],
+    ["Web Voice gate", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), webVoiceEnabledByAgency: false })],
+    ["Web Chat gate", () => mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), webChatEnabledByAgency: false })],
+    ["readiness", () => {
+      const sub = mem.read("subAccounts/sa1")!;
+      mem.seed("subAccounts/sa1", { ...sub, webVoiceMeta: { ...(sub.webVoiceMeta as object), ready: false } });
+    }],
+    ["enabled chat", () => mem.seed(CHAT, { enabled: false })],
+    ["connection revision", () => mem.seed(SECRET, { ...mem.read(SECRET), rev: "changed-during-spec" })],
+  ])("rechecks %s after AgentSpec async work and before provider mutation", async (_label, change) => {
+    await connect();
+    seedHandoffReady();
+    const approved = await readWebVoiceHandoffSnapshot("sa1");
+    let reachedProbe!: () => void;
+    let releaseProbe!: () => void;
+    const reached = new Promise<void>((resolve) => { reachedProbe = resolve; });
+    const held = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    onAppProbe = async () => {
+      reachedProbe();
+      await held;
+    };
+    calls = [];
+    const saving = updateWebVoiceSettings({
+      subAccountId: "sa1",
+      patch: { enabled: true },
+      expectedRevision: approved.revision,
+      transactionGuard: handoffGuard,
+    });
+    await reached;
+    change();
+    releaseProbe();
+    await expect(saving).rejects.toThrow();
+    expect(calls).toEqual([]);
+  });
+
+  it("rechecks the full guard before fallback create after PATCH returns 404", async () => {
+    await connect();
+    seedHandoffReady();
+    const approved = await readWebVoiceHandoffSnapshot("sa1");
+    agents.delete("agent1");
+    onPatchMissing = () => mem.seed(CHAT, { enabled: false });
+    calls = [];
+    await expect(updateWebVoiceSettings({
+      subAccountId: "sa1",
+      patch: { enabled: true },
+      expectedRevision: approved.revision,
+      transactionGuard: handoffGuard,
+    })).rejects.toThrow("chat changed");
+    expect(elCalls("PATCH", "/v1/convai/agents/agent1")).toHaveLength(1);
+    expect(elCalls("POST", "/v1/convai/agents/create")).toHaveLength(0);
   });
 
   it.each([

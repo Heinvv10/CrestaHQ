@@ -10,9 +10,12 @@ import {
   ChevronRight,
   Info,
 } from "lucide-react";
-import { pageCalendarType } from "@/lib/booking/calendar-types";
 import { PublicServicePicker } from "@/components/booking/public-service-picker";
-import type { BookingPage, IntakeField } from "@/types/booking";
+import type { IntakeField } from "@/types/booking";
+import type {
+  PublicBookingBranding,
+  PublicBookingPageData,
+} from "@/lib/booking/public-page";
 import {
   CHECKOUT_THEMES,
   checkoutThemeCssVars,
@@ -38,19 +41,11 @@ import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 /** `seatsLeft` is present on class pages only. */
 type SlotISO = { startAt: string; endAt: string; seatsLeft?: number };
 
-interface Branding {
-  name: string;
-  logoUrl: string | null;
-  accentColor: string | null;
-}
-
 interface Props {
   subAccountId: string;
-  page: Omit<BookingPage, "createdAt" | "updatedAt"> & {
-    createdAt: null;
-    updatedAt: null;
-  };
-  branding: Branding;
+  /** Built by the server page's allow-list, never a stored doc. */
+  page: PublicBookingPageData;
+  branding: PublicBookingBranding;
   /**
    * True only when rendered at /embed/booking/[saId]/[slug] (the iframe
    * target of the booking-embed.js snippet). Drops the full-viewport
@@ -160,9 +155,9 @@ export function PublicBookingView({
   const [allowHostSelection, setAllowHostSelection] = useState(false);
   const [selectedHostUid, setSelectedHostUid] = useState<string | null>(null);
   // Service pages: nothing to show until the visitor picks a service.
-  const isServicePage = pageCalendarType(page) === "service";
+  const isServicePage = page.isServicePage;
   const [serviceId, setServiceId] = useState<string | null>(null);
-  const service = (page.services ?? []).find((s) => s.id === serviceId) ?? null;
+  const service = page.services.find((s) => s.id === serviceId) ?? null;
   const durationMinutes = service?.durationMinutes ?? page.durationMinutes;
   const [confirmation, setConfirmation] = useState<{
     status: "scheduled" | "awaiting_payment";
@@ -215,7 +210,7 @@ export function PublicBookingView({
     if (selectedHostUid) params.set("host", selectedHostUid);
     if (serviceId) params.set("serviceId", serviceId);
     const qs = params.toString() ? `?${params}` : "";
-    fetch(`/api/booking/${subAccountId}/${page.slug}/availability${qs}`, {
+    fetch(`/api/booking/${encodeURIComponent(subAccountId)}/${encodeURIComponent(page.slug)}/availability${qs}`, {
       cache: "no-store",
     })
       .then(async (res) => {
@@ -444,7 +439,7 @@ export function PublicBookingView({
 
         {isServicePage && (
           <PublicServicePicker
-            services={page.services ?? []}
+            services={page.services}
             selectedId={serviceId}
             onPick={(id) => {
               setServiceId(id);
@@ -652,7 +647,7 @@ function IntakeFormSection({
     setSubmitting(true);
     try {
       const res = await fetch(
-        `/api/booking/${subAccountId}/${slug}/book`,
+        `/api/booking/${encodeURIComponent(subAccountId)}/${encodeURIComponent(slug)}/book`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },

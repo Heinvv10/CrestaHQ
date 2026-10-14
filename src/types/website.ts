@@ -267,6 +267,8 @@ export interface WebsiteProvisioning {
   /** Web Voice mic is on for this workspace after the hand-off. Absent on
    *  builds from before Web Voice existed. */
   voiceEnabled?: boolean;
+  /** Why a requested Web Voice enable was skipped. Absent on older builds. */
+  voiceSkippedReason?: string | null;
   kbSeeded: boolean;
   personaSeeded: boolean;
   workflowId: string | null;
@@ -422,6 +424,7 @@ export function blankWebsiteConfig(): WebsiteConfig {
     hero_motion: null,
     include_form: true,
     include_chat: true,
+    include_voice: true,
     premium_details: null,
   };
 }

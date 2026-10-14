@@ -1,7 +1,12 @@
 import { notFound } from "next/navigation";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { PublicBookingView } from "@/components/booking/public-booking-view";
-import { publicBookingStyle } from "@/lib/booking/public-style";
+import {
+  publicBookingBranding,
+  publicBookingPage,
+} from "@/lib/booking/public-page";
+import { validateSlug } from "@/lib/booking/validation";
+import { isDocId } from "@/lib/server/doc-id";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 
@@ -22,6 +27,9 @@ interface PageProps {
 
 export default async function EmbedBookingPage({ params }: PageProps) {
   const { subAccountId, slug } = await params;
+  const slugCheck = validateSlug(slug);
+  if (!isDocId(subAccountId) || !slugCheck.ok || slugCheck.value !== slug)
+    notFound();
   const db = getAdminDb();
 
   const [pageSnap, subSnap] = await Promise.all([
@@ -35,29 +43,13 @@ export default async function EmbedBookingPage({ params }: PageProps) {
 
   const sub = subSnap.data() as SubAccountDoc;
 
-  // The stored style fields, checked before anything is sent to the client.
-  const style = publicBookingStyle(page);
-
-  const branding = {
-    name: sub.name ?? "Schedule a meeting",
-    logoUrl: page.logoUrl ?? sub.logoUrl ?? null,
-    accentColor: style.accentColor,
-  };
-
-  const pageForClient: Omit<BookingPage, "createdAt" | "updatedAt"> & {
-    createdAt: null;
-    updatedAt: null;
-  } = {
-    ...page,
-    ...style,
-    createdAt: null,
-    updatedAt: null,
-  };
+  // Only what these builders pick is sent to the client (see /b's page).
+  const branding = publicBookingBranding(sub, page, "Schedule a meeting");
 
   return (
     <PublicBookingView
       subAccountId={subAccountId}
-      page={pageForClient}
+      page={publicBookingPage(page, slug)}
       branding={branding}
       embedded
     />

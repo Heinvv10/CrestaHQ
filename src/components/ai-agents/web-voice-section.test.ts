@@ -259,6 +259,29 @@ describe("WebVoiceSection guards", () => {
       "Talking to the chat widget is locked"
     );
   });
+
+  it("puts the direct-preview token only in an encoded fragment URL", async () => {
+    ctx.value = { ...ctx.value, subAccountId: "sa preview" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        response({
+          meta: connectedMeta,
+          previewToken: "w1.preview?secret",
+        })
+      )
+    );
+
+    await render();
+
+    const link = [...container.querySelectorAll<HTMLAnchorElement>("a")].find(
+      (candidate) => candidate.textContent?.includes("Test voice in the widget")
+    )!;
+    const preview = new URL(link.href);
+    expect(preview.pathname).toBe("/embed/chat/sa%20preview");
+    expect(preview.search).toBe("");
+    expect(preview.hash).toBe("#vt=w1.preview%3Fsecret");
+  });
 });
 
 describe("WebVoiceSection mutations", () => {
