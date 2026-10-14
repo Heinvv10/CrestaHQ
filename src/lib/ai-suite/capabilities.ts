@@ -382,6 +382,7 @@ const AGENCY_DELEGATED = [
   "get_website_prefill",
   "research_website_reference",
   "create_website",
+  "list_website_concepts",
   "check_website_status",
   // Speed-to-Lead setup — the owner can check readiness, manage forms and
   // re-point a built site's call-to-action in a named client workspace.
