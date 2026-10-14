@@ -28,6 +28,14 @@ type VoiceCallbacks = {
 const jsonResponse = (body: object, ok = true) =>
   ({ ok, json: async () => body }) as Response;
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe("ChatWindow Web Voice", () => {
   let root: Root;
   let host: HTMLDivElement;
@@ -426,7 +434,7 @@ describe("ChatWindow Web Voice", () => {
     expect(connected).toBe(2);
   });
 
-  it("cleans up retries and emits one ended event on end", async () => {
+  it("keeps failed settlement retries bounded after end", async () => {
     await mount();
     await act(async () => micButton()?.click());
     await flush();
@@ -458,10 +466,11 @@ describe("ChatWindow Web Voice", () => {
           typeof init?.body === "string" &&
           init.body.includes('"type":"connected"')
       )
-    ).toHaveLength(connectedBeforeEnd);
+    ).toHaveLength(4);
+    expect(connectedBeforeEnd).toBe(1);
   });
 
-  it("ends the SDK call and cancels claim retries on unmount", async () => {
+  it("ends the SDK call and bounds settlement retries on unmount", async () => {
     await mount();
     await act(async () => micButton()?.click());
     await flush();
@@ -492,7 +501,109 @@ describe("ChatWindow Web Voice", () => {
           typeof init?.body === "string" &&
           init.body.includes('"type":"connected"')
       )
-    ).toHaveLength(connectedBeforeUnmount);
+    ).toHaveLength(4);
+    expect(connectedBeforeUnmount).toBe(1);
+  });
+
+  it("follows a late successful claim with exactly one more ended event", async () => {
+    const firstClaim = deferred<Response>();
+    fetchMock.mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.startsWith("/api/web-chat/poll"))
+          return jsonResponse({ messages: [] });
+        if (url === "/api/web-chat/voice/start") {
+          return jsonResponse({ signedUrl: "wss://signed", token: "session-token" });
+        }
+        if (
+          typeof init?.body === "string" &&
+          init.body.includes('"type":"connected"')
+        ) {
+          return firstClaim.promise;
+        }
+        return jsonResponse({ ok: true });
+      },
+    );
+
+    await mount();
+    await act(async () => micButton()?.click());
+    await flush();
+    await act(async () => callbacks?.onConnect({ conversationId: "conv-late" }));
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>('button[aria-label="End voice chat"]')
+        ?.click(),
+    );
+
+    const endedCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([, init]) =>
+          typeof init?.body === "string" && init.body.includes('"type":"ended"'),
+      );
+    expect(endedCalls()).toHaveLength(1);
+    await act(async () => micButton()?.click());
+    await flush();
+    expect(sdk.startSession).toHaveBeenCalledTimes(2);
+
+    firstClaim.resolve(jsonResponse({ ok: true, claimed: true }));
+    await flush();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+
+    expect(endedCalls()).toHaveLength(2);
+    expect(host.textContent).toContain("Connecting");
+    expect(
+      fetchMock.mock.calls.filter(
+        ([, init]) =>
+          typeof init?.body === "string" && init.body.includes('"type":"connected"'),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("retries a failed in-flight claim after end and settles its later claim", async () => {
+    const firstClaim = deferred<Response>();
+    let connected = 0;
+    fetchMock.mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.startsWith("/api/web-chat/poll"))
+          return jsonResponse({ messages: [] });
+        if (url === "/api/web-chat/voice/start") {
+          return jsonResponse({ signedUrl: "wss://signed", token: "session-token" });
+        }
+        if (
+          typeof init?.body === "string" &&
+          init.body.includes('"type":"connected"')
+        ) {
+          connected += 1;
+          return connected === 1
+            ? firstClaim.promise
+            : jsonResponse({ ok: true, claimed: true });
+        }
+        return jsonResponse({ ok: true });
+      },
+    );
+
+    await mount();
+    await act(async () => micButton()?.click());
+    await flush();
+    await act(async () => callbacks?.onConnect({ conversationId: "conv-retry" }));
+    await act(async () =>
+      host
+        .querySelector<HTMLButtonElement>('button[aria-label="End voice chat"]')
+        ?.click(),
+    );
+    firstClaim.resolve(jsonResponse({ ok: false }, false));
+    await flush();
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+
+    expect(connected).toBe(2);
+    expect(
+      fetchMock.mock.calls.filter(
+        ([, init]) =>
+          typeof init?.body === "string" && init.body.includes('"type":"ended"'),
+      ),
+    ).toHaveLength(2);
   });
 
   it("falls back when sendBeacon declines the end and still emits it once", async () => {
@@ -517,6 +628,33 @@ describe("ChatWindow Web Voice", () => {
         typeof init?.body === "string" && init.body.includes('"type":"ended"'),
       ),
     ).toHaveLength(1);
+  });
+
+  it("restores idle controls after a persisted pagehide and pageshow", async () => {
+    await mount();
+    await act(async () => micButton()?.click());
+    await flush();
+    await act(async () => callbacks?.onConnect({ conversationId: "conv-bfcache" }));
+    await flush();
+
+    const pagehide = new Event("pagehide");
+    Object.defineProperty(pagehide, "persisted", { value: true });
+    const pageshow = new Event("pageshow");
+    Object.defineProperty(pageshow, "persisted", { value: true });
+    await act(async () => {
+      window.dispatchEvent(pagehide);
+      window.dispatchEvent(pageshow);
+    });
+
+    expect(endSession).toHaveBeenCalledTimes(1);
+    expect(
+      host.querySelector('button[aria-label="End voice chat"]'),
+    ).toBeNull();
+    expect(micButton()).toBeTruthy();
+    expect(micButton()?.disabled).toBe(false);
+    await act(async () => micButton()?.click());
+    await flush();
+    expect(sdk.startSession).toHaveBeenCalledTimes(2);
   });
 
   it("never renders raw SDK error text", async () => {

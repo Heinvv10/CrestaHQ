@@ -128,7 +128,9 @@ type ActiveVoiceCall = {
   conversationId: string | null;
   connectedAttempts: number;
   retryTimer: ReturnType<typeof setTimeout> | null;
+  claimConfirmed: boolean;
   endedSent: boolean;
+  endedAfterClaimSent: boolean;
   stopped: boolean;
   seenMessages: Set<string>;
   messageSequence: number;
@@ -453,10 +455,15 @@ export function ChatWindow(props: ChatWindowProps) {
     []
   );
 
-  /** Send `ended` at most once. A beacon survives page teardown. */
+  /** Send the initial `ended`, plus one settlement resend after a late claim. */
   const sendVoiceEnded = useCallback(
     (call: ActiveVoiceCall, beacon = false) => {
-      if (call.endedSent || !call.sessionToken || !call.conversationId) return;
+      if (
+        (call.claimConfirmed ? call.endedAfterClaimSent : call.endedSent) ||
+        !call.sessionToken ||
+        !call.conversationId
+      )
+        return;
       const payload = JSON.stringify({
         token: call.sessionToken,
         type: "ended",
@@ -466,6 +473,7 @@ export function ChatWindow(props: ChatWindowProps) {
         try {
           if (navigator.sendBeacon("/api/web-chat/voice/event", payload)) {
             call.endedSent = true;
+            if (call.claimConfirmed) call.endedAfterClaimSent = true;
             return;
           }
         } catch {
@@ -483,6 +491,7 @@ export function ChatWindow(props: ChatWindowProps) {
         // keepalive request was dispatched. A synchronous fetch failure may
         // therefore be retried by a later lifecycle callback.
         call.endedSent = true;
+        if (call.claimConfirmed) call.endedAfterClaimSent = true;
         void request.catch(() => {});
       } catch {
         // A later lifecycle callback may retry.
@@ -501,8 +510,13 @@ export function ChatWindow(props: ChatWindowProps) {
         return;
       }
       call.stopped = true;
-      if (call.retryTimer) clearTimeout(call.retryTimer);
-      call.retryTimer = null;
+      // An unclaimed grant keeps its bounded connected retries alive. If an
+      // in-flight/retried claim succeeds after this immediate end report, the
+      // server needs one idempotent follow-up end to settle that claim.
+      if (call.claimConfirmed && call.retryTimer) {
+        clearTimeout(call.retryTimer);
+        call.retryTimer = null;
+      }
       sendVoiceEnded(call, options.beacon);
       if (activeVoiceCallRef.current === call) {
         activeVoiceCallRef.current = null;
@@ -524,9 +538,10 @@ export function ChatWindow(props: ChatWindowProps) {
     (call: ActiveVoiceCall) => {
       const attempt = async () => {
         if (
-          !isCurrentVoiceCall(call) ||
+          (!call.stopped && !isCurrentVoiceCall(call)) ||
           !call.sessionToken ||
           !call.conversationId ||
+          call.claimConfirmed ||
           call.connectedAttempts >= CONNECTED_ATTEMPT_CAP
         ) {
           return;
@@ -560,15 +575,18 @@ export function ChatWindow(props: ChatWindowProps) {
         } catch {
           // A later bounded attempt may still claim the call.
         }
-        if (!isCurrentVoiceCall(call)) return;
-        if (claimed && call.retryTimer) {
-          clearTimeout(call.retryTimer);
-          call.retryTimer = null;
+        if (claimed) {
+          call.claimConfirmed = true;
+          if (call.retryTimer) {
+            clearTimeout(call.retryTimer);
+            call.retryTimer = null;
+          }
+          if (call.stopped) sendVoiceEnded(call);
         }
       };
       void attempt();
     },
-    [isCurrentVoiceCall]
+    [isCurrentVoiceCall, sendVoiceEnded]
   );
 
   const startVoice = useCallback(async () => {
@@ -589,7 +607,9 @@ export function ChatWindow(props: ChatWindowProps) {
       conversationId: null,
       connectedAttempts: 0,
       retryTimer: null,
+      claimConfirmed: false,
       endedSent: false,
+      endedAfterClaimSent: false,
       stopped: false,
       seenMessages: new Set(),
       messageSequence: 0,
@@ -752,7 +772,7 @@ export function ChatWindow(props: ChatWindowProps) {
     function onHide() {
       const call = activeVoiceCallRef.current;
       if (call) {
-        finishVoiceCall(call, { beacon: true, endSdk: true, updateUi: false });
+        finishVoiceCall(call, { beacon: true, endSdk: true });
       }
     }
     window.addEventListener("pagehide", onHide);

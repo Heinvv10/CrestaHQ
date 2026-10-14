@@ -288,8 +288,9 @@ claimed only in its first 2 minutes. It reports `connected` with the conversatio
 id ElevenLabs gives it (a different id is refused) and must **resend it a few times
 over about 30 seconds until the response says it was claimed**: ElevenLabs may not
 list a brand-new conversation yet, and a 404 is not retried on the server. Stay
-within the event limit of 6 per grant (e.g. 4 `connected` tries, then one `ended`;
-a beacon on page hide is fine). The response to `connected` is
+within the event limit of 6 per grant (up to 4 `connected` tries and one `ended`;
+if a claim succeeds after that end was sent, one idempotent follow-up `ended`
+settles the late claim; a beacon on page hide is fine). The response to `connected` is
 `{ ok: true, claimed }`: `claimed` is true once this token's grant holds that
 conversation (also on a resend after an earlier ping already claimed it).
 The ElevenLabs web module is preloaded when the verified widget token arrives, before
