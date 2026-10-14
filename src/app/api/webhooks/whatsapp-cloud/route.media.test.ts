@@ -919,6 +919,21 @@ describe("cloud inbound media — a transient failure never loses the file", () 
     expect(row()).not.toHaveProperty("mediaFailedDeliveries");
   });
 
+  it("logs a codeless cause's name and message, not a bare 'fetch failed'", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onBytes = async () => {
+      const err = new TypeError("fetch failed");
+      (err as { cause?: unknown }).cause = new Error("unexpected redirect");
+      throw err;
+    };
+
+    await post(image());
+
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes("fetch failed [cause Error: unexpected redirect]"))).toBe(true);
+    warn.mockRestore();
+  });
+
   it("does not stack timeouts in place, but has Meta redeliver", async () => {
     let downloads = 0;
     onBytes = async () => {

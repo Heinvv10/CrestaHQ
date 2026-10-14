@@ -9,6 +9,7 @@ import {
 } from "./provider";
 import { resolveWaSendMode, type WaSendMode } from "./send-mode";
 import { graphVersion } from "./graph-version";
+import { classifyFetchError } from "./fetch-error";
 import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
 import type { CloudInteractive } from "./interactive";
 import { mediaKindForMime, type WhatsappMediaKind } from "@/types/whatsapp-media";
@@ -107,6 +108,9 @@ function redact(text: string, accessToken: string): string {
   return accessToken ? text.split(accessToken).join("[redacted]") : text;
 }
 
+/** Backoff before each retry of a pre-connect failure: 3 attempts in all. */
+const PRE_CONNECT_RETRY_DELAYS_MS = [1_000, 3_000];
+
 /**
  * `POST /{phoneNumberId}/media` — multipart, returns the media id a message
  * then references. Never throws.
@@ -117,6 +121,7 @@ function redact(text: string, accessToken: string): string {
  * `ErrMediaUpload` documents, and it is what lets the route answer 400.
  */
 export async function uploadCloudMedia(opts: {
+  subAccountId: string;
   creds: WhatsappCloudSecret;
   filename: string;
   contentType: string;
@@ -140,22 +145,38 @@ export async function uploadCloudMedia(opts: {
   // A File over the Blob references its bytes rather than copying them.
   form.set("file", new File([opts.data], opts.filename, { type: opts.contentType }));
   const url = `https://graph.facebook.com/${graphVersion()}/${opts.creds.phoneNumberId}/media`;
+  const attempts = PRE_CONNECT_RETRY_DELAYS_MS.length + 1;
   try {
-    const res = await (opts.fetchImpl ?? fetch)(url, {
-      method: "POST",
-      // No Content-Type: fetch writes the multipart boundary itself.
-      headers: { Authorization: `Bearer ${opts.creds.accessToken}` },
-      body: form,
-      // Measured, not decorative: with redirects allowed undici holds a full
-      // second copy of the body for a possible replay — +95 MiB on a 100 MB
-      // document. Graph does not redirect this call, and a redirect would
-      // carry the bearer token wherever it pointed.
-      redirect: "error",
-      // 30 s plus a second per MB: a flat 30 s would need ~27 Mbit/s of
-      // upstream to get a 100 MB document to Graph in time.
-      signal:
-        opts.signal ?? AbortSignal.timeout(30_000 + Math.ceil(opts.data.size / 1_000_000) * 1_000),
-    });
+    let res: Response;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        res = await (opts.fetchImpl ?? fetch)(url, {
+          method: "POST",
+          // No Content-Type: fetch writes the multipart boundary itself.
+          headers: { Authorization: `Bearer ${opts.creds.accessToken}` },
+          body: form,
+          // Measured, not decorative: with redirects allowed undici holds a full
+          // second copy of the body for a possible replay — +95 MiB on a 100 MB
+          // document. Graph does not redirect this call, and a redirect would
+          // carry the bearer token wherever it pointed.
+          redirect: "error",
+          // 30 s plus a second per MB: a flat 30 s would need ~27 Mbit/s of
+          // upstream to get a 100 MB document to Graph in time.
+          signal:
+            opts.signal ?? AbortSignal.timeout(30_000 + Math.ceil(opts.data.size / 1_000_000) * 1_000),
+        });
+        break;
+      } catch (e) {
+        const { preConnect, detail } = classifyFetchError(e);
+        console.warn(
+          `[whatsapp-cloud] media upload threw (sa=${opts.subAccountId} attempt=${attempt}/${attempts} ${detail})`,
+        );
+        // Only pre-connect failures are retried. Nothing reaches the customer
+        // either way, but re-sending a timed-out 100 MB upload is not quick.
+        if (!preConnect || attempt === attempts) throw e;
+        await new Promise((r) => setTimeout(r, PRE_CONNECT_RETRY_DELAYS_MS[attempt - 1]));
+      }
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "unknown error");
       return fail(`WhatsApp Cloud media upload ${res.status}: ${redact(text, opts.creds.accessToken)}`);
@@ -205,31 +226,6 @@ function cloudFilename(raw: string): string {
     base.pop();
   }
   return base.join("") + ext;
-}
-
-/**
- * Undici error codes (on `cause`) that mean the connection was never
- * established, so the request body cannot have reached Meta and a retry cannot
- * double-message. Everything else — a reset, a socket error, a timeout after
- * connecting — may have been delivered and stays AMBIGUOUS. ETIMEDOUT,
- * EHOSTUNREACH and ENETUNREACH are left out on purpose: Linux also raises them
- * on an established socket.
- */
-const PRE_CONNECT_CODES = new Set([
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "ECONNREFUSED",
-  "UND_ERR_CONNECT_TIMEOUT",
-]);
-
-/** Backoff before each retry of a pre-connect failure: 3 attempts in all. */
-const PRE_CONNECT_RETRY_DELAYS_MS = [1_000, 3_000];
-
-/** fetch throws `TypeError("fetch failed")` with the code on `cause`. */
-function fetchErrorCode(e: unknown): string | null {
-  const err = e as { code?: unknown; cause?: { code?: unknown } } | null | undefined;
-  const code = err?.cause?.code ?? err?.code;
-  return typeof code === "string" ? code : null;
 }
 
 export async function sendWhatsappCloud(opts: {
@@ -313,6 +309,7 @@ export async function sendWhatsappCloud(opts: {
     }
     const filename = cloudFilename(opts.media.filename);
     const up = await uploadCloudMedia({
+      subAccountId: opts.subAccountId,
       creds: opts.creds,
       filename,
       contentType: opts.media.contentType,
@@ -350,13 +347,12 @@ export async function sendWhatsappCloud(opts: {
         });
         break;
       } catch (e) {
-        const code = fetchErrorCode(e);
-        // Code and attempt only: the token, body and recipient stay out of logs.
+        const { code, preConnect, detail } = classifyFetchError(e);
+        // Error shape and attempt only: the token, body and recipient stay out of logs.
         console.warn(
-          `[whatsapp-cloud] messages POST threw (sa=${opts.subAccountId} attempt=${attempt}/${attempts} ` +
-            `name=${e instanceof Error ? e.name : typeof e} code=${code ?? "none"})`,
+          `[whatsapp-cloud] messages POST threw (sa=${opts.subAccountId} attempt=${attempt}/${attempts} ${detail})`,
         );
-        if (!code || !PRE_CONNECT_CODES.has(code)) throw e;
+        if (!preConnect) throw e;
         if (attempt === attempts) {
           // No connection was ever made, so nothing reached Meta: the caller
           // may treat this as unsent.

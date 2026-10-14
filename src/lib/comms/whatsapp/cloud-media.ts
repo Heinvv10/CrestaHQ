@@ -74,11 +74,19 @@ function isTransient(err: unknown): boolean {
   return typeof code === "string";
 }
 
-/** fetch throws `TypeError("fetch failed")` with the undici code on `cause`. */
+/**
+ * fetch throws `TypeError("fetch failed")` with the undici code on `cause`.
+ * The cause's name and message are logged too: a codeless cause (a refused
+ * redirect, say) otherwise prints as a bare "fetch failed", as it did live on
+ * 2026-10-13 with nothing to say what it was.
+ */
 function describeError(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
-  const code = (err as { cause?: { code?: unknown } }).cause?.code;
-  return `${err.name}: ${err.message}${typeof code === "string" ? ` (${code})` : ""}`;
+  const cause = (err as { cause?: { code?: unknown; name?: unknown; message?: unknown } }).cause;
+  const code = cause?.code;
+  const causeText =
+    cause && typeof cause.name === "string" ? ` [cause ${cause.name}: ${String(cause.message)}]` : "";
+  return `${err.name}: ${err.message}${typeof code === "string" ? ` (${code})` : ""}${causeText}`;
 }
 
 /**
