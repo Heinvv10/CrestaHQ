@@ -90,6 +90,13 @@ function stableWebsiteError(err: unknown): CapabilityUserError {
   );
 }
 
+function stableDraftCreationError(err: unknown): CapabilityUserError {
+  if (err instanceof WebsiteServiceError) return stableWebsiteError(err);
+  return new CapabilityUserError(
+    "The website draft couldn't be created. No build was submitted. Check the Website page before trying again.",
+  );
+}
+
 function writeVersion(value: unknown): number | null {
   if (value instanceof Date) return value.getTime();
   if (typeof (value as { toMillis?: unknown } | null)?.toMillis === "function") {
@@ -762,7 +769,7 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
               (args.heading as string),
           });
         } catch (err) {
-          throw stableWebsiteError(err);
+          throw stableDraftCreationError(err);
         }
       })();
       if (!isDocId(siteId)) {

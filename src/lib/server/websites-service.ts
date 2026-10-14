@@ -366,6 +366,7 @@ export class WebsiteServiceError extends Error {
     | "local-rate"
     | "local-validation"
     | "local-preparation"
+    | "local-draft-create"
     | "provider";
   readonly gitpageStatus?: number;
   readonly gitpageBody?: unknown;
@@ -464,7 +465,7 @@ export async function requireWebsiteEnabledSub(subAccountId: string): Promise<{
  * Create a new (blank, draft) website doc, enforcing the gate + the
  * per-sub-account cap. Returns the new site id.
  */
-export async function createWebsiteForSubAccount(input: {
+async function createWebsiteForSubAccountImpl(input: {
   subAccountId: string;
   /** Optional operator-facing card label; defaults to "Website N". */
   name?: string;
@@ -520,7 +521,7 @@ export async function createWebsiteForSubAccount(input: {
   } catch (err) {
     if (!isContention(err)) {
       throw new WebsiteServiceError("Could not create the website draft.", 500, {
-        failureSource: "local-preparation",
+        failureSource: "local-draft-create",
         submissionOutcome: "not-accepted",
       });
     }
@@ -538,6 +539,37 @@ export async function createWebsiteForSubAccount(input: {
   }
 
   return { siteId: ref.id, agencyId };
+}
+
+/** Draft creation cannot call gitpage. Preserve controlled local failures and
+ * classify every unexpected Firestore/auth failure as a definite local
+ * no-provider outcome. */
+export async function createWebsiteForSubAccount(
+  input: Parameters<typeof createWebsiteForSubAccountImpl>[0],
+): Promise<{ siteId: string; agencyId: string }> {
+  try {
+    return await createWebsiteForSubAccountImpl(input);
+  } catch (err) {
+    if (
+      err instanceof WebsiteServiceError &&
+      err.submissionOutcome === "not-accepted"
+    ) {
+      throw err;
+    }
+    if (err instanceof WebsiteServiceError) {
+      throw new WebsiteServiceError(err.message, err.status, {
+        fieldErrors: err.fieldErrors,
+        fieldErrorsSource: err.fieldErrorsSource,
+        failureSource: "local-draft-create",
+        retryAfterSec: err.retryAfterSec,
+        submissionOutcome: "not-accepted",
+      });
+    }
+    throw new WebsiteServiceError("Could not create the website draft.", 500, {
+      failureSource: "local-draft-create",
+      submissionOutcome: "not-accepted",
+    });
+  }
 }
 
 /**

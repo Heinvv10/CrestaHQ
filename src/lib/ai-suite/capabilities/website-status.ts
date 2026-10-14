@@ -14,22 +14,22 @@ import {
 import { type AiSuiteCapability } from "./types";
 import { oneLine } from "./text-safety";
 
-const BUILD_STAGE_LABELS: Readonly<Record<string, string>> = {
-  brief: "writing the brief",
-  repo: "creating the repository",
-  images: "generating photography",
-  image_generation: "image generation",
-  images_submit: "commissioning photography",
-  images_wait: "generating photography",
-  render: "designing the pages",
-  deploy: "publishing",
-  seo_finalize: "finalising the address for Google",
-  settle: "finishing up",
-  completed: "done",
-};
+const BUILD_STAGE_LABELS = new Map<string, string>([
+  ["brief", "writing the brief"],
+  ["repo", "creating the repository"],
+  ["images", "generating photography"],
+  ["image_generation", "image generation"],
+  ["images_submit", "commissioning photography"],
+  ["images_wait", "generating photography"],
+  ["render", "designing the pages"],
+  ["deploy", "publishing"],
+  ["seo_finalize", "finalising the address for Google"],
+  ["settle", "finishing up"],
+  ["completed", "done"],
+]);
 
 function buildStageLabel(value: unknown): string | null {
-  return typeof value === "string" ? BUILD_STAGE_LABELS[value] ?? null : null;
+  return typeof value === "string" ? BUILD_STAGE_LABELS.get(value) ?? null : null;
 }
 
 export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [

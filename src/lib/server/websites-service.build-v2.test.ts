@@ -271,6 +271,40 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     },
   );
 
+  it.each(["gate-read", "draft-transaction"] as const)(
+    "classifies an unexpected Add website %s failure as local with no provider submission",
+    async (failurePoint) => {
+      const originalDoc = mem.db.doc.bind(mem.db);
+      const docSpy = vi.spyOn(mem.db, "doc");
+      const transactionSpy = vi.spyOn(mem.db, "runTransaction");
+      try {
+        if (failurePoint === "gate-read") {
+          docSpy.mockImplementation((path: string) => {
+            const ref = originalDoc(path);
+            return path === "subAccounts/sa1"
+              ? { ...ref, get: async () => { throw new Error("secret gate read failure"); } }
+              : ref;
+          });
+        } else {
+          transactionSpy.mockRejectedValueOnce(new Error("secret create failure"));
+        }
+
+        await expect(
+          createWebsiteForSubAccount({ subAccountId: "sa1", name: "Acme" }),
+        ).rejects.toMatchObject({
+          status: 500,
+          message: "Could not create the website draft.",
+          failureSource: "local-draft-create",
+          submissionOutcome: "not-accepted",
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        docSpy.mockRestore();
+        transactionSpy.mockRestore();
+      }
+    },
+  );
+
   it("asks gitpage for a premium build on the forced model tier, even from a standard draft", async () => {
     await build();
     expect(sent()).toMatchObject({ quality: "premium", claudeModel: "opus-5.5", subAccountId: "sa1" });

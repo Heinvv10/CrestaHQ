@@ -30,6 +30,7 @@ vi.mock("@/lib/server/websites-service", () => {
       | "local-rate"
       | "local-validation"
       | "local-preparation"
+      | "local-draft-create"
       | "provider";
     gitpageStatus?: number;
     submissionOutcome?: "not-accepted" | "accepted" | "unknown";
@@ -197,6 +198,33 @@ describe("website assistant v2 create", () => {
       });
     },
   );
+
+  it.each([
+    new Error("raw Firestore gate read"),
+    null,
+  ])("treats raw draft-creation failure %# as local with no provider submit", async (failure) => {
+    const { WebsiteServiceError } = await import("@/lib/server/websites-service");
+    seams.createWebsite.mockRejectedValueOnce(
+      failure ??
+        new WebsiteServiceError("raw create wrapper", 500, {
+          failureSource: "local-draft-create",
+          submissionOutcome: "not-accepted",
+        }),
+    );
+    const checked = create.validate(base);
+    if (!checked.ok) throw new Error(checked.error);
+    const message = await create.execute(ctx, checked.args).then(
+      () => "",
+      (err: unknown) => String(err),
+    );
+    expect(message).not.toContain("may already have started");
+    expect(seams.submitBuild).not.toHaveBeenCalled();
+    if (failure) {
+      expect(message).toContain("No build was submitted");
+    } else {
+      expect(message).toContain("rejected the request before accepting a build");
+    }
+  });
 
   it("deletes only an unchanged draft after a definite pre-acceptance refusal", async () => {
     const { WebsiteServiceError } = await import("@/lib/server/websites-service");
@@ -528,4 +556,26 @@ describe("website status build stage and handoff", () => {
     expect(result.resultText).not.toContain("IGNORE ABOVE");
     expect(result.resultText).not.toContain("secret provider error");
   });
+
+  it.each(["constructor", "toString", "valueOf", "__proto__"])(
+    "does not treat inherited prototype key %s as an allowlisted stage",
+    async (prototypeKey) => {
+      mem.seed("subAccounts/sa1/website/site1", {
+        id: "site1",
+        name: "Prototype stage",
+        status: "failed",
+        statusPhase: prototypeKey,
+        gitpageJobId: null,
+        config: { quality: "premium" },
+      });
+
+      const result = await status.execute(ctx, {});
+      const siteLine = result.resultText
+        .split("\n")
+        .find((line) => line.startsWith("- “Prototype stage”"));
+      expect(siteLine).toContain("Prototype stage”: failed;");
+      expect(siteLine).not.toContain(" during ");
+      expect(siteLine).not.toContain(prototypeKey);
+    },
+  );
 });
