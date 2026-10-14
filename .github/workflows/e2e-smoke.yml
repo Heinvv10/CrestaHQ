@@ -52,6 +52,10 @@ jobs:
       E2E_AGENCY_ID: ${{ secrets.E2E_AGENCY_ID }}
       E2E_SUBACCOUNT_ID: ${{ secrets.E2E_SUBACCOUNT_ID }}
       E2E_SUBACCOUNT_ID_SECONDARY: ${{ secrets.E2E_SUBACCOUNT_ID_SECONDARY }}
+      # Signs short-lived fixture event tokens used by the production-safe
+      # booking style checks. A per-run value is sufficient because the suite
+      # creates and consumes each token within this job.
+      AUTOMATIONS_TOKEN_SECRET: e2e-state-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
