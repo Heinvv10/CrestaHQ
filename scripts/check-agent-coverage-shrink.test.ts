@@ -127,9 +127,35 @@ describe("check-agent-coverage-shrink CLI", () => {
     ]);
   });
 
-  it("keeps edited out of ci.yml, whose concurrency group would cancel E2E on a body edit", () => {
+  it("keeps edited out of ci.yml so a body edit does not enqueue redundant gates", () => {
     const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
     expect(ci).not.toMatch(/types:.*edited/);
+  });
+
+  it("cancels fast work and replaces pending E2E when a ready PR returns to draft", () => {
+    const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+    expect(ci).toContain("types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]");
+    expect(ci).not.toMatch(/^concurrency:/m);
+    expect(ci).not.toContain("runs-on: ubuntu-latest");
+    expect(ci).toContain("cancel_ci_on_draft:");
+    expect(ci).toContain("cancel_secrets_on_draft:");
+    expect(ci).toContain("replace_pending_e2e_on_draft:");
+    expect(ci).toContain("group: ci-fast-${{ github.ref }}");
+    expect(ci).toContain("group: ci-secrets-${{ github.ref }}");
+    expect(ci).toContain("group: ci-e2e-${{ github.ref }}");
+    expect(ci).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+  });
+
+  it("protects active E2E teardown and gives every main push unique groups", () => {
+    const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
+    const unique = "${{ github.event_name == 'pull_request' && github.ref || github.run_id }}";
+    expect(ci).toContain(`group: ci-fast-${unique}`);
+    expect(ci).toContain(`group: ci-secrets-${unique}`);
+    expect(ci).toContain(`group: ci-e2e-${unique}`);
+    const draftHelper = ci.slice(ci.indexOf("  replace_pending_e2e_on_draft:"), ci.indexOf("\n  ci:"));
+    expect(draftHelper).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
+    const e2e = ci.slice(ci.indexOf("  e2e:"));
+    expect(e2e).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
   });
 });
 
