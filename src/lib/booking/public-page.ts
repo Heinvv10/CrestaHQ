@@ -118,8 +118,7 @@ function publicPayment(value: unknown): PublicBookingPageData["payment"] {
     !Number.isFinite(value.amount) ||
     typeof value.currency !== "string" ||
     (value.description !== null && value.description !== undefined && typeof value.description !== "string") ||
-    typeof value.holdHours !== "number" ||
-    !Number.isFinite(value.holdHours)
+    (value.holdHours !== undefined && value.holdHours !== null && typeof value.holdHours !== "number")
   ) {
     return null;
   }
@@ -127,7 +126,9 @@ function publicPayment(value: unknown): PublicBookingPageData["payment"] {
     amount: value.amount,
     currency: value.currency,
     description: value.description ?? null,
-    holdHours: value.holdHours,
+    holdHours: typeof value.holdHours === "number" && Number.isFinite(value.holdHours) && value.holdHours > 0
+      ? value.holdHours
+      : 24,
   };
 }
 

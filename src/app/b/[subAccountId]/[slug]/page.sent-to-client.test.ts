@@ -223,6 +223,12 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
     expect(stringsSentToClient(el).filter((s) => s.includes("SENTINEL"))).toEqual([]);
   });
 
+  it("keeps a legacy deposit visible with the established default hold window", async () => {
+    if (name === "/e") return;
+    const el = await open({ payment: { amount: 50, currency: "USD", description: "Deposit" } });
+    expect(el.props.page?.payment).toEqual({ amount: 50, currency: "USD", description: "Deposit", holdHours: 24 });
+  });
+
   it.each(HOSTILE)("drops a stored accent that is %s", async (_label, accentColor) => {
     const el = await open({ accentColor });
     expect(stringsSentToClient(el).filter((s) => s.includes("evil.example"))).toEqual([]);
