@@ -103,6 +103,20 @@ function fetchSequence(...results: Array<Response | Error>) {
   return fetchMock;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function toastText() {
+  return [toast.error, toast.message, toast.success, toast.warning]
+    .flatMap((mock) => mock.mock.calls.flat())
+    .join(" ");
+}
+
 async function changeValue(
   element: HTMLInputElement | HTMLTextAreaElement,
   value: string
@@ -233,7 +247,9 @@ describe("WebVoiceSection mutations", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "ElevenLabs connected — voice is ready"
     );
-    expect(toast.error).toHaveBeenCalledWith("refresh failed");
+    expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't load Web Voice settings. Try again."
+    );
   });
 
   it("keeps the saved PATCH result when the refresh fails", async () => {
@@ -256,7 +272,9 @@ describe("WebVoiceSection mutations", () => {
     ).toBe(saved.greeting);
     expect(container.textContent).toContain("Key ending …abcd");
     expect(toast.success).toHaveBeenCalledWith("Voice settings saved");
-    expect(toast.error).toHaveBeenCalledWith("refresh failed");
+    expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't load Web Voice settings. Try again."
+    );
   });
 
   it("clears the connected DELETE state when the refresh fails", async () => {
@@ -276,7 +294,9 @@ describe("WebVoiceSection mutations", () => {
     expect(toast.success).toHaveBeenCalledWith(
       "ElevenLabs disconnected — the mic is gone from the widget"
     );
-    expect(toast.error).toHaveBeenCalledWith("refresh failed");
+    expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't load Web Voice settings. Try again."
+    );
   });
 
   it("reports a DELETE network failure and retains the connected state", async () => {
@@ -290,7 +310,189 @@ describe("WebVoiceSection mutations", () => {
     expect(container.textContent).not.toContain("Connect ElevenLabs");
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(
-      "Network error — couldn't disconnect. Try again."
+      "Couldn't disconnect ElevenLabs. Check your connection and try again."
     );
+  });
+
+  it("invalidates an in-flight sa1 mutation and clears its key before loading sa2", async () => {
+    const oldMutation = deferred<Response>();
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (url.includes("/sa1/") && method === "GET") {
+        return Promise.resolve(response({ meta: connectedMeta }));
+      }
+      if (url.includes("/sa1/") && method === "POST")
+        return oldMutation.promise;
+      if (url.includes("/sa2/") && method === "GET")
+        return Promise.resolve(response());
+      if (url.includes("/sa2/") && method === "POST") {
+        return Promise.resolve(
+          json({ meta: { ...connectedMeta, keyLast4: "2222" }, voices: [] })
+        );
+      }
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await render();
+
+    await click(button("Replace key"));
+    const oldKey = "sk_old_tenant_secret_123456";
+    const replacement = container.querySelector<HTMLInputElement>(
+      '[aria-label="New ElevenLabs API key"]'
+    )!;
+    await changeValue(replacement, oldKey);
+    await submit(replacement.form!);
+
+    ctx.value = { ...ctx.value, subAccountId: "sa2" };
+    await render();
+    expect(container.querySelector<HTMLInputElement>("#wv-key")!.value).toBe(
+      ""
+    );
+    expect(container.textContent).not.toContain("…abcd");
+
+    await act(async () => {
+      oldMutation.resolve(
+        json({
+          meta: { ...connectedMeta, keyLast4: "old1", lastError: oldKey },
+          voices: [],
+        })
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Connect ElevenLabs");
+    expect(container.textContent).not.toContain("old1");
+    expect(toastText()).not.toContain(oldKey);
+    expect(toast.success).not.toHaveBeenCalled();
+
+    const newKey = "sk_new_tenant_secret_654321";
+    const input = container.querySelector<HTMLInputElement>("#wv-key")!;
+    await changeValue(input, newKey);
+    await submit(input.form!);
+
+    const posts = fetchMock.mock.calls.filter(
+      ([, init]) => init?.method === "POST"
+    );
+    expect(posts).toHaveLength(2);
+    expect(posts[1]?.[0]).toContain("/sa2/web-voice");
+    expect(JSON.parse(String(posts[1]?.[1]?.body))).toEqual({ apiKey: newKey });
+    expect(String(posts[1]?.[1]?.body)).not.toContain(oldKey);
+  });
+
+  it("aborts an old tenant load and ignores its out-of-order response", async () => {
+    const oldLoad = deferred<Response>();
+    const fetchMock = vi.fn((url: string, _init?: RequestInit) =>
+      url.includes("/sa1/") ? oldLoad.promise : Promise.resolve(response())
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await render();
+
+    ctx.value = { ...ctx.value, subAccountId: "sa2" };
+    await render();
+
+    const oldSignal = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)
+      ?.signal;
+    expect(oldSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      oldLoad.resolve(response({ meta: connectedMeta }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Connect ElevenLabs");
+    expect(container.textContent).not.toContain("…abcd");
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("redacts provider status errors from the card", async () => {
+    const malicious = "<script>provider-secret-stack</script>";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        response({
+          meta: { ...connectedMeta, ready: false, lastError: malicious },
+          voicesError: malicious,
+        })
+      )
+    );
+
+    await render();
+
+    expect(container.textContent).toContain(
+      "The ElevenLabs voice agent isn't ready"
+    );
+    expect(container.textContent).toContain(
+      "Couldn't load your ElevenLabs voices"
+    );
+    expect(container.textContent).not.toContain(malicious);
+    expect(toastText()).not.toContain(malicious);
+  });
+
+  it("redacts a POST server error and clears the submitted API key", async () => {
+    const apiKey = "sk_submitted_secret_123456789";
+    const malicious = `Provider rejected ${apiKey} with stack trace`;
+    fetchSequence(response(), json({ error: malicious }, 502));
+    await render();
+
+    const input = container.querySelector<HTMLInputElement>("#wv-key")!;
+    await changeValue(input, apiKey);
+    await submit(input.form!);
+
+    expect(input.value).toBe("");
+    expect(container.textContent).not.toContain(apiKey);
+    expect(container.textContent).not.toContain(malicious);
+    expect(toastText()).not.toContain(apiKey);
+    expect(toastText()).not.toContain(malicious);
+    expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't connect ElevenLabs. Check the key and try again."
+    );
+  });
+
+  it("uses fixed feedback for a direct POST network failure", async () => {
+    const apiKey = "sk_network_secret_123456789";
+    fetchSequence(response(), new Error(`socket exposed ${apiKey}`));
+    await render();
+
+    const input = container.querySelector<HTMLInputElement>("#wv-key")!;
+    await changeValue(input, apiKey);
+    await submit(input.form!);
+
+    expect(input.value).toBe("");
+    expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't connect ElevenLabs. Check your connection and try again."
+    );
+    expect(toastText()).not.toContain(apiKey);
+    expect(toastText()).not.toContain("socket exposed");
+  });
+
+  it("uses fixed feedback for a direct PATCH network failure", async () => {
+    fetchSequence(
+      response({ meta: connectedMeta }),
+      new Error("provider stack and credential")
+    );
+    await render();
+
+    await submit(button("Save voice settings").form!);
+
+    expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't save voice settings. Check your connection and try again."
+    );
+    expect(toastText()).not.toContain("provider stack");
+  });
+
+  it("uses fixed feedback when the initial GET rejects", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Promise.reject(new Error("raw sdk headers")))
+    );
+
+    await render();
+
+    expect(container.textContent).toContain("Couldn't load Web Voice settings");
+    expect(container.textContent).not.toContain("raw sdk headers");
+    expect(toast.error).toHaveBeenCalledWith(
+      "Couldn't load Web Voice settings. Try again."
+    );
+    expect(toastText()).not.toContain("raw sdk headers");
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -63,7 +63,17 @@ function minutes(seconds: number): string {
 export function WebVoiceSection() {
   const { subAccountId, isAdmin } = useSubAccount();
 
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const tenantRef = useRef(subAccountId);
+  tenantRef.current = subAccountId;
+  const generationRef = useRef(0);
+  const controllersRef = useRef(new Set<AbortController>());
+
+  const [statusRecord, setStatusRecord] = useState<{
+    subAccountId: string;
+    status: StatusResponse;
+  } | null>(null);
+  const status = statusRecord?.subAccountId === subAccountId ? statusRecord.status : null;
+  const [loadErrorFor, setLoadErrorFor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [apiKey, setApiKey] = useState("");
@@ -90,43 +100,98 @@ export function WebVoiceSection() {
     setDailyCap(meta.dailyMinuteCap);
   }, []);
 
+  const requestIsCurrent = useCallback(
+    (requestSubAccountId: string, generation: number) =>
+      tenantRef.current === requestSubAccountId && generationRef.current === generation,
+    [],
+  );
+
+  const startRequest = useCallback(() => {
+    const controller = new AbortController();
+    controllersRef.current.add(controller);
+    return controller;
+  }, []);
+
   const applyMutationMeta = useCallback(
-    (meta: WebVoiceMeta, voices?: VoiceOption[]) => {
+    (
+      requestSubAccountId: string,
+      generation: number,
+      meta: WebVoiceMeta,
+      voices?: VoiceOption[],
+    ) => {
+      if (!requestIsCurrent(requestSubAccountId, generation)) return;
       hydrateForm(meta);
-      setStatus((current) =>
-        current
+      setStatusRecord((current) =>
+        current?.subAccountId === requestSubAccountId
           ? {
-              ...current,
-              meta,
-              usage: null,
-              previewToken: null,
-              ...(voices ? { voices, voicesError: null } : {}),
+              subAccountId: requestSubAccountId,
+              status: {
+                ...current.status,
+                meta,
+                usage: null,
+                previewToken: null,
+                ...(voices ? { voices, voicesError: null } : {}),
+              },
             }
           : current,
       );
     },
-    [hydrateForm],
+    [hydrateForm, requestIsCurrent],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/web-voice?voices=1`);
-      const data = (await res.json()) as StatusResponse & { error?: string };
-      if (!res.ok) throw new Error(data.error ?? "Couldn't load voice settings");
-      setStatus(data);
-      hydrateForm(data.meta);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Couldn't load voice settings");
-    } finally {
-      setLoading(false);
+  const load = useCallback(async (requestSubAccountId: string, generation: number) => {
+    const controller = startRequest();
+    if (requestIsCurrent(requestSubAccountId, generation)) {
+      setLoading(true);
+      setLoadErrorFor(null);
     }
-  }, [subAccountId, hydrateForm]);
+    try {
+      const res = await fetch(`/api/sub-accounts/${requestSubAccountId}/web-voice?voices=1`, {
+        signal: controller.signal,
+      });
+      const data = (await res.json()) as StatusResponse;
+      if (!res.ok) throw new Error("load_failed");
+      if (!requestIsCurrent(requestSubAccountId, generation)) return;
+      setStatusRecord({ subAccountId: requestSubAccountId, status: data });
+      hydrateForm(data.meta);
+    } catch {
+      if (!requestIsCurrent(requestSubAccountId, generation)) return;
+      setLoadErrorFor(requestSubAccountId);
+      toast.error("Couldn't load Web Voice settings. Try again.");
+    } finally {
+      controllersRef.current.delete(controller);
+      if (requestIsCurrent(requestSubAccountId, generation)) setLoading(false);
+    }
+  }, [hydrateForm, requestIsCurrent, startRequest]);
 
   useEffect(() => {
-    if (!isAdmin) return;
-    void load();
-  }, [isAdmin, load]);
+    const generation = ++generationRef.current;
+    const controllers = controllersRef.current;
+    for (const controller of controllers) controller.abort();
+    controllers.clear();
+    setStatusRecord(null);
+    setLoadErrorFor(null);
+    setLoading(isAdmin);
+    setApiKey("");
+    setConnecting(false);
+    setShowReplaceKey(false);
+    setEnabled(true);
+    setVoiceId("");
+    setLanguage("en");
+    setGreeting("");
+    setMaxCallMinutes(5);
+    setDailyCap(60);
+    setSaving(false);
+    setConfirmDisconnect(false);
+    setDisconnecting(false);
+    if (isAdmin) void load(subAccountId, generation);
+    return () => {
+      if (generationRef.current !== generation) return;
+      generationRef.current += 1;
+      for (const controller of controllers) controller.abort();
+      controllers.clear();
+    };
+  }, [isAdmin, load, subAccountId]);
 
   const previewUrl = useMemo(() => {
     if (typeof window === "undefined" || !status?.previewToken) return null;
@@ -135,42 +200,51 @@ export function WebVoiceSection() {
 
   async function handleConnect(e: FormEvent) {
     e.preventDefault();
-    if (!apiKey.trim()) return;
+    const submittedKey = apiKey.trim();
+    if (!submittedKey || !status) return;
+    const requestSubAccountId = subAccountId;
+    const generation = generationRef.current;
+    const controller = startRequest();
+    setApiKey("");
     setConnecting(true);
     try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/web-voice`, {
+      const res = await fetch(`/api/sub-accounts/${requestSubAccountId}/web-voice`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: apiKey.trim() }),
+        body: JSON.stringify({ apiKey: submittedKey }),
+        signal: controller.signal,
       });
       const data = (await res.json()) as {
         meta: WebVoiceMeta;
         voices?: VoiceOption[];
-        error?: string;
       };
-      if (!res.ok) {
-        toast.error(data.error ?? "Couldn't connect ElevenLabs");
-        return;
-      }
-      setApiKey("");
+      if (!requestIsCurrent(requestSubAccountId, generation)) return;
+      if (!res.ok) return toast.error("Couldn't connect ElevenLabs. Check the key and try again.");
       setShowReplaceKey(false);
-      applyMutationMeta(data.meta, data.voices);
+      applyMutationMeta(requestSubAccountId, generation, data.meta, data.voices);
       if (data.meta.ready) toast.success("ElevenLabs connected — voice is ready");
-      else toast.warning(data.meta.lastError ?? "Connected, but the voice agent isn't ready yet");
-      await load();
+      else toast.warning("ElevenLabs connected, but the voice agent isn't ready. Try saving again.");
+      await load(requestSubAccountId, generation);
     } catch {
-      toast.error("Network error — try again");
+      if (requestIsCurrent(requestSubAccountId, generation)) {
+        toast.error("Couldn't connect ElevenLabs. Check your connection and try again.");
+      }
     } finally {
-      setConnecting(false);
+      controllersRef.current.delete(controller);
+      if (requestIsCurrent(requestSubAccountId, generation)) setConnecting(false);
     }
   }
 
   async function handleSave(e: FormEvent) {
     e.preventDefault();
+    if (!status) return;
+    const requestSubAccountId = subAccountId;
+    const generation = generationRef.current;
+    const controller = startRequest();
     setSaving(true);
     const voice = status?.voices.find((v) => v.voiceId === voiceId);
     try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/web-voice`, {
+      const res = await fetch(`/api/sub-accounts/${requestSubAccountId}/web-voice`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -182,53 +256,65 @@ export function WebVoiceSection() {
           maxCallSeconds: maxCallMinutes * 60,
           dailyMinuteCap: dailyCap,
         }),
+        signal: controller.signal,
       });
-      const data = (await res.json()) as { meta: WebVoiceMeta; error?: string };
-      if (!res.ok) {
-        toast.error(data.error ?? "Couldn't save voice settings");
-        return;
-      }
-      applyMutationMeta(data.meta);
+      const data = (await res.json()) as { meta: WebVoiceMeta };
+      if (!requestIsCurrent(requestSubAccountId, generation)) return;
+      if (!res.ok) return toast.error("Couldn't save voice settings. Try again.");
+      applyMutationMeta(requestSubAccountId, generation, data.meta);
       if (data.meta.ready) toast.success("Voice settings saved");
-      else toast.warning(data.meta.lastError ?? "Saved, but the voice agent needs attention");
-      await load();
+      else toast.warning("Settings saved, but the voice agent isn't ready. Try saving again.");
+      await load(requestSubAccountId, generation);
     } catch {
-      toast.error("Network error — try again");
+      if (requestIsCurrent(requestSubAccountId, generation)) {
+        toast.error("Couldn't save voice settings. Check your connection and try again.");
+      }
     } finally {
-      setSaving(false);
+      controllersRef.current.delete(controller);
+      if (requestIsCurrent(requestSubAccountId, generation)) setSaving(false);
     }
   }
 
   async function handleDisconnect() {
+    if (!status) return;
+    const requestSubAccountId = subAccountId;
+    const generation = generationRef.current;
+    const controller = startRequest();
     setDisconnecting(true);
     try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/web-voice`, {
+      const res = await fetch(`/api/sub-accounts/${requestSubAccountId}/web-voice`, {
         method: "DELETE",
+        signal: controller.signal,
       });
+      if (!requestIsCurrent(requestSubAccountId, generation)) return;
       if (!res.ok) {
-        const data = (await res.json().catch(() => ({}))) as { error?: string };
-        toast.error(data.error ?? "Couldn't disconnect");
-        return;
+        return toast.error("Couldn't disconnect ElevenLabs. Try again.");
       }
-      setStatus((current) =>
-        current
+      setStatusRecord((current) =>
+        current?.subAccountId === requestSubAccountId
           ? {
-              ...current,
-              meta: null,
-              usage: null,
-              voices: [],
-              voicesError: null,
-              previewToken: null,
+              subAccountId: requestSubAccountId,
+              status: {
+                ...current.status,
+                meta: null,
+                usage: null,
+                voices: [],
+                voicesError: null,
+                previewToken: null,
+              },
             }
           : current,
       );
       toast.success("ElevenLabs disconnected — the mic is gone from the widget");
       setConfirmDisconnect(false);
-      await load();
+      await load(requestSubAccountId, generation);
     } catch {
-      toast.error("Network error — couldn't disconnect. Try again.");
+      if (requestIsCurrent(requestSubAccountId, generation)) {
+        toast.error("Couldn't disconnect ElevenLabs. Check your connection and try again.");
+      }
     } finally {
-      setDisconnecting(false);
+      controllersRef.current.delete(controller);
+      if (requestIsCurrent(requestSubAccountId, generation)) setDisconnecting(false);
     }
   }
 
@@ -244,14 +330,18 @@ export function WebVoiceSection() {
   }
 
   if (!isAdmin) return null;
-  if (loading && !status) {
+  if (!status) {
     return (
       <section className="mt-6 rounded-2xl border bg-card p-6">
-        <p className="text-sm text-muted-foreground">Loading voice settings…</p>
+        <p className="text-sm text-muted-foreground">
+          {loadErrorFor === subAccountId && !loading
+            ? "Couldn't load Web Voice settings. Refresh the page to try again."
+            : "Loading voice settings…"}
+        </p>
       </section>
     );
   }
-  if (!status || !status.webChatGateOn) return null;
+  if (!status.webChatGateOn) return null;
 
   const header = (
     <div className="flex items-start gap-3">
@@ -355,7 +445,7 @@ export function WebVoiceSection() {
 
       {meta.lastError && (
         <div className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-800 dark:text-amber-400">
-          {meta.lastError}
+          The ElevenLabs voice agent isn&apos;t ready. Check the connection and save the settings again.
         </div>
       )}
 
@@ -423,7 +513,7 @@ export function WebVoiceSection() {
             </div>
             {status.voicesError && (
               <p className="text-[11px] text-amber-600 dark:text-amber-500">
-                Couldn&apos;t load your voices: {status.voicesError}
+                Couldn&apos;t load your ElevenLabs voices. Refresh the page to try again.
               </p>
             )}
           </div>
