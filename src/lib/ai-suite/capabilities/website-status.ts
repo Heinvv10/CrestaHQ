@@ -53,7 +53,7 @@ export const WEBSITE_STATUS_CAPABILITIES: AiSuiteCapability[] = [
             status === "ready" && liveUrl
               ? `live at ${customDomain ? `https://${customDomain}/ (custom domain; builder address ${liveUrl})` : liveUrl}`
               : status === "failed"
-                ? `failed${w.errorMessage ? ` — ${oneLine(w.errorMessage).slice(0, 300)}` : ""}${
+                ? `failed${phase ? ` during ${phase}` : ""}${
                     hasUnsettledFailure(w)
                       ? "; its last build can still finish, so it can't be re-pointed until someone uses Re-check now, or Try again, on the Website page"
                       : ""

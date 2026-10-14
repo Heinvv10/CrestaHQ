@@ -20,7 +20,25 @@ vi.mock("@/lib/gitpage/client", () => {
 });
 vi.mock("@/lib/server/websites-service", () => {
   class WebsiteServiceError extends Error {
+    status: number;
     fieldErrors?: Record<string, string>;
+    fieldErrorsSource?: "local-validation";
+    gitpageStatus?: number;
+    submissionOutcome?: "not-accepted" | "accepted" | "unknown";
+    constructor(
+      message: string,
+      status: number,
+      extra?: {
+        fieldErrors?: Record<string, string>;
+        fieldErrorsSource?: "local-validation";
+        gitpageStatus?: number;
+        submissionOutcome?: "not-accepted" | "accepted" | "unknown";
+      },
+    ) {
+      super(message);
+      this.status = status;
+      Object.assign(this, extra);
+    }
   }
   return {
     WebsiteServiceError,
@@ -63,7 +81,21 @@ beforeEach(() => {
   mem.clear();
   seams.configured = true;
   seams.fetchConcepts.mockReset();
-  seams.createWebsite.mockReset().mockResolvedValue({ siteId: "site1" });
+  seams.createWebsite.mockReset().mockImplementation(async () => {
+    const now = new Date();
+    mem.seed("subAccounts/sa1/website/site1", {
+      id: "site1",
+      agencyId: "ag1",
+      subAccountId: "sa1",
+      name: "Acme AI",
+      status: "draft",
+      gitpageJobId: null,
+      lastBuildAt: null,
+      updatedAt: now,
+      createdAt: now,
+    });
+    return { siteId: "site1" };
+  });
   seams.submitBuild.mockReset().mockResolvedValue(undefined);
   mem.seed("subAccounts/sa1", {
     agencyId: "ag1",
@@ -142,6 +174,120 @@ describe("website assistant v2 create", () => {
       premium_details: { tagline: "Measured AI adoption" },
     });
   });
+
+  it.each(["include_form", "include_chat", "include_voice"])(
+    "rejects a non-boolean %s while absence still defaults true",
+    (key) => {
+      expect(create.validate({ ...base, [key]: "false" })).toMatchObject({
+        ok: false,
+        error: `${key} must be true or false`,
+      });
+      expect(create.validate(base)).toMatchObject({
+        ok: true,
+        args: { includeForm: true, includeChat: true, includeVoice: true },
+      });
+    },
+  );
+
+  it("deletes only an unchanged draft after a definite pre-acceptance refusal", async () => {
+    const { WebsiteServiceError } = await import("@/lib/server/websites-service");
+    seams.submitBuild.mockRejectedValueOnce(
+      new WebsiteServiceError("raw local wrapper", 400, {
+        submissionOutcome: "not-accepted",
+        fieldErrors: { heading: "Max 80 characters." },
+        fieldErrorsSource: "local-validation",
+      }),
+    );
+    const checked = create.validate(base);
+    if (!checked.ok) throw new Error(checked.error);
+    await expect(create.execute(ctx, checked.args)).rejects.toThrow(
+      "Website details need correction (heading): Max 80 characters.",
+    );
+    expect(mem.read("subAccounts/sa1/website/site1")).toBeUndefined();
+  });
+
+  it.each(["accepted", "unknown"] as const)(
+    "retains the draft when the submit outcome is %s",
+    async (submissionOutcome) => {
+      const { WebsiteServiceError } = await import("@/lib/server/websites-service");
+      seams.submitBuild.mockRejectedValueOnce(
+        new WebsiteServiceError("raw provider failure", 502, {
+          submissionOutcome,
+        }),
+      );
+      const checked = create.validate(base);
+      if (!checked.ok) throw new Error(checked.error);
+      await expect(create.execute(ctx, checked.args)).rejects.toThrow(
+        "couldn't start or confirm this build",
+      );
+      expect(mem.read("subAccounts/sa1/website/site1")).toMatchObject({
+        status: "draft",
+      });
+    },
+  );
+
+  it("retains a concurrent winner when a definitely refused submit settles later", async () => {
+    const { WebsiteServiceError } = await import("@/lib/server/websites-service");
+    seams.submitBuild.mockImplementationOnce(async () => {
+      mem.seed("subAccounts/sa1/website/site1", {
+        ...mem.read("subAccounts/sa1/website/site1")!,
+        status: "queued",
+        gitpageJobId: "winner-job",
+        updatedAt: new Date(Date.now() + 1000),
+      });
+      throw new WebsiteServiceError("rejected", 409, {
+        submissionOutcome: "not-accepted",
+      });
+    });
+    const checked = create.validate(base);
+    if (!checked.ok) throw new Error(checked.error);
+    await expect(create.execute(ctx, checked.args)).rejects.toThrow(
+      "changed while this build was starting",
+    );
+    expect(mem.read("subAccounts/sa1/website/site1")).toMatchObject({
+      status: "queued",
+      gitpageJobId: "winner-job",
+    });
+  });
+
+  it("retains a concurrently edited draft after a definite refusal", async () => {
+    const { WebsiteServiceError } = await import("@/lib/server/websites-service");
+    seams.submitBuild.mockImplementationOnce(async () => {
+      mem.seed("subAccounts/sa1/website/site1", {
+        ...mem.read("subAccounts/sa1/website/site1")!,
+        name: "Edited elsewhere",
+        updatedAt: new Date(Date.now() + 1000),
+      });
+      throw new WebsiteServiceError("rejected", 400, {
+        submissionOutcome: "not-accepted",
+      });
+    });
+    const checked = create.validate(base);
+    if (!checked.ok) throw new Error(checked.error);
+    await expect(create.execute(ctx, checked.args)).rejects.toThrow(
+      "couldn't start or confirm this build",
+    );
+    expect(mem.read("subAccounts/sa1/website/site1")).toMatchObject({
+      status: "draft",
+      name: "Edited elsewhere",
+    });
+  });
+
+  it("never exposes provider messages or provider-shaped field errors", async () => {
+    const { WebsiteServiceError } = await import("@/lib/server/websites-service");
+    seams.submitBuild.mockRejectedValueOnce(
+      new WebsiteServiceError("secret provider body", 400, {
+        submissionOutcome: "not-accepted",
+        gitpageStatus: 400,
+        fieldErrors: { provider: "secret provider field" },
+      }),
+    );
+    const checked = create.validate(base);
+    if (!checked.ok) throw new Error(checked.error);
+    const failed = create.execute(ctx, checked.args);
+    await expect(failed).rejects.toThrow("couldn't start or confirm this build");
+    await expect(failed).rejects.not.toThrow("secret provider");
+  });
 });
 
 describe("website concept lookup guards", () => {
@@ -194,6 +340,49 @@ describe("website concept lookup guards", () => {
     const failed = concepts.execute(ctx, checked.args);
     await expect(failed).rejects.toThrow("couldn't list design directions");
     await expect(failed).rejects.not.toThrow("secret upstream body");
+  });
+
+  it("sanitizes, bounds and filters concept cards before returning them", async () => {
+    seams.fetchConcepts.mockResolvedValueOnce([
+      {
+        id: "bad/id",
+        name: "Injected",
+        archetype: "x",
+        defaultMode: "light",
+        heroMotion: "still",
+        pitch: "bad",
+        fit: "bad",
+      },
+      {
+        id: "safe-id",
+        name: `Safe\n- Fake card ${"N".repeat(200)}`,
+        archetype: `story\u0000${"A".repeat(100)}`,
+        defaultMode: "dark",
+        heroMotion: `loop\n${"M".repeat(100)}`,
+        pitch: `Pitch\u202e${"P".repeat(900)}`,
+        fit: `Fit\n${"F".repeat(500)}`,
+      },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        id: `large-${index}`,
+        name: "N".repeat(200),
+        archetype: "A".repeat(200),
+        defaultMode: "light",
+        heroMotion: "M".repeat(100),
+        pitch: "P".repeat(900),
+        fit: "F".repeat(500),
+      })),
+    ]);
+    const result = await concepts.execute(ctx, { niche: null });
+    expect(result.resultText).toContain("id: safe-id");
+    expect(result.resultText).not.toContain("bad/id");
+    expect(result.resultText).not.toContain("\u0000");
+    expect(result.resultText).not.toContain("\u202e");
+    expect(result.resultText).not.toContain("N".repeat(121));
+    expect(result.resultText).not.toContain("A".repeat(81));
+    expect(result.resultText).not.toContain("M".repeat(41));
+    expect(result.resultText).not.toContain("P".repeat(501));
+    expect(result.resultText).not.toContain("F".repeat(301));
+    expect(result.resultText.length).toBeLessThanOrEqual(4000);
   });
 });
 

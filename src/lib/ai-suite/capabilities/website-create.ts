@@ -3,7 +3,6 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   fetchConcepts,
-  GitpageError,
   gitpageIsConfigured,
 } from "@/lib/gitpage/client";
 import { isDocId } from "@/lib/server/doc-id";
@@ -37,6 +36,96 @@ import {
 } from "@/types/website";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { EMAIL_RE, str } from "./helpers";
+import { oneLine } from "./text-safety";
+
+const CONCEPT_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const CONCEPT_RESULT_MAX = 4000;
+
+function stableWebsiteError(err: unknown): CapabilityUserError {
+  if (!(err instanceof WebsiteServiceError)) {
+    return new CapabilityUserError(
+      "The website builder couldn't complete that request. Check the Website page before trying again.",
+    );
+  }
+  if (
+    err.submissionOutcome === "not-accepted" &&
+    err.fieldErrorsSource === "local-validation" &&
+    err.status === 400 &&
+    err.fieldErrors
+  ) {
+    const first = Object.entries(err.fieldErrors)[0];
+    if (first) {
+      return new CapabilityUserError(
+        `Website details need correction (${oneLine(first[0]).slice(0, 100)}): ${oneLine(first[1]).slice(0, 300)}`,
+      );
+    }
+  }
+  if (err.status === 403) {
+    return new CapabilityUserError(
+      "The website builder is disabled for this workspace — ask the agency owner to enable it.",
+    );
+  }
+  if (err.status === 429) {
+    return new CapabilityUserError(
+      "This workspace can't start another website build right now. Wait and try again from the Website page.",
+    );
+  }
+  if (err.status === 409) {
+    return new CapabilityUserError(
+      "The website changed while this build was starting. Check its current state on the Website page before trying again.",
+    );
+  }
+  if (err.status === 503) {
+    return new CapabilityUserError(
+      "The website builder isn't configured on this deployment. Ask the agency owner to check the Website setup.",
+    );
+  }
+  return new CapabilityUserError(
+    "The website builder couldn't start or confirm this build. Check the Website page before trying again.",
+  );
+}
+
+function writeVersion(value: unknown): number | null {
+  if (value instanceof Date) return value.getTime();
+  if (typeof (value as { toMillis?: unknown } | null)?.toMillis === "function") {
+    return (value as { toMillis: () => number }).toMillis();
+  }
+  return null;
+}
+
+async function deleteUntouchedCreatedDraft(input: {
+  subAccountId: string;
+  siteId: string;
+}): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(
+    `subAccounts/${input.subAccountId}/website/${input.siteId}`,
+  );
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return;
+    const site = snap.data() as Record<string, unknown>;
+    if (
+      site.status !== "draft" ||
+      site.gitpageJobId != null ||
+      site.lastBuildAt != null ||
+      writeVersion(site.createdAt) === null ||
+      writeVersion(site.updatedAt) !== writeVersion(site.createdAt)
+    ) {
+      return;
+    }
+    tx.delete(ref);
+  });
+}
+
+function clipText(value: string, max: number): string {
+  const clipped = value.slice(0, max);
+  return /[\ud800-\udbff]$/.test(clipped) ? clipped.slice(0, -1) : clipped;
+}
+
+function conceptText(value: unknown, max: number): string {
+  return clipText(oneLine(value), max);
+}
 
 export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
   {
@@ -276,7 +365,7 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
       const niche: Niche | null = isNicheKey(nicheRaw) ? nicheRaw : null;
 
       const concept = str(raw, "concept");
-      if (concept && !/^[A-Za-z0-9_-]{1,64}$/.test(concept)) {
+      if (concept && !CONCEPT_ID_RE.test(concept)) {
         return {
           ok: false,
           error: "concept must be an id from list_website_concepts",
@@ -330,6 +419,20 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
           ok: false,
           error: `premium.${firstPremiumError[0]}: ${firstPremiumError[1]}`,
         };
+      }
+
+      const rawRecord = raw as Record<string, unknown>;
+      for (const key of [
+        "include_form",
+        "include_chat",
+        "include_voice",
+      ] as const) {
+        if (
+          rawRecord[key] !== undefined &&
+          typeof rawRecord[key] !== "boolean"
+        ) {
+          return { ok: false, error: `${key} must be true or false` };
+        }
       }
 
       const videoLink = str(raw, "video_link");
@@ -654,16 +757,12 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
               (args.heading as string),
           });
         } catch (err) {
-          if (err instanceof WebsiteServiceError) {
-            throw new CapabilityUserError(err.message);
-          }
-          throw err;
+          throw stableWebsiteError(err);
         }
       })();
       if (!isDocId(siteId)) {
         throw new Error("website service returned an invalid id");
       }
-
       try {
         await submitWebsiteBuildForSubAccount({
           subAccountId,
@@ -672,21 +771,20 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
           buildByUid: ctx.uid,
         });
       } catch (err) {
-        // Don't leave a blank draft occupying one of the 5 site slots when
-        // the build submit failed — the user will just retry from chat.
-        await db
-          .doc(`subAccounts/${subAccountId}/website/${siteId}`)
-          .delete()
-          .catch(() => undefined);
-        if (err instanceof WebsiteServiceError) {
-          const firstFieldError = err.fieldErrors
-            ? Object.values(err.fieldErrors)[0]
-            : null;
-          throw new CapabilityUserError(
-            firstFieldError ? `${err.message} ${firstFieldError}` : err.message
-          );
+        // Release the new slot only after a definite pre-acceptance refusal,
+        // and only while this exact draft version is still untouched. An
+        // accepted/ambiguous request or concurrent transition keeps the site
+        // for its callback or a manual reconciliation.
+        if (
+          err instanceof WebsiteServiceError &&
+          err.submissionOutcome === "not-accepted"
+        ) {
+          await deleteUntouchedCreatedDraft({
+            subAccountId,
+            siteId,
+          }).catch(() => undefined);
         }
-        throw err;
+        throw stableWebsiteError(err);
       }
 
       return {
@@ -756,20 +854,36 @@ export const WEBSITE_CREATE_CAPABILITIES: AiSuiteCapability[] = [
               "No design directions are available for that niche. Build without a concept and the builder will choose its default.",
           };
         }
-        const lines = cards.map(
-          (card) =>
-            `- ${card.name} (id: ${card.id}; ${card.archetype} layout, ${card.defaultMode} by default, hero: ${card.heroMotion}) — ${card.pitch}${card.fit ? ` Fits: ${card.fit}` : ""}`
-        );
-        return {
-          resultText: `Design directions for ${args.niche ?? "a generic site"}:\n${lines.join("\n")}\nPass the chosen id as concept to create_website, or omit it to let the builder choose.`,
-        };
-      } catch (err) {
-        if (err instanceof GitpageError) {
-          throw new CapabilityUserError(
-            "The website builder couldn't list design directions right now. Try again later, or build without a concept."
-          );
+        const lines = cards
+          .slice(0, 6)
+          .map((card) => {
+            const id = conceptText(card.id, 64);
+            const name = conceptText(card.name, 120);
+            if (!CONCEPT_ID_RE.test(id) || !name) return null;
+            const archetype = conceptText(card.archetype, 80) || "custom";
+            const mode = card.defaultMode === "dark" ? "dark" : "light";
+            const motion = conceptText(card.heroMotion, 40) || "default";
+            const pitch = conceptText(card.pitch, 500);
+            const fit = conceptText(card.fit, 300);
+            return `- ${name} (id: ${id}; ${archetype} layout, ${mode} by default, hero: ${motion})${pitch ? ` — ${pitch}` : ""}${fit ? ` Fits: ${fit}` : ""}`;
+          })
+          .filter((line): line is string => line !== null);
+        if (!lines.length) {
+          return {
+            resultText:
+              "No valid design directions are available for that niche. Build without a concept and the builder will choose its default.",
+          };
         }
-        throw err;
+        return {
+          resultText: clipText(
+            `Design directions for ${args.niche ?? "a generic site"}:\n${lines.join("\n")}\nPass the chosen id as concept to create_website, or omit it to let the builder choose.`,
+            CONCEPT_RESULT_MAX,
+          ),
+        };
+      } catch {
+        throw new CapabilityUserError(
+          "The website builder couldn't list design directions right now. Try again later, or build without a concept."
+        );
       }
     },
   },

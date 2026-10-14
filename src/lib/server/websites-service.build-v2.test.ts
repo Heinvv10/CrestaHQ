@@ -245,6 +245,7 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       message: "The website builder did not start the build. Nothing was built — try again in a few minutes.",
       gitpageStatus: undefined,
       gitpageBody: undefined,
+      submissionOutcome: "unknown",
     });
     expect(mem.read(SITE)).toMatchObject({ status: "draft" });
     expect(mem.read(SITE)?.gitpageJobId).toBeUndefined();
@@ -512,6 +513,8 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     it.each([
       ["422", 422, { message: "Invalid palette." }],
       ["429", 429, { message: "Hourly cap reached." }],
+      ["408", 408, { message: "Request timed out." }],
+      ["425", 425, { message: "Too early." }],
       ["500", 500, { error: "Internal error." }],
       ["502", 502, { error: "Bad gateway." }],
       ["503 with no JSON body", 503, null],
@@ -519,7 +522,15 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
       fetchMock.mockImplementation(async () =>
         body === null ? new Response("<html>down</html>", { status }) : Response.json(body, { status }),
       );
-      for (let i = 0; i < 10; i++) await expect(build()).rejects.toMatchObject({ gitpageStatus: status });
+      for (let i = 0; i < 10; i++) {
+        await expect(build()).rejects.toMatchObject({
+          gitpageStatus: status,
+          submissionOutcome:
+            status < 500 && status !== 408 && status !== 425
+              ? "not-accepted"
+              : "unknown",
+        });
+      }
       expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: 10 });
       await expect(build()).rejects.toMatchObject({ status: 429 });
       expect(fetchMock).toHaveBeenCalledTimes(10);
@@ -534,7 +545,10 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
         throw failure();
       });
       for (let i = 0; i < 10; i++) {
-        await expect(build()).rejects.toMatchObject({ status: 502 });
+        await expect(build()).rejects.toMatchObject({
+          status: 502,
+          submissionOutcome: "unknown",
+        });
         expect(mem.read(websiteLimitsPath("sa1"))).toMatchObject({ windowStart: T0, count: i + 1 });
       }
       // The eleventh attempt is refused without a call, outage or not...
@@ -669,7 +683,10 @@ describe("submitWebsiteBuildForSubAccount — Build v2 request", () => {
     it("stays removed: the build is refused with 409, the orphaned job is logged, no poll is scheduled", async () => {
       acceptedAfter(() => mem.db.doc(SITE).delete());
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
-      await expect(build()).rejects.toMatchObject({ status: 409 });
+      await expect(build()).rejects.toMatchObject({
+        status: 409,
+        submissionOutcome: "accepted",
+      });
       expect(error).toHaveBeenCalledTimes(1);
       expect(error.mock.calls[0][0]).toContain("orphanedJob=build_orphan");
       expect(error.mock.calls[0][0]).toContain("(missing)");
