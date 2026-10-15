@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { blankWebsiteConfig } from "../../src/types/website";
 import { adminDb } from "../lib/admin";
@@ -50,6 +50,8 @@ const LIVE_URL = `https://e2e-${runId()}.example.test/site`;
 // The other fixture tenant's site: a build in flight that no callback in
 // this spec is addressed to.
 const OTHER_JOB_ID = `build_e2e_other_${runId()}`;
+/** gitpage page ids are ObjectIds (24 hex); a run-scoped one, so the settle keeps it. */
+const PAGE_ID = createHash("sha256").update(`page_${runId()}`).digest("hex").slice(0, 24);
 
 const primaryId = () => readEnv().E2E_SUBACCOUNT_ID;
 const secondaryId = () => readEnv().E2E_SUBACCOUNT_ID_SECONDARY;
@@ -93,7 +95,7 @@ const callbackBody = (patch: Record<string, unknown> = {}) =>
     statusPhase: "completed",
     pagesUrl: LIVE_URL,
     quality: "premium",
-    pageId: `page_${runId()}`,
+    pageId: PAGE_ID,
     ...patch,
   });
 
@@ -199,7 +201,7 @@ test.describe("the callback, with no session", () => {
       liveUrl: LIVE_URL,
       errorMessage: null,
       statusPhase: "completed",
-      gitpagePageId: `page_${runId()}`,
+      gitpagePageId: PAGE_ID,
       gitpageJobId: JOB_ID,
     });
 
