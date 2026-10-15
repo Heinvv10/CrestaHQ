@@ -144,6 +144,29 @@ describe("submitWebsiteBuildForSubAccount — template scope (not upstream)", ()
     expect(mem.read(websiteLimitsPath("sa1"))).toBeUndefined();
   });
 
+  it("a rebuild of a site whose last build failed keeps the site it still replaces", async () => {
+    mem.seed(SITE, { id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "failed", gitpageJobId: null, gitpagePageId: null, replacesGitpagePageId: OLD_PAGE, config: blankWebsiteConfig() });
+    await build(templateConfig());
+    expect(mem.read(SITE)).toMatchObject({ status: "queued", replacesGitpagePageId: OLD_PAGE });
+  });
+
+  it("refuses a first build at a gp-<pageId> id: only the gitpage import creates those", async () => {
+    const id = `gp-${OTHER_CLIENTS_TPL}`;
+    await expect(
+      submitWebsiteBuildForSubAccount({ subAccountId: "sa1", siteId: id, config: sampleWebsiteConfig(), buildByUid: "u1" }),
+    ).rejects.toMatchObject({ status: 400, submissionOutcome: "not-accepted" });
+    expect(mem.read(`subAccounts/sa1/website/${id}`)).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mem.read(websiteLimitsPath("sa1"))).toBeUndefined();
+  });
+
+  it("…but rebuilds an imported gp- site that exists", async () => {
+    const id = `gp-${OLD_PAGE}`;
+    mem.seed(`subAccounts/sa1/website/${id}`, { id, agencyId: "ag1", subAccountId: "sa1", status: "ready", importedFrom: "gitpage", importedPageId: OLD_PAGE, gitpagePageId: OLD_PAGE, config: blankWebsiteConfig() });
+    await submitWebsiteBuildForSubAccount({ subAccountId: "sa1", siteId: id, config: sampleWebsiteConfig(), buildByUid: "u1" });
+    expect(mem.read(`subAccounts/sa1/website/${id}`)).toMatchObject({ status: "queued", importedFrom: null, importedPageId: OLD_PAGE, replacesGitpagePageId: OLD_PAGE });
+  });
+
   it("a normal build never asks for the template list", async () => {
     await build(sampleWebsiteConfig());
     expect(calls("/api/v1/templates")).toHaveLength(0);

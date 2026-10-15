@@ -847,6 +847,14 @@ async function submitWebsiteBuildForSubAccountImpl(input: {
   }
   const isFirst = !snap.exists;
   const existingDoc = (snap.data() ?? {}) as Partial<WebsiteDoc>;
+  // `gp-<pageId>` ids belong to sites imported from gitpage
+  // (website-import-service.ts); a build never creates one at a caller-chosen id.
+  if (isFirst && siteId.startsWith("gp-")) {
+    throw new WebsiteServiceError("That website id is reserved. Add the website from the Websites page.", 400, {
+      failureSource: "local-validation",
+      submissionOutcome: "not-accepted",
+    });
+  }
 
   // Refuse before anything is spent. A site already building keeps its job:
   // a second submit would start a second paid build and orphan the first.
@@ -1301,12 +1309,15 @@ export async function settleWebsiteBuild(input: {
   const live = published && result.pagesUrl ? await resolveLiveUrl(result.pagesUrl) : null;
   const liveUrl = live?.url ?? null;
 
+  // The replaced site as the claim saw it — not the caller's earlier read.
+  let replaced: string | null = null;
   const settled = await transitionWebsite(
     docRef,
     {
       expectJobId: jobId,
       fromStatuses: ["queued", "building", "failed"],
       when: (fresh) => {
+        replaced = fresh.replacesGitpagePageId ?? null;
         const repeat =
           fresh.settledDelivery?.jobId === delivery.jobId &&
           fresh.settledDelivery.status === delivery.status;
@@ -1353,10 +1364,10 @@ export async function settleWebsiteBuild(input: {
   // stays live; the agency can unhide it), so gitpage lists what LeadStack
   // does. Templates and sites with a connected domain stay visible (gitpage).
   // After the response and outside the claim, and never fails the publish.
-  const replaced = site.replacesGitpagePageId;
-  if (replaced && result.pageId && replaced !== result.pageId) {
+  const hide = replaced as string | null;
+  if (hide && result.pageId && hide !== result.pageId) {
     runAfterResponse(() =>
-      hideClientSite(replaced, subAccountId, "replaced").catch((err) =>
+      hideClientSite(hide, subAccountId, "replaced").catch((err) =>
         console.error(
           `[website/settle] could not hide the replaced site in gitpage sa=${subAccountId} site=${siteId}: ${err instanceof Error ? err.message : String(err)}`,
         ),

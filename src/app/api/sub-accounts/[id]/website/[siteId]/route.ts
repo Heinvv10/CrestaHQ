@@ -48,7 +48,7 @@ export async function PATCH(
   ctx: { params: Promise<{ id: string; siteId: string }> },
 ) {
   const { id: subAccountId, siteId } = await ctx.params;
-  if (!isDocId(siteId)) return siteNotFound();
+  if (!isDocId(subAccountId) || !isDocId(siteId)) return siteNotFound();
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 
@@ -134,7 +134,7 @@ export async function DELETE(
   ctx: { params: Promise<{ id: string; siteId: string }> },
 ) {
   const { id: subAccountId, siteId } = await ctx.params;
-  if (!isDocId(siteId)) return siteNotFound();
+  if (!isDocId(subAccountId) || !isDocId(siteId)) return siteNotFound();
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
   if (new URL(request.url).searchParams.has("reset")) {

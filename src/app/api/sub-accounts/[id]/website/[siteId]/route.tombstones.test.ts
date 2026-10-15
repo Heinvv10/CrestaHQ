@@ -18,9 +18,10 @@ vi.mock("@/lib/firebase/admin", () => ({
   getAdminAuth: () => ({ getUser: async () => ({ customClaims: { status: "active", agencyId: "ag1" } }) }),
 }));
 
-const { DELETE } = await import("./route");
+const { DELETE, PATCH } = await import("./route");
 
-const SITE_ID = "gp-64b7f0c2a1d3e4f5a6b7c8d1";
+const IMPORTED = "64b7f0c2a1d3e4f5a6b7c8d1";
+const SITE_ID = `gp-${IMPORTED}`;
 const SITE = `subAccounts/sa1/website/${SITE_ID}`;
 const CURRENT = "64b7f0c2a1d3e4f5a6b7c8d2";
 const REPLACED = "64b7f0c2a1d3e4f5a6b7c8d3";
@@ -41,7 +42,7 @@ beforeEach(() => {
   mem.clear();
   mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: true });
   mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "admin", status: "active" });
-  mem.seed(SITE, { id: SITE_ID, agencyId: "ag1", subAccountId: "sa1", status: "ready", gitpagePageId: CURRENT, replacesGitpagePageId: REPLACED });
+  mem.seed(SITE, { id: SITE_ID, agencyId: "ag1", subAccountId: "sa1", status: "ready", gitpagePageId: CURRENT, replacesGitpagePageId: REPLACED, importedPageId: IMPORTED });
   fetchMock.mockReset().mockImplementation(async () => Response.json({ ok: true }));
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -55,7 +56,7 @@ afterEach(() => {
 });
 
 describe("DELETE /api/sub-accounts/[id]/website/[siteId] — tombstones and hide", () => {
-  const ALL = [CURRENT, REPLACED, SITE_ID.slice(3)].sort();
+  const ALL = [CURRENT, REPLACED, IMPORTED].sort();
 
   it("tombstones every gitpage site of the doc in the delete's transaction, then hides them after the response", async () => {
     let tombsAtCommit: string[] | null = null;
@@ -107,6 +108,24 @@ describe("DELETE /api/sub-accounts/[id]/website/[siteId] — tombstones and hide
     await flushAfterResponse();
     expect(tombstones()).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a doc named gp-<X> without importedPageId tombstones and hides nothing of X's", async () => {
+    mem.seed(SITE, { id: SITE_ID, agencyId: "ag1", subAccountId: "sa1", status: "ready", gitpagePageId: null });
+    expect((await remove()).status).toBe(200);
+    await flushAfterResponse();
+    expect(tombstones()).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a path-shaped sub-account id is 404 before any read, on DELETE and PATCH", async () => {
+    const doc = vi.spyOn(mem.db, "doc");
+    const params = { params: Promise.resolve({ id: "sa1/website/x", siteId: "site1" }) };
+    const url = "https://app.test/api/sub-accounts/x/website/site1";
+    const headers = { "x-user-uid": "u_admin", "content-type": "application/json" };
+    expect((await DELETE(new Request(url, { method: "DELETE", headers }), params)).status).toBe(404);
+    expect((await PATCH(new Request(url, { method: "PATCH", headers, body: JSON.stringify({ config: {} }) }), params)).status).toBe(404);
+    expect(doc).not.toHaveBeenCalled();
   });
 
   it("only gitpage ObjectIds become tombstones", async () => {

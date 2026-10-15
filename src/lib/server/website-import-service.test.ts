@@ -60,7 +60,7 @@ describe("syncClientSitesFromGitpage", () => {
     expect(await syncClientSitesFromGitpage("sa1")).toEqual({ imported: 1 });
     expect(mem.read(`${COL}/gp-${id(1)}`)).toMatchObject({
       id: `gp-${id(1)}`, agencyId: "ag1", subAccountId: "sa1", name: "Peak (copy)", status: "ready",
-      liveUrl: "https://copy-1.gitlab.io/", gitpagePageId: id(1), customDomain: "www.peak.test", importedFrom: "gitpage",
+      liveUrl: "https://copy-1.gitlab.io/", gitpagePageId: id(1), importedPageId: id(1), customDomain: "www.peak.test", importedFrom: "gitpage",
       config: { heading: sampleWebsiteConfig().heading },
     });
     // The client's name is sent for gitpage's Client filter.
@@ -68,13 +68,23 @@ describe("syncClientSitesFromGitpage", () => {
     expect(JSON.parse(rename[1].body)).toEqual({ action: "rename", subAccountId: "sa1", subAccountName: "Acme" });
   });
 
-  it("skips a copy already known by gitpagePageId or replacesGitpagePageId, or already imported under gp-<pageId>", async () => {
+  it("skips a copy already known by gitpagePageId, replacesGitpagePageId or importedPageId, or already imported under gp-<pageId>", async () => {
     seedSite("a", { gitpagePageId: id(1) });
     seedSite("b", { replacesGitpagePageId: id(2) });
     seedSite(`gp-${id(3)}`, { gitpagePageId: null });
-    sites = [copy(1), copy(2), copy(3)];
+    // An imported copy rebuilt since: its own id is not gp-<pageId> any more in spirit, its record is.
+    seedSite("c", { gitpagePageId: id(9), importedPageId: id(4) });
+    sites = [copy(1), copy(2), copy(3), copy(4)];
     expect(await syncClientSitesFromGitpage("sa1")).toEqual({ imported: 0 });
-    expect(docs()).toHaveLength(3);
+    expect(docs()).toHaveLength(4);
+  });
+
+  it("contention that outlasts the retries stops the loop quietly: nothing imported, no throw, no further tries", async () => {
+    sites = [copy(1), copy(2), copy(3)];
+    const tx = vi.spyOn(mem.db, "runTransaction").mockRejectedValue(Object.assign(new Error("10 ABORTED: contention"), { code: 10 }));
+    expect(await syncClientSitesFromGitpage("sa1")).toEqual({ imported: 0 });
+    expect(tx).toHaveBeenCalledTimes(1);
+    expect(docs()).toHaveLength(0);
   });
 
   it("never brings back a deleted site (tombstoned)", async () => {
@@ -171,7 +181,12 @@ describe("syncClientSitesFromGitpage", () => {
 
 describe("pageIdsOf", () => {
   it("lists the current, the replaced and the imported-from pageId, ObjectIds only", () => {
-    expect(pageIdsOf({ id: `gp-${id(3)}`, gitpagePageId: id(1), replacesGitpagePageId: id(2) })).toEqual([id(1), id(2), id(3)]);
-    expect(pageIdsOf({ id: "gp-../x", gitpagePageId: "page_42", replacesGitpagePageId: id(1) })).toEqual([id(1)]);
+    expect(pageIdsOf({ gitpagePageId: id(1), replacesGitpagePageId: id(2), importedPageId: id(3) })).toEqual([id(1), id(2), id(3)]);
+    expect(pageIdsOf({ gitpagePageId: "page_42", replacesGitpagePageId: id(1), importedPageId: "../x" })).toEqual([id(1)]);
+  });
+
+  it("never reads a page id from the doc id: a doc named gp-<X> without importedPageId stands for nothing of X's", () => {
+    const doc = { id: `gp-${id(7)}`, gitpagePageId: null, replacesGitpagePageId: null } as Parameters<typeof pageIdsOf>[0];
+    expect(pageIdsOf(doc)).toEqual([]);
   });
 });

@@ -46,6 +46,34 @@ const dismissedPath = (subAccountId: string, pageId: string) =>
 /** Gave up after its retries because other writers kept winning (gRPC ABORTED). */
 const isContention = (err: unknown) => (err as { code?: unknown } | null)?.code === 10;
 
+/** Least time between two syncs of one sub-account. */
+export const SYNC_COOLDOWN_MS = 60_000;
+
+/**
+ * Take the sub-account's sync slot, or false when it synced less than
+ * `SYNC_COOLDOWN_MS` ago (not upstream: every sync costs two gitpage calls
+ * on the agency's key). Its own doc, `private/websiteSync`, so the throttle
+ * never contends with build reservations on `private/websiteLimits`.
+ * Contention is a refusal: another sync is starting right now.
+ */
+export async function claimSyncSlot(subAccountId: string): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`subAccounts/${subAccountId}/private/websiteSync`);
+  try {
+    return await db.runTransaction(async (tx) => {
+      const last = ((await tx.get(ref)).data() as { lastSyncAt?: unknown } | undefined)?.lastSyncAt;
+      const now = Date.now();
+      // A time an interval or more in the future is another clock's error, not a recent sync.
+      if (typeof last === "number" && Number.isFinite(last) && Math.abs(now - last) < SYNC_COOLDOWN_MS) return false;
+      tx.set(ref, { lastSyncAt: now, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      return true;
+    });
+  } catch (err) {
+    if (isContention(err)) return false;
+    throw err;
+  }
+}
+
 export async function syncClientSitesFromGitpage(subAccountId: string): Promise<{ imported: number }> {
   if (!isDocId(subAccountId) || !gitpageIsConfigured()) return { imported: 0 };
   const db = getAdminDb();
@@ -101,7 +129,9 @@ async function importCopy(
     // Only this sub-account's own docs: the copy's config is never taken
     // from another workspace's site.
     const docs = slot.docs.filter((d) => d.subAccountId === subAccountId);
-    const known = docs.some((d) => d.gitpagePageId === site.pageId || d.replacesGitpagePageId === site.pageId);
+    const known = docs.some(
+      (d) => d.gitpagePageId === site.pageId || d.replacesGitpagePageId === site.pageId || d.importedPageId === site.pageId,
+    );
     if (dismissed.exists || own.exists || known) return "skipped";
     if (!slot.free) return "cap";
 
@@ -125,6 +155,7 @@ async function importCopy(
       config,
       quality: site.quality,
       gitpagePageId: site.pageId,
+      importedPageId: site.pageId,
       customDomain: site.customDomain,
       importedFrom: "gitpage",
       statusPhase: "completed",
@@ -136,13 +167,18 @@ async function importCopy(
   });
 }
 
+type PageIdFields = Pick<WebsiteDoc, "gitpagePageId" | "replacesGitpagePageId" | "importedPageId">;
+
 /**
  * The gitpage sites a website doc stands for: its current one, the one a
  * build in progress replaces, and the copy it was imported from. Only
  * gitpage ObjectIds — each becomes a doc id under `websiteDismissed`.
+ * Deviation from upstream: never read from the doc id (`gp-<pageId>`) —
+ * only the import writes `importedPageId`, while a doc id could once be
+ * chosen by a caller, who could then hide another client's site.
  */
-export function pageIdsOf(doc: Pick<WebsiteDoc, "id" | "gitpagePageId" | "replacesGitpagePageId">): string[] {
-  const ids = [doc.gitpagePageId, doc.replacesGitpagePageId, doc.id?.startsWith("gp-") ? doc.id.slice(3) : null];
+export function pageIdsOf(doc: PageIdFields): string[] {
+  const ids = [doc.gitpagePageId, doc.replacesGitpagePageId, doc.importedPageId];
   return [...new Set(ids.filter((id): id is string => typeof id === "string" && TEMPLATE_ID_RE.test(id)))];
 }
 
@@ -155,7 +191,7 @@ export function pageIdsOf(doc: Pick<WebsiteDoc, "id" | "gitpagePageId" | "replac
 export function writeWebsiteTombstones(
   tx: FirebaseFirestore.Transaction,
   subAccountId: string,
-  doc: Pick<WebsiteDoc, "id" | "gitpagePageId" | "replacesGitpagePageId">,
+  doc: PageIdFields,
 ): void {
   const db = getAdminDb();
   for (const pageId of pageIdsOf(doc)) {
@@ -171,7 +207,7 @@ export function writeWebsiteTombstones(
  */
 export async function hideWebsiteInGitpage(
   subAccountId: string,
-  doc: Pick<WebsiteDoc, "id" | "gitpagePageId" | "replacesGitpagePageId">,
+  doc: PageIdFields,
 ): Promise<void> {
   if (!gitpageIsConfigured()) return;
   for (const pageId of pageIdsOf(doc)) {

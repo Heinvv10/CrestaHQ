@@ -40,7 +40,7 @@ const payload = (patch: Record<string, unknown> = {}) =>
     statusPhase: "completed",
     pagesUrl: "https://acme.gitlab.io/site",
     quality: "premium",
-    pageId: "page_42",
+    pageId: "64b7f0c2a1d3e4f5a6b7c842",
     ...patch,
   });
 
@@ -92,7 +92,7 @@ describe("POST /api/webhooks/gitpage/build-settled — signature", () => {
     expect(mem.read(SITE)).toMatchObject({
       status: "ready",
       liveUrl: "https://acme.gitlab.io/site",
-      gitpagePageId: "page_42",
+      gitpagePageId: "64b7f0c2a1d3e4f5a6b7c842",
       statusPhase: "completed",
     });
   });

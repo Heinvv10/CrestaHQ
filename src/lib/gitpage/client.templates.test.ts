@@ -138,6 +138,19 @@ describe("fetchTemplates", () => {
     ]);
   });
 
+  it("drops a client template gitpage says belongs to another sub-account; keeps one without an owner", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({
+      clientTemplates: true,
+      templates: [
+        { templateId: PAGE, name: "Theirs", scope: "client", subAccountId: "sa2" },
+        { templateId: PAGE2, name: "Mine", scope: "client", subAccountId: "sa1" },
+        { templateId: "64b7f0c2a1d3e4f5a6b7c8db", name: "Unowned", scope: "client" },
+        { templateId: "64b7f0c2a1d3e4f5a6b7c8dc", name: "Agency", scope: "agency", subAccountId: "sa2" },
+      ],
+    }));
+    expect((await fetchTemplates("sa1")).templates.map((t) => t.name)).toEqual(["Mine", "Unowned", "Agency"]);
+  });
+
   it("404 is 'not available', any other failure throws with gitpage's message", async () => {
     fetchMock.mockResolvedValueOnce(Response.json({ error: "Not found" }, { status: 404 }));
     expect(await fetchTemplates("sa1")).toEqual({ enabled: false, templates: [], clientTemplates: false });

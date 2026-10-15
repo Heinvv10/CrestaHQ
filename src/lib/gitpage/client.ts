@@ -432,13 +432,9 @@ function normalisePollBody(body: Record<string, unknown>): PollBuildResult {
     isTerminal,
     updatedAt,
     premium: readPremium(body),
-    // An id is used whole or not at all: an over-long one is not an id.
-    pageId:
-      typeof body.pageId === "string" &&
-      body.pageId.length <= MAX_LABEL_LENGTH &&
-      cleanText(body.pageId, MAX_LABEL_LENGTH) === body.pageId
-        ? body.pageId
-        : null,
+    // HARDENING: a gitpage site id is an ObjectId; it is stored as
+    // gitpagePageId and becomes a tombstone doc id on delete.
+    pageId: typeof body.pageId === "string" && TEMPLATE_ID_RE.test(body.pageId) ? body.pageId : null,
   };
 }
 
@@ -561,7 +557,15 @@ export async function fetchTemplates(
   const list = Array.isArray(body.templates) ? body.templates : [];
   return {
     enabled: true,
-    templates: list.map(toTemplate).filter((t): t is GitpageTemplate => !!t),
+    templates: list.flatMap((raw: unknown): GitpageTemplate[] => {
+      const t = toTemplate(raw);
+      if (!t) return [];
+      // HARDENING: a client template gitpage says belongs to another
+      // sub-account is never offered here (entries without an owner are kept).
+      const owner = (raw as { subAccountId?: unknown }).subAccountId;
+      if (subAccountId && t.scope === "client" && typeof owner === "string" && owner !== subAccountId) return [];
+      return [t];
+    }),
     // Older gitpage versions don't know client templates (they'd save one agency-wide).
     clientTemplates: body.clientTemplates === true,
   };

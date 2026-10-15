@@ -93,6 +93,16 @@ describe("settleWebsiteBuild — the replaced gitpage site", () => {
     expect(hides()).toHaveLength(1);
   });
 
+  it("hides the site the claim saw as replaced, not the caller's earlier read", async () => {
+    const OTHER = "64b7f0c2a1d3e4f5a6b7c8db";
+    const site = seedSite({ replacesGitpagePageId: OLD });
+    await mem.db.doc(SITE).update({ replacesGitpagePageId: OTHER });
+    expect(await settle(site, published())).toBe("ready");
+    await flushAfterResponse();
+    expect(hides()).toHaveLength(1);
+    expect(JSON.parse((hides()[0] as [string, { body: string }])[1].body).pageId).toBe(OTHER);
+  });
+
   it("does not hide anything when the published site is the one recorded as replaced", async () => {
     const site = seedSite({ replacesGitpagePageId: NEW });
     expect(await settle(site, published())).toBe("ready");

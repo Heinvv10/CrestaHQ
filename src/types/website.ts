@@ -383,6 +383,12 @@ export interface WebsiteDoc {
    * failed build until one publishes.
    */
   replacesGitpagePageId?: string | null;
+  /**
+   * The gitpage site an imported copy was made from in gitpage (set once by
+   * the import, never cleared by a rebuild). The doc id `gp-<pageId>` is NOT
+   * evidence of this: a caller could once choose a site id of that shape.
+   */
+  importedPageId?: string | null;
 }
 
 export interface WebsitePageSpeed {
