@@ -10,7 +10,8 @@ import { WebsiteBuilder } from "./website-builder";
  * live site — that it opens the wizard and the after-publish dialogs, and
  * that a stored address or colour reaches an href or style only when valid.
  * The wizard's own steps and saves are in website-wizard.test.ts; here
- * `fetch` only answers Re-check now.
+ * `fetch` answers Re-check now, and the wizard's template list (none) when
+ * it opens.
  */
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }));
@@ -25,7 +26,7 @@ beforeEach(() => {
   vi.stubGlobal("PointerEvent", MouseEvent);
   vi.stubGlobal("fetch", fetchMock);
   HTMLElement.prototype.scrollTo = () => {};
-  fetchMock.mockReset();
+  fetchMock.mockReset().mockResolvedValue({ ok: true, json: async () => ({ enabled: false, templates: [] }) });
   for (const t of Object.values(toasts)) t.mockReset();
   container = document.createElement("div");
   document.body.append(container);

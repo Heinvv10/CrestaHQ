@@ -1,7 +1,7 @@
 "use client";
 
 import { cloneElement, isValidElement, useId } from "react";
-import { LayoutGrid, PlayCircle, Sparkles } from "lucide-react";
+import { Copy, LayoutGrid, PlayCircle, Sparkles } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,7 +14,8 @@ import type { BuildType, Niche } from "@/types/website";
  * of website-builder.tsx when the long form became a stepped modal.
  */
 
-export type BuildMode = "standard_local" | "standard_vsl" | "niche";
+/** "template": an Agency template saved on gitpage (lib/website/templates.ts). */
+export type BuildMode = "standard_local" | "standard_vsl" | "niche" | "template";
 
 /** Wizard accent (violet, matching the Website page icon). */
 export const TILE_ON = "border-violet-500/60 bg-violet-500/10 ring-2 ring-violet-500/25";
@@ -125,10 +126,13 @@ export function BuildModePicker({
   value,
   onChange,
   disabled,
+  showTemplate = false,
 }: {
   value: BuildMode;
   onChange: (next: BuildMode) => void;
   disabled?: boolean;
+  /** Offer "Agency template" (only when the agency has saved templates). */
+  showTemplate?: boolean;
 }) {
   const options: Array<{ id: BuildMode; label: string; hint: string; Icon: typeof LayoutGrid }> = [
     {
@@ -149,9 +153,17 @@ export function BuildModePicker({
       hint: "Tailored to a trade — gyms, home services, real estate, agencies.",
       Icon: Sparkles,
     },
+    ...(showTemplate
+      ? [{
+          id: "template" as const,
+          label: "Agency template",
+          hint: "Start from one of your agency's saved sites, with this business's details.",
+          Icon: Copy,
+        }]
+      : []),
   ];
   return (
-    <div className="grid gap-2 sm:grid-cols-3">
+    <div className={"grid gap-2 " + (showTemplate ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
       {options.map((opt) => {
         const selected = value === opt.id;
         return (
