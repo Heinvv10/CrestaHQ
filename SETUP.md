@@ -489,6 +489,8 @@ Each sub-account can publish a marketing site (LocalSite multi-page or single-pa
 | Agency API key | `GITPAGE_API_KEY` |
 | API base URL (optional) | `GITPAGE_API_URL` — leave unset; defaults to `https://www.gitpage.site` |
 
+Your gitpage account also needs an **OpenRouter API key and an AI model** (gitpage.site → Manage Keys). gitpage runs builds through that key, and LeadStack builds always ask for Claude Opus 5.5. (Agency accounts set up earlier with their own Anthropic key keep working on it for now.)
+
 gitpage rate-limits at **30 builds per hour per agency** (shared across sub-accounts). Builds beyond that surface as a friendly 429 error.
 
 ### Local tunnel (for testing automations + website builds in dev)
@@ -796,6 +798,7 @@ If anything looks off after an update, your `main` branch and your pushed histor
 | **Build site** button surfaces 503 | `GITPAGE_API_KEY` is missing. Add it and restart |
 | Build hangs at "queued" forever | QStash callback can't reach your app. Verify `NEXT_PUBLIC_APP_URL` matches your tunnel/Vercel hostname, and check the QStash dashboard for poll messages with `DELIVERED` status |
 | Build says "ready" but no live URL in the UI | Firestore rules for the website subcollection weren't deployed — run `firebase deploy --only firestore:rules,firestore:indexes` |
+| Build error mentions an OpenRouter key | Your gitpage account has no OpenRouter key. Log in at gitpage.site → Manage Keys, add one and choose your AI model |
 | 429 rate-limited error on build | You've exceeded gitpage's 30 builds/hour/agency cap. Wait it out — the error includes `resetAt` |
 | Activate banner won't go away | Your gitpage agency subscription is inactive. Activate it from the gitpage dashboard, then click the **Refresh** button in the website builder header (or wait for the next daily status refresh) |
 
