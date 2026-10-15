@@ -6,6 +6,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { agentProfileInTx, prepareAiAgentDocs, webChatAllowListInTx } from "@/lib/comms/ai/agent";
 import { isDocId } from "@/lib/server/doc-id";
+import { runAfterResponse } from "@/lib/server/after-response";
+import { hideWebsiteInGitpage, writeWebsiteTombstones } from "@/lib/server/website-import-service";
 import {
   requireWebsiteEnabledSub,
   transitionWebsite,
@@ -114,6 +116,13 @@ export async function PATCH(
  * nothing records them. A chat bot pointed at that domain goes back to the
  * live URL, as when the domain alone is removed.
  *
+ * The site's gitpage sites are tombstoned (`websiteDismissed`) in that same
+ * transaction, so a sync never imports them again — the doc goes and the
+ * tombstones stay, or neither happens (upstream wrote them separately and
+ * ignored failures). Once it has committed the sites are hidden in gitpage
+ * (they stay live; the agency can unhide them there), after the response
+ * and best-effort: the delete has already succeeded.
+ *
  * Upstream also resets a site to draft on `?reset=1` (its old Rebuild
  * button); ours has no such branch, since nothing calls it any more. A
  * request that still asks for a reset — a page loaded before the WS-6
@@ -143,7 +152,7 @@ export async function DELETE(
   }
 
   if ((snap.data() as WebsiteDoc).customDomain) await prepareAiAgentDocs(subAccountId);
-  await db.runTransaction(async (tx) => {
+  const removed = await db.runTransaction(async (tx) => {
     const fresh = (await tx.get(docRef)).data() as WebsiteDoc | undefined;
     if (fresh?.customDomain) {
       const list = await webChatAllowListInTx(tx, subAccountId);
@@ -155,7 +164,11 @@ export async function DELETE(
         agent.save({ websiteUrl: fresh.liveUrl });
       }
     }
+    const ours = fresh?.subAccountId === subAccountId ? fresh : null;
+    if (ours) writeWebsiteTombstones(tx, subAccountId, ours);
     tx.delete(docRef);
+    return ours;
   });
+  if (removed) runAfterResponse(() => hideWebsiteInGitpage(subAccountId, removed));
   return NextResponse.json({ ok: true, removed: true });
 }

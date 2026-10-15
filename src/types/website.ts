@@ -227,6 +227,17 @@ export interface WebsiteConfig {
    */
   include_voice?: boolean;
   premium_details?: WebsitePremiumDetails | null;
+
+  // --- Agency templates (lib/website/templates.ts) — optional, absent on every other site.
+
+  /**
+   * gitpage template id: build this site from one of the agency's saved
+   * templates (gitpage copies its design and pages, then swaps in
+   * business_details and the LeadStack wiring). build_type stays "local".
+   */
+  template_id?: string | null;
+  /** The template's name, for display. */
+  template_name?: string | null;
 }
 
 /** Absent/unknown quality reads as premium — the Build v2 default. */
@@ -359,6 +370,19 @@ export interface WebsiteDoc {
   customDomainChatHosts?: string[] | null;
   /** Latest Google PageSpeed Insights (mobile) scores — set ~2 min after publish. */
   pagespeed?: WebsitePageSpeed | null;
+  /**
+   * "gitpage": a copy the client made in gitpage (Duplicate), imported by the
+   * Websites page sync (lib/server/website-import-service.ts). No LeadStack
+   * build behind it.
+   */
+  importedFrom?: "gitpage" | null;
+  /**
+   * The gitpage site the current build replaces (a rebuild makes a new gitpage
+   * site). Once the new one publishes, the old one is hidden in gitpage (it
+   * stays live), so gitpage lists the same sites as LeadStack. Kept across a
+   * failed build until one publishes.
+   */
+  replacesGitpagePageId?: string | null;
 }
 
 export interface WebsitePageSpeed {
@@ -630,7 +654,7 @@ export function sampleHomeServicesLocalConfig(): WebsiteConfig {
       "Licensed, insured, on-time guaranteed. Same-day service across Charlotte.",
     features: "Emergency Repair, Water Heater Install, Drain Cleaning",
     benefits:
-      "24/7 live phone, Upfront flat-rate pricing, 100% satisfaction guarantee",
+      "24/7 live phone, Flat-rate pricing, Satisfaction guarantee",
     contact_details: "office@acmeplumbing.example",
     cta_link: "https://acmeplumbing.example/book",
     include_faq: true,
@@ -699,10 +723,10 @@ export function sampleHomeServicesVslConfig(): WebsiteConfig {
     hero_statement:
       "Same-day water heater repair and install with upfront pricing.",
     features:
-      "Free 2nd opinion, $200 off any water heater, 0% APR for 12 months",
+      "Free 2nd opinion, $200 off heaters, 0% APR 12 months",
     benefits: "Licensed and insured, On-time guarantee, 4.9-star rated",
     contact_details: "office@acmeplumbing.example",
-    cta_link: "tel:+17045550142",
+    cta_link: "https://acmeplumbing.example/book",
     include_faq: true,
     video_link: "https://www.youtube.com/embed/dQw4w9WgXcQ",
     local_page_selections: {
@@ -755,9 +779,9 @@ export function sampleRealEstateLocalConfig(): WebsiteConfig {
     heading: "Serena Stone",
     color_scheme: "Standard",
     hero_statement:
-      "Upper East Side real estate, with the discretion and track record your move deserves.",
+      "Upper East Side real estate with discretion and a proven record.",
     features:
-      "Buyer Representation, Seller Representation, Off-Market Access",
+      "Buyer Representation, Seller Representation, Off-Market",
     benefits: "Top 1% Producer, $1.2B career sales, 99% sale-to-list",
     contact_details: "serena@stonere.example",
     cta_link: "https://stonere.example/connect",
@@ -950,7 +974,7 @@ export function sampleGymFitnessVslConfig(): WebsiteConfig {
     heading: "How NYC Professionals Train Like Athletes Without Quitting Their Day Jobs.",
     color_scheme: "Dark Mode",
     hero_statement:
-      "Coach-led sessions, smart programming, and a community that walks in sharper every week.",
+      "Coach-led sessions and smart programming, sharper every week.",
     features: "Coach-led, HR tracked, Progressive",
     benefits: "Adapt fast, Stay durable, Train sharper",
     contact_details: "admin@peak.com",

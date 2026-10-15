@@ -7,6 +7,7 @@ import {
   type WebsiteConfig,
 } from "@/types/website";
 import { isNicheKey, NICHE_FORCED_PAGES } from "@/lib/website/niches";
+import { isTemplateConfig, TEMPLATE_ID_RE } from "@/lib/website/templates";
 import {
   premiumDetailsPayload,
   premiumModeFor,
@@ -524,6 +525,245 @@ export async function fetchConcepts(
 }
 
 // ---------------------------------------------------------------------------
+// fetchTemplates — the agency's saved templates (gitpage My Sites → "Save as template")
+
+export interface GitpageTemplate {
+  templateId: string;
+  name: string;
+  /** Niche key, or null when the template suits any niche. */
+  niche: string | null;
+  previewUrl: string | null;
+  quality: "premium" | "standard";
+  savedAt: string | null;
+  updatedAt: string | null;
+  /** "agency": offered to every client; "client": one client's own (only that sub-account sees it). */
+  scope: "agency" | "client";
+}
+
+/**
+ * GET /api/v1/templates — the agency's Agency templates, plus the client's
+ * own when `subAccountId` is given. gitpage answers 404
+ * while templates aren't enabled for the account (and older gitpage versions
+ * don't have the route): both mean "not available", never an error.
+ * `enabled` with an empty list means "available, none saved yet".
+ */
+export async function fetchTemplates(
+  subAccountId?: string,
+): Promise<{ enabled: boolean; templates: GitpageTemplate[]; clientTemplates: boolean }> {
+  const query = subAccountId ? `?subAccountId=${encodeURIComponent(subAccountId)}` : "";
+  const res = await fetch(`${getBaseUrl()}/api/v1/templates${query}`, {
+    headers: { Authorization: `Bearer ${getApiKey()}` },
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  if (res.status === 404) return { enabled: false, templates: [], clientTemplates: false };
+  const body = await readTemplatesBody(res, "GET");
+  const list = Array.isArray(body.templates) ? body.templates : [];
+  return {
+    enabled: true,
+    templates: list.map(toTemplate).filter((t): t is GitpageTemplate => !!t),
+    // Older gitpage versions don't know client templates (they'd save one agency-wide).
+    clientTemplates: body.clientTemplates === true,
+  };
+}
+
+/**
+ * Save one of the agency's gitpage sites (its `gitpagePageId`) as an Agency
+ * template, or rename it — POST /api/v1/templates.
+ *   client  save it as that client's own template, acting as the client (it
+ *           can't change agency templates)
+ *   scope   (agency owner) "agency" | "client" (only the client the site was
+ *           built for); left out, a rename keeps the current scope and a new
+ *           template is for every client
+ */
+export async function saveTemplate(
+  pageId: string,
+  name: string,
+  opts: { client?: string; scope?: "agency" | "client" } = {},
+): Promise<GitpageTemplate | null> {
+  const payload: Record<string, unknown> = { pageId, name };
+  if (opts.client) Object.assign(payload, { actingAs: "client", subAccountId: opts.client });
+  else if (opts.scope) payload.scope = opts.scope;
+  const res = await fetch(`${getBaseUrl()}/api/v1/templates`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getApiKey()}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+    signal: AbortSignal.timeout(10000),
+  });
+  if (res.status === 404) {
+    const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+    throw new GitpageError(
+      typeof (body as { error?: unknown }).error === "string" && (body as { error: string }).error !== "Not found"
+        ? (body as { error: string }).error
+        : "Agency templates aren't switched on for this gitpage account.",
+      404,
+      body,
+    );
+  }
+  const body = await readTemplatesBody(res, "POST");
+  return toTemplate(body.template);
+}
+
+/**
+ * Stop a gitpage site being an Agency template — DELETE /api/v1/templates.
+ * With `client` (a sub-account id) only that client's own templates.
+ */
+export async function removeTemplate(pageId: string, client?: string): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/api/v1/templates`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${getApiKey()}`, "Content-Type": "application/json" },
+    body: JSON.stringify(client ? { pageId, actingAs: "client", subAccountId: client } : { pageId }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(10000),
+  });
+  await readTemplatesBody(res, "DELETE");
+}
+
+async function readTemplatesBody(res: Response, method: string): Promise<Record<string, unknown>> {
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await res.json()) as Record<string, unknown>;
+  } catch {
+    // fallthrough
+  }
+  if (!res.ok) {
+    const message =
+      typeof body.message === "string"
+        ? body.message
+        : typeof body.error === "string"
+          ? body.error
+          : `gitpage ${method} failed: ${res.status}`;
+    throw new GitpageError(message, res.status, body);
+  }
+  return body;
+}
+
+function toTemplate(t: unknown): GitpageTemplate | null {
+  if (!t || typeof t !== "object") return null;
+  const r = t as Record<string, unknown>;
+  // HARDENING: ids, names and URLs from gitpage are checked here, before they
+  // are stored or shipped to the browser. A template id goes back to gitpage
+  // in build payloads, the preview URL renders as a link.
+  const name = cleanText(r.name, MAX_GITPAGE_NAME_LENGTH);
+  if (typeof r.templateId !== "string" || !TEMPLATE_ID_RE.test(r.templateId) || !name) return null;
+  const str = (v: unknown) => cleanText(v, 64);
+  return {
+    templateId: r.templateId,
+    name,
+    niche: str(r.niche),
+    previewUrl: safePagesUrl(r.previewUrl),
+    quality: r.quality === "premium" ? "premium" : "standard",
+    savedAt: str(r.savedAt),
+    updatedAt: str(r.updatedAt),
+    scope: r.scope === "client" ? "client" : "agency",
+  };
+}
+
+/** HARDENING: longest template / repo name kept from gitpage. */
+const MAX_GITPAGE_NAME_LENGTH = 120;
+
+/** HARDENING: a plain lowercase hostname, else null (gitpage's verified custom domain). */
+const CUSTOM_DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/;
+
+function safeCustomDomain(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const host = v.trim().toLowerCase();
+  return CUSTOM_DOMAIN_RE.test(host) ? host : null;
+}
+
+// ---------------------------------------------------------------------------
+// Client sites — sites gitpage holds for one sub-account (incl. copies the
+// client made in gitpage with Duplicate)
+
+export interface GitpageClientSite {
+  pageId: string;
+  repoName: string | null;
+  status: string | null;
+  liveUrl: string | null;
+  /** Verified custom domain, else null. */
+  customDomain: string | null;
+  quality: "premium" | "standard";
+  /** "duplicate": made in gitpage (no LeadStack build); "build": a LeadStack build. */
+  origin: "duplicate" | "build";
+  /** The pageId it was copied from, or null. */
+  duplicatedFrom: string | null;
+  createdAt: string | null;
+}
+
+/**
+ * GET /api/v1/sites?subAccountId= — the sub-account's visible gitpage sites.
+ * Older gitpage versions don't have the route: 404 means "none".
+ */
+export async function fetchClientSites(subAccountId: string): Promise<GitpageClientSite[]> {
+  const res = await fetch(`${getBaseUrl()}/api/v1/sites?subAccountId=${encodeURIComponent(subAccountId)}`, {
+    headers: { Authorization: `Bearer ${getApiKey()}` },
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  if (res.status === 404) return [];
+  const body = await readTemplatesBody(res, "GET sites");
+  const list = Array.isArray(body.sites) ? body.sites : [];
+  const str = (v: unknown) => cleanText(v, 64);
+  const id = (v: unknown) => (typeof v === "string" && TEMPLATE_ID_RE.test(v) ? v : null);
+  return list.flatMap((s: unknown): GitpageClientSite[] => {
+    if (!s || typeof s !== "object") return [];
+    const r = s as Record<string, unknown>;
+    // HARDENING: the pageId becomes part of Firestore doc ids (`gp-<pageId>`,
+    // websiteDismissed/<pageId>), so anything but a gitpage ObjectId is dropped.
+    const pageId = id(r.pageId);
+    if (!pageId) return [];
+    return [{
+      pageId,
+      repoName: cleanText(r.repoName, MAX_GITPAGE_NAME_LENGTH),
+      status: str(r.status),
+      liveUrl: safePagesUrl(r.liveUrl),
+      customDomain: safeCustomDomain(r.customDomain),
+      quality: r.quality === "premium" ? "premium" : "standard",
+      origin: r.origin === "duplicate" ? "duplicate" : "build",
+      duplicatedFrom: id(r.duplicatedFrom),
+      createdAt: str(r.createdAt),
+    }];
+  });
+}
+
+/**
+ * Tell gitpage a sub-account's current name (its sites are grouped by client
+ * in gitpage's My Sites) — POST /api/v1/sites. Older gitpage versions answer
+ * 400/404: ignored by the caller.
+ */
+export async function renameClientSites(subAccountId: string, subAccountName: string): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/api/v1/sites`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getApiKey()}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "rename", subAccountId, subAccountName }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(8000),
+  });
+  await readTemplatesBody(res, "rename client");
+}
+
+/**
+ * Hide a sub-account's site in gitpage (LeadStack "Delete website") — POST
+ * /api/v1/sites. It stays live; the agency can unhide it in gitpage.
+ */
+export async function hideClientSite(
+  pageId: string,
+  subAccountId: string,
+  /** "replaced": a rebuild made a new site (gitpage then keeps templates and sites with a domain). */
+  reason?: "replaced",
+): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/api/v1/sites`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${getApiKey()}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "hide", pageId, subAccountId, ...(reason && { reason }) }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(10000),
+  });
+  await readTemplatesBody(res, "hide site");
+}
+
+// ---------------------------------------------------------------------------
 // Errors + transform
 
 export class GitpageError extends Error {
@@ -535,6 +775,49 @@ export class GitpageError extends Error {
     this.status = status;
     this.body = body;
   }
+}
+
+/**
+ * Agency template build (gitpage `buildType: "template"`): the template id,
+ * the new business's details and the LeadStack wiring. The template supplies
+ * the design, pages and copy, so none of those fields are sent. The form and
+ * chat-widget wiring is sent whenever it exists: gitpage refuses the build if
+ * the template has a form or widget it can't re-point to this sub-account.
+ */
+function templatePayload(input: SubmitBuildInput): Record<string, unknown> {
+  const c = input.config;
+  const b = c.business_details;
+  const t = (v: string | undefined | null) => (typeof v === "string" ? v.trim() : "");
+  const ls = input.leadstack;
+  return {
+    buildType: "template",
+    templateId: c.template_id,
+    subAccountId: input.subAccountId,
+    ...(input.subAccountName ? { subAccountName: input.subAccountName } : {}),
+    ...(input.callbackUrl ? { callbackUrl: input.callbackUrl } : {}),
+    ...(input.editorEmail ? { editorEmail: input.editorEmail } : {}),
+    businessName: t(b?.business_name),
+    // The contact email is the field the template step shows.
+    businessEmail: t(c.contact_details) || t(b?.business_email),
+    ...(t(b?.business_phone) && { businessPhone: t(b?.business_phone) }),
+    ...(t(b?.business_street) && { businessStreet: t(b?.business_street) }),
+    ...(t(b?.business_city) && { businessCity: t(b?.business_city) }),
+    ...(t(b?.business_state) && { businessState: t(b?.business_state) }),
+    ...(t(b?.business_zip) && { businessZip: t(b?.business_zip) }),
+    ...(t(b?.business_country) && { businessCountry: t(b?.business_country) }),
+    // Replaces the template's booking / main button link (gitpage asks for it when the template has one).
+    ...(t(c.cta_link) && { ctaLink: t(c.cta_link) }),
+    ...(ls
+      ? {
+          leadstack: {
+            appUrl: ls.appUrl,
+            subAccountId: ls.subAccountId,
+            ...(ls.formId && ls.formSubmitUrl ? { formId: ls.formId, formSubmitUrl: ls.formSubmitUrl } : {}),
+            ...(ls.widgetScriptUrl ? { widgetScriptUrl: ls.widgetScriptUrl } : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 /**
@@ -552,6 +835,9 @@ export class GitpageError extends Error {
  */
 function configToGitpagePayload(input: SubmitBuildInput) {
   const c = input.config;
+  // Agency template builds have their own small payload (gitpage copies the
+  // template's design and pages); local and vsl payloads below are unchanged.
+  if (isTemplateConfig(c)) return templatePayload(input);
   const buildType = c.build_type ?? "local";
   // Niche is optional. When set, gitpage swaps in a research-backed design
   // system + section structure. For `local`, gitpage forces the page set
