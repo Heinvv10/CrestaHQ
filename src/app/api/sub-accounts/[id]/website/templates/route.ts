@@ -2,11 +2,8 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
-import {
-  fetchTemplates,
-  GitpageError,
-  gitpageIsConfigured,
-} from "@/lib/gitpage/client";
+import { fetchTemplates, gitpageIsConfigured } from "@/lib/gitpage/client";
+import { gitpageErrorResponse } from "@/lib/gitpage/route-errors";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   requireWebsiteEnabledSub,
@@ -60,15 +57,6 @@ export async function GET(
     const result = await fetchTemplates(subAccountId);
     return NextResponse.json(result, { headers });
   } catch (err) {
-    if (err instanceof GitpageError) {
-      return NextResponse.json(
-        { error: err.message },
-        { status: err.status >= 500 ? 502 : err.status },
-      );
-    }
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Could not load templates." },
-      { status: 502 },
-    );
+    return gitpageErrorResponse(err, "Could not load templates.");
   }
 }

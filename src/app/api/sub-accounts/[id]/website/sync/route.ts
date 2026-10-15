@@ -3,7 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { isDocId } from "@/lib/server/doc-id";
-import { syncClientSitesFromGitpage } from "@/lib/server/website-import-service";
+import { claimSyncSlot, syncClientSitesFromGitpage } from "@/lib/server/website-import-service";
 import {
   requireWebsiteEnabledSub,
   WebsiteServiceError,
@@ -21,7 +21,9 @@ export const dynamic = "force-dynamic";
  * list just stays as it is.
  *
  * Behind the `websiteEnabledByAgency` gate like create and build (upstream
- * has no check here; its import service checks it and imports nothing).
+ * has no check here; its import service checks it and imports nothing), and
+ * at most once a minute per sub-account (`claimSyncSlot`; not upstream): each
+ * sync spends two gitpage calls on the agency's key.
  */
 export async function POST(
   request: Request,
@@ -45,6 +47,9 @@ export async function POST(
   }
 
   try {
+    if (!(await claimSyncSlot(subAccountId))) {
+      return NextResponse.json({ ok: true, imported: 0, throttled: true });
+    }
     const result = await syncClientSitesFromGitpage(subAccountId);
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {

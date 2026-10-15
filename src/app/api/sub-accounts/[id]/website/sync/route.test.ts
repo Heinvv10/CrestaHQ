@@ -45,6 +45,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
 });
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const [name, value] of [["GITPAGE_API_KEY", ORIGINAL.key], ["GITPAGE_API_URL", ORIGINAL.url]] as const) {
     if (value === undefined) delete process.env[name];
@@ -57,6 +59,36 @@ describe("POST /api/sub-accounts/[id]/website/sync", () => {
     const res = await sync();
     expect(await res.json()).toEqual({ ok: true, imported: 1 });
     expect(mem.read(`subAccounts/sa1/website/gp-${PAGE}`)).toMatchObject({ importedFrom: "gitpage", subAccountId: "sa1" });
+  });
+
+  it("syncs at most once a minute per sub-account, on its own throttle doc", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.UTC(2026, 9, 15, 8, 0, 0));
+    expect(await (await sync()).json()).toEqual({ ok: true, imported: 1 });
+    const calls = fetchMock.mock.calls.length;
+    vi.setSystemTime(Date.UTC(2026, 9, 15, 8, 0, 59));
+    expect(await (await sync()).json()).toEqual({ ok: true, imported: 0, throttled: true });
+    expect(fetchMock.mock.calls.length).toBe(calls);
+    vi.setSystemTime(Date.UTC(2026, 9, 15, 8, 1, 0));
+    expect(await (await sync()).json()).toEqual({ ok: true, imported: 0 });
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(calls);
+    expect(mem.read("subAccounts/sa1/private/websiteSync")).toMatchObject({ lastSyncAt: Date.UTC(2026, 9, 15, 8, 1, 0) });
+    // Build reservations never contend with it.
+    expect(mem.read("subAccounts/sa1/private/websiteLimits")).toMatchObject({ createSeq: 1 });
+    expect(mem.read("subAccounts/sa1/private/websiteLimits")).not.toHaveProperty("lastSyncAt");
+    vi.useRealTimers();
+  });
+
+  it("a sync starting at the same instant as another is throttled, not run twice", async () => {
+    const [a, b] = await Promise.all([sync(), sync()]);
+    const bodies = [await a.json(), await b.json()];
+    expect(bodies.filter((x) => x.throttled)).toHaveLength(1);
+  });
+
+  it("a throttle that cannot be taken (contention past the retries) is a skip, not a sync", async () => {
+    vi.spyOn(mem.db, "runTransaction").mockRejectedValue(Object.assign(new Error("10 ABORTED: contention"), { code: 10 }));
+    expect(await (await sync()).json()).toEqual({ ok: true, imported: 0, throttled: true });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("refuses a member and the gate-off workspace before gitpage is asked", async () => {
@@ -80,6 +112,7 @@ describe("POST /api/sub-accounts/[id]/website/sync", () => {
     const res = await sync();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: false, imported: 0 });
+    expect(errors).toHaveBeenCalled();
     expect(errors.mock.calls.every((args) => args.every((a) => typeof a === "string"))).toBe(true);
     errors.mockRestore();
   });

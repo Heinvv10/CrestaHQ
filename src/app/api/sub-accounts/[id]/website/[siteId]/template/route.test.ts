@@ -65,6 +65,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", fetchMock);
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const [name, value] of [["GITPAGE_API_KEY", ORIGINAL.key], ["GITPAGE_API_URL", ORIGINAL.url]] as const) {
     if (value === undefined) delete process.env[name];
@@ -135,10 +136,28 @@ describe("client scope (a sub-account admin)", () => {
     expect(gitpageCalls("POST")).toEqual([]);
   });
 
-  it("a save that comes back agency-wide is undone when it was new, and answered 409", async () => {
+  it("a save that comes back agency-wide is undone acting as this client (never as the agency) when it was new, and answered 409", async () => {
     savedScope = "agency";
     expect((await call("POST")).status).toBe(409);
-    expect(gitpageCalls("DELETE")).toEqual([{ url: "https://gitpage.test/api/v1/templates", body: { pageId: PAGE } }]);
+    expect(gitpageCalls("DELETE")).toEqual([
+      { url: "https://gitpage.test/api/v1/templates", body: { pageId: PAGE, actingAs: "client", subAccountId: "sa1" } },
+    ]);
+  });
+
+  it("a save answered without a readable template is a 502 and nothing is undone", async () => {
+    fetchMock.mockImplementation(async (_url: string, init?: { method?: string }) =>
+      (init?.method ?? "GET") === "GET" ? Response.json(list) : Response.json({ template: null }),
+    );
+    expect((await call("POST")).status).toBe(502);
+    expect(gitpageCalls("DELETE")).toEqual([]);
+  });
+
+  it("is 404 when templates are not switched on for the agency's gitpage", async () => {
+    fetchMock.mockImplementation(async () => Response.json({ error: "Not found" }, { status: 404 }));
+    expect((await call("POST")).status).toBe(404);
+    expect((await call("DELETE")).status).toBe(404);
+    expect(gitpageCalls("POST")).toEqual([]);
+    expect(gitpageCalls("DELETE")).toEqual([]);
   });
 
   it("…but a rename of an existing template is not removed on that answer", async () => {
@@ -157,17 +176,65 @@ describe("agency scope (the agency owner)", () => {
     expect(gitpageCalls("POST")[0].body).toEqual({ pageId: PAGE, name: "Gym template", scope: "agency" });
   });
 
+  it("scope \"client\" goes through the client-template check and a wrong answer is undone as this client", async () => {
+    savedScope = "agency";
+    expect((await call("POST", { uid: "u_owner", body: { name: "Gym template", scope: "client" } })).status).toBe(409);
+    expect(gitpageCalls("GET")).toHaveLength(1);
+    expect(gitpageCalls("POST")[0].body).toEqual({ pageId: PAGE, name: "Gym template", scope: "client" });
+    expect(gitpageCalls("DELETE")[0].body).toEqual({ pageId: PAGE, actingAs: "client", subAccountId: "sa1" });
+  });
+
   it("removes an agency template", async () => {
     expect((await call("DELETE", { uid: "u_owner" })).status).toBe(200);
     expect(gitpageCalls("DELETE")[0].body).toEqual({ pageId: PAGE });
   });
 });
 
+describe("requests refused before gitpage", () => {
+  it("a site that is not published, or has no gitpage page, is 400", async () => {
+    mem.seed(SITE, { id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "building", gitpagePageId: PAGE });
+    expect((await call("POST")).status).toBe(400);
+    mem.seed(SITE, { id: "site1", agencyId: "ag1", subAccountId: "sa1", status: "ready", gitpagePageId: null });
+    expect((await call("DELETE")).status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("an empty name and one over 60 characters are 400", async () => {
+    expect((await call("POST", { body: { name: "   " } })).status).toBe(400);
+    expect((await call("POST", { body: { name: "x".repeat(61) } })).status).toBe(400);
+    expect((await call("POST", { body: { name: "x".repeat(60) } })).status).toBe(200);
+  });
+
+  it("is 503 without a gitpage key", async () => {
+    delete process.env.GITPAGE_API_KEY;
+    expect((await call("POST")).status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("gitpage errors", () => {
-  it("reach the browser as the message only", async () => {
-    fetchMock.mockImplementation(async () => Response.json({ error: "Site is not on GitLab", secret: "gp_internal" }, { status: 400 }));
+  it("reach the browser as the message only, cleaned", async () => {
+    fetchMock.mockImplementation(async () => Response.json({ error: "Site is not\non GitLab", secret: "gp_internal" }, { status: 400 }));
     const res = await call("POST", { uid: "u_owner" });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "Site is not on GitLab" });
+  });
+
+  it("a rejected agency key (401 / 403) is our 502, and a 401 flags the key", async () => {
+    for (const status of [401, 403]) {
+      fetchMock.mockImplementation(async () => Response.json({ error: "Invalid API key" }, { status }));
+      expect((await call("POST", { uid: "u_owner" })).status).toBe(502);
+    }
+    expect(mem.read("system/gitpageStatus")).toMatchObject({ agency: false, lastError: "401_invalid_api_key" });
+  });
+
+  it("anything that is not a gitpage answer is fixed text", async () => {
+    fetchMock.mockImplementation(async () => {
+      throw new Error("connect ECONNREFUSED 10.0.0.1:443 key=gp_test_key");
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await call("POST", { uid: "u_owner" });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "Could not save the template." });
   });
 });

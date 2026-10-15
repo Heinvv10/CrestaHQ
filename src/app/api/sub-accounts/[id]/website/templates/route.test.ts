@@ -59,6 +59,24 @@ describe("GET /api/sub-accounts/[id]/website/templates", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("https://gitpage.test/api/v1/templates?subAccountId=sa1");
   });
 
+  it("answers 'not available' without a gitpage key, without calling it", async () => {
+    delete process.env.GITPAGE_API_KEY;
+    expect(await (await get()).json()).toEqual({ enabled: false, templates: [] });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 400],
+    [401, 502],
+    [403, 502],
+    [500, 502],
+  ])("gitpage %i is answered %i with the cleaned message only", async (gitpageStatus, ours) => {
+    fetchMock.mockImplementation(async () => Response.json({ error: "Nope\tthere", detail: "secret" }, { status: gitpageStatus }));
+    const res = await get();
+    expect(res.status).toBe(ours);
+    expect(await res.json()).toEqual({ error: "Nope there" });
+  });
+
   it("refuses a member before gitpage is asked", async () => {
     expect((await get("u_member")).status).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();

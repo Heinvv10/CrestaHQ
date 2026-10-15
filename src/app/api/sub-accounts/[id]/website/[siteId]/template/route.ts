@@ -5,12 +5,12 @@ import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   fetchTemplates,
-  GitpageError,
   gitpageIsConfigured,
   removeTemplate,
   saveTemplate,
   type GitpageTemplate,
 } from "@/lib/gitpage/client";
+import { gitpageErrorResponse } from "@/lib/gitpage/route-errors";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   requireWebsiteEnabledSub,
@@ -41,14 +41,6 @@ async function siteFor(subAccountId: string, siteId: string): Promise<WebsiteDoc
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}/website/${siteId}`).get();
   const doc = snap.exists ? (snap.data() as WebsiteDoc) : null;
   return doc && doc.subAccountId === subAccountId ? doc : null;
-}
-
-function errorResponse(err: unknown, fallback: string) {
-  if (err instanceof GitpageError) {
-    return NextResponse.json({ error: err.message }, { status: err.status >= 500 ? 502 : err.status });
-  }
-  const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
-  return NextResponse.json({ error: timedOut ? "gitpage didn't answer in time — please try again." : err instanceof Error ? err.message : fallback }, { status: 502 });
 }
 
 /**
@@ -124,9 +116,15 @@ export async function POST(
     }
     const template = await saveTemplate(pageId, name, g.isAgencyOwner ? { scope } : { client: g.subAccountId });
     // Belt and braces: a client template must come back as one.
+    if (wantsClient && !template) {
+      // HARDENING: no readable answer — what gitpage saved is unknown, so nothing is undone.
+      return NextResponse.json({ error: "gitpage's answer didn't include the template. Check it in gitpage before trying again." }, { status: 502 });
+    }
     if (wantsClient && template?.scope !== "client") {
+      // HARDENING (not upstream, which removed it as the agency): undone
+      // acting as this client, so the undo can never remove an agency template.
       if (!existed) {
-        await removeTemplate(pageId).catch((err) =>
+        await removeTemplate(pageId, g.subAccountId).catch((err) =>
           console.error(
             `[website/template] could not undo an agency-wide save sa=${g.subAccountId} page=${pageId}: ${err instanceof Error ? err.message : String(err)}`,
           ),
@@ -136,7 +134,7 @@ export async function POST(
     }
     return NextResponse.json({ ok: true, isTemplate: true, template });
   } catch (err) {
-    return errorResponse(err, "Could not save the template.");
+    return gitpageErrorResponse(err, "Could not save the template.");
   }
 }
 
@@ -154,6 +152,6 @@ export async function DELETE(
     await removeTemplate(g.site.gitpagePageId as string, g.isAgencyOwner ? undefined : g.subAccountId);
     return NextResponse.json({ ok: true, isTemplate: false });
   } catch (err) {
-    return errorResponse(err, "Could not remove the template.");
+    return gitpageErrorResponse(err, "Could not remove the template.");
   }
 }

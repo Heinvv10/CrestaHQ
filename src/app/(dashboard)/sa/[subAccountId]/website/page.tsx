@@ -23,7 +23,10 @@ import type { WebsiteDoc } from "@/types/website";
  * <WebsiteBuilder/> (a status card that opens the stepped build wizard).
  */
 export default function WebsitePage() {
-  const { subAccountId, isAdmin, isAgencyOwner, loading: subLoading } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, isAgencyOwner, loading: subLoading } = useSubAccount();
+  // The template list and the gitpage-copies sync answer 403 with the agency
+  // gate off, so the page only asks for them with it on.
+  const websiteGateOn = subAccount?.websiteEnabledByAgency === true;
   const [sites, setSites] = useState<WebsiteDoc[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -47,14 +50,15 @@ export default function WebsitePage() {
       .catch(() => setTemplates({ enabled: false, clientTemplates: false, names: {} }));
   }, [subAccountId]);
   useEffect(() => {
-    if (isAdmin) loadTemplates();
-  }, [isAdmin, loadTemplates]);
+    if (isAdmin && websiteGateOn) loadTemplates();
+  }, [isAdmin, websiteGateOn, loadTemplates]);
   // Copies the client made in gitpage (Duplicate) join the list: the server
   // imports them and the Firestore listener below shows them. Never blocks.
   useEffect(() => {
-    if (!isAdmin || !subAccountId) return;
-    fetch(`/api/sub-accounts/${subAccountId}/website/sync`, { method: "POST" }).catch(() => {});
-  }, [isAdmin, subAccountId]);
+    if (!isAdmin || !websiteGateOn || !subAccountId) return;
+    // A failed sync changes nothing on the page: the list stays as it is.
+    fetch(`/api/sub-accounts/${subAccountId}/website/sync`, { method: "POST" }).catch(() => undefined);
+  }, [isAdmin, websiteGateOn, subAccountId]);
 
   // "Save as template" on a card: the agency owner for any site; the client's
   // admins for their own templates (not on the agency's own templates).
