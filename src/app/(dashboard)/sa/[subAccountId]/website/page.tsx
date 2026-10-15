@@ -23,11 +23,53 @@ import type { WebsiteDoc } from "@/types/website";
  * <WebsiteBuilder/> (a status card that opens the stepped build wizard).
  */
 export default function WebsitePage() {
-  const { subAccountId, isAdmin, loading: subLoading } = useSubAccount();
+  const { subAccountId, subAccount, isAdmin, isAgencyOwner, loading: subLoading } = useSubAccount();
+  // The template list and the gitpage-copies sync answer 403 with the agency
+  // gate off, so the page only asks for them with it on.
+  const websiteGateOn = subAccount?.websiteEnabledByAgency === true;
   const [sites, setSites] = useState<WebsiteDoc[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [creating, setCreating] = useState(false);
   const { state: gateState, refresh: refreshGate } = useGitpageStatus();
+  // Agency templates (gitpage): whether they're switched on for the agency, and
+  // which sites already are templates (by gitpage page id) — for the cards'
+  // "Save as template". Never blocks the page.
+  type TemplateInfo = { name: string; scope: "agency" | "client" };
+  const [templates, setTemplates] = useState<{ enabled: boolean; clientTemplates: boolean; names: Record<string, TemplateInfo> }>({ enabled: false, clientTemplates: false, names: {} });
+  const loadTemplates = useCallback(() => {
+    if (!subAccountId) return;
+    fetch(`/api/sub-accounts/${subAccountId}/website/templates`)
+      .then((r) => (r.ok ? r.json() : { enabled: false, templates: [] }))
+      .then((body: { enabled?: boolean; clientTemplates?: boolean; templates?: Array<{ templateId: string; name: string; scope?: string }> }) => {
+        const names: Record<string, TemplateInfo> = {};
+        for (const t of Array.isArray(body.templates) ? body.templates : []) {
+          names[t.templateId] = { name: t.name, scope: t.scope === "client" ? "client" : "agency" };
+        }
+        setTemplates({ enabled: body.enabled === true, clientTemplates: body.clientTemplates === true, names });
+      })
+      .catch(() => setTemplates({ enabled: false, clientTemplates: false, names: {} }));
+  }, [subAccountId]);
+  useEffect(() => {
+    if (isAdmin && websiteGateOn) loadTemplates();
+  }, [isAdmin, websiteGateOn, loadTemplates]);
+  // Copies the client made in gitpage (Duplicate) join the list: the server
+  // imports them and the Firestore listener below shows them. Never blocks.
+  useEffect(() => {
+    if (!isAdmin || !websiteGateOn || !subAccountId) return;
+    // A failed sync changes nothing on the page: the list stays as it is.
+    fetch(`/api/sub-accounts/${subAccountId}/website/sync`, { method: "POST" }).catch(() => undefined);
+  }, [isAdmin, websiteGateOn, subAccountId]);
+
+  // "Save as template" on a card: the agency owner for any site; the client's
+  // admins for their own templates (not on the agency's own templates).
+  function templateFor(site: WebsiteDoc) {
+    if (!templates.enabled) return null;
+    // Client templates need a gitpage that knows them.
+    if (!isAgencyOwner && !templates.clientTemplates) return null;
+    const info = site.gitpagePageId ? templates.names[site.gitpagePageId] ?? null : null;
+    if (!isAgencyOwner && info?.scope === "agency") return null;
+    return { name: info?.name ?? null, scope: info?.scope ?? null, asOwner: isAgencyOwner, clientTemplates: templates.clientTemplates };
+  }
 
   // Re-fire the heartbeat when the tab regains focus. Operators who go to
   // gitpage.site to subscribe and come back get an instant status update.
@@ -201,6 +243,8 @@ export default function WebsitePage() {
               autoOpen={site.id === newSiteId}
               onAutoOpened={() => setNewSiteId(null)}
               chatSource={site.id === chatSource.siteId ? { accent: chatSource.accent } : null}
+              template={templateFor(site)}
+              onTemplatesChanged={loadTemplates}
             />
           ))}
 

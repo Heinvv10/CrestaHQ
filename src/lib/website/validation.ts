@@ -1,6 +1,7 @@
 import type { WebsiteConfig } from "@/types/website";
 import { isNicheKey, NICHE_META } from "@/lib/website/niches";
 import { validatePremiumDetails } from "@/lib/website/premium";
+import { isTemplateConfig, TEMPLATE_ID_RE } from "@/lib/website/templates";
 
 /**
  * Server-side + client-side validation for a WebsiteConfig payload. Returns
@@ -31,6 +32,10 @@ const HEX_TRIPLE_RE = /^#?[0-9a-f]{6}\s*,\s*#?[0-9a-f]{6}\s*,\s*#?[0-9a-f]{6}$/i
 export type ValidationErrors = Record<string, string>;
 
 export function validateWebsiteConfig(config: WebsiteConfig): ValidationErrors {
+  // Agency template builds only need the new business's details (the template
+  // supplies everything else); every other config is checked as before.
+  if (isTemplateConfig(config)) return validateTemplateConfig(config);
+
   const errors: ValidationErrors = {};
 
   if (!config.language?.trim()) errors.language = "Required.";
@@ -178,4 +183,25 @@ export function firstValidationError(
   const keys = Object.keys(errors);
   if (keys.length === 0) return null;
   return errors[keys[0]];
+}
+
+/**
+ * An Agency template build: the template, and the business details gitpage
+ * swaps in. gitpage also asks for the phone / address when the template shows
+ * them (its error names the missing fields).
+ */
+function validateTemplateConfig(config: WebsiteConfig): ValidationErrors {
+  const errors: ValidationErrors = {};
+  if (!TEMPLATE_ID_RE.test(String(config.template_id ?? "").trim())) errors.template_id = "Pick a template.";
+  if (!config.contact_details?.trim()) errors.contact_details = "Required.";
+  else if (!EMAIL_RE.test(config.contact_details.trim())) errors.contact_details = "Must be a valid email address.";
+  if (config.cta_link?.trim() && !URL_RE.test(config.cta_link.trim())) errors.cta_link = "Must start with http:// or https://.";
+  const biz = config.business_details;
+  if (!biz) {
+    errors["business_details"] = "Add the business details.";
+  } else {
+    if (!biz.business_name?.trim()) errors["business_details.business_name"] = "Required.";
+    else if (biz.business_name.length > 120) errors["business_details.business_name"] = "Max 120 characters.";
+  }
+  return errors;
 }

@@ -50,7 +50,7 @@ const PUBLISHED = {
   statusPhase: "completed",
   pagesUrl: "https://acme.gitlab.io/site",
   quality: "premium",
-  pageId: "page_42",
+  pageId: "64b7f0c2a1d3e4f5a6b7c842",
   theme: { primaryColor: "#B13F2B", conceptName: "Atelier" },
 };
 const IN_PROGRESS = { status: "processing", statusPhase: "images", quality: "premium" };
@@ -150,7 +150,7 @@ describe("POST …/website/[siteId]/poll — the QStash tick", () => {
       liveUrl: "https://acme.gitlab.io/site",
       statusPhase: "completed",
       conceptName: "Atelier",
-      gitpagePageId: "page_42",
+      gitpagePageId: "64b7f0c2a1d3e4f5a6b7c842",
       pollAttempts: 4,
     });
     expect(qstash.publishCallback).not.toHaveBeenCalled();
@@ -284,7 +284,7 @@ describe("POST …/website/[siteId]/poll-now — the manual re-check", () => {
       status: "ready",
       liveUrl: "https://acme.gitlab.io/site",
       errorMessage: null,
-      gitpagePageId: "page_42",
+      gitpagePageId: "64b7f0c2a1d3e4f5a6b7c842",
     });
   });
 
@@ -416,7 +416,7 @@ describe("a build the poll cap gave up on", () => {
     expect(mem.read(SITE)).toMatchObject({ status: "failed", gitpageJobId: JOB });
 
     expect(await (await callback()).json()).toEqual({ ok: true, settled: "ready" });
-    expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null, gitpagePageId: "page_42" });
+    expect(mem.read(SITE)).toMatchObject({ ...READY, errorMessage: null, gitpagePageId: "64b7f0c2a1d3e4f5a6b7c842" });
   });
 
   it("a late FAILED callback changes nothing: only success can reopen it", async () => {

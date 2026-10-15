@@ -46,6 +46,8 @@ import {
 } from "@/types/website";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { isNicheKey, NICHE_META, nicheSample } from "@/lib/website/niches";
+import { isTemplateConfig } from "@/lib/website/templates";
+import { TemplatePicker, type WizardTemplate } from "@/components/website/website-template-picker";
 import { premiumModeFor } from "@/lib/website/premium";
 import {
   validateWebsiteConfig,
@@ -98,6 +100,9 @@ const STEP_META: Record<WizardStepId, { title: string; blurb: string }> = {
 };
 
 export function wizardStepsFor(config: WebsiteConfig): WizardStepId[] {
+  // Agency template: the template supplies design, pages and copy — only the
+  // business details are asked (on the Location step).
+  if (isTemplateConfig(config)) return ["start", "location", "review"];
   const local = (config.build_type ?? "local") === "local";
   const premium = effectiveQuality(config) === "premium";
   const steps: WizardStepId[] = ["start", "business", local ? "pages" : "video"];
@@ -113,7 +118,12 @@ export function wizardStepTitle(step: string | null | undefined): string | null 
 }
 
 /** Which step owns a validation error key. Unknown keys land on Review. */
-function stepForError(key: string, buildType: BuildType): WizardStepId {
+function stepForError(key: string, buildType: BuildType, template = false): WizardStepId {
+  if (template) {
+    if (key === "template_id") return "start";
+    if (key === "contact_details" || key === "cta_link" || key.startsWith("business_details")) return "location";
+    return "review";
+  }
   if (["heading", "hero_statement", "features", "benefits", "contact_details", "cta_link", "language"].includes(key)) return "business";
   if (key === "quality" || key === "niche") return "start";
   if (key === "video_link") return "video";
@@ -126,6 +136,7 @@ function stepForError(key: string, buildType: BuildType): WizardStepId {
 }
 
 function modeFor(config: WebsiteConfig): BuildMode {
+  if (isTemplateConfig(config)) return "template";
   if (isNicheKey(config.niche)) return "niche";
   return config.build_type === "vsl" ? "standard_vsl" : "standard_local";
 }
@@ -173,12 +184,17 @@ export function WebsiteWizard({
   const [maxReached, setMaxReached] = useState(0);
   const [saving, setSaving] = useState(false);
   const [building, setBuilding] = useState(false);
+  // The agency's saved templates (gitpage); empty = the option stays hidden.
+  const [templates, setTemplates] = useState<WizardTemplate[]>([]);
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
+  const [templatesEnabled, setTemplatesEnabled] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const steps = useMemo(() => wizardStepsFor(config), [config]);
   const stepIndex = Math.max(0, steps.indexOf(step));
   const buildType: BuildType = config.build_type ?? "local";
   const niche: Niche | null = isNicheKey(config.niche) ? config.niche : null;
+  const isTemplate = isTemplateConfig(config);
   // Premium only (Ben, 2026-10-01) — Standard is no longer offered.
   const quality = "premium" as const;
   const isPremium = true;
@@ -198,6 +214,32 @@ export function WebsiteWizard({
     setMaxReached(freshSteps.indexOf(target));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Load the agency's templates when the modal opens (never blocks the wizard).
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setTemplatesLoaded(false);
+    fetch(`/api/sub-accounts/${subAccountId}/website/templates`)
+      .then((r) => (r.ok ? r.json() : { enabled: false, templates: [] }))
+      .then((body: { enabled?: boolean; templates?: WizardTemplate[] }) => {
+        if (cancelled) return;
+        const list = Array.isArray(body.templates) ? body.templates : [];
+        setTemplates(list);
+        setTemplatesEnabled(body.enabled === true || list.length > 0);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTemplates([]);
+        setTemplatesEnabled(false);
+      })
+      .finally(() => {
+        if (!cancelled) setTemplatesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, subAccountId]);
 
   // If a choice removes the current step (e.g. contact page unticked), fall back.
   useEffect(() => {
@@ -221,6 +263,20 @@ export function WebsiteWizard({
     if (next === "standard_local") setConfig({ ...blankWebsiteConfig(), quality });
     else if (next === "standard_vsl") setConfig({ ...blankVslConfig(), quality });
     else setConfig({ ...blankWebsiteConfig(), niche: null, quality });
+  }
+
+  function selectTemplate(t: WizardTemplate) {
+    // Keep business details already typed when switching between templates.
+    setConfig((prev) => ({
+      ...blankWebsiteConfig(),
+      quality,
+      template_id: t.templateId,
+      template_name: t.name,
+      contact_details: isTemplateConfig(prev) ? prev.contact_details : "",
+      local_page_selections: { index: true, services: false, contact: true, privacy: false, terms: false },
+      business_details: (isTemplateConfig(prev) && prev.business_details) || blankBusinessDetails(),
+    }));
+    setErrors({});
   }
 
   function selectNiche(key: Niche, asBuildType: BuildType) {
@@ -310,11 +366,12 @@ export function WebsiteWizard({
 
   function errorsForStep(target: WizardStepId): ValidationErrors {
     if (target === "start") {
+      if (mode === "template" && !isTemplate) return { template_id: "Pick a template to continue." };
       return mode === "niche" && !niche ? { niche: "Pick a niche template to continue." } : {};
     }
     const all = validateWebsiteConfig(config);
     return Object.fromEntries(
-      Object.entries(all).filter(([k]) => stepForError(k, buildType) === target),
+      Object.entries(all).filter(([k]) => stepForError(k, buildType, isTemplate) === target),
     );
   }
 
@@ -360,7 +417,7 @@ export function WebsiteWizard({
     const merged = { ...startErrors, ...all };
     if (Object.keys(merged).length) {
       const firstKey = Object.keys(merged)[0];
-      const target = startErrors.niche ? "start" : stepForError(firstKey, buildType);
+      const target = startErrors.niche || startErrors.template_id ? "start" : stepForError(firstKey, buildType, isTemplate);
       setErrors(merged);
       if (steps.includes(target)) setStep(target);
       toast.error(merged[firstKey]);
@@ -378,13 +435,15 @@ export function WebsiteWizard({
         if (payload.fieldErrors) {
           setErrors(payload.fieldErrors);
           const k = Object.keys(payload.fieldErrors)[0];
-          const target = k ? stepForError(k, buildType) : null;
+          const target = k ? stepForError(k, buildType, isTemplate) : null;
           if (target && steps.includes(target)) setStep(target);
         }
         throw new Error(payload.error ?? "Could not start build.");
       }
       toast.success(
-        isPremium
+        isTemplate
+          ? "Template build started — usually 1–3 minutes. You can leave this page."
+          : isPremium
           ? "Premium build started — usually 10–20 minutes. You can leave this page."
           : "Build started — usually 1–3 minutes.",
       );
@@ -416,8 +475,26 @@ export function WebsiteWizard({
           {step === "start" && (
             <>
               <Section title="Site type" description="Pick the kind of site — switching clears what you've entered.">
-                <BuildModePicker value={mode} onChange={switchMode} disabled={building} />
+                <BuildModePicker
+                  value={mode}
+                  onChange={switchMode}
+                  disabled={building}
+                  showTemplate={templatesEnabled || mode === "template"}
+                />
               </Section>
+              {mode === "template" && (
+                <Section title="Pick a template" description="Your agency's saved sites. The new site copies its design and pages, with this business's details.">
+                  {templatesLoaded ? (
+                    <TemplatePicker templates={templates} value={config.template_id} onPick={selectTemplate} disabled={building} />
+                  ) : (
+                    <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading your templates…</p>
+                  )}
+                  {templatesLoaded && isTemplate && !templates.some((t) => t.templateId === config.template_id) && (
+                    <p className="mt-2 text-[11px] text-muted-foreground">Selected: {config.template_name || "a saved template"}</p>
+                  )}
+                  {errors.template_id && <p className="mt-2 text-[11px] text-destructive">{errors.template_id}</p>}
+                </Section>
+              )}
               {mode === "niche" && !niche && (
                 <Section title="Pick your niche" description="Each niche ships a researched section structure and copy tone.">
                   <NicheTilePicker onPick={selectNiche} disabled={building} />
@@ -453,12 +530,22 @@ export function WebsiteWizard({
               <div className="flex items-start gap-3 rounded-xl border border-violet-500/20 bg-gradient-to-r from-violet-500/10 via-indigo-500/5 to-transparent p-4">
                 <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-violet-500 dark:text-violet-300" />
                 <p className="text-xs text-muted-foreground">
+                  {mode === "template" ? (
+                    <>
+                      <span className="font-medium text-foreground">Built from your template:</span> same design, pages and
+                      photography, with this business&apos;s name, contact details and address, and this workspace&apos;s contact
+                      form + AI chat. Builds take 1–3 minutes.
+                    </>
+                  ) : (
+                    <>
                   <span className="font-medium text-foreground">Every site is a premium build:</span> a studio-grade design,
                   copy written by the strongest model, generated photography, and your contact form + AI chat wired in.
                   Builds take 10–20 minutes.
+                    </>
+                  )}
                 </p>
               </div>
-              {(mode !== "niche" || niche) && (
+              {(mode !== "niche" || niche) && mode !== "template" && (
                 <div className="flex items-center justify-between gap-3 rounded-xl border border-dashed border-violet-500/30 bg-violet-500/[0.03] p-4">
                   <p className="text-xs text-muted-foreground">
                     Just exploring? Fill every step with realistic sample data for this site type.
@@ -614,10 +701,27 @@ export function WebsiteWizard({
 
           {step === "location" && config.business_details && (
             <div className="grid gap-3 sm:grid-cols-2">
+              {isTemplate && (
+                <p className="text-xs text-muted-foreground sm:col-span-2">
+                  These replace the template business&apos;s name, contact details, address and main button everywhere on the
+                  site. Fill in the phone and address if the template shows them. Opening hours, team and testimonials are
+                  copied from the template — edit them in the site editor afterwards.
+                </p>
+              )}
+              {isTemplate && (
+                <Field label="Contact email" hint="Shown on the site and used for enquiries." error={errors.contact_details}>
+                  <Input type="email" value={config.contact_details} onChange={(e) => update("contact_details", e.target.value)} placeholder="hello@acme.com" />
+                </Field>
+              )}
+              {isTemplate && (
+                <Field label="Main button link" hint="Replaces the template's booking / call-to-action link." error={errors.cta_link}>
+                  <Input type="url" value={config.cta_link} onChange={(e) => update("cta_link", e.target.value)} placeholder="https://book.acme.com" />
+                </Field>
+              )}
               <Field label="Business name" error={errors["business_details.business_name"]}>
                 <Input value={config.business_details.business_name} onChange={(e) => updateBusiness("business_name", e.target.value)} />
               </Field>
-              <Field label="Phone">
+              <Field label="Phone" error={errors["business_details.business_phone"]}>
                 <Input value={config.business_details.business_phone} onChange={(e) => updateBusiness("business_phone", e.target.value)} />
               </Field>
               <Field label="Street" error={errors["business_details.business_street"]}>
@@ -626,29 +730,36 @@ export function WebsiteWizard({
               <Field label="City" error={errors["business_details.business_city"]}>
                 <Input value={config.business_details.business_city} onChange={(e) => updateBusiness("business_city", e.target.value)} />
               </Field>
-              <Field label="State / region">
+              <Field label="State / region" error={errors["business_details.business_state"]}>
                 <Input value={config.business_details.business_state} onChange={(e) => updateBusiness("business_state", e.target.value)} />
               </Field>
-              <Field label="Country">
+              <Field label="Country" error={errors["business_details.business_country"]}>
                 <Input value={config.business_details.business_country} onChange={(e) => updateBusiness("business_country", e.target.value)} />
               </Field>
-              <Field label="Postcode / ZIP">
+              <Field label="Postcode / ZIP" error={errors["business_details.business_zip"]}>
                 <Input value={config.business_details.business_zip} onChange={(e) => updateBusiness("business_zip", e.target.value)} />
               </Field>
-              <Field label="Business email">
-                <Input type="email" value={config.business_details.business_email} onChange={(e) => updateBusiness("business_email", e.target.value)} />
-              </Field>
-              <Field label="Google rating" hint="e.g. 4.8">
-                <Input value={config.business_details.google_rating} onChange={(e) => updateBusiness("google_rating", e.target.value)} />
-              </Field>
-              <Field label="Google review count" hint="e.g. 127">
-                <Input value={config.business_details.google_review_count} onChange={(e) => updateBusiness("google_review_count", e.target.value)} />
-              </Field>
+              {!isTemplate && (
+                <>
+                  <Field label="Business email">
+                    <Input type="email" value={config.business_details.business_email} onChange={(e) => updateBusiness("business_email", e.target.value)} />
+                  </Field>
+                  <Field label="Google rating" hint="e.g. 4.8">
+                    <Input value={config.business_details.google_rating} onChange={(e) => updateBusiness("google_rating", e.target.value)} />
+                  </Field>
+                  <Field label="Google review count" hint="e.g. 127">
+                    <Input value={config.business_details.google_review_count} onChange={(e) => updateBusiness("google_review_count", e.target.value)} />
+                  </Field>
+                </>
+              )}
+              {/* A template's opening hours are copied as they are (edit them in the site editor). */}
+              {!isTemplate && (
               <div className="sm:col-span-2">
                 <Field label="Opening hours" hint='Free text, e.g. "Mon–Fri 8–6, Sat 10–2".'>
                   <Textarea rows={2} value={config.business_details.opening_hours} onChange={(e) => updateBusiness("opening_hours", e.target.value)} />
                 </Field>
               </div>
+              )}
             </div>
           )}
 
@@ -739,7 +850,7 @@ export function WebsiteWizard({
           {step === "review" && (
             <>
               <ReviewSummary config={config} steps={steps} saved={draftSavable} onEdit={(s) => goTo(steps.indexOf(s))} />
-              {isPremium && (
+              {isPremium && !isTemplate && (
                 <Section title="Wired in on publish" description="On by default — the site feeds this workspace from day one.">
                   <LeadCaptureToggles
                     includeForm={config.include_form !== false}
@@ -750,6 +861,7 @@ export function WebsiteWizard({
                   />
                 </Section>
               )}
+              {!isTemplate && (
               <label className="flex items-center gap-3 rounded-lg border bg-background p-3">
                 <Checkbox checked={config.include_faq} onCheckedChange={(c) => update("include_faq", c === true)} />
                 <div>
@@ -757,9 +869,12 @@ export function WebsiteWizard({
                   <p className="text-xs text-muted-foreground">Questions and answers written from what you&apos;ve told us.</p>
                 </div>
               </label>
+              )}
               <p className="flex items-center gap-2 rounded-xl border border-violet-500/20 bg-gradient-to-br from-violet-500/10 via-indigo-500/5 to-transparent p-4 text-xs text-muted-foreground">
                 <Sparkles className="h-4 w-4 shrink-0 text-violet-500 dark:text-violet-300" />
-                {isPremium
+                {isTemplate
+                  ? "Template builds take 1–3 minutes — copy, rebrand, publish. This workspace's contact form and AI chat are wired in when the template has them."
+                  : isPremium
                   ? "Premium builds take 10–20 minutes — brief, photography, design, publish. You can close this and leave the page; the card shows progress."
                   : "Standard builds take 1–3 minutes."}
               </p>
@@ -883,6 +998,18 @@ function ReviewSummary({
   const pages = local
     ? (["services", "contact", "privacy", "terms"] as const).filter((p) => config.local_page_selections?.[p])
     : [];
+  if (isTemplateConfig(config)) {
+    const b = config.business_details;
+    const templateRows: Array<{ step: WizardStepId; label: string; value: string }> = [
+      { step: "start", label: "Site", value: `Agency template · ${config.template_name || "saved template"}` },
+      { step: "location", label: "Business", value: b?.business_name || "—" },
+      { step: "location", label: "Email", value: config.contact_details || "—" },
+      { step: "location", label: "Phone", value: b?.business_phone || "—" },
+      { step: "location", label: "Address", value: [b?.business_street, b?.business_city].filter(Boolean).join(", ") || "—" },
+      { step: "location", label: "Main button", value: config.cta_link || "—" },
+    ];
+    return <SummaryList rows={templateRows} saved={saved} onEdit={onEdit} />;
+  }
   const d = config.premium_details;
   const storyCount = d
     ? [d.tagline, d.metrics, d.team, d.testimonials, d.offer_headline, d.gallery_notes, d.social_links, d.reference_notes].filter((v) => v?.trim()).length
@@ -900,6 +1027,18 @@ function ReviewSummary({
     { step: "look", label: "Look", value: `${config.color_scheme}${premium ? ` · ${config.concept ? "chosen direction" : "studio's choice"}` : ""}` },
     ...(premium ? [{ step: "story" as const, label: "Your story", value: storyCount ? `${storyCount} section${storyCount === 1 ? "" : "s"} filled` : "Skipped" }] : []),
   ];
+  return <SummaryList rows={rows} saved={saved} onEdit={onEdit} />;
+}
+
+function SummaryList({
+  rows,
+  saved,
+  onEdit,
+}: {
+  rows: Array<{ step: WizardStepId; label: string; value: string }>;
+  saved: boolean;
+  onEdit: (step: WizardStepId) => void;
+}) {
   return (
     <dl className="divide-y rounded-xl border">
       {rows.map((r, i) => (

@@ -797,10 +797,34 @@
         "reason": "Records the custom domain a live site is served on and allow-lists it for Web Chat, after the operator has set it up in GitLab or GitHub (the custom-domain dialog). Widens where the chat widget may run, so it stays with a person. The website tools are chat-only."
       }
     },
+    "api/sub-accounts/[id]/website/[siteId]/template:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Stops a live site being one of the agency's gitpage templates (the site card's Save as template dialog). Changes what every client of the agency may build from, so it stays with a person. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/[siteId]/template:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Saves or renames a live site as a gitpage template (the site card's Save as template dialog). An agency-scope save offers the site's design to every client of the agency, so it stays with a person. The website tools are chat-only."
+      }
+    },
     "api/sub-accounts/[id]/website/concepts:GET": {
       "exclude": {
         "category": "human-only",
         "reason": "Feeds the website builder's concept picker: a member-authed proxy over gitpage's design directions. The website tools are chat-only; an assistant tool for it is unit WS-7 of UPSTREAM_PORT_PLAN.md."
+      }
+    },
+    "api/sub-accounts/[id]/website/sync:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Fired by the Websites page when it opens: imports the copies the client made in gitpage (Duplicate) into the list. Housekeeping for the page a person is looking at, not an action. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/templates:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Feeds the website wizard's template picker and the site cards' Save as template: an admin-only proxy over the agency's gitpage templates. The website tools are chat-only."
       }
     },
     "api/sub-accounts/[id]/whatsapp-templates:GET": {

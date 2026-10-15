@@ -8,9 +8,12 @@ import {
   type ValidationErrors,
 } from "@/lib/website/validation";
 import { isNicheKey } from "@/lib/website/niches";
+import { isTemplateConfig, TEMPLATE_ID_RE } from "@/lib/website/templates";
 import {
+  fetchTemplates,
   GitpageError,
   gitpageIsConfigured,
+  hideClientSite,
   safePagesUrl,
   submitBuild,
   type PollBuildResult,
@@ -197,17 +200,21 @@ async function reserveBuildSubmit(
  * writing the one limits doc is what serialises creators; the count that a
  * second creator sees on its re-run includes the first one's doc.
  */
-async function siteSlotFree(
+export async function siteSlotFree(
   tx: FirebaseFirestore.Transaction,
   subAccountId: string,
-): Promise<{ free: boolean; count: number }> {
+): Promise<{ free: boolean; count: number; docs: WebsiteDoc[] }> {
   const db = getAdminDb();
   await tx.get(db.doc(websiteLimitsPath(subAccountId)));
   const existing = await tx.get(db.collection(`subAccounts/${subAccountId}/website`));
-  return { free: existing.size < MAX_WEBSITES_PER_SUBACCOUNT, count: existing.size };
+  return {
+    free: existing.size < MAX_WEBSITES_PER_SUBACCOUNT,
+    count: existing.size,
+    docs: existing.docs.map((d) => d.data() as WebsiteDoc),
+  };
 }
 
-function claimSiteSlot(tx: FirebaseFirestore.Transaction, subAccountId: string): void {
+export function claimSiteSlot(tx: FirebaseFirestore.Transaction, subAccountId: string): void {
   tx.set(
     getAdminDb().doc(websiteLimitsPath(subAccountId)),
     { createSeq: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() },
@@ -609,6 +616,43 @@ export function normalizeWebsiteConfig(config: WebsiteConfig): void {
   }
   config.niche = isNicheKey(config.niche) ? config.niche : null;
 
+  // Agency template builds: a local config plus the template id. The template
+  // supplies design and pages; the business details stay (contact page on).
+  // Configs without template_id are untouched here.
+  if (isTemplateConfig(config)) {
+    const id = String(config.template_id).trim();
+    if (!TEMPLATE_ID_RE.test(id)) {
+      throw new WebsiteServiceError("That template id isn't valid. Pick the template again.", 400, {
+        failureSource: "local-validation",
+        submissionOutcome: "not-accepted",
+      });
+    }
+    config.template_id = id;
+    config.template_name =
+      typeof config.template_name === "string" && config.template_name.trim()
+        ? config.template_name.trim().slice(0, 120)
+        : null;
+    config.build_type = "local";
+    config.niche = null;
+    // The site's title in LeadStack (cards, lead emails); gitpage doesn't use it.
+    config.heading = (config.business_details?.business_name ?? "").trim().slice(0, 80);
+    // The template decides whether the site has a form and chat widget; when
+    // it does, gitpage needs this sub-account's wiring to re-point them.
+    config.include_form = true;
+    config.include_chat = true;
+    config.local_page_selections = {
+      index: true,
+      services: !!config.local_page_selections?.services,
+      contact: true,
+      privacy: !!config.local_page_selections?.privacy,
+      terms: !!config.local_page_selections?.terms,
+    };
+  } else if (config.template_id !== undefined || config.template_name !== undefined) {
+    // A draft switched away from a template: drop the leftovers.
+    config.template_id = null;
+    config.template_name = null;
+  }
+
   if (config.build_type === "local") {
     if (!config.local_page_selections) {
       throw new WebsiteServiceError("local_page_selections is required.", 400, {
@@ -649,6 +693,83 @@ export function normalizeWebsiteConfig(config: WebsiteConfig): void {
     };
     config.services_config = null;
     config.business_details = null;
+  }
+}
+
+/** gitpage request fields → the wizard's field keys (Agency template builds). */
+const TEMPLATE_FIELD_KEYS: Record<string, string> = {
+  businessName: "business_details.business_name",
+  businessEmail: "contact_details",
+  businessPhone: "business_details.business_phone",
+  businessStreet: "business_details.business_street",
+  businessCity: "business_details.business_city",
+  businessState: "business_details.business_state",
+  businessZip: "business_details.business_zip",
+  businessCountry: "business_details.business_country",
+  ctaLink: "cta_link",
+};
+
+/** The wizard's labels for gitpage's request field names. */
+const TEMPLATE_FIELD_LABELS: Record<string, string> = {
+  businessName: "Business name",
+  businessEmail: "Contact email",
+  businessPhone: "Phone",
+  businessStreet: "Street",
+  businessCity: "City",
+  businessState: "State / region",
+  businessZip: "Postcode / ZIP",
+  businessCountry: "Country",
+  ctaLink: "Main button link",
+};
+
+/** A failed template build's message with gitpage's field names as the wizard's labels. */
+function templateErrorText(message: string): string {
+  return message.replace(/\b(business(?:Name|Email|Phone|Street|City|State|Zip|Country)|ctaLink)\b/g, (name) => TEMPLATE_FIELD_LABELS[name] ?? name);
+}
+
+/** gitpage's "Missing business details" answer as wizard field errors, or null. */
+function templateFieldErrors(body: unknown): Record<string, string> | null {
+  const missing = (body as { missing?: unknown } | null)?.missing;
+  if (!Array.isArray(missing)) return null;
+  const errors: Record<string, string> = {};
+  for (const name of missing) {
+    const key = typeof name === "string" ? TEMPLATE_FIELD_KEYS[name] : undefined;
+    if (key) errors[key] = "The template shows this — add this business's own.";
+  }
+  return Object.keys(errors).length ? errors : null;
+}
+
+const TEMPLATE_UNAVAILABLE_MESSAGE =
+  "That template isn't available to this workspace any more. Pick the template again.";
+
+/**
+ * HARDENING (not upstream): a template build may only use a template gitpage
+ * offers THIS sub-account — an agency template, or a client template saved
+ * for this sub-account. Upstream sends any well-formed id on, so client A
+ * could build from client B's client template by id. Fails closed: gitpage
+ * not answering is a refusal, not a pass.
+ */
+async function requireTemplateOffered(subAccountId: string, templateId: string): Promise<void> {
+  let offered: Awaited<ReturnType<typeof fetchTemplates>>;
+  try {
+    offered = await fetchTemplates(subAccountId);
+  } catch (err) {
+    console.error(
+      `[website/build] template list unavailable sa=${subAccountId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    throw new WebsiteServiceError(
+      "Couldn't check the template with the website builder. Nothing was built — try again in a few minutes.",
+      502,
+      { failureSource: "provider", submissionOutcome: "not-accepted" },
+    );
+  }
+  if (!offered.enabled || !offered.templates.some((t) => t.templateId === templateId)) {
+    throw new WebsiteServiceError(TEMPLATE_UNAVAILABLE_MESSAGE, 400, {
+      fieldErrors: { template_id: TEMPLATE_UNAVAILABLE_MESSAGE },
+      fieldErrorsSource: "local-validation",
+      failureSource: "local-validation",
+      submissionOutcome: "not-accepted",
+    });
   }
 }
 
@@ -726,6 +847,14 @@ async function submitWebsiteBuildForSubAccountImpl(input: {
   }
   const isFirst = !snap.exists;
   const existingDoc = (snap.data() ?? {}) as Partial<WebsiteDoc>;
+  // `gp-<pageId>` ids belong to sites imported from gitpage
+  // (website-import-service.ts); a build never creates one at a caller-chosen id.
+  if (isFirst && siteId.startsWith("gp-")) {
+    throw new WebsiteServiceError("That website id is reserved. Add the website from the Websites page.", 400, {
+      failureSource: "local-validation",
+      submissionOutcome: "not-accepted",
+    });
+  }
 
   // Refuse before anything is spent. A site already building keeps its job:
   // a second submit would start a second paid build and orphan the first.
@@ -755,6 +884,12 @@ async function submitWebsiteBuildForSubAccountImpl(input: {
       });
     }
   }
+  // Before the reservation below: a template the workspace may not use costs
+  // no build from its hourly allowance.
+  if (isTemplateConfig(config)) {
+    await requireTemplateOffered(subAccountId, config.template_id as string);
+  }
+
   // The real bound on calls to gitpage. The 409 above stops a second build
   // of a site that is building, but two submits in the same instant both
   // pass it; this counter is what neither
@@ -861,6 +996,22 @@ async function submitWebsiteBuildForSubAccountImpl(input: {
       if (err.status === 401) {
         await markGitpageKeyInvalid();
       }
+      // Agency template: gitpage names the details the template shows that the
+      // build lacks — point the wizard at those fields.
+      const fieldErrors = isTemplateConfig(config) ? templateFieldErrors(err.body) : null;
+      if (fieldErrors) {
+        throw new WebsiteServiceError(
+          "This template shows these details, so the new site needs its own — fill in the highlighted fields.",
+          400,
+          {
+            fieldErrors,
+            gitpageStatus: err.status,
+            gitpageBody: err.body,
+            failureSource: "provider",
+            submissionOutcome: rejectedBeforeAcceptance(err.status) ? "not-accepted" : "unknown",
+          },
+        );
+      }
       throw new WebsiteServiceError(err.message, err.status, {
         gitpageStatus: err.status,
         gitpageBody: err.body,
@@ -904,8 +1055,14 @@ async function submitWebsiteBuildForSubAccountImpl(input: {
     conceptName: null,
     provisioning: null,
     gitpagePageId: null,
+    // The site this build replaces, hidden in gitpage once the new one
+    // publishes. Read from the doc inside the write below (`inTransaction`),
+    // so a settle that lands in between is not lost; null for a new doc.
+    replacesGitpagePageId: null,
     editorEmail: editorEmail ?? null,
     settledDelivery: null,
+    // A copy imported from gitpage that is rebuilt is a LeadStack build from now on.
+    importedFrom: null,
   };
 
   if (isFirst) {
@@ -938,6 +1095,9 @@ async function submitWebsiteBuildForSubAccountImpl(input: {
         orMissing: isFirst,
         merge: true,
         ...(input.ctaOnly ? { when: (fresh: WebsiteDoc) => !hasUnsettledFailure(fresh) } : {}),
+        inTransaction: async (_tx, fresh) => ({
+          replacesGitpagePageId: fresh.gitpagePageId ?? fresh.replacesGitpagePageId ?? null,
+        }),
       },
       update,
     );
@@ -1149,12 +1309,15 @@ export async function settleWebsiteBuild(input: {
   const live = published && result.pagesUrl ? await resolveLiveUrl(result.pagesUrl) : null;
   const liveUrl = live?.url ?? null;
 
+  // The replaced site as the claim saw it — not the caller's earlier read.
+  let replaced: string | null = null;
   const settled = await transitionWebsite(
     docRef,
     {
       expectJobId: jobId,
       fromStatuses: ["queued", "building", "failed"],
       when: (fresh) => {
+        replaced = fresh.replacesGitpagePageId ?? null;
         const repeat =
           fresh.settledDelivery?.jobId === delivery.jobId &&
           fresh.settledDelivery.status === delivery.status;
@@ -1170,7 +1333,8 @@ export async function settleWebsiteBuild(input: {
           partialErrors: result.partialErrors,
           statusPhase: "completed",
           conceptName: result.premium?.theme?.conceptName ?? null,
-          ...(result.pageId ? { gitpagePageId: result.pageId } : {}),
+          // The replaced site is forgotten once the new one is known (and hidden below).
+          ...(result.pageId ? { gitpagePageId: result.pageId, replacesGitpagePageId: null } : {}),
           pollAttempts: input.attempts,
           settledDelivery: delivery,
           updatedAt: FieldValue.serverTimestamp(),
@@ -1179,7 +1343,9 @@ export async function settleWebsiteBuild(input: {
           status: "failed",
           errorMessage: refused
             ? `gitpage published this site at an address that was refused: "${refused}". Only a public https address is accepted.`
-            : (result.error ?? "gitpage build failed without details."),
+            : isTemplateConfig(site.config)
+              ? templateErrorText(result.error ?? "gitpage build failed without details.")
+              : (result.error ?? "gitpage build failed without details."),
           statusPhase: result.premium?.failedStage ?? result.statusPhase ?? null,
           pollAttempts: input.attempts,
           settledDelivery: delivery,
@@ -1194,10 +1360,28 @@ export async function settleWebsiteBuild(input: {
   // route). It only stores scores that nothing displays, upstream included,
   // so it would spend a QStash message per publish for nothing.
 
+  // A rebuild made a new gitpage site: hide the one it replaces in gitpage (it
+  // stays live; the agency can unhide it), so gitpage lists what LeadStack
+  // does. Templates and sites with a connected domain stay visible (gitpage).
+  // After the response and outside the claim, and never fails the publish.
+  const hide = replaced as string | null;
+  if (hide && result.pageId && hide !== result.pageId) {
+    runAfterResponse(() =>
+      hideClientSite(hide, subAccountId, "replaced").catch((err) =>
+        console.error(
+          `[website/settle] could not hide the replaced site in gitpage sa=${subAccountId} site=${siteId}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      ),
+    );
+  }
+
   // Premium hand-off, for the caller that claimed — and only that caller: a
-  // "noop" above has already returned.
+  // "noop" above has already returned. A site built from an Agency template
+  // follows the template's own quality as gitpage reports it: a standard
+  // template has no chat bot text or wiring to hand over.
   const quality = site.quality ?? effectiveQuality(site.config);
-  if (quality === "premium" && liveUrl) {
+  const standardTemplate = isTemplateConfig(site.config) && !result.premium;
+  if (quality === "premium" && liveUrl && !standardTemplate) {
     runAfterResponse(() =>
       runWebsiteHandoff({
         subAccountId,
@@ -1319,6 +1503,22 @@ export async function updateWebsiteCtaAndRebuild(input: {
     throw new WebsiteServiceError(SITE_NOT_FOUND_MESSAGE, 404);
   }
   const config: WebsiteConfig = { ...blankWebsiteConfig(), ...(doc.config ?? {}) };
+  // A copy made in gitpage has no LeadStack build behind it: a rebuild would
+  // replace it with a fresh build and lose everything changed since.
+  if (doc.importedFrom === "gitpage") {
+    throw new WebsiteServiceError(
+      "This site was copied in gitpage: rebuilding it would replace it with a new build and lose its edits. Change the link in the site editor instead.",
+      409,
+    );
+  }
+  // A site built from an Agency template takes its button from the template:
+  // a rebuild would copy the template again, not change the link.
+  if (isTemplateConfig(config)) {
+    throw new WebsiteServiceError(
+      "This site was built from an Agency template: rebuilding it would copy the template again and lose edits made since. Change the link in the site editor instead.",
+      409,
+    );
+  }
   const siteName = siteDisplayName(doc);
   if (
     input.expectSiteName !== undefined &&

@@ -4,6 +4,7 @@ import { useEffect, useId, useState } from "react";
 import {
   AlertTriangle,
   Bot,
+  Copy,
   ExternalLink,
   Loader2,
   Pencil,
@@ -17,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { isHexColor } from "@/lib/hex-color";
 import { effectiveQuality, siteAddress, type WebsiteDoc } from "@/types/website";
 import { NICHE_META, isNicheKey } from "@/lib/website/niches";
+import { isTemplateConfig } from "@/lib/website/templates";
 import {
   ProvisioningSummary,
   premiumPhaseLabel,
@@ -30,6 +32,7 @@ import {
 import { WebsiteEditHelper } from "@/components/website/website-edit-helper";
 import { WebsiteDomainDialog } from "@/components/website/website-domain-dialog";
 import { WebsiteSeoPanel } from "@/components/website/website-seo-panel";
+import { SaveTemplateDialog } from "@/components/website/website-template-save";
 
 /**
  * One website card in the sub-account's list — a compact status card. All
@@ -46,6 +49,8 @@ export function WebsiteBuilder({
   autoOpen = false,
   onAutoOpened,
   chatSource = null,
+  template = null,
+  onTemplatesChanged,
 }: {
   subAccountId: string;
   doc: WebsiteDoc;
@@ -57,11 +62,19 @@ export function WebsiteBuilder({
   onAutoOpened?: () => void;
   /** Set when the shared chat bot's knowledge comes from THIS site. */
   chatSource?: { accent: string | null } | null;
+  /**
+   * Agency templates are switched on for the agency (gitpage): null = off.
+   * name = this site's template name when it already is one.
+   */
+  template?: { name: string | null; scope?: "agency" | "client" | null; asOwner?: boolean; clientTemplates?: boolean } | null;
+  /** Reload the agency's templates after a save / remove. */
+  onTemplatesChanged?: () => void;
 }) {
   const siteId = doc.id;
   const [wizardOpen, setWizardOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [domainOpen, setDomainOpen] = useState(false);
+  const [templateOpen, setTemplateOpen] = useState(false);
   const [wizardStart, setWizardStart] = useState<WizardStepId | null>(null);
   const [rechecking, setRechecking] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -80,7 +93,10 @@ export function WebsiteBuilder({
   const isInFlight = status === "queued" || status === "building";
   const docIsPremium = (doc.quality ?? effectiveQuality(doc.config)) === "premium";
   const phaseLabel = premiumPhaseLabel(doc.statusPhase);
-  const buildingCopy = docIsPremium
+  const fromTemplate = isTemplateConfig(doc.config);
+  const buildingCopy = fromTemplate
+    ? `Building from your template… (1–3 min)${phaseLabel ? ` · ${phaseLabel}` : ""}`
+    : docIsPremium
     ? `Building your premium site… (10–20 min)${phaseLabel ? ` · ${phaseLabel}` : ""}`
     : "Building your site… (1–3 min)";
   // The wizard builds every site as premium, so count its steps that way.
@@ -91,11 +107,13 @@ export function WebsiteBuilder({
   // The address visitors use — the custom domain when one is set.
   const liveUrl = httpsOnly(siteAddress(doc));
   const nicheLabel = isNicheKey(doc.config.niche) ? NICHE_META[doc.config.niche].label : null;
-  const kindLabel = [
-    docIsPremium ? "Premium" : "Standard",
-    doc.config.build_type === "vsl" ? "VSL funnel" : "site",
-    nicheLabel ? `· ${nicheLabel}` : null,
-  ]
+  const kindLabel = (fromTemplate
+    ? ["Agency template", doc.config.template_name ? `· ${doc.config.template_name}` : null]
+    : [
+        docIsPremium ? "Premium" : "Standard",
+        doc.config.build_type === "vsl" ? "VSL funnel" : "site",
+        nicheLabel ? `· ${nicheLabel}` : null,
+      ])
     .filter(Boolean)
     .join(" ");
 
@@ -132,7 +150,7 @@ export function WebsiteBuilder({
   async function handleRemove() {
     if (
       !confirm(
-        "Remove this website? This frees a slot so you can build a different one. Any already-published site stays live until you delete its repo on gitpage.",
+        "Remove this website? This frees a slot so you can build a different one. An already-published site is hidden in gitpage but stays live until its repo is deleted there.",
       )
     )
       return;
@@ -252,6 +270,19 @@ export function WebsiteBuilder({
               Edit site
             </Button>
           )}
+          {template && status === "ready" && liveUrl && doc.gitpagePageId && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setTemplateOpen(true)}
+              title={template.name ? `${template.scope === "client" ? "Template for this client" : "Agency template"}: ${template.name}` : template.asOwner ? "Build new client sites from this one" : "Build new sites for this client from this one"}
+              className={template.name ? "border-violet-500/50 text-violet-700 dark:text-violet-300" : undefined}
+            >
+              <Copy className="mr-1 h-3.5 w-3.5" />
+              {template.name ? "Template" : "Save as template"}
+            </Button>
+          )}
           {/* No Rebuild on live sites (edit them in Claude, or delete and build
               a new one). A FAILED build published nothing, so retrying it from
               the saved answers is safe — as is a "ready" site with no usable
@@ -294,6 +325,21 @@ export function WebsiteBuilder({
       )}
 
       {status === "ready" && liveUrl && <WebsiteSeoPanel />}
+
+      {template && doc.gitpagePageId && (
+        <SaveTemplateDialog
+          open={templateOpen}
+          onOpenChange={setTemplateOpen}
+          subAccountId={subAccountId}
+          siteId={siteId}
+          defaultName={template.name || doc.name || doc.config.heading || ""}
+          isTemplate={!!template.name}
+          scope={template.scope ?? null}
+          asOwner={template.asOwner === true}
+          canChooseClient={template.clientTemplates === true}
+          onChanged={() => onTemplatesChanged?.()}
+        />
+      )}
 
       {status === "ready" && liveUrl && (
         <WebsiteDomainDialog open={domainOpen} onOpenChange={setDomainOpen} subAccountId={subAccountId} doc={doc} />

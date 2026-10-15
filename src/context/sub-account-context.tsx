@@ -29,6 +29,8 @@ export interface SubAccountContextValue {
    */
   myRole: SubAccountRole | null;
   isAdmin: boolean;
+  /** The agency owner (not a client-level admin). */
+  isAgencyOwner: boolean;
   agencyId: string | null;
   /**
    * The sub-account's deal pipelines, default first, read once per mount
@@ -175,6 +177,7 @@ export function SubAccountProvider({
     loading: authLoading || subLoading || !membershipsLoaded,
     myRole,
     isAdmin,
+    isAgencyOwner: ownerForThisAgency,
     agencyId: subAccount?.agencyId ?? claimAgencyId,
     pipelines,
     refreshPipelines,

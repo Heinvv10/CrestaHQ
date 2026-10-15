@@ -540,6 +540,10 @@ const PHASE_LABEL: Record<string, string> = {
   render: "designing the pages",
   deploy: "publishing",
   seo_finalize: "finalising the address for Google",
+  // Agency template builds
+  check: "checking the template",
+  copy: "copying the pages",
+  finalize: "finalising the address",
   settle: "finishing up",
   completed: "done",
 };

@@ -170,7 +170,7 @@ describe("reading a build's status", () => {
     imageProvider: "higgsfield",
     imageCount: 9,
     briefSource: "opus",
-    pageId: "page_42",
+    pageId: "64b7f0c2a1d3e4f5a6b7c842",
     kbText: "Acme Gym is open 6am–9pm.",
     agentPersona: {
       systemPrompt: "You are Acme's assistant.",
@@ -186,7 +186,7 @@ describe("reading a build's status", () => {
   it("pollBuild reads the premium artefacts and the page id", async () => {
     fetchMock.mockResolvedValue(Response.json(PUBLISHED));
     const result = await pollBuild("build_abc");
-    expect(result).toMatchObject({ status: "Published", isTerminal: true, pageId: "page_42" });
+    expect(result).toMatchObject({ status: "Published", isTerminal: true, pageId: "64b7f0c2a1d3e4f5a6b7c842" });
     expect(result.premium).toEqual({
       quality: "premium",
       concept: "atelier",
@@ -383,8 +383,10 @@ describe("R5 / R11: other fields of a status body", () => {
     expect(settledPayloadToPollResult({ status: "Published", pageId: "" }).pageId).toBeNull();
   });
 
-  it("drops an over-long page id rather than truncating it into a different id", () => {
-    expect(settledPayloadToPollResult({ status: "Published", pageId: "p".repeat(121) }).pageId).toBeNull();
-    expect(settledPayloadToPollResult({ status: "Published", pageId: "p".repeat(120) }).pageId).toBe("p".repeat(120));
+  it("keeps only a gitpage ObjectId as the page id (it becomes a tombstone doc id on delete)", () => {
+    expect(settledPayloadToPollResult({ status: "Published", pageId: "p".repeat(120) }).pageId).toBeNull();
+    expect(settledPayloadToPollResult({ status: "Published", pageId: "page_42" }).pageId).toBeNull();
+    expect(settledPayloadToPollResult({ status: "Published", pageId: "../../x/64b7f0c2a1d3e4f5a6b7" }).pageId).toBeNull();
+    expect(settledPayloadToPollResult({ status: "Published", pageId: "64B7F0C2A1D3E4F5A6B7C842" }).pageId).toBe("64B7F0C2A1D3E4F5A6B7C842");
   });
 });
