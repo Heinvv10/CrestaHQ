@@ -75,3 +75,10 @@ PAYMENTS_V1_PLAN.md
 # "always allow" on. It can hold absolute local paths and must never ship to
 # a buyer.
 .claude/settings.local.json
+
+# client/customer data exports (e.g. QContact case packs) must never be
+# committed: POPIA. Root-level only, so tracked fixtures such as
+# public/contacts-template.csv are unaffected. Store such files outside the
+# repo in a restricted folder instead.
+/*.zip
+/*.csv
