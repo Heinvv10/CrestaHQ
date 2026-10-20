@@ -126,19 +126,23 @@ drain_and_stop() {
   $SYSTEMCTL stop "$SERVICE@$port" || echo "WARNING: stopping $SERVICE@$port failed — it takes no traffic but is still running" >&2
 }
 
-# Keep exactly the two releases the colours point at: the live one and the
-# rollback target. Compared by name, never by resolved path.
 # Form-engine keepers (scripts/form-engine-image.mjs --keep) hold their image
 # and network against Dokploy's nightly docker prune. Keep those whose tag a
 # colour's release names, so a rollback has its engine too.
 prune_form_keepers() {
   local keep c img
   keep="$(cat "$RELEASES_DIR/$BLUE_PORT/docker/form-engine/dist/TAG" "$RELEASES_DIR/$GREEN_PORT/docker/form-engine/dist/TAG" 2>/dev/null || true)"
+  if [ -z "$keep" ]; then
+    echo "WARNING: no release names a form-engine TAG — keeping all form keepers" >&2
+    return 0
+  fi
   docker ps -a --filter label=leadstack.form-keeper=1 --format '{{.Names}} {{.Image}}' 2>/dev/null | while read -r c img; do
     grep -qxF "$img" <<<"$keep" || { docker rm -f "$c" >/dev/null && echo "removed form keeper $c"; } || true
   done || true
 }
 
+# Keep exactly the two releases the colours point at: the live one and the
+# rollback target. Compared by name, never by resolved path.
 prune_releases() {
   local keep_a keep_b d
   keep_a="$(basename "$(readlink "$RELEASES_DIR/$BLUE_PORT" || echo none)")"

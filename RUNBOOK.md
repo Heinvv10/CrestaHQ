@@ -456,7 +456,9 @@ PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
   label `leadstack.form-keeper=1`), on `leadstack-form`, which keeps both.
   After a switch (or `--rollback`) it removes keepers whose tag neither
   colour's release names. Check: `docker ps -f label=leadstack.form-keeper=1`
-  shows the live release's TAG Up.
+  shows the live release's TAG Up. A keeper protects only while it is
+  running: a stopped keeper protects nothing; `docker start <keeper>` or
+  redeploy.
 - **Partial leads.** Before the submit click, the engine aborts any request
   that carries our email address or the enquiry message (a page that saves
   fields as they are typed). Only those two are matched: the business name

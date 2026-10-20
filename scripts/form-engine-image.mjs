@@ -93,14 +93,25 @@ if (!process.argv.includes("--bundle-only")) {
   execFileSync("node", [join(root, "scripts/form-engine-smoke.mjs"), "docker", tag], { stdio: "inherit" });
   if (process.argv.includes("--keep")) {
     const keeper = `leadstack-form-keeper-${tag.split(":")[1]}`;
-    // `docker start` is a no-op on a running container and revives a stopped one.
-    if (ok(["container", "inspect", keeper])) execFileSync("docker", ["start", keeper], { stdio: ["ignore", "ignore", "inherit"] });
-    else {
-      execFileSync("docker", [
-        "run", "-d", "--name", keeper, "--label", "leadstack.form-keeper=1", "--restart", "unless-stopped",
-        "--pull", "never", "--network", NETWORK, "--memory", "32m", "--pids-limit", "8", "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges", "--read-only", "--user", "pwuser", "--entrypoint", "sleep", tag, "infinity",
-      ], { stdio: ["ignore", "ignore", "inherit"] });
+    const quiet = { stdio: ["ignore", "ignore", "inherit"] };
+    const inspect = (args) => execFileSync("docker", args, { encoding: "utf8" }).trim();
+    // Not fatal: without a keeper the engine still works until the nightly prune.
+    try {
+      // Reuse an existing keeper only if it holds this tag's image (a re-tag would leave it on the old one).
+      const reuse = ok(["container", "inspect", keeper])
+        && inspect(["container", "inspect", "-f", "{{.Image}}", keeper]) === inspect(["image", "inspect", "-f", "{{.Id}}", tag]);
+      // `docker start` is a no-op on a running container and revives a stopped one.
+      if (reuse) execFileSync("docker", ["start", keeper], quiet);
+      else {
+        if (ok(["container", "inspect", keeper])) execFileSync("docker", ["rm", "-f", keeper], quiet);
+        execFileSync("docker", [
+          "run", "-d", "--name", keeper, "--label", "leadstack.form-keeper=1", "--restart", "unless-stopped",
+          "--pull", "never", "--network", NETWORK, "--memory", "32m", "--pids-limit", "8", "--cap-drop", "ALL",
+          "--security-opt", "no-new-privileges", "--read-only", "--user", "pwuser", "--entrypoint", "sleep", tag, "infinity",
+        ], quiet);
+      }
+    } catch {
+      console.error(`WARNING: form keeper not running — the nightly prune will delete ${tag}`);
     }
   }
   // Only now: the release's app reads this tag, so it must name an image (and network) that exist.
