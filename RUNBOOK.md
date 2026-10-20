@@ -451,20 +451,20 @@ PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
   form engine isn't installed on this server." (cached for 5 minutes).
 - **Keeper.** Dokploy's nightly docker cleanup (`docker system prune --all`,
   02:00 SAST) deletes every image and network no container uses — between
-  jobs, the engine's. The deploy (`--keep`) runs one idle container,
-  `leadstack-form-keeper` (`sleep infinity`, `--restart unless-stopped`),
-  from the release's image on `leadstack-form`, which keeps both. Only the
-  live tag is kept: after the prune a `--rollback` has no form engine until
-  the next deploy. Never `docker rm` the keeper; `docker ps -f
-  name=leadstack-form-keeper` should show it Up.
+  jobs, the engine's. The deploy (`--keep`) runs one idle container per tag,
+  `leadstack-form-keeper-<tag>` (`sleep infinity`, `--restart unless-stopped`,
+  label `leadstack.form-keeper=1`), on `leadstack-form`, which keeps both.
+  After a switch (or `--rollback`) it removes keepers whose tag neither
+  colour's release names. Check: `docker ps -f label=leadstack.form-keeper=1`
+  shows the live release's TAG Up.
 - **Partial leads.** Before the submit click, the engine aborts any request
   that carries our email address or the enquiry message (a page that saves
   fields as they are typed). Only those two are matched: the business name
   and the WhatsApp number typed into the form can still leave early.
 - **Check it.** `cat /home/velo/crestahq/docker/form-engine/dist/TAG` then
   `docker image inspect "$(cat …/TAG)" --format '{{.Size}}'` as velo.
-- **Old tags.** Each runner change makes a new tag; the nightly prune removes
-  the ones the keeper no longer uses.
+- **Old tags.** Each runner change makes a new tag; once its keeper is
+  removed, the nightly prune deletes it (only while Dokploy's cleanup is on).
 - **Chromium's sandbox is off inside the container.** It cannot start here:
   "FATAL: zygote_host_impl_linux.cc:128 No usable sandbox!" (velo restricts
   unprivileged user namespaces through AppArmor —
