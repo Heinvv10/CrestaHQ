@@ -449,15 +449,22 @@ PATH, HOME and DOCKER_HOST only) and is removed (`docker rm -f`) after 60 s.
   before the Next build, which traces the TAG file into the release. The step
   is not fatal: a failure prints a WARNING and the form channel shows "The
   form engine isn't installed on this server." (cached for 5 minutes).
+- **Keeper.** Dokploy's nightly docker cleanup (`docker system prune --all`,
+  02:00 SAST) deletes every image and network no container uses — between
+  jobs, the engine's. The deploy (`--keep`) runs one idle container,
+  `leadstack-form-keeper` (`sleep infinity`, `--restart unless-stopped`),
+  from the release's image on `leadstack-form`, which keeps both. Only the
+  live tag is kept: after the prune a `--rollback` has no form engine until
+  the next deploy. Never `docker rm` the keeper; `docker ps -f
+  name=leadstack-form-keeper` should show it Up.
 - **Partial leads.** Before the submit click, the engine aborts any request
   that carries our email address or the enquiry message (a page that saves
   fields as they are typed). Only those two are matched: the business name
   and the WhatsApp number typed into the form can still leave early.
 - **Check it.** `cat /home/velo/crestahq/docker/form-engine/dist/TAG` then
   `docker image inspect "$(cat …/TAG)" --format '{{.Size}}'` as velo.
-- **Prune old tags.** Each runner change makes a new tag, and the old
-  colour's release still uses its own. Prune only tags no release names:
-  `docker images leadstack-form-engine` and `docker rmi <tag>` for the rest.
+- **Old tags.** Each runner change makes a new tag; the nightly prune removes
+  the ones the keeper no longer uses.
 - **Chromium's sandbox is off inside the container.** It cannot start here:
   "FATAL: zygote_host_impl_linux.cc:128 No usable sandbox!" (velo restricts
   unprivileged user namespaces through AppArmor —

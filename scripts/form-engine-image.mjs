@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds the mystery shop's form-engine image (docker/form-engine), idempotently.
 //
-//   node scripts/form-engine-image.mjs [--bundle-only]
+//   node scripts/form-engine-image.mjs [--bundle-only] [--keep]
 //
 // 1. Bundles src/lib/prospecting/mystery-shop/form/runner-cli.ts with rolldown
 //    into docker/form-engine/dist/runner.mjs (playwright-core left external).
@@ -13,7 +13,12 @@
 //    subnet 172.16.88.0/24, inter-container traffic off. Host firewalling of
 //    that subnet is scripts/form-engine-firewall.sh (root, run once by hand).
 // 5. Smoke-runs the image (an invalid job must answer one result line).
-// 6. Only once the image, the network and the smoke pass: writes the tag to
+// 6. --keep (the deploy): runs one idle keeper container from the image on the
+//    network. Dokploy's nightly `docker system prune --all` (02:00 SAST)
+//    deletes every image and network no container uses — between jobs, the
+//    engine's. Only the deploy passes it: a hand run from a changed checkout
+//    would otherwise move the keeper off the release's tag.
+// 7. Only once the image, the network and the smoke pass: writes the tag to
 //    docker/form-engine/dist/TAG — the one place the app reads it from (the
 //    Next build traces it). Prints the tag.
 import { createHash } from "node:crypto";
@@ -85,6 +90,26 @@ if (!process.argv.includes("--bundle-only")) {
   }
   // The image answers like a runner: an invalid job → one well-formed result line.
   execFileSync("node", [join(root, "scripts/form-engine-smoke.mjs"), "docker", tag], { stdio: "inherit" });
+  if (process.argv.includes("--keep")) {
+    const KEEPER = "leadstack-form-keeper";
+    let state = "";
+    try {
+      state = execFileSync("docker", ["container", "inspect", "--format", "{{.Config.Image}} {{.State.Running}}", KEEPER], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      // No keeper yet.
+    }
+    if (state !== `${tag} true`) {
+      ok(["rm", "-f", KEEPER]);
+      execFileSync("docker", [
+        "run", "-d", "--name", KEEPER, "--restart", "unless-stopped", "--pull", "never", "--network", NETWORK,
+        "--memory", "32m", "--pids-limit", "8", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--read-only", "--user", "pwuser", "--entrypoint", "sleep", tag, "infinity",
+      ], { stdio: "ignore" });
+    }
+  }
   // Only now: the release's app reads this tag, so it must name an image (and network) that exist.
   writeFileSync(join(dist, "TAG"), `${tag}\n`);
 }
