@@ -206,7 +206,7 @@ pnpm install --frozen-lockfile || die "pnpm install"
 # hash of the runner and its image) is already built. Not fatal: without it
 # only the website-form channel is unavailable. See RUNBOOK.md.
 say "Building the form engine's container image"
-node scripts/form-engine-image.mjs \
+node scripts/form-engine-image.mjs --keep \
   || echo "WARNING: form engine image not built — the website-form channel will show as unavailable"
 
 # ── Gates: everything that can fail runs BEFORE the service is touched ───────

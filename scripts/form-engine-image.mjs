@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds the mystery shop's form-engine image (docker/form-engine), idempotently.
 //
-//   node scripts/form-engine-image.mjs [--bundle-only]
+//   node scripts/form-engine-image.mjs [--bundle-only] [--keep]
 //
 // 1. Bundles src/lib/prospecting/mystery-shop/form/runner-cli.ts with rolldown
 //    into docker/form-engine/dist/runner.mjs (playwright-core left external).
@@ -13,7 +13,13 @@
 //    subnet 172.16.88.0/24, inter-container traffic off. Host firewalling of
 //    that subnet is scripts/form-engine-firewall.sh (root, run once by hand).
 // 5. Smoke-runs the image (an invalid job must answer one result line).
-// 6. Only once the image, the network and the smoke pass: writes the tag to
+// 6. --keep (the deploy): runs an idle keeper container for this tag on the
+//    network. Dokploy's nightly `docker system prune --all` (02:00 SAST)
+//    deletes every image and network no container uses — between jobs, the
+//    engine's. One keeper per tag, so the live release's stays until the
+//    deploy has switched; the deploy then removes keepers no release names
+//    (prune_form_keepers in deploy-velo-bluegreen.sh).
+// 7. Only once the image, the network and the smoke pass: writes the tag to
 //    docker/form-engine/dist/TAG — the one place the app reads it from (the
 //    Next build traces it). Prints the tag.
 import { createHash } from "node:crypto";
@@ -85,6 +91,29 @@ if (!process.argv.includes("--bundle-only")) {
   }
   // The image answers like a runner: an invalid job → one well-formed result line.
   execFileSync("node", [join(root, "scripts/form-engine-smoke.mjs"), "docker", tag], { stdio: "inherit" });
+  if (process.argv.includes("--keep")) {
+    const keeper = `leadstack-form-keeper-${tag.split(":")[1]}`;
+    const quiet = { stdio: ["ignore", "ignore", "inherit"] };
+    const inspect = (args) => execFileSync("docker", args, { encoding: "utf8" }).trim();
+    // Not fatal: without a keeper the engine still works until the nightly prune.
+    try {
+      // Reuse an existing keeper only if it holds this tag's image (a re-tag would leave it on the old one).
+      const reuse = ok(["container", "inspect", keeper])
+        && inspect(["container", "inspect", "-f", "{{.Image}}", keeper]) === inspect(["image", "inspect", "-f", "{{.Id}}", tag]);
+      // `docker start` is a no-op on a running container and revives a stopped one.
+      if (reuse) execFileSync("docker", ["start", keeper], quiet);
+      else {
+        if (ok(["container", "inspect", keeper])) execFileSync("docker", ["rm", "-f", keeper], quiet);
+        execFileSync("docker", [
+          "run", "-d", "--name", keeper, "--label", "leadstack.form-keeper=1", "--restart", "unless-stopped",
+          "--pull", "never", "--network", NETWORK, "--memory", "32m", "--pids-limit", "8", "--cap-drop", "ALL",
+          "--security-opt", "no-new-privileges", "--read-only", "--user", "pwuser", "--entrypoint", "sleep", tag, "infinity",
+        ], quiet);
+      }
+    } catch {
+      console.error(`WARNING: form keeper not running — the nightly prune will delete ${tag}`);
+    }
+  }
   // Only now: the release's app reads this tag, so it must name an image (and network) that exist.
   writeFileSync(join(dist, "TAG"), `${tag}\n`);
 }
