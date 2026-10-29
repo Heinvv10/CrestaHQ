@@ -22,5 +22,6 @@ The agency Branding card (Agency → Settings) and the sub-account Branding card
 
 ## Known gaps
 
+- **Remove does not unpublish copies already served.** The current version's URL is served `public, max-age=31536000, s-maxage=31536000, immutable`, so any CDN, browser or email client (including image proxies such as Gmail's) that fetched it may keep showing the old logo for up to a year. Emails already sent keep embedding that URL too: after Remove it 404s for anyone who hasn't cached it, but the cached copies are not purged. To replace a logo everywhere new, upload a new one (new `?v=`); content already sent cannot be recalled.
 - Quote/invoice PDFs and the prospect report's OG image embed only PNG or JPEG logos (`lib/branding/logo-data-uri.ts`), so a logo the browser stored as WebP (only when the PNG is over 400 KB) shows there as no logo.
 - No agent tool: both upload routes are `human-only` in `scripts/agent-coverage.json`.

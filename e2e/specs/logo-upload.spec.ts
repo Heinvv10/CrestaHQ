@@ -11,10 +11,10 @@ import { runId } from "../lib/run-id";
  * Logo upload (K1), through the real server: the sub-account Branding card
  * resizes a file in the browser and uploads it; the logo is then served
  * signed-out from /api/brand/logo/sa/{id} as the stored PNG/WebP with
- * nosniff, inline, a sandboxing CSP, and an immutable cache only for the current version. An
- * SVG picked in the browser is rasterised before upload, so only PNG bytes
- * reach the server; SVG / HTML posted straight at the route, and an oversize
- * body, are refused. Remove clears the field and the logo 404s.
+ * nosniff, inline, a sandboxing CSP, and an immutable cache only for the
+ * current version. An SVG picked in the browser is rasterised before
+ * upload, so only PNG bytes reach the server; SVG / HTML posted straight at
+ * the route, and an oversize body, are refused. Remove clears the field and the logo 404s.
  *
  * Writes only the fixture PRIMARY's `logoUrl` and its
  * `private/brandLogo` doc; both are read before the first write and put back
