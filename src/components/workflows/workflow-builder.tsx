@@ -491,6 +491,12 @@ export function WorkflowBuilder({
                 </option>
               ))}
             </select>
+            {(trigger.type === "message.received" || reentry === "every_time") &&
+              Object.values(flattenTree(steps).nodes).some((n) => n.type === "send_ai_sms") && (
+                <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+                  This can reach the same contact again and again, but a Send AI text step texts each contact at most once every 30 days; later runs skip it.
+                </p>
+              )}
           </div>
         </div>
 

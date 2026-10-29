@@ -34,7 +34,8 @@ afterEach(async () => {
 async function render(
   type: WorkflowNodeType,
   flags: Partial<BuilderReadiness["detail"]> = {},
-  emailReady = false
+  emailReady = false,
+  initialExtra: Record<string, unknown> = {}
 ) {
   const detail = {
     smsSub: false,
@@ -74,6 +75,7 @@ async function render(
           trigger: { type: "contact.created", filters: { all: [] } },
           startNodeId: "n1",
           nodes: { n1: { id: "n1", type, config: { body: "Hello" } } },
+          ...initialExtra,
         },
       })
     );
@@ -151,4 +153,29 @@ it("shows a ready Send AI text step as sendable from the workspace's own number"
   expect(
     Array.from(container.querySelectorAll("span[title]")).some((el) => el.textContent === "SA")
   ).toBe(true);
+});
+
+const REPEAT_WARNING = "texts each contact at most once every 30 days";
+
+it("warns that a Send AI text step can be reached again and again on an every-time workflow", async () => {
+  await render("send_ai_sms", { aiSmsGate: true });
+  expect(container.textContent).toContain(REPEAT_WARNING);
+});
+
+it("warns on a message-received trigger even when re-entry is limited", async () => {
+  await render("send_ai_sms", { aiSmsGate: true }, false, {
+    reentry: "unless_active",
+    trigger: { type: "message.received", filters: { all: [] } },
+  });
+  expect(container.textContent).toContain(REPEAT_WARNING);
+});
+
+it("shows no repeat warning for a once-ever workflow", async () => {
+  await render("send_ai_sms", { aiSmsGate: true }, false, { reentry: "once_ever" });
+  expect(container.textContent).not.toContain(REPEAT_WARNING);
+});
+
+it("shows no repeat warning without the step", async () => {
+  await render("send_sms");
+  expect(container.textContent).not.toContain(REPEAT_WARNING);
 });
