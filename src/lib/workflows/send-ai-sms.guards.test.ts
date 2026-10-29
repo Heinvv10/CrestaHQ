@@ -37,6 +37,7 @@ const db = {
   },
 };
 const publishCallback = vi.fn();
+let controls = { botMode: "auto", botPausedUntilMs: null as number | null, loopResetAtMs: null };
 const smsSent = vi.fn(async (_subAccountId: string, _args: { to: string; body: string }) => ({ sid: "SMai1" }));
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => db }));
@@ -47,7 +48,7 @@ vi.mock("@/lib/automations/qstash", () => ({
 }));
 vi.mock("@/lib/server/conversations-service", () => ({
   upsertConversationForMessage: async () => undefined,
-  getConversationControls: async () => ({ botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null }),
+  getConversationControls: async () => controls,
   setConversationDraft: async () => undefined,
 }));
 vi.mock("@/lib/comms/sms/select", () => ({
@@ -57,6 +58,7 @@ vi.mock("@/lib/comms/sms/select", () => ({
 const { enrollForTest, runStep } = await import("./engine");
 const { usageMonthKey } = await import("@/lib/server/usage-meter");
 const { AI_SMS_COOLDOWN_MS } = await import("./ai-sms-cooldown");
+const { guardProspectSend } = await import("@/lib/prospecting/approach-guard");
 
 const DAY = new Date("2026-09-25T10:00:00Z");
 const OPENER = "Hi Thandi, this is Velocity Fibre. Would you like a quick fibre quote for your street?";
@@ -80,6 +82,7 @@ beforeEach(() => {
   failContactReadAfterAi = false;
   aiCalled = false;
   cooldownTakenBeforeClaim = false;
+  controls = { botMode: "auto", botPausedUntilMs: null, loopResetAtMs: null };
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(DAY);
   vi.stubEnv("OPENROUTER_API_KEY", "or-test");
@@ -146,15 +149,73 @@ describe("the prospecting stamp", () => {
     expect(counter()).toBe(0);
   });
 
-  it("is handed back when the contact opts out while the AI writes", async () => {
+  it("is handed back when AI texts are switched off while the AI writes", async () => {
     aiReply = () => {
-      mem.seed("contacts/c1", { ...mem.read("contacts/c1"), smsOptedOut: true });
+      mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), aiOutboundSmsEnabledByAgency: false });
       return OPENER;
     };
     const runId = await runFirst();
-    expect(result(runId)).toBe("skipped:opt_out:after_generation");
+    expect(result(runId)).toBe("skipped:ai_sms_gate_off:after_generation");
     expect(prospecting()?.approachedAt ?? null).toBeNull();
     expect(counter()).toBe(0);
+  });
+
+  const kept: Array<[string, () => void, () => string, string | undefined]> = [
+    ["the text was saved as a draft", () => (controls = { ...controls, botMode: "suggest" }), () => OPENER, "drafted:suggest_mode"],
+    [
+      "quiet hours held the text",
+      () => undefined,
+      () => {
+        vi.setSystemTime(new Date("2026-09-25T19:30:00Z"));
+        return OPENER;
+      },
+      undefined, // held: no history entry, the same step runs again
+    ],
+    [
+      "the contact opted out while the AI wrote",
+      () => undefined,
+      () => {
+        mem.seed("contacts/c1", { ...mem.read("contacts/c1"), smsOptedOut: true });
+        return OPENER;
+      },
+      "skipped:opt_out:after_generation",
+    ],
+  ];
+  it.each(kept)("is kept when %s (not a nothing-produced outcome)", async (_label, setup, reply, expected) => {
+    setup();
+    aiReply = reply;
+    const runId = await runFirst();
+    expect(result(runId)).toBe(expected);
+    expect(prospecting()).toMatchObject({ approachedWorkflowId: "wf1", approachedRunId: runId });
+    expect(counter()).toBe(1);
+  });
+
+  it("is not taken back once another run of the same workflow holds it", async () => {
+    aiReply = () => {
+      // Another run of wf1 passes the guard (and sends) while this one writes.
+      mem.seed("contacts/c1", {
+        ...mem.read("contacts/c1"),
+        prospecting: { ...prospecting(), approachedRunId: "run_other", approachedNodeId: "n1" },
+      });
+      return "Hi Thandi, Velocity Fibre here. Get a quote at evil.com today?";
+    };
+    const runId = await runFirst();
+    expect(result(runId)).toBe("error:ai_link_not_allowed");
+    expect(prospecting()).toMatchObject({ approachedWorkflowId: "wf1", approachedRunId: "run_other" });
+    expect(prospecting()?.approachedAt).toBeTruthy();
+    expect(counter()).toBe(1);
+  });
+
+  it("a later send of the same workflow takes the stamp over, so the first can't release it", async () => {
+    const first = await runFirst();
+    expect(prospecting()).toMatchObject({ approachedRunId: first, approachedNodeId: "n1" });
+    const refusal = await guardProspectSend({
+      contactId: "c1", subAccountId: "sa1", agencyId: "ag1", subAccount: null,
+      workflowId: "wf1", runId: "run_later", nodeId: "n2",
+    });
+    expect(refusal).toBeNull();
+    expect(prospecting()).toMatchObject({ approachedRunId: "run_later", approachedNodeId: "n2" });
+    expect(counter()).toBe(1);
   });
 });
 

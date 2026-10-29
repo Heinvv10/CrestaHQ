@@ -102,6 +102,10 @@ export interface ApproachInput {
   agencyId: string;
   subAccount: SubAccountDoc | null;
   workflowId: string;
+  /** The run and step sending. Stamped with the approach, so only the send
+   *  that made a stamp can hand it back (releaseApproach). */
+  runId?: string;
+  nodeId?: string;
   now?: Date;
 }
 
@@ -120,9 +124,18 @@ export async function claimApproach(input: ApproachInput): Promise<ApproachVerdi
     if (!contact || !isProspect(contact)) return { kind: "pass", firstTouch: false };
     const p = (contact.prospecting ?? {}) as ContactData;
     if (p.approachedAt) {
-      return p.approachedWorkflowId === input.workflowId
-        ? { kind: "pass", firstTouch: false }
-        : {
+      if (p.approachedWorkflowId === input.workflowId) {
+        // A later send of the same campaign now holds the stamp, so an
+        // earlier send that ends up sending nothing can't take it back.
+        if (input.runId && (p.approachedRunId !== input.runId || p.approachedNodeId !== (input.nodeId ?? null))) {
+          tx.update(contactRef, {
+            "prospecting.approachedRunId": input.runId,
+            "prospecting.approachedNodeId": input.nodeId ?? null,
+          });
+        }
+        return { kind: "pass", firstTouch: false };
+      }
+      return {
             kind: "already_approached",
             approachedWorkflowId: typeof p.approachedWorkflowId === "string" ? p.approachedWorkflowId : null,
           };
@@ -142,6 +155,9 @@ export async function claimApproach(input: ApproachInput): Promise<ApproachVerdi
     tx.update(contactRef, {
       "prospecting.approachedAt": FieldValue.serverTimestamp(),
       "prospecting.approachedWorkflowId": input.workflowId,
+      ...(input.runId
+        ? { "prospecting.approachedRunId": input.runId, "prospecting.approachedNodeId": input.nodeId ?? null }
+        : {}),
     });
     return { kind: "pass", firstTouch: true, dayKey };
   });
@@ -152,13 +168,16 @@ export interface ApproachStamp {
   contactId: string;
   subAccountId: string;
   workflowId: string;
+  runId: string;
+  nodeId: string;
   dayKey: string;
 }
 
 /**
  * Undo a first touch whose send never happened: clear the stamp (only while
- * it is still this workflow's) and give the day's counter its slot back, in
- * one transaction. Never throws — a stamp left behind errs toward not
+ * it is still this run and step's — another run of the same workflow that
+ * sent since holds it) and give the day's counter its slot back, in one
+ * transaction. Never throws — a stamp left behind errs toward not
  * messaging the prospect.
  */
 export async function releaseApproach(stamp: ApproachStamp): Promise<void> {
@@ -170,10 +189,19 @@ export async function releaseApproach(stamp: ApproachStamp): Promise<void> {
       const contact = (await tx.get(contactRef)).data();
       const used = ((await tx.get(counterRef)).data()?.count as number | undefined) ?? 0;
       const p = (contact?.prospecting ?? {}) as ContactData;
-      if (!p.approachedAt || p.approachedWorkflowId !== stamp.workflowId) return;
+      if (
+        !p.approachedAt ||
+        p.approachedWorkflowId !== stamp.workflowId ||
+        p.approachedRunId !== stamp.runId ||
+        p.approachedNodeId !== stamp.nodeId
+      ) {
+        return;
+      }
       tx.update(contactRef, {
         "prospecting.approachedAt": null,
         "prospecting.approachedWorkflowId": FieldValue.delete(),
+        "prospecting.approachedRunId": FieldValue.delete(),
+        "prospecting.approachedNodeId": FieldValue.delete(),
       });
       if (used > 0) {
         tx.set(counterRef, { count: used - 1, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
@@ -212,6 +240,8 @@ export async function guardProspectSend(
         contactId: input.contactId,
         subAccountId: input.subAccountId,
         workflowId: input.workflowId,
+        runId: input.runId,
+        nodeId: input.nodeId,
         dayKey: verdict.dayKey,
       });
     }

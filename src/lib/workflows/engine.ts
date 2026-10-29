@@ -520,6 +520,11 @@ async function deliverWorkflowSms(
   }
 }
 
+/** Send AI text outcomes that produced and queued nothing: the only ones that
+ *  hand a prospecting stamp back. A draft, a hold or a send never does. */
+const AI_SMS_NOTHING_PRODUCED =
+  /^(?:skipped:(?:ai_sms_gate_off|not_ready:[a-z_]+|bot_paused|quota)(?::after_generation)?|error:ai_failed:[\s\S]*|error:ai_link_not_allowed|error:ai_empty)$/;
+
 /** What a Send AI text needs once nothing stops it. */
 interface AiSmsPrep {
   instruction: string;
@@ -2254,12 +2259,10 @@ export async function runStep(
     selfTriggeredBookingAt: selfTriggeredBookingAt(wf, run),
     workflowStatus: wf.status,
   };
-  // A first touch this delivery stamped. A Send AI text that then sends
-  // nothing hands it back (and its cap slot); other steps keep it.
+  // A first touch this delivery stamped. A Send AI text that ended with
+  // nothing produced or queued hands it back (and its cap slot); every other
+  // outcome — sent, drafted, held, failed mid-way — and every other step keeps it.
   const stamped: { stamp?: ApproachStamp } = {};
-  const releaseIfUnsent = async (sent: boolean) => {
-    if (stamped.stamp && node.type === "send_ai_sms" && !sent) await releaseApproach(stamped.stamp);
-  };
   let executed: Awaited<ReturnType<NodeExecutor>>;
   try {
     // A Send AI text checks everything that would stop it (gate, readiness,
@@ -2289,7 +2292,6 @@ export async function runStep(
         : null);
     executed = refused ?? (await exec(stepCtx));
   } catch (err) {
-    await releaseIfUnsent(Boolean(stepCtx.sent));
     // Thrown before any provider call (`sent` is set just before one): nothing
     // went out, so release the claim and let QStash retry normally. Once a
     // provider call has started the claim stays — at most once.
@@ -2301,7 +2303,9 @@ export async function runStep(
     throw err;
   }
   const { result, log } = executed;
-  await releaseIfUnsent(log === "ok" || stepCtx.sent?.attempted === true);
+  if (stamped.stamp && node.type === "send_ai_sms" && AI_SMS_NOTHING_PRODUCED.test(log)) {
+    await releaseApproach(stamped.stamp);
+  }
 
   // Quiet hours: nothing was sent, so no history entry (that would mark the
   // step done). Release the claim and run this same step again when they end.
