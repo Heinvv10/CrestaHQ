@@ -5,9 +5,10 @@ import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/bill
 
 /**
  * GET /api/agency/sub-accounts/[id]/usage — the Manage dialog's usage
- * section. The overage preview is valued only while the client is rebilled
- * (agency switch AND client switch, both read fresh), and its currency is
- * the plan's, else the payment provider's — never a hard-coded "usd".
+ * section. The overage line is valued whenever rates are set, as before;
+ * the usage-charge preview (`rebilling.previewCents`) only while the client
+ * is rebilled (agency switch AND client switch, both read fresh). The
+ * currency is the plan's, else the payment provider's — never a hard-coded "usd".
  * Real route, real tenancy, real meter, in-memory Firestore.
  */
 
@@ -41,7 +42,7 @@ let SA = "";
 interface Body {
   currency: string;
   overage: { perUnit: Record<string, { overUnits: number; cents: number }>; totalCents: number };
-  rebilling: { active: boolean; agency: boolean; client: boolean };
+  rebilling: { active: boolean; agency: boolean; client: boolean; previewCents: number | null };
 }
 
 async function get(uid = "uid_owner") {
@@ -73,42 +74,50 @@ beforeEach(() => {
   spyBillingProvider("paystack");
 });
 
-describe("overage preview needs both rebilling switches", () => {
+const OVERAGE = { perUnit: { smsSegments: { overUnits: 20, cents: 1000 } }, totalCents: 1000 };
+
+describe("the usage-charge preview needs both rebilling switches", () => {
   it.each<[string, { agency?: boolean; client?: boolean }]>([
     ["neither switch", {}],
     ["the agency switch only", { agency: true }],
     ["the client switch only", { client: true }],
     ["both explicitly off", { agency: false, client: false }],
-  ])("%s → no preview", async (_label, flags) => {
+  ])("%s → no preview, the overage line as before", async (_label, flags) => {
     seed(flags);
     const res = await get();
     expect(res.status).toBe(200);
     const body = (await res.json()) as Body;
-    expect(body.overage).toEqual({ perUnit: {}, totalCents: 0 });
+    expect(body.overage).toEqual(OVERAGE);
     expect(body.rebilling).toEqual({
       active: false,
       agency: flags.agency === true,
       client: flags.client === true,
+      previewCents: null,
     });
   });
 
-  it("both on → the overage is valued", async () => {
+  it("both on → the preview is the overage total", async () => {
     seed({ agency: true, client: true });
     const body = (await (await get()).json()) as Body;
-    expect(body.rebilling).toEqual({ active: true, agency: true, client: true });
-    expect(body.overage).toEqual({
-      perUnit: { smsSegments: { overUnits: 20, cents: 1000 } },
-      totalCents: 1000,
-    });
+    expect(body.overage).toEqual(OVERAGE);
+    expect(body.rebilling).toEqual({ active: true, agency: true, client: true, previewCents: 1000 });
+  });
+
+  it("both on with nothing over → a preview of zero, not none", async () => {
+    seed({ agency: true, client: true });
+    db().seed(`subAccounts/${SA}/usage/${usageMonthKey()}`, { smsSegments: 100 });
+    const body = (await (await get()).json()) as Body;
+    expect(body.overage.totalCents).toBe(0);
+    expect(body.rebilling.previewCents).toBe(0);
   });
 
   it("a flip of the agency switch shows on the next read (no stale cache)", async () => {
     seed({ agency: true, client: true });
-    expect(((await (await get()).json()) as Body).rebilling.active).toBe(true);
+    expect(((await (await get()).json()) as Body).rebilling.previewCents).toBe(1000);
     db().seed("agencies/ag_1", { name: "Agency", usageRebillingEnabled: false });
     const body = (await (await get()).json()) as Body;
-    expect(body.rebilling.active).toBe(false);
-    expect(body.overage.totalCents).toBe(0);
+    expect(body.rebilling).toMatchObject({ active: false, previewCents: null });
+    expect(body.overage).toEqual(OVERAGE);
   });
 });
 

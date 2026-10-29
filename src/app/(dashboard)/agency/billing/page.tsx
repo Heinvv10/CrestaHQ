@@ -111,8 +111,8 @@ export default function AgencyBillingPage() {
 
   async function toggleRebilling(next: boolean) {
     const question = next
-      ? "Turn on usage rebilling? Clients you then switch on have their usage past the plan allowance valued at your rates."
-      : "Turn off usage rebilling? No client's usage is valued while it's off. Charges already sent stay payable.";
+      ? "Turn on usage rebilling? Clients you then switch on are billed for usage past their plan allowance at your rates."
+      : "Turn off usage rebilling? No client is billed for usage while it's off. Charges already sent stay payable.";
     if (!window.confirm(question)) return;
     setRebillingBusy(true);
     try {
@@ -252,9 +252,9 @@ export default function AgencyBillingPage() {
             </span>
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Value each client&apos;s usage past their plan allowance at your own
-            rates, as a running estimate. No usage charge is created
-            automatically yet.
+            Bill clients for usage past their plan allowance at your own rates.
+            A rebilled client shows an estimated usage charge; no charge is
+            created automatically yet.
             {rebillingOn
               ? ` ${rebilledCount} client${rebilledCount === 1 ? "" : "s"} switched on (Manage → Usage rebilling).`
               : " Each client is then switched on individually."}

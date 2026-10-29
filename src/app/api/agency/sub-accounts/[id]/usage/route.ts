@@ -11,7 +11,7 @@ import {
   usageRebillingState,
 } from "@/lib/server/usage-meter";
 import { usageCurrency } from "@/lib/billing/currency";
-import type { UsageMonthDoc } from "@/types/usage";
+import type { UsageMonthDoc, UsageQuotas } from "@/types/usage";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -20,9 +20,9 @@ import type { SubAccountDoc } from "@/types";
  * effective quotas (override → plan → null=unlimited). The ledger is
  * server-only in Firestore rules, so this route is the ONLY read surface;
  * usage is deliberately agency-eyes-only in v1 (see
- * USAGE_METERING_V1_PLAN.md). The overage preview is only valued while
- * the client is rebilled (agency switch AND client switch); otherwise
- * rates are inert and it reports zero.
+ * USAGE_METERING_V1_PLAN.md). `rebilling.previewCents` — what the usage
+ * charge would be — is set only while the client is rebilled (agency
+ * switch AND client switch); the overage line itself shows regardless.
  */
 export async function GET(
   request: Request,
@@ -58,17 +58,19 @@ export async function GET(
     };
   });
 
-  const quotas = await getEffectiveQuotas(subAccountId, sub);
+  const quotas: UsageQuotas | null = await getEffectiveQuotas(
+    subAccountId,
+    sub,
+  );
   const rates = await getEffectiveRates(subAccountId, sub);
   const rebilling = await usageRebillingState(sub);
 
-  // Value the current month's usage BEYOND the included quotas at the
-  // configured sell rates — only for a rebilled client. Display only; no
-  // charge is created from it yet.
+  // v1.5 — value the current month's usage BEYOND the included quotas at
+  // the configured sell rates. Display/accrual only; the owner can invoice
+  // it today via a one-time charge. The rebilling preview is the same
+  // amount, shown only for a rebilled client; no charge is created yet.
   const currentDoc = (snaps[0].data() as UsageMonthDoc | undefined) ?? {};
-  const overage = rebilling.active
-    ? computeOverage(currentDoc, quotas, rates)
-    : { perUnit: {}, totalCents: 0 };
+  const overage = computeOverage(currentDoc, quotas, rates);
 
   return NextResponse.json({
     usage,
@@ -81,6 +83,9 @@ export async function GET(
       : sub.billing?.planId && quotas
         ? "plan"
         : "none",
-    rebilling,
+    rebilling: {
+      ...rebilling,
+      previewCents: rebilling.active ? overage.totalCents : null,
+    },
   });
 }

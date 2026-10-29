@@ -8,8 +8,7 @@ import { formatBillingPrice } from "@/lib/billing/status";
  * N2b's usage tools through the real Agency Assistant chat and confirm
  * routes (an owner of ag1): sub_account_usage reports this month's ledger
  * against the effective limits of ag1's own sub-account, with overage in
- * the plan's currency (the provider's when the client has none), valued
- * only while the client is rebilled (agency + client switch);
+ * the plan's currency (the provider's when the client has none);
  * set_usage_limits is a card that writes the override only on confirm,
  * only in ag1.
  */
@@ -38,15 +37,8 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllEnvs());
 
-/** Both usage-rebilling switches on for sa1. */
-function rebill() {
-  mem.seed("agencies/ag1", { ...mem.read("agencies/ag1")!, usageRebillingEnabled: true });
-  mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageRebillingEnabled: true });
-}
-
 describe("sub_account_usage", () => {
   it("this month against the workspace override, CAPPED where hit, overage valued in the provider's currency", async () => {
-    rebill();
     mem.seed("subAccounts/sa1", {
       ...mem.read("subAccounts/sa1")!,
       usageQuotas: { smsSegmentsPerMonth: 100, emailsPerMonth: 1000 },
@@ -65,7 +57,6 @@ describe("sub_account_usage", () => {
 
   it.each(["paystack", "stripe"] as const)("on %s the tool and the Manage dialog's usage section show the same overage (breaker #413)", async (kind) => {
     spyBillingProvider(kind);
-    rebill();
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageQuotas: { smsSegmentsPerMonth: 100 }, usageRates: { smsSegmentCents: 50 } });
     mem.seed(`subAccounts/sa1/usage/${month}`, { smsSegments: 120 });
     await askAgency("sub_account_usage", { subAccountId: "sa1" });
@@ -78,22 +69,7 @@ describe("sub_account_usage", () => {
     expect(lookupResult()).toContain(`Accrued overage this month: ${formatBillingPrice(page.overage.totalCents, page.currency)} `);
   });
 
-  it("not rebilled: neither the tool nor the usage route values the overage", async () => {
-    mem.seed("agencies/ag1", { ...mem.read("agencies/ag1")!, usageRebillingEnabled: true });
-    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, usageQuotas: { smsSegmentsPerMonth: 100 }, usageRates: { smsSegmentCents: 50 } });
-    mem.seed(`subAccounts/sa1/usage/${month}`, { smsSegments: 120 });
-    await askAgency("sub_account_usage", { subAccountId: "sa1" });
-    expect(lookupResult()).toContain("Usage rebilling is off for this client, so overage isn't valued.");
-    expect(lookupResult()).not.toContain("Accrued overage");
-    const route = await import("@/app/api/agency/sub-accounts/[id]/usage/route");
-    const page = (await (await route.GET(new Request("http://localhost/x"), { params: Promise.resolve({ id: "sa1" }) })).json()) as {
-      overage: { totalCents: number };
-    };
-    expect(page.overage.totalCents).toBe(0);
-  });
-
   it("limits from the assigned plan when there is no override", async () => {
-    rebill();
     mem.seed("agencies/ag1/plans/plan_1", { name: "Growth", quotas: { whatsappPerMonth: 50 } });
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, billing: { planId: "plan_1", planName: "Growth", currency: "zar" } });
     await askAgency("sub_account_usage", { subAccountId: "sa1" });

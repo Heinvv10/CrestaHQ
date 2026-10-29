@@ -13,7 +13,7 @@ import type { UsageQuotas } from "@/types/usage";
  * dialog. Current month per unit (used / quota / % bar; "—" = unlimited)
  * plus a 3-month mini-history. Data comes from the owner-only usage GET
  * (the ledger is server-only in rules). The usage-rebilling switch sits
- * above it; the overage preview shows only while the client is rebilled.
+ * above it, with the usage-charge preview while the client is rebilled.
  */
 
 interface MonthRow {
@@ -38,8 +38,13 @@ interface UsageResponse {
   };
   /** The plan's currency, else the payment provider's (the route resolves it). */
   currency: string;
-  /** `active` = agency switch AND client switch; the overage is zero otherwise. */
-  rebilling: { active: boolean; agency: boolean; client: boolean };
+  /** `active` = agency switch AND client switch; `previewCents` is null otherwise. */
+  rebilling: {
+    active: boolean;
+    agency: boolean;
+    client: boolean;
+    previewCents: number | null;
+  };
 }
 
 const UNITS: {
@@ -123,6 +128,7 @@ export function SubAccountUsageSection({
         <RebillingCard
           subAccountId={subAccountId}
           rebilling={data.rebilling}
+          currency={data.currency}
           onSaved={() => setReloadKey((k) => k + 1)}
         />
       )}
@@ -196,7 +202,7 @@ export function SubAccountUsageSection({
               );
             })}
 
-            {data.rebilling.active && data.overage && data.overage.totalCents > 0 && (
+            {data.overage && data.overage.totalCents > 0 && (
               <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2">
                 <p className="text-xs font-medium text-amber-700 dark:text-amber-400">
                   Overage accruing this month:{" "}
@@ -204,8 +210,8 @@ export function SubAccountUsageSection({
                 </p>
                 <p className="mt-0.5 text-[11px] text-muted-foreground">
                   Usage beyond the included allowance at your configured rates.
-                  A preview only: no charge is created from it. Invoice it via a
-                  one-time charge in the Billing section above.
+                  Invoice it via a one-time charge in the Billing section above —
+                  automatic monthly billing is a later stage.
                 </p>
               </div>
             )}
@@ -255,10 +261,12 @@ export function SubAccountUsageSection({
 function RebillingCard({
   subAccountId,
   rebilling,
+  currency,
   onSaved,
 }: {
   subAccountId: string;
   rebilling: UsageResponse["rebilling"];
+  currency: string;
   onSaved: () => void;
 }) {
   const [confirming, setConfirming] = useState<null | boolean>(null);
@@ -304,9 +312,9 @@ function RebillingCard({
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {rebilling.active
-              ? "Usage past the included allowance is valued at this client's rates below. No charge is created from it automatically."
+              ? "Usage past the included allowance counts toward this client's monthly usage charge, at their rates."
               : rebilling.agency
-                ? "Usage is counted but not valued. Turn this on to see what this client owes for usage past their allowance."
+                ? "Usage is counted but not billed to this client. Turn this on to bill usage past their allowance."
                 : "Usage rebilling is off for the agency."}
             {!rebilling.agency && (
               <>
@@ -332,12 +340,26 @@ function RebillingCard({
         )}
       </div>
 
+      {rebilling.previewCents !== null && (
+        <div className="mt-3 flex items-baseline justify-between rounded-lg border bg-muted/30 px-3 py-2 text-xs">
+          <span>
+            <span className="font-medium">Usage charge this month (est.)</span>
+            <span className="ml-1 text-muted-foreground">
+              Not charged yet: automatic usage charges are a later stage.
+            </span>
+          </span>
+          <span className="font-semibold tabular-nums">
+            {formatBillingPrice(rebilling.previewCents, currency)}
+          </span>
+        </div>
+      )}
+
       {confirming !== null && (
         <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
           <p className="text-amber-800 dark:text-amber-300">
             {confirming
-              ? "This client's usage past the allowance will be valued at their rates from now on."
-              : "This client's usage will no longer be valued. Charges already sent stay payable."}
+              ? "This client's usage past the allowance will count toward a monthly usage charge from now on."
+              : "This client's usage will no longer be billed. Charges already sent stay payable."}
           </p>
           <div className="mt-2 flex gap-2">
             <Button
