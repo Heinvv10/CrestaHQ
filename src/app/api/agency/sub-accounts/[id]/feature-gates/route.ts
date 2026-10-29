@@ -6,7 +6,10 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
 import { metaAppConfigured } from "@/lib/comms/meta";
-import { recordSubAccountAuditEvent } from "@/lib/audit/record";
+import {
+  setClientUsageRebilling,
+  UsageRebillingRefusedError,
+} from "@/lib/server/usage-rebilling";
 import {
   sanitizeUsageQuotas,
   sanitizeUsageRates,
@@ -341,19 +344,21 @@ export async function PATCH(
       { status: 404 }
     );
   }
-  const storedRebilling = subSnap.data()?.usageRebillingEnabled === true;
 
-  // Checked before any write, so a refusal leaves every other field alone.
-  if (body.usageRebillingEnabled === true) {
-    const agencySnap = await db.doc(`agencies/${subSnap.data()?.agencyId}`).get();
-    if (agencySnap.data()?.usageRebillingEnabled !== true) {
-      return NextResponse.json(
-        {
-          error:
-            "Turn on Usage rebilling for the agency first (Agency → Client billing).",
-        },
-        { status: 400 }
+  // Written (or refused) first, in its own transaction, so a refusal leaves
+  // every other field in the body alone.
+  if (wantsRebilling) {
+    try {
+      await setClientUsageRebilling(
+        subAccountId,
+        body.usageRebillingEnabled === true,
+        access.uid
       );
+    } catch (err) {
+      if (err instanceof UsageRebillingRefusedError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      throw err;
     }
   }
 
@@ -515,29 +520,9 @@ export async function PATCH(
   if (wantsUsageRates) {
     hiddenUpdates.usageRates = sanitizeUsageRates(body.usageRates);
   }
-  if (wantsRebilling) {
-    hiddenUpdates.usageRebillingEnabled = body.usageRebillingEnabled;
-    if (body.usageRebillingEnabled === true && !storedRebilling) {
-      hiddenUpdates.usageRebillingSince = FieldValue.serverTimestamp();
-    }
-  }
   if (Object.keys(hiddenUpdates).length > 0) {
     hiddenUpdates.updatedAt = FieldValue.serverTimestamp();
     await subRef.update(hiddenUpdates);
-  }
-  if (wantsRebilling && body.usageRebillingEnabled !== storedRebilling) {
-    await recordSubAccountAuditEvent(db, subAccountId, {
-      action: "usage_rebilling.updated",
-      actor: { type: "user", id: access.uid },
-      target: { type: "subAccount", id: subAccountId },
-      changes: [
-        {
-          field: "usageRebillingEnabled",
-          before: storedRebilling,
-          after: body.usageRebillingEnabled,
-        },
-      ],
-    });
   }
 
   return NextResponse.json({

@@ -58,6 +58,7 @@ describe("usageRebillingEnabled (agency master switch)", () => {
     db().seed("agencies/ag1/agencyMembers/owner1", { role: "owner", status: "removed" });
     expect((await patch("owner1", { usageRebillingEnabled: true })).status).toBe(403);
     expect(agency()).not.toHaveProperty("usageRebillingEnabled");
+    db().seed("agencies/ag1", { name: "Cresta Agency", ownerUid: "owner1", usageRebillingEnabled: true });
     expect((await patch("owner1", { usageRebillingEnabled: false })).status).toBe(200);
     expect(agency().usageRebillingEnabled).toBe(false);
   });
@@ -84,11 +85,84 @@ describe("usageRebillingEnabled (agency master switch)", () => {
     expect(auditRows()).toHaveLength(0);
   });
 
-  it("switching off is audited", async () => {
-    db().seed("agencies/ag1", { name: "Cresta Agency", ownerUid: "owner1", usageRebillingEnabled: true });
+  it("switching off is audited and leaves since alone", async () => {
+    db().seed("agencies/ag1", { name: "Cresta Agency", ownerUid: "owner1", usageRebillingEnabled: true, usageRebillingSince: "first" });
     expect((await patch("owner1", { usageRebillingEnabled: false })).status).toBe(200);
     expect(agency().usageRebillingEnabled).toBe(false);
+    expect(agency().usageRebillingSince).toBe("first");
     expect(auditRows()).toHaveLength(1);
     expect(auditRows()[0]).toMatchObject({ changes: [{ field: "usageRebillingEnabled", before: true, after: false }] });
+  });
+});
+
+describe("switching the master off switches every client of the agency off", () => {
+  const clientRows = () => auditRows().filter((r) => (r.target as { type: string }).type === "subAccount");
+
+  beforeEach(() => {
+    db().seed("agencies/ag1", { name: "Cresta Agency", ownerUid: "owner1", usageRebillingEnabled: true });
+    db().seed("subAccounts/sa1", { agencyId: "ag1", name: "One", usageRebillingEnabled: true });
+    db().seed("subAccounts/sa2", { agencyId: "ag1", name: "Two", usageRebillingEnabled: true });
+    db().seed("subAccounts/sa3", { agencyId: "ag1", name: "Three", usageRebillingEnabled: false });
+    db().seed("subAccounts/sb1", { agencyId: "ag2", name: "Other agency", usageRebillingEnabled: true });
+  });
+
+  it("off: every rebilled client of this agency off, one audit row each; others untouched", async () => {
+    expect((await patch("owner1", { usageRebillingEnabled: false })).status).toBe(200);
+    expect(agency().usageRebillingEnabled).toBe(false);
+    expect(db().read("subAccounts/sa1")!.usageRebillingEnabled).toBe(false);
+    expect(db().read("subAccounts/sa2")!.usageRebillingEnabled).toBe(false);
+    expect(db().read("subAccounts/sa3")!.usageRebillingEnabled).toBe(false);
+    expect(db().read("subAccounts/sb1")!.usageRebillingEnabled).toBe(true);
+    const rows = clientRows();
+    expect(rows.map((r) => (r.target as { id: string }).id).sort()).toEqual(["sa1", "sa2"]);
+    for (const r of rows) {
+      expect(r).toMatchObject({
+        agencyId: "ag1",
+        subAccountId: (r.target as { id: string }).id,
+        actor: { type: "user", id: "owner1" },
+        changes: [{ field: "usageRebillingEnabled", before: true, after: false }],
+      });
+    }
+    expect(auditRows().filter((r) => r.subAccountId === null)).toHaveLength(1);
+  });
+
+  it("off then on: the master is on again and no client is reactivated", async () => {
+    expect((await patch("owner1", { usageRebillingEnabled: false })).status).toBe(200);
+    expect((await patch("owner1", { usageRebillingEnabled: true })).status).toBe(200);
+    expect(agency().usageRebillingEnabled).toBe(true);
+    expect(db().read("subAccounts/sa1")!.usageRebillingEnabled).toBe(false);
+    expect(db().read("subAccounts/sa2")!.usageRebillingEnabled).toBe(false);
+    expect(clientRows()).toHaveLength(2);
+  });
+
+  it("re-saving the master on leaves every rebilled client on", async () => {
+    expect((await patch("owner1", { usageRebillingEnabled: true })).status).toBe(200);
+    expect(db().read("subAccounts/sa1")!.usageRebillingEnabled).toBe(true);
+    expect(db().read("subAccounts/sa2")!.usageRebillingEnabled).toBe(true);
+    expect(clientRows()).toHaveLength(0);
+  });
+
+  it("more rebilled clients than one transaction holds are all switched off", async () => {
+    const { REBILLING_CASCADE_CHUNK } = await import("@/lib/server/usage-rebilling");
+    const n = REBILLING_CASCADE_CHUNK + 3;
+    for (let i = 0; i < n; i++) {
+      db().seed(`subAccounts/bulk${i}`, { agencyId: "ag1", name: `Bulk ${i}`, usageRebillingEnabled: true });
+    }
+    expect((await patch("owner1", { usageRebillingEnabled: false })).status).toBe(200);
+    const stillOn = db().all().filter((d) => d.path.startsWith("subAccounts/") && d.data.agencyId === "ag1" && d.data.usageRebillingEnabled === true);
+    expect(stillOn).toEqual([]);
+    expect(clientRows()).toHaveLength(n + 2);
+  });
+});
+
+describe("concurrent toggles", () => {
+  it("two simultaneous switch-ons write one audit row", async () => {
+    const [a, b] = await Promise.all([
+      patch("owner1", { usageRebillingEnabled: true }),
+      patch("owner1", { usageRebillingEnabled: true }),
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(agency().usageRebillingEnabled).toBe(true);
+    expect(auditRows()).toHaveLength(1);
   });
 });

@@ -116,11 +116,12 @@ describe("usageRebillingEnabled", () => {
   });
 
   it("switching off is always allowed, even with the agency switch off, and audited", async () => {
-    db().seed(`subAccounts/${SA}`, { agencyId: "ag_1", name: "Fixture", usageRebillingEnabled: true });
+    db().seed(`subAccounts/${SA}`, { agencyId: "ag_1", name: "Fixture", usageRebillingEnabled: true, usageRebillingSince: "first" });
     agencySwitch(false);
     db().seed("agencies/ag_1/agencyMembers/uid_owner", { role: "owner", status: "removed" });
     expect((await patch({ usageRebillingEnabled: false })).status).toBe(200);
     expect(sub().usageRebillingEnabled).toBe(false);
+    expect(sub().usageRebillingSince).toBe("first");
     expect(auditRows()).toHaveLength(1);
     expect(auditRows()[0]).toMatchObject({ changes: [{ field: "usageRebillingEnabled", before: true, after: false }] });
   });
@@ -151,5 +152,17 @@ describe("usageRebillingEnabled", () => {
     db().seed("agencies/ag_2", { name: "Other", usageRebillingEnabled: true });
     expect((await patch({ usageRebillingEnabled: true, agencyId: "ag_2" })).status).toBe(400);
     expect(sub().usageRebillingEnabled).toBeUndefined();
+  });
+});
+
+describe("concurrent toggles", () => {
+  it("two simultaneous switch-ons write one audit row", async () => {
+    const [a, b] = await Promise.all([
+      patch({ usageRebillingEnabled: true }),
+      patch({ usageRebillingEnabled: true }),
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(sub().usageRebillingEnabled).toBe(true);
+    expect(auditRows()).toHaveLength(1);
   });
 });
