@@ -5,8 +5,10 @@ import { clientIpFrom } from "@/lib/checkout/rate-limit";
 /**
  * Per-client rate limit for the public logo route (`/api/brand/logo/...`),
  * its OWN buckets so logo traffic can never starve another public flow. It
- * bounds the Firestore reads an unauthenticated caller can cause; the
- * current version is served immutable, so real viewers rarely come back.
+ * bounds the Firestore reads an unauthenticated caller can cause. Only
+ * cache misses are counted (lib/brand/logo-cache.ts serves repeat requests
+ * for a version without a read), so a shared prefetching proxy fetching one
+ * broadcast's logo for many recipients is not refused.
  * The client is `clientIpFrom`'s answer, the one place that is decided.
  *
  * Same model as the reviews-feed limiter (lib/gbp/feed/rate-limit.ts): a
@@ -16,7 +18,7 @@ import { clientIpFrom } from "@/lib/checkout/rate-limit";
  * clear. In-memory, per instance: an abuse-dampener, not a security boundary.
  */
 
-export const LOGO_PER_IP_LIMIT = 300;
+export const LOGO_PER_IP_LIMIT = 1000;
 const WINDOW_MS = 60 * 1000;
 const MAX_TRACKED_KEYS = 10_000;
 

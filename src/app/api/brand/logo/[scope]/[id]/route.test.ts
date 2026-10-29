@@ -19,8 +19,12 @@ vi.mock("@/lib/firebase/admin", () => ({
   }),
 }));
 
-import { GET } from "./route";
 import { LOGO_PER_IP_LIMIT } from "@/lib/brand/logo-rate-limit";
+import { LOGO_CACHE_MAX_BYTES, LOGO_CACHE_TTL_MS } from "@/lib/brand/logo-cache";
+
+// Fresh module state (logo cache + limiter buckets) per test.
+let GET: typeof import("./route").GET;
+let cacheStats: typeof import("@/lib/brand/logo-cache").logoCacheStats;
 
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 const get = (scope: string, id: string, query = "", xff?: string) =>
@@ -31,7 +35,11 @@ const get = (scope: string, id: string, query = "", xff?: string) =>
     { params: Promise.resolve({ scope, id }) },
   );
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
+  ({ GET } = await import("./route"));
+  ({ logoCacheStats: cacheStats } = await import("@/lib/brand/logo-cache"));
+  vi.restoreAllMocks();
   m.docs.clear();
   m.reads.length = 0;
   m.fail = false;
@@ -108,20 +116,21 @@ describe("per-client rate limit", () => {
   const seed = () =>
     m.docs.set("subAccounts/sa1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 7 });
 
-  it("serves the budget with one read each, then 429s without reading", async () => {
+  // No ?v: never a cache hit, so every request is a counted miss.
+  it("serves 1000 misses a minute with one read each, then 429s without reading", async () => {
     seed();
-    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) {
-      expect((await get("sa", "sa1", "?v=7", "203.0.113.10")).status).toBe(200);
+    for (let i = 0; i < 1000; i++) {
+      expect((await get("sa", "sa1", "", "203.0.113.10")).status).toBe(200);
     }
-    expect(m.reads).toHaveLength(LOGO_PER_IP_LIMIT);
-    const refused = await get("sa", "sa1", "?v=7", "203.0.113.10");
+    expect(m.reads).toHaveLength(1000);
+    const refused = await get("sa", "sa1", "", "203.0.113.10");
     expect(refused.status).toBe(429);
     const retry = Number(refused.headers.get("retry-after"));
     expect(retry).toBeGreaterThanOrEqual(1);
     expect(retry).toBeLessThanOrEqual(60);
-    expect(m.reads).toHaveLength(LOGO_PER_IP_LIMIT);
+    expect(m.reads).toHaveLength(1000);
     // Another client keeps its own budget.
-    expect((await get("sa", "sa1", "?v=7", "203.0.113.11")).status).toBe(200);
+    expect((await get("sa", "sa1", "", "203.0.113.11")).status).toBe(200);
   });
 
   it("keys on the proxy-appended hop, so a forged left-most X-Forwarded-For buys no fresh budget", async () => {
@@ -138,5 +147,76 @@ describe("per-client rate limit", () => {
       if (i % 1000 === 0) await get("sa", "sa1", "", "203.0.113.30");
     }
     expect((await get("sa", "sa1", "", "203.0.113.30")).status).toBe(429);
+  });
+});
+
+describe("decoded-logo cache", () => {
+  const OLD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 7]);
+  const NEW = Buffer.from([0x89, 0x50, 0x4e, 0x47, 8]);
+  const store = (bytes: Buffer, version: number) =>
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: bytes.toString("base64"), mime: "image/png", version });
+
+  it("serves a hit with no read, immutable, with the same safe headers", async () => {
+    store(OLD, 7);
+    expect((await get("sa", "sa1", "?v=7")).status).toBe(200);
+    expect(m.reads).toHaveLength(1);
+    for (let i = 0; i < 5; i++) {
+      const res = await get("sa", "sa1", "?v=7");
+      expect(Buffer.from(await res.arrayBuffer()).equals(OLD)).toBe(true);
+      expect(res.headers.get("content-type")).toBe("image/png");
+      expect(res.headers.get("cache-control")).toContain("immutable");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+    }
+    expect(m.reads).toHaveLength(1);
+  });
+
+  it("does not rate-limit a hit (a shared prefetching proxy past its miss budget)", async () => {
+    store(OLD, 7);
+    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await get("sa", "sa1", "", "203.0.113.40");
+    expect((await get("sa", "sa1", "", "203.0.113.40")).status).toBe(429);
+    const reads = m.reads.length;
+    for (let i = 0; i < 50; i++) expect((await get("sa", "sa1", "?v=7", "203.0.113.40")).status).toBe(200);
+    expect(m.reads).toHaveLength(reads);
+  });
+
+  it("rereads once the TTL has passed", async () => {
+    const t0 = 1_800_000_000_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(t0);
+    store(OLD, 7);
+    await get("sa", "sa1", "?v=7");
+    now.mockReturnValue(t0 + LOGO_CACHE_TTL_MS - 1);
+    await get("sa", "sa1", "?v=7");
+    expect(m.reads).toHaveLength(1);
+    now.mockReturnValue(t0 + LOGO_CACHE_TTL_MS);
+    await get("sa", "sa1", "?v=7");
+    expect(m.reads).toHaveLength(2);
+  });
+
+  it("never serves an older upload under a new ?v, even one requested before it existed", async () => {
+    store(OLD, 7);
+    await get("sa", "sa1", "?v=7");
+    // A guessed future version reads v7: served, but not cached as v8.
+    const early = await get("sa", "sa1", "?v=8");
+    expect(early.headers.get("cache-control")).not.toContain("immutable");
+    store(NEW, 8); // re-upload
+    const res = await get("sa", "sa1", "?v=8");
+    expect(Buffer.from(await res.arrayBuffer()).equals(NEW)).toBe(true);
+    expect(res.headers.get("cache-control")).toContain("immutable");
+    const again = await get("sa", "sa1", "?v=8");
+    expect(Buffer.from(await again.arrayBuffer()).equals(NEW)).toBe(true);
+  });
+
+  it("holds its byte bound, evicting the oldest entry first", async () => {
+    const { cacheLogo, getCachedLogo } = await import("@/lib/brand/logo-cache");
+    const mb = 1024 * 1024;
+    const count = Math.ceil(LOGO_CACHE_MAX_BYTES / mb) + 4;
+    for (let i = 0; i < count; i++) {
+      cacheLogo("sa", `s${i}`, "1", { body: Buffer.alloc(mb), mime: "image/png" });
+      expect(cacheStats().bytes).toBeLessThanOrEqual(LOGO_CACHE_MAX_BYTES);
+    }
+    expect(cacheStats().bytes).toBe(cacheStats().entries * mb);
+    expect(getCachedLogo("sa", "s0", "1")).toBeNull();
+    expect(getCachedLogo("sa", `s${count - 1}`, "1")).not.toBeNull();
   });
 });
