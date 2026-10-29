@@ -4,7 +4,7 @@ import type { SubAccountDoc } from "@/types/tenancy";
 /**
  * Client-safe Sell Online helpers, shared by the Products UI and the server
  * routes so what the operator sees matches what the API enforces. Which rail
- * sells a product is `chooseProductPayRail` (lib/server/product-pay-rail.ts,
+ * sells a product is `chooseProductPayRail` (lib/products/pay-rail.ts,
  * also pure).
  */
 

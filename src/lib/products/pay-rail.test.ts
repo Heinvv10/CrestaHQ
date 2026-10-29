@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chooseProductPayRail } from "./product-pay-rail";
+import { chooseProductPayRail } from "./pay-rail";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 /**

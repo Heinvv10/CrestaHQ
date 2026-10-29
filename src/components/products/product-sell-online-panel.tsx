@@ -16,7 +16,7 @@ import {
   productSlugError,
   slugifyProductSlug,
 } from "@/lib/products/sell-online";
-import { chooseProductPayRail } from "@/lib/server/product-pay-rail";
+import { chooseProductPayRail } from "@/lib/products/pay-rail";
 import type { CheckoutPage } from "@/types/checkout-pages";
 import type { Course, CommunityGroup } from "@/types/community";
 import type { ProductDelivery } from "@/types/products";

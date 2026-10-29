@@ -34,8 +34,8 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `delete_custom_field_folder` | `hard_delete` | admin | Delete a custom-field folder; its fields move to General (none are deleted). | the folder; its fields move to General |
 | `list_products` | read | member | List the sub-account's products: id, name, price, currency and whether each is active. |  |
 | `create_product` | write | member | Add a product (name and unitPriceCents required). |  |
-| `update_product` | write; `spend` when the product is sold by a checkout page or funnel | member | Edit a product's name, description, price, currency, active flag or order-bump settings. | every asked field old -> new, what sells the product (checkout pages, funnels) and what buyers then see |
-| `delete_product` | `hard_delete` | member | Delete a product permanently. | the product, its price and the open quotes / invoices using it; refused while a checkout page or funnel sells it |
+| `update_product` | write; `spend` when the product is sold by a checkout page or funnel, or is on sale online | member | Edit a product's name, description, price, currency, active flag or order-bump settings. | every asked field old -> new, what sells the product (checkout pages, funnels, its buy link) and what buyers then see |
+| `delete_product` | `hard_delete` | member | Delete a product permanently. | the product, its price and the open quotes / invoices using it; refused while a checkout page or funnel sells it or it is on sale online |
 | `list_snippets` | read | member | List the sub-account's snippets (saved replies): id, name, type, folder, subject and body. |  |
 | `create_snippet` | write | member | Create a snippet (a saved reply people insert into messages). |  |
 | `update_snippet` | write | member | Replace a snippet's name, type, body, subject and folder (send them all, as list_snippets shows them). |  |

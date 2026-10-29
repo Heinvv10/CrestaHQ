@@ -11,7 +11,7 @@ import {
   slugifyProductSlug,
 } from "@/lib/products/sell-online";
 import { isDocId } from "@/lib/server/doc-id";
-import { chooseProductPayRail } from "@/lib/server/product-pay-rail";
+import { chooseProductPayRail } from "@/lib/products/pay-rail";
 import { isSafeSocialUrl } from "@/lib/website/premium";
 import type { Product, ProductDelivery } from "@/types/products";
 import type { SubAccountDoc } from "@/types/tenancy";

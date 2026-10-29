@@ -2,7 +2,7 @@ import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isSellableProduct, sellOnlinePriceError } from "@/lib/products/sell-online";
-import { chooseProductPayRail } from "@/lib/server/product-pay-rail";
+import { chooseProductPayRail } from "@/lib/products/pay-rail";
 import type { Product } from "@/types/products";
 import type { SubAccountDoc } from "@/types/tenancy";
 

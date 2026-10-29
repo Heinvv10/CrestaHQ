@@ -22,6 +22,7 @@ import { recordProvenanceRows } from "./record-provenance";
  * Catalog products for API agents (AGENT_API_V1_PLAN.md, PR10): list,
  * create / update as direct writes (the products route's own sanitizer and
  * writer) — except any edit of a product a checkout page or funnel sells,
+ * or that is on sale online,
  * which a person approves — and delete
  * approved, refused while anything sells the product (it would break that
  * checkout). Text fields must be visible text.
@@ -158,13 +159,14 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Edit the product ${args.productId}.`,
     // Checkout pages show a product's name, description, price and bump
-    // settings: any change to one a checkout page or funnel sells is what its
+    // settings (a buy link shows the same): any change to one a checkout page,
+    // funnel or its own buy link sells is what its
     // buyers see and pay, so a person approves it (spend).
     approvalFor: async (args, ctx) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
       return (await productSellers(ctx.subAccountId!, p.id)).length ? "spend" : undefined;
     },
-    approvalHint: { approval: "spend", when: "the product is sold by a checkout page or funnel" },
+    approvalHint: { approval: "spend", when: "the product is sold by a checkout page or funnel, or is on sale online" },
     approvalTarget: async (ctx, args) => {
       await tenantProduct(ctx.subAccountId!, args.productId);
       return { contactId: null, territoryId: null, scoped: false };
@@ -228,7 +230,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
             throw new CapabilityUserError("The product changed since this was reviewed; nothing was changed.");
           }
         } else if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
-          throw new CapabilityUserError("A checkout page or funnel now sells this product, so this change needs approval: send it again.");
+          throw new CapabilityUserError("A checkout page, funnel or buy link now sells this product, so this change needs approval: send it again.");
         }
         tx.update(ref, { ...fields, ...sell, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_product")) });
       });
@@ -243,7 +245,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     approval: "hard_delete",
     menuLabel: "Delete a product (a person approves)",
     description:
-      "Delete a product permanently. Refused while a checkout page or funnel sells it (archive it with update_product active:false instead). Open quotes keep their own copy. Queued for a sub-account admin to approve.",
+      "Delete a product permanently. Refused while a checkout page or funnel sells it or it is on sale online (archive it with update_product active:false instead). Open quotes keep their own copy. Queued for a sub-account admin to approve.",
     parameters: { type: "object", properties: { productId: productIdParam }, required: ["productId"], additionalProperties: false },
     validate: (raw) => {
       const productId = str(raw, "productId");
@@ -262,6 +264,11 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
           `That product is sold by ${used.checkoutPages} checkout page(s) and ${used.funnels} funnel(s); deleting it would break them. Archive it instead (update_product active:false).`
         );
       }
+      if (used.onSale) {
+        throw new CapabilityUserError(
+          "That product is on sale online; deleting it would break its buy link. Archive it instead (update_product active:false)."
+        );
+      }
       return [
         { label: "Delete product", value: oneLine(p.name) || "(unnamed)" },
         ...recordProvenanceRows(p.id, p),
@@ -278,7 +285,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That product isn't in this workspace.");
         if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
-          throw new CapabilityUserError("A checkout page or funnel now sells this product; it was not deleted.");
+          throw new CapabilityUserError("A checkout page, funnel or buy link now sells this product; it was not deleted.");
         }
         tx.delete(ref);
       });
