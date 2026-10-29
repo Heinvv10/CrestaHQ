@@ -37,7 +37,7 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 import { DELETE, POST } from "./route";
-import { cacheLogo, getCachedLogo } from "@/lib/brand/logo-cache";
+import { cacheLogo, getCachedLogo, logoCacheGeneration } from "@/lib/brand/logo-cache";
 
 let png: string;
 beforeAll(async () => {
@@ -201,8 +201,12 @@ describe("DELETE /api/sub-accounts/[id]/logo — remove", () => {
 });
 
 describe("this instance's logo cache (breaker R3)", () => {
-  const prime = (id: string) =>
-    cacheLogo("sa", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 }, 0);
+  // At the current generation (earlier tests' uploads/removes bumped it), and
+  // checked, so a drop assertion can never pass on an entry that was never there.
+  const prime = (id: string) => {
+    cacheLogo("sa", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 }, logoCacheGeneration("sa", id));
+    expect(getCachedLogo("sa", id)).not.toBeNull();
+  };
 
   it("an upload drops this sub-account's cached logo, and only its own", async () => {
     prime("sa1");

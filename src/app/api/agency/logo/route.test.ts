@@ -33,7 +33,7 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 import { DELETE, POST } from "./route";
-import { cacheLogo, getCachedLogo } from "@/lib/brand/logo-cache";
+import { cacheLogo, getCachedLogo, logoCacheGeneration } from "@/lib/brand/logo-cache";
 
 let webp: string;
 beforeAll(async () => {
@@ -137,8 +137,12 @@ it.each([
 });
 
 it.each(["POST", "DELETE"])("%s drops this agency's cached logo on this instance, and only its own (breaker R3)", async (method) => {
-  const prime = (id: string) =>
-    cacheLogo("agency", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 }, 0);
+  // At the current generation (earlier tests' uploads/removes bumped it), and
+  // checked, so a drop assertion can never pass on an entry that was never there.
+  const prime = (id: string) => {
+    cacheLogo("agency", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 }, logoCacheGeneration("agency", id));
+    expect(getCachedLogo("agency", id)).not.toBeNull();
+  };
   prime("ag1");
   prime("ag2");
   m.docs.set("agencies/ag1", { logoUrl: "https://crm.example.com/api/brand/logo/agency/ag1?v=1" });
