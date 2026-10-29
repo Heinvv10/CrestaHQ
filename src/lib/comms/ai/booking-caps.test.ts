@@ -84,23 +84,46 @@ describe("per IP", () => {
     expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "new", visitor: web("9.9.9.9") }).ok).toBe(false);
   });
 
-  it("one IPv6 /48 is one visitor; another /48 is not", () => {
-    reserveN(5, (i) => ({ conversationKey: `chat-${i}`, visitor: web(`2001:DB8:1:${i}::1`) }));
-    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n", visitor: web("2001:db8:1:ffff::9") }).ok).toBe(false);
+  it("one IPv6 /64 is one visitor at the per-IP limit; the next /64 is not", () => {
+    reserveN(5, (i) => ({ conversationKey: `chat-${i}`, visitor: web(`2001:DB8:1:2::${i + 1}`) }));
+    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n", visitor: web("2001:db8:1:2:ffff::9") })).toEqual({
+      ok: false,
+      scope: "visitor",
+    });
+    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n2", visitor: web("2001:db8:1:3::1") }).ok).toBe(true);
+    expect(caps.ipPrefixes("2001:db8:1:2::1%eth0")).toEqual({ host: "2001:db8:1:2::/64", wide: "2001:db8:1::/48" });
+    expect(caps.ipPrefixes("::ffff:9.9.9.9")).toEqual({ host: "9.9.9.9", wide: null });
+  });
+
+  it("rotating /64s inside one /48 hits the /48 cap (20); another /48 is unaffected", () => {
+    reserveN(20, (i) => ({ conversationKey: `chat-${i}`, visitor: web(`2001:db8:1:${i.toString(16)}::1`) }));
+    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n", visitor: web("2001:db8:1:ff::1") })).toEqual({
+      ok: false,
+      scope: "visitor",
+    });
     expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n2", visitor: web("2001:db8:2::1") }).ok).toBe(true);
-    expect(caps.ipBucket("2001:db8:1:2::1%eth0")).toBe('["ip6","2001:db8:1::/48"]');
+  });
+
+  it("an exhausted /64 or /48 in one workspace doesn't affect another", () => {
+    reserveN(5, (i) => ({ subAccountId: "sa-a", conversationKey: `a-${i}`, visitor: web("2001:db8:1:2::1") }));
+    expect(caps.reserveBooking({ subAccountId: "sa-a", conversationKey: "a-new", visitor: web("2001:db8:1:2::1") }).ok).toBe(false);
+    expect(caps.reserveBooking({ subAccountId: "sa-b", conversationKey: "b-1", visitor: web("2001:db8:1:2::1") }).ok).toBe(true);
+    reserveN(15, (i) => ({ subAccountId: "sa-a", conversationKey: `a48-${i}`, visitor: web(`2001:db8:1:${(i + 16).toString(16)}::1`) }));
+    expect(caps.reserveBooking({ subAccountId: "sa-a", conversationKey: "a48-new", visitor: web("2001:db8:1:ff::1") }).ok).toBe(false);
+    expect(caps.reserveBooking({ subAccountId: "sa-b", conversationKey: "b-2", visitor: web("2001:db8:1:ff::1") }).ok).toBe(true);
   });
 
   it("a non-string IP is no IP, not a crash", () => {
-    expect(caps.ipBucket(42)).toBeNull();
-    expect(caps.ipBucket({ trim: () => "1.1.1.1" })).toBeNull();
+    expect(caps.ipPrefixes(42)).toBeNull();
+    expect(caps.ipPrefixes({ trim: () => "1.1.1.1" })).toBeNull();
     const r = caps.reserveBooking({ subAccountId: "sa1", conversationKey: "c", visitor: { ip: 42 as unknown as string } });
     expect(r.ok).toBe(true);
   });
 
-  it("the IP cap spans sub-accounts", () => {
-    reserveN(5, (i) => ({ conversationKey: `chat-${i}`, visitor: web("9.9.9.9"), subAccountId: `sa-${i}` }));
-    expect(caps.reserveBooking({ subAccountId: "sa-other", conversationKey: "c", visitor: web("9.9.9.9") }).ok).toBe(false);
+  it("an IPv4 address's cap is per workspace", () => {
+    reserveN(5, (i) => ({ conversationKey: `chat-${i}`, visitor: web("9.9.9.9"), subAccountId: "sa-a" }));
+    expect(caps.reserveBooking({ subAccountId: "sa-a", conversationKey: "c", visitor: web("9.9.9.9") }).ok).toBe(false);
+    expect(caps.reserveBooking({ subAccountId: "sa-b", conversationKey: "c", visitor: web("9.9.9.9") }).ok).toBe(true);
   });
 });
 

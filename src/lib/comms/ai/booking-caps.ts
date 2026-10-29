@@ -16,6 +16,8 @@ import ipaddr from "ipaddr.js";
  */
 
 const BOOKINGS_PER_IP = 5;
+/** Rotating /64s inside one /48 (one customer's allocation) share this wider cap. */
+const BOOKINGS_PER_IPV6_48 = BOOKINGS_PER_IP * 4;
 const BOOKINGS_PER_CONVERSATION = 2;
 const BOOKINGS_PER_SUB_ACCOUNT = 50;
 /** Web visitors whose IP didn't come through share one stricter bucket per workspace. */
@@ -54,19 +56,23 @@ function bucketKey(...parts: string[]): string {
 }
 
 /**
- * The bucket for an IP: IPv4 (and IPv4-mapped IPv6) as a dotted quad, IPv6
- * as its /48, since one customer is commonly handed a whole /48 (a zone id
- * is dropped). The bucket is the parsed form, so its length is bounded
- * whatever the header held. Null = no usable IP ("unknown", empty, garbage).
+ * A visitor IP's bucket prefixes: `host` is the IPv4 address (IPv4-mapped
+ * IPv6 included) or the IPv6 /64, one host's usual allocation; `wide` is the
+ * IPv6 /48, null for IPv4. A zone id is dropped. They are parsed forms, so
+ * their length is bounded whatever the header held. Null = no usable IP
+ * ("unknown", empty, garbage, not a string).
  */
-export function ipBucket(raw: unknown): string | null {
+export function ipPrefixes(raw: unknown): { host: string; wide: string | null } | null {
   if (typeof raw !== "string") return null;
   const v = raw.trim().toLowerCase();
   if (!ipaddr.isValid(v)) return null;
   const addr = ipaddr.process(v);
-  if (addr.kind() === "ipv4") return bucketKey("ip", addr.toString());
-  const head = (addr as ipaddr.IPv6).toNormalizedString().split(":").slice(0, 3);
-  return bucketKey("ip6", `${head.join(":")}::/48`);
+  if (addr.kind() === "ipv4") return { host: addr.toString(), wide: null };
+  const groups = (addr as ipaddr.IPv6).toNormalizedString().split(":");
+  return {
+    host: `${groups.slice(0, 4).join(":")}::/64`,
+    wide: `${groups.slice(0, 3).join(":")}::/48`,
+  };
 }
 
 export type BookingCapResult = "ok" | "chat" | "visitor" | "workspace";
@@ -95,13 +101,18 @@ function bookingKeys(input: BookingCapInput): CapKey[] {
   const keys: CapKey[] = [
     { key: bucketKey("conv", sa, input.conversationKey), limit: BOOKINGS_PER_CONVERSATION, scope: "chat" },
   ];
+  // IP buckets are per sub-account: one visitor (or one busy ISP range)
+  // must not use up another workspace's booking.
   if (input.visitor) {
-    const ip = ipBucket(input.visitor.ip);
-    keys.push(
-      ip
-        ? { key: ip, limit: BOOKINGS_PER_IP, scope: "visitor" }
-        : { key: bucketKey("noip", sa), limit: NO_IP_BOOKINGS_PER_SUB_ACCOUNT, scope: "visitor" },
-    );
+    const ip = ipPrefixes(input.visitor.ip);
+    if (!ip) {
+      keys.push({ key: bucketKey("noip", sa), limit: NO_IP_BOOKINGS_PER_SUB_ACCOUNT, scope: "visitor" });
+    } else {
+      keys.push({ key: bucketKey("ip", sa, ip.host), limit: BOOKINGS_PER_IP, scope: "visitor" });
+      if (ip.wide) {
+        keys.push({ key: bucketKey("ip48", sa, ip.wide), limit: BOOKINGS_PER_IPV6_48, scope: "visitor" });
+      }
+    }
   }
   keys.push({ key: bucketKey("sa", sa), limit: BOOKINGS_PER_SUB_ACCOUNT, scope: "workspace" });
   return keys;
