@@ -603,7 +603,9 @@ export async function runWatchdogSweep(): Promise<{
   const snap = await getAdminDb()
     .collection(AGENTS_COLLECTION)
     .where("enabled", "==", true)
-    .limit(200)
+    // Ceiling: 500 enabled agent docs of ANY type (stale-deals docs count
+    // too, filtered below); past it some agents silently never run.
+    .limit(500)
     .get();
 
   const watchdogs = snap.docs.filter(

@@ -237,8 +237,20 @@ describe("what is never flagged", () => {
     expect(tasksFor("talking")).toHaveLength(0);
     expect(tasksFor("worked")).toHaveLength(0);
     expect(tasksFor("other-deal-work")).toHaveLength(1);
-    // Rechecked once the work can have aged out: activity at T0-1d + 7d.
-    expect((mem.read("deals/worked")?.staleRecheckAt as Timestamp).toMillis()).toBe(T0 + 6 * DAY);
+    // Held with the work's time, so the hold follows the current threshold.
+    expect((mem.read("deals/worked")?.staleWorkAt as Timestamp).toMillis()).toBe(T0 - DAY);
+  });
+
+  it("lowering the threshold releases a recent-work hold at once", async () => {
+    mem.seed("contacts/c3", { subAccountId: "sa1", agencyId: "ag1", name: "Cy" });
+    seedDeal("worked", { contactId: "c3" });
+    mem.seed("contacts/c3/activities/a1", { subAccountId: "sa1", meta: { dealId: "worked" }, createdAt: Timestamp.fromMillis(T0 - 5 * DAY) });
+    await sweep();
+    expect(tasksFor("worked")).toHaveLength(0);
+    vi.setSystemTime(T0 + 3_600_000);
+    patchAgent({ thresholdDays: 3 });
+    await sweep();
+    expect(tasksFor("worked")).toHaveLength(1);
   });
 
   it("gate off: skipped with agents_gate_off, the deal untouched", async () => {
@@ -256,6 +268,37 @@ describe("what is never flagged", () => {
     seedDeal("d1");
     expect((await sweep()).results).toEqual([]);
     expect(tasksFor("d1")).toHaveLength(0);
+  });
+});
+
+describe("errors", () => {
+  it("every checked deal erroring is a failed run with the count and first message", async () => {
+    seedDeal("d1");
+    seedDeal("d2");
+    t.throwOn.add("conversations/c1");
+    const { results } = await sweep();
+    expect(results).toEqual([expect.objectContaining({ status: "failed" })]);
+    const run = runsOf().at(-1)!;
+    expect(run).toMatchObject({ status: "failed", scanned: 2, errors: 2, flagged: 0 });
+    expect(String(run.error)).toContain("FAILED_PRECONDITION");
+  });
+
+  it("some deals erroring: completed, errors counted, the rest flagged", async () => {
+    seedDeal("d1");
+    seedDeal("d2", { contactId: "" });
+    t.throwOn.add("conversations/c1");
+    await sweep();
+    expect(runsOf().at(-1)).toMatchObject({ status: "completed", errors: 1, flagged: 1 });
+    expect(tasksFor("d2")).toHaveLength(1);
+  });
+
+  it("the note is written before the visit is claimed", async () => {
+    seedDeal("d1");
+    const claimedDuringAi: unknown[] = [];
+    t.onAiCall = () => claimedDuringAi.push(mem.read("deals/d1")?.staleAlertedAt);
+    await sweep();
+    expect(claimedDuringAi).toEqual([undefined]);
+    expect(mem.read("deals/d1")?.staleAlertedAt).toBeInstanceOf(Date);
   });
 });
 

@@ -8,6 +8,7 @@ import { sendPushForEvent } from "@/lib/push/send";
 import { readPipelines } from "@/lib/pipelines/server";
 import { dealPipelineId, dealStage } from "@/lib/pipelines/stages";
 import { isDocId } from "@/lib/server/doc-id";
+import { isAssignableMember } from "@/lib/server/assignee";
 import { runAfterResponse } from "@/lib/server/after-response";
 import {
   agentRef,
@@ -156,16 +157,14 @@ async function tenantContact(
 /**
  * Someone is already on it: an open task for the deal, a message either way
  * within the window, or deal activity on the contact within the window.
- * Returns the earliest time that work can have aged out (when to recheck),
- * or null when there is none.
+ * Null when there is none; otherwise `workAtMs` = the latest message or
+ * activity, or null for an open task (which has no age to wait out).
  */
-async function recentWorkUntil(
+async function recentWork(
   deal: DealRow,
   contactId: string | null,
   cutoffMs: number,
-  thresholdMs: number,
-  nowMs: number,
-): Promise<number | null> {
+): Promise<{ workAtMs: number | null } | null> {
   const db = getAdminDb();
 
   const openTask = await db
@@ -175,7 +174,7 @@ async function recentWorkUntil(
     .where("completed", "==", false)
     .limit(1)
     .get();
-  if (!openTask.empty) return nowMs + OPEN_TASK_RECHECK_MS;
+  if (!openTask.empty) return { workAtMs: null };
   if (!contactId) return null;
 
   // Conversation doc id == contactId.
@@ -195,7 +194,21 @@ async function recentWorkUntil(
   const at = acts.empty ? null : toMillis(acts.docs[0]!.data().createdAt);
   if (at !== null && (latest === null || at > latest)) latest = at;
 
-  return latest === null ? null : latest + thresholdMs;
+  return latest === null ? null : { workAtMs: latest };
+}
+
+/**
+ * Whether a deal stamped with recent work is still held. Computed from the
+ * stored work time and the CURRENT threshold, so lowering the threshold
+ * releases holds at once: work ages out at `workAt + threshold`; an open
+ * task is rechecked a day after the check.
+ */
+function heldByRecentWork(deal: DealRow, thresholdMs: number, nowMs: number): boolean {
+  const data = deal as { staleWorkAt?: unknown; staleCheckedAt?: unknown };
+  const workAt = toMillis(data.staleWorkAt);
+  if (workAt !== null) return workAt + thresholdMs > nowMs;
+  const checkedAt = toMillis(data.staleCheckedAt);
+  return checkedAt !== null && checkedAt + OPEN_TASK_RECHECK_MS > nowMs;
 }
 
 /** Already alerted for the current stage visit. A stage change writes a newer
@@ -236,12 +249,8 @@ async function setVisitClaim(deal: DealRow, claim: boolean): Promise<boolean> {
 }
 
 /** The deal's assignee while still an active member; otherwise unassigned. */
-async function activeAssignee(subAccountId: string, uid: unknown): Promise<string | null> {
-  if (!isDocId(uid)) return null;
-  const snap = await getAdminDb()
-    .doc(`subAccounts/${subAccountId}/subAccountMembers/${uid}`)
-    .get();
-  return snap.data()?.status === "active" ? uid : null;
+async function dealAssignee(subAccountId: string, uid: unknown): Promise<string | null> {
+  return isDocId(uid) && (await isAssignableMember(subAccountId, uid)) ? uid : null;
 }
 
 /** A user-typed value going into the prompt: one line, no quotes. */
@@ -333,8 +342,7 @@ async function runStaleDealsForSubAccount(
       const stage = dealStage(deal, pipelines);
       if (!stage || stage.terminal) return false;
       if (alertedThisVisit(deal)) return false;
-      const recheckAt = toMillis((deal as { staleRecheckAt?: unknown }).staleRecheckAt);
-      return recheckAt === null || recheckAt <= nowMs;
+      return !heldByRecentWork(deal, thresholdMs, nowMs);
     };
 
     const pushSuppressed = isInQuietHours(agent.quietHours ?? null, now);
@@ -347,6 +355,8 @@ async function runStaleDealsForSubAccount(
     let checked = 0;
     let pushes = 0;
     let droppedByCap = 0;
+    let errors = 0;
+    let firstError: string | null = null;
     const actions: WatchdogRunAction[] = [];
 
     // The scan resumes where the last run stopped, in (stageChangedAt, id)
@@ -399,16 +409,12 @@ async function runStaleDealsForSubAccount(
 
         try {
           const contact = await tenantContact(deal.contactId, subAccountId);
-          const recheckAt = await recentWorkUntil(deal, contact?.id ?? null, cutoffMs, thresholdMs, nowMs);
-          if (recheckAt !== null) {
+          const work = await recentWork(deal, contact?.id ?? null, cutoffMs);
+          if (work !== null) {
             await db.doc(`deals/${deal.id}`).update({
               staleCheckedAt: FieldValue.serverTimestamp(),
-              staleRecheckAt: Timestamp.fromMillis(recheckAt),
+              staleWorkAt: work.workAtMs === null ? null : Timestamp.fromMillis(work.workAtMs),
             });
-            cursor = position;
-            continue;
-          }
-          if (!(await setVisitClaim(deal, true))) {
             cursor = position;
             continue;
           }
@@ -465,6 +471,13 @@ async function runStaleDealsForSubAccount(
           // The Task follows the deal's territory, like the push; a legacy
           // untagged deal is admins-only (null), never Global.
           const territoryId = typeof deal.territoryId === "string" ? deal.territoryId : null;
+          // Claimed last, so only the Task write sits between the claim and
+          // its release: the note is already written (an AI call that hangs
+          // or crashes the run leaves the visit unclaimed).
+          if (!(await setVisitClaim(deal, true))) {
+            cursor = position;
+            continue;
+          }
           let task: Awaited<ReturnType<typeof createTaskServerSide>>;
           try {
             task = await createTaskServerSide({
@@ -482,7 +495,7 @@ async function runStaleDealsForSubAccount(
               contactId: contact?.id ?? null,
               dealId: deal.id,
               eventId: null,
-              assignedToUid: await activeAssignee(subAccountId, deal.assignedToUid),
+              assignedToUid: await dealAssignee(subAccountId, deal.assignedToUid),
               territoryId,
             });
           } catch (err) {
@@ -538,10 +551,10 @@ async function runStaleDealsForSubAccount(
           // Not stopped on, so one failing deal can't pin the scan: the next
           // deal moves the cursor past it. Its claim was released, so the
           // scan retries it on its next pass.
-          console.error(
-            `[stale-deals] act failed sa=${subAccountId} deal=${deal.id}`,
-            err instanceof Error ? err.message : String(err),
-          );
+          const msg = err instanceof Error ? err.message : String(err);
+          errors++;
+          firstError ??= `deal ${deal.id}: ${msg}`.slice(0, 500);
+          console.error(`[stale-deals] act failed sa=${subAccountId} deal=${deal.id}`, msg);
         }
       }
       if (stopped) break pages;
@@ -551,6 +564,9 @@ async function runStaleDealsForSubAccount(
       }
     }
 
+    // Every checked deal erroring (e.g. a missing index) is a failed run,
+    // never an "all clear".
+    const status = checked > 0 && errors === checked ? "failed" : "completed";
     await runRef.set({
       ...base,
       scanned,
@@ -559,7 +575,9 @@ async function runStaleDealsForSubAccount(
       flagged: actions.length,
       actions,
       tokensUsed,
-      status: "completed",
+      errors,
+      error: firstError,
+      status,
       skippedReason: null,
     });
     await ref.update({
@@ -569,7 +587,7 @@ async function runStaleDealsForSubAccount(
       totalTokensUsed: FieldValue.increment(tokensUsed),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return result("completed", null, { scanned, judged, flagged: actions.length, tokensUsed });
+    return result(status, null, { scanned, judged, flagged: actions.length, tokensUsed });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "unknown error";
     console.error(`[stale-deals] run failed sa=${subAccountId}:`, msg);

@@ -43,15 +43,18 @@ Agents ([monitors/page.tsx](../../src/app/(dashboard)/sa/[subAccountId]/ai-agent
     terminal on the deal's OWN pipeline (`dealStage` over `readPipelines`, so a
     custom pipeline's Won/Lost count) or cannot be resolved; deals already
     alerted this stage visit (`staleAlertedAt >= stageChangedAt`); deals held
-    by `staleRecheckAt`.
+    by a recent-work stamp.
   - Per deal (≤60 checked, ≤20 flagged per run; the cursor stays before what
     a cap or the budget left): the contact counts only if it belongs to the same
     sub-account. Recent work = an open task on the deal, a conversation message
     either way inside the window, or a contact activity with `meta.dealId` = the
     deal inside the window (queried by deal id; index `activities(meta.dealId,
-    createdAt DESC)`). Recent work stamps `staleCheckedAt` and `staleRecheckAt` =
-    when that work ages out (an open task: a day), and the deal is skipped until then.
-  - Claim, then act. The visit is claimed in a transaction that re-reads the
+    createdAt DESC)`). Recent work stamps `staleCheckedAt` and `staleWorkAt` (the
+    work's time; null for an open task). The deal is skipped until
+    `staleWorkAt + thresholdDays` — computed with the CURRENT threshold, so
+    lowering it releases holds at once — or, for an open task, a day after the check.
+  - Note, then claim, then act. The note is written first, so only the Task
+    write sits after the claim. The visit is claimed in a transaction that re-reads the
     deal and stamps `staleAlertedAt` only if `stageChangedAt` is unchanged and
     the visit is unclaimed — so two overlapping sweeps raise one alert, and a
     deal that moved stage mid-run is left armed. If the Task write fails the
@@ -71,6 +74,13 @@ Agents ([monitors/page.tsx](../../src/app/(dashboard)/sa/[subAccountId]/ai-agent
   - Re-arm: every stage writer stamps `stageChangedAt` with the server time
     (`deals-service`, `v1/deals/[id]`, bulk import, workflow `move_stage` through
     the service), which is later than the stamp.
+- **Errors.** A deal whose check or action throws is counted in the run doc
+  (`errors`, with the first message in `error`) and the scan moves on. When
+  every checked deal errored (e.g. a missing index) the run is `failed`, never
+  an "all clear".
+- **Ceiling.** The watchdog's `where("enabled","==",true)` query reads at most
+  500 agent docs of any type (stale-deals docs included); past that some
+  watchdogs would silently never run. Stale deals reads at most 200 of its own.
 - **Config.** `GET/PATCH /api/sub-accounts/[id]/agents/stale-deals` (admin;
   threshold 3–60 days; pipeline and stage filters validated against the live
   pipelines) →

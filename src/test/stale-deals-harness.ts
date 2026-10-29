@@ -26,6 +26,8 @@ export const t = {
   failTaskWrites: 0,
   /** Runs once when the sweep reads this doc path. */
   onRead: new Map<string, () => void>(),
+  /** Every read of these doc paths rejects (e.g. a missing index). */
+  throwOn: new Set<string>(),
 };
 
 /** The admin db, with a read hook so a test can change a doc mid-sweep. */
@@ -35,6 +37,9 @@ export function adminMock() {
       if (prop !== "doc") return Reflect.get(target, prop, receiver);
       return (path: string) => {
         const ref = target.doc(path);
+        if (t.throwOn.has(path)) {
+          return { ...ref, get: () => Promise.reject(new Error(`9 FAILED_PRECONDITION: ${path}`)) };
+        }
         const hook = t.onRead.get(path);
         if (!hook) return ref;
         return {
@@ -77,6 +82,7 @@ export function resetStaleDeals() {
   t.pushes = [];
   t.failTaskWrites = 0;
   t.onRead.clear();
+  t.throwOn.clear();
   mem.seed("subAccounts/sa1", { agencyId: "ag1", ownerUid: "u1", name: "Acme", agentsEnabledByAgency: true });
   mem.seed("subAccounts/sa1/subAccountMembers/rep1", { status: "active", role: "collaborator" });
   mem.seed("subAccounts/sa1/subAccountMembers/gone", { status: "removed", role: "collaborator" });

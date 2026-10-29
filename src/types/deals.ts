@@ -206,11 +206,12 @@ export interface Deal {
   staleAlertedAt?: Timestamp | FieldValue | null;
   /**
    * Server-only, stale deals monitor: when it last found recent work on the
-   * deal, and the earliest time that work can have aged out. The sweep
-   * skips the deal until `staleRecheckAt`.
+   * deal, and that work's time (null = an open task). The sweep skips the
+   * deal until `staleWorkAt + thresholdDays` (an open task: a day after
+   * `staleCheckedAt`), computed with the current threshold.
    */
   staleCheckedAt?: Timestamp | FieldValue | null;
-  staleRecheckAt?: Timestamp | FieldValue | null;
+  staleWorkAt?: Timestamp | FieldValue | null;
 }
 
 export type DealFormData = {

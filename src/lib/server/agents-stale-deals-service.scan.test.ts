@@ -150,6 +150,17 @@ describe("the inbox watchdog keeps its own gates", () => {
     expect(stale.results).toEqual([expect.objectContaining({ status: "skipped", skippedReason: "agents_gate_off" })]);
   });
 
+  it("300 enabled stale-deals docs ahead don't push the watchdog out of its query", async () => {
+    mem.clear();
+    for (let i = 0; i < 300; i++) {
+      mem.seed(`customAgents/x${String(i).padStart(3, "0")}_stale-deals`, { type: "stale-deals", enabled: true, subAccountId: `x${i}` });
+    }
+    mem.seed("subAccounts/sa1", { agencyId: "ag1" });
+    mem.seed("customAgents/sa1", { enabled: true, thresholdHours: 1 });
+    const watchdog = await runWatchdogSweep();
+    expect(watchdog.results).toEqual([expect.objectContaining({ subAccountId: "sa1", skippedReason: "labs_gate_off" })]);
+  });
+
   it("agents on, Labs off: the watchdog skips labs_gate_off and never runs the stale-deals doc", async () => {
     seedWatchdog();
     const watchdog = await runWatchdogSweep();

@@ -118,7 +118,10 @@ export interface WatchdogRunDoc {
   flagged: number;
   actions: WatchdogRunAction[];
   tokensUsed: number;
+  /** Run-level failure, or (stale deals) the first per-deal error. */
   error: string | null;
+  /** Stale deals: deals whose check or action threw this run. */
+  errors?: number;
   startedAt: Timestamp | FieldValue | Date | null;
   finishedAt: Timestamp | FieldValue | Date | null;
 }
