@@ -3,7 +3,7 @@ import "server-only";
 import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
-import { deleteWorkflowServerSide } from "@/lib/server/workflows-service";
+import { aiSmsActivationBlock, deleteWorkflowServerSide } from "@/lib/server/workflows-service";
 import { updateWorkflowGuarded } from "@/lib/server/workflows-guarded";
 import type { WorkflowStatus } from "@/types/workflows";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
@@ -66,6 +66,9 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
     preview: async (ctx, args) => {
       const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
       if (wf.status === "active") throw new CapabilityUserError("That workflow is already active.");
+      // A Send AI text step the workspace can't run: the approver is told now.
+      const aiSmsBlock = await aiSmsActivationBlock(ctx.subAccountId!, wf.nodes);
+      if (aiSmsBlock) throw new CapabilityUserError(aiSmsBlock);
       return {
         rows: [
           ...workflowReviewRows(wf),
@@ -81,6 +84,11 @@ export const WORKFLOW_STATUS_CAPABILITIES: AiSuiteCapability[] = [
       if (status === "active" && !ctx.apiKey && !ctx.approved) {
         const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
         throw new CapabilityUserError(activationRefusal(ctx.subAccountId!, wf.id));
+      }
+      if (status === "active") {
+        const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
+        const aiSmsBlock = await aiSmsActivationBlock(ctx.subAccountId!, wf.nodes);
+        if (aiSmsBlock) throw new CapabilityUserError(aiSmsBlock);
       }
       const done = await updateWorkflowGuarded({
         subAccountId: ctx.subAccountId!,

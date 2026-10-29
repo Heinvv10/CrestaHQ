@@ -1,7 +1,12 @@
 import "server-only";
 
 import { isDocId } from "@/lib/server/doc-id";
-import { listWorkflowRuns, listWorkflows, type WorkflowPatch } from "@/lib/server/workflows-service";
+import {
+  aiSmsActivationBlock,
+  listWorkflowRuns,
+  listWorkflows,
+  type WorkflowPatch,
+} from "@/lib/server/workflows-service";
 import { liveRunsQuery, updateWorkflowGuarded } from "@/lib/server/workflows-guarded";
 import type { WorkflowDoc } from "@/types/workflows";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
@@ -26,6 +31,15 @@ const ACTIVE_CHAT =
 
 /** Changes what a run executes next (runs read the steps live). */
 const touchesSteps = (args: Record<string, unknown>) => args.nodes !== undefined || args.startNodeId !== undefined;
+
+/** An edit leaving an ACTIVE workflow with a Send AI text step this workspace
+ *  can't run is refused, as the builder's save is. */
+async function aiSmsEditBlock(subAccountId: string, args: Record<string, unknown>, wf: WorkflowDoc): Promise<void> {
+  if (wf.status !== "active") return;
+  const nodes = (args.nodes ?? wf.nodes) as WorkflowDoc["nodes"];
+  const block = await aiSmsActivationBlock(subAccountId, nodes);
+  if (block) throw new CapabilityUserError(block);
+}
 
 /** The start step after the patch must be one of the steps after it. */
 function startProblem(args: Record<string, unknown>, wf: WorkflowDoc): string | null {
@@ -154,6 +168,7 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       const wf = await tenantWorkflow(ctx.subAccountId!, args.workflowId);
       const bad = startProblem(args, wf);
       if (bad) throw new CapabilityUserError(bad);
+      await aiSmsEditBlock(ctx.subAccountId!, args, wf);
       // The whole workflow as it will be, not just the changed fields: a new
       // start step or a wider trigger runs steps the patch never mentions.
       const { workflowId: _id, ...patch } = args;
@@ -168,6 +183,7 @@ export const WORKFLOW_EDIT_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       const { workflowId, ...patch } = args as unknown as { workflowId: string } & WorkflowPatch;
+      await aiSmsEditBlock(ctx.subAccountId!, args, await tenantWorkflow(ctx.subAccountId!, workflowId));
       const done = await updateWorkflowGuarded({
         subAccountId: ctx.subAccountId!,
         workflowId,
