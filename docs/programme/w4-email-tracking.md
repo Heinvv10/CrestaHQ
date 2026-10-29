@@ -64,16 +64,19 @@ reports no engagement, so the app measures it itself.
   attribute-escaped. It stores each destination at `broadcasts/{id}/links/{linkKey}` before sending;
   a failed write releases the claim, so nothing goes out with links that would 404. `linkKey` is a
   hash of the URL rather than a position, so a merge tag in an href creates one doc per distinct
-  rendered URL — per recipient, at worst. Caps: 50 tracked links per email, 500 link docs per
+  rendered URL — per recipient, at worst. Bogus comments (`<?…>`, `<!…>`, `</` + non-letter) end at
+  their first `>`, and end-tag attributes are parsed, as the HTML tokenizer does. Caps: 50 tracked links per email, 500 link docs per
   broadcast (`trackedLinkCount`, counted in the creating transaction), and a body over 500,000
-  characters goes out untracked; past a cap, links stay direct.
+  characters goes out untracked; past a cap, links stay direct — so once a broadcast has 500 link
+  docs, later recipients whose links are new get ordinary, untracked links.
 - **Unsubscribe.** Never wrapped: the recipient's own unsubscribe URL (exact match), and any `/u/…`
   path on this deployment's host, with the path decoded, `//` collapsed and the first segment
   lower-cased before the check. A `/u/` page on another host is an ordinary link.
 - **Routes.** `/t/c/{token}` 302s to the stored destination only, re-validated as http(s), and
   404s otherwise, including when the lookup fails (same rule as `/l/`). `/t/o/{token}` always
   answers 200 with a no-store GIF. Neither response waits on a limiter; only the record step is
-  limited, 20/min per verified token. Signatures must be 64 lower-case hex before the timing-safe
+  limited, 20/min per verified token. The `/t/c/` lookup itself is capped at 30/min per token; past
+  it the redirect comes from an in-memory cache of destinations already resolved, or a 429. Signatures must be 64 lower-case hex before the timing-safe
   compare. Middleware opens exactly `/t/o/{one segment}` and `/t/c/{one segment}`.
 - **Data.** Upstream's send-row fields (`openedAt`, `clickedAt`, `opens`, `clicks`; parent
   `totals.opened` / `totals.clicked`), first occurrence decided in one transaction, counters capped

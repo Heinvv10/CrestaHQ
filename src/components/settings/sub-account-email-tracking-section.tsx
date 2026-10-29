@@ -72,7 +72,7 @@ export function SubAccountEmailTrackingSection() {
         {row(
           "clicks",
           "Track link clicks",
-          "Sends each link through this app first, so the click is recorded before the reader lands on the page. Unsubscribe, email and phone links are never changed.",
+          "Sends each link through this app first, so the click is recorded before the reader lands on the page. Unsubscribe, email and phone links are never changed. Up to 50 links per email and 500 different links per broadcast are tracked; a personalised link counts once per recipient, and recipients past the limit get ordinary, untracked links.",
         )}
       </div>
       <p className="text-muted-foreground mt-3 text-xs">

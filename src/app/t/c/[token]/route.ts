@@ -17,6 +17,25 @@ export const dynamic = "force-dynamic";
  */
 const checkClickRecordLimit = createFixedWindowLimiter({ limit: 20, windowMs: 60_000 });
 
+/**
+ * Firestore lookups per token. Past it, a destination this instance already
+ * resolved is served from memory (the stored link never changes), and an
+ * unknown one gets a 429 — a replayed token can't cost a read per request.
+ */
+const checkClickLookupLimit = createFixedWindowLimiter({ limit: 30, windowMs: 60_000 });
+const RESOLVED_CACHE_MAX = 1_000;
+/** token → resolved destination, oldest first (insertion order). */
+const resolvedCache = new Map<string, Resolved>();
+
+function remember(token: string, resolved: Resolved): void {
+  resolvedCache.delete(token);
+  resolvedCache.set(token, resolved);
+  if (resolvedCache.size > RESOLVED_CACHE_MAX) {
+    const oldest = resolvedCache.keys().next().value;
+    if (oldest !== undefined) resolvedCache.delete(oldest);
+  }
+}
+
 const notFound = () =>
   new NextResponse("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
 
@@ -59,6 +78,9 @@ async function resolveDestination(token: string): Promise<Resolved | null> {
  * The click is recorded before the redirect (the process may stop once the
  * response is written). A failed or rate-limited record still redirects: the
  * reader asked for the page, and the destination check is what guards it.
+ * Past a token's lookup budget the redirect comes from the in-memory cache of
+ * destinations this instance resolved (only ever filled from the stored doc),
+ * or a 429 when there is none.
  */
 export async function GET(
   _request: Request,
@@ -68,12 +90,28 @@ export async function GET(
   let resolved: Resolved | null;
   try {
     token = (await params).token;
+    const lookup = checkClickLookupLimit(token);
+    if (!lookup.ok) {
+      const cached = resolvedCache.get(token);
+      if (!cached) {
+        return new NextResponse("Too many requests", {
+          status: 429,
+          headers: { "Retry-After": String(lookup.retryAfterSec), "Cache-Control": "no-store" },
+        });
+      }
+      // Over the lookup budget is over the record budget too: redirect only.
+      return NextResponse.redirect(cached.destination, {
+        status: 302,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
     resolved = await resolveDestination(token);
   } catch (err) {
     console.error("[t/c] link lookup failed", err instanceof Error ? err.message : String(err));
     return notFound();
   }
   if (!resolved) return notFound();
+  remember(token, resolved);
 
   if (checkClickRecordLimit(token).ok) {
     try {

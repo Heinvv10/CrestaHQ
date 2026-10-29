@@ -2,8 +2,9 @@
  * Href rewriting for broadcast click tracking. Pure string work — no
  * Firestore, no secret — so the parser can be tested on its own.
  *
- * One forward pass, in the spirit of the HTML tokenizer: text, comments,
- * tags with their attributes, and the raw-text elements (`<script>`,
+ * One forward pass, in the spirit of the HTML tokenizer: text, comments
+ * (bogus ones too: `<?…>`, `<!…>`, `</` + non-letter), start and end tags
+ * with their attributes, and the raw-text elements (`<script>`,
  * `<style>`, …) whose content is never markup. Only the `href` of a real
  * `<a>` tag is touched — not one inside a comment, a raw-text element, or
  * another tag's attribute value — and only that attribute is replaced; the
@@ -139,9 +140,29 @@ export function rewriteAnchorHrefs(
       pos = close + 3;
       continue;
     }
+    const next = html[lt + 1];
+    const bogusComment =
+      next === "?" ||
+      (next === "!" && !/^doctype/i.test(html.slice(lt + 2, lt + 9))) ||
+      (next === "/" && html[lt + 2] !== undefined && !/[A-Za-z>]/.test(html[lt + 2]!));
+    if (bogusComment) {
+      // `<?…>`, `<!…>` (not a doctype) and `</` + non-letter run to the first ">".
+      const close = html.indexOf(">", lt + 2);
+      if (close === -1) break;
+      pos = close + 1;
+      continue;
+    }
+    if (next === "/" && html[lt + 2] !== ">") {
+      // An end tag: its attributes are parsed (and dropped) like a start tag's.
+      const endNameEnd = matchAt(TAG_NAME_RE, html, lt + 2);
+      const endTag = endNameEnd === -1 ? null : parseTag(html, endNameEnd);
+      if (!endTag) break;
+      pos = endTag.end;
+      continue;
+    }
     const nameEnd = matchAt(TAG_NAME_RE, html, lt + 1);
     if (nameEnd === -1) {
-      // A closing tag, a declaration or a stray "<": text as far as we care.
+      // `</>`, a doctype or a stray "<": text as far as we care.
       pos = lt + 1;
       continue;
     }

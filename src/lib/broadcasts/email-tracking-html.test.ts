@@ -88,6 +88,24 @@ describe("rewriteAnchorHrefs", () => {
     expect(seen).toEqual(["https://a.test/real"]);
   });
 
+  it("skips bogus comments to their first '>' — <?…>, <!…> and </ + non-letter", () => {
+    const html = [
+      `<?php <a title=">" href="https://a.test/php">`,
+      `<!x <a title=">" href="https://a.test/bang">`,
+      `</ <a title=">" href="https://a.test/slash">`,
+      `<a href="https://a.test/real">r</a>`,
+    ].join("");
+    run(html);
+    // Each bogus comment ends at the ">" in the title, so the href after it is
+    // text — a parse5 tokenizer sees no <a> there either.
+    expect(seen).toEqual(["https://a.test/real"]);
+  });
+
+  it("still finds links after a doctype, and reads an end tag's attributes as attributes", () => {
+    run(`<!DOCTYPE html><a href="https://a.test/1">x</a></p title="<a href=https://a.test/in-end-tag>"><a href="https://a.test/2">y</a>`);
+    expect(seen).toEqual(["https://a.test/1", "https://a.test/2"]);
+  });
+
   it("leaves an <a> inside another tag's attribute value alone", () => {
     const html = `<img alt='<a href="https://a.test/in-alt">' src="x.png"><div data-x="<a href=https://a.test/in-data>">`;
     expect(run(html)).toBe(html);
@@ -115,6 +133,8 @@ describe("rewriteAnchorHrefs", () => {
       "<a href='".repeat(80_000),
       "<!--".repeat(100_000),
       "<style>".repeat(60_000),
+      "<?".repeat(150_000),
+      "</p x='".repeat(80_000),
     ]) {
       const started = performance.now();
       run(html);

@@ -168,6 +168,27 @@ describe("GET /t/c/[token]", () => {
     expect(row().clicks).toBe(20);
   });
 
+  it("past a token's lookup budget serves the cached destination without reading Firestore", async () => {
+    const token = issueClickToken("b1", "c1", "k1");
+    for (let i = 0; i < 30; i++) expect((await click(token)).status).toBe(302);
+    const spy = vi.spyOn(mem.db, "collection");
+    const res = await click(token, "?url=https://evil.test/");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(DEST);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("past a token's lookup budget answers 429 when nothing is cached for it", async () => {
+    // Validly signed, but its link was never stored: every lookup 404s, nothing is cached.
+    const token = issueClickToken("b1", "c1", "missing");
+    for (let i = 0; i < 30; i++) expect((await click(token)).status).toBe(404);
+    const res = await click(token);
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBeTruthy();
+    expect(res.headers.get("location")).toBeNull();
+  });
+
   it("404s, never 500s, when the link lookup throws", async () => {
     const spy = vi.spyOn(mem.db, "collection").mockImplementationOnce(() => {
       throw new Error("firestore down");
