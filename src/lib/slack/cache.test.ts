@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
+import { skewClockPastSlackCooldown } from "@/test/slack-cooldown-clock";
 import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
@@ -35,6 +36,7 @@ const req = (sa: string, method: string, body?: unknown) =>
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 const ctx = (sa: string) => ({ params: Promise.resolve({ id: sa }) });
+const { pastCooldown } = skewClockPastSlackCooldown();
 
 async function connected(sa: string) {
   mem.seed(`subAccounts/${sa}`, { agencyId: "ag1" });
@@ -73,6 +75,7 @@ it("disconnect: the next event does not post", async () => {
 it("reconnect with a new URL: the next event posts to the new one", async () => {
   await connected("sa-swap");
   await emit("sa-swap");
+  pastCooldown();
   expect((await route.POST(req("sa-swap", "POST", { webhookUrl: URL_B }), ctx("sa-swap"))).status).toBe(200);
   await emit("sa-swap");
   expect(eventPosts()).toEqual([URL_A, URL_B]);

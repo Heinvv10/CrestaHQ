@@ -10,6 +10,7 @@ import {
   disconnectSlack,
   getSlackConfig,
   sanitizeSlackEvents,
+  slackUrlForRedaction,
   updateSlackSettings,
 } from "@/lib/server/slack-service";
 import { invalidateSlackHookCache } from "@/lib/slack/events";
@@ -25,11 +26,16 @@ import { invalidateSlackHookCache } from "@/lib/slack/events";
  * DELETE: remove the hook and reset the meta.
  */
 
-function fail(err: unknown) {
+/** `urls`: the stored and/or submitted hook, redacted from the log line too. */
+function fail(err: unknown, ...urls: (string | undefined)[]) {
   if (err instanceof SlackError) {
     return NextResponse.json({ error: err.message }, { status: err.status });
   }
-  console.error("[slack] route failed", redactSlackUrls(err instanceof Error ? err.message : String(err)));
+  const message = urls.reduce<string>(
+    (out, url) => redactSlackUrls(out, url),
+    err instanceof Error ? err.message : String(err),
+  );
+  console.error("[slack] route failed", message);
   return NextResponse.json({ error: "Slack request failed" }, { status: 500 });
 }
 
@@ -65,7 +71,7 @@ export async function GET(
   try {
     return NextResponse.json({ config: await getSlackConfig(id) });
   } catch (err) {
-    return fail(err);
+    return fail(err, await slackUrlForRedaction(id));
   }
 }
 
@@ -108,7 +114,7 @@ export async function POST(
     invalidateSlackHookCache(id);
     return NextResponse.json({ ok: true, config });
   } catch (err) {
-    return fail(err);
+    return fail(err, body.webhookUrl, await slackUrlForRedaction(id));
   }
 }
 
@@ -151,7 +157,7 @@ export async function PATCH(
     invalidateSlackHookCache(id);
     return NextResponse.json({ ok: true, config });
   } catch (err) {
-    return fail(err);
+    return fail(err, await slackUrlForRedaction(id));
   }
 }
 
@@ -168,6 +174,6 @@ export async function DELETE(
     invalidateSlackHookCache(id);
     return NextResponse.json({ ok: true });
   } catch (err) {
-    return fail(err);
+    return fail(err, await slackUrlForRedaction(id));
   }
 }

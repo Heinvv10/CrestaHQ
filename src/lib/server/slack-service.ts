@@ -35,11 +35,10 @@ export class SlackError extends Error {
 }
 
 // One test post per sub-account per 5 s on this instance, shared by Send
-// test and a connect that re-saves the stored URL: both post to a real
-// channel, so a held key or a script must not flood it. A connect with a
-// different URL is exempt (and does not start the window): it is the only
-// way to prove a new hook. Check-and-set is synchronous, after the last
-// await, so concurrent clicks claim it once.
+// test and connect (whatever URL it saves): both post to a real channel, so
+// a held key or a script must not flood it. Claimed synchronously after the
+// last await and before the post, so concurrent requests claim it once; a
+// post that fails releases it, so a mistyped hook can be retried at once.
 const TEST_COOLDOWN_MS = 5_000;
 const lastTestAt = new Map<string, number>();
 
@@ -49,6 +48,10 @@ function claimTestSlot(subAccountId: string): void {
     throw new SlackError("A test was just sent. Wait a few seconds before sending another.", 429);
   }
   lastTestAt.set(subAccountId, Date.now());
+}
+
+function releaseTestSlot(subAccountId: string): void {
+  lastTestAt.delete(subAccountId);
 }
 
 function privateRef(subAccountId: string) {
@@ -127,12 +130,10 @@ export async function connectSlack(opts: {
       400,
     );
   }
-  const stored = (await privateRef(opts.subAccountId).get()).data() as
-    | Partial<SlackPrivateDoc>
-    | undefined;
-  if (stored?.webhookUrl === url) claimTestSlot(opts.subAccountId);
+  claimTestSlot(opts.subAccountId);
   const test = await postSlackMessage(url, slackTestMessage(appUrl(), opts.subAccountId));
   if (!test.ok) {
+    releaseTestSlot(opts.subAccountId);
     throw new SlackError(test.error ?? "Slack rejected the test message.", 502);
   }
 
@@ -233,11 +234,26 @@ export async function sendSlackTest(
   // Only a test that will post starts the window.
   claimTestSlot(subAccountId);
   const result = await postSlackMessage(url, slackTestMessage(appUrl(), subAccountId));
+  if (!result.ok) releaseTestSlot(subAccountId);
   await recordSlackResult(subAccountId, url, result);
   if (!result.ok) {
     throw new SlackError(result.error ?? "Slack rejected the test message.", 502);
   }
   return getSlackConfig(subAccountId);
+}
+
+/**
+ * The stored URL for redacting a log line, or undefined. Never throws: it
+ * runs on error paths.
+ */
+export async function slackUrlForRedaction(subAccountId: string): Promise<string | undefined> {
+  try {
+    const url = ((await privateRef(subAccountId).get()).data() as Partial<SlackPrivateDoc> | undefined)
+      ?.webhookUrl;
+    return typeof url === "string" ? url : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** null, not a `connected: false` object: `hasChannelConnection` (and the

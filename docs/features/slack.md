@@ -44,9 +44,10 @@ channel is all it spends.
 - **DELETE** — deletes the private doc and sets `slackMeta` to null.
 - **POST `…/slack/test`** — re-sends the "connected" message. 429 within 5 s of the
   previous test post for that sub-account (per instance). The window is shared with
-  a POST that re-saves the stored URL; a POST with a different URL is exempt and does
-  not start it. A test refused before posting (not connected, invalid URL) does not
-  start it either.
+  POST (connect), whatever URL it saves: both claim it synchronously just before
+  their test post, so concurrent requests post once. A post that fails releases the
+  claim (a mistyped hook can be retried at once); a test refused before posting (not
+  connected, invalid URL) never claims it.
 - POST and PATCH answer 400 for a body that is not a JSON object, and for an
   `events` that is present but not an array.
 
@@ -66,9 +67,12 @@ doc that somehow holds another URL is never posted to: the read sets `needsRecon
 with `lastError` "The saved webhook URL is not a Slack Incoming Webhook URL. Reconnect
 with a new one.", and Send test answers 400 with the same text.
 
-Log lines never carry a webhook URL: `redactSlackUrls` replaces any
-`hooks.slack.com` URL, any `/services/…` path, and (where the caller has it) the URL
-being posted to and its token segment, with `[slack-url]`.
+Log lines never carry a webhook URL: `redactSlackUrls` replaces with `[slack-url]`
+the URL being posted to or stored (every log site passes it; the routes read it
+with `slackUrlForRedaction`) and its token segment in any case; any
+`hooks.slack.com` URL or `/services/…` path, plain, JSON-escaped or once/twice
+percent-encoded; and any 24+ character alphanumeric run (what is left of a hook
+split across lines; Firestore ids are 20).
 
 ## Posting
 
@@ -152,6 +156,11 @@ key-written fields on the record and checking them here; it is not done.
   control.
 - `src/lib/slack/cache.test.ts` — disconnect, reconnect and PATCH reach the next event.
 - `src/lib/slack/throttle.test.ts` — ~1 s spacing; the 31st waiting post is dropped.
+- Re-break repros (#449 on fec1dc43, `races-3.test.ts`): no cooldown bypass by
+  delete + re-POST, alternating URLs or concurrent POSTs; a failed connect releases
+  it; a revoked hook's backlog stops; untick/re-tick and preview flaps; redaction
+  with and without the stored URL. (Its G6 is not adopted: a preview change skipping
+  queued posts is the intended, safe direction.)
 - Re-break repros (#449, `races-2.test.ts`): Send test and a harmless PATCH mid-burst
   keep the queue; reconnect, untick and a preview change mid-burst skip it; the
   shared cooldown; non-object bodies; redaction variants.

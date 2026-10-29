@@ -33,22 +33,37 @@ const MAX_RESPONSE_BYTES = 4 * 1024;
  *  anything else is not echoed into `lastError`. */
 const SLACK_ERROR_CODE = /^[a-z0-9_]{1,64}$/;
 
+/** A URL separator as it can appear in a log line: plain, JSON-escaped,
+ *  or once/twice percent-encoded. */
+const SEP = String.raw`(?:\/|\\\/|%2F|%252F)`;
+const HOOK_URL_RE = new RegExp(String.raw`https?(?::|%3A|%253A)${SEP}{2}hooks\.slack\.com\.?${SEP}\S*`, "gi");
+const SERVICES_PATH_RE = new RegExp(String.raw`${SEP}services${SEP}\S+`, "gi");
+/** Slack hook secrets are 24 alphanumerics; Firestore ids (20) are left alone. */
+const TOKEN_LIKE_RE = /\b[A-Za-z0-9]{24,}\b/g;
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
- * Replaces webhook URLs in a message bound for a log line: any Slack hook
- * URL or bare `/services/…` path, and `url` itself plus its last path
- * segment (the secret token), which also catches a URL that was split,
- * encoded or re-cased on its way into the message.
+ * Replaces webhook URLs in a message bound for a log line with
+ * `[slack-url]`: `url` itself and (case-insensitively) its last path segment,
+ * the secret, which also catches a URL that was split, encoded, escaped or
+ * re-cased on its way into the message; then any Slack hook URL or bare
+ * `/services/…` path in any of those encodings, and any 24+ character
+ * alphanumeric run (what is left of a hook split across lines).
  */
 export function redactSlackUrls(message: string, url?: string): string {
   let out = message;
   if (url) {
     out = out.split(url).join("[slack-url]");
     const token = url.split("/").pop() ?? "";
-    if (token.length >= 8) out = out.split(token).join("[slack-url]");
+    if (token.length >= 8) out = out.replace(new RegExp(escapeRe(token), "gi"), "[slack-url]");
   }
   return out
-    .replace(/https?:\/\/hooks\.slack\.com\.?\/\S*/gi, "[slack-url]")
-    .replace(/\/services\/\S+/gi, "[slack-url]");
+    .replace(HOOK_URL_RE, "[slack-url]")
+    .replace(SERVICES_PATH_RE, "[slack-url]")
+    .replace(TOKEN_LIKE_RE, "[slack-url]");
 }
 
 export async function postSlackMessage(

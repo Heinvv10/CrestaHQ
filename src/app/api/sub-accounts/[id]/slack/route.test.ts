@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
+import { skewClockPastSlackCooldown } from "@/test/slack-cooldown-clock";
 
 /**
  * Slack settings routes with the real `requireSubAccountAdmin` (claims and
@@ -24,6 +25,7 @@ const URL_A = "https://hooks.slack.com/services/T0001/B0001/aaaaaaaaaaaaaaaaaaaa
 const TOKEN = "aaaaaaaaaaaaaaaaaaaaaaaa";
 
 const ctx = (id = "sa1") => ({ params: Promise.resolve({ id }) });
+const { pastCooldown } = skewClockPastSlackCooldown();
 const req = (method: string, body?: unknown, uid = "admin1") =>
   new Request("https://app.test/api/sub-accounts/sa1/slack", {
     method,
@@ -127,11 +129,36 @@ describe("events, test and disconnect", () => {
     expect((await on.json()).config).toMatchObject({ includeMessagePreview: true, events: expect.any(Array) });
     expect((await route.PATCH(req("PATCH", { includeMessagePreview: "yes" }), ctx())).status).toBe(400);
     expect((await route.PATCH(req("PATCH", {}), ctx())).status).toBe(400);
+    pastCooldown();
     await connect();
     expect((mem.read("subAccounts/sa1")!.slackMeta as Record<string, unknown>).includeMessagePreview).toBe(true);
     await route.DELETE(req("DELETE"), ctx());
+    pastCooldown();
     await connect();
     expect((mem.read("subAccounts/sa1")!.slackMeta as Record<string, unknown>).includeMessagePreview).toBe(false);
+  });
+
+  it("a test post that fails releases the cooldown: a fixed hook can be retried at once", async () => {
+    await connect();
+    pastCooldown();
+    publicFetch.mockResolvedValueOnce(new Response("oops", { status: 500 }));
+    expect((await testRoute.POST(req("POST"), ctx())).status).toBe(502);
+    expect((await testRoute.POST(req("POST"), ctx())).status).toBe(200);
+    expect((await testRoute.POST(req("POST"), ctx())).status).toBe(429);
+  });
+
+  it("an unexpected route error is logged with the stored URL's secret redacted", async () => {
+    const short = "https://hooks.slack.com/services/T1/B1/shortsecret1";
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", slackMeta: { connected: true, events: [], needsReconnect: false } });
+    mem.seed("subAccounts/sa1/private/slack", { webhookUrl: short });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const tx = vi.spyOn(mem.db, "runTransaction").mockRejectedValueOnce(new Error("write failed near shortsecret1"));
+    try {
+      expect((await route.PATCH(req("PATCH", { events: [] }), ctx())).status).toBe(500);
+    } finally {
+      tx.mockRestore();
+    }
+    expect(error).toHaveBeenCalledWith("[slack] route failed", "write failed near [slack-url]");
   });
 
   it("a stored URL that isn't a Slack hook: test says reconnect, and the card is flagged", async () => {

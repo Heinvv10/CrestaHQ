@@ -72,6 +72,12 @@ it("redactSlackUrls removes Slack hook URLs and the given stored URL", () => {
   const hook = "https://hooks.slack.com/services/T1/B1/secret";
   expect(redactSlackUrls(`connect failed ${hook} now`)).toBe("connect failed [slack-url] now");
   expect(redactSlackUrls("bad http://10.0.0.1/x/y", "http://10.0.0.1/x/y")).toBe("bad [slack-url]");
+  // A token shorter than the 24-character catch-all: each layer on its own.
+  const short = "https://hooks.slack.com/services/T1/B1/shortsecret1";
+  expect(redactSlackUrls("tok SHORTSECRET1", short)).toBe("tok [slack-url]");
+  expect(redactSlackUrls(`u=${encodeURIComponent(short)}`)).toBe("u=[slack-url]");
+  expect(redactSlackUrls(`u=${encodeURIComponent(encodeURIComponent(short))}`)).toBe("u=[slack-url]");
+  expect(redactSlackUrls(JSON.stringify(short).replace(/\//g, "\\/"))).toBe('"[slack-url]');
   // No stored URL to hand (a route's catch): a bare hook path still goes.
   expect(redactSlackUrls("POST /services/T1/B1/secrettoken HTTP/1.1")).toBe("POST [slack-url] HTTP/1.1");
 });

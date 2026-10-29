@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
+import { skewClockPastSlackCooldown } from "@/test/slack-cooldown-clock";
 import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
@@ -37,6 +38,7 @@ const req = (sa: string, method: string, body?: unknown, uid = "admin1") =>
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
 const ctx = (sa: string) => ({ params: Promise.resolve({ id: sa }) });
+const { pastCooldown } = skewClockPastSlackCooldown();
 
 async function connected(sa: string) {
   mem.seed(`subAccounts/${sa}`, { agencyId: "ag1" });
@@ -120,6 +122,7 @@ it("REPRO 5 authz matrix + no URL in responses/logs", async () => {
 
 it("REPRO 6 test endpoint has a 5 s cooldown: 15 clicks = 1 post, then one again after it", async () => {
   await connected("sa-t");
+  pastCooldown();
   publicFetch.mockClear();
   const statuses: number[] = [];
   for (let i = 0; i < 15; i++) statuses.push((await testRoute.POST(req("sa-t", "POST"), ctx("sa-t"))).status);

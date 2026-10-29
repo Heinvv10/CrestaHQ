@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
+import { skewClockPastSlackCooldown } from "@/test/slack-cooldown-clock";
 import { flushAfterResponse } from "@/lib/server/after-response";
 
 /**
@@ -30,6 +31,7 @@ const URL_A = "https://hooks.slack.com/services/T0001/B0001/aaaaaaaaaaaaaaaaaaaa
 const req = (sa: string, method: string, body?: unknown | string) =>
   new Request(`https://app.test/x`, { method, headers: { "x-user-uid": "admin1" }, ...(body === undefined ? {} : { body: typeof body === "string" ? body : JSON.stringify(body) }) });
 const ctx = (sa: string) => ({ params: Promise.resolve({ id: sa }) });
+const { pastCooldown } = skewClockPastSlackCooldown();
 async function connected(sa: string) {
   mem.seed(`subAccounts/${sa}`, { agencyId: "ag1" });
   mem.seed(`subAccounts/${sa}/subAccountMembers/admin1`, { role: "admin", status: "active" });
@@ -67,25 +69,29 @@ describe("attack the fixes", () => {
     await burst;
     expect(eventPosts(), "contact.created still ticked: 3 posts").toBe(3);
   });
-  it("F3 POST /slack (reconnect) bypasses the test cooldown: repeated channel posts", async () => {
+  it("F3 POST /slack (reconnect) shares the test cooldown: 10 re-saves in the window = 1 post", async () => {
     await connected("sa-c");
+    pastCooldown();
     publicFetch.mockClear();
     for (let i = 0; i < 10; i++) await route.POST(req("sa-c", "POST", { webhookUrl: URL_A }), ctx("sa-c"));
-    expect(publicFetch.mock.calls.length, "10 reconnects = 10 channel posts").toBeLessThan(10);
+    expect(publicFetch.mock.calls.length, "10 reconnects within the window = 1 channel post").toBe(1);
   });
   it("F4 concurrent test clicks: exactly one post", async () => {
     await connected("sa-d");
+    pastCooldown();
     publicFetch.mockClear();
     const rs = await Promise.all(Array.from({ length: 10 }, () => testRoute.POST(req("sa-d", "POST"), ctx("sa-d"))));
     expect(rs.filter((r) => r.status === 200).length).toBe(1);
     expect(publicFetch.mock.calls.length).toBe(1);
   });
-  it("F5 a failed/not-connected test still burns the cooldown for a following good one (UX)", async () => {
+  it("F5 a refused test does not start the window; connect does (it posted), so a test waits it out", async () => {
     mem.seed("subAccounts/sa-e", { agencyId: "ag1" });
     mem.seed("subAccounts/sa-e/subAccountMembers/admin1", { role: "admin", status: "active" });
     expect((await testRoute.POST(req("sa-e", "POST"), ctx("sa-e"))).status).toBe(400);
-    await route.POST(req("sa-e", "POST", { webhookUrl: URL_A }), ctx("sa-e"));
-    expect((await testRoute.POST(req("sa-e", "POST"), ctx("sa-e"))).status, "test right after connect").toBe(200);
+    expect((await route.POST(req("sa-e", "POST", { webhookUrl: URL_A }), ctx("sa-e"))).status, "connect after a refused test").toBe(200);
+    expect((await testRoute.POST(req("sa-e", "POST"), ctx("sa-e"))).status, "test right after connect").toBe(429);
+    pastCooldown();
+    expect((await testRoute.POST(req("sa-e", "POST"), ctx("sa-e"))).status).toBe(200);
   });
   it.each([["number", "5"], ["string", '"x"'], ["null", "null"], ["array", "[]"]])("F6 POST body %s -> 400 not 500/throw", async (_n, raw) => {
     mem.seed("subAccounts/sa-f", { agencyId: "ag1" });
@@ -138,9 +144,10 @@ describe("mid-burst changes that do skip queued posts", () => {
   }
 
   it("a reconnect to a new URL: nothing more goes to the old one, and nothing queued goes to the new one", async () => {
-    const before = await midBurst("sa-j", () =>
-      route.POST(req("sa-j", "POST", { webhookUrl: URL_B }), ctx("sa-j")),
-    );
+    const before = await midBurst("sa-j", async () => {
+      pastCooldown();
+      expect((await route.POST(req("sa-j", "POST", { webhookUrl: URL_B }), ctx("sa-j"))).status).toBe(200);
+    });
     expect(postsTo(URL_A)).toBe(before);
     expect(postsTo(URL_B)).toBe(0);
   });
