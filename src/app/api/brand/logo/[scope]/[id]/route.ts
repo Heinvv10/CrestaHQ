@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { logoDocRef, type LogoScope } from "@/lib/brand/logo-server";
 import { checkLogoRateLimit } from "@/lib/brand/logo-rate-limit";
 import { cacheLogo, getCachedLogo, type CachedLogo } from "@/lib/brand/logo-cache";
+import { LOGO_ID_RE } from "@/lib/brand/logo-shared";
 import { isDocId } from "@/lib/server/doc-id";
 
 /**
@@ -17,8 +18,6 @@ import { isDocId } from "@/lib/server/doc-id";
  */
 
 export const dynamic = "force-dynamic";
-
-const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 const notFound = () => NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -43,7 +42,7 @@ export async function GET(
   ctx: { params: Promise<{ scope: string; id: string }> },
 ) {
   const { scope, id } = await ctx.params;
-  if ((scope !== "agency" && scope !== "sa") || !isDocId(id) || !ID_RE.test(id)) {
+  if ((scope !== "agency" && scope !== "sa") || !isDocId(id) || !LOGO_ID_RE.test(id)) {
     return notFound();
   }
   const requested = new URL(request.url).searchParams.get("v");

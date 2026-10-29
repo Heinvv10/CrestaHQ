@@ -107,6 +107,16 @@ describe("POST /api/sub-accounts/[id]/logo — upload", () => {
     expect(m.writes).toEqual([]);
   });
 
+  it.each(["sa.1", "sa 1", "x".repeat(129)])(
+    "400s a doc id the serve route would never answer for (%j), before any read",
+    async (id) => {
+      const res = await upload("owner1", { data: png, mime: "image/png" }, id);
+      expect(res.status).toBe(400);
+      expect(m.reads).toEqual([]);
+      expect(m.writes).toEqual([]);
+    },
+  );
+
   it("refuses an SVG and an HTML body", async () => {
     const svg = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>").toString("base64");
     expect((await upload("admin1", { data: svg, mime: "image/svg+xml" })).status).toBe(400);

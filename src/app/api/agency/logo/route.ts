@@ -12,7 +12,7 @@ import {
   storeLogo,
   validateLogo,
 } from "@/lib/brand/logo-server";
-import { isUploadedLogoUrl } from "@/lib/brand/logo-shared";
+import { LOGO_ID_RE, isUploadedLogoUrl } from "@/lib/brand/logo-shared";
 
 /**
  * Owner-only agency logo upload/remove. The browser resizes the file
@@ -25,6 +25,12 @@ export async function POST(request: Request) {
   const owner = await requireAgencyOwnerAny(request);
   if (owner instanceof NextResponse) return owner;
   const agencyId = owner.agencyId as string;
+  if (!LOGO_ID_RE.test(agencyId)) {
+    return NextResponse.json(
+      { error: "This id can't be given a public logo URL." },
+      { status: 400 },
+    );
+  }
 
   const read = await readJsonCapped(request, LOGO_MAX_BODY_BYTES);
   if (!read.ok) {

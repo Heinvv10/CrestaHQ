@@ -80,6 +80,13 @@ it.each([
   expect(m.writes).toEqual([]);
 });
 
+it("400s an agency id the serve route would never answer for", async () => {
+  m.claims.set("dotted", { status: "active", agencyRole: "owner", agencyId: "ag.1" });
+  m.docs.set("agencies/ag.1", { name: "Dotted" });
+  expect((await POST(req("dotted", "POST", { data: webp, mime: "image/webp" }))).status).toBe(400);
+  expect(m.writes).toEqual([]);
+});
+
 it("refuses an SVG", async () => {
   const svg = Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>").toString("base64");
   expect((await POST(req("owner1", "POST", { data: svg, mime: "image/svg+xml" }))).status).toBe(400);

@@ -13,7 +13,7 @@ import {
   storeLogo,
   validateLogo,
 } from "@/lib/brand/logo-server";
-import { isUploadedLogoUrl } from "@/lib/brand/logo-shared";
+import { LOGO_ID_RE, isUploadedLogoUrl } from "@/lib/brand/logo-shared";
 
 /**
  * Sub-account logo upload/remove (admin or agency owner). Same flow as the
@@ -29,6 +29,13 @@ export async function POST(
 ) {
   const { id: subAccountId } = await ctx.params;
   if (!isDocId(subAccountId)) return notFound();
+  // The serve route answers only these ids; a logo stored under another would 404 forever.
+  if (!LOGO_ID_RE.test(subAccountId)) {
+    return NextResponse.json(
+      { error: "This id can't be given a public logo URL." },
+      { status: 400 },
+    );
+  }
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 

@@ -17,6 +17,13 @@ export const LOGO_ROUTE_PREFIX = "/api/brand/logo/";
 
 export type LogoScope = "agency" | "sa";
 
+/**
+ * The ids the public serving route will answer for. An upload under any
+ * other id would store a logo whose URL can only ever 404, so the upload
+ * routes refuse it too.
+ */
+export const LOGO_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 /** The serving path of one tenant's uploaded logo (no query). */
 export function uploadedLogoPath(scope: LogoScope, id: string): string {
   return `${LOGO_ROUTE_PREFIX}${scope}/${encodeURIComponent(id)}`;
