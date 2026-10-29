@@ -32,15 +32,23 @@ export function logoDocRef(scope: LogoScope, id: string) {
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
+/** Total bytes of ancillary (lowercase-first) PNG chunks a logo may carry. */
+export const PNG_MAX_ANCILLARY_BYTES = 64 * 1024;
+
 /**
- * Walks the PNG chunk list: IHDR first, IEND last and nothing after it, so a
- * PNG header glued onto another file's bytes is refused. Returns the IHDR
- * dimensions, or null when the structure is broken.
+ * Walks the PNG chunk list: IHDR first, at least one IDAT, IEND last and
+ * nothing after it, so a PNG header glued onto another file's bytes is
+ * refused. Ancillary chunks (text, profiles, anything a decoder may skip)
+ * are capped at PNG_MAX_ANCILLARY_BYTES in total, so a "logo" can't be a
+ * carrier for some other payload. Returns the IHDR dimensions, or null when
+ * the structure is broken.
  */
 function pngSize(buf: Buffer): { width: number; height: number } | null {
   if (buf.length < 8 || !PNG_SIGNATURE.every((b, i) => buf[i] === b)) return null;
   let off = 8;
   let size: { width: number; height: number } | null = null;
+  let sawIdat = false;
+  let ancillary = 0;
   while (off + 12 <= buf.length) {
     const len = buf.readUInt32BE(off);
     const type = buf.toString("latin1", off + 4, off + 8);
@@ -50,7 +58,12 @@ function pngSize(buf: Buffer): { width: number; height: number } | null {
       if (type !== "IHDR" || len !== 13) return null;
       size = { width: buf.readUInt32BE(off + 8), height: buf.readUInt32BE(off + 12) };
     }
-    if (type === "IEND") return end === buf.length ? size : null;
+    if (type === "IEND") return end === buf.length && sawIdat ? size : null;
+    if (type === "IDAT") sawIdat = true;
+    if (/^[a-z]/.test(type)) {
+      ancillary += 12 + len;
+      if (ancillary > PNG_MAX_ANCILLARY_BYTES) return null;
+    }
     off = end;
   }
   return null;

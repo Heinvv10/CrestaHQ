@@ -4,7 +4,7 @@ import sharp from "sharp";
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
 vi.mock("firebase-admin/firestore", () => ({ FieldValue: { serverTimestamp: () => "ts" } }));
 
-import { logoPublicUrl, validateLogo } from "./logo-server";
+import { PNG_MAX_ANCILLARY_BYTES, logoPublicUrl, validateLogo } from "./logo-server";
 import { LOGO_MAX_BYTES } from "./logo-shared";
 
 const b64 = (buf: Buffer) => buf.toString("base64");
@@ -120,6 +120,64 @@ describe("validateLogo — refuses anything that is not a PNG/WebP", () => {
   it("refuses missing data", () => {
     expect(validateLogo("", "image/png")).toBe("Missing logo data");
     expect(validateLogo(undefined, "image/png")).toBe("Missing logo data");
+  });
+});
+
+/** One PNG chunk (CRC zeroed: the validator checks structure, not CRCs). */
+function pngChunk(type: string, data: Buffer): Buffer {
+  const head = Buffer.alloc(8);
+  head.writeUInt32BE(data.length, 0);
+  head.write(type, 4, "latin1");
+  return Buffer.concat([head, data, Buffer.alloc(4)]);
+}
+
+/** `png` without its ancillary chunks (the encoder adds pHYs), so the cap boundary is exact. */
+function criticalOnly(buf: Buffer): Buffer {
+  const out = [buf.subarray(0, 8)];
+  for (let off = 8; off < buf.length; ) {
+    const end = off + 12 + buf.readUInt32BE(off);
+    if (/^[A-Z]/.test(buf.toString("latin1", off + 4, off + 5))) out.push(buf.subarray(off, end));
+    off = end;
+  }
+  return Buffer.concat(out);
+}
+
+/** The critical-only `png` with `chunk` spliced in right after IHDR (8-byte signature + 25-byte IHDR). */
+const afterIhdr = (chunk: Buffer) => {
+  const bare = criticalOnly(png);
+  return Buffer.concat([bare.subarray(0, 33), chunk, bare.subarray(33)]);
+};
+
+describe("validateLogo — PNG chunk content", () => {
+  it("accepts the encoder's PNG with its ancillary chunks stripped", () => {
+    expect(Buffer.isBuffer(validateLogo(b64(criticalOnly(png)), "image/png"))).toBe(true);
+  });
+
+  it("refuses a PNG with no IDAT (header and end only)", () => {
+    const empty = Buffer.concat([png.subarray(0, 33), pngChunk("IEND", Buffer.alloc(0))]);
+    expect(validateLogo(b64(empty), "image/png")).toBe("Logo data isn't a PNG");
+  });
+
+  it("refuses an IDAT that only appears after IEND", () => {
+    const idat = pngChunk("IDAT", Buffer.alloc(4));
+    const late = Buffer.concat([png.subarray(0, 33), pngChunk("IEND", Buffer.alloc(0)), idat]);
+    expect(validateLogo(b64(late), "image/png")).toBe("Logo data isn't a PNG");
+  });
+
+  it("accepts small ancillary chunks and refuses them past the cap in total", () => {
+    const text = (n: number) => pngChunk("tEXt", Buffer.alloc(n, 0x41));
+    expect(Buffer.isBuffer(validateLogo(b64(afterIhdr(text(1024))), "image/png"))).toBe(true);
+    // Exactly at the cap is fine; one byte over is not.
+    expect(Buffer.isBuffer(validateLogo(b64(afterIhdr(text(PNG_MAX_ANCILLARY_BYTES - 12))), "image/png"))).toBe(true);
+    expect(validateLogo(b64(afterIhdr(text(PNG_MAX_ANCILLARY_BYTES - 11))), "image/png")).toBe("Logo data isn't a PNG");
+    // Split across several chunks, the total still counts.
+    const parts = Buffer.concat(Array.from({ length: 3 }, () => text(PNG_MAX_ANCILLARY_BYTES / 2)));
+    expect(validateLogo(b64(afterIhdr(parts)), "image/png")).toBe("Logo data isn't a PNG");
+  });
+
+  it("does not count critical chunks against the ancillary cap", () => {
+    const idat = pngChunk("IDAT", Buffer.alloc(PNG_MAX_ANCILLARY_BYTES * 2));
+    expect(Buffer.isBuffer(validateLogo(b64(afterIhdr(idat)), "image/png"))).toBe(true);
   });
 });
 
