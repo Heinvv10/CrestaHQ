@@ -116,20 +116,33 @@ export function quoteRequiresSignature(
   return (quote.kind ?? "quote") === "quote" && quote.requireSignature === true;
 }
 
+export type SignerNameCheck =
+  | { ok: true; name: string }
+  | { ok: false; reason: "length" | "letters" | "unsafe" };
+
 /**
- * The typed name, whitespace collapsed, or null when it can't be a signature:
- * outside the length bounds, fewer than two letters (digits, punctuation or
- * combining marks alone are not a name), or carrying a control, invisible or
- * bidi character (a right-to-left override could make the recorded name read
- * as someone else's).
+ * The typed name, whitespace collapsed, or why it can't be a signature:
+ * outside the length bounds; fewer than two letters, where combining marks
+ * count once there is at least one letter ("का" is a letter and a vowel sign)
+ * but digits, punctuation or marks alone are not a name; or carrying a
+ * control, invisible or bidi character (a right-to-left override could make
+ * the recorded name read as someone else's).
  */
-export function normalizeSignerName(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
+export function checkSignerName(raw: unknown): SignerNameCheck {
+  if (typeof raw !== "string") return { ok: false, reason: "length" };
   const name = raw.replace(/\s+/g, " ").trim();
   if (name.length < SIGNER_NAME_MIN || name.length > SIGNER_NAME_MAX) {
-    return null;
+    return { ok: false, reason: "length" };
   }
-  if ((name.match(/\p{L}/gu) ?? []).length < 2) return null;
-  if (hasUnsafeText(name)) return null;
-  return name;
+  const letters = (name.match(/\p{L}/gu) ?? []).length;
+  const marks = (name.match(/\p{M}/gu) ?? []).length;
+  if (letters < 1 || letters + marks < 2) return { ok: false, reason: "letters" };
+  if (hasUnsafeText(name)) return { ok: false, reason: "unsafe" };
+  return { ok: true, name };
+}
+
+/** checkSignerName's name, or null when it fails. */
+export function normalizeSignerName(raw: unknown): string | null {
+  const checked = checkSignerName(raw);
+  return checked.ok ? checked.name : null;
 }

@@ -37,6 +37,9 @@ async function plan(subAccountId: string, q: TenantQuote): Promise<{ expect: Quo
   if (q.kind !== "invoice" && q.signature) {
     throw new CapabilityUserError("That quote has been signed, so it can't be sent again; convert it to an invoice to request payment.");
   }
+  if (q.kind !== "invoice" && q.status === "accepted") {
+    throw new CapabilityUserError("That quote has already been accepted, so it can't be sent again; convert it to an invoice to request payment.");
+  }
   const db = getAdminDb();
   const [contactSnap, subSnap] = await Promise.all([
     isDocId(q.contactId) ? db.doc(`contacts/${q.contactId}`).get() : null,

@@ -99,6 +99,8 @@ describe("a quote that requires a signature", () => {
     ["a 121-character name", { ...SIGN, signerName: "a".repeat(121) }, NAME_ERR],
     ["a name with a bidi override", { ...SIGN, signerName: "Jane \u202eeoD" }, NAME_ERR],
     ["a name that isn't a string", { ...SIGN, signerName: ["Jane Doe"] }, NAME_ERR],
+    ["a name with no letters", { ...SIGN, signerName: "12 34" }, "Type your full name — at least two letters."],
+    ["a name of combining marks only", { ...SIGN, signerName: "\u0301\u0301\u0301" }, "Type your full name — at least two letters."],
     ["no terms agreement", { ...SIGN, agreedToTerms: undefined }, "Tick the box to confirm you agree to the terms."],
     ["agreement that isn't exactly true", { ...SIGN, agreedToTerms: "true" }, "Tick the box to confirm you agree to the terms."],
     ["no document fingerprint", { ...SIGN, documentHash: undefined }, STALE_PAGE],

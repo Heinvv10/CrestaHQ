@@ -222,6 +222,7 @@ describe("send_quote", () => {
 
   it.each([
     ["a paid quote", () => mem.seed("quotes/q1", { ...QUOTE, status: "paid" }), "That quote is already paid."],
+    ["an accepted quote", () => mem.seed("quotes/q1", { ...QUOTE, status: "accepted" }), "That quote has already been accepted, so it can't be sent again; convert it to an invoice to request payment."],
     ["a signed quote", () => mem.seed("quotes/q1", { ...QUOTE, status: "accepted", signature: { signerName: "Ann", documentHash: "a".repeat(64) } }), "That quote has been signed, so it can't be sent again; convert it to an invoice to request payment."],
     ["a contact with no email", () => mem.seed("contacts/c1", { ...ANN, email: "" }), "Its contact has no email address."],
     ["email not set up", () => sub({ emailProvider: "smtp", smtpConfig: null }), "Email isn't configured for this workspace."],

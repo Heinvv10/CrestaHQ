@@ -3,6 +3,7 @@ import { Timestamp } from "firebase-admin/firestore";
 import { describe, expect, it } from "vitest";
 
 import {
+  checkSignerName,
   computeQuoteDocumentHash,
   normalizeSignerName,
   quoteDocumentBody,
@@ -156,9 +157,24 @@ describe("normalizeSignerName", () => {
     ["punctuation only", "--..--"],
     ["one letter and digits", "J 123"],
     ["combining marks only", "\u0301\u0301\u0301"],
-    ["one letter with combining marks", "J\u0301\u0301"],
+    ["one letter and a digit", "J1"],
   ])("refuses %s", (_label, raw) => {
     expect(normalizeSignerName(raw)).toBeNull();
+  });
+
+  it("counts combining marks once there is a letter: a letter and a vowel sign is a name", () => {
+    // Devanagari KA + vowel sign AA (U+093E, a spacing combining mark).
+    expect(normalizeSignerName("\u0915\u093e")).toBe("\u0915\u093e");
+    expect(normalizeSignerName("J\u0301")).toBe("J\u0301");
+  });
+
+  it("says why a name was refused", () => {
+    expect(checkSignerName("12345")).toEqual({ ok: false, reason: "letters" });
+    expect(checkSignerName("\u0301\u0301")).toEqual({ ok: false, reason: "letters" });
+    expect(checkSignerName("J")).toEqual({ ok: false, reason: "length" });
+    expect(checkSignerName(7)).toEqual({ ok: false, reason: "length" });
+    expect(checkSignerName("Jane \u202eeoD")).toEqual({ ok: false, reason: "unsafe" });
+    expect(checkSignerName(" Jane  Doe ")).toEqual({ ok: true, name: "Jane Doe" });
   });
 
   it("keeps names in other scripts, including a joiner inside a word", () => {

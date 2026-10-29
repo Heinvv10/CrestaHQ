@@ -7,7 +7,7 @@ import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { isDocId } from "@/lib/server/doc-id";
 import {
   computeQuoteDocumentHash,
-  normalizeSignerName,
+  checkSignerName,
   quoteRequiresSignature,
 } from "@/lib/quotes/signature";
 import {
@@ -27,6 +27,8 @@ import {
 
 export interface SignatureInputs {
   signerName: string | null;
+  /** Why signerName is null; "letters" gets its own message. */
+  signerNameProblem: "length" | "letters" | "unsafe" | null;
   agreed: boolean;
   /** computeQuoteDocumentHash of what the signer's page rendered, if well-formed. */
   seenHash: string | null;
@@ -40,8 +42,10 @@ export function readSignatureInputs(payload: QuoteRespondPayload, request: Reque
   // The same right-most-hop rule every per-IP limiter uses: the left of
   // X-Forwarded-For is whatever the caller sent.
   const ip = clientIpFrom(request);
+  const name = checkSignerName(payload.signerName);
   return {
-    signerName: normalizeSignerName(payload.signerName),
+    signerName: name.ok ? name.name : null,
+    signerNameProblem: name.ok ? null : name.reason,
     agreed: payload.agreedToTerms === true,
     seenHash:
       typeof payload.documentHash === "string" && /^[0-9a-f]{64}$/.test(payload.documentHash)
@@ -91,6 +95,9 @@ export async function signatureForAccept(
   inputs: SignatureInputs,
   signerEmail: string | null,
 ): Promise<SignatureResult> {
+  if (!inputs.signerName && inputs.signerNameProblem === "letters") {
+    return { ok: false, status: 400, error: "Type your full name — at least two letters." };
+  }
   if (!inputs.signerName) {
     return { ok: false, status: 400, error: `Type your full name to sign (${SIGNER_NAME_MIN}–${SIGNER_NAME_MAX} characters).` };
   }

@@ -141,6 +141,24 @@ describe("pre-flight guards", () => {
     expect(state.quoteUpdates).toHaveLength(0);
   });
 
+  it("409s an accepted quote, sending nothing: its link would never be recorded", async () => {
+    state.quoteDoc = baseQuote({ status: "accepted" });
+    const { status, body } = await call();
+    expect(status).toBe(409);
+    expect(body.error).toBe(
+      "This quote has already been accepted and can't be re-sent. Convert it to an invoice to request payment, or create a new quote.",
+    );
+    await flushAfterResponse();
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(state.quoteUpdates).toHaveLength(0);
+  });
+
+  it("still sends an accepted-then-converted invoice", async () => {
+    state.quoteDoc = baseQuote({ kind: "invoice", status: "accepted" });
+    const { status } = await call();
+    expect(status).not.toBe(409);
+  });
+
   it("still sends an invoice converted from a signed quote", async () => {
     state.quoteDoc = baseQuote({ kind: "invoice", status: "draft", signature: { signerName: "Jane Doe", documentHash: "a".repeat(64) } });
     const { status } = await call();

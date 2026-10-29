@@ -1303,8 +1303,8 @@ service cloud.firestore {
         && linkInTenant("contactId", "contacts")
         && linkInTenant("dealId", "deals");
       // A signed document is a record of what was agreed: no client deletes it
-      // (the converted invoice included). The Admin contact-delete cascade is
-      // the one path that still removes it, with its contact.
+      // (the converted invoice included). No server path removes one either:
+      // contact delete and sub-account delete refuse while quotes remain.
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
