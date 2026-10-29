@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import {
+  aiSmsActivationBlock,
   deleteWorkflowServerSide,
   getWorkflow,
   updateWorkflowServerSide,
@@ -81,6 +82,17 @@ export async function PATCH(
       return NextResponse.json({ error: "Folder not found" }, { status: 404 });
     }
     patch.folderId = folder.id;
+  }
+
+  // A workflow that will be active with a Send AI text step needs AI texts
+  // enabled and ready here.
+  if (patch.status === "active" || patch.nodes !== undefined) {
+    const existing = await getWorkflow(subAccountId, workflowId);
+    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if ((patch.status ?? existing.status) === "active") {
+      const block = await aiSmsActivationBlock(subAccountId, patch.nodes ?? existing.nodes);
+      if (block) return NextResponse.json({ error: block }, { status: 400 });
+    }
   }
 
   const updated = await updateWorkflowServerSide({ subAccountId, workflowId, patch });

@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * The Manage dialog's X0 checkboxes (Agent monitors, Sell online, AI texts):
- * ticking one sends only that field on Save, and "AI texts" cannot be ticked
- * on (the PATCH always refuses until readiness lands) but can be unticked
- * when stored on.
+ * ticking one sends only that field on Save, and "AI texts" can be ticked on
+ * only while its readiness checklist passes (and SMS AI auto-reply isn't
+ * being switched off in the same save), but can always be unticked.
  */
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -18,12 +18,24 @@ import { SubAccountManageDialog } from "./sub-account-manage-dialog";
 import type { SubAccountDoc } from "@/types";
 
 const fetchMock = vi.fn();
+type Check = { label: string; ok: boolean; fix: string };
+let readinessChecks: Check[] = [];
 let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  readinessChecks = [];
   fetchMock.mockReset().mockImplementation(async (url: string) =>
-    ({ ok: true, status: 200, json: async () => (url.endsWith("/feature-gates") ? { ok: true } : { metaConfigured: true }) }),
+    ({
+      ok: true,
+      status: 200,
+      json: async () =>
+        url.endsWith("/feature-gates")
+          ? { ok: true }
+          : url.endsWith("/ai-outbound-sms-readiness")
+            ? { ready: readinessChecks.every((c) => c.ok), checks: readinessChecks }
+            : { metaConfigured: true },
+    }),
   );
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", fetchMock);
@@ -80,8 +92,28 @@ describe.each([
 });
 
 describe("AI texts checkbox", () => {
-  it("cannot be ticked on while stored off", async () => {
+  const unmet = { label: "The SMS AI agent is switched on", ok: false, fix: "AI Agents → SMS: turn the channel on." };
+
+  it("cannot be ticked on while a prerequisite is unmet, and lists it", async () => {
+    readinessChecks = [{ label: "AI is configured on this deployment", ok: true, fix: "" }, unmet];
     await open(sub({}));
+    expect(checkbox("AI texts").disabled).toBe(true);
+    expect(document.body.textContent).toContain("The SMS AI agent is switched on. AI Agents → SMS: turn the channel on.");
+  });
+
+  it("can be ticked on once every prerequisite passes, sending only that field", async () => {
+    readinessChecks = [{ ...unmet, ok: true }];
+    await open(sub({}));
+    expect(checkbox("AI texts").disabled).toBe(false);
+    await act(async () => checkbox("AI texts").click());
+    await act(async () => saveButton().click());
+    expect(patches()).toEqual([{ aiOutboundSmsEnabled: true }]);
+  });
+
+  it("cannot be ticked on while SMS AI auto-reply is being switched off", async () => {
+    readinessChecks = [{ ...unmet, ok: true }];
+    await open(sub({}));
+    await act(async () => checkbox("SMS AI auto-reply").click());
     expect(checkbox("AI texts").disabled).toBe(true);
   });
 

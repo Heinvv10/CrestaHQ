@@ -41,7 +41,12 @@ import { buildUnsubscribeUrl } from "@/lib/automations/unsubscribe-token";
 import { publishCallback, qstashIsConfigured } from "@/lib/automations/qstash";
 import { logIfReviewAsk, type TemplateIdentity } from "@/lib/reviews/review-ask";
 import { providerAttempted } from "@/lib/comms/provider-attempt";
-import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
+import {
+  formatHoldUntil,
+  isQuietHoursDeferred,
+  quietHoursHold,
+  type QuietHoursHold,
+} from "@/lib/comms/quiet-hours";
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import { APPROACH_CAP_LOG, guardProspectSend } from "@/lib/prospecting/approach-guard";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
@@ -56,6 +61,14 @@ import {
 import { writeHeldEnrolment } from "@/lib/server/agent-held-enrolment";
 import { workflowStepsFingerprint } from "@/lib/workflows/steps-fingerprint";
 import { publicFetch } from "@/lib/webhooks/public-fetch";
+import {
+  aiOutboundSmsGateOn,
+  aiOutboundSmsReadiness,
+  firstUnmet,
+  generateAiOpener,
+} from "@/lib/comms/ai/outbound-sms";
+import { incrementChannelTokens } from "@/lib/comms/ai/agent";
+import { runAfterResponse } from "@/lib/server/after-response";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc, WhatsappTemplateButton } from "@/types/whatsapp-templates";
@@ -65,6 +78,7 @@ import type {
   IfElseConfig,
   MoveStageConfig,
   NotifyConfig,
+  SendAiSmsConfig,
   SendEmailConfig,
   SendSmsConfig,
   SendWhatsappConfig,
@@ -199,7 +213,7 @@ function deferForQuietHours(hold: QuietHoursHold): { result: StepResult; log: st
  */
 function channelOptedOut(type: WorkflowNodeType, contact: Contact): boolean {
   if (type === "send_email") return Boolean(contact.emailOptedOut);
-  if (type === "send_sms") return Boolean(smsSendBlock(contact));
+  if (type === "send_sms" || type === "send_ai_sms") return Boolean(smsSendBlock(contact));
   return Boolean(contact.whatsappOptedOut);
 }
 
@@ -348,6 +362,19 @@ const execSendSms: NodeExecutor = async (ctx) => {
     return { result: { kind: "next" }, log: "error:sms_not_configured" };
   }
   const body = resolveMergeTags(cfg.body ?? "", mergeSubject(ctx, ""));
+  return deliverWorkflowSms(ctx, to, body, "SMS (workflow)");
+};
+
+/** The send itself, shared by the SMS and AI text steps: an automated send
+ *  (quiet hours hold it), traced on the contact and, in dedicated mode, the
+ *  thread and inbox. */
+async function deliverWorkflowSms(
+  ctx: NodeContext,
+  to: string,
+  body: string,
+  label: string
+): Promise<{ result: StepResult; log: string }> {
+  const contact = ctx.contact;
   ctx.sent = { channel: "sms", parts: [body] };
   try {
     const sent = await sendSmsForSubAccount({
@@ -355,6 +382,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
       subAccount: ctx.subAccount,
       to,
       body,
+      origin: "automated",
       selfTriggeredBookingAt: ctx.selfTriggeredBookingAt,
     });
     ctx.sent.messageSid = sent.sid;
@@ -373,7 +401,7 @@ const execSendSms: NodeExecutor = async (ctx) => {
         .collection("activities")
         .add({
           type: "sms_sent",
-          content: `SMS (workflow): ${preview}`,
+          content: `${label}: ${preview}`,
           createdBy: "workflow",
           meta: {
             sid: sent.sid,
@@ -474,6 +502,100 @@ const execSendSms: NodeExecutor = async (ctx) => {
       log: `error:${err instanceof Error ? err.message : "send_failed"}`,
     };
   }
+}
+
+/**
+ * The AI writes the first text (lib/comms/ai/outbound-sms.ts). The agency
+ * gate and readiness are re-checked on every send, not just when the gate was
+ * switched on: anything turned off since skips the step with the reason.
+ * Quiet hours are checked before the model is called, so a held text spends
+ * nothing, and again by the send itself.
+ */
+const execSendAiSms: NodeExecutor = async (ctx) => {
+  const cfg = ctx.node.config as unknown as SendAiSmsConfig;
+  const contact = ctx.contact;
+  const instruction = (cfg.instruction ?? "").trim().slice(0, 1000);
+  if (!instruction) {
+    return { result: { kind: "next" }, log: "error:no_instruction" };
+  }
+  if (!ctx.subAccount || !aiOutboundSmsGateOn(ctx.subAccount)) {
+    return { result: { kind: "next" }, log: "skipped:ai_sms_gate_off" };
+  }
+  if (channelOptedOut(ctx.node.type, contact)) {
+    return { result: { kind: "next" }, log: "skipped:opt_out" };
+  }
+  const to = contact.phone;
+  if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
+  const readiness = await aiOutboundSmsReadiness(ctx.subAccountId, ctx.subAccount);
+  const unmet = firstUnmet(readiness);
+  if (unmet || !readiness.agent) {
+    return {
+      result: { kind: "next" },
+      log: `skipped:not_ready:${unmet?.key ?? "agent"}`,
+    };
+  }
+  const agent = readiness.agent;
+  // Dynamic import: conversations-service statically imports this engine.
+  const { getConversationControls, setConversationDraft } = await import(
+    "@/lib/server/conversations-service"
+  );
+  const controls = await getConversationControls(contact.id);
+  if (
+    controls.botMode === "off" ||
+    (controls.botPausedUntilMs && controls.botPausedUntilMs > Date.now())
+  ) {
+    return { result: { kind: "next" }, log: "skipped:bot_paused" };
+  }
+  const hold = quietHoursHold({
+    subAccount: ctx.subAccount,
+    origin: "automated",
+    selfTriggeredBookingAt: ctx.selfTriggeredBookingAt,
+  });
+  if (hold) return deferForQuietHours(hold);
+  for (const unit of ["aiTokens", "smsSegments"] as const) {
+    const quota = await checkQuota({
+      subAccountId: ctx.subAccountId,
+      unit,
+      subAccount: ctx.subAccount,
+    });
+    if (!quota.allowed) return { result: { kind: "next" }, log: "skipped:quota" };
+  }
+  let opener: Awaited<ReturnType<typeof generateAiOpener>>;
+  try {
+    opener = await generateAiOpener({
+      subAccountId: ctx.subAccountId,
+      agent,
+      sub: ctx.subAccount,
+      contact,
+      instruction,
+    });
+  } catch (err) {
+    return {
+      result: { kind: "next" },
+      log: `error:ai_failed:${err instanceof Error ? err.message.slice(0, 120) : "unknown"}`,
+    };
+  }
+  // Spent whether or not the text is usable; also meters aiTokens.
+  const tokens = opener.tokens;
+  runAfterResponse(() => incrementChannelTokens(ctx.subAccountId, "sms", tokens));
+  if (!opener.ok) {
+    return { result: { kind: "next" }, log: `error:ai_${opener.reason}` };
+  }
+  if (controls.botMode === "suggest") {
+    await setConversationDraft({
+      contactId: contact.id,
+      subAccountId: ctx.subAccountId,
+      agencyId: ctx.agencyId,
+      contactName: contact.name ?? "",
+      contactPhone: to,
+      channel: "sms",
+      body: opener.text,
+      model: opener.model,
+      tokens: opener.tokens,
+    });
+    return { result: { kind: "next" }, log: "drafted:suggest_mode" };
+  }
+  return deliverWorkflowSms(ctx, to, opener.text, "AI text (workflow)");
 };
 
 /** Exported for tests only — the registry below is the production entry point.
@@ -1237,6 +1359,7 @@ const execPassThrough: NodeExecutor = async () => ({
 const REGISTRY: Partial<Record<WorkflowNodeType, NodeExecutor>> = {
   send_email: execSendEmail,
   send_sms: execSendSms,
+  send_ai_sms: execSendAiSms,
   whatsapp_template: execWhatsappTemplate,
   send_whatsapp: execSendWhatsapp,
   wait: execWait,
@@ -1877,6 +2000,7 @@ async function completeRun(
 export const AT_MOST_ONCE_NODES = new Set<WorkflowNodeType>([
   "send_email",
   "send_sms",
+  "send_ai_sms",
   "whatsapp_template",
   "send_whatsapp",
 ]);

@@ -214,6 +214,10 @@ function ManageDialogBody({
   const [aiOutboundSmsEnabled, setAiOutboundSmsEnabled] = useState(
     initialAiOutboundSms
   );
+  // Prerequisites behind the AI texts gate; null while loading.
+  const [aiSmsChecks, setAiSmsChecks] = useState<
+    { label: string; ok: boolean; fix: string }[] | null
+  >(null);
   const [emailAiDraftsEnabled, setEmailAiDraftsEnabled] = useState(
     initialEmailAiDrafts
   );
@@ -271,6 +275,23 @@ function ManageDialogBody({
       cancelled = true;
     };
   }, [open, metaConfigured]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void fetch(`/api/agency/sub-accounts/${subAccount.id}/ai-outbound-sms-readiness`)
+      .then((r) => r.json())
+      .then((d: { checks?: { label: string; ok: boolean; fix: string }[] }) => {
+        if (!cancelled) setAiSmsChecks(d.checks ?? []);
+      })
+      .catch(() => {
+        // The PATCH re-checks, so an empty list just means no checklist shown.
+        if (!cancelled) setAiSmsChecks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, subAccount.id]);
 
   const willTearDown = initialEmail && !emailDomainEnabled && hasLiveDomain;
   const emailDirty = emailDomainEnabled !== initialEmail;
@@ -372,6 +393,12 @@ function ManageDialogBody({
   // two Meta gates when unconfigured — but still allow turning an already-on
   // gate OFF (don't trap a legacy enabled state).
   const metaUnconfigured = metaConfigured === false;
+  // AI texts can only be switched on once every prerequisite passes (and the
+  // SMS AI gate isn't being switched off in the same save). Off is always allowed.
+  const aiSmsUnmet = (aiSmsChecks ?? []).filter((c) => !c.ok);
+  const aiSmsBlocked =
+    !aiOutboundSmsEnabled &&
+    (aiSmsChecks === null || aiSmsUnmet.length > 0 || !smsAgentEnabled);
 
   async function handleSave() {
     const quota = parseProspectReportQuota(prospectingQuota);
@@ -1297,17 +1324,40 @@ function ManageDialogBody({
           <GateToggle
             checked={aiOutboundSmsEnabled}
             onChange={setAiOutboundSmsEnabled}
-            // Enabling is refused until readiness lands (J1): only allow
-            // switching it off when it is stored on.
-            disabled={saving || !initialAiOutboundSms}
+            disabled={saving || aiSmsBlocked}
             icon={
               <MessageSquareText className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
             }
             title="AI texts"
           >
-            When enabled, workflows can send AI-written texts to contacts. It
-            can only be switched on once AI outbound SMS readiness passes, which
-            is not available in this build yet, so enabling is refused for now.
+            Adds a &quot;Send AI text&quot; workflow step: the AI writes a
+            personal first text from the agent persona and contact details,
+            and the SMS AI agent carries on when they reply. Each text spends
+            your OpenRouter credits plus the client&apos;s Twilio. Off by
+            default; turning it off stops every AI text immediately.
+            {!aiOutboundSmsEnabled && aiSmsChecks === null && (
+              <span className="text-muted-foreground mt-2 block text-xs">
+                Checking prerequisites…
+              </span>
+            )}
+            {/* Only when being unticked now; the checklist covers the saved state. */}
+            {!aiOutboundSmsEnabled && !smsAgentEnabled && initialSmsAgent && (
+              <span className="mt-2 block text-xs text-amber-700 dark:text-amber-400">
+                Needs SMS AI auto-reply allowed above.
+              </span>
+            )}
+            {!aiOutboundSmsEnabled && aiSmsUnmet.length > 0 && (
+              <span className="mt-2 block space-y-1 text-xs text-amber-700 dark:text-amber-400">
+                <span className="block font-medium">
+                  Can&apos;t be enabled until these are set up:
+                </span>
+                {aiSmsUnmet.map((c) => (
+                  <span key={c.label} className="block">
+                    • {c.label}. {c.fix}
+                  </span>
+                ))}
+              </span>
+            )}
           </GateToggle>
 
           <GateToggle

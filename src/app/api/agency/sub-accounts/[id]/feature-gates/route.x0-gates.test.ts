@@ -7,8 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/gbp-sync-store")).adminMock());
+vi.mock("@/lib/automations/qstash", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/automations/qstash")>()),
+  qstashIsConfigured: () => true,
+}));
 
 import { SA, claims, mem, resetSync } from "@/test/gbp-sync-harness";
+import { seedAiSmsReady } from "@/test/ai-outbound-sms-fixture";
 import { PLAN_GATE_KEYS, PLAN_GATE_LABELS } from "@/types/billing";
 import { PATCH } from "./route";
 
@@ -30,7 +35,10 @@ beforeEach(() => {
   resetSync();
   claims.set("uid_owner", { status: "active", agencyId: "ag_1", agencyRole: "owner" });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe.each([
   ["agentsEnabled", "agentsEnabledByAgency"],
@@ -61,11 +69,42 @@ describe.each([
 });
 
 describe("aiOutboundSmsEnabled", () => {
-  it("refuses to enable with a 409 and writes nothing", async () => {
+  /** Every readiness check passes; the gate itself is still off. */
+  function ready() {
+    vi.stubEnv("OPENROUTER_API_KEY", "or-test");
+    seedAiSmsReady(mem.seed, SA, { ...doc(), aiOutboundSmsEnabledByAgency: false });
+  }
+
+  it("refuses to enable with a 409 naming the first unmet prerequisite, and writes nothing", async () => {
     const res = await patch({ aiOutboundSmsEnabled: true });
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/readiness — not yet available/);
+    expect(res.body.error).toMatch(/^AI texts can't be enabled yet: ai is configured on this deployment is missing/);
     expect(doc()?.aiOutboundSmsEnabledByAgency).toBeUndefined();
+  });
+
+  it("enables once every readiness check passes", async () => {
+    ready();
+    const res = await patch({ aiOutboundSmsEnabled: true });
+    expect(res.status).toBe(200);
+    expect(doc()?.aiOutboundSmsEnabledByAgency).toBe(true);
+  });
+
+  it("refuses when one check fails though the rest pass (SMS agent switched off)", async () => {
+    ready();
+    mem.seed(`subAccounts/${SA}/aiAgent/sms`, { ...mem.read(`subAccounts/${SA}/aiAgent/sms`), enabled: false });
+    const res = await patch({ aiOutboundSmsEnabled: true });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/the sms ai agent is switched on is missing/);
+    expect(doc()?.aiOutboundSmsEnabledByAgency).toBe(false);
+  });
+
+  it("refuses when the same request switches SMS AI auto-reply off", async () => {
+    ready();
+    const res = await patch({ aiOutboundSmsEnabled: true, smsAgentEnabled: false });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/sms ai auto-reply is allowed is missing/);
+    expect(doc()?.aiOutboundSmsEnabledByAgency).toBe(false);
+    expect(doc()?.smsAgentEnabledByAgency).toBeUndefined();
   });
 
   it("refuses enable even when sent alongside another gate, and applies neither", async () => {

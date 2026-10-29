@@ -126,6 +126,31 @@ export function NodeConfigDialog({
             </Field>
           )}
 
+          {step.type === "send_ai_sms" && (
+            <>
+              <Field
+                label="What should the AI's first text do?"
+                hint={`The AI writes a short, personal opener (up to two text segments) from your agent's persona, website knowledge and what's known about the contact. It always names the business and ends with "Reply STOP to opt out." When they reply, the SMS AI agent carries on the conversation.`}
+              >
+                <Textarea
+                  rows={4}
+                  maxLength={1000}
+                  value={str("instruction")}
+                  onChange={(e) => set({ instruction: e.target.value })}
+                  placeholder="Introduce yourself, mention they asked about a quote, and ask what time suits for a quick call."
+                />
+              </Field>
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
+                Only text people who agreed to hear from this business. Texts
+                due in the workspace&apos;s quiet hours wait until they end.
+                Contacts who opted out of SMS, or whose conversation a team
+                member has taken over, are skipped. A link is only sent if you
+                wrote it above. If the conversation is set to Suggest, the text
+                is saved as a draft for a person to approve.
+              </p>
+            </>
+          )}
+
           {step.type === "send_whatsapp" && (
             <>
               <Field

@@ -141,7 +141,7 @@ const AI_PROFILE: Shape = {
 };
 
 const NODE_TYPES = new Set([
-  "send_email", "send_sms", "whatsapp_template", "send_whatsapp", "wait", "wait_for_reply",
+  "send_email", "send_sms", "send_ai_sms", "whatsapp_template", "send_whatsapp", "wait", "wait_for_reply",
   "if_else", "goal", "add_tag", "remove_tag", "move_stage", "update_field", "create_task",
   "notify", "webhook",
 ]);

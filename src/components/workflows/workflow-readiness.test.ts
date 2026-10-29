@@ -44,6 +44,8 @@ async function render(
     whatsappGate: true,
     whatsappSender: true,
     whatsappTemplate: false,
+    aiSmsGate: false,
+    aiSmsMissing: null,
     ...flags,
   };
   await act(async () => {
@@ -62,6 +64,7 @@ async function render(
             detail.whatsappGate &&
             detail.whatsappSender &&
             detail.whatsappTemplate,
+          aiSmsReady: detail.aiSmsGate && detail.aiSmsMissing === null,
           detail,
         },
         initial: {
@@ -133,4 +136,19 @@ it("preserves the notification warning when deployment email is unavailable", as
 it("allows notifications when deployment email is configured", async () => {
   await render("notify", {}, true);
   expect(container.textContent).not.toContain("Won't run");
+});
+
+it("flags a Send AI text step with the first missing AI texts prerequisite", async () => {
+  await render("send_ai_sms", { aiSmsGate: true, aiSmsMissing: "Missing: The SMS AI agent is switched on." });
+  expect(container.textContent).toContain("Won't run");
+  const warning = container.querySelector("span[title]");
+  expect(warning?.getAttribute("title")).toContain("Missing: The SMS AI agent is switched on.");
+});
+
+it("shows a ready Send AI text step as sendable from the workspace's own number", async () => {
+  await render("send_ai_sms", { aiSmsGate: true, aiSmsMissing: null });
+  expect(container.textContent).not.toContain("Won't run");
+  expect(
+    Array.from(container.querySelectorAll("span[title]")).some((el) => el.textContent === "SA")
+  ).toBe(true);
 });

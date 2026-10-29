@@ -11,6 +11,11 @@ import {
   subAccountTwilioIsConfigured,
 } from "@/lib/comms/twilio";
 import type { SubAccountDoc } from "@/types";
+import {
+  aiOutboundSmsGateOn,
+  aiOutboundSmsReadiness,
+  firstUnmet,
+} from "@/lib/comms/ai/outbound-sms";
 import { whatsappSenderConfigured } from "@/lib/comms/whatsapp/sender-configured";
 import { capabilitiesFor } from "@/lib/comms/whatsapp/provider";
 import {
@@ -64,10 +69,23 @@ export default async function WorkflowBuilderPage({
   const whatsappTemplate =
     capabilitiesFor(whatsappRail).supportsTemplates && !approvedWhatsapp.empty;
 
+  // The same gate + readiness the AI text step re-checks on every send.
+  const aiSmsGate = aiOutboundSmsGateOn(sub);
+  const aiSmsUnmet =
+    sub && aiSmsGate
+      ? firstUnmet(await aiOutboundSmsReadiness(subAccountId, sub))
+      : null;
+  const aiSmsMissing = !aiSmsGate
+    ? "Your agency hasn't enabled AI texts for this workspace."
+    : aiSmsUnmet
+      ? `Missing: ${aiSmsUnmet.label}. ${aiSmsUnmet.fix}`
+      : null;
+
   const readiness: BuilderReadiness = {
     emailReady: emailIsConfigured(sub),
     smsReady: smsSub || smsAgency,
     whatsappReady: whatsappGate && whatsappSender && whatsappTemplate,
+    aiSmsReady: aiSmsMissing === null,
     detail: {
       smsSub,
       smsAgency,
@@ -76,6 +94,8 @@ export default async function WorkflowBuilderPage({
       whatsappGate,
       whatsappSender,
       whatsappTemplate,
+      aiSmsGate,
+      aiSmsMissing,
     },
   };
 

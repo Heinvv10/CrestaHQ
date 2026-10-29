@@ -24,6 +24,7 @@ import { getFirestore, type Firestore } from "firebase-admin/firestore";
 export const MESSAGING_STEP_TYPES: ReadonlySet<string> = new Set([
   "send_email",
   "send_sms",
+  "send_ai_sms",
   "whatsapp_template",
   "send_whatsapp",
 ]);
