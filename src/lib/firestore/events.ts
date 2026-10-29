@@ -22,7 +22,7 @@ import {
   NOOP_UNSUB,
   territoryQueryPlan,
 } from "@/lib/firestore/territory-query";
-import type { CalendarEvent, EventFormData } from "@/types/events";
+import { isImportedEvent, type CalendarEvent, type EventFormData } from "@/types/events";
 import { GLOBAL_TERRITORY_ID, type TenantScope } from "@/types";
 import { isLongEvent } from "@/lib/booking/long-event";
 
@@ -162,7 +162,9 @@ export function subscribeToAppointments(
       ...pastDocs.slice(0, opts.pastLimit),
       ...upcomingDocs.slice(0, APPOINTMENTS_UPCOMING_LIMIT),
     ]) {
-      byId.set(d.id, { id: d.id, ...(d.data() as Omit<CalendarEvent, "id">) });
+      const e = { id: d.id, ...(d.data() as Omit<CalendarEvent, "id">) };
+      // Imported Google events stay on the calendar only: they are not appointments.
+      if (!isImportedEvent(e)) byId.set(d.id, e);
     }
     const events = [...byId.values()];
     events.sort((a, b) => toMillis(a.startAt) - toMillis(b.startAt));

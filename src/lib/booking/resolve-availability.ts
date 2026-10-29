@@ -11,7 +11,7 @@ import {
   type PageSlot,
   type PageSlotsInput,
 } from "@/lib/booking/page-slots";
-import { eventOccupiesSlot, eventStatus } from "@/types/events";
+import { eventOccupiesSlot, eventStatus, isImportedEvent } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
@@ -226,6 +226,9 @@ async function loadEventBusy(
     if (d.id === excludeEventId || seen.has(d.id)) continue;
     seen.add(d.id);
     const e = d.data() as CalendarEvent;
+    // Imported Google events: the hosts' Google busy already covers them, and
+    // with no host on them they would block every host.
+    if (isImportedEvent(e)) continue;
     // Skip malformed timestamps so one bad doc can't break every slot.
     const startAt = toDate(e.startAt);
     const endAt = toDate(e.endAt);

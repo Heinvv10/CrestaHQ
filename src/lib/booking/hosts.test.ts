@@ -51,6 +51,14 @@ describe("loadHostUpcomingCounts", () => {
 });
 
 describe("queryHostEvents", () => {
+  it("never returns an imported Google event, owned or collective", async () => {
+    seed("booking", { assignedToUid: "b" });
+    seed("g-owned", { assignedToUid: "b", source: "google" });
+    seed("g-listed", { hostUids: ["b"], source: "google" });
+    const docs = await queryHostEvents("sa1", "b", (q) => q);
+    expect(docs.map((d) => d.id)).toEqual(["booking"]);
+  });
+
   it("keeps the owned half when the collective half fails", async () => {
     seed("owned", { assignedToUid: "b" });
     seed("col", { assignedToUid: "a", hostUids: ["a", "b"] });

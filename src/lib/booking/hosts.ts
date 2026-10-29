@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { eventOccupiesSlot, eventStatus } from "@/types/events";
+import { eventOccupiesSlot, eventStatus, isImportedEvent } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { BookingHost } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
@@ -92,7 +92,8 @@ export async function loadHostNotifyContact(
 /**
  * Every event `uid` attends in the sub-account — the two sources of
  * `eventHostUids`: the ones they own (`assignedToUid`) and the collective ones
- * listing them in `hostUids` — merged by id. `refine` adds the same range /
+ * listing them in `hostUids` — merged by id. Imported Google events are never
+ * returned: they are not bookings. `refine` adds the same range /
  * order / limit to both queries. Needs the composite indexes
  * events(subAccountId, assignedToUid, startAt) and
  * events(subAccountId, hostUids CONTAINS, startAt).
@@ -122,7 +123,7 @@ export async function queryHostEvents(
       listed.reason,
     );
   }
-  return [...byId.values()];
+  return [...byId.values()].filter((d) => !isImportedEvent(d.data()));
 }
 
 /**

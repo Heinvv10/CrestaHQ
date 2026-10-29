@@ -199,3 +199,16 @@ it("unsubscribing stops both listeners", () => {
   unsub();
   expect(m.unsubs).toBe(2);
 });
+
+it("leaves imported Google events out of the list: they stay on the calendar only", () => {
+  const cb = vi.fn();
+  subscribeToAppointments(SCOPE, { pastLimit: 200 }, cb);
+  const booking = snap([{ id: "u1", startMs: NOW + 1000 }]);
+  const imported = snap([{ id: "g1", startMs: NOW + 2000 }]).docs.map((d) => ({
+    ...d,
+    data: () => ({ ...d.data(), source: "google" }),
+  }));
+  m.nexts[0]({ size: 2, docs: [...booking.docs, ...imported] });
+  m.nexts[1](snap([]));
+  expect(cb.mock.calls[0][0].events.map((e: { id: string }) => e.id)).toEqual(["u1"]);
+});

@@ -22,9 +22,12 @@ export type EventStatus =
 /**
  * Origin of an event. Defaults to `"manual"` for legacy events — read
  * via `eventSource()`. Booking-page-created events also fire the
- * `event_booked` automation trigger; manual events do not.
+ * `event_booked` automation trigger; manual events do not. `"google"` =
+ * imported from a member's Google Calendar: read-only, and kept out of
+ * availability, pushes, reminders, the .ics feed, the API, the assistant
+ * and search — test it with `isImportedEvent()`.
  */
-export type EventSource = "manual" | "booking_page";
+export type EventSource = "manual" | "booking_page" | "google";
 
 export interface CalendarEvent {
   id: string;
@@ -187,6 +190,11 @@ export function eventStatus(
   e: Pick<CalendarEvent, "status"> | { status?: EventStatus },
 ): EventStatus {
   return e.status ?? "scheduled";
+}
+
+/** Imported from Google: read-only in the CRM and excluded from bookings, feeds and the API. */
+export function isImportedEvent(e: { source?: EventSource } | null | undefined): boolean {
+  return e?.source === "google";
 }
 
 /**
