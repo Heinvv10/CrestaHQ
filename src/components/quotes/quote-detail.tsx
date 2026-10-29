@@ -135,9 +135,10 @@ export function QuoteDetail({
   // a pending or unknown charge confirmed in Paystack is marked paid by hand.
   const canMarkCardDraftPaid =
     isInvoice && quote.status === "draft" && !!quote.recurringInvoiceId && !!quote.autoCharge;
-  const canDelete = quote.status === "draft";
-  const canConvert = quote.kind === "quote" && quote.status === "accepted";
   const signed = !!quote.signature;
+  // A signed document (and the invoice it was converted to) is kept: rules refuse the delete.
+  const canDelete = quote.status === "draft" && !signed;
+  const canConvert = quote.kind === "quote" && quote.status === "accepted";
   const canEdit = !signed;
   const canResend = !(signed && !isInvoice);
   const sendLabel =

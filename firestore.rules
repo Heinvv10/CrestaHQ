@@ -1302,11 +1302,14 @@ service cloud.firestore {
             .hasOnly(["updatedAt", "status", "paidAt", "autoCreateDealOnAccept", "dealId", "paymentDueDays"]))
         && linkInTenant("contactId", "contacts")
         && linkInTenant("dealId", "deals");
+      // A signed document is a record of what was agreed: no client deletes it
+      // (the converted invoice included). The Admin contact-delete cascade is
+      // the one path that still removes it, with its contact.
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
-      );
+      ) && resource.data.get("signature", null) == null;
     }
 
     // Product catalog used by the Quotes + Invoices builder. Reads from

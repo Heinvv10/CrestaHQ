@@ -33,6 +33,10 @@ const RAIL_SHOWN: Record<PayRailKind, string> = {
 
 async function plan(subAccountId: string, q: TenantQuote): Promise<{ expect: QuoteSendExpect; name: string; from: string }> {
   if (q.status === "paid") throw new CapabilityUserError(`That ${docLabel(q).toLowerCase()} is already paid.`);
+  // The send refuses it (quote-send-service.ts); refused here so it is never approved first.
+  if (q.kind !== "invoice" && q.signature) {
+    throw new CapabilityUserError("That quote has been signed, so it can't be sent again; convert it to an invoice to request payment.");
+  }
   const db = getAdminDb();
   const [contactSnap, subSnap] = await Promise.all([
     isDocId(q.contactId) ? db.doc(`contacts/${q.contactId}`).get() : null,

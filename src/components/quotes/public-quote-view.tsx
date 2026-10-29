@@ -37,7 +37,7 @@ import {
   type DeclineReason,
   type QuoteRespondPayload,
 } from "@/types/quotes";
-import type { SerializableQuote } from "@/app/q/[token]/page";
+import type { SerializableQuote } from "@/lib/quotes/public-quote";
 
 /**
  * Recipient-facing quote view rendered inside the public /q/[token]
@@ -129,13 +129,19 @@ export function PublicQuoteView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      const body = (await res.json().catch(() => ({}))) as { error?: string; signed?: boolean };
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        // The quote started requiring a signature after this page loaded:
+        // there is no name field to fill in until the page is reloaded.
+        if (res.status === 400 && payload.action === "accept" && !requireSignature) {
+          throw new Error("This quote now needs your signature — refresh the page to sign it.");
+        }
         throw new Error(body.error ?? `Failed (HTTP ${res.status})`);
       }
       setRespondedAction(payload.action);
-      // Only after the server recorded it, so a rejected attempt leaves no stale name.
-      if (payload.action === "accept" && payload.signerName) {
+      // Only when the server says it recorded a signature: a quote whose
+      // requirement was switched off after load accepts without one.
+      if (body.signed === true && payload.signerName) {
         setJustSignedBy(payload.signerName);
       }
       setDeclineOpen(false);

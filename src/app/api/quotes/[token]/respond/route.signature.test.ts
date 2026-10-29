@@ -34,6 +34,7 @@ process.env.AUTOMATIONS_TOKEN_SECRET = SECRET;
 const { POST } = await import("./route");
 const { issueQuoteToken } = await import("@/lib/quotes/token");
 const { computeQuoteDocumentHash } = await import("@/lib/quotes/signature");
+const { serializeQuote } = await import("@/lib/quotes/public-quote");
 
 const QUOTE = {
   agencyId: "ag1",
@@ -174,6 +175,17 @@ describe("a quote that requires a signature", () => {
     seed();
     expect((await respond(SIGN)).status).toBe(200);
     expect((quote().signature as { documentHash: string }).documentHash).toBe(SEEN);
+  });
+
+  it("the seam: what the /q page serialises, fingerprinted as the browser does, is accepted", async () => {
+    // A real validity with sub-millisecond nanoseconds, as Firestore stores one.
+    seed({ validUntil: new Timestamp(Math.floor(Date.now() / 1000) + 30 * 86_400, 600_000) });
+    const props = serializeQuote({ id: "q1", ...quote() } as never);
+    expect(props.validUntil).toEqual(expect.any(Number));
+    const documentHash = await computeQuoteDocumentHash(props);
+    const res = await respond({ ...SIGN, documentHash });
+    expect(res.status).toBe(200);
+    expect((quote().signature as { documentHash: string }).documentHash).toBe(documentHash);
   });
 
   it("caps the stored user agent at 500 characters", async () => {

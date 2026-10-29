@@ -11,18 +11,15 @@ import {
   recordQuoteActivity,
 } from "@/lib/quotes/lifecycle";
 import {
-  computeQuoteDocumentHash,
-  normalizeSignerName,
-  quoteRequiresSignature,
-} from "@/lib/quotes/signature";
-import { clientIpFrom } from "@/lib/checkout/rate-limit";
+  readSignatureInputs,
+  signatureForAccept,
+  signerEmailFor,
+} from "@/lib/quotes/accept-signature";
+import { quoteRequiresSignature } from "@/lib/quotes/signature";
 import {
   DECLINE_REASONS,
-  SIGNER_NAME_MAX,
-  SIGNER_NAME_MIN,
   type DeclineReason,
   type QuoteRespondPayload,
-  type QuoteSignature,
 } from "@/types/quotes";
 import type { Quote } from "@/types/quotes";
 import { isDocId } from "@/lib/server/doc-id";
@@ -110,56 +107,14 @@ export async function POST(
     note = trimmedNote ? trimmedNote.slice(0, 2000) : null;
   }
 
-  // Signature inputs are validated up front so a bad request never opens a
-  // transaction. Whether they are required is only known once the quote is read.
-  const signerName = normalizeSignerName(payload.signerName);
-  const agreed = payload.agreedToTerms === true;
-  // The fingerprint of what the signer's page rendered, checked against the
-  // quote as read in the transaction: an edit after the page loaded must not
-  // be signed for content the signer never saw.
-  const seenHash =
-    typeof payload.documentHash === "string" && /^[0-9a-f]{64}$/.test(payload.documentHash)
-      ? payload.documentHash
-      : null;
-  // The same right-most-hop rule every per-IP limiter uses: the left of
-  // X-Forwarded-For is whatever the caller sent.
-  const ip = clientIpFrom(request);
-  const ipAddress = ip === "unknown" ? null : ip.slice(0, 64);
-  const userAgent = request.headers.get("user-agent")?.slice(0, 500) ?? null;
+  const signatureInputs = readSignatureInputs(payload, request);
 
   const db = getAdminDb();
   const quoteRef = db.collection("quotes").doc(verified.quoteId);
   const presentedHash = hashQuoteToken(token);
 
-  // The contact's email is part of the signature record; read it before the
-  // transaction so no network call sits inside the retry loop. Only quotes
-  // that require a signature pay for the extra reads, and only a contact in
-  // the quote's own sub-account counts.
-  let signerEmail: string | null = null;
-  if (payload.action === "accept") {
-    try {
-      const pre = (await quoteRef.get()).data() as Partial<Quote> | undefined;
-      const contactId = pre?.contactId;
-      if (
-        pre &&
-        quoteRequiresSignature({
-          kind: pre.kind ?? "quote",
-          requireSignature: pre.requireSignature,
-        }) &&
-        isDocId(contactId)
-      ) {
-        const contact = (await db.doc(`contacts/${contactId}`).get()).data();
-        const email = contact?.subAccountId === pre.subAccountId ? contact?.email : null;
-        signerEmail = typeof email === "string" && email.trim() ? email.trim() : null;
-      }
-    } catch (err) {
-      // The accept still goes ahead; the record just has no address.
-      console.warn(
-        `[/api/quotes/respond] signer email lookup failed for ${verified.quoteId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      signerEmail = null;
-    }
-  }
+  // Part of the signature record; read before the transaction (see signerEmailFor).
+  const signerEmail = payload.action === "accept" ? await signerEmailFor(verified.quoteId) : null;
 
   let signedThisRequest = false;
 
@@ -205,44 +160,9 @@ export async function POST(
 
       if (payload.action === "accept") {
         if (quoteRequiresSignature(quote)) {
-          if (!signerName) {
-            return {
-              error: `Type your full name to sign (${SIGNER_NAME_MIN}–${SIGNER_NAME_MAX} characters).`,
-              status: 400,
-            } as const;
-          }
-          if (!agreed) {
-            return {
-              error: "Tick the box to confirm you agree to the terms.",
-              status: 400,
-            } as const;
-          }
-          if (!seenHash) {
-            return {
-              error: "This page is out of date — refresh it and sign again.",
-              status: 400,
-            } as const;
-          }
-          // Hash the quote as read in this transaction, so the fingerprint is
-          // of the exact content being accepted — and that content must be
-          // what the signer's page showed.
-          const documentHash = await computeQuoteDocumentHash(quote);
-          if (documentHash !== seenHash) {
-            return {
-              error: "This quote changed — refresh to see the latest version.",
-              status: 409,
-            } as const;
-          }
-          const signature: QuoteSignature = {
-            signerName,
-            signedAsNumber: quote.quoteNumber,
-            signerEmail,
-            signedAt: FieldValue.serverTimestamp(),
-            ipAddress,
-            userAgent,
-            documentHash,
-            hashVersion: 1,
-          };
+          const signed = await signatureForAccept(quote, signatureInputs, signerEmail);
+          if (!signed.ok) return { error: signed.error, status: signed.status } as const;
+          const signature = signed.signature;
           tx.update(quoteRef, {
             status: "accepted",
             acceptedAt: FieldValue.serverTimestamp(),

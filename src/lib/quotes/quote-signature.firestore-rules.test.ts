@@ -15,7 +15,13 @@ import { rulesAccessToken, rulesFetch } from "../../test/rules-api";
  *     only `updatedAt`, `status`, `paidAt`, `autoCreateDealOnAccept`,
  *     `dealId` and `paymentDueDays` may move. An edit that touches one of
  *     those AND anything else is refused (the `hasOnly` cases below).
- *   - The `paidVia` / `autoCharge` locks still hold on a signed quote.
+ *   - No client deletes a signed quote, or the invoice it was converted to.
+ *   - On a signed quote `paidVia` / `autoCharge` can't be proven locked on
+ *     their own: neither is in the allow-list, so ANY change to them is an
+ *     affected key `hasOnly` already refuses, and no case can separate the
+ *     two. Their own locks are proven on unsigned quotes in
+ *     src/lib/paystack/payments.firestore-rules.test.ts; the signed cases
+ *     below only pin that the combination still refuses.
  *   - An unsigned quote stays editable exactly as before.
  *
  * Every allow/deny pair differs only in the field under test, so a deny
@@ -210,13 +216,16 @@ const CASES: [string, Case, "allow" | "deny"][] = [
   ["signed: owner sets the payment due days", upd(owner, SIGNED, { paymentDueDays: 14, updatedAt: 2 }), "allow"],
   ["signed: admin touches only updatedAt", upd(saAdmin, SIGNED, { updatedAt: 2 }), "allow"],
 
-  // ---- the money locks still hold on a signed quote ----
+  // ---- money fields on a signed quote (refused by hasOnly too; see the header) ----
   ["signed: admin cannot set paidVia", upd(saAdmin, SIGNED, { status: "paid", paidVia: PAID_VIA }), "deny"],
   ["signed: admin cannot set autoCharge", upd(saAdmin, SIGNED, { autoCharge: AUTO_CHARGE }), "deny"],
 
-  // ---- reads and deletes are unchanged ----
+  // ---- reads unchanged; a signed doc is never deleted by a client ----
   ["signed: collaborator reads it", { caller: collaborator, method: "get", path: QTE, before: SIGNED }, "allow"],
-  ["signed: admin may delete it (UI offers delete on drafts only)", { caller: saAdmin, method: "delete", path: QTE, before: SIGNED }, "allow"],
+  ["unsigned: admin deletes a draft (control)", { caller: saAdmin, method: "delete", path: QTE, before: { ...QUOTE, status: "draft" } }, "allow"],
+  ["signed: admin cannot delete it", { caller: saAdmin, method: "delete", path: QTE, before: SIGNED }, "deny"],
+  ["signed: owner cannot delete it", { caller: owner, method: "delete", path: QTE, before: SIGNED }, "deny"],
+  ["signed: collaborator cannot delete the draft invoice it was converted to", { caller: collaborator, method: "delete", path: QTE, before: { ...SIGNED, kind: "invoice", status: "draft", quoteNumber: "INV-2026-0031" } }, "deny"],
 ];
 
 describe.skipIf(!haveCreds)("quote e-signature — firestore rules", () => {

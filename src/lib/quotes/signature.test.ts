@@ -77,6 +77,26 @@ describe("computeQuoteDocumentHash", () => {
   });
 
   it.each([
+    ["0.6 ms", 600_000],
+    ["1.5 ms", 1_500_000],
+    ["999.999999 ms", 999_999_999],
+  ])("a Timestamp %s past the second hashes like the epoch ms the public page receives", async (_label, nanos) => {
+    const ts = new Timestamp(1_900_000_000, nanos);
+    const server = await hash({ ...QUOTE, validUntil: ts });
+    // The /q page hands the browser toMillis(), fractional for sub-ms nanos.
+    expect(await hash({ ...QUOTE, validUntil: ts.toMillis() })).toBe(server);
+    expect(await hash({ ...QUOTE, validUntil: Math.floor(ts.toMillis()) })).toBe(server);
+    // The plain { seconds, nanoseconds } shape a decoded doc can carry.
+    expect(await hash({ ...QUOTE, validUntil: { seconds: ts.seconds, nanoseconds: ts.nanoseconds } })).toBe(server);
+    expect(quoteDocumentBody({ ...QUOTE, validUntil: ts })).toContain(new Date(Math.floor(ts.toMillis())).toISOString());
+  });
+
+  it("a fractional epoch ms (a client SDK Timestamp's toMillis) floors to the same instant", async () => {
+    const ts = new Timestamp(1_900_000_000, 600_000);
+    expect(await hash({ ...QUOTE, validUntil: 1_900_000_000_000.6 })).toBe(await hash({ ...QUOTE, validUntil: ts }));
+  });
+
+  it.each([
     ["a line's price", { lineItems: [{ ...QUOTE.lineItems[0], unitPrice: 1400 }, QUOTE.lineItems[1]] }],
     ["a line's quantity", { lineItems: [QUOTE.lineItems[0], { ...QUOTE.lineItems[1], quantity: 3 }] }],
     ["a line's description", { lineItems: [{ ...QUOTE.lineItems[0], description: "Fibre install (premium)" }, QUOTE.lineItems[1]] }],
@@ -116,6 +136,7 @@ describe("normalizeSignerName", () => {
 
   it("accepts 2 and 120 characters, refuses 1 and 121", () => {
     expect(normalizeSignerName("Jo")).toBe("Jo");
+    expect(normalizeSignerName("J. O'Neil-2")).toBe("J. O'Neil-2");
     expect(normalizeSignerName("J")).toBeNull();
     expect(normalizeSignerName("a".repeat(120))).toBe("a".repeat(120));
     expect(normalizeSignerName("a".repeat(121))).toBeNull();
@@ -131,6 +152,11 @@ describe("normalizeSignerName", () => {
     ["a NUL", "Jane\u0000Doe"],
     ["a zero-width space", "Jane\u200bDoe"],
     ["a bell", "Jane\u0007Doe"],
+    ["digits only", "12345"],
+    ["punctuation only", "--..--"],
+    ["one letter and digits", "J 123"],
+    ["combining marks only", "\u0301\u0301\u0301"],
+    ["one letter with combining marks", "J\u0301\u0301"],
   ])("refuses %s", (_label, raw) => {
     expect(normalizeSignerName(raw)).toBeNull();
   });

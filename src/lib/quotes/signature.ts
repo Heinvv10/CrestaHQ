@@ -6,12 +6,15 @@ import {
 } from "@/types/quotes";
 
 /**
- * Document fingerprint for a signed quote. Pure and dependency-free so the
- * public page, the accept route and the PDF all compute the same value.
+ * Document fingerprint for a signed quote. Pure and isomorphic so the public
+ * page (from what it rendered) and the accept route (from the doc in its
+ * transaction) compute the same value.
  *
- * Covers exactly what the recipient agreed to (items, money, terms, parties,
- * validity). Lifecycle fields are left out on purpose: a later status change
- * or re-send must not change the fingerprint of what was signed.
+ * Covers what the recipient agreed to: line items, money, terms, the
+ * billed-to organisation and address, and validity. Not the contact the quote
+ * points at (a contact merge legitimately re-points `contactId`), and not
+ * lifecycle fields: a later status change or re-send must not change the
+ * fingerprint of what was signed.
  */
 
 export const QUOTE_HASH_VERSION = 1 as const;
@@ -46,21 +49,30 @@ function canonicalize(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Representation-independent: Timestamp, Date, epoch ms or ISO string all hash the same. */
-function isoOrNull(v: unknown): string | null {
-  if (!v) return null;
-  if (v instanceof Date) return v.toISOString();
-  if (typeof v === "number") return new Date(v).toISOString();
-  if (typeof v === "string") {
-    const d = new Date(v);
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
-  }
-  const maybe = v as { toDate?: () => Date; seconds?: number };
-  if (typeof maybe.toDate === "function") return maybe.toDate().toISOString();
+/** Whole epoch milliseconds, floored, from any representation. */
+function epochMs(v: unknown): number | null {
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "number") return v;
+  if (typeof v === "string") return new Date(v).getTime();
+  const maybe = v as { toMillis?: () => number; seconds?: number; nanoseconds?: number };
+  if (typeof maybe.toMillis === "function") return maybe.toMillis();
   if (typeof maybe.seconds === "number") {
-    return new Date(maybe.seconds * 1000).toISOString();
+    // Floored before adding: seconds * 1000 + 999.999999 rounds up to the next ms in a double.
+    return maybe.seconds * 1000 + Math.floor((maybe.nanoseconds ?? 0) / 1e6);
   }
   return null;
+}
+
+/**
+ * Representation-independent: Timestamp, Date, epoch ms or ISO string all hash
+ * the same. A Timestamp carries nanoseconds and the public page receives its
+ * `toMillis()`, possibly fractional, so both sides floor to whole ms first.
+ */
+function isoOrNull(v: unknown): string | null {
+  if (!v) return null;
+  const ms = epochMs(v);
+  if (ms === null || !Number.isFinite(ms)) return null;
+  return new Date(Math.floor(ms)).toISOString();
 }
 
 /**
@@ -106,9 +118,10 @@ export function quoteRequiresSignature(
 
 /**
  * The typed name, whitespace collapsed, or null when it can't be a signature:
- * outside the length bounds, or carrying a control, invisible or bidi
- * character (the name is printed on the signed record, where a right-to-left
- * override could make it read as someone else's).
+ * outside the length bounds, fewer than two letters (digits, punctuation or
+ * combining marks alone are not a name), or carrying a control, invisible or
+ * bidi character (a right-to-left override could make the recorded name read
+ * as someone else's).
  */
 export function normalizeSignerName(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -116,6 +129,7 @@ export function normalizeSignerName(raw: unknown): string | null {
   if (name.length < SIGNER_NAME_MIN || name.length > SIGNER_NAME_MAX) {
     return null;
   }
+  if ((name.match(/\p{L}/gu) ?? []).length < 2) return null;
   if (hasUnsafeText(name)) return null;
   return name;
 }
