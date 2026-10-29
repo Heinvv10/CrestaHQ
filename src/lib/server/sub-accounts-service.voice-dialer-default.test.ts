@@ -35,7 +35,7 @@ beforeEach(() => {
   delete process.env.BOOTSTRAP_ADMIN_EMAIL;
 });
 
-describe("a new sub-account ships with Web Voice, the dialer and Email AI drafts off", () => {
+describe("a new sub-account ships with Web Voice, the dialer, Email AI drafts and the X0 gates off", () => {
   it("via the agency create path", async () => {
     const { subAccountId } = await createSubAccountForAgency({
       agencyId: "ag_1", uid: "uid_owner", email: "owner@example.com", displayName: "Owner",
@@ -45,6 +45,9 @@ describe("a new sub-account ships with Web Voice, the dialer and Email AI drafts
     expect(doc.webVoiceEnabledByAgency).toBe(false);
     expect(doc.dialerEnabledByAgency).toBe(false);
     expect(doc.emailAiDraftsEnabledByAgency).toBe(false);
+    expect(doc.agentsEnabledByAgency).toBe(false);
+    expect(doc.sellOnlineEnabledByAgency).toBe(false);
+    expect(doc.aiOutboundSmsEnabledByAgency).toBe(false);
   });
 
   it("via the first signup (agency owner bootstrap)", async () => {
@@ -62,5 +65,8 @@ describe("a new sub-account ships with Web Voice, the dialer and Email AI drafts
     expect(docs[0].webVoiceEnabledByAgency).toBe(false);
     expect(docs[0].dialerEnabledByAgency).toBe(false);
     expect(docs[0].emailAiDraftsEnabledByAgency).toBe(false);
+    expect(docs[0].agentsEnabledByAgency).toBe(false);
+    expect(docs[0].sellOnlineEnabledByAgency).toBe(false);
+    expect(docs[0].aiOutboundSmsEnabledByAgency).toBe(false);
   });
 });
