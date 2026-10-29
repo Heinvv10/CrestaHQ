@@ -45,8 +45,10 @@ interface Resolved {
   contactId: string;
 }
 
-/** The stored destination for a click token, or null for a bad token or link. */
-async function resolveDestination(token: string): Promise<Resolved | null> {
+type SignedClick = NonNullable<ReturnType<typeof verifyClickToken>>;
+
+/** The verified ids, or null for a forged or malformed token. */
+function verifiedClick(token: string): SignedClick | null {
   const signed = verifyClickToken(token);
   if (
     !signed ||
@@ -56,6 +58,11 @@ async function resolveDestination(token: string): Promise<Resolved | null> {
   ) {
     return null;
   }
+  return signed;
+}
+
+/** The stored destination for a verified click, or null for an unknown link. */
+async function resolveDestination(signed: SignedClick): Promise<Resolved | null> {
   const linkSnap = await getAdminDb()
     .collection("broadcasts")
     .doc(signed.broadcastId)
@@ -90,6 +97,10 @@ export async function GET(
   let resolved: Resolved | null;
   try {
     token = (await params).token;
+    const signed = verifiedClick(token);
+    if (!signed) return notFound();
+    // Keyed only after the signature checks, so garbage tokens can't fill
+    // the limiter's table and evict (reset) a real token's budget.
     const lookup = checkClickLookupLimit(token);
     if (!lookup.ok) {
       const cached = resolvedCache.get(token);
@@ -105,7 +116,7 @@ export async function GET(
         headers: { "Cache-Control": "no-store" },
       });
     }
-    resolved = await resolveDestination(token);
+    resolved = await resolveDestination(signed);
   } catch (err) {
     console.error("[t/c] link lookup failed", err instanceof Error ? err.message : String(err));
     return notFound();

@@ -189,6 +189,15 @@ describe("GET /t/c/[token]", () => {
     expect(res.headers.get("location")).toBeNull();
   });
 
+  it("6,000 garbage tokens don't evict a valid token's lookup budget", async () => {
+    const token = issueClickToken("b1", "c1", "missing");
+    for (let i = 0; i < 30; i++) expect((await click(token)).status).toBe(404);
+    // More distinct keys than the limiter keeps (5,000): keyed, they would
+    // push this token out and hand it a fresh budget.
+    for (let i = 0; i < 6_000; i++) await click(`garbage-${i}`);
+    expect((await click(token)).status).toBe(429);
+  });
+
   it("404s, never 500s, when the link lookup throws", async () => {
     const spy = vi.spyOn(mem.db, "collection").mockImplementationOnce(() => {
       throw new Error("firestore down");
