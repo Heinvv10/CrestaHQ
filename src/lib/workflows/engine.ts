@@ -48,7 +48,12 @@ import {
   type QuietHoursHold,
 } from "@/lib/comms/quiet-hours";
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
-import { APPROACH_CAP_LOG, guardProspectSend } from "@/lib/prospecting/approach-guard";
+import {
+  APPROACH_CAP_LOG,
+  guardProspectSend,
+  releaseApproach,
+  type ApproachStamp,
+} from "@/lib/prospecting/approach-guard";
 import type { ReviewRequestChannel } from "@/lib/reviews/request-log";
 import { hasLinkMergeTag, isLinkMergeTag } from "@/lib/comms/whatsapp/template-validation";
 import { evalConditionGroup } from "./conditions";
@@ -69,6 +74,12 @@ import {
 } from "@/lib/comms/ai/outbound-sms";
 import { incrementChannelTokens } from "@/lib/comms/ai/agent";
 import { runAfterResponse } from "@/lib/server/after-response";
+import {
+  aiSmsCooldownActive,
+  claimAiSmsCooldown,
+  releaseAiSmsCooldown,
+} from "@/lib/workflows/ai-sms-cooldown";
+import type { ResolvedAiAgent } from "@/types/ai";
 import type { Contact } from "@/types/contacts";
 import type { AgencyDoc, SubAccountDoc } from "@/types";
 import type { WhatsappTemplateDoc, WhatsappTemplateButton } from "@/types/whatsapp-templates";
@@ -93,6 +104,7 @@ import type {
   WorkflowNodeType,
   WorkflowRunDoc,
   WorkflowRunHistoryEntry,
+  WorkflowStatus,
   WorkflowTriggerType,
 } from "@/types/workflows";
 import { readSubAccountSecret } from "@/lib/server/sub-account-secrets";
@@ -119,6 +131,10 @@ export type StepResult =
 
 interface NodeContext {
   node: WorkflowNode;
+  /** The workflow's status when the step began; a Send AI text stops if it changes. */
+  workflowStatus?: WorkflowStatus;
+  /** A Send AI text's checks, run by runStep before the prospecting stamp. */
+  aiSms?: AiSmsCheck;
   contact: Contact;
   subAccount: SubAccountDoc | null;
   owner: { displayName: string; email: string };
@@ -504,70 +520,92 @@ async function deliverWorkflowSms(
   }
 }
 
+/** What a Send AI text needs once nothing stops it. */
+interface AiSmsPrep {
+  instruction: string;
+  to: string;
+  agent: ResolvedAiAgent;
+  botMode: string;
+}
+type AiSmsCheck = { stop: { result: StepResult; log: string } } | { prep: AiSmsPrep };
+const aiSmsStop = (log: string, result: StepResult = { kind: "next" }): AiSmsCheck => ({ stop: { result, log } });
+
 /**
- * The AI writes the first text (lib/comms/ai/outbound-sms.ts). The agency
- * gate and readiness are re-checked on every send, not just when the gate was
- * switched on: anything turned off since skips the step with the reason.
- * Quiet hours are checked before the model is called, so a held text spends
- * nothing, and again by the send itself.
+ * Everything that stops a Send AI text, or what it needs to go ahead. runStep
+ * runs it BEFORE the prospecting stamp, so a step that can't send never
+ * stamps; the step runs it again after the model call on freshly read docs
+ * ("after"), because the contact may opt out, the agency switch AI texts off,
+ * a person take over or the workflow be paused while the AI writes. The gate
+ * and readiness are re-checked on every send, never trusted from enable time.
  */
-const execSendAiSms: NodeExecutor = async (ctx) => {
+async function aiSmsCheck(
+  ctx: NodeContext,
+  contact: Contact,
+  sub: SubAccountDoc | null,
+  phase: "before" | "after",
+  expectedTo?: string
+): Promise<AiSmsCheck> {
   const cfg = ctx.node.config as unknown as SendAiSmsConfig;
-  const contact = ctx.contact;
   const instruction = (cfg.instruction ?? "").trim().slice(0, 1000);
-  if (!instruction) {
-    return { result: { kind: "next" }, log: "error:no_instruction" };
-  }
-  if (!ctx.subAccount || !aiOutboundSmsGateOn(ctx.subAccount)) {
-    return { result: { kind: "next" }, log: "skipped:ai_sms_gate_off" };
-  }
-  if (channelOptedOut(ctx.node.type, contact)) {
-    return { result: { kind: "next" }, log: "skipped:opt_out" };
-  }
+  if (!instruction) return aiSmsStop("error:no_instruction");
+  if (!sub || !aiOutboundSmsGateOn(sub)) return aiSmsStop("skipped:ai_sms_gate_off");
+  if (channelOptedOut(ctx.node.type, contact)) return aiSmsStop("skipped:opt_out");
   const to = contact.phone;
-  if (!to) return { result: { kind: "next" }, log: "skipped:no_phone" };
-  const readiness = await aiOutboundSmsReadiness(ctx.subAccountId, ctx.subAccount);
-  const unmet = firstUnmet(readiness);
-  if (unmet || !readiness.agent) {
-    return {
-      result: { kind: "next" },
-      log: `skipped:not_ready:${unmet?.key ?? "agent"}`,
-    };
+  if (!to) return aiSmsStop("skipped:no_phone");
+  if (expectedTo !== undefined && to !== expectedTo) return aiSmsStop("skipped:phone_changed");
+  const wfSnap = await getAdminDb().doc(`workflows/${ctx.workflowId}`).get();
+  if (!wfSnap.exists || (wfSnap.data() as WorkflowDoc).status !== ctx.workflowStatus) {
+    return aiSmsStop("skipped:workflow_changed");
   }
-  const agent = readiness.agent;
+  const readiness = await aiOutboundSmsReadiness(ctx.subAccountId, sub);
+  const unmet = firstUnmet(readiness);
+  if (unmet || !readiness.agent) return aiSmsStop(`skipped:not_ready:${unmet?.key ?? "agent"}`);
   // Dynamic import: conversations-service statically imports this engine.
-  const { getConversationControls, setConversationDraft } = await import(
-    "@/lib/server/conversations-service"
-  );
+  const { getConversationControls } = await import("@/lib/server/conversations-service");
   const controls = await getConversationControls(contact.id);
   if (
     controls.botMode === "off" ||
     (controls.botPausedUntilMs && controls.botPausedUntilMs > Date.now())
   ) {
-    return { result: { kind: "next" }, log: "skipped:bot_paused" };
+    return aiSmsStop("skipped:bot_paused");
   }
+  if (await aiSmsCooldownActive(ctx.subAccountId, contact.id)) return aiSmsStop("skipped:ai_sms_cooldown");
+  // Before the model call too, so a held text spends nothing.
   const hold = quietHoursHold({
-    subAccount: ctx.subAccount,
+    subAccount: sub,
     origin: "automated",
     selfTriggeredBookingAt: ctx.selfTriggeredBookingAt,
   });
-  if (hold) return deferForQuietHours(hold);
-  for (const unit of ["aiTokens", "smsSegments"] as const) {
-    const quota = await checkQuota({
-      subAccountId: ctx.subAccountId,
-      unit,
-      subAccount: ctx.subAccount,
-    });
-    if (!quota.allowed) return { result: { kind: "next" }, log: "skipped:quota" };
+  if (hold) {
+    const { result, log } = deferForQuietHours(hold);
+    return aiSmsStop(log, result);
   }
+  if (phase === "before") {
+    for (const unit of ["aiTokens", "smsSegments"] as const) {
+      const quota = await checkQuota({ subAccountId: ctx.subAccountId, unit, subAccount: sub });
+      if (!quota.allowed) return aiSmsStop("skipped:quota");
+    }
+  }
+  return { prep: { instruction, to, agent: readiness.agent, botMode: controls.botMode } };
+}
+
+/**
+ * The AI writes the first text (lib/comms/ai/outbound-sms.ts) and it goes out
+ * as an automated SMS (quiet hours hold it again at the send). Once tokens are
+ * spent a throw is recorded and the run stops — a retry would pay again.
+ */
+const execSendAiSms: NodeExecutor = async (ctx) => {
+  const before = ctx.aiSms ?? (await aiSmsCheck(ctx, ctx.contact, ctx.subAccount, "before"));
+  if ("stop" in before) return before.stop;
+  const { prep } = before;
   let opener: Awaited<ReturnType<typeof generateAiOpener>>;
   try {
     opener = await generateAiOpener({
       subAccountId: ctx.subAccountId,
-      agent,
-      sub: ctx.subAccount,
-      contact,
-      instruction,
+      agent: prep.agent,
+      sub: ctx.subAccount!,
+      contact: ctx.contact,
+      instruction: prep.instruction,
     });
   } catch (err) {
     return {
@@ -581,21 +619,46 @@ const execSendAiSms: NodeExecutor = async (ctx) => {
   if (!opener.ok) {
     return { result: { kind: "next" }, log: `error:ai_${opener.reason}` };
   }
-  if (controls.botMode === "suggest") {
-    await setConversationDraft({
-      contactId: contact.id,
-      subAccountId: ctx.subAccountId,
-      agencyId: ctx.agencyId,
-      contactName: contact.name ?? "",
-      contactPhone: to,
-      channel: "sms",
-      body: opener.text,
-      model: opener.model,
-      tokens: opener.tokens,
-    });
-    return { result: { kind: "next" }, log: "drafted:suggest_mode" };
+  try {
+    const db = getAdminDb();
+    const [contactSnap, subSnap] = await Promise.all([
+      db.doc(`contacts/${ctx.contact.id}`).get(),
+      db.doc(`subAccounts/${ctx.subAccountId}`).get(),
+    ]);
+    if (!contactSnap.exists) return { result: { kind: "next" }, log: "skipped:contact_gone" };
+    ctx.contact = { id: contactSnap.id, ...(contactSnap.data() as Omit<Contact, "id">) };
+    ctx.subAccount = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
+    const after = await aiSmsCheck(ctx, ctx.contact, ctx.subAccount, "after", prep.to);
+    if ("stop" in after) {
+      return { result: after.stop.result, log: `${after.stop.log}:after_generation` };
+    }
+    const cooldown = { subAccountId: ctx.subAccountId, contactId: ctx.contact.id, runId: ctx.runId };
+    if (!(await claimAiSmsCooldown({ ...cooldown, agencyId: ctx.agencyId }))) {
+      return { result: { kind: "next" }, log: "skipped:ai_sms_cooldown" };
+    }
+    if (prep.botMode === "suggest" || after.prep.botMode === "suggest") {
+      const { setConversationDraft } = await import("@/lib/server/conversations-service");
+      await setConversationDraft({
+        contactId: ctx.contact.id,
+        subAccountId: ctx.subAccountId,
+        agencyId: ctx.agencyId,
+        contactName: ctx.contact.name ?? "",
+        contactPhone: prep.to,
+        channel: "sms",
+        body: opener.text,
+        model: opener.model,
+        tokens: opener.tokens,
+      });
+      return { result: { kind: "next" }, log: "drafted:suggest_mode" };
+    }
+    const delivered = await deliverWorkflowSms(ctx, prep.to, opener.text, "AI text (workflow)");
+    if (delivered.log !== "ok" && ctx.sent?.attempted !== true) await releaseAiSmsCooldown(cooldown);
+    return delivered;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[workflows] AI text step failed after the model call (run ${ctx.runId}): ${msg}`);
+    return { result: { kind: "fail" }, log: `error:ai_after_generation:${msg.slice(0, 120)}` };
   }
-  return deliverWorkflowSms(ctx, to, opener.text, "AI text (workflow)");
 };
 
 /** Exported for tests only — the registry below is the production entry point.
@@ -2189,14 +2252,28 @@ export async function runStep(
     runId,
     triggerContext: run.context ?? {},
     selfTriggeredBookingAt: selfTriggeredBookingAt(wf, run),
+    workflowStatus: wf.status,
+  };
+  // A first touch this delivery stamped. A Send AI text that then sends
+  // nothing hands it back (and its cap slot); other steps keep it.
+  const stamped: { stamp?: ApproachStamp } = {};
+  const releaseIfUnsent = async (sent: boolean) => {
+    if (stamped.stamp && node.type === "send_ai_sms" && !sent) await releaseApproach(stamped.stamp);
   };
   let executed: Awaited<ReturnType<NodeExecutor>>;
   try {
+    // A Send AI text checks everything that would stop it (gate, readiness,
+    // takeover, cooldown, quiet hours, quota) BEFORE the stamp below.
+    if (node.type === "send_ai_sms") {
+      stepCtx.aiSms = await aiSmsCheck(stepCtx, contact, subAccount, "before");
+    }
+    const blocked = stepCtx.aiSms && "stop" in stepCtx.aiSms ? stepCtx.aiSms.stop : null;
     // Prospecting approach guard: past the opt-out / no-address skip, before
     // the send. Refuses (ends the run), holds (daily cap) or stamps + sends.
     // Throws on an infrastructure error: claim released, nothing sent.
     const refused =
-      atMostOnce && !sendSkips(node.type, contact)
+      blocked ??
+      (atMostOnce && !sendSkips(node.type, contact)
         ? await guardProspectSend({
             contactId: contact.id,
             subAccountId: run.subAccountId,
@@ -2205,10 +2282,14 @@ export async function runStep(
             workflowId: run.workflowId,
             runId,
             nodeId,
+            onFirstTouch: (stamp) => {
+              stamped.stamp = stamp;
+            },
           })
-        : null;
+        : null);
     executed = refused ?? (await exec(stepCtx));
   } catch (err) {
+    await releaseIfUnsent(Boolean(stepCtx.sent));
     // Thrown before any provider call (`sent` is set just before one): nothing
     // went out, so release the claim and let QStash retry normally. Once a
     // provider call has started the claim stays — at most once.
@@ -2220,6 +2301,7 @@ export async function runStep(
     throw err;
   }
   const { result, log } = executed;
+  await releaseIfUnsent(log === "ok" || stepCtx.sent?.attempted === true);
 
   // Quiet hours: nothing was sent, so no history entry (that would mark the
   // step done). Release the claim and run this same step again when they end.

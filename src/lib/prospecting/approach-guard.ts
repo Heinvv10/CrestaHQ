@@ -90,8 +90,9 @@ export function nextDayHold(now: Date, tz: string): QuietHoursHold {
 }
 
 export type ApproachVerdict =
-  /** Send. `firstTouch` = this send stamped the prospect and was counted. */
-  | { kind: "pass"; firstTouch: boolean }
+  /** Send. `firstTouch` = this send stamped the prospect and was counted
+   *  (on `dayKey`'s counter). */
+  | { kind: "pass"; firstTouch: boolean; dayKey?: string }
   | { kind: "already_approached"; approachedWorkflowId: string | null }
   | { kind: "daily_cap"; hold: QuietHoursHold };
 
@@ -111,9 +112,8 @@ export async function claimApproach(input: ApproachInput): Promise<ApproachVerdi
   const now = input.now ?? new Date();
   const tz = guardTimezone(input.subAccount);
   const contactRef = db.doc(`contacts/${input.contactId}`);
-  const counterRef = db.doc(
-    `subAccounts/${input.subAccountId}/prospectingFirstTouch/${localDayKey(now, tz)}`,
-  );
+  const dayKey = localDayKey(now, tz);
+  const counterRef = db.doc(`subAccounts/${input.subAccountId}/prospectingFirstTouch/${dayKey}`);
   const cap = prospectingFirstTouchCap(input.subAccount);
   return db.runTransaction(async (tx): Promise<ApproachVerdict> => {
     const contact = (await tx.get(contactRef)).data();
@@ -143,8 +143,47 @@ export async function claimApproach(input: ApproachInput): Promise<ApproachVerdi
       "prospecting.approachedAt": FieldValue.serverTimestamp(),
       "prospecting.approachedWorkflowId": input.workflowId,
     });
-    return { kind: "pass", firstTouch: true };
+    return { kind: "pass", firstTouch: true, dayKey };
   });
+}
+
+/** A first touch this delivery made, so a step that then sends nothing can hand it back. */
+export interface ApproachStamp {
+  contactId: string;
+  subAccountId: string;
+  workflowId: string;
+  dayKey: string;
+}
+
+/**
+ * Undo a first touch whose send never happened: clear the stamp (only while
+ * it is still this workflow's) and give the day's counter its slot back, in
+ * one transaction. Never throws — a stamp left behind errs toward not
+ * messaging the prospect.
+ */
+export async function releaseApproach(stamp: ApproachStamp): Promise<void> {
+  const db = getAdminDb();
+  const contactRef = db.doc(`contacts/${stamp.contactId}`);
+  const counterRef = db.doc(`subAccounts/${stamp.subAccountId}/prospectingFirstTouch/${stamp.dayKey}`);
+  try {
+    await db.runTransaction(async (tx) => {
+      const contact = (await tx.get(contactRef)).data();
+      const used = ((await tx.get(counterRef)).data()?.count as number | undefined) ?? 0;
+      const p = (contact?.prospecting ?? {}) as ContactData;
+      if (!p.approachedAt || p.approachedWorkflowId !== stamp.workflowId) return;
+      tx.update(contactRef, {
+        "prospecting.approachedAt": null,
+        "prospecting.approachedWorkflowId": FieldValue.delete(),
+      });
+      if (used > 0) {
+        tx.set(counterRef, { count: used - 1, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      }
+    });
+  } catch (err) {
+    console.warn(
+      `[prospecting] approach release failed for ${stamp.contactId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /** What `runStep` does instead of the send: end the run, or hold the step. */
@@ -159,10 +198,25 @@ export type ApproachRefusal =
  * daily cap holds the step until 08:00 local the next day.
  */
 export async function guardProspectSend(
-  input: ApproachInput & { runId: string; nodeId: string },
+  input: ApproachInput & {
+    runId: string;
+    nodeId: string;
+    /** Told when this send stamped the prospect, for a caller that may send nothing after all. */
+    onFirstTouch?: (stamp: ApproachStamp) => void;
+  },
 ): Promise<ApproachRefusal | null> {
   const verdict = await claimApproach(input);
-  if (verdict.kind === "pass") return null;
+  if (verdict.kind === "pass") {
+    if (verdict.firstTouch && verdict.dayKey) {
+      input.onFirstTouch?.({
+        contactId: input.contactId,
+        subAccountId: input.subAccountId,
+        workflowId: input.workflowId,
+        dayKey: verdict.dayKey,
+      });
+    }
+    return null;
+  }
   if (verdict.kind === "daily_cap") {
     return { result: { kind: "defer", hold: verdict.hold }, log: APPROACH_CAP_LOG };
   }
