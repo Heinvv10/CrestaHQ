@@ -38,6 +38,7 @@ describe("stripBookingMarkers", () => {
     expect(stripBookingMarkers("Hi [[book start=")).toBe("Hi ");
     expect(stripBookingMarkers("Hi [[")).toBe("Hi ");
     expect(stripBookingMarkers("Hi [[resch")).toBe("Hi ");
+    expect(stripBookingMarkers("Hi [[bo[[sl")).toBe("Hi ");
     expect(stripBookingMarkers('See you then! [[book start="2026-11-03T08:00:00Z" name="Ann"')).toBe("See you then! ");
   });
 
@@ -59,6 +60,48 @@ describe("stripBookingMarkers", () => {
     expect(stripBookingMarkers("[[form]] and [link] and [[bookmark]] and [[booking]]")).toBe(
       "[[form]] and [link] and [[bookmark]] and [[booking]]",
     );
+  });
+
+  it("repeats while removing one marker exposes another", () => {
+    const a = stripBookingMarkers("a [[bo[[slots]]ok x");
+    expect(a).toBe("a ");
+    const b = stripBookingMarkers("x [[[[slots]]book now");
+    expect(b).toBe("x ");
+    for (const out of [a, b]) expect(stripBookingMarkers(out)).toBe(out);
+    // A second pass keeps the prose after the exposed marker; cutting wouldn't.
+    expect(stripBookingMarkers("a [[bo[[slots]]ok\n]] keep this")).toBe("a keep this");
+  });
+
+  it("after 3 passes, everything from the first remaining opener goes", () => {
+    // Each level needs one more pass: "[[bo" + inner + "ok\n]]".
+    let nested = "[[slots]]";
+    for (let i = 0; i < 5; i++) nested = `[[bo${nested}ok\n]]`;
+    const out = stripBookingMarkers(`Hi ${nested}`);
+    // The cut leaves "[[bo[[bo" at the end, which reads as cut-off openers.
+    expect(out).toBe("Hi ");
+    expect(stripBookingMarkers(out)).toBe(out);
+  });
+
+  it.each([
+    ["soft hyphen", "\u00AD"],
+    ["combining grapheme joiner", "\u034F"],
+    ["Mongolian vowel separator", "\u180E"],
+    ["braille blank", "\u2800"],
+    ["NEL", "\u0085"],
+    ["Hangul filler", "\u3164"],
+    ["Hangul choseong filler", "\u115F"],
+    ["halfwidth Hangul filler", "\uFFA0"],
+    ["format character (LRI)", "\u2066"],
+  ])("an invisible %s after [[ doesn't hide an opener", (_name, ch) => {
+    expect(stripBookingMarkers(`a [[${ch}book start="x"]] b`)).toBe("a b");
+    expect(stripBookingMarkers(`Hi [[${ch}`)).toBe("Hi ");
+  });
+
+  it("a Hangul filler right after the keyword doesn't hide an opener", () => {
+    for (const ch of ["\u3164", "\u115F", "\uFFA0"]) {
+      expect(stripBookingMarkers(`a [[book${ch}start=x]] b`)).toBe("a b");
+    }
+    expect(stripBookingMarkers("[[bookmark]] [[bookings]]")).toBe("[[bookmark]] [[bookings]]");
   });
 
   it("drops a fence the strip left empty, and only then", () => {

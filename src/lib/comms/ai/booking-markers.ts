@@ -125,12 +125,19 @@ export function rescheduleOfferKey(eventId: string, iso: string): string {
   return `move:${eventId}|${normalizeIso(iso)}`;
 }
 
-// Strip openers: "[[", optional whitespace or zero-width characters, a
-// keyword, then anything but a letter or digit (or the end).
-const STRIP_OPENER = "\\[\\[[\\s\\u200B-\\u200D\\u2060\\uFEFF]*(?:slots|book|reschedule|cancel)(?![\\p{L}\\p{N}])";
+// Whitespace and characters that render as nothing (format characters, soft
+// hyphen, combining grapheme joiner, Mongolian vowel separator, braille
+// blank, NEL, Hangul fillers), so they can't hide an opener.
+const INVISIBLE = "[\\s\\p{Cf}\\u00AD\\u034F\\u180E\\u2800\\u0085\\u3164\\u115F\\uFFA0]";
+// Strip openers: "[[", optional invisibles, a keyword, then a Hangul filler
+// (a letter that renders as nothing) or anything but a letter or digit, or the end.
+const STRIP_OPENER = `\\[\\[${INVISIBLE}*(?:slots|book|reschedule|cancel)(?=[\\u3164\\u115F\\uFFA0]|[^\\p{L}\\p{N}]|$)`;
+const MAX_STRIP_PASSES = 3;
 /** A reply cut off inside an opener: "Hi [[", "Hi [[bo". */
-const TRUNCATED_OPENER_RE =
-  /^\[\[[\s\u200B-\u200D\u2060\uFEFF]*(?:s(?:l(?:o(?:ts?)?)?)?|b(?:o(?:ok?)?)?|r(?:e(?:s(?:c(?:h(?:e(?:d(?:u(?:le?)?)?)?)?)?)?)?)?|c(?:a(?:n(?:c(?:el?)?)?)?)?)?$/iu;
+const TRUNCATED_OPENER_RE = new RegExp(
+  `^\\[\\[${INVISIBLE}*(?:s(?:l(?:o(?:ts?)?)?)?|b(?:o(?:ok?)?)?|r(?:e(?:s(?:c(?:h(?:e(?:d(?:u(?:le?)?)?)?)?)?)?)?)?|c(?:a(?:n(?:c(?:el?)?)?)?)?)?$`,
+  "iu",
+);
 
 /**
  * Past a removed marker: a "]]" before the next "[[" or line break closes it
@@ -152,12 +159,29 @@ function skipOrphanCloses(text: string, from: number): number {
 /**
  * Removes anything that starts like a marker, through the next "]]" (inner
  * openers go with it) or to the end of the text, plus orphan "]]" right after
- * it and an opener cut off at the very end. One linear pass; no double space
- * is left where a marker was, and a code fence the strip left empty goes.
- * Broad on purpose: prose like "[[Book now]]" is removed too, which beats a
- * marker leaking to a person.
+ * it and an opener cut off at the very end. Each pass is linear; passes repeat
+ * while removing one marker exposes another ("[[bo[[slots]]ok"), at most
+ * MAX_STRIP_PASSES, then everything from the first remaining opener goes. No
+ * double space is left where a marker was, and a code fence the strip left
+ * empty goes. Broad on purpose: prose like "[[Book now]]" is removed too,
+ * which beats a marker leaking to a person.
  */
 export function stripBookingMarkers(text: string): string {
+  let current = text;
+  for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
+    const next = stripPass(current);
+    if (next === current) break;
+    current = next;
+  }
+  if (stripPass(current) !== current) {
+    const first = new RegExp(STRIP_OPENER, "iu").exec(current);
+    current = dropTruncatedTail(first ? current.slice(0, first.index) : stripPass(current));
+  }
+  return current === text ? text : dropEmptyFences(current);
+}
+
+/** One linear pass; returns `text` itself when nothing was removed. */
+function stripPass(text: string): string {
   const opener = new RegExp(STRIP_OPENER, "giu");
   const out: string[] = [];
   let from = 0;
@@ -186,13 +210,19 @@ export function stripBookingMarkers(text: string): string {
     if (close === -1) break;
     from = skipOrphanCloses(text, close + 2);
   }
-  let result = out.join("");
-  const tail = result.lastIndexOf("[[");
-  if (tail !== -1 && TRUNCATED_OPENER_RE.test(result.slice(tail))) {
+  const joined = out.join("");
+  const result = dropTruncatedTail(joined);
+  return changed || result !== joined ? result : text;
+}
+
+/** Drops every opener cut off at the very end ("Hi [[bo[[bo" -> "Hi "). */
+function dropTruncatedTail(text: string): string {
+  let result = text;
+  for (;;) {
+    const tail = result.lastIndexOf("[[");
+    if (tail === -1 || !TRUNCATED_OPENER_RE.test(result.slice(tail))) return result;
     result = result.slice(0, tail);
-    changed = true;
   }
-  return changed ? dropEmptyFences(result) : text;
 }
 
 /** Removes ``` blocks holding only whitespace (a fence that wrapped a marker). */
