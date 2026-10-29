@@ -17,7 +17,7 @@ import {
   checkCheckoutRateLimit,
   clientIpFrom,
 } from "@/lib/checkout/rate-limit";
-import { eventStatus } from "@/types/events";
+import { eventStatus, isImportedEvent } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { OrderLineItem } from "@/types/orders";
 
@@ -69,6 +69,7 @@ export async function POST(
   if (!snap.exists) return fail("This payment link isn't valid.", 404);
 
   const event = { id: snap.id, ...(snap.data() as Omit<CalendarEvent, "id">) };
+  if (isImportedEvent(event)) return fail("This payment link isn't valid.", 404);
   if (event.publicTokenHash !== verified.hash) {
     return fail(
       "This link is out of date. Please use the most recent email.",

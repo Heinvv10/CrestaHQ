@@ -5,7 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { changeEventStatus, statusChangeError } from "@/lib/server/event-status-service";
 import { planCancelNotice, type CancelNoticeExpect } from "@/lib/server/event-cancel-notice";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
-import { eventStatus, type CalendarEvent, type EventNotifySkipReason, type EventStatus } from "@/types/events";
+import { eventStatus, isImportedEvent, type CalendarEvent, type EventNotifySkipReason, type EventStatus } from "@/types/events";
 import { CapabilityUserError, type AiSuiteCapability, type PreviewRow } from "./types";
 import { agentActor, str, toDate } from "./helpers";
 import { hasUnsafeText, messageBody, oneLine, plainSpaces, UNSAFE_TEXT_MESSAGE } from "./text-safety";
@@ -37,6 +37,7 @@ export async function tenantEvent(subAccountId: string, eventId: unknown): Promi
   const snap = isDocId(eventId) ? await getAdminDb().doc(`events/${eventId}`).get() : null;
   const data = snap?.data();
   if (!data || data.subAccountId !== subAccountId) throw new CapabilityUserError("That appointment isn't in this workspace.");
+  if (isImportedEvent(data)) throw new CapabilityUserError("That appointment comes from Google Calendar — change it there.");
   return { ...(data as Omit<CalendarEvent, "id">), id: snap!.id };
 }
 
