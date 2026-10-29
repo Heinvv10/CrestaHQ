@@ -54,7 +54,7 @@ describe.each([
     expect(others.map((f) => doc()?.[f])).toEqual(before);
   });
 
-  it("ignores a non-boolean value", async () => {
+  it("rejects a non-boolean value with 400 and writes nothing", async () => {
     expect((await patch({ [key]: "true" })).status).toBe(400);
     expect(doc()?.[field]).toBeUndefined();
   });

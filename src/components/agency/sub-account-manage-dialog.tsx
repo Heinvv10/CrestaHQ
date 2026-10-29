@@ -1297,7 +1297,9 @@ function ManageDialogBody({
           <GateToggle
             checked={aiOutboundSmsEnabled}
             onChange={setAiOutboundSmsEnabled}
-            disabled={saving}
+            // Enabling is refused until readiness lands (J1): only allow
+            // switching it off when it is stored on.
+            disabled={saving || !initialAiOutboundSms}
             icon={
               <MessageSquareText className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
             }
