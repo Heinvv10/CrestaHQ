@@ -1,16 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ANY_BOOKING_MARKER_RE,
-  bookOfferKey,
-  buildBookingToolsBlock,
-  rescheduleOfferKey,
   runBookingTool,
-  toChangeTargets,
   type BookRequest,
   type BookToolResult,
   type ChangeToolResult,
   type RunBookingToolInput,
 } from "@/lib/comms/ai/booking-tools";
+import { bookOfferKey, rescheduleOfferKey } from "@/lib/comms/ai/booking-markers";
+import { toChangeTargets, type ChangeTarget } from "@/lib/comms/ai/booking-prompt";
 import type { AgentBookingEngine, ChangeableBooking } from "@/lib/comms/ai/booking-engine";
 import type { SlotCandidate } from "@/lib/booking/availability";
 import type { BookingHost, BookingPage, IntakeField } from "@/types/booking";
@@ -44,6 +41,7 @@ function slot(iso: string): SlotCandidate {
 
 const changeable: ChangeableBooking[] = [
   { eventId: "evt-1", startAt: new Date(SLOT_A), page, assignedToUid: null, assignedToName: null },
+  { eventId: "evt-2", startAt: new Date(SLOT_B), page, assignedToUid: "u-jane", assignedToName: "Jane Smith" },
 ];
 
 let book: ReturnType<typeof vi.fn<(req: BookRequest) => Promise<BookToolResult>>>;
@@ -78,12 +76,23 @@ function input(over: Partial<RunBookingToolInput> & { modelText: string }): RunB
     emailAccount: null,
     page,
     book,
-    allowedKeys: new Set([bookOfferKey(page.slug, SLOT_A)]),
+    allowedKeys: new Set([bookOfferKey(page.slug, null, SLOT_A)]),
     ...over,
   };
 }
 
 const WEB_ID = 'name="Ann" email="ann@example.com"';
+
+function changes(over: { cancel?: ChangeToolResult; reschedule?: ChangeToolResult } = {}) {
+  return {
+    changeable: toChangeTargets(changeable),
+    cancel: vi.fn<(t: ChangeTarget) => Promise<ChangeToolResult>>(async () => over.cancel ?? { ok: true }),
+    reschedule: vi.fn<(t: ChangeTarget, iso: string) => Promise<ChangeToolResult>>(
+      async () => over.reschedule ?? { ok: true },
+    ),
+    allowedKeys: new Set([rescheduleOfferKey("evt-1", SLOT_B), rescheduleOfferKey("evt-2", SLOT_A)]),
+  };
+}
 
 describe("no marker / malformed markers", () => {
   it("plain text is the final reply", async () => {
@@ -102,12 +111,40 @@ describe("no marker / malformed markers", () => {
     expect(book).not.toHaveBeenCalled();
   });
 
+  it("a start that isn't a date is refused before the replay check or the engine", async () => {
+    const findExisting = vi.fn(async () => null);
+    const out = await runBookingTool(
+      input({ allowedKeys: null, findExisting, modelText: `[[book start="next tuesday" ${WEB_ID}]]` }),
+    );
+    expect(findExisting).not.toHaveBeenCalled();
+    expect(book).not.toHaveBeenCalled();
+    expect(out?.toolResult).toMatch(/wasn't a valid slot time/);
+  });
+
   it("web-text refuses a booking without a valid email and never books", async () => {
     const out = await runBookingTool(
       input({ modelText: `[[book start="${SLOT_A}" name="Ann" email="not-an-email"]]` }),
     );
     expect(out?.toolResult).toMatch(/isn't a valid email address/);
     expect(book).not.toHaveBeenCalled();
+  });
+
+  it("an address list is not an email address", async () => {
+    const out = await runBookingTool(
+      input({ modelText: `[[book start="${SLOT_A}" name="Ann" email="ann,bcc@example.com"]]` }),
+    );
+    expect(out?.toolResult).toMatch(/isn't a valid email address/);
+    expect(book).not.toHaveBeenCalled();
+  });
+
+  it("web-voice needs a name and a phone or an email", async () => {
+    const voice = { audience: "web-voice" as const };
+    const nameOnly = await runBookingTool(input({ ...voice, modelText: `[[book start="${SLOT_A}" name="Ann"]]` }));
+    expect(nameOnly?.toolResult).toMatch(/a phone number or email address first/);
+    expect(book).not.toHaveBeenCalled();
+    await runBookingTool(input({ ...voice, modelText: `[[book start="${SLOT_A}" name="Ann" phone="082 555 0101"]]` }));
+    await runBookingTool(input({ ...voice, modelText: `[[book start="${SLOT_A}" name="Ann" email="ann@example.com"]]` }));
+    expect(book).toHaveBeenCalledTimes(2);
   });
 
   it("phone refuses a booking without the caller's name", async () => {
@@ -127,6 +164,58 @@ describe("no marker / malformed markers", () => {
   });
 });
 
+describe("an action marker runs only as the whole reply", () => {
+  it("prose around a [[book]] is prose: nothing books", async () => {
+    const out = await runBookingTool(
+      input({ modelText: `Great, booking you now! [[book start="${SLOT_A}" ${WEB_ID}]]` }),
+    );
+    expect(out).toBeNull();
+    expect(book).not.toHaveBeenCalled();
+  });
+
+  it("prose around a [[cancel]] or [[reschedule]] is prose", async () => {
+    const c = changes();
+    expect(await runBookingTool(input({ ...c, modelText: 'Sure. [[cancel booking="b1"]]' }))).toBeNull();
+    expect(
+      await runBookingTool(input({ ...c, modelText: `[[reschedule booking="b1" start="${SLOT_B}"]] done` })),
+    ).toBeNull();
+    expect(c.cancel).not.toHaveBeenCalled();
+    expect(c.reschedule).not.toHaveBeenCalled();
+  });
+
+  it("two markers in one reply run neither", async () => {
+    const c = changes();
+    const out = await runBookingTool(input({ ...c, modelText: '[[cancel booking="b1"]][[cancel booking="b2"]]' }));
+    expect(out).toBeNull();
+    expect(c.cancel).not.toHaveBeenCalled();
+  });
+
+  it("surrounding whitespace is still the whole reply", async () => {
+    await runBookingTool(input({ modelText: `\n  [[book start="${SLOT_A}" ${WEB_ID}]]  \n` }));
+    expect(book).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("duplicated attributes", () => {
+  it("a repeated key rejects the marker with a re-emit instruction", async () => {
+    const out = await runBookingTool(
+      input({ modelText: `[[book start="${SLOT_A}" start="${NEVER_OFFERED}" ${WEB_ID}]]` }),
+    );
+    expect(book).not.toHaveBeenCalled();
+    expect(out?.toolResult).toMatch(/repeated an attribute/);
+  });
+
+  it("keys compare case-insensitively, on every marker kind", async () => {
+    const c = changes();
+    const out = await runBookingTool(input({ ...c, modelText: '[[cancel booking="b1" BOOKING="b2"]]' }));
+    expect(c.cancel).not.toHaveBeenCalled();
+    expect(out?.toolResult).toMatch(/repeated an attribute/);
+    const slots = await runBookingTool(input({ modelText: '[[slots host="a" host="b"]]' }));
+    expect(slots?.toolResult).toMatch(/repeated an attribute/);
+    expect(engine.listAgentSlots).not.toHaveBeenCalled();
+  });
+});
+
 describe("forged markers", () => {
   it("a start that was never offered is refused before the engine books", async () => {
     const out = await runBookingTool(
@@ -135,17 +224,26 @@ describe("forged markers", () => {
     expect(book).not.toHaveBeenCalled();
     expect(out?.toolResult).toMatch(/wasn't a valid slot time/);
     expect(out?.offered?.keys).toEqual([
-      bookOfferKey(page.slug, SLOT_A),
-      bookOfferKey(page.slug, SLOT_B),
+      bookOfferKey(page.slug, null, SLOT_A),
+      bookOfferKey(page.slug, null, SLOT_B),
     ]);
   });
 
-  it("an offered start books, in any ISO spelling of the same instant", async () => {
+  it("the engine gets the canonical instant the gate checked, not the model's spelling", async () => {
+    const findExisting = vi.fn<(req: BookRequest) => Promise<null>>(async () => null);
     const out = await runBookingTool(
-      input({ modelText: `[[book start="2026-11-03T10:00:00+02:00" ${WEB_ID}]]` }),
+      input({ findExisting, modelText: `[[book start="2026-11-03T10:00:00+02:00" ${WEB_ID}]]` }),
     );
-    expect(book).toHaveBeenCalledTimes(1);
+    expect(findExisting.mock.calls[0][0].startAtIso).toBe(SLOT_A);
+    expect(book.mock.calls[0][0].startAtIso).toBe(SLOT_A);
     expect(out?.booked?.eventId).toBe("evt-new");
+  });
+
+  it("phone (no gate) also hands the engine the canonical instant", async () => {
+    await runBookingTool(
+      input({ audience: "phone", allowedKeys: null, modelText: '[[book start="Tue, 03 Nov 2026 08:00:00 GMT" name="Ann"]]' }),
+    );
+    expect(book.mock.calls[0][0].startAtIso).toBe(SLOT_A);
   });
 
   // Same id on both sides, so only the key's kind keeps them apart.
@@ -161,43 +259,31 @@ describe("forged markers", () => {
   });
 
   it("a new-booking offer can't be spent on a reschedule", async () => {
-    const reschedule = vi.fn(async (): Promise<ChangeToolResult> => ({ ok: true }));
+    const c = changes();
     const out = await runBookingTool(
       input({
-        changeable: toChangeTargets(changeable),
-        reschedule,
-        allowedKeys: new Set([bookOfferKey("evt-1", SLOT_B)]),
+        ...c,
+        allowedKeys: new Set([bookOfferKey("evt-1", null, SLOT_B)]),
         modelText: `[[reschedule booking="b1" start="${SLOT_B}"]]`,
       }),
     );
-    expect(reschedule).not.toHaveBeenCalled();
+    expect(c.reschedule).not.toHaveBeenCalled();
     expect(out?.toolResult).toMatch(/wasn't one of the offered times/);
   });
 
   it("phone (no stored offers) only moves to a time the booking can move to now", async () => {
-    const reschedule = vi.fn(async (): Promise<ChangeToolResult> => ({ ok: true }));
-    const base = {
-      audience: "phone" as const,
-      allowedKeys: null,
-      changeable: toChangeTargets(changeable),
-      reschedule,
-    };
-    await runBookingTool(input({ ...base, modelText: `[[reschedule booking="b1" start="${NEVER_OFFERED}"]]` }));
-    expect(reschedule).not.toHaveBeenCalled();
-    await runBookingTool(input({ ...base, modelText: `[[reschedule booking="b1" start="${SLOT_B}"]]` }));
-    expect(reschedule).toHaveBeenCalledTimes(1);
+    const c = { ...changes(), audience: "phone" as const, allowedKeys: null };
+    await runBookingTool(input({ ...c, modelText: `[[reschedule booking="b1" start="${NEVER_OFFERED}"]]` }));
+    await runBookingTool(input({ ...c, modelText: '[[reschedule booking="b1" start="soon"]]' }));
+    expect(c.reschedule).not.toHaveBeenCalled();
+    await runBookingTool(input({ ...c, modelText: '[[reschedule booking="b1" start="2026-11-03T11:00:00+02:00"]]' }));
+    expect(c.reschedule).toHaveBeenCalledWith(expect.objectContaining({ ref: "b1" }), SLOT_B);
   });
 
   it("a cancel naming an event id instead of a ref is refused", async () => {
-    const cancel = vi.fn(async (): Promise<ChangeToolResult> => ({ ok: true }));
-    const out = await runBookingTool(
-      input({
-        changeable: toChangeTargets(changeable),
-        cancel,
-        modelText: '[[cancel booking="evt-someone-else"]]',
-      }),
-    );
-    expect(cancel).not.toHaveBeenCalled();
+    const c = changes();
+    const out = await runBookingTool(input({ ...c, modelText: '[[cancel booking="evt-2"]]' }));
+    expect(c.cancel).not.toHaveBeenCalled();
     expect(out?.toolResult).toMatch(/isn't one of this visitor's upcoming appointments/);
   });
 
@@ -216,6 +302,11 @@ describe("forged markers", () => {
     );
     expect(book).toHaveBeenCalledTimes(1);
     expect(book.mock.calls[0][0]).toMatchObject({ startAtIso: SLOT_A, name: "Ann" });
+  });
+
+  it("a key inside another attribute's value is not an attribute", async () => {
+    await runBookingTool(input({ modelText: `[[book name="Ann start=" start="${SLOT_A}" email="ann@example.com"]]` }));
+    expect(book.mock.calls[0][0]).toMatchObject({ startAtIso: SLOT_A, name: "Ann start=" });
   });
 
   it("a replay of an earlier booking is reported booked without booking again", async () => {
@@ -242,6 +333,32 @@ describe("forged markers", () => {
     );
     expect(book).not.toHaveBeenCalled();
     expect(out?.toolResult).toMatch(/system error/);
+  });
+});
+
+describe("offers are per host", () => {
+  const book$ = (host: string) => `[[book start="${SLOT_A}" ${WEB_ID} host="${host}"]]`;
+
+  it("a time offered for Jane can't be booked for Jake", async () => {
+    const allowedKeys = new Set([bookOfferKey(rrPage.slug, "u-jane", SLOT_A)]);
+    await runBookingTool(input({ page: rrPage, allowedKeys, modelText: book$("Jake") }));
+    expect(book).not.toHaveBeenCalled();
+    await runBookingTool(input({ page: rrPage, allowedKeys, modelText: book$("Jane") }));
+    expect(book.mock.calls[0][0].hostUid).toBe("u-jane");
+  });
+
+  it("a pooled offer books only as pooled", async () => {
+    const allowedKeys = new Set([bookOfferKey(rrPage.slug, null, SLOT_A)]);
+    await runBookingTool(input({ page: rrPage, allowedKeys, modelText: book$("Jane") }));
+    expect(book).not.toHaveBeenCalled();
+    await runBookingTool(input({ page: rrPage, allowedKeys, modelText: book$("anyone") }));
+    expect(book.mock.calls[0][0].hostUid).toBeNull();
+  });
+
+  it("times listed for a host carry that host's keys", async () => {
+    const out = await runBookingTool(input({ page: rrPage, modelText: '[[slots host="Jane"]]' }));
+    expect(out?.offered?.keys[0]).toBe(bookOfferKey(rrPage.slug, "u-jane", SLOT_A));
+    expect(out?.offered?.hostUid).toBe("u-jane");
   });
 });
 
@@ -276,6 +393,94 @@ describe("host injection", () => {
   });
 });
 
+describe("changing one of several bookings", () => {
+  it("cancel b2 cancels b2's event", async () => {
+    const c = changes();
+    const out = await runBookingTool(input({ ...c, modelText: '[[cancel booking="B2"]]' }));
+    expect(c.cancel.mock.calls[0][0]).toMatchObject({ ref: "b2", booking: { eventId: "evt-2" } });
+    expect(out?.changed).toMatchObject({ kind: "cancelled", eventId: "evt-2" });
+    expect(out?.toolResult).toMatch(/Cancelled: Consult on .* with Jane Smith/);
+  });
+
+  it("reschedule b2 moves b2's event to the offered time", async () => {
+    const c = changes();
+    const out = await runBookingTool(input({ ...c, modelText: `[[reschedule booking="b2" start="${SLOT_A}"]]` }));
+    expect(c.reschedule.mock.calls[0][0]).toMatchObject({ booking: { eventId: "evt-2" } });
+    expect(c.reschedule.mock.calls[0][1]).toBe(SLOT_A);
+    expect(out?.changed).toMatchObject({ kind: "rescheduled", eventId: "evt-2" });
+    expect(out?.toolResult).toMatch(/Moved: Consult is now/);
+  });
+
+  it("b1's offer can't move b2", async () => {
+    const c = changes();
+    await runBookingTool(input({ ...c, modelText: `[[reschedule booking="b2" start="${SLOT_B}"]]` }));
+    expect(c.reschedule).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ ok: false, code: "limit" } as ChangeToolResult, /maximum number of changes/],
+    [{ ok: false, code: "bad_state", message: "It already started." } as ChangeToolResult, /Couldn't cancel: It already started\./],
+    [{ ok: false, code: "error" } as ChangeToolResult, /Cancelling failed due to a system error/],
+  ])("cancel outcome %j", async (result, expected) => {
+    const out = await runBookingTool(input({ ...changes({ cancel: result }), modelText: '[[cancel booking="b1"]]' }));
+    expect(out?.toolResult).toMatch(expected);
+    expect(out?.changed).toBeUndefined();
+  });
+
+  it.each([
+    [{ ok: false, code: "limit" } as ChangeToolResult, /maximum number of changes/],
+    [{ ok: false, code: "bad_state", message: "It was cancelled." } as ChangeToolResult, /Couldn't move it: It was cancelled\./],
+    [{ ok: false, code: "slot_taken" } as ChangeToolResult, /no longer available[\s\S]*Times b1/],
+    [{ ok: false, code: "error" } as ChangeToolResult, /Moving the appointment failed/],
+  ])("reschedule outcome %j", async (result, expected) => {
+    const out = await runBookingTool(
+      input({ ...changes({ reschedule: result }), modelText: `[[reschedule booking="b1" start="${SLOT_B}"]]` }),
+    );
+    expect(out?.toolResult).toMatch(expected);
+    expect(out?.changed).toBeUndefined();
+  });
+
+  it("a taken move hands back fresh move keys for that booking", async () => {
+    const out = await runBookingTool(
+      input({ ...changes({ reschedule: { ok: false, code: "slot_taken" } }), modelText: `[[reschedule booking="b1" start="${SLOT_B}"]]` }),
+    );
+    expect(out?.offered).toMatchObject({ moveEventId: "evt-1", keys: [rescheduleOfferKey("evt-1", SLOT_B)] });
+  });
+});
+
+describe("booking intent (onAttempt)", () => {
+  it("is recorded when times are asked for", async () => {
+    const onAttempt = vi.fn();
+    await runBookingTool(input({ onAttempt, modelText: "[[slots]]" }));
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("is recorded for an unknown host, on [[slots]] and on [[book]]", async () => {
+    const onAttempt = vi.fn();
+    await runBookingTool(input({ page: rrPage, onAttempt, modelText: '[[slots host="Mallory"]]' }));
+    await runBookingTool(input({ page: rrPage, onAttempt, modelText: `[[book start="${SLOT_A}" ${WEB_ID} host="Mallory"]]` }));
+    expect(onAttempt).toHaveBeenCalledTimes(2);
+    expect(engine.listAgentSlots).not.toHaveBeenCalled();
+  });
+
+  it("is recorded when a book attempt doesn't land, not when it does or hits a cap", async () => {
+    const onAttempt = vi.fn();
+    await runBookingTool(input({ onAttempt, modelText: `[[book start="${NEVER_OFFERED}" ${WEB_ID}]]` }));
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+    await runBookingTool(input({ onAttempt, modelText: `[[book start="${SLOT_A}" ${WEB_ID}]]` }));
+    book.mockResolvedValueOnce({ ok: false, code: "limit", scope: "chat" });
+    const limited = await runBookingTool(input({ onAttempt, modelText: `[[book start="${SLOT_A}" ${WEB_ID}]]` }));
+    expect(limited?.toolResult).toMatch(/maximum number of bookings/);
+    expect(onAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("a taken slot offers the alternatives with an apology", async () => {
+    book.mockResolvedValueOnce({ ok: false, code: "slot_taken" });
+    const out = await runBookingTool(input({ modelText: `[[book start="${SLOT_A}" ${WEB_ID}]]` }));
+    expect(out?.toolResult).toMatch(/no longer available[\s\S]*Offer up to 3/);
+  });
+});
+
 describe("oversized input", () => {
   it("attribute values are capped before they reach the engine", async () => {
     const intake: IntakeField[] = [{ id: "q", label: "Why", type: "text", required: true, options: null }];
@@ -291,17 +496,22 @@ describe("oversized input", () => {
     expect(req.intakeAnswers[0].value).toHaveLength(500);
   });
 
+  it("an over-long email is refused, not truncated into another address", async () => {
+    const long = `${"a".repeat(250)}@example.com`;
+    const out = await runBookingTool(input({ modelText: `[[book start="${SLOT_A}" name="Ann" email="${long}"]]` }));
+    expect(book).not.toHaveBeenCalled();
+    expect(out?.toolResult).toMatch(/isn't a valid email address/);
+  });
+
   it("an over-long phone is dropped rather than truncated into a wrong number", async () => {
     await runBookingTool(input({ modelText: `[[book start="${SLOT_A}" ${WEB_ID} phone="${"9".repeat(30)}"]]` }));
     expect(book.mock.calls[0][0].phone).toBeNull();
   });
 
   it("only the head of a huge reply is scanned for a marker", async () => {
-    const out = await runBookingTool(
-      input({ modelText: `${"x".repeat(20_000)} [[book start="${SLOT_A}" ${WEB_ID}]]` }),
-    );
+    const out = await runBookingTool(input({ modelText: `${"x".repeat(20_000)}[[slots]]` }));
     expect(out).toBeNull();
-    expect(book).not.toHaveBeenCalled();
+    expect(engine.listAgentSlots).not.toHaveBeenCalled();
   });
 
   it("many unclosed markers don't hang the parser", async () => {
@@ -364,34 +574,5 @@ describe("intake, location and email copy", () => {
       input({ emailAccount: smtp(""), modelText: `[[book start="${SLOT_A}" ${WEB_ID}]]` }),
     );
     expect(unverified?.toolResult).not.toMatch(/confirmation email/);
-  });
-});
-
-describe("buildBookingToolsBlock", () => {
-  it("phone keeps the copy-the-start-value rules", () => {
-    const block = buildBookingToolsBlock(page, "phone");
-    expect(block).toContain("COPY the start value character-for-character from the [[slots]] result");
-    expect(block).not.toContain("HOST SELECTION");
-  });
-
-  it("host selection only on pages that assign one host", () => {
-    expect(buildBookingToolsBlock(rrPage, "web-text")).toContain("Our team: Jane Smith, Jake Doe");
-    expect(buildBookingToolsBlock(collectivePage, "web-text")).not.toContain("HOST SELECTION");
-  });
-
-  it("adds the location, the intake questions and the changeable bookings", () => {
-    const block = buildBookingToolsBlock(page, "messaging", {
-      location: { type: "in_person", description: "In person at 1 Main Rd" },
-      intake: [{ id: "q", label: "Why", type: "text", required: true, options: null }],
-      changeable: toChangeTargets(changeable),
-    });
-    expect(block).toContain("WHERE: In person at 1 Main Rd.");
-    expect(block).toContain("- q1: Why (required)");
-    expect(block).toContain("- b1: Consult on");
-  });
-
-  it("the leftover-marker pattern strips every marker kind", () => {
-    const text = 'a [[slots]] b [[book start="x"]] c [[reschedule booking="b1" start="y"]] d [[cancel booking="b1"]] e';
-    expect(text.replace(ANY_BOOKING_MARKER_RE, "")).toBe("a  b  c  d  e");
   });
 });

@@ -18,7 +18,7 @@ import {
   hostSelectionOn,
   invalidHostResult,
   resolveRequestedHost,
-} from "@/lib/comms/ai/booking-tools";
+} from "@/lib/comms/ai/booking-prompt";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 import { readJsonCapped } from "@/lib/server/read-json-capped";

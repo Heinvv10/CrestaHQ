@@ -6,15 +6,17 @@ import {
   type CallAiOptions,
 } from "@/lib/comms/ai/openrouter";
 import {
-  ANY_BOOKING_MARKER_RE,
+  runBookingTool,
+  type BookingToolOutcome,
+  type RunBookingToolInput,
+} from "@/lib/comms/ai/booking-tools";
+import {
   bookOfferKey,
   normalizeIso,
   rescheduleOfferKey,
-  runBookingTool,
-  type BookingToolOutcome,
-  type ChangeTarget,
-  type RunBookingToolInput,
-} from "@/lib/comms/ai/booking-tools";
+  stripBookingMarkers,
+} from "@/lib/comms/ai/booking-markers";
+import type { ChangeTarget } from "@/lib/comms/ai/booking-prompt";
 import {
   formatSlotForChip,
   formatSlotForSpeech,
@@ -38,29 +40,38 @@ const OFFER_TTL_MS = 2 * 60 * 60 * 1000;
 /** Times offered in a conversation, persisted between turns (web session or conversation doc). */
 export type StoredBookingOffer = WebChatBookingOffer;
 
-/** The stored offer when it's fresh enough to replay, else null. */
+/**
+ * The stored offer when it's fresh enough to replay, else null. An offer
+ * stamped in the future is not fresh: it would never expire.
+ */
 export function liveOffer(
   offer: StoredBookingOffer | null | undefined,
 ): StoredBookingOffer | null {
   if (!offer || !offer.pageSlug || !Array.isArray(offer.slots) || offer.slots.length === 0) {
     return null;
   }
-  return Date.now() - offer.offeredAtMs <= OFFER_TTL_MS ? offer : null;
+  const age = Date.now() - offer.offeredAtMs;
+  return age >= 0 && age <= OFFER_TTL_MS ? offer : null;
 }
 
-/** Keys a later marker may use, from a stored offer. */
-export function offerKeys(offer: StoredBookingOffer | null): string[] {
+/** Keys a later marker may use, from a stored offer; none once it's stale. */
+export function offerKeys(stored: StoredBookingOffer | null): string[] {
+  const offer = liveOffer(stored);
   if (!offer?.pageSlug) return [];
+  const pageSlug = offer.pageSlug;
   return offer.slots.map((s) =>
     offer.moveEventId
       ? rescheduleOfferKey(offer.moveEventId, s.startIso)
-      : bookOfferKey(offer.pageSlug!, s.startIso),
+      : bookOfferKey(pageSlug, offer.hostUid, s.startIso),
   );
 }
 
-/** Visitor-typed values quoted into the prompt can't close the quote or forge a marker. */
+/**
+ * Visitor-typed values quoted into the prompt can't close the quote, forge a
+ * marker, or start a new line (any Unicode line break or control character).
+ */
 function promptSafe(value: string | null | undefined): string {
-  return (value ?? "").replace(/["[\]\r\n]/g, "").trim().slice(0, 120);
+  return (value ?? "").replace(/[\p{Cc}\p{Zl}\p{Zp}"[\]]/gu, "").trim().slice(0, 120);
 }
 
 /** The "--- BOOKING STATE ---" section: what's booked, what's known, what's on offer. */
@@ -281,11 +292,11 @@ export async function callAiWithBookingTools(input: {
   }
 
   // A marker can survive when the round cap is hit; never show it.
-  let finalText = text
-    .replace(ANY_BOOKING_MARKER_RE, "")
+  let finalText = stripBookingMarkers(text)
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  if (!finalText && input.tools) {
+  // Also when booking is off but the reply was only a marker: never send nothing.
+  if (!finalText && (input.tools || text.trim())) {
     finalText =
       actionLabel ??
       input.emptyReplyFallback ??
