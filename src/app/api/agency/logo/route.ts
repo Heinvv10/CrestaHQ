@@ -72,7 +72,7 @@ export async function DELETE(request: Request) {
   const snap = await agencyRef.get();
   await logoDocRef("agency", agencyId).delete();
   // Leave a pasted URL alone; only clear the field when it points at our upload.
-  if (isUploadedLogoUrl(snap.data()?.logoUrl as string | undefined)) {
+  if (isUploadedLogoUrl(snap.data()?.logoUrl as string | undefined, "agency", agencyId)) {
     await agencyRef.update({
       logoUrl: null,
       updatedAt: FieldValue.serverTimestamp(),

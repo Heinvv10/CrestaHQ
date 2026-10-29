@@ -5,8 +5,9 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import {
   LOGO_MAX_BYTES,
   LOGO_MAX_EDGE,
-  LOGO_ROUTE_PREFIX,
+  uploadedLogoPath,
   type LogoMime,
+  type LogoScope,
 } from "@/lib/brand/logo-shared";
 
 /**
@@ -16,7 +17,7 @@ import {
  * working unchanged.
  */
 
-export type LogoScope = "agency" | "sa";
+export type { LogoScope };
 
 /** Upload body cap: the base64 ceiling below plus JSON framing. */
 export const LOGO_MAX_BODY_BYTES = 600_000;
@@ -128,7 +129,7 @@ export function validateLogo(base64: unknown, mime: unknown): Buffer | string {
 export function logoPublicUrl(scope: LogoScope, id: string, version: number): string | null {
   const base = process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/+$/, "");
   if (!base || !/^https?:\/\/[^/]+$/i.test(base)) return null;
-  return `${base}${LOGO_ROUTE_PREFIX}${scope}/${encodeURIComponent(id)}?v=${version}`;
+  return `${base}${uploadedLogoPath(scope, id)}?v=${version}`;
 }
 
 export async function storeLogo(

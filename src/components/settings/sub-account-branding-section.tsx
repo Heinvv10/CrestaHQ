@@ -100,6 +100,8 @@ export function SubAccountBrandingSection() {
         <Label htmlFor="sa-logo-url">Logo</Label>
         <LogoUploadControls
           endpoint={`/api/sub-accounts/${subAccountId}/logo`}
+          scope="sa"
+          ownerId={subAccountId}
           currentUrl={logoUrl}
           onChange={setLogoUrl}
         />

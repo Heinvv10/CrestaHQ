@@ -145,10 +145,14 @@ describe("DELETE /api/sub-accounts/[id]/logo — remove", () => {
     expect(m.docs.get("subAccounts/sa1")?.logoUrl).toBeNull();
   });
 
-  it("leaves a pasted logo URL alone", async () => {
-    m.docs.set("subAccounts/sa1", { agencyId: "ag1", logoUrl: "https://cdn.example.com/logo.png" });
+  it.each([
+    ["a pasted logo URL", "https://cdn.example.com/logo.png"],
+    ["another tenant's uploaded logo", "https://crm.example.com/api/brand/logo/sa/sa2?v=1"],
+    ["a URL carrying the prefix in its query", "https://cdn.example.com/logo.png?r=/api/brand/logo/"],
+  ])("leaves %s alone", async (_label, url) => {
+    m.docs.set("subAccounts/sa1", { agencyId: "ag1", logoUrl: url });
     await DELETE(req("admin1", "DELETE"), ctx());
-    expect(m.docs.get("subAccounts/sa1")?.logoUrl).toBe("https://cdn.example.com/logo.png");
+    expect(m.docs.get("subAccounts/sa1")?.logoUrl).toBe(url);
   });
 
   it.each([

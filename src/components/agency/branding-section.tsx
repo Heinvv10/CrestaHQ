@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Globe, Mail, Palette, Save } from "lucide-react";
 import { toast } from "sonner";
 import { useAgency } from "@/hooks/use-agency";
+import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,6 +19,7 @@ const HEX_COLOR_RE = /^#[0-9a-f]{6}$/i;
 
 export function BrandingSection() {
   const agency = useAgency();
+  const { agencyId } = useAuth();
   const [name, setName] = useState<string>("");
   const [logoUrl, setLogoUrl] = useState<string>("");
   const [brandColor, setBrandColor] = useState<string>("");
@@ -147,6 +149,8 @@ export function BrandingSection() {
         <Label htmlFor="logo-url">Logo</Label>
         <LogoUploadControls
           endpoint="/api/agency/logo"
+          scope="agency"
+          ownerId={agencyId}
           currentUrl={logoUrl}
           onChange={setLogoUrl}
         />

@@ -81,7 +81,7 @@ export async function DELETE(
   const snap = await subRef.get();
   await logoDocRef("sa", subAccountId).delete();
   // Leave a pasted URL alone; only clear the field when it points at our upload.
-  if (isUploadedLogoUrl(snap.data()?.logoUrl as string | undefined)) {
+  if (isUploadedLogoUrl(snap.data()?.logoUrl as string | undefined, "sa", subAccountId)) {
     await subRef.update({
       logoUrl: null,
       updatedAt: FieldValue.serverTimestamp(),

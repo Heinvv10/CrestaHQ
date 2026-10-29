@@ -102,3 +102,12 @@ it("DELETE clears an uploaded logoUrl but leaves a pasted one", async () => {
   await DELETE(req("owner1", "DELETE"));
   expect(m.docs.get("agencies/ag1")?.logoUrl).toBe("https://cdn.example.com/logo.svg");
 });
+
+it.each([
+  ["another agency's uploaded logo", "https://crm.example.com/api/brand/logo/agency/ag2?v=1"],
+  ["a URL carrying the prefix in its query", "https://cdn.example.com/logo.png?r=/api/brand/logo/"],
+])("DELETE leaves %s alone", async (_label, url) => {
+  m.docs.set("agencies/ag1", { logoUrl: url });
+  await DELETE(req("owner1", "DELETE"));
+  expect(m.docs.get("agencies/ag1")?.logoUrl).toBe(url);
+});

@@ -5,7 +5,7 @@ import { Loader2, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { renderLogo } from "@/lib/brand/render-logo-client";
-import { isUploadedLogoUrl } from "@/lib/brand/logo-shared";
+import { isUploadedLogoUrl, type LogoScope } from "@/lib/brand/logo-shared";
 
 /**
  * Upload / Remove buttons for a logo. Uploading saves immediately (no form
@@ -14,11 +14,16 @@ import { isUploadedLogoUrl } from "@/lib/brand/logo-shared";
  */
 export function LogoUploadControls({
   endpoint,
+  scope,
+  ownerId,
   currentUrl,
   onChange,
 }: {
   /** POST uploads, DELETE removes. */
   endpoint: string;
+  /** Whose logo this is; Remove shows only for this owner's own upload. */
+  scope: LogoScope;
+  ownerId: string | null;
   currentUrl: string;
   onChange: (logoUrl: string) => void;
 }) {
@@ -92,7 +97,7 @@ export function LogoUploadControls({
         )}
         {busy === "upload" ? "Uploading…" : "Upload logo"}
       </Button>
-      {isUploadedLogoUrl(currentUrl) && (
+      {ownerId && isUploadedLogoUrl(currentUrl, scope, ownerId) && (
         <Button
           type="button"
           variant="ghost"
