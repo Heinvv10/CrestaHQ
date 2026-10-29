@@ -71,9 +71,55 @@ describe("rewriteAnchorHrefs", () => {
     expect(run(html)).toBe(`Hi &amp; welcome<br><a href="https://app.test/t/c/1">x</a> — bye<br>`);
   });
 
-  it("never writes a replacement that would break out of the attribute", () => {
-    const html = `<a href="https://a.test">x</a>`;
-    expect(rewriteAnchorHrefs(html, () => `https://x.test/" onclick="alert(1)`)).toBe(html);
+  it("escapes the replacement so it can't break out of the attribute", () => {
+    const out = rewriteAnchorHrefs(`<a href="https://a.test">x</a>`, () => `https://x.test/?a=1&b="'<>`);
+    expect(out).toBe(`<a href="https://x.test/?a=1&amp;b=&quot;&#39;&lt;&gt;">x</a>`);
+  });
+
+  it("leaves <a> inside comments, <style>, <script> and other raw-text elements alone", () => {
+    const html = [
+      `<!-- <a href="https://a.test/comment">c</a> -->`,
+      `<style>.x::after{content:'<a href="https://a.test/style">'}</style>`,
+      `<SCRIPT>var s = '<a href="https://a.test/script">';</SCRIPT>`,
+      `<title><a href="https://a.test/title"></title>`,
+      `<a href="https://a.test/real">r</a>`,
+    ].join("");
+    run(html);
+    expect(seen).toEqual(["https://a.test/real"]);
+  });
+
+  it("leaves an <a> inside another tag's attribute value alone", () => {
+    const html = `<img alt='<a href="https://a.test/in-alt">' src="x.png"><div data-x="<a href=https://a.test/in-data>">`;
+    expect(run(html)).toBe(html);
+    expect(seen).toEqual([]);
+  });
+
+  it("stops at an unterminated comment or raw-text element, leaving the rest", () => {
+    for (const html of [
+      `<!-- open <a href="https://a.test/1">x</a>`,
+      `<style> <a href="https://a.test/1">x</a>`,
+    ]) {
+      expect(run(html)).toBe(html);
+      expect(seen).toEqual([]);
+    }
+    // Links before the unterminated part are still rewritten.
+    expect(run(`<a href="https://a.test/1">a</a><a title="never closed`)).toBe(
+      `<a href="https://app.test/t/c/1">a</a><a title="never closed`,
+    );
+  });
+
+  it("is linear on hostile input (the old per-<a> rescan was quadratic)", () => {
+    for (const html of [
+      `<a x="` + "<a ".repeat(150_000),
+      "<a ".repeat(150_000),
+      "<a href='".repeat(80_000),
+      "<!--".repeat(100_000),
+      "<style>".repeat(60_000),
+    ]) {
+      const started = performance.now();
+      run(html);
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
   });
 
   it("handles self-closing and newline-separated attributes", () => {
