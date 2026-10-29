@@ -17,40 +17,57 @@ Agents ([monitors/page.tsx](../../src/app/(dashboard)/sa/[subAccountId]/ai-agent
     unchanged from Labs ([labs-watchdog.md](labs-watchdog.md)). It moved from the
     Labs page to this tab; the sweep, the route and the gates are as before.
   - Stale deals — `agentsEnabledByAgency` (opt-in, default off,
-    `assistantMayEnable: false`) and `aiIsConfigured()`. The sweep skips with
-    `agents_gate_off` / `ai_not_configured`; the config route 403s both GET and
-    PATCH while the gate is off.
+    `assistantMayEnable: false`). The sweep skips with `agents_gate_off`; the
+    config route 403s both GET and PATCH while the gate is off. No AI key is
+    needed: the AI only words the note (see below).
   - The tab shows when either gate is on; a locked monitor renders a Lock card.
-- **Shared flow.** The existing hourly `leadstack-agents-watchdog` QStash schedule
-  (no new schedule) → `POST /api/agents/watchdog/step` →
-  [agents-watchdog-service.ts](../../src/lib/server/agents-watchdog-service.ts)::`runWatchdogSweep()`:
-  one `where("enabled","==",true)` over `customAgents`, dispatched by `type`
-  (absent = the watchdog). A stale-deals doc runs only when its id is
-  `{subAccountId}_stale-deals` for the `subAccountId` it carries.
-- **Stale deals (`type: "stale-deals"`).** Rules decide, the model only writes
+- **Shared step.** The existing hourly `leadstack-agents-watchdog` QStash schedule
+  (no new schedule) → `POST /api/agents/watchdog/step` runs the watchdog sweep
+  ([agents-watchdog-service.ts](../../src/lib/server/agents-watchdog-service.ts),
+  which skips stale-deals docs) FIRST, then
+  [agents-stale-deals-service.ts](../../src/lib/server/agents-stale-deals-service.ts)::`runStaleDealsSweep()`
+  inside a 40 s budget shared by every stale-deals agent (least recently run
+  first; whatever is left goes first next hour). A stale-deals failure is logged
+  and never fails the watchdog's response. A stale-deals doc runs only when its
+  id is `{subAccountId}_stale-deals` for the `subAccountId` it carries.
+- **Stale deals (`type: "stale-deals"`).** Rules decide, the model only words
   the note.
-  - Query `deals(subAccountId, stageChangedAt <= now − thresholdDays)` ordered
-    ascending, paged (5 × 200). Composite index `deals(subAccountId,
-    stageChangedAt ASC)`.
+  - Query `deals(subAccountId, stageChangedAt <= now − thresholdDays)` in
+    (`stageChangedAt`, doc id) order, up to 5 pages of 200 per run, resuming from
+    the agent's persisted `scanCursor`; reaching the end of the window resets it,
+    so the next run starts from the oldest. Deals it can never flag therefore
+    can't pin the window. Composite index `deals(subAccountId, stageChangedAt ASC)`.
   - In memory: drop `mode == "test"` (a deal with no `mode` — form and quote
     deals — is live, so `mode` is not a query filter); pipelines outside
     `pipelineIds`; `excludeStageKeys` (`pipelineId:stageId`); any stage that is
     terminal on the deal's OWN pipeline (`dealStage` over `readPipelines`, so a
     custom pipeline's Won/Lost count) or cannot be resolved; deals already
-    alerted this stage visit (`staleAlertedAt >= stageChangedAt`).
-  - Per deal (≤60 checked, ≤20 flagged per run): skip when there is an open task
-    on the deal, a conversation message either way inside the window, or a
-    contact activity with `meta.dealId` inside the window.
+    alerted this stage visit (`staleAlertedAt >= stageChangedAt`); deals held
+    by `staleRecheckAt`.
+  - Per deal (≤60 checked, ≤20 flagged per run; the cursor stays before what
+    a cap or the budget left): the contact counts only if it belongs to the same
+    sub-account. Recent work = an open task on the deal, a conversation message
+    either way inside the window, or a contact activity with `meta.dealId` = the
+    deal inside the window (queried by deal id; index `activities(meta.dealId,
+    createdAt DESC)`). Recent work stamps `staleCheckedAt` and `staleRecheckAt` =
+    when that work ages out (an open task: a day), and the deal is skipped until then.
   - Claim, then act. The visit is claimed in a transaction that re-reads the
     deal and stamps `staleAlertedAt` only if `stageChangedAt` is unchanged and
     the visit is unclaimed — so two overlapping sweeps raise one alert, and a
-    deal that moved stage mid-run is left armed. A claim is never released: if
-    the task write then fails, that visit's alert is lost (logged).
-  - One `callAi` per flagged deal (`maxTokens: 80`) writes the "suggested next
-    step"; a spent daily budget or a failed call keeps the templated note. Task
-    with `dealId` (`createdByUid: "ai-monitor"`), push (tag
-    `stale-deal-{dealId}`, the deal's territory; a legacy untagged deal reaches
-    admins only; suppressed in quiet hours), activity row.
+    deal that moved stage mid-run is left armed. If the Task write fails the
+    claim is released the same way, so a later pass retries; a Task that did
+    land is an open task, which the retry's recent-work check finds.
+  - The note: one `callAi` per flagged deal (`maxTokens: 80`) only when an AI
+    key is configured and the daily budget has room; otherwise, or on failure,
+    a templated note. The deal title, contact name and stage go in as one-line
+    labelled data with quotes and control characters stripped, and the system
+    prompt says not to follow instructions in them. A note containing a link,
+    domain, phone number or email address is replaced by the template.
+  - Actions: a Task with `dealId` (`createdByUid: "ai-monitor"`), assigned to
+    `deal.assignedToUid` while that member is active, on the deal's territory
+    (a legacy untagged deal → `null`, admins only — never Global); a push (tag
+    `stale-deal-{dealId}`, same territory, at most 5 per run, suppressed in quiet
+    hours); an activity row on the contact (same-sub-account contacts only).
   - Re-arm: every stage writer stamps `stageChangedAt` with the server time
     (`deals-service`, `v1/deals/[id]`, bulk import, workflow `move_stage` through
     the service), which is later than the stamp.
@@ -63,11 +80,14 @@ Agents ([monitors/page.tsx](../../src/app/(dashboard)/sa/[subAccountId]/ai-agent
 - **Assistant.** No tools yet: `stale_deals_status` /
   `configure_stale_deals_monitor` are unit T3.
 - **Deploy step.** `firebase deploy --only firestore:rules,firestore:indexes` —
-  without the `deals(subAccountId, stageChangedAt ASC)` composite the sweep's
-  query throws FAILED_PRECONDITION and the run is recorded as failed. No rules
+  without the `deals(subAccountId, stageChangedAt ASC)` and
+  `activities(meta.dealId, createdAt DESC)` composites the sweep's queries throw
+  FAILED_PRECONDITION and the run is recorded as failed. No rules
   change: deals are already server-write-only.
-- **Tests.** [agents-stale-deals.test.ts](../../src/lib/server/agents-stale-deals.test.ts)
-  (real sweep, pipelines, task writer and deal-service stage move over the
-  in-memory Firestore) and the route's
+- **Tests.** [agents-stale-deals-service.test.ts](../../src/lib/server/agents-stale-deals-service.test.ts)
+  (per deal) and [.scan.test.ts](../../src/lib/server/agents-stale-deals-service.scan.test.ts)
+  (cursor, hold, caps, budget, watchdog gates) — real sweep, pipelines, task
+  writer and deal-service stage move over the in-memory Firestore; the step
+  route's order test; and the config route's
   [route.test.ts](../../src/app/api/sub-accounts/[id]/agents/stale-deals/route.test.ts).
   Monitors page: `e2e/specs/agent-monitors.spec.ts`.
