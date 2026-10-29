@@ -22,9 +22,12 @@ export type EventStatus =
 /**
  * Origin of an event. Defaults to `"manual"` for legacy events — read
  * via `eventSource()`. Booking-page-created events also fire the
- * `event_booked` automation trigger; manual events do not.
+ * `event_booked` automation trigger; manual events do not. `"google"` =
+ * imported from a member's Google Calendar: read-only, and kept out of
+ * availability, pushes, reminders, the .ics feed, the API, the assistant
+ * and search — test it with `isImportedEvent()`.
  */
-export type EventSource = "manual" | "booking_page";
+export type EventSource = "manual" | "booking_page" | "google";
 
 export interface CalendarEvent {
   id: string;
@@ -123,6 +126,12 @@ export interface CalendarEvent {
   rescheduledAt?: Timestamp | FieldValue | null;
   /** Number of times this event has been rescheduled. Undefined/0 = never. */
   rescheduleCount?: number;
+  /**
+   * Imported events only (`source: "google"`): the member whose Google
+   * Calendar it came from. Never `assignedToUid` / `hostUids`, which make an
+   * event a booking for its hosts.
+   */
+  importOwnerUid?: string | null;
   /** SEQUENCE of the last invite update sent; see `nextIcsSequence`. */
   icsSequence?: number;
   /**
@@ -187,6 +196,14 @@ export function eventStatus(
   e: Pick<CalendarEvent, "status"> | { status?: EventStatus },
 ): EventStatus {
   return e.status ?? "scheduled";
+}
+
+/** `source` of an imported Google event — for queries; in code, test `isImportedEvent()`. */
+export const IMPORTED_EVENT_SOURCE = "google" satisfies EventSource;
+
+/** Imported from Google: read-only in the CRM and excluded from bookings, feeds and the API. */
+export function isImportedEvent(e: { source?: EventSource } | null | undefined): boolean {
+  return e?.source === IMPORTED_EVENT_SOURCE;
 }
 
 /**

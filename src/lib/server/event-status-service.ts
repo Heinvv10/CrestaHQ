@@ -9,7 +9,7 @@ import {
   fireBookingTrigger,
   recordBookingActivity,
 } from "@/lib/booking/lifecycle";
-import { eventStatus, isValidStatusTransition } from "@/types/events";
+import { eventStatus, isImportedEvent, isValidStatusTransition } from "@/types/events";
 import type { ActivityType } from "@/types/contacts";
 import type { AutomationTriggerType } from "@/types";
 import type {
@@ -91,10 +91,12 @@ function eventHasStarted(
  * write itself will apply.
  */
 export function statusChangeError(
-  event: { startAt: CalendarEvent["startAt"] | Date } & Pick<CalendarEvent, "status">,
+  event: { startAt: CalendarEvent["startAt"] | Date } & Pick<CalendarEvent, "status" | "source">,
   next: EventStatus,
   nowMs: number,
 ): string | null {
+  // Read-only in the CRM: its status is whatever Google says.
+  if (isImportedEvent(event)) return "This event comes from Google Calendar — change it there.";
   const current = eventStatus(event);
   const transitionError = statusTransitionError(current, next);
   if (transitionError) return transitionError;
