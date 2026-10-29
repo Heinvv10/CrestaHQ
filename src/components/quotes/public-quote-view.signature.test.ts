@@ -57,6 +57,19 @@ const button = (text: string) => {
 };
 const click = (el: Element) => act(async () => { (el as HTMLElement).click(); });
 
+/**
+ * Until the page has POSTed, then let the answer render. The signed accept
+ * hashes with WebCrypto before it posts, which a loaded runner makes slow, so
+ * a fixed number of ticks races it.
+ */
+async function untilPosted() {
+  await act(async () => {
+    await vi.waitFor(() => expect(calls).toHaveLength(1), { timeout: 10_000 });
+  });
+  await tick();
+  await tick();
+}
+
 async function signAs(name: string) {
   await click(button("Sign & accept"));
   const input = host.querySelector<HTMLInputElement>("#signer-name")!;
@@ -66,8 +79,7 @@ async function signAs(name: string) {
   });
   await click(host.querySelector('[role="checkbox"]')!);
   await click(button("Accept & sign"));
-  await tick();
-  await tick();
+  await untilPosted();
 }
 
 beforeEach(() => {
@@ -89,7 +101,7 @@ it("a signature switched on after load: the 400 tells the visitor to refresh", a
   answer(400, { error: "Type your full name to sign (2–120 characters)." });
   await render({ ...QUOTE, requireSignature: false });
   await click(button("Accept this quote"));
-  await tick();
+  await untilPosted();
   expect(host.textContent).toContain("This quote now needs your signature — refresh the page to sign it.");
   expect(host.textContent).not.toContain("Type your full name");
   expect(host.textContent).not.toContain("Quote accepted");
