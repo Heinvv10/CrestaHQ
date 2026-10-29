@@ -25,8 +25,9 @@ export async function refInSubAccount(
   if (!snap.exists) return false;
   const data = snap.data() ?? {};
   if (data.subAccountId !== subAccountId) return false;
-  // An imported Google event is never visible to an API key or agent.
-  if (mode !== undefined && collection === "events" && isImportedEvent(data)) return false;
+  // An imported Google event is a member's own calendar, never a record
+  // anything links to.
+  if (collection === "events" && isImportedEvent(data)) return false;
   if (mode === undefined || data.mode === mode) return true;
   // Events ONLY: booking-page and voice bookings are written without a
   // `mode`, and are still this sub-account's events. Deliberately, a test-mode

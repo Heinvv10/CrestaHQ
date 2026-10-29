@@ -126,6 +126,12 @@ export interface CalendarEvent {
   rescheduledAt?: Timestamp | FieldValue | null;
   /** Number of times this event has been rescheduled. Undefined/0 = never. */
   rescheduleCount?: number;
+  /**
+   * Imported events only (`source: "google"`): the member whose Google
+   * Calendar it came from. Never `assignedToUid` / `hostUids`, which make an
+   * event a booking for its hosts.
+   */
+  importOwnerUid?: string | null;
   /** SEQUENCE of the last invite update sent; see `nextIcsSequence`. */
   icsSequence?: number;
   /**
@@ -192,9 +198,12 @@ export function eventStatus(
   return e.status ?? "scheduled";
 }
 
+/** `source` of an imported Google event — for queries; in code, test `isImportedEvent()`. */
+export const IMPORTED_EVENT_SOURCE = "google" satisfies EventSource;
+
 /** Imported from Google: read-only in the CRM and excluded from bookings, feeds and the API. */
 export function isImportedEvent(e: { source?: EventSource } | null | undefined): boolean {
-  return e?.source === "google";
+  return e?.source === IMPORTED_EVENT_SOURCE;
 }
 
 /**

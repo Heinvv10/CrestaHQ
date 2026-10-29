@@ -4,9 +4,11 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 /**
  * An API key never sees an event imported from a member's Google Calendar:
  * not in the list, not by id (read, patch, delete), and not as a task's
- * `event_id`. Imported events carry no `mode`, which the queries already
- * filter on; each case is also run with a `mode` stamped on, so that
- * `source` alone keeps the event out.
+ * `event_id`. The importer writes no `mode`, and the list and by-id routes
+ * already filter on it — so those cases stamp the key's mode on, leaving
+ * `source` as the only thing that keeps the event out. A task link is
+ * checked both ways: refInSubAccount accepts any mode-less event (bookings
+ * carry none), so there `source` decides even without a mode.
  */
 
 const mem = createMemoryFirestore();
@@ -49,18 +51,27 @@ const call = (
   );
 
 const START = new Date("2026-09-20T09:00:00Z");
-describe.each([
-  ["without a mode", {}],
-  ["even with a mode stamped on", { mode: "live" }],
-])("an imported Google event, %s", (_label, modeField) => {
-  beforeEach(() => {
-    mem.clear();
-    const own = { subAccountId: "sa1", agencyId: "ag1" };
-    mem.seed("events/manual", { ...own, mode: "live", title: "Visit", startAt: START, endAt: START });
-    mem.seed("events/g1", {
-      ...own, ...modeField, source: "google", title: "Dentist", startAt: new Date(START.getTime() + 1), endAt: START,
-    });
+const own = { subAccountId: "sa1", agencyId: "ag1" };
+const seedImported = (extra: Record<string, unknown>) => {
+  mem.clear();
+  mem.seed("events/manual", { ...own, mode: "live", title: "Visit", startAt: START, endAt: START });
+  mem.seed("events/booking", { ...own, title: "Booked", source: "booking_page", startAt: START, endAt: START });
+  mem.seed("events/g1", {
+    ...own, ...extra, source: "google", importOwnerUid: "u1", title: "Dentist", startAt: new Date(START.getTime() + 1), endAt: START,
   });
+};
+const postTask = (eventId: string) =>
+  tasks.POST(
+    new Request("http://x/api/v1/tasks", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "New", event_id: eventId }),
+    }),
+    { params: undefined } as never,
+  );
+
+describe("an imported Google event stamped with the key's mode", () => {
+  beforeEach(() => seedImported({ mode: "live" }));
 
   it("is not listed", async () => {
     const res = await list.GET(new Request("http://x/api/v1/events?limit=20"), { params: undefined } as never);
@@ -74,18 +85,21 @@ describe.each([
     expect(mem.read("events/g1")?.title).toBe("Dentist");
     expect((await call(byId.DELETE, "DELETE", "g1")).status).toBe(404);
     expect(mem.read("events/g1")).toBeDefined();
+    expect((await call(byId.GET, "GET", "manual")).status).toBe(200);
   });
 
   it("can't be a task's event_id", async () => {
-    const res = await tasks.POST(
-      new Request("http://x/api/v1/tasks", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: "New", event_id: "g1" }),
-      }),
-      { params: undefined } as never,
-    );
-    expect(res.status).toBe(400);
+    expect((await postTask("g1")).status).toBe(400);
     expect(mem.list("tasks")).toEqual([]);
+  });
+});
+
+describe("an imported Google event as the importer writes it (no mode)", () => {
+  beforeEach(() => seedImported({}));
+
+  it("can't be a task's event_id, though a mode-less booking can", async () => {
+    expect((await postTask("g1")).status).toBe(400);
+    expect(mem.list("tasks")).toEqual([]);
+    expect((await postTask("booking")).status).toBe(201);
   });
 });

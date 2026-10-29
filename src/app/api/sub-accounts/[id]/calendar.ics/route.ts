@@ -159,11 +159,10 @@ export async function GET(
   try {
     if (hostMode && host) {
       // Per-host feed: every booking this member attends — owned, or a
-      // collective one listing them — earliest first, same cap.
+      // collective one listing them — earliest first, same cap, paged past
+      // imported events like the all-bookings feed below.
       eventDocs = (
-        await queryHostEvents(subAccountId, host, (q) =>
-          window(q).limit(FEED_EVENT_CAP),
-        )
+        await queryHostEvents(subAccountId, host, window, { want: FEED_EVENT_CAP })
       )
         .sort((a, b) => startMs(a) - startMs(b))
         .slice(0, FEED_EVENT_CAP);

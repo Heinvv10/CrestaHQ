@@ -49,12 +49,27 @@ describe("calendar.ics and imported Google events", () => {
     expect(ics).not.toContain("Private dentist");
   });
 
-  it("the per-host feed leaves them out", async () => {
+  it("the per-host feed leaves out the owner's imported events", async () => {
     seed("b1", "Ann's booking", 24, { assignedToUid: "ann" });
-    seed("g1", "Ann's dentist", 25, { assignedToUid: "ann", source: "google" });
+    seed("g1", "Ann's dentist", 25, { importOwnerUid: "ann", source: "google" });
     const ics = await fetchFeed(buildHostCalendarFeedUrl("sa1", "ann"));
     expect(ics).toContain("Ann's booking");
     expect(ics).not.toContain("Ann's dentist");
+  });
+
+  // Defence: an importer that wrongly stamped host fields still can't leak
+  // them, nor crowd real bookings out of the host feed's cap.
+  it("the per-host feed: 600 earlier imported events per host query don't push her bookings out", async () => {
+    for (let i = 0; i < 600; i++) {
+      seed(`go${i}`, `Imported owned ${i}`, 1 + i / 1000, { source: "google", assignedToUid: "ann" });
+      seed(`gl${i}`, `Imported listed ${i}`, 1 + i / 1000, { source: "google", hostUids: ["ann"] });
+    }
+    seed("late", "Ann's later booking", 48, { assignedToUid: "ann" });
+    seed("late-col", "Ann's collective", 49, { assignedToUid: "bob", hostUids: ["bob", "ann"] });
+    const ics = await fetchFeed(buildHostCalendarFeedUrl("sa1", "ann"));
+    expect(ics).toContain("Ann's later booking");
+    expect(ics).toContain("Ann's collective");
+    expect(ics).not.toContain("Imported");
   });
 
   it("600 earlier imported events don't push a real booking out of the cap", async () => {

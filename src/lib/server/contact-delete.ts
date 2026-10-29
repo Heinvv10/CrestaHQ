@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitContactDeleted } from "@/lib/server/contacts-service";
 import { isDocId } from "@/lib/server/doc-id";
+import { IMPORTED_EVENT_SOURCE } from "@/types/events";
 
 /**
  * THE contact delete. Both the single DELETE /api/contacts/[id] route and
@@ -91,7 +92,7 @@ function importedEventsOf(
     .collection("events")
     .where("subAccountId", "==", subAccountId)
     .where("contactId", "==", contactId)
-    .where("source", "==", "google");
+    .where("source", "==", IMPORTED_EVENT_SOURCE);
 }
 
 export interface ContactBlocker {

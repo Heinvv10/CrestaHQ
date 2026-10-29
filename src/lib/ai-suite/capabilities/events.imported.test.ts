@@ -72,9 +72,44 @@ describe("tools that act on an event by id", () => {
     expect(mem.read("events/g1")?.status).toBe("awaiting_payment");
   });
 
-  it("mark_booking_paid refuses it", async () => {
+  it("mark_booking_paid refuses it at approval, preview and an approved execute", async () => {
     const cap = getCapability("mark_booking_paid")!;
     await expect(cap.approvalTarget!(ctx as never, { eventId: "g1" })).rejects.toThrow(refusal);
     await expect(cap.preview!(ctx as never, { eventId: "g1" })).rejects.toThrow(refusal);
+    // Approved, with the pin a booking with these fields would carry: only the
+    // imported refusal can stop it.
+    const approved = {
+      ...ctx,
+      approved: { pinned: { eventId: "g1", contactId: null, emailTo: null, reminders: [], workflows: [] } },
+    };
+    await expect(cap.execute(approved as never, { eventId: "g1" })).rejects.toThrow(refusal);
+    expect(mem.read("events/g1")?.status).toBe("awaiting_payment");
+  });
+});
+
+describe("record counts", () => {
+  beforeEach(() => {
+    mem.seed("events/b1", ev({ title: "Real booking" }));
+    mem.seed("events/b2", ev({ title: "Past booking", startAt: inHours(-5), endAt: inHours(-4) }));
+    mem.seed("events/g1", ev({ source: "google" }));
+    mem.seed("events/g2", ev({ source: "google", startAt: inHours(-5), endAt: inHours(-4) }));
+  });
+
+  it("workspace_stats counts upcoming events without imported ones", async () => {
+    expect(await run("workspace_stats", {})).toContain("- Upcoming calendar events: 1");
+  });
+
+  it("workspace_stats for a territory-scoped caller too", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", aiSuiteEnabledByAgency: true, timezone: "UTC", name: "W", territoryScopingEnabled: true });
+    mem.seed("subAccounts/sa1/subAccountMembers/u1", { role: "collaborator", status: "active", assignedTerritoryIds: ["north"] });
+    const scoped = { ...ctx, subAccountRole: "collaborator" };
+    const text = (await getCapability("workspace_stats")!.execute(scoped as never, {})).resultText;
+    expect(text).toContain("- Upcoming calendar events: 1");
+  });
+
+  it("sub_account_stats counts calendar events without imported ones", async () => {
+    const agencyCtx = { uid: "owner1", email: "", displayName: "", agencyId: "ag1", agencyRole: "owner" };
+    const text = (await getCapability("sub_account_stats")!.execute(agencyCtx as never, { subAccountId: "sa1" })).resultText;
+    expect(text).toContain(" 2 calendar events");
   });
 });

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * subscribeToAppointments must never read a sub-account's whole history:
@@ -200,15 +200,101 @@ it("unsubscribing stops both listeners", () => {
   expect(m.unsubs).toBe(2);
 });
 
+/** A snapshot mixing real events and imported Google events ("g…" ids). */
+function mixed(events: { id: string; startMs: number }[]) {
+  const base = snap(events);
+  return {
+    size: base.size,
+    docs: base.docs.map((d) =>
+      d.id.startsWith("g") ? { ...d, data: () => ({ ...d.data(), source: "google" }) } : d,
+    ),
+  };
+}
+const ids = (cb: ReturnType<typeof vi.fn>) =>
+  cb.mock.calls.at(-1)![0].events.map((e: { id: string }) => e.id);
+
 it("leaves imported Google events out of the list: they stay on the calendar only", () => {
   const cb = vi.fn();
   subscribeToAppointments(SCOPE, { pastLimit: 200 }, cb);
-  const booking = snap([{ id: "u1", startMs: NOW + 1000 }]);
-  const imported = snap([{ id: "g1", startMs: NOW + 2000 }]).docs.map((d) => ({
-    ...d,
-    data: () => ({ ...d.data(), source: "google" }),
-  }));
-  m.nexts[0]({ size: 2, docs: [...booking.docs, ...imported] });
+  m.nexts[0](mixed([{ id: "u1", startMs: NOW + 1000 }, { id: "g1", startMs: NOW + 2000 }]));
   m.nexts[1](snap([]));
-  expect(cb.mock.calls[0][0].events.map((e: { id: string }) => e.id)).toEqual(["u1"]);
+  expect(ids(cb)).toEqual(["u1"]);
+});
+
+describe("imported Google events never take real appointments' places", () => {
+  it("a half they fill is re-read with room for them, then shows its real events", () => {
+    const cb = vi.fn();
+    subscribeToAppointments(SCOPE, { pastLimit: 2 }, cb);
+    m.nexts[0](snap([]));
+    // Limit 3 (pastLimit + 1), two of them imported: only one real event seen.
+    m.nexts[1](mixed([
+      { id: "g2", startMs: NOW - 1000 },
+      { id: "g1", startMs: NOW - 2000 },
+      { id: "p3", startMs: NOW - 3000 },
+    ]));
+    expect(cb).not.toHaveBeenCalled();
+    expect(m.unsubs).toBe(1);
+    expect(m.queries[2]).toContainEqual({ limit: 5 });
+    m.nexts[2](mixed([
+      { id: "g2", startMs: NOW - 1000 },
+      { id: "g1", startMs: NOW - 2000 },
+      { id: "p3", startMs: NOW - 3000 },
+      { id: "p2", startMs: NOW - 4000 },
+      { id: "p1", startMs: NOW - 5000 },
+    ]));
+    expect(ids(cb)).toEqual(["p2", "p3"]);
+    expect(cb.mock.calls.at(-1)![0].pastTruncated).toBe(true);
+  });
+
+  it("truncation counts real events only: imported ones alone never make a half truncated", () => {
+    const cb = vi.fn();
+    subscribeToAppointments(SCOPE, { pastLimit: 2 }, cb);
+    m.nexts[0](snap([]));
+    const half = [
+      { id: "g2", startMs: NOW - 1000 },
+      { id: "g1", startMs: NOW - 2000 },
+      { id: "p1", startMs: NOW - 3000 },
+    ];
+    m.nexts[1](mixed(half));
+    m.nexts[2](mixed(half));
+    expect(ids(cb)).toEqual(["p1"]);
+    expect(cb.mock.calls.at(-1)![0].pastTruncated).toBe(false);
+  });
+
+  it("the upcoming half too", () => {
+    const cb = vi.fn();
+    subscribeToAppointments(SCOPE, { pastLimit: 200 }, cb);
+    const crowd = Array.from({ length: APPOINTMENTS_UPCOMING_LIMIT + 1 }, (_, i) => ({
+      id: `g${i}`,
+      startMs: NOW + 1000 + i,
+    }));
+    m.nexts[0](mixed(crowd));
+    m.nexts[1](snap([]));
+    m.nexts[2](mixed([...crowd, { id: "u1", startMs: NOW + 9_000_000 }]));
+    expect(ids(cb)).toEqual(["u1"]);
+    expect(cb.mock.calls.at(-1)![0].upcomingTruncated).toBe(false);
+  });
+
+  it("stops growing at 4x the limit and then says the half may be missing events", () => {
+    const cb = vi.fn();
+    subscribeToAppointments(SCOPE, { pastLimit: 2 }, cb);
+    m.nexts[0](snap([]));
+    const allImported = (n: number) =>
+      mixed(Array.from({ length: n }, (_, i) => ({ id: `g${i}`, startMs: NOW - 1000 - i })));
+    m.nexts[1](allImported(3));
+    m.nexts[2](allImported(6));
+    m.nexts[3](allImported(9));
+    m.nexts[4](allImported(12));
+    expect(m.queries[4]).toContainEqual({ limit: 12 });
+    expect(m.nexts).toHaveLength(5);
+    expect(ids(cb)).toEqual([]);
+    expect(cb.mock.calls.at(-1)![0].pastTruncated).toBe(true);
+  });
+
+  it("unsubscribing after a refill stops the current listener", () => {
+    const unsub = subscribeToAppointments(SCOPE, { pastLimit: 2 }, vi.fn());
+    m.nexts[1](mixed([{ id: "g2", startMs: NOW - 1000 }, { id: "g1", startMs: NOW - 2000 }, { id: "g0", startMs: NOW - 3000 }]));
+    unsub();
+    expect(m.unsubs).toBe(3);
+  });
 });

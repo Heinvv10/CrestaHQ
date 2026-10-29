@@ -226,13 +226,19 @@ async function loadEventBusy(
     if (d.id === excludeEventId || seen.has(d.id)) continue;
     seen.add(d.id);
     const e = d.data() as CalendarEvent;
-    // Imported Google events: the hosts' Google busy already covers them, and
-    // with no host on them they would block every host.
-    if (isImportedEvent(e)) continue;
     // Skip malformed timestamps so one bad doc can't break every slot.
     const startAt = toDate(e.startAt);
     const endAt = toDate(e.endAt);
     if (!startAt || !endAt) continue;
+    // An imported Google event blocks its owner only — from this copy, so it
+    // still holds while their live Google busy fails open. Never a booking.
+    if (isImportedEvent(e)) {
+      const owner = e.importOwnerUid;
+      if (owner && eventOccupiesSlot(eventStatus(e))) {
+        busy.push({ startAt, endAt, hostUids: [owner], bookingPageSlug: null, ownerOnly: true });
+      }
+      continue;
+    }
     const status = eventStatus(e);
     const entry: HostBusy = {
       startAt,
