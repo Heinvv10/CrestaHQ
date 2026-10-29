@@ -46,7 +46,8 @@ channel is all it spends.
   previous test post for that sub-account (per instance). The window is shared with
   POST (connect), whatever URL it saves: both claim it synchronously just before
   their test post, so concurrent requests post once. A post that fails releases the
-  claim (a mistyped hook can be retried at once); a test refused before posting (not
+  claim (a mistyped hook can be retried at once), compare-and-delete, so a slow post
+  failing after its window cannot release a newer claim; a test refused before posting (not
   connected, invalid URL) never claims it.
 - POST and PATCH answer 400 for a body that is not a JSON object, and for an
   `events` that is present but not an array.
@@ -69,7 +70,7 @@ with a new one.", and Send test answers 400 with the same text.
 
 Log lines never carry a webhook URL: `redactSlackUrls` replaces with `[slack-url]`
 the URL being posted to or stored (every log site passes it; the routes read it
-with `slackUrlForRedaction`) and its token segment in any case; any
+with `slackUrlForRedaction`, only on the branch that logs) and its token segment in any case; any
 `hooks.slack.com` URL or `/services/…` path, plain, JSON-escaped or once/twice
 percent-encoded; and any 24+ character alphanumeric run (what is left of a hook
 split across lines; Firestore ids are 20).
@@ -156,6 +157,8 @@ key-written fields on the record and checking them here; it is not done.
   control.
 - `src/lib/slack/cache.test.ts` — disconnect, reconnect and PATCH reach the next event.
 - `src/lib/slack/throttle.test.ts` — ~1 s spacing; the 31st waiting post is dropped.
+- Re-break repro H1 (#449 on 83b13e4d, `races-4.test.ts`): a stale failure does not
+  release a newer cooldown claim.
 - Re-break repros (#449 on fec1dc43, `races-3.test.ts`): no cooldown bypass by
   delete + re-POST, alternating URLs or concurrent POSTs; a failed connect releases
   it; a revoked hook's backlog stops; untick/re-tick and preview flaps; redaction

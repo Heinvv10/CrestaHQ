@@ -42,16 +42,21 @@ export class SlackError extends Error {
 const TEST_COOLDOWN_MS = 5_000;
 const lastTestAt = new Map<string, number>();
 
-function claimTestSlot(subAccountId: string): void {
+/** Claims the slot; returns the claim's stamp for `releaseTestSlot`. */
+function claimTestSlot(subAccountId: string): number {
   const last = lastTestAt.get(subAccountId);
-  if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
+  const now = Date.now();
+  if (last !== undefined && now - last < TEST_COOLDOWN_MS) {
     throw new SlackError("A test was just sent. Wait a few seconds before sending another.", 429);
   }
-  lastTestAt.set(subAccountId, Date.now());
+  lastTestAt.set(subAccountId, now);
+  return now;
 }
 
-function releaseTestSlot(subAccountId: string): void {
-  lastTestAt.delete(subAccountId);
+/** Compare-and-delete: a slow post that fails after its window ran out must
+ *  not release a newer claim made meanwhile. */
+function releaseTestSlot(subAccountId: string, stamp: number): void {
+  if (lastTestAt.get(subAccountId) === stamp) lastTestAt.delete(subAccountId);
 }
 
 function privateRef(subAccountId: string) {
@@ -130,10 +135,10 @@ export async function connectSlack(opts: {
       400,
     );
   }
-  claimTestSlot(opts.subAccountId);
+  const claim = claimTestSlot(opts.subAccountId);
   const test = await postSlackMessage(url, slackTestMessage(appUrl(), opts.subAccountId));
   if (!test.ok) {
-    releaseTestSlot(opts.subAccountId);
+    releaseTestSlot(opts.subAccountId, claim);
     throw new SlackError(test.error ?? "Slack rejected the test message.", 502);
   }
 
@@ -232,9 +237,9 @@ export async function sendSlackTest(
     throw new SlackError("Connect a Slack channel first.", 400);
   }
   // Only a test that will post starts the window.
-  claimTestSlot(subAccountId);
+  const claim = claimTestSlot(subAccountId);
   const result = await postSlackMessage(url, slackTestMessage(appUrl(), subAccountId));
-  if (!result.ok) releaseTestSlot(subAccountId);
+  if (!result.ok) releaseTestSlot(subAccountId, claim);
   await recordSlackResult(subAccountId, url, result);
   if (!result.ok) {
     throw new SlackError(result.error ?? "Slack rejected the test message.", 502);

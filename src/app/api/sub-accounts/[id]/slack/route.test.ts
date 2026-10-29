@@ -147,6 +147,18 @@ describe("events, test and disconnect", () => {
     expect((await testRoute.POST(req("POST"), ctx())).status).toBe(429);
   });
 
+  it("an expected refusal (SlackError) never reads the stored URL", async () => {
+    mem.seed("subAccounts/sa1/private/slack", { webhookUrl: URL_A });
+    const doc = vi.spyOn(mem.db, "doc");
+    try {
+      // Not connected: updateSlackSettings refuses with a SlackError.
+      expect((await route.PATCH(req("PATCH", { events: [] }), ctx())).status).toBe(400);
+      expect(doc.mock.calls.map(([p]) => p)).not.toContain("subAccounts/sa1/private/slack");
+    } finally {
+      doc.mockRestore();
+    }
+  });
+
   it("an unexpected route error is logged with the stored URL's secret redacted", async () => {
     const short = "https://hooks.slack.com/services/T1/B1/shortsecret1";
     mem.seed("subAccounts/sa1", { agencyId: "ag1", slackMeta: { connected: true, events: [], needsReconnect: false } });
