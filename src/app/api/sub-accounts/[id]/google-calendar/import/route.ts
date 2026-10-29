@@ -2,10 +2,10 @@ import "server-only";
 
 import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
-import { readConnection } from "@/lib/google-calendar/connection";
 import { googleCalendarGateOn } from "@/lib/google-calendar/gate";
 import { runCalendarImport } from "@/lib/google-calendar/import";
-import { setImportMode, setWorkspaceImportAllowed } from "@/lib/google-calendar/import-state";
+import { ImportModeRefusedError, setImportMode, setWorkspaceImportAllowed } from "@/lib/google-calendar/import-state";
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { gcalAppConfigured } from "@/lib/google-calendar/provider/mode";
 import { runAfterResponse } from "@/lib/server/after-response";
 import { isDocId } from "@/lib/server/doc-id";
@@ -27,6 +27,8 @@ export const maxDuration = 60;
 type Ctx = { params: Promise<{ id: string }> };
 const MODES = new Set(["off", "busy", "details"]);
 const SYNC_NOW_MS = 45_000;
+/** A member's full pass (Sync now, or the one a mode change starts) at most once a minute. */
+const FULL_COOLDOWN_MS = 60_000;
 
 export async function PATCH(request: Request, ctx: Ctx) {
   const { id } = await ctx.params;
@@ -64,7 +66,17 @@ export async function PATCH(request: Request, ctx: Ctx) {
         return NextResponse.json({ error: "Google Calendar isn't configured on this deployment." }, { status: 503 });
       }
     }
+    const before = (await getAdminDb().doc(`subAccounts/${id}`).get()).data()?.calendarImportAllowed === true;
     const removed = await setWorkspaceImportAllowed(id, body.allowWorkspace);
+    if (before !== body.allowWorkspace) {
+      // Logs and swallows its own failure: the switch already landed.
+      await recordSubAccountAuditEvent(getAdminDb(), id, {
+        action: "calendar_import.workspace_changed",
+        actor: { type: "user", id: access.uid },
+        target: { type: "subAccount", id },
+        changes: [{ field: "calendarImportAllowed", before, after: body.allowWorkspace }],
+      });
+    }
     return NextResponse.json({ ok: true, removed });
   }
 
@@ -76,28 +88,43 @@ export async function PATCH(request: Request, ctx: Ctx) {
     if (mode !== "off") {
       const refused = await gateOff();
       if (refused) return refused;
-      const sub = (await getAdminDb().doc(`subAccounts/${id}`).get()).data();
-      if (sub?.calendarImportAllowed !== true) {
-        return NextResponse.json(
-          { error: "An admin hasn't allowed Google Calendar import in this workspace.", code: "not_allowed" },
-          { status: 403 },
-        );
-      }
-      const conn = await readConnection(id, access.uid);
-      if (conn?.status !== "connected") {
-        return NextResponse.json({ error: "Connect your Google Calendar first.", code: "not_connected" }, { status: 409 });
-      }
     }
-    const removed = await setImportMode(id, access.uid, mode as "off" | "busy" | "details");
-    if (mode !== "off") runAfterResponse(() => runCalendarImport(id, access.uid, { full: true }));
+    let removed: number;
+    try {
+      // The allowance and the connection are checked inside its transaction.
+      removed = await setImportMode(id, access.uid, mode as "off" | "busy" | "details");
+    } catch (err) {
+      if (!(err instanceof ImportModeRefusedError)) throw err;
+      return err.code === "not_allowed"
+        ? NextResponse.json(
+            { error: "An admin hasn't allowed Google Calendar import in this workspace.", code: "not_allowed" },
+            { status: 403 },
+          )
+        : NextResponse.json({ error: "Connect your Google Calendar first.", code: "not_connected" }, { status: 409 });
+    }
+    // Within the cooldown this pass is skipped; the mode change forgot the
+    // sync token, so the next scheduled pass is the full one.
+    if (mode !== "off") {
+      runAfterResponse(() => runCalendarImport(id, access.uid, { full: true, minFullIntervalMs: FULL_COOLDOWN_MS }));
+    }
     return NextResponse.json({ ok: true, removed });
   }
 
   if (body.syncNow !== true) return NextResponse.json({ error: "syncNow must be true" }, { status: 400 });
   const refused = await gateOff();
   if (refused) return refused;
-  const result = await runCalendarImport(id, access.uid, { full: true, deadlineMs: Date.now() + SYNC_NOW_MS });
-  if (result.skipped === "not_eligible" || result.skipped === "not_connected") {
+  const result = await runCalendarImport(id, access.uid, {
+    full: true,
+    deadlineMs: Date.now() + SYNC_NOW_MS,
+    minFullIntervalMs: FULL_COOLDOWN_MS,
+  });
+  if (result.skipped === "cooldown") {
+    return NextResponse.json({ error: "Synced less than a minute ago — try again shortly.", code: "cooldown" }, { status: 429 });
+  }
+  if (result.skipped === "in_progress") {
+    return NextResponse.json({ error: "A sync of your calendar is already running.", code: "in_progress" }, { status: 409 });
+  }
+  if (result.skipped) {
     return NextResponse.json({ error: "Import isn't on for your calendar.", code: result.skipped }, { status: 409 });
   }
   if (!result.ok) return NextResponse.json({ error: result.error ?? "Sync failed." }, { status: 502 });

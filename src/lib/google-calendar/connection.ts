@@ -40,7 +40,8 @@ export interface GoogleCalendarConnection {
   /**
    * Calendar import (lib/google-calendar/import.ts). Set only by the member
    * themself: "busy" stores times only, "details" also titles and places.
-   * Absent = off. A reconnect replaces the doc, so it resets to off.
+   * Absent = off. A reconnect replaces the doc, so it resets to off (and
+   * carries `importGeneration` forward, bumped).
    */
   importMode?: ImportMode;
   /** Bumped by every opt-in change; a running import that sees it move backs off. */
@@ -51,6 +52,11 @@ export interface GoogleCalendarConnection {
   importLastFullSyncAt?: Date | null;
   /** Last pass started — orders the sweep so a pass that keeps dying can't hog it. */
   importLastAttemptAt?: Date | null;
+  /** Last FULL pass started — the settings route's cooldown. */
+  importLastFullAttemptAt?: Date | null;
+  /** One pass at a time per member: who holds it, and until when. */
+  importLeaseId?: string | null;
+  importLeaseUntil?: Date | null;
   importStatus?: "ok" | "error" | null;
   /** Fixed text per failure kind, like `lastError`. */
   importError?: string | null;

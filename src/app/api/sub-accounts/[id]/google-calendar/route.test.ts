@@ -143,6 +143,11 @@ describe("connect", () => {
 });
 
 describe("callback (calendar purpose)", () => {
+  it("a first connect starts the import generation at 1", async () => {
+    await callback(calState(), "uid_member");
+    expect(state.docs.get(CAL_PATH("uid_member"))?.importGeneration).toBe(1);
+  });
+
   it("stores the member's own connection with the Google email, and nothing on the sub-account doc", async () => {
     const res = await callback(calState(), "uid_member");
     expect(gcal(res)).toBe("connected");
@@ -167,6 +172,8 @@ describe("callback (calendar purpose)", () => {
     state.docs.set("events/manual", { subAccountId: SUB, title: "Call", importOwnerUid: "uid_member" });
     expect(gcal(await callback(calState(), "uid_member"))).toBe("connected");
     expect(state.docs.get(CAL_PATH("uid_member"))).not.toHaveProperty("importMode");
+    // Carried forward and bumped: a pass started under the old connection never sees 3 again.
+    expect(state.docs.get(CAL_PATH("uid_member"))?.importGeneration).toBe(4);
     expect(state.docs.has("events/gcal_mine")).toBe(false);
     expect(state.docs.has("events/gcal_colleague")).toBe(true);
     expect(state.docs.has("events/manual")).toBe(true);

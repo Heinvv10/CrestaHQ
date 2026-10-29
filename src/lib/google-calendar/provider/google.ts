@@ -92,7 +92,7 @@ export const googleGcalProvider: GcalProvider = {
     throw new GbpProviderError("malformed");
   },
 
-  async syncEvents(accessToken, { syncToken, timeMin, timeMax, maxPages, details }, signal) {
+  async syncEvents(accessToken, { syncToken, timeMin, timeMax, maxPages, details, ordered }, signal) {
     const items: GcalEvent[] = [];
     let timeZone: string | null = null;
     let pageToken: string | null = null;
@@ -103,6 +103,7 @@ export const googleGcalProvider: GcalProvider = {
       else {
         params.set("timeMin", timeMin.toISOString());
         params.set("timeMax", timeMax.toISOString());
+        if (ordered) params.set("orderBy", "startTime");
       }
       if (pageToken) params.set("pageToken", pageToken);
       let body: { items?: unknown; timeZone?: unknown; nextPageToken?: unknown; nextSyncToken?: unknown } | null;

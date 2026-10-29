@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { mem } from "@/test/gbp-sync-store";
-import type { GcalEvent, GcalSyncResult } from "@/lib/google-calendar/provider/types";
+import type { GcalEvent, GcalProvider, GcalSyncResult } from "@/lib/google-calendar/provider/types";
 
 /**
  * Fixtures for the Google Calendar import tests (import.test.ts,
@@ -17,7 +17,7 @@ export const U2 = "u2";
 export const CONN = (uid: string) => `subAccounts/${SA}/private/googleCalendar_${uid}`;
 
 export const provider = {
-  syncEvents: vi.fn<(t: string, o: { syncToken: string | null; details: boolean }) => Promise<GcalSyncResult>>(),
+  syncEvents: vi.fn<(t: string, o: Parameters<GcalProvider["syncEvents"]>[1]) => Promise<GcalSyncResult>>(),
   refresh: vi.fn(),
   listEvents: vi.fn(),
   putEvent: vi.fn(async () => {}),

@@ -164,6 +164,66 @@ describe("re-runs and incremental sync", () => {
   });
 });
 
+describe("one pass at a time, and the full-pass cooldown", () => {
+  it("a pass while another holds the lease is skipped and calls Google not at all; the lease is given back after", async () => {
+    let inner: unknown;
+    provider.syncEvents.mockImplementationOnce(async () => {
+      inner = await runCalendarImport(SA, U1);
+      return page([gev("g1", 2, 3)]);
+    });
+    expect(await runCalendarImport(SA, U1)).toMatchObject({ ok: true, written: 1 });
+    expect(inner).toMatchObject({ ok: true, skipped: "in_progress" });
+    expect(provider.syncEvents).toHaveBeenCalledTimes(1);
+    expect(conn(U1)).toMatchObject({ importLeaseId: null, importLeaseUntil: null });
+  });
+
+  it("an expired lease (a pass that died) is taken over", async () => {
+    mem.seed(CONN(U1), { ...conn(U1), importLeaseId: "dead", importLeaseUntil: new Date(Date.now() - 1) });
+    provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));
+    expect(await runCalendarImport(SA, U1)).toMatchObject({ ok: true, written: 1 });
+  });
+
+  it("a full pass asked for within minFullIntervalMs of the last full attempt is skipped; a later one runs", async () => {
+    provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));
+    await runCalendarImport(SA, U1, { full: true, minFullIntervalMs: 60_000 });
+    expect(await runCalendarImport(SA, U1, { full: true, minFullIntervalMs: 60_000 })).toMatchObject({ skipped: "cooldown" });
+    expect(provider.syncEvents).toHaveBeenCalledTimes(1);
+    mem.seed(CONN(U1), { ...conn(U1), importLastFullAttemptAt: new Date(Date.now() - 61_000) });
+    expect(await runCalendarImport(SA, U1, { full: true, minFullIntervalMs: 60_000 })).toMatchObject({ ok: true, full: true });
+  });
+});
+
+describe("a calendar too big for one walk", () => {
+  it("re-walks ordered by start from now, so what is kept is the nearest upcoming; still no absence, no token", async () => {
+    provider.syncEvents.mockResolvedValueOnce(page([gev("g1", 2, 3)]));
+    await runCalendarImport(SA, U1);
+    provider.syncEvents
+      .mockResolvedValueOnce(page([gev("far", 24 * 100, 24 * 100 + 1)], { truncated: true, nextSyncToken: null }))
+      .mockResolvedValueOnce(page([gev("soon", 1, 2)], { truncated: true, nextSyncToken: null }));
+    await runCalendarImport(SA, U1, { full: true });
+    const ordered = provider.syncEvents.mock.calls[2][1];
+    expect(ordered).toMatchObject({ ordered: true, syncToken: null });
+    expect(Math.abs(ordered.timeMin.getTime() - Date.now())).toBeLessThan(60_000);
+    expect(docOf("soon")).toBeDefined();
+    expect(docOf("far")).toBeUndefined();
+    expect(docOf("g1")).toBeDefined();
+    expect(conn(U1)).toMatchObject({ importSyncToken: null, importError: expect.stringMatching(/some were skipped/) });
+  });
+});
+
+describe("rewrites", () => {
+  it("are a whole-doc set: a field outside the import's shape does not survive, createdAt does", async () => {
+    provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));
+    await runCalendarImport(SA, U1);
+    const id = importedEventDocId(SA, U1, "g1");
+    const createdAt = docOf("g1")!.createdAt;
+    mem.seed(`events/${id}`, { ...docOf("g1"), title: "stale", assignedToUid: "host_x" });
+    await runCalendarImport(SA, U1, { full: true });
+    expect(docOf("g1")).toMatchObject({ title: "Busy", createdAt });
+    expect(docOf("g1")).not.toHaveProperty("assignedToUid");
+  });
+});
+
 describe("an imported event is never a booking", () => {
   it("is never pushed back to Google", async () => {
     provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));

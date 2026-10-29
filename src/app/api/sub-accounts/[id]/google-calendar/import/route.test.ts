@@ -118,8 +118,13 @@ describe("the member's own opt-in", () => {
     const res = await patch(U1, { syncNow: true });
     expect(res.status).toBe(200);
     expect((await res.json()).result).toMatchObject({ ok: true, full: true, written: 1 });
-    setSub({ googleCalendarEnabledByAgency: false });
+    // A second Sync now within a minute of the last full pass: 429, no Google call.
     provider.syncEvents.mockClear();
+    const again = await patch(U1, { syncNow: true });
+    expect(again.status).toBe(429);
+    expect((await again.json()).code).toBe("cooldown");
+    expect(provider.syncEvents).not.toHaveBeenCalled();
+    setSub({ googleCalendarEnabledByAgency: false });
     expect((await patch(U1, { syncNow: true })).status).toBe(403);
     expect(provider.syncEvents).not.toHaveBeenCalled();
   });
@@ -138,6 +143,20 @@ describe("the admin's workspace switch", () => {
     vi.stubEnv("GOOGLE_CLIENT_ID", "cid");
     expect((await patch(ADMIN, { allowWorkspace: true })).status).toBe(200);
     expect(mem.read(`subAccounts/${SA}`)?.calendarImportAllowed).toBe(true);
+  });
+
+  it("an allowance change is audited (actor, before/after); a no-op save is not", async () => {
+    const audits = () => mem.list("auditEvents").filter((e) => e.action === "calendar_import.workspace_changed");
+    await patch(ADMIN, { allowWorkspace: true });
+    expect(audits()).toEqual([]);
+    await patch(ADMIN, { allowWorkspace: false });
+    expect(audits()).toHaveLength(1);
+    expect(audits()[0]).toMatchObject({
+      actor: { type: "user", id: ADMIN },
+      target: { type: "subAccount", id: SA },
+      subAccountId: SA,
+      changes: [{ field: "calendarImportAllowed", before: true, after: false }],
+    });
   });
 
   it("off works with the gate off, resets every member and removes every import", async () => {
@@ -160,6 +179,18 @@ describe("status and disconnect", () => {
     expect(Number.isNaN(Date.parse(body.importLastSyncAt))).toBe(false);
     expect(JSON.stringify(body)).not.toMatch(/tok-1|a-u1|r-u1/);
     expect(await (await call(GET, ADMIN)).json()).toMatchObject({ connected: false, importMode: "off", importedCount: 0 });
+  });
+
+  it("DELETE still disconnects when the import cleanup fails (logged; the orphan sweep is the backstop)", async () => {
+    const real = storeDb.collection;
+    const spy = vi.spyOn(storeDb, "collection").mockImplementation(((p: string) => {
+      if (p === "events") throw new Error("firestore down");
+      return real(p);
+    }) as typeof storeDb.collection);
+    expect((await call(DELETE, U1, "DELETE")).status).toBe(200);
+    spy.mockRestore();
+    expect(mem.read(CONN(U1))).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith(`[google-calendar] disconnect import cleanup failed sa=${SA}`, "firestore down");
   });
 
   it("DELETE removes the caller's imports with the connection, and only theirs", async () => {

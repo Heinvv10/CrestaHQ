@@ -61,7 +61,7 @@ describe("listEvents", () => {
 });
 
 describe("syncEvents (calendar import)", () => {
-  const sync = (o: Partial<{ syncToken: string | null; maxPages: number; details: boolean }> = {}) =>
+  const sync = (o: Partial<{ syncToken: string | null; maxPages: number; details: boolean; ordered: boolean }> = {}) =>
     g.syncEvents("tok", { syncToken: null, ...WINDOW, maxPages: 5, details: false, ...o });
 
   it("a full walk is windowed, follows pages, and returns Google's next sync token", async () => {
@@ -76,6 +76,14 @@ describe("syncEvents (calendar import)", () => {
     expect(q.get("singleEvents")).toBe("true");
     expect(q.has("syncToken")).toBe(false);
     expect(new URL(calls[1].url).searchParams.get("pageToken")).toBe("p2");
+  });
+
+  it("orders by start time only when asked (no sync token comes back for an ordered walk)", async () => {
+    stub({ body: { items: [] } }, { body: { items: [] } });
+    await sync();
+    await sync({ ordered: true });
+    expect(new URL(calls[0].url).searchParams.has("orderBy")).toBe(false);
+    expect(new URL(calls[1].url).searchParams.get("orderBy")).toBe("startTime");
   });
 
   it("an incremental walk sends only the token (Google refuses it with a window)", async () => {

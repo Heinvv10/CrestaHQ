@@ -101,11 +101,13 @@ export interface GcalProvider {
    * [timeMin, timeMax); otherwise only what changed since that token
    * (cancelled events included), and the window is NOT applied by Google.
    * Throws GcalSyncTokenExpiredError when Google refuses the token (410).
-   * `details` false: titles and places are not even requested.
+   * `details` false: titles and places are not even requested. `ordered`
+   * (full walks only): by start time, soonest first — Google then returns no
+   * sync token.
    */
   syncEvents(
     accessToken: string,
-    opts: { syncToken: string | null; timeMin: Date; timeMax: Date; maxPages: number; details: boolean },
+    opts: { syncToken: string | null; timeMin: Date; timeMax: Date; maxPages: number; details: boolean; ordered?: boolean },
     signal?: AbortSignal,
   ): Promise<GcalSyncResult>;
   /**

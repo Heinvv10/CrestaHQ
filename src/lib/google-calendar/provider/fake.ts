@@ -166,13 +166,14 @@ export function createFakeGcalProvider(
       return { items: calendar.events.filter(overlaps), timeZone: "UTC" };
     },
 
-    async syncEvents(accessToken, { syncToken, timeMin, timeMax, details }) {
+    async syncEvents(accessToken, { syncToken, timeMin, timeMax, details, ordered }) {
       const calendar = await authed(accessToken, "syncEvents");
       const shown = (e: FakeGcalEvent): GcalEvent => {
         const { description: _d, location, summary, ...rest } = e;
         return details ? { ...rest, summary, location } : rest;
       };
       let items: GcalEvent[];
+      const startMs = (e: GcalEvent) => Date.parse(e.start?.dateTime ?? `${e.start?.date}T00:00:00Z`);
       if (syncToken) {
         if (!mine("fake-gcal-sync", syncToken) || calendar.expireSyncToken) {
           if (calendar.expireSyncToken) await save({ ...calendar, expireSyncToken: false });
@@ -185,11 +186,12 @@ export function createFakeGcalProvider(
         ];
       } else {
         const overlaps = (e: FakeGcalEvent) => {
-          const start = Date.parse(e.start?.dateTime ?? `${e.start?.date}T00:00:00Z`);
           const end = Date.parse(e.end?.dateTime ?? `${e.end?.date}T00:00:00Z`);
-          return start < timeMax.getTime() && end > timeMin.getTime();
+          return startMs(e) < timeMax.getTime() && end > timeMin.getTime();
         };
         items = calendar.events.filter(overlaps).map(shown);
+        // As Google: ordered by start, and no sync token for an ordered walk.
+        if (ordered) return { items: items.sort((a, b) => startMs(a) - startMs(b)), timeZone: "UTC", nextSyncToken: null, truncated: false };
       }
       return { items, timeZone: "UTC", nextSyncToken: `fake-gcal-sync:${who}:${next()}`, truncated: false };
     },

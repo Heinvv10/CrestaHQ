@@ -41,7 +41,17 @@ export function workspaceAllowsImport(sub: SubData | null | undefined): boolean 
   return sub?.googleCalendarEnabledByAgency === true && sub?.calendarImportAllowed === true;
 }
 
-/** Every key an import pass started under; a changed value means a cleanup is (or was) running. */
+export const ms = (v: unknown): number => {
+  if (v instanceof Date) return v.getTime();
+  return (v as { toMillis?: () => number } | null)?.toMillis?.() ?? 0;
+};
+
+/**
+ * Every key an import pass started under; a changed value means a cleanup is
+ * (or was) running. `connectedAt` and `status` too: a reconnect (perhaps to
+ * another Google account) or a revoked grant is a different connection even
+ * when its opt-in and generation happen to read the same again.
+ */
 export function importFingerprint(sub: SubData | null | undefined, conn: GoogleCalendarConnection | null): string {
   return [
     sub ? "sa" : "no-sa",
@@ -49,6 +59,8 @@ export function importFingerprint(sub: SubData | null | undefined, conn: GoogleC
     sub?.calendarImportGeneration ?? 0,
     conn ? (conn.importMode ?? "off") : "no-conn",
     conn?.importGeneration ?? 0,
+    conn?.status ?? "-",
+    ms(conn?.connectedAt),
   ].join("|");
 }
 
@@ -74,16 +86,19 @@ export async function readImportState(subAccountId: string, uid: string): Promis
     agencyId: (sub as { agencyId?: string } | null)?.agencyId ?? null,
     conn,
     print: importFingerprint(sub, conn),
-    eligible: workspaceAllowsImport(sub) && importModeOn(conn?.importMode) && active,
+    // A revoked grant is not eligible either: its copy would never update again.
+    eligible: workspaceAllowsImport(sub) && importModeOn(conn?.importMode) && conn?.status === "connected" && active,
   };
 }
 
 function importedQuery(subAccountId: string, uid?: string) {
+  // "" is not "everyone": a blank uid must never widen to the whole workspace.
+  if (uid === "") throw new Error("google-calendar/import: empty uid");
   let q = getAdminDb()
     .collection("events")
     .where("subAccountId", "==", subAccountId)
     .where("source", "==", IMPORTED_EVENT_SOURCE);
-  if (uid) q = q.where("importOwnerUid", "==", uid);
+  if (uid !== undefined) q = q.where("importOwnerUid", "==", uid);
   return q;
 }
 
@@ -109,6 +124,38 @@ export async function deleteImportedEvents(subAccountId: string, uid?: string): 
   }
 }
 
+/**
+ * One member's imports, deleted only while the keys still read `print`: each
+ * page is deleted in a transaction that re-reads the sub-account and
+ * connection, so a pass that judged the member ineligible cannot wipe what a
+ * fresh opt-in has written since. Null when the keys moved (nothing more is
+ * deleted; the newer change owns the state).
+ */
+export async function deleteImportedEventsIfUnchanged(
+  subAccountId: string,
+  uid: string,
+  print: string,
+): Promise<number | null> {
+  const db = getAdminDb();
+  const subRef = db.doc(`subAccounts/${subAccountId}`);
+  const connRef = db.doc(gcalConnectionPath(subAccountId, uid));
+  let removed = 0;
+  for (;;) {
+    const page = await importedQuery(subAccountId, uid).limit(BATCH).get();
+    const ok = await db.runTransaction(async (tx) => {
+      const [s, c] = await tx.getAll(subRef, connRef);
+      if (importFingerprint(s.exists ? s.data() : null, c.exists ? (c.data() as GoogleCalendarConnection) : null) !== print) {
+        return false;
+      }
+      for (const d of page.docs) tx.delete(d.ref);
+      return true;
+    });
+    if (!ok) return null;
+    if (page.empty) return removed;
+    removed += page.size;
+  }
+}
+
 /** Times only, right now: titles and places go before the next sync. */
 export async function stripImportedDetails(subAccountId: string, uid: string): Promise<void> {
   const db = getAdminDb();
@@ -122,23 +169,46 @@ export async function stripImportedDetails(subAccountId: string, uid: string): P
   }
 }
 
-/** Make the stored imports match the CURRENT keys: delete when any is off, strip when busy-only. */
+/**
+ * Make the stored imports match the CURRENT keys: delete when any is off,
+ * strip when busy-only. The delete is guarded like a pass's own: if the keys
+ * move again meanwhile, the newer change owns the state.
+ */
 export async function enforceCurrentImportState(subAccountId: string, uid: string): Promise<void> {
   const state = await readImportState(subAccountId, uid);
-  if (!state.eligible) await deleteImportedEvents(subAccountId, uid);
+  if (!state.eligible) await deleteImportedEventsIfUnchanged(subAccountId, uid, state.print);
   else if (state.conn?.importMode === "busy") await stripImportedDetails(subAccountId, uid);
+}
+
+/** setImportMode refused a mode that switches import ON. */
+export class ImportModeRefusedError extends Error {
+  constructor(readonly code: "not_allowed" | "not_connected") {
+    super(`google-calendar/import: ${code}`);
+    this.name = "ImportModeRefusedError";
+  }
 }
 
 /**
  * The member's own opt-in. The generation bump comes first (see the race
  * rule); a new mode also forgets the sync token, so the next pass is a full
- * walk under the new detail level. Returns how many imports were removed.
+ * walk under the new detail level. Switching ON re-checks the workspace keys
+ * and the connection INSIDE the transaction (throws ImportModeRefusedError),
+ * so an admin's switch-off between the route's check and this write cannot
+ * leave an opt-in behind. Off always goes through. Returns how many imports
+ * were removed.
  */
 export async function setImportMode(subAccountId: string, uid: string, mode: ImportMode): Promise<number> {
   const db = getAdminDb();
   const ref = db.doc(gcalConnectionPath(subAccountId, uid));
+  const subRef = db.doc(`subAccounts/${subAccountId}`);
   const prev = await db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
+    const [subSnap, snap] = await tx.getAll(subRef, ref);
+    if (mode !== "off") {
+      if (!workspaceAllowsImport(subSnap.data() as SubData | undefined)) throw new ImportModeRefusedError("not_allowed");
+      if ((snap.data() as GoogleCalendarConnection | undefined)?.status !== "connected") {
+        throw new ImportModeRefusedError("not_connected");
+      }
+    }
     if (!snap.exists) return null;
     tx.update(ref, {
       importMode: mode,
@@ -190,11 +260,6 @@ export async function setWorkspaceImportAllowed(subAccountId: string, allowed: b
   return deleteImportedEvents(subAccountId);
 }
 
-const ms = (v: unknown): number => {
-  if (v instanceof Date) return v.getTime();
-  return (v as { toMillis?: () => number } | null)?.toMillis?.() ?? 0;
-};
-
 /** One read: does any workspace allow import? (The tick publishes nothing otherwise.) */
 export async function anyWorkspaceAllowsImport(): Promise<boolean> {
   const snap = await getAdminDb().collection("subAccounts").where("calendarImportAllowed", "==", true).limit(1).get();
@@ -221,9 +286,15 @@ export async function listImportTargets(): Promise<Array<{ subAccountId: string;
   return targets.sort((a, b) => a.last - b.last).map(({ subAccountId, uid }) => ({ subAccountId, uid }));
 }
 
+/** Where the daily orphan sweep stopped (server-only: no rule matches it, so clients are denied). */
+export const SWEEP_CURSOR_PATH = "appConfig/calendarImportSweep";
+
 /**
  * Safety net (daily): deletes imported docs whose workspace, member or
  * opt-in no longer allows them — whatever a failed cleanup left behind.
+ * Resumes after the doc id the last run stopped at, so a collection larger
+ * than one run's budget is still covered over the following days; reaching
+ * the end resets the cursor, so the next run starts from the top.
  */
 export async function sweepOrphanedImports(deadlineMs: number): Promise<number> {
   const db = getAdminDb();
@@ -237,8 +308,11 @@ export async function sweepOrphanedImports(deadlineMs: number): Promise<number> 
     return verdict.get(key)!;
   };
   let removed = 0;
+  const cursorRef = db.doc(SWEEP_CURSOR_PATH);
   // An id cursor, not a snapshot: the cursor doc may be one just deleted.
-  let cursor: string | null = null;
+  const saved = (await cursorRef.get()).data()?.cursor;
+  let cursor: string | null = typeof saved === "string" && saved ? saved : null;
+  let reachedEnd = false;
   while (Date.now() < deadlineMs) {
     let q = db
       .collection("events")
@@ -248,7 +322,10 @@ export async function sweepOrphanedImports(deadlineMs: number): Promise<number> 
       .limit(BATCH);
     if (cursor) q = q.startAfter(cursor);
     const page = await q.get();
-    if (page.empty) break;
+    if (page.empty) {
+      reachedEnd = true;
+      break;
+    }
     const doomed: FirebaseFirestore.DocumentReference[] = [];
     for (const d of page.docs) {
       const sa = d.data().subAccountId;
@@ -264,7 +341,11 @@ export async function sweepOrphanedImports(deadlineMs: number): Promise<number> 
     }
     removed += doomed.length;
     cursor = page.docs[page.docs.length - 1].id;
-    if (page.size < BATCH) break;
+    if (page.size < BATCH) {
+      reachedEnd = true;
+      break;
+    }
   }
+  await cursorRef.set({ cursor: reachedEnd ? null : cursor, updatedAt: FieldValue.serverTimestamp() });
   return removed;
 }

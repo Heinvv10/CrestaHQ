@@ -19,6 +19,7 @@ import { AG, CONN, SA, U1, U2, conn, connectMember, gev, imported, page, provide
 import { applyFeatureGates } from "@/lib/server/feature-gates-service";
 import { runCalendarImport } from "./import";
 import {
+  SWEEP_CURSOR_PATH,
   listImportTargets,
   setImportMode,
   setWorkspaceImportAllowed,
@@ -138,6 +139,28 @@ describe("the sweep", () => {
       { subAccountId: SA, uid: U2 },
       { subAccountId: SA, uid: U1 },
     ]);
+  });
+
+  it("the orphan sweep resumes after the cursor the last run saved, and reaching the end resets it", async () => {
+    for (const id of ["gcal_a", "gcal_b", "gcal_c"]) mem.seed(`events/${id}`, { subAccountId: "sa_gone", source: "google", importOwnerUid: U1 });
+    mem.seed(SWEEP_CURSOR_PATH, { cursor: "gcal_a" });
+    expect(await sweepOrphanedImports(Date.now() + 10_000)).toBe(2);
+    expect(mem.read("events/gcal_a")).toBeDefined();
+    expect(mem.read(SWEEP_CURSOR_PATH)?.cursor).toBeNull();
+    expect(await sweepOrphanedImports(Date.now() + 10_000)).toBe(1);
+    expect(mem.read("events/gcal_a")).toBeUndefined();
+  });
+
+  it("a run out of time saves where it stopped", async () => {
+    for (let i = 0; i < 450; i++) {
+      mem.seed(`events/gcal_${String(i).padStart(3, "0")}`, { subAccountId: SA, source: "google", importOwnerUid: U1 });
+    }
+    const base = Date.now();
+    let checks = 0;
+    // One loop turn (one page of 400), then the deadline has passed.
+    vi.spyOn(Date, "now").mockImplementation(() => (checks++ < 1 ? base : base + 60_000));
+    expect(await sweepOrphanedImports(base + 1_000)).toBe(0);
+    expect(mem.read(SWEEP_CURSOR_PATH)?.cursor).toBe("gcal_399");
   });
 
   it("the daily orphan sweep deletes imports no key allows any more, and keeps the rest", async () => {
