@@ -57,6 +57,13 @@ export interface EmitWebhookEventInput {
    * the staff push copy changes, so an agent can't put its text on phones.
    */
   byAgent?: boolean;
+  /**
+   * Who made the write (`createdByUid` / `byUid` of the write path):
+   * `apikey:<prefix>` for a public-API key or an agent, a uid for a person.
+   * Subscribers never see it; the Slack consumer posts fixed copy for an
+   * `apikey:` actor, so no key-chosen text reaches the team channel.
+   */
+  actorUid?: string;
 }
 
 export async function emitWebhookEvent(

@@ -9,7 +9,7 @@ import {
   disconnectSlack,
   getSlackConfig,
   sanitizeSlackEvents,
-  updateSlackEvents,
+  updateSlackSettings,
 } from "@/lib/server/slack-service";
 import { invalidateSlackHookCache } from "@/lib/slack/events";
 
@@ -19,7 +19,8 @@ import { invalidateSlackHookCache } from "@/lib/slack/events";
  * GET: display meta (never the URL).
  * POST { webhookUrl, channelLabel?, events? }: validate, prove with a test
  * post, store. Re-posting a new URL on a connected card is the reconnect path.
- * PATCH { events }: change the ticked events.
+ * PATCH { events?, includeMessagePreview? }: change the ticked events and
+ * whether inbound-message posts carry the message text.
  * DELETE: remove the hook and reset the meta.
  */
 
@@ -106,14 +107,25 @@ export async function PATCH(
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
-  if (!Array.isArray(body.events)) {
+  const hasEvents = "events" in body;
+  const hasPreview = "includeMessagePreview" in body;
+  if ((hasEvents && !Array.isArray(body.events)) || (!hasEvents && !hasPreview)) {
     return NextResponse.json(
       { error: "events must be an array of event types" },
       { status: 400 },
     );
   }
+  if (hasPreview && typeof body.includeMessagePreview !== "boolean") {
+    return NextResponse.json(
+      { error: "includeMessagePreview must be true or false" },
+      { status: 400 },
+    );
+  }
   try {
-    const config = await updateSlackEvents(id, sanitizeSlackEvents(body.events));
+    const config = await updateSlackSettings(id, {
+      ...(hasEvents ? { events: sanitizeSlackEvents(body.events) } : {}),
+      ...(hasPreview ? { includeMessagePreview: body.includeMessagePreview as boolean } : {}),
+    });
     invalidateSlackHookCache(id);
     return NextResponse.json({ ok: true, config });
   } catch (err) {

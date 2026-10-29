@@ -79,6 +79,7 @@ export function SubAccountSlackSection() {
   const [channelLabel, setChannelLabel] = useState("");
   const [events, setEvents] = useState<WebhookEventType[]>([]);
   const [eventsDirty, setEventsDirty] = useState(false);
+  const [includePreview, setIncludePreview] = useState(false);
   const [busy, setBusy] = useState<null | "connect" | "save" | "test" | "disconnect">(null);
   const [reconnecting, setReconnecting] = useState(false);
 
@@ -89,6 +90,7 @@ export function SubAccountSlackSection() {
       if (data.config) {
         setConfig(data.config);
         setEvents(data.config.events);
+        setIncludePreview(data.config.includeMessagePreview);
         setEventsDirty(false);
       }
     } catch {
@@ -130,6 +132,7 @@ export function SubAccountSlackSection() {
       if (data.config) {
         setConfig(data.config);
         setEvents(data.config.events);
+        setIncludePreview(data.config.includeMessagePreview);
         setEventsDirty(false);
       }
       setWebhookUrl("");
@@ -149,7 +152,7 @@ export function SubAccountSlackSection() {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/slack`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ events }),
+        body: JSON.stringify({ events, includeMessagePreview: includePreview }),
       });
       const data = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -235,6 +238,9 @@ export function SubAccountSlackSection() {
               Incoming Webhooks
             </a>
             , add one for the channel you want, and paste the URL here.
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Posts go to your Slack workspace and include contact names, emails, phone numbers and amounts.
           </p>
         </div>
       </header>
@@ -367,6 +373,17 @@ export function SubAccountSlackSection() {
                   </div>
                 ))}
               </div>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={includePreview}
+                  onCheckedChange={(v) => {
+                    setIncludePreview(v === true);
+                    setEventsDirty(true);
+                  }}
+                  disabled={busy !== null}
+                />
+                <span>Include the message text in inbound-message posts (off: the sender&apos;s first name only)</span>
+              </label>
               <div className="flex justify-end">
                 <Button type="button" size="sm" onClick={handleSaveEvents} disabled={busy !== null || !eventsDirty}>
                   {busy === "save" ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : null}

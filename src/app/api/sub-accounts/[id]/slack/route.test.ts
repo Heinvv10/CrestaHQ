@@ -51,7 +51,7 @@ describe("connect", () => {
     expect(publicFetch).toHaveBeenCalledWith(URL_A, expect.objectContaining({ method: "POST" }));
     expect(mem.read("subAccounts/sa1/private/slack")).toMatchObject({ webhookUrl: URL_A, connectedByUid: "admin1" });
     const meta = mem.read("subAccounts/sa1")!.slackMeta as Record<string, unknown>;
-    expect(meta).toMatchObject({ connected: true, channelLabel: "#sales", urlTail: TOKEN.slice(-6) });
+    expect(meta).toMatchObject({ connected: true, channelLabel: "#sales", urlTail: "aaaa", includeMessagePreview: false });
     expect(JSON.stringify(meta)).not.toContain(TOKEN);
     expect(await res.text()).not.toContain(TOKEN);
   });
@@ -85,7 +85,7 @@ describe("GET", () => {
     const text = await res.text();
     expect(text).not.toContain(TOKEN);
     expect(text).not.toContain("hooks.slack.com");
-    expect(JSON.parse(text).config).toMatchObject({ connected: true, urlTail: TOKEN.slice(-6) });
+    expect(JSON.parse(text).config).toMatchObject({ connected: true, urlTail: "aaaa", includeMessagePreview: false });
   });
 });
 
@@ -118,6 +118,20 @@ describe("events, test and disconnect", () => {
     const res = await route.PATCH(req("PATCH", { events: ["deal.won", "nope", "deal.won"] }), ctx());
     expect(res.status).toBe(200);
     expect((mem.read("subAccounts/sa1")!.slackMeta as { events: string[] }).events).toEqual(["deal.won"]);
+  });
+
+  it("PATCH sets includeMessagePreview, refuses a non-boolean, and a reconnect keeps it", async () => {
+    await connect();
+    const on = await route.PATCH(req("PATCH", { includeMessagePreview: true }), ctx());
+    expect(on.status).toBe(200);
+    expect((await on.json()).config).toMatchObject({ includeMessagePreview: true, events: expect.any(Array) });
+    expect((await route.PATCH(req("PATCH", { includeMessagePreview: "yes" }), ctx())).status).toBe(400);
+    expect((await route.PATCH(req("PATCH", {}), ctx())).status).toBe(400);
+    await connect();
+    expect((mem.read("subAccounts/sa1")!.slackMeta as Record<string, unknown>).includeMessagePreview).toBe(true);
+    await route.DELETE(req("DELETE"), ctx());
+    await connect();
+    expect((mem.read("subAccounts/sa1")!.slackMeta as Record<string, unknown>).includeMessagePreview).toBe(false);
   });
 
   it("test refuses a stored URL that isn't a Slack hook", async () => {

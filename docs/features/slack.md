@@ -19,13 +19,16 @@ actions. The assistant tools (`slack_status`, `configure_slack_events`,
 Settings → Admin tab → **Slack notifications**
 ([sub-account-slack-section.tsx](../../src/components/settings/sub-account-slack-section.tsx)),
 admins only. Paste the URL (and an optional channel label), and the server posts a
-test message before anything is stored. Once connected the card shows the label,
-the URL's last 6 characters, the last post time and last error, and the event
-picker (every `WEBHOOK_EVENT_CATEGORIES` entry). Reconnect means pasting a new URL;
-the old one is never shown again.
+test message before anything is stored. The card says in one line that posts carry
+contact names, emails, phone numbers and amounts to the client's Slack workspace.
+Once connected it shows the label, the URL's last 4 characters, the last post time
+and last error, the event picker (every `WEBHOOK_EVENT_CATEGORIES` entry) and the
+"Include the message text" option. Reconnect means pasting a new URL; the old one is
+never shown again.
 
 Defaults on connect: `contact.created`, `message.received`, `booking.created`,
-`call.missed`, `quote.accepted`, `quote.declined`. A reconnect keeps the ticked set.
+`call.missed`, `quote.accepted`, `quote.declined`, with `includeMessagePreview` off.
+A reconnect keeps the ticked set and the preview choice.
 
 ## Routes (`/api/sub-accounts/[id]/slack`, sub-account admins)
 
@@ -36,7 +39,8 @@ channel is all it spends.
 - **POST `{ webhookUrl, channelLabel?, events? }`** — validate, test-post, store.
   400 on a URL that isn't a Slack hook, 502 when Slack refuses the test post
   (nothing stored).
-- **PATCH `{ events }`** — unknown event names are dropped.
+- **PATCH `{ events?, includeMessagePreview? }`** — at least one; unknown event
+  names are dropped, `includeMessagePreview` must be a boolean.
 - **DELETE** — deletes the private doc and sets `slackMeta` to null.
 - **POST `…/slack/test`** — re-sends the "connected" message.
 
@@ -84,12 +88,36 @@ generic line for the rest.
 
 Tenant text is escaped once, at the end: `&`, `<`, `>` become entities (so no
 `<link|label>` or `<!channel>`), `*`, `~` and `` ` `` are dropped, the headline is
-capped at 150 and the context at 400 characters before escaping. A write made by an
-API agent (`byAgent`) posts fixed copy, as push does, never the agent's text.
+capped at 150 and the context at 400 characters before escaping; whitespace and
+newlines in the headline collapse to single spaces.
+
+`message.received` posts "New message from <first name>" and nothing else unless the
+hook's `includeMessagePreview` is on; then it posts the name, channel and the first
+200 characters of the message.
+
+A write made with a public-API key or by an agent posts fixed copy ("<Category>
+changed by an API agent", "New contact added by an API agent"), never the text the
+key chose. It is keyed off the emit input: `byAgent`, or `actorUid` starting
+`apikey:`. `actorUid` is set on every v1 route that emits (contacts delete, deals
+create/update/delete, tasks create/update, events create/cancel, form submissions)
+and by the services the agent tools write through (`createContactServerSide` /
+`upsertContactByPhone` via `createdByUid`, `createDealServerSide`,
+`updateDealServerSide`, `deleteDealServerSide`, `createTaskServerSide`,
+`setTaskCompletedServerSide`, `patchTaskServerSide`, `createEventServerSide`).
+Paths left without it post only fixed text anyway: `contact.updated` from
+`updateContactServerSide`, `member.*`, and quote events (number, totals and signer
+are server- or recipient-written). Billing and community events are not in the
+picker.
 
 ## Tests
 
-- `src/lib/slack/format.test.ts` — URL validator refusals, escaping, caps, agent copy.
+- `src/lib/slack/format.test.ts` — URL validator refusals, escaping, caps, headline
+  whitespace, message preview on/off, agent copy.
+- `src/lib/slack/agent-copy.test.ts` — v1 task and deal writes (create, complete,
+  stage move, won) through the real routes post fixed copy; a person's task is the
+  control.
+- `src/lib/slack/cache.test.ts` — disconnect, reconnect and PATCH reach the next event.
+- `src/lib/slack/throttle.test.ts` — ~1 s spacing; the 31st waiting post is dropped.
 - `src/lib/slack/events.test.ts` — through the real `emitWebhookEvent`: posts,
   skips, deliveries still scheduled when Slack throws or hangs, 404/410 revoke, a
   stale revoke not flagging a replaced URL.

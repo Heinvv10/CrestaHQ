@@ -68,6 +68,29 @@ describe("dispatch → Slack", () => {
     const [url, init] = publicFetch.mock.calls[0];
     expect(url).toBe(URL_A);
     expect(JSON.parse(init.body).text).toBe("New lead: Ann");
+    // The deadline and the body cap are what make an unresponsive or
+    // oversized answer harmless; both must reach publicFetch.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.signal.aborted).toBe(false);
+    expect(init.maxBytes).toBe(4 * 1024);
+  });
+
+  it("an inbound message posts the first name only, unless the hook opts in to the text", async () => {
+    const message = { contact_id: "c1", contact_name: "Ann Lee", channel: "sms", preview: "my id is 800101" };
+    connect("sa-msg", URL_A, ["message.received"]);
+    await emit("sa-msg", { type: "message.received", payload: { message } });
+    await flushAfterResponse();
+    expect(JSON.parse(publicFetch.mock.calls[0][1].body).text).toBe("New message from Ann");
+    expect(publicFetch.mock.calls[0][1].body).not.toContain("800101");
+
+    connect("sa-msg-on", URL_A, ["message.received"]);
+    mem.seed("subAccounts/sa-msg-on", {
+      ...mem.read("subAccounts/sa-msg-on"),
+      slackMeta: { ...meta("sa-msg-on"), includeMessagePreview: true },
+    });
+    await emit("sa-msg-on", { type: "message.received", payload: { message } });
+    await flushAfterResponse();
+    expect(JSON.parse(publicFetch.mock.calls[1][1].body).text).toBe("Ann Lee replied on SMS — “my id is 800101”");
   });
 
   it("does not post test-mode events or events that aren't ticked", async () => {

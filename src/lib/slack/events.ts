@@ -74,7 +74,9 @@ export async function dispatchSlackForWebhookEvent(
   try {
     const hook = await hookFor(input.subAccountId);
     if (!hook || !hook.events.includes(input.type)) return;
-    const message = buildSlackMessage(input, appUrl());
+    const message = buildSlackMessage(input, appUrl(), {
+      includeMessagePreview: hook.includeMessagePreview,
+    });
     const first = await throttled(input.subAccountId, () =>
       postSlackMessage(hook.webhookUrl, message),
     );

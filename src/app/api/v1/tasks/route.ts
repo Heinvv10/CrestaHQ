@@ -156,6 +156,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     mode: ctx.mode,
     type: "task.created",
     payload: { task: wire },
+    actorUid: `apikey:${ctx.keyPrefix}`,
   }));
   if (input.contactId) {
     await writeTaskCreatedActivity(db, {

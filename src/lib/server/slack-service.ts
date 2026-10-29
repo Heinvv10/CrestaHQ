@@ -61,6 +61,7 @@ export function serializeSlackMeta(
     channelLabel: meta?.channelLabel ?? null,
     urlTail: meta?.urlTail ?? null,
     events: Array.isArray(meta?.events) ? meta.events : [],
+    includeMessagePreview: meta?.includeMessagePreview === true,
     lastSentAt: tsToIso(meta?.lastSentAt),
     lastError: meta?.lastError ?? null,
     needsReconnect: meta?.needsReconnect === true,
@@ -133,8 +134,10 @@ export async function connectSlack(opts: {
         opts.channelLabel === undefined
           ? existing?.channelLabel ?? null
           : opts.channelLabel?.trim().slice(0, 60) || null,
-      urlTail: url.slice(-6),
+      urlTail: url.slice(-4),
       events,
+      // A reconnect keeps the choice; a first connect starts with it off.
+      includeMessagePreview: existing?.connected === true && existing.includeMessagePreview === true,
       lastSentAt: FieldValue.serverTimestamp(),
       lastError: null,
       needsReconnect: false,
@@ -150,9 +153,10 @@ export async function connectSlack(opts: {
   return getSlackConfig(opts.subAccountId);
 }
 
-export async function updateSlackEvents(
+/** Change the ticked events and/or the message-preview choice. */
+export async function updateSlackSettings(
   subAccountId: string,
-  events: WebhookEventType[],
+  patch: { events?: WebhookEventType[]; includeMessagePreview?: boolean },
 ): Promise<SlackConfigResponse> {
   await getAdminDb().runTransaction(async (tx) => {
     const meta = metaOf((await tx.get(subRef(subAccountId))).data());
@@ -160,7 +164,10 @@ export async function updateSlackEvents(
       throw new SlackError("Connect a Slack channel first.", 400);
     }
     tx.update(subRef(subAccountId), {
-      "slackMeta.events": events,
+      ...(patch.events !== undefined ? { "slackMeta.events": patch.events } : {}),
+      ...(patch.includeMessagePreview !== undefined
+        ? { "slackMeta.includeMessagePreview": patch.includeMessagePreview }
+        : {}),
       "slackMeta.updatedAt": FieldValue.serverTimestamp(),
     });
   });
@@ -211,7 +218,11 @@ export async function disconnectSlack(subAccountId: string): Promise<void> {
 /** Read the hook for a post; null when not connected, revoked or invalid. */
 export async function loadSlackHook(
   subAccountId: string,
-): Promise<{ webhookUrl: string; events: WebhookEventType[] } | null> {
+): Promise<{
+  webhookUrl: string;
+  events: WebhookEventType[];
+  includeMessagePreview: boolean;
+} | null> {
   const meta = metaOf((await subRef(subAccountId).get()).data());
   if (!meta?.connected || meta.needsReconnect) return null;
   const webhookUrl = await storedUrl(subAccountId);
@@ -219,6 +230,7 @@ export async function loadSlackHook(
   return {
     webhookUrl,
     events: Array.isArray(meta.events) ? meta.events : [],
+    includeMessagePreview: meta.includeMessagePreview === true,
   };
 }
 

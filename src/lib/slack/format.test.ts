@@ -66,6 +66,7 @@ describe("buildSlackMessage", () => {
     const reply = buildSlackMessage(
       ev({ type: "message.received", payload: { message: { channel: "<!here>", contact_name: "Ann" } } }),
       null,
+      { includeMessagePreview: true },
     );
     expect(reply.text).toBe("Ann replied on &lt;!here&gt;");
     const deal = buildSlackMessage(
@@ -73,6 +74,34 @@ describe("buildSlackMessage", () => {
       null,
     );
     expect(deal.text).toBe("Deal won: D — &lt;X&gt; 5");
+  });
+
+  it("collapses whitespace and newlines in the headline", () => {
+    const msg = buildSlackMessage(ev({ payload: { contact: { name: "Ann\n\n*bold*\t  Lee " } } }), null);
+    expect(msg.text).toBe("New lead: Ann bold Lee");
+    expect(sectionText(msg)).toBe("*New lead: Ann bold Lee*");
+  });
+
+  it("message.received without the preview option: first name only, no context", () => {
+    const input = ev({
+      type: "message.received",
+      payload: { message: { contact_name: "  Ann Lee", preview: "secret", channel: "sms" } },
+    });
+    const off = buildSlackMessage(input, null);
+    expect(off.text).toBe("New message from Ann");
+    expect(sectionText(off)).toBe("*New message from Ann*");
+    expect(buildSlackMessage(ev({ type: "message.received", payload: { message: {} } }), null).text).toBe("New message");
+    expect(buildSlackMessage(input, null, { includeMessagePreview: true }).text).toBe("Ann Lee replied on SMS — “secret”");
+  });
+
+  it("an apikey: actor is agent-made even without byAgent", () => {
+    const msg = buildSlackMessage(
+      ev({ type: "task.created", actorUid: "apikey:lsk_live_x", payload: { task: { title: "Call 0800" } } }),
+      null,
+    );
+    expect(msg.text).toBe("Tasks &amp; Events changed by an API agent");
+    const human = buildSlackMessage(ev({ type: "task.created", actorUid: "u1", payload: { task: { title: "Call" } } }), null);
+    expect(human.text).toBe("New task: Call");
   });
 
   it("caps the headline and context", () => {

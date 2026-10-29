@@ -116,6 +116,19 @@ function seg(id: string): string {
   return encodeURIComponent(id);
 }
 
+/**
+ * The write came from a public-API key or an agent: the emit path says so
+ * (`byAgent`), or its actor is an `apikey:` uid.
+ */
+function agentMade(input: EmitWebhookEventInput): boolean {
+  return input.byAgent === true || input.actorUid?.startsWith("apikey:") === true;
+}
+
+export interface SlackFormatOptions {
+  /** Post the text of an inbound message; off = "New message from <first name>". */
+  includeMessagePreview?: boolean;
+}
+
 interface Built {
   headline: string;
   context: string | null;
@@ -123,11 +136,11 @@ interface Built {
   path: string;
 }
 
-function build(input: EmitWebhookEventInput): Built {
+function build(input: EmitWebhookEventInput, opts: SlackFormatOptions): Built {
   const sa = input.subAccountId;
   const p = rec(input.payload);
 
-  if (input.byAgent) {
+  if (agentMade(input)) {
     // Fixed copy, as on push: no agent-chosen text reaches the team channel.
     const id = str(rec(p.contact).id);
     return {
@@ -157,13 +170,18 @@ function build(input: EmitWebhookEventInput): Built {
     case "message.received": {
       const m = rec(p.message);
       const contactId = str(m.contact_id);
+      const path = contactId ? `/sa/${seg(sa)}/conversations/${seg(contactId)}` : `/sa/${seg(sa)}/conversations`;
+      if (!opts.includeMessagePreview) {
+        const first = str(m.contact_name)?.trim().split(/\s+/)[0];
+        return { headline: first ? `New message from ${first}` : "New message", context: null, path };
+      }
       const channel = str(m.channel);
       const name = str(m.contact_name) ?? "Unknown contact";
       const preview = str(m.preview);
       return {
         headline: `${name} replied${channel ? ` on ${CHANNEL_LABELS[channel] ?? channel}` : ""}`,
         context: preview ? `“${preview.slice(0, 200)}”` : null,
-        path: contactId ? `/sa/${seg(sa)}/conversations/${seg(contactId)}` : `/sa/${seg(sa)}/conversations`,
+        path,
       };
     }
     case "booking.created":
@@ -290,9 +308,11 @@ function build(input: EmitWebhookEventInput): Built {
 export function buildSlackMessage(
   input: EmitWebhookEventInput,
   appUrl: string | null,
+  opts: SlackFormatOptions = {},
 ): SlackMessage {
-  const built = build(input);
-  const headline = esc(cap(built.headline, HEADLINE_MAX));
+  const built = build(input, opts);
+  // One line: a newline in a name would otherwise break out of the bold.
+  const headline = esc(cap(built.headline.replace(/\s+/g, " ").trim(), HEADLINE_MAX));
   const context = built.context ? esc(cap(built.context, CONTEXT_MAX)) : null;
   const text = context ? `${headline} — ${context}` : headline;
   const blocks: unknown[] = [

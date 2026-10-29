@@ -333,9 +333,9 @@ holding it can post to the channel), `connectedByUid` and `connectedAt`. Admin
 SDK only under the `private/{docId}` deny rule; read and written only by
 `lib/server/slack-service.ts`, which re-checks the URL (`isSlackWebhookUrl`)
 every time it reads it. The parent carries only the display copy `slackMeta`
-(`SlackMeta`: `connected`, `channelLabel`, `urlTail` — the last 6 characters —
-`events`, `lastSentAt`, `lastError`, `needsReconnect`, `updatedAt`; null =
-not connected), server-written; status stamps land in a transaction only while
+(`SlackMeta`: `connected`, `channelLabel`, `urlTail` — the last 4 characters —
+`events`, `includeMessagePreview` (absent = false), `lastSentAt`, `lastError`,
+`needsReconnect`, `updatedAt`; null = not connected), server-written; status stamps land in a transaction only while
 the stored URL is still the one posted to. Disconnect deletes the private doc
 and sets `slackMeta` to null. `slackMeta` is in `CHANNEL_CONNECTION_FIELDS`.
 No new rule or index. See [slack.md](../features/slack.md).

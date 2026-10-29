@@ -21,6 +21,12 @@ export interface SlackMeta {
   /** Last characters of the URL so the card can show which hook is in place. */
   urlTail: string | null;
   events: WebhookEventType[];
+  /**
+   * Post the text of inbound messages. Off (the default, and when absent):
+   * "New message from <first name>" only. The text is the contact's own
+   * words, so posting it to a third-party workspace is the admin's choice.
+   */
+  includeMessagePreview?: boolean;
   lastSentAt: Timestamp | FieldValue | Date | null;
   /** Set when the last post failed; cleared by the next success. */
   lastError: string | null;
@@ -76,6 +82,7 @@ export interface SlackConfigResponse {
   channelLabel: string | null;
   urlTail: string | null;
   events: WebhookEventType[];
+  includeMessagePreview: boolean;
   lastSentAt: string | null;
   lastError: string | null;
   needsReconnect: boolean;
