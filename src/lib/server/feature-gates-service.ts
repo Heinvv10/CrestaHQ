@@ -66,6 +66,11 @@ export type AgencyGateField =
   // account the client owns, an explicit per-client decision.
   | "webVoiceEnabledByAgency"
   | "dialerEnabledByAgency"
+  // Agent monitors, selling online and AI texts — standalone: they spend AI
+  // credits, move money, and message customers, so no plan may switch them.
+  | "agentsEnabledByAgency"
+  | "sellOnlineEnabledByAgency"
+  | "aiOutboundSmsEnabledByAgency"
   // Email AI drafts — standalone: AI-written replies to a client's customers
   // are an explicit per-client decision, not a plan perk.
   | "emailAiDraftsEnabledByAgency"

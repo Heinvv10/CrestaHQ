@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { GLOBAL_TERRITORY_ID } from "@/types";
+import { isImportedEvent } from "@/types/events";
 
 /**
  * Re-tag a contact's territory and fan the change out to everything the
@@ -87,18 +88,23 @@ export async function PATCH(
     )
   );
 
+  // Imported Google events keep their own territory: they follow their
+  // owner, not the contact.
+  const eventDocs = childSnaps[3].docs.filter((d) => !isImportedEvent(d.data()));
+
   // Build the full ref list (contact + all children), then commit in
   // 500-op batches.
   const refs: FirebaseFirestore.DocumentReference[] = [];
-  for (const snap of childSnaps) {
+  for (const snap of childSnaps.slice(0, 3)) {
     for (const d of snap.docs) refs.push(d.ref);
   }
+  for (const d of eventDocs) refs.push(d.ref);
 
   const counts: Record<string, number> = {
     deals: childSnaps[0].size,
     quotes: childSnaps[1].size,
     tasks: childSnaps[2].size,
-    events: childSnaps[3].size,
+    events: eventDocs.length,
   };
 
   const stamp = FieldValue.serverTimestamp();

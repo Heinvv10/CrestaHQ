@@ -244,3 +244,30 @@ describe("removeBookingFromGoogleBeforeDelete", () => {
     expect(await removeBookingFromGoogleBeforeDelete("ev_1")).toEqual({ ok: true });
   });
 });
+
+describe("an imported Google event", () => {
+  // Defence: stamped with a host (an importer never does — it sets
+  // importOwnerUid), so only `source` stops the push.
+  it("is never pushed back to Google, even stamped with a host, and nothing is written to it", async () => {
+    connect("host_a");
+    seedEvent({ source: "google", bookingPageSlug: null, assignedToUid: "host_a" });
+    const before = { ...event() };
+    await pushBookingToGoogle("ev_1");
+    expect(provider.putEvent).not.toHaveBeenCalled();
+    expect(event()).toEqual(before);
+  });
+
+  it("is never removed from Google: the member's own event survives a cancel or delete", async () => {
+    connect("host_a");
+    seedEvent({
+      source: "google",
+      status: "cancelled",
+      assignedToUid: null,
+      importOwnerUid: "host_a",
+      googleEventIds: { host_a: "g_members_own" },
+    });
+    await pushBookingToGoogle("ev_1");
+    await removeBookingFromGoogle("ev_1");
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+  });
+});
