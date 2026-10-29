@@ -30,28 +30,12 @@ export function uploadedLogoPath(scope: LogoScope, id: string): string {
 }
 
 /**
- * Whether `url` is THIS tenant's uploaded logo: same origin as
- * NEXT_PUBLIC_APP_URL and exactly its serving path. Another tenant's logo,
- * another host, or the prefix anywhere else (`?r=/api/brand/logo/`) is a
- * pasted URL. False when the app URL is unset.
- */
-export function isUploadedLogoUrl(
-  url: string | null | undefined,
-  scope: LogoScope,
-  id: string,
-): boolean {
-  const base = process.env.NEXT_PUBLIC_APP_URL?.trim();
-  if (!url || !base || !URL.canParse(url) || !URL.canParse(base)) return false;
-  const parsed = new URL(url);
-  return parsed.origin === new URL(base).origin && parsed.pathname === uploadedLogoPath(scope, id);
-}
-
-/**
- * Looser than isUploadedLogoUrl, for Remove on the server: any absolute URL
- * whose path is exactly this tenant's serving path, on any origin. A logo
- * uploaded before NEXT_PUBLIC_APP_URL changed still clears instead of being
- * left pointing at a deleted blob. Another tenant's path, or the prefix in a
- * query, still doesn't match.
+ * Whether `url` is this tenant's uploaded logo, as Remove decides it (the
+ * DELETE routes and the cards' Remove button): an absolute URL whose path is
+ * exactly this tenant's serving path, on any origin, so a logo uploaded
+ * before NEXT_PUBLIC_APP_URL changed still clears instead of being left
+ * pointing at a deleted blob. Another tenant's path, the other scope, or the
+ * prefix in a query doesn't match.
  */
 export function pointsAtUploadedLogo(
   url: string | null | undefined,
