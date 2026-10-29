@@ -206,6 +206,13 @@ describe("an action marker runs only as the whole reply", () => {
     expect(book).not.toHaveBeenCalled();
   });
 
+  it("a sloppy-quoted marker never runs", async () => {
+    expect(await runBookingTool(input({ modelText: `[[book start='${SLOT_A}' name='Ann' email='ann@example.com']]` }))).toBeNull();
+    expect(await runBookingTool(input({ modelText: "[[slots host=Jane]]" }))).toBeNull();
+    expect(book).not.toHaveBeenCalled();
+    expect(engine.listAgentSlots).not.toHaveBeenCalled();
+  });
+
   it("a hyphenated lookalike keyword is not a marker", async () => {
     expect(await runBookingTool(input({ modelText: `[[book-x start="${SLOT_A}" ${WEB_ID}]]` }))).toBeNull();
     expect(book).not.toHaveBeenCalled();

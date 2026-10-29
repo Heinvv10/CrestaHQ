@@ -5,7 +5,8 @@
  *
  * A marker is "[[" + keyword + whitespace or "]]", then either nothing or at
  * least one key="…" before the closing "]]". "[[Book now]]", "[[booking]]"
- * and "[[book-x]]" are prose, never markers.
+ * and "[[book-x]]" are prose, never markers. Stripping is looser than
+ * running (LOOSE_ATTR_RE), so a sloppy marker never reaches a person.
  */
 
 export type BookingMarkerKind = "slots" | "book" | "reschedule" | "cancel";
@@ -26,12 +27,20 @@ const MARKER_RE: Record<BookingMarkerKind, RegExp> = {
 };
 const OPENER = "\\[\\[\\s*(?:slots|book|reschedule|cancel)(?=[\\s\\]])";
 const ATTR_RE = /(?:^|\s)[a-z][a-z0-9_-]*\s*=\s*"[^"]*"/i;
-/** A key=" whose value may have been cut off (a reply stopped at max tokens). */
-const ATTR_START_RE = /(?:^|\s)[a-z][a-z0-9_-]*\s*=\s*"/i;
+/**
+ * Strip only (execution stays strict): any `word=` counts, so a sloppy marker
+ * (host=Jane, name='Ann', name=“Ann”) or one cut off at max tokens mid-value
+ * is removed instead of reaching the person. "[[Book now]]" has no "=".
+ */
+const LOOSE_ATTR_RE = /\w\s*=/;
 const MAX_STRIP_PASSES = 8;
 
 function isMarkerBody(body: string): boolean {
   return body.trim() === "" || ATTR_RE.test(body);
+}
+
+function isStripBody(body: string): boolean {
+  return body.trim() === "" || LOOSE_ATTR_RE.test(body);
 }
 
 /**
@@ -145,11 +154,11 @@ function stripOnce(text: string): string {
     const bodyStart = m.index + m[0].length;
     const close = text.indexOf("]]", bodyStart);
     if (close === -1) {
-      // Unclosed: cut off at max tokens only if it already has a key=". Cut
+      // Unclosed: cut off at max tokens only if it already has a key=. Cut
       // from the last opener before that key (earlier ones are prose).
-      const attrAt = text.slice(bodyStart).search(ATTR_START_RE);
+      const attrAt = text.slice(bodyStart).search(LOOSE_ATTR_RE);
       if (attrAt === -1) return keep(out, text.slice(from), removed);
-      // +1 keeps the whitespace before the key, which the opener's lookahead needs.
+      // +1 keeps the character after the keyword, which the opener's lookahead needs.
       const head = text.slice(0, bodyStart + attrAt + 1);
       let cut = m.index;
       for (const o of head.slice(m.index).matchAll(new RegExp(OPENER, "gi"))) {
@@ -159,7 +168,7 @@ function stripOnce(text: string): string {
     }
     const body = text.slice(bodyStart, close);
     let start = m.index;
-    if (!isMarkerBody(body)) {
+    if (!isStripBody(body)) {
       // Only an opener with nothing but whitespace before this "]]" can still
       // be a marker inside a non-marker span ("[[book now [[slots ]]").
       const inner = new RegExp(`${OPENER}\\s*$`, "i").exec(body);

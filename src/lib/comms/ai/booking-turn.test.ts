@@ -112,6 +112,13 @@ describe("callAiWithBookingTools", () => {
     expect((await turn(new Set())).text).toBe("Hi \u{1F468}\u200D\u{1F469}");
   });
 
+  it("a sloppy marker neither runs nor reaches the person", async () => {
+    ai.replies = ["Sure! [[slots host=Jane]]"];
+    const out = await turn(new Set());
+    expect(out.text).toBe("Sure!");
+    expect(ai.calls).toBe(1);
+  });
+
   it("a trailing unclosed marker never reaches the person", async () => {
     ai.replies = ['Sure, booking now [[book start="2026-11-03T08:00:00Z" name="Ann"'];
     const out = await turn(new Set());

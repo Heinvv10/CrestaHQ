@@ -21,6 +21,16 @@ describe("stripBookingMarkers", () => {
     }
   });
 
+  it("sloppy-quoted markers are stripped (never shown) but never run", () => {
+    expect(stripBookingMarkers("Sure! [[slots host=Jane]] One moment.")).toBe("Sure! One moment.");
+    expect(stripBookingMarkers("ok [[book start='2026-11-03T08:00:00Z' name=\u201cAnn\u201d]] done")).toBe("ok done");
+    expect(stripBookingMarkers("ok [[cancel booking = b1]]")).toBe("ok ");
+    expect(stripBookingMarkers("See you [[book start=2026-11-03T08:0")).toBe("See you ");
+    expect(stripBookingMarkers("[[Book now]] and save")).toBe("[[Book now]] and save");
+    expect(findMarker("[[slots host=Jane]]", "slots")).toBeNull();
+    expect(findMarker("[[book name=\u201cAnn\u201d]]", "book")).toBeNull();
+  });
+
   it("a marker formed by stripping a nested one goes too", () => {
     expect(stripBookingMarkers('a [[bo[[book start="x"]]ok start="y"]] b')).toBe("a b");
   });
