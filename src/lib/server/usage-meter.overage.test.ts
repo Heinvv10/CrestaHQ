@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
 
-const { computeOverage } = await import("./usage-meter");
+const { computeOverage, sanitizeUsageRates, MAX_USAGE_RATE_CENTS } = await import("./usage-meter");
 
 describe("computeOverage", () => {
   it("bills nothing at exactly the included allowance, one unit at one past it", () => {
@@ -87,5 +87,85 @@ describe("computeOverage", () => {
     expect(
       computeOverage({ aiTokens: 1e12 + 1500 }, { aiTokensPerMonth: 1000 }, { aiTokensPer1kCents: 3 }).totalCents,
     ).toBe(3_000_000_002);
+  });
+});
+
+describe("computeOverage on malformed ledger values and rates", () => {
+  const quotas = { emailsPerMonth: 100 };
+  const rates = { emailCents: 7 };
+  const over = (used: unknown, r: Record<string, unknown> = rates) =>
+    computeOverage({ emailsSent: used as number }, quotas, r as typeof rates);
+
+  it("a fractional count bills whole units only (101.5 → 1 over)", () => {
+    expect(over(101.5)).toEqual({ perUnit: { emailsSent: { overUnits: 1, cents: 7 } }, totalCents: 7 });
+  });
+
+  it.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["negative", -500],
+    ["a string", "150"],
+    ["null", null],
+    ["an object", { n: 150 }],
+  ])("used = %s bills nothing and does not throw", (_label, used) => {
+    expect(over(used)).toEqual({ perUnit: {}, totalCents: 0 });
+  });
+
+  it.each([
+    ["negative", -7],
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["a string", "7"],
+  ])("rate = %s bills nothing and does not throw", (_label, rate) => {
+    expect(over(150, { emailCents: rate })).toEqual({ perUnit: {}, totalCents: 0 });
+  });
+
+  it("a fractional rate rounds half-up (7.5 → 8 per unit)", () => {
+    expect(over(102, { emailCents: 7.5 }).totalCents).toBe(16);
+  });
+
+  it("a huge rate whose line can't be held exactly is skipped, not rounded, and other lines survive", () => {
+    const out = computeOverage(
+      { emailsSent: 1e6, smsSegments: 11 },
+      { emailsPerMonth: 1, smsSegmentsPerMonth: 10 },
+      { emailCents: 1e300, smsSegmentCents: 5 },
+    );
+    expect(out).toEqual({ perUnit: { smsSegments: { overUnits: 1, cents: 5 } }, totalCents: 5 });
+  });
+
+  it("a line that would push the total past 2^53 is skipped", () => {
+    const big = Number.MAX_SAFE_INTEGER - 10;
+    const out = computeOverage(
+      { emailsSent: big + 1, smsSegments: 100 },
+      { emailsPerMonth: 1, smsSegmentsPerMonth: 1 },
+      { emailCents: 1, smsSegmentCents: 1 },
+    );
+    expect(out.totalCents).toBe(big);
+    expect(Number.isSafeInteger(out.totalCents)).toBe(true);
+    expect(out.perUnit.smsSegments).toBeUndefined();
+  });
+});
+
+describe("sanitizeUsageRates", () => {
+  it("caps a rate at 1,000,000 minor units", () => {
+    expect(MAX_USAGE_RATE_CENTS).toBe(1_000_000);
+    expect(sanitizeUsageRates({ emailCents: 5e9, smsSegmentCents: 1_000_000 })).toEqual({
+      emailCents: 1_000_000,
+      smsSegmentCents: 1_000_000,
+    });
+  });
+
+  it("rounds half-up, drops what rounds to 0, negatives, NaN, Infinity and strings", () => {
+    expect(
+      sanitizeUsageRates({
+        emailCents: 2.5,
+        smsSegmentCents: 0.4,
+        whatsappMessageCents: -3,
+        aiTokensPer1kCents: Number.NaN,
+        voiceMinuteCents: Number.POSITIVE_INFINITY,
+      }),
+    ).toEqual({ emailCents: 3 });
+    expect(sanitizeUsageRates({ emailCents: "5" })).toBeNull();
   });
 });

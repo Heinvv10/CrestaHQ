@@ -184,7 +184,8 @@ function overageMinorUnits(overUnits: number, rate: number, per: number): number
  * rule: each unit's line is rounded half-up to a whole minor unit once,
  * and the total is the sum of the rounded lines, so lines always add up
  * to the total. A fractional rate is rounded half-up first (the rate
- * sanitizers store whole minor units anyway).
+ * sanitizers store whole minor units anyway). A line too big to hold
+ * exactly (past Number.MAX_SAFE_INTEGER) is skipped.
  */
 export function computeOverage(
   usage: UsageMonthDoc,
@@ -224,13 +225,23 @@ export function computeOverage(
     const overUnits = Number.isFinite(used) ? Math.max(0, Math.floor(used) - limit) : 0;
     if (overUnits <= 0) continue;
     const cents = overageMinorUnits(overUnits, rate, e.per);
+    // Past 2^53 a Number can't hold the amount exactly: skip the line, never
+    // round it. Both are >= 0, so this also covers a line too big on its own.
+    if (!Number.isSafeInteger(totalCents + cents)) continue;
     perUnit[e.unit] = { overUnits, cents };
     totalCents += cents;
   }
   return { perUnit, totalCents };
 }
 
-/** Sanitize an inbound rates payload — same contract as quotas. */
+/** Highest sell rate stored per unit: 1,000,000 minor units (R10,000 / $10,000). */
+export const MAX_USAGE_RATE_CENTS = 1_000_000;
+
+/**
+ * Sanitize an inbound rates payload — same contract as quotas, rounded to
+ * whole minor units (a rate that rounds to 0 is dropped) and capped at
+ * MAX_USAGE_RATE_CENTS.
+ */
 export function sanitizeUsageRates(raw: unknown): UsageRates | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -244,8 +255,8 @@ export function sanitizeUsageRates(raw: unknown): UsageRates | null {
   ];
   for (const key of keys) {
     const v = r[key];
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) {
-      out[key] = Math.round(v);
+    if (typeof v === "number" && Number.isFinite(v) && Math.round(v) > 0) {
+      out[key] = Math.min(MAX_USAGE_RATE_CENTS, Math.round(v));
     }
   }
   return Object.keys(out).length > 0 ? out : null;
