@@ -2,7 +2,7 @@ import "server-only";
 
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { postSlackMessage, type SlackPostResult } from "@/lib/slack/client";
+import { postSlackMessage, redactSlackUrls, type SlackPostResult } from "@/lib/slack/client";
 import { slackTestMessage } from "@/lib/slack/format";
 import {
   DEFAULT_SLACK_EVENTS,
@@ -174,23 +174,48 @@ export async function updateSlackSettings(
   return getSlackConfig(subAccountId);
 }
 
-/** The stored URL, or null when there is none or it is not a Slack hook. */
-async function storedUrl(subAccountId: string): Promise<string | null> {
+export const INVALID_STORED_URL_ERROR =
+  "The saved webhook URL is not a Slack Incoming Webhook URL. Reconnect with a new one.";
+
+/**
+ * The stored URL; "invalid" when it is not a Slack hook (the card is then
+ * flagged for reconnect, so nothing posts until a new URL is saved); null
+ * when there is none.
+ */
+async function storedUrl(subAccountId: string): Promise<string | "invalid" | null> {
   const priv = (await privateRef(subAccountId).get()).data() as
     | Partial<SlackPrivateDoc>
     | undefined;
   if (!priv?.webhookUrl) return null;
   if (!isSlackWebhookUrl(priv.webhookUrl)) {
     console.warn(`[slack] stored webhook URL for ${subAccountId} is not a Slack hook; refusing to post`);
-    return null;
+    await recordSlackResult(subAccountId, priv.webhookUrl, {
+      ok: false,
+      revoked: true,
+      error: INVALID_STORED_URL_ERROR,
+    });
+    return "invalid";
   }
   return priv.webhookUrl;
 }
 
+// One test post per sub-account per 5 s on this instance: the button posts
+// to a real channel, so a held key or a script must not flood it.
+const TEST_COOLDOWN_MS = 5_000;
+const lastTestAt = new Map<string, number>();
+
 export async function sendSlackTest(
   subAccountId: string,
 ): Promise<SlackConfigResponse> {
+  const last = lastTestAt.get(subAccountId);
+  if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
+    throw new SlackError("A test was just sent. Wait a few seconds before sending another.", 429);
+  }
+  lastTestAt.set(subAccountId, Date.now());
   const url = await storedUrl(subAccountId);
+  if (url === "invalid") {
+    throw new SlackError(INVALID_STORED_URL_ERROR, 400);
+  }
   if (!url) {
     throw new SlackError("Connect a Slack channel first.", 400);
   }
@@ -226,7 +251,7 @@ export async function loadSlackHook(
   const meta = metaOf((await subRef(subAccountId).get()).data());
   if (!meta?.connected || meta.needsReconnect) return null;
   const webhookUrl = await storedUrl(subAccountId);
-  if (!webhookUrl) return null;
+  if (!webhookUrl || webhookUrl === "invalid") return null;
   return {
     webhookUrl,
     events: Array.isArray(meta.events) ? meta.events : [],
@@ -283,7 +308,7 @@ export async function recordSlackResult(
   } catch (err) {
     console.warn(
       "[slack] status stamp failed",
-      err instanceof Error ? err.message : String(err),
+      redactSlackUrls(err instanceof Error ? err.message : String(err), postedUrl),
     );
   }
 }

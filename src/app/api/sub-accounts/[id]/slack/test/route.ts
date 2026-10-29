@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { isDocId } from "@/lib/server/doc-id";
+import { redactSlackUrls } from "@/lib/slack/client";
 import { SlackError, sendSlackTest } from "@/lib/server/slack-service";
 import { invalidateSlackHookCache } from "@/lib/slack/events";
 
@@ -25,7 +26,7 @@ export async function POST(
     if (err instanceof SlackError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    console.error("[slack/test] failed", err instanceof Error ? err.message : String(err));
+    console.error("[slack/test] failed", redactSlackUrls(err instanceof Error ? err.message : String(err)));
     return NextResponse.json({ error: "Test failed" }, { status: 500 });
   }
 }

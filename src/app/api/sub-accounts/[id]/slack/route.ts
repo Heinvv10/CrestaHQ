@@ -3,6 +3,7 @@ import "server-only";
 import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { isDocId } from "@/lib/server/doc-id";
+import { redactSlackUrls } from "@/lib/slack/client";
 import {
   SlackError,
   connectSlack,
@@ -28,7 +29,7 @@ function fail(err: unknown) {
   if (err instanceof SlackError) {
     return NextResponse.json({ error: err.message }, { status: err.status });
   }
-  console.error("[slack] route failed", err instanceof Error ? err.message : String(err));
+  console.error("[slack] route failed", redactSlackUrls(err instanceof Error ? err.message : String(err)));
   return NextResponse.json({ error: "Slack request failed" }, { status: 500 });
 }
 
@@ -65,6 +66,12 @@ export async function POST(
     body = (await request.json()) as Record<string, unknown>;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  if ("events" in body && !Array.isArray(body.events)) {
+    return NextResponse.json(
+      { error: "events must be an array of event types" },
+      { status: 400 },
+    );
   }
   if (typeof body.webhookUrl !== "string") {
     return NextResponse.json(

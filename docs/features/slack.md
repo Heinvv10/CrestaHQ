@@ -42,7 +42,9 @@ channel is all it spends.
 - **PATCH `{ events?, includeMessagePreview? }`** — at least one; unknown event
   names are dropped, `includeMessagePreview` must be a boolean.
 - **DELETE** — deletes the private doc and sets `slackMeta` to null.
-- **POST `…/slack/test`** — re-sends the "connected" message.
+- **POST `…/slack/test`** — re-sends the "connected" message. 429 within 5 s of the
+  previous test for that sub-account (per instance).
+- POST and PATCH answer 400 for an `events` that is present but not an array.
 
 All five are `human-only` in `scripts/agent-coverage.json` until T2.
 
@@ -56,15 +58,22 @@ carries `slackMeta`, which every member can read, so it never holds the URL. See
 `https://hooks.slack.com/services/…` regex AND a `new URL` check (https, host exactly
 `hooks.slack.com`, default port, no credentials, `/services/` path), capped at 300
 characters. It runs on the pasted URL and again on every read of the stored one, so a
-doc that somehow holds another URL is never posted to.
+doc that somehow holds another URL is never posted to: the read sets `needsReconnect`
+with `lastError` "The saved webhook URL is not a Slack Incoming Webhook URL. Reconnect
+with a new one.", and Send test answers 400 with the same text.
+
+Log lines never carry a webhook URL: `redactSlackUrls` replaces any
+`hooks.slack.com` URL, and the URL being posted to, with `[slack-url]`.
 
 ## Posting
 
 `postSlackMessage` ([client.ts](../../src/lib/slack/client.ts)) goes through
 `publicFetch`: no redirect is followed (a 3xx is a failure), production connects
 only to public addresses, the response read is capped at 4 KB, and one 5 s deadline
-covers DNS, connect and read. A thrown error is logged by message only and recorded
-as "Could not reach Slack."
+covers DNS, connect and read. A thrown error is logged by message only (redacted) and
+recorded as "Could not reach Slack." A non-2xx answer is recorded as "Slack returned
+<status>", with Slack's body appended only when it is a short error code
+(`no_service`, `invalid_payload`).
 
 The consumer ([events.ts](../../src/lib/slack/events.ts)) is registered in
 `emitWebhookEvent` next to push, live mode only, as its own `runAfterResponse` task.
@@ -72,6 +81,17 @@ It never throws, and webhook deliveries never wait on it. It loads the hook (60 
 per-instance cache, dropped by the settings routes and after a revoke), skips events
 that aren't ticked, spaces posts ~1/s per sub-account (overflow during a bulk import
 is dropped with a log line, never retried) and stamps the outcome.
+
+Every invalidation bumps a per-sub-account generation. A load that started before the
+bump does not refill the cache, and a queued post re-checks the generation just
+before it is sent and is skipped if it changed. So a disconnect, reconnect or event
+change on this instance stops posts already waiting in the lane.
+
+**Limit (blue/green):** the cache, the generation and the lane are per instance.
+Invalidation only reaches the instance that served the settings request. During a
+blue/green overlap the other instance can keep its cached hook (and post to a
+disconnected or replaced URL, or with the old event set) for up to 60 s, and the test
+cooldown is per instance too.
 
 Stamps (`recordSlackResult`) run in a transaction that applies only while the stored
 URL is still the one posted to. Successes stamp `lastSentAt` at most once a minute
@@ -125,6 +145,12 @@ key-written fields on the record and checking them here; it is not done.
   control.
 - `src/lib/slack/cache.test.ts` — disconnect, reconnect and PATCH reach the next event.
 - `src/lib/slack/throttle.test.ts` — ~1 s spacing; the 31st waiting post is dropped.
+- Breaker repros (#449), adopted: `races.test.ts` (queued posts after a disconnect,
+  authz matrix with no URL in responses, logs or docs, test cooldown, POST `events`),
+  `hook-cache-race.test.ts` (a load straddling an invalidation),
+  `client-transport.test.ts` (hostile servers: redirect, drip, hang, huge or HTML
+  bodies; redaction), `format-hostile.test.ts` (validator bypasses, injection through
+  every pickable event, size limits, preview and agent text).
 - `src/lib/slack/events.test.ts` — through the real `emitWebhookEvent`: posts,
   skips, deliveries still scheduled when Slack throws or hangs, 404/410 revoke, a
   stale revoke not flagging a replaced URL.

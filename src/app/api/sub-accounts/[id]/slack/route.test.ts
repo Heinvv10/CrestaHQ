@@ -134,11 +134,17 @@ describe("events, test and disconnect", () => {
     expect((mem.read("subAccounts/sa1")!.slackMeta as Record<string, unknown>).includeMessagePreview).toBe(false);
   });
 
-  it("test refuses a stored URL that isn't a Slack hook", async () => {
+  it("a stored URL that isn't a Slack hook: test says reconnect, and the card is flagged", async () => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", slackMeta: { connected: true, events: [], needsReconnect: false } });
     mem.seed("subAccounts/sa1/private/slack", { webhookUrl: "https://evil.test/services/T0001/B0001/aaaa" });
     const res = await testRoute.POST(req("POST"), ctx());
     expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/Reconnect with a new one/);
     expect(publicFetch).not.toHaveBeenCalled();
+    expect(mem.read("subAccounts/sa1")!.slackMeta).toMatchObject({
+      needsReconnect: true,
+      lastError: expect.stringMatching(/not a Slack Incoming Webhook URL/),
+    });
   });
 
   it("DELETE removes the URL and clears the meta to null", async () => {

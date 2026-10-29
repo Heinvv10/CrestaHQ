@@ -29,6 +29,19 @@ export interface SlackPostResult {
 const TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BYTES = 4 * 1024;
 
+/** Slack's error bodies are short codes ("no_service", "invalid_payload");
+ *  anything else is not echoed into `lastError`. */
+const SLACK_ERROR_CODE = /^[a-z0-9_]{1,64}$/;
+
+/**
+ * Replaces webhook URLs in a message bound for a log line: any Slack hook
+ * URL, and `url` itself (a stored value that may not look like one).
+ */
+export function redactSlackUrls(message: string, url?: string): string {
+  const out = url ? message.split(url).join("[slack-url]") : message;
+  return out.replace(/https?:\/\/hooks\.slack\.com\/\S*/gi, "[slack-url]");
+}
+
 export async function postSlackMessage(
   webhookUrl: string,
   message: SlackMessage,
@@ -42,7 +55,8 @@ export async function postSlackMessage(
       maxBytes: MAX_RESPONSE_BYTES,
     });
     if (res.ok) return { ok: true, error: null, revoked: false };
-    const body = (await res.text().catch(() => "")).slice(0, 200);
+    const raw = (await res.text().catch(() => "")).trim();
+    const body = SLACK_ERROR_CODE.test(raw) ? raw : "";
     const revoked = res.status === 404 || res.status === 410;
     return {
       ok: false,
@@ -55,7 +69,7 @@ export async function postSlackMessage(
     // The message only: a raw error object can carry request details.
     console.warn(
       "[slack/client] post failed",
-      err instanceof Error ? err.message : String(err),
+      redactSlackUrls(err instanceof Error ? err.message : String(err), webhookUrl),
     );
     return { ok: false, revoked: false, error: "Could not reach Slack." };
   }

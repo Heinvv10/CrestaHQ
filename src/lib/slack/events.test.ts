@@ -128,6 +128,20 @@ describe("dispatch → Slack", () => {
     expect(console.warn).toHaveBeenCalledWith("[slack/events] dispatch failed", "firestore down");
   });
 
+  it("a failure that names the hook URL is logged with the URL redacted", async () => {
+    connect("sa-redact");
+    const doc = vi.spyOn(mem.db, "doc").mockImplementation(() => {
+      throw new Error(`boom ${URL_A}`);
+    });
+    try {
+      await emit("sa-redact");
+      await flushAfterResponse();
+    } finally {
+      doc.mockRestore();
+    }
+    expect(console.warn).toHaveBeenCalledWith("[slack/events] dispatch failed", "boom [slack-url]");
+  });
+
   it("schedules deliveries without waiting on a Slack post that never answers", async () => {
     connect("sa-hang");
     publicFetch.mockReturnValue(new Promise(() => {}));
