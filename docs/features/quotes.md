@@ -32,6 +32,21 @@ Email sender uses the deployment-wide `EMAIL_FROM` (per v1 locked spec — no pe
 
 After the transaction commits, [src/lib/quotes/lifecycle.ts](../../src/lib/quotes/lifecycle.ts) helpers fire side-effects: activity timeline row + automation trigger + (on accept, if `autoCreateDealOnAccept`) a new Deal at the "Won" pipeline stage with the quote total as value. All helpers swallow errors internally — a stale activity write can't 500 the recipient's accept click.
 
+## E-signature
+
+A quote can require a typed-name signature to accept (`quote.requireSignature`; the builder's "Require a signature to accept" checkbox). New quotes default to **on**; a doc without the field (every quote sent before this shipped) reads as off, so outstanding links keep one-click accept. Invoices are never signed — `quoteRequiresSignature()` in [src/lib/quotes/signature.ts](../../src/lib/quotes/signature.ts) checks `kind`.
+
+On such a quote the public page's accept opens a signing panel: full name + "I agree" checkbox. The respond route validates both at the server boundary (`normalizeSignerName`: whitespace collapsed, 2–120 characters, no control / invisible / bidi characters; `agreedToTerms === true`) and writes `quote.signature` **in the same transaction** as the accept: `{signerName, signedAsNumber, signerEmail, signedAt, ipAddress, userAgent, documentHash, hashVersion: 1}`. `signerEmail` is the quote's contact's email, only if that contact is in the quote's sub-account. `ipAddress` is `clientIpFrom()` (the right-most X-Forwarded-For hop, never the caller-supplied left). A quote that already carries a signature is never signed again, and is never accepted or declined again, whatever its status says.
+
+`documentHash` is SHA-256 over a canonical body of what was agreed: currency, line items (description, quantity, unit price), discount, tax, terms, billed-to, billing address, validity. The document number, kind, status and payment-due days are left out, so the fingerprint still verifies after convert-to-invoice renumbers the doc. The public page receives only `signerName` + `signedAt`; IP and user agent stay server-side.
+
+Once signed the document is frozen:
+- **Rules** (`quotes` block): no client create carrying `signature`; `signature` unchanged on update; a signed doc may change only `updatedAt`, `status`, `paidAt`, `autoCreateDealOnAccept`, `dealId`, `paymentDueDays`. Tested in [src/lib/quotes/quote-signature.firestore-rules.test.ts](../../src/lib/quotes/quote-signature.firestore-rules.test.ts).
+- **Server**: the send service refuses to re-send a signed quote (409; convert it to an invoice instead); the agent's `update_quote` refuses any edit of a signed doc, including the invoice it was converted to.
+- **UI**: the detail page shows a Signed badge + who/when, hides Edit, and hides Re-send on a signed quote.
+
+The signed-copy PDF and emails to both parties are not built yet (upstream 1.0.54 H2).
+
 ## Decline reason picker
 
 Borrowed UX from GHL's Documents/Estimates flow: predefined reasons (`"Too expensive"`, `"Not the right fit"`, `"Bad timing"`, `"Going with a competitor"`, `"Other"`) + optional free-text note. `"Other"` requires a note. The reason + note land in `quote.declineReason` + `quote.declineNote` and surface in the operator's detail-page lifecycle timeline.
@@ -54,7 +69,7 @@ The detail page ([src/app/(dashboard)/sa/[subAccountId]/quotes/[id]/page.tsx](..
 ## What's intentionally NOT in v1
 
 - **Inline Stripe payment collection** — operator marks paid manually. v2 adds a "Pay now" button on the public page that opens a Stripe Checkout session and auto-flips status on the webhook.
-- **E-signature** — accept is one-click. GHL splits this into a separate "Documents & Contracts" product with a legally-binding signature certificate (IP, geo, timestamps per signer); v3 territory if buyers ask for it.
+- **Drawn signatures / multiple signers** — the e-signature (above) is one typed name per quote.
 - **Quote templates** (save & reuse) — every quote is built fresh in v1. Easy v2 add — extend the new-quote flow to optionally seed from a saved template.
 - **Multiple recipients per quote** — single `contactId`. v2 if it comes up.
 - **Per-line tax rates** — single global tax % in v1. Per-line is GHL parity but a much bigger UI lift.

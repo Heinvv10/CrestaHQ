@@ -411,6 +411,15 @@ export async function emitQuoteWebhook(
           declined_at: tsToIsoOrNull(quote.declinedAt),
           decline_reason: quote.declineReason ?? null,
           paid_at: tsToIsoOrNull(quote.paidAt),
+          signature: quote.signature
+            ? {
+                signer_name: quote.signature.signerName,
+                signer_email: quote.signature.signerEmail,
+                signed_at: tsToIsoOrNull(quote.signature.signedAt),
+                ip_address: quote.signature.ipAddress,
+                document_hash: quote.signature.documentHash,
+              }
+            : null,
         },
       },
     });

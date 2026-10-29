@@ -67,6 +67,7 @@ export interface QuoteFormValues {
    *  — on accept, that deal moves to Won instead of a new deal being
    *  created. Null = unlinked (the pre-linkage default behavior). */
   dealId: string | null;
+  requireSignature: boolean;
 }
 
 interface QuoteBuilderProps {
@@ -217,6 +218,9 @@ export function QuoteBuilder({
     initial?.autoCreateDealOnAccept ?? true,
   );
   const [dealId, setDealId] = useState<string | null>(initial?.dealId ?? null);
+  const [requireSignature, setRequireSignature] = useState<boolean>(
+    initial ? initial.requireSignature === true : true,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -342,6 +346,7 @@ export function QuoteBuilder({
         paymentDueDays: isInvoice ? paymentDueDays : null,
         autoCreateDealOnAccept: autoCreateDeal,
         dealId: isInvoice ? null : dealId,
+        requireSignature: isInvoice ? false : requireSignature,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -676,6 +681,24 @@ export function QuoteBuilder({
 
         {!isInvoice && (
           <>
+            <div className="mt-5 flex items-start gap-3">
+              <Checkbox
+                id="require-signature"
+                checked={requireSignature}
+                onCheckedChange={(c) => setRequireSignature(c === true)}
+              />
+              <div>
+                <Label htmlFor="require-signature" className="text-sm font-medium">
+                  Require a signature to accept
+                </Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  The recipient types their name and agrees to your terms. Their
+                  name, the time and a fingerprint of the quote are recorded,
+                  and the quote locks against edits once signed.
+                </p>
+              </div>
+            </div>
+
             {/* Link to an existing pipeline deal. When linked, accepting
                 the quote moves THAT deal to Won (value = quote total)
                 instead of creating a duplicate next to it. Only shown

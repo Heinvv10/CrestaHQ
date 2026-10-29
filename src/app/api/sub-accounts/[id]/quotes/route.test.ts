@@ -28,6 +28,24 @@ describe("POST /quotes", () => {
   });
 
   it.each([
+    ["a quote by default", { kind: "quote" }, true],
+    ["a quote with the toggle off", { kind: "quote", requireSignature: false }, false],
+    ["a quote with a non-boolean toggle", { kind: "quote", requireSignature: "no" }, true],
+    ["an invoice, even asked to", { kind: "invoice", requireSignature: true }, false],
+  ])("requireSignature: %s -> %s, and never a signature", async (_label, over, expected) => {
+    const res = await post({ contactId: "c1", lineItems: [LINE], ...over });
+    expect(res.status).toBe(201);
+    const { id } = (await res.json()) as { id: string };
+    expect(mem.read(`quotes/${id}`)).toMatchObject({ requireSignature: expected, signature: null });
+  });
+
+  it("a signature in the body is not written", async () => {
+    const res = await post({ contactId: "c1", lineItems: [LINE], signature: { signerName: "Forged", documentHash: "x" } });
+    const { id } = (await res.json()) as { id: string };
+    expect(mem.read(`quotes/${id}`)!.signature).toBeNull();
+  });
+
+  it.each([
     ["no lines", { contactId: "c1", lineItems: [] }, 400],
     ["another contact's deal", { contactId: "c1", lineItems: [LINE], dealId: "d_ben" }, 400],
     ["an unknown contact", { contactId: "c_gone", lineItems: [LINE] }, 404],

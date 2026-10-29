@@ -170,6 +170,7 @@ type SerializableQuote = Omit<
   | "validUntil"
   | "convertedFromQuoteAt"
   | "paymentLinkMintedAt"
+  | "signature"
 > & {
   createdAt: number | null;
   updatedAt: number | null;
@@ -181,11 +182,19 @@ type SerializableQuote = Omit<
   validUntil: number | null;
   convertedFromQuoteAt: number | null;
   paymentLinkMintedAt: number | null;
+  /** Only what the recipient should see; IP and browser stay server-side. */
+  signature: { signerName: string; signedAt: number | null } | null;
 };
 
 function serializeQuote(quote: Quote): SerializableQuote {
   return {
     ...quote,
+    signature: quote.signature
+      ? {
+          signerName: quote.signature.signerName,
+          signedAt: tsMillis(quote.signature.signedAt),
+        }
+      : null,
     createdAt: tsMillis(quote.createdAt),
     updatedAt: tsMillis(quote.updatedAt),
     sentAt: tsMillis(quote.sentAt),

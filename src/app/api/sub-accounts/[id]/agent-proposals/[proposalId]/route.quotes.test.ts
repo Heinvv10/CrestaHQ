@@ -117,6 +117,19 @@ describe("update_quote", () => {
     expect(await call("update_quote", { quoteId: "q1", ...patch })).toMatchObject({ ok: true, proposal: { status: "pending" } });
   });
 
+  it.each([
+    ["a signed, accepted quote (a proposal would be asked for)", { status: "accepted" }],
+    ["the draft invoice a signed quote was converted to (written directly)", { kind: "invoice", status: "draft" }],
+  ])("%s -> refused, unchanged, no proposal", async (_label, over) => {
+    const signed = { ...QUOTE, ...over, signature: { signerName: "Ann", documentHash: "a".repeat(64), hashVersion: 1 } };
+    mem.seed("quotes/q1", signed);
+    expect(await call("update_quote", { quoteId: "q1", lineItems: [LINE] })).toMatchObject({
+      ok: false, message: "It has been signed, so it's locked against edits; create a new quote instead.",
+    });
+    expect(mem.read("quotes/q1")).toEqual(signed);
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
   it("a draft price change when a pay link is minted inside the write -> refused, unchanged", async () => {
     mem.seed("quotes/q1", { ...QUOTE, kind: "invoice" });
     beforeNextTransaction(async () => mem.seed("paymentLinks/pl1", { subAccountId: "sa1", invoiceId: "q1", status: "open", active: true }));

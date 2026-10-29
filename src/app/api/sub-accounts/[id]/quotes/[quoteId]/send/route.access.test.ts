@@ -129,6 +129,24 @@ describe("pre-flight guards", () => {
     );
   });
 
+  it("409s a signed quote, sending nothing: a re-send would rotate its link over the signature", async () => {
+    state.quoteDoc = baseQuote({ status: "accepted", signature: { signerName: "Jane Doe", documentHash: "a".repeat(64) } });
+    const { status, body } = await call();
+    expect(status).toBe(409);
+    expect(body.error).toBe(
+      "This quote has been signed and can't be re-sent. Convert it to an invoice to request payment, or create a new quote.",
+    );
+    await flushAfterResponse();
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(state.quoteUpdates).toHaveLength(0);
+  });
+
+  it("still sends an invoice converted from a signed quote", async () => {
+    state.quoteDoc = baseQuote({ kind: "invoice", status: "draft", signature: { signerName: "Jane Doe", documentHash: "a".repeat(64) } });
+    const { status } = await call();
+    expect(status).not.toBe(409);
+  });
+
   it("404s when the recipient contact is gone", async () => {
     state.contactDoc = null;
     const { status, body } = await call();
