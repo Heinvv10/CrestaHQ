@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
 import { metaAppConfigured } from "@/lib/comms/meta";
+import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import {
   sanitizeUsageQuotas,
   sanitizeUsageRates,
@@ -91,6 +92,11 @@ interface PatchBody {
   usageQuotas?: import("@/types/usage").UsageQuotas | null;
   /** v1.5 — per-workspace overage-rate override; same contract as quotas. */
   usageRates?: import("@/types/usage").UsageRates | null;
+  /**
+   * Usage rebilling for this client. Not a gate (never plan-managed);
+   * switching it on is refused unless the agency's master switch is on.
+   */
+  usageRebillingEnabled?: boolean;
   // "Hide instead of lock" overrides for the sidebar-gated features.
   // Only take effect while the matching gate is off. See `*HiddenWhenDisabled`
   // on SubAccountDoc.
@@ -126,7 +132,12 @@ export async function PATCH(
 
   // Switching a reach gate on widens what an agency key reaches, so the
   // owner claim alone is not enough: it outlives a removal.
-  if (body.apiAccessEnabled === true || body.agentApiEnabled === true) {
+  // Rebilling a client is a money switch, held to the same live-row check.
+  if (
+    body.apiAccessEnabled === true ||
+    body.agentApiEnabled === true ||
+    body.usageRebillingEnabled === true
+  ) {
     const refusal = await activeOwnerRefusal(access.uid, access.agencyId!);
     if (refusal) return refusal;
   }
@@ -236,7 +247,9 @@ export async function PATCH(
   // to plan/unlimited; an object sanitizes to valid positive integers.
   const wantsUsageQuotas = body.usageQuotas !== undefined;
   const wantsUsageRates = body.usageRates !== undefined;
+  const wantsRebilling = typeof body.usageRebillingEnabled === "boolean";
   if (
+    !wantsRebilling &&
     !wantsUsageQuotas &&
     !wantsUsageRates &&
     !wantsEmail &&
@@ -317,6 +330,21 @@ export async function PATCH(
       { error: "Sub-account not found" },
       { status: 404 }
     );
+  }
+  const storedRebilling = subSnap.data()?.usageRebillingEnabled === true;
+
+  // Checked before any write, so a refusal leaves every other field alone.
+  if (body.usageRebillingEnabled === true) {
+    const agencySnap = await db.doc(`agencies/${subSnap.data()?.agencyId}`).get();
+    if (agencySnap.data()?.usageRebillingEnabled !== true) {
+      return NextResponse.json(
+        {
+          error:
+            "Turn on Usage rebilling for the agency first (Agency → Client billing).",
+        },
+        { status: 400 }
+      );
+    }
   }
 
   // Gate fields — routed through the shared chokepoint
@@ -477,9 +505,29 @@ export async function PATCH(
   if (wantsUsageRates) {
     hiddenUpdates.usageRates = sanitizeUsageRates(body.usageRates);
   }
+  if (wantsRebilling) {
+    hiddenUpdates.usageRebillingEnabled = body.usageRebillingEnabled;
+    if (body.usageRebillingEnabled === true && !storedRebilling) {
+      hiddenUpdates.usageRebillingSince = FieldValue.serverTimestamp();
+    }
+  }
   if (Object.keys(hiddenUpdates).length > 0) {
     hiddenUpdates.updatedAt = FieldValue.serverTimestamp();
     await subRef.update(hiddenUpdates);
+  }
+  if (wantsRebilling && body.usageRebillingEnabled !== storedRebilling) {
+    await recordSubAccountAuditEvent(db, subAccountId, {
+      action: "usage_rebilling.updated",
+      actor: { type: "user", id: access.uid },
+      target: { type: "subAccount", id: subAccountId },
+      changes: [
+        {
+          field: "usageRebillingEnabled",
+          before: storedRebilling,
+          after: body.usageRebillingEnabled,
+        },
+      ],
+    });
   }
 
   return NextResponse.json({
@@ -537,6 +585,9 @@ export async function PATCH(
       ? { reviewsAutoReplyEnabled: body.reviewsAutoReplyEnabled }
       : {}),
     ...(wantsAgentApi ? { agentApiEnabled: body.agentApiEnabled } : {}),
+    ...(wantsRebilling
+      ? { usageRebillingEnabled: body.usageRebillingEnabled }
+      : {}),
     ...(wantsWebinar1Hidden
       ? { webinar1HiddenWhenDisabled: body.webinar1HiddenWhenDisabled }
       : {}),

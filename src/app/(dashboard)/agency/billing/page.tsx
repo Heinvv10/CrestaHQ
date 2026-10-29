@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { collection, onSnapshot, query, where } from "firebase/firestore";
+import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { toast } from "sonner";
-import { Archive, CreditCard, Pencil, Plus } from "lucide-react";
+import { Archive, CreditCard, Pencil, Plus, Receipt } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
@@ -51,6 +51,8 @@ export default function AgencyBillingPage() {
   );
   const [managingId, setManagingId] = useState<string | null>(null);
   const managing = subs.find((s) => s.id === managingId) ?? null;
+  const [rebillingOn, setRebillingOn] = useState<boolean | null>(null);
+  const [rebillingBusy, setRebillingBusy] = useState(false);
 
   const refreshPlans = useCallback(() => {
     void fetch("/api/agency/plans")
@@ -97,6 +99,41 @@ export default function AgencyBillingPage() {
     );
     return () => unsub();
   }, [agencyId, isOwner]);
+
+  useEffect(() => {
+    if (!agencyId || !isOwner) return;
+    return onSnapshot(
+      doc(getFirebaseDb(), "agencies", agencyId),
+      (snap) => setRebillingOn(snap.data()?.usageRebillingEnabled === true),
+      () => setRebillingOn(null),
+    );
+  }, [agencyId, isOwner]);
+
+  async function toggleRebilling(next: boolean) {
+    const question = next
+      ? "Turn on usage rebilling? Clients you then switch on have their usage past the plan allowance valued at your rates."
+      : "Turn off usage rebilling? No client's usage is valued while it's off. Charges already sent stay payable.";
+    if (!window.confirm(question)) return;
+    setRebillingBusy(true);
+    try {
+      const res = await fetch("/api/agency", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ usageRebillingEnabled: next }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Couldn't save.");
+      toast.success(next ? "Usage rebilling is on." : "Usage rebilling is off.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't save.");
+    } finally {
+      setRebillingBusy(false);
+    }
+  }
+
+  const rebilledCount = rebillingOn
+    ? subs.filter((s) => s.usageRebillingEnabled === true).length
+    : 0;
 
   // MRR roll-up per currency (a deployment can mix e.g. usd + aud plans).
   // Annual subscriptions are normalized to their monthly-equivalent (/12) so
@@ -196,6 +233,43 @@ export default function AgencyBillingPage() {
           account.
         </div>
       )}
+
+      {/* Usage rebilling master switch */}
+      <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-4">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 font-semibold">
+            <Receipt className="h-4 w-4 text-muted-foreground" />
+            Usage rebilling
+            <span
+              className={
+                "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide " +
+                (rebillingOn
+                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                  : "bg-muted text-muted-foreground")
+              }
+            >
+              {rebillingOn === null ? "…" : rebillingOn ? "On" : "Off"}
+            </span>
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Value each client&apos;s usage past their plan allowance at your own
+            rates, as a running estimate. No usage charge is created
+            automatically yet.
+            {rebillingOn
+              ? ` ${rebilledCount} client${rebilledCount === 1 ? "" : "s"} switched on (Manage → Usage rebilling).`
+              : " Each client is then switched on individually."}
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant={rebillingOn ? "outline" : "default"}
+          disabled={rebillingOn === null || rebillingBusy || (!rebillingOn && !stripeConfigured)}
+          onClick={() => toggleRebilling(!rebillingOn)}
+        >
+          {rebillingOn ? "Turn off" : "Turn on"}
+        </Button>
+      </section>
 
       <AttentionList
         endpoint="/api/agency/billing-attention"

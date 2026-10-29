@@ -8,9 +8,10 @@ import {
   getEffectiveQuotas,
   getEffectiveRates,
   usageMonthKey,
+  usageRebillingState,
 } from "@/lib/server/usage-meter";
 import { usageCurrency } from "@/lib/billing/currency";
-import type { UsageMonthDoc, UsageQuotas } from "@/types/usage";
+import type { UsageMonthDoc } from "@/types/usage";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -19,7 +20,9 @@ import type { SubAccountDoc } from "@/types";
  * effective quotas (override → plan → null=unlimited). The ledger is
  * server-only in Firestore rules, so this route is the ONLY read surface;
  * usage is deliberately agency-eyes-only in v1 (see
- * USAGE_METERING_V1_PLAN.md).
+ * USAGE_METERING_V1_PLAN.md). The overage preview is only valued while
+ * the client is rebilled (agency switch AND client switch); otherwise
+ * rates are inert and it reports zero.
  */
 export async function GET(
   request: Request,
@@ -55,17 +58,17 @@ export async function GET(
     };
   });
 
-  const quotas: UsageQuotas | null = await getEffectiveQuotas(
-    subAccountId,
-    sub,
-  );
+  const quotas = await getEffectiveQuotas(subAccountId, sub);
   const rates = await getEffectiveRates(subAccountId, sub);
+  const rebilling = await usageRebillingState(sub);
 
-  // v1.5 — value the current month's usage BEYOND the included quotas at
-  // the configured sell rates. Display/accrual only; the owner can invoice
-  // it today via a one-time charge, and v2 automates the monthly charge.
+  // Value the current month's usage BEYOND the included quotas at the
+  // configured sell rates — only for a rebilled client. Display only; no
+  // charge is created from it yet.
   const currentDoc = (snaps[0].data() as UsageMonthDoc | undefined) ?? {};
-  const overage = computeOverage(currentDoc, quotas, rates);
+  const overage = rebilling.active
+    ? computeOverage(currentDoc, quotas, rates)
+    : { perUnit: {}, totalCents: 0 };
 
   return NextResponse.json({
     usage,
@@ -78,5 +81,6 @@ export async function GET(
       : sub.billing?.planId && quotas
         ? "plan"
         : "none",
+    rebilling,
   });
 }

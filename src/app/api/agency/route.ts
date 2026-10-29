@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { invalidateAgencyPolicyCache } from "@/lib/agency/policy";
 import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
+import { recordAuditEvent } from "@/lib/audit/record";
 import { MIN_CONTRAST, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 import type { MemberStatus, Role } from "@/types";
 
@@ -34,6 +35,7 @@ interface PatchBody {
   agencyAssistantEnabled?: boolean;
   agencyAssistantModel?: "opus" | "sonnet";
   agentApiEnabled?: boolean;
+  usageRebillingEnabled?: boolean;
 }
 
 const APP_THEMES = new Set(["leadstack", "green", "neutral"]);
@@ -220,6 +222,28 @@ export async function PATCH(request: Request) {
     update.agentApiEnabled = body.agentApiEnabled;
   }
 
+  // Usage rebilling master switch (off by default; read `=== true`). A money
+  // switch, so turning it on re-checks the live owner row like the API switch.
+  let rebillingBefore: boolean | null = null;
+  if (body.usageRebillingEnabled !== undefined) {
+    if (typeof body.usageRebillingEnabled !== "boolean") {
+      return NextResponse.json(
+        { error: "usageRebillingEnabled must be a boolean." },
+        { status: 400 },
+      );
+    }
+    if (body.usageRebillingEnabled) {
+      const refusal = await activeOwnerRefusal(access.uid, access.agencyId);
+      if (refusal) return refusal;
+    }
+    const current = await getAdminDb().doc(`agencies/${access.agencyId}`).get();
+    rebillingBefore = current.data()?.usageRebillingEnabled === true;
+    update.usageRebillingEnabled = body.usageRebillingEnabled;
+    if (body.usageRebillingEnabled && !rebillingBefore) {
+      update.usageRebillingSince = FieldValue.serverTimestamp();
+    }
+  }
+
   // Agency Assistant model tier ("opus" | "sonnet"; unset docs read as
   // opus — matching pre-picker behavior).
   if (body.agencyAssistantModel !== undefined) {
@@ -265,6 +289,26 @@ export async function PATCH(request: Request) {
   // this instance (other serverless instances expire via the 60s TTL).
   if (body.sharedSmsAllowed !== undefined) {
     invalidateAgencyPolicyCache(access.agencyId);
+  }
+
+  if (
+    rebillingBefore !== null &&
+    body.usageRebillingEnabled !== rebillingBefore
+  ) {
+    await recordAuditEvent(getAdminDb(), {
+      action: "usage_rebilling.updated",
+      actor: { type: "user", id: access.uid },
+      target: { type: "agency", id: access.agencyId },
+      agencyId: access.agencyId,
+      subAccountId: null,
+      changes: [
+        {
+          field: "usageRebillingEnabled",
+          before: rebillingBefore,
+          after: body.usageRebillingEnabled,
+        },
+      ],
+    });
   }
 
   return NextResponse.json({ ok: true });

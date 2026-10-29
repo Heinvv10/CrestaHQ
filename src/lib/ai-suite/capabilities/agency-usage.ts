@@ -10,6 +10,7 @@ import {
   getEffectiveRates,
   sanitizeUsageQuotas,
   usageMonthKey,
+  usageRebillingState,
 } from "@/lib/server/usage-meter";
 import type { UsageMonthDoc, UsageQuotas } from "@/types/usage";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
@@ -67,7 +68,7 @@ export const AGENCY_USAGE_CAPABILITIES: AiSuiteCapability[] = [
     surfaces: ["chat", "agent"],
     menuLabel: "See a sub-account's usage this month against its limits",
     description:
-      "Show one sub-account's current-month usage — emails, SMS segments, WhatsApp messages, AI tokens, voice minutes — against its effective limits (workspace override → plan → unlimited), plus any accrued overage at the plan's rates. Resolve the sub-account's id with list_sub_accounts first — never guess ids. Use for 'how much SMS has Acme used?', 'is anyone near their limit?'.",
+      "Show one sub-account's current-month usage — emails, SMS segments, WhatsApp messages, AI tokens, voice minutes — against its effective limits (workspace override → plan → unlimited), plus any accrued overage at the plan's rates (only while the client is rebilled). Resolve the sub-account's id with list_sub_accounts first — never guess ids. Use for 'how much SMS has Acme used?', 'is anyone near their limit?'.",
     parameters: {
       type: "object",
       properties: {
@@ -93,6 +94,8 @@ export const AGENCY_USAGE_CAPABILITIES: AiSuiteCapability[] = [
         getEffectiveQuotas(subSnap.id, subject),
         getEffectiveRates(subSnap.id, subject),
       ]);
+      // Reported only for a rebilled client, as the usage route does.
+      const rebilling = await usageRebillingState(sub);
       const overage = computeOverage(usage, quotas, rates);
       const line = (label: string, used: number, limit: number | null | undefined) => {
         const capped = typeof limit === "number" && limit > 0;
@@ -113,8 +116,9 @@ export const AGENCY_USAGE_CAPABILITIES: AiSuiteCapability[] = [
           : "none set (unlimited)";
       // As the Manage dialog's usage section shows it (the usage route).
       const currency = usageCurrency(sub.billing);
-      const overLine =
-        overage.totalCents > 0
+      const overLine = !rebilling.active
+        ? "Usage rebilling is off for this client, so overage isn't valued."
+        : overage.totalCents > 0
           ? `Accrued overage this month: ${formatBillingPrice(overage.totalCents, currency)} — invoice it with a one-time charge.`
           : "No overage accrued.";
       return {
