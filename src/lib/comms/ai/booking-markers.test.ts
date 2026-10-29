@@ -15,52 +15,72 @@ describe("stripBookingMarkers", () => {
     expect(stripBookingMarkers(text)).toBe("a b c d e");
   });
 
-  it("brackets that only look like a marker are prose", () => {
-    for (const prose of ["[[Book now]] and save", "[[booking]]", '[[book-x start="x"]]', "Our [[cancel policy is strict"]) {
-      expect(stripBookingMarkers(prose)).toBe(prose);
-    }
-  });
-
-  it("sloppy-quoted markers are stripped (never shown) but never run", () => {
+  it("strips sloppy-quoted markers (never shown); the executor still won't run them", () => {
     expect(stripBookingMarkers("Sure! [[slots host=Jane]] One moment.")).toBe("Sure! One moment.");
-    expect(stripBookingMarkers("ok [[book start='2026-11-03T08:00:00Z' name=\u201cAnn\u201d]] done")).toBe("ok done");
-    expect(stripBookingMarkers("ok [[cancel booking = b1]]")).toBe("ok ");
-    expect(stripBookingMarkers("See you [[book start=2026-11-03T08:0")).toBe("See you ");
-    expect(stripBookingMarkers("[[Book now]] and save")).toBe("[[Book now]] and save");
+    expect(stripBookingMarkers("ok [[book start='2026-11-03T08:00:00Z' name='Ann']] done")).toBe("ok done");
+    expect(stripBookingMarkers("ok [[book name=\u201cAnn\u201d]] done")).toBe("ok done");
     expect(findMarker("[[slots host=Jane]]", "slots")).toBeNull();
     expect(findMarker("[[book name=\u201cAnn\u201d]]", "book")).toBeNull();
   });
 
-  it("a marker formed by stripping a nested one goes too", () => {
-    expect(stripBookingMarkers('a [[bo[[book start="x"]]ok start="y"]] b')).toBe("a b");
+  it("a zero-width character or whitespace after [[ doesn't hide a marker", () => {
+    expect(stripBookingMarkers('a [[\u200Bbook start="x"]] b')).toBe("a b");
+    expect(stripBookingMarkers("a [[\uFEFF \u2060slots]] b")).toBe("a b");
   });
 
-  it("an empty marker inside a non-marker span goes; the prose stays", () => {
-    expect(stripBookingMarkers("[[book now [[slots ]] x")).toBe("[[book now x");
+  it('a "]]" inside a value, and a stray "]]" after a marker, go with it', () => {
+    expect(stripBookingMarkers('Done [[book name="a]]b" start="x"]] thanks')).toBe("Done thanks");
+    expect(stripBookingMarkers("ok [[slots]]]] next")).toBe("ok next");
+    expect(stripBookingMarkers("ok [[slots]]\nline ]] two")).toBe("ok \nline ]] two");
+  });
+
+  it("an opener cut off at max tokens goes to the end", () => {
+    expect(stripBookingMarkers("Hi [[book start=")).toBe("Hi ");
+    expect(stripBookingMarkers("Hi [[")).toBe("Hi ");
+    expect(stripBookingMarkers("Hi [[resch")).toBe("Hi ");
+    expect(stripBookingMarkers('See you then! [[book start="2026-11-03T08:00:00Z" name="Ann"')).toBe("See you then! ");
+  });
+
+  it("inner openers go with the marker", () => {
+    expect(stripBookingMarkers("x [[book [[slots]] y")).toBe("x y");
+    expect(stripBookingMarkers('x [[book a="[[cancel b=1]]" c]] y')).toBe("x y");
+    // One pass: removing the inner marker can't form a new one, because the
+    // rest of the outer span ends at an orphan "]]" and goes too.
+    const spliced = stripBookingMarkers('a [[bo[[book start="x"]]ok start="y"]] b');
+    expect(spliced).toBe("a [[bo b");
+    expect(stripBookingMarkers(spliced)).toBe(spliced);
+  });
+
+  // Accepted trade-off: prose that starts like a marker is stripped too.
+  it("prose that starts like a marker is stripped; other brackets are not", () => {
+    expect(stripBookingMarkers("[[Book now]] and save")).toBe(" and save");
+    expect(stripBookingMarkers("Our [[cancel policy is strict")).toBe("Our ");
+    expect(stripBookingMarkers('a [[book-x start="x"]] b')).toBe("a b");
+    expect(stripBookingMarkers("[[form]] and [link] and [[bookmark]] and [[booking]]")).toBe(
+      "[[form]] and [link] and [[bookmark]] and [[booking]]",
+    );
   });
 
   it("drops a fence the strip left empty, and only then", () => {
     expect(stripBookingMarkers('Here:\n```\n[[book start="x"]]\n```\nThanks')).toBe("Here:\nThanks");
     expect(stripBookingMarkers("```\n```")).toBe("```\n```");
-    expect(stripBookingMarkers('```js\ncode()\n```\n[[slots]]')).toBe("```js\ncode()\n```\n");
+    expect(stripBookingMarkers("```js\ncode()\n```\n[[slots]]")).toBe("```js\ncode()\n```\n");
   });
 
-  it("drops a trailing unclosed marker and everything after it", () => {
-    expect(stripBookingMarkers('See you then! [[book start="2026-11-03T08:00:00Z" name="Ann"')).toBe("See you then! ");
-    expect(stripBookingMarkers("ok [[slots]] then [[cancel")).toBe("ok then [[cancel");
-    expect(stripBookingMarkers('Our [[cancel policy is strict. [[book start="2026-')).toBe("Our [[cancel policy is strict. ");
-  });
-
-  it("leaves other brackets alone", () => {
-    expect(stripBookingMarkers("[[form]] and [link] and [[bookmark]]")).toBe("[[form]] and [link] and [[bookmark]]");
-  });
-
-  it("is linear: a huge reply of unclosed markers strips fast", () => {
-    const adversarial = "[[book ".repeat(60_000) + "]]x" + '[[slots a="'.repeat(60_000);
+  it("is linear on 2M chars of markers", () => {
+    const text = "[[slots]] x ".repeat(Math.ceil(2_000_000 / 12));
     const t0 = performance.now();
-    const out = stripBookingMarkers(adversarial);
+    const out = stripBookingMarkers(text);
     expect(performance.now() - t0).toBeLessThan(2_000);
-    expect(out).toBe(`${"[[book ".repeat(59_999)}x`);
+    expect(out).not.toContain("[[");
+    expect(out).not.toContain("  ");
+  });
+
+  it("is linear on unclosed openers", () => {
+    const text = "[[book ".repeat(60_000) + "]]x" + '[[slots a="'.repeat(60_000);
+    const t0 = performance.now();
+    expect(stripBookingMarkers(text)).toBe("x");
+    expect(performance.now() - t0).toBeLessThan(2_000);
   });
 });
 

@@ -3,10 +3,11 @@
  * marker, reading its attributes, offered-time keys, and stripping leftovers
  * before a reply reaches a person. Pure, no I/O.
  *
- * A marker is "[[" + keyword + whitespace or "]]", then either nothing or at
- * least one key="…" before the closing "]]". "[[Book now]]", "[[booking]]"
- * and "[[book-x]]" are prose, never markers. Stripping is looser than
- * running (LOOSE_ATTR_RE), so a sloppy marker never reaches a person.
+ * Running is strict: "[[" + keyword + whitespace or "]]", then either nothing
+ * or at least one key="…" before the closing "]]" ("[[Book now]]",
+ * "[[book-x]]" never run). Stripping is deliberately broad (see
+ * stripBookingMarkers): anything that starts like a marker is removed, so a
+ * sloppy or cut-off one can't reach a person.
  */
 
 export type BookingMarkerKind = "slots" | "book" | "reschedule" | "cancel";
@@ -25,22 +26,10 @@ const MARKER_RE: Record<BookingMarkerKind, RegExp> = {
   reschedule: /\[\[\s*reschedule(?=[\s\]])([\s\S]*?)\]\]/gi,
   cancel: /\[\[\s*cancel(?=[\s\]])([\s\S]*?)\]\]/gi,
 };
-const OPENER = "\\[\\[\\s*(?:slots|book|reschedule|cancel)(?=[\\s\\]])";
 const ATTR_RE = /(?:^|\s)[a-z][a-z0-9_-]*\s*=\s*"[^"]*"/i;
-/**
- * Strip only (execution stays strict): any `word=` counts, so a sloppy marker
- * (host=Jane, name='Ann', name=“Ann”) or one cut off at max tokens mid-value
- * is removed instead of reaching the person. "[[Book now]]" has no "=".
- */
-const LOOSE_ATTR_RE = /\w\s*=/;
-const MAX_STRIP_PASSES = 8;
 
 function isMarkerBody(body: string): boolean {
   return body.trim() === "" || ATTR_RE.test(body);
-}
-
-function isStripBody(body: string): boolean {
-  return body.trim() === "" || LOOSE_ATTR_RE.test(body);
 }
 
 /**
@@ -136,71 +125,74 @@ export function rescheduleOfferKey(eventId: string, iso: string): string {
   return `move:${eventId}|${normalizeIso(iso)}`;
 }
 
-/** Appends kept text; right after a removed marker, no double space is left. */
-function keep(out: string, chunk: string, afterRemoval: boolean): string {
-  return afterRemoval && /[ \t]$/.test(out) ? out + chunk.replace(/^[ \t]+/, "") : out + chunk;
-}
+// Strip openers: "[[", optional whitespace or zero-width characters, a
+// keyword, then anything but a letter or digit (or the end).
+const STRIP_OPENER = "\\[\\[[\\s\\u200B-\\u200D\\u2060\\uFEFF]*(?:slots|book|reschedule|cancel)(?![\\p{L}\\p{N}])";
+/** A reply cut off inside an opener: "Hi [[", "Hi [[bo". */
+const TRUNCATED_OPENER_RE =
+  /^\[\[[\s\u200B-\u200D\u2060\uFEFF]*(?:s(?:l(?:o(?:ts?)?)?)?|b(?:o(?:ok?)?)?|r(?:e(?:s(?:c(?:h(?:e(?:d(?:u(?:le?)?)?)?)?)?)?)?)?|c(?:a(?:n(?:c(?:el?)?)?)?)?)?$/iu;
 
-/** One forward pass; each segment up to a "]]" is examined once, so linear. */
-function stripOnce(text: string): string {
-  const opener = new RegExp(OPENER, "gi");
-  let out = "";
-  let from = 0;
-  let removed = false;
-  for (;;) {
-    opener.lastIndex = from;
-    const m = opener.exec(text);
-    if (!m) return keep(out, text.slice(from), removed);
-    const bodyStart = m.index + m[0].length;
-    const close = text.indexOf("]]", bodyStart);
-    if (close === -1) {
-      // Unclosed: cut off at max tokens only if it already has a key=. Cut
-      // from the last opener before that key (earlier ones are prose).
-      const attrAt = text.slice(bodyStart).search(LOOSE_ATTR_RE);
-      if (attrAt === -1) return keep(out, text.slice(from), removed);
-      // +1 keeps the character after the keyword, which the opener's lookahead needs.
-      const head = text.slice(0, bodyStart + attrAt + 1);
-      let cut = m.index;
-      for (const o of head.slice(m.index).matchAll(new RegExp(OPENER, "gi"))) {
-        cut = m.index + (o.index ?? 0);
-      }
-      return keep(out, text.slice(from, cut), removed);
+/**
+ * Past a removed marker: a "]]" before the next "[[" or line break closes it
+ * too (a "]]" inside a value, a stray "]]"). Returns where kept text resumes.
+ */
+function skipOrphanCloses(text: string, from: number): number {
+  let resume = from;
+  for (let j = from; j < text.length; j++) {
+    if (text.startsWith("]]", j)) {
+      resume = j + 2;
+      j++;
+    } else if (text[j] === "\n" || text.startsWith("[[", j)) {
+      break;
     }
-    const body = text.slice(bodyStart, close);
-    let start = m.index;
-    if (!isStripBody(body)) {
-      // Only an opener with nothing but whitespace before this "]]" can still
-      // be a marker inside a non-marker span ("[[book now [[slots ]]").
-      const inner = new RegExp(`${OPENER}\\s*$`, "i").exec(body);
-      if (!inner) {
-        out = keep(out, text.slice(from, close + 2), removed);
-        removed = false;
-        from = close + 2;
-        continue;
-      }
-      start = bodyStart + inner.index;
-    }
-    out = keep(out, text.slice(from, start), removed);
-    removed = true;
-    from = close + 2;
   }
+  return resume;
 }
 
 /**
- * Removes every booking marker, and a trailing marker cut off at max tokens.
- * Repeats until nothing changes, so a marker formed by removing a nested one
- * goes too; after MAX_STRIP_PASSES the remaining openers are removed outright.
- * A code fence the strip left empty is dropped.
+ * Removes anything that starts like a marker, through the next "]]" (inner
+ * openers go with it) or to the end of the text, plus orphan "]]" right after
+ * it and an opener cut off at the very end. One linear pass; no double space
+ * is left where a marker was, and a code fence the strip left empty goes.
+ * Broad on purpose: prose like "[[Book now]]" is removed too, which beats a
+ * marker leaking to a person.
  */
 export function stripBookingMarkers(text: string): string {
-  let current = text;
-  for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
-    const next = stripOnce(current);
-    if (next === current) break;
-    current = next;
-    if (pass === MAX_STRIP_PASSES - 1) current = current.replace(new RegExp(OPENER, "gi"), "");
+  const opener = new RegExp(STRIP_OPENER, "giu");
+  const out: string[] = [];
+  let from = 0;
+  let removed = false;
+  let changed = false;
+  const keep = (chunk: string) => {
+    const last = out[out.length - 1];
+    const lastChar = last ? last[last.length - 1] : "";
+    const piece =
+      removed && (lastChar === " " || lastChar === "\t") ? chunk.replace(/^[ \t]+/, "") : chunk;
+    if (!piece) return;
+    out.push(piece);
+    removed = false;
+  };
+  for (;;) {
+    opener.lastIndex = from;
+    const m = opener.exec(text);
+    if (!m) {
+      keep(text.slice(from));
+      break;
+    }
+    keep(text.slice(from, m.index));
+    removed = true;
+    changed = true;
+    const close = text.indexOf("]]", m.index + m[0].length);
+    if (close === -1) break;
+    from = skipOrphanCloses(text, close + 2);
   }
-  return current === text ? text : dropEmptyFences(current);
+  let result = out.join("");
+  const tail = result.lastIndexOf("[[");
+  if (tail !== -1 && TRUNCATED_OPENER_RE.test(result.slice(tail))) {
+    result = result.slice(0, tail);
+    changed = true;
+  }
+  return changed ? dropEmptyFences(result) : text;
 }
 
 /** Removes ``` blocks holding only whitespace (a fence that wrapped a marker). */
