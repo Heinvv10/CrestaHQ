@@ -103,6 +103,16 @@ it("DELETE clears an uploaded logoUrl but leaves a pasted one", async () => {
   expect(m.docs.get("agencies/ag1")?.logoUrl).toBe("https://cdn.example.com/logo.svg");
 });
 
+it("DELETE clears logoUrl before deleting the blob", async () => {
+  m.docs.set("agencies/ag1/brandAssets/logo", { data: webp, mime: "image/webp", version: 1 });
+  m.docs.set("agencies/ag1", { logoUrl: "https://crm.example.com/api/brand/logo/agency/ag1?v=1" });
+  await DELETE(req("owner1", "DELETE"));
+  expect(m.writes.map(({ op, path }) => `${op} ${path}`)).toEqual([
+    "update agencies/ag1",
+    "delete agencies/ag1/brandAssets/logo",
+  ]);
+});
+
 it.each([
   ["another agency's uploaded logo", "https://crm.example.com/api/brand/logo/agency/ag2?v=1"],
   ["a URL carrying the prefix in its query", "https://cdn.example.com/logo.png?r=/api/brand/logo/"],

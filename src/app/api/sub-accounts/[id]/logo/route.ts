@@ -79,7 +79,6 @@ export async function DELETE(
 
   const subRef = getAdminDb().doc(`subAccounts/${subAccountId}`);
   const snap = await subRef.get();
-  await logoDocRef("sa", subAccountId).delete();
   // Leave a pasted URL alone; only clear the field when it points at our upload.
   if (isUploadedLogoUrl(snap.data()?.logoUrl as string | undefined, "sa", subAccountId)) {
     await subRef.update({
@@ -87,6 +86,9 @@ export async function DELETE(
       updatedAt: FieldValue.serverTimestamp(),
     });
   }
+  // Blob last: a failure between the two leaves a stored logo nothing points
+  // at, never a logoUrl that 404s in every email and page.
+  await logoDocRef("sa", subAccountId).delete();
 
   return NextResponse.json({ ok: true });
 }

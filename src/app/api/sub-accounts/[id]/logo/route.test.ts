@@ -145,6 +145,16 @@ describe("DELETE /api/sub-accounts/[id]/logo — remove", () => {
     expect(m.docs.get("subAccounts/sa1")?.logoUrl).toBeNull();
   });
 
+  it("clears logoUrl before deleting the blob, so a failure between never leaves a dead logoUrl", async () => {
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: png, mime: "image/png", version: 1 });
+    m.docs.set("subAccounts/sa1", { agencyId: "ag1", logoUrl: "https://crm.example.com/api/brand/logo/sa/sa1?v=1" });
+    await DELETE(req("admin1", "DELETE"), ctx());
+    expect(m.writes.map(({ op, path }) => `${op} ${path}`)).toEqual([
+      "update subAccounts/sa1",
+      "delete subAccounts/sa1/private/brandLogo",
+    ]);
+  });
+
   it.each([
     ["a pasted logo URL", "https://cdn.example.com/logo.png"],
     ["another tenant's uploaded logo", "https://crm.example.com/api/brand/logo/sa/sa2?v=1"],

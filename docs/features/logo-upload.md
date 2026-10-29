@@ -18,7 +18,7 @@ The agency Branding card (Agency → Settings) and the sub-account Branding card
    - both edges are at most 1024 px.
 3. The route stores the logo as base64 in `agencies/{id}/brandAssets/logo` or `subAccounts/{id}/private/brandLogo` (both server-only, see [firestore-collections.md](../architecture/firestore-collections.md)), then sets `logoUrl` to `${NEXT_PUBLIC_APP_URL}/api/brand/logo/{agency|sa}/{id}?v={upload ms}`. The upload is refused with 503 when `NEXT_PUBLIC_APP_URL` is unset. The URL is never built from the request origin, which under the standalone server is the bind address.
 4. `GET /api/brand/logo/{agency|sa}/{id}` is public (middleware pattern, exactly those two scopes and one id), because email clients fetch it with no session. It serves `Content-Type` from the stored mime only (PNG or WebP, anything else 404s), with `X-Content-Type-Options: nosniff`, `Content-Disposition: inline` and `Content-Security-Policy: default-src 'none'; sandbox`. The cache is immutable for a year only when `?v` matches the stored version; any other request gets five minutes. A bad id, unknown scope, missing doc or failed read is a 404.
-5. **Remove** (`DELETE` on the same upload route) deletes the stored logo and clears `logoUrl` only when it points at an uploaded logo. A pasted URL is left alone.
+5. **Remove** (`DELETE` on the same upload route) first clears `logoUrl`, but only when it is exactly this tenant's own uploaded logo (same origin as `NEXT_PUBLIC_APP_URL`, same serving path); a pasted URL or another tenant's logo is left alone. Then it deletes the stored logo, so a failure in between leaves an orphaned blob, never a `logoUrl` that 404s.
 
 ## Known gaps
 
