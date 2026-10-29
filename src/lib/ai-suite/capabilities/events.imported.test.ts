@@ -10,7 +10,33 @@ import { mem, seedTenants } from "@/test/chat-route-harness";
  * tool that resolves an event by id refuses it.
  */
 
-vi.mock("@/lib/firebase/admin", async () => (await import("@/test/chat-route-harness")).adminMock());
+// `failImportedCount`: a `source ==` query's count fails, as it does in
+// production until its composite index has built.
+const flags = vi.hoisted(() => ({ failImportedCount: false }));
+vi.mock("@/lib/firebase/admin", async () => {
+  const harness = await import("@/test/chat-route-harness");
+  type Q = { where: (f: string, op: string, v: unknown) => Q } & Record<string | symbol, unknown>;
+  const pass = <T extends object>(t: T, k: string | symbol) => {
+    const v = (t as Record<string | symbol, unknown>)[k];
+    return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+  };
+  const wrap = (q: Q): Q =>
+    new Proxy(q, {
+      get: (t, k) =>
+        k === "where"
+          ? (f: string, op: string, v: unknown) =>
+              f === "source" && flags.failImportedCount
+                ? { count: () => ({ get: () => Promise.reject(new Error("9 FAILED_PRECONDITION: The query requires an index.")) }) }
+                : wrap(t.where(f, op, v))
+          : pass(t, k),
+    });
+  const db = harness.mem.db as unknown as { collection: (p: string) => Q };
+  return {
+    ...harness.adminMock(),
+    getAdminDb: () =>
+      new Proxy(db, { get: (t, k) => (k === "collection" ? (p: string) => wrap(t.collection(p)) : pass(t, k)) }),
+  };
+});
 vi.mock("@/lib/ai-suite/usage", () => ({ recordAiSuiteUsage: async () => undefined }));
 vi.mock("@/lib/ai-suite/audit", () => ({ recordAiSuiteAction: async () => undefined }));
 
@@ -97,6 +123,18 @@ describe("record counts", () => {
 
   it("workspace_stats counts upcoming events without imported ones", async () => {
     expect(await run("workspace_stats", {})).toContain("- Upcoming calendar events: 1");
+  });
+
+  it("workspace_stats still answers when the imported count fails (index still building): the old count, logged", async () => {
+    flags.failImportedCount = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await run("workspace_stats", {})).toContain("- Upcoming calendar events: 2");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("[workspace_stats] imported-event count failed sa=sa1: 9 FAILED_PRECONDITION"));
+    } finally {
+      flags.failImportedCount = false;
+      warn.mockRestore();
+    }
   });
 
   it("workspace_stats for a territory-scoped caller too", async () => {

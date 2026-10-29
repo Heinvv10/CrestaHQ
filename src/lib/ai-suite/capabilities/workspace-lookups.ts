@@ -170,12 +170,21 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
               capped: r.docs.length >= 1000 || r.scanCapped,
             }))
           : Promise.all([
-              upcomingQuery.count().get(),
-              upcomingQuery.where("source", "==", IMPORTED_EVENT_SOURCE).count().get(),
-            ]).then(([all, imported]) => ({
-              count: all.data().count - imported.data().count,
-              capped: false,
-            })),
+              upcomingQuery.count().get().then((r) => r.data().count),
+              // A display count: until its index builds this query fails, and
+              // the stats then show the old (imported-inclusive) count.
+              upcomingQuery
+                .where("source", "==", IMPORTED_EVENT_SOURCE)
+                .count()
+                .get()
+                .then((r) => r.data().count)
+                .catch((err: unknown) => {
+                  console.warn(
+                    `[workspace_stats] imported-event count failed sa=${said}: ${err instanceof Error ? err.message : String(err)}`
+                  );
+                  return 0;
+                }),
+            ]).then(([all, imported]) => ({ count: all - imported, capped: false })),
         scopedDocs(
           scope,
           db.collection("deals").where("subAccountId", "==", said).limit(1000)
