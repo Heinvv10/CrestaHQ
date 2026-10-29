@@ -73,10 +73,15 @@ export const REFRESH_MARGIN_MS = 60_000;
 
 const UID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
+/** True when `uid` can name a connection doc (the shape gcalConnectionPath accepts). */
+export function isConnectionUid(uid: string): boolean {
+  return UID_RE.test(uid);
+}
+
 export function gcalConnectionPath(subAccountId: string, uid: string): string {
   // The uid becomes part of a document id; one with a "/" would name a
   // different document entirely.
-  if (!UID_RE.test(uid)) throw new Error("google-calendar: unsupported uid shape");
+  if (!isConnectionUid(uid)) throw new Error("google-calendar: unsupported uid shape");
   return `subAccounts/${subAccountId}/private/googleCalendar_${uid}`;
 }
 

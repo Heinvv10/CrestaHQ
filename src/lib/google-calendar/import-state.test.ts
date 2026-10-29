@@ -14,7 +14,7 @@ vi.mock("@/lib/google-calendar/provider/select", async () => ({
 vi.mock("@/lib/gbp/sync/clear", () => ({ clearAllGbpCaches: async () => undefined }));
 vi.mock("@/lib/comms/resend-domains", () => ({ removeSendingDomain: async () => undefined }));
 
-import { mem } from "@/test/gbp-sync-store";
+import { mem, storeDb } from "@/test/gbp-sync-store";
 import { AG, CONN, SA, U1, U2, conn, connectMember, gev, imported, page, provider, resetImport } from "@/test/gcal-import-harness";
 import { applyFeatureGates } from "@/lib/server/feature-gates-service";
 import { runCalendarImport } from "./import";
@@ -150,6 +150,28 @@ describe("the sweep", () => {
     expect(mem.read(SWEEP_CURSOR_PATH)?.cursor).toBeNull();
     expect(await sweepOrphanedImports(Date.now() + 10_000)).toBe(1);
     expect(mem.read("events/gcal_a")).toBeUndefined();
+  });
+
+  it("a transient error reading an owner's state skips them this run (no delete); a uid that cannot name a connection is still deleted", async () => {
+    await seedImports();
+    mem.seed(CONN(U2), { ...conn(U2), importMode: "off" });
+    mem.seed("events/gcal_badshape", { subAccountId: SA, source: "google", importOwnerUid: "bad/uid" });
+    const real = storeDb.doc;
+    const spy = vi.spyOn(storeDb, "doc").mockImplementation(((p: string) => {
+      if (p === CONN(U2)) throw new Error("14 UNAVAILABLE");
+      return real(p);
+    }) as typeof storeDb.doc);
+    expect(await sweepOrphanedImports(Date.now() + 10_000)).toBe(1);
+    spy.mockRestore();
+    expect(imported(U2)).toHaveLength(1);
+    expect(mem.read("events/gcal_badshape")).toBeUndefined();
+    expect(console.warn).toHaveBeenCalledWith(
+      `[google-calendar/import] orphan sweep skipped an owner sa=${SA} uid=${U2}`,
+      "14 UNAVAILABLE",
+    );
+    // Next run, Firestore answers: U2 (opted out) loses theirs.
+    expect(await sweepOrphanedImports(Date.now() + 10_000)).toBe(1);
+    expect(imported(U2)).toEqual([]);
   });
 
   it("a run out of time saves where it stopped", async () => {

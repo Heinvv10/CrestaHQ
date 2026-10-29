@@ -7,6 +7,7 @@ import type { SubAccountDoc } from "@/types/tenancy";
 import {
   gcalConnectionPath,
   isActiveMember,
+  isConnectionUid,
   type GoogleCalendarConnection,
   type ImportMode,
 } from "./connection";
@@ -341,17 +342,28 @@ export const SWEEP_CURSOR_PATH = "system/calendarImportSweep";
 export async function sweepOrphanedImports(deadlineMs: number): Promise<number> {
   const db = getAdminDb();
   // print null: the uid cannot even name a connection doc, so nothing can
-  // ever import for it — its docs are deleted outright.
-  const verdict = new Map<string, Promise<{ eligible: boolean; print: string | null }>>();
+  // ever import for it — its docs are deleted outright. skip: reading the
+  // owner's state failed (a transient error is not a verdict) — their docs
+  // stay until a later run.
+  type Verdict = { eligible: boolean; print: string | null; skip?: boolean };
+  const verdict = new Map<string, Promise<Verdict>>();
   const judge = (sa: string, uid: string) => {
     const key = `${sa}\n${uid}`;
     if (!verdict.has(key)) {
       verdict.set(
         key,
-        readImportState(sa, uid).then(
-          (s) => ({ eligible: s.eligible, print: s.print }),
-          () => ({ eligible: false, print: null }),
-        ),
+        !isConnectionUid(uid)
+          ? Promise.resolve({ eligible: false, print: null })
+          : readImportState(sa, uid).then(
+              (s): Verdict => ({ eligible: s.eligible, print: s.print }),
+              (err): Verdict => {
+                console.warn(
+                  `[google-calendar/import] orphan sweep skipped an owner sa=${sa} uid=${uid}`,
+                  err instanceof Error ? err.message : String(err),
+                );
+                return { eligible: false, print: null, skip: true };
+              },
+            ),
       );
     }
     return verdict.get(key)!;
@@ -385,7 +397,7 @@ export async function sweepOrphanedImports(deadlineMs: number): Promise<number> 
         continue;
       }
       const v = await judge(sa, uid);
-      if (v.eligible) continue;
+      if (v.eligible || v.skip) continue;
       if (v.print === null) {
         doomed.push(d.ref);
         continue;
