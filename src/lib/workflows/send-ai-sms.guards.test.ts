@@ -117,6 +117,15 @@ describe("the prospecting stamp", () => {
     expect(counter()).toBe(0);
   });
 
+  it("is never even looked at when the step can't send: the gate wins over another workflow's approach", async () => {
+    mem.seed("contacts/c1", {
+      ...mem.read("contacts/c1"),
+      prospecting: { listId: "l1", approachedAt: new Date(DAY.getTime() - 86_400_000), approachedWorkflowId: "wf_other" },
+    });
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), aiOutboundSmsEnabledByAgency: false });
+    expect(result(await runFirst())).toBe("skipped:ai_sms_gate_off");
+  });
+
   it("is handed back, with its cap slot, when the AI's text is refused", async () => {
     aiReply = () => "Hi Thandi, Velocity Fibre here. Get a quote at evil.com today?";
     const runId = await runFirst();

@@ -11,20 +11,20 @@ import { segmentInfo } from "@/lib/comms/sms-segments";
 
 /** Dot, colon, slash and at look-alikes NFKC leaves alone. */
 const LOOKALIKE_PUNCT: Record<string, string> = {
-  "。": ".", "｡": ".", "․": ".", "‧": ".", "·": ".", "∙": ".",
-  "⋅": ".", "・": ".", "։": ".", "۔": ".", "܁": ".", "܂": ".",
-  "﹒": ".", "⸳": ".", "⸱": ".",
-  "∶": ":", "꞉": ":", "﹕": ":", "ː": ":",
-  "⁄": "/", "∕": "/", "⧸": "/", "╱": "/",
-  "﹫": "@",
+  "\u3002": ".", "\uFF61": ".", "\u2024": ".", "\u2027": ".", "\u00B7": ".", "\u2219": ".",
+  "\u22C5": ".", "\u30FB": ".", "\u0589": ".", "\u06D4": ".", "\u0701": ".", "\u0702": ".",
+  "\uFE52": ".", "\u2E33": ".", "\u2E31": ".",
+  "\u2236": ":", "\uA789": ":", "\uFE55": ":", "\u02D0": ":",
+  "\u2044": "/", "\u2215": "/", "\u29F8": "/", "\u2571": "/",
+  "\uFE6B": "@",
 };
 const LOOKALIKE_PUNCT_RE = new RegExp(`[${Object.keys(LOOKALIKE_PUNCT).join("")}]`, "g");
 
 /** Cyrillic and Greek letters that read as Latin, folded for the checks only. */
 const LOOKALIKE_LETTERS: Record<string, string> = {
-  а: "a", в: "b", е: "e", к: "k", м: "m", н: "h", о: "o", р: "p", с: "c", т: "t", у: "y",
-  х: "x", і: "i", ј: "j", ѕ: "s", ԁ: "d", һ: "h", ӏ: "l", ԛ: "q", ԝ: "w",
-  α: "a", ε: "e", ι: "i", κ: "k", ν: "v", ο: "o", ρ: "p", τ: "t", υ: "u", χ: "x",
+  "\u0430": "a", "\u0432": "b", "\u0435": "e", "\u043A": "k", "\u043C": "m", "\u043D": "h", "\u043E": "o", "\u0440": "p", "\u0441": "c", "\u0442": "t", "\u0443": "y",
+  "\u0445": "x", "\u0456": "i", "\u0458": "j", "\u0455": "s", "\u0501": "d", "\u04BB": "h", "\u04CF": "l", "\u051B": "q", "\u051D": "w",
+  "\u03B1": "a", "\u03B5": "e", "\u03B9": "i", "\u03BA": "k", "\u03BD": "v", "\u03BF": "o", "\u03C1": "p", "\u03C4": "t", "\u03C5": "u", "\u03C7": "x",
 };
 const LOOKALIKE_LETTERS_RE = new RegExp(`[${Object.keys(LOOKALIKE_LETTERS).join("")}]`, "gi");
 
@@ -37,13 +37,13 @@ const LOOKALIKE_LETTERS_RE = new RegExp(`[${Object.keys(LOOKALIKE_LETTERS).join(
 export function normaliseSmsText(raw: string): string {
   return raw
     .normalize("NFKC")
-    .replace(/[\p{Cf}­]/gu, "")
+    .replace(/[\p{Cf}\u00AD]/gu, "")
     .replace(/[\u{10000}-\u{10FFFF}]/gu, "")
     .replace(LOOKALIKE_PUNCT_RE, (c) => LOOKALIKE_PUNCT[c])
-    .replace(/[‘’‚′]/g, "'")
-    .replace(/[“”„″]/g, '"')
-    .replace(/[–—−]/g, "-")
-    .replace(/…/g, "...")
+    .replace(/[\u2018\u2019\u201A\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+    .replace(/[\u2013\u2014\u2212]/g, "-")
+    .replace(/\u2026/g, "...")
     .replace(/[\p{Cc}\p{Z}]+/gu, " ")
     .trim();
 }

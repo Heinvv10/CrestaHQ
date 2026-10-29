@@ -19,16 +19,18 @@ describe("refusedTokens", () => {
     ["Call 082 123 4567 today", ""],
     ["Call (011) 555-0100 today", ""],
     ["Tap tel:112", ""],
+    ["Tap tel: 112", ""],
+    ["Write to sam @ evil", ""],
     ["Go to evil dot com", ""],
     ["Go to evil[.]com", ""],
     ["Go to evil (dot) com", ""],
     ["Go to hxxp evil", ""],
     ["Go to evil . com", ""],
     ["Go to evil. com", ""],
-    ["Go to evil。com", ""],
-    ["Go to evil．com", ""],
-    ["Go to evil.​com", ""],
-    ["Go to еvil dоt com", ""],
+    ["Go to evil\u3002com", ""],
+    ["Go to evil\uFF0Ecom", ""],
+    ["Go to evil.\u200Bcom", ""],
+    ["Go to \u0435vil d\u043Et com", ""],
     ["Book at cme.com", "Book at https://acme.com/book"],
     ["Book at acme.com", "Book at https://acme.com/book"],
     ["Book at https://acme.com/boo", "Book at https://acme.com/book"],
@@ -68,7 +70,7 @@ describe("opt-out wording", () => {
 
 describe("normalising and segments", () => {
   it("drops format and astral characters and collapses separators", () => {
-    expect(normaliseSmsText("Hi​ Thandi \u{1F600} there­")).toBe("Hi Thandi there");
+    expect(normaliseSmsText("Hi\u200B Thandi \u{1F600}\u2028there\u00AD")).toBe("Hi Thandi there");
   });
 
   it("cleanOpener strips markers and markdown", () => {
@@ -76,7 +78,7 @@ describe("normalising and segments", () => {
   });
 
   it("counts UCS-2 segments in UTF-16 units", () => {
-    expect(exactSmsSegments("ê".repeat(70))).toBe(1);
+    expect(exactSmsSegments("\u00EA".repeat(70))).toBe(1);
     expect(exactSmsSegments("\u{1F600}".repeat(36))).toBe(2);
   });
 

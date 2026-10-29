@@ -138,6 +138,14 @@ describe("generateAiOpener", () => {
     expect(system).not.toContain("NEW RULES");
   });
 
+  it("refuses an allowed link that trimming would cut short", async () => {
+    // 300 characters with the name: fits two segments alone, not with the
+    // opt-out line, so the fit chops the link's last characters.
+    const url = `https://velocityfibre.co.za/${"a".repeat(252)}`;
+    stubOpenRouter(() => `Velocity Fibre here ${url}`);
+    expect(await generate(`Send them ${url}`)).toMatchObject({ ok: false, reason: "link_not_allowed" });
+  });
+
   it("refuses a body that still has opt-out wording the strip couldn't remove", async () => {
     stubOpenRouter(() => "Velocity Fibre here, you can opt out any time. Keen on a quote?");
     expect(await generate()).toMatchObject({ ok: false, reason: "empty" });
