@@ -13,8 +13,17 @@ import { seedAiSmsReady, stubOpenRouter } from "@/test/ai-outbound-sms-fixture";
 const mem = createMemoryFirestore();
 let failContactReadAfterAi = false;
 let aiCalled = false;
+/** Another run's AI text landing between this step's re-check and its claim. */
+let cooldownTakenBeforeClaim = false;
 const db = {
   ...mem.db,
+  runTransaction: (fn: Parameters<typeof mem.db.runTransaction>[0]) => {
+    if (cooldownTakenBeforeClaim && aiCalled) {
+      cooldownTakenBeforeClaim = false;
+      mem.seed("subAccounts/sa1/aiSmsCooldowns/c1", { lastSentAtMs: Date.now(), runId: "other_run", previousAtMs: null });
+    }
+    return mem.db.runTransaction(fn);
+  },
   doc: (path: string) => {
     const ref = mem.db.doc(path);
     if (path !== "contacts/c1") return ref;
@@ -70,6 +79,7 @@ beforeEach(() => {
   mem.clear();
   failContactReadAfterAi = false;
   aiCalled = false;
+  cooldownTakenBeforeClaim = false;
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(DAY);
   vi.stubEnv("OPENROUTER_API_KEY", "or-test");
@@ -185,6 +195,15 @@ describe("the 30-day cooldown", () => {
     expect(result(second)).toBe("skipped:ai_sms_cooldown");
     expect(smsSent).toHaveBeenCalledOnce();
     expect(ai.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("a claim lost to another run's text in the same moment sends nothing", async () => {
+    plainContact();
+    cooldownTakenBeforeClaim = true;
+    const runId = await runFirst();
+    expect(result(runId)).toBe("skipped:ai_sms_cooldown");
+    expect(smsSent).not.toHaveBeenCalled();
+    expect(mem.read("subAccounts/sa1/aiSmsCooldowns/c1")?.runId).toBe("other_run");
   });
 
   it("texts again once 30 days have passed", async () => {

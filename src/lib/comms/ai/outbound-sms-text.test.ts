@@ -27,6 +27,7 @@ describe("refusedTokens", () => {
     ["Go to hxxp evil", ""],
     ["Go to evil . com", ""],
     ["Go to evil. com", ""],
+    ["Go to evil .Com", ""],
     ["Go to evil\u3002com", ""],
     ["Go to evil\uFF0Ecom", ""],
     ["Go to evil.\u200Bcom", ""],
