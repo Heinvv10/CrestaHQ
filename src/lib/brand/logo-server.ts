@@ -1,6 +1,7 @@
 import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
+import sharp from "sharp";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   LOGO_MAX_BYTES,
@@ -39,9 +40,10 @@ export const PNG_MAX_ANCILLARY_BYTES = 64 * 1024;
  * Walks the PNG chunk list: IHDR first, at least one IDAT, IEND last and
  * nothing after it, so a PNG header glued onto another file's bytes is
  * refused. Ancillary chunks (text, profiles, anything a decoder may skip)
- * are capped at PNG_MAX_ANCILLARY_BYTES in total, so a "logo" can't be a
- * carrier for some other payload. Returns the IHDR dimensions, or null when
- * the structure is broken.
+ * are capped at PNG_MAX_ANCILLARY_BYTES in total. That bounds one place
+ * extra bytes can ride; it does not make the file payload-free (see
+ * validateLogo). Returns the IHDR dimensions, or null when the structure is
+ * broken.
  */
 function pngSize(buf: Buffer): { width: number; height: number } | null {
   if (buf.length < 8 || !PNG_SIGNATURE.every((b, i) => buf[i] === b)) return null;
@@ -111,8 +113,12 @@ function webpSize(buf: Buffer): { width: number; height: number } | null {
   return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
 }
 
-/** Checks the bytes match the claimed type and fit the budget. Returns the buffer or a problem string. */
-export function validateLogo(base64: unknown, mime: unknown): Buffer | string {
+/**
+ * The synchronous half of validateLogo: base64, size, container structure
+ * and the stated dimensions, with no decode. Returns the buffer or a problem
+ * string.
+ */
+export function checkLogoStructure(base64: unknown, mime: unknown): Buffer | string {
   if (mime !== "image/png" && mime !== "image/webp") {
     return "Logo must be a PNG or WebP";
   }
@@ -173,3 +179,44 @@ export async function storeLogo(
   });
   return version;
 }
+
+/** Decoder pixel ceiling: the structural edge cap squared, so it never refuses a file that passed. */
+const LOGO_MAX_PIXELS = 1024 * 1024;
+const LOGO_DECODE_TIMEOUT_S = 5;
+
+/**
+ * Upload validation: checkLogoStructure, then a full decode with sharp
+ * (pixel ceiling, fail on any decoder error, time-bounded), which must
+ * report the claimed format and the structurally stated dimensions.
+ *
+ * What a stored logo is guaranteed to be: a PNG or WebP of the declared mime
+ * that libvips decodes completely, at most 1024 px on each edge and 400 KB,
+ * whose decode is bounded in pixels and time (a zlib stream longer than the
+ * image is not inflated past its last row). What it is NOT guaranteed to be:
+ * free of bytes a decoder ignores. Data past the last row in IDAT, PNG
+ * ancillary chunks (64 KB in total), and WebP chunks libwebp skips are all
+ * still possible. The serve route's safety rests on the stored mime,
+ * `nosniff` and the sandboxing CSP, not on the bytes being pure.
+ */
+export async function validateLogo(base64: unknown, mime: unknown): Promise<Buffer | string> {
+  const buf = checkLogoStructure(base64, mime);
+  if (typeof buf === "string") return buf;
+  const size = mime === "image/png" ? pngSize(buf) : webpSize(buf);
+  const format = mime === "image/png" ? "png" : "webp";
+  const refused = `Logo data doesn't decode as a ${mime === "image/png" ? "PNG" : "WebP"} image`;
+  try {
+    const image = sharp(buf, { limitInputPixels: LOGO_MAX_PIXELS, failOn: "error" }).timeout({
+      seconds: LOGO_DECODE_TIMEOUT_S,
+    });
+    const meta = await image.metadata();
+    if (meta.format !== format || meta.width !== size?.width || meta.height !== size?.height) return refused;
+    // Every pixel, not just the header: a broken bitstream fails here.
+    await image.raw().toBuffer();
+  } catch (err) {
+    // A decoder refusal is the answer, not a fault.
+    console.warn("[brand/logo] decode refused:", err instanceof Error ? err.message : String(err));
+    return refused;
+  }
+  return buf;
+}
+

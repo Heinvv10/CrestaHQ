@@ -48,7 +48,7 @@ export async function POST(
   }
   const body = (read.value ?? {}) as { data?: unknown; mime?: unknown };
 
-  const result = validateLogo(body.data, body.mime);
+  const result = await validateLogo(body.data, body.mime);
   if (typeof result === "string") {
     return NextResponse.json({ error: result }, { status: 400 });
   }
