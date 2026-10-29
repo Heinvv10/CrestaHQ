@@ -130,6 +130,16 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  if (
+    body.usageRebillingEnabled !== undefined &&
+    typeof body.usageRebillingEnabled !== "boolean"
+  ) {
+    return NextResponse.json(
+      { error: "usageRebillingEnabled must be a boolean." },
+      { status: 400 }
+    );
+  }
+
   // Switching a reach gate on widens what an agency key reaches, so the
   // owner claim alone is not enough: it outlives a removal.
   // Rebilling a client is a money switch, held to the same live-row check.

@@ -15,6 +15,7 @@ const mem = vi.hoisted(() => ({ ref: null as ReturnType<typeof createMemoryFires
 const claims: Record<string, Record<string, unknown>> = {
   uid_owner: { status: "active", agencyId: "ag_1", agencyRole: "owner" },
   uid_admin: { status: "active", agencyId: "ag_1", agencyRole: null },
+  uid_other_owner: { status: "active", agencyId: "ag_2", agencyRole: "owner" },
 };
 vi.mock("@/lib/firebase/admin", async () => {
   const { createMemoryFirestore: make } = await import("@/test/memory-firestore");
@@ -124,9 +125,25 @@ describe("usageRebillingEnabled", () => {
     expect(auditRows()[0]).toMatchObject({ changes: [{ field: "usageRebillingEnabled", before: true, after: false }] });
   });
 
-  it("a non-boolean is not a request to change it", async () => {
-    expect((await patch({ usageRebillingEnabled: "yes" })).status).toBe(400);
-    expect(sub().usageRebillingEnabled).toBeUndefined();
+  it.each([["a string", "yes"], ["a number", 1], ["null", null], ["an object", { on: true }]])(
+    "%s is refused (400) and nothing else in the body lands",
+    async (_label, value) => {
+      const res = await patch({ usageRebillingEnabled: value, agentApiEnabled: true });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("usageRebillingEnabled must be a boolean.");
+      expect(sub().usageRebillingEnabled).toBeUndefined();
+      expect(sub().agentApiEnabledByAgency).toBeUndefined();
+    }
+  );
+
+  it.each([true, false])("another agency's owner cannot set it to %s (403)", async (value) => {
+    db().seed("agencies/ag_2/agencyMembers/uid_other_owner", { role: "owner", status: "active" });
+    db().seed("agencies/ag_2", { name: "Other", usageRebillingEnabled: true });
+    db().seed(`subAccounts/${SA}`, { agencyId: "ag_1", name: "Fixture", usageRebillingEnabled: !value });
+    const res = await patch({ usageRebillingEnabled: value }, "uid_other_owner");
+    expect(res.status).toBe(403);
+    expect(sub().usageRebillingEnabled).toBe(!value);
+    expect(auditRows()).toHaveLength(0);
   });
 
   it("the agency switch is read from the sub-account's own agency, not the body", async () => {
