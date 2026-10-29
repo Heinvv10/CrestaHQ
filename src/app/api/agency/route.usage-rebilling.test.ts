@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Agency PATCH `usageRebillingEnabled` — the usage rebilling master switch.
@@ -23,6 +23,7 @@ vi.mock("@/lib/firebase/admin", async () => {
 vi.mock("@/lib/agency/policy", () => ({ invalidateAgencyPolicyCache: vi.fn() }));
 
 const { PATCH } = await import("./route");
+const { REBILLING_CASCADE_CHUNK } = await import("@/lib/server/usage-rebilling");
 const db = () => mem.ref!;
 const agency = () => db().read("agencies/ag1")!;
 const auditRows = () => db().list("auditEvents").filter((r) => r.action === "usage_rebilling.updated");
@@ -143,7 +144,6 @@ describe("switching the master off switches every client of the agency off", () 
   });
 
   it("more rebilled clients than one transaction holds are all switched off", async () => {
-    const { REBILLING_CASCADE_CHUNK } = await import("@/lib/server/usage-rebilling");
     const n = REBILLING_CASCADE_CHUNK + 3;
     for (let i = 0; i < n; i++) {
       db().seed(`subAccounts/bulk${i}`, { agencyId: "ag1", name: `Bulk ${i}`, usageRebillingEnabled: true });
@@ -164,5 +164,73 @@ describe("concurrent toggles", () => {
     expect([a.status, b.status]).toEqual([200, 200]);
     expect(agency().usageRebillingEnabled).toBe(true);
     expect(auditRows()).toHaveLength(1);
+  });
+});
+
+describe("cascade past one transaction (breaker REPRO 6 and 7)", () => {
+  const store = () => db().db as unknown as { runTransaction: (fn: unknown) => Promise<unknown> };
+  let realTx: (fn: unknown) => Promise<unknown>;
+
+  beforeEach(() => {
+    realTx = store().runTransaction;
+    db().seed("agencies/ag1", { name: "Cresta Agency", ownerUid: "owner1", usageRebillingEnabled: true });
+  });
+  afterEach(() => {
+    store().runTransaction = realTx;
+  });
+
+  /** Runs `before(n)` ahead of the n-th transaction (1-based). */
+  function aroundTransactions(before: (n: number) => void) {
+    let n = 0;
+    store().runTransaction = (fn) => {
+      before(++n);
+      return realTx(fn);
+    };
+  }
+  const seedClients = (count: number) => {
+    for (let i = 0; i < count; i++) {
+      db().seed(`subAccounts/c${String(i).padStart(4, "0")}`, { agencyId: "ag1", name: `C${i}`, usageRebillingEnabled: true });
+    }
+  };
+  const clientsOn = () =>
+    db().all().filter((d) => d.path.startsWith("subAccounts/") && d.data.agencyId === "ag1" && d.data.usageRebillingEnabled === true);
+
+  it("a chunk failing mid-cascade, then a retry: every client off, 1 agency row, 1 row per client, no gaps", async () => {
+    expect(REBILLING_CASCADE_CHUNK).toBeLessThan(500);
+    seedClients(1000);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    aroundTransactions((n) => {
+      if (n === 2) throw new Error("chunk 2 failed");
+    });
+    await expect(patch("owner1", { usageRebillingEnabled: false })).rejects.toThrow("chunk 2 failed");
+    // The first chunk committed, and is already audited.
+    expect(agency().usageRebillingEnabled).toBe(false);
+    expect(auditRows().filter((r) => r.subAccountId !== null)).toHaveLength(REBILLING_CASCADE_CHUNK);
+
+    store().runTransaction = realTx;
+    expect((await patch("owner1", { usageRebillingEnabled: false })).status).toBe(200);
+    expect(clientsOn()).toEqual([]);
+    const rows = auditRows();
+    expect(rows.filter((r) => r.subAccountId === null)).toHaveLength(1);
+    const clientIds = rows.filter((r) => r.subAccountId !== null).map((r) => r.subAccountId as string);
+    expect(clientIds).toHaveLength(1000);
+    expect(new Set(clientIds).size).toBe(1000);
+  });
+
+  it("the master switched back on mid-cascade: later chunks clear nothing; a freshly enabled client stays on", async () => {
+    seedClients(REBILLING_CASCADE_CHUNK + 5);
+    aroundTransactions((n) => {
+      if (n !== 2) return;
+      // Between chunk 1's commit and chunk 2: the owner turns the master
+      // back on and switches a client on.
+      db().seed("agencies/ag1", { name: "Cresta Agency", ownerUid: "owner1", usageRebillingEnabled: true });
+      db().seed("subAccounts/fresh", { agencyId: "ag1", name: "Fresh", usageRebillingEnabled: true });
+    });
+    expect((await patch("owner1", { usageRebillingEnabled: false })).status).toBe(200);
+    expect(db().read("subAccounts/fresh")!.usageRebillingEnabled).toBe(true);
+    expect(agency().usageRebillingEnabled).toBe(true);
+    // Only chunk 1 was cleared and audited.
+    expect(auditRows().filter((r) => r.subAccountId !== null)).toHaveLength(REBILLING_CASCADE_CHUNK);
+    expect(clientsOn()).toHaveLength(6);
   });
 });

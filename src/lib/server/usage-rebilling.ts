@@ -103,6 +103,9 @@ export async function setAgencyUsageRebilling(
   for (let first = true; ; first = false) {
     const step = await db.runTransaction(async (tx) => {
       const agencyOn = (await tx.get(agencyRef)).data()?.usageRebillingEnabled === true;
+      // The master went back on mid-cascade: clear nothing (which ends the
+      // loop), so a client the owner has just switched on stays on.
+      if (!first && agencyOn) return { changed: false, cleared: [] as string[] };
       const clients = on ? [] : (await tx.get(rebilledClients)).docs;
       const flip = first && agencyOn !== on;
       if (flip) {
@@ -120,12 +123,17 @@ export async function setAgencyUsageRebilling(
       }
       return { changed: flip, cleared: clients.map((c) => c.id) };
     });
-    if (first) changed = step.changed;
+    // Audited as each commit lands, so a later chunk failing leaves no
+    // committed change unaudited; a retry (master already off) clears and
+    // audits the stragglers.
+    if (first) {
+      changed = step.changed;
+      if (changed) await auditFlip(actorUid, agencyId, null, !on, on);
+    }
+    await Promise.all(step.cleared.map((id) => auditFlip(actorUid, agencyId, id, true, false)));
     switchedOff.push(...step.cleared);
     if (step.cleared.length < REBILLING_CASCADE_CHUNK) break;
   }
 
-  if (changed) await auditFlip(actorUid, agencyId, null, !on, on);
-  await Promise.all(switchedOff.map((id) => auditFlip(actorUid, agencyId, id, true, false)));
   return { changed, clientsSwitchedOff: switchedOff };
 }
