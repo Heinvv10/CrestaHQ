@@ -7,9 +7,13 @@ import { isDocId } from "@/lib/server/doc-id";
 /**
  * Public logo endpoint behind every uploaded `logoUrl`. Public because email
  * clients and visitors fetch it without credentials, and it's only branding.
- * The URL carries ?v=<upload millis>; only a request for the stored version
- * is cached as immutable, so a re-upload never leaves an old URL pinned to
- * new bytes (or a guessed one pinned to nothing).
+ * The URL carries ?v=<upload millis>. The response is immutable only when
+ * its bytes are that version's: a hit in the in-memory cache
+ * (lib/brand/logo-cache.ts, keyed by the version a read found), or a read
+ * whose stored version matches. Any other ?v, or none, is read and served
+ * with a five-minute cache, so a re-upload never pins an old URL to new
+ * bytes. Cache hits skip the Firestore read and the per-client limit; only
+ * misses are limited (lib/brand/logo-rate-limit.ts).
  */
 
 export const dynamic = "force-dynamic";

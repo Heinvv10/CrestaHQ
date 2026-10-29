@@ -207,6 +207,20 @@ describe("decoded-logo cache", () => {
     expect(Buffer.from(await again.arrayBuffer()).equals(NEW)).toBe(true);
   });
 
+  it("never crosses scopes: agency ag1 and sa ag1 at the same version stay apart", async () => {
+    const AGENCY = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xa1]);
+    const SUB = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x5a]);
+    m.docs.set("agencies/ag1/brandAssets/logo", { data: AGENCY.toString("base64"), mime: "image/png", version: 7 });
+    m.docs.set("subAccounts/ag1/private/brandLogo", { data: SUB.toString("base64"), mime: "image/png", version: 7 });
+    const body = async (scope: string) => Buffer.from(await (await get(scope, "ag1", "?v=7")).arrayBuffer());
+    // Prime both, then read each again from the cache.
+    expect((await body("agency")).equals(AGENCY)).toBe(true);
+    expect((await body("sa")).equals(SUB)).toBe(true);
+    expect((await body("agency")).equals(AGENCY)).toBe(true);
+    expect((await body("sa")).equals(SUB)).toBe(true);
+    expect(m.reads).toEqual(["agencies/ag1/brandAssets/logo", "subAccounts/ag1/private/brandLogo"]);
+  });
+
   it("holds its byte bound, evicting the oldest entry first", async () => {
     const { cacheLogo, getCachedLogo } = await import("@/lib/brand/logo-cache");
     const mb = 1024 * 1024;
