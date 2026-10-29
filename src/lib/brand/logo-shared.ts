@@ -45,3 +45,18 @@ export function isUploadedLogoUrl(
   const parsed = new URL(url);
   return parsed.origin === new URL(base).origin && parsed.pathname === uploadedLogoPath(scope, id);
 }
+
+/**
+ * Looser than isUploadedLogoUrl, for Remove on the server: any absolute URL
+ * whose path is exactly this tenant's serving path, on any origin. A logo
+ * uploaded before NEXT_PUBLIC_APP_URL changed still clears instead of being
+ * left pointing at a deleted blob. Another tenant's path, or the prefix in a
+ * query, still doesn't match.
+ */
+export function pointsAtUploadedLogo(
+  url: string | null | undefined,
+  scope: LogoScope,
+  id: string,
+): boolean {
+  return !!url && URL.canParse(url) && new URL(url).pathname === uploadedLogoPath(scope, id);
+}

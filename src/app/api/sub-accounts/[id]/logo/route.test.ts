@@ -165,6 +165,14 @@ describe("DELETE /api/sub-accounts/[id]/logo — remove", () => {
     ]);
   });
 
+  it("clears its own upload minted under an earlier NEXT_PUBLIC_APP_URL", async () => {
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: png, mime: "image/png", version: 1 });
+    m.docs.set("subAccounts/sa1", { agencyId: "ag1", logoUrl: "https://old-host.example.org/api/brand/logo/sa/sa1?v=1" });
+    await DELETE(req("admin1", "DELETE"), ctx());
+    expect(m.docs.get("subAccounts/sa1")?.logoUrl).toBeNull();
+    expect(m.docs.has("subAccounts/sa1/private/brandLogo")).toBe(false);
+  });
+
   it.each([
     ["a pasted logo URL", "https://cdn.example.com/logo.png"],
     ["another tenant's uploaded logo", "https://crm.example.com/api/brand/logo/sa/sa2?v=1"],

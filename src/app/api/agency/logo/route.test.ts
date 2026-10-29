@@ -120,6 +120,12 @@ it("DELETE clears logoUrl before deleting the blob", async () => {
   ]);
 });
 
+it("DELETE clears its own upload minted under an earlier NEXT_PUBLIC_APP_URL", async () => {
+  m.docs.set("agencies/ag1", { logoUrl: "http://localhost:4301/api/brand/logo/agency/ag1?v=1" });
+  await DELETE(req("owner1", "DELETE"));
+  expect(m.docs.get("agencies/ag1")?.logoUrl).toBeNull();
+});
+
 it.each([
   ["another agency's uploaded logo", "https://crm.example.com/api/brand/logo/agency/ag2?v=1"],
   ["a URL carrying the prefix in its query", "https://cdn.example.com/logo.png?r=/api/brand/logo/"],

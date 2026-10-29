@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { isUploadedLogoUrl } from "./logo-shared";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { isUploadedLogoUrl, pointsAtUploadedLogo } from "./logo-shared";
 
 beforeEach(() => vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://crm.example.com/"));
 afterEach(() => vi.unstubAllEnvs());
@@ -27,4 +27,22 @@ it.each([
 it("is false when the app URL is unset", () => {
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
   expect(isUploadedLogoUrl("https://crm.example.com/api/brand/logo/sa/sa1?v=1", "sa", "sa1")).toBe(false);
+});
+
+describe("pointsAtUploadedLogo (Remove's server-side match)", () => {
+  it("matches this tenant's path on any origin", () => {
+    expect(pointsAtUploadedLogo("https://old-host.example.org/api/brand/logo/sa/sa1?v=1", "sa", "sa1")).toBe(true);
+    expect(pointsAtUploadedLogo("https://crm.example.com/api/brand/logo/sa/sa1", "sa", "sa1")).toBe(true);
+  });
+
+  it.each([
+    ["another tenant's path", "https://crm.example.com/api/brand/logo/sa/sa2?v=1"],
+    ["the other scope", "https://crm.example.com/api/brand/logo/agency/sa1?v=1"],
+    ["the prefix in a query", "https://cdn.example.com/x.png?r=/api/brand/logo/sa/sa1"],
+    ["a longer path", "https://crm.example.com/api/brand/logo/sa/sa1/x"],
+    ["not absolute", "/api/brand/logo/sa/sa1"],
+    ["empty", ""],
+  ])("refuses %s", (_label, url) => {
+    expect(pointsAtUploadedLogo(url, "sa", "sa1")).toBe(false);
+  });
 });

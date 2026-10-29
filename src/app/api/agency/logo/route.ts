@@ -12,7 +12,7 @@ import {
   storeLogo,
   validateLogo,
 } from "@/lib/brand/logo-server";
-import { LOGO_ID_RE, isUploadedLogoUrl } from "@/lib/brand/logo-shared";
+import { LOGO_ID_RE, pointsAtUploadedLogo } from "@/lib/brand/logo-shared";
 
 /**
  * Owner-only agency logo upload/remove. The browser resizes the file
@@ -76,8 +76,9 @@ export async function DELETE(request: Request) {
   const db = getAdminDb();
   const agencyRef = db.doc(`agencies/${agencyId}`);
   const snap = await agencyRef.get();
-  // Leave a pasted URL alone; only clear the field when it points at our upload.
-  if (isUploadedLogoUrl(snap.data()?.logoUrl as string | undefined, "agency", agencyId)) {
+  // Leave a pasted URL alone; clear the field when its path is this tenant's
+  // upload, whatever origin it was minted under.
+  if (pointsAtUploadedLogo(snap.data()?.logoUrl as string | undefined, "agency", agencyId)) {
     await agencyRef.update({
       logoUrl: null,
       updatedAt: FieldValue.serverTimestamp(),

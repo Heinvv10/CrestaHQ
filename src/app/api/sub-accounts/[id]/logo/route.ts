@@ -13,7 +13,7 @@ import {
   storeLogo,
   validateLogo,
 } from "@/lib/brand/logo-server";
-import { LOGO_ID_RE, isUploadedLogoUrl } from "@/lib/brand/logo-shared";
+import { LOGO_ID_RE, pointsAtUploadedLogo } from "@/lib/brand/logo-shared";
 
 /**
  * Sub-account logo upload/remove (admin or agency owner). Same flow as the
@@ -86,8 +86,9 @@ export async function DELETE(
 
   const subRef = getAdminDb().doc(`subAccounts/${subAccountId}`);
   const snap = await subRef.get();
-  // Leave a pasted URL alone; only clear the field when it points at our upload.
-  if (isUploadedLogoUrl(snap.data()?.logoUrl as string | undefined, "sa", subAccountId)) {
+  // Leave a pasted URL alone; clear the field when its path is this tenant's
+  // upload, whatever origin it was minted under.
+  if (pointsAtUploadedLogo(snap.data()?.logoUrl as string | undefined, "sa", subAccountId)) {
     await subRef.update({
       logoUrl: null,
       updatedAt: FieldValue.serverTimestamp(),
