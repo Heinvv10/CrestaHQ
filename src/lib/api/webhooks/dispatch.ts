@@ -8,6 +8,7 @@ import {
 } from "@/lib/firestore/webhook-events";
 import { findMatchingSubscriptions } from "@/lib/firestore/webhook-subscriptions";
 import { dispatchPushForWebhookEvent } from "@/lib/push/events";
+import { dispatchSlackForWebhookEvent } from "@/lib/slack/events";
 import type { WebhookEventType } from "@/types/webhooks";
 import { runAfterResponse } from "@/lib/server/after-response";
 
@@ -67,9 +68,12 @@ export async function emitWebhookEvent(
     // below (most deployments have zero API webhook subscribers; push
     // must still fire). Self-guarded fire-and-forget: it filters to the
     // four speed-to-lead events, no-ops without VAPID keys, and swallows
-    // its own errors. Test-mode events never notify a phone.
+    // its own errors. Test-mode events never notify a phone. Slack rides
+    // the same way: its own task, never throws, so a Slack failure or a
+    // slow hook can't touch the deliveries below.
     if (input.mode === "live") {
       runAfterResponse(() => dispatchPushForWebhookEvent(input));
+      runAfterResponse(() => dispatchSlackForWebhookEvent(input));
     }
 
     const subscriptions = await findMatchingSubscriptions(

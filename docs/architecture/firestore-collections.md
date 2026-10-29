@@ -326,6 +326,20 @@ in a transaction. Disconnect deletes
 it with the connection doc. No new index. See
 [web-voice.md](../features/web-voice.md).
 
+### Slack notifications
+`subAccounts/{id}/private/slack` (`SlackPrivateDoc` in `src/types/slack.ts`)
+holds the sub-account's Slack Incoming Webhook `webhookUrl` (a secret: anyone
+holding it can post to the channel), `connectedByUid` and `connectedAt`. Admin
+SDK only under the `private/{docId}` deny rule; read and written only by
+`lib/server/slack-service.ts`, which re-checks the URL (`isSlackWebhookUrl`)
+every time it reads it. The parent carries only the display copy `slackMeta`
+(`SlackMeta`: `connected`, `channelLabel`, `urlTail` — the last 6 characters —
+`events`, `lastSentAt`, `lastError`, `needsReconnect`, `updatedAt`; null =
+not connected), server-written; status stamps land in a transaction only while
+the stored URL is still the one posted to. Disconnect deletes the private doc
+and sets `slackMeta` to null. `slackMeta` is in `CHANNEL_CONNECTION_FIELDS`.
+No new rule or index. See [slack.md](../features/slack.md).
+
 ### Workspace mailbox and email conversations
 
 `subAccounts/{id}/private/mailboxConnection` stores verified IMAPS credentials,
