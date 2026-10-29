@@ -523,6 +523,18 @@
         "reason": "The approvals queue itself: agents create proposals through tools, only a person lists and decides them."
       }
     },
+    "api/sub-accounts/[id]/agents/stale-deals:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The Stale deals monitor's config card on AI Agents → Monitors (on/off, threshold, pipeline and stage filters, quiet hours, recent runs); a sub-account admin's act, behind the Agent monitors gate. Assistant tools are a separate unit (T3)."
+      }
+    },
+    "api/sub-accounts/[id]/agents/stale-deals:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The Stale deals monitor's config card on AI Agents → Monitors (on/off, threshold, pipeline and stage filters, quiet hours, recent runs); a sub-account admin's act, behind the Agent monitors gate. Assistant tools are a separate unit (T3)."
+      }
+    },
     "api/sub-accounts/[id]/agents/watchdog:GET": {
       "tools": [
         "watchdog_status"

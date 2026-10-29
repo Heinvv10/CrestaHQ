@@ -199,6 +199,11 @@ export interface Deal {
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
   stageChangedAt: Timestamp | FieldValue | null;
+  /**
+   * Server-only stamp from the stale deals monitor. A deal is flagged once
+   * per stage visit: a stage change moves `stageChangedAt` past it.
+   */
+  staleAlertedAt?: Timestamp | FieldValue | null;
 }
 
 export type DealFormData = {

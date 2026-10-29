@@ -7,6 +7,7 @@ import {
   MessageSquare,
   PhoneCall,
   PhoneOutgoing,
+  Radar,
   Star,
   type LucideIcon,
 } from "lucide-react";
@@ -15,7 +16,9 @@ import {
  * Single source of truth for the AI Agents channel surface. Every nav
  * tab, every Overview status card, every Coming Soon page reads from
  * this list — adding a future channel means appending one entry and
- * dropping its `comingSoon` flag once shipped.
+ * dropping its `comingSoon` flag once shipped. "Monitors" is a tab, not a
+ * channel: it has no aiAgent/{channel} doc and its agents watch the CRM
+ * instead of answering anyone.
  */
 
 export type AiChannelId =
@@ -27,12 +30,14 @@ export type AiChannelId =
   | "email"
   | "web-chat"
   | "google-business"
-  | "outbound";
+  | "outbound"
+  | "monitors";
 
 /** Direction grouping for the nav. Inbound channels (the AI reacts to
  *  someone reaching out) are colored one way; the outbound channel (the
- *  AI proactively calls out) another, so the two are visually distinct. */
-export type AiChannelGroup = "inbound" | "outbound";
+ *  AI proactively calls out) another, so the two are visually distinct.
+ *  Monitor: the AI watches the CRM (its own colour, never in the Overview). */
+export type AiChannelGroup = "inbound" | "outbound" | "monitor";
 
 export interface AiChannel {
   id: AiChannelId;
@@ -150,6 +155,17 @@ export const AI_CHANNELS: AiChannel[] = [
     comingSoon: false,
     slug: "google-business",
   },
+  {
+    id: "monitors",
+    label: "Monitors",
+    blurb:
+      "Background agents that watch the workspace every hour: unanswered customer messages and deals stuck in a stage. Each flag becomes a Task plus a push; they never message customers.",
+    icon: Radar,
+    group: "monitor",
+    comingSoon: false,
+    beta: true,
+    slug: "monitors",
+  },
 ];
 
 export function getChannel(id: AiChannelId): AiChannel {
@@ -166,6 +182,23 @@ export function getChannel(id: AiChannelId): AiChannel {
 export const VISIBLE_AI_CHANNELS: AiChannel[] = AI_CHANNELS.filter(
   (c) => !c.hidden,
 );
+
+/**
+ * The Monitors tab shows once the workspace doc says at least one monitor's
+ * gate is on: Labs (the inbox watchdog) or Agent monitors (stale deals).
+ * Hidden while the doc is loading, so it never flashes and disappears.
+ * Every other channel is unaffected.
+ */
+export function monitorsTabVisible(
+  channel: Pick<AiChannel, "id">,
+  sub:
+    | { labsEnabledByAgency?: boolean; agentsEnabledByAgency?: boolean }
+    | null
+    | undefined,
+): boolean {
+  if (channel.id !== "monitors") return true;
+  return sub?.labsEnabledByAgency === true || sub?.agentsEnabledByAgency === true;
+}
 
 export function buildChannelHref(
   subAccountId: string,

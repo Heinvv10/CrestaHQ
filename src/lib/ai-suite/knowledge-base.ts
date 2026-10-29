@@ -436,10 +436,19 @@ export const AI_SUITE_KNOWLEDGE: AiSuiteKnowledgeCard[] = [
     id: "labs",
     levels: ["sub-account", "agency"],
     title: "Labs (pre-release features & the Follow-up Watchdog)",
-    location: "Sidebar → Labs",
+    location: "Sidebar → Labs; the watchdog is on Sidebar → AI Agents → Monitors",
     keywords: ["labs", "experimental", "beta", "watchdog", "follow-up watchdog", "inbox watchdog", "agent", "autonomous", "unanswered", "waiting on reply", "pre-release"],
     body:
-      "Labs is the home for pre-release, experimental features. It's agency-gated (hidden by default — the agency owner enables the Labs gate per sub-account from the Manage dialog). Its first resident is the Inbox Follow-up Watchdog: an hourly background agent that scans the unified inbox for conversations where a customer wrote in and nobody replied for longer than your threshold, uses AI to judge which ones genuinely need a follow-up, and for each flagged thread creates a Task and sends a push notification to the team. It only ever ADDS internal items — it never messages customers or changes records. Configure it on the Labs page: on/off toggle, the waiting threshold (1–24 hours), optional extra judging criteria, quiet hours for pushes, and a recent-runs log. It also requires the Workspace Assistant (AI Suite) gate to be on, since judgments spend the agency's AI credits. Admins can also ask the assistant whether the watchdog is on and what it flagged recently, or change its settings behind a confirmation card.",
+      "Labs is the home for pre-release, experimental features. It's agency-gated (hidden by default — the agency owner enables the Labs gate per sub-account from the Manage dialog). Its first resident is the Inbox Follow-up Watchdog: an hourly background agent that scans the unified inbox for conversations where a customer wrote in and nobody replied for longer than your threshold, uses AI to judge which ones genuinely need a follow-up, and for each flagged thread creates a Task and sends a push notification to the team. It only ever ADDS internal items — it never messages customers or changes records. Configure it on AI Agents → Monitors (it moved there from the Labs page and still needs the Labs gate): on/off toggle, the waiting threshold (1–24 hours), optional extra judging criteria, quiet hours for pushes, and a recent-runs log. It also requires the Workspace Assistant (AI Suite) gate to be on, since judgments spend the agency's AI credits. Admins can also ask the assistant whether the watchdog is on and what it flagged recently, or change its settings behind a confirmation card.",
+  },
+  {
+    id: "stale-deals-monitor",
+    levels: ["sub-account", "agency"],
+    title: "Stale deals monitor (AI Agents → Monitors)",
+    location: "Sidebar → AI Agents → Monitors → Stale deals",
+    keywords: ["stale deals", "stalled deal", "stuck deal", "deal stuck", "idle deal", "pipeline monitor", "monitors", "agent monitors", "follow up deal", "days in stage", "nudge"],
+    body:
+      "The Stale deals monitor checks the pipeline every hour for deals that have sat in one open stage longer than your threshold (3–60 days, default 7) with no open task on the deal, no message either way with the contact and no deal activity in that time. Each one gets a follow-up Task on the deal with a one-line AI-suggested next step, a push to the team (suppressed in quiet hours; the Task is still created) and a note on the contact's timeline. It flags a deal once per stage visit: moving the deal to another stage re-arms it. Won and Lost stages of every pipeline are never flagged, test-mode deals are ignored, and you can limit it to some pipelines or ignore specific stages such as a Parked stage. It never messages customers and never moves or edits a deal. It is agency-gated: the agency owner switches on Agent monitors in the sub-account's Manage dialog (off by default, because each flagged deal spends the agency's AI credits), and it also needs the deployment's AI key. A workspace admin then enables it on the Monitors tab. The assistant cannot configure it yet.",
   },
   {
     id: "funnels-labs",

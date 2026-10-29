@@ -252,7 +252,7 @@ export const FEATURE_GATES: Record<
   // reach customers: the assistant can switch them off, never on.
   agents: {
     field: "agentsEnabledByAgency",
-    label: "Agent monitors (stale deals, inbox watchdog)",
+    label: "Agent monitors (stale deals)",
     assistantMayEnable: false,
   },
   "sell-online": {

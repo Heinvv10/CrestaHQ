@@ -7,10 +7,21 @@ import { getAgentProfile } from "@/lib/comms/ai/agent";
 import { createTaskServerSide } from "@/lib/server/tasks-service";
 import { sendPushForEvent } from "@/lib/push/send";
 import { contactTerritoryId } from "@/lib/push/events";
+import { readPipelines } from "@/lib/pipelines/server";
+import { dealPipelineId, dealStage } from "@/lib/pipelines/stages";
+import { isDocId } from "@/lib/server/doc-id";
 import {
+  STALE_DEALS_DEFAULT_DAILY_TOKEN_BUDGET,
+  STALE_DEALS_DEFAULT_THRESHOLD_DAYS,
+  STALE_DEALS_MAX_FLAGS_PER_RUN,
   WATCHDOG_DEFAULT_DAILY_TOKEN_BUDGET,
   WATCHDOG_DEFAULT_THRESHOLD_HOURS,
   WATCHDOG_MAX_JUDGMENTS_PER_RUN,
+  agentDocId,
+  type AgentConfigBase,
+  type AgentType,
+  type StaleDealsConfigDoc,
+  type StaleDealsConfigResponse,
   type WatchdogConfigDoc,
   type WatchdogConfigResponse,
   type WatchdogQuietHours,
@@ -20,6 +31,7 @@ import {
   type WatchdogSkippedReason,
 } from "@/types/custom-agents";
 import type { ConversationChannel, ConversationDoc } from "@/types/conversations";
+import type { Deal } from "@/types/deals";
 import type { SubAccountDoc } from "@/types";
 import { runAfterResponse } from "@/lib/server/after-response";
 
@@ -37,6 +49,11 @@ import { runAfterResponse } from "@/lib/server/after-response";
  *      clamped fields; unparseable → treated as "no follow-up needed".
  *   4. Cost bounds: deterministic pre-filter first; ≤20 judgments/run;
  *      per-day token budget; gates re-checked EVERY run.
+ *
+ * The Stale deals monitor (AI Agents → Monitors) shares the collection, the
+ * hourly sweep and these invariants, except that RULES pick the deals and
+ * the model only writes the one-line note. It is gated by
+ * `agentsEnabledByAgency`; the watchdog keeps its Labs + AI Suite gates.
  */
 
 const AGENTS_COLLECTION = "customAgents";
@@ -45,9 +62,18 @@ const PREFILTER_FETCH_LIMIT = 60;
 /** Thread excerpt: last N messages fed to the judge. */
 const THREAD_EXCERPT_MESSAGES = 5;
 const MAX_RUNS_KEPT_DAYS = 30;
+const STALE_DEALS_FETCH_LIMIT = 200;
+/** Pages of STALE_DEALS_FETCH_LIMIT scanned per run before giving up. */
+const STALE_DEALS_MAX_PAGES = 5;
+/** Candidate deals given the recent-work checks (3 reads each) per run. */
+const STALE_DEALS_MAX_CHECKS_PER_RUN = 60;
+/** Contact activity rows read per candidate deal when checking for recent work. */
+const STALE_DEALS_ACTIVITY_LOOKBACK = 15;
 
-function agentRef(subAccountId: string) {
-  return getAdminDb().collection(AGENTS_COLLECTION).doc(subAccountId);
+function agentRef(subAccountId: string, type: AgentType = "inbox-watchdog") {
+  return getAdminDb()
+    .collection(AGENTS_COLLECTION)
+    .doc(agentDocId(subAccountId, type));
 }
 
 // ---------------------------------------------------------------------------
@@ -117,17 +143,102 @@ export async function upsertWatchdogConfig(
   return serializeWatchdogConfig(updated.data() as Partial<WatchdogConfigDoc>);
 }
 
+export function serializeStaleDealsConfig(
+  data: Partial<StaleDealsConfigDoc> | undefined,
+): StaleDealsConfigResponse {
+  return {
+    enabled: data?.enabled === true,
+    thresholdDays:
+      typeof data?.thresholdDays === "number"
+        ? data.thresholdDays
+        : STALE_DEALS_DEFAULT_THRESHOLD_DAYS,
+    pipelineIds: Array.isArray(data?.pipelineIds) ? data.pipelineIds : null,
+    excludeStageKeys: Array.isArray(data?.excludeStageKeys)
+      ? data.excludeStageKeys
+      : [],
+    instructions: data?.instructions ?? null,
+    quietHours: data?.quietHours ?? null,
+    dailyTokenBudget:
+      typeof data?.dailyTokenBudget === "number"
+        ? data.dailyTokenBudget
+        : STALE_DEALS_DEFAULT_DAILY_TOKEN_BUDGET,
+    totalTokensUsed:
+      typeof data?.totalTokensUsed === "number" ? data.totalTokensUsed : 0,
+  };
+}
+
+export async function getStaleDealsConfig(
+  subAccountId: string,
+): Promise<StaleDealsConfigResponse> {
+  const snap = await agentRef(subAccountId, "stale-deals").get();
+  return serializeStaleDealsConfig(snap.data() as Partial<StaleDealsConfigDoc>);
+}
+
+export async function upsertStaleDealsConfig(
+  subAccountId: string,
+  agencyId: string,
+  patch: Partial<
+    Pick<
+      StaleDealsConfigDoc,
+      | "enabled"
+      | "thresholdDays"
+      | "pipelineIds"
+      | "excludeStageKeys"
+      | "instructions"
+      | "quietHours"
+    >
+  >,
+): Promise<StaleDealsConfigResponse> {
+  const ref = agentRef(subAccountId, "stale-deals");
+  const snap = await ref.get();
+  if (!snap.exists) {
+    await ref.set({
+      subAccountId,
+      agencyId,
+      type: "stale-deals",
+      enabled: false,
+      thresholdDays: STALE_DEALS_DEFAULT_THRESHOLD_DAYS,
+      pipelineIds: null,
+      excludeStageKeys: [],
+      instructions: null,
+      quietHours: null,
+      dailyTokenBudget: STALE_DEALS_DEFAULT_DAILY_TOKEN_BUDGET,
+      tokensTodayDate: null,
+      tokensToday: 0,
+      totalTokensUsed: 0,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    } satisfies Omit<StaleDealsConfigDoc, "createdAt" | "updatedAt"> & {
+      createdAt: FieldValue;
+      updatedAt: FieldValue;
+    });
+  }
+  await ref.update({ ...patch, updatedAt: FieldValue.serverTimestamp() });
+  const updated = await ref.get();
+  return serializeStaleDealsConfig(
+    updated.data() as Partial<StaleDealsConfigDoc>,
+  );
+}
+
 function tsToIso(value: unknown): string | null {
   if (value instanceof Timestamp) return value.toDate().toISOString();
   if (value instanceof Date) return value.toISOString();
   return null;
 }
 
-export async function listWatchdogRuns(
+export function listWatchdogRuns(
   subAccountId: string,
   limit = 10,
 ): Promise<WatchdogRunResponse[]> {
-  const snap = await agentRef(subAccountId)
+  return listAgentRuns(subAccountId, "inbox-watchdog", limit);
+}
+
+export async function listAgentRuns(
+  subAccountId: string,
+  type: AgentType,
+  limit = 10,
+): Promise<WatchdogRunResponse[]> {
+  const snap = await agentRef(subAccountId, type)
     .collection("runs")
     .orderBy("startedAt", "desc")
     .limit(limit)
@@ -573,12 +684,390 @@ async function runWatchdogForSubAccount(
   }
 }
 
-/** The hourly cron entry point: run every enabled watchdog, sequentially
+// ---------------------------------------------------------------------------
+// Stale deals monitor
+// ---------------------------------------------------------------------------
+
+type DealRow = Deal & { mode?: unknown };
+
+/** Someone is already on it: an open task for the deal, a message either way
+ *  within the window, or deal activity on the contact within the window. */
+async function dealHasRecentWork(
+  deal: DealRow,
+  contactId: string | null,
+  cutoffMs: number,
+): Promise<boolean> {
+  const db = getAdminDb();
+
+  const openTask = await db
+    .collection("tasks")
+    .where("subAccountId", "==", deal.subAccountId)
+    .where("dealId", "==", deal.id)
+    .where("completed", "==", false)
+    .limit(1)
+    .get();
+  if (!openTask.empty) return true;
+
+  if (contactId) {
+    // Conversation doc id == contactId.
+    const conv = await db.doc(`conversations/${contactId}`).get();
+    const last = toMillis(conv.data()?.lastMessageAt);
+    if (last !== null && last >= cutoffMs) return true;
+
+    const acts = await db
+      .collection("contacts")
+      .doc(contactId)
+      .collection("activities")
+      .orderBy("createdAt", "desc")
+      .limit(STALE_DEALS_ACTIVITY_LOOKBACK)
+      .get();
+    for (const a of acts.docs) {
+      const data = a.data() as { meta?: { dealId?: string }; createdAt?: unknown };
+      const at = toMillis(data.createdAt);
+      if (at === null || at < cutoffMs) break;
+      if (data.meta?.dealId === deal.id) return true;
+    }
+  }
+  return false;
+}
+
+/** Already alerted for the current stage visit. A stage change writes a newer
+ *  `stageChangedAt` than the stamp, which re-arms the deal. */
+function alertedThisVisit(data: {
+  staleAlertedAt?: unknown;
+  stageChangedAt?: unknown;
+}): boolean {
+  const alerted = toMillis(data.staleAlertedAt);
+  const changed = toMillis(data.stageChangedAt);
+  return alerted !== null && changed !== null && alerted >= changed;
+}
+
+/**
+ * Claim this stage visit before acting, inside a transaction that re-reads
+ * the deal: false when it moved stage since the query (that is a new visit)
+ * or another run already claimed it. One alert per visit, even when two
+ * sweeps overlap; a claim is never released.
+ */
+async function claimStaleVisit(deal: DealRow): Promise<boolean> {
+  const db = getAdminDb();
+  const ref = db.doc(`deals/${deal.id}`);
+  const seenChangedAt = toMillis(deal.stageChangedAt);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.data();
+    if (!snap.exists || !data) return false;
+    if (toMillis(data.stageChangedAt) !== seenChangedAt) return false;
+    if (alertedThisVisit(data)) return false;
+    tx.update(ref, { staleAlertedAt: FieldValue.serverTimestamp() });
+    return true;
+  });
+}
+
+/** Run the stale deals monitor for ONE sub-account. Never throws; failures
+ *  land in the run doc. */
+async function runStaleDealsForSubAccount(
+  agent: StaleDealsConfigDoc,
+): Promise<SweepAccountResult> {
+  const db = getAdminDb();
+  const subAccountId = agent.subAccountId;
+  const runRef = agentRef(subAccountId, "stale-deals").collection("runs").doc();
+  const now = new Date();
+  const nowMs = now.getTime();
+
+  const base: Omit<WatchdogRunDoc, "status" | "skippedReason"> = {
+    scanned: 0,
+    droppedByCap: 0,
+    judged: 0,
+    flagged: 0,
+    actions: [],
+    tokensUsed: 0,
+    error: null,
+    startedAt: FieldValue.serverTimestamp(),
+    finishedAt: FieldValue.serverTimestamp(),
+  };
+
+  const skip = async (
+    reason: WatchdogSkippedReason,
+  ): Promise<SweepAccountResult> => {
+    await runRef.set({ ...base, status: "skipped", skippedReason: reason });
+    return {
+      subAccountId,
+      status: "skipped",
+      skippedReason: reason,
+      scanned: 0,
+      judged: 0,
+      flagged: 0,
+      tokensUsed: 0,
+    };
+  };
+
+  try {
+    // Re-checked every run so an agency flip takes effect within the hour.
+    const saSnap = await db.doc(`subAccounts/${subAccountId}`).get();
+    const sub = saSnap.exists ? (saSnap.data() as SubAccountDoc) : null;
+    if (!sub || sub.agentsEnabledByAgency !== true) return skip("agents_gate_off");
+    if (!aiIsConfigured()) return skip("ai_not_configured");
+
+    // Rules decide what gets flagged; the model only writes the note, so a
+    // spent budget degrades to a templated note and the Task still lands.
+    const today = now.toISOString().slice(0, 10);
+    const tokensToday =
+      agent.tokensTodayDate === today ? (agent.tokensToday ?? 0) : 0;
+    const budget =
+      agent.dailyTokenBudget ?? STALE_DEALS_DEFAULT_DAILY_TOKEN_BUDGET;
+
+    const thresholdDays =
+      agent.thresholdDays ?? STALE_DEALS_DEFAULT_THRESHOLD_DAYS;
+    const cutoffMs = nowMs - thresholdDays * 24 * 3_600_000;
+    const cutoff = Timestamp.fromMillis(cutoffMs);
+
+    // Read-only: a sweep never seeds the default pipeline.
+    const pipelines = await readPipelines(subAccountId);
+    const allowedPipelines = Array.isArray(agent.pipelineIds)
+      ? new Set(agent.pipelineIds)
+      : null;
+    const excluded = new Set(agent.excludeStageKeys ?? []);
+
+    // Already-alerted deals stay inside the query window (the stamp only
+    // re-arms on a stage change), so page past them instead of letting the
+    // oldest stamped deals crowd out newer stale ones. `mode` is filtered in
+    // memory: form and quote deals carry no `mode` and are live, which an
+    // equality filter would drop.
+    const rows: DealRow[] = [];
+    let cursor: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+    for (let page = 0; page < STALE_DEALS_MAX_PAGES; page++) {
+      let q = db
+        .collection("deals")
+        .where("subAccountId", "==", subAccountId)
+        .where("stageChangedAt", "<=", cutoff)
+        .orderBy("stageChangedAt", "asc")
+        .limit(STALE_DEALS_FETCH_LIMIT);
+      if (cursor) q = q.startAfter(cursor);
+      const snap = await q.get();
+      for (const d of snap.docs) {
+        rows.push({ id: d.id, ...(d.data() as Omit<DealRow, "id">) });
+      }
+      if (snap.size < STALE_DEALS_FETCH_LIMIT) break;
+      cursor = snap.docs[snap.docs.length - 1];
+    }
+
+    const candidates = rows.filter((deal) => {
+      if (deal.mode === "test") return false;
+      const pipelineId = dealPipelineId(deal);
+      if (allowedPipelines && !allowedPipelines.has(pipelineId)) return false;
+      if (excluded.has(`${pipelineId}:${deal.stageId}`)) return false;
+      // Terminal per the deal's OWN pipeline. A stage we can't resolve
+      // (deleted pipeline or stage) is never flagged either.
+      const stage = dealStage(deal, pipelines);
+      if (!stage || stage.terminal) return false;
+      return !alertedThisVisit(deal);
+    });
+
+    const scanned = candidates.length;
+    const quiet = agent.quietHours ?? null;
+    const pushSuppressed = isInQuietHours(quiet, now);
+    const businessName = sub.name || "the business";
+
+    let judged = 0;
+    let tokensUsed = 0;
+    const actions: WatchdogRunAction[] = [];
+    let droppedByCap = 0;
+    let checked = 0;
+
+    for (const deal of candidates) {
+      // Both caps bound the per-run Firestore reads; whatever is left is
+      // picked up next hour since nothing here changes the candidate set.
+      if (
+        actions.length >= STALE_DEALS_MAX_FLAGS_PER_RUN ||
+        checked >= STALE_DEALS_MAX_CHECKS_PER_RUN
+      ) {
+        droppedByCap++;
+        continue;
+      }
+      checked++;
+      const contactId = isDocId(deal.contactId) ? deal.contactId : null;
+
+      try {
+        if (await dealHasRecentWork(deal, contactId, cutoffMs)) continue;
+        if (!(await claimStaleVisit(deal))) continue;
+
+        const stageLabel = dealStage(deal, pipelines)?.label ?? deal.stageId;
+        const daysInStage = Math.max(
+          1,
+          Math.round((nowMs - (toMillis(deal.stageChangedAt) ?? nowMs)) / 86_400_000),
+        );
+        const contactSnap = contactId
+          ? await db.doc(`contacts/${contactId}`).get()
+          : null;
+        const contactName =
+          (contactSnap?.data()?.name as string | undefined)?.trim() || "the contact";
+
+        // One short note; a failure or a spent budget keeps the template.
+        let note = `No task, message or activity on this deal in ${thresholdDays} days.`;
+        if (tokensToday + tokensUsed < budget) {
+          try {
+            const completion = await callAi({
+              messages: [
+                {
+                  role: "system",
+                  content: [
+                    `You help the sales team at ${businessName} revive stalled deals.`,
+                    `Write ONE sentence (max 140 characters) suggesting the next step for the team. Plain text, no quotes, no preamble.`,
+                    agent.instructions?.trim()
+                      ? `Operator guidance: ${agent.instructions.trim()}`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join("\n"),
+                },
+                {
+                  role: "user",
+                  content: `Deal "${deal.title}" (${deal.currency} ${deal.value}) with ${contactName} has sat in stage "${stageLabel}" for ${daysInStage} days with no task, message or activity.`,
+                },
+              ],
+              maxTokens: 80,
+              temperature: 0.4,
+            });
+            judged++;
+            tokensUsed += completion.totalTokens;
+            const text = completion.text.replace(/\s+/g, " ").trim();
+            if (text) note = text.slice(0, 140);
+          } catch (err) {
+            console.warn(
+              `[stale-deals] note failed sa=${subAccountId} deal=${deal.id}`,
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
+
+        // ── Act: Task + push + activity (additive only; stamp claimed above)
+        const task = await createTaskServerSide({
+          subAccountId,
+          agencyId: deal.agencyId,
+          createdByUid: "ai-monitor",
+          mode: "live",
+          title: `Follow up: ${deal.title} — ${daysInStage} days in ${stageLabel}`.slice(0, 200),
+          notes: [
+            `Flagged by the Stale deals monitor.`,
+            `Suggested next step: ${note}`,
+            `Open the deal: /sa/${subAccountId}/pipeline`,
+          ].join("\n"),
+          dueAt: now,
+          contactId,
+          dealId: deal.id,
+          eventId: null,
+        });
+
+        if (!pushSuppressed) {
+          // The push names the deal, so it follows the deal's territory; a
+          // legacy untagged deal reaches admins only.
+          const territoryId =
+            typeof deal.territoryId === "string" ? deal.territoryId : null;
+          runAfterResponse(() => sendPushForEvent({
+            subAccountId,
+            agencyId: deal.agencyId,
+            title: `📌 Stalled deal: ${deal.title}`,
+            body: `${daysInStage} days in ${stageLabel}. ${note}`.slice(0, 160),
+            url: `/sa/${subAccountId}/pipeline`,
+            tag: `stale-deal-${deal.id}`,
+            territoryId,
+          }));
+        }
+
+        if (contactId) {
+          runAfterResponse(() => db.collection("contacts")
+            .doc(contactId)
+            .collection("activities")
+            .add({
+              type: "ai_agent_flagged",
+              content: `Stale deals monitor flagged "${deal.title}" (${daysInStage} days in ${stageLabel}): ${note}`,
+              meta: { taskId: task.id, dealId: deal.id, daysInStage },
+              agencyId: deal.agencyId,
+              subAccountId,
+              createdBy: "ai-monitor",
+              createdAt: FieldValue.serverTimestamp(),
+            })
+            .catch((err) =>
+              console.warn(
+                "[stale-deals] activity write failed",
+                err instanceof Error ? err.message : String(err),
+              ),
+            ));
+        }
+
+        actions.push({
+          contactId: contactId ?? "",
+          contactName,
+          taskId: task.id,
+          reason: note,
+          urgency: "normal",
+          dealId: deal.id,
+          dealTitle: deal.title,
+        });
+      } catch (err) {
+        console.error(
+          `[stale-deals] act failed sa=${subAccountId} deal=${deal.id}`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    await runRef.set({
+      ...base,
+      scanned,
+      droppedByCap,
+      judged,
+      flagged: actions.length,
+      actions,
+      tokensUsed,
+      status: "completed",
+      skippedReason: null,
+    });
+    await agentRef(subAccountId, "stale-deals").update({
+      tokensTodayDate: today,
+      tokensToday: tokensToday + tokensUsed,
+      totalTokensUsed: FieldValue.increment(tokensUsed),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    return {
+      subAccountId,
+      status: "completed",
+      skippedReason: null,
+      scanned,
+      judged,
+      flagged: actions.length,
+      tokensUsed,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "unknown error";
+    console.error(`[stale-deals] run failed sa=${subAccountId}:`, msg);
+    await runRef
+      .set({
+        ...base,
+        status: "failed",
+        skippedReason: null,
+        error: msg.slice(0, 500),
+      })
+      .catch(() => undefined);
+    return {
+      subAccountId,
+      status: "failed",
+      skippedReason: null,
+      scanned: 0,
+      judged: 0,
+      flagged: 0,
+      tokensUsed: 0,
+    };
+  }
+}
+
+/** The hourly cron entry point: run every enabled agent, sequentially
  *  (fleet sizes are small; sequential keeps the invocation bounded and the
- *  Firestore load smooth). */
+ *  Firestore load smooth), dispatched by `type` (absent = the watchdog). */
 export async function runWatchdogSweep(): Promise<{
   agents: number;
-  results: SweepAccountResult[];
+  results: (SweepAccountResult & { type: AgentType })[];
 }> {
   const snap = await getAdminDb()
     .collection(AGENTS_COLLECTION)
@@ -586,13 +1075,37 @@ export async function runWatchdogSweep(): Promise<{
     .limit(200)
     .get();
 
-  const results: SweepAccountResult[] = [];
+  const results: (SweepAccountResult & { type: AgentType })[] = [];
   for (const doc of snap.docs) {
+    const data = doc.data() as Partial<AgentConfigBase>;
+    if (data.type === "stale-deals") {
+      // Newer agent docs carry their sub-account; the doc id must agree, so
+      // a doc can only ever sweep the sub-account it is named for.
+      const subAccountId = data.subAccountId;
+      if (
+        !isDocId(subAccountId) ||
+        doc.id !== agentDocId(subAccountId, "stale-deals")
+      ) {
+        console.warn(`[stale-deals] agent doc ${doc.id} skipped: subAccountId mismatch`);
+        continue;
+      }
+      results.push({
+        ...(await runStaleDealsForSubAccount({
+          ...(data as StaleDealsConfigDoc),
+          subAccountId,
+        })),
+        type: "stale-deals",
+      });
+      continue;
+    }
     const agent = {
       ...(doc.data() as WatchdogConfigDoc),
       subAccountId: doc.id,
     };
-    results.push(await runWatchdogForSubAccount(agent));
+    results.push({
+      ...(await runWatchdogForSubAccount(agent)),
+      type: "inbox-watchdog",
+    });
   }
   return { agents: snap.size, results };
 }

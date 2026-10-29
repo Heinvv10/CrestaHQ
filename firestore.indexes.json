@@ -563,6 +563,20 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "stageChangedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "deals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "subAccountId",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "mode",
           "order": "ASCENDING"
         },
