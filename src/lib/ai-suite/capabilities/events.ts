@@ -1,6 +1,7 @@
 import "server-only";
 
 import { isDocId } from "@/lib/server/doc-id";
+import { isImportedEvent } from "@/types/events";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createEventServerSide } from "@/lib/server/events-service";
 import { utcFromWallClock } from "@/lib/booking/availability";
@@ -93,7 +94,8 @@ export const EVENT_CAPABILITIES: AiSuiteCapability[] = [
       const { docs, scanCapped } = await collectVisible(
         scope,
         q.orderBy("startAt", "asc"),
-        { want: 50, maxScan: 1000 }
+        // Imported Google events are a member's own calendar, not CRM data.
+        { want: 50, maxScan: 1000, keep: (doc) => !isImportedEvent(doc.data()) }
       );
 
       const partial = scanCapped

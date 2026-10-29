@@ -7,7 +7,7 @@ import { loadEventContact } from "@/lib/server/tenant-ref";
 import { markBookingPaidServerSide } from "@/lib/server/bookings-service";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { collectVisible, territoryScopeFor } from "@/lib/ai-suite/territory-scope";
-import { eventStatus, type CalendarEvent } from "@/types/events";
+import { eventStatus, isImportedEvent, type CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { CapabilityUserError, type AiSuiteCapability, type PreviewRow } from "./types";
@@ -129,7 +129,7 @@ export const BOOKING_PAYMENT_CAPABILITIES: AiSuiteCapability[] = [
           .where("subAccountId", "==", ctx.subAccountId!)
           .where("status", "==", "awaiting_payment")
           .orderBy("startAt", "asc"),
-        { want: SHOWN + 1, maxScan: MAX_SCAN }
+        { want: SHOWN + 1, maxScan: MAX_SCAN, keep: (d) => !isImportedEvent(d.data()) }
       );
       if (docs.length === 0) {
         return scanCapped
