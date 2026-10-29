@@ -177,6 +177,12 @@ describe("one pass at a time, and the full-pass cooldown", () => {
     expect(conn(U1)).toMatchObject({ importLeaseId: null, importLeaseUntil: null });
   });
 
+  it("a live lease taken under older keys (another connection, another opt-in) does not block a pass under the current ones", async () => {
+    mem.seed(CONN(U1), { ...conn(U1), importLeaseId: "old", importLeaseUntil: new Date(Date.now() + 60_000), importLeasePrint: "stale-print" });
+    provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));
+    expect(await runCalendarImport(SA, U1)).toMatchObject({ ok: true, written: 1 });
+  });
+
   it("an expired lease (a pass that died) is taken over", async () => {
     mem.seed(CONN(U1), { ...conn(U1), importLeaseId: "dead", importLeaseUntil: new Date(Date.now() - 1) });
     provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));
@@ -208,6 +214,51 @@ describe("a calendar too big for one walk", () => {
     expect(docOf("far")).toBeUndefined();
     expect(docOf("g1")).toBeDefined();
     expect(conn(U1)).toMatchObject({ importSyncToken: null, importError: expect.stringMatching(/some were skipped/) });
+  });
+
+  it("an ordered re-walk that fails keeps the first walk's result, still truncated", async () => {
+    provider.syncEvents.mockResolvedValueOnce(page([gev("g1", 2, 3)]));
+    await runCalendarImport(SA, U1);
+    provider.syncEvents
+      .mockResolvedValueOnce(page([gev("first", 5, 6)], { truncated: true, nextSyncToken: null }))
+      .mockRejectedValueOnce(new Error("timeout"));
+    expect(await runCalendarImport(SA, U1, { full: true })).toMatchObject({ ok: true, deleted: 0 });
+    expect(docOf("first")).toBeDefined();
+    expect(docOf("g1")).toBeDefined();
+    expect(conn(U1)).toMatchObject({ importStatus: "ok", importSyncToken: null, importError: expect.stringMatching(/some were skipped/) });
+  });
+});
+
+describe("a revoked grant", () => {
+  it("loses its imports and then its opt-in, so the sweep stops listing it", async () => {
+    const { listImportTargets } = await import("./import-state");
+    provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));
+    await runCalendarImport(SA, U1);
+    mem.seed(CONN(U1), { ...conn(U1), status: "revoked" });
+    expect(await listImportTargets()).toEqual([{ subAccountId: SA, uid: U1 }]);
+    expect(await runCalendarImport(SA, U1)).toMatchObject({ skipped: "not_eligible", deleted: 1 });
+    expect(conn(U1)).toMatchObject({ importMode: "off", importSyncToken: null });
+    expect(await listImportTargets()).toEqual([]);
+  });
+
+  it("a connected member whose workspace key is off keeps the opt-in (re-enabling resumes)", async () => {
+    provider.syncEvents.mockResolvedValue(page([gev("g1", 2, 3)]));
+    await runCalendarImport(SA, U1);
+    mem.seed(`subAccounts/${SA}`, { ...mem.read(`subAccounts/${SA}`), googleCalendarEnabledByAgency: false });
+    expect(await runCalendarImport(SA, U1)).toMatchObject({ skipped: "not_eligible", deleted: 1 });
+    expect(conn(U1).importMode).toBe("busy");
+  });
+
+  it("found revoked mid-walk: the pass's own cleanup also retires the opt-in", async () => {
+    provider.syncEvents.mockResolvedValueOnce(page([gev("g1", 2, 3)]));
+    await runCalendarImport(SA, U1);
+    provider.syncEvents.mockImplementationOnce(async () => {
+      mem.seed(CONN(U1), { ...conn(U1), status: "revoked" });
+      throw new Error("invalid_grant");
+    });
+    await runCalendarImport(SA, U1, { full: true });
+    expect(imported(U1)).toEqual([]);
+    expect(conn(U1).importMode).toBe("off");
   });
 });
 

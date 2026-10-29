@@ -12,7 +12,8 @@ import { rulesAccessToken, rulesFetch } from "../../test/rules-api";
  * What must hold: no client — not even the event's owner or an admin — can
  * update or delete an imported event, or create one; a manual event stays
  * editable and deletable; every member can read an imported event. Each
- * allow/deny pair differs only in `source`.
+ * allow/deny pair differs only in `source`. Plus: the orphan sweep's cursor
+ * sits where no client can read it.
  */
 
 const creds = {
@@ -31,6 +32,8 @@ const RULES = readFileSync(new URL("../../../firestore.rules", import.meta.url),
 type Data = Record<string, unknown>;
 interface Case {
   method: "get" | "create" | "update" | "delete";
+  /** Default `events/e1`. */
+  path?: string;
   uid: string;
   before?: Data;
   after?: Data;
@@ -53,10 +56,10 @@ const MOCKS = [
 
 async function evaluate(cases: Case[]): Promise<{ allowed: boolean; errors: string[] }[]> {
   const access_token = await rulesAccessToken(creds);
-  const testCases = cases.map(({ method, uid, before, after }) => ({
+  const testCases = cases.map(({ method, uid, before, after, path }) => ({
     expectation: "ALLOW",
     request: {
-      path: `${DOCS}events/e1`,
+      path: `${DOCS}${path ?? "events/e1"}`,
       method,
       auth: { uid, token: { status: "active", agencyId: "agency_a", agencyRole: "none" } },
       ...(after ? { resource: { data: after } } : {}),
@@ -125,6 +128,10 @@ const CASES: [string, Case, "allow" | "deny"][] = [
 
   ["create: a client writes an imported event", { method: "create", uid: OWNER, after: IMPORTED }, "deny"],
   ["create: the same doc without source", { method: "create", uid: OWNER, after: LEGACY }, "allow"],
+
+  // The orphan sweep's cursor (an imported event id) is server-only; appConfig/* would not be.
+  ["sweep cursor: a member reads system/calendarImportSweep", { method: "get", uid: ADMIN, path: "system/calendarImportSweep", before: { cursor: "gcal_x" } }, "deny"],
+  ["contrast: a member reads an appConfig doc", { method: "get", uid: ADMIN, path: "appConfig/calendarImportSweep", before: { cursor: "gcal_x" } }, "allow"],
 ];
 
 describe.skipIf(!haveCreds)("imported Google events — firestore rules", () => {

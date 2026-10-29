@@ -18,6 +18,7 @@ import {
   loadImported,
   ms,
   readImportState,
+  retireRevokedOptIn,
 } from "./import-state";
 import { getGcalProviderFor } from "./provider/select";
 import { GcalSyncTokenExpiredError, type GcalSyncResult } from "./provider/types";
@@ -85,7 +86,11 @@ export async function runCalendarImport(
   if (!state.eligible) {
     // Guarded: a fresh opt-in since `state` was read owns the imports now.
     const deleted = await deleteImportedEventsIfUnchanged(subAccountId, uid, state.print);
-    return deleted === null ? { ok: true, skipped: "settings_changed" } : { ok: true, skipped: "not_eligible", deleted };
+    if (deleted === null) return { ok: true, skipped: "settings_changed" };
+    // A revoked grant's opt-in goes too, after its imports: it stops being a
+    // sweep target, and a reconnect starts from off anyway.
+    await retireRevokedOptIn(subAccountId, uid, state);
+    return { ok: true, skipped: "not_eligible", deleted };
   }
   const conn = state.conn as GoogleCalendarConnection;
   const detail = conn.importMode === "details" ? "details" : "busy";
@@ -114,13 +119,16 @@ export async function runCalendarImport(
     const [s, c] = await tx.getAll(subRef, connRef);
     const cur = c.exists ? (c.data() as GoogleCalendarConnection) : null;
     if (importFingerprint(s.exists ? s.data() : null, cur) !== state.print) return "settings_changed" as const;
-    if (ms(cur?.importLeaseUntil) > now) return "in_progress" as const;
+    // A live lease blocks only a pass under the same keys: one taken under
+    // older keys belongs to a pass whose every commit will be refused.
+    if (ms(cur?.importLeaseUntil) > now && cur?.importLeasePrint === state.print) return "in_progress" as const;
     if (full && opts.minFullIntervalMs && now - ms(cur?.importLastFullAttemptAt) < opts.minFullIntervalMs) {
       return "cooldown" as const;
     }
     tx.update(connRef, {
       importLeaseId: leaseId,
       importLeaseUntil: new Date(now + LEASE_MS),
+      importLeasePrint: state.print,
       importLastAttemptAt: new Date(now),
       ...(full ? { importLastFullAttemptAt: new Date(now) } : {}),
     });
@@ -171,7 +179,18 @@ export async function runCalendarImport(
       // Walk again ordered by start time from now, so what is kept is the
       // nearest upcoming events. Not the first walk: Google issues no sync
       // token for an ordered walk. Still "truncated" — absence proves nothing.
-      if (full && result.truncated) result = { ...(await walk(null, true)), nextSyncToken: null, truncated: true };
+      if (full && result.truncated) {
+        try {
+          result = { ...(await walk(null, true)), nextSyncToken: null, truncated: true };
+        } catch (err) {
+          // Keep what the first walk read; it is still truncated.
+          console.warn(
+            `[google-calendar/import] ordered re-walk failed sa=${subAccountId} uid=${uid}`,
+            err instanceof Error ? `${err.name}: ${err.message}` : typeof err,
+          );
+          result = { ...result, nextSyncToken: null, truncated: true };
+        }
+      }
 
       // Last occurrence of an id wins (pages can repeat an event that changed mid-walk).
       const mapped = new Map<string, ReturnType<typeof mapGoogleEvent>>();
@@ -282,7 +301,9 @@ async function releaseLease(connRef: FirebaseFirestore.DocumentReference, leaseI
   try {
     await getAdminDb().runTransaction(async (tx) => {
       const c = await tx.get(connRef);
-      if (c.exists && c.data()?.importLeaseId === leaseId) tx.update(connRef, { importLeaseId: null, importLeaseUntil: null });
+      if (c.exists && c.data()?.importLeaseId === leaseId) {
+        tx.update(connRef, { importLeaseId: null, importLeaseUntil: null, importLeasePrint: null });
+      }
     });
   } catch (err) {
     // It expires on its own (LEASE_MS); a disconnect meanwhile lands here too.

@@ -57,6 +57,8 @@ export interface GoogleCalendarConnection {
   /** One pass at a time per member: who holds it, and until when. */
   importLeaseId?: string | null;
   importLeaseUntil?: Date | null;
+  /** The import fingerprint the holder started under; a pass under newer keys may take over. */
+  importLeasePrint?: string | null;
   importStatus?: "ok" | "error" | null;
   /** Fixed text per failure kind, like `lastError`. */
   importError?: string | null;

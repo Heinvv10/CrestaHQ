@@ -176,8 +176,43 @@ export async function stripImportedDetails(subAccountId: string, uid: string): P
  */
 export async function enforceCurrentImportState(subAccountId: string, uid: string): Promise<void> {
   const state = await readImportState(subAccountId, uid);
-  if (!state.eligible) await deleteImportedEventsIfUnchanged(subAccountId, uid, state.print);
-  else if (state.conn?.importMode === "busy") await stripImportedDetails(subAccountId, uid);
+  if (!state.eligible) {
+    if ((await deleteImportedEventsIfUnchanged(subAccountId, uid, state.print)) !== null) {
+      await retireRevokedOptIn(subAccountId, uid, state);
+    }
+  } else if (state.conn?.importMode === "busy") await stripImportedDetails(subAccountId, uid);
+}
+
+/**
+ * A revoked (or otherwise not connected) grant's opt-in goes to off, after
+ * its imports were deleted: it stops being a sweep target, and a reconnect
+ * starts from off anyway. Only while the keys still read `state.print`.
+ */
+export async function retireRevokedOptIn(subAccountId: string, uid: string, state: ImportState): Promise<void> {
+  const { conn, print } = state;
+  if (!conn || conn.status === "connected" || !importModeOn(conn.importMode)) return;
+  const db = getAdminDb();
+  const subRef = db.doc(`subAccounts/${subAccountId}`);
+  const connRef = db.doc(gcalConnectionPath(subAccountId, uid));
+  try {
+    await db.runTransaction(async (tx) => {
+      const [s, c] = await tx.getAll(subRef, connRef);
+      if (!c.exists) return;
+      if (importFingerprint(s.exists ? s.data() : null, c.data() as GoogleCalendarConnection) !== print) return;
+      tx.update(connRef, {
+        importMode: "off",
+        importGeneration: FieldValue.increment(1),
+        importSyncToken: null,
+        importedCount: 0,
+      });
+    });
+  } catch (err) {
+    // The imports are already gone; the next sweep tick retries.
+    console.warn(
+      `[google-calendar/import] could not retire a revoked opt-in sa=${subAccountId} uid=${uid}`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /** setImportMode refused a mode that switches import ON. */
@@ -286,27 +321,42 @@ export async function listImportTargets(): Promise<Array<{ subAccountId: string;
   return targets.sort((a, b) => a.last - b.last).map(({ subAccountId, uid }) => ({ subAccountId, uid }));
 }
 
-/** Where the daily orphan sweep stopped (server-only: no rule matches it, so clients are denied). */
-export const SWEEP_CURSOR_PATH = "appConfig/calendarImportSweep";
+/**
+ * Where the daily orphan sweep stopped. Under `system/`, whose rule lets
+ * clients read only `gitpageStatus` (every `appConfig/*` doc is readable by
+ * any active user, so not there).
+ */
+export const SWEEP_CURSOR_PATH = "system/calendarImportSweep";
 
 /**
  * Safety net (daily): deletes imported docs whose workspace, member or
  * opt-in no longer allows them — whatever a failed cleanup left behind.
  * Resumes after the doc id the last run stopped at, so a collection larger
  * than one run's budget is still covered over the following days; reaching
- * the end resets the cursor, so the next run starts from the top.
+ * the end resets the cursor, so the next run starts from the top. An
+ * ineligible owner's imports go through the same guarded delete as a pass's
+ * (with the print the verdict was taken under), so a member who opts in
+ * while the sweep runs keeps what their fresh import wrote.
  */
 export async function sweepOrphanedImports(deadlineMs: number): Promise<number> {
   const db = getAdminDb();
-  const verdict = new Map<string, Promise<boolean>>();
-  const eligible = (sa: string, uid: string): Promise<boolean> => {
+  // print null: the uid cannot even name a connection doc, so nothing can
+  // ever import for it — its docs are deleted outright.
+  const verdict = new Map<string, Promise<{ eligible: boolean; print: string | null }>>();
+  const judge = (sa: string, uid: string) => {
     const key = `${sa}\n${uid}`;
     if (!verdict.has(key)) {
-      // A uid that cannot name a connection doc is not eligible.
-      verdict.set(key, readImportState(sa, uid).then((s) => s.eligible, () => false));
+      verdict.set(
+        key,
+        readImportState(sa, uid).then(
+          (s) => ({ eligible: s.eligible, print: s.print }),
+          () => ({ eligible: false, print: null }),
+        ),
+      );
     }
     return verdict.get(key)!;
   };
+  const owners = new Set<string>();
   let removed = 0;
   const cursorRef = db.doc(SWEEP_CURSOR_PATH);
   // An id cursor, not a snapshot: the cursor doc may be one just deleted.
@@ -330,9 +380,22 @@ export async function sweepOrphanedImports(deadlineMs: number): Promise<number> 
     for (const d of page.docs) {
       const sa = d.data().subAccountId;
       const uid = d.data().importOwnerUid;
-      if (typeof sa !== "string" || !sa || typeof uid !== "string" || !uid || !(await eligible(sa, uid))) {
+      if (typeof sa !== "string" || !sa || typeof uid !== "string" || !uid) {
         doomed.push(d.ref);
+        continue;
       }
+      const v = await judge(sa, uid);
+      if (v.eligible) continue;
+      if (v.print === null) {
+        doomed.push(d.ref);
+        continue;
+      }
+      // Once per owner per run: the guarded delete takes all of theirs, or
+      // (keys moved) none, and then the newer change owns them.
+      const key = `${sa}\n${uid}`;
+      if (owners.has(key)) continue;
+      owners.add(key);
+      removed += (await deleteImportedEventsIfUnchanged(sa, uid, v.print)) ?? 0;
     }
     if (doomed.length > 0) {
       const batch = db.batch();

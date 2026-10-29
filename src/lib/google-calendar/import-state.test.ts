@@ -142,7 +142,8 @@ describe("the sweep", () => {
   });
 
   it("the orphan sweep resumes after the cursor the last run saved, and reaching the end resets it", async () => {
-    for (const id of ["gcal_a", "gcal_b", "gcal_c"]) mem.seed(`events/${id}`, { subAccountId: "sa_gone", source: "google", importOwnerUid: U1 });
+    // One owner each: an ineligible owner's imports all go at once.
+    for (const id of ["gcal_a", "gcal_b", "gcal_c"]) mem.seed(`events/${id}`, { subAccountId: "sa_gone", source: "google", importOwnerUid: `u_${id}` });
     mem.seed(SWEEP_CURSOR_PATH, { cursor: "gcal_a" });
     expect(await sweepOrphanedImports(Date.now() + 10_000)).toBe(2);
     expect(mem.read("events/gcal_a")).toBeDefined();
