@@ -61,7 +61,9 @@ export async function GET(
     return serve(cached, requested === String(cached.version));
   }
   // Read as absent in the last few seconds: 404 again with no read, no limit.
-  if (!cached && isKnownMissingLogo(scope, id)) return notFound();
+  // Not for a numeric ?v: that is an uploaded logo's URL, and the upload may
+  // have landed on another instance since this one read the absence.
+  if (!cached && !/^\d{1,16}$/.test(requested ?? "") && isKnownMissingLogo(scope, id)) return notFound();
 
   // Before the read: the limit bounds what an anonymous caller costs Firestore.
   const retryAfter = checkLogoRateLimit(request);

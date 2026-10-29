@@ -187,10 +187,11 @@ const LOGO_DECODE_TIMEOUT_S = 5;
 /**
  * Upload validation: checkLogoStructure, then a full decode with sharp
  * (pixel ceiling, fail on any decoder error, time-bounded), which must
- * report the claimed format and the structurally stated dimensions.
+ * report the claimed format and the structurally stated dimensions, and a
+ * single page (no animation).
  *
  * What a stored logo is guaranteed to be: a PNG or WebP of the declared mime
- * that libvips decodes completely, at most 1024 px on each edge and 400 KB,
+ * that libvips decodes completely, a single still frame, at most 1024 px on each edge and 400 KB,
  * whose decode is bounded in pixels and time (a zlib stream longer than the
  * image is not inflated past its last row). What it is NOT guaranteed to be:
  * free of bytes a decoder ignores. Data past the last row in IDAT, PNG
@@ -210,6 +211,8 @@ export async function validateLogo(base64: unknown, mime: unknown): Promise<Buff
     });
     const meta = await image.metadata();
     if (meta.format !== format || meta.width !== size?.width || meta.height !== size?.height) return refused;
+    // An animated WebP decodes its first frame and passes everything else.
+    if ((meta.pages ?? 1) > 1) return "Logo must be a still image, not an animation";
     // Every pixel, not just the header: a broken bitstream fails here.
     await image.raw().toBuffer();
   } catch (err) {

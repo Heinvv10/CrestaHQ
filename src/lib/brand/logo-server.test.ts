@@ -373,6 +373,17 @@ describe("validateLogo — full decode with sharp", () => {
     expect(await validateLogo(b64(garbage), "image/webp")).toBe("Logo data doesn't decode as a WebP image");
   });
 
+  it("refuses an animated WebP; a still one with the same container passes", async () => {
+    const frame = (c: string) => sharp({ create: { width: 32, height: 16, channels: 4, background: c } }).png().toBuffer();
+    const anim = await sharp([await frame("#f00"), await frame("#00f")], { join: { animated: true } }).webp().toBuffer();
+    expect(anim.toString("ascii", 12, 16)).toBe("VP8X");
+    expect(Buffer.isBuffer(checkLogoStructure(b64(anim), "image/webp"))).toBe(true);
+    expect(await validateLogo(b64(anim), "image/webp")).toBe("Logo must be a still image, not an animation");
+    const still = await image("webp", { alpha: true, width: 32, height: 16 });
+    expect(still.toString("ascii", 12, 16)).toBe("VP8X");
+    expect(Buffer.isBuffer(await validateLogo(b64(still), "image/webp"))).toBe(true);
+  });
+
   it("refuses a VP8X canvas that disagrees with its frame", async () => {
     const lie = Buffer.from(await image("webp", { alpha: true }));
     lie.writeUIntLE(99, 24, 3);

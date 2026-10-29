@@ -311,10 +311,21 @@ describe("negative cache (W3)", () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(t0);
     expect((await get("sa", "nope")).status).toBe(404);
     now.mockReturnValue(t0 + LOGO_MISSING_TTL_MS - 1);
-    for (let i = 0; i < 5; i++) expect((await get("sa", "nope", "?v=1")).status).toBe(404);
+    for (const q of ["", "", "?v=", "?v=abc", "?v=1x"]) expect((await get("sa", "nope", q)).status).toBe(404);
     expect(m.reads).toEqual(["subAccounts/nope/private/brandLogo"]);
     now.mockReturnValue(t0 + LOGO_MISSING_TTL_MS);
     expect((await get("sa", "nope")).status).toBe(404);
+    expect(m.reads).toHaveLength(2);
+  });
+
+  it("a numeric ?v skips it, so an upload made on another instance shows at once", async () => {
+    expect((await get("sa", "sa1")).status).toBe(404); // absence remembered here
+    // Another instance writes the logo; this one never ran dropCachedLogo.
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 9 });
+    expect((await get("sa", "sa1")).status).toBe(404); // a bare URL still waits out the 10 s
+    const res = await get("sa", "sa1", "?v=9");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toContain("immutable");
     expect(m.reads).toHaveLength(2);
   });
 
