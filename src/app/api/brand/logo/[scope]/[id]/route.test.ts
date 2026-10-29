@@ -116,37 +116,37 @@ describe("per-client rate limit", () => {
   const seed = () =>
     m.docs.set("subAccounts/sa1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 7 });
 
-  // No ?v: never a cache hit, so every request is a counted miss.
+  // Ids with no logo are never cached, so each request is a counted miss.
+  const miss = (i: number, xff: string) => get("sa", `miss${i}`, "", xff);
+
   it("serves 1000 misses a minute with one read each, then 429s without reading", async () => {
-    seed();
     for (let i = 0; i < 1000; i++) {
-      expect((await get("sa", "sa1", "", "203.0.113.10")).status).toBe(200);
+      expect((await miss(i, "203.0.113.10")).status).toBe(404);
     }
     expect(m.reads).toHaveLength(1000);
-    const refused = await get("sa", "sa1", "", "203.0.113.10");
+    const refused = await miss(1000, "203.0.113.10");
     expect(refused.status).toBe(429);
     const retry = Number(refused.headers.get("retry-after"));
     expect(retry).toBeGreaterThanOrEqual(1);
     expect(retry).toBeLessThanOrEqual(60);
     expect(m.reads).toHaveLength(1000);
     // Another client keeps its own budget.
+    seed();
     expect((await get("sa", "sa1", "", "203.0.113.11")).status).toBe(200);
   });
 
   it("keys on the proxy-appended hop, so a forged left-most X-Forwarded-For buys no fresh budget", async () => {
-    seed();
-    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await get("sa", "sa1", "", `10.0.${i >> 8}.${i & 255}, 203.0.113.20`);
-    expect((await get("sa", "sa1", "", "198.51.100.99, 203.0.113.20")).status).toBe(429);
+    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await miss(i, `10.0.${i >> 8}.${i & 255}, 203.0.113.20`);
+    expect((await miss(-1, "198.51.100.99, 203.0.113.20")).status).toBe(429);
   });
 
   it("never evicts a client that keeps hitting while new clients flood the table", async () => {
-    seed();
-    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await get("sa", "sa1", "", "203.0.113.30");
+    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await miss(i, "203.0.113.30");
     for (let i = 0; i < 10_050; i++) {
-      await get("sa", "sa1", "", `192.0.${i >> 8}.${i & 255}`);
-      if (i % 1000 === 0) await get("sa", "sa1", "", "203.0.113.30");
+      await miss(i, `192.0.${i >> 8}.${i & 255}`);
+      if (i % 1000 === 0) await miss(i, "203.0.113.30");
     }
-    expect((await get("sa", "sa1", "", "203.0.113.30")).status).toBe(429);
+    expect((await miss(-1, "203.0.113.30")).status).toBe(429);
   });
 });
 
@@ -173,11 +173,37 @@ describe("decoded-logo cache", () => {
 
   it("does not rate-limit a hit (a shared prefetching proxy past its miss budget)", async () => {
     store(OLD, 7);
-    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await get("sa", "sa1", "", "203.0.113.40");
-    expect((await get("sa", "sa1", "", "203.0.113.40")).status).toBe(429);
+    await get("sa", "sa1", "?v=7", "203.0.113.41"); // primed by another client
+    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await get("sa", `miss${i}`, "", "203.0.113.40");
+    expect((await get("sa", "miss-x", "", "203.0.113.40")).status).toBe(429);
     const reads = m.reads.length;
-    for (let i = 0; i < 50; i++) expect((await get("sa", "sa1", "?v=7", "203.0.113.40")).status).toBe(200);
+    for (let i = 0; i < 25; i++) expect((await get("sa", "sa1", "?v=7", "203.0.113.40")).status).toBe(200);
+    for (let i = 0; i < 25; i++) expect((await get("sa", "sa1", "", "203.0.113.40")).status).toBe(200);
     expect(m.reads).toHaveLength(reads);
+  });
+
+  it("serves the latest bytes to an older or missing ?v without a read, never immutable (breaker R4)", async () => {
+    store(NEW, 8);
+    for (let i = 0; i < 5; i++) {
+      for (const q of ["?v=7", ""]) {
+        const res = await get("sa", "sa1", q);
+        expect(res.status).toBe(200);
+        expect(Buffer.from(await res.arrayBuffer()).equals(NEW)).toBe(true);
+        expect(res.headers.get("cache-control")).toBe("public, max-age=300");
+      }
+    }
+    expect(m.reads.length).toBeLessThanOrEqual(1);
+    // The stored version itself is still immutable, from the same entry.
+    expect((await get("sa", "sa1", "?v=8")).headers.get("cache-control")).toContain("immutable");
+    expect(m.reads).toHaveLength(1);
+  });
+
+  it("does not count latest-served requests as misses", async () => {
+    store(NEW, 8);
+    await get("sa", "sa1", "", "203.0.113.50");
+    for (let i = 0; i < LOGO_PER_IP_LIMIT + 50; i++) {
+      expect((await get("sa", "sa1", i % 2 ? "?v=7" : "", "203.0.113.50")).status).toBe(200);
+    }
   });
 
   it("rereads once the TTL has passed", async () => {
@@ -196,10 +222,11 @@ describe("decoded-logo cache", () => {
   it("never serves an older upload under a new ?v, even one requested before it existed", async () => {
     store(OLD, 7);
     await get("sa", "sa1", "?v=7");
-    // A guessed future version reads v7: served, but not cached as v8.
+    // A guessed future version is a miss: it reads v7 and is served, never immutable.
     const early = await get("sa", "sa1", "?v=8");
     expect(early.headers.get("cache-control")).not.toContain("immutable");
-    store(NEW, 8); // re-upload
+    expect(m.reads).toHaveLength(2);
+    store(NEW, 8); // re-upload, by another instance (this one's cache still holds v7)
     const res = await get("sa", "sa1", "?v=8");
     expect(Buffer.from(await res.arrayBuffer()).equals(NEW)).toBe(true);
     expect(res.headers.get("cache-control")).toContain("immutable");
@@ -226,11 +253,11 @@ describe("decoded-logo cache", () => {
     const mb = 1024 * 1024;
     const count = Math.ceil(LOGO_CACHE_MAX_BYTES / mb) + 4;
     for (let i = 0; i < count; i++) {
-      cacheLogo("sa", `s${i}`, "1", { body: Buffer.alloc(mb), mime: "image/png" });
+      cacheLogo("sa", `s${i}`, { body: Buffer.alloc(mb), mime: "image/png", version: 1 });
       expect(cacheStats().bytes).toBeLessThanOrEqual(LOGO_CACHE_MAX_BYTES);
     }
     expect(cacheStats().bytes).toBe(cacheStats().entries * mb);
-    expect(getCachedLogo("sa", "s0", "1")).toBeNull();
-    expect(getCachedLogo("sa", `s${count - 1}`, "1")).not.toBeNull();
+    expect(getCachedLogo("sa", "s0")).toBeNull();
+    expect(getCachedLogo("sa", `s${count - 1}`)).not.toBeNull();
   });
 });

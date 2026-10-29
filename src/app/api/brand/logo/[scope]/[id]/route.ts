@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { logoDocRef, type LogoScope } from "@/lib/brand/logo-server";
 import { checkLogoRateLimit } from "@/lib/brand/logo-rate-limit";
-import { cacheLogo, getCachedLogo, type CachedLogo } from "@/lib/brand/logo-cache";
+import { cacheLogo, getCachedLogo, isNewerVersion, type CachedLogo } from "@/lib/brand/logo-cache";
 import { LOGO_ID_RE } from "@/lib/brand/logo-shared";
 import { isDocId } from "@/lib/server/doc-id";
 
@@ -9,19 +9,19 @@ import { isDocId } from "@/lib/server/doc-id";
  * Public logo endpoint behind every uploaded `logoUrl`. Public because email
  * clients and visitors fetch it without credentials, and it's only branding.
  * The URL carries ?v=<upload millis>. The response is immutable only when
- * its bytes are that version's: a hit in the in-memory cache
- * (lib/brand/logo-cache.ts, keyed by the version a read found), or a read
- * whose stored version matches. Any other ?v, or none, is read and served
- * with a five-minute cache, so a re-upload never pins an old URL to new
- * bytes. Cache hits skip the Firestore read and the per-client limit; only
- * misses are limited (lib/brand/logo-rate-limit.ts).
+ * ?v is the version of the bytes served, from the in-memory cache
+ * (lib/brand/logo-cache.ts, the tenant's latest read) or a fresh read. No
+ * ?v, or an older one, gets the latest bytes with a five-minute cache, so a
+ * re-upload never pins an old URL to new bytes; a ?v newer than the cache
+ * is a miss. Cache hits skip the Firestore read and the per-client limit;
+ * only misses are limited (lib/brand/logo-rate-limit.ts).
  */
 
 export const dynamic = "force-dynamic";
 
 const notFound = () => NextResponse.json({ error: "Not found" }, { status: 404 });
 
-function serve({ body, mime }: CachedLogo, current: boolean): NextResponse {
+function serve({ body, mime }: Pick<CachedLogo, "body" | "mime">, current: boolean): NextResponse {
   return new NextResponse(body, {
     headers: {
       "Content-Type": mime,
@@ -46,9 +46,12 @@ export async function GET(
     return notFound();
   }
   const requested = new URL(request.url).searchParams.get("v");
-  // A hit is the version the URL names, read within the TTL: no read, no limit.
-  const cached = getCachedLogo(scope, id, requested);
-  if (cached) return serve(cached, true);
+  // A hit is the tenant's latest read within the TTL: no read, no limit.
+  // Immutable only for its own version; a newer ?v is an upload not yet read.
+  const cached = getCachedLogo(scope, id);
+  if (cached && !isNewerVersion(requested, cached.version)) {
+    return serve(cached, requested === String(cached.version));
+  }
 
   // Before the read: the limit bounds what an anonymous caller costs Firestore.
   const retryAfter = checkLogoRateLimit(request);
@@ -65,10 +68,10 @@ export async function GET(
     const b64 = data?.data as string | undefined;
     const mime = data?.mime as string | undefined;
     if (b64 && (mime === "image/png" || mime === "image/webp")) {
-      const logo: CachedLogo = { body: Buffer.from(b64, "base64"), mime };
-      const stored = typeof data?.version === "number" ? String(data.version) : null;
-      if (stored !== null) cacheLogo(scope, id, stored, logo);
-      return serve(logo, requested !== null && requested === stored);
+      const body = Buffer.from(b64, "base64");
+      const version = data?.version;
+      if (typeof version === "number") cacheLogo(scope, id, { body, mime, version });
+      return serve({ body, mime }, typeof version === "number" && requested === String(version));
     }
   } catch (err) {
     // Fall through to 404; logo requests never 500.

@@ -1,11 +1,13 @@
 import "server-only";
 
 /**
- * In-memory cache of decoded logos for the public logo route, keyed by
- * scope + id + the STORED version. An entry is written only from a read that
- * found that version, so a request for `?v=<new upload>` can never hit bytes
- * of an older one; a request for an older `?v` may get that older version's
- * bytes for up to the TTL (which is what its URL always meant).
+ * In-memory cache of decoded logos for the public logo route: ONE entry per
+ * tenant (scope + id), holding the latest bytes a read found and their
+ * stored version. The route serves it as immutable only to a request whose
+ * `?v` equals that version; no `?v`, or an older or non-numeric one, gets
+ * the same bytes with the short cache-control. A `?v` NEWER than the entry
+ * means a re-upload this instance hasn't read yet, so it is a miss and
+ * reads, never older bytes under the new URL.
  *
  * Exists for shared-IP prefetchers (Apple Mail Privacy Protection fetches a
  * broadcast's images through a few proxy addresses): a hit costs no
@@ -19,6 +21,8 @@ export const LOGO_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export interface CachedLogo {
   body: Buffer<ArrayBuffer>;
   mime: "image/png" | "image/webp";
+  /** The stored version (upload ms) these bytes were read at. */
+  version: number;
 }
 
 interface Entry extends CachedLogo {
@@ -28,7 +32,7 @@ interface Entry extends CachedLogo {
 const entries = new Map<string, Entry>();
 let totalBytes = 0;
 
-const keyOf = (scope: string, id: string, version: string) => `${scope}|${id}|${version}`;
+const keyOf = (scope: string, id: string) => `${scope}|${id}`;
 
 function drop(key: string): void {
   const entry = entries.get(key);
@@ -37,10 +41,9 @@ function drop(key: string): void {
   entries.delete(key);
 }
 
-/** The cached logo for exactly this version, or null when absent or expired. */
-export function getCachedLogo(scope: string, id: string, version: string | null): CachedLogo | null {
-  if (version === null) return null;
-  const key = keyOf(scope, id, version);
+/** The tenant's cached logo, or null when absent or expired. */
+export function getCachedLogo(scope: string, id: string): CachedLogo | null {
+  const key = keyOf(scope, id);
   const entry = entries.get(key);
   if (!entry) return null;
   if (Date.now() - entry.storedAt >= LOGO_CACHE_TTL_MS) {
@@ -50,12 +53,17 @@ export function getCachedLogo(scope: string, id: string, version: string | null)
   return entry;
 }
 
-export function cacheLogo(scope: string, id: string, version: string, logo: CachedLogo): void {
-  const key = keyOf(scope, id, version);
+export function cacheLogo(scope: string, id: string, logo: CachedLogo): void {
+  const key = keyOf(scope, id);
   drop(key);
   entries.set(key, { ...logo, storedAt: Date.now() });
   totalBytes += logo.body.length;
   while (totalBytes > LOGO_CACHE_MAX_BYTES) drop(entries.keys().next().value!);
+}
+
+/** Whether `requested` (a `?v`) names a version after `cached`, i.e. an upload not yet read. */
+export function isNewerVersion(requested: string | null, cached: number): boolean {
+  return requested !== null && /^\d{1,16}$/.test(requested) && Number(requested) > cached;
 }
 
 /** For the bound test. */
