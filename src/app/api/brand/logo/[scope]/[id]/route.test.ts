@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
   docs: new Map<string, Record<string, unknown>>(),
@@ -20,12 +20,16 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 import { GET } from "./route";
+import { LOGO_PER_IP_LIMIT } from "@/lib/brand/logo-rate-limit";
 
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
-const get = (scope: string, id: string, query = "") =>
-  GET(new Request(`https://crm.example.com/api/brand/logo/${scope}/${id}${query}`), {
-    params: Promise.resolve({ scope, id }),
-  });
+const get = (scope: string, id: string, query = "", xff?: string) =>
+  GET(
+    new Request(`https://crm.example.com/api/brand/logo/${scope}/${id}${query}`, {
+      headers: xff ? { "x-forwarded-for": xff } : {},
+    }),
+    { params: Promise.resolve({ scope, id }) },
+  );
 
 beforeEach(() => {
   m.docs.clear();
@@ -98,4 +102,41 @@ it("404s (never 500s) when the read throws", async () => {
   m.fail = true;
   expect((await get("sa", "sa1")).status).toBe(404);
   expect(console.warn).toHaveBeenCalledWith("[brand/logo] read failed:", "backend unavailable");
+});
+
+describe("per-client rate limit", () => {
+  const seed = () =>
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 7 });
+
+  it("serves the budget with one read each, then 429s without reading", async () => {
+    seed();
+    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) {
+      expect((await get("sa", "sa1", "?v=7", "203.0.113.10")).status).toBe(200);
+    }
+    expect(m.reads).toHaveLength(LOGO_PER_IP_LIMIT);
+    const refused = await get("sa", "sa1", "?v=7", "203.0.113.10");
+    expect(refused.status).toBe(429);
+    const retry = Number(refused.headers.get("retry-after"));
+    expect(retry).toBeGreaterThanOrEqual(1);
+    expect(retry).toBeLessThanOrEqual(60);
+    expect(m.reads).toHaveLength(LOGO_PER_IP_LIMIT);
+    // Another client keeps its own budget.
+    expect((await get("sa", "sa1", "?v=7", "203.0.113.11")).status).toBe(200);
+  });
+
+  it("keys on the proxy-appended hop, so a forged left-most X-Forwarded-For buys no fresh budget", async () => {
+    seed();
+    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await get("sa", "sa1", "", `10.0.${i >> 8}.${i & 255}, 203.0.113.20`);
+    expect((await get("sa", "sa1", "", "198.51.100.99, 203.0.113.20")).status).toBe(429);
+  });
+
+  it("never evicts a client that keeps hitting while new clients flood the table", async () => {
+    seed();
+    for (let i = 0; i < LOGO_PER_IP_LIMIT; i++) await get("sa", "sa1", "", "203.0.113.30");
+    for (let i = 0; i < 10_050; i++) {
+      await get("sa", "sa1", "", `192.0.${i >> 8}.${i & 255}`);
+      if (i % 1000 === 0) await get("sa", "sa1", "", "203.0.113.30");
+    }
+    expect((await get("sa", "sa1", "", "203.0.113.30")).status).toBe(429);
+  });
 });

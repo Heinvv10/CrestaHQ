@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { logoDocRef, type LogoScope } from "@/lib/brand/logo-server";
+import { checkLogoRateLimit } from "@/lib/brand/logo-rate-limit";
 import { isDocId } from "@/lib/server/doc-id";
 
 /**
@@ -23,6 +24,14 @@ export async function GET(
   const { scope, id } = await ctx.params;
   if ((scope !== "agency" && scope !== "sa") || !isDocId(id) || !ID_RE.test(id)) {
     return notFound();
+  }
+  // Before the read: the limit bounds what an anonymous caller costs Firestore.
+  const retryAfter = checkLogoRateLimit(request);
+  if (retryAfter > 0) {
+    return NextResponse.json(
+      { error: "Too many requests" },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } },
+    );
   }
 
   try {
