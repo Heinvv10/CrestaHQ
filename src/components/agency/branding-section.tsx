@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { LogoMark } from "@/components/brand/logo-mark";
+import { LogoUploadControls } from "@/components/brand/logo-upload-controls";
 import { DEFAULT_BRAND_COLOR, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 
 const URL_RE = /^https?:\/\/.+/i;
@@ -143,7 +144,12 @@ export function BrandingSection() {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="logo-url">Logo URL</Label>
+        <Label htmlFor="logo-url">Logo</Label>
+        <LogoUploadControls
+          endpoint="/api/agency/logo"
+          currentUrl={logoUrl}
+          onChange={setLogoUrl}
+        />
         <Input
           id="logo-url"
           type="url"
@@ -152,9 +158,10 @@ export function BrandingSection() {
           placeholder="https://yourcdn.com/agency-logo.svg"
         />
         <p className="text-[11px] text-muted-foreground">
-          Public https URL pointing at your logo (SVG or PNG, transparent
-          background works best). Renders in the sidebar at 24px tall. Leave
-          blank to fall back to the LeadStack chevron mark.
+          Upload a PNG, JPG, WebP or SVG (transparent background works best),
+          or paste a public https URL. Uploads save straight away. Renders in
+          the sidebar at 24px tall. Leave blank to fall back to the default
+          mark.
         </p>
       </div>
 
