@@ -4,6 +4,8 @@ const m = vi.hoisted(() => ({
   docs: new Map<string, Record<string, unknown>>(),
   reads: [] as string[],
   fail: false,
+  /** When set, a read waits for it, so a test can act while the read is in flight. */
+  gate: null as Promise<void> | null,
 }));
 vi.mock("firebase-admin/firestore", () => ({ FieldValue: { serverTimestamp: () => "ts" } }));
 vi.mock("@/lib/firebase/admin", () => ({
@@ -11,6 +13,7 @@ vi.mock("@/lib/firebase/admin", () => ({
     doc: (path: string) => ({
       get: async () => {
         m.reads.push(path);
+        if (m.gate) await m.gate;
         if (m.fail) throw new Error("backend unavailable");
         const data = m.docs.get(path);
         return { exists: !!data, data: () => data };
@@ -43,6 +46,7 @@ beforeEach(async () => {
   m.docs.clear();
   m.reads.length = 0;
   m.fail = false;
+  m.gate = null;
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
 });
 
@@ -116,8 +120,10 @@ describe("per-client rate limit", () => {
   const seed = () =>
     m.docs.set("subAccounts/sa1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 7 });
 
-  // Ids with no logo are never cached, so each request is a counted miss.
-  const miss = (i: number, xff: string) => get("sa", `miss${i}`, "", xff);
+  // A fresh id with no logo every call: never a cache hit (positive or
+  // negative), so each request is a counted miss.
+  let fresh = 0;
+  const miss = (_i: number, xff: string) => get("sa", `miss${fresh++}`, "", xff);
 
   it("serves 1000 misses a minute with one read each, then 429s without reading", async () => {
     for (let i = 0; i < 1000; i++) {
@@ -253,11 +259,97 @@ describe("decoded-logo cache", () => {
     const mb = 1024 * 1024;
     const count = Math.ceil(LOGO_CACHE_MAX_BYTES / mb) + 4;
     for (let i = 0; i < count; i++) {
-      cacheLogo("sa", `s${i}`, { body: Buffer.alloc(mb), mime: "image/png", version: 1 });
+      cacheLogo("sa", `s${i}`, { body: Buffer.alloc(mb), mime: "image/png", version: 1 }, 0);
       expect(cacheStats().bytes).toBeLessThanOrEqual(LOGO_CACHE_MAX_BYTES);
     }
     expect(cacheStats().bytes).toBe(cacheStats().entries * mb);
     expect(getCachedLogo("sa", "s0")).toBeNull();
     expect(getCachedLogo("sa", `s${count - 1}`)).not.toBeNull();
+  });
+});
+
+describe("cache generations (W1)", () => {
+  const OLD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 7]);
+
+  it("a read in flight across an upload/remove never re-caches what it read", async () => {
+    const { dropCachedLogo, getCachedLogo } = await import("@/lib/brand/logo-cache");
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: OLD.toString("base64"), mime: "image/png", version: 7 });
+    let release!: () => void;
+    m.gate = new Promise((r) => (release = r));
+    const pending = get("sa", "sa1", "?v=7");
+    await vi.waitFor(() => expect(m.reads).toHaveLength(1));
+    dropCachedLogo("sa", "sa1"); // the upload/remove lands while the read is out
+    release();
+    expect((await pending).status).toBe(200); // still answered with what it read
+    expect(getCachedLogo("sa", "sa1")).toBeNull();
+    m.gate = null;
+    await get("sa", "sa1", "?v=7");
+    expect(m.reads).toHaveLength(2);
+    expect(getCachedLogo("sa", "sa1")).not.toBeNull(); // a read after the bump caches again
+  });
+
+  it("a miss read in flight across an upload never records the tenant as missing", async () => {
+    const { dropCachedLogo } = await import("@/lib/brand/logo-cache");
+    let release!: () => void;
+    m.gate = new Promise((r) => (release = r));
+    const pending = get("sa", "sa1", "");
+    await vi.waitFor(() => expect(m.reads).toHaveLength(1));
+    dropCachedLogo("sa", "sa1");
+    release();
+    expect((await pending).status).toBe(404);
+    m.gate = null;
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: OLD.toString("base64"), mime: "image/png", version: 7 });
+    expect((await get("sa", "sa1", "?v=7")).status).toBe(200);
+  });
+});
+
+describe("negative cache (W3)", () => {
+  it("404s a repeat for an absent logo without a read for 10 s, then rereads", async () => {
+    const { LOGO_MISSING_TTL_MS } = await import("@/lib/brand/logo-cache");
+    expect(LOGO_MISSING_TTL_MS).toBe(10_000);
+    const t0 = 1_800_000_000_000;
+    const now = vi.spyOn(Date, "now").mockReturnValue(t0);
+    expect((await get("sa", "nope")).status).toBe(404);
+    now.mockReturnValue(t0 + LOGO_MISSING_TTL_MS - 1);
+    for (let i = 0; i < 5; i++) expect((await get("sa", "nope", "?v=1")).status).toBe(404);
+    expect(m.reads).toEqual(["subAccounts/nope/private/brandLogo"]);
+    now.mockReturnValue(t0 + LOGO_MISSING_TTL_MS);
+    expect((await get("sa", "nope")).status).toBe(404);
+    expect(m.reads).toHaveLength(2);
+  });
+
+  it("does not spend the limiter on a known-missing repeat", async () => {
+    await get("sa", "nope", "", "203.0.113.60");
+    for (let i = 0; i < LOGO_PER_IP_LIMIT + 10; i++) {
+      expect((await get("sa", "nope", "", "203.0.113.60")).status).toBe(404);
+    }
+    expect(m.reads).toHaveLength(1);
+  });
+
+  it("keeps scopes apart and never caches a failed read as missing", async () => {
+    await get("agency", "x1");
+    m.docs.set("subAccounts/x1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 1 });
+    expect((await get("sa", "x1")).status).toBe(200);
+    m.fail = true;
+    expect((await get("sa", "y1")).status).toBe(404);
+    m.fail = false;
+    m.docs.set("subAccounts/y1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 1 });
+    expect((await get("sa", "y1")).status).toBe(200);
+  });
+
+  it("an upload/remove on this instance clears the tenant's negative entry", async () => {
+    const { dropCachedLogo } = await import("@/lib/brand/logo-cache");
+    await get("sa", "sa1");
+    m.docs.set("subAccounts/sa1/private/brandLogo", { data: PNG_BYTES.toString("base64"), mime: "image/png", version: 7 });
+    dropCachedLogo("sa", "sa1");
+    expect((await get("sa", "sa1", "?v=7")).status).toBe(200);
+  });
+
+  it("holds its key bound, oldest first", async () => {
+    const { cacheMissingLogo, isKnownMissingLogo, LOGO_MISSING_MAX_KEYS } = await import("@/lib/brand/logo-cache");
+    for (let i = 0; i < LOGO_MISSING_MAX_KEYS + 5; i++) cacheMissingLogo("sa", `n${i}`, 0);
+    expect(cacheStats().missing).toBe(LOGO_MISSING_MAX_KEYS);
+    expect(isKnownMissingLogo("sa", "n0")).toBe(false);
+    expect(isKnownMissingLogo("sa", `n${LOGO_MISSING_MAX_KEYS + 4}`)).toBe(true);
   });
 });

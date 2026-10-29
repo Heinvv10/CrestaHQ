@@ -138,7 +138,7 @@ it.each([
 
 it.each(["POST", "DELETE"])("%s drops this agency's cached logo on this instance, and only its own (breaker R3)", async (method) => {
   const prime = (id: string) =>
-    cacheLogo("agency", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 });
+    cacheLogo("agency", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 }, 0);
   prime("ag1");
   prime("ag2");
   m.docs.set("agencies/ag1", { logoUrl: "https://crm.example.com/api/brand/logo/agency/ag1?v=1" });

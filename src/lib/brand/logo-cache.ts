@@ -31,6 +31,8 @@ interface Entry extends CachedLogo {
 
 const entries = new Map<string, Entry>();
 let totalBytes = 0;
+/** Bumped by dropCachedLogo: a read that began before a bump must not re-cache. */
+const generations = new Map<string, number>();
 
 const keyOf = (scope: string, id: string) => `${scope}|${id}`;
 
@@ -53,8 +55,19 @@ export function getCachedLogo(scope: string, id: string): CachedLogo | null {
   return entry;
 }
 
-export function cacheLogo(scope: string, id: string, logo: CachedLogo): void {
+/** Capture before a read; pass to cacheLogo / cacheMissingLogo after it. */
+export function logoCacheGeneration(scope: string, id: string): number {
+  return generations.get(keyOf(scope, id)) ?? 0;
+}
+
+/**
+ * Cache what a read found, unless the tenant's logo changed (an upload or a
+ * remove on this instance) while that read was in flight: its bytes may be
+ * the old logo, and caching them would undo the drop.
+ */
+export function cacheLogo(scope: string, id: string, logo: CachedLogo, generation: number): void {
   const key = keyOf(scope, id);
+  if ((generations.get(key) ?? 0) !== generation) return;
   drop(key);
   entries.set(key, { ...logo, storedAt: Date.now() });
   totalBytes += logo.body.length;
@@ -67,7 +80,39 @@ export function cacheLogo(scope: string, id: string, logo: CachedLogo): void {
  * own entry until its TTL runs out.
  */
 export function dropCachedLogo(scope: string, id: string): void {
-  drop(keyOf(scope, id));
+  const key = keyOf(scope, id);
+  drop(key);
+  missing.delete(key);
+  generations.set(key, (generations.get(key) ?? 0) + 1);
+}
+
+/**
+ * Negative cache: tenants whose logo doc a read found absent, for
+ * LOGO_MISSING_TTL_MS, so repeat requests for a removed or never-uploaded
+ * logo 404 without a read. Bounded by count, oldest first; the same
+ * generation rule as cacheLogo applies.
+ */
+export const LOGO_MISSING_TTL_MS = 10 * 1000;
+export const LOGO_MISSING_MAX_KEYS = 10_000;
+const missing = new Map<string, number>();
+
+export function isKnownMissingLogo(scope: string, id: string): boolean {
+  const key = keyOf(scope, id);
+  const at = missing.get(key);
+  if (at === undefined) return false;
+  if (Date.now() - at >= LOGO_MISSING_TTL_MS) {
+    missing.delete(key);
+    return false;
+  }
+  return true;
+}
+
+export function cacheMissingLogo(scope: string, id: string, generation: number): void {
+  const key = keyOf(scope, id);
+  if ((generations.get(key) ?? 0) !== generation) return;
+  missing.delete(key);
+  missing.set(key, Date.now());
+  while (missing.size > LOGO_MISSING_MAX_KEYS) missing.delete(missing.keys().next().value!);
 }
 
 /** Whether `requested` (a `?v`) names a version after `cached`, i.e. an upload not yet read. */
@@ -76,4 +121,4 @@ export function isNewerVersion(requested: string | null, cached: number): boolea
 }
 
 /** For the bound test. */
-export const logoCacheStats = () => ({ entries: entries.size, bytes: totalBytes });
+export const logoCacheStats = () => ({ entries: entries.size, bytes: totalBytes, missing: missing.size });

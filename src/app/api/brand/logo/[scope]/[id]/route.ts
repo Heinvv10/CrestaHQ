@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
 import { logoDocRef, type LogoScope } from "@/lib/brand/logo-server";
 import { checkLogoRateLimit } from "@/lib/brand/logo-rate-limit";
-import { cacheLogo, getCachedLogo, isNewerVersion, type CachedLogo } from "@/lib/brand/logo-cache";
+import {
+  cacheLogo,
+  cacheMissingLogo,
+  getCachedLogo,
+  isKnownMissingLogo,
+  isNewerVersion,
+  logoCacheGeneration,
+  type CachedLogo,
+} from "@/lib/brand/logo-cache";
 import { LOGO_ID_RE } from "@/lib/brand/logo-shared";
 import { isDocId } from "@/lib/server/doc-id";
 
@@ -52,6 +60,8 @@ export async function GET(
   if (cached && !isNewerVersion(requested, cached.version)) {
     return serve(cached, requested === String(cached.version));
   }
+  // Read as absent in the last few seconds: 404 again with no read, no limit.
+  if (!cached && isKnownMissingLogo(scope, id)) return notFound();
 
   // Before the read: the limit bounds what an anonymous caller costs Firestore.
   const retryAfter = checkLogoRateLimit(request);
@@ -63,14 +73,19 @@ export async function GET(
   }
 
   try {
+    const generation = logoCacheGeneration(scope, id);
     const snap = await logoDocRef(scope as LogoScope, id).get();
     const data = snap.data();
+    if (!data) {
+      cacheMissingLogo(scope, id, generation);
+      return notFound();
+    }
     const b64 = data?.data as string | undefined;
     const mime = data?.mime as string | undefined;
     if (b64 && (mime === "image/png" || mime === "image/webp")) {
       const body = Buffer.from(b64, "base64");
       const version = data?.version;
-      if (typeof version === "number") cacheLogo(scope, id, { body, mime, version });
+      if (typeof version === "number") cacheLogo(scope, id, { body, mime, version }, generation);
       return serve({ body, mime }, typeof version === "number" && requested === String(version));
     }
   } catch (err) {

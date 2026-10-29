@@ -202,7 +202,7 @@ describe("DELETE /api/sub-accounts/[id]/logo — remove", () => {
 
 describe("this instance's logo cache (breaker R3)", () => {
   const prime = (id: string) =>
-    cacheLogo("sa", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 });
+    cacheLogo("sa", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 }, 0);
 
   it("an upload drops this sub-account's cached logo, and only its own", async () => {
     prime("sa1");
