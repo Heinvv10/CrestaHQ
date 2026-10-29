@@ -20,6 +20,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 /** A "." in any id would break the split on verify. */
 const ID_RE = /^[A-Za-z0-9_-]{1,200}$/;
+/** What `sign` emits. Checked before the compare: a presented value of the
+ *  right string length but with non-ASCII characters has a different BYTE
+ *  length, and `timingSafeEqual` throws on unequal buffers. */
+const SIG_RE = /^[0-9a-f]{64}$/;
 
 const OPEN_PURPOSE = "broadcast-open";
 const CLICK_PURPOSE = "broadcast-click";
@@ -56,7 +60,7 @@ function verify(purpose: string, token: string, idCount: number): string[] | nul
   if (parts.length !== idCount + 1) return null;
   const ids = parts.slice(0, idCount);
   const presentedSig = parts[idCount]!;
-  if (!ids.every((id) => ID_RE.test(id))) return null;
+  if (!ids.every((id) => ID_RE.test(id)) || !SIG_RE.test(presentedSig)) return null;
 
   let expectedSig: string;
   try {
@@ -64,7 +68,6 @@ function verify(purpose: string, token: string, idCount: number): string[] | nul
   } catch {
     return null;
   }
-  if (presentedSig.length !== expectedSig.length) return null;
   if (!timingSafeEqual(Buffer.from(presentedSig), Buffer.from(expectedSig))) {
     return null;
   }

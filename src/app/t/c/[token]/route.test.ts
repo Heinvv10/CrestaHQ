@@ -20,12 +20,11 @@ const { issueClickToken, issueOpenToken } = await import("@/lib/broadcasts/track
 
 const DEST = "https://shop.example/x?a=1&b=2";
 
-let ipSeq = 0;
-async function click(token: string, query = "", ip = `10.0.1.${++ipSeq % 250}`) {
-  return GET(
-    new Request(`https://app.test/t/c/${token}${query}`, { headers: { "x-forwarded-for": ip } }),
-    { params: Promise.resolve({ token }) },
-  );
+// No IP header on any request: the limiter must not key on one.
+async function click(token: string, query = "") {
+  return GET(new Request(`https://app.test/t/c/${token}${query}`), {
+    params: Promise.resolve({ token }),
+  });
 }
 
 function seed(tracking: Record<string, boolean> = { clicks: true }) {
@@ -42,7 +41,14 @@ function seed(tracking: Record<string, boolean> = { clicks: true }) {
 const row = () => mem.read("broadcasts/b1/sends/c1")!;
 const snapshot = () => JSON.stringify(mem.all());
 
-beforeEach(() => seed());
+// Each test starts a fresh limiter window (only Date is faked).
+vi.useFakeTimers({ toFake: ["Date"] });
+let clock = Date.parse("2026-10-29T00:00:00Z");
+beforeEach(() => {
+  clock += 10 * 60_000;
+  vi.setSystemTime(clock);
+  seed();
+});
 
 describe("GET /t/c/[token]", () => {
   it("302s to the stored destination and records the first click once", async () => {
@@ -123,11 +129,28 @@ describe("GET /t/c/[token]", () => {
     spy.mockRestore();
   });
 
-  it("429s an address past its per-minute budget", async () => {
-    for (let i = 0; i < 120; i++) await click("garbage", "", "203.0.113.20");
-    const res = await click(issueClickToken("b1", "c1", "k1"), "", "203.0.113.20");
-    expect(res.status).toBe(429);
-    expect(res.headers.get("retry-after")).toBeTruthy();
-    expect(row().clickedAt).toBeUndefined();
+  it("past a token's per-minute budget still redirects, but stops recording", async () => {
+    const token = issueClickToken("b1", "c1", "k1");
+    for (let i = 0; i < 20; i++) expect((await click(token)).status).toBe(302);
+    expect(row().clicks).toBe(20);
+    const res = await click(token);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(DEST);
+    expect(row().clicks).toBe(20);
+  });
+
+  it("404s, never 500s, when the link lookup throws", async () => {
+    const spy = vi.spyOn(mem.db, "collection").mockImplementationOnce(() => {
+      throw new Error("firestore down");
+    });
+    const res = await click(issueClickToken("b1", "c1", "k1"));
+    expect(res.status).toBe(404);
+    spy.mockRestore();
+  });
+
+  it("404s for a signature with non-ASCII characters", async () => {
+    const good = issueClickToken("b1", "c1", "k1");
+    const res = await click(`${good.slice(0, -64)}é${good.slice(-63)}`);
+    expect(res.status).toBe(404);
   });
 });

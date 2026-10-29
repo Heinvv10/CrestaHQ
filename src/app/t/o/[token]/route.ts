@@ -2,7 +2,6 @@ import "server-only";
 
 import { recordBroadcastEngagement } from "@/lib/broadcasts/engagement";
 import { verifyOpenToken } from "@/lib/broadcasts/tracking-token";
-import { clientIpFrom } from "@/lib/checkout/rate-limit";
 import { isDocId } from "@/lib/server/doc-id";
 import { createFixedWindowLimiter } from "@/lib/server/fixed-window-limit";
 
@@ -15,37 +14,37 @@ const PIXEL = Buffer.from(
 );
 
 /**
- * Generous: Gmail and Apple fetch images through shared proxy addresses, so
- * one IP stands for many readers. Over the limit the pixel is still served,
- * just not recorded — opens are an estimate either way.
+ * Records per verified token, so a replayed pixel can't cost a transaction
+ * per request. Keyed by token, not IP: Gmail and Apple fetch images through
+ * shared proxies, and a request with no IP header must not share one bucket
+ * with every other such request. Over the limit the GIF is still served.
  */
-const checkOpenRateLimit = createFixedWindowLimiter({ limit: 600, windowMs: 60_000 });
+const checkOpenRecordLimit = createFixedWindowLimiter({ limit: 20, windowMs: 60_000 });
 
 /**
  * Broadcast open pixel. `/t/o/{token}` always answers 200 with the GIF —
- * a forged, bit-flipped or unknown token included — so the response says
- * nothing about whether the token was good. Only a verified token for a
- * sent row, on a sub-account with open tracking on, writes anything.
+ * a forged, bit-flipped or unknown token included, and whatever fails
+ * inside — so the response says nothing about whether the token was good.
+ * Only a verified token for a sent row, on a sub-account with open tracking
+ * on, writes anything.
  */
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ token: string }> },
 ): Promise<Response> {
-  const { token } = await params;
-  if (checkOpenRateLimit(clientIpFrom(request)).ok) {
+  try {
+    const { token } = await params;
     const signed = verifyOpenToken(token);
-    if (signed && isDocId(signed.broadcastId) && isDocId(signed.contactId)) {
-      try {
-        await recordBroadcastEngagement({ ...signed, kind: "opened" });
-      } catch (err) {
-        console.error(
-          "[t/o] open record failed",
-          signed.broadcastId,
-          signed.contactId,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+    if (
+      signed &&
+      isDocId(signed.broadcastId) &&
+      isDocId(signed.contactId) &&
+      checkOpenRecordLimit(token).ok
+    ) {
+      await recordBroadcastEngagement({ ...signed, kind: "opened" });
     }
+  } catch (err) {
+    console.error("[t/o] open record failed", err instanceof Error ? err.message : String(err));
   }
   return new Response(new Uint8Array(PIXEL), {
     status: 200,

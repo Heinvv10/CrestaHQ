@@ -67,6 +67,17 @@ describe("open token", () => {
     expect(verifyOpenToken(good)).toBeNull();
   });
 
+  it("returns null — never throws — for a signature that is not 64 lower-case hex", () => {
+    const [b, c, sig] = issueOpenToken("b1", "c1").split(".") as [string, string, string];
+    // Same UTF-16 length as a real signature, more bytes: timingSafeEqual would throw.
+    for (const bad of [`é${sig.slice(1)}`, `${sig.slice(0, -1)}€`, sig.toUpperCase(), sig.slice(1), `${sig}0`]) {
+      expect(() => verifyOpenToken(`${b}.${c}.${bad}`)).not.toThrow();
+      expect(verifyOpenToken(`${b}.${c}.${bad}`)).toBeNull();
+    }
+    const click = issueClickToken("b1", "c1", "k1");
+    expect(verifyClickToken(`${click.slice(0, -64)}é${click.slice(-63)}`)).toBeNull();
+  });
+
   it("does not accept a click token or an /l/ tracked-link token", () => {
     // Same secret, same id shapes: only the purpose prefix keeps them apart.
     const click = issueClickToken("b1", "c1", "k1");

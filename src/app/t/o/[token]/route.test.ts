@@ -19,12 +19,9 @@ const { GET } = await import("./route");
 const { issueOpenToken, issueClickToken } = await import("@/lib/broadcasts/tracking-token");
 const { ENGAGEMENT_COUNT_CAP } = await import("@/lib/broadcasts/engagement");
 
-let ipSeq = 0;
-async function open(token: string, ip = `10.0.0.${++ipSeq % 250}`) {
-  return GET(
-    new Request(`https://app.test/t/o/${token}`, { headers: { "x-forwarded-for": ip } }),
-    { params: Promise.resolve({ token }) },
-  );
+// No IP header on any request: the limiter must not key on one.
+async function open(token: string) {
+  return GET(new Request(`https://app.test/t/o/${token}`), { params: Promise.resolve({ token }) });
 }
 
 function seed(tracking: Record<string, boolean> = { opens: true }) {
@@ -51,7 +48,14 @@ const row = (b = "b1") => mem.read(`broadcasts/${b}/sends/c1`)!;
 const activities = () => mem.list("contacts/c1/activities");
 const snapshot = () => JSON.stringify(mem.all());
 
-beforeEach(() => seed());
+// Each test starts a fresh limiter window (only Date is faked).
+vi.useFakeTimers({ toFake: ["Date"] });
+let clock = Date.parse("2026-10-29T00:00:00Z");
+beforeEach(() => {
+  clock += 10 * 60_000;
+  vi.setSystemTime(clock);
+  seed();
+});
 
 describe("GET /t/o/[token]", () => {
   it("serves an uncacheable 1x1 GIF", async () => {
@@ -129,15 +133,33 @@ describe("GET /t/o/[token]", () => {
     expect(activities()).toHaveLength(0);
   });
 
-  it("stops recording one address after its per-minute budget, but keeps serving the GIF", async () => {
-    // The budget counts every request, good token or not.
-    for (let i = 0; i < 600; i++) await open("garbage", "203.0.113.9");
-    const res = await open(issueOpenToken("b1", "c1"), "203.0.113.9");
+  it("stops recording one token after its per-minute budget, but keeps serving the GIF", async () => {
+    const token = issueOpenToken("b1", "c1");
+    for (let i = 0; i < 20; i++) await open(token);
+    expect(row().opens).toBe(20);
+    const res = await open(token);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("image/gif");
+    expect(row().opens).toBe(20);
+    // Garbage and other tokens never touch this token's budget, nor it theirs.
+    mem.seed("broadcasts/b1/sends/c2", { ...row(), opens: 0, openedAt: null });
+    for (let i = 0; i < 50; i++) await open("garbage");
+    await open(issueOpenToken("b1", "c2"));
+    expect(mem.read("broadcasts/b1/sends/c2")!.opens).toBe(1);
+  });
+
+  it("serves the GIF when the record step throws", async () => {
+    const spy = vi.spyOn(mem.db, "runTransaction").mockRejectedValueOnce(new Error("firestore down"));
+    const res = await open(issueOpenToken("b1", "c1"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/gif");
+    spy.mockRestore();
+  });
+
+  it("serves the GIF for a signature with non-ASCII characters", async () => {
+    const good = issueOpenToken("b1", "c1");
+    const res = await open(`${good.slice(0, -64)}é${good.slice(-63)}`);
+    expect(res.status).toBe(200);
     expect(row().openedAt).toBeUndefined();
-    // Another address is unaffected.
-    await open(issueOpenToken("b1", "c1"), "203.0.113.10");
-    expect(row().openedAt).toBeTruthy();
   });
 });
