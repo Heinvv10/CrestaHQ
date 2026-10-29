@@ -43,8 +43,12 @@ channel is all it spends.
   names are dropped, `includeMessagePreview` must be a boolean.
 - **DELETE** — deletes the private doc and sets `slackMeta` to null.
 - **POST `…/slack/test`** — re-sends the "connected" message. 429 within 5 s of the
-  previous test for that sub-account (per instance).
-- POST and PATCH answer 400 for an `events` that is present but not an array.
+  previous test post for that sub-account (per instance). The window is shared with
+  a POST that re-saves the stored URL; a POST with a different URL is exempt and does
+  not start it. A test refused before posting (not connected, invalid URL) does not
+  start it either.
+- POST and PATCH answer 400 for a body that is not a JSON object, and for an
+  `events` that is present but not an array.
 
 All five are `human-only` in `scripts/agent-coverage.json` until T2.
 
@@ -63,7 +67,8 @@ with `lastError` "The saved webhook URL is not a Slack Incoming Webhook URL. Rec
 with a new one.", and Send test answers 400 with the same text.
 
 Log lines never carry a webhook URL: `redactSlackUrls` replaces any
-`hooks.slack.com` URL, and the URL being posted to, with `[slack-url]`.
+`hooks.slack.com` URL, any `/services/…` path, and (where the caller has it) the URL
+being posted to and its token segment, with `[slack-url]`.
 
 ## Posting
 
@@ -82,10 +87,12 @@ per-instance cache, dropped by the settings routes and after a revoke), skips ev
 that aren't ticked, spaces posts ~1/s per sub-account (overflow during a bulk import
 is dropped with a log line, never retried) and stamps the outcome.
 
-Every invalidation bumps a per-sub-account generation. A load that started before the
-bump does not refill the cache, and a queued post re-checks the generation just
-before it is sent and is skipped if it changed. So a disconnect, reconnect or event
-change on this instance stops posts already waiting in the lane.
+Every invalidation bumps a per-sub-account generation; a load that started before the
+bump does not refill the cache. A queued post re-reads the hook just before it is
+sent and is skipped only when what it was built for no longer holds: the URL was
+disconnected or replaced, its event was unticked, or the preview choice changed. A
+harmless change (Send test, ticking another event) posts the queue as normal. A
+skipped post holds no 1 s gap.
 
 **Limit (blue/green):** the cache, the generation and the lane are per instance.
 Invalidation only reaches the instance that served the settings request. During a
@@ -145,6 +152,9 @@ key-written fields on the record and checking them here; it is not done.
   control.
 - `src/lib/slack/cache.test.ts` — disconnect, reconnect and PATCH reach the next event.
 - `src/lib/slack/throttle.test.ts` — ~1 s spacing; the 31st waiting post is dropped.
+- Re-break repros (#449, `races-2.test.ts`): Send test and a harmless PATCH mid-burst
+  keep the queue; reconnect, untick and a preview change mid-burst skip it; the
+  shared cooldown; non-object bodies; redaction variants.
 - Breaker repros (#449), adopted: `races.test.ts` (queued posts after a disconnect,
   authz matrix with no URL in responses, logs or docs, test cooldown, POST `events`),
   `hook-cache-race.test.ts` (a load straddling an invalidation),

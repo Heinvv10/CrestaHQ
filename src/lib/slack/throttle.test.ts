@@ -21,6 +21,7 @@ vi.mock("@/lib/firestore/webhook-subscriptions", () => ({ findMatchingSubscripti
 vi.mock("@/lib/push/events", () => ({ dispatchPushForWebhookEvent: async () => {} }));
 
 const { emitWebhookEvent } = await import("@/lib/api/webhooks/dispatch");
+const { invalidateSlackHookCache } = await import("@/lib/slack/events");
 
 const URL_A = "https://hooks.slack.com/services/T0001/B0001/aaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -59,6 +60,27 @@ it("spaces posts for one sub-account about a second apart", async () => {
   expect(at).toHaveLength(3);
   expect(at[1] - at[0]).toBeGreaterThanOrEqual(950);
   expect(at[2] - at[1]).toBeGreaterThanOrEqual(950);
+});
+
+it("a skipped post holds no gap: the lane moves straight on", async () => {
+  connect("sa-skip");
+  publicFetch.mockImplementation(async () => {
+    // After the first post goes out, untick the event: the two queued
+    // behind it are skipped, and must not each wait out a second.
+    mem.seed("subAccounts/sa-skip", {
+      agencyId: "ag1",
+      slackMeta: { connected: true, events: ["deal.won"], needsReconnect: false, lastError: null },
+    });
+    invalidateSlackHookCache("sa-skip");
+    return new Response("ok", { status: 200 });
+  });
+  const started = Date.now();
+  await emit("sa-skip");
+  await emit("sa-skip");
+  await emit("sa-skip");
+  await flushAfterResponse();
+  expect(publicFetch).toHaveBeenCalledTimes(1);
+  expect(Date.now() - started).toBeLessThan(1_800);
 });
 
 it("drops posts beyond 30 waiting, with a log line, and never sends them", async () => {

@@ -24,22 +24,22 @@ const cache = new Map<
 >();
 
 // Bumped by every invalidation. A load that started before a bump read the
-// store before the change, so it must not refill the cache, and a post
-// queued under an older generation is skipped rather than sent to a hook
-// that was disconnected or replaced meanwhile.
+// store before the change, so it must not refill the cache (it would serve
+// the old hook for a minute).
 const generations = new Map<string, number>();
 const generationOf = (subAccountId: string) => generations.get(subAccountId) ?? 0;
 
-/** The hook, and the generation it is valid for. */
-async function hookFor(subAccountId: string) {
+type Hook = Awaited<ReturnType<typeof loadSlackHook>>;
+
+async function hookFor(subAccountId: string): Promise<Hook> {
   const generation = generationOf(subAccountId);
   const hit = cache.get(subAccountId);
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { hook: hit.hook, generation };
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.hook;
   const hook = await loadSlackHook(subAccountId);
   if (generationOf(subAccountId) === generation) {
     cache.set(subAccountId, { at: Date.now(), hook });
   }
-  return { hook, generation };
+  return hook;
 }
 
 /** Called by the settings routes so a change shows up on the next event. */
@@ -48,16 +48,30 @@ export function invalidateSlackHookCache(subAccountId: string): void {
   cache.delete(subAccountId);
 }
 
-/** Post unless the hook changed since `generation` was read (null = skipped). */
+/**
+ * Post from the lane, after re-reading the hook (the cache, or the store if
+ * a settings change cleared it). Skipped (null) only when what the message
+ * was built for no longer holds: the URL was replaced or disconnected, the
+ * event is no longer ticked, or the preview choice changed. A change that
+ * leaves those alone (Send test, ticking another event) posts as queued.
+ */
 function postIfCurrent(
   subAccountId: string,
-  generation: number,
-  webhookUrl: string,
+  built: { webhookUrl: string; type: EmitWebhookEventInput["type"]; includeMessagePreview: boolean },
   message: Parameters<typeof postSlackMessage>[1],
 ) {
-  return throttled(subAccountId, async () =>
-    generationOf(subAccountId) === generation ? postSlackMessage(webhookUrl, message) : null,
-  );
+  return throttled(subAccountId, async () => {
+    const current = await hookFor(subAccountId);
+    if (
+      !current ||
+      current.webhookUrl !== built.webhookUrl ||
+      !current.events.includes(built.type) ||
+      current.includeMessagePreview !== built.includeMessagePreview
+    ) {
+      return null;
+    }
+    return postSlackMessage(built.webhookUrl, message);
+  });
 }
 
 // Slack allows roughly one post per second per webhook. Posts for one
@@ -76,12 +90,16 @@ function throttled<T>(subAccountId: string, fn: () => Promise<T>): Promise<T | n
   lane.depth += 1;
   const run = lane.tail.then(async () => {
     const started = Date.now();
+    // A skipped post (fn resolved null) sent nothing, so it holds no gap.
+    let sent = true;
     try {
-      return await fn();
+      const out = await fn();
+      sent = out !== null;
+      return out;
     } finally {
       lane.depth -= 1;
       const wait = MIN_GAP_MS - (Date.now() - started);
-      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      if (sent && wait > 0) await new Promise((r) => setTimeout(r, wait));
     }
   });
   lane.tail = run.then(
@@ -96,12 +114,15 @@ export async function dispatchSlackForWebhookEvent(
   input: EmitWebhookEventInput,
 ): Promise<void> {
   try {
-    const { hook, generation } = await hookFor(input.subAccountId);
+    const hook = await hookFor(input.subAccountId);
     if (!hook || !hook.events.includes(input.type)) return;
-    const message = buildSlackMessage(input, appUrl(), {
-      includeMessagePreview: hook.includeMessagePreview,
-    });
-    const first = await postIfCurrent(input.subAccountId, generation, hook.webhookUrl, message);
+    const { includeMessagePreview } = hook;
+    const message = buildSlackMessage(input, appUrl(), { includeMessagePreview });
+    const first = await postIfCurrent(
+      input.subAccountId,
+      { webhookUrl: hook.webhookUrl, type: input.type, includeMessagePreview },
+      message,
+    );
     if (!first) return;
     let result = first;
     let postedUrl = hook.webhookUrl;
@@ -109,12 +130,15 @@ export async function dispatchSlackForWebhookEvent(
       // The cache may be stale: another instance might have reconnected with
       // a new URL or disconnected, so re-read before marking the card.
       invalidateSlackHookCache(input.subAccountId);
-      const reread = await hookFor(input.subAccountId);
-      const fresh = reread.hook;
+      const fresh = await hookFor(input.subAccountId);
       if (!fresh) return;
       if (fresh.webhookUrl !== hook.webhookUrl) {
         if (!fresh.events.includes(input.type)) return;
-        const retry = await postIfCurrent(input.subAccountId, reread.generation, fresh.webhookUrl, message);
+        const retry = await postIfCurrent(
+          input.subAccountId,
+          { webhookUrl: fresh.webhookUrl, type: input.type, includeMessagePreview },
+          message,
+        );
         if (!retry) return;
         result = retry;
         postedUrl = fresh.webhookUrl;

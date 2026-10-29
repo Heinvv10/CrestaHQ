@@ -34,6 +34,23 @@ export class SlackError extends Error {
   }
 }
 
+// One test post per sub-account per 5 s on this instance, shared by Send
+// test and a connect that re-saves the stored URL: both post to a real
+// channel, so a held key or a script must not flood it. A connect with a
+// different URL is exempt (and does not start the window): it is the only
+// way to prove a new hook. Check-and-set is synchronous, after the last
+// await, so concurrent clicks claim it once.
+const TEST_COOLDOWN_MS = 5_000;
+const lastTestAt = new Map<string, number>();
+
+function claimTestSlot(subAccountId: string): void {
+  const last = lastTestAt.get(subAccountId);
+  if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
+    throw new SlackError("A test was just sent. Wait a few seconds before sending another.", 429);
+  }
+  lastTestAt.set(subAccountId, Date.now());
+}
+
 function privateRef(subAccountId: string) {
   return getAdminDb().doc(`subAccounts/${subAccountId}/private/slack`);
 }
@@ -110,6 +127,10 @@ export async function connectSlack(opts: {
       400,
     );
   }
+  const stored = (await privateRef(opts.subAccountId).get()).data() as
+    | Partial<SlackPrivateDoc>
+    | undefined;
+  if (stored?.webhookUrl === url) claimTestSlot(opts.subAccountId);
   const test = await postSlackMessage(url, slackTestMessage(appUrl(), opts.subAccountId));
   if (!test.ok) {
     throw new SlackError(test.error ?? "Slack rejected the test message.", 502);
@@ -199,19 +220,9 @@ async function storedUrl(subAccountId: string): Promise<string | "invalid" | nul
   return priv.webhookUrl;
 }
 
-// One test post per sub-account per 5 s on this instance: the button posts
-// to a real channel, so a held key or a script must not flood it.
-const TEST_COOLDOWN_MS = 5_000;
-const lastTestAt = new Map<string, number>();
-
 export async function sendSlackTest(
   subAccountId: string,
 ): Promise<SlackConfigResponse> {
-  const last = lastTestAt.get(subAccountId);
-  if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
-    throw new SlackError("A test was just sent. Wait a few seconds before sending another.", 429);
-  }
-  lastTestAt.set(subAccountId, Date.now());
   const url = await storedUrl(subAccountId);
   if (url === "invalid") {
     throw new SlackError(INVALID_STORED_URL_ERROR, 400);
@@ -219,6 +230,8 @@ export async function sendSlackTest(
   if (!url) {
     throw new SlackError("Connect a Slack channel first.", 400);
   }
+  // Only a test that will post starts the window.
+  claimTestSlot(subAccountId);
   const result = await postSlackMessage(url, slackTestMessage(appUrl(), subAccountId));
   await recordSlackResult(subAccountId, url, result);
   if (!result.ok) {

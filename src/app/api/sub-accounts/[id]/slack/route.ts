@@ -33,6 +33,23 @@ function fail(err: unknown) {
   return NextResponse.json({ error: "Slack request failed" }, { status: 500 });
 }
 
+/** The JSON body when it is an object; null for invalid JSON, a number,
+ *  string, null or an array (each would otherwise throw on `in`). */
+async function readObject(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const body: unknown = await request.json();
+    return body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function invalidBody(): NextResponse {
+  return NextResponse.json({ error: "Send a JSON object." }, { status: 400 });
+}
+
 function notFound(): NextResponse {
   return NextResponse.json({ error: "Sub-account not found" }, { status: 404 });
 }
@@ -61,12 +78,8 @@ export async function POST(
   const auth = await requireSubAccountAdmin(request, id);
   if (auth instanceof NextResponse) return auth;
 
-  let body: Record<string, unknown>;
-  try {
-    body = (await request.json()) as Record<string, unknown>;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const body = await readObject(request);
+  if (!body) return invalidBody();
   if ("events" in body && !Array.isArray(body.events)) {
     return NextResponse.json(
       { error: "events must be an array of event types" },
@@ -108,15 +121,17 @@ export async function PATCH(
   const auth = await requireSubAccountAdmin(request, id);
   if (auth instanceof NextResponse) return auth;
 
-  let body: Record<string, unknown>;
-  try {
-    body = (await request.json()) as Record<string, unknown>;
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-  }
+  const body = await readObject(request);
+  if (!body) return invalidBody();
   const hasEvents = "events" in body;
   const hasPreview = "includeMessagePreview" in body;
-  if ((hasEvents && !Array.isArray(body.events)) || (!hasEvents && !hasPreview)) {
+  if (!hasEvents && !hasPreview) {
+    return NextResponse.json(
+      { error: "Send events (an array of event types), includeMessagePreview (true or false), or both." },
+      { status: 400 },
+    );
+  }
+  if (hasEvents && !Array.isArray(body.events)) {
     return NextResponse.json(
       { error: "events must be an array of event types" },
       { status: 400 },

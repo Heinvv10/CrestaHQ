@@ -35,11 +35,20 @@ const SLACK_ERROR_CODE = /^[a-z0-9_]{1,64}$/;
 
 /**
  * Replaces webhook URLs in a message bound for a log line: any Slack hook
- * URL, and `url` itself (a stored value that may not look like one).
+ * URL or bare `/services/…` path, and `url` itself plus its last path
+ * segment (the secret token), which also catches a URL that was split,
+ * encoded or re-cased on its way into the message.
  */
 export function redactSlackUrls(message: string, url?: string): string {
-  const out = url ? message.split(url).join("[slack-url]") : message;
-  return out.replace(/https?:\/\/hooks\.slack\.com\/\S*/gi, "[slack-url]");
+  let out = message;
+  if (url) {
+    out = out.split(url).join("[slack-url]");
+    const token = url.split("/").pop() ?? "";
+    if (token.length >= 8) out = out.split(token).join("[slack-url]");
+  }
+  return out
+    .replace(/https?:\/\/hooks\.slack\.com\.?\/\S*/gi, "[slack-url]")
+    .replace(/\/services\/\S+/gi, "[slack-url]");
 }
 
 export async function postSlackMessage(
