@@ -123,6 +123,68 @@ describe("validateLogo — refuses anything that is not a PNG/WebP", () => {
   });
 });
 
+/** A RIFF/WEBP container around raw chunks (`fourcc`, payload), padded like RIFF. */
+function riff(chunks: Array<[string, Buffer]>, trailing = Buffer.alloc(0)): Buffer {
+  const body = Buffer.concat([
+    ...chunks.map(([fourcc, payload]) => {
+      const head = Buffer.alloc(8);
+      head.write(fourcc, 0, "ascii");
+      head.writeUInt32LE(payload.length, 4);
+      return Buffer.concat([head, payload, Buffer.alloc(payload.length & 1)]);
+    }),
+    trailing,
+  ]);
+  const head = Buffer.from("RIFF\0\0\0\0WEBP", "latin1");
+  head.writeUInt32LE(body.length + 4, 4);
+  return Buffer.concat([head, body]);
+}
+
+describe("validateLogo — WebP chunk structure", () => {
+  it("accepts a real WebP re-wrapped by the test helper (the helper is sound)", async () => {
+    const real = await image("webp", { alpha: true });
+    const chunks: Array<[string, Buffer]> = [];
+    for (let off = 12; off < real.length; ) {
+      const size = real.readUInt32LE(off + 4);
+      chunks.push([real.toString("ascii", off, off + 4), real.subarray(off + 8, off + 8 + size)]);
+      off += 8 + size + (size & 1);
+    }
+    expect(riff(chunks).equals(real)).toBe(true);
+  });
+
+  it("refuses a chunk whose size runs past the container", async () => {
+    const webp = Buffer.from(await image("webp"));
+    webp.writeUInt32LE(webp.length, 16); // the VP8 chunk now claims more than the file
+    expect(validateLogo(b64(webp), "image/webp")).toBe("Logo data isn't a WebP");
+  });
+
+  it("refuses bytes inside the RIFF length that are not a chunk", async () => {
+    const webp = await image("webp");
+    const chunks: Array<[string, Buffer]> = [["VP8 ", webp.subarray(20, 20 + webp.readUInt32LE(16))]];
+    expect(Buffer.isBuffer(validateLogo(b64(riff(chunks)), "image/webp"))).toBe(true);
+    expect(validateLogo(b64(riff(chunks, Buffer.from("<s>"))), "image/webp")).toBe("Logo data isn't a WebP");
+  });
+
+  it("refuses a first chunk too short for the bitstream fields read from it", () => {
+    // A 4-byte "VP8 " chunk; the start code and a small size sit in the NEXT
+    // chunk's header, where a reader that ignores the chunk length would find them.
+    const forged = riff([
+      ["VP8 ", Buffer.from([0, 0, 0, 0x9d])],
+      [Buffer.from([0x01, 0x2a, 16, 0]).toString("latin1"), Buffer.alloc(16)],
+    ]);
+    expect(forged.subarray(23, 26).equals(Buffer.from([0x9d, 0x01, 0x2a]))).toBe(true);
+    expect(validateLogo(b64(forged), "image/webp")).toBe("Logo data isn't a WebP");
+  });
+
+  it.each([
+    ["VP8L", Buffer.from([0x2f, 0, 0, 0])],
+    ["VP8X", Buffer.alloc(9)],
+  ])("refuses a %s first chunk under its minimum", (fourcc, payload) => {
+    expect(validateLogo(b64(riff([[fourcc, payload], ["ICCP", Buffer.alloc(16)]])), "image/webp")).toBe(
+      "Logo data isn't a WebP",
+    );
+  });
+});
+
 describe("validateLogo — size and dimension caps", () => {
   it("refuses base64 over the character ceiling before scanning or decoding it", () => {
     // Not even valid base64: only the up-front length check can answer "too large".

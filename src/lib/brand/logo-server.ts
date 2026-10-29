@@ -56,21 +56,36 @@ function pngSize(buf: Buffer): { width: number; height: number } | null {
   return null;
 }
 
+/** Smallest payload each first chunk needs for the fields read from it. */
+const WEBP_MIN_FIRST_CHUNK = new Map([["VP8 ", 10], ["VP8L", 5], ["VP8X", 10]]);
+
 /**
- * RIFF/WEBP container whose RIFF length covers exactly the buffer, with the
- * canvas size read from the first chunk (lossy VP8, lossless VP8L, or the
- * extended VP8X a canvas emits for lossy-with-alpha). Null otherwise.
+ * RIFF/WEBP container whose RIFF length covers exactly the buffer and whose
+ * chunks tile it exactly: every chunk (plus its pad byte) fits, and no byte
+ * sits outside a chunk. The canvas size is read from the first chunk (lossy
+ * VP8, lossless VP8L, or the extended VP8X a canvas emits for
+ * lossy-with-alpha), which must be at least as long as the fields read from
+ * it. Null otherwise.
  */
 function webpSize(buf: Buffer): { width: number; height: number } | null {
   if (
-    buf.length < 30 ||
+    buf.length < 20 ||
     buf.toString("ascii", 0, 4) !== "RIFF" ||
     buf.toString("ascii", 8, 12) !== "WEBP" ||
     buf.readUInt32LE(4) !== buf.length - 8
   ) {
     return null;
   }
+  for (let off = 12; off < buf.length; ) {
+    if (off + 8 > buf.length) return null;
+    const size = buf.readUInt32LE(off + 4);
+    const end = off + 8 + size + (size & 1);
+    if (end > buf.length) return null;
+    off = end;
+  }
   const chunk = buf.toString("ascii", 12, 16);
+  const min = WEBP_MIN_FIRST_CHUNK.get(chunk);
+  if (min === undefined || buf.readUInt32LE(16) < min) return null;
   if (chunk === "VP8 ") {
     if (buf[23] !== 0x9d || buf[24] !== 0x01 || buf[25] !== 0x2a) return null;
     return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
@@ -80,10 +95,7 @@ function webpSize(buf: Buffer): { width: number; height: number } | null {
     const bits = buf.readUInt32LE(21);
     return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
   }
-  if (chunk === "VP8X") {
-    return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
-  }
-  return null;
+  return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
 }
 
 /** Checks the bytes match the claimed type and fit the budget. Returns the buffer or a problem string. */
