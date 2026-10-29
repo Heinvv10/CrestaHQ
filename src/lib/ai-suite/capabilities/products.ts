@@ -164,7 +164,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     // buyers see and pay, so a person approves it (spend).
     approvalFor: async (args, ctx) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      return (await productSellers(ctx.subAccountId!, p.id)).length ? "spend" : undefined;
+      return (await productSellers(ctx.subAccountId!, p)).length ? "spend" : undefined;
     },
     approvalHint: { approval: "spend", when: "the product is sold by a checkout page or funnel, or is on sale online" },
     approvalTarget: async (ctx, args) => {
@@ -173,7 +173,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     },
     preview: async (ctx, args) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      const sellers = await productSellers(ctx.subAccountId!, p.id);
+      const sellers = await productSellers(ctx.subAccountId!, p);
       const { productId: _id, ...fields } = args;
       const next = { ...p, ...(fields as Partial<Product>) };
       const shown: Record<string, (x: Product) => string> = {
@@ -229,7 +229,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
           if (JSON.stringify(valuesOf(current, fields)) !== JSON.stringify(ctx.approved.pinned?.before)) {
             throw new CapabilityUserError("The product changed since this was reviewed; nothing was changed.");
           }
-        } else if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
+        } else if ((await productSellers(ctx.subAccountId!, { ...(current as Partial<Product>), id: p.id }, (q) => tx.get(q))).length) {
           throw new CapabilityUserError("A checkout page, funnel or buy link now sells this product, so this change needs approval: send it again.");
         }
         tx.update(ref, { ...fields, ...sell, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_product")) });
@@ -258,7 +258,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     },
     preview: async (ctx, args) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      const used = await productUsage(ctx.subAccountId!, p.id);
+      const used = await productUsage(ctx.subAccountId!, p);
       if (used.checkoutPages || used.funnels) {
         throw new CapabilityUserError(
           `That product is sold by ${used.checkoutPages} checkout page(s) and ${used.funnels} funnel(s); deleting it would break them. Archive it instead (update_product active:false).`
@@ -284,7 +284,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
       await db.runTransaction(async (tx) => {
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That product isn't in this workspace.");
-        if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
+        if ((await productSellers(ctx.subAccountId!, { ...(current as Partial<Product>), id: p.id }, (q) => tx.get(q))).length) {
           throw new CapabilityUserError("A checkout page, funnel or buy link now sells this product; it was not deleted.");
         }
         tx.delete(ref);

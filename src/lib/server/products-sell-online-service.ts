@@ -124,10 +124,24 @@ function parseDelivery(raw: unknown): ProductDelivery {
   throw new SellOnlineError("Unknown delivery type.", 400);
 }
 
+/** What each sell key must be when present; anything else is a 400.
+ *  (`delivery`: parseDelivery refuses anything but a known object.) */
+const SELL_KEY_TYPES: Record<Exclude<SellKey, "delivery">, (v: unknown) => boolean> = {
+  sellOnline: (v) => typeof v === "boolean",
+  slug: (v) => typeof v === "string",
+  publicDescription: (v) => typeof v === "string",
+  checkoutPageId: (v) => v === null || typeof v === "string",
+};
+
 /** Pulls the sell-online keys out of a request body, format-checked only. */
 export function parseSellOnlineBody(
   body: Record<string, unknown>,
 ): Partial<Pick<Product, SellKey>> {
+  for (const [key, ok] of Object.entries(SELL_KEY_TYPES)) {
+    if (key in body && !ok(body[key])) {
+      throw new SellOnlineError(`Invalid ${key}.`, 400);
+    }
+  }
   const out: Partial<Pick<Product, SellKey>> = {};
   if (typeof body.sellOnline === "boolean") out.sellOnline = body.sellOnline;
   if (typeof body.slug === "string") {

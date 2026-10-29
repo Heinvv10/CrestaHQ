@@ -144,7 +144,24 @@ export async function DELETE(
 
   try {
     if (hard) {
-      await loaded.ref.delete();
+      // As for the agent's delete_product: a hard delete would break its buy
+      // link. Re-read in the delete's own transaction.
+      const outcome = await loaded.db.runTransaction(async (tx) => {
+        const fresh = (await tx.get(loaded.ref)).data();
+        if (!fresh || fresh.subAccountId !== subAccountId) return "not_found";
+        if (fresh.sellOnline === true) return "on_sale";
+        tx.delete(loaded.ref);
+        return "deleted";
+      });
+      if (outcome === "not_found") {
+        return NextResponse.json({ error: "Product not found" }, { status: 404 });
+      }
+      if (outcome === "on_sale") {
+        return NextResponse.json(
+          { error: "This product is on sale online. Take it off sale first.", code: "on_sale" },
+          { status: 409 },
+        );
+      }
     } else {
       await loaded.ref.update({
         active: false,

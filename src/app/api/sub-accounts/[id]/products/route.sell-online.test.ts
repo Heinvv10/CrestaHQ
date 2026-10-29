@@ -34,7 +34,17 @@ const create = (body: Record<string, unknown>) => POST(req("POST", "", body), { 
 // The handler's inferred type admits undefined; every path returns a response.
 const patch = async (body: Record<string, unknown>, productId = "pr1") =>
   (await PATCH(req("PATCH", `/${productId}`, body), { params: Promise.resolve({ id: "sa1", productId }) }))!;
+const del = async (productId: string, hard = false) =>
+  (await DELETE(req("DELETE", `/${productId}${hard ? "?hard=true" : ""}`), { params: Promise.resolve({ id: "sa1", productId }) }))!;
 const products = () => mem.list("products");
+/** Runs `before` just before the route's next transaction body reads. */
+const beforeNextTransaction = (before: () => void) => {
+  const real = mem.db.runTransaction.bind(mem.db);
+  vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async (fn) => {
+    before();
+    return real(fn);
+  });
+};
 
 afterEach(() => vi.restoreAllMocks());
 beforeEach(() => {
@@ -71,6 +81,22 @@ describe("gate", () => {
     const res = await patch({ sellOnline: false, publicDescription: "", delivery: { type: "none" }, checkoutPageId: null });
     expect(res.status).toBe(200);
     expect(mem.read("products/pr1")).toEqual(PRODUCT);
+  });
+
+  it.each([
+    ["delivery", { delivery: { type: "download", url: "https://example.com/a.pdf" } }],
+    ["slug", { slug: "fibre-new" }],
+    ["checkoutPageId", { checkoutPageId: "cp1" }],
+    ["publicDescription", { publicDescription: "New copy" }],
+  ])("gate off → off sale plus a %s change → 403, nothing written", async (_label, fields) => {
+    mem.seed("subAccounts/sa1", { ...SELLING_SUB, sellOnlineEnabledByAgency: false });
+    const online = { ...PRODUCT, sellOnline: true, slug: "fibre-100" };
+    mem.seed("products/pr1", online);
+    mem.seed("subAccounts/sa1/checkoutPages/cp1", { subAccountId: "sa1", slug: "offer", productId: "pr1", status: "published" });
+    const res = await patch({ sellOnline: false, ...fields });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: "gate_off" });
+    expect(mem.read("products/pr1")).toEqual(online);
   });
 
   it("gate off → taking a product off sale is still allowed", async () => {
@@ -231,6 +257,81 @@ describe("delivery and ids", () => {
     mem.seed("products/pr1", { ...PRODUCT, sellOnline: true, slug: "fibre-100" });
     mem.seed("subAccounts/sa1/checkoutPages/cp1", { subAccountId: "sa1", slug: "offer", productId: "other", status: "published" });
     expect((await patch({ checkoutPageId: "cp1" })).status).toBe(400);
+  });
+});
+
+describe("wrong-typed sell keys", () => {
+  it.each([
+    ["sellOnline as a string", { sellOnline: "true" }],
+    ["sellOnline as a number", { sellOnline: 1 }],
+    ["slug as a number", { slug: 42 }],
+    ["slug as null", { slug: null }],
+    ["publicDescription as an array", { publicDescription: ["x"] }],
+    ["checkoutPageId as a number", { checkoutPageId: 7 }],
+    ["delivery as a string", { delivery: "none" }],
+    ["delivery as null", { delivery: null }],
+  ])("PATCH %s → 400, nothing written", async (_label, fields) => {
+    expect((await patch({ name: "Renamed", ...fields })).status).toBe(400);
+    expect(mem.read("products/pr1")).toEqual(PRODUCT);
+  });
+
+  it.each([
+    ["sellOnline as a string", { sellOnline: "true" }],
+    ["slug as a number", { slug: 42 }],
+    ["publicDescription as a number", { publicDescription: 1 }],
+  ])("POST %s → 400, nothing created", async (_label, fields) => {
+    expect((await create({ name: "Fibre 200", unitPriceCents: 100, currency: "ZAR", ...fields })).status).toBe(400);
+    expect(products()).toHaveLength(1);
+  });
+});
+
+describe("cross-tenant", () => {
+  const OTHER = { ...PRODUCT, subAccountId: "sa2", name: "Other tenant" };
+
+  it("PATCH of another sub-account's product → refused at the pre-check, nothing written", async () => {
+    mem.seed("products/px", OTHER);
+    expect((await patch({ name: "Hijacked" }, "px")).status).toBe(403);
+    expect(mem.read("products/px")).toEqual(OTHER);
+  });
+
+  it("PATCH: the product belonging to another sub-account at commit → refused in the transaction", async () => {
+    beforeNextTransaction(() => mem.seed("products/pr1", OTHER));
+    expect((await patch({ name: "Hijacked" })).status).toBe(404);
+    expect(mem.read("products/pr1")).toEqual(OTHER);
+  });
+
+  it.each([[false], [true]])("DELETE (hard=%s) of another sub-account's product → refused at the pre-check", async (hard) => {
+    mem.seed("products/px", OTHER);
+    expect((await del("px", hard)).status).toBe(403);
+    expect(mem.read("products/px")).toEqual(OTHER);
+  });
+
+  it("hard DELETE: the product belonging to another sub-account at commit → refused in the transaction", async () => {
+    beforeNextTransaction(() => mem.seed("products/pr1", OTHER));
+    expect((await del("pr1", true)).status).toBe(404);
+    expect(mem.read("products/pr1")).toEqual(OTHER);
+  });
+});
+
+describe("hard delete", () => {
+  it("a product on sale → 409 take it off sale first, kept", async () => {
+    const online = { ...PRODUCT, sellOnline: true, slug: "fibre-100" };
+    mem.seed("products/pr1", online);
+    const res = await del("pr1", true);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "on_sale", error: expect.stringMatching(/Take it off sale first/) });
+    expect(mem.read("products/pr1")).toEqual(online);
+  });
+
+  it("put on sale between the check and the delete → 409, kept", async () => {
+    beforeNextTransaction(() => mem.seed("products/pr1", { ...PRODUCT, sellOnline: true, slug: "fibre-100" }));
+    expect((await del("pr1", true)).status).toBe(409);
+    expect(mem.read("products/pr1")).toBeDefined();
+  });
+
+  it("a product not on sale → deleted", async () => {
+    expect((await del("pr1", true)).status).toBe(200);
+    expect(mem.read("products/pr1")).toBeUndefined();
   });
 });
 

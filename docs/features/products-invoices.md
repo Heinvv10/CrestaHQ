@@ -33,16 +33,22 @@ A product can be put on sale with its own buy link (`/co/[sa]/buy/[slug]`). **F1
 
 - **Fields** (optional on `products/{id}`, absent = catalog-only): `sellOnline`, `slug`, `publicDescription`, `checkoutPageId` (a published checkout page selling this product, for the Buy button), `delivery` (`none` / `community` group+course / `download` link), `publicVersion` (bumped on public-facing edits and archive).
 - **Validation** (`lib/server/products-sell-online-service.ts`, used by `POST …/products`, `PATCH …/products/[productId]` and the agent `update_product`):
+  - A sell-online key present with the wrong type (`sellOnline: "true"`, a non-string `slug`/`publicDescription`, a `checkoutPageId` that is neither a string nor null, a non-object `delivery`) answers 400; nothing is written.
   - Gate off: changing any sell-online field answers 403 `{ code: "gate_off" }`, except taking a product off sale (`sellOnline: false` alone), which is always allowed. Unchanged values round-tripped by the UI are a no-op 200.
   - Slug: lowercase kebab, 2–60 characters, not `api`/`new`/`thanks`/`preview`/`buy`; 409 when another product **or a checkout page** in the same sub-account uses it. Minted from the name on first sale, skipping both. Uniqueness is a query, not a claim doc (ruled 2026-10-30), so two simultaneous saves can still collide: **F2's slug lookup must fail closed — more than one product with the slug in the sub-account answers 404.**
   - While a product is (or becomes) for sale: price a whole number of cents above 0 and at most 100,000,000; currency one of `SELL_ONLINE_CURRENCIES` (the quote builder's list, incl. ZAR). Catalog-only products keep the old rules (price 0 allowed, any currency).
   - Turning it on, or changing an on-sale product's currency, needs a rail: `chooseProductPayRail(sub, currency)` (`lib/products/pay-rail.ts`, pure, also used by the editor). Stripe when Payments is on, `stripeConnectionMeta.ready` and Stripe can price the currency; else Paystack when Payments is on, a connection exists and the currency is ZAR. Both ready → Stripe (same order as invoices). Refusal: 400 `{ code: "no_pay_rail" }` with the reason.
   - Download links: public https only (no IP literal, localhost, userinfo or quote characters). Community/course and checkout page ids pass `isDocId`; the group must exist with Community on, the checkout page must be published and sell this product.
   - The PATCH validates and writes in one transaction against the product as it is at commit.
-- **Agent tools:** a product on sale counts as sold (`productSellers` lists its buy link), so the agent's `update_product` needs a person's "spend" approval for any edit of it (price and currency included), and `delete_product` is refused while it is on sale.
+- **Hard delete** (`DELETE …/products/[productId]?hard=true`) of a product on sale answers 409 `{ code: "on_sale" }` ("take it off sale first"), re-checked in the delete's transaction. Archiving (the default delete) still works.
+- **Agent tools:** a product on sale counts as sold (`productSellers` adds its buy link from the caller's own read of the product, inside the transaction for the re-checks), so the agent's `update_product` needs a person's "spend" approval for any edit of it (price and currency included), and `delete_product` is refused while it is on sale.
 - **Snapshots** copy products catalog-only: the sell-online fields stay behind.
 - **Checkout pages** created from a product skip reserved slugs.
 - `listSellableProducts` (`lib/server/products-catalog-service.ts`) is the public catalog builder for F2/F6: on sale, valid price, and a rail for the currency right now.
+
+**What F2 (buy pages + sessions) must do — F1 checks only at save time, and the world moves after it:**
+- Slug lookup fails closed: more than one product with the slug in the sub-account → 404 (uniqueness is a query, not a claim doc).
+- At render AND at session creation, re-check everything the save checked, from the stored docs: the product is `active`, `sellOnline`, its price passes `sellOnlinePriceError`, and `chooseProductPayRail(sub, currency)` is ok; a `checkoutPageId` still names a checkout page whose `productId` is this product and whose `status` is `published` (otherwise never send the buyer to that page); a `community` delivery's group (and course) still exists and Community is still on. The amount always comes from the product doc, never the request.
 
 ## Key files
 
