@@ -282,7 +282,7 @@ function RebillingCard({
       });
       const d = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(d.error ?? "Couldn't save.");
-      toast.success(next ? "This client is now rebilled." : "Rebilling stopped for this client.");
+      toast.success(next ? "Rebilling on for this client, no charges yet." : "Rebilling off for this client.");
       setConfirming(null);
       onSaved();
     } catch (err) {
@@ -307,14 +307,14 @@ function RebillingCard({
                   : "bg-muted text-muted-foreground")
               }
             >
-              {rebilling.active ? "Rebilled" : "Metering only"}
+              {rebilling.active ? "Rebilling on, no charges yet" : "Metering only"}
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {rebilling.active
-              ? "Usage past the included allowance counts toward this client's monthly usage charge, at their rates."
+              ? "Rebilling is on for this client, but no charges are created yet. The estimate below is what usage past their allowance comes to at their rates."
               : rebilling.agency
-                ? "Usage is counted but not billed to this client. Turn this on to bill usage past their allowance."
+                ? "Usage is counted but not billed to this client."
                 : "Usage rebilling is off for the agency."}
             {!rebilling.agency && (
               <>
@@ -335,7 +335,7 @@ function RebillingCard({
             disabled={busy || (!rebilling.client && !rebilling.agency)}
             onClick={() => setConfirming(!rebilling.client)}
           >
-            {rebilling.client ? "Stop rebilling" : "Rebill this client"}
+            {rebilling.client ? "Turn rebilling off" : "Turn rebilling on"}
           </Button>
         )}
       </div>
@@ -358,8 +358,8 @@ function RebillingCard({
         <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
           <p className="text-amber-800 dark:text-amber-300">
             {confirming
-              ? "This client's usage past the allowance will count toward a monthly usage charge from now on."
-              : "This client's usage will no longer be billed. Charges already sent stay payable."}
+              ? "Turn rebilling on for this client? No charges are created yet; you'll see an estimate of their usage charge."
+              : "Turn rebilling off for this client? Charges already sent stay payable."}
           </p>
           <div className="mt-2 flex gap-2">
             <Button
@@ -370,7 +370,7 @@ function RebillingCard({
               onClick={() => void save(confirming)}
             >
               {busy && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
-              {confirming ? "Yes, rebill" : "Yes, stop"}
+              {confirming ? "Yes, turn it on" : "Yes, turn it off"}
             </Button>
             <Button
               type="button"

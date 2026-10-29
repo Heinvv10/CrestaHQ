@@ -111,8 +111,8 @@ export default function AgencyBillingPage() {
 
   async function toggleRebilling(next: boolean) {
     const question = next
-      ? "Turn on usage rebilling? Clients you then switch on are billed for usage past their plan allowance at your rates."
-      : "Turn off usage rebilling? No client is billed for usage while it's off. Charges already sent stay payable.";
+      ? "Turn on usage rebilling? No charges are created yet: clients you then switch on show an estimate of their usage charge."
+      : "Turn off usage rebilling? Every client switched on is switched off too, and switching back on won't reactivate them. Charges already sent stay payable.";
     if (!window.confirm(question)) return;
     setRebillingBusy(true);
     try {
@@ -123,7 +123,7 @@ export default function AgencyBillingPage() {
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? "Couldn't save.");
-      toast.success(next ? "Usage rebilling is on." : "Usage rebilling is off.");
+      toast.success(next ? "Usage rebilling is on, no charges yet." : "Usage rebilling is off for every client.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't save.");
     } finally {
@@ -248,13 +248,12 @@ export default function AgencyBillingPage() {
                   : "bg-muted text-muted-foreground")
               }
             >
-              {rebillingOn === null ? "…" : rebillingOn ? "On" : "Off"}
+              {rebillingOn === null ? "…" : rebillingOn ? "On, no charges yet" : "Off"}
             </span>
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Bill clients for usage past their plan allowance at your own rates.
-            A rebilled client shows an estimated usage charge; no charge is
-            created automatically yet.
+            Estimate what each client owes for usage past their plan
+            allowance, at your own rates. No charges are created yet.
             {rebillingOn
               ? ` ${rebilledCount} client${rebilledCount === 1 ? "" : "s"} switched on (Manage → Usage rebilling).`
               : " Each client is then switched on individually."}
