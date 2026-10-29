@@ -45,24 +45,28 @@ function unpush(key: string, stamp: number): void {
   if (list && i >= 0) list.splice(i, 1);
 }
 
-/** Over-long ids are cut, which can only merge buckets (stricter), never split them. */
-function part(value: string): string {
-  return value.slice(0, MAX_KEY_PART);
+/**
+ * A bucket key from its parts, JSON-encoded so no id can reach into the next
+ * part. Over-long parts are cut, which can only merge buckets (stricter).
+ */
+function bucketKey(...parts: string[]): string {
+  return JSON.stringify(parts.map((p) => p.slice(0, MAX_KEY_PART)));
 }
 
 /**
  * The bucket for an IP: IPv4 (and IPv4-mapped IPv6) as a dotted quad, IPv6
- * as its /64, since one host usually holds a whole /64 (a zone id is
- * dropped). The bucket is the parsed form, so its length is bounded whatever
- * the header held. Null = no usable IP ("unknown", empty, garbage).
+ * as its /48, since one customer is commonly handed a whole /48 (a zone id
+ * is dropped). The bucket is the parsed form, so its length is bounded
+ * whatever the header held. Null = no usable IP ("unknown", empty, garbage).
  */
-export function ipBucket(raw: string | null): string | null {
-  const v = (raw ?? "").trim().toLowerCase();
+export function ipBucket(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim().toLowerCase();
   if (!ipaddr.isValid(v)) return null;
   const addr = ipaddr.process(v);
-  if (addr.kind() === "ipv4") return `ip:${addr.toString()}`;
-  const head = (addr as ipaddr.IPv6).toNormalizedString().split(":").slice(0, 4);
-  return `ip6:${head.join(":")}::/64`;
+  if (addr.kind() === "ipv4") return bucketKey("ip", addr.toString());
+  const head = (addr as ipaddr.IPv6).toNormalizedString().split(":").slice(0, 3);
+  return bucketKey("ip6", `${head.join(":")}::/48`);
 }
 
 export type BookingCapResult = "ok" | "chat" | "visitor" | "workspace";
@@ -87,19 +91,19 @@ interface CapKey {
 }
 
 function bookingKeys(input: BookingCapInput): CapKey[] {
-  const sa = part(input.subAccountId);
+  const sa = input.subAccountId;
   const keys: CapKey[] = [
-    { key: `conv:${sa}:${part(input.conversationKey)}`, limit: BOOKINGS_PER_CONVERSATION, scope: "chat" },
+    { key: bucketKey("conv", sa, input.conversationKey), limit: BOOKINGS_PER_CONVERSATION, scope: "chat" },
   ];
   if (input.visitor) {
     const ip = ipBucket(input.visitor.ip);
     keys.push(
       ip
         ? { key: ip, limit: BOOKINGS_PER_IP, scope: "visitor" }
-        : { key: `noip:${sa}`, limit: NO_IP_BOOKINGS_PER_SUB_ACCOUNT, scope: "visitor" },
+        : { key: bucketKey("noip", sa), limit: NO_IP_BOOKINGS_PER_SUB_ACCOUNT, scope: "visitor" },
     );
   }
-  keys.push({ key: `sa:${sa}`, limit: BOOKINGS_PER_SUB_ACCOUNT, scope: "workspace" });
+  keys.push({ key: bucketKey("sa", sa), limit: BOOKINGS_PER_SUB_ACCOUNT, scope: "workspace" });
   return keys;
 }
 
@@ -136,7 +140,7 @@ export function reserveBooking(input: BookingCapInput): CapReservation {
 export function reserveChange(subAccountId: string, conversationKey: string): CapReservation {
   return reserve([
     {
-      key: `chg:${part(subAccountId)}:${part(conversationKey)}`,
+      key: bucketKey("chg", subAccountId, conversationKey),
       limit: CHANGES_PER_CONVERSATION,
       scope: "chat",
     },

@@ -13,9 +13,9 @@ import {
   attr,
   bookOfferKey,
   findMarker,
-  MAX_SCAN_CHARS,
   parseMarkerAttrs,
   parseStartIso,
+  promptSafe,
   rescheduleOfferKey,
   type MarkerAttrs,
 } from "@/lib/comms/ai/booking-markers";
@@ -130,7 +130,7 @@ function identityProblem(
   const phoneOk = isPlausiblePhone(req.phone);
   if (audience === "web-text") {
     if (req.name && emailOk) return null;
-    return `${prefix} Not booked yet — you need the visitor's name and a valid email address first.${req.email && !emailOk ? ` "${req.email.slice(0, 200)}" isn't a valid email address.` : ""} Ask for whatever is missing, then emit ${example} again.`;
+    return `${prefix} Not booked yet — you need the visitor's name and a valid email address first.${req.email && !emailOk ? ` "${promptSafe(req.email)}" isn't a valid email address.` : ""} Ask for whatever is missing, then emit ${example} again.`;
   }
   if (req.name && (emailOk || phoneOk)) return null;
   return `${prefix} Not booked yet — you need the visitor's name and a phone number or email address first (read it back and confirm). Ask for whatever is missing, then emit ${example} again.`;
@@ -229,7 +229,8 @@ export async function runBookingTool(
   input: RunBookingToolInput,
 ): Promise<BookingToolOutcome | null> {
   const { audience, subAccountId } = input;
-  const modelText = input.modelText.slice(0, MAX_SCAN_CHARS);
+  // findMarker scans only the head, but judges `whole` on the full reply.
+  const modelText = input.modelText;
   const prefix = TOOL_PREFIX[audience];
   const person = who(audience);
 

@@ -56,6 +56,13 @@ describe("per conversation", () => {
     expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: `${long}z`, visitor: null }).ok).toBe(false);
   });
 
+  it("ids containing the separator can't collide across parts", () => {
+    reserveN(2, () => ({ subAccountId: "a:b", conversationKey: "c", visitor: null }));
+    expect(caps.reserveBooking({ subAccountId: "a", conversationKey: "b:c", visitor: null }).ok).toBe(true);
+    for (let i = 0; i < 5; i++) caps.reserveChange("a:b", "c");
+    expect(caps.reserveChange("a", "b:c").ok).toBe(true);
+  });
+
   it("the same conversation key in another sub-account is a different conversation", () => {
     reserveN(2, () => ({ conversationKey: "contact-1", visitor: null }));
     expect(caps.reserveBooking({ subAccountId: "sa2", conversationKey: "contact-1", visitor: null }).ok).toBe(true);
@@ -77,11 +84,18 @@ describe("per IP", () => {
     expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "new", visitor: web("9.9.9.9") }).ok).toBe(false);
   });
 
-  it("one IPv6 /64 is one visitor; another /64 is not", () => {
-    reserveN(5, (i) => ({ conversationKey: `chat-${i}`, visitor: web(`2001:DB8:1:2::${i + 1}`) }));
-    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n", visitor: web("2001:db8:1:2:ffff::9") }).ok).toBe(false);
-    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n2", visitor: web("2001:db8:1:3::1") }).ok).toBe(true);
-    expect(caps.ipBucket("2001:db8:1:2::1%eth0")).toBe("ip6:2001:db8:1:2::/64");
+  it("one IPv6 /48 is one visitor; another /48 is not", () => {
+    reserveN(5, (i) => ({ conversationKey: `chat-${i}`, visitor: web(`2001:DB8:1:${i}::1`) }));
+    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n", visitor: web("2001:db8:1:ffff::9") }).ok).toBe(false);
+    expect(caps.reserveBooking({ subAccountId: "sa1", conversationKey: "n2", visitor: web("2001:db8:2::1") }).ok).toBe(true);
+    expect(caps.ipBucket("2001:db8:1:2::1%eth0")).toBe('["ip6","2001:db8:1::/48"]');
+  });
+
+  it("a non-string IP is no IP, not a crash", () => {
+    expect(caps.ipBucket(42)).toBeNull();
+    expect(caps.ipBucket({ trim: () => "1.1.1.1" })).toBeNull();
+    const r = caps.reserveBooking({ subAccountId: "sa1", conversationKey: "c", visitor: { ip: 42 as unknown as string } });
+    expect(r.ok).toBe(true);
   });
 
   it("the IP cap spans sub-accounts", () => {

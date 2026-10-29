@@ -13,6 +13,7 @@ import {
 import {
   bookOfferKey,
   normalizeIso,
+  promptSafe,
   rescheduleOfferKey,
   stripBookingMarkers,
 } from "@/lib/comms/ai/booking-markers";
@@ -66,14 +67,6 @@ export function offerKeys(stored: StoredBookingOffer | null): string[] {
   );
 }
 
-/**
- * Visitor-typed values quoted into the prompt can't close the quote, forge a
- * marker, or start a new line (any Unicode line break or control character).
- */
-function promptSafe(value: string | null | undefined): string {
-  return (value ?? "").replace(/[\p{Cc}\p{Zl}\p{Zp}"[\]]/gu, "").trim().slice(0, 120);
-}
-
 /** The "--- BOOKING STATE ---" section: what's booked, what's known, what's on offer. */
 export function buildBookingStateBlock(input: {
   /** Labels of upcoming bookings made in this conversation. */
@@ -115,7 +108,7 @@ export function buildBookingStateBlock(input: {
       `Details already on file: ${known.join(", ")}. Use them in the [[book]] marker instead of asking again${input.confirmKnown ? " (confirm them once)" : ""}.`,
     );
   }
-  const offer = input.offer;
+  const offer = liveOffer(input.offer);
   if (offer) {
     const moveRef = offer.moveEventId
       ? input.changeable.find((t) => t.booking.eventId === offer.moveEventId)?.ref ?? null
@@ -168,9 +161,10 @@ export function matchPickedSlot(
   offer: StoredBookingOffer | null,
   pickedIso: string | null,
 ): { startIso: string; label: string } | null {
-  if (!offer || !pickedIso) return null;
+  const live = liveOffer(offer);
+  if (!live || !pickedIso) return null;
   const iso = normalizeIso(pickedIso);
-  return offer.slots.find((s) => s.startIso === iso) ?? null;
+  return live.slots.find((s) => s.startIso === iso) ?? null;
 }
 
 export function toStoredOffer(
@@ -296,7 +290,9 @@ export async function callAiWithBookingTools(input: {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   // Also when booking is off but the reply was only a marker: never send nothing.
-  if (!finalText && (input.tools || text.trim())) {
+  // Zero-width characters alone count as nothing (they stay in a real reply:
+  // U+200D joins emoji).
+  if (!finalText.replace(/[\u200B-\u200D\u2060\uFEFF]/g, "").trim() && (input.tools || text.trim())) {
     finalText =
       actionLabel ??
       input.emptyReplyFallback ??

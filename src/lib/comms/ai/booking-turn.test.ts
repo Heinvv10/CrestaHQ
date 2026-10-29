@@ -93,7 +93,7 @@ describe("callAiWithBookingTools", () => {
       subAccountId: "sa1",
     });
     expect(ai.calls).toBe(1);
-    expect(out.text).toBe("Sure  thing");
+    expect(out.text).toBe("Sure thing");
   });
 
   it("booking off: a reply that was only a marker still says something", async () => {
@@ -103,6 +103,13 @@ describe("callAiWithBookingTools", () => {
     expect(out.text).toBe("One moment.");
     ai.replies = [""];
     expect((await callAiWithBookingTools(off)).text).toBe("");
+  });
+
+  it("a reply of only zero-width characters gets the fallback; real ones keep them", async () => {
+    ai.replies = ["\u200B\u2060\uFEFF"];
+    expect((await turn(new Set())).text).toBe("Sorry, I couldn't check the calendar just now. Could you try again?");
+    ai.replies = ["Hi \u{1F468}\u200D\u{1F469}"];
+    expect((await turn(new Set())).text).toBe("Hi \u{1F468}\u200D\u{1F469}");
   });
 
   it("a trailing unclosed marker never reaches the person", async () => {
@@ -237,6 +244,13 @@ describe("prompt state", () => {
     expect(matchPickedSlot(offer, "2026-11-03T10:00:00+02:00")).toEqual({ startIso: SLOT_A, label: "Tue" });
     expect(matchPickedSlot(offer, "2026-11-03T09:00:00.000Z")).toBeNull();
     expect(matchPickedSlot(null, SLOT_A)).toBeNull();
+    expect(matchPickedSlot({ ...offer, offeredAtMs: Date.now() - 3 * 60 * 60 * 1000 }, SLOT_A)).toBeNull();
+  });
+
+  it("a stale offer isn't replayed into the prompt", () => {
+    const offer = { pageSlug: "consult", slots: [{ startIso: SLOT_A, label: "Tue" }], hostUid: null, offeredAtMs: Date.now() };
+    expect(buildBookingStateBlock({ ...emptyState, offer })).toContain("Times already offered");
+    expect(buildBookingStateBlock({ ...emptyState, offer: { ...offer, offeredAtMs: Date.now() - 3 * 60 * 60 * 1000 } })).toBe("");
   });
 
   it("stale or page-less offers are not replayed", () => {
