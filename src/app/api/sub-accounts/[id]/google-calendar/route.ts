@@ -72,7 +72,16 @@ export async function DELETE(request: Request, ctx: Ctx) {
   // connection down with it. The card tells the member where to remove the
   // app's access themselves (myaccount.google.com/permissions).
   await getAdminDb().doc(gcalConnectionPath(id, access.uid)).delete();
-  // After the connection doc is gone, so a running import sees it and backs off.
-  await deleteImportedEvents(id, access.uid);
+  // After the connection doc is gone, so a running import sees it and backs
+  // off. Best-effort like every other cleanup path: the connection is already
+  // gone, and the daily orphan sweep removes anything left.
+  try {
+    await deleteImportedEvents(id, access.uid);
+  } catch (err) {
+    console.error(
+      `[google-calendar] disconnect import cleanup failed sa=${id}`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   return NextResponse.json({ ok: true });
 }

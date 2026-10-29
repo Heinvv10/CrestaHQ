@@ -110,13 +110,16 @@ profile and message links are NOT cached — Meta is the source of truth.
 (tokens, status, errors — [google-calendar-sync.md](../features/google-calendar-sync.md))
 and their calendar-import state: `importMode` (`off`/`busy`/`details`, set only
 by that member), `importGeneration`, `importSyncToken`, `importLastSyncAt`,
-`importLastFullSyncAt`, `importLastAttemptAt`, `importStatus`, `importError`,
+`importLastFullSyncAt`, `importLastAttemptAt`, `importLastFullAttemptAt`,
+`importLeaseId`, `importLeaseUntil`, `importStatus`, `importError`,
 `importedCount`. Admin SDK only under the `private/{docId}` deny rule; the
 member sees their own through `GET /api/sub-accounts/[id]/google-calendar`.
 The sub-account doc carries `calendarImportAllowed` (the admin's workspace
 switch) and `calendarImportGeneration`, server-written. Import queries are
 equality-only (`events` by `subAccountId` + `source` [+ `importOwnerUid`],
-`private` by `importMode in`), so no composite index.
+`private` by `importMode in`), so no composite index. `appConfig/calendarImportSweep`
+`{cursor, updatedAt}` is where the daily orphan sweep stopped (Admin SDK only:
+no rule matches it).
 
 ### Google Business Profile
 `subAccounts/{id}/private/googleConnection` holds the OAuth refresh/access
