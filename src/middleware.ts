@@ -62,6 +62,9 @@ const PUBLIC_PATHS = [
   // api-cleanup, gbp-retention and whatsapp-staging-cleanup in sequence (the
   // QStash plan caps schedules at 10). Same auth: the signature, bound to the URL.
   "/api/cron/daily-housekeeping",
+  // Google Calendar import sweep, fanned out by the email-sync tick. Same
+  // auth: the signature, bound to the URL.
+  "/api/cron/calendar-import",
   // Review-request reminders (SP5 d2) — one QStash message per scheduled
   // reminder. Same auth: the signature, bound to this route's URL.
   "/api/cron/review-reminder",

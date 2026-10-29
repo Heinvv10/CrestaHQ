@@ -286,6 +286,13 @@ describe("isPublicPath — the prospect report PDF (R5)", () => {
   });
 });
 
+describe("isPublicPath — the Google Calendar import sweep", () => {
+  it("lets QStash reach the signed sweep, and keeps the import settings behind a session", () => {
+    expect(isPublicPath("/api/cron/calendar-import")).toBe(true);
+    expect(isPublicPath("/api/sub-accounts/sa1/google-calendar/import")).toBe(false);
+  });
+});
+
 describe("isPublicPath — the WhatsApp settings routes (SP15)", () => {
   it("lets QStash reach the signed quality poll (the signature is its auth)", () => {
     expect(isPublicPath("/api/cron/whatsapp-quality")).toBe(true);

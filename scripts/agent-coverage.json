@@ -984,6 +984,12 @@
         "category": "human-only",
         "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
       }
+    },
+    "api/sub-accounts/[id]/google-calendar/import:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Google Calendar import consent: a member chooses to show their OWN Google calendar (times only, or with titles) to the workspace, and a sub-account admin allows it. Consent to share a person's calendar is that person's act; an agent key acts for no member."
+      }
     }
   }
 }

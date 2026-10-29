@@ -23,7 +23,7 @@ Code: [src/lib/google-calendar/](../../src/lib/google-calendar/). Agency gate: `
 - **Tokens:** the cached access token is used while more than 60 s remain; otherwise it is refreshed (within the caller's time budget, which aborts the refresh too), and a rotated refresh token is stored. A 401 from Google earns exactly one forced refresh. `invalid_grant` sets `status: "revoked"` and `lastError` — only if the stored refresh token is still the one that failed, so a member who reconnected meanwhile is not marked dead. The card then shows **Reconnect**.
 - **Two error fields:** `lastError` is a busy-time/token failure, cleared by the next successful read. `lastPushError` is a booking write that failed, cleared by the next successful write for that member. A busy read that works never clears a push error.
 - **UI:** the Google Calendar card in Settings → Calendar sync ([google-calendar-card.tsx](../../src/components/settings/google-calendar-card.tsx)). It shows one of: Connect, "Connected as … (primary calendar)" with any busy or push error, Reconnect with the last error, or Disconnect. While the gate is off it shows only a Disconnect, and only when the member still has a stored connection (`GET` answers `{gateOff, connected, googleEmail}`).
-- **Member removal** deletes the member's connection doc. Busy and push also refuse any connection whose owner is not an active member (or the agency owner).
+- **Member removal** deletes the member's connection doc and their imported events. Busy and push also refuse any connection whose owner is not an active member (or the agency owner).
 
 ## Busy time (G2)
 
@@ -71,6 +71,24 @@ It is called once per post-commit path:
 
 Deleting an event in Google does **not** cancel the booking (ruling 9).
 
+## Import (C1, port of 1.0.54) — NOT runtime-verified
+
+> Merged dark: no Settings UI yet (C2), and not walked against a real Google account. Nothing is imported until an admin allows it through the API below.
+
+A member's own Google events shown on the CRM calendar as read-only `events` docs. Code: [import.ts](../../src/lib/google-calendar/import.ts) (the pass), [import-map.ts](../../src/lib/google-calendar/import-map.ts) (what is stored), [import-state.ts](../../src/lib/google-calendar/import-state.ts) (keys and cleanups).
+
+- **Three keys, all required:** the agency gate `googleCalendarEnabledByAgency`; the workspace allowance `calendarImportAllowed` on the sub-account (a sub-account admin); and the member's own `importMode` on their connection (`busy` or `details`; absent = off). Plus the member still being active. Any key off: no Google call, and that member's imports are deleted.
+- **Detail level (Decision 4):** `busy` (the default the UI should offer first) stores times only — title "Busy", no place, and Google is not even asked for titles. `details` stores the title and place too, which every member of the workspace can then read; a Google-private/confidential event stays "Busy". Descriptions, guests, conference links and attachments are never fetched in either mode.
+- **What is imported:** the same rule as busy time — cancelled, Free (transparent), declined events and LeadStack's own pushed copies are skipped, as are `workingLocation` and `birthday` entries. **All-day events** are imported only when marked Busy (Google makes all-day events Free by default), midnight to midnight in the calendar's zone; a multi-day one carries `isLong`.
+- **Doc shape:** see `events/{id}` in [firestore-collections.md](../architecture/firestore-collections.md). Deterministic ids, so a re-run never duplicates; an unchanged event is not rewritten. Never `assignedToUid`, `hostUids`, `mode`, `publicTokenHash` or `bookingPageSlug`. Every event reader skips it (C0) except availability, where it is busy for its owner only — from the Firestore copy, so it holds while their live Google busy fails open.
+- **Sync:** `events.list` on the primary calendar under the existing `calendar.events` scope (no new scope). A full walk covers 30 days back to 180 days ahead and deletes what Google no longer returns; later passes are incremental from Google's sync token. A refused token (410) falls back to a full walk; a full walk also runs daily and on every mode change. At most 20 pages (5,000 events) per walk and 2,000 imported events per member (upcoming first); a walk cut short deletes nothing and says so in `importError`.
+- **Races:** every switch-off writes its key first and deletes after; each write batch commits in a transaction that re-reads the sub-account and connection and refuses if their fingerprint moved — then the pass re-applies the current keys itself. So a member who opts out (or an admin, or the agency) mid-sync never keeps an import.
+- **Cleanups:** opt-out, workspace switch off (also resets every member to off, so allowing it again exposes nobody), agency gate off (`applyFeatureGates`, every path), disconnect, reconnect (the doc is replaced, so the opt-in resets), member removal and sub-account delete (imported events don't block the delete guard; they go with it). The daily housekeeping job `calendar-import-orphans` deletes anything a failed cleanup left.
+- **Schedule:** no QStash schedule of its own. The 15-minute `email-sync` tick publishes one message to `POST /api/cron/calendar-import` (QStash-signed, URL-bound) when any workspace allows import; it syncs members least recently attempted first, three at a time, within 45 s.
+- **API:** `PATCH /api/sub-accounts/[id]/google-calendar/import` with exactly one of `{allowWorkspace: boolean}` (admin; on needs the gate and a configured deployment), `{mode: "off"|"busy"|"details"}` (the caller's own calendar only; on needs the gate, the allowance and a connected calendar; off always works) or `{syncNow: true}` (the caller's full pass, awaited). `GET /api/sub-accounts/[id]/google-calendar` adds `importAllowed`, `importMode`, `importStatus`, `importError`, `importLastSyncAt`, `importedCount`.
+- **Rules:** no client may update or delete a `source: "google"` event (nor create one — `source` was already server-only). Every member may read them; a per-doc read condition would break the calendar's list queries ("rules are not filters"), which is why sharing details is the owner's explicit choice.
+- **Not built (C1 scope):** no contact linking from guest emails (upstream links one in details mode); no UI (C2).
+
 ## Fake provider (dev/CI)
 
 `GCAL_PROVIDER=fake` is fenced exactly like the GBP, WhatsApp and SMS fakes ([mode.ts](../../src/lib/google-calendar/provider/mode.ts)). It needs all of:
@@ -84,6 +102,7 @@ Deleting an event in Google does **not** cancel the booking (ruling 9).
 - Each member's "Google calendar" is the Firestore doc `private/googleCalendarFake_{uid}`, shaped `{email?, revoked?, events[], failNext?}`.
 - Connect skips Google and lands on the real callback.
 - `revoked: true` makes refresh answer `invalid_grant` and access tokens stop working.
+- Import walks: an incremental walk returns every event as changed plus `deletedIds` as cancelled; `expireSyncToken: true` answers the next incremental walk with a 410 once.
 
 The deploy guard (`scripts/gbp-deploy-check.mjs`) refuses any `GCAL_PROVIDER` / `GCAL_FAKE_*` name, and checks the URL inlined into the built fake check. Spec: [e2e/specs/google-calendar-sync.spec.ts](../../e2e/specs/google-calendar-sync.spec.ts).
 

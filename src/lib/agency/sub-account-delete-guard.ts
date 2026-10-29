@@ -38,6 +38,21 @@ const USAGE_COLLECTIONS: ReadonlyArray<{ collection: string; label: string }> =
     { collection: "recurringInvoices", label: "recurring invoices" },
   ];
 
+/**
+ * Events other than imported Google ones (`source: "google"`): those are a
+ * copy of members' own calendars, not CRM data, and the delete removes them
+ * itself. Two counts, not a `!=` query: that would skip legacy events with
+ * no `source` at all.
+ */
+async function hasOwnEvents(db: Db, subAccountId: string): Promise<boolean> {
+  const all = db.collection("events").where("subAccountId", "==", subAccountId);
+  const [total, imported] = await Promise.all([
+    all.count().get(),
+    all.where("source", "==", "google").count().get(),
+  ]);
+  return total.data().count > imported.data().count;
+}
+
 /** Rows a person still has to act on: undecided, mid-action, or outcome unknown. */
 const OPEN_PROPOSAL_STATUSES = ["pending", "executing", "unsettled"] as const;
 export const DECIDED_PROPOSAL_STATUSES: ReadonlySet<string> = new Set(["executed", "failed", "rejected", "expired"]);
@@ -56,6 +71,7 @@ export async function findDeleteBlockers(
   except: ReadonlySet<string> = new Set()
 ): Promise<string[]> {
   const usage = USAGE_COLLECTIONS.filter(({ collection }) => !except.has(collection)).map(async ({ collection, label }) => {
+    if (collection === "events") return (await hasOwnEvents(db, subAccountId)) ? label : null;
     const snap = await db.collection(collection).where("subAccountId", "==", subAccountId).limit(1).get();
     return snap.empty ? null : label;
   });

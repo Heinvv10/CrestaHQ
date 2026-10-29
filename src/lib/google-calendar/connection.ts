@@ -37,7 +37,28 @@ export interface GoogleCalendarConnection {
    */
   lastPushError?: string | null;
   lastPushErrorAt?: Date | null;
+  /**
+   * Calendar import (lib/google-calendar/import.ts). Set only by the member
+   * themself: "busy" stores times only, "details" also titles and places.
+   * Absent = off. A reconnect replaces the doc, so it resets to off.
+   */
+  importMode?: ImportMode;
+  /** Bumped by every opt-in change; a running import that sees it move backs off. */
+  importGeneration?: number;
+  /** Google's incremental sync token; null forces a full walk. */
+  importSyncToken?: string | null;
+  importLastSyncAt?: Date | null;
+  importLastFullSyncAt?: Date | null;
+  /** Last pass started — orders the sweep so a pass that keeps dying can't hog it. */
+  importLastAttemptAt?: Date | null;
+  importStatus?: "ok" | "error" | null;
+  /** Fixed text per failure kind, like `lastError`. */
+  importError?: string | null;
+  importedCount?: number;
 }
+
+/** What a member shares from their Google Calendar. */
+export type ImportMode = "off" | "busy" | "details";
 
 /** Refresh when less than this is left on the cached access token. */
 export const REFRESH_MARGIN_MS = 60_000;

@@ -34,12 +34,36 @@ export interface GcalEvent {
   attendees?: Array<{ self?: boolean; responseStatus?: string }>;
   extendedProperties?: { private?: Record<string, string> };
   summary?: string;
+  /** Read by the calendar import only, and stored only in "details" mode. */
+  location?: string;
+  /** "private" / "confidential" events import as "Busy" in every mode. */
+  visibility?: string;
+  /** Google's own kind, e.g. "workingLocation" or "birthday" (not appointments). */
+  eventType?: string;
 }
 
 export interface GcalEventList {
   items: GcalEvent[];
   /** The calendar's own timezone — what an all-day `date` is relative to. */
   timeZone: string | null;
+}
+
+/** One events.list walk for the calendar import (full or incremental). */
+export interface GcalSyncResult {
+  items: GcalEvent[];
+  timeZone: string | null;
+  /** Google's token for the next incremental walk; null when the walk stopped early. */
+  nextSyncToken: string | null;
+  /** True when pages were left unread (`maxPages`): absence proves nothing. */
+  truncated: boolean;
+}
+
+/** Google answered 410 Gone to a sync token: the caller must run a full sync. */
+export class GcalSyncTokenExpiredError extends Error {
+  constructor() {
+    super("Google Calendar sync token expired");
+    this.name = "GcalSyncTokenExpiredError";
+  }
 }
 
 /** What LeadStack writes for a booking. */
@@ -72,6 +96,18 @@ export interface GcalProvider {
     window: { timeMin: Date; timeMax: Date },
     signal?: AbortSignal,
   ): Promise<GcalEventList>;
+  /**
+   * The calendar import's walk. `syncToken` null = a full walk of
+   * [timeMin, timeMax); otherwise only what changed since that token
+   * (cancelled events included), and the window is NOT applied by Google.
+   * Throws GcalSyncTokenExpiredError when Google refuses the token (410).
+   * `details` false: titles and places are not even requested.
+   */
+  syncEvents(
+    accessToken: string,
+    opts: { syncToken: string | null; timeMin: Date; timeMax: Date; maxPages: number; details: boolean },
+    signal?: AbortSignal,
+  ): Promise<GcalSyncResult>;
   /**
    * Create the event under OUR id, or — when that id already exists (409) —
    * overwrite it. Idempotent, so two racing pushes can never duplicate.

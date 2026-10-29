@@ -38,7 +38,7 @@ export interface GoogleBusyInterval {
 export const GOOGLE_BUSY_TIMEOUT_MS = 3_000;
 
 /** An instant from Google's `dateTime`, or the start of an all-day `date` in the calendar's zone. */
-function instant(t: GcalEventTime | undefined, calendarTz: string): Date | null {
+export function instant(t: GcalEventTime | undefined, calendarTz: string): Date | null {
   if (t?.dateTime) {
     const d = new Date(t.dateTime);
     return Number.isNaN(d.getTime()) ? null : d;
@@ -48,8 +48,8 @@ function instant(t: GcalEventTime | undefined, calendarTz: string): Date | null 
   return utcFromWallClock(Number(m[1]), Number(m[2]), Number(m[3]), 0, t?.timeZone ?? calendarTz);
 }
 
-/** True when the event actually occupies the member's time. */
-function isBusy(e: GcalEvent): boolean {
+/** True when the event actually occupies the member's time (the calendar import uses the same rule). */
+export function isBusy(e: GcalEvent): boolean {
   if (e.status === "cancelled") return false;
   if (e.transparency === "transparent") return false;
   // Our own bookings are already busy in Firestore; counting their Google
