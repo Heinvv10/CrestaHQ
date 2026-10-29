@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import sharp from "sharp";
+import sharp, { type Metadata, type Sharp } from "sharp";
 import { crc32, deflateSync } from "node:zlib";
 
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
@@ -386,8 +386,8 @@ describe("validateLogo — full decode with sharp", () => {
     ["other dimensions", { width: 65 }],
   ])("refuses when the decoder reports %s than the structure stated", async (_label, over) => {
     const real = sharp.prototype.metadata;
-    const spy = vi.spyOn(sharp.prototype, "metadata").mockImplementationOnce(async function (this: sharp.Sharp) {
-      return { ...(await real.call(this)), ...over } as sharp.Metadata;
+    const spy = vi.spyOn(sharp.prototype, "metadata").mockImplementationOnce(async function (this: Sharp) {
+      return { ...(await real.call(this)), ...over } as Metadata;
     });
     expect(await validateLogo(b64(png), "image/png")).toBe("Logo data doesn't decode as a PNG image");
     spy.mockRestore();
