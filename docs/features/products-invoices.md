@@ -27,13 +27,30 @@ A reusable product catalog plus an Invoice document type that shares the Quotes 
 
 **Orders needing attention.** When a card payment arrives but cannot settle what it paid for (invoice already paid, total changed, booking no longer waiting), the reconciler writes `order.attention` and sets `attentionOpen: true`. Reports → Payments lists open ones at the top for sub-account admins and the agency owner (collaborators don't see it), with **Mark resolved** (`GET/POST /api/sub-accounts/[id]/order-attention`), which sets `attentionOpen: false` + `attentionResolvedAt/ByUid/ByEmail` on the order; the orders table then shows the note as resolved. One flag per order + source, whatever the note's wording, so a redelivery neither re-emails nor reopens it. The sub-account's admins get one email per flag. Orders flagged before this shipped have no `attentionOpen` and are not listed. Details: [client-billing.md → Flagged payments](client-billing.md#flagged-payments-attention).
 
+## Sell online (upstream 1.0.54 F1 — model + editor only, NOT runtime-verified)
+
+A product can be put on sale with its own buy link (`/co/[sa]/buy/[slug]`). **F1 ships only the data model, the server validation and the editor**: the public buy pages and payment sessions land in F2/F3, so a buy link shown in the editor 404s until then. Gated by `sellOnlineEnabledByAgency` (default off, [feature-gates.md](../architecture/feature-gates.md)); while off the Products dialog shows no Sell online block and the request is unchanged. NOT runtime-verified: no tenant has the gate on and nothing can be bought yet.
+
+- **Fields** (optional on `products/{id}`, absent = catalog-only): `sellOnline`, `slug`, `publicDescription`, `checkoutPageId` (a published checkout page selling this product, for the Buy button), `delivery` (`none` / `community` group+course / `download` link), `publicVersion` (bumped on public-facing edits and archive).
+- **Validation** (`lib/server/products-sell-online-service.ts`, used by `POST …/products`, `PATCH …/products/[productId]` and the agent `update_product`):
+  - Gate off: changing any sell-online field answers 403 `{ code: "gate_off" }`, except taking a product off sale (`sellOnline: false` alone), which is always allowed. Unchanged values round-tripped by the UI are a no-op 200.
+  - Slug: lowercase kebab, 2–60 characters, not `api`/`new`/`thanks`/`preview`/`buy`; 409 when another product **or a checkout page** in the same sub-account uses it. Minted from the name on first sale, skipping both. Uniqueness is a query, not a claim doc, so two simultaneous saves can still collide.
+  - While a product is (or becomes) for sale: price a whole number of cents above 0 and at most 100,000,000; currency one of `SELL_ONLINE_CURRENCIES` (the quote builder's list, incl. ZAR). Catalog-only products keep the old rules (price 0 allowed, any currency).
+  - Turning it on, or changing an on-sale product's currency, needs a rail: `chooseProductPayRail(sub, currency)` (`lib/server/product-pay-rail.ts`, pure, also used by the editor). Stripe when Payments is on, `stripeConnectionMeta.ready` and Stripe can price the currency; else Paystack when Payments is on, a connection exists and the currency is ZAR. Both ready → Stripe (same order as invoices). Refusal: 400 `{ code: "no_pay_rail" }` with the reason.
+  - Download links: public https only (no IP literal, localhost, userinfo or quote characters). Community/course and checkout page ids pass `isDocId`; the group must exist with Community on, the checkout page must be published and sell this product.
+  - The PATCH validates and writes in one transaction against the product as it is at commit.
+- **Snapshots** copy products catalog-only: the sell-online fields stay behind.
+- **Checkout pages** created from a product skip reserved slugs.
+- `listSellableProducts` (`lib/server/products-catalog-service.ts`) is the public catalog builder for F2/F6: on sale, valid price, and a rail for the currency right now.
+
 ## Key files
 
 - Types: [src/types/products.ts](../../src/types/products.ts), [src/types/quotes.ts](../../src/types/quotes.ts) (extended), `PayPalConfig` in [src/types/tenancy.ts](../../src/types/tenancy.ts)
 - PayPal helper: [src/lib/paypal/payment-link.ts](../../src/lib/paypal/payment-link.ts) — `buildPaypalInvoiceUrl({ paypal, invoice })`, pure URL builder, no API call
 - Settings UI: [src/components/settings/sub-account-paypal-section.tsx](../../src/components/settings/sub-account-paypal-section.tsx) (active), [src/components/settings/sub-account-stripe-section.tsx](../../src/components/settings/sub-account-stripe-section.tsx) (Payments v1 connect card — replaced the coming-soon placeholder; self-gates on `paymentsEnabledByAgency`)
 - API: [src/app/api/sub-accounts/[id]/paypal-integration/route.ts](../../src/app/api/sub-accounts/[id]/paypal-integration/route.ts)
-- Products UI: [src/app/(dashboard)/sa/[subAccountId]/products/page.tsx](../../src/app/(dashboard)/sa/[subAccountId]/products/page.tsx)
+- Products UI: [src/app/(dashboard)/sa/[subAccountId]/products/page.tsx](../../src/app/(dashboard)/sa/[subAccountId]/products/page.tsx), Sell online block [src/components/products/product-sell-online-panel.tsx](../../src/components/products/product-sell-online-panel.tsx)
+- Sell online: [src/lib/products/sell-online.ts](../../src/lib/products/sell-online.ts) (client-safe rules), [src/lib/server/products-sell-online-service.ts](../../src/lib/server/products-sell-online-service.ts), [src/lib/server/product-pay-rail.ts](../../src/lib/server/product-pay-rail.ts)
 - Convert route: [src/app/api/sub-accounts/[id]/quotes/[quoteId]/convert-to-invoice/route.ts](../../src/app/api/sub-accounts/[id]/quotes/[quoteId]/convert-to-invoice/route.ts)
 
 ## What's intentionally NOT in v1

@@ -114,6 +114,15 @@ describe("products", () => {
     expect(mem.read("products/pr2")!.unitPriceCents).toBe(1);
   });
 
+  it("a product sold online keeps the sell-online price rules: price 0 refused, nothing written", async () => {
+    const online = { ...PRODUCT, name: "Online", sellOnline: true, slug: "online" };
+    mem.seed("products/pr2", online);
+    expect(await call("update_product", { productId: "pr2", unitPriceCents: 0 })).toMatchObject({
+      ok: false, message: "Set a price above zero before selling online.",
+    });
+    expect(mem.read("products/pr2")).toEqual(online);
+  });
+
   it("a checkout page starting to sell it between the check and the direct write → refused, nothing written", async () => {
     beforeNextTransaction(async () => page({ productId: "pr1" }));
     expect(await call("update_product", { productId: "pr1", unitPriceCents: 1 })).toMatchObject({

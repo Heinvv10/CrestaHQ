@@ -7,7 +7,12 @@ import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { sanitizeProductPayload } from "@/lib/products/sanitize";
 import { createProduct } from "@/lib/products/write";
 import { productSellers, productUsage } from "@/lib/products/usage";
+import {
+  SellOnlineError,
+  prepareSellOnlineUpdate,
+} from "@/lib/server/products-sell-online-service";
 import type { Product } from "@/types/products";
+import type { SubAccountDoc } from "@/types/tenancy";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, fmtMoney, str } from "./helpers";
 import { hasUnsafeText, lookAlikeProblem, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
@@ -201,9 +206,23 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
       if (typeof fields.name === "string") await assertNameDistinct(ctx.subAccountId!, fields.name, p.id);
       const db = getAdminDb();
       const ref = db.doc(`products/${p.id}`);
+      const sub = ((await db.doc(`subAccounts/${ctx.subAccountId}`).get()).data() ?? {}) as Partial<SubAccountDoc>;
       await db.runTransaction(async (tx) => {
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That product isn't in this workspace.");
+        // A product sold online keeps a valid price and a rail for its
+        // currency, as the products route enforces (no sell-online keys here).
+        const sell = await prepareSellOnlineUpdate({
+          db,
+          subAccountId: ctx.subAccountId!,
+          sub,
+          productId: p.id,
+          existing: current as Partial<Product>,
+          baseUpdates: fields as Partial<Product>,
+          body: {},
+        }).catch((err: unknown) => {
+          throw err instanceof SellOnlineError ? new CapabilityUserError(err.message) : err;
+        });
         if (ctx.approved) {
           if (JSON.stringify(valuesOf(current, fields)) !== JSON.stringify(ctx.approved.pinned?.before)) {
             throw new CapabilityUserError("The product changed since this was reviewed; nothing was changed.");
@@ -211,7 +230,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
         } else if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
           throw new CapabilityUserError("A checkout page or funnel now sells this product, so this change needs approval: send it again.");
         }
-        tx.update(ref, { ...fields, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_product")) });
+        tx.update(ref, { ...fields, ...sell, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_product")) });
       });
       return { resultText: "Updated the product.", ref: { kind: "product", id: p.id } };
     },
