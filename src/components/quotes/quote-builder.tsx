@@ -219,7 +219,7 @@ export function QuoteBuilder({
   );
   const [dealId, setDealId] = useState<string | null>(initial?.dealId ?? null);
   const [requireSignature, setRequireSignature] = useState<boolean>(
-    initial ? initial.requireSignature === true : true,
+    initial?.requireSignature === true,
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

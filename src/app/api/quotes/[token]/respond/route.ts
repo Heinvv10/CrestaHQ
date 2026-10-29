@@ -114,6 +114,13 @@ export async function POST(
   // transaction. Whether they are required is only known once the quote is read.
   const signerName = normalizeSignerName(payload.signerName);
   const agreed = payload.agreedToTerms === true;
+  // The fingerprint of what the signer's page rendered, checked against the
+  // quote as read in the transaction: an edit after the page loaded must not
+  // be signed for content the signer never saw.
+  const seenHash =
+    typeof payload.documentHash === "string" && /^[0-9a-f]{64}$/.test(payload.documentHash)
+      ? payload.documentHash
+      : null;
   // The same right-most-hop rule every per-IP limiter uses: the left of
   // X-Forwarded-For is whatever the caller sent.
   const ip = clientIpFrom(request);
@@ -210,9 +217,22 @@ export async function POST(
               status: 400,
             } as const;
           }
+          if (!seenHash) {
+            return {
+              error: "This page is out of date — refresh it and sign again.",
+              status: 400,
+            } as const;
+          }
           // Hash the quote as read in this transaction, so the fingerprint is
-          // of the exact content being accepted.
+          // of the exact content being accepted — and that content must be
+          // what the signer's page showed.
           const documentHash = await computeQuoteDocumentHash(quote);
+          if (documentHash !== seenHash) {
+            return {
+              error: "This quote changed — refresh to see the latest version.",
+              status: 409,
+            } as const;
+          }
           const signature: QuoteSignature = {
             signerName,
             signedAsNumber: quote.quoteNumber,

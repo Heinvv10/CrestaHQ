@@ -75,7 +75,11 @@ const respond = (body: unknown, headers: Record<string, string> = {}, t = token)
     { params: Promise.resolve({ token: t }) },
   );
 
-const SIGN = { action: "accept", signerName: "  Jane   Doe ", agreedToTerms: true };
+// What the signer's page computes from the content it rendered.
+const SEEN = await computeQuoteDocumentHash(QUOTE as never);
+const SIGN = { action: "accept", signerName: "  Jane   Doe ", agreedToTerms: true, documentHash: SEEN };
+const NAME_ERR = "Type your full name to sign (2–120 characters).";
+const STALE_PAGE = "This page is out of date — refresh it and sign again.";
 const quote = () => mem.read("quotes/q1")!;
 
 beforeAll(() => {
@@ -89,13 +93,17 @@ beforeEach(() => {
 
 describe("a quote that requires a signature", () => {
   it.each([
-    ["no name", { action: "accept", agreedToTerms: true }, "Type your full name to sign (2–120 characters)."],
-    ["a one-letter name", { action: "accept", signerName: "J", agreedToTerms: true }, "Type your full name to sign (2–120 characters)."],
-    ["a 121-character name", { action: "accept", signerName: "a".repeat(121), agreedToTerms: true }, "Type your full name to sign (2–120 characters)."],
-    ["a name with a bidi override", { action: "accept", signerName: "Jane ‮eoD", agreedToTerms: true }, "Type your full name to sign (2–120 characters)."],
-    ["a name that isn't a string", { action: "accept", signerName: ["Jane Doe"], agreedToTerms: true }, "Type your full name to sign (2–120 characters)."],
-    ["no terms agreement", { action: "accept", signerName: "Jane Doe" }, "Tick the box to confirm you agree to the terms."],
-    ["agreement that isn't exactly true", { action: "accept", signerName: "Jane Doe", agreedToTerms: "true" }, "Tick the box to confirm you agree to the terms."],
+    ["no name", { ...SIGN, signerName: undefined }, NAME_ERR],
+    ["a one-letter name", { ...SIGN, signerName: "J" }, NAME_ERR],
+    ["a 121-character name", { ...SIGN, signerName: "a".repeat(121) }, NAME_ERR],
+    ["a name with a bidi override", { ...SIGN, signerName: "Jane \u202eeoD" }, NAME_ERR],
+    ["a name that isn't a string", { ...SIGN, signerName: ["Jane Doe"] }, NAME_ERR],
+    ["no terms agreement", { ...SIGN, agreedToTerms: undefined }, "Tick the box to confirm you agree to the terms."],
+    ["agreement that isn't exactly true", { ...SIGN, agreedToTerms: "true" }, "Tick the box to confirm you agree to the terms."],
+    ["no document fingerprint", { ...SIGN, documentHash: undefined }, STALE_PAGE],
+    ["an upper-case fingerprint", { ...SIGN, documentHash: SEEN.toUpperCase() }, STALE_PAGE],
+    ["a short fingerprint", { ...SIGN, documentHash: SEEN.slice(1) }, STALE_PAGE],
+    ["a fingerprint that isn't a string", { ...SIGN, documentHash: [SEEN] }, STALE_PAGE],
   ])("%s -> 400, nothing written, no follow-ups", async (_label, body, error) => {
     seed();
     const before = quote();
@@ -144,6 +152,28 @@ describe("a quote that requires a signature", () => {
     );
     expect(lifecycle.fireQuoteTrigger).toHaveBeenCalledWith(expect.objectContaining({ id: "q1" }), "quote_accepted");
     expect(lifecycle.applyDealOutcomeForAcceptedQuote).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["a line's price", { lineItems: [{ ...QUOTE.lineItems[0], unitPrice: 1400 }] }],
+    ["the terms", { termsAndNotes: "Full payment up front." }],
+    ["the validity", { validUntil: Timestamp.fromMillis(Date.now() + 30 * 86_400_000) }],
+  ])("%s edited after the signer's page loaded -> 409, nothing written, no follow-ups", async (_label, edit) => {
+    seed(edit);
+    const before = quote();
+    const res = await respond(SIGN);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "This quote changed — refresh to see the latest version." });
+    expect(quote()).toEqual(before);
+    await flushAfterResponse();
+    expect(lifecycle.recordQuoteActivity).not.toHaveBeenCalled();
+    expect(lifecycle.applyDealOutcomeForAcceptedQuote).not.toHaveBeenCalled();
+  });
+
+  it("the fingerprint the page sends is the one stored", async () => {
+    seed();
+    expect((await respond(SIGN)).status).toBe(200);
+    expect((quote().signature as { documentHash: string }).documentHash).toBe(SEEN);
   });
 
   it("caps the stored user agent at 500 characters", async () => {

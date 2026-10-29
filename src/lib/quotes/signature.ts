@@ -25,8 +25,10 @@ type HashInput = Pick<
   | "termsAndNotes"
   | "billedToOrganization"
   | "billingAddress"
-  | "validUntil"
->;
+> & {
+  /** Any representation: the server holds a Timestamp, the public page epoch ms. */
+  validUntil: unknown;
+};
 
 /** Stable JSON: object keys sorted at every level, arrays kept in order. */
 function canonicalize(value: unknown): string {

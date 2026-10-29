@@ -12,7 +12,10 @@ import { runId } from "../lib/run-id";
  * the real server: a quote that requires a signature can't be accepted until
  * the visitor types their name and ticks the terms box; the accept writes the
  * signature (name, fingerprint) with it; a reload shows who signed; and a
- * replayed accept is refused with the first signature untouched.
+ * replayed accept is refused with the first signature untouched. The page's
+ * own fingerprint (computed in the browser from what it rendered) must match
+ * the server's: an edit after the page loaded is refused, and once reloaded
+ * the new content signs.
  *
  * The quote is this run's own, on the fixture PRIMARY, written directly with
  * its token (nothing is emailed). The token is signed as
@@ -138,7 +141,22 @@ test("a quote that requires a signature is signed by typed name, then refuses a 
     const agree = page.getByRole("checkbox");
     await agree.click();
     await expect(agree).toBeChecked();
+
+    // The business edits the terms after this page loaded: the signature
+    // would be for terms the signer never saw, so it is refused.
+    await quoteRef().update({ termsAndNotes: "Full payment on acceptance.", updatedAt: FieldValue.serverTimestamp() });
     await accept.click();
+    await expect(page.getByText("This quote changed — refresh to see the latest version.")).toBeVisible({ timeout: 30_000 });
+    expect((await quoteRef().get()).data()).toMatchObject({ status: "viewed", signature: null });
+
+    // Reloaded, the page shows (and fingerprints) the new terms, and signs.
+    await page.reload();
+    await expect(page.getByText("Full payment on acceptance.")).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Sign & accept" }).click();
+    await page.getByLabel("Your full name").fill(`  E2E   Signer ${stamp} `);
+    await page.getByRole("checkbox").click();
+    await expect(page.getByRole("checkbox")).toBeChecked();
+    await page.getByRole("button", { name: "Accept & sign" }).click();
     await expect(page.getByText("Quote accepted — thank you!")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(/^Signed by/)).toContainText(`E2E Signer ${stamp}`);
 

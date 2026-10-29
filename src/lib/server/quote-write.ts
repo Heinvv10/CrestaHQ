@@ -96,7 +96,7 @@ export async function createQuote(opts: {
     territoryId: (contact.territoryId as string | null | undefined) ?? GLOBAL_TERRITORY_ID,
     ...sanitized,
     dealId,
-    requireSignature: kind === "quote" ? body.requireSignature !== false : false,
+    requireSignature: kind === "quote" && body.requireSignature === true,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };

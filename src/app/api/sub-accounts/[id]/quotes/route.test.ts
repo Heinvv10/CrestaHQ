@@ -28,9 +28,9 @@ describe("POST /quotes", () => {
   });
 
   it.each([
-    ["a quote by default", { kind: "quote" }, true],
-    ["a quote with the toggle off", { kind: "quote", requireSignature: false }, false],
-    ["a quote with a non-boolean toggle", { kind: "quote", requireSignature: "no" }, true],
+    ["a quote by default (opt-in)", { kind: "quote" }, false],
+    ["a quote with the toggle on", { kind: "quote", requireSignature: true }, true],
+    ["a quote with a truthy non-boolean toggle", { kind: "quote", requireSignature: "yes" }, false],
     ["an invoice, even asked to", { kind: "invoice", requireSignature: true }, false],
   ])("requireSignature: %s -> %s, and never a signature", async (_label, over, expected) => {
     const res = await post({ contactId: "c1", lineItems: [LINE], ...over });

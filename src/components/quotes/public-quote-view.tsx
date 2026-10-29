@@ -28,6 +28,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { computeQuoteTotals } from "@/lib/quotes/calc";
 import { formatCurrency } from "@/lib/format";
+import { computeQuoteDocumentHash } from "@/lib/quotes/signature";
 import { cn } from "@/lib/utils";
 import {
   DECLINE_REASONS,
@@ -145,7 +146,7 @@ export function PublicQuoteView({
     }
   };
 
-  const handleAccept = () => {
+  const handleAccept = async () => {
     if (!requireSignature) {
       void handleRespond({ action: "accept" });
       return;
@@ -163,7 +164,16 @@ export function PublicQuoteView({
       setError("Tick the box to confirm you agree to the terms.");
       return;
     }
-    void handleRespond({ action: "accept", signerName: name, agreedToTerms: true });
+    let documentHash: string;
+    try {
+      // Of the content this page rendered: the server refuses the signature
+      // if the quote has changed since.
+      documentHash = await computeQuoteDocumentHash(quote);
+    } catch {
+      setError("This browser can't sign here — try another browser, or ask the sender.");
+      return;
+    }
+    void handleRespond({ action: "accept", signerName: name, agreedToTerms: true, documentHash });
   };
 
   /**
@@ -498,7 +508,7 @@ export function PublicQuoteView({
                   </Button>
                   <Button
                     type="button"
-                    onClick={handleAccept}
+                    onClick={() => void handleAccept()}
                     disabled={busy !== null}
                   >
                     {busy === "accept" ? (

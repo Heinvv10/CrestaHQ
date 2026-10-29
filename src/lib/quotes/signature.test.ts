@@ -127,9 +127,9 @@ describe("normalizeSignerName", () => {
     ["a non-string", 42],
     ["null", null],
     ["an object", { toString: () => "Jane Doe" }],
-    ["a right-to-left override", "Jane ‮eoD"],
+    ["a right-to-left override", "Jane \u202eeoD"],
     ["a NUL", "Jane\u0000Doe"],
-    ["a zero-width space", "Jane​Doe"],
+    ["a zero-width space", "Jane\u200bDoe"],
     ["a bell", "Jane\u0007Doe"],
   ])("refuses %s", (_label, raw) => {
     expect(normalizeSignerName(raw)).toBeNull();
@@ -138,6 +138,6 @@ describe("normalizeSignerName", () => {
   it("keeps names in other scripts, including a joiner inside a word", () => {
     expect(normalizeSignerName("Thandiwe Nkosi-Mbeki")).toBe("Thandiwe Nkosi-Mbeki");
     expect(normalizeSignerName("José Ñúñez")).toBe("José Ñúñez");
-    expect(normalizeSignerName("می‌روز")).toBe("می‌روز");
+    expect(normalizeSignerName("\u0645\u06cc\u200c\u0631\u0648\u0632")).toBe("\u0645\u06cc\u200c\u0631\u0648\u0632");
   });
 });

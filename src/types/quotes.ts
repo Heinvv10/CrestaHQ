@@ -190,9 +190,9 @@ export interface Quote {
   dealId?: string | null;
 
   /**
-   * Accepting requires a typed signature. New quotes default true; absent on
-   * older docs reads as false so outstanding links keep one-click accept.
-   * Ignored for invoices.
+   * Accepting requires a typed signature. Opt-in per quote (default false);
+   * absent on older docs reads as false, so outstanding links keep one-click
+   * accept. Ignored for invoices.
    */
   requireSignature?: boolean;
   /** Set on a signed accept. Carried onto the invoice on convert. */
@@ -270,7 +270,7 @@ export const DEFAULT_QUOTE: Omit<
   paymentDueDays: null,
   autoCreateDealOnAccept: true,
   dealId: null,
-  requireSignature: true,
+  requireSignature: false,
   signature: null,
   sentAt: null,
   viewedAt: null,
@@ -298,6 +298,9 @@ export interface QuoteRespondPayload {
   signerName?: string;
   /** Must be true for a signed accept. */
   agreedToTerms?: boolean;
+  /** Required for a signed accept: computeQuoteDocumentHash of the content
+   *  the page rendered, so the signature binds to what the signer saw. */
+  documentHash?: string;
 }
 
 /** See `Quote.paidVia`. */

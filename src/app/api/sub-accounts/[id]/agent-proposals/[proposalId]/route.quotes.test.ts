@@ -69,6 +69,14 @@ describe("create_quote / list_quotes / get_quote", () => {
     expect(mem.list("quotes")).toHaveLength(1);
   });
 
+  it("a drafted quote doesn't require a signature (opt-in, not an agent argument)", async () => {
+    // validate keeps only the declared fields, so an agent can't turn it on either.
+    for (const extra of [{}, { requireSignature: true }]) {
+      const r = await call("create_quote", { contactId: "c1", lineItems: [LINE], ...extra });
+      expect(mem.read(`quotes/${(r as { ref: { id: string } }).ref.id}`)).toMatchObject({ kind: "quote", requireSignature: false, signature: null });
+    }
+  });
+
   it("the multi-line terms keep their line breaks", async () => {
     const r = await call("create_quote", { contactId: "c1", lineItems: [LINE], termsAndNotes: "Line one\nLine two", dealId: "d1" });
     expect(mem.read(`quotes/${(r as { ref: { id: string } }).ref.id}`)).toMatchObject({ termsAndNotes: "Line one\nLine two", dealId: "d1" });
