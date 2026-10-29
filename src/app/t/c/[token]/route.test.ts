@@ -59,12 +59,41 @@ describe("GET /t/c/[token]", () => {
     }
     expect(row()).toMatchObject({ clicks: 3 });
     expect(row().clickedAt).toBeTruthy();
-    // A click proves an open even when the pixel was blocked.
-    expect(row().openedAt).toBeTruthy();
-    expect(mem.read("broadcasts/b1")!.totals).toEqual({ clicked: 1, opened: 1 });
+    // Open tracking is off here, so the click records no open.
+    expect(row().openedAt).toBeUndefined();
+    expect(mem.read("broadcasts/b1")!.totals).toEqual({ clicked: 1 });
     const acts = mem.list("contacts/c1/activities");
     expect(acts).toHaveLength(1);
-    expect(acts[0]).toMatchObject({ type: "email_clicked", meta: { broadcastId: "b1", link: DEST } });
+    // Origin + path only: the query (and any fragment) never reaches the timeline.
+    expect(acts[0]).toMatchObject({
+      type: "email_clicked",
+      content: "Clicked https://shop.example/x in bulk email: News",
+      meta: { broadcastId: "b1", link: "https://shop.example/x" },
+    });
+    expect(JSON.stringify(acts[0])).not.toContain("a=1");
+  });
+
+  it("with open tracking on too, a click with no open yet also counts the open", async () => {
+    seed({ opens: true, clicks: true });
+    await click(issueClickToken("b1", "c1", "k1"));
+    expect(row().openedAt).toBeTruthy();
+    expect(mem.read("broadcasts/b1")!.totals).toEqual({ clicked: 1, opened: 1 });
+  });
+
+  it("drops the fragment from the timeline link as well", async () => {
+    mem.seed("broadcasts/b1/links/k1", { url: "https://shop.example/p#token=secret" });
+    await click(issueClickToken("b1", "c1", "k1"));
+    expect(mem.list("contacts/c1/activities")[0]!.meta).toEqual({
+      broadcastId: "b1",
+      link: "https://shop.example/p",
+    });
+  });
+
+  it("writes no activity on a contact that now belongs to another sub-account", async () => {
+    mem.seed("contacts/c1", { agencyId: "ag2", subAccountId: "sa2", name: "Moved" });
+    await click(issueClickToken("b1", "c1", "k1"));
+    expect(row().clickedAt).toBeTruthy();
+    expect(mem.list("contacts/c1/activities")).toHaveLength(0);
   });
 
   it("takes the destination from the stored doc only — never from the query string", async () => {

@@ -12,14 +12,19 @@ import type { BroadcastSendDoc, SubAccountDoc } from "@/types";
  * measured it:
  *   - first open  → `openedAt`, `totals.opened` +1; every open → `opens` +1
  *   - first click → `clickedAt`, `totals.clicked` +1; every click → `clicks` +1.
- *     A click with no open yet also stamps `openedAt` (the pixel was blocked).
+ *     A click with no open yet also stamps `openedAt` (the pixel was blocked)
+ *     — only while open tracking is on too: opens off means no open is
+ *     recorded, by the pixel or by a click.
  * The "first" decision and the totals move in one transaction, so a burst of
  * opens counts the recipient once. Per-row counters stop at
  * ENGAGEMENT_COUNT_CAP — a replayed token can't grow them without bound.
  *
  * Nothing is written unless the row was sent and the sub-account still has
  * that kind of tracking on: switching it off stops collection for emails
- * already out.
+ * already out. The step has no persisted "provider accepted" state between
+ * the SMTP accept and the settle that marks the row `sent`, so an open or
+ * click in that gap (normally under a second), or on a row later failed as
+ * "delivery unknown", is not recorded.
  *
  * On the first occurrence only, an `email_opened` / `email_clicked` activity
  * lands on the contact. No workflow trigger fires here (I3 adds those).
@@ -69,7 +74,7 @@ export async function recordBroadcastEngagement(input: {
     }
 
     const first = !send.clickedAt;
-    const impliedOpen = !send.openedAt;
+    const impliedOpen = !send.openedAt && sub.emailTracking?.opens === true;
     const room = (send.clicks ?? 0) < ENGAGEMENT_COUNT_CAP;
     if (!first && !room) return { first: false, send };
     tx.update(sendRef, {
@@ -100,7 +105,7 @@ async function writeActivity(
     // A deleted (or moved) contact gets no orphan activity subcollection.
     if (contactSnap.data()?.subAccountId !== send.subAccountId) return;
     const templateName = (broadcastSnap.data()?.templateName as string | undefined) ?? "broadcast";
-    const link = (input.link ?? "").slice(0, 500);
+    const link = linkWithoutQuery(input.link);
     await contactRef.collection("activities").add({
       type: input.kind === "opened" ? "email_opened" : "email_clicked",
       content:
@@ -120,5 +125,19 @@ async function writeActivity(
       input.contactId,
       err instanceof Error ? err.message : String(err),
     );
+  }
+}
+
+/**
+ * Origin + path of the clicked link, for the timeline. The query and
+ * fragment are dropped: they often carry tokens or personal data.
+ */
+function linkWithoutQuery(link: string | undefined): string {
+  if (!link) return "";
+  try {
+    const url = new URL(link);
+    return `${url.origin}${url.pathname}`.slice(0, 500);
+  } catch {
+    return "";
   }
 }

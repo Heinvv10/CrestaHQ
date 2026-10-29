@@ -69,8 +69,12 @@ reports no engagement, so the app measures it itself.
   Middleware opens exactly `/t/o/{one segment}` and `/t/c/{one segment}`.
 - **Data.** Upstream's send-row fields (`openedAt`, `clickedAt`, `opens`, `clicks`; parent
   `totals.opened` / `totals.clicked`), first occurrence decided in one transaction, counters capped
-  at 100. First open / click writes an `email_opened` / `email_clicked` activity. A click with no
-  open stamps the open too, as upstream does.
+  at 100. First open / click writes an `email_opened` / `email_clicked` activity; its link is origin
+  + path only (no query or fragment, which often carry tokens). A click with no open stamps the open
+  too, as upstream does — but only while open tracking is on.
+- **Known gap.** The step persists no "provider accepted" state between the SMTP accept and the
+  settle that marks the row `sent`. An open or click in that window (normally under a second), or on
+  a row later failed as "delivery unknown" after a stale claim, is not recorded.
 - **Not in PR2:** the stats display and `email.opened` / `email.clicked` workflow triggers (unit
   I3), and Resend's own events webhook (unit I2).
 
