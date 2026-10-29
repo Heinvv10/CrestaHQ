@@ -30,6 +30,7 @@ import { SubAccountWhatsappSendersSection } from "@/components/settings/sub-acco
 import { SubAccountWhatsappBridgeSection } from "@/components/settings/sub-account-whatsapp-bridge-section";
 import { SubAccountMailboxSection } from "@/components/settings/sub-account-mailbox-section";
 import { SubAccountEmailSuppressionSection } from "@/components/settings/sub-account-email-suppression-section";
+import { SubAccountEmailTrackingSection } from "@/components/settings/sub-account-email-tracking-section";
 import { SubAccountSmtpSection } from "@/components/settings/sub-account-smtp-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
@@ -355,6 +356,7 @@ export default function SettingsPage() {
           <SubAccountSmtpSection />
           <SubAccountMailboxSection />
           <SubAccountEmailSuppressionSection />
+          <SubAccountEmailTrackingSection />
           <SubAccountEmailDomainSection />
 
           {/* Google reviews — SMS / WhatsApp review-request sends. */}

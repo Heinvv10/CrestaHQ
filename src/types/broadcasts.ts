@@ -52,6 +52,10 @@ export interface BroadcastTotals {
   skipped: number;
   /** Recipients where the Resend API call returned an error. */
   failed: number;
+  // Engagement (our own pixel / click redirect, lib/broadcasts/engagement.ts);
+  // absent on older docs = 0. Each counts recipients once, not events.
+  opened?: number;
+  clicked?: number;
 }
 
 export interface BroadcastDoc {
@@ -143,4 +147,24 @@ export interface BroadcastSendDoc {
   claimedAt?: Timestamp | FieldValue | null;
   /** Token of the claim holder; only that holder's settle lands. */
   claimId?: string;
+  // Engagement, absent until it happens (lib/broadcasts/engagement.ts).
+  /** First open — an estimate: privacy proxies preload images. */
+  openedAt?: Timestamp | FieldValue | null;
+  /** First click. */
+  clickedAt?: Timestamp | FieldValue | null;
+  /** Capped at ENGAGEMENT_COUNT_CAP. */
+  opens?: number;
+  clicks?: number;
+}
+
+/**
+ * `broadcasts/{broadcastId}/links/{linkKey}` — a click-tracked destination,
+ * written by the send step before the email goes out. The `/t/c/` redirect
+ * reads only this. `linkKey` is a hash of `url`. Server-only.
+ */
+export interface BroadcastLinkDoc {
+  url: string;
+  agencyId: string;
+  subAccountId: string;
+  createdAt: Timestamp | FieldValue | null;
 }
