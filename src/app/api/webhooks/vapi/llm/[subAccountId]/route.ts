@@ -13,8 +13,13 @@ import {
   getVoiceBookingContext,
   listVoiceSlots,
 } from "@/lib/server/voice-booking-service";
-import { hostSelectionEnabled } from "@/lib/booking/page-slots";
-import type { BookingHost, BookingPage } from "@/types/booking";
+import {
+  buildBookingToolsBlock,
+  hostSelectionOn,
+  invalidHostResult,
+  resolveRequestedHost,
+} from "@/lib/comms/ai/booking-tools";
+import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 import { isDocId } from "@/lib/server/doc-id";
@@ -267,7 +272,7 @@ export async function POST(
       );
       if (bctx?.bookable) {
         bookingPage = bctx.page;
-        systemPrompt += `\n\n${buildBookingToolsBlock(bctx.page)}`;
+        systemPrompt += `\n\n${buildBookingToolsBlock(bctx.page, "phone")}`;
       } else if (bctx) {
         console.warn(
           `[vapi/llm] booking page "${slugCfg}" not bookable (${bctx.reason}) sa=${subAccountId} — falling back to link behavior`,
@@ -396,87 +401,8 @@ export async function POST(
 const SLOTS_MARKER_RE = /\[\[\s*slots\b([^\]]*)\]\]/i;
 const BOOK_MARKER_RE = /\[\[\s*book\b([^\]]*)\]\]/i;
 
-/** Phrases the caller might use for "no preference" — treated as pooled
- *  (first-available), never a host name to resolve. */
-const ANY_HOST_PHRASES = new Set([
-  "anyone",
-  "any",
-  "anybody",
-  "anyone available",
-  "first available",
-  "no preference",
-  "whoever",
-  "whoever's available",
-  "whoever is available",
-  "doesn't matter",
-]);
-
 function parseHostAttr(attrs: string): string {
   return /host\s*=\s*"([^"]*)"/i.exec(attrs)?.[1]?.trim() ?? "";
-}
-
-/**
- * Resolve a spoken host name to a page host, case-insensitively: exact
- * display-name match first, then a UNIQUE "starts with" match (so "Jane"
- * resolves "Jane Smith"). Ambiguous or unknown ⇒ null. Never throws.
- */
-function resolveHostByName(page: BookingPage, spoken: string): BookingHost | null {
-  const hosts = page.hosts ?? [];
-  const q = spoken.trim().toLowerCase();
-  if (!q) return null;
-  const exact = hosts.find((h) => h.name.trim().toLowerCase() === q);
-  if (exact) return exact;
-  const starts = hosts.filter((h) =>
-    h.name.trim().toLowerCase().startsWith(q),
-  );
-  return starts.length === 1 ? starts[0] : null;
-}
-
-/**
- * Resolve a requested host from a marker's attrs. Returns the uid to book/
- * narrow against (null = pooled / anyone), plus an `invalid` flag when a
- * name was given but doesn't resolve — the caller treats that as its own
- * distinct outcome (NOT a scheduling conflict), mirroring how a bad
- * slot-copy is kept separate from a real conflict.
- */
-function resolveRequestedHost(
-  page: BookingPage,
-  attrs: string,
-): { hostUid: string | null; invalid: boolean } {
-  const spoken = parseHostAttr(attrs);
-  if (!spoken) return { hostUid: null, invalid: false };
-  if (ANY_HOST_PHRASES.has(spoken.toLowerCase())) {
-    return { hostUid: null, invalid: false };
-  }
-  const host = resolveHostByName(page, spoken);
-  return host
-    ? { hostUid: host.uid, invalid: false }
-    : { hostUid: null, invalid: true };
-}
-
-function invalidHostResult(page: BookingPage): string {
-  const names = (page.hosts ?? []).map((h) => h.name).join(", ");
-  return `[SYSTEM TOOL RESULT — not the caller speaking] That name isn't one of our team members — this is NOT a scheduling conflict and NOT a booking error. Our team members are: ${names}. Ask the caller which of them they'd like (or offer "anyone available"), then re-emit the marker with host="<exact name>" — or omit host for anyone.`;
-}
-
-/** True when this page exposes named-host selection to the caller. */
-function hostSelectionOn(page: BookingPage): boolean {
-  return hostSelectionEnabled(page);
-}
-
-function buildBookingToolsBlock(page: BookingPage): string {
-  const hostBlock = hostSelectionOn(page)
-    ? `
-HOST SELECTION: This business lets the caller book with a specific team member. Our team: ${(page.hosts ?? []).map((h) => h.name).join(", ")}. EARLY in the booking — before offering times — ask the caller which team member they'd like, or whether anyone available is fine. Pass their choice as host="<team member's name>" in BOTH markers: [[slots host="<name>"]] and [[book start="…" name="…" host="<name>"]]. If the caller has no preference, OMIT the host attribute (or use host="anyone") and the system picks the least-busy person. Only offer the times the system returns for the chosen person.`
-    : "";
-  return `--- LIVE BOOKING TOOLS ---
-You can book real appointments for the caller on the business's "${page.name}" calendar (${page.durationMinutes}-minute slots, times in ${page.timezone}). This SUPERSEDES the earlier booking guidance: book directly during this call instead of promising a texted link — only fall back to the link if no offered time suits the caller.
-Markers (the system intercepts them; the caller never hears them):
-1. When the caller wants to book, schedule, or pick a time, respond with EXACTLY [[slots]] and nothing else. The system hands you the available times.
-2. Offer AT MOST 3 of those times conversationally (day + time, e.g. "Tuesday at ten a.m."). Ask which works.
-3. When the caller chooses a time AND you know their first name (ask for it first if you don't), respond with EXACTLY [[book start="<the exact start value of the chosen slot>" name="<caller's first name>"]] and nothing else.
-4. The system reports the result; confirm to the caller in one short sentence.${hostBlock}
-Rules: never invent or confirm a time that didn't come from [[slots]]. COPY the start value character-for-character from the [[slots]] result — never retype, reformat, shorten, or reconstruct a timestamp from the day/time you spoke aloud. Never read raw start values or dates in ISO format aloud. If the system says a time was just taken, apologise and offer the alternatives it provides.`;
 }
 
 /**
@@ -531,10 +457,10 @@ async function runBookingToolIfRequested(input: {
     // outcome, not a name/slot problem.
     let hostUid: string | null = null;
     if (allowHostSelection) {
-      const r = resolveRequestedHost(page, attrs);
+      const r = resolveRequestedHost(page, parseHostAttr(attrs));
       if (r.invalid) {
         runAfterResponse(() => stampBookingAttempt(subAccountId, input.callId));
-        return invalidHostResult(page);
+        return invalidHostResult(page, "phone");
       }
       hostUid = r.hostUid;
     }
@@ -612,10 +538,10 @@ async function runBookingToolIfRequested(input: {
     const attrs = slotsMatch[1] ?? "";
     let hostUid: string | null = null;
     if (allowHostSelection) {
-      const r = resolveRequestedHost(page, attrs);
+      const r = resolveRequestedHost(page, parseHostAttr(attrs));
       if (r.invalid) {
         runAfterResponse(() => stampBookingAttempt(subAccountId, input.callId));
-        return invalidHostResult(page);
+        return invalidHostResult(page, "phone");
       }
       hostUid = r.hostUid;
     }
