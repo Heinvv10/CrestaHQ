@@ -33,7 +33,7 @@ describe("isSafeFormRedirectUrl", () => {
 
 describe("isSafeFormRedirectTarget", () => {
   it("accepts same-origin relative paths and absolute http(s)", () => {
-    for (const ok of ["/thanks", "/thanks?a=1#x", "/", "https://example.com/t"]) {
+    for (const ok of ["/thanks", "/thanks?a=1#x", "/", "/@evil.com", "/%2f%2fevil.com", "/.%2e/x", "/?next=//x", "https://example.com/t"]) {
       expect(isSafeFormRedirectTarget(ok), ok).toBe(true);
     }
   });
