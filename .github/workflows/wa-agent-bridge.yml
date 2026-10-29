@@ -35,14 +35,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          # Bumped from 1.26.0 when govulncheck was added below: it reported
-          # eight STANDARD LIBRARY advisories with call paths this service
-          # actually reaches — net/http, crypto/tls, crypto/x509,
-          # net/textproto, net/url, encoding/asn1 — all fixed by 1.26.6. A
-          # vulnerability gate pinned to a toolchain that cannot pass it is
-          # not a gate. go.mod carries the same floor, for builds that never
-          # go through CI.
-          go-version: '1.26.6'
+          # Bumped from 1.26.6: govulncheck reported two called stdlib advisories
+          # — GO-2026-6617 (net/http HTTP/2 HPACK race, fixed 1.26.9) and
+          # GO-2026-6809 (crypto/x509 cert distrust, fixed 1.26.10). The floor
+          # is the higher of the two. go.mod carries the same floor.
+          go-version: '1.26.10'
       # README.md calls gofmt a gate, so it has to actually be one. A gate
       # believed to run and not running is worse than no gate.
       - name: gofmt
