@@ -41,6 +41,8 @@ export async function GET(
             ? "public, max-age=31536000, s-maxage=31536000, immutable"
             : "public, max-age=300",
           "Content-Disposition": "inline",
+          // Opened directly, the image document may run nothing and load nothing.
+          "Content-Security-Policy": "default-src 'none'; sandbox",
           "X-Content-Type-Options": "nosniff",
         },
       });

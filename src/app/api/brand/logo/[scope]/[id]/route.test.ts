@@ -42,6 +42,7 @@ it("serves a sub-account logo from subAccounts/{id}/private/brandLogo", async ()
   expect(res.headers.get("content-type")).toBe("image/png");
   expect(res.headers.get("x-content-type-options")).toBe("nosniff");
   expect(res.headers.get("content-disposition")).toBe("inline");
+  expect(res.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
   expect(res.headers.get("cache-control")).toContain("immutable");
 });
 

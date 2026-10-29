@@ -11,7 +11,7 @@ import { runId } from "../lib/run-id";
  * Logo upload (K1), through the real server: the sub-account Branding card
  * resizes a file in the browser and uploads it; the logo is then served
  * signed-out from /api/brand/logo/sa/{id} as the stored PNG/WebP with
- * nosniff, inline, and an immutable cache only for the current version. An
+ * nosniff, inline, a sandboxing CSP, and an immutable cache only for the current version. An
  * SVG picked in the browser is rasterised before upload, so only PNG bytes
  * reach the server; SVG / HTML posted straight at the route, and an oversize
  * body, are refused. Remove clears the field and the logo 404s.
@@ -100,6 +100,7 @@ test("a PNG uploaded on the Branding card is served signed-out with safe headers
   expect(res.headers["content-type"]).toBe(stored.mime);
   expect(res.headers["x-content-type-options"]).toBe("nosniff");
   expect(res.headers["content-disposition"]).toBe("inline");
+  expect(res.headers["content-security-policy"]).toBe("default-src 'none'; sandbox");
   expect(res.headers["cache-control"]).toContain("immutable");
   expect(res.body.equals(Buffer.from(stored.data, "base64"))).toBe(true);
 
