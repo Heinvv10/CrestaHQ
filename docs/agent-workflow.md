@@ -24,6 +24,10 @@ CI runs, so a green local run means a green pipeline. Keep them identical; a
 `npx` here and a `pnpm exec` there is the first millimetre of the same drift
 that let FibreFlow's baselines diverge across five files.
 
+`pnpm test:rules` needs the `FIREBASE_ADMIN_*` env vars. Without them the
+rules specs skip (a local `ci:check` shows them all skipped); in CI, where the
+secrets are passed, a missing credential fails the step instead of skipping.
+
 **Nothing in CI is `continue-on-error`, and nothing should become so.** The
 entire gate takes ~52s, so there is no speed argument for softening a step. If
 a step is too slow or flaky to block, delete it instead — a gate believed to
