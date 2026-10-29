@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
 import { metaAppConfigured } from "@/lib/comms/meta";
+import { aiOutboundSmsEnableBlock } from "@/lib/comms/ai/outbound-sms-enable";
 import {
   setClientUsageRebilling,
   UsageRebillingRefusedError,
@@ -83,6 +84,9 @@ interface PatchBody {
   googleCalendarEnabled?: boolean;
   webVoiceEnabled?: boolean;
   dialerEnabled?: boolean;
+  agentsEnabled?: boolean;
+  sellOnlineEnabled?: boolean;
+  aiOutboundSmsEnabled?: boolean;
   emailAiDraftsEnabled?: boolean;
   reviewsAiEnabled?: boolean;
   reviewsAutoReplyEnabled?: boolean;
@@ -232,6 +236,9 @@ export async function PATCH(
   const wantsGoogleCalendar = typeof body.googleCalendarEnabled === "boolean";
   const wantsWebVoice = typeof body.webVoiceEnabled === "boolean";
   const wantsDialer = typeof body.dialerEnabled === "boolean";
+  const wantsAgents = typeof body.agentsEnabled === "boolean";
+  const wantsSellOnline = typeof body.sellOnlineEnabled === "boolean";
+  const wantsAiOutboundSms = typeof body.aiOutboundSmsEnabled === "boolean";
   const wantsEmailAiDrafts = typeof body.emailAiDraftsEnabled === "boolean";
   const wantsReviewsAi = typeof body.reviewsAiEnabled === "boolean";
   const wantsReviewsAutoReply =
@@ -293,6 +300,9 @@ export async function PATCH(
     !wantsGoogleCalendar &&
     !wantsWebVoice &&
     !wantsDialer &&
+    !wantsAgents &&
+    !wantsSellOnline &&
+    !wantsAiOutboundSms &&
     !wantsEmailAiDrafts &&
     !wantsReviewsAi &&
     !wantsReviewsAutoReply &&
@@ -345,8 +355,17 @@ export async function PATCH(
     );
   }
 
-  // Written (or refused) first, in its own transaction, so a refusal leaves
-  // every other field in the body alone.
+  // AI outbound SMS can only be switched on once its readiness check passes.
+  // Disabling is always allowed.
+  if (body.aiOutboundSmsEnabled === true) {
+    const block = await aiOutboundSmsEnableBlock(subSnap.data() ?? {});
+    if (block) {
+      return NextResponse.json({ error: block }, { status: 409 });
+    }
+  }
+
+  // Written (or refused) after every read-only refusal and before any other
+  // write, in its own transaction, so a refusal leaves the rest of the body alone.
   if (wantsRebilling) {
     try {
       await setClientUsageRebilling(
@@ -438,6 +457,15 @@ export async function PATCH(
   }
   if (typeof body.dialerEnabled === "boolean") {
     gates.dialerEnabledByAgency = body.dialerEnabled;
+  }
+  if (typeof body.agentsEnabled === "boolean") {
+    gates.agentsEnabledByAgency = body.agentsEnabled;
+  }
+  if (typeof body.sellOnlineEnabled === "boolean") {
+    gates.sellOnlineEnabledByAgency = body.sellOnlineEnabled;
+  }
+  if (typeof body.aiOutboundSmsEnabled === "boolean") {
+    gates.aiOutboundSmsEnabledByAgency = body.aiOutboundSmsEnabled;
   }
   if (typeof body.emailAiDraftsEnabled === "boolean") {
     gates.emailAiDraftsEnabledByAgency = body.emailAiDraftsEnabled;
@@ -572,6 +600,11 @@ export async function PATCH(
       : {}),
     ...(wantsWebVoice ? { webVoiceEnabled: body.webVoiceEnabled } : {}),
     ...(wantsDialer ? { dialerEnabled: body.dialerEnabled } : {}),
+    ...(wantsAgents ? { agentsEnabled: body.agentsEnabled } : {}),
+    ...(wantsSellOnline ? { sellOnlineEnabled: body.sellOnlineEnabled } : {}),
+    ...(wantsAiOutboundSms
+      ? { aiOutboundSmsEnabled: body.aiOutboundSmsEnabled }
+      : {}),
     ...(wantsEmailAiDrafts
       ? { emailAiDraftsEnabled: body.emailAiDraftsEnabled }
       : {}),

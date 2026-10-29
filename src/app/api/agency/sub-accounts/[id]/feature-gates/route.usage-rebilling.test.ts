@@ -91,6 +91,14 @@ describe("usageRebillingEnabled", () => {
     expect(auditRows()).toHaveLength(0);
   });
 
+  it("a body that X0's AI-outbound-SMS refusal turns away writes no rebilling either", async () => {
+    const res = await patch({ usageRebillingEnabled: true, aiOutboundSmsEnabled: true });
+    expect(res.status).toBe(409);
+    expect(sub().usageRebillingEnabled).toBeUndefined();
+    expect(sub().aiOutboundSmsEnabledByAgency).toBeUndefined();
+    expect(auditRows()).toHaveLength(0);
+  });
+
   it("switching on with the agency switch on writes it, stamps since, and audits", async () => {
     const res = await patch({ usageRebillingEnabled: true });
     expect(res.status).toBe(200);
