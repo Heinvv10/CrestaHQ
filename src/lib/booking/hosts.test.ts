@@ -51,6 +51,23 @@ describe("loadHostUpcomingCounts", () => {
 });
 
 describe("queryHostEvents", () => {
+  it("never returns the owner's imported Google events (they carry importOwnerUid, no host fields)", async () => {
+    seed("booking", { assignedToUid: "b" });
+    seed("g-own", { importOwnerUid: "b", source: "google" });
+    const docs = await queryHostEvents("sa1", "b", (q) => q);
+    expect(docs.map((d) => d.id)).toEqual(["booking"]);
+    expect(Object.fromEntries(await loadHostUpcomingCounts("sa1", ["b"], NOW))).toEqual({ b: 1 });
+  });
+
+  it("nor one an importer wrongly stamped with assignedToUid or hostUids", async () => {
+    seed("booking", { assignedToUid: "b" });
+    seed("g-stamped-owned", { assignedToUid: "b", source: "google" });
+    seed("g-stamped-listed", { hostUids: ["b"], source: "google" });
+    const docs = await queryHostEvents("sa1", "b", (q) => q);
+    expect(docs.map((d) => d.id)).toEqual(["booking"]);
+    expect(Object.fromEntries(await loadHostUpcomingCounts("sa1", ["b"], NOW))).toEqual({ b: 1 });
+  });
+
   it("keeps the owned half when the collective half fails", async () => {
     seed("owned", { assignedToUid: "b" });
     seed("col", { assignedToUid: "a", hostUids: ["a", "b"] });

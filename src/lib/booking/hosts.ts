@@ -1,7 +1,7 @@
 import "server-only";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { eventOccupiesSlot, eventStatus } from "@/types/events";
+import { eventOccupiesSlot, eventStatus, isImportedEvent } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { BookingHost } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
@@ -92,8 +92,11 @@ export async function loadHostNotifyContact(
 /**
  * Every event `uid` attends in the sub-account — the two sources of
  * `eventHostUids`: the ones they own (`assignedToUid`) and the collective ones
- * listing them in `hostUids` — merged by id. `refine` adds the same range /
- * order / limit to both queries. Needs the composite indexes
+ * listing them in `hostUids` — merged by id. Imported Google events are never
+ * returned: they are not bookings. `refine` adds the same range /
+ * order / limit to both queries. With `want`, `refine` must order and not
+ * limit: each query is paged until it has `want` non-imported events, so
+ * imported ones can't crowd bookings out of a cap. Needs the composite indexes
  * events(subAccountId, assignedToUid, startAt) and
  * events(subAccountId, hostUids CONTAINS, startAt).
  */
@@ -101,19 +104,22 @@ export async function queryHostEvents(
   subAccountId: string,
   uid: string,
   refine: (q: FirebaseFirestore.Query) => FirebaseFirestore.Query,
+  opts: { want?: number } = {},
 ): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
   const events = getAdminDb()
     .collection("events")
     .where("subAccountId", "==", subAccountId);
+  const run = (q: FirebaseFirestore.Query) =>
+    opts.want === undefined ? q.get().then((s) => s.docs) : pagedNonImported(q, opts.want);
   const [owned, listed] = await Promise.allSettled([
-    refine(events.where("assignedToUid", "==", uid)).get(),
-    refine(events.where("hostUids", "array-contains", uid)).get(),
+    run(refine(events.where("assignedToUid", "==", uid))),
+    run(refine(events.where("hostUids", "array-contains", uid))),
   ]);
   if (owned.status === "rejected") throw owned.reason;
   const byId = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
-  for (const d of owned.value.docs) byId.set(d.id, d);
+  for (const d of owned.value) byId.set(d.id, d);
   if (listed.status === "fulfilled") {
-    for (const d of listed.value.docs) byId.set(d.id, d);
+    for (const d of listed.value) byId.set(d.id, d);
   } else {
     // Most likely the hostUids index isn't built yet: keep the owned half
     // rather than lose every booking, and say so.
@@ -122,7 +128,23 @@ export async function queryHostEvents(
       listed.reason,
     );
   }
-  return [...byId.values()];
+  return [...byId.values()].filter((d) => !isImportedEvent(d.data()));
+}
+
+/** Up to `want` non-imported docs of an ordered query, at most 10 pages of `want`. */
+async function pagedNonImported(
+  q: FirebaseFirestore.Query,
+  want: number,
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const out: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  let cursor: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+  for (let page = 0; page < 10 && out.length < want; page++) {
+    const snap: FirebaseFirestore.QuerySnapshot = await (cursor ? q.startAfter(cursor) : q).limit(want).get();
+    for (const d of snap.docs) if (!isImportedEvent(d.data())) out.push(d);
+    if (snap.size < want) break;
+    cursor = snap.docs[snap.docs.length - 1];
+  }
+  return out.slice(0, want);
 }
 
 /**

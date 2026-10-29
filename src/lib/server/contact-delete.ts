@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emitContactDeleted } from "@/lib/server/contacts-service";
 import { isDocId } from "@/lib/server/doc-id";
+import { IMPORTED_EVENT_SOURCE } from "@/types/events";
 
 /**
  * THE contact delete. Both the single DELETE /api/contacts/[id] route and
@@ -57,6 +58,16 @@ export async function deleteContactServerSide(opts: {
     await batch.commit();
   }
 
+  // Imported Google events only reference a contact for display: unlink them.
+  const imported = await importedEventsOf(db, subAccountId, opts.contactId).get();
+  for (let i = 0; i < imported.docs.length; i += 500) {
+    const batch = db.batch();
+    for (const d of imported.docs.slice(i, i + 500)) {
+      batch.update(d.ref, { contactId: null });
+    }
+    await batch.commit();
+  }
+
   // Nothing references the contact — safe to delete it and its own
   // subcollections (notes, activities, messages).
   await db.recursiveDelete(contactRef);
@@ -70,6 +81,18 @@ export async function deleteContactServerSide(opts: {
     data: contact,
   });
   return { status: "deleted" };
+}
+
+function importedEventsOf(
+  db: FirebaseFirestore.Firestore,
+  subAccountId: string,
+  contactId: string,
+): FirebaseFirestore.Query {
+  return db
+    .collection("events")
+    .where("subAccountId", "==", subAccountId)
+    .where("contactId", "==", contactId)
+    .where("source", "==", IMPORTED_EVENT_SOURCE);
 }
 
 export interface ContactBlocker {
@@ -105,11 +128,13 @@ export async function findContactBlockers(
       .count()
       .get();
 
-  const [deals, tasks, events, quotes, submissionDocs, webChats, voiceCalls] =
+  const [deals, tasks, events, importedEvents, quotes, submissionDocs, webChats, voiceCalls] =
     await Promise.all([
       inSub("deals"),
       inSub("tasks"),
       inSub("events"),
+      // Imported Google events never block: the delete unlinks them.
+      importedEventsOf(db, subAccountId, contactId).count().get(),
       inSub("quotes"),
       // Form submissions live in forms/{id}/submissions — a collection-group
       // query finds them across every form. contactId is a globally unique
@@ -143,7 +168,11 @@ export async function findContactBlockers(
   };
   add(deals.data().count, "deals", "deal");
   add(tasks.data().count, "tasks", "task");
-  add(events.data().count, "events", "calendar event / booking");
+  add(
+    events.data().count - importedEvents.data().count,
+    "events",
+    "calendar event / booking",
+  );
   add(quotes.data().count, "quotes", "quote / invoice");
   add(webChats.data().count, "web_chat_sessions", "web-chat conversation");
   add(voiceCalls.data().count, "voice_calls", "voice call");

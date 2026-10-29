@@ -14,6 +14,7 @@ import { type AiSuiteCapability } from "./types";
 import { str, fmtMoney } from "./helpers";
 import { oneLine } from "./text-safety";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
+import { IMPORTED_EVENT_SOURCE, isImportedEvent } from "@/types/events";
 
 /** find_contacts' partial-match scan: this many visible contacts, newest first. */
 const SCAN_CAP = 500;
@@ -157,18 +158,33 @@ export const WORKSPACE_LOOKUP_CAPABILITIES: AiSuiteCapability[] = [
         ),
         // A range + `in` needs an index this collection lacks, so a scoped
         // caller's upcoming events are counted by paging (capped at 1000).
+        // Imported Google events are a member's own calendar, never counted:
+        // the unscoped count subtracts them (index subAccountId, source, startAt).
         scope.enforce
           ? collectVisible(scope, upcomingQuery.orderBy("startAt", "asc"), {
               want: 1000,
               maxScan: 1000,
+              keep: (d) => !isImportedEvent(d.data()),
             }).then((r) => ({
               count: r.docs.length,
               capped: r.docs.length >= 1000 || r.scanCapped,
             }))
-          : upcomingQuery
-              .count()
-              .get()
-              .then((r) => ({ count: r.data().count, capped: false })),
+          : Promise.all([
+              upcomingQuery.count().get().then((r) => r.data().count),
+              // A display count: until its index builds this query fails, and
+              // the stats then show the old (imported-inclusive) count.
+              upcomingQuery
+                .where("source", "==", IMPORTED_EVENT_SOURCE)
+                .count()
+                .get()
+                .then((r) => r.data().count)
+                .catch((err: unknown) => {
+                  console.warn(
+                    `[workspace_stats] imported-event count failed sa=${said}: ${err instanceof Error ? err.message : String(err)}`
+                  );
+                  return 0;
+                }),
+            ]).then(([all, imported]) => ({ count: all - imported, capped: false })),
         scopedDocs(
           scope,
           db.collection("deals").where("subAccountId", "==", said).limit(1000)
