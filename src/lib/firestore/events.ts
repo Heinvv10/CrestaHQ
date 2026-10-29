@@ -12,7 +12,7 @@ import {
   updateDoc,
   where,
   type QueryConstraint,
-  type QuerySnapshot,
+  type QueryDocumentSnapshot,
   type Unsubscribe,
 } from "firebase/firestore";
 import { getFirebaseDb } from "@/lib/firebase/client";
@@ -22,7 +22,7 @@ import {
   NOOP_UNSUB,
   territoryQueryPlan,
 } from "@/lib/firestore/territory-query";
-import type { CalendarEvent, EventFormData } from "@/types/events";
+import { isImportedEvent, type CalendarEvent, type EventFormData } from "@/types/events";
 import { GLOBAL_TERRITORY_ID, type TenantScope } from "@/types";
 import { isLongEvent } from "@/lib/booking/long-event";
 
@@ -127,26 +127,9 @@ export function subscribeToAppointments(
   ];
   if (plan.mode === "in") base.push(plan.constraint);
   const boundary = Timestamp.fromMillis(Date.now());
-  const col = collection(getFirebaseDb(), EVENTS);
-  // One more than the limit: a full half only counts as truncated when the
-  // extra document really exists. The extra is never shown.
-  const upcomingQ = query(
-    col,
-    ...base,
-    where("startAt", ">=", boundary),
-    orderBy("startAt", "asc"),
-    limit(APPOINTMENTS_UPCOMING_LIMIT + 1),
-  );
-  const pastQ = query(
-    col,
-    ...base,
-    where("startAt", "<", boundary),
-    orderBy("startAt", "desc"),
-    limit(opts.pastLimit + 1),
-  );
-
-  // A half is a snapshot, "failed", or still null (not answered yet).
-  type Half = QuerySnapshot | "failed" | null;
+  // A half is its real events (imported Google events dropped) and whether
+  // more real ones exist than `want`, "failed", or null (not answered yet).
+  type Half = { docs: QueryDocumentSnapshot[]; truncated: boolean } | "failed" | null;
   let upcoming: Half = null;
   let past: Half = null;
   let errored = false;
@@ -155,12 +138,10 @@ export function subscribeToAppointments(
   // other half still renders and `failedHalves` says what is missing.
   const emit = () => {
     if (!upcoming || !past) return;
-    const upcomingDocs = upcoming === "failed" ? [] : upcoming.docs;
-    const pastDocs = past === "failed" ? [] : past.docs;
     const byId = new Map<string, CalendarEvent>();
     for (const d of [
-      ...pastDocs.slice(0, opts.pastLimit),
-      ...upcomingDocs.slice(0, APPOINTMENTS_UPCOMING_LIMIT),
+      ...(past === "failed" ? [] : past.docs),
+      ...(upcoming === "failed" ? [] : upcoming.docs),
     ]) {
       byId.set(d.id, { id: d.id, ...(d.data() as Omit<CalendarEvent, "id">) });
     }
@@ -168,8 +149,8 @@ export function subscribeToAppointments(
     events.sort((a, b) => toMillis(a.startAt) - toMillis(b.startAt));
     callback({
       events,
-      upcomingTruncated: upcomingDocs.length > APPOINTMENTS_UPCOMING_LIMIT,
-      pastTruncated: pastDocs.length > opts.pastLimit,
+      upcomingTruncated: upcoming !== "failed" && upcoming.truncated,
+      pastTruncated: past !== "failed" && past.truncated,
       failedHalves: [
         ...(upcoming === "failed" ? (["upcoming"] as const) : []),
         ...(past === "failed" ? (["past"] as const) : []),
@@ -181,34 +162,76 @@ export function subscribeToAppointments(
     if (!errored) onError?.(err);
     errored = true;
   };
-  const unsubUpcoming = onSnapshot(
-    upcomingQ,
-    (snap) => {
-      upcoming = snap;
+  const upcomingHalf = listenHalf(
+    [...base, where("startAt", ">=", boundary), orderBy("startAt", "asc")],
+    APPOINTMENTS_UPCOMING_LIMIT,
+    (h) => {
+      upcoming = h;
       emit();
     },
-    (err) => {
-      upcoming = "failed";
-      fail(err);
-      emit();
-    },
+    fail,
   );
-  const unsubPast = onSnapshot(
-    pastQ,
-    (snap) => {
-      past = snap;
+  const pastHalf = listenHalf(
+    [...base, where("startAt", "<", boundary), orderBy("startAt", "desc")],
+    opts.pastLimit,
+    (h) => {
+      past = h;
       emit();
     },
-    (err) => {
-      past = "failed";
-      fail(err);
-      emit();
-    },
+    fail,
   );
   return () => {
-    unsubUpcoming();
-    unsubPast();
+    upcomingHalf();
+    pastHalf();
   };
+}
+
+/** How far a half may grow past its imported Google events: this many times its limit. */
+const APPOINTMENTS_REFILL_FACTOR = 4;
+
+/**
+ * One appointments half: the first `want` REAL events of the ordered query.
+ * Imported Google events are dropped (they stay on the calendar only), and
+ * the listener re-subscribes with a larger limit until they no longer take
+ * real events' places — one more than `want` real, or the query is
+ * exhausted. Past APPOINTMENTS_REFILL_FACTOR × the limit it stops growing
+ * and reports truncated, since more real events may exist.
+ */
+function listenHalf(
+  constraints: QueryConstraint[],
+  want: number,
+  onHalf: (half: { docs: QueryDocumentSnapshot[]; truncated: boolean } | "failed") => void,
+  onFail: (err: Error) => void,
+): Unsubscribe {
+  const col = collection(getFirebaseDb(), EVENTS);
+  const maxFetch = (want + 1) * APPOINTMENTS_REFILL_FACTOR;
+  // One more than the limit: a full half only counts as truncated when the
+  // extra real document really exists. The extra is never shown.
+  let fetchLimit = want + 1;
+  let unsub: Unsubscribe = NOOP_UNSUB;
+  const listen = () => {
+    unsub = onSnapshot(
+      query(col, ...constraints, limit(fetchLimit)),
+      (snap) => {
+        const real = snap.docs.filter((d) => !isImportedEvent(d.data()));
+        const full = snap.docs.length >= fetchLimit;
+        if (full && real.length <= want && fetchLimit < maxFetch) {
+          // Imported events took real ones' places: refill past them.
+          fetchLimit = Math.min(maxFetch, want + 1 + (snap.docs.length - real.length));
+          unsub();
+          listen();
+          return;
+        }
+        onHalf({ docs: real.slice(0, want), truncated: real.length > want || full });
+      },
+      (err) => {
+        onFail(err);
+        onHalf("failed");
+      },
+    );
+  };
+  listen();
+  return () => unsub();
 }
 
 export async function createEvent(

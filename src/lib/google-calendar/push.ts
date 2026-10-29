@@ -8,7 +8,7 @@ import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventHostUids } from "@/lib/booking/page-slots";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import type { BookingPage } from "@/types/booking";
-import { eventOccupiesSlot, eventStatus, type CalendarEvent } from "@/types/events";
+import { eventOccupiesSlot, eventStatus, isImportedEvent, type CalendarEvent } from "@/types/events";
 import {
   activeGoogleHosts,
   describeFailure,
@@ -133,6 +133,8 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
   const snap = await ref.get();
   if (!snap.exists) return null;
   const e = snap.data() as SyncedEvent;
+  // An imported event came FROM Google: writing it back would duplicate it.
+  if (isImportedEvent(e)) return null;
   const sa = e.subAccountId;
   const prior = { ...(e.googleEventIds ?? {}) };
   const start = toDate(e.startAt);

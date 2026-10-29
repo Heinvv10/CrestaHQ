@@ -88,14 +88,14 @@ export async function scopedCount(
 /**
  * Page through an ORDERED query, keeping the caller's visible docs, until
  * `want` are collected or the query is exhausted. The territory filter runs
- * BEFORE the cap, so invisible docs never eat a scoped caller's result slots.
- * `scanCapped` is true when `maxScan` docs were read without exhausting the
+ * BEFORE the cap, so invisible docs never eat a scoped caller's result slots;
+ * so does `keep`, when given. `scanCapped` is true when `maxScan` docs were read without exhausting the
  * query — the caller must say the answer may be incomplete.
  */
 export async function collectVisible(
   scope: EffectiveTerritoryScope,
   q: Query<DocumentData>,
-  opts: { want: number; maxScan: number },
+  opts: { want: number; maxScan: number; keep?: (d: Doc) => boolean },
 ): Promise<{ docs: Doc[]; scanCapped: boolean }> {
   const pageSize = Math.min(opts.maxScan, opts.want);
   const docs: Doc[] = [];
@@ -108,7 +108,7 @@ export async function collectVisible(
     const snap = await page.get();
     scanned += snap.size;
     for (const d of snap.docs) {
-      if (canSeeTerritory(scope, d.data().territoryId)) docs.push(d);
+      if (canSeeTerritory(scope, d.data().territoryId) && (opts.keep?.(d) ?? true)) docs.push(d);
     }
     if (snap.size < pageSize) return { docs: docs.slice(0, opts.want), scanCapped: false };
     if (scanned >= opts.maxScan) {
