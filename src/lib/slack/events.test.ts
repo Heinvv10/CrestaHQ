@@ -62,8 +62,17 @@ beforeEach(() => {
 describe("dispatch → Slack", () => {
   it("posts a ticked live event to the stored hook", async () => {
     connect("sa-post");
-    await emit("sa-post");
-    await flushAfterResponse();
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    try {
+      await emit("sa-post");
+      await flushAfterResponse();
+      // One 5 s deadline, and it is the signal publicFetch gets.
+      expect(timeout).toHaveBeenCalledTimes(1);
+      expect(timeout).toHaveBeenCalledWith(5_000);
+      expect(publicFetch.mock.calls[0][1].signal).toBe(timeout.mock.results[0].value);
+    } finally {
+      timeout.mockRestore();
+    }
     expect(publicFetch).toHaveBeenCalledTimes(1);
     const [url, init] = publicFetch.mock.calls[0];
     expect(url).toBe(URL_A);

@@ -109,6 +109,13 @@ Paths left without it post only fixed text anyway: `contact.updated` from
 are server- or recipient-written). Billing and community events are not in the
 picker.
 
+**Limit (same as push):** the gate is on who made *this* write, not on where the
+text came from. Text a key chose (a deal title, a task title, a contact name) still
+posts when a person or a workflow later acts on that record: a member moving the
+key-created deal, completing its task, or a workflow step updating it emits with
+that actor, and the layout reads the stored title. Closing that would mean marking
+key-written fields on the record and checking them here; it is not done.
+
 ## Tests
 
 - `src/lib/slack/format.test.ts` — URL validator refusals, escaping, caps, headline
