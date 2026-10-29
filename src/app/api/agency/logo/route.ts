@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireAgencyOwnerAny } from "@/lib/auth/require-tenancy";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { dropCachedLogo } from "@/lib/brand/logo-cache";
 import {
   LOGO_MAX_BODY_BYTES,
   logoDocRef,
@@ -65,6 +66,8 @@ export async function POST(request: Request) {
     updatedAt: FieldValue.serverTimestamp(),
   });
 
+  dropCachedLogo("agency", agencyId);
+
   return NextResponse.json({ ok: true, logoUrl });
 }
 
@@ -87,6 +90,7 @@ export async function DELETE(request: Request) {
   // Blob last: a failure between the two leaves a stored logo nothing points
   // at, never a logoUrl that 404s in every email and page.
   await logoDocRef("agency", agencyId).delete();
+  dropCachedLogo("agency", agencyId);
 
   return NextResponse.json({ ok: true });
 }

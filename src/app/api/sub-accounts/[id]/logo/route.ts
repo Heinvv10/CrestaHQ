@@ -6,6 +6,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { isDocId } from "@/lib/server/doc-id";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
+import { dropCachedLogo } from "@/lib/brand/logo-cache";
 import {
   LOGO_MAX_BODY_BYTES,
   logoDocRef,
@@ -72,6 +73,8 @@ export async function POST(
     { merge: true },
   );
 
+  dropCachedLogo("sa", subAccountId);
+
   return NextResponse.json({ ok: true, logoUrl });
 }
 
@@ -97,6 +100,7 @@ export async function DELETE(
   // Blob last: a failure between the two leaves a stored logo nothing points
   // at, never a logoUrl that 404s in every email and page.
   await logoDocRef("sa", subAccountId).delete();
+  dropCachedLogo("sa", subAccountId);
 
   return NextResponse.json({ ok: true });
 }

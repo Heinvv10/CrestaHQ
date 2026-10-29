@@ -37,6 +37,7 @@ vi.mock("@/lib/firebase/admin", () => ({
 }));
 
 import { DELETE, POST } from "./route";
+import { cacheLogo, getCachedLogo } from "@/lib/brand/logo-cache";
 
 let png: string;
 beforeAll(async () => {
@@ -196,5 +197,31 @@ describe("DELETE /api/sub-accounts/[id]/logo — remove", () => {
     expect((await DELETE(req("owner1", "DELETE"), ctx(".."))).status).toBe(404);
     expect(m.reads).toEqual([]);
     expect(m.writes).toEqual([]);
+  });
+});
+
+describe("this instance's logo cache (breaker R3)", () => {
+  const prime = (id: string) =>
+    cacheLogo("sa", id, { body: Buffer.from([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", version: 1 });
+
+  it("an upload drops this sub-account's cached logo, and only its own", async () => {
+    prime("sa1");
+    prime("sa2");
+    expect((await upload("admin1", { data: png, mime: "image/png" })).status).toBe(200);
+    expect(getCachedLogo("sa", "sa1")).toBeNull();
+    expect(getCachedLogo("sa", "sa2")).not.toBeNull();
+  });
+
+  it("a remove drops this sub-account's cached logo", async () => {
+    prime("sa1");
+    m.docs.set("subAccounts/sa1", { agencyId: "ag1", logoUrl: "https://crm.example.com/api/brand/logo/sa/sa1?v=1" });
+    expect((await DELETE(req("admin1", "DELETE"), ctx())).status).toBe(200);
+    expect(getCachedLogo("sa", "sa1")).toBeNull();
+  });
+
+  it("a refused caller drops nothing", async () => {
+    prime("sa1");
+    expect((await DELETE(req("user1", "DELETE"), ctx())).status).toBe(403);
+    expect(getCachedLogo("sa", "sa1")).not.toBeNull();
   });
 });

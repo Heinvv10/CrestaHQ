@@ -61,6 +61,15 @@ export function cacheLogo(scope: string, id: string, logo: CachedLogo): void {
   while (totalBytes > LOGO_CACHE_MAX_BYTES) drop(entries.keys().next().value!);
 }
 
+/**
+ * Forget a tenant's entry after an upload or a remove, so THIS instance
+ * serves the new state on the next request. Other instances may serve their
+ * own entry until its TTL runs out.
+ */
+export function dropCachedLogo(scope: string, id: string): void {
+  drop(keyOf(scope, id));
+}
+
 /** Whether `requested` (a `?v`) names a version after `cached`, i.e. an upload not yet read. */
 export function isNewerVersion(requested: string | null, cached: number): boolean {
   return requested !== null && /^\d{1,16}$/.test(requested) && Number(requested) > cached;
