@@ -569,6 +569,20 @@
       ]
     },
     {
+      "collectionGroup": "activities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "meta.dealId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "deals",
       "queryScope": "COLLECTION",
       "fields": [

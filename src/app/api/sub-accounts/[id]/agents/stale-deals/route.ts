@@ -4,11 +4,11 @@ import { NextResponse } from "next/server";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isDocId } from "@/lib/server/doc-id";
+import { listAgentRuns } from "@/lib/server/agents-watchdog-service";
 import {
   getStaleDealsConfig,
-  listAgentRuns,
   upsertStaleDealsConfig,
-} from "@/lib/server/agents-watchdog-service";
+} from "@/lib/server/agents-stale-deals-service";
 import { readPipelines } from "@/lib/pipelines/server";
 import {
   STALE_DEALS_MAX_THRESHOLD_DAYS,

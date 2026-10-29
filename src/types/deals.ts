@@ -204,6 +204,13 @@ export interface Deal {
    * per stage visit: a stage change moves `stageChangedAt` past it.
    */
   staleAlertedAt?: Timestamp | FieldValue | null;
+  /**
+   * Server-only, stale deals monitor: when it last found recent work on the
+   * deal, and the earliest time that work can have aged out. The sweep
+   * skips the deal until `staleRecheckAt`.
+   */
+  staleCheckedAt?: Timestamp | FieldValue | null;
+  staleRecheckAt?: Timestamp | FieldValue | null;
 }
 
 export type DealFormData = {

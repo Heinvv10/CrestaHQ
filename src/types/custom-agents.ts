@@ -60,6 +60,12 @@ export interface StaleDealsConfigDoc extends AgentConfigBase {
   pipelineIds: string[] | null;
   /** `${pipelineId}:${stageId}` keys never flagged (e.g. a Parked stage). */
   excludeStageKeys: string[];
+  /**
+   * Where the next sweep resumes in the (stageChangedAt, doc id) order, so
+   * deals it can never flag don't pin the window. Null = from the oldest.
+   * Server-written by the sweep only.
+   */
+  scanCursor?: { stageChangedAtMs: number; dealId: string } | null;
 }
 
 export const WATCHDOG_DEFAULT_THRESHOLD_HOURS = 3;
