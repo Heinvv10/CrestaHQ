@@ -92,6 +92,8 @@ export interface BroadcastDoc {
   /** An API agent's broadcast, as a person approved it: the template's
    *  fingerprint (lib/broadcasts/approved.ts) and the recipient count shown. */
   approved?: { templateFingerprint: string; audienceCap: number; at: Date | Timestamp } | null;
+  /** Click-tracked link docs under `links/`, capped (lib/broadcasts/email-tracking.ts). */
+  trackedLinkCount?: number;
 }
 
 /** Reasons the step executor skips a recipient WITHOUT calling Resend. */

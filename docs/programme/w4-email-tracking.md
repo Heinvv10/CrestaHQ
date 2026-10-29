@@ -59,14 +59,22 @@ reports no engagement, so the app measures it itself.
   `broadcastId.contactId` (open) or `broadcastId.contactId.linkKey` (click), with a purpose prefix
   in the HMAC input so an open token, a click token and an `/l/` token never verify as each other.
 - **Links.** The step rewrites `<a href>` values only (quoted, single-quoted or unquoted, any case or
-  attribute order, entities decoded) and stores each destination at
-  `broadcasts/{id}/links/{linkKey}` before sending; a failed write releases the claim, so nothing
-  goes out with links that would 404. `linkKey` is a hash of the URL rather than a position, so a
-  link that differs per recipient (a merge tag in the href) still has exactly one stored
-  destination per URL. At most 50 distinct links per email are tracked.
+  attribute order, entities decoded), in one linear tokenizer-style pass that skips comments,
+  raw-text elements (`<style>`, `<script>`, …) and other tags' attribute values; the replacement is
+  attribute-escaped. It stores each destination at `broadcasts/{id}/links/{linkKey}` before sending;
+  a failed write releases the claim, so nothing goes out with links that would 404. `linkKey` is a
+  hash of the URL rather than a position, so a merge tag in an href creates one doc per distinct
+  rendered URL — per recipient, at worst. Caps: 50 tracked links per email, 500 link docs per
+  broadcast (`trackedLinkCount`, counted in the creating transaction), and a body over 500,000
+  characters goes out untracked; past a cap, links stay direct.
+- **Unsubscribe.** Never wrapped: the recipient's own unsubscribe URL (exact match), and any `/u/…`
+  path on this deployment's host, with the path decoded, `//` collapsed and the first segment
+  lower-cased before the check. A `/u/` page on another host is an ordinary link.
 - **Routes.** `/t/c/{token}` 302s to the stored destination only, re-validated as http(s), and
-  404s otherwise (same rule as `/l/`). `/t/o/{token}` always answers 200 with a no-store GIF.
-  Middleware opens exactly `/t/o/{one segment}` and `/t/c/{one segment}`.
+  404s otherwise, including when the lookup fails (same rule as `/l/`). `/t/o/{token}` always
+  answers 200 with a no-store GIF. Neither response waits on a limiter; only the record step is
+  limited, 20/min per verified token. Signatures must be 64 lower-case hex before the timing-safe
+  compare. Middleware opens exactly `/t/o/{one segment}` and `/t/c/{one segment}`.
 - **Data.** Upstream's send-row fields (`openedAt`, `clickedAt`, `opens`, `clicks`; parent
   `totals.opened` / `totals.clicked`), first occurrence decided in one transaction, counters capped
   at 100. First open / click writes an `email_opened` / `email_clicked` activity; its link is origin
