@@ -51,6 +51,49 @@ describe("refusedTokens", () => {
   });
 });
 
+describe("refusedTokens: homoglyphs, digits, URL case", () => {
+  const ALLOWED = "Book at https://acme.com/Book?ref=SMS";
+
+  it("compares tokens unfolded: a Cyrillic look-alike of an allowed link is refused", () => {
+    expect(refusedTokens("Book at https://\u0430cme.com/Book?ref=SMS", [ALLOWED])).not.toEqual([]);
+    expect(refusedTokens("Book at https://acme.com/Book?ref=SMS", [ALLOWED])).toEqual([]);
+    // ...and the other way round: the instruction's own look-alike is not the Latin link.
+    expect(refusedTokens("Visit acme.com today", ["Visit \u0430cme.com"])).not.toEqual([]);
+  });
+
+  it("refuses any non-Latin letter outside the exact business and first name", () => {
+    expect(refusedTokens("Hi Thandi, \u043F\u0440\u0438\u0432\u0435\u0442?", [""])).toContain("non_latin_letters");
+    expect(refusedTokens("Hi \u041E\u043B\u0435\u0433, keen on a quote?", [""], ["\u041E\u043B\u0435\u0433"])).toEqual([]);
+    expect(refusedTokens("\u0412\u0435\u043B\u043E here, keen on a quote?", [""], ["\u0412\u0435\u043B\u043E"])).toEqual([]);
+    // A name only exempts itself, matched exactly.
+    expect(refusedTokens("Hi \u041E\u043B\u0435\u0433\u0430, keen?", [""], ["\u041E\u043B\u0435\u0433"])).toContain("non_latin_letters");
+  });
+
+  it.each([
+    ["Call 082 ~ 123 ~ 4567 today"],
+    ["Call 082_123_4567 today"],
+    ["Ref a1~2~3~4~5~6~7 today"],
+    ["Call \u0660\u0668\u0662\u0661\u0662\u0663\u0664\u0665\u0666\u0667 today"],
+    ["Call \u0966\u096E\u0968 \u0967\u0968\u0969 today"],
+    ["Call oh eight two one two three four five six seven"],
+    ["Call zero eight two, one two three, four five six seven"],
+    ["Call 0 eight 2 one 2 three 4"],
+  ])("refuses a phone number however it is written: %j", (text) => {
+    expect(refusedTokens(text, [""])).not.toEqual([]);
+  });
+
+  it("leaves a few spelled-out numbers and words that contain them alone", () => {
+    expect(refusedTokens("Hi Thandi, one quick question. Is someone home on Monday?", [""])).toEqual([]);
+  });
+
+  it("lowercases only the scheme and host; the path and query must match exactly", () => {
+    expect(refusedTokens("Book at HTTPS://ACME.com/Book?ref=SMS", [ALLOWED])).toEqual([]);
+    expect(refusedTokens("Book at https://acme.com/book?ref=SMS", [ALLOWED])).not.toEqual([]);
+    expect(refusedTokens("Book at https://acme.com/Book?ref=sms", [ALLOWED])).not.toEqual([]);
+    expect(refusedTokens("Book at acme.com/BOOK", ["Book at acme.com/book"])).not.toEqual([]);
+  });
+});
+
 describe("opt-out wording", () => {
   it.each([
     ['Want a quote? Reply "STOP" to unsubscribe.', "Want a quote?"],

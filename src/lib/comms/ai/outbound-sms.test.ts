@@ -146,6 +146,12 @@ describe("generateAiOpener", () => {
     expect(await generate(`Send them ${url}`)).toMatchObject({ ok: false, reason: "link_not_allowed" });
   });
 
+  it("lets the contact's own non-Latin first name through, and nothing else non-Latin", async () => {
+    stubOpenRouter(() => "Hi \u041E\u043B\u0435\u0433, Velocity Fibre here. Keen on a quote?");
+    expect(await generate("Offer a fibre quote.", contact({ name: "\u041E\u043B\u0435\u0433" }))).toMatchObject({ ok: true });
+    expect(await generate("Offer a fibre quote.", contact({ name: "Thandi" }))).toMatchObject({ ok: false, reason: "link_not_allowed" });
+  });
+
   it("refuses a body that still has opt-out wording the strip couldn't remove", async () => {
     stubOpenRouter(() => "Velocity Fibre here, you can opt out any time. Keen on a quote?");
     expect(await generate()).toMatchObject({ ok: false, reason: "empty" });

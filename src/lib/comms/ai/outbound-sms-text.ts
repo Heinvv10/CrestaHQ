@@ -20,14 +20,6 @@ const LOOKALIKE_PUNCT: Record<string, string> = {
 };
 const LOOKALIKE_PUNCT_RE = new RegExp(`[${Object.keys(LOOKALIKE_PUNCT).join("")}]`, "g");
 
-/** Cyrillic and Greek letters that read as Latin, folded for the checks only. */
-const LOOKALIKE_LETTERS: Record<string, string> = {
-  "\u0430": "a", "\u0432": "b", "\u0435": "e", "\u043A": "k", "\u043C": "m", "\u043D": "h", "\u043E": "o", "\u0440": "p", "\u0441": "c", "\u0442": "t", "\u0443": "y",
-  "\u0445": "x", "\u0456": "i", "\u0458": "j", "\u0455": "s", "\u0501": "d", "\u04BB": "h", "\u04CF": "l", "\u051B": "q", "\u051D": "w",
-  "\u03B1": "a", "\u03B5": "e", "\u03B9": "i", "\u03BA": "k", "\u03BD": "v", "\u03BF": "o", "\u03C1": "p", "\u03C4": "t", "\u03C5": "u", "\u03C7": "x",
-};
-const LOOKALIKE_LETTERS_RE = new RegExp(`[${Object.keys(LOOKALIKE_LETTERS).join("")}]`, "gi");
-
 /**
  * NFKC, then no format characters (zero-width, bidi, soft hyphen), no astral
  * characters (emoji are not allowed anyway, and they break segment counts),
@@ -82,11 +74,16 @@ export function hasOptOutWording(text: string): boolean {
   return /(?<![\w-])stop(?![\w-])/i.test(text) || /\bopt.?out\b/i.test(text) || /unsubscribe/i.test(text);
 }
 
+/** A digit spelled out, as a whole word. */
+const DIGIT_WORD = String.raw`(?:zero|one|two|three|four|five|six|seven|eight|nine|oh)(?!\p{L})`;
+
 /** Patterns that can carry a contact route. Each match is refused unless its
  *  whole tokens are allowed. */
 const ROUTE_PATTERNS: RegExp[] = [
-  // A phone number: 7+ digits, ignoring spaces, dots, dashes and brackets.
-  /\d(?:[\s.\-()]*\d){6,}/g,
+  // A phone number: 7+ digits, whatever non-letters sit between them.
+  /\d(?:[^\p{L}]{0,3}\d){6,}/gu,
+  // ...or spelled out ("oh eight two one…"), digits and words mixed.
+  new RegExp(String.raw`(?<!\p{L})(?:\d|${DIGIT_WORD})(?:[^\p{L}\d]{0,3}(?:\d|${DIGIT_WORD})){6,}`, "giu"),
   /tel:/gi,
   /@/g,
   // A dot, colon or slash inside a word: domains, IPs, paths, times, e.g.
@@ -100,36 +97,52 @@ const ROUTE_PATTERNS: RegExp[] = [
   /hxxp/gi,
 ];
 
-/** Look-alike letters as Latin, case kept (one pattern below is case-sensitive). */
-const fold = (s: string) =>
-  s.replace(LOOKALIKE_LETTERS_RE, (c) => {
-    const latin = LOOKALIKE_LETTERS[c.toLowerCase()] ?? c;
-    return c === c.toLowerCase() ? latin : latin.toUpperCase();
-  });
 const trimToken = (t: string) => t.replace(/^[("'[{]+/, "").replace(/[.,!?;:)"'\]}]+$/, "");
+
+/** A token as compared: scheme and host are case-insensitive, so lowercased;
+ *  a path, query or fragment is not, so it is kept exactly. */
+function comparable(token: string): string {
+  const head = token.match(/^(?:[a-z][a-z0-9+.-]*:\/\/)?[^/?#]*/i)?.[0] ?? "";
+  return head.toLowerCase() + token.slice(head.length);
+}
 
 interface Token { text: string; start: number; end: number }
 function tokens(text: string): Token[] {
   return [...text.matchAll(/\S+/g)].map((m) => ({
-    text: trimToken(m[0]).toLowerCase(),
+    text: comparable(trimToken(m[0])),
     start: m.index,
     end: m.index + m[0].length,
   }));
 }
 
+/** A letter outside the Latin script: a look-alike domain or word that would
+ *  be compared as something it is not. */
+const NON_LATIN_LETTER = /(?!\p{Script=Latin})\p{L}/u;
+/** A digit other than 0-9 (Arabic-Indic, Devanagari and so on): a phone
+ *  number the digit-run rules can't count. */
+const NON_ASCII_DIGIT = /(?![0-9])\p{Nd}/u;
+
 /**
  * The route-like tokens in `text` that none of `allowedSources` contains as
- * the same whole token sequence (never a substring of a token). Both sides are
- * normalised the same way first. Empty = sendable.
+ * the same whole token sequence (never a substring of a token), compared
+ * exactly: a domain spelled with a Cyrillic look-alike never matches the Latin
+ * one the business wrote. Any non-Latin letter refuses the text outright —
+ * look-alikes included, so a "dot" spelled with a Cyrillic o is caught too —
+ * except inside `exactNames` (the business and first name, matched exactly),
+ * and so does any non-ASCII digit. Empty = sendable.
  */
-export function refusedTokens(text: string, allowedSources: string[]): string[] {
-  const checked = fold(normaliseSmsText(text));
-  const own = tokens(checked);
-  const allowed = allowedSources.map((s) => tokens(fold(normaliseSmsText(s))).map((t) => t.text));
+export function refusedTokens(text: string, allowedSources: string[], exactNames: string[] = []): string[] {
+  const sent = normaliseSmsText(text);
+  const own = tokens(sent);
+  const allowed = allowedSources.map((s) => tokens(normaliseSmsText(s)).map((t) => t.text));
   const refused: string[] = [];
+  let unnamed = sent;
+  for (const name of exactNames.map(normaliseSmsText).filter(Boolean)) unnamed = unnamed.split(name).join(" ");
+  if (NON_LATIN_LETTER.test(unnamed)) refused.push("non_latin_letters");
+  if (NON_ASCII_DIGIT.test(sent)) refused.push("non_ascii_digits");
   for (const re of ROUTE_PATTERNS) {
     re.lastIndex = 0;
-    for (const m of checked.matchAll(re)) {
+    for (const m of sent.matchAll(re)) {
       const from = m.index;
       const to = from + m[0].length;
       const seq = own.filter((t) => t.end > from && t.start < to).map((t) => t.text);

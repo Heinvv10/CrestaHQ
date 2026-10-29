@@ -214,7 +214,7 @@ export async function generateAiOpener(input: {
   // Checked on the words that go out (trimming can cut an allowed token into
   // one that isn't), less the prefix we wrote.
   const modelWords = prefixed && body.startsWith(prefix) ? body.slice(prefix.length) : body;
-  if (refusedTokens(modelWords, [instruction, businessName]).length > 0) {
+  if (refusedTokens(modelWords, [instruction, businessName], [businessName, firstName ?? ""]).length > 0) {
     return { ok: false, reason: "link_not_allowed", ...spent };
   }
   const text = `${body}${OPT_OUT_SUFFIX}`;
