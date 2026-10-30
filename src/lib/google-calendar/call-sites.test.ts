@@ -95,7 +95,8 @@ describe("push call sites", () => {
       endAt: new Date(),
       actor: "operator",
     });
-    expect(push.now).toHaveBeenCalledWith("e1", { replaceFallback: true });
+    // No "Updated:" mail can go out in this harness: a fill-only push.
+    expect(push.now).toHaveBeenCalledWith("e1");
   });
 
   it("payment expiry (expire-step route)", async () => {

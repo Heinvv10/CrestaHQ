@@ -142,6 +142,22 @@ export async function rescheduleWithoutAvailabilityCheck(
  * other notifications: the token was just rotated, so a visitor who isn't
  * emailed is left holding a dead manage link — the operator must be told.
  */
+/** Whether the "Updated:" mail has someone to go to (the checks below, before the push). */
+async function updatedMailWillSend(event: CalendarEvent): Promise<boolean> {
+  if (!event.contactId) return false;
+  try {
+    const [contact, subSnap] = await Promise.all([
+      loadEventContact(event),
+      getAdminDb().doc(`subAccounts/${event.subAccountId}`).get(),
+    ]);
+    const sub = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
+    return !!contact?.email && !contact.emailOptedOut && !!sub && emailIsConfigured(sub);
+  } catch (err) {
+    console.warn("[booking/reschedule] pre-push mail check failed", err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
 export async function runRescheduleSideEffects(args: {
   event: CalendarEvent;
   page: BookingPage | undefined;
@@ -155,8 +171,10 @@ export async function runRescheduleSideEffects(args: {
   const { event, page, newRawToken, publicEventUrl, startAt, endAt, actor } =
     args;
   // The "Updated:" mail below carries the event's link, so a room the push
-  // makes now may replace the page's fallback.
-  await pushBookingToGoogle(event.id, { replaceFallback: true });
+  // makes now may replace the page's fallback — but only when that mail will
+  // go out; otherwise the booker keeps the fallback and so does the event.
+  if (await updatedMailWillSend(event)) await pushBookingToGoogle(event.id, { replaceFallback: true });
+  else await pushBookingToGoogle(event.id);
   // The push may have just stored the booking's Google Meet link (a room
   // made now, or found after an earlier push timed out): mail that one.
   let meetingUrl = event.meetingUrl ?? null;

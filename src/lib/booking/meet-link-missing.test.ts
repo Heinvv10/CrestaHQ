@@ -6,8 +6,15 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { MEET_LINK_ON_BOOKING_NOTE, MEET_LINK_SENT_NOTE, meetLinkMissingNote, recordMeetLinkMissing, settleMeetLinkPending } =
-  await import("./meet-link-missing");
+const {
+  MEET_LINK_NOT_EMAILED_NOTE,
+  MEET_LINK_ON_BOOKING_NOTE,
+  MEET_LINK_SENT_NOTE,
+  meetLinkMissingNote,
+  recordMeetLinkMissing,
+  settleMeetLinkPending,
+  settleMeetLinkRows,
+} = await import("./meet-link-missing");
 
 const row = (id: string, meta: Record<string, unknown>) =>
   mem.seed(`contacts/c1/activities/${id}`, { type: "meet_link_missing", content: meetLinkMissingNote(true), meta });
@@ -34,6 +41,16 @@ describe("settleMeetLinkPending", () => {
     row("a1", { eventId: "e1", pending: true });
     await settleMeetLinkPending("e1");
     expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_ON_BOOKING_NOTE, meta: { pending: false } });
+  });
+});
+
+describe("settleMeetLinkRows", () => {
+  it("rewrites only this booking's OPEN rows; a resolved one stays resolved", async () => {
+    row("a1", { eventId: "e1", pending: true });
+    mem.seed("contacts/c1/activities/a2", { type: "meet_link_missing", content: MEET_LINK_SENT_NOTE, meta: { eventId: "e1", resolved: true } });
+    await settleMeetLinkRows("c1", "e1", "not_emailed");
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE, meta: { pending: false } });
+    expect(mem.read("contacts/c1/activities/a2")).toMatchObject({ content: MEET_LINK_SENT_NOTE, meta: { resolved: true } });
   });
 });
 

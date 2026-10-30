@@ -41,14 +41,14 @@ async function rowsFor(contactId: string, eventId: string) {
   ).docs;
 }
 
-/** Rewrite the booking's rows: the late link was emailed, or couldn't be. Never throws. */
+/** Rewrite the booking's OPEN rows: the late link was emailed, or couldn't be. Never throws. */
 export async function settleMeetLinkRows(
   contactId: string,
   eventId: string,
   outcome: "sent" | "not_emailed",
 ): Promise<void> {
   try {
-    const rows = await rowsFor(contactId, eventId);
+    const rows = (await rowsFor(contactId, eventId)).filter((d) => d.data().meta?.resolved !== true);
     await Promise.all(
       rows.map((d) =>
         d.ref.update(

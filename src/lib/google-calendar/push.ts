@@ -25,7 +25,7 @@ import { getGcalProviderFor } from "./provider/select";
 import { meetUrlOf, type GcalEventInput } from "./provider/types";
 import { runAfterResponse } from "@/lib/server/after-response";
 import { sendMeetLinkFollowUp } from "@/lib/booking/meet-link-follow-up";
-import { settleMeetLinkPending } from "@/lib/booking/meet-link-missing";
+import { settleMeetLinkPending, settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
 import type { ActivityType } from "@/types/contacts";
 
 /**
@@ -140,7 +140,8 @@ interface PushMode {
   storing?: { meetUrl: string; done: Promise<boolean> };
 }
 
-const FILL_ONLY: PushMode = { detached: false, replaceFallback: false };
+/** A fresh mode per push: convergeOnce writes `storing` onto it. */
+const fillOnly = (): PushMode => ({ detached: false, replaceFallback: false });
 
 type SyncedEvent = CalendarEvent & GoogleSyncFields;
 
@@ -284,7 +285,7 @@ async function storeMeetUrl(
 async function convergeOnce(
   eventId: string,
   removeAll = false,
-  mode: PushMode = FILL_ONLY,
+  mode: PushMode = fillOnly(),
 ): Promise<Converged | null> {
   const ref = getAdminDb().collection("events").doc(eventId);
   const snap = await ref.get();
@@ -433,6 +434,9 @@ async function convergeOnce(
     const done = storeMeetUrl(ref, fallback, room, meetHost!, mode);
     mode.storing = { meetUrl: room, done };
     stored = await done;
+    // A fill-only push (Retry sync, reassign…) emails nobody: an open
+    // "link missing" row now says the link is on the booking, not emailed.
+    if (stored && !mode.replaceFallback && e.contactId) await settleMeetLinkRows(e.contactId, eventId, "not_emailed");
   }
   if (room && !stored && room !== e.meetingUrl && !mayStore(e.meetingUrl, fallback, mode)) {
     console.warn(`[google-calendar] Meet room kept off event=${eventId}: it holds its own meeting link`);
@@ -664,7 +668,7 @@ export async function pushBookingToGoogle(eventId: string, opts?: { replaceFallb
  * host isn't connected, Google failed). Never throws.
  */
 export async function pushBookingAndGetMeetUrl(eventId: string): Promise<{ meetUrl: string | null }> {
-  const { meetUrl } = await pushWithMode(eventId, FILL_ONLY);
+  const { meetUrl } = await pushWithMode(eventId, fillOnly());
   return { meetUrl };
 }
 
@@ -682,7 +686,7 @@ async function pushWithMode(eventId: string, mode: PushMode): Promise<{ meetUrl:
 export const MEET_PUSH_DEADLINE_MS = 6_000;
 
 /** Past the deadline, the longest the caller waits for a store already committing. */
-export const STORE_WAIT_CAP_MS = 3_000;
+export const STORE_WAIT_CAP_MS = 1_500;
 
 /** The longest a detached push's follow-up waits for its caller's `after`. */
 export const FOLLOW_UP_WAIT_CAP_MS = 30_000;

@@ -13,7 +13,8 @@ vi.mock("firebase-admin/firestore", async () => (await import("@/test/google-oau
 const followUp = vi.hoisted(() => vi.fn(async (_eventId: string, _url: string, _o?: unknown) => undefined));
 vi.mock("@/lib/booking/meet-link-follow-up", () => ({ sendMeetLinkFollowUp: followUp }));
 const settle = vi.hoisted(() => vi.fn(async (_eventId: string) => undefined));
-vi.mock("@/lib/booking/meet-link-missing", () => ({ settleMeetLinkPending: settle }));
+const settleRows = vi.hoisted(() => vi.fn(async (_c: string, _e: string, _o: string) => undefined));
+vi.mock("@/lib/booking/meet-link-missing", () => ({ settleMeetLinkPending: settle, settleMeetLinkRows: settleRows }));
 
 import { SUB_PATH, state } from "@/test/google-oauth-harness";
 import { PAGE, connect, event, resetGcal, seedEvent, setGate, stubProvider, type StubProvider } from "@/test/gcal-harness";
@@ -54,6 +55,7 @@ beforeEach(() => {
   resetGcal();
   followUp.mockClear();
   settle.mockClear();
+  settleRows.mockClear();
   provider = stubProvider();
   provider.putEvent.mockImplementation(async (_t: string, _id: string, input: GcalEventInput) => ({
     created: true,
@@ -158,11 +160,27 @@ describe("a Google Meet booking", () => {
     expect(event().googleMeetOwnerUid).toBeUndefined();
   });
 
-  it("…but it still fills an empty link", async () => {
+  it("…but it still fills an empty link — and, emailing nobody, settles the booking's open 'link missing' rows", async () => {
     connect("host_a");
-    seedMeetBooking({ meetingUrl: null });
+    seedMeetBooking({ meetingUrl: null, contactId: "c1" });
     await pushBookingToGoogle("ev_1");
     expect(event()).toMatchObject({ meetingUrl: MEET_LINK, googleMeetOwnerUid: "host_a" });
+    expect(settleRows).toHaveBeenCalledWith("c1", "ev_1", "not_emailed");
+  });
+
+  it("a push that emails the link (in-time booking push) doesn't settle rows as not emailed", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: null, contactId: "c1" });
+    await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 });
+    expect(event().meetingUrl).toBe(MEET_LINK);
+    expect(settleRows).not.toHaveBeenCalled();
+  });
+
+  it("a fill-only push that stores nothing settles nothing", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: FALLBACK, contactId: "c1" });
+    await pushBookingToGoogle("ev_1");
+    expect(settleRows).not.toHaveBeenCalled();
   });
 
   it("a reassign of a booking with no recorded room owner: the new host's copy carries the link, no new room", async () => {

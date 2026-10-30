@@ -21,11 +21,11 @@ vi.mock("@/lib/booking/lifecycle", () => ({
 const g = vi.hoisted(() => ({
   order: [] as string[],
   within: vi.fn(async (_id: string): Promise<{ meetUrl: string | null; pending: boolean }> => ({ meetUrl: null, pending: false })),
-  push: vi.fn(async (_id: string) => undefined),
+  push: vi.fn(async (..._args: unknown[]) => undefined),
 }));
 vi.mock("@/lib/google-calendar/push", () => ({
   pushBookingAndGetMeetUrlWithin: async (id: string) => (g.order.push("push-within"), g.within(id)),
-  pushBookingToGoogle: async (id: string) => (g.order.push("push"), g.push(id)),
+  pushBookingToGoogle: async (...args: unknown[]) => (g.order.push("push"), g.push(...args)),
 }));
 vi.mock("@/lib/google-calendar/busy", () => ({ loadGoogleBusyForEvent: async () => [] }));
 
@@ -165,4 +165,38 @@ it("a reschedule mails the link as it stands after its push", async () => {
   const [m] = mails();
   expect(m.text).toContain(`Join the meeting: ${MEET_LINK}`);
   expect(invite(m)).toContain(`LOCATION:${MEET_LINK}`);
+});
+
+describe("a reschedule's push may replace the fallback only when its \"Updated:\" mail will go out", () => {
+  const reschedule = async () => {
+    const again = slotAt(5, 11);
+    const op = await rescheduleWithoutAvailabilityCheck("e1", again.startAt, again.endAt);
+    await runRescheduleSideEffects({
+      event: op.event,
+      page: op.page,
+      newRawToken: op.newToken,
+      publicEventUrl: "",
+      startAt: again.startAt,
+      endAt: again.endAt,
+      actor: "operator",
+    });
+  };
+
+  it("mail goes out: replaceFallback", async () => {
+    seed(MEET_PAGE, { status: "scheduled" });
+    await reschedule();
+    expect(g.push).toHaveBeenCalledWith("e1", { replaceFallback: true });
+  });
+
+  it.each([
+    ["the contact opted out", () => mem.seed("contacts/c1", { ...(mem.read("contacts/c1") as object), emailOptedOut: true })],
+    ["the contact has no address", () => mem.seed("contacts/c1", { ...(mem.read("contacts/c1") as object), email: null })],
+    ["sending isn't configured", () => mem.seed(`subAccounts/${SA}`, { agencyId: AGENCY })],
+  ])("%s: fill-only", async (_l, setup) => {
+    seed(MEET_PAGE, { status: "scheduled" });
+    setup();
+    await reschedule();
+    expect(g.push).toHaveBeenCalledTimes(1);
+    expect(g.push.mock.calls[0]).toEqual(["e1"]);
+  });
 });
