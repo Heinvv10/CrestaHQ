@@ -203,6 +203,43 @@ describe("isPublicPath — the gitpage build-settled callback", () => {
   });
 });
 
+describe("isPublicPath — the broadcast open pixel and click redirect", () => {
+  it("lets a mail client load the pixel and follow a link without a session", () => {
+    expect(isPublicPath("/t/o/b1.c1.sig")).toBe(true);
+    expect(isPublicPath("/t/c/b1.c1.k1.sig")).toBe(true);
+  });
+
+  it("opens exactly one token segment under each — nothing under or beside them", () => {
+    expect(isPublicPath("/t")).toBe(false);
+    expect(isPublicPath("/t/o")).toBe(false);
+    expect(isPublicPath("/t/c")).toBe(false);
+    expect(isPublicPath("/t/o/b1.c1.sig/extra")).toBe(false);
+    expect(isPublicPath("/t/c/b1.c1.k1.sig/extra")).toBe(false);
+    expect(isPublicPath("/t/x/token")).toBe(false);
+    expect(isPublicPath("/tx/o/token")).toBe(false);
+  });
+});
+
+describe("isPublicPath — the uploaded-logo route", () => {
+  it("lets email clients fetch an uploaded logo without a session", () => {
+    expect(isPublicPath("/api/brand/logo/agency/ag1")).toBe(true);
+    expect(isPublicPath("/api/brand/logo/sa/sa1")).toBe(true);
+  });
+
+  it("opens exactly the two scopes with one id — nothing under or beside them", () => {
+    expect(isPublicPath("/api/brand")).toBe(false);
+    expect(isPublicPath("/api/brand/logo")).toBe(false);
+    expect(isPublicPath("/api/brand/logo/agency")).toBe(false);
+    expect(isPublicPath("/api/brand/logo/other/x1")).toBe(false);
+    expect(isPublicPath("/api/brand/logo/sa/sa1/extra")).toBe(false);
+  });
+
+  it("keeps the upload routes behind a session", () => {
+    expect(isPublicPath("/api/agency/logo")).toBe(false);
+    expect(isPublicPath("/api/sub-accounts/sa1/logo")).toBe(false);
+  });
+});
+
 describe("isPublicPath — the ElevenLabs custom-LLM endpoint", () => {
   it("lets ElevenLabs reach the reply endpoint without a session (path secret + token are its auth)", () => {
     expect(isPublicPath("/api/webhooks/elevenlabs/llm/sa1/s3cr3t")).toBe(true);

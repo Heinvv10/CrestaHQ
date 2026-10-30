@@ -51,6 +51,9 @@ const GATE_FIELDS: Record<AgencyGateField, true> = {
   googleCalendarEnabledByAgency: true,
   webVoiceEnabledByAgency: true,
   dialerEnabledByAgency: true,
+  agentsEnabledByAgency: true,
+  sellOnlineEnabledByAgency: true,
+  aiOutboundSmsEnabledByAgency: true,
   emailAiDraftsEnabledByAgency: true,
 };
 
@@ -93,6 +96,7 @@ export const AUDIT_ALLOWED_VALUES: Record<
   // No changes: the row records THAT a reply was posted, never its text.
   "review.auto_replied": {},
   "calendar_import.workspace_changed": { calendarImportAllowed: GATE_VALUES },
+  "usage_rebilling.updated": { usageRebillingEnabled: GATE_VALUES },
 };
 
 export function auditValue(

@@ -31,6 +31,7 @@ export interface CreateQuotePayload {
   paymentDueDays?: number | null;
   autoCreateDealOnAccept?: boolean;
   dealId?: string | null;
+  requireSignature?: boolean;
 }
 
 export type QuoteWriteFailure = { ok: false; status: number; error: string };
@@ -95,6 +96,7 @@ export async function createQuote(opts: {
     territoryId: (contact.territoryId as string | null | undefined) ?? GLOBAL_TERRITORY_ID,
     ...sanitized,
     dealId,
+    requireSignature: kind === "quote" && body.requireSignature === true,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   };
