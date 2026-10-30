@@ -24,17 +24,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export type UsageDebtState = "none" | "grace" | "lapsed";
 
 /**
- * When the wall would fall, or null when it cannot: the wall is off, or either
- * date is unreadable. Never earlier than 7 days after the invoice was due AND
- * 7 days after the agency turned the paywall on, so turning it on never walls a
- * long-overdue client at once.
+ * When the wall would fall, or null when it cannot: the wall is off, or any of
+ * the three dates is unreadable. Never earlier than 7 days after the latest of
+ * the invoice's due date, the agency turning the paywall on, and the client's
+ * switch turning on, so neither turning the paywall on nor re-enabling a client
+ * walls a long-overdue workspace at once.
  */
 function wallAtMs(overdue: UsageOverdue): number | null {
   if (overdue.paywall !== true) return null;
-  const sinceMs = billingDateToMillis(overdue.since);
-  const enabledMs = billingDateToMillis(overdue.paywallSince ?? null);
-  if (sinceMs === null || enabledMs === null) return null;
-  return Math.max(sinceMs, enabledMs) + BILLING_GRACE_DAYS * DAY_MS;
+  const dates = [overdue.since, overdue.paywallSince, overdue.rebillingSince].map((d) =>
+    billingDateToMillis(d ?? null),
+  );
+  if (dates.some((d) => d === null)) return null;
+  return Math.max(...(dates as number[])) + BILLING_GRACE_DAYS * DAY_MS;
 }
 
 /**

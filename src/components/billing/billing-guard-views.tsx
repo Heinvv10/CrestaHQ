@@ -15,10 +15,13 @@ export function AgencyBillingNotice({
   state,
   usage,
   paywall,
+  isOwner,
 }: {
   state: "pending" | "grace" | "lapsed";
   usage: boolean;
   paywall: boolean;
+  /** Client billing is owner-only, so staff get the notice without the link. */
+  isOwner: boolean;
 }) {
   const copy = usage
     ? state === "grace"
@@ -35,10 +38,15 @@ export function AgencyBillingNotice({
     <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
       <span>
-        {copy}{" "}
-        <Link href="/agency/billing" className="font-medium underline">
-          Manage in Client billing
-        </Link>
+        {copy}
+        {isOwner && (
+          <>
+            {" "}
+            <Link href="/agency/billing" className="font-medium underline">
+              Manage in Client billing
+            </Link>
+          </>
+        )}
       </span>
     </div>
   );

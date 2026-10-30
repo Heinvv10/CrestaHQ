@@ -22,6 +22,11 @@ vi.mock("@/lib/firebase/admin", async () => {
   };
 });
 vi.mock("@/lib/agency/policy", () => ({ invalidateAgencyPolicyCache: vi.fn() }));
+// No real waits between the re-check retries.
+vi.mock("@/lib/server/usage-retry-delay", async (orig) => ({
+  ...(await orig<typeof import("@/lib/server/usage-retry-delay")>()),
+  sleep: async () => {},
+}));
 
 const { PATCH } = await import("./route");
 const db = () => mem.ref!;

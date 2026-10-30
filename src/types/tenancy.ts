@@ -955,10 +955,16 @@ export interface UsageOverdue {
   paywall: boolean;
   /**
    * The agency's `usagePaywallEnabledAt` when this was written. The wall is at
-   * the later of `since` + 7 days and this + 7 days; without a readable value
+   * the latest of `since`, this and `rebillingSince`, plus 7 days; without a readable value
    * the guard shows only the banner.
    */
   paywallSince?: Timestamp | Date | null;
+  /**
+   * The client's `usageRebillingSince` when this was written (stamped each time
+   * the client switch turns on). Re-enabling a client starts a fresh 7 days
+   * before the wall; without a readable value the guard shows only the banner.
+   */
+  rebillingSince?: Timestamp | Date | null;
 }
 
 export interface AccountContact {

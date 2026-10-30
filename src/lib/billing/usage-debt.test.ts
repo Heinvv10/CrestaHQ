@@ -13,8 +13,9 @@ const overdue = (
   since: Date | null,
   paywall: boolean | undefined,
   paywallSince: Date | null | undefined = new Date(0),
+  rebillingSince: Date | null | undefined = new Date(0),
 ): UsageOverdue =>
-  ({ chargeId: "usage_sa1_2026-10", since, amountCents: 5000, currency: "zar", usageMonth: "2026-10", paywall, paywallSince }) as UsageOverdue;
+  ({ chargeId: "usage_sa1_2026-10", since, amountCents: 5000, currency: "zar", usageMonth: "2026-10", paywall, paywallSince, rebillingSince }) as UsageOverdue;
 const billing = (status: SubAccountBilling["status"], extra: Partial<SubAccountBilling> = {}): SubAccountBilling =>
   ({ status, ...extra }) as SubAccountBilling;
 
@@ -68,6 +69,35 @@ describe("turning the paywall on starts its own 7 days", () => {
     expect(usageDebtState({ ...overdue(old, true), paywallSince: undefined }, NOW)).toBe("grace");
     expect(usageDebtState(overdue(old, true, "x" as unknown as Date), NOW)).toBe("grace");
     expect(usageGraceEndsAt(overdue(old, true, null))).toBeNull();
+  });
+});
+
+describe("re-enabling a client starts its own 7 days", () => {
+  const old = dueDaysAgo(400);
+
+  it("a long-overdue client re-enabled yesterday is not walled: banner, countdown to 6 days", () => {
+    const o = overdue(old, true, new Date(0), dueDaysAgo(1));
+    expect(usageDebtState(o, NOW)).toBe("grace");
+    expect(usageGraceEndsAt(o)).toBe(dueDaysAgo(1).getTime() + BILLING_GRACE_DAYS * DAY);
+  });
+
+  it("walled once 7 days have passed since the client was re-enabled", () => {
+    expect(usageDebtState(overdue(old, true, new Date(0), dueDaysAgo(BILLING_GRACE_DAYS + 1)), NOW)).toBe("lapsed");
+  });
+
+  it("the wall time is the latest of due, paywall-on and client-on", () => {
+    const o = overdue(dueDaysAgo(30), true, dueDaysAgo(10), dueDaysAgo(3));
+    expect(usageGraceEndsAt(o)).toBe(dueDaysAgo(3).getTime() + BILLING_GRACE_DAYS * DAY);
+    const p = overdue(dueDaysAgo(30), true, dueDaysAgo(2), dueDaysAgo(5));
+    expect(usageGraceEndsAt(p)).toBe(dueDaysAgo(2).getTime() + BILLING_GRACE_DAYS * DAY);
+  });
+
+  it("no readable client-on date is a banner, never a wall (fails open)", () => {
+    for (const missing of [null, undefined, "x" as unknown as Date]) {
+      const o = { ...overdue(old, true), rebillingSince: missing } as UsageOverdue;
+      expect(usageDebtState(o, NOW)).toBe("grace");
+      expect(usageGraceEndsAt(o)).toBeNull();
+    }
   });
 });
 

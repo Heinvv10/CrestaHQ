@@ -60,6 +60,7 @@ export function BillingGuard({ children }: { children: ReactNode }) {
           state={state}
           usage={blockedBy === "usage"}
           paywall={subAccount.usageOverdue?.paywall === true}
+          isOwner={agencyRole === "owner"}
         />
         {children}
       </>

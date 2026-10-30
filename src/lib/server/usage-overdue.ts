@@ -4,6 +4,7 @@ import { Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { localDay } from "@/lib/billing/usage";
 import { inPool, reason, toMillis } from "@/lib/server/usage-billing-shared";
+import { backoffFor, sleep } from "@/lib/server/usage-retry-delay";
 
 /**
  * `subAccounts/{id}.usageOverdue`: the oldest overdue usage charge, which the
@@ -61,7 +62,7 @@ export async function refreshUsageOverdue(
         )
         .sort((a, b) => a.dueMs - b.dueMs)[0];
       const current = sub.usageOverdue as
-        | { chargeId?: string; paywall?: boolean }
+        | { chargeId?: string; paywall?: boolean; paywallSince?: unknown; rebillingSince?: unknown }
         | null
         | undefined;
       if (!oldest) {
@@ -72,11 +73,13 @@ export async function refreshUsageOverdue(
       // When the paywall was last turned on: the wall waits 7 days from then, so
       // turning it on never walls a long-overdue client at once.
       const paywallSinceMs = paywall ? toMillis(agency?.usagePaywallEnabledAt) : null;
-      const currentSinceMs = toMillis((current as { paywallSince?: unknown } | null | undefined)?.paywallSince);
+      // When this client's switch last turned on: re-enabling a client gives it a fresh 7 days too.
+      const rebillingSinceMs = toMillis(sub.usageRebillingSince);
       if (
         current?.chargeId === oldest.d.id &&
         current.paywall === paywall &&
-        currentSinceMs === paywallSinceMs
+        toMillis(current.paywallSince) === paywallSinceMs &&
+        toMillis(current.rebillingSince) === rebillingSinceMs
       ) {
         return;
       }
@@ -90,6 +93,7 @@ export async function refreshUsageOverdue(
           usageMonth: typeof c.usageMonth === "string" ? c.usageMonth : null,
           paywall,
           paywallSince: paywallSinceMs === null ? null : Timestamp.fromMillis(paywallSinceMs),
+          rebillingSince: rebillingSinceMs === null ? null : Timestamp.fromMillis(rebillingSinceMs),
         },
       });
     });
@@ -123,6 +127,7 @@ export async function refreshAgencyUsageOverdue(
       return true;
     } catch (err) {
       console.warn(`[usage-overdue] agency refresh failed ag=${agencyId} attempt=${attempt}/${attempts}: ${reason(err)}`);
+      if (attempt < attempts) await sleep(backoffFor(attempt));
     }
   }
   return false;
@@ -154,6 +159,7 @@ export async function sweepUsageOverdue(now: Date = new Date(), attempts = 3): P
     } catch (err) {
       console.warn(`[usage-overdue] sweep scan failed attempt=${attempt}/${attempts}: ${reason(err)}`);
       if (attempt >= attempts) throw err;
+      await sleep(backoffFor(attempt));
     }
   }
 }

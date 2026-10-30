@@ -39,6 +39,7 @@ const overdue = (daysAgo: number, paywall: boolean | undefined) => ({
   usageMonth: "2026-09",
   paywall,
   paywallSince: new Date(0),
+  rebillingSince: new Date(0),
 });
 const setSub = (extra: Record<string, unknown>) => {
   ctx.sub.value = { id: "sa1", agencyId: "ag1", billing: null, ...extra };
@@ -117,6 +118,14 @@ describe("wall: past the grace period", () => {
     expect(button("Pay & restore access")).toBeTruthy();
   });
 
+  it("a long-overdue client whose switch was just turned back on is not walled: banner with a fresh countdown", async () => {
+    setSub({ usageOverdue: { ...overdue(400, true), rebillingSince: new Date(Date.now() - 2 * DAY) } });
+    await render();
+    expect(text()).toContain("WORKSPACE CONTENT");
+    expect(text()).not.toContain("Usage invoice unpaid");
+    expect(text()).toMatch(/Access pauses in\s*5 days/);
+  });
+
   it("a long-overdue client is not walled the moment the paywall is turned on: banner with a fresh 7-day countdown", async () => {
     setSub({ usageOverdue: { ...overdue(400, true), paywallSince: new Date(Date.now() - DAY) } });
     await render();
@@ -142,6 +151,16 @@ describe("wall: past the grace period", () => {
     expect(text()).toContain("WORKSPACE CONTENT");
     expect(text()).toContain("unpaid past the grace period");
     expect(text()).not.toContain("Usage invoice unpaid");
+  });
+
+  it("the agency notice links to Client billing for the owner only, since that page is owner-only", async () => {
+    setSub({ usageOverdue: overdue(20, true) });
+    for (const [agencyRole, link] of [["owner", true], ["staff", false]] as const) {
+      ctx.auth.value = { agencyId: "ag1", agencyRole };
+      await render();
+      expect(text()).toContain("WORKSPACE CONTENT");
+      expect(container.querySelector('a[href="/agency/billing"]') !== null).toBe(link);
+    }
   });
 
   it("never walls agency staff either: any agency user of the workspace's agency gets in", async () => {

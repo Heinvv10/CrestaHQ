@@ -17,6 +17,14 @@ vi.mock("@/lib/comms/platform-email", () => ({
   noPlatformSender: () => new Error("no sender"),
 }));
 vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({ name: "Agency" }) }));
+// The retry waits are replaced by a recorder, so the tests stay fast and can assert the backoff.
+const waits = vi.hoisted(() => ({ ms: [] as number[] }));
+vi.mock("@/lib/server/usage-retry-delay", async (orig) => ({
+  ...(await orig<typeof import("@/lib/server/usage-retry-delay")>()),
+  sleep: async (ms: number) => {
+    waits.ms.push(ms);
+  },
+}));
 
 const { runUsageClose } = await import("./usage-billing-service");
 const { refreshUsageOverdue, refreshAgencyUsageOverdue, sweepUsageOverdue } = await import("./usage-overdue");
@@ -26,7 +34,10 @@ const { setClientUsageRebilling, setAgencyUsageRebilling, setAgencyUsagePaywall 
 
 setupUsageBillingTests();
 // Tests wrap Firestore methods; put them back so a later test never wraps a wrapper.
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  waits.ms.length = 0;
+});
 
 /** The close ran on the 1st; the invoice is due 14 days later. */
 const DUE_DAY = new Date(2026, 9, 15, 5, 0);
@@ -87,6 +98,28 @@ describe("when the flag exists", () => {
     expect(out).toMatchObject({ closed: 1, charged: 0, failed: 0 });
     expect(charges()).toHaveLength(0);
     expect(mem.read("subAccounts/sa1/usage/2026-09")?.closed).toMatchObject({ totalCents: 0, chargeId: null });
+  });
+
+  it("carries when the client's switch last turned on, and re-enabling the client updates a standing flag", async () => {
+    await emailedCharge();
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    expect(toMs(flag()?.rebillingSince)).toBe(new Date(2026, 7, 1).getTime());
+    // Off, then on again: the switch re-stamps usageRebillingSince and the flag follows.
+    await setClientUsageRebilling("sa1", false, "own");
+    expect(flag()).toBeNull();
+    await new Promise((r) => setTimeout(r, 5));
+    await setClientUsageRebilling("sa1", true, "own");
+    expect(toMs(mem.read("subAccounts/sa1")!.usageRebillingSince)).toBeGreaterThan(new Date(2026, 7, 1).getTime());
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    expect(toMs(flag()?.rebillingSince)).toBe(toMs(mem.read("subAccounts/sa1")!.usageRebillingSince));
+  });
+
+  it("a changed client-on date alone updates the standing flag", async () => {
+    await emailedCharge();
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    sub({ usageRebillingSince: new Date(2026, 8, 20) });
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    expect(toMs(flag()?.rebillingSince)).toBe(new Date(2026, 8, 20).getTime());
   });
 
   it("a manual charge, a paid one and a waived one are not flagged", async () => {
@@ -261,7 +294,9 @@ describe("fails open: a read error never walls", () => {
     expect(flag()).toBeTruthy();
 
     for (let i = 0; i < 3; i++) spy.mockImplementationOnce(() => { throw new Error("firestore unavailable"); });
+    waits.ms.length = 0;
     await expect(sweepUsageOverdue(DAY_AFTER)).rejects.toThrow("firestore unavailable");
+    expect(waits.ms).toEqual([250, 750]);
   });
 
   it("the daily close counts a sweep that still fails as a failure, and keeps its other results", async () => {
@@ -292,6 +327,7 @@ describe("re-checking an agency's flagged clients", () => {
     agency({ usagePaywallEnabled: true });
     expect(await refreshAgencyUsageOverdue("ag1", DAY_AFTER)).toBe(true);
     expect(flag()?.paywall).toBe(true);
+    expect(waits.ms).toEqual([250, 750]);
   });
 
   it("reports failure after three failed scans, and leaves the flags to the daily sweep", async () => {
@@ -301,6 +337,8 @@ describe("re-checking an agency's flagged clients", () => {
     const spy = vi.spyOn(mem.db, "collection");
     for (let i = 0; i < 3; i++) spy.mockImplementationOnce(() => { throw new Error("unavailable"); });
     expect(await refreshAgencyUsageOverdue("ag1", DAY_AFTER)).toBe(false);
+    // Waits between the attempts, not after the last one.
+    expect(waits.ms).toEqual([250, 750]);
     expect(flag()?.paywall).toBe(false);
     expect(await sweepUsageOverdue(DAY_AFTER)).toBe(1);
     expect(flag()?.paywall).toBe(true);
