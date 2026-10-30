@@ -176,15 +176,17 @@ describe("a stuck attempt", () => {
 });
 
 describe("an attempt whose key is no longer the workspace's", () => {
+  /** 73 h after the default buy was opened (OLD = 25 h before NOW). */
+  const LATE = new Date(NOW.getTime() + 48 * HOUR);
   const closedWithoutAsking = () => {
     expect(calls).toHaveLength(0);
     expect(attempt(1)).toMatchObject({ state: "refused" });
   };
 
-  it("open and past 24 h after a key change: the order is expired and the attempt closed, Paystack never asked", async () => {
+  it("open and past 72 h after a key change: the order is expired and the attempt closed, Paystack never asked", async () => {
     seedBuy(1);
     seedSub(SA, OTHER_KEY);
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0, expired: 1, retired: 1 });
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ checked: 0, expired: 1, retired: 1 });
     expect(order(1)).toMatchObject({ status: "expired" });
     closedWithoutAsking();
     expect(attempt(1).reason).toMatch(/no longer connected/);
@@ -193,19 +195,23 @@ describe("an attempt whose key is no longer the workspace's", () => {
   it("also after a disconnect", async () => {
     seedBuy(1);
     await mem.db.doc(`subAccounts/${SA}/private/paystackConnection`).delete();
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ expired: 1, retired: 1 });
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ expired: 1, retired: 1 });
     expect(order(1)).toMatchObject({ status: "expired" });
     closedWithoutAsking();
   });
 
-  it("under 24 h it waits", async () => {
-    seedBuy(1, new Date(NOW.getTime() - 22 * HOUR));
+  it("the boundary is 72 h, not 24: Paystack retries a webhook for about that long", async () => {
+    seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
     seedSub(SA, OTHER_KEY);
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ expired: 0, retired: 0 });
+    const at = (hoursAfterOpen: number) => new Date(NOW.getTime() - 2 * HOUR + hoursAfterOpen * HOUR);
+    expect(await expireStalePaystackOrders(at(25))).toMatchObject({ expired: 0, retired: 0 });
+    expect(await expireStalePaystackOrders(at(71))).toMatchObject({ expired: 0, retired: 0 });
     expect(attempt(1)).toMatchObject({ state: "open" });
+    expect(await expireStalePaystackOrders(at(72))).toMatchObject({ expired: 1, retired: 1 });
+    expect(order(1)).toMatchObject({ status: "expired" });
   });
 
-  it("flagged by the key change and past 24 h: expired too, with the order's flag kept", async () => {
+  it("flagged by the key change and past 72 h: expired too, with the order's flag kept", async () => {
     seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
     seedSub(SA, OTHER_KEY);
     await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
@@ -213,10 +219,10 @@ describe("an attempt whose key is no longer the workspace's", () => {
     expect(order(1)).toMatchObject({ attentionOpen: true });
     const flag = order(1).attention;
 
-    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 20 * HOUR))).toMatchObject({ retired: 0 });
+    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 68 * HOUR))).toMatchObject({ retired: 0 });
     expect(order(1)).toMatchObject({ status: "pending" });
 
-    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 23 * HOUR))).toMatchObject({ expired: 1, retired: 1 });
+    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 71 * HOUR))).toMatchObject({ expired: 1, retired: 1 });
     expect(order(1)).toMatchObject({ status: "expired", attentionOpen: true, attention: flag });
     closedWithoutAsking();
     expect(attempt(1).reason).toContain("Closed after 24 h");
@@ -228,7 +234,7 @@ describe("an attempt whose key is no longer the workspace's", () => {
     seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
     seedSub(SA, OTHER_KEY);
     await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
-    await expireStalePaystackOrders(new Date(NOW.getTime() + 23 * HOUR));
+    await expireStalePaystackOrders(new Date(NOW.getTime() + 71 * HOUR));
     seedSub(SA, KEY);
     const { reconcilePaystackCharge } = await import("@/lib/paystack/payment-link-reconciler");
     verifyAnswer = (reference) => verified({ reference, status: "success", amount: 49_900 });
@@ -238,19 +244,19 @@ describe("an attempt whose key is no longer the workspace's", () => {
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
+  it("a PAID order with a leftover open old-key attempt is never expired", async () => {
+    seedBuy(1, OLD, { status: "paid", paidAt: new Date() });
+    seedSub(SA, OTHER_KEY);
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ expired: 0, retired: 0 });
+    expect(order(1)).toMatchObject({ status: "paid" });
+    expect(attempt(1)).toMatchObject({ state: "open" });
+  });
+
   it("a held order is never expired this way: money arrived for it", async () => {
     seedBuy(1, OLD, { heldAt: new Date(), attention: "Held", attentionOpen: true });
     mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Held" });
     seedSub(SA, OTHER_KEY);
-    await expireStalePaystackOrders(NOW);
-    expect(order(1)).toMatchObject({ status: "pending" });
-    expect(attempt(1)).toMatchObject({ state: "flagged" });
-  });
-
-  it("a flagged attempt still on the workspace's current key is left alone (a held mismatch, a late payment)", async () => {
-    seedBuy(1);
-    mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Mismatch" });
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ retired: 0, expired: 0 });
+    await expireStalePaystackOrders(LATE);
     expect(order(1)).toMatchObject({ status: "pending" });
     expect(attempt(1)).toMatchObject({ state: "flagged" });
   });
@@ -259,8 +265,74 @@ describe("an attempt whose key is no longer the workspace's", () => {
     seedBuy(1, OLD, { status: "failed", attention: "Paid, but failed", attentionOpen: true });
     mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Paid, but failed" });
     seedSub(SA, OTHER_KEY);
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ retired: 0 });
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ retired: 0 });
     expect(attempt(1)).toMatchObject({ state: "flagged" });
+  });
+});
+
+describe("a flagged buy whose key is the workspace's again", () => {
+  /** Opened 2 h before NOW, flagged by a disconnect, same key reconnected: 25 h old at this time. */
+  const AT = new Date(NOW.getTime() + 23 * HOUR);
+  async function disconnectAndReconnectSameKey() {
+    seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
+    await mem.db.doc(`subAccounts/${SA}/private/paystackConnection`).delete();
+    await flagStaleAttempts(SA, null);
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+    expect(order(1)).toMatchObject({ status: "pending", attentionOpen: true });
+    seedSub(SA, KEY);
+  }
+
+  it.each(["abandoned", "failed"])("%s at 25 h: the order expires (its flag kept) and the attempt closes", async (status) => {
+    await disconnectAndReconnectSameKey();
+    const flag = order(1).attention;
+    verifyAnswer = (reference) => verified({ reference, status });
+    expect(await expireStalePaystackOrders(AT)).toMatchObject({ checked: 1, expired: 1 });
+    expect(order(1)).toMatchObject({ status: "expired", attentionOpen: true, attention: flag });
+    expect(attempt(1)).toMatchObject({ state: "refused" });
+    expect(attempt(1).reason).toContain(`Paystack: ${status}`);
+  });
+
+  it("not_found at 25 h closes it too", async () => {
+    await disconnectAndReconnectSameKey();
+    verifyAnswer = () => refused(404, "Transaction reference not found");
+    await expireStalePaystackOrders(AT);
+    expect(order(1)).toMatchObject({ status: "expired" });
+    expect(attempt(1)).toMatchObject({ state: "refused" });
+  });
+
+  it("success at 25 h reconciles it: paid, the flag lifted, one email", async () => {
+    await disconnectAndReconnectSameKey();
+    verifyAnswer = (reference) => verified({ reference, status: "success", amount: 49_900 });
+    expect(await expireStalePaystackOrders(AT)).toMatchObject({ checked: 1, reconciled: 1 });
+    await flushAfterResponse();
+    expect(order(1)).toMatchObject({ status: "paid", attentionOpen: false, attention: null });
+    expect(attempt(1)).toMatchObject({ state: "settled" });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("under 24 h it is not asked", async () => {
+    await disconnectAndReconnectSameKey();
+    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 20 * HOUR))).toMatchObject({ checked: 0 });
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+  });
+
+  it("still ongoing: left flagged, and the ask counts against the workspace cap like any other", async () => {
+    for (let i = 1; i <= 5; i += 1) {
+      seedBuy(i, new Date(NOW.getTime() - 2 * HOUR - i * 1000));
+    }
+    await flagStaleAttempts(SA, null);
+    seedSub(SA, KEY);
+    verifyAnswer = (reference) => verified({ reference, status: "ongoing" });
+    expect(await expireStalePaystackOrders(AT)).toMatchObject({ checked: 3, skipped: 2 });
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+  });
+
+  it("a held order's flagged attempt is not asked about (the money is already accounted for)", async () => {
+    seedBuy(1, OLD, { heldAt: new Date(), attention: "Held", attentionOpen: true });
+    mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Held" });
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0, expired: 0 });
+    expect(calls).toHaveLength(0);
+    expect(order(1)).toMatchObject({ status: "pending" });
   });
 });
 
@@ -439,7 +511,7 @@ describe("the run's summary", () => {
       seedBuy(1);
       seedSub(SA, OTHER_KEY);
       const tx = vi.spyOn(mem.db, "runTransaction").mockRejectedValue(new Error("firestore unavailable"));
-      const summary = await expireStalePaystackOrders(NOW);
+      const summary = await expireStalePaystackOrders(new Date(NOW.getTime() + 48 * HOUR));
       tx.mockRestore();
       expect(summary).toMatchObject({ writeErrors: 1, retired: 0, errors: 0 });
     });

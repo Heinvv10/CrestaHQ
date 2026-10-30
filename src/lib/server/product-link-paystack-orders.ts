@@ -140,3 +140,9 @@ export async function expireOrderKeepingFlag(orderId: string): Promise<"expired"
     return "expired" as const;
   });
 }
+
+/** A buy-page order still pending and not held: its checkout can still be asked about. */
+export async function isOrderPendingUnheld(orderId: string): Promise<boolean> {
+  const order = (await getAdminDb().doc(`orders/${orderId}`).get()).data() as Partial<Order> | undefined;
+  return !!order && order.source === "product_link" && order.status === "pending" && !order.heldAt;
+}

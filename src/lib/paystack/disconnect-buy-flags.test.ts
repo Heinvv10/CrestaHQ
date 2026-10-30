@@ -92,7 +92,7 @@ describe("disconnecting Paystack with abandoned buys", () => {
     expect(mem.read("orders/ord1")).toMatchObject({ status: "expired" });
   });
 
-  it("a young reference Paystack doesn't know is flagged at the disconnect, then expired 24 h later without asking Paystack", async () => {
+  it("a young reference Paystack doesn't know is flagged at the disconnect, then expired 72 h later without asking Paystack", async () => {
     seedBuy(1, 1);
     const calls = stubPaystack(() => refused(404, "Transaction reference not found"));
     await disconnect();
@@ -100,10 +100,10 @@ describe("disconnecting Paystack with abandoned buys", () => {
     expect(mem.read("orders/ord1")).toMatchObject({ status: "pending", attentionOpen: true });
     const asked = calls.length;
 
-    await expireStalePaystackOrders(new Date(Date.now() + 22 * HOUR));
+    await expireStalePaystackOrders(new Date(Date.now() + 70 * HOUR));
     expect(mem.read("orders/ord1")).toMatchObject({ status: "pending" });
 
-    await expireStalePaystackOrders(new Date(Date.now() + 25 * HOUR));
+    await expireStalePaystackOrders(new Date(Date.now() + 73 * HOUR));
     expect(mem.read("orders/ord1")).toMatchObject({ status: "expired", attentionOpen: true });
     expect(mem.read("paymentAttempts/po-ord1")).toMatchObject({ state: "refused" });
     expect(calls).toHaveLength(asked);
