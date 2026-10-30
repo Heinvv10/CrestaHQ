@@ -94,3 +94,23 @@ it("fetches the roster once an imported event is on screen", async () => {
   await show([imported()]);
   expect(members.ids).toContain("sa1");
 });
+
+it("lists real events before imported ones within a day, so busy blocks never hide one behind +N more", async () => {
+  const at = (h: number) => Timestamp.fromDate(new Date(noon().getTime() + h * 3_600_000));
+  // Three imported blocks start before the one real event; only three chips fit.
+  await show([
+    imported({ id: "g1", startAt: at(-3), endAt: at(-2) }),
+    imported({ id: "g2", startAt: at(-2), endAt: at(-1) }),
+    imported({ id: "g3", startAt: at(-1), endAt: at(0) }),
+    event({ id: "real", title: "Client call", startAt: at(2), endAt: at(3) }),
+  ]);
+  expect(document.body.textContent).toContain("Client call");
+  expect(chips()).toHaveLength(2);
+  expect(document.body.textContent).toContain("+1 more");
+});
+
+it("names the owner in the sheet from the shared roster", async () => {
+  await show([imported()]);
+  await act(async () => chips()[0].click());
+  expect(document.querySelector('[data-testid="imported-event-sheet"]')?.textContent).toContain("Bob Jones");
+});

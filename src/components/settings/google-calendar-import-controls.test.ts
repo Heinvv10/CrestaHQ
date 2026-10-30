@@ -16,7 +16,7 @@ vi.mock("@/context/sub-account-context", () => ({
   useSubAccount: () => ({ isAdmin: ctx.isAdmin, subAccountId: "sa1" }),
 }));
 
-const { GoogleImportControls } = await import("./google-calendar-import-controls");
+const { GoogleImportControls, POLL_MAX, POLL_MS } = await import("./google-calendar-import-controls");
 type Status = Parameters<typeof GoogleImportControls>[0]["status"];
 
 const fetchMock = vi.fn();
@@ -34,6 +34,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await act(async () => root.unmount());
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   document.body.innerHTML = "";
 });
@@ -116,4 +117,74 @@ it("shows a failed sync and the first-sync wait", async () => {
   await act(async () => root.unmount());
   await show({ ...connected, importMode: "busy" });
   expect(byId("gcal-import-status")?.textContent).toContain("First sync in progress");
+});
+
+const status = () => byId("gcal-import-status")?.textContent ?? "";
+const STALE = new Date(Date.now() - 3 * 86_400_000).toISOString();
+const tick = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
+const rerender = (st: Status) =>
+  act(async () => root.render(createElement(GoogleImportControls, { status: st, onChanged })));
+
+it("pluralises the event count", async () => {
+  await show({ ...connected, importMode: "busy", importLastSyncAt: new Date().toISOString(), importedCount: 1 });
+  expect(status()).toMatch(/^1 event, synced/);
+});
+
+it("off to busy with a stale sync time shows the first sync and polls until the new pass reports", async () => {
+  vi.useFakeTimers();
+  await show({ ...connected, importMode: "off", importLastSyncAt: STALE, importedCount: 0 });
+  await click("gcal-import-mode-busy");
+  // The status the page still holds is the old pass's: it must not be read as this one's.
+  await rerender({ ...connected, importMode: "busy", importLastSyncAt: STALE, importedCount: 0 });
+  expect(status()).toContain("First sync in progress");
+  const before = onChanged.mock.calls.length;
+  await tick(POLL_MS);
+  expect(onChanged.mock.calls.length).toBe(before + 1);
+  // The new pass reports.
+  await rerender({ ...connected, importMode: "busy", importLastSyncAt: new Date().toISOString(), importedCount: 2 });
+  expect(status()).toMatch(/^2 events, synced/);
+  const after = onChanged.mock.calls.length;
+  await tick(POLL_MS * 3);
+  expect(onChanged.mock.calls.length).toBe(after);
+});
+
+it("busy to details does not keep showing the last pass's failure", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const failed: Status = { ...connected, importMode: "busy", importStatus: "error", importError: "Google said no" };
+  await show(failed);
+  expect(status()).toContain("Last sync failed");
+  await click("gcal-import-mode-details");
+  await rerender({ ...failed, importMode: "details" });
+  expect(status()).toContain("First sync in progress");
+  expect(status()).not.toContain("Google said no");
+  const before = onChanged.mock.calls.length;
+  await tick(POLL_MS);
+  expect(onChanged.mock.calls.length).toBe(before + 1);
+});
+
+it("stops polling after POLL_MAX reads and then shows what the status says", async () => {
+  vi.useFakeTimers();
+  const noSync: Status = { ...connected, importMode: "busy" };
+  await show(noSync);
+  const before = onChanged.mock.calls.length;
+  await tick(POLL_MS * (POLL_MAX + 4));
+  expect(onChanged.mock.calls.length).toBe(before + POLL_MAX);
+});
+
+it("switching off, or a refused switch-on, does not start the first-sync wait", async () => {
+  vi.useFakeTimers();
+  await show({ ...connected, importMode: "busy", importLastSyncAt: new Date().toISOString(), importedCount: 1 });
+  await click("gcal-import-mode-off");
+  await rerender({ ...connected, importMode: "off" });
+  const before = onChanged.mock.calls.length;
+  await tick(POLL_MS * 3);
+  expect(onChanged.mock.calls.length).toBe(before);
+
+  fetchMock.mockResolvedValue({ ok: false, json: async () => ({ error: "An admin hasn't allowed it." }) });
+  await click("gcal-import-mode-busy");
+  await rerender({ ...connected, importMode: "off" });
+  const refused = onChanged.mock.calls.length;
+  await tick(POLL_MS * 3);
+  expect(onChanged.mock.calls.length).toBe(refused);
 });

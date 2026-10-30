@@ -12,9 +12,6 @@ import type { CalendarEvent } from "@/types/events";
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { uid: "ann" } }) }));
 vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ({ isAdmin: true, subAccountId: "sa1" }) }));
-vi.mock("@/hooks/use-sub-account-members", () => ({
-  useSubAccountMembers: () => ({ members: [{ uid: "bob", displayName: "Bob Jones", email: "", role: "admin" }] }),
-}));
 vi.mock("@/lib/firebase/client", () => ({ getFirebaseDb: () => ({}) }));
 vi.mock("@/lib/firestore/events", () => ({ updateEvent: vi.fn(), deleteEvent: vi.fn() }));
 
@@ -45,8 +42,14 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+const roster = [
+  { uid: "bob", displayName: "Bob Jones" },
+  { uid: "eve", displayName: "eve@example.com" },
+];
 const show = (event: CalendarEvent) =>
-  act(async () => root.render(createElement(EventDialog, { open: true, onOpenChange: vi.fn(), contacts: [], event })));
+  act(async () =>
+    root.render(createElement(EventDialog, { open: true, onOpenChange: vi.fn(), contacts: [], event, members: roster })),
+  );
 const text = () => document.body.textContent ?? "";
 const buttons = () => [...document.body.querySelectorAll("button")].map((b) => b.textContent?.trim());
 
@@ -82,6 +85,31 @@ it("an all-day import reads All day", async () => {
     }),
   );
   expect(text()).toContain("All day");
+});
+
+it("names an owner who has only an email as a team member", async () => {
+  await show(imported({ importOwnerUid: "eve" }));
+  expect(text()).toContain("a team member");
+  expect(text()).not.toContain("eve@example.com");
+});
+
+it("a single all-day event shows one date, not a range", async () => {
+  await show(
+    imported({
+      allDay: true,
+      startAt: Timestamp.fromDate(new Date(2030, 0, 1)),
+      endAt: Timestamp.fromDate(new Date(2030, 0, 2)),
+    }),
+  );
+  expect(text()).not.toMatch(/ - .*All day/);
+  await show(
+    imported({
+      allDay: true,
+      startAt: Timestamp.fromDate(new Date(2030, 0, 1)),
+      endAt: Timestamp.fromDate(new Date(2030, 0, 3)),
+    }),
+  );
+  expect(text()).toMatch(/ - .*All day/);
 });
 
 it("a manual event still opens the editable form", async () => {

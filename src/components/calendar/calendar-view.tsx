@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { EventDialog } from "@/components/calendar/event-dialog";
+import { CalendarEventChip } from "@/components/calendar/calendar-event-chip";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
 import { importedOwnerName } from "@/lib/calendar/imported-event";
@@ -37,16 +38,6 @@ function startOfGrid(monthStart: Date): Date {
   d.setDate(d.getDate() - weekday);
   d.setHours(0, 0, 0, 0);
   return d;
-}
-
-function formatTime(d: Date): string {
-  return d
-    .toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: d.getMinutes() === 0 ? undefined : "2-digit",
-    })
-    .toLowerCase()
-    .replace(" ", "");
 }
 
 export function CalendarView({
@@ -104,8 +95,11 @@ export function CalendarView({
       else map.set(key, [ev]);
     }
     for (const bucket of map.values()) {
+      // Real events first: imported busy blocks must never push one behind "+N more".
       bucket.sort(
-        (a, b) => (toDate(a.startAt)?.getTime() ?? 0) - (toDate(b.startAt)?.getTime() ?? 0),
+        (a, b) =>
+          Number(isImportedEvent(a)) - Number(isImportedEvent(b)) ||
+          (toDate(a.startAt)?.getTime() ?? 0) - (toDate(b.startAt)?.getTime() ?? 0),
       );
     }
     return map;
@@ -246,52 +240,20 @@ export function CalendarView({
 
                 <div className="space-y-1">
                   {visible.map((ev) => {
-                    const start = toDate(ev.startAt);
                     const contact = ev.contactId
                       ? contactById.get(ev.contactId)
                       : null;
-                    const imported = isImportedEvent(ev);
                     // An imported event shows whose Google Calendar it is from.
-                    const who = imported
+                    const who = isImportedEvent(ev)
                       ? importedOwnerName(members, ev.importOwnerUid)?.split(" ")[0]
                       : contact?.name?.split(" ")[0];
                     return (
-                      <button
+                      <CalendarEventChip
                         key={ev.id}
-                        type="button"
-                        onClick={(e) => openEdit(ev, e)}
-                        title={imported ? "Imported from Google Calendar" : undefined}
-                        data-imported={imported ? "true" : undefined}
-                        className={cn(
-                          "group/event flex w-full items-center gap-1 truncate rounded-md border px-1.5 py-1 text-left text-[11px] font-medium leading-tight transition-colors hover:border-primary/30",
-                          imported
-                            ? "border-dashed border-border bg-muted/40 text-muted-foreground"
-                            : "border-transparent bg-gradient-to-r from-indigo-500/10 via-violet-500/10 to-pink-500/10",
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
-                            imported
-                              ? "bg-muted-foreground/50"
-                              : "bg-gradient-to-br from-indigo-500 via-violet-500 to-pink-500",
-                          )}
-                        />
-                        {start && (
-                          <span className="shrink-0 text-muted-foreground">
-                            {ev.allDay ? "All day" : formatTime(start)}
-                          </span>
-                        )}
-                        <span className="truncate">
-                          {ev.title}
-                          {who && (
-                            <span className="text-muted-foreground">
-                              {" · "}
-                              {who}
-                            </span>
-                          )}
-                        </span>
-                      </button>
+                        event={ev}
+                        who={who}
+                        onOpen={(e) => openEdit(ev, e)}
+                      />
                     );
                   })}
                   {overflow > 0 && (
@@ -308,6 +270,7 @@ export function CalendarView({
 
       <EventDialog
         open={dialogOpen}
+        members={members}
         onOpenChange={setDialogOpen}
         contacts={contacts}
         event={shownEvent(events, editEvent)}

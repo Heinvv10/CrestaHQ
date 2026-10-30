@@ -3,9 +3,6 @@
 import { CalendarClock, MapPin } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import { useSubAccount } from "@/context/sub-account-context";
-import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
-import { importedOwnerName } from "@/lib/calendar/imported-event";
 import { toDate } from "@/lib/format";
 import type { CalendarEvent } from "@/types/events";
 
@@ -18,9 +15,10 @@ function whenLabel(event: CalendarEvent): string {
   if (event.allDay) {
     const day = (d: Date) =>
       d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
-    // Google's all-day end is the day after the last day.
-    const last = end ? new Date(end.getTime() - 1) : start;
-    return `${last.getTime() - start.getTime() >= DAY_MS ? `${day(start)} - ${day(last)}` : day(start)} · All day`;
+    // Whole days, rounded so a 23 or 25 hour day (daylight saving) is still one.
+    const days = end ? Math.max(1, Math.round((end.getTime() - start.getTime()) / DAY_MS)) : 1;
+    const last = new Date(start.getFullYear(), start.getMonth(), start.getDate() + days - 1);
+    return `${days > 1 ? `${day(start)} - ${day(last)}` : day(start)} · All day`;
   }
   const from = start.toLocaleString(undefined, {
     weekday: "short",
@@ -42,14 +40,15 @@ export function ImportedEventSheet({
   open,
   onOpenChange,
   event,
+  ownerName,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   event: CalendarEvent;
+  /** From the members roster; null when it is unknown. */
+  ownerName: string | null;
 }) {
-  const { subAccountId } = useSubAccount();
-  const { members } = useSubAccountMembers(subAccountId);
-  const owner = importedOwnerName(members, event.importOwnerUid) ?? "a team member";
+  const owner = ownerName ?? "a team member";
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-lg" data-testid="imported-event-sheet">

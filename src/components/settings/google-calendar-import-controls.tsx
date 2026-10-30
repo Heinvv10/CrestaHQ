@@ -44,29 +44,47 @@ const WORKSPACE_OFF_CONFIRM =
   "Turn this off for everyone? Every imported Google event is removed from the CRM calendar now.";
 
 /** The first pass runs after the response; re-read the status a few times until it lands. */
-const POLL_MS = 4_000;
-const POLL_MAX = 5;
+export const POLL_MS = 4_000;
+export const POLL_MAX = 5;
+
+const sigOf = (st: ImportStatus) => `${st.importLastSyncAt ?? ""}|${st.importStatus ?? ""}|${st.importError ?? ""}`;
+const countLabel = (n: number) => `${n} ${n === 1 ? "event" : "events"}`;
 
 export function GoogleImportControls({ status, onChanged }: { status: ImportStatus; onChanged: () => Promise<void> }) {
   const { subAccountId, isAdmin } = useSubAccount();
   const [saving, setSaving] = useState(false);
+  // After a successful switch-on: the status that was on screen when it was made. Until the
+  // status shows something different, whatever it says is the PREVIOUS pass's (the server clears
+  // it on a mode change, but a stale copy already on screen must not be read as the new pass's).
+  const [staleSig, setStaleSig] = useState<string | null>(null);
   const allowed = status.importAllowed === true;
   const mode: ImportMode = status.importMode ?? "off";
-  const waitingForFirstSync = mode !== "off" && !status.importLastSyncAt && status.importStatus !== "error";
+  const reported = !!status.importLastSyncAt || !!status.importStatus;
+  const syncing = staleSig !== null;
+  const waiting = mode !== "off" && (syncing || !reported);
 
   useEffect(() => {
-    if (!waitingForFirstSync) return;
+    if (staleSig !== null && reported && sigOf(status) !== staleSig) setStaleSig(null);
+  }, [staleSig, reported, status]);
+
+  useEffect(() => {
+    if (!waiting) return;
     let tries = 0;
     const timer = setInterval(() => {
       tries += 1;
       void onChanged();
-      if (tries >= POLL_MAX) clearInterval(timer);
+      if (tries >= POLL_MAX) {
+        clearInterval(timer);
+        setStaleSig(null);
+      }
     }, POLL_MS);
     return () => clearInterval(timer);
-  }, [waitingForFirstSync, onChanged]);
+  }, [waiting, onChanged]);
 
   async function patch(body: Record<string, unknown>, success: string) {
     setSaving(true);
+    const sigBefore = sigOf(status);
+    let ok = false;
     try {
       const res = await fetch(`/api/sub-accounts/${subAccountId}/google-calendar/import`, {
         method: "PATCH",
@@ -76,12 +94,14 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? "Couldn't save.");
       toast.success(success);
+      ok = true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't save.");
     } finally {
       setSaving(false);
       await onChanged();
     }
+    if (ok && typeof body.mode === "string" && body.mode !== "off") setStaleSig(sigBefore);
   }
 
   function chooseMode(next: ImportMode) {
@@ -165,12 +185,14 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
           {mode !== "off" && (
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <span data-testid="gcal-import-status">
-                {status.importStatus === "error"
-                  ? `Last sync failed: ${status.importError ?? "unknown error"}`
-                  : lastSync
-                    ? `${status.importedCount ?? 0} events, synced ${formatRelativeTime(lastSync)}. Refreshes about every 15 minutes.`
-                    : "First sync in progress…"}
-                {status.importStatus !== "error" && status.importError ? ` ${status.importError}` : ""}
+                {syncing
+                  ? "First sync in progress…"
+                  : status.importStatus === "error"
+                    ? `Last sync failed: ${status.importError ?? "unknown error"}`
+                    : lastSync
+                      ? `${countLabel(status.importedCount ?? 0)}, synced ${formatRelativeTime(lastSync)}. Refreshes about every 15 minutes.`
+                      : "First sync in progress…"}
+                {!syncing && status.importStatus !== "error" && status.importError ? ` ${status.importError}` : ""}
               </span>
               <Button
                 type="button"

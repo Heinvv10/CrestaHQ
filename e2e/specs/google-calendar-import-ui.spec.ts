@@ -1,5 +1,5 @@
-import { expect, test } from "@playwright/test";
-import { FieldValue } from "firebase-admin/firestore";
+import { expect, test, type Page } from "@playwright/test";
+import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { adminDb } from "../lib/admin";
 import { FIXTURE_PRIMARY_NAME, readEnv } from "../lib/env";
 import { assertFixtureSubAccount, deleteScoped } from "../lib/guard";
@@ -23,14 +23,23 @@ const env = () => readEnv();
 const SA = () => env().E2E_SUBACCOUNT_ID;
 const primaryRef = () => adminDb().doc(`subAccounts/${SA()}`);
 const guard = () => assertFixtureSubAccount(SA(), FIXTURE_PRIMARY_NAME);
-/** Calendar months from now that the event is placed, so a busy day-of-month on the shared tenant is unlikely. */
-const MONTHS_AHEAD = 3;
+/** The import window reaches 180 days ahead; stay well inside it. */
+const MONTHS_AHEAD_MIN = 2;
+const MONTHS_AHEAD_SPAN = 3;
+const AUDIT_ACTION = "calendar_import.workspace_changed";
 /** A title and place that must never reach the CRM in time-only mode. */
 const SECRET_TITLE = "E2E-private-dentist";
 const SECRET_PLACE = "E2E-private-place";
 
 let ownerUid = "";
-let prior: { gate: unknown; allowed: unknown } = { gate: undefined, allowed: undefined };
+let prior: { gate: unknown; allowed: unknown; generation: unknown } = {
+  gate: undefined,
+  allowed: undefined,
+  generation: undefined,
+};
+/** Months ahead and day of month of the Google event, chosen in beforeAll. */
+let monthsAhead = MONTHS_AHEAD_MIN;
+let dayOfMonth = 15;
 const privateDoc = (id: string) => primaryRef().collection("private").doc(id);
 const connection = () => privateDoc(`googleCalendar_${ownerUid}`);
 const fakeCalendar = () => privateDoc(`googleCalendarFake_${ownerUid}`);
@@ -44,10 +53,46 @@ const imports = async () =>
       .get()
   ).docs;
 
-/** The 15th, noon UTC, MONTHS_AHEAD months out: inside the import window wherever CI runs. */
-const eventTime = (hours: number) => {
+const dayStart = () => {
   const d = new Date();
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + MONTHS_AHEAD, 15, hours)).toISOString();
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + monthsAhead, dayOfMonth));
+};
+const eventTime = (hours: number) => new Date(dayStart().getTime() + hours * 3_600_000).toISOString();
+
+/**
+ * A day, MONTHS_AHEAD_MIN.. months out, with no event on the shared tenant (a day either side
+ * too, for timezones), so the imported chip is never behind "+N more".
+ */
+async function pickEmptyDay(): Promise<void> {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    monthsAhead = MONTHS_AHEAD_MIN + Math.floor(Math.random() * MONTHS_AHEAD_SPAN);
+    dayOfMonth = 2 + Math.floor(Math.random() * 26);
+    const lo = Timestamp.fromMillis(dayStart().getTime() - 86_400_000);
+    const hi = Timestamp.fromMillis(dayStart().getTime() + 2 * 86_400_000);
+    const busy = await adminDb()
+      .collection("events")
+      .where("subAccountId", "==", SA())
+      .where("startAt", ">=", lo)
+      .where("startAt", "<", hi)
+      .limit(1)
+      .get();
+    if (busy.empty) return;
+  }
+  throw new Error("No empty day found on the fixture tenant to place the imported event.");
+}
+
+/** The audit rows the allowance switch wrote (append-only in the app; the fixture tenant is ours to tidy). */
+async function clearAudit(): Promise<void> {
+  const rows = await adminDb()
+    .collection("auditEvents")
+    .where("subAccountId", "==", SA())
+    .where("action", "==", AUDIT_ACTION)
+    .get();
+  for (const r of rows.docs) await deleteScoped(r.ref);
+}
+
+const goToEventMonth = async (page: Page) => {
+  for (let i = 0; i < monthsAhead; i++) await page.getByRole("button", { name: "Next month" }).click();
 };
 
 async function clearImport(): Promise<void> {
@@ -63,7 +108,12 @@ test.beforeAll(async () => {
   ownerUid = (await adminDb().doc(`agencies/${env().E2E_AGENCY_ID}`).get()).data()?.ownerUid;
   expect(ownerUid).toBeTruthy();
   const sub = (await primaryRef().get()).data();
-  prior = { gate: sub?.googleCalendarEnabledByAgency, allowed: sub?.calendarImportAllowed };
+  prior = {
+    gate: sub?.googleCalendarEnabledByAgency,
+    allowed: sub?.calendarImportAllowed,
+    generation: sub?.calendarImportGeneration,
+  };
+  await pickEmptyDay();
   await clearImport();
   await primaryRef().update({ googleCalendarEnabledByAgency: true, calendarImportAllowed: false });
   const n = Date.now().toString(36);
@@ -97,9 +147,12 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await clearImport();
+  await clearAudit();
+  const restore = (v: unknown) => (v === undefined ? FieldValue.delete() : v);
   await primaryRef().update({
-    googleCalendarEnabledByAgency: prior.gate === undefined ? FieldValue.delete() : prior.gate,
-    calendarImportAllowed: prior.allowed === undefined ? FieldValue.delete() : prior.allowed,
+    googleCalendarEnabledByAgency: restore(prior.gate),
+    calendarImportAllowed: restore(prior.allowed),
+    calendarImportGeneration: restore(prior.generation),
   });
 });
 
@@ -119,15 +172,16 @@ test("settings turn import on, and the calendar shows the event read-only as Bus
   await expect(page.getByTestId("gcal-import-mode-busy")).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
 
   // The mode change starts the first pass after the response; the panel polls until it lands.
-  await expect(page.getByTestId("gcal-import-status")).toContainText(/^1 events, synced/, { timeout: 45_000 });
+  await expect(page.getByTestId("gcal-import-status")).toContainText(/^1 event, synced/, { timeout: 45_000 });
   await expect.poll(async () => (await imports()).length, { timeout: 30_000 }).toBe(1);
   expect(JSON.stringify((await imports())[0].data())).not.toContain(SECRET_TITLE);
 
   // The calendar: a marked chip reading Busy, never the Google title or place.
   await page.goto(`/sa/${SA()}/calendar`);
-  for (let i = 0; i < MONTHS_AHEAD; i++) await page.getByRole("button", { name: "Next month" }).click();
-  const chip = page.locator('[data-imported="true"]').first();
-  await expect(chip).toBeVisible({ timeout: 30_000 });
+  await goToEventMonth(page);
+  // The chosen day is empty on the tenant, so exactly one chip, never behind "+N more".
+  const chip = page.locator('[data-imported="true"]');
+  await expect(chip).toHaveCount(1, { timeout: 30_000 });
   await expect(chip).toContainText("Busy");
   await expect(page.locator("body")).not.toContainText(SECRET_TITLE);
 
@@ -146,6 +200,6 @@ test("settings turn import on, and the calendar shows the event read-only as Bus
   await page.getByTestId("gcal-import-mode-off").click();
   await expect.poll(async () => (await imports()).length, { timeout: 30_000 }).toBe(0);
   await page.goto(`/sa/${SA()}/calendar`);
-  for (let i = 0; i < MONTHS_AHEAD; i++) await page.getByRole("button", { name: "Next month" }).click();
+  await goToEventMonth(page);
   await expect(page.locator('[data-imported="true"]')).toHaveCount(0);
 });

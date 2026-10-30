@@ -192,7 +192,7 @@ export function GoogleCalendarCard() {
         )}
       </div>
 
-      {status && !status.gateOff && !error && <GoogleImportControls status={status} onChanged={load} />}
+      {status && !status.gateOff && <GoogleImportControls status={status} onChanged={load} />}
     </div>
   );
 }
