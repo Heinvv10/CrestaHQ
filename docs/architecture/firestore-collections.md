@@ -27,7 +27,7 @@
 | `subAccounts/{subAccountId}` | members + agency owner | Workspace metadata; reserved fields for Workflow-Recipes Twilio/Resend/booking/sendWindow. `whatsappNumber` (E.164, optional, prospect report redesign R2) sets the public prospect report's WhatsApp CTA button; unset falls back to a connected WhatsApp Cloud sender's `displayPhoneNumber` (never a bridge sender's), via `resolvePublicReport` |
 | `subAccounts/{subAccountId}/subAccountMembers/{uid}` | admins | Per-sub-account membership rows |
 | `subAccounts/{subAccountId}/getLeadsSearches/{requestId}` | server-only | **Legacy, no longer written.** Recorded which sub-account submitted each async Get Leads search while search was a submit-then-poll flow; search is synchronous now. Existing rows are inert |
-| `communityMagicLinkUses/{sha256}` | server-only | `{subAccountId, usedAt, expiresAt}` — one per consumed community magic link, created atomically at the verify POST so each link signs in once; deleted by the `api-cleanup` sweep once `expiresAt` passes |
+| `communityMagicLinkUses/{sha256}` | server-only | `{subAccountId, usedAt, expiresAt}` — one per consumed community magic link, created atomically at the verify POST so each link signs in once; `expiresAt` is the link's own expiry plus 5 minutes (15 min by default, 24 h for purchase-email links), so the row outlives the link; deleted by the `api-cleanup` sweep once `expiresAt` passes |
 | `userMemberships/{uid}/subAccounts/{saId}` | self-read | Denormalized index powering the sub-account switcher |
 | `userMemberships/{uid}/agencies/{agencyId}` | self-read | Denormalized index for agency-level access |
 | `users/{uid}` | self only | Slim profile (display name, photoURL, primaryAgencyId) |

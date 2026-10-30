@@ -47,7 +47,7 @@ export const EXPIRES_AT_COLLECTION_GROUPS = [
   "apiRequestLogs",
   "apiIdempotency",
   "webhookEvents",
-  // Consumed community magic links (one row per sign-in; dead after 15 min).
+  // Consumed community magic links (one row per sign-in; kept until 5 min after the link itself expires, 15 min or 24 h).
   "communityMagicLinkUses",
   // Agency agent keys' agent.call audit rows (agencies/{id}/agentCalls, 30 days).
   "agentCalls",

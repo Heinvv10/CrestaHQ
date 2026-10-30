@@ -141,13 +141,14 @@ export function signMemberSessionToken(
 
 export function verifyMemberMagicLinkToken(
   token: string,
-): { subAccountId: string; email: string; joinGroupId?: string } | null {
+): { subAccountId: string; email: string; joinGroupId?: string; exp: number } | null {
   const payload = decodeToken(token);
   if (!payload || payload.k !== "ml") return null;
   return {
     subAccountId: payload.sa,
     email: payload.e,
     joinGroupId: payload.j,
+    exp: payload.exp,
   };
 }
 

@@ -3,7 +3,6 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { getCommunityGate } from "@/lib/community/gate";
 import { groupHomePath } from "@/lib/community/group-mode";
 import {
-  MAGIC_LINK_TTL_MS,
   magicLinkUseId,
   signMemberSessionToken,
   verifyMemberMagicLinkToken,
@@ -16,6 +15,9 @@ import {
 } from "@/lib/server/community-service";
 
 export const dynamic = "force-dynamic";
+
+/** How long a use record outlives the link it consumed. */
+const USE_RECORD_MARGIN_MS = 5 * 60 * 1000;
 
 /**
  * The emailed magic link lands here.
@@ -128,8 +130,11 @@ export async function POST(
       .create({
         subAccountId: saId,
         usedAt: new Date(),
-        // The token itself is dead by then; api-cleanup deletes the row.
-        expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
+        // The row must outlive the token, or api-cleanup would delete it while
+        // the link still verifies and the link could sign in again. Links vary
+        // in lifetime (15 min by default, 24 h in purchase emails), so key it
+        // to the token's own expiry; the margin covers clock skew.
+        expiresAt: new Date(verified.exp + USE_RECORD_MARGIN_MS),
       });
   } catch (err) {
     // Already used — almost always a double-tap, whose first POST has just
