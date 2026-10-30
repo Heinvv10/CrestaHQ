@@ -37,7 +37,7 @@ const OPEN = new Date("2026-09-25T06:00:00Z");
 
 const DEDICATED = { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" };
 const sub = (over: Record<string, unknown> = {}) =>
-  ({ agencyId: AGENCY, name: "Fixture Co", sendWindow: WINDOW, twilioConfig: DEDICATED, ...over }) as unknown as SubAccountDoc;
+  ({ agencyId: AGENCY, name: "Fixture Co", defaultPhoneCountry: "ZA", sendWindow: WINDOW, twilioConfig: DEDICATED, ...over }) as unknown as SubAccountDoc;
 
 const send = (over: Partial<Parameters<typeof sendBookingSms>[0]> = {}) =>
   sendBookingSms({

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
+import { getCountryCallingCode, parsePhoneNumberFromString } from "libphonenumber-js/max";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
@@ -15,6 +16,8 @@ import {
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { loadEventContact } from "@/lib/server/tenant-ref";
 import { formatStartLocal } from "@/lib/booking/email";
+import { releaseBookingSms, reserveBookingSms } from "@/lib/booking/sms-caps";
+import { coercePhoneCountry } from "@/lib/contacts/phone";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
@@ -23,6 +26,13 @@ import type { SubAccountDoc } from "@/types/tenancy";
  * when the agency allows it. Every text is an AUTOMATED send, so the
  * workspace's quiet hours hold it (see lib/comms/quiet-hours.ts). Never
  * throws; a failed text never breaks a booking.
+ *
+ * The public booking page lets anyone make us text a number of their choice,
+ * so what goes out is fixed text plus values the operator or the system set:
+ * NO booker free text (no location or address, no phone, no title) and the
+ * booker's name only as one plain first name (see smsFirstName). The
+ * destination must be in the sub-account's home country and is capped per
+ * number and per sub-account per day (lib/booking/sms-caps.ts).
  */
 
 export type BookingSmsResult =
@@ -34,6 +44,26 @@ export type BookingSmsResult =
       hold?: QuietHoursHold;
     };
 
+/**
+ * The booker's first name, or "" when it is not a plain one: a single token of
+ * letters (with marks), hyphens and apostrophes, at most 30 characters. Anything
+ * else (a URL, a number, a sentence) is dropped rather than quoted in a text.
+ */
+export function smsFirstName(name: string): string {
+  const first = name.trim().split(/\s+/)[0] ?? "";
+  return first.length <= 30 && /^[\p{L}][\p{L}\p{M}'\u2019-]*$/u.test(first) ? first : "";
+}
+
+/** The meeting link when it is a plain https URL, else null. */
+function joinUrl(url: string | null): string | null {
+  if (!url || url.length > 300) return null;
+  try {
+    return new URL(url).protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 export function bookingConfirmationSmsBody(input: {
   recipientName: string;
   businessName: string;
@@ -41,15 +71,13 @@ export function bookingConfirmationSmsBody(input: {
   startAt: Date;
   timezone: string;
   meetingUrl: string | null;
-  /** Where it happens (address, phone call…); absent = video or not set. */
-  location?: string | null;
   publicEventUrl: string;
 }): string {
-  const first = input.recipientName.trim().split(/\s+/)[0];
+  const first = smsFirstName(input.recipientName);
+  const join = joinUrl(input.meetingUrl);
   return [
     `${first ? `Hi ${first}, you're` : "You're"} booked: ${input.pageName} with ${input.businessName}, ${formatStartLocal(input.startAt, input.timezone)}.`,
-    input.meetingUrl ? `Join: ${input.meetingUrl}` : null,
-    input.location ? `Where: ${input.location}` : null,
+    join ? `Join: ${join}` : null,
     input.publicEventUrl ? `Reschedule or cancel: ${input.publicEventUrl}` : null,
   ]
     .filter(Boolean)
@@ -62,17 +90,42 @@ export function bookingReminderSmsBody(input: {
   startAt: Date;
   timezone: string;
   meetingUrl: string | null;
-  location?: string | null;
   publicEventUrl: string;
 }): string {
+  const join = joinUrl(input.meetingUrl);
   return [
     `Reminder: ${input.pageName} with ${input.businessName}, ${formatStartLocal(input.startAt, input.timezone)}.`,
-    input.meetingUrl ? `Join: ${input.meetingUrl}` : null,
-    input.location ? `Where: ${input.location}` : null,
+    join ? `Join: ${join}` : null,
     input.publicEventUrl ? `Reschedule or cancel: ${input.publicEventUrl}` : null,
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * `raw` as E.164 when it is a valid MOBILE number whose country calling code
+ * is the home country's (the workspace's `defaultPhoneCountry`, US when unset),
+ * else null. A national number is read in the home country; a "+" number keeps its
+ * own. Calling codes are shared (+1 covers the US and Canada): the check is on
+ * the code, which is what a toll route is priced by.
+ */
+export function homeCountryE164(raw: string, homeCountry: string | null | undefined): string | null {
+  const home = coercePhoneCountry(homeCountry);
+  // The parser is lenient: it reads letters as keypad digits and drops an extension.
+  if (!/^[+\d\s().-]+$/.test(raw.trim())) return null;
+  const parsed = parsePhoneNumberFromString(raw.trim(), home);
+  if (!parsed?.isValid()) return null;
+  // Texts go to mobiles. Premium-rate, toll-free, shared-cost, short and
+  // unclassified numbers are where toll fraud lives, so they are refused.
+  const type = parsed.getType();
+  if (type !== "MOBILE" && type !== "FIXED_LINE_OR_MOBILE") return null;
+  // The metadata accepts some very short ranges (+27 82 123 reads as a mobile).
+  if (parsed.nationalNumber.length < 7) return null;
+  try {
+    return parsed.countryCallingCode === getCountryCallingCode(home) ? parsed.number : null;
+  } catch {
+    return null;
+  }
 }
 
 function reasonOf(err: unknown): string {
@@ -89,6 +142,12 @@ export async function sendBookingSms(input: {
   label: string;
   /** Set only by a confirmation of the customer's own booking (public booking page): exempt from quiet hours for a few minutes. */
   selfTriggeredBookingAt?: Date | null;
+  /**
+   * Create-only claim doc of THIS text (a redelivery finds it and sends nothing),
+   * created in the same transaction that takes the daily cap slots. Released
+   * again when quiet hours hold the text.
+   */
+  claimPath?: string;
 }): Promise<BookingSmsResult> {
   const db = getAdminDb();
   let contact: Awaited<ReturnType<typeof loadEventContact>> = null;
@@ -102,13 +161,35 @@ export async function sendBookingSms(input: {
   }
   if (!contact) return { sent: false, reason: "no_contact" };
   if (smsSendBlock(contact)) return { sent: false, reason: "opted_out" };
-  const to = contact.phone;
-  if (!to) return { sent: false, reason: "no_phone" };
+  if (!contact.phone) return { sent: false, reason: "no_phone" };
+  const to = homeCountryE164(contact.phone, input.sub.defaultPhoneCountry);
+  if (!to) {
+    try {
+      await db.collection("contacts").doc(contact.id).collection("activities").add({
+        type: "note_added",
+        content: `${input.label} text not sent: the number is not a valid number in this workspace's home country.`,
+        createdBy: "booking",
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn("[booking/sms] refusal note write failed", reasonOf(err));
+    }
+    return { sent: false, reason: "number_not_allowed" };
+  }
 
   const hasSms =
     subAccountTwilioIsConfigured(input.sub.twilioConfig) ||
     (smsIsConfigured() && (await agencyAllowsSharedSms(input.sub.agencyId)));
   if (!hasSms) return { sent: false, reason: "sms_not_configured" };
+
+  const target = { subAccountId: input.subAccountId, agencyId: input.sub.agencyId, to, claimPath: input.claimPath };
+  const reserved = await reserveBookingSms(target);
+  if (!reserved.ok) {
+    if (reserved.reason !== "already_sent") {
+      console.warn(`[booking/sms] not sent: ${reserved.reason} sub=${input.subAccountId}`);
+    }
+    return { sent: false, reason: reserved.reason };
+  }
 
   try {
     const sent = await sendSmsForSubAccount({
@@ -167,6 +248,7 @@ export async function sendBookingSms(input: {
     return { sent: true };
   } catch (err) {
     if (isQuietHoursDeferred(err)) {
+      await releaseBookingSms(target, reserved.day);
       return { sent: false, reason: "quiet_hours", hold: err.hold };
     }
     if (err instanceof SmsRecipientUnsubscribedError) {

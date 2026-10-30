@@ -95,6 +95,7 @@ beforeEach(() => {
   publishCallback.mockReset().mockResolvedValue({ messageId: "m1" });
   mem.seed(`subAccounts/${SA}`, {
     ...SMTP_SUB,
+    defaultPhoneCountry: "ZA",
     sendWindow: WINDOW,
     twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" },
   });
@@ -114,7 +115,7 @@ describe("the page's text toggle", () => {
     expect(smtpSend).toHaveBeenCalledOnce();
   });
 
-  it("on: texts the contact once, with the manage link and the place", async () => {
+  it("on: texts the contact once, with the manage link and no place", async () => {
     const res = await remind();
     await flushAfterResponse();
     expect(await res.json()).toMatchObject({ ok: true, sms: "sent", email: "disabled" });
@@ -122,7 +123,7 @@ describe("the page's text toggle", () => {
     const [, args] = sendSmsVia.mock.calls[0] as [string, { to: string; body: string }];
     expect(args.to).toBe("+27821234567");
     expect(args.body).toContain("Reminder: Intro call with Fixture Co");
-    expect(args.body).toContain("Where: 12 Long St");
+    expect(args.body).not.toContain("12 Long St");
     expect(args.body).toContain("https://app.test/e/");
     expect(smtpSend).not.toHaveBeenCalled();
   });
@@ -137,7 +138,7 @@ describe("the page's text toggle", () => {
 
   it("falls back to the scheduled snapshot when the page was deleted", async () => {
     mem.clear();
-    mem.seed(`subAccounts/${SA}`, { ...SMTP_SUB, sendWindow: WINDOW, twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" } });
+    mem.seed(`subAccounts/${SA}`, { ...SMTP_SUB, defaultPhoneCountry: "ZA", sendWindow: WINDOW, twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" } });
     seedEvent(new Date("2026-09-24T14:00:00Z"));
     seedContact();
     await remind({ channels: { email: false, sms: true, pageName: "Old name", timezone: "UTC" } });
@@ -153,6 +154,55 @@ describe("the page's text toggle", () => {
     expect(await res.json()).toMatchObject({ ok: true, sms: "sent" });
     expect(sendSmsVia).toHaveBeenCalledOnce();
     expect(smtpSend).toHaveBeenCalledOnce();
+  });
+});
+
+describe("what the booker typed", () => {
+  const HOSTILE = "https://evil.example/pay-now";
+  const hostileEvent = () =>
+    mem.seed("events/e1", {
+      ...mem.read("events/e1"),
+      title: `Intro — ${HOSTILE}`,
+      location: `At your address: 7 Oak Ave, call 0861234567 (${HOSTILE})`,
+    });
+  const expectClean = () => {
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    const body = (sendSmsVia.mock.calls[0] as [string, { body: string }])[1].body;
+    for (const leaked of ["evil", "Oak", "0861234567", "Where"]) expect(body).not.toContain(leaked);
+    expect(body.split("\n")).toEqual([
+      expect.stringMatching(/^Reminder: .* with Fixture Co, /),
+      expect.stringMatching(/^Reschedule or cancel: https:\/\/app\.test\/e\//),
+    ]);
+  };
+
+  it("never reaches a reminder: not the place, the phone, nor the title (which names the booker)", async () => {
+    hostileEvent();
+    seedContact({ name: HOSTILE });
+    await remind();
+    await flushAfterResponse();
+    expectClean();
+    expect((sendSmsVia.mock.calls[0] as [string, { body: string }])[1].body).toContain("Reminder: Intro call with Fixture Co");
+  });
+
+  it("nor when the page is gone: the title is not a fallback for its name", async () => {
+    mem.clear();
+    mem.seed(`subAccounts/${SA}`, { ...SMTP_SUB, defaultPhoneCountry: "ZA", sendWindow: WINDOW, twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" } });
+    seedEvent(new Date("2026-09-24T14:00:00Z"));
+    hostileEvent();
+    seedContact({ name: HOSTILE });
+    await remind({ channels: { sms: true, email: false } });
+    await flushAfterResponse();
+    expectClean();
+    expect((sendSmsVia.mock.calls[0] as [string, { body: string }])[1].body).toContain("Reminder: your appointment with Fixture Co");
+  });
+
+  it("a number outside the home country gets no reminder text and a timeline note", async () => {
+    seedContact({ phone: "+14155552671" });
+    const res = await remind();
+    await flushAfterResponse();
+    expect(await res.json()).toMatchObject({ sms: "number_not_allowed" });
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(mem.list("contacts/c1/activities")).toEqual([expect.objectContaining({ content: expect.stringContaining("home country") })]);
   });
 });
 

@@ -36,7 +36,7 @@ const { SMTP_SUB } = await s();
 const { POST } = await import("./route");
 
 const book = () =>
-  POST(post({ name: "Visitor Vee", email: "v@example.com", phone: "+27600000000", slot: slot("09:00", "09:30") }), {
+  POST(post({ name: "Visitor Vee", email: "v@example.com", phone: "+27821234567", slot: slot("09:00", "09:30") }), {
     params: Promise.resolve({ saId: SA, slug: "intro" }),
   });
 
@@ -50,10 +50,11 @@ beforeEach(() => {
   mem.seed(`subAccounts/${SA}`, {
     ...SMTP_SUB,
     agencyId: "ag1",
+    defaultPhoneCountry: "ZA",
     sendWindow: { startHour: 8, endHour: 20, timezone: "UTC" },
     twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" },
   });
-  mem.seed("contacts/c1", { name: "Visitor Vee", phone: "+27600000000", agencyId: "ag1", subAccountId: SA });
+  mem.seed("contacts/c1", { name: "Visitor Vee", phone: "+27821234567", agencyId: "ag1", subAccountId: SA });
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => vi.useRealTimers());
@@ -71,14 +72,23 @@ describe("the confirmation text", () => {
     expect((await book()).status).toBe(200);
     await flushAfterResponse();
     expect(texts()).toHaveLength(1);
-    expect(texts()[0].to).toBe("+27600000000");
+    expect(texts()[0].to).toBe("+27821234567");
     expect(texts()[0].body).toContain("Hi Visitor, you're booked: intro with Fixture Co");
     expect(texts()[0].body).toContain("https://app.test/e/");
   });
 
+  it("is claimed and counted against the daily caps in one step", async () => {
+    seedPage("intro", { smsRemindersEnabled: true });
+    expect((await book()).status).toBe(200);
+    await flushAfterResponse();
+    const [event] = mem.list("events");
+    expect(mem.read(`events/${event.id}/reminderSends/sms_confirm`)).toBeTruthy();
+    expect(mem.list(`subAccounts/${SA}/bookingSmsCaps`).map((d) => d.count)).toEqual([1, 1]);
+  });
+
   it("is not sent to a contact who opted out of SMS; the booking still succeeds", async () => {
     seedPage("intro", { smsRemindersEnabled: true });
-    mem.seed("contacts/c1", { name: "Visitor Vee", phone: "+27600000000", smsOptedOut: true, agencyId: "ag1", subAccountId: SA });
+    mem.seed("contacts/c1", { name: "Visitor Vee", phone: "+27821234567", smsOptedOut: true, agencyId: "ag1", subAccountId: SA });
     expect((await book()).status).toBe(200);
     await flushAfterResponse();
     expect(sendSmsVia).not.toHaveBeenCalled();
@@ -94,6 +104,43 @@ describe("the confirmation text", () => {
     expect((await book()).status).toBe(200);
     await flushAfterResponse();
     expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+});
+
+describe("what the booker typed", () => {
+  const HOSTILE = "https://evil.example/pay-now";
+
+  it("never reaches the text: not the address they gave, nor the phone, nor a URL in their name", async () => {
+    seedPage("intro", { smsRemindersEnabled: true, location: { type: "their_address", value: null } });
+    mem.seed("contacts/c1", { name: HOSTILE, phone: "+27821234567", agencyId: "ag1", subAccountId: SA });
+    const res = await POST(
+      post({ name: HOSTILE, email: "v@example.com", phone: "+27821234567", address: "7 Oak Ave, call 0861234567 now", slot: slot("09:00", "09:30") }),
+      { params: Promise.resolve({ saId: SA, slug: "intro" }) },
+    );
+    expect(res.status).toBe(200);
+    expect(mem.list("events")[0].location).toContain("7 Oak Ave");
+    await flushAfterResponse();
+    expect(texts()).toHaveLength(1);
+    const body = texts()[0].body;
+    expect(body).not.toContain("evil");
+    expect(body).not.toContain("Oak");
+    expect(body).not.toContain("0861234567");
+    expect(body).not.toContain("27821234567");
+    expect(body).not.toContain("Where");
+    expect(body.split("\n")).toEqual([
+      expect.stringMatching(/^You're booked: intro with Fixture Co, /),
+      expect.stringMatching(/^Reschedule or cancel: https:\/\/app\.test\/e\//),
+    ]);
+  });
+
+  it("a number outside the workspace's home country gets no text, and the booking still succeeds", async () => {
+    seedPage("intro", { smsRemindersEnabled: true });
+    mem.seed("contacts/c1", { name: "Visitor Vee", phone: "+14155552671", agencyId: "ag1", subAccountId: SA });
+    expect((await book()).status).toBe(200);
+    await flushAfterResponse();
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(mem.list("events")).toHaveLength(1);
+    expect(mem.list("contacts/c1/activities")).toEqual([expect.objectContaining({ content: expect.stringContaining("home country") })]);
   });
 });
 

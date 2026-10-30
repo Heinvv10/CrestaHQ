@@ -67,6 +67,7 @@ beforeEach(() => {
   scheduleEventReminders.mockReset().mockResolvedValue(undefined);
   mem.seed(`subAccounts/${SA}`, {
     ...SMTP_SUB,
+    defaultPhoneCountry: "ZA",
     sendWindow: { startHour: 8, endHour: 20, timezone: "Africa/Johannesburg" },
     twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" },
   });
@@ -97,8 +98,41 @@ describe("the mark-paid confirmation text", () => {
     expect(wireRecipients()).toEqual(["thandi@example.co.za"]);
   });
 
+  it("is claimed and counted against the daily caps in one step", async () => {
+    await markPaid();
+    await flushAfterResponse();
+    expect(mem.read("events/e1/reminderSends/sms_confirm_paid")).toBeTruthy();
+    expect(mem.list(`subAccounts/${SA}/bookingSmsCaps`).map((d) => d.count)).toEqual([1, 1]);
+  });
+
   it("is not sent when the toggle is off (the default)", async () => {
     seedPage({ smsRemindersEnabled: undefined });
+    await markPaid();
+    await flushAfterResponse();
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(wireRecipients()).toEqual(["thandi@example.co.za"]);
+  });
+
+  it("never carries what the booker typed: a URL as their name, the place, the title", async () => {
+    seedContact({ name: "https://evil.example/pay-now" });
+    mem.seed("events/e1", {
+      ...mem.read("events/e1"),
+      title: "Intro — https://evil.example/pay-now",
+      location: "At your address: 7 Oak Ave, call 0861234567",
+    });
+    await markPaid();
+    await flushAfterResponse();
+    expect(texts()).toHaveLength(1);
+    const body = texts()[0].body;
+    for (const leaked of ["evil", "Oak", "0861234567", "Where"]) expect(body).not.toContain(leaked);
+    expect(body.split("\n")).toEqual([
+      expect.stringMatching(/^You're booked: Intro call with Fixture Co, /),
+      expect.stringMatching(/^Reschedule or cancel: https:\/\/app\.test\/e\//),
+    ]);
+  });
+
+  it("is not sent to a number outside the workspace's home country", async () => {
+    seedContact({ phone: "+14155552671" });
     await markPaid();
     await flushAfterResponse();
     expect(sendSmsVia).not.toHaveBeenCalled();

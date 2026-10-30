@@ -974,8 +974,12 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
               reminder time (the same times as the emails). Sent from this
               workspace&apos;s SMS number (Settings → SMS), or
               the shared sender if your agency allows it; each text is
-              billed by Twilio. Contacts with no phone number or who
-              replied STOP are skipped. A reminder that falls in your
+              billed by Twilio. Contacts with no phone number, who
+              replied STOP, or whose number is not a mobile in your
+              workspace&apos;s home country are skipped, and a number is
+              texted at most 6 times a day. The text never repeats
+              anything the booker typed except their first name. A
+              reminder that falls in your
               quiet hours waits until they end, and is dropped if that is
               after the appointment starts. Bookings made by phone with
               the AI voice agent don&apos;t get texts.

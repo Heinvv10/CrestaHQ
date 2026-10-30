@@ -1,8 +1,5 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
-
-import { getAdminDb } from "@/lib/firebase/admin";
 import { publishCallback } from "@/lib/automations/qstash";
 import { formatHoldUntil } from "@/lib/comms/quiet-hours";
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
@@ -26,7 +23,7 @@ export interface ReminderChannels {
 /**
  * One reminder text, for the reminder step. Claimed once per offset and
  * schedule (a QStash redelivery must not text twice; a redelivery finds the
- * claim). A reminder held by quiet hours is NOT sent late: the claim is
+ * claim) inside sendBookingSms. A reminder held by quiet hours is NOT sent late: the claim is
  * released and the step is published again for when the window ends, unless
  * that is at or after the appointment's start, when the reminder is dropped.
  * The republished step re-checks everything (status, token, opt-out, the
@@ -46,30 +43,21 @@ export async function deliverReminderSms(input: {
   const { event, eventId, offsetMinutes, token, sub, page, channels, startAt, endAt } = input;
   if (!event.contactId) return "no_contact";
   const tokenKey = hashEventToken(token).slice(0, 16);
-  const claimRef = getAdminDb().doc(`events/${eventId}/reminderSends/sms_${offsetMinutes}_${tokenKey}`);
-  try {
-    await claimRef.create({
-      agencyId: event.agencyId,
-      subAccountId: event.subAccountId,
-      claimedAt: FieldValue.serverTimestamp(),
-    });
-  } catch (err) {
-    if ((err as { code?: unknown } | null)?.code === 6) return "already_sent";
-    throw err;
-  }
-
   const result = await sendBookingSms({
     subAccountId: event.subAccountId,
     sub,
     contactId: event.contactId,
     label: "booking reminder",
+    // Claimed, and counted against the daily caps, in one transaction; released
+    // again below when quiet hours hold the text so the republished step can send.
+    claimPath: `events/${eventId}/reminderSends/sms_${offsetMinutes}_${tokenKey}`,
     body: bookingReminderSmsBody({
       businessName: sub.name ?? "us",
-      pageName: page ? bookedEventLabel(page, event, startAt, endAt).name : (channels?.pageName ?? event.title ?? "Your meeting"),
+      // Never event.title: it carries the booker's name.
+      pageName: page ? bookedEventLabel(page, event, startAt, endAt).name : (channels?.pageName ?? "your appointment"),
       startAt,
       timezone: page?.timezone ?? channels?.timezone ?? "UTC",
       meetingUrl: event.meetingUrl ?? page?.meetingUrl ?? null,
-      location: event.location || null,
       publicEventUrl: buildEventPublicUrl(token),
     }),
   });
@@ -77,10 +65,6 @@ export async function deliverReminderSms(input: {
   const hold = result.hold;
   if (result.reason !== "quiet_hours" || !hold) return result.reason;
 
-  // Nothing went out: free the claim so the republished step can send.
-  await claimRef.delete().catch((err: unknown) => {
-    console.error("[events/reminder] sms claim release failed", err instanceof Error ? err.message : String(err));
-  });
   const noteId = `bsms_${eventId}_${offsetMinutes}_${tokenKey}`;
   if (hold.until.getTime() >= startAt.getTime()) {
     await writeHoldActivity(

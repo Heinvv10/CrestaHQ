@@ -743,6 +743,7 @@ export async function POST(
       sub,
       contactId: created.contactId,
       label: "booking confirmation",
+      claimPath: `events/${created.eventDocRef.id}/reminderSends/sms_confirm`,
       selfTriggeredBookingAt: bookedAt,
       body: bookingConfirmationSmsBody({
         recipientName: name,
@@ -751,7 +752,6 @@ export async function POST(
         startAt: slotStart,
         timezone: page.timezone,
         meetingUrl,
-        location: bookerLocation || null,
         publicEventUrl,
       }),
     });

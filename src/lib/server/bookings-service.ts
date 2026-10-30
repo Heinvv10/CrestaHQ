@@ -326,6 +326,7 @@ async function runMarkPaidSideEffects(args: {
       sub,
       contactId: contact.id,
       label: "booking confirmation",
+      claimPath: `events/${event.id}/reminderSends/sms_confirm_paid`,
       body: bookingConfirmationSmsBody({
         recipientName: contact.name ?? "",
         businessName: sub.name ?? "us",
@@ -333,7 +334,6 @@ async function runMarkPaidSideEffects(args: {
         startAt,
         timezone: page.timezone,
         meetingUrl,
-        location: where || null,
         publicEventUrl: buildEventPublicUrl(rawToken),
       }),
     });
