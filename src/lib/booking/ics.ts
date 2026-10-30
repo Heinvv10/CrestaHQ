@@ -83,6 +83,17 @@ function escapeIcsText(s: string): string {
     .replace(/[\u0000-\u001f\u007f]/g, "");
 }
 
+/**
+ * A parameter value (`CN=`), RFC 5545 §3.2: always a quoted-string, which
+ * may hold `:` `;` `,` but never a DQUOTE or a control character — TEXT
+ * backslash-escaping doesn't apply inside parameters. Unquoted, a name like
+ * `x:mailto:evil@example.com` would end the parameters early and change
+ * the address a calendar app reads.
+ */
+function icsParamValue(s: string): string {
+  return `"${s.replace(/["\u0000-\u001f\u007f]/g, "")}"`;
+}
+
 /** Soft-fold a long line to 75 octets per RFC 5545 §3.1. */
 function foldLine(line: string): string {
   if (line.length <= 75) return line;
@@ -123,13 +134,13 @@ export function generateIcs(input: IcsInput): string {
   }
   if (input.organizerEmail) {
     const cn = input.organizerName
-      ? `;CN=${escapeIcsText(input.organizerName)}`
+      ? `;CN=${icsParamValue(input.organizerName)}`
       : "";
     lines.push(`ORGANIZER${cn}:mailto:${input.organizerEmail}`);
   }
   if (input.attendeeEmail) {
     const cn = input.attendeeName
-      ? `;CN=${escapeIcsText(input.attendeeName)}`
+      ? `;CN=${icsParamValue(input.attendeeName)}`
       : "";
     lines.push(
       `ATTENDEE${cn};RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:${input.attendeeEmail}`,

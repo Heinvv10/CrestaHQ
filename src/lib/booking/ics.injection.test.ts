@@ -66,3 +66,35 @@ it("the same in the subscription feed", () => {
   });
   expect(feed).toContain("DESCRIPTION:a\\nb\\nc\\nd");
 });
+
+describe("a name in CN=", () => {
+  /** The property's value: everything after the first ':' outside quotes. */
+  const valueOf = (line: string) => {
+    let quoted = false;
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '"') quoted = !quoted;
+      else if (line[i] === ":" && !quoted) return line.slice(i + 1);
+    }
+    return null;
+  };
+  const line = (ics: string, name: string) =>
+    ics.replace(/\r\n /g, "").split("\r\n").find((l) => l.startsWith(name)) ?? "";
+
+  it.each([
+    ["a colon", "Ann:mailto:evil@example.com"],
+    ["a quote", 'Ann";ROLE=CHAIR:mailto:evil@example.com'],
+    ["a semicolon", "Ann;RSVP=FALSE"],
+  ])("with %s can't change the attendee's or organizer's address", (_l, name) => {
+    const ics = generateIcs({ ...BASE, attendeeName: name, organizerEmail: "o@example.com", organizerName: name });
+    const attendee = line(ics, "ATTENDEE");
+    const organizer = line(ics, "ORGANIZER");
+    expect(valueOf(attendee)).toBe("mailto:v@example.com");
+    expect(valueOf(organizer)).toBe("mailto:o@example.com");
+    expect(attendee).toMatch(/^ATTENDEE;CN="[^"]*";RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:v@example\.com$/);
+  });
+
+  it("keeps an ordinary name readable, quoted, without TEXT escapes", () => {
+    const ics = generateIcs({ ...BASE, attendeeName: "O'Brien, Ann" });
+    expect(line(ics, "ATTENDEE")).toContain('CN="O\'Brien, Ann";');
+  });
+});
