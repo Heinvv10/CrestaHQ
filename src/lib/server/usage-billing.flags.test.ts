@@ -163,6 +163,28 @@ describe("a problem that recurs after it was resolved flags again, once per ISO 
     expect(isoWeekKey(new Date("2021-01-03T12:00:00Z"))).toBe("2020-W53");
   });
 
+  it("a flag is written once: its createdAt does not move on later runs in the same week", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    spyBillingProvider("paystack");
+    mem.seed("subAccounts/sa1", { ...SUB, accountContact: null });
+    const flagRows = () => mem.list("billingEvents").filter((e) => e.event === "usage.flagged");
+
+    at("2026-10-12T08:00:00Z");
+    await runUsageClose(day(0));
+    const [first] = flagRows();
+    const created = (first.createdAt as Date).getTime();
+    expect(created).toBe(new Date("2026-10-12T08:00:00Z").getTime());
+
+    for (const iso of ["2026-10-13T08:00:00Z", "2026-10-15T20:00:00Z", "2026-10-18T23:00:00Z"]) {
+      at(iso);
+      await runUsageClose(day(1));
+    }
+    const rows = flagRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(first.id);
+    expect((rows[0].createdAt as Date).getTime()).toBe(created);
+  });
+
   it("resolved in week 42, back in week 43: a new flag; further days of that week add none", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     spyBillingProvider("paystack");
