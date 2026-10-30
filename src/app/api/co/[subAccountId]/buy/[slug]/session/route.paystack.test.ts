@@ -163,6 +163,12 @@ describe("refusals: nothing written, Paystack never called", () => {
     ["not an email", { email: "nope" }],
     ["a non-string email", { email: ["a@b.co"] }],
     ["an over-long email", { email: `${"a".repeat(250)}@b.co` }],
+    ["255 characters", { email: `${"a".repeat(255 - 5)}@b.co` }],
+    ["a NUL", { email: "a\u0000@b.co" }],
+    ["a zero-width space", { email: "a\u200b@b.co" }],
+    ["a right-to-left override", { email: "a\u202e@b.co" }],
+    ["a BOM inside", { email: "a\ufeff@b.co" }],
+    ["a tab inside", { email: "a\t@b.co" }],
     ["an address list", { email: "a@b.co,c@d.co" }],
     ["a semicolon list", { email: "a@b.co;c@d.co" }],
     ["a display name", { email: "Bob <a@b.co>" }],
@@ -191,6 +197,21 @@ describe("refusals: nothing written, Paystack never called", () => {
     expect(orders()[0]).toMatchObject({ status: "failed" });
     expect(attempts()).toHaveLength(0);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("the email check", () => {
+  it("254 characters is the longest accepted, and the refusal names the email, not Paystack", async () => {
+    const email254 = `${"a".repeat(254 - 5)}@b.co`;
+    expect(email254).toHaveLength(254);
+    expect((await post({ email: email254 })).status).toBe(200);
+    mem.clear();
+    mem.seed(`subAccounts/${SA}`, SUB);
+    mem.seed(`subAccounts/${SA}/private/paystackConnection`, { secretKey: KEY });
+    mem.seed("products/p1", PRODUCT);
+    const res = await post({ email: `${"a".repeat(255 - 5)}@b.co` });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Enter a valid email address." });
   });
 });
 

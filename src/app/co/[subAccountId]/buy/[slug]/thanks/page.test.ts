@@ -101,10 +101,18 @@ describe("with the order's own token", () => {
     }
   });
 
-  it("held (pending, flagged): a quick check, no download", async () => {
-    mem.seed("orders/o1", { ...ORDER, status: "pending", attentionOpen: true, attention: "differs" });
+  it("held (pending, money arrived but did not match): a quick check, no download", async () => {
+    mem.seed("orders/o1", { ...ORDER, status: "pending", heldAt: new Date(), attentionOpen: true, attention: "differs" });
     const html = await render({ order: "o1", t: TOKEN });
     expect(html).toContain("quick check");
+    expect(html).not.toContain(DOWNLOAD);
+  });
+
+  it("pending and merely flagged (a key change on an abandoned buy): processing, never 'Payment received'", async () => {
+    mem.seed("orders/o1", { ...ORDER, status: "pending", attentionOpen: true, attention: "Paystack key was changed" });
+    const html = await render({ order: "o1", t: TOKEN });
+    expect(html).toContain("Payment processing");
+    expect(html).not.toContain("Payment received");
     expect(html).not.toContain(DOWNLOAD);
   });
 

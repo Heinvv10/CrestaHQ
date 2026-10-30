@@ -49,6 +49,9 @@ const NOT_YET = "Buying this online isn't available yet.";
 // No whitespace or address-list/quoting characters: the address goes into
 // Paystack's request and our mail header as the one recipient.
 const EMAIL_RE = /^[^\s@,;<>"()]+@[^\s@,;<>"()]+\.[^\s@,;<>"()]+$/;
+// NUL, other control and invisible format characters (zero-width, bidi
+// overrides): \s misses them, and none belongs in a real address.
+const HIDDEN_CHAR = /[\p{Cc}\p{Cf}]/u;
 
 export async function POST(
   request: Request,
@@ -82,7 +85,7 @@ export async function POST(
 
   if (buy.rail === "paystack") {
     // Paystack's hosted page shows the email, it does not ask for it.
-    if (!EMAIL_RE.test(email) || email.length > 254) return fail("Enter a valid email address.", 400);
+    if (!EMAIL_RE.test(email) || HIDDEN_CHAR.test(email) || email.length > 254) return fail("Enter a valid email address.", 400);
     const paystack = await dedupedSession(
       requestId ? buyRequestKey(subAccountId, product.id, requestId, email) : null,
       { unitPriceCents: product.unitPriceCents, currency: product.currency },

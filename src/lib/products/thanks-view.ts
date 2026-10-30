@@ -5,8 +5,11 @@ import type { Order } from "@/types/orders";
  * What the express buy thanks page says about an order, decided from the
  * ORDER DOC only (never the URL). Pure, so the page and its tests agree.
  *
- *  - held: money arrived but not what the order was opened for (or the order
- *    is flagged): nothing is delivered until the operator resolves it.
+ *  - held: money arrived but not what the order was opened for (or a paid
+ *    order is flagged): nothing is delivered until the operator resolves it.
+ *  - processing: includes a pending order that is merely flagged (a Paystack
+ *    key change, "may have paid, not recorded"): nothing says money arrived,
+ *    so the page must not claim it.
  *  - paid / partially_refunded: the purchase stands; the download (from the
  *    order's own snapshot, public https only) shows unless the order is
  *    flagged.
@@ -31,7 +34,7 @@ export function thanksView(order: Order | null, emailConfigured: boolean): Thank
         ? "held"
         : "paid"
       : order.status === "pending"
-        ? flagged
+        ? order.heldAt
           ? "held"
           : "processing"
         : order.status === "expired"
