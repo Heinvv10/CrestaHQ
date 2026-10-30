@@ -58,6 +58,18 @@ describe("stale_deals_status", () => {
     expect(text).not.toContain("T".repeat(121));
   });
 
+  it("a long emoji title is capped on a code point, never leaving half a surrogate pair", async () => {
+    mem.seed(`${CONFIG}/runs/r1`, {
+      status: "completed", scanned: 1, judged: 0, flagged: 1, startedAt: new Date("2030-01-10T08:00:00Z"),
+      actions: [{ contactId: "c1", contactName: "Ann", dealId: "d1", dealTitle: "a" + "\u{1F600}".repeat(200), taskId: "t1", reason: "r", urgency: "normal" }],
+    });
+    await ask("stale_deals_status", {});
+    const text = lookupResult();
+    expect(text.isWellFormed()).toBe(true);
+    expect(text).toContain(`flagged 1 → a${"\u{1F600}".repeat(119)}: r`);
+    expect(text).not.toContain("\u{FFFD}");
+  });
+
   it("no config yet: the defaults, no runs", async () => {
     await ask("stale_deals_status", {});
     expect(lookupResult()).toContain("Stale deals monitor: OFF — flags deals sitting 7+ days");

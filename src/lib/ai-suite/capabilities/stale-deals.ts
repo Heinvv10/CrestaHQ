@@ -71,7 +71,7 @@ export const STALE_DEALS_CAPABILITIES: AiSuiteCapability[] = [
         if (r.status !== "completed") return `- ${when}: ${r.status}${r.skippedReason ? ` (${r.skippedReason})` : ""}`;
         const flagged = r.actions
           .slice(0, 5)
-          .map((a) => `${oneLine(a.dealTitle ?? a.contactName).slice(0, 120) || "(untitled)"}: ${oneLine(a.reason)}`)
+          .map((a) => `${[...oneLine(a.dealTitle ?? a.contactName).toWellFormed()].slice(0, 120).join("") || "(untitled)"}: ${oneLine(a.reason)}`)
           .join("; ");
         return `- ${when}: ${r.scanned} past threshold, flagged ${r.flagged}${flagged ? ` → ${flagged}` : ""}`;
       });
