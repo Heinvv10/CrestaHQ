@@ -33,13 +33,14 @@ jobs:
     # runs under the same fixture lock (scripts/ci/fixture-lock.mjs; see the
     # note on ci.yml's e2e job for why this is not a concurrency group).
     runs-on: ubuntu-latest
-    # Lock ref write + holder-run check; token given only to the lock steps.
+    # Lock ref write + holder-run check (see ci.yml's e2e job for the
+    # accepted risk); the token is given only to the lock steps.
     permissions:
       contents: write
       actions: read
     # Includes waiting for the lock behind PR E2E runs; the steps carry the
     # real limits.
-    timeout-minutes: 240
+    timeout-minutes: 355
     env:
       # No build step: the target is already running. Only the values the
       # SUITE itself reads are needed — Firebase REST sign-in, the Admin SDK
@@ -78,7 +79,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Acquire fixture lock
-        timeout-minutes: 180
+        timeout-minutes: 290
         run: node scripts/ci/fixture-lock.mjs acquire
         env:
           GITHUB_TOKEN: ${{ github.token }}

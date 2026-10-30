@@ -105,17 +105,28 @@ cancels the older one when a third queues. Instead the Playwright step sits
 between two steps of `scripts/ci/fixture-lock.mjs`:
 
 - `acquire` creates the git ref `refs/ci-locks/e2e-fixtures` (create is atomic:
-  422 if it exists) and otherwise **waits**, polling every 20 s, logging the
-  holder run. It never cancels anything.
+  422 if it exists) and otherwise **waits**, polling once a minute and logging
+  the holder run. It never cancels anything. Waiting is not FIFO, and a wait
+  longer than 290 min fails that run's check. On a PR it gives up (failing that
+  superseded commit's check) once the PR has a newer head or is closed.
 - A lock whose holder run attempt has completed (or no longer exists), or that is
   older than 90 min, is taken over with a fast-forward-only ref update on top of
   it, so two waiters cannot both take the same stale lock. The Playwright step's
   own 45-min timeout keeps a live holder well inside that limit.
-- `release` runs under `if: always()` and deletes the ref only if this job still
-  holds it.
+- `release` runs under `if: always()` and deletes the ref only if its recorded
+  holder is this run attempt.
 
-The jobs get `contents: write` (the ref) and `actions: read` (holder check); the
-token is passed only to the two lock steps and checkout does not persist it.
+The jobs get `contents: write` (the ref), `actions: read` (holder check) and, for
+E2E, `pull-requests: read` (newer head). The token is passed only to the two lock
+steps and checkout does not persist it. That keeps it away from the suite and app
+by default; it is not a boundary against a same-repo PR's author, who can edit the
+workflow (fork PRs never run these jobs).
+
+**Local Playwright runs do not take the lock.** A local run against the fixture
+tenants can still collide with CI; check `gh run list --status in_progress` (or
+the lock ref) before starting one. The self-hosted runner `velo-crestahq-u`
+(service `actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`) no longer
+receives jobs once this is merged and can be stopped and unregistered.
 To clear a wedged lock by hand: `gh api -X DELETE repos/Heinvv10/CrestaHQ/git/refs/ci-locks/e2e-fixtures`
 — only when no E2E or smoke run is in its Playwright step.
 

@@ -195,7 +195,15 @@ describe("check-agent-coverage-shrink CLI", () => {
       expect(job.slice(job.lastIndexOf("- name:", release), release)).toContain("if: always()");
       expect(job).toMatch(/permissions:\n\s+contents: write\n\s+actions: read/);
       expect(job).toContain("persist-credentials: false");
+      // The Playwright step bounds how long the lock is held (stale limit 90 min).
+      const step = job.slice(job.lastIndexOf("- name:", playwright), playwright);
+      expect(step).toMatch(/timeout-minutes: (\d+)/);
+      expect(Number(step.match(/timeout-minutes: (\d+)/)![1])).toBeLessThan(90);
+      // The write token reaches the two lock steps and nothing else.
+      expect(job.match(/github\.token/g)).toHaveLength(2);
     }
+    expect(e2e).toContain("LOCK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}");
+    expect(e2e).toMatch(/permissions:\n\s+contents: write\n\s+actions: read\n\s+pull-requests: read/);
   });
 });
 
