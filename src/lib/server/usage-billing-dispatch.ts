@@ -123,6 +123,7 @@ export async function processPendingCharges(
         lineItems: frozen.lineItems,
         dueAt,
         payerEmail: to,
+        ledgerPath: ledgerRef.path,
       }).catch(async (err) => {
         // A refusal that outlives the retry window is withheld, so no month is
         // ever held for more than a week or so (and a carry restored by a late
@@ -130,11 +131,17 @@ export async function processPendingCharges(
         if (err instanceof BillingError && queuedPastWindow(p, now)) {
           const msg = `charge could not be created for ${INVOICE_EMAIL_RETRY_DAYS} days (${err.message}); the month was withheld`;
           if ((await withholdOrStand("charge could not be created", msg)) === "busy") return null;
-          return { created: false, chargeId };
+          return { created: false, chargeId, withheld: false };
         }
         return held(err);
       });
       if (created === null) return;
+      // A concurrent run withheld this month while we were minting: it has
+      // already audited and flagged it, so this one only clears its entry.
+      if (created.withheld) {
+        await q.ref.delete();
+        return;
+      }
       if (created.created) charged++;
     }
 

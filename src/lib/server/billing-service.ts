@@ -1038,7 +1038,13 @@ export async function createUsageCharge(input: {
   lineItems: UsageChargeLine[];
   dueAt: Date;
   payerEmail: string | null;
-}): Promise<{ created: boolean; chargeId: string }> {
+  /**
+   * The month's ledger doc. When given, the charge is written in a transaction
+   * that first reads it: a month already withheld (`closed.withheldAt`) is NOT
+   * minted, so a mint racing a withhold either sees the stamp or is seen by it.
+   */
+  ledgerPath?: string;
+}): Promise<{ created: boolean; chargeId: string; withheld?: boolean }> {
   const provider = getBillingProvider();
   if (!provider.isConfigured()) {
     throw new BillingError(
@@ -1077,13 +1083,22 @@ export async function createUsageCharge(input: {
     remindedAt: {},
     emailedTo: null,
   };
+  const db = getAdminDb();
   try {
-    await ref.create({
-      ...doc,
-      createdAt: FieldValue.serverTimestamp(),
-      paidAt: null,
-      updatedAt: FieldValue.serverTimestamp(),
+    const withheld = await db.runTransaction(async (tx) => {
+      if (input.ledgerPath) {
+        const ledger = (await tx.get(db.doc(input.ledgerPath))).data();
+        if (ledger?.closed?.withheldAt) return true;
+      }
+      tx.create(ref, {
+        ...doc,
+        createdAt: FieldValue.serverTimestamp(),
+        paidAt: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return false;
     });
+    if (withheld) return { created: false, chargeId, withheld: true };
   } catch (err) {
     // gRPC ALREADY_EXISTS: an earlier run already minted it.
     if ((err as { code?: number }).code === 6) return { created: false, chargeId };

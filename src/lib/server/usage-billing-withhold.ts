@@ -106,7 +106,13 @@ export async function withholdUnsent(input: {
   const chargeRef = getAdminDb().doc(`billingCharges/${chargeId}`);
   const verdict = await getAdminDb().runTransaction(async (tx) => {
     const c = (await tx.get(chargeRef)).data();
-    if (!c) return "none" as const;
+    // No charge: the stamp is written in THIS transaction, which has read the
+    // charge doc. A mint that creates the charge meanwhile makes this commit
+    // retry (and see it); one that comes after sees the stamp and does not mint.
+    if (!c) {
+      tx.update(ledgerRef, withheldPatch(why, carryBackCents));
+      return "none" as const;
+    }
     if (c.status !== "pending" || c.emailedTo || c.emailAttemptedAt) return "stands" as const;
     if (claimFresh(c, now)) return "busy" as const;
     tx.update(chargeRef, { status: "canceled", tokenHash: null, updatedAt: FieldValue.serverTimestamp() });
@@ -114,8 +120,6 @@ export async function withholdUnsent(input: {
     return "canceled" as const;
   });
   if (verdict === "stands" || verdict === "busy") return verdict;
-  // No charge exists: the ledger stamp is the only write, so it needs no transaction.
-  if (verdict === "none") await ledgerRef.update(withheldPatch(why, carryBackCents));
   await announceWithheld({ sub, month, chargeId, charge: verdict === "none" ? "none" : "canceled", why, carryBackCents });
   return "withheld";
 }

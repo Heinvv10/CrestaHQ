@@ -138,9 +138,9 @@ describe("a charge that cannot be created", () => {
     tx.mockRestore();
     expect(out).toMatchObject({ failed: 1, refusals: [] });
     expect(queue()).toHaveLength(1);
-    // The next run recovers and mints it.
-    // (The charge doc itself was already created before the failure, so this run mints nothing new.)
-    expect((await runUsageClose(NOW)).charged).toBe(0);
+    // The next run recovers and mints it. (The mint itself is the first transaction, so nothing was written.)
+    expect(charges()).toHaveLength(0);
+    expect((await runUsageClose(NOW)).charged).toBe(1);
     expect(charges()).toHaveLength(1);
   });
 
