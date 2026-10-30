@@ -36,8 +36,9 @@ const DELIVERY_MARKER_TTL_MS = 24 * 3_600_000;
  * anything in the body (lib/comms/email-events.ts).
  *
  * Fails closed: 503 with no RESEND_WEBHOOK_SECRET, 413 over the cap (checked
- * before hashing), 401 on a missing, wrong or stale Svix signature, 409 on a
- * svix-id already processed. Each refusal writes nothing. A verified message
+ * before hashing), 401 on a missing, wrong or stale Svix signature; a
+ * svix-id already processed is acknowledged 200 `{ignored: true}`. None of
+ * these writes anything. A verified message
  * we could not process deletes its marker and answers 500, so Resend's retry
  * runs it again. Everything else answers 200, so Resend doesn't retry-storm.
  */
@@ -70,7 +71,8 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     if ((err as { code?: unknown }).code === 6) {
-      return NextResponse.json({ error: "Already processed" }, { status: 409 });
+      // Already processed: acknowledge, or Svix retries it as a failure.
+      return NextResponse.json({ ok: true, ignored: true });
     }
     console.error(
       "[webhooks/resend/events] delivery marker write failed",

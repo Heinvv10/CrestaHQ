@@ -7,7 +7,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * `v1,<base64 HMAC-SHA256>` over `${svix-id}.${svix-timestamp}.${raw body}`,
  * keyed with the base64 part of the `whsec_…` signing secret. Verified here
  * by hand (no svix dependency) — timing-safe, with a ±5 minute timestamp
- * window; replays of a still-fresh message are refused by the route.
+ * window; a replay of a still-fresh message is acknowledged by the route
+ * without being processed again.
  */
 
 export const SVIX_TOLERANCE_SECONDS = 5 * 60;

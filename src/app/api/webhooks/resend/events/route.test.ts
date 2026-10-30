@@ -127,11 +127,13 @@ describe("POST /api/webhooks/resend/events — refusals write nothing", () => {
     expect(everything()).toBe(before);
   });
 
-  it("409 on a replayed svix-id, and the replay writes nothing", async () => {
+  it("acknowledges a replayed svix-id with 200 ignored, and the replay writes nothing", async () => {
     const body = ev("email.opened");
     expect((await POST(signed(body, { id: "msg_replay" }))).status).toBe(200);
     const after = everything();
-    expect((await POST(signed(body, { id: "msg_replay" }))).status).toBe(409);
+    const replay = await POST(signed(body, { id: "msg_replay" }));
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({ ok: true, ignored: true });
     expect(everything()).toBe(after);
     expect(row().opens).toBe(1);
   });
