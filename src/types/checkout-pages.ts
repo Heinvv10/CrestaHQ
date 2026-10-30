@@ -98,7 +98,7 @@ export function slugifyCheckoutSlug(raw: string): string {
 }
 
 /** Reserved so a page can never shadow a sibling route under /co. */
-const RESERVED_SLUGS = new Set(["api", "new", "thanks", "preview"]);
+const RESERVED_SLUGS = new Set(["api", "new", "thanks", "preview", "buy"]);
 
 export function checkoutSlugError(slug: string): string | null {
   if (!slug) return "Add a URL slug.";

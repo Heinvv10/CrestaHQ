@@ -143,6 +143,7 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     agencyId: ctx.agencyId,
     mode: ctx.mode,
     type: "booking.cancelled",
+    actorUid: `apikey:${ctx.keyPrefix}`,
     payload: { event: { id: params.id, object: "event", deleted: true } },
   }));
   return apiOk(ctx, { id: params.id, object: "event", deleted: true });

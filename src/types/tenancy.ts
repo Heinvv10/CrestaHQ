@@ -1,5 +1,6 @@
 import type { StripeConnectionMeta } from "@/types/payments";
 import type { WebVoiceMeta } from "@/types/web-voice";
+import type { SlackMeta } from "@/types/slack";
 import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
 import type { GbpSummary } from "@/lib/gbp/sync/types";
 import type { PaystackConnectionMeta } from "@/types/paystack-connection";
@@ -611,6 +612,12 @@ export interface SubAccountDoc {
    * credential to this object. Null/absent = not connected.
    */
   webVoiceMeta?: WebVoiceMeta | null;
+  /**
+   * Slack notifications display metadata. The Incoming Webhook URL lives at
+   * `subAccounts/{id}/private/slack`; never add it here. Null/absent = not
+   * connected (in `CHANNEL_CONNECTION_FIELDS`).
+   */
+  slackMeta?: SlackMeta | null;
   /**
    * Agency-controlled gate for the browser phone dialer (softphone) that
    * places calls through the sub-account's own Twilio account. Opt-in:
