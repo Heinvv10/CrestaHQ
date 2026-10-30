@@ -39,6 +39,7 @@ import { SubAccountGoogleReviewSection } from "@/components/settings/sub-account
 import { SubAccountStripeSection } from "@/components/settings/sub-account-stripe-section";
 import { SubAccountPaystackSection } from "@/components/settings/sub-account-paystack-section";
 import { SubAccountWebinar1Section } from "@/components/settings/sub-account-webinar1-section";
+import { SubAccountSlackSection } from "@/components/settings/sub-account-slack-section";
 import { SubAccountApexgeoSection } from "@/components/settings/sub-account-apexgeo-section";
 import { SubAccountApiKeysSection } from "@/components/settings/sub-account-api-keys-section";
 import { SubAccountApiRecipesSection } from "@/components/settings/sub-account-api-recipes-section";
@@ -258,6 +259,10 @@ export default function SettingsPage() {
           {/* ApexGEO — the key behind prospect reports' website speed, AI
               readiness and AI search presence sections. */}
           <SubAccountApexgeoSection />
+
+          {/* Slack — Incoming-webhook posts from the event stream; self-gates
+              on admin. */}
+          <SubAccountSlackSection />
 
           {/* Data export */}
           <section className="bg-card rounded-2xl border p-5">

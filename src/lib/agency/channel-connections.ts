@@ -24,6 +24,7 @@ export const CHANNEL_CONNECTION_FIELDS = [
   "ghlImportConfig",
   "webVoiceMeta",
   "dialerConfig",
+  "slackMeta",
 ] as const;
 
 /** Whether the sub-account has any channel or payment connection: a field
