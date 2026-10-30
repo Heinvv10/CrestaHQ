@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { STALE_MS, acquire, release } from "./fixture-lock-core.mjs";
+import {
+  DEEP_EVERY,
+  STALE_MS,
+  acquire,
+  release,
+} from "./fixture-lock-core.mjs";
 import { fakeGitHub, holder, noSleep, quiet } from "./fixture-lock.fake";
 
 describe("fixture lock: acquire", () => {
@@ -153,5 +158,34 @@ describe("fixture lock: acquire", () => {
       })
     ).rejects.toThrow("lost the race and waited");
     expect(gh.ref()).not.toBe(stale);
+  });
+  it("notices a watched holder's run ending on a later poll, with no new lock sha", async () => {
+    const clock = { t: 0 };
+    const gh = fakeGitHub(clock);
+    gh.runs.set("1/1", "in_progress");
+    const crashed = await acquire(gh.api, {
+      tree: "t",
+      holder: holder("1"),
+      now: () => clock.t,
+      sleep: noSleep,
+      log: quiet,
+    });
+    let waits = 0;
+    const sleep = async () => {
+      if (++waits > DEEP_EVERY + 1)
+        throw new Error("never re-checked the holder run");
+      clock.t += 60_000;
+      if (waits === 1) gh.runs.set("1/1", "completed");
+    };
+    const mine = await acquire(gh.api, {
+      tree: "t",
+      holder: holder("2"),
+      now: () => clock.t,
+      sleep,
+      log: quiet,
+    });
+    expect(waits).toBe(DEEP_EVERY);
+    expect(mine).not.toBe(crashed);
+    expect(gh.ref()).toBe(mine);
   });
 });
