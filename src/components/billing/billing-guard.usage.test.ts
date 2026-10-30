@@ -38,6 +38,7 @@ const overdue = (daysAgo: number, paywall: boolean | undefined) => ({
   currency: "zar",
   usageMonth: "2026-09",
   paywall,
+  paywallSince: new Date(0),
 });
 const setSub = (extra: Record<string, unknown>) => {
   ctx.sub.value = { id: "sa1", agencyId: "ag1", billing: null, ...extra };
@@ -116,6 +117,14 @@ describe("wall: past the grace period", () => {
     expect(button("Pay & restore access")).toBeTruthy();
   });
 
+  it("a long-overdue client is not walled the moment the paywall is turned on: banner with a fresh 7-day countdown", async () => {
+    setSub({ usageOverdue: { ...overdue(400, true), paywallSince: new Date(Date.now() - DAY) } });
+    await render();
+    expect(text()).toContain("WORKSPACE CONTENT");
+    expect(text()).not.toContain("Usage invoice unpaid");
+    expect(text()).toMatch(/Access pauses in\s*6 days/);
+  });
+
   it("never walls when the wall is off, however old the debt: banner only", async () => {
     for (const paywall of [false, undefined]) {
       setSub({ usageOverdue: overdue(400, paywall) });
@@ -133,6 +142,25 @@ describe("wall: past the grace period", () => {
     expect(text()).toContain("WORKSPACE CONTENT");
     expect(text()).toContain("unpaid past the grace period");
     expect(text()).not.toContain("Usage invoice unpaid");
+  });
+
+  it("never walls agency staff either: any agency user of the workspace's agency gets in", async () => {
+    ctx.auth.value = { agencyId: "ag1", agencyRole: "staff" };
+    setSub({ usageOverdue: overdue(20, true) });
+    await render();
+    expect(text()).toContain("WORKSPACE CONTENT");
+    expect(text()).toContain("unpaid past the grace period");
+    expect(text()).not.toContain("Usage invoice unpaid");
+  });
+
+  it("does not exempt an agency user of a DIFFERENT agency, or a workspace member with no agency role", async () => {
+    setSub({ usageOverdue: overdue(20, true) });
+    for (const auth of [{ agencyId: "ag2", agencyRole: "owner" }, { agencyId: "ag2", agencyRole: "staff" }, { agencyId: "ag1", agencyRole: null }]) {
+      ctx.auth.value = auth;
+      await render();
+      expect(text()).not.toContain("WORKSPACE CONTENT");
+      expect(text()).toContain("Usage invoice unpaid");
+    }
   });
 
   it("a non-admin member is told to ask their admin", async () => {

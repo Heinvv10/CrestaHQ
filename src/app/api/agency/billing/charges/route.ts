@@ -10,8 +10,8 @@ export async function GET(request: Request) {
   if (caller instanceof NextResponse) return caller;
 
   try {
-    const charges = await listChargesForAgency(caller.agencyId!);
-    return NextResponse.json({ charges });
+    const { charges, truncated } = await listChargesForAgency(caller.agencyId!);
+    return NextResponse.json({ charges, truncated });
   } catch (err) {
     console.error(
       "[agency/billing/charges] list failed",

@@ -17,6 +17,7 @@ vi.mock("@/lib/firebase/admin", async () => {
 });
 
 const { GET } = await import("./route");
+const { AGENCY_CHARGES_CAP } = await import("@/lib/server/billing-service");
 const db = () => mem.ref!;
 const get = (uid?: string) =>
   GET(new Request("http://x/api/agency/billing/charges", { headers: uid ? { "x-user-uid": uid } : {} }));
@@ -40,7 +41,8 @@ describe("agency charges list", () => {
   it("the owner sees only their own agency's charges, newest first, with usage fields", async () => {
     const res = await get("owner1");
     expect(res.status).toBe(200);
-    const { charges } = (await res.json()) as { charges: { id: string; kind: string; usageMonth: string | null; dueAt: string | null }[] };
+    const { charges, truncated } = (await res.json()) as { truncated: boolean; charges: { id: string; kind: string; usageMonth: string | null; dueAt: string | null }[] };
+    expect(truncated).toBe(false);
     expect(charges.map((c) => c.id)).toEqual(["b", "a"]);
     expect(charges[1]).toMatchObject({ kind: "usage", usageMonth: "2026-09" });
     expect(new Date(charges[1].dueAt!).getTime()).toBe(new Date(2026, 9, 15).getTime());
@@ -49,5 +51,31 @@ describe("agency charges list", () => {
   it("never returns a token or pay link", async () => {
     db().seed("billingCharges/a", { ...db().read("billingCharges/a")!, tokenHash: "h", payUrl: "https://x/pay/charge/t" });
     expect(JSON.stringify(await (await get("owner1")).json())).not.toMatch(/tokenHash|payUrl|pay\/charge/);
+  });
+});
+
+describe("an agency with many charges", () => {
+  const seedMany = (n: number) => {
+    for (let i = 0; i < n; i++) db().seed(`billingCharges/m${String(i).padStart(5, "0")}`, row("ag1", { createdAt: new Date(2026, 0, 1, 0, 0, i % 59) }));
+  };
+  type Body = { charges: unknown[]; truncated: boolean };
+
+  it("returns all of them past the old 1,000 cut, and says it is complete", async () => {
+    seedMany(1200);
+    const body = (await (await get("owner1")).json()) as Body;
+    expect(body.charges).toHaveLength(1202);
+    expect(body.truncated).toBe(false);
+  });
+
+  it("exactly at the cap is complete; one over is flagged truncated and cut to the cap", async () => {
+    db().clear();
+    seedMany(AGENCY_CHARGES_CAP);
+    let body = (await (await get("owner1")).json()) as Body;
+    expect(body.charges).toHaveLength(AGENCY_CHARGES_CAP);
+    expect(body.truncated).toBe(false);
+    seedMany(AGENCY_CHARGES_CAP + 1);
+    body = (await (await get("owner1")).json()) as Body;
+    expect(body.charges).toHaveLength(AGENCY_CHARGES_CAP);
+    expect(body.truncated).toBe(true);
   });
 });

@@ -154,13 +154,18 @@ export async function setAgencyUsagePaywall(
   agencyId: string,
   on: boolean,
   actorUid: string,
-): Promise<{ changed: boolean }> {
+): Promise<{ changed: boolean; refreshed: boolean }> {
   const db = getAdminDb();
   const agencyRef = db.doc(`agencies/${agencyId}`);
   const changed = await db.runTransaction(async (tx) => {
     const before = (await tx.get(agencyRef)).data()?.usagePaywallEnabled === true;
     if (before === on) return false;
-    tx.update(agencyRef, { usagePaywallEnabled: on, updatedAt: FieldValue.serverTimestamp() });
+    tx.update(agencyRef, {
+      usagePaywallEnabled: on,
+      // Each off-to-on starts a fresh 7 days before anyone is walled.
+      ...(on ? { usagePaywallEnabledAt: FieldValue.serverTimestamp() } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
     return true;
   });
   if (changed) {
@@ -172,7 +177,8 @@ export async function setAgencyUsagePaywall(
       subAccountId: null,
       changes: [{ field: "usagePaywallEnabled", before: !on, after: on }],
     });
-    await refreshAgencyUsageOverdue(agencyId);
   }
-  return { changed };
+  // Also when nothing changed: a retry after a failed re-check must be able to finish it.
+  const refreshed = await refreshAgencyUsageOverdue(agencyId);
+  return { changed, refreshed };
 }

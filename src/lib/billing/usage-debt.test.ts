@@ -8,8 +8,13 @@ import type { UsageOverdue } from "@/types/tenancy";
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = new Date(Date.UTC(2026, 10, 20, 10, 0));
 const dueDaysAgo = (n: number): Date => new Date(NOW.getTime() - n * DAY);
-const overdue = (since: Date | null, paywall: boolean | undefined): UsageOverdue =>
-  ({ chargeId: "usage_sa1_2026-10", since, amountCents: 5000, currency: "zar", usageMonth: "2026-10", paywall }) as UsageOverdue;
+/** `paywallSince` defaults to long ago: the wall has been on for ages unless a test says otherwise. */
+const overdue = (
+  since: Date | null,
+  paywall: boolean | undefined,
+  paywallSince: Date | null | undefined = new Date(0),
+): UsageOverdue =>
+  ({ chargeId: "usage_sa1_2026-10", since, amountCents: 5000, currency: "zar", usageMonth: "2026-10", paywall, paywallSince }) as UsageOverdue;
 const billing = (status: SubAccountBilling["status"], extra: Partial<SubAccountBilling> = {}): SubAccountBilling =>
   ({ status, ...extra }) as SubAccountBilling;
 
@@ -36,6 +41,33 @@ describe("usageDebtState", () => {
     expect(usageDebtState(overdue(old, undefined), NOW)).toBe("grace");
     expect(usageDebtState(overdue(old, "true" as unknown as boolean), NOW)).toBe("grace");
     expect(usageDebtState(overdue(old, 1 as unknown as boolean), NOW)).toBe("grace");
+  });
+});
+
+describe("turning the paywall on starts its own 7 days", () => {
+  const old = dueDaysAgo(400);
+
+  it("a long-overdue client is not walled the moment the paywall is turned on", () => {
+    expect(usageDebtState(overdue(old, true, dueDaysAgo(1)), NOW)).toBe("grace");
+    expect(usageDebtState(overdue(old, true, dueDaysAgo(BILLING_GRACE_DAYS - 1)), NOW)).toBe("grace");
+  });
+
+  it("then the wall falls 7 days after it was turned on", () => {
+    expect(usageDebtState(overdue(old, true, dueDaysAgo(BILLING_GRACE_DAYS + 1)), NOW)).toBe("lapsed");
+  });
+
+  it("the countdown targets the later of due+7 and enabled+7", () => {
+    const enabled = dueDaysAgo(1);
+    expect(usageGraceEndsAt(overdue(old, true, enabled))).toBe(enabled.getTime() + BILLING_GRACE_DAYS * DAY);
+    const due = dueDaysAgo(2);
+    expect(usageGraceEndsAt(overdue(due, true, dueDaysAgo(30)))).toBe(due.getTime() + BILLING_GRACE_DAYS * DAY);
+  });
+
+  it("a paywall with no readable turned-on date is a banner, never a wall (fails open)", () => {
+    expect(usageDebtState(overdue(old, true, null), NOW)).toBe("grace");
+    expect(usageDebtState({ ...overdue(old, true), paywallSince: undefined }, NOW)).toBe("grace");
+    expect(usageDebtState(overdue(old, true, "x" as unknown as Date), NOW)).toBe("grace");
+    expect(usageGraceEndsAt(overdue(old, true, null))).toBeNull();
   });
 });
 

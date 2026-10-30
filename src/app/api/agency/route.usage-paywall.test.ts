@@ -102,4 +102,31 @@ describe("usagePaywallEnabled", () => {
     expect(flag("sa1")?.paywall).toBe(false);
     expect(flag("sb1")?.paywall).toBe(true);
   });
+
+  it("saves the setting but answers 502 when flagged clients could not be re-checked, so the page cannot claim they were", async () => {
+    db().seed("subAccounts/sa1", { agencyId: "ag1", usageOverdue: { chargeId: "c", paywall: true } });
+    // Only the flagged-clients scan fails; the audit row is written through `collection` too.
+    const real = db().db.collection.bind(db().db);
+    const spy = vi.spyOn(db().db, "collection").mockImplementation(((name: string) => {
+      if (name === "subAccounts") throw new Error("unavailable");
+      return real(name);
+    }) as never);
+    const res = await patch("owner1", { usagePaywallEnabled: true });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({ saved: true, error: expect.stringContaining("couldn't re-check") });
+    expect(agency().usagePaywallEnabled).toBe(true);
+    expect(auditRows()).toHaveLength(1);
+    spy.mockRestore();
+    // The failed re-check left the stale flag standing (no charge backs it any more).
+    expect(flag("sa1")).toBeTruthy();
+    // Saving the same value again finishes the re-check.
+    expect((await patch("owner1", { usagePaywallEnabled: true })).status).toBe(200);
+    expect(flag("sa1")).toBeNull();
+    expect(auditRows()).toHaveLength(1);
+  });
+
+  it("turning it on stamps usagePaywallEnabledAt", async () => {
+    expect((await patch("owner1", { usagePaywallEnabled: true })).status).toBe(200);
+    expect(agency().usagePaywallEnabledAt).toBeDefined();
+  });
 });

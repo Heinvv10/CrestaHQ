@@ -144,7 +144,7 @@ export default function AgencyBillingPage() {
 
   async function togglePaywall(next: boolean) {
     const question = next
-      ? "Turn on the usage paywall? A client that leaves a usage invoice unpaid for 7 days past its due date loses access to its workspace until it pays. Its data is kept, and you keep full access."
+      ? "Turn on the usage paywall? A client with an overdue usage invoice loses access to its workspace until it pays, at the later of 7 days after the invoice was due and 7 days from now. Clients already long overdue therefore get a full 7 days from now, with a banner counting down. Data is kept, and you keep full access."
       : "Turn off the usage paywall? Clients with an overdue usage invoice only see a payment banner, and any workspace currently paused is restored.";
     if (!window.confirm(question)) return;
     setPaywallBusy(true);
@@ -339,8 +339,8 @@ export default function AgencyBillingPage() {
             <p className="mt-1 text-xs text-muted-foreground">
               A client with an overdue usage invoice always sees a payment banner.
               With this on, a workspace is also paused once the invoice is 7 days
-              past due, until it is paid. You are never locked out, and a waived
-              invoice lifts it.
+              past due (or 7 days after you turn this on, if later), until it is paid.
+              Agency users are never locked out, and a waived invoice lifts it.
             </p>
           </div>
           <Button

@@ -9,15 +9,16 @@ export type InvoiceFilter = "all" | "outstanding" | "overdue" | "paid" | "cancel
 export const INVOICE_FILTERS: { id: InvoiceFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "outstanding", label: "Outstanding" },
-  { id: "overdue", label: "Overdue" },
+  { id: "overdue", label: "Past due" },
   { id: "paid", label: "Paid" },
   { id: "canceled", label: "Canceled / waived" },
 ];
 
 /**
- * Same rule as the server's overdue flag (`refreshUsageOverdue`): past the due
- * calendar day, not on it. Both sides read local days, which agree for an
- * owner in the server's time zone.
+ * Past the due calendar day, not on it. Only an approximation of the server's
+ * flag (`refreshUsageOverdue`), which also needs both rebilling switches on and
+ * an emailed invoice, and counts days in the server's time zone where this uses
+ * the browser's. So the panel says "Past due", not "Overdue".
  */
 export function isOverdue(c: BillingChargeResponse, now: Date): boolean {
   if (c.status !== "pending" || !c.dueAt) return false;

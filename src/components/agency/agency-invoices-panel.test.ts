@@ -88,7 +88,7 @@ describe("the table and totals", () => {
     expect(rows()).toHaveLength(4);
     expect(text()).toContain("Client One");
     expect(rows()[0].textContent).toContain("Usage");
-    expect(rows()[0].textContent).toContain("Overdue");
+    expect(rows()[0].textContent).toContain("Past due");
   });
 
   it("totals stay per currency: outstanding, overdue and collected this month", async () => {
@@ -96,17 +96,17 @@ describe("the table and totals", () => {
     const stats = [...container.querySelectorAll(".grid > div")].map((d) => d.textContent ?? "");
     expect(stats[0]).toContain("Outstanding");
     expect(stats[0]).toContain("75.00 ZAR"); // 5000 + 2500
-    expect(stats[1]).toContain("Overdue");
+    expect(stats[1]).toContain("Past due");
     expect(stats[1]).toContain("50.00 ZAR");
     expect(stats[2]).toContain("Collected this month");
     expect(stats[2]).toContain("300.00 ZAR");
   });
 
-  it("filter chips count and narrow: overdue is past-due only, not due-in-the-future", async () => {
+  it("filter chips count and narrow: past due is past-due only, not due-in-the-future", async () => {
     await render();
-    expect(chip("Overdue")!.textContent).toContain("1");
+    expect(chip("Past due")!.textContent).toContain("1");
     expect(chip("Outstanding")!.textContent).toContain("2");
-    await act(async () => chip("Overdue")!.click());
+    await act(async () => chip("Past due")!.click());
     expect(rows()).toHaveLength(1);
     expect(rows()[0].textContent).toContain("Usage September 2026");
     await act(async () => chip("Canceled / waived")!.click());
@@ -149,6 +149,20 @@ describe("actions", () => {
     await render();
     expect(rows()[2].querySelectorAll("button")).toHaveLength(0);
     expect(rows()[3].querySelectorAll("button")).toHaveLength(0);
+  });
+});
+
+describe("a truncated list", () => {
+  it("warns that the totals may be incomplete, with the count shown", async () => {
+    listResponse = { ok: true, json: async () => ({ charges: CHARGES, truncated: true }) };
+    await render();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Showing 4 invoices");
+    expect(text()).toContain("totals below may be incomplete");
+  });
+
+  it("says nothing when the list is complete", async () => {
+    await render();
+    expect(container.querySelector('[role="status"]')).toBeNull();
   });
 });
 

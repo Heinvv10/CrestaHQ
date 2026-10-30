@@ -24,8 +24,23 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export type UsageDebtState = "none" | "grace" | "lapsed";
 
 /**
- * Overdue usage: grace for BILLING_GRACE_DAYS after the due date, then lapsed
- * only if the agency allows the wall. Otherwise it stays a banner.
+ * When the wall would fall, or null when it cannot: the wall is off, or either
+ * date is unreadable. Never earlier than 7 days after the invoice was due AND
+ * 7 days after the agency turned the paywall on, so turning it on never walls a
+ * long-overdue client at once.
+ */
+function wallAtMs(overdue: UsageOverdue): number | null {
+  if (overdue.paywall !== true) return null;
+  const sinceMs = billingDateToMillis(overdue.since);
+  const enabledMs = billingDateToMillis(overdue.paywallSince ?? null);
+  if (sinceMs === null || enabledMs === null) return null;
+  return Math.max(sinceMs, enabledMs) + BILLING_GRACE_DAYS * DAY_MS;
+}
+
+/**
+ * Overdue usage: a banner while within BILLING_GRACE_DAYS of the due date,
+ * then lapsed only once the wall time (above) has also passed. Otherwise it
+ * stays a banner.
  */
 export function usageDebtState(
   overdue: UsageOverdue | null | undefined,
@@ -35,14 +50,13 @@ export function usageDebtState(
   const sinceMs = billingDateToMillis(overdue.since);
   if (sinceMs === null) return "none";
   if (now.getTime() < sinceMs + BILLING_GRACE_DAYS * DAY_MS) return "grace";
-  return overdue.paywall === true ? "lapsed" : "grace";
+  const wallAt = wallAtMs(overdue);
+  return wallAt !== null && now.getTime() >= wallAt ? "lapsed" : "grace";
 }
 
 /** When access pauses, or null when nothing is overdue or the wall is off. */
 export function usageGraceEndsAt(overdue: UsageOverdue | null | undefined): number | null {
-  if (overdue?.paywall !== true) return null;
-  const sinceMs = billingDateToMillis(overdue.since);
-  return sinceMs === null ? null : sinceMs + BILLING_GRACE_DAYS * DAY_MS;
+  return overdue ? wallAtMs(overdue) : null;
 }
 
 export interface WorkspaceBillingState {

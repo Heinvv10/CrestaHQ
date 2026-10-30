@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue, Timestamp } from "firebase-admin/firestore";
+import { FieldPath, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { getBillingProvider } from "@/lib/billing/provider";
 import { applyFeatureGates } from "@/lib/server/feature-gates-service";
@@ -1135,17 +1135,43 @@ export async function listChargesForSubAccount(
     .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 }
 
-/** Every charge in the agency, newest first; single-field query, no index needed. */
+/** Charges read per page, and the most the Invoices table will hold. */
+const AGENCY_CHARGES_PAGE = 500;
+export const AGENCY_CHARGES_CAP = 5000;
+
+/**
+ * The agency's charges, newest first within what was read. Paged by document
+ * id (an equality filter plus `__name__` order needs no composite index), so a
+ * busy agency is not silently cut at an arbitrary 1,000. Past
+ * `AGENCY_CHARGES_CAP` the rest are dropped and `truncated` says so: the id
+ * order is not creation order, so the dropped ones are not necessarily the
+ * oldest, and the caller must not present totals as complete.
+ */
 export async function listChargesForAgency(
   agencyId: string,
-): Promise<BillingChargeResponse[]> {
-  const snap = await chargesCollection()
-    .where("agencyId", "==", agencyId)
-    .limit(1000)
-    .get();
-  return snap.docs
-    .map((d) => serializeCharge(d.id, d.data()))
-    .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+): Promise<{ charges: BillingChargeResponse[]; truncated: boolean }> {
+  const docs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  let last: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+  while (docs.length <= AGENCY_CHARGES_CAP) {
+    const want = Math.min(AGENCY_CHARGES_PAGE, AGENCY_CHARGES_CAP + 1 - docs.length);
+    let q = chargesCollection()
+      .where("agencyId", "==", agencyId)
+      .orderBy(FieldPath.documentId())
+      .limit(want);
+    if (last) q = q.startAfter(last);
+    const page = await q.get();
+    docs.push(...page.docs);
+    if (page.docs.length < want) break;
+    last = page.docs[page.docs.length - 1];
+  }
+  const truncated = docs.length > AGENCY_CHARGES_CAP;
+  return {
+    charges: docs
+      .slice(0, AGENCY_CHARGES_CAP)
+      .map((d) => serializeCharge(d.id, d.data()))
+      .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "")),
+    truncated,
+  };
 }
 
 async function getChargeInAgencyOrThrow(

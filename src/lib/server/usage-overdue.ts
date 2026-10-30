@@ -65,7 +65,17 @@ export async function refreshUsageOverdue(
         return;
       }
       const paywall = agency?.usagePaywallEnabled === true;
-      if (current?.chargeId === oldest.d.id && current.paywall === paywall) return;
+      // When the paywall was last turned on: the wall waits 7 days from then, so
+      // turning it on never walls a long-overdue client at once.
+      const paywallSinceMs = paywall ? toMillis(agency?.usagePaywallEnabledAt) : null;
+      const currentSinceMs = toMillis((current as { paywallSince?: unknown } | null | undefined)?.paywallSince);
+      if (
+        current?.chargeId === oldest.d.id &&
+        current.paywall === paywall &&
+        currentSinceMs === paywallSinceMs
+      ) {
+        return;
+      }
       const c = oldest.d.data();
       tx.update(subRef, {
         usageOverdue: {
@@ -75,6 +85,7 @@ export async function refreshUsageOverdue(
           currency: String(c.currency ?? "zar"),
           usageMonth: typeof c.usageMonth === "string" ? c.usageMonth : null,
           paywall,
+          paywallSince: paywallSinceMs === null ? null : Timestamp.fromMillis(paywallSinceMs),
         },
       });
     });
@@ -89,15 +100,28 @@ export async function refreshUsageOverdue(
   }
 }
 
-/** Re-checks every client of one agency that is flagged (after a switch or the wall setting changes). */
-export async function refreshAgencyUsageOverdue(agencyId: string, now: Date = new Date()): Promise<void> {
-  try {
-    const flagged = await getAdminDb().collection("subAccounts").where("usageOverdue", "!=", null).get();
-    const ids = flagged.docs.filter((d) => d.data().agencyId === agencyId).map((d) => d.id);
-    await inPool(ids, (id) => refreshUsageOverdue(id, now));
-  } catch (err) {
-    console.warn(`[usage-overdue] agency refresh failed ag=${agencyId}: ${reason(err)}`);
+/**
+ * Re-checks every client of one agency that is flagged (after a switch or the
+ * wall setting changes). The scan is retried twice; returns false if it still
+ * failed, so the caller can say so instead of claiming clients were restored.
+ * The daily sweep is the backstop either way.
+ */
+export async function refreshAgencyUsageOverdue(
+  agencyId: string,
+  now: Date = new Date(),
+  attempts = 3,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const flagged = await getAdminDb().collection("subAccounts").where("usageOverdue", "!=", null).get();
+      const ids = flagged.docs.filter((d) => d.data().agencyId === agencyId).map((d) => d.id);
+      await inPool(ids, (id) => refreshUsageOverdue(id, now));
+      return true;
+    } catch (err) {
+      console.warn(`[usage-overdue] agency refresh failed ag=${agencyId} attempt=${attempt}/${attempts}: ${reason(err)}`);
+    }
   }
+  return false;
 }
 
 /**

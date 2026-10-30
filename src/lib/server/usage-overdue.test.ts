@@ -19,7 +19,7 @@ vi.mock("@/lib/comms/platform-email", () => ({
 vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => ({ name: "Agency" }) }));
 
 const { runUsageClose } = await import("./usage-billing-service");
-const { refreshUsageOverdue, sweepUsageOverdue } = await import("./usage-overdue");
+const { refreshUsageOverdue, refreshAgencyUsageOverdue, sweepUsageOverdue } = await import("./usage-overdue");
 const { cancelOneTimeCharge } = await import("./billing-service");
 const { markSubAccountChargePaid } = await import("./billing-lifecycle");
 const { setClientUsageRebilling, setAgencyUsageRebilling, setAgencyUsagePaywall } = await import("./usage-rebilling");
@@ -31,6 +31,7 @@ const DUE_DAY = new Date(2026, 9, 15, 5, 0);
 const ON_DUE_DAY = new Date(2026, 9, 15, 23, 0);
 const DAY_AFTER = new Date(2026, 9, 16, 5, 0);
 
+const toMs = (v: unknown) => (v instanceof Date ? v.getTime() : (v as { toMillis(): number }).toMillis());
 const flag = () => mem.read("subAccounts/sa1")?.usageOverdue as Record<string, unknown> | null | undefined;
 const setCharge = (patch: Record<string, unknown>) =>
   mem.seed(`billingCharges/${CHARGE}`, { ...mem.read(`billingCharges/${CHARGE}`)!, ...patch });
@@ -86,13 +87,18 @@ describe("when the flag exists", () => {
     expect(flag()?.chargeId).toBe("usage_sa1_2026-08");
   });
 
-  it("carries the agency's paywall setting, and a change to it updates a standing flag", async () => {
+  it("carries the agency's paywall setting and when it was turned on, and a change to either updates a standing flag", async () => {
     await emailedCharge();
     await refreshUsageOverdue("sa1", DAY_AFTER);
     expect(flag()?.paywall).toBe(false);
-    agency({ usagePaywallEnabled: true });
+    expect(flag()?.paywallSince).toBeNull();
+    agency({ usagePaywallEnabled: true, usagePaywallEnabledAt: new Date(2026, 9, 10) });
     await refreshUsageOverdue("sa1", DAY_AFTER);
     expect(flag()?.paywall).toBe(true);
+    expect(toMs(flag()?.paywallSince)).toBe(new Date(2026, 9, 10).getTime());
+    agency({ usagePaywallEnabledAt: new Date(2026, 9, 14) });
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    expect(toMs(flag()?.paywallSince)).toBe(new Date(2026, 9, 14).getTime());
     agency({ usagePaywallEnabled: "yes" });
     await refreshUsageOverdue("sa1", DAY_AFTER);
     expect(flag()?.paywall).toBe(false);
@@ -158,10 +164,26 @@ describe("what clears it", () => {
     agency({ usagePaywallEnabled: true });
     await refreshUsageOverdue("sa1", DAY_AFTER);
     expect(flag()?.paywall).toBe(true);
-    expect(await setAgencyUsagePaywall("ag1", false, "own")).toEqual({ changed: true });
+    expect(await setAgencyUsagePaywall("ag1", false, "own")).toEqual({ changed: true, refreshed: true });
     expect(flag()?.paywall).toBe(false);
-    expect(await setAgencyUsagePaywall("ag1", false, "own")).toEqual({ changed: false });
+    expect(await setAgencyUsagePaywall("ag1", false, "own")).toEqual({ changed: false, refreshed: true });
     expect(mem.list("auditEvents").filter((r) => r.action === "usage_paywall.updated")).toHaveLength(1);
+  });
+
+  it("turning the paywall on stamps when, so the flag's wall waits 7 days from then; turning it off then on restamps", async () => {
+    await emailedCharge();
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    await setAgencyUsagePaywall("ag1", true, "own");
+    const first = toMs(mem.read("agencies/ag1")!.usagePaywallEnabledAt);
+    expect(flag()).toMatchObject({ paywall: true });
+    expect(toMs(flag()?.paywallSince)).toBe(first);
+    await setAgencyUsagePaywall("ag1", true, "own");
+    expect(toMs(mem.read("agencies/ag1")!.usagePaywallEnabledAt)).toBe(first);
+    await setAgencyUsagePaywall("ag1", false, "own");
+    expect(flag()?.paywall).toBe(false);
+    await new Promise((r) => setTimeout(r, 5));
+    await setAgencyUsagePaywall("ag1", true, "own");
+    expect(toMs(mem.read("agencies/ag1")!.usagePaywallEnabledAt)).toBeGreaterThan(first);
   });
 
   it("the daily sweep flags a charge that has just gone overdue and clears a stale flag", async () => {
@@ -204,6 +226,31 @@ describe("fails open: a read error never walls", () => {
       throw new Error("firestore unavailable");
     });
     await expect(sweepUsageOverdue(DAY_AFTER)).resolves.toBe(0);
+  });
+});
+
+describe("re-checking an agency's flagged clients", () => {
+  it("retries a failed scan twice and reports success when a retry works", async () => {
+    await emailedCharge();
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    const spy = vi.spyOn(mem.db, "collection");
+    spy.mockImplementationOnce(() => { throw new Error("unavailable"); });
+    spy.mockImplementationOnce(() => { throw new Error("unavailable"); });
+    agency({ usagePaywallEnabled: true });
+    expect(await refreshAgencyUsageOverdue("ag1", DAY_AFTER)).toBe(true);
+    expect(flag()?.paywall).toBe(true);
+  });
+
+  it("reports failure after three failed scans, and leaves the flags to the daily sweep", async () => {
+    await emailedCharge();
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    agency({ usagePaywallEnabled: true });
+    const spy = vi.spyOn(mem.db, "collection");
+    for (let i = 0; i < 3; i++) spy.mockImplementationOnce(() => { throw new Error("unavailable"); });
+    expect(await refreshAgencyUsageOverdue("ag1", DAY_AFTER)).toBe(false);
+    expect(flag()?.paywall).toBe(false);
+    expect(await sweepUsageOverdue(DAY_AFTER)).toBe(1);
+    expect(flag()?.paywall).toBe(true);
   });
 });
 

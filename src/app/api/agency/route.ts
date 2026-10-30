@@ -306,18 +306,32 @@ export async function PATCH(request: Request) {
     );
   }
 
+  let paywallRefreshed = true;
   if (wantsPaywall) {
-    await setAgencyUsagePaywall(
+    ({ refreshed: paywallRefreshed } = await setAgencyUsagePaywall(
       access.agencyId,
       body.usagePaywallEnabled === true,
       access.uid,
-    );
+    ));
   }
 
   // Drop the cached policy so send paths pick up the new value immediately on
   // this instance (other serverless instances expire via the 60s TTL).
   if (body.sharedSmsAllowed !== undefined) {
     invalidateAgencyPolicyCache(access.agencyId);
+  }
+
+  // The setting is saved, but clients with a standing flag could not be re-checked.
+  // Say so rather than let the page claim the change reached them.
+  if (!paywallRefreshed) {
+    return NextResponse.json(
+      {
+        error:
+          "Saved, but couldn't re-check clients that are already overdue. Their banners or paywalls may be out of date until tomorrow's daily run; save again to retry.",
+        saved: true,
+      },
+      { status: 502 },
+    );
   }
 
   return NextResponse.json({ ok: true });

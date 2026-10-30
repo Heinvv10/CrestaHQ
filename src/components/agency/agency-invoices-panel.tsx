@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Copy, Loader2, RefreshCw, X } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { formatBillingPrice } from "@/lib/billing/status";
 import {
   INVOICE_FILTERS,
   isOverdue,
@@ -13,27 +12,19 @@ import {
   sumByCurrency,
   type InvoiceFilter,
 } from "@/lib/billing/invoice-filters";
+import { InvoiceRow } from "@/components/agency/agency-invoice-row";
 import type { BillingChargeResponse } from "@/types/billing";
 import type { SubAccountDoc } from "@/types";
 
 /** Agency > Client billing > Invoices: one-time and usage charges across every client. */
 
-// Local dates, to match the overdue rule the server uses (lib/billing/invoice-filters.ts).
-function shortDate(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
 export function AgencyInvoicesPanel({ subs }: { subs: SubAccountDoc[] }) {
   const [charges, setCharges] = useState<BillingChargeResponse[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const [failed, setFailed] = useState(false);
   const [filter, setFilter] = useState<InvoiceFilter>("all");
   const [busyId, setBusyId] = useState<string | null>(null);
-  // Refreshed with each load, so the overdue cut-off tracks the data on screen.
+  // Refreshed with each load, so the past-due cut-off tracks the data on screen.
   const [now, setNow] = useState(() => new Date());
 
   const load = useCallback(async () => {
@@ -41,8 +32,9 @@ export function AgencyInvoicesPanel({ subs }: { subs: SubAccountDoc[] }) {
     try {
       const r = await fetch("/api/agency/billing/charges");
       if (!r.ok) throw new Error(String(r.status));
-      const d = (await r.json()) as { charges?: BillingChargeResponse[] };
+      const d = (await r.json()) as { charges?: BillingChargeResponse[]; truncated?: boolean };
       setCharges(d.charges ?? []);
+      setTruncated(d.truncated === true);
       setNow(new Date());
     } catch {
       setFailed(true);
@@ -155,10 +147,20 @@ export function AgencyInvoicesPanel({ subs }: { subs: SubAccountDoc[] }) {
 
   return (
     <div className="space-y-4">
+      {truncated && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          Showing {charges.length.toLocaleString()} invoices. There are more than this, so the
+          totals below may be incomplete.
+        </div>
+      )}
+
       <div className="grid gap-3 sm:grid-cols-3">
         <Stat label="Outstanding" value={totals.outstanding} />
         <Stat
-          label="Overdue"
+          label="Past due"
           value={totals.overdue}
           tone={counts.overdue > 0 ? "bad" : undefined}
         />
@@ -221,110 +223,18 @@ export function AgencyInvoicesPanel({ subs }: { subs: SubAccountDoc[] }) {
                 </td>
               </tr>
             ) : (
-              visible.map((c) => {
-                const usage = c.kind === "usage";
-                const overdue = isOverdue(c, now);
-                const label =
-                  c.status === "paid"
-                    ? "Paid"
-                    : c.status === "canceled"
-                      ? usage
-                        ? "Waived"
-                        : "Canceled"
-                      : overdue
-                        ? "Overdue"
-                        : "Pending";
-                return (
-                  <tr key={c.id} className="border-t">
-                    <td className="text-muted-foreground px-4 py-3 whitespace-nowrap">
-                      {shortDate(c.createdAt)}
-                    </td>
-                    <td className="px-4 py-3 font-medium">
-                      {names.get(c.subAccountId) ?? "Deleted client"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="flex items-center gap-1.5">
-                        {usage && (
-                          <span className="shrink-0 rounded-full bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-sky-600 uppercase dark:text-sky-400">
-                            Usage
-                          </span>
-                        )}
-                        <span className="min-w-0 truncate">
-                          {c.description}
-                        </span>
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap tabular-nums">
-                      {formatBillingPrice(c.amountCents, c.currency)}{" "}
-                      <span className="text-muted-foreground text-xs">
-                        {c.currency.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="text-muted-foreground px-4 py-3 whitespace-nowrap">
-                      {shortDate(c.dueAt)}
-                    </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <span
-                        className={
-                          "rounded-full px-2 py-0.5 text-[11px] font-medium " +
-                          (c.status === "paid"
-                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                            : c.status === "canceled"
-                              ? "bg-muted text-muted-foreground"
-                              : overdue
-                                ? "bg-rose-500/10 text-rose-600 dark:text-rose-400"
-                                : "bg-amber-500/10 text-amber-600 dark:text-amber-400")
-                        }
-                      >
-                        {label}
-                      </span>
-                      {c.status === "paid" && c.paidAt && (
-                        <span className="text-muted-foreground ml-1.5 text-xs">
-                          {shortDate(c.paidAt)}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
-                      {c.status === "pending" && (
-                        <span className="inline-flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => void copyLink(c)}
-                            disabled={busyId !== null}
-                            title="Copy a fresh payment link"
-                            aria-label="Copy a fresh payment link"
-                            className="text-muted-foreground hover:text-foreground rounded p-1 transition-colors disabled:opacity-50"
-                          >
-                            {busyId === c.id ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Copy className="h-3.5 w-3.5" />
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void cancel(c)}
-                            disabled={busyId !== null}
-                            title={
-                              usage
-                                ? "Waive this usage charge"
-                                : "Cancel this charge"
-                            }
-                            aria-label={
-                              usage
-                                ? "Waive this usage charge"
-                                : "Cancel this charge"
-                            }
-                            className="text-muted-foreground hover:text-destructive rounded p-1 transition-colors disabled:opacity-50"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })
+              visible.map((c) => (
+                <InvoiceRow
+                  key={c.id}
+                  c={c}
+                  clientName={names.get(c.subAccountId) ?? "Deleted client"}
+                  now={now}
+                  busy={busyId === c.id}
+                  anyBusy={busyId !== null}
+                  onCopyLink={(row) => void copyLink(row)}
+                  onCancel={(row) => void cancel(row)}
+                />
+              ))
             )}
           </tbody>
         </table>

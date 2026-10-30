@@ -127,6 +127,8 @@ export interface AgencyDoc {
    * banner. Written by PATCH /api/agency (owner only).
    */
   usagePaywallEnabled?: boolean;
+  /** When the paywall setting last turned on; the wall waits 7 days from then. Server-written. */
+  usagePaywallEnabledAt?: Date | null;
   /**
    * Agency Agent API kill switch. OFF by default — read `=== true`. While
    * off, every agency API key is refused at auth and none can be minted.
@@ -951,6 +953,12 @@ export interface UsageOverdue {
    * lets the guard wall the workspace; anything else stays a banner.
    */
   paywall: boolean;
+  /**
+   * The agency's `usagePaywallEnabledAt` when this was written. The wall is at
+   * the later of `since` + 7 days and this + 7 days; without a readable value
+   * the guard shows only the banner.
+   */
+  paywallSince?: Timestamp | Date | null;
 }
 
 export interface AccountContact {
