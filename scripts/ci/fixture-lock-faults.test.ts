@@ -149,6 +149,31 @@ describe("fixture lock: ownership and faults", () => {
     expect(await holds(gh.api, { holder: holder("2") })).toBe(true);
   });
 
+  it("release fails on a 422 that is not a moved ref instead of spinning", async () => {
+    const clock = { t: 0 };
+    const gh = fakeGitHub(clock);
+    await acquire(gh.api, {
+      tree: "t",
+      holder: holder("1"),
+      now: () => clock.t,
+      sleep: noSleep,
+      log: quiet,
+    });
+    let patches = 0;
+    const broken = async (
+      method: string,
+      path: string,
+      body?: Record<string, unknown>
+    ) =>
+      method === "PATCH" && ++patches
+        ? { status: 422, body: { message: "Object does not exist" } }
+        : gh.api(method, path, body);
+    await expect(
+      release(broken, { holder: holder("1"), sleep: noSleep, log: quiet })
+    ).rejects.toThrow("release lock ref: HTTP 422");
+    expect(patches).toBe(1);
+  });
+
   it("stops waiting once its PR has a newer head", async () => {
     const clock = { t: 0 };
     const gh = fakeGitHub(clock);

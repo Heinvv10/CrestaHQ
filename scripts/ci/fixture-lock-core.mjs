@@ -271,7 +271,12 @@ export async function release(
         sha: marker,
         force: false,
       });
-      if (moved.status === 422) {
+      // Only a not-fast-forward 422 means the ref moved; re-read (it can no
+      // longer be ours). Any other 422 is a real fault and fails below.
+      if (
+        moved.status === 422 &&
+        /fast.?forward/i.test(JSON.stringify(moved.body))
+      ) {
         log("fixture lock moved while releasing; re-checking");
         continue;
       }

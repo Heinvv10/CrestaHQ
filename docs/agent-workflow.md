@@ -136,7 +136,7 @@ code. The suite job, which installs dependencies and runs the PR's code with the
 fixture secrets, gets `contents: read`. That is not a boundary against a
 same-repo PR's author, who can edit the workflow (fork PRs never run these
 jobs). `E2E (Playwright)` is the required check and a skipped required check
-counts as passing, so it runs under `!cancelled()` and fails itself when
+counts as passing, so it runs under `always()` and fails itself when
 `e2e-lock` did not succeed. Follow-up: the suite job still receives the fixture
 secrets while running PR code (unchanged from velo-server).
 
