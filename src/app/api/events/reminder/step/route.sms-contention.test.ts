@@ -50,11 +50,11 @@ const NIGHT = new Date("2026-09-24T21:00:00Z");
 const ts = (d: Date) => ({ toDate: () => d, toMillis: () => d.getTime() });
 
 const tokens = new Map<string, string>();
-const remind = (eventId: string, extra: Record<string, unknown> = {}) =>
+const remind = (eventId: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) =>
   POST(
     new Request("https://app.test/api/events/reminder/step", {
       method: "POST",
-      headers: { "Upstash-Signature": "sig" },
+      headers: { "Upstash-Signature": "sig", ...headers },
       body: JSON.stringify({ eventId, offsetMinutes: 60, token: tokens.get(eventId), ...extra }),
     }),
   );
@@ -72,6 +72,7 @@ function seedBooking(n: number, start = new Date("2026-09-24T14:00:00Z")) {
   });
   return id;
 }
+const claimsAll = () => mem.list("events/e0/reminderSends").filter((d) => d.id.startsWith("sms_")).map((d) => d.id);
 const claims = () => mem.list("events/e0/reminderSends").filter((d) => d.id.startsWith("sms_"));
 
 beforeEach(() => {
@@ -144,16 +145,63 @@ describe("a cap slot that cannot be taken", () => {
     expect(sendSmsVia).toHaveBeenCalledOnce();
   });
 
-  it("holds the email back too until the retry, so nothing is sent twice", async () => {
+  it("the email does not depend on the text: it goes on the first delivery, the 503 is answered last, and the redelivery does not repeat it", async () => {
     seedBooking(0);
     mem.seed(`subAccounts/${SA}/bookingPages/p1`, { name: "Intro call", timezone: "UTC", durationMinutes: 30, remindersEnabled: true, smsRemindersEnabled: true });
     const tx = failTransactions(1000);
-    expect((await remind("e0")).status).toBe(503);
-    expect(smtpSend).not.toHaveBeenCalled();
+    const first = await remind("e0");
+    expect(first.status).toBe(503);
+    expect(await first.json()).toMatchObject({ sms: "cap_unavailable" });
+    expect(smtpSend).toHaveBeenCalledOnce();
+    expect(sendSmsVia).not.toHaveBeenCalled();
     tx.mockRestore();
     expect((await remind("e0")).status).toBe(200);
-    expect(smtpSend).toHaveBeenCalledOnce();
+    expect(smtpSend).toHaveBeenCalledOnce(); // not repeated
     expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("every email outcome still answers 503 while the text is owed (no email wanted, no address, opted out)", async () => {
+    seedBooking(0);
+    const tx = failTransactions(1000);
+    expect((await remind("e0")).status).toBe(503); // email off on this page
+    mem.seed(`subAccounts/${SA}/bookingPages/p1`, { name: "Intro call", timezone: "UTC", durationMinutes: 30, remindersEnabled: true, smsRemindersEnabled: true });
+    mem.seed("contacts/c0", { ...mem.read("contacts/c0")!, email: undefined });
+    expect((await remind("e0")).status).toBe(503); // no address
+    mem.seed("contacts/c0", { ...mem.read("contacts/c0")!, email: "t0@example.co.za", emailOptedOut: true });
+    expect((await remind("e0")).status).toBe(503); // opted out
+    tx.mockRestore();
+  });
+
+  it("an email that was already sent still answers 503 while the text is owed", async () => {
+    seedBooking(0);
+    mem.seed(`subAccounts/${SA}/bookingPages/p1`, { name: "Intro call", timezone: "UTC", durationMinutes: 30, remindersEnabled: true, smsRemindersEnabled: true });
+    const tx = failTransactions(1000);
+    await remind("e0");
+    const again = await remind("e0");
+    expect(again.status).toBe(503);
+    expect(await again.json()).toMatchObject({ skipped: "already_sent" });
+    expect(smtpSend).toHaveBeenCalledOnce();
+    tx.mockRestore();
+  });
+
+  it("on QStash's LAST delivery the text is noted instead of retried, and the answer is 200", async () => {
+    seedBooking(0);
+    failTransactions(1000);
+    const res = await remind("e0", {}, { "upstash-retried": "3" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ sms: "cap_unavailable" });
+    expect(mem.list("contacts/c0/activities")).toEqual([
+      expect.objectContaining({ content: "Booking reminder text not sent: the daily limit could not be checked." }),
+    ]);
+  });
+
+  it("an earlier delivery (retried 0, 1, 2) is a 503 with no note", async () => {
+    seedBooking(0);
+    failTransactions(1000);
+    for (const retried of ["0", "1", "2"]) {
+      expect((await remind("e0", {}, { "upstash-retried": retried })).status).toBe(503);
+    }
+    expect(mem.list("contacts/c0/activities")).toEqual([]);
   });
 
   it("retries in place first: contention that clears within a few tries is not even a 503", async () => {
@@ -167,25 +215,44 @@ describe("a cap slot that cannot be taken", () => {
 });
 
 describe("a release that fails", () => {
-  it("answers 503 so QStash tries again, and the claim is not left taken for the retry", async () => {
+  it("is still a hold: no 503, no loss. The republished step has a claim of its own and sends", async () => {
     seedBooking(0, new Date("2026-09-25T09:00:00Z"));
     vi.setSystemTime(NIGHT);
     // The window boundary crossed between the check and the send; the release then fails everywhere.
     const real = mem.db.runTransaction.bind(mem.db);
     let calls = 0;
-    vi.spyOn(mem.db, "runTransaction").mockImplementation(((fn: never) =>
+    const tx = vi.spyOn(mem.db, "runTransaction").mockImplementation(((fn: never) =>
       ++calls === 1 ? real(fn) : Promise.reject(Object.assign(new Error("10 ABORTED"), { code: 10 }))) as never);
     const realDoc = mem.db.doc.bind(mem.db);
-    vi.spyOn(mem.db, "doc").mockImplementation(((path: string) => {
+    const doc = vi.spyOn(mem.db, "doc").mockImplementation(((path: string) => {
       const ref = realDoc(path);
       return path.includes("/reminderSends/sms_") ? { ...ref, set: () => Promise.reject(new Error("write failed")) } : ref;
     }) as never);
     pre.skipNext = true;
     const res = await remind("e0");
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ sms: "release_failed" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ sms: "quiet_hours_deferred" });
     expect(sendSmsVia).not.toHaveBeenCalled();
-    expect(publishCallback).not.toHaveBeenCalled();
+    expect(publishCallback).toHaveBeenCalledOnce();
+    // The orphaned claim of the first pass is still there, "sending"...
+    expect(mem.read("events/e0/reminderSends/" + claimsAll()[0])).toMatchObject({ state: "sending" });
+    tx.mockRestore();
+    doc.mockRestore();
+    // ...and the republished step, at the window end, sends regardless.
+    vi.setSystemTime(new Date("2026-09-25T06:00:00Z"));
+    const body = (publishCallback.mock.calls[0][0] as { body: Record<string, unknown> }).body;
+    expect(body).toMatchObject({ smsOnly: true, attempt: 1 });
+    const second = await POST(
+      new Request("https://app.test/api/events/reminder/step", { method: "POST", headers: { "Upstash-Signature": "sig" }, body: JSON.stringify(body) }),
+    );
+    expect(await second.json()).toMatchObject({ sms: "sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    // A redelivery of that republished step does not text again.
+    const third = await POST(
+      new Request("https://app.test/api/events/reminder/step", { method: "POST", headers: { "Upstash-Signature": "sig" }, body: JSON.stringify(body) }),
+    );
+    expect(await third.json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
   });
 
   it("when the release works but the claim write is the only thing failing, the hold simply goes ahead", async () => {

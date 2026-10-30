@@ -1,5 +1,6 @@
 import "server-only";
 import { canTakePayment } from "@/lib/payments/can-take-payment";
+import { hasExplicitPhoneCountry } from "@/lib/contacts/phone";
 
 import { NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
@@ -121,6 +122,17 @@ export async function POST(
       "Payment was removed from the copy — connect Stripe or PayPal under Settings → Payments, then re-enable it on the new page.";
   }
 
+  // Texts go only to numbers in the workspace's home country, and an unset
+  // phone country reads as US: the same gate as turning them on by hand. Like
+  // payment, the copy drops them with a warning instead of failing the duplicate.
+  let smsRemindersEnabled = source.smsRemindersEnabled ?? false;
+  if (smsRemindersEnabled && !hasExplicitPhoneCountry(sub.defaultPhoneCountry as string | undefined)) {
+    smsRemindersEnabled = false;
+    warning = [warning, "Text reminders were removed from the copy: this workspace has no phone country saved (Settings → Phone region). Save it, then turn them on in the new page."]
+      .filter(Boolean)
+      .join(" ");
+  }
+
   const draft: BookingPageFormData = {
     slug: copySlugCandidate(slug, 1), // re-validated below; replaced per attempt
     name: copyName(source.name),
@@ -156,7 +168,7 @@ export async function POST(
     redirectUrl: source.redirectUrl ?? null,
     redirectAppendParams: source.redirectAppendParams ?? true,
     remindersEnabled: source.remindersEnabled,
-    smsRemindersEnabled: source.smsRemindersEnabled ?? false,
+    smsRemindersEnabled,
     reminderOffsetsMinutes: source.reminderOffsetsMinutes,
     payment,
     defaultTerritoryId: source.defaultTerritoryId ?? null,

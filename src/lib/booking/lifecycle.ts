@@ -11,6 +11,7 @@ import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import type { ActivityType } from "@/types/contacts";
 import type { WebhookEventType } from "@/types/webhooks";
 import type { AutomationTriggerType } from "@/types";
+import { REMINDER_STEP_PATH, REMINDER_STEP_RETRIES } from "@/lib/booking/reminder-step";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import { runAfterResponse } from "@/lib/server/after-response";
@@ -308,7 +309,7 @@ export async function scheduleEventReminders(input: {
     const nonceSuffix = input.scheduleNonce ? `_${input.scheduleNonce}` : "";
     // publishCallback never throws: null = not queued (e.g. the daily cap).
     const queued = await publishCallback({
-      pathname: "/api/events/reminder/step",
+      pathname: REMINDER_STEP_PATH,
       body: {
         eventId: input.eventId,
         offsetMinutes: offsetMin,
@@ -326,6 +327,7 @@ export async function scheduleEventReminders(input: {
       },
       delaySeconds,
       deduplicationId: `evt_reminder_${input.eventId}_${offsetMin}${nonceSuffix}`,
+      retries: REMINDER_STEP_RETRIES,
     });
     if (!queued) {
       console.error(

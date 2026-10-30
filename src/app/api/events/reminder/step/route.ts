@@ -18,6 +18,7 @@ import {
 } from "@/lib/booking/event-token";
 import { renderBookingReminderEmail } from "@/lib/booking/email";
 import { deliverReminderSms, type ReminderChannels } from "@/lib/booking/sms-reminder";
+import { REMINDER_STEP_RETRIES } from "@/lib/booking/reminder-step";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus, eventOccupiesSlot, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -191,22 +192,28 @@ export async function POST(request: Request) {
       endAt,
       heldUntil: typeof body.heldUntil === "number" ? body.heldUntil : null,
       attempt: typeof body.attempt === "number" && body.attempt >= 0 ? Math.floor(body.attempt) : 0,
+      finalAttempt: Number(request.headers.get("upstash-retried") ?? "0") >= REMINDER_STEP_RETRIES,
     });
   }
-  // Nothing was claimed or sent: let QStash deliver this again.
-  if (smsResult === "cap_unavailable" || smsResult === "release_failed") {
-    return NextResponse.json({ error: "Text could not be queued; retry", sms: smsResult }, { status: 503 });
-  }
   const withSms = smsResult === undefined ? {} : { sms: smsResult };
+  // The text's cap slot could not be taken and nothing was claimed: QStash
+  // delivers this again. The email below does not wait for that (it has its
+  // own claim, so the redelivery does not repeat it); the 503 is answered last.
+  // On the final delivery the text was noted instead (see sendBookingSms).
+  const retrySms = smsResult === "cap_unavailable" && Number(request.headers.get("upstash-retried") ?? "0") < REMINDER_STEP_RETRIES;
+  const reply = (extra: Record<string, unknown>) =>
+    retrySms
+      ? NextResponse.json({ error: "Text could not be queued; retry", ...withSms, ...extra }, { status: 503 })
+      : NextResponse.json({ ok: true, ...withSms, ...extra });
 
   if (!emailOn) {
-    return NextResponse.json({ ok: true, ...withSms, email: "disabled" });
+    return reply({ email: "disabled" });
   }
   if (!contact.email || contact.emailOptedOut) {
-    return NextResponse.json({ ok: true, ...withSms, skipped: "opt_out_or_no_email" });
+    return reply({ skipped: "opt_out_or_no_email" });
   }
   if (!emailIsConfigured(sub)) {
-    return NextResponse.json({ ok: true, ...withSms, skipped: "email_not_configured" });
+    return reply({ skipped: "email_not_configured" });
   }
 
   const rendered = renderBookingReminderEmail(
@@ -246,7 +253,7 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     if ((err as { code?: unknown } | null)?.code === 6) {
-      return NextResponse.json({ ok: true, skipped: "already_sent" });
+      return reply({ skipped: "already_sent" });
     }
     throw err;
   }
@@ -286,5 +293,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ ok: true, ...withSms });
+  return reply({});
 }

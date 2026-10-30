@@ -9,11 +9,11 @@ import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import { buildEventPublicUrl, hashEventToken } from "@/lib/booking/event-token";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { bookingReminderSmsBody, sendBookingSms } from "@/lib/booking/sms";
+import { REMINDER_STEP_PATH, REMINDER_STEP_RETRIES } from "@/lib/booking/reminder-step";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 
-export const REMINDER_STEP_PATH = "/api/events/reminder/step";
 
 /** Channel snapshot a reminder callback carries from scheduling time. */
 export interface ReminderChannels {
@@ -51,6 +51,8 @@ export async function deliverReminderSms(input: {
   /** A republish: the window end (ms) this step waited for, and how many holds led here. */
   heldUntil?: number | null;
   attempt?: number;
+  /** QStash's last delivery: a text that still cannot be queued is noted instead of retried. */
+  finalAttempt?: boolean;
 }): Promise<string> {
   const { event, eventId, offsetMinutes, token, sub, page, channels, startAt, endAt } = input;
   if (!event.contactId) return "no_contact";
@@ -60,13 +62,14 @@ export async function deliverReminderSms(input: {
 
   // One text per quiet-hours window end and event.
   let windowClaim: DocumentReference | null = null;
+  let ownWindow = false;
   if (input.heldUntil) {
     windowClaim = getAdminDb().doc(`events/${eventId}/reminderSends/smswin_${tokenKey}_${input.heldUntil}`);
     try {
       await windowClaim.create({ agencyId: event.agencyId, subAccountId: event.subAccountId, offsetMinutes, claimedAt: FieldValue.serverTimestamp() });
     } catch (err) {
       if ((err as { code?: unknown } | null)?.code !== 6) throw err;
-      // Our own earlier delivery is a redelivery, not a collapse into another offset's text.
+      // Another offset's text went for this window.
       const holder = (await windowClaim.get()).data()?.offsetMinutes;
       if (holder !== offsetMinutes) {
         await writeHoldActivity(
@@ -74,8 +77,11 @@ export async function deliverReminderSms(input: {
           "A booking reminder text was not sent: another reminder held to the same time went instead.",
           `${noteId}_collapsed`,
         );
+        return "already_sent";
       }
-      return "already_sent";
+      // Our own: a redelivery, or a step that died after claiming the window.
+      // Which one is for this offset's own claim below to say (exactly once).
+      ownWindow = true;
     }
   }
   const giveBackWindow = async () => {
@@ -93,8 +99,10 @@ export async function deliverReminderSms(input: {
       label: "booking reminder",
       // Claimed, and counted against the daily caps, in one transaction. Quiet
       // hours are checked first, so a held text takes neither.
-      retryOnContention: true,
-      claimPath: `events/${eventId}/reminderSends/sms_${offsetMinutes}_${tokenKey}`,
+      retryOnContention: !input.finalAttempt,
+      // A step that follows a hold has its own claim: if the release of the
+      // earlier one ever failed, that claim is left behind and must not block it.
+      claimPath: `events/${eventId}/reminderSends/sms_${offsetMinutes}_${tokenKey}${attempt > 0 ? `_a${attempt}` : ""}`,
       body: bookingReminderSmsBody({
         businessName: sub.name ?? "us",
         // Never event.title: it carries the booker's name.
@@ -111,7 +119,9 @@ export async function deliverReminderSms(input: {
   }
   if (result.sent) return "sent";
   // Nothing went out: another reminder held to this window may still send.
-  await giveBackWindow();
+  // (Not when our own claim says it is a redelivery of a text that went: that
+  // window is spent.)
+  if (!(ownWindow && result.reason === "already_sent")) await giveBackWindow();
   const hold = result.hold;
   if (result.reason !== "quiet_hours" || !hold) return result.reason;
 
@@ -136,6 +146,7 @@ export async function deliverReminderSms(input: {
     },
     delaySeconds: hold.retryAfterSec,
     deduplicationId: `evt_reminder_${eventId}_${offsetMinutes}_${tokenKey}_qh${hold.until.getTime()}_a${attempt + 1}`,
+    retries: REMINDER_STEP_RETRIES,
   });
   await writeHoldActivity(
     event.contactId,

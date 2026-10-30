@@ -324,7 +324,11 @@ export async function sendBookingSms(input: {
   } catch (err) {
     if (isQuietHoursDeferred(err)) {
       // Only a window boundary crossed between the check above and the send gets here.
-      if (!(await releaseBookingSms(target, reserved.day))) return { sent: false, reason: "release_failed" };
+      // If the claim cannot be given back either, it is still a hold: the caller
+      // carries on as for any hold (the republished step has a claim of its own),
+      // and the claim left behind harms nothing.
+      const released = await releaseBookingSms(target, reserved.day);
+      if (!released) console.error(`[booking/sms] claim not released after a hold sub=${input.subAccountId}`);
       return { sent: false, reason: "quiet_hours", hold: err.hold };
     }
     if (err instanceof SmsRecipientUnsubscribedError) {

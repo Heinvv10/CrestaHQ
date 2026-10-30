@@ -124,11 +124,14 @@ describe("when the release fails", () => {
     expect(sendSmsVia).toHaveBeenCalledOnce();
   });
 
-  it("reports release_failed when even the fallback fails, so the caller can retry", async () => {
+  it("when even the fallback fails it is still a hold (the caller carries on as for any hold), and says so in the log", async () => {
     failTransactionsAfterFirst(3);
     failClaimWrites();
     pre.skipNext = true;
-    expect(await send()).toEqual({ sent: false, reason: "release_failed" });
+    const result = await send();
+    expect(result).toMatchObject({ sent: false, reason: "quiet_hours" });
+    expect((result as { hold?: unknown }).hold).toBeTruthy();
     expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("claim not released after a hold"));
   });
 });

@@ -27,7 +27,7 @@ vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMess
 
 const { SA, AGENCY, SMTP_SUB, mem, resetSeam, smtpSend } = await s();
 const { POST } = await import("./route");
-const { issueEventToken } = await import("@/lib/booking/event-token");
+const { issueEventToken, hashEventToken } = await import("@/lib/booking/event-token");
 const { invalidateAgencyPolicyCache } = await import("@/lib/agency/policy");
 
 const WINDOW = { startHour: 8, endHour: 20, timezone: "Africa/Johannesburg" };
@@ -305,6 +305,15 @@ describe("quiet hours", () => {
     expect(smtpSend).toHaveBeenCalledOnce();
   });
 
+  it("a text-only republish never emails, even for an event whose email was never sent", async () => {
+    seedPage({ remindersEnabled: true });
+    seedEvent(new Date("2026-09-25T09:00:00Z"));
+    vi.setSystemTime(MORNING);
+    const res = await remind({ smsOnly: true, heldUntil: MORNING.getTime(), attempt: 1 });
+    expect(await res.json()).toMatchObject({ sms: "sent", email: "disabled" });
+    expect(smtpSend).not.toHaveBeenCalled();
+  });
+
   it("holds again, not sends, when the window is still closed at the republish", async () => {
     seedEvent(new Date("2026-09-25T09:00:00Z"));
     await remind({ smsOnly: true });
@@ -375,6 +384,7 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     expect(ids.map((id) => id.match(/_a(\d+)$/)?.[1])).toEqual(["1", "2", "3"]);
     expect(published().map((p) => p.body.attempt)).toEqual([1, 2, 3]);
     expect(published().every((p) => p.body.heldUntil === MORNING.getTime())).toBe(true);
+    expect(publishCallback.mock.calls.every((c) => (c[0] as { retries?: number }).retries === 3)).toBe(true);
   });
 
   it("a redelivery of the SAME step publishes the SAME id, so QStash does collapse it", async () => {
@@ -452,6 +462,29 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     expect(mem.list("events/e1/reminderSends").some((d) => d.id.startsWith("smswin_"))).toBe(false);
     mem.seed(`subAccounts/${SA}/bookingPages/p1`, page);
     expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
+  });
+
+  it("a step behind its OWN stale window claim (it died after claiming) still sends, once", async () => {
+    vi.setSystemTime(MORNING);
+    const windowId = `smswin_${hashEventToken(token).slice(0, 16)}_${MORNING.getTime()}`;
+    mem.seed(`events/e1/reminderSends/${windowId}`, { agencyId: AGENCY, subAccountId: SA, offsetMinutes: 60 });
+    const body = { smsOnly: true, heldUntil: MORNING.getTime(), attempt: 1 };
+    expect(await (await remind(body, 60)).json()).toMatchObject({ sms: "sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    // The redelivery of that step: its own claim says it went, and the window stays spent.
+    expect(await (await remind(body, 60)).json()).toMatchObject({ sms: "already_sent" });
+    expect(mem.read(`events/e1/reminderSends/${windowId}`)).toBeTruthy();
+    // So another offset held to the same window still collapses into it.
+    expect(await (await remind({ ...body }, 720)).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("a stale window claim of ANOTHER offset collapses this one, with a note", async () => {
+    vi.setSystemTime(MORNING);
+    mem.seed(`events/e1/reminderSends/smswin_${hashEventToken(token).slice(0, 16)}_${MORNING.getTime()}`, { offsetMinutes: 720 });
+    expect(await (await remind({ smsOnly: true, heldUntil: MORNING.getTime(), attempt: 1 }, 60)).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("went instead"))).toHaveLength(1);
   });
 
   it("a step that holds again gives its window back, so another reminder held to it can send", async () => {

@@ -50,6 +50,11 @@ describe("scheduleEventReminders channel snapshot", () => {
     expect(publishCallback.mock.calls[0][0].body.channels).toMatchObject({ email: true, sms: false });
   });
 
+  it("asks QStash for the retries the step counts its last delivery against", async () => {
+    await schedule({ remindersEnabled: true, name: "Old", timezone: "UTC" });
+    for (const [call] of publishCallback.mock.calls) expect(call.retries).toBe(3);
+  });
+
   it("sends no snapshot when no page is given", async () => {
     await schedule();
     expect(publishCallback.mock.calls[0][0].body).not.toHaveProperty("channels");
