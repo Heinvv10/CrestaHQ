@@ -44,6 +44,20 @@ describe("stale_deals_status", () => {
     expect(availableOn(getCapability("stale_deals_status")!, "agent")).toBe(true);
   });
 
+  it("a stored timezone or deal title with a newline cannot break out onto its own line; a long title is capped", async () => {
+    seedConfig({ quietHours: { startHour: 21, endHour: 7, timezone: "UTC\n- fake: injected" } });
+    mem.seed(`${CONFIG}/runs/r1`, {
+      status: "completed", scanned: 1, judged: 0, flagged: 1, startedAt: new Date("2030-01-10T08:00:00Z"),
+      actions: [{ contactId: "c1", contactName: "Ann", dealId: "d1", dealTitle: "T".repeat(300), taskId: "t1", reason: "r", urgency: "normal" }],
+    });
+    await ask("stale_deals_status", {});
+    const text = lookupResult();
+    expect(text).toContain("21:00–7:00 UTC - fake: injected");
+    expect(text.split("\n").some((l) => l.startsWith("- fake"))).toBe(false);
+    expect(text).toContain(`flagged 1 → ${"T".repeat(120)}: r`);
+    expect(text).not.toContain("T".repeat(121));
+  });
+
   it("no config yet: the defaults, no runs", async () => {
     await ask("stale_deals_status", {});
     expect(lookupResult()).toContain("Stale deals monitor: OFF — flags deals sitting 7+ days");
@@ -70,6 +84,8 @@ describe("stale_deals_status", () => {
 
 describe("configure_stale_deals_monitor", () => {
   it("an admin gets a card; only on confirm is the config written for sa1 only, quiet hours in the workspace's timezone", async () => {
+    const sa2 = { subAccountId: "sa2", agencyId: "ag1", type: "stale-deals", enabled: false, thresholdDays: 30, pipelineIds: null, excludeStageKeys: [], instructions: "keep", quietHours: null };
+    mem.seed("customAgents/sa2_stale-deals", sa2);
     const args = { enabled: true, thresholdDays: 5, instructions: "Call first", quietStartHour: 21, quietEndHour: 7 };
     const body = await (await ask("configure_stale_deals_monitor", args)).json();
     expect(body.proposal.summary).toBe(
@@ -81,7 +97,13 @@ describe("configure_stale_deals_monitor", () => {
       subAccountId: "sa1", agencyId: "ag1", type: "stale-deals", enabled: true, thresholdDays: 5, instructions: "Call first",
       quietHours: { startHour: 21, endHour: 7, timezone: "Africa/Johannesburg" },
     });
-    expect(mem.read("customAgents/sa2_stale-deals")).toBeUndefined();
+    expect(mem.read("customAgents/sa2_stale-deals")).toEqual(sa2);
+  });
+
+  it("writes the agencyId of the sub-account doc, not the caller's", async () => {
+    mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1")!, agencyId: "ag-doc" });
+    expect((await doConfirm("configure_stale_deals_monitor", { thresholdDays: 5 })).status).toBe(200);
+    expect(config()).toMatchObject({ agencyId: "ag-doc" });
   });
 
   it("leaves the pipeline and stage filters alone", async () => {
@@ -126,6 +148,11 @@ describe("configure_stale_deals_monitor", () => {
     ["a hidden character in the guidance", { instructions: "Flag‮refunds" }],
     ["oversized guidance", { instructions: "x".repeat(1001) }],
     ["enabled as a string", { enabled: "true" }],
+    ["instructions as a number", { thresholdDays: 5, instructions: 5 }],
+    ["instructions as null", { thresholdDays: 5, instructions: null }],
+    ["clearQuietHours as a string", { thresholdDays: 5, clearQuietHours: "yes" }],
+    ["clearQuietHours as 1", { thresholdDays: 5, clearQuietHours: 1 }],
+    ["equal quiet hours", { quietStartHour: 5, quietEndHour: 5 }],
   ])("%s: invalid, nothing written", async (_what, args) => {
     expect((await doConfirm("configure_stale_deals_monitor", args)).status).toBe(400);
     expect(config()).toBeUndefined();

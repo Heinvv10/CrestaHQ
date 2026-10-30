@@ -26,12 +26,13 @@ import { messageBody, oneLine } from "./text-safety";
 const GATE_OFF =
   "Agent monitors aren't enabled for this workspace, so the Stale deals monitor isn't available. The agency owner can turn on the Agent monitors gate from the sub-account's Manage dialog.";
 
-async function assertAgentsOn(subAccountId: string): Promise<void> {
+async function assertAgentsOn(subAccountId: string): Promise<Record<string, unknown>> {
   const sub = (await getAdminDb().doc(`subAccounts/${subAccountId}`).get()).data() ?? {};
   if (sub.agentsEnabledByAgency !== true) throw new CapabilityUserError(GATE_OFF);
+  return sub;
 }
 
-const quietText = (q: WatchdogQuietHours | null) => (q ? `${q.startHour}:00–${q.endHour}:00 ${q.timezone}` : "none");
+const quietText = (q: WatchdogQuietHours | null) => (q ? `${q.startHour}:00–${q.endHour}:00 ${oneLine(q.timezone)}` : "none");
 
 /** A whole number in [min, max], null when absent, "bad" otherwise. */
 function whole(raw: unknown, key: string, min: number, max: number): number | null | "bad" {
@@ -70,11 +71,11 @@ export const STALE_DEALS_CAPABILITIES: AiSuiteCapability[] = [
         if (r.status !== "completed") return `- ${when}: ${r.status}${r.skippedReason ? ` (${r.skippedReason})` : ""}`;
         const flagged = r.actions
           .slice(0, 5)
-          .map((a) => `${oneLine(a.dealTitle ?? a.contactName) || "(untitled)"}: ${oneLine(a.reason)}`)
+          .map((a) => `${oneLine(a.dealTitle ?? a.contactName).slice(0, 120) || "(untitled)"}: ${oneLine(a.reason)}`)
           .join("; ");
         return `- ${when}: ${r.scanned} past threshold, flagged ${r.flagged}${flagged ? ` → ${flagged}` : ""}`;
       });
-      return { resultText: `${head}\nRecent runs (UTC):\n${runLines.join("\n")}\nEach flagged deal got a Task (linked to the deal) and a push to the team.` };
+      return { resultText: `${head}\nRecent runs (UTC):\n${runLines.join("\n")}\nEach flagged deal got a Task (linked to the deal), and usually a push to the team.` };
     },
   },
   {
@@ -110,6 +111,8 @@ export const STALE_DEALS_CAPABILITIES: AiSuiteCapability[] = [
       if (thresholdDays === "bad") {
         return { ok: false, error: `thresholdDays must be a whole number from ${STALE_DEALS_MIN_THRESHOLD_DAYS} to ${STALE_DEALS_MAX_THRESHOLD_DAYS}` };
       }
+      if (r.instructions !== undefined && typeof r.instructions !== "string") return { ok: false, error: "instructions must be a string" };
+      if (r.clearQuietHours !== undefined && typeof r.clearQuietHours !== "boolean") return { ok: false, error: "clearQuietHours must be true or false" };
       const hasInstructions = typeof r.instructions === "string";
       let instructions: string | null = null;
       if (hasInstructions) {
@@ -122,6 +125,7 @@ export const STALE_DEALS_CAPABILITIES: AiSuiteCapability[] = [
       const qe = whole(raw, "quietEndHour", 0, 23);
       if (qs === "bad" || qe === "bad") return { ok: false, error: "quiet hours must be whole hours from 0 to 23" };
       if ((qs === null) !== (qe === null)) return { ok: false, error: "give both quietStartHour and quietEndHour (or neither)" };
+      if (qs !== null && qs === qe) return { ok: false, error: "quiet hours can't start and end at the same hour — that would mean no quiet hours" };
       const clearQuietHours = r.clearQuietHours === true;
       if (clearQuietHours && qs !== null) return { ok: false, error: "either set quiet hours or clear them, not both" };
       if (enabled === null && thresholdDays === null && !hasInstructions && qs === null && !clearQuietHours) {
@@ -143,7 +147,7 @@ export const STALE_DEALS_CAPABILITIES: AiSuiteCapability[] = [
       return `Stale deals monitor: ${parts.join(", ")}.`;
     },
     execute: async (ctx, args) => {
-      await assertAgentsOn(ctx.subAccountId!);
+      const sub = await assertAgentsOn(ctx.subAccountId!);
       const patch: Parameters<typeof upsertStaleDealsConfig>[2] = {};
       if (args.enabled !== null) patch.enabled = args.enabled as boolean;
       if (args.thresholdDays !== null) patch.thresholdDays = args.thresholdDays as number;
@@ -157,7 +161,7 @@ export const STALE_DEALS_CAPABILITIES: AiSuiteCapability[] = [
           timezone: await subAccountTimezone(ctx.subAccountId!),
         };
       }
-      const cfg = await upsertStaleDealsConfig(ctx.subAccountId!, ctx.agencyId, patch);
+      const cfg = await upsertStaleDealsConfig(ctx.subAccountId!, String(sub.agencyId ?? ""), patch);
       return {
         resultText: `Stale deals monitor updated: ${cfg.enabled ? "ON" : "OFF"}, threshold ${cfg.thresholdDays} days, quiet hours ${quietText(cfg.quietHours)}${
           cfg.instructions ? ", guidance set" : ""
