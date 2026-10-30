@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { FieldValue } from "firebase-admin/firestore";
+import { monthStart } from "@/lib/billing/usage";
 import type { UsageChargeLine } from "@/types/billing";
 import type { UsageQuotas, UsageRates } from "@/types/usage";
 
@@ -39,6 +40,32 @@ export function toMillis(v: unknown): number | null {
   if (v instanceof Date) return v.getTime();
   const fn = (v as { toMillis?: unknown } | null)?.toMillis;
   return typeof fn === "function" ? (fn.call(v) as number) : null;
+}
+
+/**
+ * Why a month is NOT billable, or null when it is. The one eligibility rule,
+ * used at the freeze AND again when the charge is minted: a month is billed
+ * only if it STARTED with both switches already on. A client enabled
+ * mid-month is billed from its first full month, and a switch turned off and
+ * on again after the month began does not bill it. Each `since` stamp must be
+ * readable and at or before the month's first instant; a missing or
+ * unreadable one with the switch on fails closed.
+ */
+export function unbillableReason(
+  agency: Record<string, unknown> | undefined,
+  client: Record<string, unknown> | undefined,
+  month: string,
+): string | null {
+  const startMs = monthStart(month).getTime();
+  const startedOn = (since: unknown) => {
+    const ms = toMillis(since);
+    return ms !== null && ms <= startMs;
+  };
+  if (agency?.usageRebillingEnabled !== true) return "agency_off";
+  if (client?.usageRebillingEnabled !== true) return "client_off";
+  if (!startedOn(agency.usageRebillingSince)) return "agency_switched_on_after_month_start";
+  if (!startedOn(client.usageRebillingSince)) return "client_switched_on_after_month_start";
+  return null;
 }
 
 export function reason(err: unknown): string {

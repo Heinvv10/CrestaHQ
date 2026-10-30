@@ -14,14 +14,13 @@ import { processPendingCharges, sendDueReminders } from "@/lib/server/usage-bill
 import {
   inPool,
   PENDING_COLLECTION,
-  toMillis,
+  unbillableReason,
   type PendingChargeDoc,
   type UsageClosedSnapshot,
 } from "@/lib/server/usage-billing-shared";
 import {
   formatUsageMonth,
   monthBefore,
-  monthStart,
   previousMonthKey,
   USAGE_MIN_CHARGE_CENTS,
 } from "@/lib/billing/usage";
@@ -137,7 +136,6 @@ export async function freezeMonthForSubAccount(input: {
   if ((await ref.get()).data()?.closed) return false;
 
   const [quotas, rates] = await Promise.all([getEffectiveQuotas(sub.id, sub), getEffectiveRates(sub.id, sub)]);
-  const monthStartMs = monthStart(month).getTime();
   const currency = usageCurrency(sub.billing).toLowerCase();
 
   const outcome = await db.runTransaction(async (tx): Promise<FreezeOutcome> => {
@@ -148,25 +146,7 @@ export async function freezeMonthForSubAccount(input: {
     const agencyId = typeof fresh.agencyId === "string" ? fresh.agencyId : "";
     const agency = agencyId ? (await tx.get(db.doc(`agencies/${agencyId}`))).data() : undefined;
 
-    // Only a month that STARTED with both switches already on is billed: a
-    // client enabled mid-month is billed from its first full month, and a
-    // switch turned off and on again during the month does not bill it. The
-    // `since` stamp must be readable and at or before the month's start; an
-    // unreadable or missing one with the switch on fails closed.
-    const startedOn = (since: unknown) => {
-      const ms = toMillis(since);
-      return ms !== null && ms <= monthStartMs;
-    };
-    const skipReason =
-      agency?.usageRebillingEnabled !== true
-        ? "agency_off"
-        : fresh.usageRebillingEnabled !== true
-          ? "client_off"
-          : !startedOn(agency.usageRebillingSince)
-            ? "agency_switched_on_after_month_start"
-            : !startedOn(fresh.usageRebillingSince)
-              ? "client_switched_on_after_month_start"
-              : null;
+    const skipReason = unbillableReason(agency, fresh, month);
 
     if (skipReason) {
       const skipped: UsageClosedSnapshot = {

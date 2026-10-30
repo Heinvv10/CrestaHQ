@@ -15,8 +15,9 @@ import type { SubAccountDoc } from "@/types";
  * rather than guess. Ties on `addedAt` break on uid.
  */
 export async function billingRecipient(sub: SubAccountDoc): Promise<string | null> {
-  const contact = sub.accountContact?.email?.trim();
-  if (contact && contact.includes("@")) return contact;
+  // A stored value that isn't a string is absent, never a crash.
+  const contact = typeof sub.accountContact?.email === "string" ? sub.accountContact.email.trim() : "";
+  if (contact.includes("@")) return contact;
   if (!sub.agencyId) return null;
 
   const db = getAdminDb();
@@ -26,9 +27,10 @@ export async function billingRecipient(sub: SubAccountDoc): Promise<string | nul
   ]);
   const ownerUid = agency.data()?.ownerUid;
   const admins = members.docs
-    .map((d) => d.data() as { uid?: string; email?: string; status?: string; addedAt?: unknown })
+    .map((d) => d.data() as { uid?: string; email?: unknown; status?: string; addedAt?: unknown })
     .filter((m): m is typeof m & { uid: string; email: string } =>
-      m.status === "active" && !!m.uid && m.uid !== ownerUid && !!m.email?.trim().includes("@"));
+      m.status === "active" && typeof m.uid === "string" && !!m.uid && m.uid !== ownerUid &&
+      typeof m.email === "string" && m.email.trim().includes("@"));
   const agencyUser = await Promise.all(
     admins.map(async (m) => (await db.doc(`agencies/${sub.agencyId}/agencyMembers/${m.uid}`).get()).exists),
   );

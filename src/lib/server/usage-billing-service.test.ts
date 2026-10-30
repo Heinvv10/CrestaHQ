@@ -23,7 +23,7 @@ vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => 
 const { runUsageClose, freezeMonthForSubAccount } = await import("./usage-billing-service");
 const { verifyChargeToken } = await import("@/lib/billing/token");
 const { flushAfterResponse } = await import("@/lib/server/after-response");
-const { createUsageCharge, createChargeCheckoutSession, listChargesForSubAccount } = await import("./billing-service");
+const { createUsageCharge, createChargeCheckoutSession, listChargesForSubAccount, mintChargeCheckoutLink } = await import("./billing-service");
 
 restoreBillingProviderAfterEach();
 
@@ -350,6 +350,47 @@ describe("a switch turned off after the freeze", () => {
     expect(frozen()?.withheldAt).toBeUndefined();
   });
 
+  it.each([
+    ["client toggled off and on again", { sub: new Date(2026, 9, 1, 0, 0, 1) }],
+    ["agency toggled off and on again", { agency: new Date(2026, 9, 1, 0, 0, 1) }],
+    ["client since now missing", { sub: undefined }],
+    ["agency since now unreadable", { agency: "later" }],
+  ])("%s between the freeze and a delayed mint: both switches are on but the month no longer qualifies, so nothing is billed", async (_l, since) => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1/usage/2026-09", {
+      emailsSent: 600,
+      closed: { totalCents: 5000, currency: "zar", lineItems: [], chargeId: CHARGE, carryOutCents: 0 },
+    });
+    mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09" });
+    if ("sub" in since) mem.seed("subAccounts/sa1", { ...SUB, usageRebillingSince: since.sub });
+    if ("agency" in since) mem.seed("agencies/ag1", { ...AGENCY, usageRebillingSince: since.agency });
+    const out = await runUsageClose(NOW);
+    expect(out.charged).toBe(0);
+    expect(charges()).toHaveLength(0);
+    expect(queue()).toHaveLength(0);
+    expect(frozen()?.withheldAt).toBeDefined();
+    expect(mail.send).not.toHaveBeenCalled();
+  });
+
+  it("an invoice email that failed, then the switch goes off: the next run cancels the charge and no reminder is ever sent", async () => {
+    spyBillingProvider("stripe");
+    mail.send.mockRejectedValueOnce(new Error("smtp down"));
+    await runUsageClose(NOW);
+    const charge = mem.read(`billingCharges/${CHARGE}`)!;
+    expect(charge).toMatchObject({ status: "pending", emailedTo: null });
+    expect(queue()).toHaveLength(1);
+    mem.seed(`billingCharges/${CHARGE}`, { ...charge, dueAt: new Date(2026, 9, 15, 12, 0) });
+
+    mem.seed("subAccounts/sa1", { ...SUB, usageRebillingEnabled: false });
+    mail.send.mockClear();
+    await runUsageClose(new Date(2026, 9, 2, 5, 0));
+    expect(mem.read(`billingCharges/${CHARGE}`)).toMatchObject({ status: "canceled", tokenHash: null });
+    expect(frozen()?.withheldAt).toBeDefined();
+    expect(queue()).toHaveLength(0);
+    for (const d of [12, 15, 16]) await runUsageClose(new Date(2026, 9, d, 5, 0));
+    expect(mail.send).not.toHaveBeenCalled();
+  });
+
   it("a withheld month stays unbilled on every re-run", async () => {
     spyBillingProvider("stripe");
     mem.seed("subAccounts/sa1", { ...SUB, usageRebillingEnabled: false });
@@ -406,6 +447,51 @@ describe("reminders only for an invoice that went out", () => {
     expect((await runUsageClose(new Date(2026, 9, 12, 5, 0))).reminded).toBe(0);
     expect(mem.read(`billingCharges/${CHARGE}`)?.remindedAt).toEqual({});
     expect((await runUsageClose(new Date(2026, 9, 13, 5, 0))).reminded).toBe(1);
+  });
+});
+
+describe("pay links", () => {
+  it("rotation updates the live link: after an agency re-send the reminder carries a newer link, and neither earlier link still verifies", async () => {
+    spyBillingProvider("stripe");
+    await runUsageClose(NOW);
+    const invoiceUrl = payUrlsSent()[0];
+    const hashOf = (url: string) => verifyChargeToken(url.split("/pay/charge/")[1])?.hash;
+    expect(hashOf(invoiceUrl)).toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
+
+    const resent = await mintChargeCheckoutLink({ agencyId: "ag1", chargeId: CHARGE });
+    expect(hashOf(resent)).toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
+    expect(hashOf(invoiceUrl)).not.toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
+
+    mem.seed(`billingCharges/${CHARGE}`, { ...mem.read(`billingCharges/${CHARGE}`)!, dueAt: new Date(2026, 9, 15, 12, 0) });
+    await runUsageClose(new Date(2026, 9, 12, 5, 0));
+    const reminderUrl = payUrlsSent()[1];
+    expect(hashOf(reminderUrl)).toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
+    for (const old of [invoiceUrl, resent]) expect(hashOf(old)).not.toBe(hashOf(reminderUrl));
+  });
+});
+
+describe("a recipient that is not a string", () => {
+  it("is treated as absent: no crash, the next real address is used", async () => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1", { ...SUB, accountContact: { email: 12345 } });
+    mem.seed("subAccounts/sa1/subAccountMembers/bad", {
+      uid: "bad", role: "admin", status: "active", email: { x: 1 }, addedAt: new Date(2026, 0, 1),
+    });
+    mem.seed("subAccounts/sa1/subAccountMembers/nouid", { role: "admin", status: "active", email: "nouid@example.com" });
+    mem.seed("subAccounts/sa1/subAccountMembers/ok", {
+      uid: "ok", role: "admin", status: "active", email: " ok@example.com ", addedAt: new Date(2026, 5, 1),
+    });
+    const out = await runUsageClose(NOW);
+    expect(out.failed).toBe(0);
+    expect(mail.send.mock.calls[0][1]).toMatchObject({ to: "ok@example.com" });
+  });
+
+  it("with nothing usable the close holds the entry instead of throwing (Stripe)", async () => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1", { ...SUB, accountContact: { email: 7 } });
+    const out = await runUsageClose(NOW);
+    expect(out.failed).toBe(0);
+    expect(queue()).toHaveLength(1);
   });
 });
 

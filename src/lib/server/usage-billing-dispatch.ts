@@ -2,7 +2,6 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { usageRebillingState } from "@/lib/server/usage-meter";
 import { createUsageCharge, mintChargeCheckoutLink } from "@/lib/server/billing-service";
 import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import { billingRecipient } from "@/lib/server/usage-billing-recipient";
@@ -13,6 +12,7 @@ import {
   PENDING_COLLECTION,
   reason,
   toMillis,
+  unbillableReason,
   type PendingChargeDoc,
   type UsageClosedSnapshot,
 } from "@/lib/server/usage-billing-shared";
@@ -102,9 +102,12 @@ export async function processPendingCharges(now: Date): Promise<{ charged: numbe
       throw err;
     };
 
-    // Fail closed: a switch turned off since the freeze means nothing is billed
-    // unless the invoice already went out.
-    if (!(await usageRebillingState(sub)).active) {
+    // Fail closed: the full eligibility rule (both switches AND `since` at or
+    // before the month's start, as at the freeze) is applied again to the
+    // stored docs. A client toggled off and on since the freeze fails it.
+    // Nothing is billed unless the invoice already went out.
+    const agencyDoc = (await db.doc(`agencies/${sub.agencyId}`).get()).data();
+    if (unbillableReason(agencyDoc, sub as unknown as Record<string, unknown>, p.month)) {
       const verdict = await withholdUnsent({ sub, month: p.month, chargeId, now, ledgerRef });
       if (verdict === "withheld") {
         await q.ref.delete();
