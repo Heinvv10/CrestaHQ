@@ -10,7 +10,7 @@ import { SA, mem, post, resetBookingHarness, seedPage, slot } from "@/test/booki
 const m = vi.hoisted(() => ({
   order: [] as string[],
   sent: [] as Array<{ to: string; text: string; html: string; attachments?: Array<{ content: string }> }>,
-  meet: vi.fn(async (_id: string): Promise<{ meetUrl: string | null }> => ({ meetUrl: null })),
+  meet: vi.fn(async (_id: string): Promise<{ meetUrl: string | null; pending: boolean }> => ({ meetUrl: null, pending: false })),
   later: vi.fn(),
 }));
 
@@ -51,7 +51,7 @@ beforeEach(() => {
   m.order.length = 0;
   m.sent.length = 0;
   m.meet.mockReset();
-  m.meet.mockResolvedValue({ meetUrl: null });
+  m.meet.mockResolvedValue({ meetUrl: null, pending: false });
   m.later.mockClear();
   mem.seed(`subAccounts/${SA}/subAccountMembers/host_a`, { uid: "host_a", status: "active", email: "ann@example.com", displayName: "Ann" });
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -60,7 +60,7 @@ beforeEach(() => {
 describe("Google Meet pages", () => {
   it("await the push, then email the booker the Meet link it returned (email, invite)", async () => {
     seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
-    m.meet.mockResolvedValueOnce({ meetUrl: "https://meet.google.com/abc-defg-hij" });
+    m.meet.mockResolvedValueOnce({ meetUrl: "https://meet.google.com/abc-defg-hij", pending: false });
     const res = await book();
     expect(res.status).toBe(200);
     const { eventId } = (await res.json()) as { eventId: string };
@@ -99,14 +99,35 @@ describe("Google Meet pages", () => {
     const { eventId } = (await res.json()) as { eventId: string };
     expect(m.sent.map((s) => s.to)).toEqual(["v@example.com"]);
     expect(mem.list("contacts/c1/activities")).toEqual([
-      expect.objectContaining({ type: "meet_link_missing", createdBy: "booking", meta: { eventId } }),
+      expect.objectContaining({ type: "meet_link_missing", createdBy: "booking", meta: { eventId, pending: false } }),
     ]);
+    expect(mem.list("contacts/c1/activities")[0].content).toMatch(/could be made .*send the customer a joining link/);
+  });
+
+  it("the push still running at the deadline: the host is told the link is on its way, not to check settings", async () => {
+    seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
+    m.meet.mockResolvedValueOnce({ meetUrl: null, pending: true });
+    expect((await book()).status).toBe(200);
+    const host = m.sent.find((s) => s.to === "ann@example.com")!;
+    expect(host.text).toContain("being created and will appear on the booking");
+    expect(host.text).not.toContain("check Settings");
+  });
+
+  it("…and with no host to email, the timeline row says the same", async () => {
+    seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
+    mem.seed(`subAccounts/${SA}/subAccountMembers/host_a`, { uid: "host_a", status: "active", displayName: "Ann" });
+    m.meet.mockResolvedValueOnce({ meetUrl: null, pending: true });
+    expect((await book()).status).toBe(200);
+    const [row] = mem.list("contacts/c1/activities");
+    expect(row).toMatchObject({ type: "meet_link_missing", meta: expect.objectContaining({ pending: true }) });
+    expect(row.content).toMatch(/being created and will appear on the booking/);
+    expect(row.content).not.toMatch(/check Settings/);
   });
 
   it("a link made: no timeline row", async () => {
     seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
     mem.seed(`subAccounts/${SA}/subAccountMembers/host_a`, { uid: "host_a", status: "active", displayName: "Ann" });
-    m.meet.mockResolvedValueOnce({ meetUrl: "https://meet.google.com/abc-defg-hij" });
+    m.meet.mockResolvedValueOnce({ meetUrl: "https://meet.google.com/abc-defg-hij", pending: false });
     expect((await book()).status).toBe(200);
     expect(mem.list("contacts/c1/activities")).toEqual([]);
   });

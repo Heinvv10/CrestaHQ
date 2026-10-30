@@ -243,6 +243,7 @@ async function runMarkPaidSideEffects(args: {
         eventId: event.id,
         agencyId: event.agencyId,
         subAccountId: event.subAccountId,
+        pending: got.pending,
       });
     }
   }

@@ -35,6 +35,8 @@ export const state = {
   reads: [] as string[],
   /** Runs after each doc write lands — a test pauses or fails the caller here. */
   afterWrite: undefined as ((w: Write) => Promise<void> | void) | undefined,
+  /** A doc read of a path this returns true for throws, as Firestore does when unavailable. */
+  failRead: undefined as ((path: string) => boolean) | undefined,
 };
 
 function isPlain(v: unknown): v is Record<string, unknown> {
@@ -58,10 +60,13 @@ function docRef(path: string) {
   return {
     __path: path,
     path,
-    get: async () => ({
-      exists: (state.reads.push(path), state.docs.has(path)),
-      data: () => state.docs.get(path),
-    }),
+    get: async () => {
+      if (state.failRead?.(path)) throw new Error(`14 UNAVAILABLE: read of ${path}`);
+      return {
+        exists: (state.reads.push(path), state.docs.has(path)),
+        data: () => state.docs.get(path),
+      };
+    },
     set: async (data: Record<string, unknown>, opts?: { merge?: boolean }) => {
       state.writes.push({ op: "set", path, data });
       const cur = state.docs.get(path);
@@ -197,6 +202,7 @@ export function resetHarness(opts: { gateOn?: boolean } = {}) {
   state.writes = [];
   state.reads = [];
   state.afterWrite = undefined;
+  state.failRead = undefined;
   state.docs = new Map<string, Record<string, unknown>>([
     [
       SUB_PATH,

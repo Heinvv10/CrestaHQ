@@ -37,7 +37,7 @@ import {
   isPlainLocationText,
   meetLinkToFollow,
 } from "@/lib/booking/location";
-import { recordMeetLinkMissing } from "@/lib/booking/meet-link-missing";
+import { meetLinkMissingNote, recordMeetLinkMissing } from "@/lib/booking/meet-link-missing";
 import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import {
   loadHostNotifyContact,
@@ -550,9 +550,11 @@ export async function POST(
   // (mark-paid, which does the same), so its push stays after the response.
   const meetPushNow = pageLocation?.type === "google_meet" && !paymentRequired;
   let meetingUrl = page.meetingUrl ?? null;
+  let meetPending = false;
   if (meetPushNow) {
     const pushed = await pushBookingAndGetMeetUrlWithin(created.eventDocRef.id);
     if (pushed.meetUrl) meetingUrl = pushed.meetUrl;
+    meetPending = pushed.pending;
   }
   // No Meet room and no fallback link: say so instead of a bare "Google Meet".
   const meetLinkMissing = meetPushNow && !meetingUrl;
@@ -681,9 +683,7 @@ export async function POST(
             notes:
               [
                 locationText ? `Where: ${locationText}` : "",
-                meetLinkMissing
-                  ? "No Google Meet link could be made for this booking (check Settings → Calendar sync) — send the customer a joining link."
-                  : "",
+                meetLinkMissing ? meetLinkMissingNote(meetPending) : "",
                 ...Object.entries(extras).map(
                   ([k, v]) => `${labelForField(page, k)}: ${v}`,
                 ),
@@ -715,6 +715,7 @@ export async function POST(
       eventId: created.eventDocRef.id,
       agencyId,
       subAccountId: saId,
+      pending: meetPending,
     });
   }
 

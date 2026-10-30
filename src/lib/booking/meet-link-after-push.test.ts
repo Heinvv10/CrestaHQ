@@ -20,7 +20,7 @@ vi.mock("@/lib/booking/lifecycle", () => ({
 }));
 const g = vi.hoisted(() => ({
   order: [] as string[],
-  within: vi.fn(async (_id: string): Promise<{ meetUrl: string | null }> => ({ meetUrl: null })),
+  within: vi.fn(async (_id: string): Promise<{ meetUrl: string | null; pending: boolean }> => ({ meetUrl: null, pending: false })),
   push: vi.fn(async (_id: string) => undefined),
 }));
 vi.mock("@/lib/google-calendar/push", () => ({
@@ -88,7 +88,7 @@ beforeEach(() => {
   smtpSend.mockImplementation(async () => (g.order.push("email"), { id: "<sent@tenant.test>" }));
   g.order.length = 0;
   g.within.mockReset();
-  g.within.mockResolvedValue({ meetUrl: null });
+  g.within.mockResolvedValue({ meetUrl: null, pending: false });
   g.push.mockReset();
   process.env.AUTOMATIONS_TOKEN_SECRET = "test-secret-not-a-real-key";
   process.env.NEXT_PUBLIC_APP_URL = "https://app.test";
@@ -101,7 +101,7 @@ const paid = () => markBookingPaidServerSide({ eventId: "e1", expectSubAccountId
 describe("mark-paid on a Google Meet page", () => {
   it("pushes first, then mails the link the push returned (text and invite), and does not push twice", async () => {
     seed();
-    g.within.mockResolvedValueOnce({ meetUrl: MEET_LINK });
+    g.within.mockResolvedValueOnce({ meetUrl: MEET_LINK, pending: false });
     expect((await paid()).ok).toBe(true);
     expect(g.within).toHaveBeenCalledWith("e1");
     expect(g.order).toEqual(["push-within", "email"]);
@@ -118,8 +118,17 @@ describe("mark-paid on a Google Meet page", () => {
     expect(m.text).not.toContain("Join the meeting");
     expect(m.text).toContain("Where: Google Meet video call (the joining link will follow)");
     expect(mem.list("contacts/c1/activities")).toEqual([
-      expect.objectContaining({ type: "meet_link_missing", meta: { eventId: "e1" } }),
+      expect.objectContaining({ type: "meet_link_missing", meta: { eventId: "e1", pending: false } }),
     ]);
+  });
+
+  it("the push still running at the deadline: the timeline row says the link is on its way", async () => {
+    seed();
+    g.within.mockResolvedValueOnce({ meetUrl: null, pending: true });
+    expect((await paid()).ok).toBe(true);
+    const [row] = mem.list("contacts/c1/activities").filter((a) => a.type === "meet_link_missing");
+    expect(row.meta).toEqual({ eventId: "e1", pending: true });
+    expect(row.content).toMatch(/being created and will appear on the booking/);
   });
 
   it("no new link, but the event already holds one (made at hold time): that one goes out", async () => {
