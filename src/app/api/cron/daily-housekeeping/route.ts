@@ -6,6 +6,7 @@ import { refreshModelCatalog } from "@/lib/comms/ai/model-catalog";
 import { sweepStaleStaged } from "@/lib/comms/whatsapp/staged-upload";
 import { runGbpRetentionSweep } from "@/lib/gbp/sync/sweep";
 import { collectHeartbeatStats, sendHeartbeat } from "@/lib/gitpage/heartbeat";
+import { expireStalePaystackOrders } from "@/lib/server/paystack-order-expiry";
 import { runApiCleanup } from "../api-cleanup/route";
 
 /**
@@ -55,6 +56,8 @@ const JOBS: Array<[string, () => Promise<unknown>]> = [
   ],
   ["gbp-retention", () => runGbpRetentionSweep()],
   ["whatsapp-staging-cleanup", () => sweepStaleStaged()],
+  // Closes abandoned Paystack buy-page orders after 24 h; bounded per run.
+  ["paystack-order-expiry", () => expireStalePaystackOrders()],
 ];
 
 export async function POST(request: Request) {

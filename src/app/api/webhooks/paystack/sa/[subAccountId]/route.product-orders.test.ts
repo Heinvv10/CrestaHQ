@@ -1,6 +1,8 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAfterResponse } from "@/lib/server/after-response";
+import { thanksView } from "@/lib/products/thanks-view";
+import type { Order } from "@/types/orders";
 
 import {
   KEY,
@@ -333,5 +335,75 @@ describe("money for an order that can no longer be paid is flagged, not dropped"
     await deliver({ key: KEY });
     expect(order().attention ?? null).toBeNull();
     expect(order()).toMatchObject({ status: "paid" });
+  });
+});
+
+describe("a flag on the attempt does not outlive a verified, matching payment", () => {
+  /** The real flow: the key is replaced mid-checkout, the old key's event flags it, then the old key is reconnected. */
+  async function flaggedByKeyChange() {
+    seedSub(SA, OTHER_KEY);
+    await deliver({ key: KEY });
+    expect(order()).toMatchObject({ status: "pending", attentionOpen: true });
+    expect(attempt()).toMatchObject({ state: "flagged" });
+    seedSub(SA, KEY);
+  }
+
+  it("pays the order, clears the flag, sends the one email, and the thanks page says paid", async () => {
+    await flaggedByKeyChange();
+    expect((await deliver()).status).toBe(200);
+    await flushAfterResponse();
+
+    expect(order()).toMatchObject({ status: "paid", attentionOpen: false, attention: null });
+    expect(attempt()).toMatchObject({ state: "settled" });
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(paidEvents()).toHaveLength(1);
+    const view = thanksView({ id: "ord1", ...order() } as unknown as Order, true);
+    expect(view).toMatchObject({ state: "paid", download: { url: DOWNLOAD } });
+    await deliver();
+    await flushAfterResponse();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("another attention reason stays: the recovery is noted once and nothing is sent", async () => {
+    await flaggedByKeyChange();
+    mem.seed("orders/ord1", { ...order(), attention: `${order().attention}\nCustomer disputed this.` });
+    await deliver();
+    await deliver();
+    await flushAfterResponse();
+
+    expect(order()).toMatchObject({ status: "paid", attentionOpen: true });
+    expect(order().attention).toContain("Customer disputed this.");
+    expect((order().attention as string).match(/has since been recorded/g)).toHaveLength(1);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("recovering twice (a crash before the attempt settles) notes it once", async () => {
+    const { recoverFlaggedOrder } = await import("@/lib/server/product-link-paystack-orders");
+    seedOrder({ status: "paid", attention: "Old flag.\nCustomer disputed this.", attentionOpen: true });
+    await recoverFlaggedOrder("ord1", "Old flag.", REF);
+    await recoverFlaggedOrder("ord1", "Old flag.", REF);
+    expect((order().attention as string).match(/has since been recorded/g)).toHaveLength(1);
+  });
+
+  it("a held order is never recovered, even by a matching reason", async () => {
+    const { recoverFlaggedOrder } = await import("@/lib/server/product-link-paystack-orders");
+    seedOrder({ status: "paid", heldAt: new Date(), attention: "Held.", attentionOpen: true });
+    await recoverFlaggedOrder("ord1", "Held.", REF);
+    expect(order()).toMatchObject({ attention: "Held.", attentionOpen: true });
+  });
+
+  it("a mismatch on a flagged attempt is still held for good, and never emailed", async () => {
+    await flaggedByKeyChange();
+    verifyAnswer = () => verified({ reference: REF, amount: 100 });
+    await deliver();
+    verifyAnswer = () => verified({ reference: REF, amount: 49_900 });
+    await deliver();
+    await flushAfterResponse();
+
+    expect(order()).toMatchObject({ status: "pending", attentionOpen: true });
+    expect(order().heldAt).toBeTruthy();
+    // The order says why it is held, not the older key-change flag.
+    expect(order().attention).toMatch(/differs from this order/);
+    expect(sendEmail).not.toHaveBeenCalled();
   });
 });

@@ -46,7 +46,9 @@ function fail(message: string, status = 400): NextResponse {
 
 const UNAVAILABLE = "This item isn't available to buy right now.";
 const NOT_YET = "Buying this online isn't available yet.";
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// No whitespace or address-list/quoting characters: the address goes into
+// Paystack's request and our mail header as the one recipient.
+const EMAIL_RE = /^[^\s@,;<>"()]+@[^\s@,;<>"()]+\.[^\s@,;<>"()]+$/;
 
 export async function POST(
   request: Request,

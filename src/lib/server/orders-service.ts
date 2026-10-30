@@ -282,7 +282,8 @@ export async function flagOrderAttention(order: Order, note: string): Promise<vo
     reason: note,
     amountCents: order.totalCents,
     currency: order.currency,
-    reference: order.stripePaymentIntentId ?? order.stripeCheckoutSessionId,
+    // `||`: a Paystack order's Stripe session id is "", not missing.
+    reference: order.stripePaymentIntentId || order.stripeCheckoutSessionId || order.paystackReference || null,
   });
 }
 

@@ -11,9 +11,11 @@ import {
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import type { PaymentLinkReconcileResult } from "@/lib/paystack/payment-link-reconciler";
 import { isNotFound, requestedAmount } from "@/lib/paystack/verify-answer";
+import { flagOrderAttention } from "@/lib/server/orders-service";
 import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
 import { parseProductOrderReference } from "@/lib/server/product-order-reference";
 import { settleProductLinkPayment } from "@/lib/server/product-link-orders";
+import { recoverFlaggedOrder } from "@/lib/server/product-link-paystack-orders";
 import { finishPaidProductLinkOrder } from "@/lib/stripe/product-link-reconcile";
 import type { Order } from "@/types/orders";
 import type { PaymentAttempt } from "@/types/payment-attempts";
@@ -32,7 +34,9 @@ import type { PaymentAttempt } from "@/types/payment-attempts";
  * currency, judged against the order as re-read inside the transaction). A
  * mismatch HOLDS the order (`heldAt`): never paid, never delivered, no release
  * path in the app; the attempt and the order are flagged for the operator.
- * Money for an order already failed is flagged, never dropped.
+ * Money for an order already failed is flagged, never dropped. A verified,
+ * matching payment for an order whose attempt had been flagged (a key change)
+ * pays it and lifts that flag (`recoverFlaggedOrder`).
  *
  * Never throws. `retry: true` only when Paystack or Firestore could not
  * answer, so the route answers non-200 and Paystack redelivers.
@@ -120,22 +124,31 @@ export async function reconcileProductOrderCharge(input: {
     if (!settled) return { handled: true, detail: "order no longer exists" };
 
     if (settled.kind === "held") {
-      const why = mismatch(tx, settled.order, attempt) ?? "A payment did not match this order";
+      const why = mismatch(tx, settled.order, attempt);
+      // This delivery matches: the order was held by an earlier, mismatching
+      // one, which already flagged why. Held for good; nothing to add.
+      if (!why) return { handled: true, detail: `order ${orderId} held by an earlier delivery` };
       console.error(`${tag} order held: ${why}`);
-      await flagPaymentAttempt(reference, () =>
-        `${why} (Paystack reference ${reference}). It was not marked paid and nothing was delivered. Refund it in Paystack, or settle it by hand.`,
-      );
+      const note = `${why} (Paystack reference ${reference}). It was not marked paid and nothing was delivered. Refund it in Paystack, or settle it by hand.`;
+      await flagPaymentAttempt(reference, () => note);
+      // The attempt may already carry an older flag (a key change), whose
+      // reason is what it put on the order: the order says why it is held.
+      await flagOrderAttention(settled.order, note);
       return { handled: true, detail: `order ${orderId} held: mismatch` };
     }
     if (settled.kind === "closed") {
-      await flagPaymentAttempt(reference, () =>
-        `Paid (Paystack reference ${reference}), but this order was already ${settled.order.status} — nothing was delivered. Refund the payment, or settle it by hand.`,
-      );
+      const note = `Paid (Paystack reference ${reference}), but this order was already ${settled.order.status} — nothing was delivered. Refund the payment, or settle it by hand.`;
+      await flagPaymentAttempt(reference, () => note);
+      await flagOrderAttention(settled.order, note);
       return { handled: true, detail: `order ${orderId} is ${settled.order.status}` };
     }
 
     // The money is recorded: the attempt is settled. At least once — a crash
     // before this write is repaired by the replay, which lands here as "already".
+    // A flag on the attempt ("may have paid, not recorded") is answered FIRST:
+    // the attempt leaves "flagged" only afterwards, so a crash in between is
+    // repaired by the replay too, and the confirmation below can go out.
+    if (attempt.state === "flagged") await recoverFlaggedOrder(orderId, attempt.reason, reference);
     if (attempt.state !== "settled") {
       await db.doc(`paymentAttempts/${reference}`).update({
         state: "settled",

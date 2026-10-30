@@ -7,6 +7,8 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyPaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { reconcilePaystackCharge } from "@/lib/paystack/payment-link-reconciler";
+import { isPastOrderLifetime } from "@/lib/server/paystack-order-expiry";
+import { markOrderExpired } from "@/lib/server/product-link-orders";
 import type { Order } from "@/types/orders";
 import type { PaymentAttempt } from "@/types/payment-attempts";
 import type { PaymentLink } from "@/types/payment-links";
@@ -26,7 +28,8 @@ import type { PaymentLink } from "@/types/payment-links";
  *   reversed, or unknown to Paystack → closed as `refused` (no money can come);
  *   abandoned / failed             → closed only if its link is already paid or
  *                                    withdrawn (a buy-page order's: no longer
- *                                    pending). Paystack lets the customer
+ *                                    pending, or older than 24 h and expired
+ *                                    with it). Paystack lets the customer
  *                                    resume or retry on the same reference, so
  *                                    on a live link it may still take money;
  *   no answer                      → left open, for `flagStaleAttempts`.
@@ -104,6 +107,13 @@ async function settleOrClose(subAccountId: string, secretKey: string, reference:
 
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
+  // A buy-page order that is over (reversed/unknown, or abandoned past its
+  // lifetime) is expired first, so a crash before the attempt closes below
+  // leaves an open attempt for the next sweep rather than an order stuck pending.
+  const before = (await attemptRef.get()).data() as PaymentAttempt | undefined;
+  if (before?.state === "open" && before.orderId && (CLOSED.has(status) || isPastOrderLifetime(before.createdAt))) {
+    await markOrderExpired(before.orderId);
+  }
   await db.runTransaction(async (t) => {
     const attempt = (await t.get(attemptRef)).data() as PaymentAttempt | undefined;
     // Only ever open → refused: a payment may have settled it meanwhile.
@@ -113,11 +123,12 @@ async function settleOrClose(subAccountId: string, secretKey: string, reference:
         ? ((await t.get(db.doc(`paymentLinks/${attempt.paymentLinkId}`))).data() as PaymentLink | undefined)
         : undefined;
       if (link && link.status !== "paid" && link.active) return;
-      // A buy-page order is payable on its checkout for as long as it is pending.
+      // A buy-page order is payable on its checkout while it is pending and
+      // younger than its lifetime (after that the expiry sweep closes it).
       const order = attempt.orderId
         ? ((await t.get(db.doc(`orders/${attempt.orderId}`))).data() as Pick<Order, "status"> | undefined)
         : undefined;
-      if (order?.status === "pending") return;
+      if (order?.status === "pending" && !isPastOrderLifetime(attempt.createdAt)) return;
     }
     t.update(attemptRef, {
       state: "refused",

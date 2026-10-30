@@ -6,7 +6,8 @@ import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { initializePaystackTransaction } from "@/lib/paystack/billing-api";
 import { createPendingOrder } from "@/lib/server/orders-service";
-import { attachCheckoutSession, openPaystackAttempt } from "@/lib/server/product-link-orders";
+import { attachCheckoutSession } from "@/lib/server/product-link-orders";
+import { openPaystackAttempt } from "@/lib/server/product-link-paystack-orders";
 import {
   deliverySnapshots,
   mintThanksToken,

@@ -163,6 +163,12 @@ describe("refusals: nothing written, Paystack never called", () => {
     ["not an email", { email: "nope" }],
     ["a non-string email", { email: ["a@b.co"] }],
     ["an over-long email", { email: `${"a".repeat(250)}@b.co` }],
+    ["an address list", { email: "a@b.co,c@d.co" }],
+    ["a semicolon list", { email: "a@b.co;c@d.co" }],
+    ["a display name", { email: "Bob <a@b.co>" }],
+    ["a quoted local part", { email: '"a b"@b.co' }],
+    ["a comment", { email: "a(x)@b.co" }],
+    ["inner whitespace", { email: "a b@b.co" }],
   ])("%s → 400", async (_name, body) => {
     refused(await post(body), 400);
   });
