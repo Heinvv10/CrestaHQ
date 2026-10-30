@@ -7,6 +7,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyPaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { reconcilePaystackCharge } from "@/lib/paystack/payment-link-reconciler";
+import type { Order } from "@/types/orders";
 import type { PaymentAttempt } from "@/types/payment-attempts";
 import type { PaymentLink } from "@/types/payment-links";
 
@@ -24,7 +25,8 @@ import type { PaymentLink } from "@/types/payment-links";
  *   success                        → recorded through the normal reconciler;
  *   reversed, or unknown to Paystack → closed as `refused` (no money can come);
  *   abandoned / failed             → closed only if its link is already paid or
- *                                    withdrawn. Paystack lets the customer
+ *                                    withdrawn (a buy-page order's: no longer
+ *                                    pending). Paystack lets the customer
  *                                    resume or retry on the same reference, so
  *                                    on a live link it may still take money;
  *   no answer                      → left open, for `flagStaleAttempts`.
@@ -111,6 +113,11 @@ async function settleOrClose(subAccountId: string, secretKey: string, reference:
         ? ((await t.get(db.doc(`paymentLinks/${attempt.paymentLinkId}`))).data() as PaymentLink | undefined)
         : undefined;
       if (link && link.status !== "paid" && link.active) return;
+      // A buy-page order is payable on its checkout for as long as it is pending.
+      const order = attempt.orderId
+        ? ((await t.get(db.doc(`orders/${attempt.orderId}`))).data() as Pick<Order, "status"> | undefined)
+        : undefined;
+      if (order?.status === "pending") return;
     }
     t.update(attemptRef, {
       state: "refused",

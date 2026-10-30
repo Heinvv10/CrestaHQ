@@ -43,6 +43,13 @@ export interface PaymentAttempt {
   /** What the attempt pays. */
   paymentLinkId: string | null;
   /**
+   * An express buy-page order (`orders/{id}`, source `product_link`) this
+   * attempt pays. Such an attempt stores `paymentLinkId: ""` (never null),
+   * which keeps it out of the stale auto-charge sweep's `paymentLinkId ==
+   * null` query: abandoned buys would otherwise fill that sweep's page.
+   */
+  orderId?: string;
+  /**
    * A recurring card cycle's charge (`ra-{scheduleId}-c{cycle}`): the saved
    * card charged, the invoice it pays and its schedule. Absent on checkouts.
    */

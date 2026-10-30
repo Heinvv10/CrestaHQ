@@ -16,6 +16,7 @@ import {
   openProductLinkSession,
   PAYMENTS_DOWN,
 } from "@/lib/server/product-buy-session";
+import { openProductPaystackSession } from "@/lib/server/product-buy-paystack";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 export const dynamic = "force-dynamic";
@@ -23,16 +24,20 @@ export const dynamic = "force-dynamic";
 /**
  * Express buy link: one product, straight to Stripe Checkout. Unauthenticated,
  * so price, currency and name come from Firestore only — the body carries
- * only the buy button's request id. Stripe collects the buyer's email and name, and the
- * webhook reconciles the contact from them once paid.
+ * only the buy button's request id (and, on Paystack, the buyer's email).
+ * Stripe collects the buyer's email and name, and the webhook reconciles the
+ * contact from them once paid.
  *
  * Order of work: rate limit → re-check the product (loadBuyContext) → rail →
  * Stripe connection → (dedupe a double click) → pending order → Stripe
  * session → session id onto the order (product-buy-session.ts).
  *
- * Paystack (ZAR-only workspaces) is unit F3 and community access unit F4:
- * until they land such a product answers 503 and no order or session is
- * created (`canBuyExpressNow`).
+ * The Paystack rail (ZAR-only workspaces) differs only in that Paystack's
+ * page cannot ask for the buyer's email, so the body also carries `email`;
+ * the order and the payment attempt are written before Paystack is called
+ * (product-buy-paystack.ts). Community access is unit F4: until it lands such
+ * a product answers 503 and no order or session is created
+ * (`canBuyExpressNow`).
  */
 
 function fail(message: string, status = 400): NextResponse {
@@ -41,6 +46,7 @@ function fail(message: string, status = 400): NextResponse {
 
 const UNAVAILABLE = "This item isn't available to buy right now.";
 const NOT_YET = "Buying this online isn't available yet.";
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(
   request: Request,
@@ -63,6 +69,7 @@ export async function POST(
   const body = read.ok && read.value && typeof read.value === "object" ? (read.value as Record<string, unknown>) : {};
   const requestId = body.requestId;
   if (requestId !== undefined && !isBuyRequestId(requestId)) return fail("Invalid request.", 400);
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
 
   const buy = await loadBuyContext(subAccountId, slug);
   if (!buy) return fail(UNAVAILABLE, 404);
@@ -70,6 +77,17 @@ export async function POST(
   if (buy.checkoutPageSlug) return fail(UNAVAILABLE, 409);
   if (!canBuyExpressNow(buy)) return fail(NOT_YET, 503);
   const { product } = buy;
+
+  if (buy.rail === "paystack") {
+    // Paystack's hosted page shows the email, it does not ask for it.
+    if (!EMAIL_RE.test(email) || email.length > 254) return fail("Enter a valid email address.", 400);
+    const paystack = await dedupedSession(
+      requestId ? buyRequestKey(subAccountId, product.id, requestId, email) : null,
+      { unitPriceCents: product.unitPriceCents, currency: product.currency },
+      () => openProductPaystackSession(buy, subAccountId, slug, email),
+    );
+    return paystack.ok ? NextResponse.json({ url: paystack.url }) : fail(paystack.error, paystack.status);
+  }
 
   if (!stripeCanChargeCurrency(product.currency)) return fail(UNAVAILABLE, 404);
 

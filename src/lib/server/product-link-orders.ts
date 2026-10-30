@@ -5,7 +5,12 @@ import { randomUUID } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
+import { paystackKeyFingerprint, paystackKeyMode } from "@/lib/paystack/key-fingerprint";
+import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
+import { productOrderReference } from "@/lib/server/product-order-reference";
 import type { Order } from "@/types/orders";
+import type { PaymentAttempt } from "@/types/payment-attempts";
+import { PAYMENT_LINK_CURRENCY } from "@/types/payment-links";
 
 /**
  * The state changes of an express buy-link order (`source: "product_link"`)
@@ -46,6 +51,71 @@ export async function attachCheckoutSession(
         : { status: "failed", updatedAt: FieldValue.serverTimestamp() },
     );
     return true;
+  });
+}
+
+export type PaystackAttemptOpened =
+  | { ok: true; reference: string; secretKey: string }
+  | { ok: false; reason: "order_unavailable" | "not_connected" | "wrong_currency" };
+
+/**
+ * Open the Paystack checkout of an order written before it: the one
+ * `paymentAttempts/{reference}` record and the order's `paystackReference`,
+ * committed together BEFORE Paystack is called. The transaction reads the
+ * connection, so a disconnect or key switch that lands first makes it retry
+ * and see it, and one that lands after finds this attempt open and flags it.
+ * The checkout then uses exactly the key the attempt recorded. Only an order
+ * still `pending` with no checkout yet is opened (once).
+ */
+export async function openPaystackAttempt(
+  orderId: string,
+  createdByUid: string,
+): Promise<PaystackAttemptOpened> {
+  const db = getAdminDb();
+  const orderRef = db.doc(`orders/${orderId}`);
+  const reference = productOrderReference(orderId);
+  const attemptRef = db.doc(`paymentAttempts/${reference}`);
+  return db.runTransaction(async (tx): Promise<PaystackAttemptOpened> => {
+    const snap = await tx.get(orderRef);
+    const order = snap.data() as Partial<Order> | undefined;
+    const conn = order ? await readPaystackConnectionSecret(order.subAccountId ?? "", tx) : null;
+    if (
+      !order ||
+      order.source !== "product_link" ||
+      order.status !== "pending" ||
+      order.heldAt ||
+      order.stripeCheckoutSessionId !== "" ||
+      order.paystackReference
+    ) {
+      return { ok: false, reason: "order_unavailable" };
+    }
+    if (!conn) return { ok: false, reason: "not_connected" };
+    if ((order.currency ?? "").toUpperCase() !== PAYMENT_LINK_CURRENCY) {
+      return { ok: false, reason: "wrong_currency" };
+    }
+    const mode = paystackKeyMode(conn.secretKey);
+    const attempt: Omit<PaymentAttempt, "id"> = {
+      agencyId: order.agencyId as string,
+      subAccountId: order.subAccountId as string,
+      createdByUid,
+      paymentLinkId: "",
+      orderId,
+      amountCents: order.totalCents as number,
+      currency: PAYMENT_LINK_CURRENCY,
+      mode,
+      keyFingerprint: paystackKeyFingerprint(conn.secretKey),
+      state: "open",
+      reason: null,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    tx.create(attemptRef, attempt);
+    tx.update(orderRef, {
+      paystackReference: reference,
+      livemode: mode === "live",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { ok: true, reference, secretKey: conn.secretKey };
   });
 }
 
@@ -204,15 +274,15 @@ export async function markOrderExpired(orderId: string): Promise<boolean> {
   });
 }
 
-/** True while the order is pending, linked to its Stripe session and not
- *  flagged: its checkout can still be paid as opened. */
+/** True while the order is pending, linked to its Stripe session or Paystack
+ *  checkout and not flagged: its checkout can still be paid as opened. */
 export async function isOrderAwaitingPayment(orderId: string): Promise<boolean> {
   const snap = await getAdminDb().doc(`orders/${orderId}`).get();
   const order = snap.data() as Partial<Order> | undefined;
   return (
     !!order &&
     order.status === "pending" &&
-    !!order.stripeCheckoutSessionId &&
+    (!!order.stripeCheckoutSessionId || !!order.paystackReference) &&
     !order.heldAt &&
     !order.attention
   );

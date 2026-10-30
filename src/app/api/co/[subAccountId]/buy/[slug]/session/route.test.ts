@@ -4,7 +4,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 /**
  * Express buy session through the real route, buy service, pay-rail rule and
  * orders service over an in-memory Firestore. Only the Stripe API calls are
- * stubbed. Covers: the agency gate, the rail (Paystack is unit F3 → 503), the
+ * stubbed. Covers: the agency gate, the rail (the Paystack path is route.paystack.test.ts), the
  * amount from the product doc (never the body), the ambiguous-slug refusal,
  * the order written BEFORE the provider call, and the per-IP rate limit.
  */
@@ -145,10 +145,10 @@ describe("refusals: nothing written, Stripe never called", () => {
     await refused(await post(), 404);
   });
 
-  it("a Paystack-rail product (ZAR, Paystack only) → 503, no order, no session", async () => {
+  it("a Paystack-rail product (ZAR, Paystack only) with no email → 400, no order, no session", async () => {
     mem.seed(`subAccounts/${SA}`, { ...SUB, stripeConnectionMeta: null, paystackConnectionMeta: PAYSTACK });
     mem.seed("products/p1", { ...PRODUCT, currency: "ZAR" });
-    await refused(await post(), 503);
+    await refused(await post(), 400);
   });
 
   it("a non-ZAR product on a Paystack-only workspace → 404", async () => {

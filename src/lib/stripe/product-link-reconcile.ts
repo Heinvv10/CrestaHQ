@@ -129,7 +129,25 @@ export async function handleProductLinkCompleted(
     return { handled: true, detail: `order ${order.id} is ${settled.order.status}` };
   }
 
-  let paid = settled.order;
+  await finishPaidProductLinkOrder(settled.order, buyer);
+
+  return {
+    handled: true,
+    detail: settled.kind === "paid" ? `order ${settled.order.id} paid` : "already paid (idempotent no-op)",
+  };
+}
+
+/**
+ * Steps 2-4 of a paid `product_link` order, shared by every rail (Stripe here,
+ * Paystack in `paystack/product-order-reconciler.ts`) so there is exactly one
+ * contact path, one `order.paid` claim and one confirmation email. Each step
+ * is claimed or compare-and-set, so a redelivery repeats none of them.
+ */
+export async function finishPaidProductLinkOrder(
+  order: Order,
+  buyer: { email: string | null; name: string | null; phone: string | null },
+): Promise<void> {
+  let paid = order;
   const email = paid.buyerEmail ?? buyer.email;
   if (!paid.contactId && email) {
     // One delivery at a time, so concurrent deliveries create one contact.
@@ -173,11 +191,6 @@ export async function handleProductLinkCompleted(
     });
   }
   sendOrderConfirmationAfterResponse(paid.id);
-
-  return {
-    handled: true,
-    detail: settled.kind === "paid" ? `order ${paid.id} paid` : "already paid (idempotent no-op)",
-  };
 }
 
 /** `checkout.session.expired`: the buyer never paid; close a pending buy-link order. */
